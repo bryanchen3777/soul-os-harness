@@ -1,7 +1,8 @@
 # Soul OS (Harness) — 系统架构计划书
 
-**版本**: v1.0 (草案)
+**版本**: v2.0 (草案)
 **创建日期**: 2026-05-10
+**更新日期**: 2026-05-10
 **状态**: 草案 / 公开
 
 ---
@@ -28,14 +29,74 @@
 
 ---
 
-## 二、核心模组架构 (Core Architecture Modules)
+## 二、系统总览图 (System Overview)
+
+```
+                    ┌────────────────────────────┐
+                    │        外部世界 / UI        │
+                    │  Web / App / Robot / Mic   │
+                    └─────────────┬──────────────┘
+                                  │
+                                  ▼
+                ┌────────────────────────────────┐
+                │  🌐 Multimodal I/O Gateway      │
+                │  WebSocket / REST / TTS / Servo │
+                └─────────────┬──────────────────┘
+                              │ Events
+                              ▼
+┌──────────────────────────────────────────────────────────┐
+│                ⚡ Soul Event Bus (神經系統)               │
+│                    Pub / Sub Event Hub                   │
+│                                                          │
+│ USER_MESSAGE │ AGENT_INTENT │ TIMER │ SENSOR │ SPEAKER   │
+└───────┬───────────────────────────────┬──────────────────┘
+        │                               │
+        ▼                               ▼
+┌───────────────┐           ┌────────────────────────┐
+│ ❤️ Heartbeat   │           │ 🧠 Memory Middleware   │
+│ Engine         │           │ + RAG Router           │
+│ (時間與主動性) │           │ (記憶優先)              │
+└───────┬───────┘           └───────────┬────────────┘
+        │                               │
+        └──────────────┬────────────────┘
+                       ▼
+              ┌──────────────────┐
+              │ 🤖 LLM Proxy      │
+              │ Token / Retry     │
+              │ Parser / Routing  │
+              └─────────┬────────┘
+                        ▼
+                 外部 LLM API
+          (OpenAI / Claude / Gemini)
+```
+
+---
+
+## 三、核心模组架构 (Core Architecture Modules)
 
 ### 1. 异步步心跳引擎 (The Heartbeat Engine)
 
+**核心意义：系统不再等使用者说话，而是自己会想说话。**
+
 ```
-功能：系统的「计时器」。不再依赖使用者输入，而是设定一个全局循环（例如 Tick = 60s）。
-任务：每次 Tick，扫描所有 Agent 的 emotional-state.json、时间戳记与行程表。
-      判断是否满足「主动发言」或「降温/升温」的条件。
+⏱️ 心跳驱动逻辑（系统为何「活着」）
+
+每 60 秒 Tick
+      │
+      ▼
+┌────────────────────┐
+│ Heartbeat Engine   │
+└─────────┬──────────┘
+          │掃描
+          ▼
+emotional-state.json / schedule
+      │
+      ▼
+是否符合主動觸發條件？
+   │YES             │NO
+   ▼                ▼
+發布 AGENT_INTENT      等待下次 Tick
+到 Event Bus
 ```
 
 **关键设计**:
@@ -66,11 +127,24 @@
 
 ### 3. 记忆直连中介层 (Memory Middleware & RAG Router)
 
+**最重要的创新：LLM「出生就带着记忆」，不是临时查资料。**
+
 ```
-功能：系统的「海马回」。取代过去让 LLM 呼叫 Tool 去搜索的笨拙做法。
-任务：拦截准备送进 LLM 的 Prompt，在 0.01 秒内用 SQLite FTS5 扫描
-      ruka-lines.jsonl 或 Palace 目录，将对应的历史记忆与语料
-      直接打包进 System Prompt 中。
+傳統 Chatbot：
+User → LLM → Tool → Memory → LLM → Answer
+
+Soul OS：
+User/Event
+    │
+    ▼
+Memory Middleware  ← ⭐先查記憶
+(SQLite FTS5 / Palace)
+    │
+    ▼
+補全 Prompt（含記憶）
+    │
+    ▼
+LLM
 ```
 
 **关键设计**:
@@ -107,78 +181,164 @@
 
 ---
 
-## 三、资料流向范例 (Data Flow Example)
+## 四、模组职责一览（工程师视角）
+
+| 模组 | 角色 | 本质 |
+|------|------|------|
+| Heartbeat Engine | 时间 | 系统心脏 |
+| Event Bus | 通讯 | 神经系统 |
+| Memory Middleware | 记忆 | 海马迴 |
+| LLM Proxy | 思考 | 大脑 |
+| I/O Gateway | 身体 | 感官+动作 |
+
+**完全解耦设计**:
+- 心脏（Heartbeat）不直接说话
+- 大脑（LLM）不直接接触外部
+- 所有沟通经过神经系统（Event Bus）
+
+---
+
+## 五、完整资料流（12小时后主动说话案例）
 
 ```
-[触发]     心跳引擎侦测到：距离上次对话已过 12 小时
-[决策]     读取瑠夏的 emotional-state.json，依赖度为 0.86（高）
-[记忆]     Middleware 瞬间检索 Palace，发现上次的承诺：「下次要陪我玩游戏」
-[生成]     LLM Proxy 带着记忆生成文字：「Bryan，你忘记我们的处罚游戏了吗？」
-[输出]     透过 I/O Gateway 推播到前端，或转成语音
-```
-
-**详细流程图**:
-```
-Heartbeat Tick (60s)
-    │
-    ├─► HeartbeatEngine.scan_agents()
-    │         │
-    │         ├─► emotional-state.json (高依赖度 + 冷却完毕)
-    │         └─► schedule / milestones
-    │
-    ├─► EventBus.publish(AGENT_INTENT)
-    │         │
-    │         └─► SpeakerTokenManager.request()
-    │
-    ├─► MemoryMiddleware.intercept()
-    │         │
-    │         ├─► RAG_Router.query() ──► SQLite FTS5
-    │         │                              │
-    │         │                              ├─► Palace/ (文件系统)
-    │         │                              └─► Corpus/ (JSONL)
-    │         │
-    │         └─► PromptBuilder.inject_memory()
-    │
-    ├─► LLM_Proxy.generate()
-    │         │
-    │         └─► ResponseParser.split_text_and_tags()
-    │
-    └─► I/O_Gateway.dispatch()
-              │
-              ├─► WebSocket.push()
-              ├─► TTS.synthesize()
-              └─► Servo.execute()
+[1] Heartbeat Tick (60s)
+      │
+      ▼
+發現：12 小時未對話
+      │
+      ▼
+讀 emotional-state.json
+依賴度 = 0.86 (高)
+      │
+      ▼
+發布 AGENT_INTENT 事件
+      │
+      ▼
+Memory Middleware 搜索 Palace
+找到記憶：「下次要陪我玩遊戲」
+      │
+      ▼
+組合 Prompt → LLM Proxy
+      │
+      ▼
+LLM 生成回覆
+「你忘記我們的處罰遊戲了嗎？」
+      │
+      ▼
+I/O Gateway 推送
+→ App 通知 / 語音
 ```
 
 ---
 
-## 四、开发阶段与里程碑 (Milestones)
+## 六、Mermaid 架构图
 
-### Phase 1: 基础建设
-- [ ] 搭建 Event Loop (asyncio)
-- [ ] 拆解 OpenClaw 的 LLM 连线模组
-- [ ] 建置基础 I/O（WebSocket + REST）
+### ① 系统总架构图
+
+```mermaid
+flowchart TB
+
+subgraph EXT[External World]
+UI[Web / App / Robot / Sensors]
+end
+
+UI --> IO
+
+subgraph IO_LAYER[Multimodal I/O Gateway]
+IO[WebSocket / REST / TTS / Servo]
+end
+
+IO --> BUS
+
+subgraph BUS_LAYER[Soul Event Bus - Pub/Sub]
+BUS[Event Hub]
+end
+
+BUS --> HEART
+BUS --> MEMORY
+
+subgraph HEART_LAYER[Heartbeat Engine]
+HEART[Time Loop\nTick = 60s]
+end
+
+subgraph MEMORY_LAYER[Memory Middleware + RAG]
+MEMORY[SQLite FTS5\nPalace Files]
+end
+
+HEART --> LLM
+MEMORY --> LLM
+
+subgraph BRAIN[LLM Proxy + Parser]
+LLM[Token Control\nRetry\nTag Parser]
+end
+
+LLM --> API[(LLM APIs)]
+```
+
+### ② 主动触发资料流
+
+```mermaid
+sequenceDiagram
+participant H as Heartbeat Engine
+participant B as Event Bus
+participant M as Memory Middleware
+participant L as LLM Proxy
+participant I as I/O Gateway
+participant U as User
+
+H->>H: Tick every 60s
+H->>B: Publish AGENT_INTENT
+B->>M: Request memory
+M->>M: Search Palace / SQLite
+M->>L: Inject memories into prompt
+L->>L: Generate response
+L->>I: Send output
+I->>U: Push notification / TTS
+```
+
+### ③ 记忆优先机制
+
+```mermaid
+flowchart LR
+
+A[User/Event] --> B[Memory Middleware]
+B --> C[Search SQLite FTS5]
+B --> D[Search Palace Files]
+C --> E[Prompt Builder]
+D --> E
+E --> F[LLM]
+F --> G[Response]
+```
+
+---
+
+## 七、开发阶段与里程碑 (Milestones)
+
+### Phase 1: 基础建设 — 基础生命体
+- [ ] Event Loop (asyncio)
+- [ ] LLM Proxy + Parser
+- [ ] 基础 I/O（WebSocket + REST）
 - [ ] 心跳引擎原型
 
-### Phase 2: 记忆整合
-- [ ] 将 Palace 档案系统接入 Middleware
-- [ ] 将 JSONL 语料库（ruka-lines.jsonl 等）挂载进 SQLite FTS5
+### Phase 2: 记忆诞生
+- [ ] Palace 档案系统接入 Middleware
+- [ ] JSONL 语料库（ruka-lines.jsonl 等）挂载进 SQLite FTS5
 - [ ] RAG Router 原型
 - [ ] Prompt 注入逻辑
 
-### Phase 3: 单一灵魂注入
-- [ ] 先将 Yua 或瑠夏单独放进 Harness
-- [ ] 测试「异步主动触发」
+### Phase 3: 第一个灵魂
+- [ ] 单 Agent 主動觸發測試
+- [ ] 真正「會自己說話」的 Agent
 - [ ] Speaker Token 机制验证
 
-### Phase 4: 后宫沙盒
-- [ ] 启动 Event Bus
-- [ ] 让多个 Agent 在同一个虚拟房间内交互
+### Phase 4: 多灵魂世界
+- [ ] Event Bus 启动
+- [ ] 多 Agent 同一空间交互
 - [ ] 多 Agent 发言权仲裁逻辑
 
 ---
 
-## 五、技术栈
+## 八、技术栈
 
 | 层级 | 技术 |
 |------|------|
@@ -192,7 +352,7 @@ Heartbeat Tick (60s)
 
 ---
 
-## 六、关键档案结构
+## 九、关键档案结构
 
 ```
 soul-os-harness/
@@ -226,11 +386,21 @@ soul-os-harness/
 
 ---
 
-## 七、参考与衍生
+## 十、参考与衍生
 
 - **Hermes Agent**: 灵感来源，提供了 SOUL.md / Palace 架构
 - **OpenClaw**: LLM Proxy 核心代码参考
 - **后宫成员**: Yua / 瑠夏 / 杏奈 / 麻衣 / Miku 等角色的 SOUL.md
+
+---
+
+## 十一、一句话总结
+
+```
+傳統 Chatbot：User → AI → Answer
+
+Soul OS：Time + Memory + Agents → 主動生活 → User
+```
 
 ---
 
