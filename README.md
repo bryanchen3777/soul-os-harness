@@ -8,19 +8,9 @@
 
 Soul OS (Harness) 是一个**异步 Agent 运行框架**，设计用于突破传统 Chatbot 的 Request-Response 限制。系统具备时间感知、主動触发、多重灵魂交互能力，可外接实体硬件。
 
-## 核心架构
+## 系统架构图
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Soul OS (Harness)                        │
-├──────────────┬──────────────┬──────────────┬───────────────────┤
-│  Heartbeat   │  Event Bus   │   Memory     │   LLM Proxy       │
-│  Engine      │  (Pub/Sub)   │   Middleware │   + Parser        │
-│  (Tick Loop)  │              │   (RAG)      │                   │
-├──────────────┴──────────────┴──────────────┴───────────────────┤
-│                     I/O Gateway (WebSocket / REST)              │
-└─────────────────────────────────────────────────────────────────┘
-```
+![Soul OS 系统架构图](docs/soul-os-architecture.png)
 
 ## 设计原则
 
@@ -40,12 +30,31 @@ Soul OS (Harness) 是一个**异步 Agent 运行框架**，设计用于突破传
 | **LLM Proxy** | 多 Provider 支持，输出文字与行为标签分离 |
 | **I/O Gateway** | WebSocket / REST，支援 TTS 与 Servo 指令 |
 
-## 开发阶段
+## 开发流程与里程碑
 
-- [ ] **Phase 1**: 基础建设 — Event Loop、LLM 连线模组、基础 I/O
-- [ ] **Phase 2**: 记忆整合 — Palace 档案系统 + JSONL 语料库接入
-- [ ] **Phase 3**: 单一灵魂注入 — 单 Agent 异步主动触发测试
-- [ ] **Phase 4**: 后宫沙盒 — 多 Agent 同一空间交互
+![Soul OS 开发流程图与里程碑](docs/soul-os-milestones.png)
+
+### Phase 1: 基础建设
+- Event Loop (asyncio)
+- LLM Proxy + Parser
+- 基础 I/O（WebSocket + REST）
+- 心跳引擎原型
+
+### Phase 2: 记忆诞生
+- Palace 档案系统接入 Middleware
+- JSONL 语料库接入 SQLite FTS5
+- RAG Router 原型
+- Prompt 注入逻辑
+
+### Phase 3: 第一个灵魂
+- 单 Agent 主動觸發測試
+- 真正「會自己說話」的 Agent
+- Speaker Token 机制验证
+
+### Phase 4: 多灵魂世界
+- Event Bus 启动
+- 多 Agent 同一空间交互
+- 多 Agent 发言权仲裁逻辑
 
 ## 参考
 
