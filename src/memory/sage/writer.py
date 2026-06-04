@@ -60,6 +60,31 @@ _RELATION_PATTERNS: list[tuple[str, str, float]] = [
     (r"(.+?)在(.+?)工作", "工作於", 1.0),
     (r"(.+?)是(.+)",     "是",    1.0),
     (r"(.+?)有(.+)",     "有",    0.9),
+
+    # ── Phase 2.3 擴充：口語句型 ──
+    # 分類 A：移動 / 行為動詞（weight 0.9，雜訊比正式句型高）
+    (r"(.{1,10})去了?(.{1,20})",   "去",    0.9),
+    (r"(.{1,10})來了?(.{1,20})",   "來",    0.9),
+    (r"(.{1,10})到了?(.{1,20})",   "到",    0.9),
+    (r"(.{1,10})買了?(.{1,20})",   "買",    0.9),
+    (r"(.{1,10})吃了?(.{1,20})",   "吃",    0.9),
+    (r"(.{1,10})見了?(.{1,20})",   "見",    0.9),
+    (r"(.{1,10})用了?(.{1,20})",   "使用",  0.9),
+
+    # 分類 B：狀態描述（weight 0.8-1.0）
+    (r"(.{1,10})覺得(.{1,20})",    "覺得",  0.8),
+    (r"(.{1,10})感覺(.{1,20})",    "感覺",  0.8),
+    (r"(.{1,10})住(.{1,15})",      "住在",  1.0),  # 補「我住台北」漏網
+
+    # 分類 C：時間 / 承諾（weight 1.0，subject 至少 1 字）
+    # 注：原 spec 寫 3 字下限會擋掉 "你說過" 這種 1 字 subject 的正常句型
+    #     實際上 1 字下限對 "上次見到→去" 這種 false positive 沒實質幫助
+    #     （keyword 不在 position 1 就對不上），所以降為 1
+    (r"(.{1,15})說過(.{1,20})",    "說過",  1.0),
+    (r"(.{1,15})答應(.{1,20})",    "答應",  1.0),
+    (r"(.{1,15})上次(.{1,20})",    "上次",  1.0),
+    (r"(.{1,15})下次(.{1,20})",    "下次要", 1.0),
+    (r"(.{1,15})記得(.{1,20})",    "記得",  1.0),
 ]
 
 _NOISE_OBJECTS = {
@@ -132,6 +157,17 @@ class MemoryWriter:
         sid = session_id or self.default_session_id
         facts = self._extract_facts(text, subject_hint, sid, source)
         return self.add_facts_batch(facts)
+
+    def extract(
+        self,
+        text: str,
+        subject_hint: Optional[str] = None,
+        session_id: Optional[str] = None,
+        source: str = "user",
+    ) -> list[Fact]:
+        """只抽取事實、不寫入 graph。測試用與下游預處理層用。"""
+        sid = session_id or self.default_session_id
+        return self._extract_facts(text, subject_hint, sid, source)
 
     def write_turn(
         self,
