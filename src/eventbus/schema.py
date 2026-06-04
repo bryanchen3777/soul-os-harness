@@ -19,11 +19,12 @@ class EventType(str, Enum):
     SYSTEM_TICK     = "system_tick"       # Heartbeat Engine 發出的時間脈衝
 
     # 內部流轉
-    AGENT_INTENT    = "agent_intent"      # Agent 想發言的意圖（搶奪發言權）
-    MEMORY_QUERY    = "memory_query"      # 向 Memory Middleware 發出查詢請求
-    MEMORY_RETRIEVED = "memory_retrieved" # Memory Middleware 回傳的記憶結果
-    LLM_REQUEST     = "llm_request"       # 向 LLM Proxy 發出生成請求
-    LLM_RESPONSE    = "llm_response"      # LLM Proxy 回傳的生成結果
+    AGENT_INTENT          = "agent_intent"           # Agent 想發言的意圖（搶奪發言權）
+    AGENT_INTENT_ENRICHED = "agent_intent_enriched"  # 記憶已注入的 intent（MemoryMiddleware → LLMProxy）
+    MEMORY_QUERY          = "memory_query"           # 向 Memory Middleware 發出查詢請求
+    MEMORY_RETRIEVED      = "memory_retrieved"       # Memory Middleware 回傳的記憶結果
+    LLM_REQUEST           = "llm_request"            # 向 LLM Proxy 發出生成請求
+    LLM_RESPONSE          = "llm_response"           # LLM Proxy 回傳的生成結果
 
     # 輸出動作
     AGENT_SPEAK     = "agent_speak"       # Agent 正式輸出的文字（送往 I/O Gateway）
@@ -158,6 +159,12 @@ class SoulEvent(BaseModel):
 #       "reason": str,             # 觸發意圖的原因（"silence_threshold" | "schedule" | ...）
 #       "draft": str | None,       # 選填，Agent 預擬的訊息草稿（可被 LLM 覆寫）
 #   }
+#
+# EventType.AGENT_INTENT_ENRICHED:
+#   payload = AGENT_INTENT 全部欄位 +
+#       "memory_context": str,    # MemoryMiddleware 注入的記憶摘要（可空字串）
+#   用途：避免 AGENT_INTENT 被 re-publish 造成 MemoryMiddleware 無限迴圈。
+#   LLMProxy 訂閱此類型，AGENT_INTENT 不再被 LLMProxy 直接消費。
 #
 # EventType.MEMORY_RETRIEVED:
 #   payload = {

@@ -7,12 +7,17 @@
 #     → AgentConsciousness._on_user_message (重置冷卻)
 #     → AgentConsciousness._on_tick (評估主動出擊)
 #     → AgentConsciousness._fire_intent (發 AGENT_INTENT)
+#     → MemoryMiddleware.enrich → AGENT_INTENT_ENRICHED
 #     → LLMProxy.handle_event (MockBackend 取代真實 API)
 #     → LLMProxy publish AGENT_SPEAK
 #     → I/O Gateway handler 收到、印出
 #
+# Phase 2.0 更新：LLMProxy 改訂閱 AGENT_INTENT_ENRICHED，所以測試
+#   會注入 MemoryMiddleware 把 AGENT_INTENT 升級為 ENRICHED。
+#   詳細的 memory 行為測試在 test_memory_middleware.py。
+#
 # 執行方式：
-#   pip install pydantic httpx
+#   pip install pydantic httpx networkx
 #   python tests/test_e2e_full_flow.py
 
 import asyncio
@@ -29,6 +34,8 @@ from src.eventbus.schema import EventPriority, EventType, SoulEvent
 from src.eventbus import SoulEventBus
 from src.llm.proxy import LLMBackend, LLMProxy
 from src.agent.consciousness import AgentRuka
+from src.memory.middleware import MemoryMiddleware
+import tempfile
 
 logging.basicConfig(
     level=logging.INFO,
@@ -116,7 +123,11 @@ async def test_e2e_full_flow() -> Dict[str, Any]:
     llm_proxy = LLMProxy(bus=bus, backend=mock_backend, model="mock-model")
     agent_ruka = AgentRuka(agent_id="agent_ruka", bus=bus)
     io_capture = IOGatewayCapture(bus)
+    # Phase 2.0：注入 MemoryMiddleware 把 AGENT_INTENT 升級為 ENRICHED
+    tmp_data = tempfile.mkdtemp(prefix="soul_os_phase1_e2e_")
+    memory = MemoryMiddleware(bus=bus, data_dir=tmp_data)
 
+    memory.register()
     llm_proxy.register()
     agent_ruka.register()
     io_capture.register()
@@ -184,6 +195,9 @@ async def test_e2e_full_flow() -> Dict[str, Any]:
         }
     finally:
         await bus.stop()
+        memory.shutdown()
+        import shutil
+        shutil.rmtree(tmp_data, ignore_errors=True)
 
 
 # ─────────────────────────────────────────────
