@@ -63,18 +63,21 @@ class EmotionalState:
             "last_spoken_at": self.last_spoken_at.isoformat() if self.last_spoken_at else None,
         }
 
-    def save(self, base_path: str = "agents") -> None:
-        """TODO Phase 2: 持久化至 JSON 檔案"""
+    def save(self, base_path: str = "data/agents") -> None:
+        """Phase 3 實作：持久化至 JSON 檔案"""
         path = Path(base_path) / self.agent_id / "emotional-state.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2))
+        path.write_text(
+            json.dumps(self.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     @classmethod
-    def load(cls, agent_id: str, base_path: str = "agents") -> "EmotionalState":
-        """TODO Phase 2: 從 JSON 檔案讀取，不存在則使用預設值"""
+    def load(cls, agent_id: str, base_path: str = "data/agents") -> "EmotionalState":
+        """Phase 3 實作：從 JSON 檔案讀取，不存在則使用預設值"""
         path = Path(base_path) / agent_id / "emotional-state.json"
         if path.exists():
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
             state = cls(
                 agent_id=data["agent_id"],
                 dependency=data.get("dependency", 0.5),
@@ -82,6 +85,10 @@ class EmotionalState:
                 mood=data.get("mood", "neutral"),
             )
             state.silence_strike = data.get("silence_strike", 0)
+            # last_spoken_at 從 ISO 格式字串還原成 datetime
+            lsa = data.get("last_spoken_at")
+            if lsa:
+                state.last_spoken_at = datetime.fromisoformat(lsa)
             return state
         return cls(agent_id=agent_id)
 
@@ -189,6 +196,13 @@ class AgentConsciousness(ABC):
             f"[{self.agent_id}] 發出主動意圖 | reason={reason} "
             f"elapsed={elapsed_mins:.1f}m"
         )
+        # Phase 3：每次主動出擊後持久化情緒狀態
+        try:
+            self.state.save()
+        except Exception as e:
+            logger.warning(
+                f"[{self.agent_id}] 情緒狀態 save 失敗：{e}"
+            )
 
     @abstractmethod
     def _should_speak(self, elapsed_mins: float) -> tuple[bool, str]:
