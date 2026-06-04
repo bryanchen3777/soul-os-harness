@@ -176,7 +176,13 @@ class ClaudeBackend(LLMBackend):
             )
             resp.raise_for_status()
             data = resp.json()
-            return data["content"][0]["text"].strip()
+            # content 可能是 [{type: "text", text: "..."}] 或
+            #         [{type: "thinking", ...}, {type: "text", text: "..."}]（extended thinking 或 MiniMax 自動加 thinking）
+            # 走訪找第一個 text block
+            for block in data.get("content", []):
+                if block.get("type") == "text" and "text" in block:
+                    return block["text"].strip()
+            return ""  # 沒 text block，回空字串
 
 
 # ─────────────────────────────────────────────

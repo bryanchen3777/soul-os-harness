@@ -59,6 +59,7 @@ def _inject_env(cfg: dict) -> None:
     env_map = {
         # 巢狀寫入：把 path 解析成 list of keys
         "ANTHROPIC_API_KEY":   ["llm", "claude", "api_key"],
+        "MINIMAX_API_KEY":     ["llm", "minimax", "api_key"],
         "OPENAI_API_KEY":      ["llm", "openai", "api_key"],
         "OPENAI_BASE_URL":     ["llm", "openai", "base_url"],
         "LLM_PROVIDER":        ["llm", "provider"],
@@ -90,6 +91,24 @@ def create_llm_backend(cfg: dict):
 
     provider = cfg.get("llm", {}).get("provider", "claude").lower()
     llm_cfg = cfg.get("llm", {})
+
+    if provider == "minimax":
+        # MiniMax 提供 Anthropic-compatible endpoint
+        # 直接複用 ClaudeBackend，只換 BASE_URL
+        minimax_cfg = llm_cfg.get("minimax", {})
+        api_key = (
+            minimax_cfg.get("api_key")
+            or os.getenv("MINIMAX_API_KEY", "")
+        )
+        if not api_key:
+            raise ValueError(
+                "MINIMAX_API_KEY is required when LLM_PROVIDER=minimax. "
+                "Set it in .env or env."
+            )
+        backend = ClaudeBackend(api_key=api_key)
+        # 覆寫 class-level BASE_URL（Python instance attr 優先於 class attr）
+        backend.BASE_URL = "https://api.minimax.io/anthropic/v1/messages"
+        return backend
 
     if provider == "openai":
         openai_cfg = llm_cfg.get("openai", {})

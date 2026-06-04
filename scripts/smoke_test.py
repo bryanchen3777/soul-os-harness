@@ -22,11 +22,11 @@ import sys
 import time
 from pathlib import Path
 
-# 強制 LLM_PROVIDER=claude 確保 smoke test 真的打真實 LLM
-# （如要改回 mock 測試，註解掉這兩行）
-os.environ.setdefault("LLM_PROVIDER", "claude")
-# 如果 LLM_MODEL 沒設，預設 haiku（最便宜、最快）
-os.environ.setdefault("LLM_MODEL", "claude-haiku-4-5-20251001")
+# 強制 LLM_PROVIDER=minimax 確保 smoke test 真的打真實 LLM
+# （如要改回 claude/openai/mock 測試，註解掉這兩行）
+os.environ.setdefault("LLM_PROVIDER", "minimax")
+# 如果 LLM_MODEL 沒設，預設 MiniMax-M2.7-highspeed（204K context、100 tps）
+os.environ.setdefault("LLM_MODEL", "MiniMax-M2.7-highspeed")
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
