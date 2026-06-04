@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+
+# Virtual envs
+venv/
+.venv/
+env/
+
+# Secrets（用 .env.example 代替）
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test/Build
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.log
+
+# Soul OS runtime（未來會有）
+agents/*/states/
+sessions/

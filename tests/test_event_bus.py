@@ -7,7 +7,12 @@
 
 import asyncio
 import logging
+import sys
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+# 確保 src/ 可 import（從 repo 根目錄執行時需要）
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
 from src.eventbus import SoulEventBus
@@ -145,8 +150,12 @@ async def test_priority_ordering(bus: SoulEventBus) -> None:
     async def track_handler(event: SoulEvent) -> None:
         results.append(f"{event.priority}:{event.event_type}")
 
-    # 暫時掛載追蹤用的 handler
-    bus.subscribe("priority_tracker", track_handler)
+    # 暫時掛載追蹤用的 handler（只追蹤本測試感興趣的事件，避免汙染前面的殘留事件）
+    bus.subscribe(
+        "priority_tracker",
+        track_handler,
+        event_filter={EventType.SYSTEM_TICK, EventType.USER_MESSAGE},
+    )
 
     low_tick = SoulEvent(
         event_type=EventType.SYSTEM_TICK,
@@ -171,7 +180,9 @@ async def test_priority_ordering(bus: SoulEventBus) -> None:
     # 驗證結果
     if results:
         logger.info(f"  處理順序: {results}")
-        high_before_low = any("HIGH" in r for r in results[:2])
+        # EventPriority 是 int enum；use_enum_values=True 會把欄位轉成 int。
+        # HIGH=1, LOW=3；用 priority 1 開頭判斷 HIGH 優先被處理。
+        high_before_low = len(results) >= 1 and results[0].startswith("1:")
         logger.info(f"  HIGH 是否優先被處理: {'✓ 通過' if high_before_low else '✗ 失敗'}")
 
 

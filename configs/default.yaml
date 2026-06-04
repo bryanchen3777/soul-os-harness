@@ -1,0 +1,33 @@
+# Soul OS — default configuration
+# 由 src/configs/loader.py 載入（Phase 1 收尾時補上）
+
+heartbeat:
+  # HeartbeatEngine 每隔幾秒發一次 SYSTEM_TICK
+  # 設太短會在 CI / 開發機壓力大；建議 60s 為生產預設，1s 為本地開發
+  tick_interval_seconds: 60
+
+llm:
+  # 主要 LLM provider（"openai" | "claude" | "mock"）
+  # Phase 1：開發/測試用 "mock"，M3 驗收不需真實 API
+  # Phase 2：切到 "claude" 跑真實煙霧測試
+  provider: mock
+
+  # provider 對應的 model 名稱
+  openai_model: gpt-4o-mini
+  claude_model: claude-haiku-4-5-20251001
+
+  # 生成參數
+  max_tokens: 300
+  temperature: 0.85
+  max_retries: 3
+
+  # 對話歷史保留最近幾輪（每輪 = user + assistant）
+  max_history_turns: 10
+
+bus:
+  # PriorityQueue 上限
+  max_queue_size: 1000
+
+logging:
+  level: INFO
+  format: "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
