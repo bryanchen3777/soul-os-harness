@@ -80,6 +80,10 @@ async def main() -> None:
     data_dir = tempfile.mkdtemp(prefix="soul_os_m8_")
     memory = MemoryMiddleware(bus=bus, data_dir=data_dir)
     memory.register()
+    # Phase 4：加 SpeakerTokenManager
+    from src.eventbus.token_manager import SpeakerTokenManager
+    token_mgr = SpeakerTokenManager(bus=bus, token_timeout_secs=10.0)
+    token_mgr.register()
     llm = LLMProxy(bus=bus, backend=MockLLMBackend(), model="mock-m8", max_tokens=200)
     llm.register()
 

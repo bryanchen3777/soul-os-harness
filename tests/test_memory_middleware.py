@@ -119,6 +119,10 @@ async def test_memory_middleware_e2e(tmp_dir: Path) -> Dict[str, Any]:
     memory = MemoryMiddleware(bus=bus, data_dir=str(data_dir))
     io_capture = IOGatewayCapture(bus)
 
+    # Phase 4：加 SpeakerTokenManager 讓 LLMProxy 收到 SPEAKER_TOKEN_GRANTED
+    from src.eventbus.token_manager import SpeakerTokenManager
+    token_mgr = SpeakerTokenManager(bus=bus, token_timeout_secs=10.0)
+    token_mgr.register()
     memory.register()
     llm_proxy.register()
     agent_ruka.register()

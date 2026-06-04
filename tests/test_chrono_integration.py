@@ -141,6 +141,10 @@ async def test_chrono_block_reaches_llm_prompt() -> None:
     data_dir = tempfile.mkdtemp(prefix="chrono_e2e_")
     memory = MemoryMiddleware(bus=bus, data_dir=data_dir)
     memory.register()
+    # Phase 4：加 SpeakerTokenManager
+    from src.eventbus.token_manager import SpeakerTokenManager
+    token_mgr = SpeakerTokenManager(bus=bus, token_timeout_secs=10.0)
+    token_mgr.register()
     mock_llm = MockLLMBackend()
     llm = LLMProxy(bus=bus, backend=mock_llm, model="mock", max_tokens=200)
     llm.register()

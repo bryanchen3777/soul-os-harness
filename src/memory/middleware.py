@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -44,6 +45,12 @@ class MemoryMiddleware:
         # Phase 2 假設單 session 單 agent；Phase 4 多 agent 同一 session 時
         # 需改成 (session_id, agent_id) 並設計配對策略
         self._pending_user_text: Dict[str, str] = {}
+
+        # Phase 4：寫入節流，防止 N² 寫入爆炸
+        # 多 agent 同時說話時（Speaker Token 釋放後 queue 觸發連發），
+        # 同一 agent 5s 內的 AGENT_SPEAK 只寫一次
+        self._last_commit: Dict[str, datetime] = {}
+        self.COMMIT_COOLDOWN_SECS = 5.0
 
     def register(self) -> None:
         """向 Event Bus 註冊，開始接收三種事件。"""
@@ -141,9 +148,21 @@ class MemoryMiddleware:
 
         採「全寫」策略：包含其他 agent 的 speak 也寫進自己的 graph，
         建立社交記憶（Yua 的 graph 也會記得瑠夏說過什麼）。
+
+        Phase 4 加節流：同 agent 5s 內只寫一次，防 N² 寫入爆炸。
         """
         agent_id = event.payload.get("agent_id", event.source)
         session_id = event.session_id or "_no_session"
+
+        # Phase 4 節流：同 agent 在 COMMIT_COOLDOWN_SECS 內的 AGENT_SPEAK 跳過寫入
+        now = datetime.now(timezone.utc)
+        last = self._last_commit.get(agent_id)
+        if last and (now - last).total_seconds() < self.COMMIT_COOLDOWN_SECS:
+            logger.debug(
+                f"[Memory] {agent_id} 寫入節流（距上次 {(now-last).total_seconds():.1f}s），跳過"
+            )
+            return
+        self._last_commit[agent_id] = now
 
         # 配對同一 session 的 user_text
         user_text = self._pending_user_text.pop(session_id, "")

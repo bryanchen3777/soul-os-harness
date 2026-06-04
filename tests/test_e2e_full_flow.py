@@ -124,9 +124,13 @@ async def test_e2e_full_flow() -> Dict[str, Any]:
     agent_ruka = AgentRuka(agent_id="agent_ruka", bus=bus)
     io_capture = IOGatewayCapture(bus)
     # Phase 2.0：注入 MemoryMiddleware 把 AGENT_INTENT 升級為 ENRICHED
+    # Phase 4：再加 SpeakerTokenManager 仲裁後升級為 SPEAKER_TOKEN_GRANTED
     tmp_data = tempfile.mkdtemp(prefix="soul_os_phase1_e2e_")
     memory = MemoryMiddleware(bus=bus, data_dir=tmp_data)
+    from src.eventbus.token_manager import SpeakerTokenManager
+    token_mgr = SpeakerTokenManager(bus=bus, token_timeout_secs=10.0)
 
+    token_mgr.register()
     memory.register()
     llm_proxy.register()
     agent_ruka.register()

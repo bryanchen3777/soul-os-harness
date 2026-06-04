@@ -264,20 +264,25 @@ class LLMProxy:
         self._history: Dict[str, List[Dict[str, str]]] = {}
 
     def register(self) -> None:
-        """向 Event Bus 註冊，開始監聽 AGENT_INTENT_ENRICHED
+        """向 Event Bus 註冊，開始監聽 SPEAKER_TOKEN_GRANTED
 
         Phase 2.0：訂閱改為 AGENT_INTENT_ENRICHED。
         MemoryMiddleware 收到 AGENT_INTENT 後注入 memory_context，
         重新發布為 AGENT_INTENT_ENRICHED 給 LLMProxy。
         這避免 LLMProxy 跟 MemoryMiddleware 都收 AGENT_INTENT 時的
         re-publish 無限迴圈。
+
+        Phase 4：訂閱再改為 SPEAKER_TOKEN_GRANTED。
+        SpeakerTokenManager 收到 AGENT_INTENT_ENRICHED 後仲裁，
+        授權後 re-publish 為 SPEAKER_TOKEN_GRANTED。
+        LLMProxy 收到才真正生產，避免多 Agent 同時搶話。
         """
         self.bus.subscribe(
             subscriber_id="llm_proxy",
             handler=self.handle_event,
-            event_filter={EventType.AGENT_INTENT_ENRICHED},
+            event_filter={EventType.SPEAKER_TOKEN_GRANTED},
         )
-        logger.info("[LLMProxy] 已掛載，監聽 AGENT_INTENT_ENRICHED ✓")
+        logger.info("[LLMProxy] 已掛載，監聽 SPEAKER_TOKEN_GRANTED ✓")
 
     def unregister(self) -> None:
         self.bus.unsubscribe("llm_proxy")

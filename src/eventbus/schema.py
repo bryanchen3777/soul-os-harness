@@ -19,12 +19,15 @@ class EventType(str, Enum):
     SYSTEM_TICK     = "system_tick"       # Heartbeat Engine 發出的時間脈衝
 
     # 內部流轉
-    AGENT_INTENT          = "agent_intent"           # Agent 想發言的意圖（搶奪發言權）
-    AGENT_INTENT_ENRICHED = "agent_intent_enriched"  # 記憶已注入的 intent（MemoryMiddleware → LLMProxy）
-    MEMORY_QUERY          = "memory_query"           # 向 Memory Middleware 發出查詢請求
-    MEMORY_RETRIEVED      = "memory_retrieved"       # Memory Middleware 回傳的記憶結果
-    LLM_REQUEST           = "llm_request"            # 向 LLM Proxy 發出生成請求
-    LLM_RESPONSE          = "llm_response"           # LLM Proxy 回傳的生成結果
+    AGENT_INTENT          = "agent_intent"             # Agent 想發言的意圖（搶奪發言權）
+    AGENT_INTENT_ENRICHED = "agent_intent_enriched"    # 記憶已注入的 intent（MemoryMiddleware → SpeakerTokenManager）
+    SPEAKER_TOKEN_REQUEST = "speaker_token_request"   # 發言權申請（保留命名，現階段用 ENRICHED 觸發）
+    SPEAKER_TOKEN_GRANTED = "speaker_token_granted"   # 發言權已授予（SpeakerTokenManager → LLMProxy）
+    SPEAKER_TOKEN_RELEASED = "speaker_token_released"  # 發言權已釋放（給監聽者、debug 用）
+    MEMORY_QUERY          = "memory_query"             # 向 Memory Middleware 發出查詢請求
+    MEMORY_RETRIEVED      = "memory_retrieved"         # Memory Middleware 回傳的記憶結果
+    LLM_REQUEST           = "llm_request"              # 向 LLM Proxy 發出生成請求
+    LLM_RESPONSE          = "llm_response"             # LLM Proxy 回傳的生成結果
 
     # 輸出動作
     AGENT_SPEAK     = "agent_speak"       # Agent 正式輸出的文字（送往 I/O Gateway）
@@ -172,6 +175,20 @@ class SoulEvent(BaseModel):
 #       "results": list[dict],     # [{"content": str, "score": float, "created_at": str}]
 #       "hit_count": int
 #   }
+#
+# EventType.SPEAKER_TOKEN_GRANTED:
+#   payload = AGENT_INTENT_ENRICHED 全部欄位（已含 memory_context、chrono_context）
+#   用途：SpeakerTokenManager 仲裁通過後 re-publish，LLMProxy 訂閱此類型。
+#   用新 event type 而非 reuse ENRICHED 是為了避免 re-publish 迴圈
+#   （Manager 自己也訂閱 ENRICHED，reuse 會無限 loop）。
+#
+# EventType.SPEAKER_TOKEN_RELEASED:
+#   payload = {
+#       "agent_id": str,           # 釋放 token 的 agent
+#       "reason": str,             # "spoke_done" | "timeout" | "queue_promotion"
+#       "next_holder": str | None, # 下一個被授予的 agent（如果有 queue 等待者）
+#   }
+#   用途：純觀察事件，給監聽者 / debug 用，不影響業務邏輯。
 #
 # EventType.AGENT_SPEAK:
 #   payload = {

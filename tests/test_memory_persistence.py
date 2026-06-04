@@ -125,6 +125,8 @@ async def main() -> None:
         # ── Phase A：建第一個 Middleware，灌 6 個 turn，shutdown ──
         logger.info("\n── Phase A：建立 MM #1，灌 6 個 turn，shutdown ──")
         mw1, bus1 = await _create_middleware(data_dir)
+        # 關閉 Phase 4 寫入節流：測試要 seed 6 個連續 turn
+        mw1.COMMIT_COOLDOWN_SECS = 0
         await _pump_turns(mw1, SEED_TURNS)
 
         provider1 = mw1._get_provider("agent_ruka")
@@ -145,6 +147,7 @@ async def main() -> None:
         # ── Phase B：全新 Middleware 實例，同 data_dir，prefetch ──
         logger.info("\n── Phase B：全新 MM #2，同 data_dir，prefetch ──")
         mw2, bus2 = await _create_middleware(data_dir)
+        mw2.COMMIT_COOLDOWN_SECS = 0  # 關節流
 
         # 確保是 fresh provider（不是 in-memory cache）
         assert "agent_ruka" not in mw1._providers or mw1._providers != mw2._providers, \
