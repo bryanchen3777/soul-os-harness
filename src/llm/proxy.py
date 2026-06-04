@@ -41,11 +41,13 @@ class PromptContext:
 
     system_prompt    : Agent 的人格設定（來自 agents/{id}/persona.md）
     memory_context   : Memory Middleware 注入的相關記憶（Phase 2 填入）
+    chrono_context   : HeartbeatEngine 注入的時間感知區塊（Phase 3.5 填入）
     conversation_history : 近期對話紀錄（來自 session 快取）
     current_intent   : 當前要處理的意圖（來自 AGENT_INTENT payload）
     """
     system_prompt: str
     memory_context: str = ""          # ⭐ Phase 2 插槽：Memory Middleware 填入
+    chrono_context: str = ""          # ⭐ Phase 3.5 插槽：HeartbeatEngine 填入
     conversation_history: List[Dict[str, str]] = field(default_factory=list)
     current_intent: str = ""
 
@@ -60,6 +62,10 @@ class PromptContext:
         │ [記憶片段]（若有）            │  ← Memory Middleware 注入
         │ 你記得以下這些事情：          │
         │ - ...                       │
+        │                             │
+        │ [時間感知]（若有）            │  ← HeartbeatEngine 注入（Phase 3.5）
+        │ [CHRONO_SOCIAL_CONTEXT v2.2]│
+        │ ...                         │
         └─────────────────────────────┘
         """
         system_parts = [self.system_prompt.strip()]
@@ -68,6 +74,10 @@ class PromptContext:
             system_parts.append(
                 f"\n你記得以下這些事情：\n{self.memory_context.strip()}"
             )
+
+        # Phase 3.5：chrono 時間感知區塊直接貼（render_temporal_block 輸出已是格式化字串）
+        if self.chrono_context.strip():
+            system_parts.append(f"\n{self.chrono_context.strip()}")
 
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": "\n".join(system_parts)}
@@ -292,6 +302,7 @@ class LLMProxy:
         prompt = PromptContext(
             system_prompt=load_persona(agent_id),
             memory_context=memory_context,        # ← Memory Middleware 填入
+            chrono_context=event.payload.get("chrono_context", ""),  # ← Phase 3.5
             conversation_history=history,
             current_intent=self._build_intent_text(reason, draft),
         )

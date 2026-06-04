@@ -153,6 +153,12 @@ class AgentConsciousness(ABC):
         3. 評估是否主動出擊
         """
         elapsed_mins: float = event.payload.get("elapsed_mins", 0.0)
+        time_period: str = event.payload.get("time_period", "unknown")
+
+        # Phase 3.5 B1：深夜 / 凌晨自動拉長冷卻（避免半夜打擾）
+        dynamic_cooldown = self.COOLDOWN_TICKS
+        if time_period in ("deep_night", "dawn"):
+            dynamic_cooldown = self.COOLDOWN_TICKS * 3
 
         # 冷卻期倒數
         if self._cooldown_remaining > 0:
@@ -162,12 +168,16 @@ class AgentConsciousness(ABC):
             )
             return
 
-        # 評估是否主動說話
-        should_speak, reason = self._should_speak(elapsed_mins)
+        # 評估是否主動說話（Phase 3.5 傳 chrono_payload）
+        should_speak, reason = self._should_speak(elapsed_mins, event.payload)
 
         if should_speak:
-            await self._fire_intent(reason=reason, elapsed_mins=elapsed_mins)
-            self._cooldown_remaining = self.COOLDOWN_TICKS
+            await self._fire_intent(
+                reason=reason,
+                elapsed_mins=elapsed_mins,
+                chrono_payload=event.payload,
+            )
+            self._cooldown_remaining = dynamic_cooldown
             self.state.silence_strike = 0
         else:
             self.state.silence_strike += 1
@@ -176,17 +186,23 @@ class AgentConsciousness(ABC):
         """其他 Agent 說話時的反應（預設不做事，子類可覆寫）"""
         pass
 
-    async def _fire_intent(self, reason: str, elapsed_mins: float) -> None:
+    async def _fire_intent(
+        self,
+        reason: str,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """向 Bus 廣播 AGENT_INTENT 事件"""
         intent_payload = self._build_intent_payload(reason, elapsed_mins)
         intent_payload["agent_id"] = self.agent_id
         intent_payload["reason"] = reason
+        # Phase 3.5：把 chrono 區塊塞進 intent，LLM 收到時可拼進 system prompt
+        if chrono_payload:
+            intent_payload["chrono_context"] = chrono_payload.get("chrono_block", "")
 
         event = SoulEvent(
             event_type=EventType.AGENT_INTENT,
             source=self.agent_id,
-            # ✅ 廣播，不硬綁 llm_proxy
-            # LLM Proxy（以及未來的 Memory Middleware）自行訂閱 AGENT_INTENT
             target="broadcast",
             priority=EventPriority.NORMAL,
             payload=intent_payload,
@@ -196,7 +212,6 @@ class AgentConsciousness(ABC):
             f"[{self.agent_id}] 發出主動意圖 | reason={reason} "
             f"elapsed={elapsed_mins:.1f}m"
         )
-        # Phase 3：每次主動出擊後持久化情緒狀態
         try:
             self.state.save()
         except Exception as e:
@@ -205,11 +220,16 @@ class AgentConsciousness(ABC):
             )
 
     @abstractmethod
-    def _should_speak(self, elapsed_mins: float) -> tuple[bool, str]:
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
         """
         決策函數：這個 Agent 現在應該主動說話嗎？
         回傳 (should_speak: bool, reason: str)
         reason 字串供 LLM Proxy 轉換為 Prompt。
+        chrono_payload 帶 chrono 豐富欄位（time_period、silence_hours 等）。
         """
         ...
 
@@ -237,9 +257,20 @@ class AgentYua(AgentConsciousness):
 
     COOLDOWN_TICKS = 15  # Yua 說完話後更久才會再主動
 
-    def _should_speak(self, elapsed_mins: float) -> tuple[bool, str]:
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
         dep = self.state.dependency
         intimacy = self.state.intimacy_level
+        time_period = (chrono_payload or {}).get("time_period", "unknown")
+
+        # Phase 3.5：深夜 / 凌晨拉高閾值
+        if time_period in ("deep_night", "dawn"):
+            if elapsed_mins >= 120.0 and dep > 0.9:
+                return True, "deep_night_concern"
+            return False, ""
 
         # 30 ~ 120 分鐘：Level 4 冷泡茶模式（若親密度夠高）
         if 30.0 <= elapsed_mins < 120.0 and intimacy > 70:
@@ -280,8 +311,17 @@ class AgentRuka(AgentConsciousness):
         super().__init__(agent_id, bus)
         self._other_agent_spoke_recently = False
 
-    def _should_speak(self, elapsed_mins: float) -> tuple[bool, str]:
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
         intimacy = self.state.intimacy_level
+        time_period = (chrono_payload or {}).get("time_period", "unknown")
+
+        # Phase 3.5：深夜/凌晨直接不主動（瑠夏本來就黏人，深夜尤其不能打擾）
+        if time_period in ("deep_night", "dawn"):
+            return False, ""
 
         # 6 分鐘沉默就忍不住，親密度門檻較低
         if elapsed_mins >= 6.0 and intimacy > 50:

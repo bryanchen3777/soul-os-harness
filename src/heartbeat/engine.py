@@ -13,6 +13,12 @@ from typing import Optional
 
 from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
+from src.temporal import (
+    build_temporal_context,
+    render_temporal_block,
+    EmotionalCarryover,
+    PersonaConfig,
+)
 
 logger = logging.getLogger("soul_os.heartbeat")
 
@@ -88,23 +94,41 @@ class HeartbeatEngine:
             now = datetime.now(timezone.utc)
             elapsed_mins = (now - self.last_user_activity).total_seconds() / 60.0
 
+            # Phase 3.5：chrono-social-engine 時間感知
+            chrono_cfg = PersonaConfig(persona_id="heartbeat_system")
+            chrono_ctx = build_temporal_context(
+                persona_id="heartbeat_system",
+                last_msg_ts=self.last_user_activity.isoformat(),
+                current_stress=0,
+                carryover=EmotionalCarryover(),
+                config=chrono_cfg,
+                now=now,
+            )
+            chrono_block = render_temporal_block(chrono_ctx)
+
             tick = SoulEvent(
                 event_type=EventType.SYSTEM_TICK,
                 source="heartbeat_engine",
                 target="broadcast",
                 priority=EventPriority.LOW,
-                # ✅ expires_at 必須是 datetime 物件，不是 float
-                # TTL = 一個 tick_interval，確保積壓的舊 Tick 自動失效
                 expires_at=now + timedelta(seconds=self.tick_interval),
                 payload={
                     "tick_count": self.tick_count,
                     "elapsed_mins": round(elapsed_mins, 2),
                     "timestamp_utc": now.isoformat(),
+                    # Phase 3.5 chrono 豐富欄位
+                    "time_period": chrono_ctx.time_period,
+                    "vulnerability_window": chrono_ctx.momentum.vulnerability_window,
+                    "silence_hours": round(chrono_ctx.silence_hours, 2),
+                    "attachment_heat": round(chrono_ctx.carryover.attachment_heat, 2),
+                    "deviation_interpretation": chrono_ctx.deviation_interpretation,
+                    "preoccupation_flavor": chrono_ctx.anticipatory.preoccupation_flavor,
+                    "chrono_block": chrono_block,
                 },
             )
 
             await self.bus.publish(tick)
             logger.debug(
                 f"[Heartbeat] Tick #{self.tick_count}  "
-                f"elapsed={elapsed_mins:.1f}m"
+                f"elapsed={elapsed_mins:.1f}m  period={chrono_ctx.time_period}"
             )
