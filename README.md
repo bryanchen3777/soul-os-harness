@@ -30,6 +30,12 @@ Soul OS (Harness) 是一個**異步 Agent 運行框架**，設計用於突破傳
 
 > 下一個里程碑：**M8** 自主發話（Yua 60s Heartbeat → 第一次主動出擊）。
 
+## 系統全貌圖
+
+![Soul OS 開發流程圖與開發路線](docs/soul-os-overview.png)
+
+> 涵蓋：系統架構、5 個核心模組實際檔案路徑、Phase 1+2 完工狀態、quick start、Config 欄位、設計決策、已知風險。
+
 ## 系統架構
 
 ```
