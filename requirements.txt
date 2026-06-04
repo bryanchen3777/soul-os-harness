@@ -5,6 +5,10 @@ httpx>=0.27
 
 # 配置載入
 python-dotenv>=1.0
+pyyaml>=6.0
+
+# SAGE-lite 圖譜記憶（Phase 2）
+networkx>=3.0
 
 # 開發/測試（optional）
 # pytest>=7.0

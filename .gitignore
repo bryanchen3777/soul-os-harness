@@ -37,3 +37,4 @@ build/
 # Soul OS runtime（未來會有）
 agents/*/states/
 sessions/
+data/
