@@ -41,9 +41,12 @@ DEMO_HTML = """
     const log = document.getElementById('log');
     ws.onmessage = (e) => {
       const d = JSON.parse(e.data);
+      if (d.type === 'ping') return;
       const div = document.createElement('div');
-      div.className = `msg ${d.agent_id?.includes('yua') ? 'yua' : d.agent_id?.includes('ruka') ? 'ruka' : 'system'}`;
-      const ts = new Date(d.timestamp).toLocaleTimeString();
+      const isYua = (d.agent_id || '').includes('yua');
+      const isRuka = (d.agent_id || '').includes('ruka');
+      div.className = `msg ${isYua ? 'yua' : isRuka ? 'ruka' : 'system'}`;
+      const ts = d.timestamp ? new Date(d.timestamp).toLocaleTimeString() : '';
       div.textContent = `[${ts}] ${d.agent_id ?? 'system'}: ${d.text ?? JSON.stringify(d)}`;
       log.appendChild(div);
       log.scrollTop = log.scrollHeight;
@@ -140,12 +143,12 @@ class IOGateway:
                 self.manager.disconnect(ws)
 
     async def _on_agent_speak(self, event: SoulEvent):
+        ts = event.timestamp.isoformat() if hasattr(event, "timestamp") and event.timestamp else datetime.now(timezone.utc).isoformat()
         payload = {
             "type": "agent_speak",
             "agent_id": event.payload.get("agent_id", event.source),
             "text": event.payload.get("text", ""),
-            "timestamp": event.timestamp.isoformat() if hasattr(event, "timestamp")
-                         else datetime.now(timezone.utc).isoformat(),
+            "timestamp": ts,
             "session_id": getattr(event, "session_id", ""),
         }
         await self.manager.broadcast(payload)
