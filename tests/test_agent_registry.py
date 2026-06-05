@@ -31,7 +31,7 @@ def test_create_agents_from_config(mock_bus):
 
     assert "agent_yua" in ids, f"agent_yua not in {ids}"
     assert "agent_ruka" in ids, f"agent_ruka not in {ids}"
-    assert len(agents) == 2, f"Expected 2 agents, got {len(agents)}: {ids}"
+    assert len(agents) == 3, f"Expected 3 agents, got {len(agents)}: {ids}"
 
     # 確認 intimacy_level 正確
     yua = next(a for a in agents if a.agent_id == "agent_yua")
@@ -39,6 +39,9 @@ def test_create_agents_from_config(mock_bus):
 
     ruka = next(a for a in agents if a.agent_id == "agent_ruka")
     assert ruka.state.intimacy_level == 60, f"Ruka intimacy={ruka.state.intimacy_level}"
+
+    akane = next(a for a in agents if a.agent_id == "agent_akane")
+    assert akane.state.intimacy_level == 50, f"Akane intimacy={akane.state.intimacy_level}"
 
     print(f"[OK] Dynamic load {len(agents)} agents: {ids}")
 
@@ -57,6 +60,7 @@ def test_disabled_agent_not_loaded(mock_bus):
 
     assert "agent_yua" not in ids, f"Disabled Yua should not load, got {ids}"
     assert "agent_ruka" in ids, f"Ruka should still load, got {ids}"
+    assert "agent_akane" in ids, f"Akane should still load, got {ids}"
 
     print("[OK] Disabled agent correctly skipped")
 

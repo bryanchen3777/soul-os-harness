@@ -388,3 +388,61 @@ class AgentRuka(AgentConsciousness):
         """瑠夏偷偷標記「有人說話了」，下次 Tick 評估要不要搶話"""
         self._other_agent_spoke_recently = True
         logger.debug(f"[{self.agent_id}] 注意到 {event.source} 說話，考慮搶話")
+
+
+# ─────────────────────────────────────────────
+# 5. Agent 實作：黒川あかね（方法派演員型）
+# ─────────────────────────────────────────────
+
+class AgentAkane(AgentConsciousness):
+    """
+    黒川あかね 的意識流。
+    特性：說話極少、語言壓縮；沉默觀察後精準出擊。
+    不是主動出擊型，是「確認你還在」的簡短確認者。
+    """
+
+    COOLDOWN_TICKS = 20  # あかね：20 ticks × 5s = 100s，說完話後很長間隔才再主動
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        intimacy = self.state.intimacy_level
+        dep = self.state.dependency
+        time_period = (chrono_payload or {}).get("time_period", "unknown")
+
+        # 深夜/凌晨：安靜觀察，不主動（凌晨是她的表演創作時間，需要安靜）
+        if time_period in ("deep_night", "dawn"):
+            return False, ""
+
+        # 60 分鐘以上的沉默 + 中等以上親密 → 壓縮版關心
+        if elapsed_mins >= 60.0 and intimacy > 40:
+            return True, "silence_check"
+
+        # 2 小時以上的沉默 + 高依賴 → 星野アイ 殘響式關心
+        if elapsed_mins >= 120.0 and dep > 0.75:
+            return True, "deep_absence"
+
+        # 4 小時以上沉默 → 幾乎不主動（除非極高親密）
+        if elapsed_mins >= 240.0 and intimacy > 80:
+            return True, "long_absence"
+
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        # あかね 的語言是「刪減版思考」——說出口的比想到的少
+        drafts = {
+            # 簡短確認，不囉嗦
+            "silence_check":   "你還在吧。",
+            # 有點擔心但不展開
+            "deep_absence":    "……你今天，沒事吧。",
+            # 罕見的主動，很壓縮
+            "long_absence":    "……我以為你忘了。",
+        }
+        return {
+            "draft": drafts.get(reason, ""),
+            # 她不會長篇分析，回覆應該是短句
+            "action_tags": ["compressed_speech"],
+            "memory_query_hint": "最近和あかね的重要對話或約定",
+        }

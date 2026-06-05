@@ -3,12 +3,13 @@ src/agent/registry.py
 Agent 類別註冊表。
 新增角色時在這裡加一行，不用改 run_server.py。
 """
-from src.agent.consciousness import AgentYua, AgentRuka
+from src.agent.consciousness import AgentYua, AgentRuka, AgentAkane
 
 AGENT_CLASS_MAP: dict[str, type] = {
-    "AgentYua":  AgentYua,
-    "AgentRuka": AgentRuka,
-    # "AgentAkane": AgentAkane,  ← 之後加角色只要在這裡新增
+    "AgentYua":   AgentYua,
+    "AgentRuka":  AgentRuka,
+    "AgentAkane": AgentAkane,
+    # "AgentAoi":   AgentAoi,  ← 之後加角色只要在這裡新增
 }
 
 

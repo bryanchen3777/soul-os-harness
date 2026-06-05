@@ -12,10 +12,10 @@ agents:
     class: AgentRuka
     intimacy_level: 60
     enabled: true
-  # - id: agent_akane
-  #   class: AgentAkane
-  #   intimacy_level: 50
-  #   enabled: false
+  - id: agent_akane
+    class: AgentAkane
+    intimacy_level: 50
+    enabled: true
 
 heartbeat:
   # HeartbeatEngine 每隔幾秒發一次 SYSTEM_TICK
