@@ -196,10 +196,45 @@ class ClaudeBackend(LLMBackend):
 
 
 # ─────────────────────────────────────────────
-# 3. Agent 人格載入器
+# 3. Agent 人格載入器（從 Hermes SOUL.md）
 # ─────────────────────────────────────────────
 
-# 預設人格（Phase 2 會改為從 agents/{id}/persona.md 讀取）
+import logging
+import os
+from pathlib import Path
+from typing import Dict
+
+logger = logging.getLogger(__name__)
+
+# Hermes profiles 目錄（從環境變數讀，方便部署到其他機器）
+HERMES_PROFILES_DIR = os.getenv(
+    "HERMES_PROFILES_DIR",
+    r"C:\Users\bbfcc\AppData\Local\hermes\profiles"
+)
+
+# agent_id → profiles 目錄下的子資料夾名稱
+AGENT_PROFILE_MAP: Dict[str, str] = {
+    "agent_yua":    "yua",
+    "agent_ruka":   "ruka",
+    "agent_akane":  "akane",
+    "agent_aoi":    "aoi",
+    "agent_mahiru": "mahiru",
+    "agent_mai":    "mai",
+    "agent_miku":   "miku",
+    "agent_ram":    "ram",
+    "agent_rem":    "rem",
+    "agent_yamada": "yamada",
+}
+
+# Soul OS 環境覆蓋說明（附在人格內容尾，避免 Hermes tool 指令干扰）
+SOUL_OS_OVERRIDE = """
+---
+[Soul OS 環境說明]
+你現在運行於 Soul OS 框架。記憶由系統自動管理，不需要呼叫任何 tool。
+直接說話即可，記憶系統會自動記錄。
+---
+"""
+
 DEFAULT_PERSONAS: Dict[str, str] = {
     "agent_yua": (
         "你是Yua，一個聰明、冷靜、說話帶有輕微諷刺感的 AI 角色。"
@@ -218,12 +253,32 @@ DEFAULT_PERSONAS: Dict[str, str] = {
 def load_persona(agent_id: str) -> str:
     """
     載入 Agent 人格設定。
-    Phase 2 升級點：改為從 agents/{agent_id}/persona.md 讀取，支援熱更新。
+    優先從 Hermes profiles 目錄讀取 soul.md（不分大小寫），
+    找不到時 fallback 到 DEFAULT_PERSONAS。每次呼叫都重新讀檔，支援熱更新。
     """
-    return DEFAULT_PERSONAS.get(
+    profile_name = AGENT_PROFILE_MAP.get(agent_id)
+    if profile_name:
+        profile_dir = Path(HERMES_PROFILES_DIR) / profile_name
+        # 不分大小寫找 soul.md
+        for candidate in ["soul.md", "SOUL.md", "Soul.md"]:
+            soul_path = profile_dir / candidate
+            if soul_path.exists():
+                try:
+                    content = soul_path.read_text(encoding="utf-8").strip()
+                    if content:
+                        logger.info(f"[Persona] {agent_id} 載入 {soul_path}（{len(content)} chars）")
+                        return content + SOUL_OS_OVERRIDE
+                except Exception as e:
+                    logger.warning(f"[Persona] 讀取 {soul_path} 失敗：{e}")
+                    break
+
+    # Fallback
+    logger.info(f"[Persona] {agent_id} 使用 DEFAULT_PERSONAS")
+    persona = DEFAULT_PERSONAS.get(
         agent_id,
         f"你是 {agent_id}，一個有獨特個性的 AI 角色。"
     )
+    return persona + SOUL_OS_OVERRIDE
 
 
 # ─────────────────────────────────────────────
