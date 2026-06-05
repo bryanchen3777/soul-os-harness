@@ -35,13 +35,18 @@ logger = logging.getLogger("soul_os.config")
 # ── 讀取 ──────────────────────────────────────────────
 
 def load_config(
-    config_path: str = "configs/default.yaml",
-    env_path: str = ".env",
+    config_path: str | None = None,
+    env_path: str | None = None,
 ) -> dict[str, Any]:
     """
     載入 yaml + .env，env 覆蓋 yaml 對應欄位。
-    raise FileNotFoundError 若 yaml 找不到；.env 找不到不報錯。
+    路徑預設為相對於本檔案（configs/loader.py）的位置，
+    不受 CWD 影響。
     """
+    _base = Path(__file__).parent  # configs/
+
+    if config_path is None:
+        config_path = str(_base / "default.yaml")
     yaml_path = Path(config_path)
     if not yaml_path.exists():
         raise FileNotFoundError(f"Config not found: {config_path}")
@@ -50,6 +55,8 @@ def load_config(
         cfg = yaml.safe_load(f) or {}
 
     # dotenv：若 .env 存在則 load；不存在不報錯
+    if env_path is None:
+        env_path = str(_base.parent / ".env")  # repo 根目錄
     if Path(env_path).exists():
         load_dotenv(env_path, override=False)
 
