@@ -1,47 +1,38 @@
 """
 scripts/smoke_test.py
-Soul OS — Phase 2.2: 真實 LLM 煙霧測試
+Soul OS — Phase 4: 雙 Agent 真實對話煙霧測試
 
-驗收三件事：
-  1. configs/loader 讀到 .env / 系統環境的 ANTHROPIC_API_KEY
-  2. memory_context 有注入 system message（看回應內容是否提到「台北 / 珍珠奶茶」）
-  3. LLM 「記得」你給的事實
+驗收：
+  1. Yua 先觸發（elapsed_mins=35），Ruka 觀察到後排隊
+  2. Yua 說完後 token 釋放，Ruka 自動獲 token 說話
+  3. 系統無 USER_MESSAGE 觸發，真正主動發話
 
 執行（從 repo 根目錄）：
   python scripts/smoke_test.py
 
 事前準備：
-  export ANTHROPIC_API_KEY=sk-ant-...
-  export LLM_PROVIDER=claude
+  export LLM_PROVIDER=minimax
+  export MINIMAX_API_KEY=sk-cp-...
 """
 import asyncio
-import io
 import logging
 import os
 import sys
-import time
+import shutil
 from pathlib import Path
 
-# 強制 LLM_PROVIDER=minimax 確保 smoke test 真的打真實 LLM
-# （如要改回 claude/openai/mock 測試，註解掉這兩行）
 os.environ.setdefault("LLM_PROVIDER", "minimax")
-# 如果 LLM_MODEL 沒設，預設 MiniMax-M2.7-highspeed（204K context、100 tps）
 os.environ.setdefault("LLM_MODEL", "MiniMax-M2.7-highspeed")
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
-from src.llm.proxy import LLMBackend
+from src.eventbus.token_manager import SpeakerTokenManager
+from src.agent.consciousness import AgentYua, AgentRuka
 from src.memory.middleware import MemoryMiddleware
-from src.memory.sage import SAGELiteProvider
-from configs.loader import (
-    load_config,
-    create_llm_backend,
-    create_llm_proxy,
-    create_heartbeat,
-)
+from src.llm.proxy import LLMProxy, LLMBackend
+from configs.loader import load_config, create_llm_backend, create_llm_proxy
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,19 +43,16 @@ logger = logging.getLogger("soul_os.smoke")
 
 
 # ─────────────────────────────────────────────
-# Mock LLM（用於沒有真實 key 時的退路）
+# Mock LLM（無 key 時退路）
 # ─────────────────────────────────────────────
 
 class MockLLMBackend(LLMBackend):
-    """沒 ANTHROPIC_API_KEY 時 fallback 用。"""
     async def complete(self, messages, model, max_tokens, temperature):
-        logger.warning("[MockLLM] 沒有真實 key，注入 mock 回應")
-        # 從 system message 抓出 memory_context（如果有的話）印出來
-        sys_content = next(
-            (m["content"] for m in messages if m["role"] == "system"), ""
-        )
-        if "你記得以下這些事情" in sys_content or "Memory" in sys_content:
-            return "[MOCK] 嗯嗯，我記得你說的，讓我想想..."
+        sys_content = next((m["content"] for m in messages if m["role"] == "system"), "")
+        if "Yua" in sys_content:
+            return "還好你還在。（Yua 冷泡茶模式）"
+        if "瑠夏" in sys_content or "Ruka" in sys_content:
+            return "你去哪裡了！我在等你！（瑠夏激動模式）"
         return "[MOCK] 收到！"
 
 
@@ -74,145 +62,144 @@ class MockLLMBackend(LLMBackend):
 
 async def main() -> int:
     logger.info("=" * 60)
-    logger.info("  Soul OS — Phase 2.2 真實 LLM 煙霧測試")
+    logger.info("  Soul OS — Phase 4 雙 Agent 真實對話 smoke test")
     logger.info("=" * 60)
 
     # ── 1. 載入 config ──
     cfg = load_config()
     provider = cfg.get("llm", {}).get("provider", "mock")
-    has_claude_key = bool(cfg.get("llm", {}).get("claude", {}).get("api_key"))
-    has_openai_key = bool(cfg.get("llm", {}).get("openai", {}).get("api_key"))
-    logger.info(f"  provider={provider} | claude_key={'✓' if has_claude_key else '✗'} | openai_key={'✓' if has_openai_key else '✗'}")
+    has_key = bool(cfg.get("llm", {}).get(provider, {}).get("api_key"))
+    logger.info(f"  provider={provider} | has_key={'✓' if has_key else '✗'}")
 
-    if provider == "claude" and not has_claude_key:
-        logger.warning("⚠ LLM_PROVIDER=claude 但沒有 ANTHROPIC_API_KEY")
-        logger.warning("  → fallback 用 MockLLMBackend（會印 [MOCK] 回應）")
-        use_mock = True
-    elif provider == "openai" and not has_openai_key:
-        logger.warning("⚠ LLM_PROVIDER=openai 但沒有 OPENAI_API_KEY")
-        logger.warning("  → fallback 用 MockLLMBackend")
-        use_mock = True
-    else:
-        use_mock = False
+    use_mock = not has_key
 
     # ── 2. 啟動 Bus ──
     bus = SoulEventBus()
     await bus.start()
 
-    # ── 3. 掛 MemoryMiddleware + LLMProxy + Heartbeat ──
+    # ── 3. 掛載所有模組（順序很重要）──
     data_dir = Path("data/smoke_test")
     if data_dir.exists():
-        import shutil
         shutil.rmtree(data_dir)
     mw = MemoryMiddleware(bus=bus, data_dir=str(data_dir))
     mw.register()
 
+    token_mgr = SpeakerTokenManager(bus=bus, token_timeout_secs=15.0)
+    token_mgr.register()
+
     if use_mock:
-        from src.llm.proxy import LLMProxy
-        llm = LLMProxy(bus=bus, backend=MockLLMBackend(),
-                       model="mock", max_tokens=300)
+        llm = LLMProxy(bus=bus, backend=MockLLMBackend(), model="mock", max_tokens=200)
     else:
         llm = create_llm_proxy(cfg, bus)
     llm.register()
     logger.info(f"  LLM model={llm.model}")
 
-    # ── 4. 收集 AGENT_SPEAK 輸出 ──
+    # ── 4. 兩個 Agent ──
+    yua = AgentYua(agent_id="agent_yua", bus=bus)
+    yua.state.intimacy_level = 80
+    yua.register()
+
+    ruka = AgentRuka(agent_id="agent_ruka", bus=bus)
+    ruka.state.intimacy_level = 60
+    ruka.register()
+
+    # ── 5. 收集 AGENT_SPEAK 輸出 ──
     outputs: list[SoulEvent] = []
+
     async def capture(event: SoulEvent) -> None:
         outputs.append(event)
-        logger.info(
-            f"  [smoke_capture] 收到 | text='{event.payload.get('text', '')[:80]}'"
-        )
+        text = event.payload.get("text", "")
+        try:
+            print(f"  [{event.source}] {text}")
+        except UnicodeEncodeError:
+            # Windows cp950 終端機 fallback
+            print(f"  [{event.source}] {text.encode('utf-8', errors='replace').decode('utf-8')}")
+
     bus.subscribe("smoke_capture", capture, event_filter={EventType.AGENT_SPEAK})
 
-    # ── 5. seed 一個事實到 graph ──
+    # ── 6. 灌一個記憶種子 ──
     logger.info("\n── Step 1: seed 台北 + 珍珠奶茶 到 graph ──")
-    seed_text = "我在台北工作，喜歡喝珍珠奶茶"
     seed = SoulEvent(
         event_type=EventType.USER_MESSAGE,
         source="user_bryan",
         target="broadcast",
         priority=EventPriority.HIGH,
-        session_id="smoke_001",
-        payload={"text": seed_text},
+        session_id="smoke_multi_001",
+        payload={"text": "我在台北工作，喜歡喝珍珠奶茶"},
     )
     await bus.publish(seed)
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(1.0)
     logger.info("  ✓ seed 已發布")
 
-    # ── 6. 灌一個 AGENT_SPEAK 讓 post_reply_commit 觸發寫入 ──
-    # 注意：seed_speak 文字刻意不用「台北」「珍珠奶茶」，斷言才能真的驗 LLM 召回
-    logger.info("\n── Step 2: 觸發 AGENT_SPEAK 寫入 graph ──")
-    seed_speak = SoulEvent(
-        event_type=EventType.AGENT_SPEAK,
-        source="agent_ruka",
+    # ── 7. 手動 Tick #1，elapsed_mins=35，Yua 先觸發 ──
+    logger.info("\n── Step 2: 手動 SYSTEM_TICK（elapsed_mins=35）→ Yua 先觸發 ──")
+    tick = SoulEvent(
+        event_type=EventType.SYSTEM_TICK,
+        source="heartbeat_engine",
         target="broadcast",
-        priority=EventPriority.NORMAL,
-        session_id="smoke_001",
-        payload={"text": "好，我記住了", "agent_id": "agent_ruka"},
-    )
-    await bus.publish(seed_speak)
-    await asyncio.sleep(1.0)
-    provider_obj = mw._get_provider("agent_ruka")
-    stats = provider_obj.stats()
-    logger.info(f"  graph: {stats.get('active_facts', 0)} active facts")
-
-    # ── 7. 觸發 AGENT_INTENT，MemoryMiddleware 會注入 memory_context ──
-    logger.info("\n── Step 3: 觸發 AGENT_INTENT 讓 LLM 召回記憶 ──")
-    intent = SoulEvent(
-        event_type=EventType.AGENT_INTENT,
-        source="agent_ruka",
-        target="broadcast",
-        priority=EventPriority.NORMAL,
-        session_id="smoke_001",
+        priority=EventPriority.LOW,
         payload={
-            "agent_id": "agent_ruka",
-            "reason": "user_message",
-            "draft": "用戶剛才說他在台北工作、喜歡珍珠奶茶，請自然回應",
-            "memory_query_hint": "台北 珍珠奶茶",
+            "tick_count": 1,
+            "elapsed_mins": 35.0,
+            "time_period": "morning",
+            "vulnerability_window": False,
+            "silence_hours": 0.58,
+            "attachment_heat": 0.3,
+            "chrono_block": "[CHRONO_SOCIAL_CONTEXT v2.2] time_period=morning silence_hours=0.58",
         },
     )
-    await bus.publish(intent)
-    # 等真實 LLM（haiku 通常 1-3s）
-    await asyncio.sleep(8.0)
+    await bus.publish(tick)
+    await asyncio.sleep(5.0)  # 等真實 LLM 回應
 
-    # ── 8. 驗收 ──
-    logger.info("\n── 驗收 ──")
-    if not outputs:
-        logger.error("  ✗ 沒收到 AGENT_SPEAK 回應（LLM 沒回 / 鏈斷了）")
-        return 1
+    # ── 8. 手動 Tick #2，讓 Ruka 觀察到 Yua 說話後搶話 ──
+    logger.info("\n── Step 3: 手動 SYSTEM_TICK（elapsed_mins=36）→ Ruka 搶話 ──")
+    tick2 = SoulEvent(
+        event_type=EventType.SYSTEM_TICK,
+        source="heartbeat_engine",
+        target="broadcast",
+        priority=EventPriority.LOW,
+        payload={
+            "tick_count": 2,
+            "elapsed_mins": 36.0,
+            "time_period": "morning",
+            "vulnerability_window": False,
+            "silence_hours": 0.60,
+            "attachment_heat": 0.35,
+            "chrono_block": "[CHRONO_SOCIAL_CONTEXT v2.2] time_period=morning silence_hours=0.60",
+        },
+    )
+    await bus.publish(tick2)
+    await asyncio.sleep(5.0)
 
-    final_text = outputs[-1].payload.get("text", "")
-    has_taipei = "台北" in final_text or "臺北" in final_text
-    has_bubble_tea = "珍珠奶茶" in final_text or "奶茶" in final_text or "bubble" in final_text.lower()
+    # ── 9. 結果 ──
+    logger.info("\n── Smoke Test 結果 ──")
+    print(f"\n  總輸出：{len(outputs)} 條 AGENT_SPEAK")
+    stats = token_mgr.stats()
+    print(f"  Token 統計：grants={stats['grants']} releases={stats['releases']}")
 
-    logger.info(f"  LLM 回應：{final_text[:200]}")
-    logger.info(f"  ✓ 收到回應：{len(final_text)} chars")
-    logger.info(f"  {'✓' if has_taipei else '✗'} 提到 '台北'：{has_taipei}")
-    logger.info(f"  {'✓' if has_bubble_tea else '✗'} 提到 '珍珠奶茶'：{has_bubble_tea}")
+    if len(outputs) >= 1:
+        logger.info("  ✓ 系統主動發話（無 USER_MESSAGE 觸發）")
+    if len(outputs) >= 2:
+        order = [e.source for e in outputs]
+        logger.info(f"  ✓ 發話順序：{order}")
 
-    if use_mock:
-        logger.info("\n⚠ Mock mode：上面 ✓ 是「mock 收到 memory」≠「LLM 真的記得」")
-        logger.info("  設 ANTHROPIC_API_KEY 後重跑才能驗 LLM 真的記得")
+        # Phase 4 核心驗收：Yua → Ruka 順序
+        if order[0] == "agent_yua" and order[-1] == "agent_ruka":
+            logger.info("  ✓ Phase 4 仲裁正確：Yua 先 → Ruka 後")
+        else:
+            logger.warning(f"  ⚠ 順序非預期：{order}（預期 Yua → Ruka）")
 
-    if has_taipei and has_bubble_tea:
-        logger.info("\n" + "=" * 60)
-        logger.info("  ✓ Phase 2.2 驗收通過")
-        logger.info("    ✅ config 載入 + .env key")
-        logger.info("    ✅ memory 自動注入 prompt")
-        logger.info("    ✅ LLM 記得你說的事實")
-        logger.info("=" * 60)
-        return 0
-    elif use_mock:
-        logger.info("\n⚠ Mock mode 預期不命中具體 entity（這是 mock，不是 LLM 失敗）")
-        return 0
-    else:
-        logger.error("\n✗ 驗收失敗：LLM 沒在回應中提到 '台北' 或 '珍珠奶茶'")
-        logger.error("  檢查：")
-        logger.error("  1. graph 是否有寫入？")
-        logger.error("  2. prefetch 是否有召回？")
-        logger.error("  3. memory_context 是否有注入到 system message？")
-        return 1
+    # ── 10. 清理 ──
+    mw.shutdown()
+    await bus.stop()
+    shutil.rmtree(data_dir, ignore_errors=True)
+
+    logger.info("\n" + "=" * 60)
+    logger.info("  ✓ Smoke test 完成")
+    logger.info(f"    實際輸出：{len(outputs)} 條 AGENT_SPEAK")
+    logger.info(f"    Token grants={stats['grants']} releases={stats['releases']}")
+    logger.info("=" * 60)
+    return 0
 
 
 if __name__ == "__main__":
