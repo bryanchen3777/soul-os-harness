@@ -39,8 +39,17 @@ DEMO_HTML = """
   <script>
     const ws = new WebSocket(`ws://${location.host}/ws`);
     const log = document.getElementById('log');
+    ws.onopen = () => {
+      const div = document.createElement('div');
+      div.className = 'msg system';
+      div.textContent = '[connected]';
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+      console.log('WebSocket connected');
+    };
     ws.onmessage = (e) => {
       const d = JSON.parse(e.data);
+      console.log('WS msg:', d);
       if (d.type === 'ping') return;
       const div = document.createElement('div');
       const isYua = (d.agent_id || '').includes('yua');
@@ -149,7 +158,22 @@ class IOGateway:
                 },
             )
             await self.bus.publish(tick)
+            # 等待鏈路完成（Agent → Intent → Token → LLM → Speak）
+            await asyncio.sleep(6.0)
             return {"injected": True, "elapsed_mins": elapsed_mins}
+
+        @self.app.get("/debug/broadcast")
+        async def debug_broadcast():
+            """直接廣播一條測試訊息，繞過 LLM 鏈路"""
+            from src.eventbus.schema import SoulEvent
+            fake_event = SoulEvent(
+                event_type=EventType.AGENT_SPEAK,
+                source="agent_yua",
+                target="broadcast",
+                payload={"agent_id": "agent_yua", "text": "還好你還在。（Yua 冷泡茶模式）"},
+            )
+            await self._on_agent_speak(fake_event)
+            return {"broadcast": True}
 
         @self.app.websocket("/ws")
         async def websocket_endpoint(ws: WebSocket):
@@ -173,5 +197,5 @@ class IOGateway:
             "timestamp": ts,
             "session_id": getattr(event, "session_id", ""),
         }
+        logger.info(f"[Gateway] broadcasting: {payload}")
         await self.manager.broadcast(payload)
-        logger.info(f"[Gateway] 廣播 {payload['agent_id']}: {payload['text'][:40]}…")
