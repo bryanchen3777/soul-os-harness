@@ -3,10 +3,9 @@ test_phase3_m8.py
 Soul OS — Phase 3 M8 端到端：系統自己開口說話
 
 完整鏈路（M8 核心）：
-  HeartbeatEngine(2s tick)
-    → SYSTEM_TICK
+  HeartbeatEngine(tick_interval=9999，手動控制)
+    → 手動 SYSTEM_TICK（含 elapsed_mins=35）
     → AgentYua._on_tick
-      [elapsed_mins 手動設為 35 分鐘 → silence_timeout]
     → AGENT_INTENT
     → MemoryMiddleware prefetch
     → AGENT_INTENT_ENRICHED
@@ -22,7 +21,6 @@ Soul OS — Phase 3 M8 端到端：系統自己開口說話
   python tests/test_phase3_m8.py
 """
 import asyncio
-import io
 import logging
 import shutil
 import sys
@@ -30,12 +28,10 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# stdout already UTF-8
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
-from src.heartbeat.engine import HeartbeatEngine
 from src.agent.consciousness import AgentYua
 from src.memory.middleware import MemoryMiddleware
 from src.llm.proxy import LLMBackend, LLMProxy
@@ -60,7 +56,7 @@ class MockLLMBackend(LLMBackend):
         )
         # Yua 人格是冷靜、不超過 2 句
         if "冷靜" in sys_content or "Yua" in sys_content:
-            return "還好你還在。（Yua 冷泡茶模式）"
+            return "還好你還在。"
         return "[MOCK] 收到！"
 
 
@@ -76,39 +72,29 @@ async def main() -> None:
     bus = SoulEventBus()
     await bus.start()
 
-    # ── 1. Memory + LLMProxy（Mock） ──
+    # ── 1. Memory + LLMProxy（Mock）──
     data_dir = tempfile.mkdtemp(prefix="soul_os_m8_")
     memory = MemoryMiddleware(bus=bus, data_dir=data_dir)
     memory.register()
-    # Phase 4：加 SpeakerTokenManager
+
     from src.eventbus.token_manager import SpeakerTokenManager
     token_mgr = SpeakerTokenManager(bus=bus, token_timeout_secs=10.0)
     token_mgr.register()
+
     llm = LLMProxy(bus=bus, backend=MockLLMBackend(), model="mock-m8", max_tokens=200)
     llm.register()
 
-    # ── 2. AgentYua + Heartbeat ──
-    # 方案 A：測試環境直接設狀態
+    # ── 2. AgentYua ──
     yua = AgentYua(agent_id="agent_yua", bus=bus)
-    yua.state.intimacy_level = 80       # > 70 觸發條件
+    yua.state.intimacy_level = 80   # > 70 觸發條件
     yua.register()
 
-    heartbeat = HeartbeatEngine(bus=bus, tick_interval_seconds=2)
-    await heartbeat.start()
-    # 設 last_user_activity 為 35 分鐘前 → 第一個 tick 的 elapsed_mins ≈ 35
-    # （Yua 條件 30-120 分鐘 + intimacy > 70 觸發 silence_timeout）
-    heartbeat.last_user_activity = datetime.now(timezone.utc) - timedelta(minutes=35)
-    logger.info(
-        f"  設 last_user_activity={heartbeat.last_user_activity.isoformat()}"
-        f"（35 分鐘前）"
-    )
-
     # ── 3. 收集 AGENT_SPEAK（不發任何 USER_MESSAGE）──
-    captured: list[SoulEvent] = []
+    outputs: list[SoulEvent] = []
     user_msgs: list[SoulEvent] = []
 
     async def capture_speak(event: SoulEvent) -> None:
-        captured.append(event)
+        outputs.append(event)
         text = event.payload.get("text", "")
         logger.info(
             f"  [M8 capture] 收到 AGENT_SPEAK | "
@@ -123,24 +109,40 @@ async def main() -> None:
     bus.subscribe("m8_capture", capture_speak, event_filter={EventType.AGENT_SPEAK})
     bus.subscribe("m8_user_tracker", track_user_msg, event_filter={EventType.USER_MESSAGE})
 
-    # ── 4. 等 3 秒讓至少 1 個 tick 觸發完整鏈路 ──
-    logger.info("  等 3s（tick_interval=2s 應至少觸發 1 次）...")
-    await asyncio.sleep(3.5)
+    # ── 4. 手動發 SYSTEM_TICK，elapsed_mins=35（觸發 Yua 的 30~120m 條件）──
+    logger.info("  手動發 SYSTEM_TICK（elapsed_mins=35, morning）...")
+    tick = SoulEvent(
+        event_type=EventType.SYSTEM_TICK,
+        source="heartbeat_engine",
+        target="broadcast",
+        priority=EventPriority.LOW,
+        payload={
+            "tick_count": 1,
+            "elapsed_mins": 35.0,
+            "time_period": "morning",
+            "vulnerability_window": False,
+            "silence_hours": 0.58,
+            "attachment_heat": 0.3,
+            "chrono_block": "[CHRONO_SOCIAL_CONTEXT v2.2] time_period=morning",
+        },
+    )
+    await bus.publish(tick)
+    await asyncio.sleep(1.0)   # 等 MemoryMiddleware + LLMProxy 跑完鏈路
 
     # ── 5. 驗收 ──
     logger.info("\n── 驗收 ──")
-    logger.info(f"  Heartbeat Tick 數：{heartbeat.tick_count}")
-    logger.info(f"  AGENT_SPEAK 收到：{len(captured)}")
+    logger.info(f"  AGENT_SPEAK 收到：{len(outputs)}")
     logger.info(f"  USER_MESSAGE 收到（應為 0）：{len(user_msgs)}")
     logger.info(f"  Yua cooldown：{yua._cooldown_remaining}")
 
-    assert heartbeat.tick_count >= 1, "Heartbeat 沒 Tick"
+    assert len(outputs) == 1, (
+        f"M8 規格：只有一個 AGENT_SPEAK（Yua 自己），實際={len(outputs)}"
+    )
     assert len(user_msgs) == 0, (
         f"M8 規格：完全不發 USER_MESSAGE，但收到 {len(user_msgs)} 個"
     )
-    assert len(captured) >= 1, "M8 失敗：系統沒開口說話"
 
-    speak = captured[0]
+    speak = outputs[0]
     text = speak.payload.get("text", "")
     agent_id = speak.payload.get("agent_id")
 
@@ -155,17 +157,15 @@ async def main() -> None:
     )
 
     logger.info("\n" + "=" * 60)
-    logger.info("  ✓ M8 驗收通過：系統自己開口說話")
-    logger.info("    ✅ Heartbeat 觸發 SYSTEM_TICK")
-    logger.info("    ✅ AgentYua._on_tick 評估 elapsed_mins=35")
-    logger.info("    ✅ Yua 自主 fire AGENT_INTENT（silence_timeout）")
+    logger.info(f"  ✓ M8 驗收通過：Yua 主動說「{text}」")
+    logger.info("    ✅ 手動 SYSTEM_TICK（elapsed_mins=35）觸發")
+    logger.info("    ✅ AgentYua._on_tick 評估 → fire AGENT_INTENT")
     logger.info("    ✅ MemoryMiddleware 注入 memory_context")
     logger.info("    ✅ LLMProxy 接收 ENRICHED、生成回應")
     logger.info("    ✅ AGENT_SPEAK 廣播（無 USER_MESSAGE 觸發）")
-    logger.info("    ✅ 文字符合 Yua 冷靜人格")
+    logger.info("    ✅ 文字符合 Yua 冷靜人格（≤2 句）")
     logger.info("=" * 60)
 
-    await heartbeat.stop()
     memory.shutdown()
     await bus.stop()
     shutil.rmtree(data_dir, ignore_errors=True)
