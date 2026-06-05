@@ -34,6 +34,26 @@ class EmotionalCarryover:
     triggered_at: str = ""
     decay_rate: float = 0.12
 
+    def save(self, agent_id: str, base_path: str = "data/agents") -> None:
+        import json
+        from pathlib import Path
+        path = Path(base_path) / agent_id / "carryover.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(self.__dict__, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, agent_id: str, base_path: str = "data/agents") -> "EmotionalCarryover":
+        import json
+        from pathlib import Path
+        path = Path(base_path) / agent_id / "carryover.json"
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return cls(**data)
+        return cls()
+
     def apply_decay(self, elapsed_hours: float) -> "EmotionalCarryover":
         factor = (1 - self.decay_rate) ** elapsed_hours
         new_worry_floor = self.unresolved_worry * 0.25 if self.unresolved_worry > 0 else 0.0

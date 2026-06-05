@@ -36,6 +36,7 @@ class EventType(str, Enum):
     # 系統管理
     SYSTEM_ERROR    = "system_error"      # 任何模組拋出的錯誤，統一匯報
     AGENT_STATE_UPDATE = "agent_state_update"  # Agent 情緒/狀態變更通知
+    SESSION_END     = "session_end"       # Heartbeat 偵測到 elapsed >= 30min，代表 session 自然結束
 
 
 class EventPriority(int, Enum):

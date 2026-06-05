@@ -119,6 +119,12 @@ class AgentConsciousness(ABC):
         self.bus.subscribe(
             subscriber_id=self.agent_id,
             handler=self.handle_event,
+            event_filter={
+                EventType.USER_MESSAGE,
+                EventType.SYSTEM_TICK,
+                EventType.AGENT_SPEAK,
+                EventType.SESSION_END,   # Phase 4 carryover 寫入觸發
+            },
             # 同時接收廣播和私發給自己的事件
             target_filter=self.agent_id,
         )
@@ -137,6 +143,8 @@ class AgentConsciousness(ABC):
             # 其他 Agent 說話，可選擇觀察或記錄
             if event.source != self.agent_id:
                 await self._on_other_agent_speak(event)
+        elif event.event_type == EventType.SESSION_END:
+            await self._on_session_end(event)
 
     async def _on_user_message(self, event: SoulEvent) -> None:
         """使用者說話：重置冷卻、更新狀態"""
@@ -185,6 +193,29 @@ class AgentConsciousness(ABC):
     async def _on_other_agent_speak(self, event: SoulEvent) -> None:
         """其他 Agent 說話時的反應（預設不做事，子類可覆寫）"""
         pass
+
+    async def _on_session_end(self, event: SoulEvent) -> None:
+        """Session 結束（elapsed >= 30min）：從當前情感狀態計算 carryover 並持久化"""
+        elapsed = event.payload.get("elapsed_mins", 0.0)
+
+        from src.temporal.models import EmotionalCarryover
+
+        carryover = EmotionalCarryover(
+            intimacy_afterglow=min(self.state.intimacy_level / 100.0, 1.0),
+            unresolved_worry=self.state.dependency * 0.5 if elapsed > 60 else 0.0,
+            emocional_openness_residue=0.3 if self.state.mood == "open" else 0.1,
+            attachment_heat=self.state.dependency,
+            source_event="session_end",
+            triggered_at=datetime.now(timezone.utc).isoformat(),
+            decay_rate=0.12,
+        )
+        carryover.save(self.agent_id)
+        logger.info(
+            f"[{self.agent_id}] Carryover 寫入："
+            f" afterglow={carryover.intimacy_afterglow:.2f}"
+            f" worry={carryover.unresolved_worry:.2f}"
+            f" heat={carryover.attachment_heat:.2f}"
+        )
 
     async def _fire_intent(
         self,

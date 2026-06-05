@@ -34,19 +34,29 @@ class HeartbeatEngine:
     自動更新 last_user_activity：
     HeartbeatEngine 同時訂閱 USER_MESSAGE，
     每次使用者說話時重置活動時間戳，確保 elapsed_mins 計算準確。
+
+    Phase 4 carryover 持久化：
+    每次心跳檢查 elapsed_mins >= 30 時廣播 SESSION_END，
+    讓 Agent 將 carryover 寫入磁碟；下次啟動時載入並 apply_decay。
     """
+
+    SESSION_END_THRESHOLD_MINS = 30.0
 
     def __init__(
         self,
         bus: SoulEventBus,
         tick_interval_seconds: int = 60,
+        data_dir: str = "data/agents",
     ):
         self.bus = bus
         self.tick_interval = tick_interval_seconds
+        self.data_dir = data_dir
         self._running = False
         self._loop_task: Optional[asyncio.Task] = None
         self.tick_count = 0
         self.last_user_activity: datetime = datetime.now(timezone.utc)
+        self._session_ended = False  # 防止 SESSION_END 重複觸發
+        self._carryovers: dict[str, EmotionalCarryover] = {}
 
     async def start(self) -> None:
         if self._running:
@@ -59,6 +69,17 @@ class HeartbeatEngine:
             handler=self._on_user_message,
             event_filter={EventType.USER_MESSAGE},
         )
+
+        # Phase 4 carryover：啟動時載入已知的 carryover 並 apply_decay
+        for agent_id in ("agent_yua", "agent_ruka"):
+            self._carryovers[agent_id] = EmotionalCarryover.load(
+                agent_id, self.data_dir
+            ).apply_decay(elapsed_hours=0.0)
+            c = self._carryovers[agent_id]
+            logger.info(
+                f"[Heartbeat] {agent_id} carryover 載入："
+                f" heat={c.attachment_heat:.2f} afterglow={c.intimacy_afterglow:.2f}"
+            )
 
         self._running = True
         self._loop_task = asyncio.create_task(
@@ -80,9 +101,10 @@ class HeartbeatEngine:
         logger.info(f"[Heartbeat] 停止  總 Tick 數={self.tick_count}")
 
     async def _on_user_message(self, event: SoulEvent) -> None:
-        """每次使用者說話，重置活動計時器"""
+        """每次使用者說話，重置活動計時器與 session 结束标记"""
         self.last_user_activity = event.timestamp
-        logger.debug("[Heartbeat] 活動計時器已重置")
+        self._session_ended = False  # 新訊息到來，代表新 session 開始
+        logger.debug("[Heartbeat] 活動計時器已重置，_session_ended=False")
 
     async def _loop(self) -> None:
         while self._running:
@@ -94,13 +116,15 @@ class HeartbeatEngine:
             now = datetime.now(timezone.utc)
             elapsed_mins = (now - self.last_user_activity).total_seconds() / 60.0
 
-            # Phase 3.5：chrono-social-engine 時間感知
+            # Phase 3.5：chrono-social-engine 時間感知（含 carryover 注入）
+            # Phase 4：carryover 從磁碟載入，inject 到 chrono_ctx
+            carryover = self._carryovers.get("agent_yua", EmotionalCarryover())
             chrono_cfg = PersonaConfig(persona_id="heartbeat_system")
             chrono_ctx = build_temporal_context(
                 persona_id="heartbeat_system",
                 last_msg_ts=self.last_user_activity.isoformat(),
                 current_stress=0,
-                carryover=EmotionalCarryover(),
+                carryover=carryover,
                 config=chrono_cfg,
                 now=now,
             )
@@ -128,6 +152,25 @@ class HeartbeatEngine:
             )
 
             await self.bus.publish(tick)
+
+            # Phase 4 carryover 持久化：SESSION_END 偵測
+            if elapsed_mins >= self.SESSION_END_THRESHOLD_MINS and not self._session_ended:
+                self._session_ended = True
+                session_end_event = SoulEvent(
+                    event_type=EventType.SESSION_END,
+                    source="heartbeat_engine",
+                    target="broadcast",
+                    priority=EventPriority.LOW,
+                    payload={
+                        "elapsed_mins": round(elapsed_mins, 2),
+                        "last_user_activity": self.last_user_activity.isoformat(),
+                    },
+                )
+                await self.bus.publish(session_end_event)
+                logger.info(
+                    f"[Heartbeat] SESSION_END 廣播（elapsed={elapsed_mins:.1f}m）"
+                )
+
             logger.debug(
                 f"[Heartbeat] Tick #{self.tick_count}  "
                 f"elapsed={elapsed_mins:.1f}m  period={chrono_ctx.time_period}"
