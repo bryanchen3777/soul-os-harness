@@ -111,10 +111,10 @@ class IOGateway:
     把每條訊息廣播給所有 WebSocket 客戶端。
     """
 
-    def __init__(self, bus: SoulEventBus):
+    def __init__(self, bus: SoulEventBus, app: FastAPI = None):
         self.bus = bus
         self.manager = ConnectionManager()
-        self.app = FastAPI(title="Soul OS Gateway")
+        self.app = app or FastAPI(title="Soul OS Gateway")
         self._setup_routes()
 
     def register(self):
@@ -170,10 +170,39 @@ class IOGateway:
                 event_type=EventType.AGENT_SPEAK,
                 source="agent_yua",
                 target="broadcast",
-                payload={"agent_id": "agent_yua", "text": "還好你還在。（Yua 冷泡茶模式）"},
+                payload={
+                    "agent_id": "agent_yua",
+                    "text": "還好你還在。（Yua 冷泡茶模式）[MiniMax-style mock]",
+                },
             )
             await self._on_agent_speak(fake_event)
             return {"broadcast": True}
+
+        @self.app.get("/inject/yua")
+        async def inject_yua():
+            """直接讓 Yua 說一句話（走真實 LLM），然後廣播"""
+            try:
+                from src.eventbus.schema import SoulEvent, EventPriority, EventType
+                intent = SoulEvent(
+                    event_type=EventType.AGENT_INTENT,
+                    source="agent_yua",
+                    target="broadcast",
+                    priority=EventPriority.NORMAL,
+                    payload={
+                        "agent_id": "agent_yua",
+                        "reason": "silence_timeout",
+                        "draft": "還好你還在。",
+                        "memory_query_hint": "",
+                        "chrono_context": "",
+                    },
+                )
+                await self.bus.publish(intent)
+                # MiniMax takes ~2-3s; wait before returning so browser stays connected
+                await asyncio.sleep(8.0)
+                return {"yua_intent_fired": True}
+            except Exception as e:
+                import traceback
+                return {"error": str(e), "trace": traceback.format_exc()}
 
         @self.app.websocket("/ws")
         async def websocket_endpoint(ws: WebSocket):

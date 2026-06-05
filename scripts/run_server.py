@@ -7,43 +7,47 @@ import asyncio
 import logging
 import os
 import sys
-import uvicorn
+from contextlib import asynccontextmanager
 from pathlib import Path
 
+import uvicorn
+from fastapi import FastAPI
+
 # 確保 configs/ 和 src/ 可以被找到
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_root))
 
 logger = logging.getLogger("soul_os.server")
 
-from configs.loader import load_config, create_llm_proxy, create_heartbeat
-from src.eventbus import SoulEventBus
-from src.eventbus.token_manager import SpeakerTokenManager
-from src.memory.middleware import MemoryMiddleware
-from src.agent.consciousness import AgentYua, AgentRuka
-from src.io.gateway import IOGateway
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """所有初始化在同一個 event loop 裡，避免跨 loop 問題。"""
+    from configs.loader import load_config, create_llm_proxy, create_heartbeat
+    from src.eventbus import SoulEventBus
+    from src.eventbus.token_manager import SpeakerTokenManager
+    from src.memory.middleware import MemoryMiddleware
+    from src.agent.consciousness import AgentYua, AgentRuka
+    from src.io.gateway import IOGateway
 
-async def bootstrap():
     cfg = load_config()
     bus = SoulEventBus()
     await bus.start()
 
-    # 掛載順序很重要
-    mw = MemoryMiddleware(bus, data_dir="data/memory")
+    mw = MemoryMiddleware(bus=bus, data_dir="data/memory")
     mw.register()
 
     token_mgr = SpeakerTokenManager(bus)
     token_mgr.register()
 
-    # 嘗試建立 LLMProxy，若無 key 則用 mock
-    from src.llm.proxy import LLMProxy
     provider = cfg.get("llm", {}).get("provider", "mock")
-    has_key = bool(cfg.get("llm", {}).get(provider, {}).get("api_key")) or \
-              bool(os.getenv(f"{provider.upper()}_API_KEY", ""))
-    if not has_key:
+    key = os.getenv(f"{provider.upper()}_API_KEY", "")
+    if not key:
         logger.warning(f"[Server] LLM_PROVIDER={provider} 但找不到 API key，使用 MockLLMBackend")
+        from src.llm.proxy import LLMProxy
         llm = LLMProxy(bus=bus, backend=MockLLMBackend(), model="mock", max_tokens=200)
     else:
+        logger.info(f"[Server] LLM backend: real {provider}")
         llm = create_llm_proxy(cfg, bus)
     llm.register()
 
@@ -55,17 +59,21 @@ async def bootstrap():
     ruka.state.intimacy_level = 60
     ruka.register()
 
-    gateway = IOGateway(bus)
+    gateway = IOGateway(bus=bus, app=app)
     gateway.register()
 
     heartbeat = create_heartbeat(cfg, bus)
     await heartbeat.start()
 
-    return gateway.app, bus, heartbeat, mw
+    logger.info("[Server] 所有模組啟動完成")
+    yield
+
+    await heartbeat.stop()
+    await bus.stop()
+    logger.info("[Server] 關閉完成")
 
 
 class MockLLMBackend:
-    """無 API key 時的 mock 替代"""
     async def complete(self, messages, model, max_tokens, temperature):
         sys_content = next((m["content"] for m in messages if m["role"] == "system"), "")
         if "Yua" in sys_content:
@@ -75,13 +83,11 @@ class MockLLMBackend:
         return "[MOCK] 收到！"
 
 
-# FastAPI app（uvicorn 需要 module-level）
-_loop = asyncio.new_event_loop()
-app, *_resources = _loop.run_until_complete(bootstrap())
+app = FastAPI(lifespan=lifespan)
 
 if __name__ == "__main__":
     uvicorn.run(
-        app,  # 直接傳 app 實例，不走字串 import
+        app,
         host="0.0.0.0",
         port=8000,
         reload=False,
