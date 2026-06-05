@@ -129,6 +129,28 @@ class IOGateway:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
+        @self.app.post("/inject/tick")
+        async def inject_tick(elapsed_mins: float = 35.0, time_period: str = "morning"):
+            """開發用：直接注入 SYSTEM_TICK 到 bus，繞過 Heartbeat timing"""
+            from src.eventbus.schema import EventPriority, EventType, SoulEvent
+            tick = SoulEvent(
+                event_type=EventType.SYSTEM_TICK,
+                source="manual_inject",
+                target="broadcast",
+                priority=EventPriority.LOW,
+                payload={
+                    "tick_count": 999,
+                    "elapsed_mins": elapsed_mins,
+                    "time_period": time_period,
+                    "vulnerability_window": False,
+                    "silence_hours": round(elapsed_mins / 60.0, 2),
+                    "attachment_heat": 0.3,
+                    "chrono_block": "",
+                },
+            )
+            await self.bus.publish(tick)
+            return {"injected": True, "elapsed_mins": elapsed_mins}
+
         @self.app.websocket("/ws")
         async def websocket_endpoint(ws: WebSocket):
             await self.manager.connect(ws)
