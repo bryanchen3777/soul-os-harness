@@ -13,7 +13,7 @@ import logging
 import sys
 from pathlib import Path
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# stdout already UTF-8
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.eventbus import SoulEventBus
