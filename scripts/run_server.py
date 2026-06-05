@@ -23,11 +23,10 @@ logger = logging.getLogger("soul_os.server")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """所有初始化在同一個 event loop 裡，避免跨 loop 問題。"""
-    from configs.loader import load_config, create_llm_proxy, create_heartbeat
+    from configs.loader import load_config, create_llm_proxy, create_heartbeat, create_agents
     from src.eventbus import SoulEventBus
     from src.eventbus.token_manager import SpeakerTokenManager
     from src.memory.middleware import MemoryMiddleware
-    from src.agent.consciousness import AgentYua, AgentRuka
     from src.io.gateway import IOGateway
 
     cfg = load_config()
@@ -51,18 +50,14 @@ async def lifespan(app: FastAPI):
         llm = create_llm_proxy(cfg, bus)
     llm.register()
 
-    yua = AgentYua("agent_yua", bus)
-    yua.state.intimacy_level = 80
-    yua.register()
-
-    ruka = AgentRuka("agent_ruka", bus)
-    ruka.state.intimacy_level = 60
-    ruka.register()
+    # 動態載入所有 enabled Agent
+    agents = create_agents(cfg, bus)
+    agent_ids = [a.agent_id for a in agents]
 
     gateway = IOGateway(bus=bus, app=app)
     gateway.register()
 
-    heartbeat = create_heartbeat(cfg, bus)
+    heartbeat = create_heartbeat(cfg, bus, agent_ids=agent_ids)
     await heartbeat.start()
 
     logger.info("[Server] 所有模組啟動完成")

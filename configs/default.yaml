@@ -1,6 +1,22 @@
 # Soul OS — default configuration
 # 由 configs/loader.py 載入；.env 環境變數可覆蓋對應欄位
 
+# ── Agents（動態載入，不需要改程式碼）──
+# 新增角色：1. 在這裡加一條  2. 在 src/agent/registry.py 的 AGENT_CLASS_MAP 加一行
+agents:
+  - id: agent_yua
+    class: AgentYua
+    intimacy_level: 80
+    enabled: true
+  - id: agent_ruka
+    class: AgentRuka
+    intimacy_level: 60
+    enabled: true
+  # - id: agent_akane
+  #   class: AgentAkane
+  #   intimacy_level: 50
+  #   enabled: false
+
 heartbeat:
   # HeartbeatEngine 每隔幾秒發一次 SYSTEM_TICK
   # 設太短會在 CI / 開發機壓力大；建議 60s 為生產預設，1-5s 為本地開發

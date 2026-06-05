@@ -47,6 +47,7 @@ class HeartbeatEngine:
         bus: SoulEventBus,
         tick_interval_seconds: int = 60,
         data_dir: str = "data/agents",
+        agent_ids: list[str] | None = None,
     ):
         self.bus = bus
         self.tick_interval = tick_interval_seconds
@@ -57,6 +58,7 @@ class HeartbeatEngine:
         self.last_user_activity: datetime = datetime.now(timezone.utc)
         self._session_ended = False  # 防止 SESSION_END 重複觸發
         self._carryovers: dict[str, EmotionalCarryover] = {}
+        self._agent_ids: list[str] = agent_ids or []  # 由外部注入，不 hardcode
 
     async def start(self) -> None:
         if self._running:
@@ -70,11 +72,12 @@ class HeartbeatEngine:
             event_filter={EventType.USER_MESSAGE},
         )
 
-        # Phase 4 carryover：啟動時載入已知的 carryover 並 apply_decay
-        for agent_id in ("agent_yua", "agent_ruka"):
-            self._carryovers[agent_id] = EmotionalCarryover.load(
-                agent_id, self.data_dir
-            ).apply_decay(elapsed_hours=0.0)
+        # Phase 4 carryover：啟動時載入所有已註冊 Agent 的 carryover 並 apply_decay
+        for agent_id in self._agent_ids:
+            self._carryovers[agent_id] = (
+                EmotionalCarryover.load(agent_id, self.data_dir)
+                .apply_decay(elapsed_hours=0.0)
+            )
             c = self._carryovers[agent_id]
             logger.info(
                 f"[Heartbeat] {agent_id} carryover 載入："
@@ -117,8 +120,13 @@ class HeartbeatEngine:
             elapsed_mins = (now - self.last_user_activity).total_seconds() / 60.0
 
             # Phase 3.5：chrono-social-engine 時間感知（含 carryover 注入）
-            # Phase 4：carryover 從磁碟載入，inject 到 chrono_ctx
-            carryover = self._carryovers.get("agent_yua", EmotionalCarryover())
+            # Phase 4：取第一個已註冊 Agent 的 carryover inject 到 chrono_ctx
+            primary_agent = self._agent_ids[0] if self._agent_ids else None
+            carryover = (
+                self._carryovers.get(primary_agent, EmotionalCarryover())
+                if primary_agent
+                else EmotionalCarryover()
+            )
             chrono_cfg = PersonaConfig(persona_id="heartbeat_system")
             chrono_ctx = build_temporal_context(
                 persona_id="heartbeat_system",

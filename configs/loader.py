@@ -21,12 +21,15 @@ Soul OS — Phase 2.2: 統一配置載入器
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 import yaml
 from dotenv import load_dotenv
+
+logger = logging.getLogger("soul_os.config")
 
 
 # ── 讀取 ──────────────────────────────────────────────
@@ -165,14 +168,42 @@ def create_llm_proxy(cfg: dict, bus):
     )
 
 
-def create_heartbeat(cfg: dict, bus):
-    """建立 HeartbeatEngine，注入 tick_interval。"""
+def create_agents(cfg: dict, bus) -> list:
+    """
+    從 config 動態實例化所有 enabled Agent。
+    回傳已 register() 的 Agent 列表。
+    """
+    from src.agent.registry import get_agent_class
+
+    agents = []
+    for agent_cfg in cfg.get("agents", []):
+        if not agent_cfg.get("enabled", True):
+            continue
+        agent_id = agent_cfg["id"]
+        class_name = agent_cfg["class"]
+        intimacy = agent_cfg.get("intimacy_level", 50)
+
+        cls = get_agent_class(class_name)
+        agent = cls(agent_id, bus)
+        agent.state.intimacy_level = intimacy
+        agent.register()
+        agents.append(agent)
+
+        logger.info(f"[Loader] Agent 載入：{agent_id} ({class_name}) intimacy={intimacy}")
+
+    return agents
+
+
+def create_heartbeat(cfg: dict, bus, agent_ids: list[str] | None = None):
+    """建立 HeartbeatEngine，注入 tick_interval 和 agent_ids。"""
     from src.heartbeat.engine import HeartbeatEngine
 
     hb_cfg = cfg.get("heartbeat", {})
     return HeartbeatEngine(
         bus=bus,
         tick_interval_seconds=hb_cfg.get("tick_interval_seconds", 60),
+        data_dir="data/agents",
+        agent_ids=agent_ids or [],
     )
 
 
