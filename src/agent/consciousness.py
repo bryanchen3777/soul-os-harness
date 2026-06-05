@@ -336,7 +336,7 @@ class AgentRuka(AgentConsciousness):
     若其他 Agent 已說話，她可能搶著補一句。
     """
 
-    COOLDOWN_TICKS = 5  # 瑠夏發完意圖後很快又可以再主動
+    COOLDOWN_TICKS = 12  # 瑠夏：12 ticks × 5s = 60s 最低間隔
 
     def __init__(self, agent_id: str, bus: SoulEventBus):
         super().__init__(agent_id, bus)
@@ -362,9 +362,12 @@ class AgentRuka(AgentConsciousness):
         if elapsed_mins >= 360.0 and intimacy > 60:
             return True, "jealousy"
 
-        # 其他 Agent 說話了，瑠夏有機率搶話
+        # 其他 Agent 說話了，瑠夏有隨機概率抑制（40% 機會搶話）
         if self._other_agent_spoke_recently and intimacy > 75:
             self._other_agent_spoke_recently = False
+            import random
+            if random.random() < 0.4:  # 60% 抑制
+                return False, ""
             return True, "competitive_response"
 
         return False, ""
