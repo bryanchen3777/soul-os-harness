@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -16,8 +17,25 @@ from src.eventbus.schema import EventType, SoulEvent
 
 logger = logging.getLogger("soul_os.gateway")
 
-
-# ── 靜態前端（開發用，直接在瀏覽器看）──
+# ── 靜態前端路徑（在 import 時解析）──
+# 嘗試多個可能的根目錄位置
+import os as _os
+_GATEWAY_DIR = Path(__file__).resolve().parent  # src/io/
+_REPO_ROOT_CANDIDATES = [
+    _GATEWAY_DIR.parent.parent,  # 從 src/io/ 往上兩層
+    Path.cwd(),                  # current working directory
+]
+_STATIC_INDEX = None
+_UI_HTML = None
+for _candidate in _REPO_ROOT_CANDIDATES:
+    _static = _candidate / "static" / "index.html"
+    if _static.exists():
+        _STATIC_INDEX = _static
+        _UI_HTML = _STATIC_INDEX.read_text(encoding="utf-8")
+        logger.info(f"[Gateway] Loaded static UI from {_STATIC_INDEX} ({len(_UI_HTML)} bytes)")
+        break
+if _UI_HTML is None:
+    logger.warning("[Gateway] static/index.html not found, using DEMO_HTML fallback")
 DEMO_HTML = """
 <!DOCTYPE html>
 <html>
@@ -128,6 +146,8 @@ class IOGateway:
 
         @self.app.get("/", response_class=HTMLResponse)
         async def root():
+            if _UI_HTML:
+                return HTMLResponse(_UI_HTML)
             return DEMO_HTML
 
         @self.app.get("/health")
@@ -204,6 +224,23 @@ class IOGateway:
                 import traceback
                 return {"error": str(e), "trace": traceback.format_exc()}
 
+        @self.app.get("/_admin/fast_forward")
+        async def admin_fast_forward(minutes: float = 35.0):
+            """
+            開發測試用，模擬 last_user_activity 往回設。
+            生產環境（SOUL_ENV=production）禁用。
+            """
+            import os
+            if os.getenv("SOUL_ENV", "dev") == "production":
+                from fastapi import HTTPException
+                raise HTTPException(status_code=403, detail="disabled in production")
+            heartbeat = getattr(self.app.state, "_heartbeat", None)
+            if heartbeat is None:
+                return {"error": "heartbeat not exposed on app.state"}
+            from datetime import timedelta, datetime, timezone
+            heartbeat.last_user_activity = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+            return {"fast_forwarded": True, "minutes": minutes}
+
         @self.app.websocket("/ws")
         async def websocket_endpoint(ws: WebSocket):
             await self.manager.connect(ws)
@@ -211,9 +248,31 @@ class IOGateway:
                 # 心跳：每 20s ping 一次，確認連線存活
                 while True:
                     try:
-                        await asyncio.wait_for(ws.receive_text(), timeout=20.0)
+                        raw = await asyncio.wait_for(ws.receive_text(), timeout=20.0)
                     except asyncio.TimeoutError:
                         await ws.send_text(json.dumps({"type": "ping"}))
+                        continue
+
+                    # 把 client 訊息轉發到 bus（client → bus）
+                    try:
+                        msg = json.loads(raw)
+                        if msg.get("type") == "USER_MESSAGE":
+                            from src.eventbus.schema import SoulEvent, EventPriority, EventType
+                            user_event = SoulEvent(
+                                event_type=EventType.USER_MESSAGE,
+                                source=msg.get("user_id", "anonymous"),
+                                target="broadcast",
+                                priority=EventPriority.HIGH,
+                                payload={
+                                    "content": msg.get("content", ""),
+                                    "user_id": msg.get("user_id", "anonymous"),
+                                },
+                            )
+                            await self.bus.publish(user_event)
+                            content_preview = str(msg.get("content", ""))[:30]
+                            logger.info("[Gateway] USER_MESSAGE forwarded: " + content_preview)
+                    except (json.JSONDecodeError, Exception) as e:
+                        logger.warning("[Gateway] WS message parse error: " + str(e))
             except WebSocketDisconnect:
                 self.manager.disconnect(ws)
 
@@ -226,5 +285,5 @@ class IOGateway:
             "timestamp": ts,
             "session_id": getattr(event, "session_id", ""),
         }
-        logger.info(f"[Gateway] broadcasting: {payload}")
+        logger.info("[Gateway] broadcasting: " + str(payload))
         await self.manager.broadcast(payload)
