@@ -10,10 +10,11 @@ from typing import Optional
 logger = logging.getLogger("soul_os.speaker_token")
 
 # 各 Agent 的 base_score（Ruka 最積極，Yua 次之，Akane 慢熱）
+# jitter_range 控制隨機範圍，範圍越大分布越均勻
 BASE_SCORES = {
-    "agent_yua":   0.7,
-    "agent_ruka":  0.9,
-    "agent_akane": 0.5,
+    "agent_yua":   (0.7, 0.4),   # (base, jitter)
+    "agent_ruka":  (0.9, 0.3),   # Ruka base 最高但 jitter 最小，相對穩定
+    "agent_akane": (0.5, 0.5),   # Akane base 最低但 jitter 最高，有翻盤機會
 }
 
 # 搶答視窗：收到 USER_MESSAGE 後，Agent 有這麼多 ms 提交 bid
@@ -68,9 +69,10 @@ class SpeakerTokenBus:
             if now < self._cooldown.get(agent_id, 0):
                 logger.debug(f"[SpeakerTokenBus] bid rejected: cooldown ({agent_id})")
                 return False
-            final_score = score + random.uniform(0, 0.3)
+            base, jitter = score
+            final_score = base + random.uniform(0, jitter)
             self._bids[agent_id] = final_score
-            logger.debug(f"[SpeakerTokenBus] bid: {agent_id} score={final_score:.3f}")
+            logger.debug(f"[SpeakerTokenBus] bid: {agent_id} base={base} final={final_score:.3f}")
             return True
 
     async def resolve_session(self) -> Optional[str]:
@@ -126,5 +128,8 @@ class SpeakerTokenBus:
 
     # ── 便捷方法 ──────────────────────────────────
 
-    def base_score(self, agent_id: str) -> float:
-        return BASE_SCORES.get(agent_id, 0.5)
+    def base_score(self, agent_id: str) -> tuple[float, float]:
+        entry = BASE_SCORES.get(agent_id, (0.5, 0.3))
+        if isinstance(entry, tuple):
+            return entry
+        return (entry, 0.3)  # 向後兼容
