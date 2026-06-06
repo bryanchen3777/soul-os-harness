@@ -171,6 +171,7 @@ class AgentConsciousness(ABC):
                     reason="user_message",
                     elapsed_mins=0.0,
                     chrono_payload={"draft": content},
+                    mode="private",
                 )
             else:
                 logger.debug(f"[{self.agent_id}] 忽略（target={target}）")
@@ -196,6 +197,7 @@ class AgentConsciousness(ABC):
                     reason="user_message",
                     elapsed_mins=0.0,
                     chrono_payload={"draft": content},
+                    mode="group",
                 )
             return
 
@@ -222,6 +224,7 @@ class AgentConsciousness(ABC):
                 reason="user_message",
                 elapsed_mins=0.0,
                 chrono_payload={"draft": content},
+                mode="group",
             )
         else:
             logger.debug(f"[{self.agent_id}] 未獲勝（winner={winner}），略過")
@@ -257,6 +260,7 @@ class AgentConsciousness(ABC):
                 reason=reason,
                 elapsed_mins=elapsed_mins,
                 chrono_payload=event.payload,
+                mode="group",
             )
             self._cooldown_remaining = dynamic_cooldown
             self.state.silence_strike = 0
@@ -301,6 +305,7 @@ class AgentConsciousness(ABC):
             chrono_payload={
                 "draft": f"（{speaker_id} 剛才說：{spoken_text[:80]}）",
             },
+            mode="group",
         )
 
     def _calc_followup_score(self, speaker_id: str, spoken_text: str) -> float:
@@ -342,12 +347,13 @@ class AgentConsciousness(ABC):
         reason: str,
         elapsed_mins: float,
         chrono_payload: Optional[Dict[str, Any]] = None,
+        mode: str = "group",
     ) -> None:
         """向 Bus 廣播 AGENT_INTENT 事件"""
         intent_payload = self._build_intent_payload(reason, elapsed_mins)
         intent_payload["agent_id"] = self.agent_id
         intent_payload["reason"] = reason
-        # Phase 3.5：把 chrono 區塊塞進 intent，LLM 收到時可拼進 system prompt
+        intent_payload["mode"] = mode  # 傳給 LLMProxy 決定用哪份 history
         if chrono_payload:
             intent_payload["chrono_context"] = chrono_payload.get("chrono_block", "")
             # 🔴 關鍵：把 draft 從 chrono_payload 提取出來放進 intent_payload
