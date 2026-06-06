@@ -335,21 +335,25 @@ class ClaudeBackend(LLMBackend):
             )
             resp.raise_for_status()
             data = resp.json()
-            # 🔴 DEBUG：印出 API 返回的完整資料結構
-            logger.info(f"[ClaudeBackend-DEBUG] response keys={list(data.keys())}")
-            if "content" in data:
-                logger.info(f"[ClaudeBackend-DEBUG] content count={len(data['content'])}")
-            # content 可能是 [{type: "text", text: "..."}] 或
-            #         [{type: "thinking", ...}, {type: "text", text: "..."}]（extended thinking 或 MiniMax 自動加 thinking）
-            # 走訪找第一個 text block
-            # 🔴 修復：確保 content 不為 None
+            # content 可能是 list [{type:"text",...}, {type:"thinking",...}] 或
+            #         None（只有 thinking、沒 text 輸出，常見於 reasoning 預算吃滿）
             content_blocks = data.get("content") or []
+            text = ""
             for block in content_blocks:
-                if block.get("type") == "text" and "text" in block:
-                    return block["text"].strip()
-            # 🔴 如果完全沒有 content，可能是 API 錯誤，回傳空並 log
-            logger.warning(f"[ClaudeBackend] 無 content，回傳空字串 | data keys={list(data.keys())}")
-            return ""  # 沒 text block，回空字串
+                if block.get("type") == "text" and block.get("text"):
+                    text = block["text"].strip()
+                    break
+            if not text:
+                # fallback：把第一個 thinking 內容當 reply（最差也比空好）
+                for block in content_blocks:
+                    if block.get("type") == "thinking" and block.get("thinking"):
+                        logger.warning(f"[ClaudeBackend] 無 text block，回傳 thinking | stop_reason={data.get('stop_reason')}")
+                        text = block["thinking"].strip()
+                        break
+                if not text:
+                    logger.warning(f"[ClaudeBackend] 無任何 block，回傳空 | data keys={list(data.keys())} content={data.get('content')}")
+                    return ""
+            return text
 
 
 # ─────────────────────────────────────────────
@@ -466,7 +470,7 @@ class LLMProxy:
         bus: SoulEventBus,
         backend: LLMBackend,
         model: str = "gpt-4o-mini",
-        max_tokens: int = 300,
+        max_tokens: int = 1200,  # MiniMax-M2.7 是 reasoning 模型，預算 400+ tokens；給 1200 確保 text 不被截斷
         temperature: float = 0.85,
         max_retries: int = 3,
         max_history_turns: int = 10,  # 保留最近幾輪對話，防 context 爆炸
