@@ -15,10 +15,12 @@
 #   把查到的記憶寫入 payload["memory_context"]，LLM Proxy 這邊零改動。
 
 import asyncio
+import json
 import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx  # 使用 httpx 做非同步 HTTP，避免 requests 阻塞事件迴圈
@@ -27,6 +29,36 @@ from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
 
 logger = logging.getLogger("soul_os.llm_proxy")
+
+# ── 對話歷史持久化 ──────────────────────────────────
+CONV_DIR = Path("data/conversations")
+CONV_DIR.mkdir(parents=True, exist_ok=True)
+MAX_PERSIST = 20  # 持久化最近 20 輪
+
+
+def _conv_path(agent_id: str) -> Path:
+    return CONV_DIR / f"{agent_id}.json"
+
+
+def _load_history(agent_id: str) -> List[Dict[str, str]]:
+    path = _conv_path(agent_id)
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def _save_history(agent_id: str, history: List[Dict[str, str]]) -> None:
+    path = _conv_path(agent_id)
+    trimmed = history[-MAX_PERSIST * 2:]
+    path.write_text(json.dumps(trimmed, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _session_key(agent_id: str) -> str:
+    """固定 session key，確保重啟後 history 能正確對應同一個 agent"""
+    return f"session_{agent_id}"
 
 
 # ─────────────────────────────────────────────
@@ -334,6 +366,13 @@ class LLMProxy:
         # Phase 2 升級點：改為持久化到 SQLite
         self._history: Dict[str, List[Dict[str, str]]] = {}
 
+        # 啟動時從磁碟載入每個 agent 的對話歷史
+        for agent_id in ("agent_yua", "agent_ruka", "agent_akane"):
+            key = _session_key(agent_id)
+            self._history[key] = _load_history(agent_id)
+            if self._history[key]:
+                logger.info(f"[LLMProxy] 載入 {agent_id} 歷史 {len(self._history[key])} 條")
+
     def register(self) -> None:
         """向 Event Bus 註冊，開始監聽 SPEAKER_TOKEN_GRANTED
 
@@ -372,7 +411,7 @@ class LLMProxy:
         )
 
         # 組裝 Prompt
-        session_id = event.session_id or f"session_{agent_id}"
+        session_id = _session_key(agent_id)  # 固定 key，重啟後能對應同一段歷史
 
         # ⭐ Step 2：收到 USER_MESSAGE 時，先把 user 訊息加入歷史
         user_message = draft if reason == "user_message" else ""
@@ -467,7 +506,9 @@ class LLMProxy:
         return history[-max_msgs:] if len(history) > max_msgs else history
 
     def _add_to_history(self, session_id: str, role: str, content: str) -> None:
-        """將訊息加入歷史（自動截斷超過 MAX_HISTORY 的舊訊息）"""
+        """將訊息加入歷史（自動截斷超過 MAX_HISTORY 的舊訊息），並持久化"""
+        # session_id 格式是 "session_{agent_id}"
+        agent_id = session_id.replace("session_", "")
         if session_id not in self._history:
             self._history[session_id] = []
         self._history[session_id].append({"role": role, "content": content})
@@ -476,6 +517,12 @@ class LLMProxy:
         max_msgs = self.max_history_turns * 2
         if len(self._history[session_id]) > max_msgs:
             self._history[session_id] = self._history[session_id][-max_msgs:]
+
+        # 持久化到磁碟
+        try:
+            _save_history(agent_id, self._history[session_id])
+        except Exception as e:
+            logger.warning(f"[LLMProxy] 寫入歷史失敗：{e}")
 
     async def _complete_with_retry(
         self,
