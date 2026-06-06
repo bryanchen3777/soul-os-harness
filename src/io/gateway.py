@@ -258,10 +258,11 @@ class IOGateway:
                         msg = json.loads(raw)
                         if msg.get("type") == "USER_MESSAGE":
                             from src.eventbus.schema import SoulEvent, EventPriority, EventType
+                            # 🔴 USER_MESSAGE 只發給 primary agent（yua），避免多個 Agent 同時搶答
                             user_event = SoulEvent(
                                 event_type=EventType.USER_MESSAGE,
                                 source=msg.get("user_id", "anonymous"),
-                                target="broadcast",
+                                target="agent_yua",  # 只有 Yua 收到
                                 priority=EventPriority.HIGH,
                                 payload={
                                     "content": msg.get("content", ""),
@@ -270,7 +271,7 @@ class IOGateway:
                             )
                             await self.bus.publish(user_event)
                             content_preview = str(msg.get("content", ""))[:30]
-                            logger.info("[Gateway] USER_MESSAGE forwarded: " + content_preview)
+                            logger.info("[Gateway] USER_MESSAGE → agent_yua: " + content_preview)
                     except (json.JSONDecodeError, Exception) as e:
                         logger.warning("[Gateway] WS message parse error: " + str(e))
             except WebSocketDisconnect:

@@ -186,12 +186,20 @@ class ClaudeBackend(LLMBackend):
             )
             resp.raise_for_status()
             data = resp.json()
+            # 🔴 DEBUG：印出 API 返回的完整資料結構
+            logger.info(f"[ClaudeBackend-DEBUG] response keys={list(data.keys())}")
+            if "content" in data:
+                logger.info(f"[ClaudeBackend-DEBUG] content count={len(data['content'])}")
             # content 可能是 [{type: "text", text: "..."}] 或
             #         [{type: "thinking", ...}, {type: "text", text: "..."}]（extended thinking 或 MiniMax 自動加 thinking）
             # 走訪找第一個 text block
-            for block in data.get("content", []):
+            # 🔴 修復：確保 content 不為 None
+            content_blocks = data.get("content") or []
+            for block in content_blocks:
                 if block.get("type") == "text" and "text" in block:
                     return block["text"].strip()
+            # 🔴 如果完全沒有 content，可能是 API 錯誤，回傳空並 log
+            logger.warning(f"[ClaudeBackend] 無 content，回傳空字串 | data keys={list(data.keys())}")
             return ""  # 沒 text block，回空字串
 
 
@@ -199,7 +207,6 @@ class ClaudeBackend(LLMBackend):
 # 3. Agent 人格載入器（從 Hermes SOUL.md）
 # ─────────────────────────────────────────────
 
-import logging
 import os
 from pathlib import Path
 from typing import Dict
@@ -226,12 +233,21 @@ AGENT_PROFILE_MAP: Dict[str, str] = {
     "agent_yamada": "yamada",
 }
 
+# Soul OS 本地人格目錄（優先於 Hermes profiles）
+SOUL_OS_PERSONAS_DIR = Path(__file__).parent.parent / "personas"
+
 # Soul OS 環境覆蓋說明（附在人格內容尾，避免 Hermes tool 指令干扰）
 SOUL_OS_OVERRIDE = """
 ---
 [Soul OS 環境說明]
 你現在運行於 Soul OS 框架。記憶由系統自動管理，不需要呼叫任何 tool。
-直接說話即可，記憶系統會自動記錄。
+
+重要規則：
+1. 直接說話，不要描述動作（如「*看著你*」）
+2. 對話歷史中，使用者說的話已經標記為「user」，你的回覆標記為「assistant」
+3. 看到使用者的訊息時，直接以角色身份回應，不要假裝或扮演
+4. 回覆保持簡短有力，不超過 2 句
+5. 如果沒有具體問題或話題，保持沉默或給出簡短回應
 ---
 """
 
@@ -253,26 +269,25 @@ DEFAULT_PERSONAS: Dict[str, str] = {
 def load_persona(agent_id: str) -> str:
     """
     載入 Agent 人格設定。
-    優先從 Hermes profiles 目錄讀取 soul.md（不分大小寫），
-    找不到時 fallback 到 DEFAULT_PERSONAS。每次呼叫都重新讀檔，支援熱更新。
-    """
-    profile_name = AGENT_PROFILE_MAP.get(agent_id)
-    if profile_name:
-        profile_dir = Path(HERMES_PROFILES_DIR) / profile_name
-        # 不分大小寫找 soul.md
-        for candidate in ["soul.md", "SOUL.md", "Soul.md"]:
-            soul_path = profile_dir / candidate
-            if soul_path.exists():
-                try:
-                    content = soul_path.read_text(encoding="utf-8").strip()
-                    if content:
-                        logger.info(f"[Persona] {agent_id} 載入 {soul_path}（{len(content)} chars）")
-                        return content + SOUL_OS_OVERRIDE
-                except Exception as e:
-                    logger.warning(f"[Persona] 讀取 {soul_path} 失敗：{e}")
-                    break
 
-    # Fallback
+    優先順序：
+    1. Soul OS 本地 personas/{agent_id}.md（專用於 Soul OS）
+    2. DEFAULT_PERSONAS（簡單 fallback）
+
+    不再讀取 Hermes profiles，因為那些包含 tool 指令不適用於 Soul OS。
+    """
+    # 🔴 優先：Soul OS 本地 personas/ 目錄
+    local_persona = SOUL_OS_PERSONAS_DIR / f"{agent_id}.md"
+    if local_persona.exists():
+        try:
+            content = local_persona.read_text(encoding="utf-8").strip()
+            if content:
+                logger.info(f"[Persona] {agent_id} 載入 {local_persona}")
+                return content + SOUL_OS_OVERRIDE
+        except Exception as e:
+            logger.warning(f"[Persona] 讀取 {local_persona} 失敗：{e}")
+
+    # Fallback 到 DEFAULT_PERSONAS
     logger.info(f"[Persona] {agent_id} 使用 DEFAULT_PERSONAS")
     persona = DEFAULT_PERSONAS.get(
         agent_id,
@@ -359,6 +374,11 @@ class LLMProxy:
         session_id = event.session_id or f"session_{agent_id}"
         history = self._get_history(session_id)
 
+        # 🔴 DEBUG：確認歷史有正確內容
+        logger.info(f"[LLMProxy-DEBUG] session_id={session_id} history_count={len(history)}")
+        for i, h in enumerate(history):
+            logger.info(f"  history[{i}] role={h.get('role')} content={h.get('content', '')[:50]!r}...")
+
         prompt = PromptContext(
             system_prompt=load_persona(agent_id),
             memory_context=memory_context,        # ← Memory Middleware 填入
@@ -367,9 +387,20 @@ class LLMProxy:
             current_intent=self._build_intent_text(reason, draft),
         )
 
+        # 🔴 DEBUG：組裝後的 messages 結構
+        messages = prompt.to_messages()
+        logger.info(f"[LLMProxy-DEBUG] agent={agent_id} messages count={len(messages)}")
+        for i, msg in enumerate(messages):
+            role = msg.get("role", "?")
+            content = msg.get("content", "")[:80]
+            logger.info(f"  [{i}] role={role} content={content!r}...")
+
+        # 🔴 擷取 user message（用於歷史記錄）
+        user_message = draft if reason == "user_message" else ""
+
         # 呼叫 LLM（帶 Retry）
         generated_text = await self._complete_with_retry(
-            messages=prompt.to_messages(),
+            messages=messages,
             agent_id=agent_id,
             correlation_id=event.event_id,
         )
@@ -377,8 +408,8 @@ class LLMProxy:
         if generated_text is None:
             return  # 錯誤已由 _complete_with_retry 上報，直接退出
 
-        # 更新對話歷史
-        self._update_history(session_id, generated_text)
+        # 更新對話歷史（包含 user + assistant）
+        self._update_history(session_id, user_message, generated_text)
 
         # 發布 AGENT_SPEAK
         speak_event = SoulEvent(
@@ -405,14 +436,21 @@ class LLMProxy:
     # ── 工具函數 ──────────────────────────────
 
     def _build_intent_text(self, reason: str, draft: str) -> str:
-        """將意圖原因轉換為自然語言提示"""
+        """將意圖原因轉換為自然語言提示
+
+        🔴 修復問題 1：確保 system prompt 結構不會混入 user content
+        USER_MESSAGE 的 draft 是使用者輸入，必須明確標記為「使用者說的話」
+        """
         prompts = {
             "silence_timeout": (
                 "你已經好一段時間沒有說話了。現在是你主動開口的時機。"
                 f"{'你可以從這個想法延伸：' + draft if draft else '說一句符合你個性的話。'}"
             ),
             "schedule": f"現在有一個預排的話題想聊。{draft}",
-            "user_message": draft or "請回應使用者的最新訊息。",
+            "user_message": (
+                # 🔴 直接給出使用者說的話，不加額外指令
+                draft if draft else ""
+            ),
         }
         return prompts.get(reason, draft or "請說一句符合你個性的話。")
 
@@ -423,13 +461,18 @@ class LLMProxy:
         max_msgs = self.max_history_turns * 2
         return history[-max_msgs:] if len(history) > max_msgs else history
 
-    def _update_history(self, session_id: str, assistant_text: str) -> None:
-        """將生成結果加入歷史（Phase 2 升級為持久化）"""
+    def _add_to_history(self, session_id: str, role: str, content: str) -> None:
+        """將訊息加入歷史"""
         if session_id not in self._history:
             self._history[session_id] = []
-        self._history[session_id].append(
-            {"role": "assistant", "content": assistant_text}
-        )
+        self._history[session_id].append({"role": role, "content": content})
+
+    def _update_history(self, session_id: str, user_text: str, assistant_text: str) -> None:
+        """將一輪對話加入歷史（user + assistant）"""
+        if session_id not in self._history:
+            self._history[session_id] = []
+        self._history[session_id].append({"role": "user", "content": user_text})
+        self._history[session_id].append({"role": "assistant", "content": assistant_text})
 
     async def _complete_with_retry(
         self,
@@ -446,6 +489,10 @@ class LLMProxy:
 
         for attempt in range(self.max_retries):
             try:
+                # 🔴 DEBUG：印出實際送給 LLM 的完整 messages
+                import json
+                print("[LLM_DEBUG] messages sent:")
+                print(json.dumps(messages, ensure_ascii=False, indent=2))
                 result = await self.backend.complete(
                     messages=messages,
                     model=self.model,

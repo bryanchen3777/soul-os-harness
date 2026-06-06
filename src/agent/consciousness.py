@@ -147,19 +147,31 @@ class AgentConsciousness(ABC):
             await self._on_session_end(event)
 
     async def _on_user_message(self, event: SoulEvent) -> None:
-        """使用者說話：重置冷卻、更新狀態，並觸發回應意圖"""
+        """使用者說話：重置冷卻、更新狀態，並觸發回應意圖
+
+        🔴 修復問題 2：嚴格確保只有 primary agent（yua）回應 USER_MESSAGE
+        即使 Event Bus 的 target_filter 失效，這層檢查提供最後防線
+        """
         self._cooldown_remaining = 0
         self.state.silence_strike = 0
         self.state.last_spoken_at = event.timestamp
 
-        # 使用者說話 → 觸發回應意圖
+        # 🔴 雙重檢查：1) 只有 agent_yua 處理  2) 明確檢查 target
         content = event.payload.get("content", "")
-        if content:
-            await self._fire_intent(
-                reason="user_message",
-                elapsed_mins=0.0,
-                chrono_payload={"draft": content},
-            )
+        if content and self.agent_id == "agent_yua":
+            # 🔴 再次確認事件目標是廣播或 agent_yua（不是給其他 Agent）
+            if event.target in ("broadcast", "agent_yua", ""):
+                logger.info(f"[{self.agent_id}] 收到 USER_MESSAGE，準備回應 | target={event.target}")
+                await self._fire_intent(
+                    reason="user_message",
+                    elapsed_mins=0.0,
+                    chrono_payload={"draft": content},
+                )
+            else:
+                logger.debug(f"[{self.agent_id}] 收到但 target={event.target}，略過")
+        else:
+            # 非 Yua 的 Agent：明確忽略 USER_MESSAGE，避免搶答
+            logger.debug(f"[{self.agent_id}] 忽略 USER_MESSAGE（非 primary agent）")
 
     async def _on_tick(self, event: SoulEvent) -> None:
         """
@@ -238,6 +250,11 @@ class AgentConsciousness(ABC):
         # Phase 3.5：把 chrono 區塊塞進 intent，LLM 收到時可拼進 system prompt
         if chrono_payload:
             intent_payload["chrono_context"] = chrono_payload.get("chrono_block", "")
+            # 🔴 關鍵：把 draft 從 chrono_payload 提取出來放進 intent_payload
+            # 這樣 LLMProxy 才能正確收到使用者說的話
+            if "draft" in chrono_payload:
+                intent_payload["draft"] = chrono_payload["draft"]
+                logger.info(f"[{self.agent_id}] draft 傳遞: {chrono_payload['draft'][:30]!r}...")
 
         event = SoulEvent(
             event_type=EventType.AGENT_INTENT,
@@ -452,5 +469,4 @@ class AgentAkane(AgentConsciousness):
             "draft": drafts.get(reason, ""),
             # 她不會長篇分析，回覆應該是短句
             "action_tags": ["compressed_speech"],
-            "memory_query_hint": "最近和あかね的重要對話或約定",
         }
