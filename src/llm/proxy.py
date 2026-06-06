@@ -234,7 +234,8 @@ AGENT_PROFILE_MAP: Dict[str, str] = {
 }
 
 # Soul OS 本地人格目錄（優先於 Hermes profiles）
-SOUL_OS_PERSONAS_DIR = Path(__file__).parent.parent / "personas"
+# 路徑：soul-os-harness/src/llm/proxy.py → parent.parent.parent = soul-os-harness/
+SOUL_OS_PERSONAS_DIR = Path(__file__).parent.parent.parent / "personas"
 
 # Soul OS 環境覆蓋說明（附在人格內容尾，避免 Hermes tool 指令干扰）
 SOUL_OS_OVERRIDE = """
