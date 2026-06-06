@@ -178,6 +178,12 @@ class AgentConsciousness(ABC):
         if not content:
             return
 
+        # 檢查是否在 participants 名單內（None = 全員）
+        participants = event.payload.get("participants")
+        if participants is not None and self.agent_id not in participants:
+            logger.debug(f"[{self.agent_id}] 不在 participants={participants}，不參與競標")
+            return
+
         stb = self.speaker_token_bus
         if stb is None:
             # 沒有 SpeakerTokenBus，回落到私聊行為（只有 agent_yua 回應）

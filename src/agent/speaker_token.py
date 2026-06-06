@@ -47,7 +47,7 @@ class SpeakerTokenBus:
         """打開一個競標窗口，讓各 Agent 提交分數"""
         async with self._lock:
             self._bids = {}
-            self._winner = None
+            self._winner = None  # 重置：每次新消息獨立結算
             self._session_active = True
             logger.debug("[SpeakerTokenBus] session opened")
 
@@ -113,8 +113,9 @@ class SpeakerTokenBus:
         async with self._lock:
             if self._winner is not None:
                 return self._winner
-            if not self._session_active and not self._bids:
-                return None
+            # 已close但winner還沒被任何agent取走（TOCTOU保護：都在lock內）
+            if not self._session_active:
+                return self._winner  # None 或已有值
         return await self.resolve_session()
 
     async def close_session(self) -> None:

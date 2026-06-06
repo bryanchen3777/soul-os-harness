@@ -259,6 +259,7 @@ class IOGateway:
                         if msg.get("type") == "USER_MESSAGE":
                             from src.eventbus.schema import SoulEvent, EventPriority, EventType
                             mode = msg.get("mode", "private")
+                            participants = msg.get("participants")
                             if mode == "group":
                                 target = "broadcast"
                             else:
@@ -273,11 +274,12 @@ class IOGateway:
                                     "user_id": msg.get("user_id", "anonymous"),
                                     "target_agent": target,
                                     "mode": mode,
+                                    "participants": participants,
                                 },
                             )
                             await self.bus.publish(user_event)
                             content_preview = str(msg.get("content", ""))[:30]
-                            logger.info(f"[Gateway] USER_MESSAGE mode={mode} target={target}: {content_preview}")
+                            logger.info(f"[Gateway] USER_MESSAGE mode={mode} participants={participants}: {content_preview}")
                     except (json.JSONDecodeError, Exception) as e:
                         logger.warning("[Gateway] WS message parse error: " + str(e))
             except WebSocketDisconnect:
