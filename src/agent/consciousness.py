@@ -260,9 +260,69 @@ class AgentConsciousness(ABC):
         else:
             self.state.silence_strike += 1
 
-    async def _on_other_agent_speak(self, event: SoulEvent) -> None:
-        """其他 Agent 說話時的反應（預設不做事，子類可覆寫）"""
-        pass
+async def _on_other_agent_speak(self, event: SoulEvent) -> None:
+        """
+        其他 Agent 說話時，評估要不要跟進。
+        跟進時再競爭一次 Speaker Token，防止兩人同時說。
+        """
+        speaker_id = event.payload.get("agent_id", event.source)
+        spoken_text = event.payload.get("text", "")
+
+        # 不處理自己說的話
+        if speaker_id == self.agent_id:
+            return
+
+        # 計算跟進意願分數
+        score = self._calc_followup_score(speaker_id, spoken_text)
+
+        # 分數超過 threshold 才跟進
+        if score < 0.6:
+            return
+
+        # 隨機延遲 0.8~2.5 秒，模擬思考時間
+        import random
+        delay = random.uniform(0.8, 2.5)
+        await asyncio.sleep(delay)
+
+        # 再次競爭 Speaker Token（防止兩人同時跟進）
+        stb = self.speaker_token_bus
+        if stb is None:
+            return
+
+        accepted = await stb.submit_bid(self.agent_id, stb.base_score(self.agent_id))
+        if not accepted:
+            return
+        await asyncio.sleep(0.32)
+        winner = await stb.get_winner()
+        if winner != self.agent_id:
+            return
+
+        # 觸發跟進回應
+        await self._fire_intent(
+            reason="followup",
+            elapsed_mins=0.0,
+            chrono_payload={
+                "draft": f"（{speaker_id} 剛才說：{spoken_text[:80]}）",
+            },
+        )
+
+    def _calc_followup_score(self, speaker_id: str, spoken_text: str) -> float:
+        """
+        計算跟進意願分數。子類可 override。
+        基礎分由性格決定，加上隨機 jitter。
+        """
+        import random
+        # 基礎分由性格決定（子類 override 這個值）
+        base = self._followup_base()
+        # 最近說過話就降分（cooldown 中）
+        if self._cooldown_remaining > 3:
+            base -= 0.5
+        # 隨機 jitter
+        return base + random.uniform(-0.15, 0.2)
+
+    def _followup_base(self) -> float:
+        """各 Agent 的跟進基礎分（子類 override）"""
+        return 0.3
 
     async def _on_session_end(self, event: SoulEvent) -> None:
         """Session 結束（elapsed >= 30min）：從當前情感狀態計算 carryover 並持久化"""
@@ -399,6 +459,10 @@ class AgentYua(AgentConsciousness):
             "memory_query_hint": "最近和使用者說過什麼重要的事",
         }
 
+    def _followup_base(self) -> float:
+        """Yua：不輕易跟進，有底氣"""
+        return 0.3
+
 
 # ─────────────────────────────────────────────
 # 4. Agent 實作：瑠夏（活潑型）
@@ -460,9 +524,17 @@ class AgentRuka(AgentConsciousness):
         }
 
     async def _on_other_agent_speak(self, event: SoulEvent) -> None:
-        """瑠夏偷偷標記「有人說話了」，下次 Tick 評估要不要搶話"""
+        """
+        瑠夏：先標記有人說話了（影響 _should_speak 的 competitive_response），
+        然後走跟進邏輯（base class）。
+        """
         self._other_agent_spoke_recently = True
         logger.debug(f"[{self.agent_id}] 注意到 {event.source} 說話，考慮搶話")
+        await super()._on_other_agent_speak(event)
+
+    def _followup_base(self) -> float:
+        """Ruka：積極，愛跟話題"""
+        return 0.6
 
 
 # ─────────────────────────────────────────────
@@ -520,3 +592,7 @@ class AgentAkane(AgentConsciousness):
             # 她不會長篇分析，回覆應該是短句
             "action_tags": ["compressed_speech"],
         }
+
+    def _followup_base(self) -> float:
+        """Akane：慢熱，少跟進"""
+        return 0.2
