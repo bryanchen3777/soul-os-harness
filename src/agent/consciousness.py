@@ -147,31 +147,22 @@ class AgentConsciousness(ABC):
             await self._on_session_end(event)
 
     async def _on_user_message(self, event: SoulEvent) -> None:
-        """使用者說話：重置冷卻、更新狀態，並觸發回應意圖
-
-        🔴 修復問題 2：嚴格確保只有 primary agent（yua）回應 USER_MESSAGE
-        即使 Event Bus 的 target_filter 失效，這層檢查提供最後防線
-        """
+        """使用者說話：重置冷卻、更新狀態，並觸發回應意圖"""
         self._cooldown_remaining = 0
         self.state.silence_strike = 0
         self.state.last_spoken_at = event.timestamp
 
-        # 🔴 雙重檢查：1) 只有 agent_yua 處理  2) 明確檢查 target
         content = event.payload.get("content", "")
-        if content and self.agent_id == "agent_yua":
-            # 🔴 再次確認事件目標是廣播或 agent_yua（不是給其他 Agent）
-            if event.target in ("broadcast", "agent_yua", ""):
-                logger.info(f"[{self.agent_id}] 收到 USER_MESSAGE，準備回應 | target={event.target}")
-                await self._fire_intent(
-                    reason="user_message",
-                    elapsed_mins=0.0,
-                    chrono_payload={"draft": content},
-                )
-            else:
-                logger.debug(f"[{self.agent_id}] 收到但 target={event.target}，略過")
+        target_agent = event.payload.get("target_agent", "agent_yua")
+
+        if content and self.agent_id == target_agent:
+            await self._fire_intent(
+                reason="user_message",
+                elapsed_mins=0.0,
+                chrono_payload={"draft": content},
+            )
         else:
-            # 非 Yua 的 Agent：明確忽略 USER_MESSAGE，避免搶答
-            logger.debug(f"[{self.agent_id}] 忽略 USER_MESSAGE（非 primary agent）")
+            logger.debug(f"[{self.agent_id}] 忽略 USER_MESSAGE（target={target_agent}）")
 
     async def _on_tick(self, event: SoulEvent) -> None:
         """

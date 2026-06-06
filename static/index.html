@@ -2,11 +2,36 @@
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
-  <title>與 Yua 對話</title>
+  <title>Soul OS</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #0f0f0f; color: #eee; font-family: sans-serif;
            display: flex; flex-direction: column; height: 100vh; }
+
+    #selector {
+      display: flex; gap: 8px; padding: 14px 20px 0;
+      border-bottom: 1px solid #222;
+    }
+    .agent-btn {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      color: #888;
+      padding: 5px 16px;
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.2s;
+    }
+    .agent-btn.active {
+      border-color: #2563eb;
+      color: #fff;
+      background: #1e3a8a;
+    }
+    .agent-btn:hover:not(.active) {
+      border-color: #555;
+      color: #ccc;
+    }
+
     #log { flex: 1; overflow-y: auto; padding: 20px; display: flex;
            flex-direction: column; gap: 10px; }
     .msg { max-width: 70%; padding: 10px 14px; border-radius: 16px;
@@ -27,6 +52,11 @@
   </style>
 </head>
 <body>
+  <div id="selector">
+    <button class="agent-btn active" data-agent="agent_yua">Yua</button>
+    <button class="agent-btn" data-agent="agent_ruka">Ruka</button>
+    <button class="agent-btn" data-agent="agent_akane">Akane</button>
+  </div>
   <div id="log"></div>
   <div id="status">connecting...</div>
   <div id="bar">
@@ -35,6 +65,16 @@
   </div>
 
   <script>
+    let currentAgent = "agent_yua";
+
+    document.querySelectorAll(".agent-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".agent-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        currentAgent = btn.dataset.agent;
+      });
+    });
+
     const log = document.getElementById('log');
     const input = document.getElementById('input');
     const status = document.getElementById('status');
@@ -68,11 +108,16 @@
       const text = input.value.trim();
       if (!text || ws.readyState !== 1) return;
       addMsg('你', text, 'user');
-      ws.send(JSON.stringify({ type: 'USER_MESSAGE', content: text, user_id: userId }));
+      ws.send(JSON.stringify({
+        type: 'USER_MESSAGE',
+        content: text,
+        user_id: userId,
+        target_agent: currentAgent
+      }));
       input.value = '';
     }
 
-    document.getElementById('send').onclick = send;
+    document.getElementById('send').addEventListener('click', send);
     input.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
   </script>
 </body>
