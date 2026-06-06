@@ -486,6 +486,8 @@ class LLMProxy:
 
             except Exception as e:
                 last_error = e
+                import sys
+                print(f"[LLMProxy-DEBUG] unexpected error: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
                 logger.error(
                     f"[LLMProxy] 未預期錯誤 | {type(e).__name__}: {e}",
                     exc_info=True,

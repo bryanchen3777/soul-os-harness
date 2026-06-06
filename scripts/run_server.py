@@ -20,6 +20,18 @@ sys.path.insert(0, str(_root))
 logger = logging.getLogger("soul_os.server")
 
 
+class MockLLMBackend:
+    async def complete(self, messages, model, max_tokens, temperature):
+        sys_content = next((m["content"] for m in messages if m["role"] == "system"), "")
+        print(f"[MockLLM] sys_content[:50]={sys_content[:50]!r}", flush=True)
+        print(f"[MockLLM] Yua={'Yua' in sys_content}", flush=True)
+        if "Yua" in sys_content:
+            return "還好你還在。（Yua 冷泡茶模式）"
+        if "瑠夏" in sys_content or "Ruka" in sys_content:
+            return "你去哪裡了！我在等你！（瑠夏激動模式）"
+        return "[MOCK] 我在這裡。"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """所有初始化在同一個 event loop 裡，避免跨 loop 問題。"""
@@ -59,6 +71,7 @@ async def lifespan(app: FastAPI):
 
     heartbeat = create_heartbeat(cfg, bus, agent_ids=agent_ids)
     await heartbeat.start()
+    app.state._heartbeat = heartbeat  # expose for /_admin/fast_forward
 
     logger.info("[Server] 所有模組啟動完成")
     yield
@@ -66,16 +79,6 @@ async def lifespan(app: FastAPI):
     await heartbeat.stop()
     await bus.stop()
     logger.info("[Server] 關閉完成")
-
-
-class MockLLMBackend:
-    async def complete(self, messages, model, max_tokens, temperature):
-        sys_content = next((m["content"] for m in messages if m["role"] == "system"), "")
-        if "Yua" in sys_content:
-            return "還好你還在。（Yua 冷泡茶模式）"
-        if "瑠夏" in sys_content or "Ruka" in sys_content:
-            return "你去哪裡了！我在等你！（瑠夏激動模式）"
-        return "[MOCK] 收到！"
 
 
 app = FastAPI(lifespan=lifespan)
