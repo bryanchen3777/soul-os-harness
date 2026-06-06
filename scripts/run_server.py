@@ -55,17 +55,7 @@ async def lifespan(app: FastAPI):
 
     # ── SpeakerTokenBus：USER_MESSAGE 仲裁 ─────────────────────
     speaker_token_bus = SpeakerTokenBus(cooldown_secs=4.0)
-
-    async def on_user_message(event: SoulEvent):
-        if event.payload.get("mode") == "group":
-            await speaker_token_bus.open_session()
-        # private 模式：直接繞過仲裁，不打開 session
-
-    bus.subscribe(
-        "speaker_token_bus_listener",
-        on_user_message,
-        event_filter={EventType.USER_MESSAGE},
-    )
+    # submit_bid 採用 lazy open，不需要單獨的 listener
 
     provider = cfg.get("llm", {}).get("provider", "mock")
     key = os.getenv(f"{provider.upper()}_API_KEY", "")

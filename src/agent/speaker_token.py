@@ -41,31 +41,33 @@ class SpeakerTokenBus:
         self._winner: Optional[str] = None  # 緩存結算結果，確保所有 Agent 拿到同一個 winner
         self._resolve_future: asyncio.Future | None = None
 
-    # ── 對外 API ──────────────────────────────────
+# ── 對外 API ──────────────────────────────────
 
     async def open_session(self) -> None:
         """打開一個競標窗口，讓各 Agent 提交分數"""
         async with self._lock:
             self._bids = {}
-            self._winner = None  # 重置：每次新消息獨立結算
+            self._winner = None
             self._session_active = True
             logger.debug("[SpeakerTokenBus] session opened")
 
     async def submit_bid(self, agent_id: str, score: float) -> bool:
         """
         Agent 提交競標。
-        在競標窗口關閉前呼叫才有效。
-        返回 True 表示已登記，False 表示窗口已關閉或 agent 在 cooldown。
+        Lazy open：若 session 未開，自動打開（以第一個 bid 為窗口起點）。
+        在窗口關閉後呼叫無效。
         """
         now = asyncio.get_event_loop().time()
         async with self._lock:
+            # Lazy open：以第一個 bid 為窗口起點，解決執行順序不確定的問題
             if not self._session_active:
-                logger.debug(f"[SpeakerTokenBus] bid rejected: session closed ({agent_id})")
-                return False
+                self._bids = {}
+                self._winner = None
+                self._session_active = True
+                logger.debug("[SpeakerTokenBus] session opened (lazy, first bid)")
             if now < self._cooldown.get(agent_id, 0):
                 logger.debug(f"[SpeakerTokenBus] bid rejected: cooldown ({agent_id})")
                 return False
-            # 分數加 jitter
             final_score = score + random.uniform(0, 0.3)
             self._bids[agent_id] = final_score
             logger.debug(f"[SpeakerTokenBus] bid: {agent_id} score={final_score:.3f}")
@@ -83,27 +85,26 @@ class SpeakerTokenBus:
                 return None
             self._session_active = False
 
-        if not self._bids:
-            async with self._lock:
+            if not self._bids:
                 self._winner = None
-            logger.debug("[SpeakerTokenBus] no bids, nobody speaks")
-            return None
+                logger.debug("[SpeakerTokenBus] no bids, nobody speaks")
+                return None
 
-        now = asyncio.get_event_loop().time()
-        available = {k: v for k, v in self._bids.items() if now >= self._cooldown.get(k, 0)}
-        if not available:
-            async with self._lock:
+            available = {
+                k: v for k, v in self._bids.items()
+                if asyncio.get_event_loop().time() >= self._cooldown.get(k, 0)
+            }
+            if not available:
                 self._winner = None
-            logger.debug("[SpeakerTokenBus] all bidders in cooldown")
-            return None
+                logger.debug("[SpeakerTokenBus] all bidders in cooldown")
+                return None
 
-        winner = max(available, key=lambda k: available[k])
-        self._cooldown[winner] = now + self.cooldown_secs
-        self._bids = {}
-        async with self._lock:
+            winner = max(available, key=lambda k: available[k])
+            self._cooldown[winner] = asyncio.get_event_loop().time() + self.cooldown_secs
+            self._bids = {}
             self._winner = winner
-        logger.info(f"[SpeakerTokenBus] winner={winner} score={available[winner]:.3f}")
-        return winner
+            logger.info(f"[SpeakerTokenBus] winner={winner} score={available[winner]:.3f}")
+            return winner
 
     async def get_winner(self) -> Optional[str]:
         """
@@ -113,7 +114,6 @@ class SpeakerTokenBus:
         async with self._lock:
             if self._winner is not None:
                 return self._winner
-            # 已close但winner還沒被任何agent取走（TOCTOU保護：都在lock內）
             if not self._session_active:
                 return self._winner  # None 或已有值
         return await self.resolve_session()
