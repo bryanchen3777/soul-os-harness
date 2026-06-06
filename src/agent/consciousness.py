@@ -147,11 +147,19 @@ class AgentConsciousness(ABC):
             await self._on_session_end(event)
 
     async def _on_user_message(self, event: SoulEvent) -> None:
-        """使用者說話：重置冷卻、更新狀態"""
+        """使用者說話：重置冷卻、更新狀態，並觸發回應意圖"""
         self._cooldown_remaining = 0
         self.state.silence_strike = 0
         self.state.last_spoken_at = event.timestamp
-        logger.debug(f"[{self.agent_id}] 收到使用者訊息，冷卻重置")
+
+        # 使用者說話 → 觸發回應意圖
+        content = event.payload.get("content", "")
+        if content:
+            await self._fire_intent(
+                reason="user_message",
+                elapsed_mins=0.0,
+                chrono_payload={"draft": content},
+            )
 
     async def _on_tick(self, event: SoulEvent) -> None:
         """
