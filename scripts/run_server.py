@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
     mw = MemoryMiddleware(bus=bus, data_dir="data/memory")
     mw.register()
 
-    token_mgr = SpeakerTokenManager(bus)
+    token_mgr = SpeakerTokenManager(bus, token_timeout_secs=120.0)
     token_mgr.register()
 
     # ── SpeakerTokenBus：USER_MESSAGE 仲裁 ─────────────────────

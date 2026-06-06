@@ -128,7 +128,7 @@ class OpenAIBackend(LLMBackend):
         max_tokens: int = 500,
         temperature: float = 0.85,
     ) -> str:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 self.base_url,
                 headers={"Authorization": f"Bearer {self.api_key}"},
@@ -168,7 +168,7 @@ class ClaudeBackend(LLMBackend):
             else:
                 user_messages.append(msg)
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 self.BASE_URL,
                 headers={
