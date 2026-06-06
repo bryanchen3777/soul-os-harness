@@ -12,9 +12,9 @@ logger = logging.getLogger("soul_os.speaker_token")
 # 各 Agent 的 base_score（Ruka 最積極，Yua 次之，Akane 慢熱）
 # jitter_range 控制隨機範圍，範圍越大分布越均勻
 BASE_SCORES = {
-    "agent_yua":   (0.7, 0.4),   # (base, jitter)
-    "agent_ruka":  (0.9, 0.3),   # Ruka base 最高但 jitter 最小，相對穩定
-    "agent_akane": (0.5, 0.5),   # Akane base 最低但 jitter 最高，有翻盤機會
+    "agent_yua":   (0.80, 0.40),   # 正宮，提高 base，略大 jitter
+    "agent_ruka":  (0.75, 0.35),   # 降低，避免壟斷
+    "agent_akane": (0.45, 0.50),   # 稍低，偶爾翻盤
 }
 
 # 搶答視窗：收到 USER_MESSAGE 後，Agent 有這麼多 ms 提交 bid

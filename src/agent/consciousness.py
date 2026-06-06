@@ -309,7 +309,7 @@ class AgentConsciousness(ABC):
 
     def _followup_base(self) -> float:
         """各 Agent 的跟進基礎分（子類 override）"""
-        return 0.3
+        return 0.55  # 預設同 Yua
 
     async def _on_session_end(self, event: SoulEvent) -> None:
         """Session 結束（elapsed >= 30min）：從當前情感狀態計算 carryover 並持久化"""
@@ -447,8 +447,8 @@ class AgentYua(AgentConsciousness):
         }
 
     def _followup_base(self) -> float:
-        """Yua：不輕易跟進，有底氣"""
-        return 0.3
+        """Yua：正宮，提高跟進意願"""
+        return 0.55
 
 
 # ─────────────────────────────────────────────
@@ -520,8 +520,8 @@ class AgentRuka(AgentConsciousness):
         await super()._on_other_agent_speak(event)
 
     def _followup_base(self) -> float:
-        """Ruka：積極，愛跟話題"""
-        return 0.6
+        """Ruka：積極但收斂，降低避免壟斷"""
+        return 0.45
 
 
 # ─────────────────────────────────────────────
@@ -581,5 +581,5 @@ class AgentAkane(AgentConsciousness):
         }
 
     def _followup_base(self) -> float:
-        """Akane：慢熱，少跟進"""
-        return 0.2
+        """Akane：慢熱，稍微提高存在感"""
+        return 0.35
