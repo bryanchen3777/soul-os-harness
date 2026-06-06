@@ -260,7 +260,7 @@ class AgentConsciousness(ABC):
         else:
             self.state.silence_strike += 1
 
-async def _on_other_agent_speak(self, event: SoulEvent) -> None:
+    async def _on_other_agent_speak(self, event: SoulEvent) -> None:
         """
         其他 Agent 說話時，評估要不要跟進。
         跟進時再競爭一次 Speaker Token，防止兩人同時說。
@@ -268,23 +268,18 @@ async def _on_other_agent_speak(self, event: SoulEvent) -> None:
         speaker_id = event.payload.get("agent_id", event.source)
         spoken_text = event.payload.get("text", "")
 
-        # 不處理自己說的話
         if speaker_id == self.agent_id:
             return
 
-        # 計算跟進意願分數
         score = self._calc_followup_score(speaker_id, spoken_text)
 
-        # 分數超過 threshold 才跟進
         if score < 0.6:
             return
 
-        # 隨機延遲 0.8~2.5 秒，模擬思考時間
         import random
         delay = random.uniform(0.8, 2.5)
         await asyncio.sleep(delay)
 
-        # 再次競爭 Speaker Token（防止兩人同時跟進）
         stb = self.speaker_token_bus
         if stb is None:
             return
@@ -297,7 +292,6 @@ async def _on_other_agent_speak(self, event: SoulEvent) -> None:
         if winner != self.agent_id:
             return
 
-        # 觸發跟進回應
         await self._fire_intent(
             reason="followup",
             elapsed_mins=0.0,
@@ -307,17 +301,10 @@ async def _on_other_agent_speak(self, event: SoulEvent) -> None:
         )
 
     def _calc_followup_score(self, speaker_id: str, spoken_text: str) -> float:
-        """
-        計算跟進意願分數。子類可 override。
-        基礎分由性格決定，加上隨機 jitter。
-        """
         import random
-        # 基礎分由性格決定（子類 override 這個值）
         base = self._followup_base()
-        # 最近說過話就降分（cooldown 中）
         if self._cooldown_remaining > 3:
             base -= 0.5
-        # 隨機 jitter
         return base + random.uniform(-0.15, 0.2)
 
     def _followup_base(self) -> float:
