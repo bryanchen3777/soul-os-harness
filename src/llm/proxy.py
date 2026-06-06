@@ -33,15 +33,34 @@ logger = logging.getLogger("soul_os.llm_proxy")
 # ── 對話歷史持久化 ──────────────────────────────────
 CONV_DIR = Path("data/conversations")
 CONV_DIR.mkdir(parents=True, exist_ok=True)
-MAX_PERSIST = 20  # 持久化最近 20 輪
+MAX_PERSIST = 20      # 每份 history 最大條數（20 輪 ≈ 40 條）
+MAX_GROUP = 20        # 群聊 history 最大條數
+MAX_PRIVATE = 20      # 私聊 history 最大條數
+MAX_GROUP_SUMMARY = 10  # 私聊注入時的群聊摘要條數
+
+_GROUP_FILE = CONV_DIR / "group_chat.json"
 
 
-def _conv_path(agent_id: str) -> Path:
-    return CONV_DIR / f"{agent_id}.json"
+def _group_path(agent_id: str) -> Path:
+    return CONV_DIR / f"{agent_id}_private.json"
 
 
-def _load_history(agent_id: str) -> List[Dict[str, str]]:
-    path = _conv_path(agent_id)
+def _load_group() -> List[Dict[str, Any]]:
+    if _GROUP_FILE.exists():
+        try:
+            return json.loads(_GROUP_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def _save_group(history: List[Dict[str, Any]]) -> None:
+    trimmed = history[-MAX_GROUP:]
+    _GROUP_FILE.write_text(json.dumps(trimmed, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_private(agent_id: str) -> List[Dict[str, str]]:
+    path = _group_path(agent_id)
     if path.exists():
         try:
             return json.loads(path.read_text(encoding="utf-8"))
@@ -50,15 +69,113 @@ def _load_history(agent_id: str) -> List[Dict[str, str]]:
     return []
 
 
-def _save_history(agent_id: str, history: List[Dict[str, str]]) -> None:
-    path = _conv_path(agent_id)
-    trimmed = history[-MAX_PERSIST * 2:]
+def _save_private(agent_id: str, history: List[Dict[str, str]]) -> None:
+    path = _group_path(agent_id)
+    trimmed = history[-MAX_PRIVATE:]
     path.write_text(json.dumps(trimmed, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _append_group(speaker: str, content: str, is_private: bool = False) -> None:
+    """寫入群聊 history（所有 agent 共享）"""
+    history = _load_group()
+    history.append({"role": "assistant", "content": content,
+                    "speaker": speaker, "is_private": is_private})
+    _save_group(history)
+
+
+def _append_group_user(speaker: str, content: str) -> None:
+    """寫入群聊 user 訊息"""
+    history = _load_group()
+    history.append({"role": "user", "content": content, "speaker": speaker})
+    _save_group(history)
 
 
 def _session_key(agent_id: str) -> str:
     """固定 session key，確保重啟後 history 能正確對應同一個 agent"""
     return f"session_{agent_id}"
+
+
+def _append_private_history(agent_id: str, role: str, content: str) -> None:
+    """寫入私聊 history"""
+    history = _load_private(agent_id)
+    history.append({"role": role, "content": content})
+    _save_private(agent_id, history)
+
+
+def _build_messages_group(
+    agent_id: str,
+    soul: str,
+    current_input: str,
+    memory_context: str,
+) -> List[Dict[str, str]]:
+    """
+    群聊模式的 messages 組裝：
+    [system: SOUL] + [conversation_history: 群聊 20 條] + [user: 當前訊息]
+    """
+    group = _load_group()
+    messages: List[Dict[str, str]] = []
+
+    # system prompt
+    system_parts = [soul.strip()]
+    if memory_context.strip():
+        system_parts.append(f"\n你記得以下這些事情：\n{memory_context.strip()}")
+    messages.append({"role": "system", "content": "\n".join(system_parts)})
+
+    # 群聊歷史（過濾 is_private）
+    for m in group[-MAX_GROUP:]:
+        if m.get("is_private"):
+            continue
+        if m["speaker"] == "bryan":
+            messages.append({"role": "user", "content": m["content"]})
+        elif m["speaker"] == agent_id:
+            messages.append({"role": "assistant", "content": m["content"]})
+        else:
+            # 其他 Agent 的話，寫進 system 讓 LLM 知道上下文
+            messages.append({
+                "role": "system",
+                "content": f"（{m['speaker']} 說：{m['content']}）"
+            })
+
+    if current_input:
+        messages.append({"role": "user", "content": current_input})
+    return messages
+
+
+def _build_messages_private(
+    agent_id: str,
+    soul: str,
+    current_input: str,
+    memory_context: str,
+) -> List[Dict[str, str]]:
+    """
+    私聊模式的 messages 組裝：
+    [system: SOUL] + [system: 群聊摘要 10 條] + [私聊歷史 20 條] + [user: 當前訊息]
+    """
+    messages: List[Dict[str, str]] = []
+
+    # system prompt（含記憶）
+    system_parts = [soul.strip()]
+    if memory_context.strip():
+        system_parts.append(f"\n你記得以下這些事情：\n{memory_context.strip()}")
+    messages.append({"role": "system", "content": "\n".join(system_parts)})
+
+    # 群聊摘要（最近 10 條，排除 is_private）
+    group = [m for m in _load_group()[-MAX_GROUP_SUMMARY * 2:] if not m.get("is_private")]
+    if group:
+        summary = "\n".join(f"{m['speaker']}: {m['content']}" for m in group[-MAX_GROUP_SUMMARY:])
+        messages.append({
+            "role": "system",
+            "content": f"最近的群聊記錄：\n{summary}"
+        })
+
+    # 私聊歷史
+    private = _load_private(agent_id)[-MAX_PRIVATE:]
+    for m in private:
+        messages.append({"role": m["role"], "content": m["content"]})
+
+    if current_input:
+        messages.append({"role": "user", "content": current_input})
+    return messages
 
 
 # ─────────────────────────────────────────────
@@ -364,14 +481,16 @@ class LLMProxy:
 
         # 簡易對話歷史快取：{session_id: [messages]}
         # Phase 2 升級點：改為持久化到 SQLite
-        self._history: Dict[str, List[Dict[str, str]]] = {}
+        self._history: Dict[str, List[Dict[str, Any]]] = {}
 
-        # 啟動時從磁碟載入每個 agent 的對話歷史
+        # 啟動時從磁碟載入記憶
+        self._group_history = _load_group()
         for agent_id in ("agent_yua", "agent_ruka", "agent_akane"):
-            key = _session_key(agent_id)
-            self._history[key] = _load_history(agent_id)
-            if self._history[key]:
-                logger.info(f"[LLMProxy] 載入 {agent_id} 歷史 {len(self._history[key])} 條")
+            self._history[_session_key(agent_id)] = _load_private(agent_id)
+        logger.info(
+            f"[LLMProxy] 載入 group={len(self._group_history)} 條, "
+            f"private histories loaded"
+        )
 
     def register(self) -> None:
         """向 Event Bus 註冊，開始監聽 SPEAKER_TOKEN_GRANTED
@@ -398,51 +517,53 @@ class LLMProxy:
         self.bus.unsubscribe("llm_proxy")
 
     async def handle_event(self, event: SoulEvent) -> None:
-        """接收 AGENT_INTENT，驅動完整的生成管線"""
+        """接收 SPEAKER_TOKEN_GRANTED，驅動完整的生成管線"""
         agent_id = event.payload.get("agent_id", event.source)
         reason = event.payload.get("reason", "unknown")
         draft = event.payload.get("draft", "")
-        # ⭐ Memory Middleware 插槽：Phase 2 的 Memory Middleware 會在這裡填入記憶
         memory_context = event.payload.get("memory_context", "")
+
+        # 從 event payload 取 mode（gateway 寫入的）
+        mode = event.payload.get("mode", "group")
+        user_message = draft if reason == "user_message" else ""
 
         logger.info(
             f"[LLMProxy] 收到意圖 | agent={agent_id} "
-            f"reason={reason} memory={'有' if memory_context else '空'}"
+            f"mode={mode} reason={reason}"
         )
 
-        # 組裝 Prompt
-        session_id = _session_key(agent_id)  # 固定 key，重啟後能對應同一段歷史
+        # ── 寫入歷史（根據 mode）───────────────────────
+        if mode == "group":
+            if user_message:
+                _append_group_user("bryan", user_message)
+                self._group_history = _load_group()
+            group_file_content = _load_group()  # 最新磁碟內容
+        else:
+            # 私聊：寫入自己的 private history
+            if user_message:
+                _append_private_history(agent_id, "user", user_message)
+                self._history[_session_key(agent_id)] = _load_private(agent_id)
+            # 同時在 group_chat 留一個啞標記
+            if user_message:
+                _append_group(
+                    speaker=agent_id,
+                    content=f"（{agent_id} 與 Bryan 私聊中）",
+                    is_private=True,
+                )
+                self._group_history = _load_group()
 
-        # ⭐ Step 2：收到 USER_MESSAGE 時，先把 user 訊息加入歷史
-        user_message = draft if reason == "user_message" else ""
-        if user_message:
-            self._add_to_history(session_id, "user", user_message)
+        # ── 組裝 messages（根據 mode）─────────────────
+        soul = load_persona(agent_id)
+        if mode == "group":
+            messages = _build_messages_group(agent_id, soul, user_message, memory_context)
+        else:
+            messages = _build_messages_private(agent_id, soul, user_message, memory_context)
 
-        # 取得對話歷史（會自動截斷）
-        history = self._get_history(session_id)
-
-        # 🔴 DEBUG：確認歷史有正確內容
-        logger.info(f"[LLMProxy-DEBUG] session_id={session_id} history_count={len(history)}")
-        for i, h in enumerate(history):
-            logger.info(f"  history[{i}] role={h.get('role')} content={h.get('content', '')[:50]!r}...")
-
-        prompt = PromptContext(
-            system_prompt=load_persona(agent_id),
-            memory_context=memory_context,        # ← Memory Middleware 填入
-            chrono_context=event.payload.get("chrono_context", ""),  # ← Phase 3.5
-            conversation_history=history,
-            current_intent=self._build_intent_text(reason, draft),
-        )
-
-        # 🔴 DEBUG：組裝後的 messages 結構
-        messages = prompt.to_messages()
-        logger.info(f"[LLMProxy-DEBUG] agent={agent_id} messages count={len(messages)}")
+        logger.info(f"[LLMProxy-DEBUG] agent={agent_id} mode={mode} messages={len(messages)}")
         for i, msg in enumerate(messages):
-            role = msg.get("role", "?")
-            content = msg.get("content", "")[:80]
-            logger.info(f"  [{i}] role={role} content={content!r}...")
+            logger.info(f"  [{i}] {msg.get('role')} {msg.get('content','')[:60]!r}...")
 
-        # 呼叫 LLM（帶 Retry）
+        # ── 呼叫 LLM ──────────────────────────────────
         generated_text = await self._complete_with_retry(
             messages=messages,
             agent_id=agent_id,
@@ -450,32 +571,37 @@ class LLMProxy:
         )
 
         if generated_text is None:
-            return  # 錯誤已由 _complete_with_retry 上報，直接退出
+            return
 
-        # ⭐ Step 3：把 LLM 回應加入歷史（role="assistant"）
-        self._add_to_history(session_id, "assistant", generated_text)
+        # ── 寫入回應歷史 ──────────────────────────────
+        if mode == "group":
+            _append_group(speaker=agent_id, content=generated_text)
+            self._group_history = _load_group()
+        else:
+            _append_private_history(agent_id, "assistant", generated_text)
+            self._history[_session_key(agent_id)] = _load_private(agent_id)
+            _append_group(speaker=agent_id, content=generated_text, is_private=True)
+            self._group_history = _load_group()
 
-        # 發布 AGENT_SPEAK
+        # ── 發布 AGENT_SPEAK ──────────────────────────
         speak_event = SoulEvent(
             event_type=EventType.AGENT_SPEAK,
             source=agent_id,
             target="broadcast",
             priority=EventPriority.NORMAL,
-            session_id=session_id,
+            session_id=_session_key(agent_id),
             correlation_id=event.correlation_id or event.event_id,
             payload={
                 "text": generated_text,
                 "agent_id": agent_id,
                 "reason": reason,
+                "mode": mode,
                 "tts_enabled": True,
-                "action_tags": [],  # Phase 3 升級：由 LLM 解析動作標籤
+                "action_tags": [],
             },
         )
         await self.bus.publish(speak_event)
-        logger.info(
-            f"[LLMProxy] 生成完成 | agent={agent_id} "
-            f"text='{generated_text[:40]}...'"
-        )
+        logger.info(f"[LLMProxy] 生成完成 | agent={agent_id} text='{generated_text[:40]}...'")
 
     # ── 工具函數 ──────────────────────────────
 

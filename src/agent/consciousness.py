@@ -77,7 +77,10 @@ class EmotionalState:
         """Phase 3 實作：從 JSON 檔案讀取，不存在則使用預設值"""
         path = Path(base_path) / agent_id / "emotional-state.json"
         if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
+            content = path.read_text(encoding="utf-8").strip()
+            if not content:
+                return cls(agent_id=agent_id)
+            data = json.loads(content)
             state = cls(
                 agent_id=data["agent_id"],
                 dependency=data.get("dependency", 0.5),
