@@ -258,21 +258,26 @@ class IOGateway:
                         msg = json.loads(raw)
                         if msg.get("type") == "USER_MESSAGE":
                             from src.eventbus.schema import SoulEvent, EventPriority, EventType
-                            target_agent = msg.get("target_agent", "agent_yua")
+                            mode = msg.get("mode", "private")
+                            if mode == "group":
+                                target = "broadcast"
+                            else:
+                                target = msg.get("target_agent", "agent_yua")
                             user_event = SoulEvent(
                                 event_type=EventType.USER_MESSAGE,
                                 source=msg.get("user_id", "anonymous"),
-                                target=target_agent,
+                                target=target,
                                 priority=EventPriority.HIGH,
                                 payload={
                                     "content": msg.get("content", ""),
                                     "user_id": msg.get("user_id", "anonymous"),
-                                    "target_agent": target_agent,
+                                    "target_agent": target,
+                                    "mode": mode,
                                 },
                             )
                             await self.bus.publish(user_event)
                             content_preview = str(msg.get("content", ""))[:30]
-                            logger.info(f"[Gateway] USER_MESSAGE → {target_agent}: {content_preview}")
+                            logger.info(f"[Gateway] USER_MESSAGE mode={mode} target={target}: {content_preview}")
                     except (json.JSONDecodeError, Exception) as e:
                         logger.warning("[Gateway] WS message parse error: " + str(e))
             except WebSocketDisconnect:

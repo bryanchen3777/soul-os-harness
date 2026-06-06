@@ -175,7 +175,7 @@ def create_llm_proxy(cfg: dict, bus):
     )
 
 
-def create_agents(cfg: dict, bus) -> list:
+def create_agents(cfg: dict, bus, speaker_token_bus=None) -> list:
     """
     從 config 動態實例化所有 enabled Agent。
     回傳已 register() 的 Agent 列表。
@@ -191,7 +191,7 @@ def create_agents(cfg: dict, bus) -> list:
         intimacy = agent_cfg.get("intimacy_level", 50)
 
         cls = get_agent_class(class_name)
-        agent = cls(agent_id, bus)
+        agent = cls(agent_id, bus, speaker_token_bus=speaker_token_bus)
         agent.state.intimacy_level = intimacy
         agent.register()
         agents.append(agent)

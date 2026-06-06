@@ -8,30 +8,43 @@
     body { background: #0f0f0f; color: #eee; font-family: sans-serif;
            display: flex; flex-direction: column; height: 100vh; }
 
-    #selector {
-      display: flex; gap: 8px; padding: 14px 20px 0;
+    /* ── 模式切換 ── */
+    #top-bar {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 20px;
       border-bottom: 1px solid #222;
     }
-    .agent-btn {
-      background: #1a1a1a;
-      border: 1px solid #333;
-      color: #888;
-      padding: 5px 16px;
-      border-radius: 20px;
-      cursor: pointer;
-      font-size: 13px;
-      transition: all 0.2s;
+    .mode-toggle {
+      display: flex; background: #1a1a1a;
+      border: 1px solid #333; border-radius: 8px;
+      overflow: hidden;
     }
-    .agent-btn.active {
-      border-color: #2563eb;
-      color: #fff;
-      background: #1e3a8a;
+    .mode-btn {
+      background: none; border: none; color: #666;
+      padding: 5px 14px; cursor: pointer;
+      font-size: 13px; transition: all 0.2s;
     }
-    .agent-btn:hover:not(.active) {
-      border-color: #555;
-      color: #ccc;
-    }
+    .mode-btn.active { background: #2563eb; color: #fff; }
+    .mode-btn:hover:not(.active) { color: #ccc; }
 
+    /* ── 角色按鈕（私聊時亮起）── */
+    #selector { display: flex; gap: 8px; }
+    .agent-btn {
+      background: #1a1a1a; border: 1px solid #333;
+      color: #555; padding: 5px 16px;
+      border-radius: 20px; cursor: pointer;
+      font-size: 13px; transition: all 0.2s;
+    }
+    .agent-btn.selectable { color: #888; cursor: pointer; }
+    .agent-btn.selectable:hover { border-color: #555; color: #ccc; }
+    .agent-btn.active {
+      border-color: #2563eb; color: #fff; background: #1e3a8a;
+    }
+    /* 群聊模式：按鈕不可選 */
+    body.group-mode .agent-btn { color: #333; border-color: #2a2a2a; cursor: default; }
+    body.group-mode .agent-btn.active { color: #fff; }
+
+    /* ── 聊天區 ── */
     #log { flex: 1; overflow-y: auto; padding: 20px; display: flex;
            flex-direction: column; gap: 10px; }
     .msg { max-width: 70%; padding: 10px 14px; border-radius: 16px;
@@ -39,24 +52,51 @@
     .user { align-self: flex-end; background: #2563eb; color: #fff; }
     .agent { align-self: flex-start; background: #1e1e1e; color: #e0e0e0;
              border: 1px solid #333; }
-    .agent-name { font-size: 11px; color: #888; margin-bottom: 4px; }
-    #bar { display: flex; gap: 8px; padding: 16px;
-           border-top: 1px solid #222; }
+    .agent-yua  { border-left: 3px solid #a78bfa; }
+    .agent-ruka { border-left: 3px solid #f472b6; }
+    .agent-akane{ border-left: 3px solid #fb923c; }
+    .agent-name { font-size: 11px; margin-bottom: 4px; }
+    .agent-yua  .agent-name { color: #a78bfa; }
+    .agent-ruka .agent-name { color: #f472b6; }
+    .agent-akane .agent-name { color: #fb923c; }
+
+    /* ── 底部 ── */
+    #status { font-size: 11px; color: #555; padding: 4px 20px; }
+    #bar { display: flex; gap: 8px; padding: 16px; border-top: 1px solid #222; }
     #input { flex: 1; background: #1a1a1a; border: 1px solid #333;
              color: #eee; padding: 10px 14px; border-radius: 10px;
              font-size: 15px; outline: none; }
+    #input:focus { border-color: #555; }
     #send { background: #2563eb; color: #fff; border: none;
             padding: 10px 20px; border-radius: 10px; cursor: pointer;
             font-size: 15px; }
-    #status { font-size: 11px; color: #555; padding: 4px 20px; }
+    #send:hover { background: #1d4ed8; }
+
+    /* ── 發言權 badge ── */
+    .speaker-badge {
+      font-size: 10px; padding: 2px 7px; border-radius: 10px;
+      margin-bottom: 4px; display: inline-block;
+    }
+    .badge-yua   { background: #4c1d95; color: #c4b5fd; }
+    .badge-ruka  { background: #4c0519; color: #f9a8d4; }
+    .badge-akane { background: #431407; color: #fdba74; }
   </style>
 </head>
 <body>
-  <div id="selector">
-    <button class="agent-btn active" data-agent="agent_yua">Yua</button>
-    <button class="agent-btn" data-agent="agent_ruka">Ruka</button>
-    <button class="agent-btn" data-agent="agent_akane">Akane</button>
+
+  <div id="top-bar">
+    <div class="mode-toggle">
+      <button class="mode-btn active" data-mode="group">群聊</button>
+      <button class="mode-btn" data-mode="private">私聊</button>
+    </div>
+    <div id="selector">
+      <button class="agent-btn active" data-agent="agent_yua">Yua</button>
+      <button class="agent-btn" data-agent="agent_ruka">Ruka</button>
+      <button class="agent-btn" data-agent="agent_akane">Akane</button>
+    </div>
+    <div style="margin-left:auto; font-size:11px; color:#555;" id="mode-hint">點角色可私聊</div>
   </div>
+
   <div id="log"></div>
   <div id="status">connecting...</div>
   <div id="bar">
@@ -65,38 +105,65 @@
   </div>
 
   <script>
-    let currentAgent = "agent_yua";
+    // ── 狀態 ──
+    let chatMode = 'group';          // 'group' | 'private'
+    let selectedAgent = 'agent_yua';  // 私聊時的目標
 
-    document.querySelectorAll(".agent-btn").forEach(btn => {
-      btn.addEventListener("click", () => {
-        document.querySelectorAll(".agent-btn").forEach(b => b.classList.remove("active"));
-        btn.classList.add("active");
-        currentAgent = btn.dataset.agent;
+    // ── 模式切換 ──
+    document.querySelectorAll('.mode-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        chatMode = btn.dataset.mode;
+        document.body.className = chatMode === 'group' ? 'group-mode' : '';
+        document.getElementById('mode-hint').textContent =
+          chatMode === 'group' ? '多人搶答，隨機仲裁' : '點角色可私聊';
       });
     });
 
+    // ── 角色選擇（僅私聊模式）──
+    document.querySelectorAll('.agent-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (chatMode !== 'private') return;
+        document.querySelectorAll('.agent-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        selectedAgent = btn.dataset.agent;
+      });
+    });
+
+    // ── WebSocket ──
     const log = document.getElementById('log');
     const input = document.getElementById('input');
     const status = document.getElementById('status');
     const userId = 'user_' + Math.random().toString(36).slice(2, 7);
 
     const ws = new WebSocket('ws://localhost:8000/ws');
-
-    ws.onopen = () => { status.textContent = '已連線'; };
+    ws.onopen  = () => { status.textContent = '已連線'; };
     ws.onclose = () => { status.textContent = '已斷線'; };
 
     ws.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      if (data.type === 'agent_speak' && data.text) {
-        addMsg(data.agent_id || 'Yua', data.text, 'agent');
+      const d = JSON.parse(e.data);
+      if (d.type === 'agent_speak' && d.text) {
+        const agentId = d.agent_id || 'agent_yua';
+        addMsg(agentId, d.text, 'agent');
       }
     };
 
     function addMsg(name, text, role) {
       const div = document.createElement('div');
-      div.className = 'msg ' + role;
+      div.className = `msg ${role}`;
       if (role === 'agent') {
-        div.innerHTML = `<div class="agent-name">${name}</div>${text}`;
+        const cls = name.includes('yua')   ? 'agent-yua'
+                  : name.includes('ruka')  ? 'agent-ruka'
+                  :                          'agent-akane';
+        const badgeCls = name.includes('yua')   ? 'badge-yua'
+                       : name.includes('ruka')  ? 'badge-ruka'
+                       :                          'badge-akane';
+        const displayName = name.includes('yua')   ? 'Yua'
+                          : name.includes('ruka')  ? 'Ruka'
+                          :                          'Akane';
+        div.className = `msg agent ${cls}`;
+        div.innerHTML = `<span class="speaker-badge ${badgeCls}">${displayName}</span><div>${text}</div>`;
       } else {
         div.textContent = text;
       }
@@ -108,12 +175,16 @@
       const text = input.value.trim();
       if (!text || ws.readyState !== 1) return;
       addMsg('你', text, 'user');
-      ws.send(JSON.stringify({
+      const payload = {
         type: 'USER_MESSAGE',
         content: text,
         user_id: userId,
-        target_agent: currentAgent
-      }));
+        mode: chatMode,
+      };
+      if (chatMode === 'private') {
+        payload.target_agent = selectedAgent;
+      }
+      ws.send(JSON.stringify(payload));
       input.value = '';
     }
 

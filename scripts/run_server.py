@@ -38,6 +38,8 @@ async def lifespan(app: FastAPI):
     from configs.loader import load_config, create_llm_proxy, create_heartbeat, create_agents
     from src.eventbus import SoulEventBus
     from src.eventbus.token_manager import SpeakerTokenManager
+    from src.agent.speaker_token import SpeakerTokenBus
+    from src.eventbus.schema import EventType, SoulEvent
     from src.memory.middleware import MemoryMiddleware
     from src.io.gateway import IOGateway
 
@@ -51,6 +53,20 @@ async def lifespan(app: FastAPI):
     token_mgr = SpeakerTokenManager(bus)
     token_mgr.register()
 
+    # ── SpeakerTokenBus：USER_MESSAGE 仲裁 ─────────────────────
+    speaker_token_bus = SpeakerTokenBus(cooldown_secs=4.0)
+
+    async def on_user_message(event: SoulEvent):
+        if event.payload.get("mode") == "group":
+            await speaker_token_bus.open_session()
+        # private 模式：直接繞過仲裁，不打開 session
+
+    bus.subscribe(
+        "speaker_token_bus_listener",
+        on_user_message,
+        event_filter={EventType.USER_MESSAGE},
+    )
+
     provider = cfg.get("llm", {}).get("provider", "mock")
     key = os.getenv(f"{provider.upper()}_API_KEY", "")
     if not key:
@@ -62,8 +78,8 @@ async def lifespan(app: FastAPI):
         llm = create_llm_proxy(cfg, bus)
     llm.register()
 
-    # 動態載入所有 enabled Agent
-    agents = create_agents(cfg, bus)
+    # 動態載入所有 enabled Agent（帶 SpeakerTokenBus）
+    agents = create_agents(cfg, bus, speaker_token_bus=speaker_token_bus)
     agent_ids = [a.agent_id for a in agents]
 
     gateway = IOGateway(bus=bus, app=app)

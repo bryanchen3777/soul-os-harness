@@ -108,9 +108,11 @@ class AgentConsciousness(ABC):
     # 防止同一個 Agent 在短時間內狂發意圖
     COOLDOWN_TICKS: int = 10
 
-    def __init__(self, agent_id: str, bus: SoulEventBus):
+    def __init__(self, agent_id: str, bus: SoulEventBus,
+                 speaker_token_bus=None):
         self.agent_id = agent_id
         self.bus = bus
+        self.speaker_token_bus = speaker_token_bus
         self.state = EmotionalState.load(agent_id)
         self._cooldown_remaining: int = 0
 
@@ -147,22 +149,69 @@ class AgentConsciousness(ABC):
             await self._on_session_end(event)
 
     async def _on_user_message(self, event: SoulEvent) -> None:
-        """使用者說話：重置冷卻、更新狀態，並觸發回應意圖"""
+        """
+        使用者說話：
+        - mode=private：直接發給 target_agent（方案 A，繞過仲裁）
+        - mode=group：廣播，啟動 SpeakerTokenBus 競標，結算後只有勝者呼叫 _fire_intent
+        """
         self._cooldown_remaining = 0
         self.state.silence_strike = 0
         self.state.last_spoken_at = event.timestamp
 
         content = event.payload.get("content", "")
-        target_agent = event.payload.get("target_agent", "agent_yua")
+        mode = event.payload.get("mode", "private")
 
-        if content and self.agent_id == target_agent:
+        # ── 私聊模式（方案 A）─────────────────────────────
+        if mode == "private":
+            target = event.payload.get("target_agent", "agent_yua")
+            if content and self.agent_id == target:
+                await self._fire_intent(
+                    reason="user_message",
+                    elapsed_mins=0.0,
+                    chrono_payload={"draft": content},
+                )
+            else:
+                logger.debug(f"[{self.agent_id}] 忽略（target={target}）")
+            return
+
+        # ── 群聊模式（方案 B）─────────────────────────────
+        if not content:
+            return
+
+        stb = self.speaker_token_bus
+        if stb is None:
+            # 沒有 SpeakerTokenBus，回落到私聊行為（只有 agent_yua 回應）
+            if self.agent_id == "agent_yua":
+                await self._fire_intent(
+                    reason="user_message",
+                    elapsed_mins=0.0,
+                    chrono_payload={"draft": content},
+                )
+            return
+
+        # 向 SpeakerTokenBus 提交競標
+        score = stb.base_score(self.agent_id)
+        accepted = await stb.submit_bid(self.agent_id, score)
+
+        if not accepted:
+            # 窗口已關閉或自己在 cooldown，略過
+            logger.debug(f"[{self.agent_id}] 競標被拒（已結算或 cooldown）")
+            return
+
+        # 等結算（300ms 窗口後）
+        await asyncio.sleep(0.32)
+
+        winner = await stb.get_winner()
+
+        if winner == self.agent_id:
+            logger.info(f"[{self.agent_id}] 獲得發言權，回應：{content[:30]!r}")
             await self._fire_intent(
                 reason="user_message",
                 elapsed_mins=0.0,
                 chrono_payload={"draft": content},
             )
         else:
-            logger.debug(f"[{self.agent_id}] 忽略 USER_MESSAGE（target={target_agent}）")
+            logger.debug(f"[{self.agent_id}] 未獲勝（winner={winner}），略過")
 
     async def _on_tick(self, event: SoulEvent) -> None:
         """
@@ -354,8 +403,8 @@ class AgentRuka(AgentConsciousness):
 
     COOLDOWN_TICKS = 12  # 瑠夏：12 ticks × 5s = 60s 最低間隔
 
-    def __init__(self, agent_id: str, bus: SoulEventBus):
-        super().__init__(agent_id, bus)
+    def __init__(self, agent_id: str, bus: SoulEventBus, speaker_token_bus=None):
+        super().__init__(agent_id, bus, speaker_token_bus)
         self._other_agent_spoke_recently = False
 
     def _should_speak(
