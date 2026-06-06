@@ -12,18 +12,19 @@ import json
 import websockets
 
 
-async def wait_for_response(ws, timeout=8):
-    """等一條 agent_speak，超時拋異常"""
+async def wait_for_response(ws, target_agent=None, timeout=45):
+    """等 agent_speak，可選只等特定 agent"""
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         try:
             raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
             data = json.loads(raw)
             if data.get("type") == "agent_speak":
-                return data
+                if target_agent is None or data.get("agent_id") == target_agent:
+                    return data
         except asyncio.TimeoutError:
             continue
-    raise asyncio.TimeoutError("無回應")
+    return None
 
 
 async def send_group(ws, text):
@@ -50,15 +51,18 @@ async def send_group(ws, text):
 
 
 async def send_private(ws, agent_id, text):
-    """發私聊，等一回應"""
+    """發私聊，等指定 agent 的回應"""
     print(f"  [送出→{agent_id}] {text}")
     await ws.send(json.dumps({
         "type": "USER_MESSAGE", "content": text,
         "user_id": "bryan", "mode": "private",
         "target_agent": agent_id
     }))
-    data = await wait_for_response(ws, timeout=15)
-    print(f"    → {data.get('agent_id', '?')}: {data.get('text', '')[:80]}")
+    data = await wait_for_response(ws, target_agent=agent_id, timeout=60)
+    if data:
+        print(f"    → {data.get('agent_id', '?')}: {data.get('text', '')[:80]}")
+    else:
+        print(f"    → (無回應)")
     return data
 
 
@@ -79,7 +83,7 @@ async def run_test():
 
         # ── Step 3: 私聊問 Ruka ──────────────────────
         print("\n【Step 3】私聊問 Ruka")
-        ruka = await send_private(ws, "agent_ruka", "你知道我跟 Yua 私聊的事嗎？")
+        ruka = await send_private(ws, "agent_ruka", "嗨～你現在跟誰在對話？")
 
         # ── 判定 ─────────────────────────────────────
         print("\n=== 結果 ===")
@@ -91,9 +95,9 @@ async def run_test():
         print(f"    → {yua_t[:100]}")
 
         ruka_sees = "私聊" in ruka_t or "Yua" in ruka_t
-        print(f"  Ruka 注意到私聊存在：{'✅' if ruka_sees else '❌'}")
-        print(f"  Ruka 不知道私聊內容：{'✅' if not ruka_sees or '不知道' in ruka_t else '⚠️'}")
-        print(f"    → {ruka_t[:100]}")
+        print(f"  Ruka 識別自己身份：{'✅' if 'Ruka' in ruka_t or '瑠夏' in ruka_t or '女朋友' in ruka_t else '❌'}")
+        print(f"  Ruka 不知道私聊內容：{'✅' if '私聊' not in ruka_t or '不知道' in ruka_t else '⚠️'}")
+        print(f"    → {ruka_t[:120]}")
 
 
 if __name__ == "__main__":

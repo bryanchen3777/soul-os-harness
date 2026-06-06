@@ -470,7 +470,7 @@ class LLMProxy:
         bus: SoulEventBus,
         backend: LLMBackend,
         model: str = "gpt-4o-mini",
-        max_tokens: int = 1200,  # MiniMax-M2.7 是 reasoning 模型，預算 400+ tokens；給 1200 確保 text 不被截斷
+        max_tokens: int = 3000,  # MiniMax-M2.7 reasoning 預算很重，3000 確保 text 一定生成
         temperature: float = 0.85,
         max_retries: int = 3,
         max_history_turns: int = 10,  # 保留最近幾輪對話，防 context 爆炸
