@@ -373,6 +373,13 @@ class LLMProxy:
 
         # 組裝 Prompt
         session_id = event.session_id or f"session_{agent_id}"
+
+        # ⭐ Step 2：收到 USER_MESSAGE 時，先把 user 訊息加入歷史
+        user_message = draft if reason == "user_message" else ""
+        if user_message:
+            self._add_to_history(session_id, "user", user_message)
+
+        # 取得對話歷史（會自動截斷）
         history = self._get_history(session_id)
 
         # 🔴 DEBUG：確認歷史有正確內容
@@ -396,9 +403,6 @@ class LLMProxy:
             content = msg.get("content", "")[:80]
             logger.info(f"  [{i}] role={role} content={content!r}...")
 
-        # 🔴 擷取 user message（用於歷史記錄）
-        user_message = draft if reason == "user_message" else ""
-
         # 呼叫 LLM（帶 Retry）
         generated_text = await self._complete_with_retry(
             messages=messages,
@@ -409,8 +413,8 @@ class LLMProxy:
         if generated_text is None:
             return  # 錯誤已由 _complete_with_retry 上報，直接退出
 
-        # 更新對話歷史（包含 user + assistant）
-        self._update_history(session_id, user_message, generated_text)
+        # ⭐ Step 3：把 LLM 回應加入歷史（role="assistant"）
+        self._add_to_history(session_id, "assistant", generated_text)
 
         # 發布 AGENT_SPEAK
         speak_event = SoulEvent(
@@ -463,17 +467,15 @@ class LLMProxy:
         return history[-max_msgs:] if len(history) > max_msgs else history
 
     def _add_to_history(self, session_id: str, role: str, content: str) -> None:
-        """將訊息加入歷史"""
+        """將訊息加入歷史（自動截斷超過 MAX_HISTORY 的舊訊息）"""
         if session_id not in self._history:
             self._history[session_id] = []
         self._history[session_id].append({"role": role, "content": content})
 
-    def _update_history(self, session_id: str, user_text: str, assistant_text: str) -> None:
-        """將一輪對話加入歷史（user + assistant）"""
-        if session_id not in self._history:
-            self._history[session_id] = []
-        self._history[session_id].append({"role": "user", "content": user_text})
-        self._history[session_id].append({"role": "assistant", "content": assistant_text})
+        # 超過限制時，從最舊的開始刪（保留 system prompt，歷史不該有 system）
+        max_msgs = self.max_history_turns * 2
+        if len(self._history[session_id]) > max_msgs:
+            self._history[session_id] = self._history[session_id][-max_msgs:]
 
     async def _complete_with_retry(
         self,
@@ -490,10 +492,6 @@ class LLMProxy:
 
         for attempt in range(self.max_retries):
             try:
-                # 🔴 DEBUG：印出實際送給 LLM 的完整 messages
-                import json
-                print("[LLM_DEBUG] messages sent:")
-                print(json.dumps(messages, ensure_ascii=False, indent=2))
                 result = await self.backend.complete(
                     messages=messages,
                     model=self.model,
@@ -534,8 +532,6 @@ class LLMProxy:
 
             except Exception as e:
                 last_error = e
-                import sys
-                print(f"[LLMProxy-DEBUG] unexpected error: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
                 logger.error(
                     f"[LLMProxy] 未預期錯誤 | {type(e).__name__}: {e}",
                     exc_info=True,
