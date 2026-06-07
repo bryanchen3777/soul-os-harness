@@ -256,6 +256,7 @@ class IOGateway:
                     # 把 client 訊息轉發到 bus（client → bus）
                     try:
                         msg = json.loads(raw)
+                        logger.info(f"[Gateway] WS raw msg: {str(msg)[:200]}")
                         if msg.get("type") == "USER_MESSAGE":
                             from src.eventbus.schema import SoulEvent, EventPriority, EventType
                             mode = msg.get("mode", "private")
@@ -264,6 +265,7 @@ class IOGateway:
                                 target = "broadcast"
                             else:
                                 target = msg.get("target_agent", "agent_yua")
+                            logger.info(f"[Gateway] USER_MESSAGE mode={mode} target={target}")
                             user_event = SoulEvent(
                                 event_type=EventType.USER_MESSAGE,
                                 source=msg.get("user_id", "anonymous"),

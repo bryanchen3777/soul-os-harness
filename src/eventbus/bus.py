@@ -243,6 +243,8 @@ class SoulEventBus:
             matched = self._match_subscribers(event)
             self._stats["dispatched"] += 1
 
+            sub_ids = [s.subscriber_id for s in matched]
+            logger.info(f"[Bus] dispatch {event.event_type} target={event.target} -> {sub_ids}")
             if not matched:
                 logger.debug(
                     f"[Bus Worker] 無訂閱者匹配: {event.event_type} "

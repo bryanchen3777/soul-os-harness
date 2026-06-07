@@ -188,17 +188,17 @@ class AgentConsciousness(ABC):
             return
 
         stb = self.speaker_token_bus
+        # No SpeakerTokenBus: all agents speak directly (dev/mock mode)
         if stb is None:
-            if self.agent_id == "agent_yua":
-                self._cooldown_remaining = 0
-                self.state.silence_strike = 0
-                self.state.last_spoken_at = event.timestamp
-                await self._fire_intent(
-                    reason="user_message",
-                    elapsed_mins=0.0,
-                    chrono_payload={"draft": content},
-                    mode="group",
-                )
+            self._cooldown_remaining = 0
+            self.state.silence_strike = 0
+            self.state.last_spoken_at = event.timestamp
+            await self._fire_intent(
+                reason="user_message",
+                elapsed_mins=0.0,
+                chrono_payload={"draft": content},
+                mode="group",
+            )
             return
 
         # 向 SpeakerTokenBus 提交競標
