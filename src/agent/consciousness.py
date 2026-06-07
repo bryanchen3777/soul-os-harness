@@ -118,6 +118,7 @@ class AgentConsciousness(ABC):
         self.speaker_token_bus = speaker_token_bus
         self.state = EmotionalState.load(agent_id)
         self._cooldown_remaining: int = 0
+        self._pending: bool = False  # per-agent 鎖：正在等 LLM 回應時不再重複觸發
 
     def register(self) -> None:
         """向 Event Bus 註冊，開始接收事件"""
@@ -148,6 +149,10 @@ class AgentConsciousness(ABC):
             # 其他 Agent 說話，可選擇觀察或記錄
             if event.source != self.agent_id:
                 await self._on_other_agent_speak(event)
+            else:
+                # 自己說話了，清除 pending 鎖
+                self._pending = False
+                logger.debug(f"[{self.agent_id}] 回應完成，pending 鎖解除")
         elif event.event_type == EventType.SESSION_END:
             await self._on_session_end(event)
 
@@ -256,6 +261,10 @@ class AgentConsciousness(ABC):
         should_speak, reason = self._should_speak(elapsed_mins, event.payload)
 
         if should_speak:
+            # per-agent 鎖：已在等 LLM 回應，跳過
+            if self._pending:
+                logger.debug(f"[{self.agent_id}] 已在回應中，跳過本次主動觸發")
+                return
             await self._fire_intent(
                 reason=reason,
                 elapsed_mins=elapsed_mins,
@@ -349,6 +358,7 @@ class AgentConsciousness(ABC):
         chrono_payload: Optional[Dict[str, Any]] = None,
         mode: str = "group",
     ) -> None:
+        self._pending = True  # 設為等待中，LLM 回應後由 AGENT_SPEAK 清除
         """向 Bus 廣播 AGENT_INTENT 事件"""
         intent_payload = self._build_intent_payload(reason, elapsed_mins)
         intent_payload["agent_id"] = self.agent_id
