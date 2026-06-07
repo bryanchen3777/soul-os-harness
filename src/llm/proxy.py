@@ -187,19 +187,22 @@ def _build_messages_private(
 
 
     if group:
-        summary_lines = [
-            f"[群聊] {m['speaker']}: {m['content']}"
-            for m in group[-MAX_GROUP_SUMMARY:]
-        ]
-        summary = "\n".join(summary_lines)
-        messages.append({
-            "role": "system",
-            "content": (
-                "以下是最近的群聊記錄，僅供你參考上下文——"
-                "這是別人之間的對話，不是現在在跟你說話的人：\n"
-                f"{summary}"
-            )
-        })
+        # Inject group chat as real conversation messages (not system summary)
+        # This makes LLM more likely to quote actual words instead of summarizing topics
+        for m in group[-MAX_GROUP_SUMMARY:]:
+            speaker = m.get("speaker", "")
+            content = m.get("content", "")
+            if speaker == "bryan":
+                messages.append({"role": "user", "content": f"[群聊] {content}"})
+            elif speaker == agent_id:
+                messages.append({"role": "assistant", "content": f"[群聊] {content}"})
+            else:
+                name = speaker.replace("agent_", "").capitalize()
+                messages.append({
+                    "role": "system",
+                    "content": f"（群聊中 {name} 說：{content}）"
+                })
+
 
     # 私聊歷史
     private = _load_private(agent_id)[-MAX_PRIVATE:]

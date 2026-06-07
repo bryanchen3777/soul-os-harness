@@ -1,7 +1,5 @@
 ﻿# -*- coding: utf-8 -*-
-"""scripts/test_group_memory.py
-Group memory test - verify agent can remember group context
-"""
+"""scripts/test_group_memory.py - Updated to verify from file (WebSocket capture has timing issues)"""
 import asyncio
 import json
 import sys
@@ -28,39 +26,31 @@ def check_server():
     except:
         return False
 
-async def send_and_collect(content, mode="group", target=None, members=None):
-    responses = []
+async def send_private(content, target):
     async with websockets.connect(WS_URL, ping_interval=None) as ws:
         payload = {
             "type": "USER_MESSAGE",
             "content": content,
             "user_id": "bryan",
-            "mode": mode,
+            "mode": "private",
+            "target_agent": target,
         }
-        if target:
-            payload["target_agent"] = target
-        if members:
-            payload["group_members"] = members
-        
         await ws.send(json.dumps(payload))
-        
+        # Wait for response
         deadline = time.time() + 15
         while time.time() < deadline:
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=0.5)
                 data = json.loads(raw)
                 if data.get("type") == "agent_speak":
-                    agent = data.get("agent_id", "").replace("agent_", "").capitalize()
-                    text = data.get("text", "")[:80]
-                    responses.append((agent, text))
-                    safe_print(f"  [{agent}] {text.encode('ascii', 'replace').decode('ascii')}")
+                    return data.get("text", "")
             except asyncio.TimeoutError:
                 break
-    return responses
+    return ""
 
 async def test_group_memory():
     safe_print("=" * 60)
-    safe_print("Test: Group Memory")
+    safe_print("Test: Group Memory & Recall")
     safe_print("=" * 60)
     
     if not check_server():
@@ -76,34 +66,72 @@ async def test_group_memory():
             pass
     safe_print("[Step 1] History cleared")
     
-    # Test group chat
-    safe_print("\n[Step 2] Group chat: Bryan with Yua and Ruka")
-    
-    safe_print("\n  Bryan: Yua 在嗎？")
-    await send_and_collect("Yua 在嗎？", mode="group", members=["agent_yua", "agent_ruka"])
-    await asyncio.sleep(2)
-    
-    safe_print("\n  Bryan: Ruka 你好嗎？")
-    await send_and_collect("Ruka 你好嗎？", mode="group", members=["agent_yua", "agent_ruka"])
-    await asyncio.sleep(2)
+    # Step 2: Group chat
+    safe_print("\n[Step 2] Group chat")
+    async with websockets.connect(WS_URL, ping_interval=None) as ws:
+        # Message 1
+        await ws.send(json.dumps({
+            "type": "USER_MESSAGE", "content": "Yua 在嗎？",
+            "user_id": "bryan", "mode": "group",
+            "group_members": ["agent_yua", "agent_ruka"]
+        }))
+        await asyncio.sleep(3)
+        
+        # Message 2
+        await ws.send(json.dumps({
+            "type": "USER_MESSAGE", "content": "Ruka 你好嗎？",
+            "user_id": "bryan", "mode": "group",
+            "group_members": ["agent_yua", "agent_ruka"]
+        }))
+        await asyncio.sleep(3)
     
     # Check group history
     group_file = conv_dir / "group_chat.json"
     if group_file.exists():
         data = json.loads(group_file.read_text(encoding='utf-8'))
-        safe_print(f"\n[Step 3] Group history: {len(data)} entries")
         roles = [m.get('role') for m in data]
         speakers = [m.get('speaker') for m in data]
+        safe_print(f"\n[Step 3] Group history: {len(data)} entries")
         safe_print(f"  Roles: {roles}")
         safe_print(f"  Speakers: {speakers}")
-        
-        # Check role correctness
-        user_count = roles.count('user')
-        assistant_count = roles.count('assistant')
-        safe_print(f"  user={user_count} assistant={assistant_count}")
+        bryan_user = any(m.get('speaker') == 'bryan' and m.get('role') == 'user' for m in data)
+        agent_assistant = any(m.get('speaker') != 'bryan' and m.get('role') == 'assistant' for m in data)
+        safe_print(f"  Bryan role=user: {bryan_user}")
+        safe_print(f"  Agent role=assistant: {agent_assistant}")
     
-    safe_print("\n" + "=" * 60)
-    return True
+    # Step 4: Private chat - verify from file
+    safe_print("\n[Step 4] Private chat with Yua")
+    
+    async with websockets.connect(WS_URL, ping_interval=None) as ws:
+        await ws.send(json.dumps({
+            "type": "USER_MESSAGE", "content": "我們剛才在群聊聊什麼？",
+            "user_id": "bryan", "mode": "private", "target_agent": "agent_yua"
+        }))
+        await asyncio.sleep(5)  # Wait for response to be written to file
+    
+    # Check private file for Yua's response
+    private_file = conv_dir / "bryan_agent_yua_private.json"
+    yua_response = ""
+    if private_file.exists():
+        data = json.loads(private_file.read_text(encoding='utf-8'))
+        if len(data) >= 2:
+            yua_response = data[-1].get('content', '')
+            safe_print(f"\n  Yua response: {yua_response[:100].encode('ascii', 'replace').decode('ascii')}")
+    
+    # Step 5: Verify recall
+    keywords = ['Yua', 'Ruka', '在嗎', '你好']
+    yua_remembers = any(kw in yua_response for kw in keywords)
+    
+    safe_print(f"\n[Step 5] Result:")
+    safe_print(f"  Yua references group chat: {yua_remembers}")
+    
+    if bryan_user and agent_assistant and yua_remembers:
+        safe_print("\n  [ALL PASS] Group memory test passed!")
+        return True
+    else:
+        if not yua_remembers:
+            safe_print("\n  [FAIL] Yua did not recall group chat")
+        return False
 
 if __name__ == "__main__":
     result = asyncio.run(test_group_memory())
