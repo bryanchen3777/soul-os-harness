@@ -81,6 +81,7 @@ class SpeakerTokenManager:
             logger.warning("[Token] AGENT_INTENT_ENRICHED 缺 agent_id，略過")
             return
 
+        logger.info(f"[Token] _request_token: agent_id={agent_id} holder={self._holder}")
         # 1. 檢查 timeout（防 holder 死鎖）
         if self._holder is not None and self._held_since is not None:
             held_secs = (

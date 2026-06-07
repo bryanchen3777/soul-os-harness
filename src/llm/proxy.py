@@ -169,7 +169,6 @@ def _build_messages_private(
     messages: List[Dict[str, str]] = []
 
     # system prompt（含記憶）
-    # system prompt（含記憶）
     name = AGENT_NAMES.get(agent_id, agent_id)
     identity_anchor = (
         f"你是 {name}。在整个对话中，你只能以 {name} 的身份说话，绝对不能声称自己是其他角色。\n\n"
@@ -386,19 +385,19 @@ class ClaudeBackend(LLMBackend):
                     text = block["text"].strip()
                     break
             if not text:
-                # 沒 text block：絕不回傳 thinking 給使用者（會洩漏內部推理）
-                thinking_found = any(
-                    b.get("type") == "thinking" and b.get("thinking")
-                    for b in content_blocks
+                # MiniMax 回傳 [thinking] 但沒有 [text] block 時，
+                # fallback 取 thinking 內容（否則使用者完全看不到回覆）
+                for b in content_blocks:
+                    if b.get("type") == "thinking" and b.get("thinking"):
+                        thinking_text = b["thinking"].strip()
+                        if thinking_text:
+                            logger.info(
+                                f"[ClaudeBackend] 無 text block，使用 thinking 內容（length={len(thinking_text)}）"
+                            )
+                            return thinking_text[:500]  # 截斷避免太長
+                logger.warning(
+                    f"[ClaudeBackend] 無任何 block，回傳空 | data keys={list(data.keys())}"
                 )
-                if thinking_found:
-                    logger.warning(
-                        f"[ClaudeBackend] 僅有 thinking、無 text（stop_reason={data.get('stop_reason')}）— 回傳空"
-                    )
-                else:
-                    logger.warning(
-                        f"[ClaudeBackend] 無任何 block，回傳空 | data keys={list(data.keys())}"
-                    )
                 return ""
             return text
 
@@ -581,12 +580,20 @@ class LLMProxy:
         # 從 event payload 取 mode（gateway 寫入的）
         mode = event.payload.get("mode", "group")
         user_message = draft if reason == "user_message" else ""
+        logger.info(f"[LLMProxy] user_message set to: {user_message[:50]!r}")
         # Fix Bug 1&2: proactive (silence_timeout) 的 draft 也應該當作 user_message 傳入
         # 否則 user_message 永遠是空字串 → LLM 收到空 prompt → 回「空白訊息」
         if not user_message and draft:
             user_message = draft
             logger.info(
                 f"[LLMProxy] proactive draft 注入: {draft[:80]!r}")
+        # Fix Bug 5: user_message 原因時，如果 draft 為空，嘗試從 chrono_context 取
+        if not user_message and reason == "user_message":
+            ctx = event.payload.get("chrono_context", {})
+            if isinstance(ctx, dict) and ctx.get("draft"):
+                user_message = ctx["draft"]
+                logger.info(
+                    f"[LLMProxy] user_message 從 chrono_context 取: {user_message[:80]!r}")
 
 
         logger.info(

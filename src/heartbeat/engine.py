@@ -7,6 +7,7 @@
 #   所有主動行為的決策，交給各 Agent 的 consciousness handler 自己判斷。
 
 import asyncio
+import time
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -62,6 +63,7 @@ class HeartbeatEngine:
         # Fix Bug 3: 全局靜默冷卻 — 任何人說話後 60 秒內不發 SYSTEM_TICK（避免連續觸發）
         self._last_any_speak: float = 0.0
         self.global_silence_secs: float = 60.0
+        self._pending_agents: set = set()  # 正在等 LLM 回應的 agent
 
         # 訂閱 AGENT_SPEAK，更新靜默計時器
         self.bus.subscribe(

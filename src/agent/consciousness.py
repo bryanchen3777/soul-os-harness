@@ -171,6 +171,7 @@ class AgentConsciousness(ABC):
             self.state.silence_strike = 0
             self.state.last_spoken_at = event.timestamp
             target = event.payload.get("target_agent", "agent_yua")
+            logger.info(f"[{self.agent_id}] _on_user_message: content={content[:30]!r} mode={mode}")
             if content and self.agent_id == target:
                 await self._fire_intent(
                     reason="user_message",
