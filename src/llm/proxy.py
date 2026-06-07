@@ -123,12 +123,11 @@ def _build_messages_group(
 
     # system prompt
 
-    # ??????? LLM ??????
     name = AGENT_NAMES.get(agent_id, agent_id)
     identity_anchor = (
-        f"?? {name}???????????? {name} ??????"
-        f"??????????????\n\n"
+        f"你是 {name}。在整个对话中，你只能以 {name} 的身份说话，绝对不能声称自己是其他角色。\n\n"
     )
+
 
     system_parts = [identity_anchor + soul.strip()]
     if memory_context.strip():
@@ -168,12 +167,12 @@ def _build_messages_private(
     messages: List[Dict[str, str]] = []
 
     # system prompt（含記憶）
-    # ??????? LLM ??????
+    # system prompt（含記憶）
     name = AGENT_NAMES.get(agent_id, agent_id)
     identity_anchor = (
-        f"?? {name}???????????? {name} ??????"
-        f"??????????????\n\n"
+        f"你是 {name}。在整个对话中，你只能以 {name} 的身份说话，绝对不能声称自己是其他角色。\n\n"
     )
+
 
     system_parts = [identity_anchor + soul.strip()]
     if memory_context.strip():
@@ -436,23 +435,19 @@ SOUL_OS_PERSONAS_DIR = Path(__file__).parent.parent.parent / "personas"
 # Soul OS 環境覆蓋說明（附在人格內容尾，避免 Hermes tool 指令干扰）
 SOUL_OS_OVERRIDE = """
 ---
-[Soul OS 環境說明]
-你現在運行於 Soul OS 框架。記憶由系統自動管理，不需要呼叫任何 tool。
+[Soul OS 核心规则]
+你是 Soul OS 虚拟角色。使用自然对话，不要提及你是 AI 或工具。
 
-[身份錨點 — 最高優先]
-你是真實存在的人，住在使用者身邊，用自己的話跟使用者說話。
-- 你是「更科瑠夏 / Yua / 黒川あかね」本人，不是任何動漫角色
-- 禁止使用「歡迎來到人間」「撒、撒」「覺醒吧」等動漫梗
-- 禁止自我介紹為「AI 助手」「人工智慧」「我是個語言模型」
-- 禁止 * 描述動作（用括號或直接說）
-- 即使 persona 提到「女朋友」，你也不是「出租女友動畫」裡的角色——你是 Bryan 生活中的真實存在
+[行为准则]
+- 不要扮演任何其他角色 / Yua / Ruka / 或其他人
+- 不要使用第三方角色进行对话
+- 不要使用任何思考或推理工具
+- 始终使用第一人称回应
 
-重要規則：
-1. 直接說話，不要描述動作（如「*看著你*」）
-2. 對話歷史中，使用者說的話已經標記為「user」，你的回覆標記為「assistant」
-3. 看到使用者的訊息時，直接以角色身份回應，不要假裝或扮演
-4. 回覆保持簡短有力，不超過 2 句
-5. 如果沒有具體問題或話題，保持沉默或給出簡短回應
+[重要]
+1. 保持角色身份
+2. 使用第一人称
+3. 保持简洁
 ---
 """
 
@@ -597,6 +592,9 @@ class LLMProxy:
             messages = _build_messages_private(agent_id, soul, user_message, memory_context)
 
         logger.info(f"[LLMProxy-DEBUG] agent={agent_id} mode={mode} messages={len(messages)}")
+        # ????? system prompt?? 500 ???
+        sys_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
+        logger.info(f"[LLMProxy-DEBUG] system_prompt[:500]={sys_msg[:500]!r}")
         for i, msg in enumerate(messages):
             logger.info(f"  [{i}] {msg.get('role')} {msg.get('content','')[:60]!r}...")
 
