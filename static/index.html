@@ -5,137 +5,148 @@
   <title>Soul OS</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #0f0f0f; color: #eee; font-family: sans-serif;
+
+    body { background: #0d0d1a; color: #e0e0e0; font-family: sans-serif;
            display: flex; flex-direction: column; height: 100vh; }
+
+    /* ── 清除歷史按鈕 ── */
+    #clear-btn {
+      position: fixed; top: 12px; right: 16px;
+      background: #1a1a2e; color: #666; border: 1px solid #333;
+      padding: 5px 14px; border-radius: 8px; cursor: pointer;
+      font-size: 12px; z-index: 100; transition: all 0.2s;
+    }
+    #clear-btn:hover { background: #2a1a1a; color: #f87171; border-color: #f87171; }
 
     /* ── 模式切換 ── */
     #top-bar {
       display: flex; align-items: center; gap: 12px;
-      padding: 12px 20px;
-      border-bottom: 1px solid #222;
+      padding: 12px 20px; border-bottom: 1px solid #1e1e2e;
       flex-wrap: wrap;
     }
     .mode-toggle {
-      display: flex; background: #1a1a1a;
-      border: 1px solid #333; border-radius: 8px;
-      overflow: hidden;
+      display: flex; background: #1a1a2e;
+      border: 1px solid #2a2a3e; border-radius: 8px; overflow: hidden;
     }
     .mode-btn {
-      background: none; border: none; color: #666;
+      background: none; border: none; color: #555;
       padding: 5px 14px; cursor: pointer;
       font-size: 13px; transition: all 0.2s;
     }
     .mode-btn.active { background: #2563eb; color: #fff; }
     .mode-btn:hover:not(.active) { color: #ccc; }
 
-    /* ── 群組成員（多選）── */
+    /* ── 群組成員 ── */
     #group-members { display: flex; gap: 8px; align-items: center; }
-    #group-members .label { font-size: 11px; color: #666; margin-right: 4px; }
-    .member-btn {
-      background: #1a1a1a; border: 1px solid #2a2a2a;
-      color: #555; padding: 5px 14px;
-      border-radius: 20px; cursor: pointer;
-      font-size: 13px; transition: all 0.2s;
-      user-select: none;
+    #group-members .label, #private-agents .label { font-size: 11px; color: #555; margin-right: 4px; }
+    .member-btn, .agent-btn {
+      background: #1a1a2e; border: 1px solid #2a2a3e;
+      color: #555; padding: 5px 14px; border-radius: 20px;
+      cursor: pointer; font-size: 13px; transition: all 0.2s; user-select: none;
     }
-    .member-btn:hover { border-color: #555; color: #ccc; }
-    .member-btn.active {
-      border-color: #10b981; color: #10b981; background: rgba(16,185,129,0.1);
-    }
+    .member-btn:hover, .agent-btn:hover { border-color: #555; color: #ccc; }
+    .member-btn.active, .agent-btn.active { color: #fff; background: #1e2a4a; border-color: #3b82f6; }
     .member-btn.yua.active   { border-color: #a78bfa; color: #a78bfa; background: rgba(167,139,250,0.1); }
     .member-btn.ruka.active  { border-color: #f472b6; color: #f472b6; background: rgba(244,114,182,0.1); }
     .member-btn.akane.active { border-color: #fb923c; color: #fb923c; background: rgba(251,146,60,0.1); }
+    .agent-btn.active { border-color: #8b5cf6; color: #c4b5fd; background: rgba(139,92,246,0.1); }
 
-    /* ── 私聊對象（單選）── */
-    #private-agents { display: flex; gap: 8px; align-items: center; }
-    #private-agents .label { font-size: 11px; color: #666; margin-right: 4px; }
-    .agent-btn {
-      background: #1a1a1a; border: 1px solid #2a2a2a;
-      color: #555; padding: 5px 16px;
-      border-radius: 20px; cursor: pointer;
-      font-size: 13px; transition: all 0.2s;
-    }
-    .agent-btn:hover { border-color: #555; color: #ccc; }
-    .agent-btn.active {
-      border-color: #2563eb; color: #fff; background: #1e3a8a;
-    }
-
-    /* ── 房間指示器（區分群聊/私聊）── */
+    /* ── 房間指示器 ── */
     #room-indicator {
-      margin-left: auto;
-      font-size: 12px;
-      padding: 4px 12px;
-      border-radius: 12px;
-      display: flex; align-items: center; gap: 6px;
+      margin-left: auto; font-size: 12px; padding: 4px 12px;
+      border-radius: 12px; display: flex; align-items: center; gap: 6px;
     }
-    body.group-mode #room-indicator {
-      background: rgba(37,99,235,0.15);
-      color: #93c5fd;
-      border: 1px solid rgba(37,99,235,0.3);
-    }
-    body.private-mode #room-indicator {
-      background: rgba(139,92,246,0.15);
-      color: #c4b5fd;
-      border: 1px solid rgba(139,92,246,0.3);
-    }
+    body.group-mode  #room-indicator { background: rgba(37,99,235,0.15); color: #93c5fd; border: 1px solid rgba(37,99,235,0.3); }
+    body.private-mode #room-indicator { background: rgba(139,92,246,0.15); color: #c4b5fd; border: 1px solid rgba(139,92,246,0.3); }
     .room-dot { width: 6px; height: 6px; border-radius: 50%; }
     body.group-mode  .room-dot { background: #3b82f6; }
     body.private-mode .room-dot { background: #8b5cf6; }
     #back-to-group {
-      background: rgba(139,92,246,0.2);
-      color: #c4b5fd;
-      border: 1px solid rgba(139,92,246,0.4);
-      padding: 3px 10px; border-radius: 10px;
-      cursor: pointer; font-size: 11px;
-      display: none;
+      background: rgba(139,92,246,0.2); color: #c4b5fd;
+      border: 1px solid rgba(139,92,246,0.4); padding: 3px 10px;
+      border-radius: 10px; cursor: pointer; font-size: 11px; display: none;
     }
     body.private-mode #back-to-group { display: inline-block; }
     #back-to-group:hover { background: rgba(139,92,246,0.3); }
 
     /* ── 聊天區 ── */
-    #log { flex: 1; overflow-y: auto; padding: 20px; display: flex;
-           flex-direction: column; gap: 10px; transition: background 0.3s; }
-    body.private-mode #log {
-      background: linear-gradient(180deg,
-        rgba(139,92,246,0.04) 0%,
-        rgba(0,0,0,0) 200px);
+    #log { flex: 1; overflow-y: auto; padding: 20px;
+           display: flex; flex-direction: column; gap: 12px; }
+
+    /* ── 訊息行 ── */
+    .msg-row { display: flex; align-items: flex-end; gap: 10px; margin: 2px 0; }
+    .msg-row.user  { flex-direction: row-reverse; }
+    .msg-row.agent { flex-direction: row; }
+
+    /* ── 頭像 ── */
+    .avatar {
+      width: 38px; height: 38px; border-radius: 50%;
+      object-fit: cover; flex-shrink: 0;
     }
-    .msg { max-width: 70%; padding: 10px 14px; border-radius: 16px;
-           line-height: 1.5; }
-    .user { align-self: flex-end; background: #2563eb; color: #fff; }
-    .agent { align-self: flex-start; background: #1e1e1e; color: #e0e0e0;
-             border: 1px solid #333; }
-    .agent-yua  { border-left: 3px solid #a78bfa; }
-    .agent-ruka { border-left: 3px solid #f472b6; }
-    .agent-akane{ border-left: 3px solid #fb923c; }
-    .agent-name { font-size: 11px; margin-bottom: 4px; }
-    .agent-yua  .agent-name { color: #a78bfa; }
-    .agent-ruka .agent-name { color: #f472b6; }
-    .agent-akane .agent-name { color: #fb923c; }
+    .avatar-fb {
+      width: 38px; height: 38px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px; font-weight: bold; color: white; flex-shrink: 0;
+    }
+    .fb-yua   { background: linear-gradient(135deg, #7c3aed, #a78bfa); }
+    .fb-ruka  { background: linear-gradient(135deg, #be185d, #f472b6); }
+    .fb-akane { background: linear-gradient(135deg, #c2410c, #fb923c); }
+    .fb-bryan { background: linear-gradient(135deg, #1d4ed8, #60a5fa); }
+    .fb-unk   { background: linear-gradient(135deg, #374151, #6b7280); }
+
+    /* ── 氣泡 ── */
+    .bubble-wrap { display: flex; flex-direction: column; gap: 2px; max-width: 68%; }
+    .msg-row.user  .bubble-wrap { align-items: flex-end; }
+    .msg-row.agent .bubble-wrap { align-items: flex-start; }
+
+    .agent-name-tag { font-size: 11px; padding: 0 4px; }
+    .agent-name-tag.yua   { color: #a78bfa; }
+    .agent-name-tag.ruka  { color: #f472b6; }
+    .agent-name-tag.akane{ color: #fb923c; }
+
+    .bubble {
+      padding: 10px 14px; border-radius: 18px;
+      line-height: 1.6; font-size: 14px; white-space: pre-wrap; word-break: break-word;
+    }
+    /* Agent 氣泡靠左，帶左側彩色邊框 */
+    .msg-row.agent .bubble {
+      background: #1e1e2e; color: #e0e0e0;
+      border: 1px solid #2a2a3e;
+      border-bottom-left-radius: 5px;
+    }
+    .msg-row.agent.yua   .bubble { border-left: 3px solid #a78bfa; }
+    .msg-row.agent.ruka  .bubble { border-left: 3px solid #f472b6; }
+    .msg-row.agent.akane .bubble { border-left: 3px solid #fb923c; }
+    .msg-row.agent.unk   .bubble { border-left: 3px solid #555; }
+
+    /* User 氣泡靠右，藍色 */
+    .msg-row.user .bubble {
+      background: #2563eb; color: #fff;
+      border-bottom-right-radius: 5px;
+    }
+
+    /* ── 時間戳 ── */
+    .msg-time { font-size: 10px; color: #444; padding: 0 4px; }
+    .msg-row.user  .msg-time { text-align: right; }
+    .msg-row.agent .msg-time { text-align: left; }
 
     /* ── 底部 ── */
-    #status { font-size: 11px; color: #555; padding: 4px 20px; }
-    #bar { display: flex; gap: 8px; padding: 16px; border-top: 1px solid #222; }
-    #input { flex: 1; background: #1a1a1a; border: 1px solid #333;
+    #status { font-size: 11px; color: #444; padding: 4px 20px; }
+    #bar { display: flex; gap: 8px; padding: 16px; border-top: 1px solid #1e1e2e; }
+    #input { flex: 1; background: #1a1a2e; border: 1px solid #2a2a3e;
              color: #eee; padding: 10px 14px; border-radius: 10px;
              font-size: 15px; outline: none; }
-    #input:focus { border-color: #555; }
+    #input:focus { border-color: #4f46e5; }
     #send { background: #2563eb; color: #fff; border: none;
             padding: 10px 20px; border-radius: 10px; cursor: pointer;
-            font-size: 15px; }
+            font-size: 15px; transition: background 0.2s; }
     #send:hover { background: #1d4ed8; }
-
-    /* ── 發言權 badge ── */
-    .speaker-badge {
-      font-size: 10px; padding: 2px 7px; border-radius: 10px;
-      margin-bottom: 4px; display: inline-block;
-    }
-    .badge-yua   { background: #4c1d95; color: #c4b5fd; }
-    .badge-ruka  { background: #4c0519; color: #f9a8d4; }
-    .badge-akane { background: #431407; color: #fdba74; }
   </style>
 </head>
 <body>
+
+  <!-- 清除歷史 -->
+  <button id="clear-btn" onclick="clearHistory()">清除歷史</button>
 
   <div id="top-bar">
     <div class="mode-toggle">
@@ -143,7 +154,6 @@
       <button class="mode-btn" data-mode="private">私聊</button>
     </div>
 
-    <!-- 群聊模式：多選群組成員（誰可以說話） -->
     <div id="group-members">
       <span class="label">成員</span>
       <button class="member-btn yua active"   data-agent="agent_yua">Yua</button>
@@ -151,7 +161,6 @@
       <button class="member-btn akane active" data-agent="agent_akane">Akane</button>
     </div>
 
-    <!-- 私聊模式：單選對話對象 -->
     <div id="private-agents" style="display:none">
       <span class="label">對象</span>
       <button class="agent-btn active" data-agent="agent_yua">Yua</button>
@@ -159,7 +168,6 @@
       <button class="agent-btn" data-agent="agent_akane">Akane</button>
     </div>
 
-    <!-- 房間指示器 -->
     <div id="room-indicator">
       <span class="room-dot"></span>
       <span id="room-label">群聊室</span>
@@ -175,49 +183,149 @@
   </div>
 
   <script>
-    // ── 狀態 ──
-    let chatMode = 'group';          // 'group' | 'private'
-    let selectedAgent = 'agent_yua';  // 私聊時的目標
-    let groupMembers = new Set(['agent_yua', 'agent_ruka', 'agent_akane']);  // 群聊可說話的成員
+    /* ── Avatar 地圖 ── */
+    const AVATAR_MAP = {
+      agent_yua:   'avatars/yua.png',
+      agent_ruka:  'avatars/ruka.png',
+      agent_akane: 'avatars/akane.png',
+      bryan:       'avatars/bryan.png',
+    };
+    const NAME_MAP = { agent_yua: 'Yua', agent_ruka: 'Ruka', agent_akane: 'Akane', bryan: 'Bryan' };
 
-    // ── 初始 body class（給 CSS 用）──
+    /* fallback initials 樣式 */
+    const AVATAR_FB = {
+      agent_yua:   'fb-yua',
+      agent_ruka:  'fb-ruka',
+      agent_akane: 'fb-akane',
+      bryan:       'fb-bryan',
+    };
+
+    function getAvatar(speaker, isUser) {
+      const key = isUser ? 'bryan' : speaker;
+      const fbCls = AVATAR_FB[key] || 'fb-unk';
+      const initials = (NAME_MAP[key] || key).charAt(0).toUpperCase();
+      return <div class="avatar-fb "></div>;
+    }
+
+    /* ── 時間格式化 ── */
+    function fmtTime(ts) {
+      if (!ts) return '';
+      const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts);
+      return d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+
+    /* ── agent 樣式 class ── */
+    function agentClass(speaker) {
+      if (!speaker) return 'unk';
+      if (speaker.includes('yua'))   return 'yua';
+      if (speaker.includes('ruka'))  return 'ruka';
+      if (speaker.includes('akane')) return 'akane';
+      return 'unk';
+    }
+
+    /* ── 訊息分類 ── */
+    function agentNameTag(speaker) {
+      if (!speaker) return '';
+      const cls = agentClass(speaker);
+      const name = NAME_MAP[speaker] || speaker.replace('agent_', '');
+      return <div class="agent-name-tag "></div>;
+    }
+
+    /* ── 插入訊息 ── */
+    function addMsg(speaker, text, isUser, ts) {
+      /* DOM 結構：
+         <div class="msg-row user|agent cls">
+           <div class="avatar-fb ..."></div>
+           <div class="bubble-wrap">
+             <div class="agent-name-tag">  (agent only)
+             <div class="bubble">text</div>
+             <div class="msg-time">HH:MM</div>
+           </div>
+         </div> */
+      const row = document.createElement('div');
+      const role = isUser ? 'user' : 'agent';
+      const cls  = isUser ? '' : agentClass(speaker);
+      row.className = msg-row ;
+
+      row.innerHTML =
+        getAvatar(speaker, isUser) +
+        <div class="bubble-wrap"> +
+        (isUser ? '' : agentNameTag(speaker)) +
+        <div class="bubble"></div> +
+        <div class="msg-time"></div> +
+        </div>;
+
+      log.appendChild(row);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function escHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    /* ── localStorage 持久化 ── */
+    const STORAGE_KEY = 'soul_os_chat_history';
+    const MAX_HISTORY = 200;
+
+    function loadHistory() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return;
+        const msgs = JSON.parse(raw);
+        msgs.forEach(m => addMsg(m.speaker, m.text, m.isUser, m.ts));
+        log.scrollTop = log.scrollHeight;
+      } catch(e) { console.warn('[UI] 載入歷史失敗', e); }
+    }
+
+    function saveMsg(speaker, text, isUser, ts) {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        const msgs = raw ? JSON.parse(raw) : [];
+        msgs.push({ speaker, text, isUser, ts });
+        const trimmed = msgs.slice(-MAX_HISTORY);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
+      } catch(e) { console.warn('[UI] 儲存失敗', e); }
+    }
+
+    function clearHistory() {
+      localStorage.removeItem(STORAGE_KEY);
+      log.innerHTML = '';
+    }
+
+    /* ── 模式切換 ── */
+    let chatMode = 'group';
+    let selectedAgent = 'agent_yua';
+    let groupMembers = new Set(['agent_yua', 'agent_ruka', 'agent_akane']);
+
     document.body.classList.add('group-mode');
 
-    // ── 模式切換 ──
     function setMode(mode) {
       chatMode = mode;
-      document.querySelectorAll('.mode-btn').forEach(b => {
-        b.classList.toggle('active', b.dataset.mode === mode);
-      });
+      document.querySelectorAll('.mode-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.mode === mode));
       document.body.className = mode + '-mode';
-      // 切換顯示對應的成員/對象選擇區
-      document.getElementById('group-members').style.display = mode === 'group' ? 'flex' : 'none';
+      document.getElementById('group-members').style.display   = mode === 'group'   ? 'flex' : 'none';
       document.getElementById('private-agents').style.display = mode === 'private' ? 'flex' : 'none';
-      // 更新 room 指示
       updateRoomLabel();
     }
-    document.querySelectorAll('.mode-btn').forEach(btn => {
-      btn.addEventListener('click', () => setMode(btn.dataset.mode));
-    });
-
-    // ── 返回群聊 ──
+    document.querySelectorAll('.mode-btn').forEach(btn =>
+      btn.addEventListener('click', () => setMode(btn.dataset.mode)));
     document.getElementById('back-to-group').addEventListener('click', () => setMode('group'));
 
-    // ── 群組成員多選 ──
+    /* 群組成員多選 */
     document.querySelectorAll('#group-members .member-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.agent;
         if (groupMembers.has(id)) {
-          groupMembers.delete(id);
-          btn.classList.remove('active');
+          groupMembers.delete(id); btn.classList.remove('active');
         } else {
-          groupMembers.add(id);
-          btn.classList.add('active');
+          groupMembers.add(id); btn.classList.add('active');
         }
+        updateRoomLabel();
       });
     });
 
-    // ── 私聊對象單選 ──
+    /* 私聊對象單選 */
     document.querySelectorAll('#private-agents .agent-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         document.querySelectorAll('#private-agents .agent-btn').forEach(b => b.classList.remove('active'));
@@ -227,91 +335,71 @@
       });
     });
 
-    // ── 房間標籤 ──
     function updateRoomLabel() {
-      const nameMap = { agent_yua: 'Yua', agent_ruka: 'Ruka', agent_akane: 'Akane' };
       const label = document.getElementById('room-label');
       if (chatMode === 'private') {
-        label.textContent = `與 ${nameMap[selectedAgent]} 私聊中`;
+        label.textContent = 與  私聊中;
       } else {
-        const members = [...groupMembers].map(m => nameMap[m]).join('、');
-        label.textContent = members
-          ? `群聊室（${members}）`
-          : '群聊室（無成員）';
+        const members = [...groupMembers].map(m => NAME_MAP[m]).join('、');
+        label.textContent = members ? 群聊室（） : '群聊室（無成員）';
       }
     }
     updateRoomLabel();
 
-    // ── WebSocket ──
-    const log = document.getElementById('log');
-    const input = document.getElementById('input');
-    const status = document.getElementById('status');
-    const userId = 'user_' + Math.random().toString(36).slice(2, 7);
+    /* ── WebSocket ── */
+    const logEl     = document.getElementById('log');
+    const inputEl   = document.getElementById('input');
+    const statusEl  = document.getElementById('status');
+    const userId    = 'bryan_' + Math.random().toString(36).slice(2, 7);
+    const ws         = new WebSocket(ws:///ws);
 
-    const ws = new WebSocket('ws://localhost:8000/ws');
-    ws.onopen  = () => { status.textContent = '已連線'; };
-    ws.onclose = () => { status.textContent = '已斷線'; };
+    ws.onopen  = () => { statusEl.textContent = '已連線'; };
+    ws.onclose = () => { statusEl.textContent = '已斷線'; };
 
     ws.onmessage = (e) => {
-      const d = JSON.parse(e.data);
-      if (d.type === 'agent_speak' && d.text) {
-        const agentId = d.agent_id || 'agent_yua';
-        // 私聊模式：只顯示對應 agent 的訊息（避免其他 agent 漏接）
-        if (chatMode === 'private' && agentId !== selectedAgent) return;
-        // 群聊模式：只顯示在 members 內的訊息
-        if (chatMode === 'group' && groupMembers.size > 0 && !groupMembers.has(agentId)) return;
-        addMsg(agentId, d.text, 'agent');
-      }
+      try {
+        const d = JSON.parse(e.data);
+        if (d.type === 'agent_speak' && d.text) {
+          const speaker = d.agent_id || 'agent_yua';
+          /* 私聊模式：只看對應 agent */
+          if (chatMode === 'private' && speaker !== selectedAgent) return;
+          /* 群聊模式：只看在 members 內的 */
+          if (chatMode === 'group' && groupMembers.size > 0 && !groupMembers.has(speaker)) return;
+
+          const ts = d.timestamp
+            ? (typeof d.timestamp === 'number' ? d.timestamp : Math.floor(new Date(d.timestamp).getTime() / 1000))
+            : Math.floor(Date.now() / 1000);
+
+          addMsg(speaker, d.text, false, ts);
+          saveMsg(speaker, d.text, false, ts);
+        }
+      } catch(err) { console.warn('[WS] 解析失敗', err); }
     };
 
-    function addMsg(name, text, role) {
-      const div = document.createElement('div');
-      div.className = `msg ${role}`;
-      if (role === 'agent') {
-        const cls = name.includes('yua')   ? 'agent-yua'
-                  : name.includes('ruka')  ? 'agent-ruka'
-                  :                          'agent-akane';
-        const badgeCls = name.includes('yua')   ? 'badge-yua'
-                       : name.includes('ruka')  ? 'badge-ruka'
-                       :                          'badge-akane';
-        const displayName = name.includes('yua')   ? 'Yua'
-                          : name.includes('ruka')  ? 'Ruka'
-                          :                          'Akane';
-        div.className = `msg agent ${cls}`;
-        div.innerHTML = `<span class="speaker-badge ${badgeCls}">${displayName}</span><div>${text}</div>`;
-      } else {
-        div.textContent = text;
-      }
-      log.appendChild(div);
-      log.scrollTop = log.scrollHeight;
-    }
-
     function send() {
-      const text = input.value.trim();
-      if (!text || ws.readyState !== 1) return;
-      addMsg('你', text, 'user');
-      const payload = {
-        type: 'USER_MESSAGE',
-        content: text,
-        user_id: userId,
-        mode: chatMode,
-      };
+      const text = inputEl.value.trim();
+      if (!text || ws.readyState !== WebSocket.OPEN) return;
+
+      const ts = Math.floor(Date.now() / 1000);
+      addMsg('bryan', text, true, ts);
+      saveMsg('bryan', text, true, ts);
+
+      const payload = { type: 'USER_MESSAGE', content: text, user_id: userId, mode: chatMode };
       if (chatMode === 'private') {
         payload.target_agent = selectedAgent;
       } else {
-        // 群聊：送出當前成員名單（給後端過濾）
-        if (groupMembers.size === 0) {
-          alert('請至少選擇一位成員');
-          return;
-        }
+        if (groupMembers.size === 0) { alert('請至少選擇一位成員'); return; }
         payload.participants = [...groupMembers];
       }
       ws.send(JSON.stringify(payload));
-      input.value = '';
+      inputEl.value = '';
     }
 
     document.getElementById('send').addEventListener('click', send);
-    input.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+    inputEl.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+
+    /* ── 初始化 ── */
+    loadHistory();
   </script>
 </body>
 </html>
