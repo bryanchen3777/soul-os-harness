@@ -36,6 +36,11 @@ class SpeakerTokenBus:
         self._cooldown: dict[str, float] = {}   # agent_id → 可再次說話的時間戳
         self.cooldown_secs = cooldown_secs
 
+        # 飢餓保底：某 Agent 連續沒搶到 token 達 N 次，下次加分
+        self._starvation: dict[str, int] = {}   # agent_id → 連續未說話次數
+        self.STARVATION_THRESHOLD = 3            # 連續 3 次沒搶到，觸發保底
+        self.STARVATION_BONUS = 0.8              # 加分幅度
+
         # 當前競標會話
         self._session_active = False
         self._bids: dict[str, float] = {}
@@ -71,6 +76,16 @@ class SpeakerTokenBus:
                 return False
             base, jitter = score
             final_score = base + random.uniform(0, jitter)
+
+            # 飢餓保底：連續 N 次沒搶到 → 加分確保下次能贏
+            hunger = self._starvation.get(agent_id, 0)
+            if hunger >= self.STARVATION_THRESHOLD:
+                final_score += self.STARVATION_BONUS
+                logger.info(
+                    f"[SpeakerTokenBus] 飢餓保底觸發 | {agent_id} "
+                    f"hunger={hunger} +bonus={self.STARVATION_BONUS}"
+                )
+
             self._bids[agent_id] = final_score
             logger.debug(f"[SpeakerTokenBus] bid: {agent_id} base={base} final={final_score:.3f}")
             return True
@@ -105,7 +120,19 @@ class SpeakerTokenBus:
             self._cooldown[winner] = asyncio.get_event_loop().time() + self.cooldown_secs
             self._bids = {}
             self._winner = winner
-            logger.info(f"[SpeakerTokenBus] winner={winner} score={available[winner]:.3f}")
+
+            # 更新飢餓計數：贏家重置，所有已知 agent（投過標或 BASE_SCORES 內的）累積
+            known_agents = set(BASE_SCORES.keys()) | set(self._starvation.keys())
+            for agent_id in known_agents:
+                if agent_id == winner:
+                    self._starvation[agent_id] = 0
+                else:
+                    self._starvation[agent_id] = self._starvation.get(agent_id, 0) + 1
+
+            logger.info(
+                f"[SpeakerTokenBus] winner={winner} score={available[winner]:.3f} "
+                f"starvation={dict(self._starvation)}"
+            )
             return winner
 
     async def get_winner(self) -> Optional[str]:
