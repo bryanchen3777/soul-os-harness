@@ -59,6 +59,16 @@ class HeartbeatEngine:
         self._session_ended = False  # 防止 SESSION_END 重複觸發
         self._carryovers: dict[str, EmotionalCarryover] = {}
         self._agent_ids: list[str] = agent_ids or []  # 由外部注入，不 hardcode
+        # Fix Bug 3: 全局靜默冷卻 — 任何人說話後 60 秒內不發 SYSTEM_TICK（避免連續觸發）
+        self._last_any_speak: float = 0.0
+        self.global_silence_secs: float = 60.0
+
+        # 訂閱 AGENT_SPEAK，更新靜默計時器
+        self.bus.subscribe(
+            subscriber_id="heartbeat_silence_tracker",
+            handler=self._on_any_speak,
+            event_filter={EventType.AGENT_SPEAK},
+        )
 
     async def start(self) -> None:
         if self._running:
@@ -95,6 +105,7 @@ class HeartbeatEngine:
     async def stop(self) -> None:
         self._running = False
         self.bus.unsubscribe("heartbeat_activity_tracker")
+        self.bus.unsubscribe("heartbeat_silence_tracker")
         if self._loop_task and not self._loop_task.done():
             self._loop_task.cancel()
             try:
@@ -109,11 +120,21 @@ class HeartbeatEngine:
         self._session_ended = False  # 新訊息到來，代表新 session 開始
         logger.debug("[Heartbeat] 活動計時器已重置，_session_ended=False")
 
+    async def _on_any_speak(self, event: SoulEvent) -> None:
+        self._last_any_speak = time.time()
+        logger.debug("[Heartbeat] 說話事件已更新靜默計時器")
+
     async def _loop(self) -> None:
         while self._running:
             await asyncio.sleep(self.tick_interval)
             if not self._running:
                 break
+
+            # Fix Bug 3: 全局靜默保護 — 說話後 60 秒內不廣播 tick
+            now_local = time.time()
+            if now_local - self._last_any_speak < self.global_silence_secs:
+                logger.debug("[Heartbeat] 全局靜默中，跳過本輪 tick")
+                continue
 
             self.tick_count += 1
             now = datetime.now(timezone.utc)

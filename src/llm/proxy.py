@@ -581,6 +581,13 @@ class LLMProxy:
         # 從 event payload 取 mode（gateway 寫入的）
         mode = event.payload.get("mode", "group")
         user_message = draft if reason == "user_message" else ""
+        # Fix Bug 1&2: proactive (silence_timeout) 的 draft 也應該當作 user_message 傳入
+        # 否則 user_message 永遠是空字串 → LLM 收到空 prompt → 回「空白訊息」
+        if not user_message and draft:
+            user_message = draft
+            logger.info(
+                f"[LLMProxy] proactive draft 注入: {draft[:80]!r}")
+
 
         logger.info(
             f"[LLMProxy] 收到意圖 | agent={agent_id} "
