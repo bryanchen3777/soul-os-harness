@@ -82,11 +82,13 @@ def _save_private(agent_id: str, history: List[Dict[str, str]]) -> None:
 
 
 def _append_group(speaker: str, content: str, is_private: bool = False) -> None:
-    """寫入群聊 history（所有 agent 共享）"""
+    """Append to group history with correct role based on speaker."""
+    role = "user" if speaker == "bryan" else "assistant"
     history = _load_group()
-    history.append({"role": "assistant", "content": content,
+    history.append({"role": role, "content": content,
                     "speaker": speaker, "is_private": is_private})
     _save_group(history)
+
 
 
 def _append_group_user(speaker: str, content: str) -> None:
