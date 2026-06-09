@@ -34,10 +34,8 @@ async def send_and_recv(ws, content, mode="private", target="agent_yua", timeout
                     continue
                 return data.get("text", "")
         except asyncio.TimeoutError:
-            # 私聊等不到目標 → 放寬：取最近一條 agent_speak
-            if mode == "private":
-                return None
-            break
+            # polling timeout：繼續等下一輪（不要放棄！agent 可能還在 LLM 調用中）
+            continue
     return None
 
 async def run_tests():
