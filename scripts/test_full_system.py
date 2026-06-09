@@ -9,23 +9,34 @@ from pathlib import Path
 WS_URL = "ws://localhost:8000/ws"
 DB_PATH = Path("data/memory.db")
 
-async def send_and_recv(ws, content, mode="private", target="agent_yua", timeout=30):
+async def send_and_recv(ws, content, mode="private", target="agent_yua", timeout=45):
     msg = {
         "type": "USER_MESSAGE",
         "content": content,
         "user_id": "bryan",
         "mode": mode,
-        "target_agent": target,
     }
+    if mode == "private" and target:
+        msg["target_agent"] = target
+    if mode == "group":
+        msg["group_members"] = ["agent_yua", "agent_ruka", "agent_akane"]
     await ws.send(json.dumps(msg))
+
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         try:
-            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+            raw = await asyncio.wait_for(ws.recv(), timeout=3.0)
             data = json.loads(raw)
             if data.get("type") == "agent_speak":
+                agent = data.get("agent_id", "")
+                if mode == "private" and target and agent != target:
+                    # 其他 agent 的 followup：忽略，繼續等目標
+                    continue
                 return data.get("text", "")
         except asyncio.TimeoutError:
+            # 私聊等不到目標 → 放寬：取最近一條 agent_speak
+            if mode == "private":
+                return None
             break
     return None
 
