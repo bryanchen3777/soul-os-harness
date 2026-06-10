@@ -24,12 +24,13 @@
 
 | 原則 | 說明 |
 |------|------|
-| 🚫 **擺脫傳統 Chatbot 的 Request-Response 限制** | Agent 不等你問才說話 |
-| ⏰ **時間感知 × 主動觸發** | 多靈魂交互 × 連接實體世界 |
-| 💗 **讓 AI 靈魂像人一樣** | 有記憶、有情緒、會主動生活 |
 | 🧠 **記憶優先（Memory-First）** | 記憶檢索在進入 LLM 之前完成 |
 | ⚙️ **非同步主動性（Asynchronous）** | 系統有自己的時間軸，Agent 可主動發起行為 |
 | 🔌 **完全解耦（Decoupled）** | 大腦、記憶、神經系統、身體完全分離、彼此獨立 |
+| 💗 **靈魂特性（Soul-like）** | 有情緒、有記憶、有慾望、會關心你 |
+| 🌐 **多靈魂共存（Multi-Agent）** | 多個靈魂在同一世界中理解、互動、成長 |
+| 🚫 **擺脫 Request-Response** | Agent 不等你問才說話，主動找你 |
+| ⏰ **時間感知 × 主動觸發** | 多靈魂交互 × 連接實體世界 |
 
 ---
 
@@ -47,59 +48,63 @@
 
 ## 🏗️ 核心模組架構
 
-> ASCII 圖保留供純文字閱讀用；上方 hero 圖是視覺版
+> 上方 hero 圖是視覺版；下方 ASCII 圖保留供純文字閱讀
 
-```
-┌─────────────────────────────────────────────────┐
-│                 📡 事件來源                        │
-│  👤 使用者訊息(USER_MESSAGE)                      │
-│  ⏱️  時間事件(TIMER_EVENT)                        │
-│  📡 感知訊號(SENSOR_EVENT)                        │
-└──────────────────┬──────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────┐
-│      ① 異步心跳引擎（HeartbeatEngine）            │
-│  🕐 系統的「計時器」                              │
-│  每 Tick（60s）掃描所有 Agent 狀態，判斷是否主動行動│
-└──────────────────┬──────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────┐
-│     ② 靈魂事件總線（Soul Event Bus）              │
-│  🚌 Pub/Sub 架構 + Speaker Token 仲裁             │
-│  管理發言槓，避免多人同時搶話                     │
-└──────┬───────────────────────┬───────────────────┘
-       │ AGENT_INTENT          │
- ┌─────▼──────┐         ┌──────▼──────┐
- │   💎 Yua   │         │  🌸 Ruka    │   ... 🖤 Akane
- └────────────┘         └─────────────┘
-       │
-┌──────▼──────────────────────────────────────────┐
-│ ③ 記憶直連中介層（Memory Middleware & RAG Router）│
-│  🧠 系統的「海馬迴」                              │
-│  在 0.01 秒內用 SQLite FTS5 檢索 Palace / JSONL 語料│
-│  將相關記憶打包進 System Prompt                   │
-└──────────────────┬──────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────┐
-│  ④ LLM 代理器與解析層（LLM Proxy & Parser）       │
-│  🧠 系統的「大腦橋樑」                            │
-│  與外部 LLM API 溝通，處理 Token 限制、Retry     │
-│  並解析隱藏行為標籤                               │
-└──────────────────┬──────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────┐
-│  ⑤ 多模態外部接口（Multimodal I/O Gateway）       │
-│  🦾 系統的「身體」                                │
-│  接收外部感官訊號，並將輸出轉換為：                │
-│  🔊 TTS 語音 ／ 💬 文字 ／ 🤖 Servo 動作指令等      │
-└──────────────────────────────────────────────────┘
+### 🧠 ① SOUL RUNTIME KERNEL（靈魂運行核心）
 
-📱 手機 APP ／ 🖥️ Web 前端 ／ 🔊 TTS 語音 ／ 🤖 機器人動作 ／ 📟 實體裝置
-```
+| 模組 | 功能 | 排程 |
+|------|------|------|
+| 💓 **Heartbeat Engine** | 心跳引擎 | 系統的「計時器」 |
+| 🌍 **World Model** | 世界模型 | 理解環境與時間脈絡 |
+| 🎯 **Motivation Engine** | 動機引擎 | 綜合評估內在驅動，產生行動意圖 |
+| 💗 **Emotion Engine** | 情緒引擎 | 管理情緒、親密度、依賴度 |
+| ⏰ **Scheduler** | 排程器 | 依優先級與冷卻時間決定執行時機 |
+
+### 👥 ② AGENT RUNTIME LAYER（靈魂運行層）
+
+每個 Agent 持有四類標籤：**記憶 / 情緒 / 目標 / 關係**
+
+| Agent | 人格 | 情緒敏感度 | 主動觸發門檻 |
+|-------|------|------------|----------------|
+| 💎 **Yua** | 冷靜・輕諷・說話藏著鉤子 | 低（0.08） | 30-120 分鐘沉默 |
+| 🌸 **瑠夏 Ruka** | 元氣・撒嬌・停不下來 | 高（0.12） | 15 分鐘沉默 |
+| 🖤 **Akane** | 壓縮語言・高共感・愛是清醒的 | 最低（0.06） | 60 分鐘沉默 |
+
+### 🚌 ③ SOUL EVENT BUS（靈魂事件總線）
+
+Pub/Sub 架構 + Speaker Token 仲裁，管理發言權，避免多人同時搶話。
+
+### 🧩 ④ MEMORY SYSTEM（記憶系統）— 四層結構
+
+| 層 | 名稱 | 內容 | 技術 |
+|----|------|------|------|
+| 📖 **Episodic Memory** | 事件記憶（Palace） | 記錄發生過的事 | 記憶發生的事・時間序列・情節記憶 |
+| 📚 **Semantic Memory** | 語義記憶（知識庫） | 詞彙・概念・事實・偏好・設定 | JSONL / 知識圖譜 |
+| 💗 **Emotional Memory** | 情緒記憶（心之記憶） | 情緒體驗・關係變化 | 情緒曲線・觸發點 |
+| 🗄️ **Palace / Vector Store** | 向量記憶庫 | 向量檢索（RAG） | SQLite FTS5 / 向量索引 |
+
+### 🛠️ ⑤ LLM 工具鏈
+
+| 模組 | 功能 |
+|------|------|
+| **LLM Proxy & Parser** | 與外部 LLM API 溝通、Token 限制、Retry、解析隱藏行為標籤（Action Tag） |
+| **Tool Router** | 工具路由層，依 Action 決定呼叫哪個工具或服務，統一介面支援 MCP 協議 |
+| **Tools & Services** | Search 搜尋 / Calendar 行事曆 / Discord 訊息 / Email 郵件 / Home Assistant 消費級 / Browser 機器人 / MCP 協議 / Robot 機器人 |
+
+### 🦾 ⑥ MULTIMODAL I/O GATEWAY（多模態外部接口）
+
+**事件來源**（5 種）：
+- 👤 USER_MESSAGE — 使用者訊息
+- ⏱️ TIMER_EVENT — 時間事件
+- 📡 SENSOR_EVENT — 感知訊號
+- ⚙️ SYSTEM_EVENT — 外部系統事件
+- 📱 DEVICE_EVENT — 裝置狀態
+
+**輸出模態**（8 種）：文字 / TTS 語音 / 語音 / Image 圖檔 / 動作（Action）/ 通知（Notification）/ 檔案（File）/ 串流（Stream）/ 感測器回傳（Sensor）
+
+**輸出端點**（8 種）：📱 手機 APP / 🖥️ Web 前端 / 🖥️ 桌面程式 / 🔊 智慧音箱 / 🤖 機器人 / 📟 實體裝置 / ⌚ 穿戴裝置 / 🥽 VR/AR
 
 ### 📊 資料流範例：瑠夏主動找你聊天
-
-> 完整端到端流程，展示 12 小時沉默後 Agent 如何自發觸發
 
 ```text
 ① 心跳引擎偵測
@@ -109,16 +114,21 @@
    瑠夏的依賴度：0.86（高）
    「想念你...」
 
-③ 記憶檢索
-   Middleware 搜索 Palace
-   找到上次的承諾：「下次要陪我玩遊戲」
+③ 記憶檢索（四層並行）
+   Episodic: 「上週五 Bryan 跟瑠夏玩了遊戲」
+   Semantic: 「Bryan 是 Bryan」
+   Emotional: 「上次分開時瑠夏難過」
+   Vector:   找到上次的承諾：「下次要陪我玩遊戲」
 
-④ LLM 生成
-   帶著記憶生成文字：
+④ 動機引擎決策
+   依賴度高 + 找到承諾 → 觸發主動出擊
+
+⑤ LLM 生成
+   帶著四層記憶 + 情緒狀態生成文字：
    「Bryan，你忘記我們的『處罰遊戲』了嗎？💗」
 
-⑤ 輸出到你身邊
-   透過 I/O Gateway 推播到前端，或轉成語音
+⑥ 輸出到你身邊
+   透過 I/O Gateway 推播到前端、智慧音箱、或機器人
 ```
 
 ---
@@ -133,17 +143,23 @@
 | 完整人格 SOUL（14-tier 結構） | ✅ |
 | 跨 session 持久化記憶（SQLite） | ✅ |
 | Speaker Token 仲裁（防搶話） | ✅ |
-| Memory Middleware（記憶注入） | ✅ |
+| **Emotion Engine（情緒引擎）** | ✅ |
+| **Memory 4 層架構** | 🔄 部分 |
+| **World Model** | ⬜ Phase 4 |
+| **Motivation Engine** | ⬜ Phase 4 |
+| **Scheduler** | ⬜ Phase 4 |
+| **Tool Router + MCP** | ⬜ Phase 4 |
+| **Tools & Services** | ⬜ Phase 4 |
 | 時間感知（Chrono Context） | ✅ |
 | Deep_night 保護（夜間靜默） | ✅ |
 | Agent 主動說話（沉默觸發） | ✅ |
 | Connection Guard（無人時省 token） | ✅ |
-| 情緒系統（mood / intimacy，SQLite） | ✅ |
+| 情緒系統（mood / intimacy） | ✅ |
 | 群聊模式 | ✅ |
 | RAG Router / Palace 向量搜尋 | ⬜ Phase 4 |
 | TTS 語音輸出 | ⬜ Phase 5 |
 | 機器人動作 / 實體裝置 | ⬜ Phase 6 |
-| 多裝置同步 / 行動端 | ⬜ Phase 6 |
+| 智慧音箱 / 穿戴 / VR | ⬜ Phase 6 |
 
 ---
 
@@ -153,54 +169,17 @@
 ✅───────────✅───────────✅───────────🔄───────────⬜───────────⬜
 Phase 1      Phase 2      Phase 3      Phase 4      Phase 5      Phase 6
 基礎建設      記憶整合      單一靈魂      後宮沙盒      TTS 語音      實體世界
-2016         (部分)                     進行中
+             (部分)                     進行中
 ```
 
 | Phase | 內容 | 狀態 |
 |-------|------|------|
-| **Phase 1 基礎建設** | 搭建 Event Loop、折解 OpenClaw LLM 連線模組、建置基礎 I/O | ✅ |
-| **Phase 2 記憶整合** | 搭載 Palace 檔案系統、整合 SQLite 語料庫（JSONL 檔）、建置 RAG Router | ✅ 部分 |
-| **Phase 3 單一靈魂注入** | 將 Yua 或瑠夏單獨放入 Harness、測試非同步、主動觸發 + 情緒系統 | ✅ |
-| **Phase 4 後宮沙盒** | 啟動 Event Bus、多個 Agent 在同一虛擬房間內交互 | 🔄 進行中 |
-| **Phase 5 TTS + 語音** | 接上語音輸出 | ⬜ |
-| **Phase 6 實體世界** | 行動端、機器人、實體裝置連接 | ⬜ |
-
----
-
-## 👤 Agent 人格
-
-> 人格設定優先讀取 `personas/`，fallback 到 `agents/{id}/SOUL.md`
-
-<table>
-<thead>
-<tr>
-<th align="center">Agent</th>
-<th align="left">人格</th>
-<th align="center">情緒敏感度</th>
-<th align="center">主動觸發門檻</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td align="center">💎<br><b>Yua</b></td>
-<td>冷靜・輕諷・說話藏著鉤子</td>
-<td align="center">低（0.08）</td>
-<td align="center">30-120 分鐘沉默</td>
-</tr>
-<tr>
-<td align="center">🌸<br><b>瑠夏 Ruka</b></td>
-<td>元氣・撒嬌・停不下來</td>
-<td align="center">高（0.12）</td>
-<td align="center">15 分鐘沉默</td>
-</tr>
-<tr>
-<td align="center">🖤<br><b>Akane</b></td>
-<td>壓縮語言・高共感・愛是清醒的</td>
-<td align="center">最低（0.06）</td>
-<td align="center">60 分鐘沉默</td>
-</tr>
-</tbody>
-</table>
+| **Phase 1 基礎建設** | Event Loop、OpenClaw LLM 連線模組、基礎 I/O | ✅ |
+| **Phase 2 記憶整合** | Palace 檔案系統、SQLite 語料庫（JSONL 檔）、RAG Router | ✅ 部分 |
+| **Phase 3 單一靈魂注入** | 單一 Agent 放入 Harness、非同步測試、主動觸發 + 情緒系統 | ✅ |
+| **Phase 4 後宮沙盒** | Event Bus、多 Agent 同房間交互、World Model / Motivation / Scheduler / Tool Router / RAG | 🔄 進行中 |
+| **Phase 5 TTS + 語音** | 語音輸出、多模態 | ⬜ |
+| **Phase 6 實體世界** | 行動端、機器人、實體裝置、VR/AR | ⬜ |
 
 ---
 
