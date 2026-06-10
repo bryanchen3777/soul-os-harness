@@ -167,6 +167,10 @@ class AgentConsciousness(ABC):
 
         # ── 私聊模式（方案 A）─────────────────────────────
         if mode == "private":
+            # per-agent lock
+            if self._pending:
+                logger.debug(f"[{self.agent_id}] already pending, skip")
+                return
             self._cooldown_remaining = 0
             self.state.silence_strike = 0
             self.state.last_spoken_at = event.timestamp
@@ -196,6 +200,9 @@ class AgentConsciousness(ABC):
         stb = self.speaker_token_bus
         # No SpeakerTokenBus: all agents speak directly (dev/mock mode)
         if stb is None:
+            if self._pending:
+                logger.debug(f"[{self.agent_id}] already pending (group, no STB), skip")
+                return
             self._cooldown_remaining = 0
             self.state.silence_strike = 0
             self.state.last_spoken_at = event.timestamp
@@ -213,6 +220,11 @@ class AgentConsciousness(ABC):
 
         if not accepted:
             logger.debug(f"[{self.agent_id}] 競標被拒（已結算或 cooldown）")
+            return
+
+        # per-agent 鎖：已在等 LLM 回應，跳過（防止 get_winner 延遲導致雙重 fire）
+        if self._pending:
+            logger.debug(f"[{self.agent_id}] 已在回應中（群聊），跳過")
             return
 
         # 等結算（320ms 窗口）
@@ -288,9 +300,14 @@ class AgentConsciousness(ABC):
         if speaker_id == self.agent_id:
             return
 
+        # per-agent 鎖：已在等 LLM 回應（不論是自己發言還是跟進），跳過跟進
+        if self._pending:
+            logger.debug(f"[{self.agent_id}] 已在回應中（跟進鎖），跳過")
+            return
+
         score = self._calc_followup_score(speaker_id, spoken_text)
 
-        if score < 0.6:
+        if score < 0.8:
             return
 
         import random
@@ -359,8 +376,8 @@ class AgentConsciousness(ABC):
         chrono_payload: Optional[Dict[str, Any]] = None,
         mode: str = "group",
     ) -> None:
-        self._pending = True  # 設為等待中，LLM 回應後由 AGENT_SPEAK 清除
         """向 Bus 廣播 AGENT_INTENT 事件"""
+        self._pending = True  # 設為等待中，LLM 回應後由 AGENT_SPEAK 清除
         intent_payload = self._build_intent_payload(reason, elapsed_mins)
         intent_payload["agent_id"] = self.agent_id
         intent_payload["reason"] = reason
@@ -467,8 +484,8 @@ class AgentYua(AgentConsciousness):
         }
 
     def _followup_base(self) -> float:
-        """Yua：正宮，提高跟進意願"""
-        return 0.55
+        """Yua：正宮，但跟進很謹慎（連鎖跟進防範）"""
+        return 0.20
 
 
 # ─────────────────────────────────────────────
@@ -500,8 +517,8 @@ class AgentRuka(AgentConsciousness):
         if time_period in ("deep_night", "dawn"):
             return False, ""
 
-        # 6 分鐘沉默就忍不住，親密度門檻較低
-        if elapsed_mins >= 6.0 and intimacy > 50:
+        # 15 分鐘沉默才主動找人（從 6 分鐘調高，避免 Ruka 黏人打擾）
+        if elapsed_mins >= 15.0 and intimacy > 50:
             return True, "silence_timeout"
 
         # 超過 6 小時：嫉妒模式
@@ -540,8 +557,8 @@ class AgentRuka(AgentConsciousness):
         await super()._on_other_agent_speak(event)
 
     def _followup_base(self) -> float:
-        """Ruka：積極但收斂，降低避免壟斷"""
-        return 0.45
+        """Ruka：活潑但跟進很謹慎（連鎖跟進防範）"""
+        return 0.25
 
 
 # ─────────────────────────────────────────────
@@ -601,5 +618,5 @@ class AgentAkane(AgentConsciousness):
         }
 
     def _followup_base(self) -> float:
-        """Akane：慢熱，稍微提高存在感"""
-        return 0.35
+        """Akane：極少跟進（連鎖跟進防範）"""
+        return 0.15

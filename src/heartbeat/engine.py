@@ -64,6 +64,8 @@ class HeartbeatEngine:
         self._last_any_speak: float = 0.0
         self.global_silence_secs: float = 60.0
         self._pending_agents: set = set()  # 正在等 LLM 回應的 agent
+        # 連線感知：沒人連線就不發 tick，避免空燒 LLM token
+        self._manager = None  # 由 run_server.py 注入 gateway.manager
 
         # 訂閱 AGENT_SPEAK，更新靜默計時器
         self.bus.subscribe(
@@ -131,6 +133,16 @@ class HeartbeatEngine:
             await asyncio.sleep(self.tick_interval)
             if not self._running:
                 break
+
+            # 連線感知：沒人連線就不發 tick（不燒 LLM token、不浪費 chrono 計算）
+            if getattr(self, "_manager", None) is not None:
+                try:
+                    conn_count = self._manager.count
+                except Exception:
+                    conn_count = None
+                if conn_count == 0:
+                    logger.debug("[Heartbeat] 無客戶端連線，跳過本輪 tick")
+                    continue
 
             # Fix Bug 3: 全局靜默保護 — 說話後 60 秒內不廣播 tick
             now_local = time.time()

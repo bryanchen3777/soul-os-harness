@@ -20,7 +20,7 @@ agents:
 heartbeat:
   # HeartbeatEngine 每隔幾秒發一次 SYSTEM_TICK
   # 設太短會在 CI / 開發機壓力大；建議 60s 為生產預設，1-5s 為本地開發
-  tick_interval_seconds: 5
+  tick_interval_seconds: 60
 
 llm:
   # 主要 LLM provider（"minimax" | "claude" | "openai" | "mock"）

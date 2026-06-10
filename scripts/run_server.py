@@ -76,6 +76,8 @@ async def lifespan(app: FastAPI):
     gateway.register()
 
     heartbeat = create_heartbeat(cfg, bus, agent_ids=agent_ids)
+    # 注入 gateway 的 connection manager — heartbeat 會在無人連線時跳過 tick
+    heartbeat._manager = gateway.manager
     await heartbeat.start()
     app.state._heartbeat = heartbeat  # expose for /_admin/fast_forward
 
