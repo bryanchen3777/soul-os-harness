@@ -58,7 +58,7 @@ class SpeakerTokenManager:
             subscriber_id="speaker_token_manager",
             handler=self.handle_event,
             event_filter={
-                EventType.AGENT_INTENT_ENRICHED,
+                EventType.AGENT_INTENT_ENRICHED,  # 只訂閱已 enrichment 的版本
                 EventType.AGENT_SPEAK,
             },
         )
@@ -67,7 +67,7 @@ class SpeakerTokenManager:
     # ── 事件分派 ─────────────────────────────────────────────
 
     async def handle_event(self, event: SoulEvent) -> None:
-        if event.event_type == EventType.AGENT_INTENT_ENRICHED:
+        if event.event_type in (EventType.AGENT_INTENT, EventType.AGENT_INTENT_ENRICHED):
             await self._request_token(event)
         elif event.event_type == EventType.AGENT_SPEAK:
             speaker = event.payload.get("agent_id", event.source)
@@ -97,13 +97,15 @@ class SpeakerTokenManager:
         if self._holder is None:
             self._grant(agent_id)
             # re-publish 為 SPEAKER_TOKEN_GRANTED（避免迴圈用新 event type）
+            # 🔴 Bug 1 fix: 明確寫入 agent_id，確保不被舊 event.source 覆蓋
+            enriched_payload = {**intent_event.payload, "agent_id": agent_id}
             await self.bus.publish(
                 SoulEvent(
                     event_type=EventType.SPEAKER_TOKEN_GRANTED,
-                    source=intent_event.source,
+                    source=agent_id,  # ← 用 agent_id，不用 intent_event.source
                     target=intent_event.target,
                     priority=intent_event.priority,
-                    payload=intent_event.payload,
+                    payload=enriched_payload,
                     session_id=intent_event.session_id,
                     correlation_id=intent_event.correlation_id,
                 )

@@ -1,6 +1,6 @@
-"""
+﻿"""
 src/io/gateway.py
-Soul OS — Phase 4 I/O Gateway：WebSocket 廣播 AGENT_SPEAK 給前端
+Soul OS — Phase 4 I/O Gateway：WebSocket + 靜態檔案服務
 """
 import asyncio
 import json
@@ -11,14 +11,14 @@ from typing import Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventType, SoulEvent
 
 logger = logging.getLogger("soul_os.gateway")
 
-# ── 靜態前端路徑（在 import 時解析）──
-# 嘗試多個可能的根目錄位置
+# 找出 static 目錄（在 import 時解析完成）
 import os as _os
 _GATEWAY_DIR = Path(__file__).resolve().parent  # src/io/
 _REPO_ROOT_CANDIDATES = [
@@ -27,15 +27,22 @@ _REPO_ROOT_CANDIDATES = [
 ]
 _STATIC_INDEX = None
 _UI_HTML = None
+_STATIC_DIR = None
+
 for _candidate in _REPO_ROOT_CANDIDATES:
-    _static = _candidate / "static" / "index.html"
-    if _static.exists():
-        _STATIC_INDEX = _static
+    _static = _candidate / "static"
+    _index = _static / "index.html"
+    if _index.exists():
+        _STATIC_DIR = _static
+        _STATIC_INDEX = _index
         _UI_HTML = _STATIC_INDEX.read_text(encoding="utf-8")
         logger.info(f"[Gateway] Loaded static UI from {_STATIC_INDEX} ({len(_UI_HTML)} bytes)")
+        logger.info(f"[Gateway] Static root: {_STATIC_DIR}")
         break
+
 if _UI_HTML is None:
     logger.warning("[Gateway] static/index.html not found, using DEMO_HTML fallback")
+
 DEMO_HTML = """
 <!DOCTYPE html>
 <html>
@@ -99,24 +106,59 @@ class ConnectionManager:
     async def connect(self, ws: WebSocket):
         await ws.accept()
         self._connections.add(ws)
-        logger.info(f"[Gateway] 新連線，目前 {len(self._connections)} 個客戶端")
+        logger.info(f"[Gateway] 連線，目前 {len(self._connections)} 個客戶端")
 
     def disconnect(self, ws: WebSocket):
         self._connections.discard(ws)
-        logger.info(f"[Gateway] 斷線，剩 {len(self._connections)} 個客戶端")
+        logger.info(f"[Gateway] 離線，剩 {len(self._connections)} 個客戶端")
 
     async def broadcast(self, payload: dict):
+        # Write to trace.log directly
+        try:
+            with open('trace.log', 'a', encoding='utf-8') as f:
+                f.write(f'[BCAST] broadcast called, connections={len(self._connections)}\n')
+                f.flush()
+        except:
+            pass
+        conn_count = len(self._connections)
+        logger.info(f'[Gateway] broadcast called, connections={conn_count}')
         if not self._connections:
+            logger.info('[Gateway] broadcast early return: no connections')
+            try:
+                with open('trace.log', 'a', encoding='utf-8') as f:
+                    f.write('[BCAST] early return: no connections\n')
+                    f.flush()
+            except:
+                pass
             return
         msg = json.dumps(payload, ensure_ascii=False)
+        logger.info(f'[Gateway] broadcast sending to {conn_count} clients: {msg[:80]}')
         dead = set()
         for ws in self._connections:
             try:
+                with open('trace.log', 'a', encoding='utf-8') as f:
+                    f.write(f'[SEND] about to send_text to ws, msg_len={len(msg)}\n')
+                    f.flush()
                 await ws.send_text(msg)
-            except Exception:
+                with open('trace.log', 'a', encoding='utf-8') as f:
+                    f.write(f'[SEND] send_text completed, ws={ws}\n')
+                    f.flush()
+                logger.info(f'[Gateway] broadcast sent to client')
+                try:
+                    with open('trace.log', 'a', encoding='utf-8') as f:
+                        f.write('[BCAST] sent to client\n')
+                        f.flush()
+                except:
+                    pass
+            except Exception as e:
+                logger.warning(f'[Gateway] broadcast send error: {e}')
+                with open('trace.log', 'a', encoding='utf-8') as f:
+                    f.write(f'[SEND] send_text error: {e}\n')
+                    f.flush()
                 dead.add(ws)
         for ws in dead:
             self._connections.discard(ws)
+        logger.info(f'[Gateway] broadcast done, dead={len(dead)}')
 
     @property
     def count(self) -> int:
@@ -126,7 +168,8 @@ class ConnectionManager:
 class IOGateway:
     """
     訂閱 Event Bus 的 AGENT_SPEAK，
-    把每條訊息廣播給所有 WebSocket 客戶端。
+    將文字廣播給所有 WebSocket 客戶端。
+    同時提供靜態檔案服務（頭像、CSS 等）。
     """
 
     def __init__(self, bus: SoulEventBus, app: FastAPI = None):
@@ -147,7 +190,7 @@ class IOGateway:
         @self.app.get("/", response_class=HTMLResponse)
         async def root():
             if _UI_HTML:
-                return HTMLResponse(_UI_HTML)
+                return HTMLResponse(_UI_HTML, media_type="text/html; charset=utf-8")
             return DEMO_HTML
 
         @self.app.get("/health")
@@ -160,7 +203,7 @@ class IOGateway:
 
         @self.app.post("/inject/tick")
         async def inject_tick(elapsed_mins: float = 35.0, time_period: str = "morning"):
-            """開發用：直接注入 SYSTEM_TICK 到 bus，繞過 Heartbeat timing"""
+            """手動觸發直接注入 SYSTEM_TICK 到 bus，測試 Heartbeat timing"""
             from src.eventbus.schema import EventPriority, EventType, SoulEvent
             tick = SoulEvent(
                 event_type=EventType.SYSTEM_TICK,
@@ -178,13 +221,13 @@ class IOGateway:
                 },
             )
             await self.bus.publish(tick)
-            # 等待鏈路完成（Agent → Intent → Token → LLM → Speak）
+            # 等管線跑完（Agent → Intent → Token → LLM → Speak）
             await asyncio.sleep(6.0)
             return {"injected": True, "elapsed_mins": elapsed_mins}
 
         @self.app.get("/debug/broadcast")
         async def debug_broadcast():
-            """直接廣播一條測試訊息，繞過 LLM 鏈路"""
+            """直接送一條測試訊息繞過 LLM 管線"""
             from src.eventbus.schema import SoulEvent
             fake_event = SoulEvent(
                 event_type=EventType.AGENT_SPEAK,
@@ -192,7 +235,7 @@ class IOGateway:
                 target="broadcast",
                 payload={
                     "agent_id": "agent_yua",
-                    "text": "還好你還在。（Yua 冷泡茶模式）[MiniMax-style mock]",
+                    "text": "嗨你好。這是 Yua 冷泡茶模式。[MiniMax-style mock]",
                 },
             )
             await self._on_agent_speak(fake_event)
@@ -200,7 +243,7 @@ class IOGateway:
 
         @self.app.get("/inject/yua")
         async def inject_yua():
-            """直接讓 Yua 說一句話（走真實 LLM），然後廣播"""
+            """直接讓 Yua 說句話（走真實 LLM）測試用"""
             try:
                 from src.eventbus.schema import SoulEvent, EventPriority, EventType
                 intent = SoulEvent(
@@ -212,6 +255,7 @@ class IOGateway:
                         "agent_id": "agent_yua",
                         "reason": "silence_timeout",
                         "draft": "還好你還在。",
+                        "mode": "private",
                         "memory_query_hint": "",
                         "chrono_context": "",
                     },
@@ -227,8 +271,8 @@ class IOGateway:
         @self.app.get("/_admin/fast_forward")
         async def admin_fast_forward(minutes: float = 35.0):
             """
-            開發測試用，模擬 last_user_activity 往回設。
-            生產環境（SOUL_ENV=production）禁用。
+            觸發測試捷徑模擬 last_user_activity 往前設定
+            不允許在正式環境（SOUL_ENV=production）使用
             """
             import os
             if os.getenv("SOUL_ENV", "dev") == "production":
@@ -245,7 +289,7 @@ class IOGateway:
         async def websocket_endpoint(ws: WebSocket):
             await self.manager.connect(ws)
             try:
-                # 心跳：每 20s ping 一次，確認連線存活
+                # 心跳：每 20s ping 一次確認連線存活
                 while True:
                     try:
                         raw = await asyncio.wait_for(ws.receive_text(), timeout=20.0)
@@ -253,19 +297,21 @@ class IOGateway:
                         await ws.send_text(json.dumps({"type": "ping"}))
                         continue
 
-                    # 把 client 訊息轉發到 bus（client → bus）
+                    # 將 client 訊息轉發到 bus（client → bus）
                     try:
                         msg = json.loads(raw)
                         logger.info(f"[Gateway] WS raw msg: {str(msg)[:200]}")
                         if msg.get("type") == "USER_MESSAGE":
                             from src.eventbus.schema import SoulEvent, EventPriority, EventType
                             mode = msg.get("mode", "private")
-                            participants = msg.get("participants")
+                            # Bug 3 fix: 統一 group_members → participants，並確保預設全員
                             if mode == "group":
+                                participants = msg.get("group_members") or msg.get("participants") or ["agent_yua", "agent_ruka", "agent_akane"]
                                 target = "broadcast"
                             else:
+                                participants = None
                                 target = msg.get("target_agent", "agent_yua")
-                            logger.info(f"[Gateway] USER_MESSAGE mode={mode} target={target}")
+                            logger.info(f"[Gateway] USER_MESSAGE mode={mode} target={target} participants={participants}")
                             user_event = SoulEvent(
                                 event_type=EventType.USER_MESSAGE,
                                 source=msg.get("user_id", "anonymous"),
@@ -287,6 +333,70 @@ class IOGateway:
             except WebSocketDisconnect:
                 self.manager.disconnect(ws)
 
+        # 掛載靜態檔案目錄（頭像、CSS 等）
+        if _STATIC_DIR is not None:
+            try:
+                self.app.mount("/avatars", StaticFiles(directory=str(_STATIC_DIR / "avatars")), name="avatars")
+                self.app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+                logger.info(f"[Gateway] Static files mounted: /avatars, /static")
+            except Exception as e:
+                logger.warning(f"[Gateway] Failed to mount static files: {e}")
+
+
+        @self.app.post("/memory/clear/group")
+        async def clear_group_memory():
+            """清除群組聊天的記憶"""
+            import json as _json
+            from pathlib import Path as _Path
+            
+            result = {"cleared": False, "file": ""}
+            group_file = _Path("data/conversations/group_chat.json")
+            if group_file.exists():
+                try:
+                    group_file.unlink()
+                    result["cleared"] = True
+                    result["file"] = str(group_file)
+                except Exception as e:
+                    result["error"] = str(e)
+            
+            logger.info(f"[Gateway] clear_group_memory result={result}")
+            return result
+
+        @self.app.post("/memory/clear/{agent_id}")
+        async def clear_agent_memory(agent_id: str):
+            """清除指定 Agent 的記憶（私人對話歷史）"""
+            import json as _json
+            from pathlib import Path as _Path
+            
+            result = {"agent_id": agent_id, "cleared": False, "files": []}
+            
+            # 清除私人對話歷史
+            private_file = _Path("data/conversations") / f"bryan_{agent_id}_private.json"
+            if private_file.exists():
+                try:
+                    private_file.unlink()
+                    result["files"].append(str(private_file))
+                    result["cleared"] = True
+                except Exception as e:
+                    result["error"] = str(e)
+            
+            # 清除群聊中該 Agent 的私人訊息標記
+            group_file = _Path("data/conversations/group_chat.json")
+            if group_file.exists():
+                try:
+                    history = _json.loads(group_file.read_text(encoding="utf-8"))
+                    original_count = len(history)
+                    # 移除該 agent 的私人訊息標記（is_private=True 且 speaker=agent_id）
+                    history = [m for m in history if not (m.get("is_private") and m.get("speaker") == agent_id)]
+                    if len(history) < original_count:
+                        group_file.write_text(_json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+                        result["files"].append(str(group_file))
+                        result["cleared"] = True
+                except Exception as e:
+                    result["error"] = str(e)
+            
+            logger.info(f"[Gateway] clear_memory agent={agent_id} result={result}")
+            return result
     async def _on_agent_speak(self, event: SoulEvent):
         ts = event.timestamp.isoformat() if hasattr(event, "timestamp") and event.timestamp else datetime.now(timezone.utc).isoformat()
         payload = {
@@ -296,5 +406,30 @@ class IOGateway:
             "timestamp": ts,
             "session_id": getattr(event, "session_id", ""),
         }
+        # Write to trace.log directly for debugging
+        try:
+            with open('trace.log', 'a', encoding='utf-8') as f:
+                f.write('[GW] _on_agent_speak ENTER\n')
+                f.write(f'[GW] self={self}\n')
+                f.write(f'[GW] manager={getattr(self, "manager", None)}\n')
+                f.write(f'[GW] payload={payload}\n')
+                f.flush()
+        except Exception as ex:
+            pass
         logger.info("[Gateway] broadcasting: " + str(payload))
-        await self.manager.broadcast(payload)
+        try:
+            if self.manager is None:
+                logger.error('[Gateway] self.manager is None!')
+            else:
+                logger.info(f'[Gateway] calling broadcast, manager count={self.manager.count}')
+                await self.manager.broadcast(payload)
+                logger.info('[Gateway] broadcast completed')
+                # Extra trace: verify broadcast actually ran
+                with open('trace.log', 'a', encoding='utf-8') as f:
+                    f.write(f'[AFT] broadcast done, manager._connections={len(self.manager._connections)}\n')
+                    f.flush()
+        except Exception as e:
+            logger.error(f'[Gateway] broadcast error: {e}')
+            with open('trace.log', 'a', encoding='utf-8') as f:
+                f.write(f'[AFT] broadcast error: {e}\n')
+                f.flush()
