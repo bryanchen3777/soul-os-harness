@@ -122,14 +122,14 @@ class TelegramAdapter(ChannelAdapter):
             )
 
     async def send(self, agent_id: str, text: str,
-                   user_id: int) -> bool:
-        """送訊息給指定 user（user_id = Telegram user id）。"""
+                   user_id: "int | str") -> bool:
+        """送訊息給指定 user（user_id = Telegram user id, int）。"""
         app = self._apps.get(agent_id)
         if not app:
             logger.warning(f"[TG] No app for agent [{agent_id}]")
             return False
         try:
-            await app.bot.send_message(chat_id=user_id, text=text)
+            await app.bot.send_message(chat_id=int(user_id), text=text)
             logger.info(
                 f"[TG:{agent_id}] sent to {user_id}: {text[:50]!r}"
             )

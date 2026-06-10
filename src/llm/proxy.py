@@ -773,6 +773,9 @@ class LLMProxy:
             self._group_history = _load_group()
 
         # ── 發布 AGENT_SPEAK ──────────────────────────
+        # Phase 5b：把觸發事件裡的 target_channel / target_user_id 透傳
+        # → ChannelRouter 看到 target_channel="telegram" 就會送到 Telegram，
+        #   而不是只讓 IOGateway broadcast 給 WebSocket
         speak_event = SoulEvent(
             event_type=EventType.AGENT_SPEAK,
             source=agent_id,
@@ -787,6 +790,9 @@ class LLMProxy:
                 "mode": mode,
                 "tts_enabled": True,
                 "action_tags": [],
+                # Phase 5b：channel routing
+                "target_channel": event.payload.get("target_channel", "web"),
+                "target_user_id": event.payload.get("target_user_id"),
             },
         )
         await self.bus.publish(speak_event)

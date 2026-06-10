@@ -31,13 +31,16 @@ class ChannelAdapter(ABC):
 
     @abstractmethod
     async def send(self, agent_id: str, text: str,
-                   user_id: int) -> bool:
+                   user_id: "int | str") -> bool:
         """送訊息給 user。
 
         Args:
             agent_id: 哪個 agent 在說話（用來選 bot token）
             text: 要送的文字
             user_id: 平台 user 識別碼
+                - Telegram: int
+                - LINE: str（"U..." 開頭）
+                - WeChat: str（open_id）
 
         Returns:
             bool: 成功送出
