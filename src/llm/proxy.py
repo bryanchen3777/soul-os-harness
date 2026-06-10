@@ -574,6 +574,7 @@ class LLMProxy:
         temperature: float = 0.85,
         max_retries: int = 3,
         max_history_turns: int = 10,  # 保留最近幾輪對話，防 context 爆炸
+        config: Optional[dict] = None,  # Phase 4: 完整 config（讓 RAG 等子模組讀取）
     ):
         self.bus = bus
         self.backend = backend
@@ -582,6 +583,7 @@ class LLMProxy:
         self.temperature = temperature
         self.max_retries = max_retries
         self.max_history_turns = max_history_turns
+        self.config = config or {}  # Phase 4 RAG 從這裡讀 rag.* 設定
 
         # 簡易對話歷史快取：{session_id: [messages]}
         # Phase 2 升級點：改為持久化到 SQLite
@@ -661,6 +663,41 @@ class LLMProxy:
                 user_message = ctx["draft"]
                 logger.info(
                     f"[LLMProxy] user_message 從 chrono_context 取: {user_message[:80]!r}")
+
+        # --- RAG 注入（Phase 4：跨 session 歷史搜尋，FTS5 trigram OR）---
+        # 撈 user 訊息在「其他 session」中的相關對話，拼成 rag_block
+        # 接在現有 SAGE memory_context 後面，不覆蓋
+        rag_cfg = self.config.get("rag", {})
+        rag_enabled = rag_cfg.get("enabled", True)
+        rag_top_k = rag_cfg.get("top_k", 3)
+        rag_exclude = rag_cfg.get("exclude_current_session", True)
+
+        if rag_enabled and user_message and len(user_message) >= 3:
+            try:
+                rag_hits = self._memory.search(
+                    query=user_message,
+                    exclude_session_id=event.session_id if rag_exclude else "",
+                    top_k=rag_top_k,
+                )
+                if rag_hits:
+                    rag_lines = [
+                        f"[{str(h.get('timestamp',''))[:10]}] "
+                        f"{h.get('speaker') or h.get('role','?')}: "
+                        f"{h.get('content','')[:120]}"
+                        for h in rag_hits
+                    ]
+                    rag_block = "【過去相關記憶】\n" + "\n".join(rag_lines)
+                    existing_mc = memory_context
+                    memory_context = (
+                        existing_mc + "\n\n" + rag_block
+                    ).strip() if existing_mc else rag_block
+                    logger.info(
+                        f"[LLMProxy] RAG | hits={len(rag_hits)} | "
+                        f"ctx_len={len(memory_context)}"
+                    )
+            except Exception as e:
+                logger.warning(f"[LLMProxy] RAG search failed, skipping: {e}")
+        # --- RAG 注入結束 ---
 
 
         logger.info(

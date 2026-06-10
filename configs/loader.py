@@ -172,6 +172,7 @@ def create_llm_proxy(cfg: dict, bus):
         temperature=llm_cfg.get("temperature", 0.85),
         max_retries=llm_cfg.get("max_retries", 3),
         max_history_turns=llm_cfg.get("max_history_turns", 10),
+        config=cfg,  # Phase 4: 傳完整 config 進去，RAG 等子模組從 self.config 讀
     )
 
 

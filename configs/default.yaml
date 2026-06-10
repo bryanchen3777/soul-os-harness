@@ -71,3 +71,11 @@ bus:
 logging:
   level: INFO
   format: "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+
+# ── Phase 4 RAG（跨 session 對話歷史搜尋）──
+# 透過 SQLite FTS5 trigram 索引，從所有 session 撈相關片段
+# 注入 LLMProxy 的 memory_context（接在 SAGE graph summary 後面）
+rag:
+  enabled: true
+  top_k: 3                      # 最多注入幾條過去相關記憶
+  exclude_current_session: true # 排除當下對話（避免跟 history 重複）
