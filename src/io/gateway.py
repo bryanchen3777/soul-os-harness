@@ -1,4 +1,4 @@
-﻿"""
+"""
 src/io/gateway.py
 Soul OS — Phase 4 I/O Gateway：WebSocket + 靜態檔案服務
 """
@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventType, SoulEvent
+from src.agent.emotion import emotion_engine
 
 logger = logging.getLogger("soul_os.gateway")
 
@@ -240,6 +241,29 @@ class IOGateway:
             )
             await self._on_agent_speak(fake_event)
             return {"broadcast": True}
+
+        @self.app.get("/debug/emotion/{agent_id}")
+        async def debug_emotion(agent_id: str):
+            """Phase 3 情緒狀態查詢：回傳 mood / intimacy / updated_at"""
+            from fastapi import HTTPException
+            valid = {"agent_yua", "agent_ruka", "agent_akane"}
+            if agent_id not in valid:
+                raise HTTPException(status_code=404, detail=f"unknown agent_id: {agent_id}")
+            mood, intimacy = emotion_engine.get(agent_id)
+            # 取 updated_at
+            cur = emotion_engine.conn.execute(
+                "SELECT updated_at FROM agent_emotions WHERE agent_id = ?",
+                (agent_id,),
+            )
+            row = cur.fetchone()
+            updated_at = row[0] if row else None
+            return {
+                "agent_id": agent_id,
+                "mood": round(mood, 3),
+                "intimacy": round(intimacy, 2),
+                "mood_description": emotion_engine.mood_description(mood),
+                "updated_at": updated_at,
+            }
 
         @self.app.get("/inject/yua")
         async def inject_yua():

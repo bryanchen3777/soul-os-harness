@@ -24,6 +24,7 @@ from typing import Any, Dict, Optional
 
 from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
+from src.agent.emotion import emotion_engine, SENSITIVITY
 
 logger = logging.getLogger("soul_os.agent")
 
@@ -165,6 +166,14 @@ class AgentConsciousness(ABC):
         content = event.payload.get("content", "")
         mode = event.payload.get("mode", "private")
 
+        # Phase 3 情緒：使用者說話 → 心情上升 + 親密度微增
+        sens = SENSITIVITY.get(self.agent_id, {"response_boost": 0.08})
+        emotion_engine.update(
+            self.agent_id,
+            mood_delta=sens["response_boost"],
+            intimacy_delta=0.3,
+        )
+
         # ── 私聊模式（方案 A）─────────────────────────────
         if mode == "private":
             # per-agent lock
@@ -269,6 +278,13 @@ class AgentConsciousness(ABC):
                 f"[{self.agent_id}] 冷卻中 ({self._cooldown_remaining} Ticks 剩餘)"
             )
             return
+
+        # Phase 3 情緒：每次 tick mood 衰減（慢慢回到 0）
+        sens = SENSITIVITY.get(self.agent_id, {"mood_decay": 0.015})
+        emotion_engine.update(
+            self.agent_id,
+            mood_delta=-sens["mood_decay"],
+        )
 
         # 評估是否主動說話（Phase 3.5 傳 chrono_payload）
         should_speak, reason = self._should_speak(elapsed_mins, event.payload)
@@ -382,6 +398,9 @@ class AgentConsciousness(ABC):
         intent_payload["agent_id"] = self.agent_id
         intent_payload["reason"] = reason
         intent_payload["mode"] = mode  # 傳給 LLMProxy 決定用哪份 history
+        # Phase 3 情緒：把當前 mood 帶進 payload，給 LLMProxy 注入 system prompt
+        current_mood, _ = emotion_engine.get(self.agent_id)
+        intent_payload["mood"] = current_mood
         if chrono_payload:
             intent_payload["chrono_context"] = chrono_payload.get("chrono_block", "")
             # 🔴 關鍵：把 draft 從 chrono_payload 提取出來放進 intent_payload

@@ -28,6 +28,7 @@ import httpx  # 使用 httpx 做非同步 HTTP，避免 requests 阻塞事件迴
 from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
 from src.memory.store import MemoryStore
+from src.agent.emotion import emotion_engine
 
 logger = logging.getLogger("soul_os.llm_proxy")
 
@@ -117,6 +118,7 @@ def _build_messages_group(
     current_input: str,
     memory_context: str,
     memory,
+    mood: float = 0.0,
 ) -> List[Dict[str, str]]:
     """
     群聊模式的 messages 組裝：
@@ -136,6 +138,10 @@ def _build_messages_group(
     system_parts = [identity_anchor + soul.strip()]
     if memory_context.strip():
         system_parts.append(f"\n你記得以下這些事情：\n{memory_context.strip()}")
+    # Phase 3 情緒：把 mood 描述注入 system prompt
+    mood_desc = emotion_engine.mood_description(mood)
+    if mood_desc:
+        system_parts.append(f"\n[情緒狀態] {mood_desc}")
     messages.append({"role": "system", "content": "\n".join(system_parts)})
 
     # 群聊歷史（過濾 is_private）
@@ -164,6 +170,7 @@ def _build_messages_private(
     current_input: str,
     memory_context: str,
     memory,
+    mood: float = 0.0,
 ) -> List[Dict[str, str]]:
     """
     私聊模式的 messages 組裝：
@@ -181,6 +188,10 @@ def _build_messages_private(
     system_parts = [identity_anchor + soul.strip()]
     if memory_context.strip():
         system_parts.append(f"\n你記得以下這些事情：\n{memory_context.strip()}")
+    # Phase 3 情緒：把 mood 描述注入 system prompt
+    mood_desc = emotion_engine.mood_description(mood)
+    if mood_desc:
+        system_parts.append(f"\n[情緒狀態] {mood_desc}")
     messages.append({"role": "system", "content": "\n".join(system_parts)})
 
     # 私人聊天：完全隔離，不注入群聊摘要
@@ -661,10 +672,12 @@ class LLMProxy:
         # 注意：不要在 LLM 呼叫前先寫 user 訊息進 history，
         # 否則 _build_messages_*() 會把同一條 user 訊息讀出來又加在末尾，造成重複。
         soul = load_persona(agent_id)
+        # Phase 3：從 event payload 拿 mood，傳給 _build_messages_*
+        mood = event.payload.get("mood", 0.0)
         if mode == "group":
-            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory)
+            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood)
         else:
-            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory)
+            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood)
 
         logger.info(f"[LLMProxy-DEBUG] agent={agent_id} mode={mode} messages={len(messages)}")
         # ????? system prompt?? 500 ???
