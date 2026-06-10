@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """scripts/test_memory_integrity.py
 測試記憶寫入完整性：
 1. 清掉所有歷史

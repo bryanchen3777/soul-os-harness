@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """scripts/test_group_memory.py - Updated to verify from file (WebSocket capture has timing issues)"""
 import asyncio
 import json

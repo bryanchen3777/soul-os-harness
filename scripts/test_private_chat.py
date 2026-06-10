@@ -1,4 +1,4 @@
-﻿"""
+"""
 scripts/test_private_chat.py
 Soul OS - Interactive Private/Group Chat Test
 

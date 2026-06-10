@@ -1,4 +1,4 @@
-﻿"""
+"""
 tests/test_private_chat.py
 Soul OS - Private Chat 端到端测试
 
