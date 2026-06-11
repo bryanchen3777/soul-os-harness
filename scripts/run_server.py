@@ -112,7 +112,9 @@ async def lifespan(app: FastAPI):
         from src.io.channels.router import ChannelRouter
 
         tg_adapter = TelegramAdapter()
-        channel_router = ChannelRouter(bus)
+        # Phase 5c：傳 gateway_manager 給 ChannelRouter，heartbeat 觸發時
+        # 動態查 WebSocket 連線數，0 連線就 fallback 走 Telegram
+        channel_router = ChannelRouter(bus, gateway_manager=gateway.manager)
         channel_router.register(tg_adapter)
         await channel_router.start()
 

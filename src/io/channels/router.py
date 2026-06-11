@@ -1,10 +1,16 @@
 """
 src/io/channels/router.py
-Soul OS Phase 5b — Channel Router
+Soul OS Phase 5b + 5c — Channel Router
 
 把 AGENT_SPEAK 事件依 payload 內的 target_channel 分發到對應 adapter。
 WebSocket 由現有 IOGateway 處理（不重複），ChannelRouter 只管其他 channel
 （Telegram / LINE / WeChat）。
+
+Phase 5c 新增：fallback 邏輯
+  - 如果 target_channel=web 且 WebSocket 0 連線（gateway_manager.count == 0）
+    → 改送 telegram（最近一次 inbound 的 user）
+  - 如果 user 不在 web → 透過 Telegram 找她
+  - 用「最近 tg user」mapping，避免每次都要 query 記憶表
 """
 from __future__ import annotations
 
@@ -22,9 +28,14 @@ logger = logging.getLogger("soul_os.channels.router")
 class ChannelRouter:
     """Phase 5b：把 AGENT_SPEAK 依 target_channel 分發到對應 ChannelAdapter。"""
 
-    def __init__(self, bus):
+    def __init__(self, bus, gateway_manager=None):
         self._bus = bus
         self._adapters: dict[str, "ChannelAdapter"] = {}
+        # Phase 5c：拿到 IOGateway 的 ConnectionManager，動態查 WebSocket 連線數
+        self._gateway_manager = gateway_manager
+        # Phase 5c：記「每個 agent 最近一次互動的 tg user」，
+        # 給主動觸發（沒帶 target_user_id 的 AGENT_SPEAK）當 fallback 對象
+        self._last_tg_user: dict[str, int] = {}
 
     def register(self, adapter: "ChannelAdapter") -> None:
         """註冊一個 channel adapter（如 TelegramAdapter）。"""
@@ -50,6 +61,30 @@ class ChannelRouter:
 
     async def _on_agent_speak(self, event: SoulEvent) -> None:
         target_channel = event.payload.get("target_channel", "web")
+        target_user_id = event.payload.get("target_user_id")
+        agent_id = event.payload.get("agent_id", event.source)
+
+        # ── Phase 5c fallback ──────────────────────────────
+        # 主動觸發（heartbeat）的 AGENT_SPEAK 預設走 web，
+        # 但如果 user 不在 Web UI → 改成走 Telegram（她「找得到你」的方式）
+        if target_channel == "web" and self._gateway_manager is not None:
+            if self._gateway_manager.count == 0:
+                last_user = self._last_tg_user.get(agent_id)
+                if last_user:
+                    logger.info(
+                        f"[ChannelRouter] web 0 conn, "
+                        f"fallback telegram: {agent_id} → user {last_user}"
+                    )
+                    target_channel = "telegram"
+                    target_user_id = last_user
+                else:
+                    # 從來沒跟 user 互動過，沒辦法送
+                    # 留給 web 廣播（雖然沒人接，總比丟掉好）
+                    logger.info(
+                        f"[ChannelRouter] {agent_id} 主動觸發，"
+                        f"web 0 conn 但沒有 last_tg_user, 留 web"
+                    )
+        # ── Phase 5c fallback end ──────────────────────────
 
         # Web 由 IOGateway 處理，這裡跳過避免重複送出
         if target_channel == "web":
@@ -64,8 +99,6 @@ class ChannelRouter:
             return
 
         text = event.payload.get("text", "")
-        target_user_id = event.payload.get("target_user_id")
-        agent_id = event.payload.get("agent_id", event.source)
 
         if target_user_id is None:
             logger.warning(
@@ -127,10 +160,18 @@ class ChannelRouter:
         AgentConsciousness.register() 用 target_filter=agent_id
         （完整前綴）。早期 code 用 target=agent_id（短碼），bus match 不到。
         """
+        # Phase 5c：記「這個 agent 最近一次互動的 tg user」
+        # 給主動觸發（heartbeat）fallback 用
+        # 注意：key 必須是「完整 agent_id」（full_agent_id）
+        # 因為 _on_agent_speak 拿到的 agent_id 是 "agent_yua"（consciousness 來的）
+        # 而 inbound 拿到的可能是 "yua"（Telegram callback 短碼）→ 統一用 full
         full_agent_id = (
             agent_id if agent_id.startswith("agent_")
             else f"agent_{agent_id}"
         )
+        if channel == "telegram":
+            self._last_tg_user[full_agent_id] = user_id
+
         session_id = f"tg_{full_agent_id}_{user_id}"
         event = SoulEvent(
             event_type=EventType.USER_MESSAGE,
