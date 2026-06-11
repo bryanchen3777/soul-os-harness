@@ -103,19 +103,27 @@ async def lifespan(app: FastAPI):
     await heartbeat.start()
     app.state._heartbeat = heartbeat  # expose for /_admin/fast_forward
 
-    # ── Phase 5b：Telegram Channel ──────────────────────────
-    # 有設 TELEGRAM_BOT_YUA 才啟動；沒設就靜默略過（避免無 env 報錯）
+    # ── ChannelRouter：聚合所有 channel（Telegram / Live2D / 之後）──
+    # Phase 5b/5c：Telegram 走 TELEGRAM_BOT_YUA env flag 啟動
+    # Phase 6.1：Live2D 永遠啟動（純前端，無外部依賴）
     tg_adapter = None
+    live2d_adapter = None
     channel_router = None
+    from src.io.channels.router import ChannelRouter
+
+    # Live2D adapter 永遠建（純前端 WS 廣播）
+    from src.io.channels.live2d_adapter import Live2DChannelAdapter
+    live2d_adapter = Live2DChannelAdapter(gateway=gateway)
+
     if os.environ.get("TELEGRAM_BOT_YUA"):
         from src.io.channels.telegram import TelegramAdapter
-        from src.io.channels.router import ChannelRouter
 
         tg_adapter = TelegramAdapter()
         # Phase 5c：傳 gateway_manager 給 ChannelRouter，heartbeat 觸發時
         # 動態查 WebSocket 連線數，0 連線就 fallback 走 Telegram
         channel_router = ChannelRouter(bus, gateway_manager=gateway.manager)
         channel_router.register(tg_adapter)
+        channel_router.register(live2d_adapter)  # Phase 6.1：Live2D 跟 Telegram 共用 router
         await channel_router.start()
 
         async def _on_tg_message(agent_id: str,
@@ -129,8 +137,13 @@ async def lifespan(app: FastAPI):
         await tg_adapter.start(_on_tg_message)
         logger.info("[Server] Telegram channel started (3 bots polling)")
     else:
+        # 沒 Telegram 也要有 ChannelRouter（給 Live2D 用）
+        channel_router = ChannelRouter(bus, gateway_manager=gateway.manager)
+        channel_router.register(live2d_adapter)
+        await channel_router.start()
         logger.info("[Server] TELEGRAM_BOT_YUA not set, skip Telegram channel")
-    # ── Phase 5b end ────────────────────────────────────────
+    logger.info("[Server] Live2D channel started (WS broadcast to frontend)")
+    # ── Phase 5b + 6.1 end ──────────────────────────────────
 
     logger.info("[Server] 所有模組啟動完成")
     yield
@@ -141,6 +154,7 @@ async def lifespan(app: FastAPI):
     if tg_adapter is not None:
         await tg_adapter.stop()
         logger.info("[Server] Telegram channel stopped")
+    # live2d_adapter 沒獨立 start/stop，直接跟著 ChannelRouter 收
     await heartbeat.stop()
     await bus.stop()
     logger.info("[Server] 關閉完成")

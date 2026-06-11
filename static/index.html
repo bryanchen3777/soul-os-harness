@@ -312,10 +312,47 @@
     </div>
   </div>
 
-  <script>
+    <script>
     var currentConversation = "group";
     var groupMembers = new Set(["agent_yua", "agent_ruka", "agent_akane"]);
     var ws = null;
+
+    // ===== Phase 6.1：Live2D Widget 整合 =====
+    // 載入 embed.js，window.AvatarWidget 會自動可用
+    // Live2D widget 顯示在右下角浮動，現有對話體驗不破壞
+    (function() {
+      var s = document.createElement('script');
+      s.src = '/embed.js';
+      // Phase 6.1：先拿 Yua 範例模型驗證
+      // Phase 6.4：會依 agent 切換模型（switch_model postMessage）
+      s.setAttribute('data-model', 'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json');
+      s.setAttribute('data-knowledge', '/knowledge.js');
+      s.setAttribute('data-open', 'true');
+      s.async = true;
+      s.onerror = function() {
+        console.warn('[Live2D] embed.js 載入失敗，繼續用純文字對話');
+      };
+      document.head.appendChild(s);
+    })();
+
+    // Live2D say() wrapper — emotion 預設 neutral，之後從 mood 推導
+    function live2dSay(agentId, text, emotion) {
+      if (!window.AvatarWidget) {
+        console.debug('[Live2D] AvatarWidget not ready yet');
+        return;
+      }
+      var em = emotion || (
+        agentId === 'agent_yua' ? 'cold' :
+        agentId === 'agent_ruka' ? 'happy' :
+        agentId === 'agent_akane' ? 'calm' : 'neutral'
+      );
+      try {
+        window.AvatarWidget.say(text);
+        console.log('[Live2D] say:', agentId, em, text.slice(0, 30));
+      } catch (e) {
+        console.error('[Live2D] say error:', e);
+      }
+    }
 
     function getStorageKey(convId) {
       return "soul_os_" + convId + "_history";
@@ -484,6 +521,11 @@
     ws.onmessage = function(event) {
       try {
         var d = JSON.parse(event.data);
+        // Phase 6.1：Live2D 訊息 — 觸發 widget 說話
+        if (d.type === "live2d" && d.text) {
+          live2dSay(d.agent_id, d.text, d.emotion);
+          return;
+        }
         if (d.type === "agent_speak" && d.text) {
           var speaker = d.agent_id || "agent_yua";
           if (currentConversation === "group") {
