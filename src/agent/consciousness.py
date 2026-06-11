@@ -186,10 +186,20 @@ class AgentConsciousness(ABC):
             target = event.payload.get("target_agent", "agent_yua")
             logger.info(f"[{self.agent_id}] _on_user_message: content={content[:30]!r} mode={mode}")
             if content and self.agent_id == target:
+                # Phase 5b：把 target_channel / target_user_id 帶進 chrono_payload
+                # → _fire_intent 透傳到 AGENT_INTENT，最後到 AGENT_SPEAK
+                # 給 ChannelRouter 用
+                chrono_payload = {"draft": content}
+                tc = event.payload.get("target_channel")
+                tu = event.payload.get("target_user_id")
+                if tc:
+                    chrono_payload["target_channel"] = tc
+                if tu is not None:
+                    chrono_payload["target_user_id"] = tu
                 await self._fire_intent(
                     reason="user_message",
                     elapsed_mins=0.0,
-                    chrono_payload={"draft": content},
+                    chrono_payload=chrono_payload,
                     mode="private",
                 )
             else:
@@ -408,6 +418,12 @@ class AgentConsciousness(ABC):
             if "draft" in chrono_payload:
                 intent_payload["draft"] = chrono_payload["draft"]
                 logger.info(f"[{self.agent_id}] draft 傳遞: {chrono_payload['draft'][:30]!r}...")
+            # Phase 5b：把 target_channel / target_user_id 從 chrono_payload
+            # 透傳到 AGENT_INTENT，最後到 AGENT_SPEAK 給 ChannelRouter
+            if "target_channel" in chrono_payload:
+                intent_payload["target_channel"] = chrono_payload["target_channel"]
+            if "target_user_id" in chrono_payload:
+                intent_payload["target_user_id"] = chrono_payload["target_user_id"]
 
         event = SoulEvent(
             event_type=EventType.AGENT_INTENT,

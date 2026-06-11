@@ -74,6 +74,14 @@ class ChannelRouter:
             )
             return
 
+        # Phase 5b：TelegramAdapter 內 _apps key 是短碼（"yua"），
+        # 但 bus 上的 agent_id 是 full（"agent_yua"）。strip prefix 對齊。
+        # 之後 LINE / WeChat 接 full id 直接用，這段只動 telegram 邏輯。
+        if target_channel == "telegram" and agent_id.startswith("agent_"):
+            adapter_agent_id = agent_id[len("agent_"):]
+        else:
+            adapter_agent_id = agent_id
+
         try:
             # Phase 5b：ChannelAdapter.send() 簽名收 int（Telegram），
             # 但 LINE/WeChat 之後的 user_id 是 string。嘗試 int()，
@@ -83,19 +91,19 @@ class ChannelRouter:
             except (ValueError, TypeError):
                 user_id_arg = str(target_user_id)
             success = await adapter.send(
-                agent_id=agent_id,
+                agent_id=adapter_agent_id,
                 text=text,
                 user_id=user_id_arg,
             )
             if success:
                 logger.info(
                     f"[ChannelRouter:{target_channel}] sent to "
-                    f"{target_user_id} from {agent_id}: {text[:50]!r}"
+                    f"{target_user_id} from {adapter_agent_id}: {text[:50]!r}"
                 )
             else:
                 logger.warning(
                     f"[ChannelRouter:{target_channel}] send failed "
-                    f"agent={agent_id} user={target_user_id}"
+                    f"agent={adapter_agent_id} user={target_user_id}"
                 )
         except Exception as e:
             logger.exception(
@@ -114,18 +122,26 @@ class ChannelRouter:
         session_id 策略（A 方案，Phase 5b 簡單版）：
           session_id = f"tg_{agent_id}_{user_id}"
         之後要支援跨時間保留 session 再升級到 mapping。
+
+        target 必須是「完整 agent_id」（如 "agent_yua"），因為
+        AgentConsciousness.register() 用 target_filter=agent_id
+        （完整前綴）。早期 code 用 target=agent_id（短碼），bus match 不到。
         """
-        session_id = f"tg_{agent_id}_{user_id}"
+        full_agent_id = (
+            agent_id if agent_id.startswith("agent_")
+            else f"agent_{agent_id}"
+        )
+        session_id = f"tg_{full_agent_id}_{user_id}"
         event = SoulEvent(
             event_type=EventType.USER_MESSAGE,
             source=f"{channel}:{user_id}",
-            target=agent_id,  # 私訊模式，target = agent_id
+            target=full_agent_id,  # 私訊模式，target = 完整 agent_id
             payload={
                 "content": text,        # USER_MESSAGE 慣例用 content（consciousness.py 看得到）
                 "text": text,           # 跟 LLMProxy 的 _on_user_message 一致
                 "user_id": str(user_id),
-                "agent_id": agent_id,
-                "target_agent": agent_id,
+                "agent_id": full_agent_id,
+                "target_agent": full_agent_id,
                 "channel": channel,
                 "target_channel": channel,   # 透傳到 AGENT_INTENT → AGENT_SPEAK
                 "target_user_id": user_id,   # 透傳，給 router outbound 用
@@ -135,6 +151,6 @@ class ChannelRouter:
         )
         await self._bus.publish(event)
         logger.info(
-            f"[inbound:{channel}] {agent_id} ← user_id={user_id} "
+            f"[inbound:{channel}] {full_agent_id} ← user_id={user_id} "
             f"session={session_id} text={text[:50]!r}"
         )

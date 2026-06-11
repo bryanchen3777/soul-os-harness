@@ -19,6 +19,28 @@ sys.path.insert(0, str(_root))
 
 logger = logging.getLogger("soul_os.server")
 
+# Phase 5b：基本 logging config，否則 logger.info 全部吞掉
+# uvicorn 預設只接 WARNING+，需要明確指定
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+)
+
+# Phase 5b：抑制 httpx/telegram 把 URL（含 bot token）印進 log
+# 4-strike 教訓：python-telegram-bot 預設 INFO 級別會在每個 HTTP
+# request log 帶完整 https://api.telegram.org/bot<TOKEN>/...
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
+
+# Phase 5b：load .env（讓 TELEGRAM_BOT_* / MINIMAX_API_KEY 等生效）
+# 沒 .env 也不報錯
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 
 class MockLLMBackend:
     async def complete(self, messages, model, max_tokens, temperature):
@@ -81,9 +103,42 @@ async def lifespan(app: FastAPI):
     await heartbeat.start()
     app.state._heartbeat = heartbeat  # expose for /_admin/fast_forward
 
+    # ── Phase 5b：Telegram Channel ──────────────────────────
+    # 有設 TELEGRAM_BOT_YUA 才啟動；沒設就靜默略過（避免無 env 報錯）
+    tg_adapter = None
+    channel_router = None
+    if os.environ.get("TELEGRAM_BOT_YUA"):
+        from src.io.channels.telegram import TelegramAdapter
+        from src.io.channels.router import ChannelRouter
+
+        tg_adapter = TelegramAdapter()
+        channel_router = ChannelRouter(bus)
+        channel_router.register(tg_adapter)
+        await channel_router.start()
+
+        async def _on_tg_message(agent_id: str,
+                                  text: str,
+                                  user_id: int) -> None:
+            """Telegram bot 收到 user 訊息 → 送進 Event Bus"""
+            await channel_router.inbound(
+                agent_id, text, user_id, channel="telegram"
+            )
+
+        await tg_adapter.start(_on_tg_message)
+        logger.info("[Server] Telegram channel started (3 bots polling)")
+    else:
+        logger.info("[Server] TELEGRAM_BOT_YUA not set, skip Telegram channel")
+    # ── Phase 5b end ────────────────────────────────────────
+
     logger.info("[Server] 所有模組啟動完成")
     yield
 
+    # ── Shutdown ────────────────────────────────────────────
+    if channel_router is not None:
+        await channel_router.stop()
+    if tg_adapter is not None:
+        await tg_adapter.stop()
+        logger.info("[Server] Telegram channel stopped")
     await heartbeat.stop()
     await bus.stop()
     logger.info("[Server] 關閉完成")
