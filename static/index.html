@@ -322,11 +322,12 @@
     // Live2D widget 顯示在右下角浮動，現有對話體驗不破壞
     (function() {
       var s = document.createElement('script');
-      s.src = '/embed.js';
+      // ?v=1 cache-bust（避免瀏覽器卡舊版 embed.js）
+      s.src = '/static/embed.js?v=1';
       // Phase 6.1：先拿 Yua 範例模型驗證
       // Phase 6.4：會依 agent 切換模型（switch_model postMessage）
       s.setAttribute('data-model', 'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json');
-      s.setAttribute('data-knowledge', '/knowledge.js');
+      s.setAttribute('data-knowledge', '/static/knowledge.js?v=1');
       s.setAttribute('data-open', 'true');
       s.async = true;
       s.onerror = function() {
