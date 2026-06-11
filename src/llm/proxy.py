@@ -206,11 +206,9 @@ def _build_messages_private(
     if current_input:
         messages.append({"role": "user", "content": current_input})
 
-    # DEBUG：印出實際送給 LLM 的 messages（確認 user 訊息沒有重複）
-    import sys
-    print(f"[MSG DEBUG _build_messages_private] agent={agent_id} total={len(messages)}", file=sys.stderr)
-    for i, m in enumerate(messages):
-        print(f"  [{i}] {m.get('role')} {m.get('content','')[:80]!r}", file=sys.stderr)
+    # DEBUG block removed in Phase 5c — 把整個 messages array 印到
+    # stderr 會 leak user 隱私（user_message 全文）。要 debug 改成
+    # logger.debug("messages count = N") 不要印內容。
     return messages
 
 
@@ -380,19 +378,21 @@ class ClaudeBackend(LLMBackend):
                     text = block["text"].strip()
                     break
             if not text:
-                # MiniMax 回傳 [thinking] 但沒有 [text] block 時，
-                # fallback 取 thinking 內容（否則使用者完全看不到回覆）
-                for b in content_blocks:
-                    if b.get("type") == "thinking" and b.get("thinking"):
-                        thinking_text = b["thinking"].strip()
-                        if thinking_text:
-                            logger.info(
-                                f"[ClaudeBackend] 無 text block，使用 thinking 內容（length={len(thinking_text)}）"
-                            )
-                            return thinking_text[:500]  # 截斷避免太長
-                logger.warning(
-                    f"[ClaudeBackend] 無任何 block，回傳空 | data keys={list(data.keys())}"
+                # 沒有 text block：可能是 LLM reasoning 預算吃滿
+                # 只輸出 thinking，沒正式回應。Phase 5c 起：thinking 是 LLM 內部
+                # 推理，不該送給 user（之前 fallback 會送，造成 Telegram 收到
+                # 整段 reasoning）。改成回傳空字串，呼叫端另外處理。
+                thinking_seen = any(
+                    b.get("type") == "thinking" for b in content_blocks
                 )
+                if thinking_seen:
+                    logger.info(
+                        f"[ClaudeBackend] 只有 thinking 沒 text，過濾掉（不送 user）"
+                    )
+                else:
+                    logger.warning(
+                        f"[ClaudeBackend] 無任何 block，回傳空 | data keys={list(data.keys())}"
+                    )
                 return ""
             return text
 
@@ -716,12 +716,13 @@ class LLMProxy:
         else:
             messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood)
 
-        logger.info(f"[LLMProxy-DEBUG] agent={agent_id} mode={mode} messages={len(messages)}")
-        # ????? system prompt?? 500 ???
-        sys_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
-        logger.info(f"[LLMProxy-DEBUG] system_prompt[:500]={sys_msg[:500]!r}")
-        for i, msg in enumerate(messages):
-            logger.info(f"  [{i}] {msg.get('role')} {msg.get('content','')[:60]!r}...")
+        # Phase 5c：DEBUG log 改 logger.debug，避免 user 訊息 / system prompt
+        # 全文被印到 log 檔（leak 隱私）
+        logger.debug(f"[LLMProxy] agent={agent_id} mode={mode} messages={len(messages)}")
+        sys_msg_len = next(
+            (len(m["content"]) for m in messages if m["role"] == "system"), 0
+        )
+        logger.debug(f"[LLMProxy] system_prompt_len={sys_msg_len}")
 
         # ── 呼叫 LLM ──────────────────────────────────
         generated_text = await self._complete_with_retry(
@@ -729,6 +730,16 @@ class LLMProxy:
             agent_id=agent_id,
             correlation_id=event.event_id,
         )
+
+        # Phase 5c bug fix：LLM 沒生成 text（可能 reasoning 預算吃滿、
+        # 過濾掉 thinking fallback），不發 AGENT_SPEAK，避免空訊息或
+        # reasoning 漏到 Telegram / WebSocket
+        if not generated_text or not generated_text.strip():
+            logger.warning(
+                f"[LLMProxy] {agent_id} 生成空 text，跳過 AGENT_SPEAK "
+                f"(reason={reason}, mode={mode})"
+            )
+            return
 
         if generated_text is None:
             # 即使 LLM 失敗也要把 user 訊息寫入（避免下次再問一次同樣的）
