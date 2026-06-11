@@ -36,6 +36,8 @@ class ChannelRouter:
         # Phase 5c：記「每個 agent 最近一次互動的 tg user」，
         # 給主動觸發（沒帶 target_user_id 的 AGENT_SPEAK）當 fallback 對象
         self._last_tg_user: dict[str, int] = {}
+        # Phase 5c+：記最近 tg session 對應的 session_id（給主動觸發帶上下文用）
+        self._last_tg_session: dict[str, str] = {}
 
     def register(self, adapter: "ChannelAdapter") -> None:
         """註冊一個 channel adapter（如 TelegramAdapter）。"""
@@ -152,9 +154,9 @@ class ChannelRouter:
     ) -> None:
         """Telegram / LINE / WeChat 收到 user 訊息 → 發 USER_MESSAGE 進 Event Bus。
 
-        session_id 策略（A 方案，Phase 5b 簡單版）：
-          session_id = f"tg_{agent_id}_{user_id}"
-        之後要支援跨時間保留 session 再升級到 mapping。
+        session_id 對齊 LLMProxy 讀 history 的 key（_session_key(agent_id)
+        回傳 "session_{agent_id}"），這樣 Telegram 跟 WebSocket 的對話歷史
+        會寫進同一個 session，LLM 看得到。
 
         target 必須是「完整 agent_id」（如 "agent_yua"），因為
         AgentConsciousness.register() 用 target_filter=agent_id
@@ -171,8 +173,12 @@ class ChannelRouter:
         )
         if channel == "telegram":
             self._last_tg_user[full_agent_id] = user_id
+            self._last_tg_session[full_agent_id] = f"session_{full_agent_id}"
 
-        session_id = f"tg_{full_agent_id}_{user_id}"
+        # Phase 5c+ fix：session_id 跟 LLMProxy _session_key 對齊
+        # 之前用 f"tg_{full_agent_id}_{user_id}" 變成獨立 session
+        # LLM 讀 history 是用固定 "session_{agent_id}"，看不到 tg 對話
+        session_id = f"session_{full_agent_id}"
         event = SoulEvent(
             event_type=EventType.USER_MESSAGE,
             source=f"{channel}:{user_id}",
