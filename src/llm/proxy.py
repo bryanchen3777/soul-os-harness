@@ -725,89 +725,117 @@ class LLMProxy:
         logger.debug(f"[LLMProxy] system_prompt_len={sys_msg_len}")
 
         # ── 呼叫 LLM ──────────────────────────────────
-        generated_text = await self._complete_with_retry(
-            messages=messages,
-            agent_id=agent_id,
-            correlation_id=event.event_id,
-        )
-
-        # Phase 5c bug fix：LLM 沒生成 text（可能 reasoning 預算吃滿、
-        # 過濾掉 thinking fallback），不發 AGENT_SPEAK，避免空訊息或
-        # reasoning 漏到 Telegram / WebSocket
-        if not generated_text or not generated_text.strip():
-            logger.warning(
-                f"[LLMProxy] {agent_id} 生成空 text，跳過 AGENT_SPEAK "
-                f"(reason={reason}, mode={mode})"
+        # Phase 5c+ bug fix：try/finally 確保任何失敗路徑（HTTP 529、
+        # thinking-only、空 text、exception）都釋放 Speaker Token，
+        # 不卡住後續 agent 排隊
+        _agent_speak_published = False
+        try:
+            generated_text = await self._complete_with_retry(
+                messages=messages,
+                agent_id=agent_id,
+                correlation_id=event.event_id,
             )
-            return
 
-        if generated_text is None:
-            # 即使 LLM 失敗也要把 user 訊息寫入（避免下次再問一次同樣的）
-            if user_message:
-                if mode == "group":
+            # Phase 5c bug fix：LLM 沒生成 text（可能 reasoning 預算吃滿、
+            # 過濾掉 thinking fallback），不發 AGENT_SPEAK，避免空訊息或
+            # reasoning 漏到 Telegram / WebSocket
+            if not generated_text or not generated_text.strip():
+                logger.warning(
+                    f"[LLMProxy] {agent_id} 生成空 text，跳過 AGENT_SPEAK "
+                    f"(reason={reason}, mode={mode})"
+                )
+                return
+
+            if generated_text is None:
+                # 即使 LLM 失敗也要把 user 訊息寫入（避免下次再問一次同樣的）
+                if user_message:
+                    if mode == "group":
+                        _append_group_user("bryan", user_message)
+                        self._memory.append("group", "user", user_message, "bryan", is_private=False)
+                        self._group_history = _load_group()
+                    else:
+                        _append_private_history(agent_id, "user", user_message)
+                        self._memory.append(f"session_{agent_id}", "user", user_message, "bryan", is_private=True)
+                        self._history[_session_key(agent_id)] = _load_private(agent_id)
+                        _append_group(
+                            speaker=agent_id,
+                            content=f"（{agent_id} 與 Bryan 私聊中）",
+                            is_private=True,
+                        )
+                        self._group_history = _load_group()
+                return
+
+            # ── 寫入歷史（user + assistant 一起寫）──────────
+            # 這樣保證 LLM 看到的 prompt 跟實際 history 一致，不會出現「你問兩遍」的重複問題
+            if mode == "group":
+                if user_message:
                     _append_group_user("bryan", user_message)
                     self._memory.append("group", "user", user_message, "bryan", is_private=False)
-                    self._group_history = _load_group()
-                else:
+                _append_group(speaker=agent_id, content=generated_text)
+                self._group_history = _load_group()
+            else:
+                if user_message:
                     _append_private_history(agent_id, "user", user_message)
                     self._memory.append(f"session_{agent_id}", "user", user_message, "bryan", is_private=True)
-                    self._history[_session_key(agent_id)] = _load_private(agent_id)
                     _append_group(
                         speaker=agent_id,
                         content=f"（{agent_id} 與 Bryan 私聊中）",
                         is_private=True,
                     )
-                    self._group_history = _load_group()
-            return
+                _append_private_history(agent_id, "assistant", generated_text)
+                self._memory.append(f"session_{agent_id}", "assistant", generated_text, "agent_id", is_private=True)
+                _append_group(speaker=agent_id, content=generated_text, is_private=True)
+                self._history[_session_key(agent_id)] = _load_private(agent_id)
+                self._group_history = _load_group()
 
-        # ── 寫入歷史（user + assistant 一起寫）──────────
-        # 這樣保證 LLM 看到的 prompt 跟實際 history 一致，不會出現「你問兩遍」的重複問題
-        if mode == "group":
-            if user_message:
-                _append_group_user("bryan", user_message)
-                self._memory.append("group", "user", user_message, "bryan", is_private=False)
-            _append_group(speaker=agent_id, content=generated_text)
-            self._group_history = _load_group()
-        else:
-            if user_message:
-                _append_private_history(agent_id, "user", user_message)
-                self._memory.append(f"session_{agent_id}", "user", user_message, "bryan", is_private=True)
-                _append_group(
-                    speaker=agent_id,
-                    content=f"（{agent_id} 與 Bryan 私聊中）",
-                    is_private=True,
+            # ── 發布 AGENT_SPEAK ──────────────────────────
+            # Phase 5b：把觸發事件裡的 target_channel / target_user_id 透傳
+            # → ChannelRouter 看到 target_channel="telegram" 就會送到 Telegram，
+            #   而不是只讓 IOGateway broadcast 給 WebSocket
+            speak_event = SoulEvent(
+                event_type=EventType.AGENT_SPEAK,
+                source=agent_id,
+                target="broadcast",
+                priority=EventPriority.NORMAL,
+                session_id=_session_key(agent_id),
+                correlation_id=event.correlation_id or event.event_id,
+                payload={
+                    "text": generated_text,
+                    "agent_id": agent_id,
+                    "reason": reason,
+                    "mode": mode,
+                    "tts_enabled": True,
+                    "action_tags": [],
+                    # Phase 5b：channel routing
+                    "target_channel": event.payload.get("target_channel", "web"),
+                    "target_user_id": event.payload.get("target_user_id"),
+                },
+            )
+            await self.bus.publish(speak_event)
+            _agent_speak_published = True
+            logger.info(f"[LLMProxy] 生成完成 | agent={agent_id} text='{generated_text[:40]}...'")
+        finally:
+            if not _agent_speak_published:
+                # 任何沒成功發 AGENT_SPEAK 的路徑（空 text / LLM None / 例外），
+                # 補發 SPEAKER_TOKEN_RELEASED 避免卡住 queue。
+                # token_manager._release_token 對非 holder 靜默忽略，雙重 release 安全。
+                logger.warning(
+                    f"[LLMProxy] {agent_id} 沒發 AGENT_SPEAK，"
+                    f"補發 SPEAKER_TOKEN_RELEASED reason=llm_failed"
                 )
-            _append_private_history(agent_id, "assistant", generated_text)
-            self._memory.append(f"session_{agent_id}", "assistant", generated_text, "agent_id", is_private=True)
-            _append_group(speaker=agent_id, content=generated_text, is_private=True)
-            self._history[_session_key(agent_id)] = _load_private(agent_id)
-            self._group_history = _load_group()
-
-        # ── 發布 AGENT_SPEAK ──────────────────────────
-        # Phase 5b：把觸發事件裡的 target_channel / target_user_id 透傳
-        # → ChannelRouter 看到 target_channel="telegram" 就會送到 Telegram，
-        #   而不是只讓 IOGateway broadcast 給 WebSocket
-        speak_event = SoulEvent(
-            event_type=EventType.AGENT_SPEAK,
-            source=agent_id,
-            target="broadcast",
-            priority=EventPriority.NORMAL,
-            session_id=_session_key(agent_id),
-            correlation_id=event.correlation_id or event.event_id,
-            payload={
-                "text": generated_text,
-                "agent_id": agent_id,
-                "reason": reason,
-                "mode": mode,
-                "tts_enabled": True,
-                "action_tags": [],
-                # Phase 5b：channel routing
-                "target_channel": event.payload.get("target_channel", "web"),
-                "target_user_id": event.payload.get("target_user_id"),
-            },
-        )
-        await self.bus.publish(speak_event)
-        logger.info(f"[LLMProxy] 生成完成 | agent={agent_id} text='{generated_text[:40]}...'")
+                release_event = SoulEvent(
+                    event_type=EventType.SPEAKER_TOKEN_RELEASED,
+                    source=agent_id,
+                    session_id=event.session_id,
+                    payload={
+                        "agent_id": agent_id,
+                        "reason": "llm_failed",
+                    },
+                )
+                try:
+                    await self.bus.publish(release_event)
+                except Exception as e:
+                    logger.error(f"[LLMProxy] 補發 token release 失敗: {e}")
 
     # ── 工具函數 ──────────────────────────────
 
