@@ -266,6 +266,34 @@
     }
     #send:hover { transform: translateY(-1px); }
     #send:active { transform: translateY(0); }
+
+    /* Phase 6.x STT：Soul OS 主輸入框旁的麥克風按鈕 */
+    .ctrl-mic {
+      background: linear-gradient(135deg, #8b6cf5, #5b54e8);  /* 紫色，跟 Live2D widget 風格一致 */
+      color: #fff;
+      border: none;
+      padding: 12px 16px;
+      border-radius: 12px;
+      cursor: pointer;
+      font-size: 18px;
+      transition: transform 0.15s, background 0.2s, box-shadow 0.2s;
+      min-width: 48px;
+    }
+    .ctrl-mic:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4); }
+    .ctrl-mic:active { transform: translateY(0); }
+    .ctrl-mic.listening {
+      background: linear-gradient(135deg, #f87171, #dc2626);  /* 聆聽中變紅 */
+      animation: mic-pulse 1.4s ease-in-out infinite;
+    }
+    .ctrl-mic:disabled {
+      background: #4a4a5a;
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+    @keyframes mic-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.7); }
+      50% { box-shadow: 0 0 0 8px rgba(248, 113, 113, 0); }
+    }
   </style>
 </head>
 <body>
@@ -308,6 +336,7 @@
     <div id="status">連線中...</div>
     <div id="input-bar">
       <input id="input" placeholder="輸入訊息..." autofocus>
+      <button id="mic" class="ctrl-mic" aria-label="語音輸入" title="點擊開始語音輸入">🎤</button>
       <button id="send">發送</button>
     </div>
   </div>
@@ -569,6 +598,76 @@
     document.getElementById("input").addEventListener("keydown", function(e) {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
     });
+
+    // ===== Phase 6.x STT：瀏覽器原生語音辨識 → Soul OS WS =====
+    // 跟 widget.html 原本的 startListening 同邏輯，但跑在主頁面（host）scope，
+    // 結果直接送 Soul OS USER_MESSAGE 走真實 LLM
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    var recognition = null, listening = false;
+    (function initMic() {
+      var micBtn = document.getElementById("mic");
+      if (!micBtn) return;
+      if (!SR) {
+        // 不支援的瀏覽器：disable + tooltip
+        micBtn.disabled = true;
+        micBtn.title = "此瀏覽器不支援語音辨識，請用 Chrome / Edge";
+        console.warn("[STT] SpeechRecognition API not available");
+        return;
+      }
+      micBtn.addEventListener("click", function() {
+        if (listening && recognition) {
+          recognition.stop();
+          return;
+        }
+        try {
+          recognition = new SR();
+        } catch (e) {
+          console.warn("[STT] failed to create recognition:", e);
+          return;
+        }
+        recognition.lang = "zh-TW";
+        recognition.interimResults = true;
+        recognition.continuous = false;
+        recognition.maxAlternatives = 1;
+        recognition.onstart = function() {
+          listening = true;
+          micBtn.classList.add("listening");
+          micBtn.textContent = "● 聆聽中";
+        };
+        recognition.onresult = function(ev) {
+          var txt = "";
+          for (var i = 0; i < ev.results.length; i++) txt += ev.results[i][0].transcript;
+          var last = ev.results[ev.results.length - 1];
+          // 顯示在輸入框（final 才送）
+          document.getElementById("input").value = txt;
+          if (last.isFinal && txt.trim()) {
+            // 直接送 Soul OS（不等使用者按 Enter）
+            send(txt.trim());
+          }
+        };
+        recognition.onerror = function(ev) {
+          listening = false;
+          micBtn.classList.remove("listening");
+          micBtn.textContent = "🎤";
+          var msg = ev.error === "not-allowed"
+            ? "需要麥克風權限才能語音輸入，請到瀏覽器設定開啟"
+            : "語音辨識錯誤：" + (ev.error || "unknown");
+          console.warn("[STT]", msg);
+          alert(msg);
+        };
+        recognition.onend = function() {
+          listening = false;
+          micBtn.classList.remove("listening");
+          micBtn.textContent = "🎤";
+        };
+        try {
+          recognition.start();
+        } catch (e) {
+          console.warn("[STT] start failed:", e);
+        }
+      });
+      console.log("[STT] mic button wired (SpeechRecognition supported)");
+    })();
 
     // WebSocket connection
     var wsUrl = "ws://" + window.location.host + "/ws";
