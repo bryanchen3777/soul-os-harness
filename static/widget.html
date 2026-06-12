@@ -93,11 +93,8 @@
         <button class="ctrl primary" id="btn-send" aria-label="送出文字問題"><span aria-hidden="true">➤</span></button>
       </div>
       <div class="dock-row" role="toolbar" aria-label="虛擬人控制列">
-      <button class="ctrl primary" id="btn-mic"   aria-label="開始語音對話"><span aria-hidden="true">🎤</span> 說話</button>
-      <button class="ctrl" id="btn-llm"   aria-label="啟用瀏覽器內 AI 大腦（首次需下載模型）" aria-pressed="false"><span aria-hidden="true">🧠</span></button>
       <button class="ctrl" id="btn-mute"  aria-label="靜音" aria-pressed="false"><span aria-hidden="true">🔊</span></button>
       <button class="ctrl" id="btn-speed" aria-label="調整語速">1.0×</button>
-      <button class="ctrl" id="btn-close" aria-label="收起助理"><span aria-hidden="true">✕</span></button>
       </div>
     </div>
   </div>
@@ -253,16 +250,13 @@
     }
   }
 
-  // Phase 6.4：語音功能開關（onTap 自我介紹 + 麥克風）
-  // 群聊時 host 會 set_voice_enabled=false，這兩個按鈕視覺暗掉、點擊也 no-op
+  // Phase 6.4：語音功能開關（onTap 自我介紹）
+  // Phase 6.4 cleanup：麥克風按鈕已移除，applyVoiceEnabled 只剩 onTap 自我介紹控制
+  // 保留介面以免 host postMessage 'set_voice_enabled' 報錯
   let voiceEnabled = true;
   function applyVoiceEnabled() {
-    const mic = document.getElementById('btn-mic');
-    if (mic) {
-      mic.disabled = !voiceEnabled;
-      mic.classList.toggle('aw-disabled', !voiceEnabled);
-      mic.title = voiceEnabled ? '開始語音對話' : '群聊模式不支援語音';
-    }
+    // 麥克風按鈕已移除，不再做任何 DOM 操作
+    // voiceEnabled flag 仍控制 onTap() 是否自我介紹（line 547）
   }
 
   function showBubble(text) {
@@ -443,30 +437,14 @@
   }
 
   // ===== STT：聽你說話 =====
+  // Phase 6.4 cleanup：麥克風按鈕已移除，STT 也停用（用戶不再需要從 widget 觸發語音輸入）
+  // 保留 setMic / startListening 函式避免 host embed.js 引用報錯（如果將來想加回可以重用）
   function setMic(on) {
-    const b = document.getElementById('btn-mic');
-    b.classList.toggle('listening', on);
-    b.textContent = on ? '● 聆聽中' : '🎤 說話';
-    const sg = document.getElementById('suggestions');
-    if (sg) sg.style.display = on ? 'none' : 'flex'; // 聆聽中收起清單
+    // 麥克風按鈕已移除，no-op
   }
   function startListening() {
-    if (!SR) { speak('你的瀏覽器不支援語音辨識，建議用 Chrome 開喔。'); return; }
-    if (listening && recognition) { recognition.stop(); return; }
-    try { recognition = new SR(); } catch (e) { speak('語音辨識啟動失敗：' + e.message); return; }
-    recognition.lang = 'zh-TW'; recognition.interimResults = true;
-    recognition.continuous = false; recognition.maxAlternatives = 1;
-    recognition.onstart  = () => { listening = true; setMic(true); showBubble('聆聽中…請說話 🎙️'); };
-    recognition.onresult = (e) => {
-      let txt = ''; for (const r of e.results) txt += r[0].transcript;
-      const last = e.results[e.results.length - 1];
-      if (last.isFinal) handleUser(txt.trim());
-      else showBubble('「' + txt + '」…');
-    };
-    recognition.onerror = (e) => { listening = false; setMic(false);
-      showBubble(e.error === 'not-allowed' ? '我需要麥克風權限才能聽你說話喔。' : '沒聽清楚（' + e.error + '），再試一次。'); };
-    recognition.onend   = () => { listening = false; setMic(false); };
-    try { recognition.start(); } catch (e) {}
+    // 麥克風按鈕已移除，no-op
+    // 如果想保留 STT 入口，可以在 control 列加個隱藏按鈕或快捷鍵
   }
 
   // ===== Live2D 載入 + 對嘴 =====
@@ -527,7 +505,8 @@
       model.on('hit', () => onTap());
       document.getElementById('avatar-canvas').addEventListener('pointerdown', onTap);
 
-      setTimeout(() => showBubble('點 🎤 說話、或直接打字問我；想更聰明可按 🧠 啟用 AI 大腦 👋'), 700);
+      // Phase 6.4：拿掉進站預設引導文字（之前 showBubble '點 🎤 說話...'）
+      // CURRENT_MODEL_URL = MODEL_URL;  // 保留
       CURRENT_MODEL_URL = MODEL_URL;  // Phase 6.4：記下當前 model URL，switch_agent 用來判斷要不要 swap
       postToParent('ready');
       window.__avatarModel = model;
@@ -551,7 +530,7 @@
   }
 
   // ===== 控制列 =====
-  document.getElementById('btn-close').onclick = () => postToParent('close');
+  // Phase 6.4 cleanup：btn-close 移除後，無法從 widget 收起 — 想收起改 embed.js data-open="false"
 
   // 打字輸入：Enter 或 ➤ 送出。組字中（注音/拼音選字）按的 Enter 不送，避免誤發半成品
   (function bindTyping() {
@@ -562,7 +541,7 @@
       if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); }
     });
   })();
-  document.getElementById('btn-mic').onclick   = () => startListening();
+  // document.getElementById('btn-mic').onclick = () => startListening();  // 麥克風按鈕已移除
   document.getElementById('btn-mute').onclick  = () => {
     ttsMuted = !ttsMuted;
     const mb = document.getElementById('btn-mute');
@@ -577,18 +556,7 @@
     document.getElementById('btn-speed').textContent = ttsRate.toFixed(1) + '×';
     showBubble('語速：' + ttsRate.toFixed(1) + '×');
   };
-  document.getElementById('btn-llm').onclick = async () => {
-    const btn = document.getElementById('btn-llm');
-    if (!window.LLM || !window.LLM.supported) { showBubble('這個裝置不支援 WebGPU，先用知識庫模式就好（功能一樣可用）。'); return; }
-    if (window.LLM.state === 'ready')   { showBubble('AI 大腦已啟用，問我問題吧 🧠'); return; }
-    if (window.LLM.state === 'loading') { showBubble('AI 大腦載入中… ' + Math.round(window.LLM.progress * 100) + '%'); return; }
-    showBubble('開始下載 AI 大腦（約 1GB，只需第一次）…');
-    try {
-      await window.LLM.load((p) => { btn.textContent = '🧠 ' + Math.round((p.progress || 0) * 100) + '%'; });
-      btn.textContent = '🧠✓'; btn.classList.add('llm-on');
-      speak('AI 大腦啟用完成，現在我可以聊得更自然囉！');
-    } catch (e) { btn.textContent = '🧠✗'; showBubble('AI 大腦載入失敗：' + (e && e.message || e)); }
-  };
+  // document.getElementById('btn-llm').onclick = async () => { ... }  // AI 大腦按鈕已移除
   </script>
 </body>
 </html>
