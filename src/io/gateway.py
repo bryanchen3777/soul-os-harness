@@ -190,6 +190,15 @@ class IOGateway:
 
         @self.app.get("/", response_class=HTMLResponse)
         async def root():
+            # 每次 GET / 都重讀 static/index.html（dev-friendly — 改 HTML 不用重啟 server）
+            # _UI_HTML module-level cache 在開發迭代中累積太多 bug，犧牲一點 I/O 換可迭代性。
+            # 部署環境可以加 if 條件或 reverse proxy cache 處理。
+            if _STATIC_INDEX and _STATIC_INDEX.exists():
+                try:
+                    html = _STATIC_INDEX.read_text(encoding="utf-8")
+                    return HTMLResponse(html, media_type="text/html; charset=utf-8")
+                except Exception as e:
+                    logger.warning(f"[Gateway] 重讀 index.html 失敗: {e}")
             if _UI_HTML:
                 return HTMLResponse(_UI_HTML, media_type="text/html; charset=utf-8")
             return DEMO_HTML

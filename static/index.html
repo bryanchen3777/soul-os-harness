@@ -314,6 +314,7 @@
 
     <script>
     var currentConversation = "group";
+    var currentAgent = "yua";  // Phase 6.4：當前 widget 對應角色（group=yua, private=agent_id 短代號）
     var groupMembers = new Set(["agent_yua", "agent_ruka", "agent_akane"]);
     var ws = null;
 
@@ -323,11 +324,15 @@
     (function() {
       var s = document.createElement('script');
       // ?v=1 cache-bust（避免瀏覽器卡舊版 embed.js）
-      s.src = '/static/embed.js?v=3';
+      s.src = '/static/embed.js?v=6';
       // Phase 6.1：先拿 Yua 範例模型驗證
       // Phase 6.4：會依 agent 切換模型（switch_model postMessage）
       s.setAttribute('data-model', 'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json');
       s.setAttribute('data-knowledge', '/static/knowledge.js?v=1');
+      // Phase 6.4：data-agent 帶目前 conversation 對應的 agent_id
+      // widget onTap() 會用這個顯示角色自我介紹
+      // 群組模式 → 預設 yua；private 模式 → 對應 agent（短代號去掉 agent_ 前綴）
+      s.setAttribute('data-agent', 'yua');
       // Phase 6.x TTS：絕對路徑指向 Soul OS /api/tts endpoint
       // 不加的話 widget 預設相對路徑會被解析成 /static/api/tts（404）
       s.setAttribute('data-api', '/api/tts');
@@ -361,6 +366,12 @@
             ws.send(JSON.stringify(payload));
             console.log('[Live2D] STT → Soul OS:', text);
           };
+          // Phase 6.4：embed.js 載入後 → 依當前 conversation 通知 widget 切 agent + 語音開關
+          // 預設在 group 模式 → 語音關、私聊 agent_yua → 語音開
+          var initAgent = currentConversation === 'group' ? 'yua' : currentConversation.replace('agent_', '');
+          window.AvatarWidget.switchAgent(initAgent);
+          window.AvatarWidget.setVoiceEnabled(currentConversation !== 'group');
+          console.log('[Live2D] init state:', { agent: initAgent, voice: currentConversation !== 'group' });
           console.log('[Live2D] onUserInput callback installed');
         }
       };
@@ -437,6 +448,14 @@
       document.getElementById("group-members").style.display = isGroup ? "flex" : "none";
       document.getElementById("clear-memory-btn").style.display = "inline-block";
       loadHistory();
+      // Phase 6.4：切換 conversation → 通知 widget 切 agent + 群聊時關語音
+      var agentShort = convId === 'group' ? 'yua' : convId.replace('agent_', '');
+      currentAgent = agentShort;
+      if (window.AvatarWidget) {
+        window.AvatarWidget.switchAgent(agentShort);
+        // 群聊不支援語音（避免多 agent 一起唸）；private 模式開語音
+        window.AvatarWidget.setVoiceEnabled(convId !== 'group');
+      }
     }
 
     function toggleMember(btn) {
@@ -571,6 +590,11 @@
             if (speaker !== currentConversation) return;
           }
           appendMessage({ speaker: speaker, content: d.text, timestamp: Math.floor(Date.now() / 1000) });
+          // Phase 6.x：Soul OS agent_speak 統一觸發 Live2D 對嘴 + 語音
+          // （之前只有 type==="live2d" 才觸發，但 Soul OS 內部都用 agent_speak，
+          //  所以打字輸入路徑完全沒讓 Live2D 動過）
+          // emotion 暫時傳 "neutral"，Phase 6.4 之後從 mood 計算
+          live2dSay(speaker, d.text, "neutral");
         }
       } catch(err) {
         console.error("WS message error:", err);

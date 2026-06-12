@@ -32,9 +32,9 @@
   var startOpen = (me && me.getAttribute('data-open') !== 'false'); // 預設一進來就展開
   var widgetOrigin = (function () { try { return new URL(widgetUrl, location.href).origin; } catch (e) { return '*'; } })();
 
-  // 把可設定項帶進 widget：皮=model / 肉的語音後端=api / 內容=knowledge / 聲線=voice
+  // 把可設定項帶進 widget：皮=model / 肉的語音後端=api / 內容=knowledge / 聲線=voice / 角色=agent
   var cfg = new URLSearchParams();
-  ['model', 'api', 'knowledge', 'voice'].forEach(function (k) {
+  ['model', 'api', 'knowledge', 'voice', 'agent'].forEach(function (k) {
     var v = me && me.getAttribute('data-' + k);
     if (v) cfg.set(k, v);
   });
@@ -79,6 +79,16 @@
   root.appendChild(bubble);
   (document.body || document.documentElement).appendChild(root);
 
+  // 確保 iframe 載入完才送 postMessage（widget 內 listener 沒 attach 之前 postMessage 會丟失）
+  // 對外暴露 onReady callback
+  var _onReady = null;
+  iframe.addEventListener('load', function () {
+    // 多延一 tick 給 widget.html 的 message listener 註冊
+    setTimeout(function () {
+      if (typeof _onReady === 'function') { try { _onReady(); } catch (e) {} }
+    }, 0);
+  });
+
   // 5) 展開 / 收合
   function setOpen(open) {
     if (open) {
@@ -102,7 +112,14 @@
     var d = e.data || {};
     if (d.ns !== NS_IN) return;
     if (d.type === 'close') setOpen(false);                 // 使用者按 ✕ → 收成泡泡
-    if (d.type === 'ready') { /* 之後可在這觸發歡迎語 */ }
+    if (d.type === 'ready') {
+      // widget 載入完成 → flush pending init（switch_agent + set_voice_enabled）
+      if (pendingInit) {
+        sendToWidget('switch_agent', { agent: pendingInit.agent || '' });
+        sendToWidget('set_voice_enabled', { enabled: !!pendingInit.voice });
+        pendingInit = null;
+      }
+    }
     if (d.type === 'error') console.warn('[avatar] widget error:', d.message);
     // Phase 6.2 路線 D：widget STT 結果 → 觸發 host 設的 onUserInput callback
     if (d.type === 'user_input' && typeof window.AvatarWidget.onUserInput === 'function') {
@@ -111,16 +128,43 @@
     }
   });
 
+  // 等 widget ready 期間，init 設定先 buffer 在這
+  var pendingInit = null;
+
   // 7) 對外 API：別的程式可以叫她說話 / 開關 / 接收 STT
   // onUserInput: function(text) — 設了就接 STT 結果；不設就 widget 走 KB fallback
   var _onUserInput = null;
+  function sendToWidget(type, payload) {
+    iframe.contentWindow && iframe.contentWindow.postMessage(
+      Object.assign({ ns: NS_OUT, type: type }, payload || {}), widgetOrigin);
+  }
   window.AvatarWidget = {
     open: function () { setOpen(true); },
     close: function () { setOpen(false); },
     say: function (text) {
       setOpen(true);
-      iframe.contentWindow && iframe.contentWindow.postMessage(
-        { ns: NS_OUT, type: 'say', text: String(text || '').slice(0, 600) }, widgetOrigin);
+      sendToWidget('say', { text: String(text || '').slice(0, 600) });
+    },
+    // Phase 6.4：host 動態切換對應角色
+    // 確保 widget listener ready 後才送（避免 message 丟失）
+    // pendingInit 在 message handler 收到 widget 'ready' 時 flush
+    switchAgent: function (agent) {
+      if (pendingInit) {
+        pendingInit.agent = agent || '';
+      } else {
+        pendingInit = { agent: agent || '', voice: true };
+      }
+      sendToWidget('switch_agent', { agent: agent || '' });
+    },
+    // Phase 6.4：群聊時 host 設 false → 麥克風 + onTap 自我介紹都暗掉
+    // 文字輸入仍可使用
+    setVoiceEnabled: function (enabled) {
+      if (pendingInit) {
+        pendingInit.voice = !!enabled;
+      } else {
+        pendingInit = { agent: '', voice: !!enabled };
+      }
+      sendToWidget('set_voice_enabled', { enabled: !!enabled });
     },
     get onUserInput() { return _onUserInput; },
     set onUserInput(fn) { _onUserInput = (typeof fn === 'function') ? fn : null; }

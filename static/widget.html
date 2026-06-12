@@ -87,7 +87,6 @@
   <div id="stage">
     <div id="bubble"></div>
     <canvas id="avatar-canvas"></canvas>
-    <div id="suggestions"></div>
     <div id="control-bar">
       <div class="dock-row">
         <input id="type-input" type="text" maxlength="200" placeholder="打字問我也可以…" aria-label="輸入文字問題" />
@@ -153,7 +152,17 @@
   let audioMouth = 0, useAudioMouth = false, audioCtx = null;
   let speakSeq = 0, currentSource = null, currentRaf = 0; // 控制「點第二下打斷第一下」
   let neuralDisabled = false; // 抓不到神經語音後端就鎖定瀏覽器語音，避免每句都打 404
-  const NEURAL_VOICE = CFG.get('voice') || 'zh-TW-HsiaoChenNeural'; // 微軟神經語音「曉臻」（可用 data-voice 覆蓋）
+  const NEURAL_VOICE = CFG.get('voice') || 'zh-CN-XiaoxiaoNeural'; // 微軟神經語音「曉曉」（簡體中文，可用 data-voice 覆蓋）
+  // Phase 6.4：當前對應角色（embed.js 傳 data-agent；host 可用 postMessage 動態切）
+  let CURRENT_AGENT = CFG.get('agent') || '';
+  const AGENT_GREET = {
+    'yua':   '你好～我是 Yua，冷泡茶式的陪伴。今天想聊點什麼？',
+    'ruka':  '哈囉～我是 Ruka，隨時都元氣滿滿！有什麼想跟我說的？',
+    'akane': '你好，我是 Akane。想到什麼隨時開口，我在。',
+  };
+  function greetFor(agent) {
+    return AGENT_GREET[agent] || '你好～我在這裡，隨時可以說點什麼或打字給我。';
+  }
   let recognition = null, listening = false;
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -175,8 +184,28 @@
     const d = e.data || {};
     if (d.ns !== 'avatar-widget-host') return;
     if (d.type === 'say') speak(String(d.text || '').slice(0, 600));
+    // Phase 6.4：host 動態切換對應角色（影響 onTap 自我介紹 + 預備切 model）
+    if (d.type === 'switch_agent') CURRENT_AGENT = d.agent || '';
+    // Phase 6.4：群聊模式 — host 通知 widget 關掉語音功能（onTap + 麥克風）
+    // 文字輸入仍可使用（不算語音）
+    if (d.type === 'set_voice_enabled') {
+      voiceEnabled = !!d.enabled;
+      applyVoiceEnabled();
+    }
     // 注意：不接受用 postMessage 遠端啟動麥克風（listen），避免惡意父頁偷開麥；麥克風只由使用者點擊觸發
   });
+
+  // Phase 6.4：語音功能開關（onTap 自我介紹 + 麥克風）
+  // 群聊時 host 會 set_voice_enabled=false，這兩個按鈕視覺暗掉、點擊也 no-op
+  let voiceEnabled = true;
+  function applyVoiceEnabled() {
+    const mic = document.getElementById('btn-mic');
+    if (mic) {
+      mic.disabled = !voiceEnabled;
+      mic.classList.toggle('aw-disabled', !voiceEnabled);
+      mic.title = voiceEnabled ? '開始語音對話' : '群聊模式不支援語音';
+    }
+  }
 
   function showBubble(text) {
     const b = document.getElementById('bubble');
@@ -321,7 +350,7 @@
     let best = null, bestScore = 0;
     for (const e of (window.KB || [])) { const s = scoreEntry(q, e); if (s > bestScore) { bestScore = s; best = e; } }
     if (best && bestScore >= 0.16) return best.a;
-    return '你問的是「' + q + '」對吧？這題我的知識庫還沒收錄～你可以問我「怎麼安裝」「怎麼換成我的角色」「要不要錢」「麥克風怎麼用」這些喔。';
+    return '你問的是「' + q + '」對吧？這題我這邊沒有現成答案～直接打字或用麥克風問我都可以。';
   }
   // 有啟用 WebLLM 時，用「檢索到的資料 + LLM」生成更自然的回答；否則退回檢索式
   async function answer(q) {
@@ -454,26 +483,17 @@
     onTap._lock = true;
     setTimeout(() => { onTap._lock = false; }, 400);
     if (model) try { model.motion('Tap'); } catch (e) {}
-    speak('你好～我是可以嵌入任何網站的語音虛擬人，問我怎麼安裝、怎麼換成你的角色都行！');
+    // Phase 6.4：群聊時語音功能關閉 → 點擊只播動作、不語音自我介紹
+    if (!voiceEnabled) {
+      showBubble('群聊模式不支援語音功能');
+      return;
+    }
+    speak(greetFor(CURRENT_AGENT));
   }
 
   // ===== 控制列 =====
   document.getElementById('btn-close').onclick = () => postToParent('close');
 
-  // 範例提示清單：一進站就告訴使用者「可以說什麼」，點任一項＝直接問（語音/打字都不用先猜）
-  (function renderSuggestions() {
-    const box = document.getElementById('suggestions');
-    if (!box) return;
-    const SUGGESTIONS = ['怎麼安裝？', '怎麼換成我的角色？', '要不要錢？', '麥克風怎麼用？', '我可以說什麼？'];
-    const label = document.createElement('div'); label.className = 'sg-label'; label.textContent = '💬 你可以問我：';
-    box.appendChild(label);
-    SUGGESTIONS.forEach((s) => {
-      const b = document.createElement('button');
-      b.type = 'button'; b.className = 'sugg'; b.textContent = s;
-      b.onclick = () => handleUser(s.replace(/？$/, ''));
-      box.appendChild(b);
-    });
-  })();
   // 打字輸入：Enter 或 ➤ 送出。組字中（注音/拼音選字）按的 Enter 不送，避免誤發半成品
   (function bindTyping() {
     const ti = document.getElementById('type-input');
