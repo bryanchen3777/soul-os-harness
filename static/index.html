@@ -323,11 +323,14 @@
     (function() {
       var s = document.createElement('script');
       // ?v=1 cache-bust（避免瀏覽器卡舊版 embed.js）
-      s.src = '/static/embed.js?v=1';
+      s.src = '/static/embed.js?v=2';
       // Phase 6.1：先拿 Yua 範例模型驗證
       // Phase 6.4：會依 agent 切換模型（switch_model postMessage）
       s.setAttribute('data-model', 'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json');
       s.setAttribute('data-knowledge', '/static/knowledge.js?v=1');
+      // Phase 6.x TTS：絕對路徑指向 Soul OS /api/tts endpoint
+      // 不加的話 widget 預設相對路徑會被解析成 /static/api/tts（404）
+      s.setAttribute('data-api', '/api/tts');
       s.setAttribute('data-open', 'true');
       s.async = true;
       s.onerror = function() {

@@ -292,6 +292,43 @@ class IOGateway:
                 import traceback
                 return {"error": str(e), "trace": traceback.format_exc()}
 
+        # ── Phase 6.x TTS：msedge-tts endpoint for Live2D widget ──
+        # widget.html 呼叫：fetch('/api/tts?voice=zh-TW-HsiaoChenNeural&text=...')
+        # 預期回應：audio/mpeg (MP3) bytes
+        @self.app.get("/api/tts")
+        async def api_tts(voice: str = "", text: str = ""):
+            """
+            線上 TTS — 把文字轉 MP3 回傳給 Live2D widget 播放
+
+            - voice 沒給 → 預設 zh-TW-HsiaoChenNeural
+            - text 為空 / edge-tts 失敗 → 回 404（widget 自動 fallback 瀏覽器 TTS）
+            - 5 分鐘 in-memory cache（避免 heartbeat 重複觸發同樣 draft）
+            """
+            from src.io.tts import synthesize_speech, DEFAULT_VOICE
+
+            if not text or not text.strip():
+                return {"error": "text is required"}, 400
+
+            mp3 = await synthesize_speech(
+                text=text,
+                voice=voice or DEFAULT_VOICE,
+            )
+            if mp3 is None:
+                # 故意回 404 + JSON（不是 500）— widget 端 404 走 fallback 路徑
+                return {"error": "tts synthesis failed", "voice": voice or DEFAULT_VOICE}, 404
+
+            # 回 MP3 stream
+            from fastapi.responses import Response
+            return Response(
+                content=mp3,
+                media_type="audio/mpeg",
+                headers={
+                    "Content-Length": str(len(mp3)),
+                    "Cache-Control": "public, max-age=300",  # 配合 server 端 cache TTL
+                },
+            )
+        # ── Phase 6.x TTS end ─────────────────────────────
+
         @self.app.get("/_admin/fast_forward")
         async def admin_fast_forward(minutes: float = 35.0):
             """
