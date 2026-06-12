@@ -344,6 +344,14 @@
 
   function handleUser(text) {
     if (text) showBubble('你：' + text);
+    // Phase 6.2 路線 D：STT 結果送到 parent（→ Soul OS WS → LLM → Live2D 對嘴）
+    // 父層沒接 callback 時退回 widget 內 KB 模式（answer() 走 WebLLM / brain()）
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ ns: 'avatar-widget', type: 'user_input', text: text }, '*');
+        return;  // 等 parent 處理完會回觸發 say
+      }
+    } catch (e) { /* cross-origin etc → fallback */ }
     Promise.resolve().then(async () => { speak(await answer(text)); });
   }
 

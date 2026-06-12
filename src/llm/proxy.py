@@ -341,6 +341,7 @@ class ClaudeBackend(LLMBackend):
         model: str = "claude-haiku-4-5-20251001",
         max_tokens: int = 500,
         temperature: float = 0.85,
+        thinking: Optional[Dict] = None,
     ) -> str:
         # Claude API 將 system message 獨立出來
         system_msg = ""
@@ -351,6 +352,19 @@ class ClaudeBackend(LLMBackend):
             else:
                 user_messages.append(msg)
 
+        # 組 request body；thinking 預設 None（不送），由 LLM 決定是否開啟
+        # MiniMax M2 系列預設開 extended thinking，會預算吃滿 max_tokens
+        # 把 text 截斷；明確送 thinking.budget_tokens 控住預算。
+        request_body: Dict = {
+            "model": model,
+            "system": system_msg,
+            "messages": user_messages or [{"role": "user", "content": "（請依你的設定開口說話）"}],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if thinking:
+            request_body["thinking"] = thinking
+
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 self.BASE_URL,
@@ -359,13 +373,7 @@ class ClaudeBackend(LLMBackend):
                     "anthropic-version": "2023-06-01",
                     "content-type": "application/json",
                 },
-                json={
-                    "model": model,
-                    "system": system_msg,
-                    "messages": user_messages or [{"role": "user", "content": "（請依你的設定開口說話）"}],
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                },
+                json=request_body,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -575,6 +583,7 @@ class LLMProxy:
         max_retries: int = 3,
         max_history_turns: int = 10,  # 保留最近幾輪對話，防 context 爆炸
         config: Optional[dict] = None,  # Phase 4: 完整 config（讓 RAG 等子模組讀取）
+        thinking: Optional[Dict] = None,  # Phase 6.x: 從 config.llm.thinking 讀，控 MiniMax thinking budget
     ):
         self.bus = bus
         self.backend = backend
@@ -584,6 +593,14 @@ class LLMProxy:
         self.max_retries = max_retries
         self.max_history_turns = max_history_turns
         self.config = config or {}  # Phase 4 RAG 從這裡讀 rag.* 設定
+        # thinking 參數：如果 init 沒給，從 config 讀（loader 會傳 config 進來）
+        # loader 沒讀 thinking → 預設 enabled + budget 256（避免 text 被截空）
+        if thinking is None:
+            thinking = (self.config.get("llm", {}) or {}).get("thinking") or {
+                "type": "enabled",
+                "budget_tokens": 256,
+            }
+        self.thinking = thinking
 
         # 簡易對話歷史快取：{session_id: [messages]}
         # Phase 2 升級點：改為持久化到 SQLite
@@ -904,6 +921,7 @@ class LLMProxy:
                     model=self.model,
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
+                    thinking=self.thinking,
                 )
                 if attempt > 0:
                     logger.info(

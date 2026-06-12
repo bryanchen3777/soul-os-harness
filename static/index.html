@@ -323,7 +323,7 @@
     (function() {
       var s = document.createElement('script');
       // ?v=1 cache-bust（避免瀏覽器卡舊版 embed.js）
-      s.src = '/static/embed.js?v=2';
+      s.src = '/static/embed.js?v=3';
       // Phase 6.1：先拿 Yua 範例模型驗證
       // Phase 6.4：會依 agent 切換模型（switch_model postMessage）
       s.setAttribute('data-model', 'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json');
@@ -331,6 +331,39 @@
       // Phase 6.x TTS：絕對路徑指向 Soul OS /api/tts endpoint
       // 不加的話 widget 預設相對路徑會被解析成 /static/api/tts（404）
       s.setAttribute('data-api', '/api/tts');
+
+      // Phase 6.2 路線 D：STT → Soul OS WS 接 chain
+      // 設好 onUserInput callback（embed.js 載入完才能設，所以等 onload）
+      s.onload = function () {
+        if (window.AvatarWidget) {
+          window.AvatarWidget.onUserInput = function (text) {
+            // 把 STT 結果當成 user 訊息送進 Soul OS（走真實 LLM）
+            if (!text || !text.trim()) return;
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+              console.warn('[Live2D] WS not open, STT text dropped:', text);
+              return;
+            }
+            // 先在 text chat 顯示自己說的話（跟手動輸入一致）
+            appendMessage({ speaker: 'bryan', content: text, timestamp: Math.floor(Date.now() / 1000) });
+            var payload = {
+              type: 'USER_MESSAGE',
+              content: text,
+              user_id: 'bryan_stt',
+              source: 'live2d_stt',  // 標記來源，方便 debug
+            };
+            if (currentConversation === 'group') {
+              payload.mode = 'group';
+              payload.participants = [...groupMembers];
+            } else {
+              payload.mode = 'private';
+              payload.target_agent = currentConversation;
+            }
+            ws.send(JSON.stringify(payload));
+            console.log('[Live2D] STT → Soul OS:', text);
+          };
+          console.log('[Live2D] onUserInput callback installed');
+        }
+      };
       s.setAttribute('data-open', 'true');
       s.async = true;
       s.onerror = function() {

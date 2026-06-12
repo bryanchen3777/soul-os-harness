@@ -104,9 +104,16 @@
     if (d.type === 'close') setOpen(false);                 // 使用者按 ✕ → 收成泡泡
     if (d.type === 'ready') { /* 之後可在這觸發歡迎語 */ }
     if (d.type === 'error') console.warn('[avatar] widget error:', d.message);
+    // Phase 6.2 路線 D：widget STT 結果 → 觸發 host 設的 onUserInput callback
+    if (d.type === 'user_input' && typeof window.AvatarWidget.onUserInput === 'function') {
+      try { window.AvatarWidget.onUserInput(d.text || ''); }
+      catch (err) { console.warn('[avatar] onUserInput callback error:', err); }
+    }
   });
 
-  // 7) 對外 API：別的程式可以叫她說話 / 開關
+  // 7) 對外 API：別的程式可以叫她說話 / 開關 / 接收 STT
+  // onUserInput: function(text) — 設了就接 STT 結果；不設就 widget 走 KB fallback
+  var _onUserInput = null;
   window.AvatarWidget = {
     open: function () { setOpen(true); },
     close: function () { setOpen(false); },
@@ -114,6 +121,8 @@
       setOpen(true);
       iframe.contentWindow && iframe.contentWindow.postMessage(
         { ns: NS_OUT, type: 'say', text: String(text || '').slice(0, 600) }, widgetOrigin);
-    }
+    },
+    get onUserInput() { return _onUserInput; },
+    set onUserInput(fn) { _onUserInput = (typeof fn === 'function') ? fn : null; }
   };
 })();

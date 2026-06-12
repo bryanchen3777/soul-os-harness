@@ -57,9 +57,23 @@ llm:
     api_key: ""
 
   # 生成參數
-  max_tokens: 300
+  # max_tokens: 1024 — 對 MiniMax M2 系列（內建 extended thinking）來說
+  # 300 太低：thinking 預算吃 200-256 後剩 50-100 tokens 給 text，偶爾 text
+  # 被截斷成空 → LLMProxy 觸發 empty text filter → 漏 AGENT_SPEAK。
+  # 1024 給 thinking + text 都足夠緩衝。
+  max_tokens: 1024
   temperature: 0.85
   max_retries: 3
+
+  # Extended thinking 控制（Anthropic Messages API 參數，MiniMax 透過
+  # Anthropic-compatible endpoint 也支援）
+  # enabled + budget_tokens: 256 給 character roleplay 留一點 reasoning 空間
+  # （如「現在該不該主動講話」「剛才 user 語氣是不是生氣」），但不讓它
+  # 預算吃滿 max_tokens 然後把 text 截掉。
+  # 想完全關掉 thinking 改成 type: "disabled"。
+  thinking:
+    type: enabled
+    budget_tokens: 256
 
   # 對話歷史保留最近幾輪（每輪 = user + assistant）
   max_history_turns: 10
