@@ -58,8 +58,10 @@
   // 2) 建外層容器
   var root = document.createElement('div');
   root.id = 'avatar-widget-root';
+  // Phase 6.4：bottom: 16px → 80px（往上抬避免擋到 Soul OS 的 #input-bar 輸入框）
+  // 收合泡泡位置比對齊 widget 底部
   root.style.cssText = [
-    'position:fixed', 'right:16px', 'bottom:16px',
+    'position:fixed', 'right:16px', 'bottom:80px',
     'z-index:2147483000', 'width:' + EXPANDED.w + 'px', 'height:' + EXPANDED.h + 'px'
   ].join(';');
 

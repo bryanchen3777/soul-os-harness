@@ -95,6 +95,7 @@
       <div class="dock-row" role="toolbar" aria-label="虛擬人控制列">
       <button class="ctrl" id="btn-mute"  aria-label="靜音" aria-pressed="false"><span aria-hidden="true">🔊</span></button>
       <button class="ctrl" id="btn-speed" aria-label="調整語速">1.0×</button>
+      <button class="ctrl" id="btn-close" aria-label="收起助理"><span aria-hidden="true">✕</span></button>
       </div>
     </div>
   </div>
@@ -530,7 +531,8 @@
   }
 
   // ===== 控制列 =====
-  // Phase 6.4 cleanup：btn-close 移除後，無法從 widget 收起 — 想收起改 embed.js data-open="false"
+  // Phase 6.4 cleanup v2：加回 btn-close（用戶需要從 widget 收起）
+  document.getElementById('btn-close').onclick = () => postToParent('close');
 
   // 打字輸入：Enter 或 ➤ 送出。組字中（注音/拼音選字）按的 Enter 不送，避免誤發半成品
   (function bindTyping() {
