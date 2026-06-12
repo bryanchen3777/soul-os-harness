@@ -29,6 +29,15 @@
   })();
   var base = me ? me.src.replace(/[^/]*$/, '') : '';
   var widgetUrl = (me && me.getAttribute('data-widget')) || (base + 'widget.html');
+  // 自動加 cache-bust（widget.html 改 dev 要硬重 load；embed.js 自身也有 ?v= 區隔）
+  // host 可以用 ?data-widget-cb=8 或單純改 embed.js 觸發（因為 widget.html 透過 embed.js 帶進來）
+  // 簡化策略：embed.js 自身 ?v= 已經是 cache-bust — 新 embed.js 載入時也會重 build widgetUrl，
+  // 但 browser 還可能 cache widget.html。強制每次 embed.js 載入時帶 _=<timestamp> 給 widget.html
+  if (widgetUrl.indexOf('?') < 0) {
+    widgetUrl = widgetUrl + '?_t=' + Date.now();
+  } else {
+    widgetUrl = widgetUrl + '&_t=' + Date.now();
+  }
   var startOpen = (me && me.getAttribute('data-open') !== 'false'); // 預設一進來就展開
   var widgetOrigin = (function () { try { return new URL(widgetUrl, location.href).origin; } catch (e) { return '*'; } })();
 
@@ -39,7 +48,8 @@
     if (v) cfg.set(k, v);
   });
   var cfgQs = cfg.toString();
-  var iframeSrc = widgetUrl + (cfgQs ? (widgetUrl.indexOf('?') < 0 ? '?' : '&') + cfgQs : '');
+  var iframeSrc = widgetUrl + (cfgQs ? (cfgQs.charAt(0) === '?' ? cfgQs : '&' + cfgQs) : '');
+  // 上面：原本邏輯用 widgetUrl.indexOf('?') 判斷，現在已帶 _t= 所以一定是 ? 開頭或 & 開頭；改用 cfgQs 自己的開頭
 
   var EXPANDED = { w: 340, h: 480 };
   var NS_OUT = 'avatar-widget-host'; // 父 → 子
@@ -115,7 +125,10 @@
     if (d.type === 'ready') {
       // widget 載入完成 → flush pending init（switch_agent + set_voice_enabled）
       if (pendingInit) {
-        sendToWidget('switch_agent', { agent: pendingInit.agent || '' });
+        var initPayload = { agent: pendingInit.agent || '' };
+        if (pendingInit.model) initPayload.model = pendingInit.model;
+        if (pendingInit.voice_actual) initPayload.voice = pendingInit.voice_actual;
+        sendToWidget('switch_agent', initPayload);
         sendToWidget('set_voice_enabled', { enabled: !!pendingInit.voice });
         pendingInit = null;
       }
@@ -129,6 +142,7 @@
   });
 
   // 等 widget ready 期間，init 設定先 buffer 在這
+  // {agent, model?, voice_actual?, voice (boolean for set_voice_enabled)?}
   var pendingInit = null;
 
   // 7) 對外 API：別的程式可以叫她說話 / 開關 / 接收 STT
@@ -145,16 +159,27 @@
       setOpen(true);
       sendToWidget('say', { text: String(text || '').slice(0, 600) });
     },
-    // Phase 6.4：host 動態切換對應角色
+    // Phase 6.4：host 動態切換對應角色（含 model + voice 切換）
     // 確保 widget listener ready 後才送（避免 message 丟失）
     // pendingInit 在 message handler 收到 widget 'ready' 時 flush
-    switchAgent: function (agent) {
+    //   switchAgent(agent, model?, voice?)
+    //     - agent: 'yua' | 'ruka' | 'akane' | '' (空字串=通用)
+    //     - model: optional Live2D model3.json URL（不傳就不切 model）
+    //     - voice: optional msedge voice name（不傳就不切 TTS voice）
+    switchAgent: function (agent, model, voice) {
+      var payload = { agent: agent || '' };
+      if (model) payload.model = model;
+      if (voice) payload.voice = voice;
       if (pendingInit) {
         pendingInit.agent = agent || '';
+        if (model) pendingInit.model = model;
+        if (voice) pendingInit.voice = voice;
       } else {
         pendingInit = { agent: agent || '', voice: true };
+        if (model) pendingInit.model = model;
+        if (voice) pendingInit.voice_actual = voice;
       }
-      sendToWidget('switch_agent', { agent: agent || '' });
+      sendToWidget('switch_agent', payload);
     },
     // Phase 6.4：群聊時 host 設 false → 麥克風 + onTap 自我介紹都暗掉
     // 文字輸入仍可使用

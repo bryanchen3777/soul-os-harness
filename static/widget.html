@@ -152,7 +152,7 @@
   let audioMouth = 0, useAudioMouth = false, audioCtx = null;
   let speakSeq = 0, currentSource = null, currentRaf = 0; // 控制「點第二下打斷第一下」
   let neuralDisabled = false; // 抓不到神經語音後端就鎖定瀏覽器語音，避免每句都打 404
-  const NEURAL_VOICE = CFG.get('voice') || 'zh-CN-XiaoxiaoNeural'; // 微軟神經語音「曉曉」（簡體中文，可用 data-voice 覆蓋）
+  let NEURAL_VOICE = CFG.get('voice') || 'zh-CN-XiaoxiaoNeural'; // 微軟神經語音（Phase 6.4 動態可切）
   // Phase 6.4：當前對應角色（embed.js 傳 data-agent；host 可用 postMessage 動態切）
   let CURRENT_AGENT = CFG.get('agent') || '';
   const AGENT_GREET = {
@@ -184,8 +184,21 @@
     const d = e.data || {};
     if (d.ns !== 'avatar-widget-host') return;
     if (d.type === 'say') speak(String(d.text || '').slice(0, 600));
-    // Phase 6.4：host 動態切換對應角色（影響 onTap 自我介紹 + 預備切 model）
-    if (d.type === 'switch_agent') CURRENT_AGENT = d.agent || '';
+    // Phase 6.4：host 動態切換對應角色（含 model + voice 切換）
+    if (d.type === 'switch_agent') {
+      CURRENT_AGENT = d.agent || '';
+      // 切 voice（不重建 widget，純 TTS 參數更新）
+      if (d.voice) {
+        NEURAL_VOICE = d.voice;
+        // 改變 widget TTS 抓的 voice — 動態重建 TTS URL 不用重 build
+        console.log('[Live2D] voice →', d.voice);
+      }
+      // 切 model（destroy 舊 Live2DModel + 載新的）
+      if (d.model && d.model !== CURRENT_MODEL_URL) {
+        CURRENT_MODEL_URL = d.model;
+        swapModel(d.model);
+      }
+    }
     // Phase 6.4：群聊模式 — host 通知 widget 關掉語音功能（onTap + 麥克風）
     // 文字輸入仍可使用（不算語音）
     if (d.type === 'set_voice_enabled') {
@@ -194,6 +207,51 @@
     }
     // 注意：不接受用 postMessage 遠端啟動麥克風（listen），避免惡意父頁偷開麥；麥克風只由使用者點擊觸發
   });
+
+  // Phase 6.4：動態換 Live2D model
+  // 把目前 model 從 stage 拿掉、釋放資源、載新的
+  // 注意：必須等 bootAvatar 完成且 model 已建好，否則 swap 沒東西可換
+  let CURRENT_MODEL_URL = null;
+  let swapInProgress = false;
+  async function swapModel(modelUrl) {
+    if (swapInProgress) {
+      console.warn('[Live2D] swapModel already in progress, ignore');
+      return;
+    }
+    swapInProgress = true;
+    try {
+      // PIXI.live2d.Live2DModel 是在 bootAvatar 內取的，swap 也要從 PIXI.live2d 拿
+      const L2DModel = (window.PIXI && window.PIXI.live2d && window.PIXI.live2d.Live2DModel) || null;
+      if (!L2DModel) throw new Error('Live2DModel not available on PIXI.live2d');
+      const newModel = await L2DModel.from(modelUrl);
+      // 等模型 ready 再 swap（避免半透明）
+      // 把舊 model 從 stage 拿掉
+      if (model && model !== newModel) {
+        try { app.stage.removeChild(model); } catch (e) {}
+        try { model.destroy(); } catch (e) {}
+      }
+      model = newModel;
+      app.stage.addChild(model);
+      // Phase 6.4：跟 bootAvatar 的 transform 設定一致（anchor + 縮放 + 位置）
+      // 不然新 model 會在 canvas 角落或巨大無比
+      try {
+        const w = app.renderer.width, h = app.renderer.height;
+        const nativeH = (model.internalModel && model.internalModel.height) || 1000;
+        model.scale.set((h / nativeH) * 0.95);
+        model.x = w / 2; model.y = h;
+        model.anchor.set(0.5, 1.0);
+      } catch (e) { console.warn('[Live2D] swap transform fallback', e); }
+      // 綁 hit 事件
+      model.on('hit', () => onTap());
+      document.getElementById('avatar-canvas').addEventListener('pointerdown', onTap);
+      window.__avatarModel = model;
+      console.log('[Live2D] model swapped →', modelUrl);
+    } catch (e) {
+      console.error('[Live2D] swapModel failed:', e);
+    } finally {
+      swapInProgress = false;
+    }
+  }
 
   // Phase 6.4：語音功能開關（onTap 自我介紹 + 麥克風）
   // 群聊時 host 會 set_voice_enabled=false，這兩個按鈕視覺暗掉、點擊也 no-op
@@ -470,6 +528,7 @@
       document.getElementById('avatar-canvas').addEventListener('pointerdown', onTap);
 
       setTimeout(() => showBubble('點 🎤 說話、或直接打字問我；想更聰明可按 🧠 啟用 AI 大腦 👋'), 700);
+      CURRENT_MODEL_URL = MODEL_URL;  // Phase 6.4：記下當前 model URL，switch_agent 用來判斷要不要 swap
       postToParent('ready');
       window.__avatarModel = model;
     } catch (err) {

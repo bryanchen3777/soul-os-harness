@@ -324,15 +324,19 @@
     (function() {
       var s = document.createElement('script');
       // ?v=1 cache-bust（避免瀏覽器卡舊版 embed.js）
-      s.src = '/static/embed.js?v=6';
-      // Phase 6.1：先拿 Yua 範例模型驗證
-      // Phase 6.4：會依 agent 切換模型（switch_model postMessage）
-      s.setAttribute('data-model', 'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json');
+      s.src = '/static/embed.js?v=7';
+      // Phase 6.4：從 window.LIVE2D_CONFIG（server 注入）讀預設 agent 的 model + voice
+      // 沒注入時 fallback 到 Haru + 曉曉（向後相容 dev 模式直接開 index.html）
+      var live2dCfg = (window.LIVE2D_CONFIG || {}).live2d || {};
+      var defaultAgent = live2dCfg.default_agent || 'yua';
+      var defaultAgentCfg = (live2dCfg.agents || {})[defaultAgent] || {};
+      var defaultModelKey = defaultAgentCfg.model || 'haru';
+      var defaultVoice = defaultAgentCfg.voice || 'zh-CN-XiaoxiaoNeural';
+      var defaultModelUrl = (live2dCfg.models || {})[defaultModelKey] || 'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json';
+      s.setAttribute('data-model', defaultModelUrl);
+      s.setAttribute('data-voice', defaultVoice);
+      s.setAttribute('data-agent', defaultAgent);
       s.setAttribute('data-knowledge', '/static/knowledge.js?v=1');
-      // Phase 6.4：data-agent 帶目前 conversation 對應的 agent_id
-      // widget onTap() 會用這個顯示角色自我介紹
-      // 群組模式 → 預設 yua；private 模式 → 對應 agent（短代號去掉 agent_ 前綴）
-      s.setAttribute('data-agent', 'yua');
       // Phase 6.x TTS：絕對路徑指向 Soul OS /api/tts endpoint
       // 不加的話 widget 預設相對路徑會被解析成 /static/api/tts（404）
       s.setAttribute('data-api', '/api/tts');
@@ -366,12 +370,16 @@
             ws.send(JSON.stringify(payload));
             console.log('[Live2D] STT → Soul OS:', text);
           };
-          // Phase 6.4：embed.js 載入後 → 依當前 conversation 通知 widget 切 agent + 語音開關
-          // 預設在 group 模式 → 語音關、私聊 agent_yua → 語音開
-          var initAgent = currentConversation === 'group' ? 'yua' : currentConversation.replace('agent_', '');
-          window.AvatarWidget.switchAgent(initAgent);
+          // Phase 6.4：embed.js 載入後 → 依當前 conversation 通知 widget 切 agent + model + voice
+          // 預設在 group 模式 → 語音關、私聊 → 語音開
+          var initAgent = currentConversation === 'group'
+            ? (window.LIVE2D_CONFIG?.live2d?.default_agent || 'yua')
+            : currentConversation.replace('agent_', '');
+          var initCfg = (window.LIVE2D_CONFIG?.live2d?.agents || {})[initAgent] || {};
+          var initModel = (window.LIVE2D_CONFIG?.live2d?.models || {})[initCfg.model] || null;
+          window.AvatarWidget.switchAgent(initAgent, initModel, initCfg.voice);
           window.AvatarWidget.setVoiceEnabled(currentConversation !== 'group');
-          console.log('[Live2D] init state:', { agent: initAgent, voice: currentConversation !== 'group' });
+          console.log('[Live2D] init state:', { agent: initAgent, model: initModel, voice: initCfg.voice, voiceEnabled: currentConversation !== 'group' });
           console.log('[Live2D] onUserInput callback installed');
         }
       };
@@ -448,12 +456,19 @@
       document.getElementById("group-members").style.display = isGroup ? "flex" : "none";
       document.getElementById("clear-memory-btn").style.display = "inline-block";
       loadHistory();
-      // Phase 6.4：切換 conversation → 通知 widget 切 agent + 群聊時關語音
-      var agentShort = convId === 'group' ? 'yua' : convId.replace('agent_', '');
+      // Phase 6.4：切換 conversation → 通知 widget 切 agent + model + voice
+      // 群聊不支援語音（避免多 agent 一起唸）；private 模式開語音
+      var agentShort = convId === 'group' ? (window.LIVE2D_CONFIG?.live2d?.default_agent || 'yua') : convId.replace('agent_', '');
       currentAgent = agentShort;
       if (window.AvatarWidget) {
-        window.AvatarWidget.switchAgent(agentShort);
-        // 群聊不支援語音（避免多 agent 一起唸）；private 模式開語音
+        // 從 live2d config 拿該 agent 的 model + voice URL
+        var live2dCfg = (window.LIVE2D_CONFIG || {}).live2d || {};
+        var agentCfg = (live2dCfg.agents || {})[agentShort] || {};
+        var modelKey = agentCfg.model;
+        var modelUrl = (live2dCfg.models || {})[modelKey] || null;
+        var voice = agentCfg.voice || null;
+        // 切換：傳 agent + 可選的 model/voice（widget 動態重建 Live2DModel + 改 NEURAL_VOICE）
+        window.AvatarWidget.switchAgent(agentShort, modelUrl, voice);
         window.AvatarWidget.setVoiceEnabled(convId !== 'group');
       }
     }

@@ -1,0 +1,28 @@
+# Soul OS — Live2D widget 設定（Phase 6.4）
+# 三個 agent 對應不同的 Live2D model + TTS voice
+# 換 voice / model 只要改這檔，後端跟前端會自動套用
+
+live2d:
+  default_agent: yua
+
+  # 每個 agent 配哪個 model 跟 voice（短代號，去 models/voices 對應表查實際 URL）
+  agents:
+    yua:
+      model: haru
+      voice: zh-CN-XiaoxiaoNeural
+      greeting: "你好～我是 Yua，冷泡茶式的陪伴。今天想聊點什麼？"
+    ruka:
+      model: mao
+      voice: zh-CN-XiaoxiaoNeural
+      greeting: "嗨！我是 Ruka，有什麼想說的嗎？"
+    akane:
+      model: rice
+      voice: zh-CN-XiaoxiaoNeural
+      greeting: "……茜在。說吧。"
+
+  # Live2D model URL 對應表（CDN 上有的官方 sample）
+  # 佔位用：Mao 跟 Rice 之後可換成正式授權的角色 model
+  models:
+    haru: "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json"
+    mao:  "https://cdn.jsdelivr.net/gh/Live2D/CubismWebSamples/Samples/Resources/Mao/Mao.model3.json"
+    rice: "https://cdn.jsdelivr.net/gh/Live2D/CubismWebARSample/assets/models/Rice/Rice.model3.json"

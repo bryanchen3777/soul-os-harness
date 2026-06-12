@@ -173,10 +173,12 @@ class IOGateway:
     同時提供靜態檔案服務（頭像、CSS 等）。
     """
 
-    def __init__(self, bus: SoulEventBus, app: FastAPI = None):
+    def __init__(self, bus: SoulEventBus, app: FastAPI = None, live2d_config: dict = None):
         self.bus = bus
         self.manager = ConnectionManager()
         self.app = app or FastAPI(title="Soul OS Gateway")
+        # Phase 6.4：Live2D config（從 run_server.py 傳入；可能 None 表示沒載入）
+        self.live2d_config = live2d_config or {}
         self._setup_routes()
 
     def register(self):
@@ -196,6 +198,21 @@ class IOGateway:
             if _STATIC_INDEX and _STATIC_INDEX.exists():
                 try:
                     html = _STATIC_INDEX.read_text(encoding="utf-8")
+                    # Phase 6.4：注入 live2d config 進 HTML（讓前端 embed.js 讀得到）
+                    # 用 JSON-safe escape，避免 </script> 等字元破壞 HTML
+                    import json as _json
+                    config_json = _json.dumps(self.live2d_config, ensure_ascii=False, default=str)
+                    # 找第一個 <script> 標籤前面插入 config global
+                    # 確保 config 在 embed.js 載入前可用
+                    # 用 HTML 註解 marker 標記已注入（避免重複注入）
+                    # 用更精準的 marker 判斷是否已注入（避免跟 JS 讀取程式碼撞）
+                    if '<!-- LIVE2D_CONFIG_INJECTED -->' not in html:
+                        inject = (
+                            f'<!-- LIVE2D_CONFIG_INJECTED -->\n'
+                            f'<script>window.LIVE2D_CONFIG = {config_json};</script>\n'
+                        )
+                        # 插在 <head> 內，</head> 前面
+                        html = html.replace('</head>', inject + '</head>', 1)
                     return HTMLResponse(html, media_type="text/html; charset=utf-8")
                 except Exception as e:
                     logger.warning(f"[Gateway] 重讀 index.html 失敗: {e}")
@@ -305,11 +322,14 @@ class IOGateway:
         # widget.html 呼叫：fetch('/api/tts?voice=zh-TW-HsiaoChenNeural&text=...')
         # 預期回應：audio/mpeg (MP3) bytes
         @self.app.get("/api/tts")
-        async def api_tts(voice: str = "", text: str = ""):
+        async def api_tts(voice: str = "", text: str = "", agent: str = ""):
             """
             線上 TTS — 把文字轉 MP3 回傳給 Live2D widget 播放
 
-            - voice 沒給 → 預設 zh-TW-HsiaoChenNeural
+            Phase 6.4 擴充：
+              - 支援 ?agent=yua 查詢 live2d_config.agents[agent].voice
+              - voice 沒給、agent 沒給 → 預設 DEFAULT_VOICE
+
             - text 為空 / edge-tts 失敗 → 回 404（widget 自動 fallback 瀏覽器 TTS）
             - 5 分鐘 in-memory cache（避免 heartbeat 重複觸發同樣 draft）
             """
@@ -317,6 +337,12 @@ class IOGateway:
 
             if not text or not text.strip():
                 return {"error": "text is required"}, 400
+
+            # Phase 6.4：依 agent 查 voice
+            if not voice and agent and self.live2d_config:
+                agents_cfg = (self.live2d_config.get("live2d", {}) or {}).get("agents", {}) or {}
+                agent_cfg = agents_cfg.get(agent) or {}
+                voice = agent_cfg.get("voice") or ""
 
             mp3 = await synthesize_speech(
                 text=text,

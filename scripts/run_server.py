@@ -66,6 +66,18 @@ async def lifespan(app: FastAPI):
     from src.io.gateway import IOGateway
 
     cfg = load_config()
+
+    # Phase 6.4：載入 live2d config（widget 的 model + voice 對應表）
+    live2d_cfg = {}
+    try:
+        import yaml as _yaml
+        _live2d_path = _root / "configs" / "live2d.yaml"
+        if _live2d_path.exists():
+            live2d_cfg = _yaml.safe_load(_live2d_path.read_text(encoding="utf-8")) or {}
+            logger.info(f"[Server] Live2D config loaded: {len((live2d_cfg.get('live2d', {}) or {}).get('agents', {}) or {})} agents")
+    except Exception as e:
+        logger.warning(f"[Server] Live2D config 載入失敗（用 fallback）: {e}")
+
     bus = SoulEventBus()
     await bus.start()
 
@@ -94,7 +106,7 @@ async def lifespan(app: FastAPI):
     agents = create_agents(cfg, bus, speaker_token_bus=speaker_token_bus)
     agent_ids = [a.agent_id for a in agents]
 
-    gateway = IOGateway(bus=bus, app=app)
+    gateway = IOGateway(bus=bus, app=app, live2d_config=live2d_cfg)
     gateway.register()
 
     heartbeat = create_heartbeat(cfg, bus, agent_ids=agent_ids)
