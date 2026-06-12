@@ -8,7 +8,7 @@ live2d:
   # 每個 agent 配哪個 model 跟 voice（短代號，去 models/voices 對應表查實際 URL）
   agents:
     yua:
-      model: haru
+      model: hibiki  # 2026-06-12: 換成本地官方 sample（比 Haru 完整，5 motions + 6 expressions）
       voice: zh-CN-XiaoxiaoNeural
       greeting: "你好～我是 Yua，冷泡茶式的陪伴。今天想聊點什麼？"
     ruka:
@@ -20,9 +20,11 @@ live2d:
       voice: zh-CN-XiaoxiaoNeural
       greeting: "……茜在。說吧。"
 
-  # Live2D model URL 對應表（CDN 上有的官方 sample）
-  # 佔位用：Mao 跟 Rice 之後可換成正式授權的角色 model
+  # Live2D model URL 對應表
+  # - hibiki: 本地解壓的官方範例模型（Cubism 5 SDK 標準格式，5 motions + 6 expressions）
+  # - haru / mao / rice: CDN 上的官方 sample（佔位用，之後可換正式授權角色）
   models:
-    haru: "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json"
-    mao:  "https://cdn.jsdelivr.net/gh/Live2D/CubismWebSamples/Samples/Resources/Mao/Mao.model3.json"
-    rice: "https://cdn.jsdelivr.net/gh/Live2D/CubismWebARSample/assets/models/Rice/Rice.model3.json"
+    haru:   "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json"
+    mao:    "https://cdn.jsdelivr.net/gh/Live2D/CubismWebSamples/Samples/Resources/Mao/Mao.model3.json"
+    rice:   "https://cdn.jsdelivr.net/gh/Live2D/CubismWebARSample/assets/models/Rice/Rice.model3.json"
+    hibiki: "/static/models/hibiki/hibiki/runtime/hibiki.model3.json"

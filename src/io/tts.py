@@ -32,8 +32,15 @@ import edge_tts
 
 logger = logging.getLogger("soul_os.tts")
 
-# 預設聲音 — 對齊 widget.html 的 NEURAL_VOICE 預設值
-DEFAULT_VOICE = "zh-TW-HsiaoChenNeural"
+# 預設聲音 — 簡體中文「曉曉」神經語音
+# 候選清單（edge-tts 都有）：
+#   zh-TW-HsiaoChenNeural  曉臻（台灣中文女）
+#   zh-TW-YunJheNeural     雲哲（台灣中文男）
+#   zh-TW-HsiaoYuNeural    曉雨（台灣中文女，較年輕）
+#   zh-CN-XiaoxiaoNeural   曉曉（簡體中文女）← 預設
+#   zh-CN-YunxiNeural      雲希（簡體中文男，活潑）
+#   zh-CN-YunyangNeural    雲揚（簡體中文男，新聞播報）
+DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural"
 
 # text 上限（widget 端已先截 600，這裡 server 端保險再截）
 MAX_TEXT_CHARS = 600

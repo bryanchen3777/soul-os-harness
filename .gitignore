@@ -38,3 +38,7 @@ build/
 agents/*/states/
 sessions/
 data/
+
+# Live2D 模型檔（官方 sample，9.9MB，dev 自己從 source 解一次）
+# 從 Live2D 官網下載 hibiki.zip 解到 static/models/hibiki/
+static/models/
