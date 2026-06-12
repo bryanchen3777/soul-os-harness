@@ -138,7 +138,7 @@ Pub/Sub 架構 + Speaker Token 仲裁，管理發言權，避免多人同時搶�
 | 功能 | 狀態 |
 |------|------|
 | 多 Agent 架構（Yua / Ruka / Akane） | ✅ |
-| WebSocket 即時對話 + 網頁 UI | ✅ |
+| WebSocket 即時對話 + 網頁 UI + Live2D 虛擬形象 | ✅ |
 | MiniMax M2.7 真實 LLM | ✅ |
 | 完整人格 SOUL（14-tier 結構） | ✅ |
 | 跨 session 持久化記憶（SQLite） | ✅ |
@@ -156,8 +156,10 @@ Pub/Sub 架構 + Speaker Token 仲裁，管理發言權，避免多人同時搶�
 | Connection Guard（無人時省 token） | ✅ |
 | 情緒系統（mood / intimacy） | ✅ |
 | 群聊模式 | ✅ |
+| **Live2D 虛擬形象（Web UI + 語音）** | ✅ |
+| **msedge-tts 語音輸出（曉曉 Neural）** | ✅ |
+| **Telegram → Live2D 語音通道** | ✅ |
 | RAG Router / Palace 向量搜尋 | ⬜ Phase 4 |
-| TTS 語音輸出 | ⬜ Phase 5 |
 | 機器人動作 / 實體裝置 | ⬜ Phase 6 |
 | 智慧音箱 / 穿戴 / VR | ⬜ Phase 6 |
 
@@ -166,10 +168,10 @@ Pub/Sub 架構 + Speaker Token 仲裁，管理發言權，避免多人同時搶�
 ## 🗺️ 開發里程碑
 
 ```
-✅───────────✅───────────✅───────────🔄───────────⬜───────────⬜
+✅───────────✅───────────✅───────────🔄───────────✅───────────⬜
 Phase 1      Phase 2      Phase 3      Phase 4      Phase 5      Phase 6
 基礎建設      記憶整合      單一靈魂      後宮沙盒      TTS 語音      實體世界
-             (部分)                     進行中
+              (部分)                     進行中       完成
 ```
 
 | Phase | 內容 | 狀態 |
@@ -178,7 +180,7 @@ Phase 1      Phase 2      Phase 3      Phase 4      Phase 5      Phase 6
 | **Phase 2 記憶整合** | Palace 檔案系統、SQLite 語料庫（JSONL 檔）、RAG Router | ✅ 部分 |
 | **Phase 3 單一靈魂注入** | 單一 Agent 放入 Harness、非同步測試、主動觸發 + 情緒系統 | ✅ |
 | **Phase 4 後宮沙盒** | Event Bus、多 Agent 同房間交互、World Model / Motivation / Scheduler / Tool Router / RAG | 🔄 進行中 |
-| **Phase 5 TTS + 語音** | 語音輸出、多模態 | ⬜ |
+| **Phase 5 TTS + 語音** | msedge-tts、Live2D widget、曉曉 Neural 語音、Telegram → Live2D 通道 | ✅ |
 | **Phase 6 實體世界** | 行動端、機器人、實體裝置、VR/AR | ⬜ |
 
 ---
@@ -254,8 +256,8 @@ soul-os-harness/
 
 ---
 
-**Made with 💜 by Bryan ╳ MiniMax ╳ Perplexity**
+**Made with 💜 by Bryan ╳ MiniMax ╳ Perplexity ╳ Live2D**
 
-*最後更新：2026-06*
+*最後更新：2026-06-12*
 
 </div>
