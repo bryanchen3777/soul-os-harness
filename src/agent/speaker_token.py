@@ -14,7 +14,7 @@ logger = logging.getLogger("soul_os.speaker_token")
 BASE_SCORES = {
     "agent_yua":   (0.80, 0.40),   # 正宮，提高 base，略大 jitter
     "agent_ruka":  (0.75, 0.35),   # 降低，避免壟斷
-    "agent_akane": (0.45, 0.50),   # 稍低，偶爾翻盤
+    "agent_akane": (0.35, 0.28),   # 比 Rem 更沉，靜默模式（TIER 13 對齊）
     "agent_rem":   (0.40, 0.30),   # Rem：不搶語言空間，做事優先（比 Akane 更低、更穩定）
 }
 
