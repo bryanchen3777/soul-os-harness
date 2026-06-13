@@ -157,6 +157,9 @@
     'yua':   '你好～我是 Yua，冷泡茶式的陪伴。今天想聊點什麼？',
     'ruka':  '哈囉～我是 Ruka，隨時都元氣滿滿！有什麼想跟我說的？',
     'akane': '你好，我是 Akane。想到什麼隨時開口，我在。',
+    // Phase 6.5 — Rem (Re:Zero)：呼應 SOUL 的「能幹女僕、行動先於語言」
+    // 跟 configs/live2d.yaml agents.rem.greeting 同步（兩份 source-of-truth 暫時同步）
+    'rem':   '雷姆在這裡。Bryan，需要什麼？',
   };
   function greetFor(agent) {
     return AGENT_GREET[agent] || '你好～我在這裡，隨時可以說點什麼或打字給我。';

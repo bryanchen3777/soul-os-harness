@@ -544,6 +544,9 @@
 
     function getAvatarInitials(agentId) {
       var map = { "bryan": "B", "agent_yua": "Y", "agent_ruka": "R", "agent_akane": "A" };
+      // Phase 6.5 — Rem 用 "レ"（日文片假名，跟 Ruka/Akane 漢字風格一致）
+      // 不用 "R" 避免跟 Ruka 撞字母（雖然色票已分開）
+      if (agentId === "agent_rem") return "レ";
       return map[agentId] || agentId.charAt(0).toUpperCase();
     }
 
