@@ -402,7 +402,7 @@ class IOGateway:
                             mode = msg.get("mode", "private")
                             # Bug 3 fix: 統一 group_members → participants，並確保預設全員
                             if mode == "group":
-                                participants = msg.get("group_members") or msg.get("participants") or ["agent_yua", "agent_ruka", "agent_akane"]
+                                participants = msg.get("group_members") or msg.get("participants") or ["agent_yua", "agent_ruka", "agent_akane", "agent_rem"]
                                 target = "broadcast"
                             else:
                                 participants = None
