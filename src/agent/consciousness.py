@@ -430,6 +430,10 @@ class AgentConsciousness(ABC):
             source=self.agent_id,
             target="broadcast",
             priority=EventPriority.NORMAL,
+            # Phase 6.x：proactive 用 agent 自己的 session_id，跟打字合併
+            # Bryan 回覆後 → 走 user_message → 同 session_id → LLM 看得到
+            # 剛才的主動觸發 + 之前打字歷史，連貫
+            session_id=f"session_{self.agent_id}",
             payload=intent_payload,
         )
         await self.bus.publish(event)
