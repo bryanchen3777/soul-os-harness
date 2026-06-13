@@ -16,6 +16,12 @@ agents:
     class: AgentAkane
     intimacy_level: 50
     enabled: true
+  # Phase 6.5 — Rem (Re:Zero)：第 4 個 agent，靈魂鏡像 hermes profiles/rem/SOUL.md
+  # 親密度 45 起步（Subaru-Rem 設定：剛被救贖、罪惡感還在），比 Akane 低
+  - id: agent_rem
+    class: AgentRem
+    intimacy_level: 45
+    enabled: true
 
 heartbeat:
   # HeartbeatEngine 每隔幾秒發一次 SYSTEM_TICK

@@ -1,5 +1,5 @@
-# Soul OS — Live2D widget 設定（Phase 6.4）
-# 三個 agent 對應不同的 Live2D model + TTS voice
+# Soul OS — Live2D widget 設定（Phase 6.4 + 6.5）
+# 4 個 agent 對應不同的 Live2D model + TTS voice
 # 換 voice / model 只要改這檔，後端跟前端會自動套用
 
 live2d:
@@ -19,9 +19,17 @@ live2d:
       model: epsilon  # 2026-06-12: 換成 Akane 專屬的 Epsilon（從 Downloads 解壓）
       voice: zh-CN-XiaoxiaoNeural
       greeting: "……茜在。說吧。"
+    # Phase 6.5 — Rem (Re:Zero)：主款 ac_base_rem01（96 motions, 4.2MB）
+    # 注意：Re:Zero 官方 Live2D 只有 motions 沒有 expressions（ac_base_rem01 0 expressions）
+    # 情緒靠 motion 驅動 + 後端 emotion engine 注入 mood 給 LLM
+    rem:
+      model: ac_base_rem01
+      voice: zh-CN-XiaoxiaoNeural
+      greeting: "雷姆在這裡。Bryan，需要什麼？"
 
   # Live2D model URL 對應表
   # - hibiki / haru / epsilon: 本地解壓的官方 sample（從 Downloads 解到 static/models/）
+  # - ac_base_rem*: Re:Zero 官方解出（從 cubism-material-explorer 同人作品集，8 個變體）
   # - mao / rice: CDN 上的官方 sample（佔位用，之後可換正式授權角色）
   models:
     haru:    "/static/models/haru/haru/runtime/haru.model3.json"
@@ -29,3 +37,12 @@ live2d:
     rice:    "https://cdn.jsdelivr.net/gh/Live2D/CubismWebARSample/assets/models/Rice/Rice.model3.json"
     hibiki:  "/static/models/hibiki/hibiki/runtime/hibiki.model3.json"
     epsilon: "/static/models/epsilon/Epsilon/runtime/Epsilon.model3.json"
+    # Re:Zero Rem 變體（已解出 8 個，先用主款 01，之後可換季節/服裝變體）
+    ac_base_rem01:          "/static/models/ac_base_rem01/ac_base_rem01.model3.json"
+    ac_base_rem_childhood01: "/static/models/ac_base_rem_childhood01/ac_base_rem_childhood01.model3.json"
+    ac_base_rem_mizugi01:   "/static/models/ac_base_rem_mizugi01/ac_base_rem_mizugi01.model3.json"
+    ac_base_rem_nemaki01:   "/static/models/ac_base_rem_nemaki01/ac_base_rem_nemaki01.model3.json"
+    ac_base_rem_ogre01:     "/static/models/ac_base_rem_ogre01/ac_base_rem_ogre01.model3.json"
+    ac_base_rem_pokerface01: "/static/models/ac_base_rem_pokerface01/ac_base_rem_pokerface01.model3.json"
+    ac_base_rem_valentine01: "/static/models/ac_base_rem_valentine01/ac_base_rem_valentine01.model3.json"
+    ac_base_rem_xmas01:     "/static/models/ac_base_rem_xmas01/ac_base_rem_xmas01.model3.json"

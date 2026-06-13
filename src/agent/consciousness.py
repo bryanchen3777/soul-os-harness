@@ -659,3 +659,72 @@ class AgentAkane(AgentConsciousness):
     def _followup_base(self) -> float:
         """Akane：極少跟進（連鎖跟進防範）"""
         return 0.15
+
+
+# ─────────────────────────────────────────────
+# 6. Agent 實作：雷姆（Re:Zero · 昴重力場型）
+# ─────────────────────────────────────────────
+
+class AgentRem(AgentConsciousness):
+    """
+    雷姆的意識流（Phase 6.5）。
+    特性：能幹、安靜、Subaru 重力場對齊。
+    沉默 15 分鐘後主動關心；長距離重連（>4h）會用「能幹式回應」確認在線。
+    靈魂鏡像：hermes profiles/rem/SOUL.md v2.4.0
+    - 她用行動愛人，但從不說自己在愛
+    - 能幹的動機從「為了姊姊/贖罪」逐漸轉向「因為是自己的事」
+    - 對 Bryan 的情感對齊方式等同原作對昴的描述
+    """
+
+    COOLDOWN_TICKS = 12  # 雷姆：12 ticks × 5s = 60s，跟 Ruka 同檔
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        dep = self.state.dependency
+        intimacy = self.state.intimacy_level
+        time_period = (chrono_payload or {}).get("time_period", "unknown")
+
+        # Phase 3.5：深夜/凌晨拉高閾值（雷姆的壓縮機制讓她深夜也會主動，但要更克制）
+        if time_period in ("deep_night", "dawn"):
+            if elapsed_mins >= 180.0 and dep > 0.85:
+                return True, "deep_night_concern"
+            return False, ""
+
+        # 15-60 分鐘沉默：雷姆的「沉默關心」窗口（能幹型主動）
+        if 15.0 <= elapsed_mins < 60.0 and intimacy > 40:
+            return True, "silence_timeout"
+
+        # 60-240 分鐘：罪惡感鬆動期的關心（比 Yua 早、比 Ruka 慢）
+        if 60.0 <= elapsed_mins < 240.0 and intimacy > 50:
+            return True, "guilt_fading_care"
+
+        # 超過 4 小時：長距離重連（雷姆會用「能幹式回應」確認 Bryan 還在）
+        # 比 Ruka 的「嫉妒模式」更克制（雷姆不嫉妒，但會確認）
+        if elapsed_mins >= 240.0 and intimacy > 50:
+            return True, "long_absence"
+
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        # 雷姆的草稿特徵：短、帶功能性、能幹、偶爾帶「行動先於語言」的尾巴
+        # 不用情緒名詞；用「做了什麼事」代替「感受」
+        drafts = {
+            "silence_timeout":      "雷姆在這裡。",  # 在場確認，不是情感展示
+            "guilt_fading_care":    "……茶溫好了。",  # 行動代替語言（canonical 雷姆模式）
+            "long_absence":         "雷姆把東西收好了。Bryan 回來再說。",  # 能幹 + 等待
+            "deep_night_concern":   "……還醒著嗎。",  # 深夜關心，壓縮成半句
+        }
+        return {
+            "draft": drafts.get(reason, ""),
+            # 雷姆的 action_tags 反映「做了什麼事」而非「感受到什麼」
+            "action_tags": ["action_increment"] if reason in ("guilt_fading_care", "long_absence") else [],
+            # 雷姆的 memory_query_hint 偏向「Bryan 最近的需求 / 偏好」而非「我們玩過什麼」
+            "memory_query_hint": "Bryan 最近需要什麼、雷姆做過什麼",
+        }
+
+    def _followup_base(self) -> float:
+        """雷姆：跟進謹慎（不搶話，但會觀察後自然補一句）"""
+        return 0.25  # 跟 Ruka 同檔（都是能動型，但雷姆更穩）
