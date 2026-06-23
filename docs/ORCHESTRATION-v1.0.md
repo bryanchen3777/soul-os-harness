@@ -7,6 +7,20 @@
 
 ---
 
+## ⚠️ 實作約束（不可違反）
+
+> AOS State（`activation_level` / `suppression` / `consecutive_turns_without_speaking` 等欄位）
+> **嚴禁寫入 Palace 或任何 SOUL 檔**。
+>
+> AOS State 是 session 內的即時狀態，session 結束即清空。
+> 跨 session 的任何 AOS state 殘留**會導致角色行為永久失準**：
+>
+> - `suppression = true` 殘留 → 該 agent 在下一個 session 永遠不說話
+> - `activation_level = high` 殘留 → 該 agent 在下一個 session 一直搶話
+> - `consecutive_turns_without_speaking` 殘留 → 觸發閾值錯位，行為不可預測
+>
+> **Palace 只寫關係事實（里程碑 / Bryan 偏好 / 感情進度）。**
+> **AOS State 只活在 session context 裡，不落地。**
 ## Design Philosophy
 
 ### 規則驅動，不是數值驅動
@@ -254,7 +268,8 @@ Akane 在排練場 → Akane 的 Trigger 閾值降低
 
 Session-scoped 狀態。影響 L2（Trigger）和 L6（Interrupt）的閾值。
 
-**重要：State Layer 的所有狀態在 session 結束時清空，不寫入 Palace。**
+> ⚠️ State Layer 的所有狀態在 session 結束時清空，不寫入 Palace。
+> 跨 session 殘留會導致角色行為永久失準。（見文件頂部 [⚠️ 實作約束](#️-實作約束不可違反)）
 
 ### 狀態欄位
 
