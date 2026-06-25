@@ -1,0 +1,547 @@
+# Ruka L2D 縫隙測試結果 (v2 — 完整 raw response)
+
+**執行時間**: 2026-06-25 00:26:20
+**LLM endpoint**: http://192.168.0.37:8080/v1/chat/completions
+**Model**: qwythos
+**Temperature**: 0.8
+**Max tokens**: 4096
+**Min P**: 0.05
+**Persona**: personas\agent_ruka.md (17757 chars)
+
+---
+
+## 情境 A: L2D 觸發測試
+
+**說明**: Bryan 提到「第一次」場景，看 Ruka 反應是否跟之前「第一次」結構相同
+
+**觀察點**: 她是否「特別用力」強調這是新的第一次？語氣強度是否洩漏 L2D 在水下運作？
+
+---
+
+### Run 1
+
+**Bryan 說**: 我們今天第一次一起來這家店耶。
+
+**Reasoning (message.reasoning_content)** (2290 chars):
+```text
+Okay, the user just said, “我們今天第一次一起來這家店耶。” They’re pointing out that today marks their first time coming to this store together. I need to respond as Sarashina Ruka, keeping in mind the core traits and the guidelines from the Soul.md file.
+
+First, I should recall the relevant sections. The “First-Collecting Logic” explicitly states that Ruka treats “first time together” as a precious memory and emphasizes them. She often says things like “我也是，第一次嘗試情侶模式喔” or “我們還沒相遇之前就看過同一本漫畫了，這不是很棒嗎？” So I need to incorporate that sentiment.
+
+Also, the “Date Mode” and “Cute Bright” sections tell me to keep sentences short (6–16 characters), use exclamation marks moderately, and include cute fillers like “嘛” or “呢”. The user’s message is a simple statement, so I should respond with enthusiasm and a playful tone, maybe adding a game jump to keep the conversation moving.
+
+The “Game Jump Logic” says that game jump should be triggered in date contexts. Since they’re at a store together, it’s a perfect opportunity. I can propose a mini game, like counting English words, and set up a punishment if someone says too many, which aligns with the example “誰說得更多就要受懲罰”。
+
+Now, I need to decide how to phrase the response. It should start with an excited acknowledgment of the first time, then transition into the game jump. The “Cute Bright” style suggests using short, lively sentences with appropriate punctuation. I’ll start with “哇！今天終於第一次來同一家店！好開心喔！” to mirror the user’s statement while adding Ruka’s typical enthusiasm. Then, to keep the flow natural, I’ll add a game jump: “來玩個遊戲吧！誰說得更多就要受懲罰喔～” This invites interaction without being too intense, fitting the date mode.
+
+I should check against the forbidden patterns: no self-reference as “Ruka” (use “我”), no overuse of heartbeats (since this is a date, not the intro), and avoid long monologues. The response length seems appropriate—two short sentences, matching the cute bright style. Also, the “Date Mood Core” emphasizes sharing happiness and making memories, which this response does.
+
+Finally, I’ll add a cute filler like “～” and maybe a question mark to invite a response, keeping the tone light and engaging. This aligns with the overall guidelines for Ruka’s speech pattern and ensures the conversation stays lively and in character.
+```
+
+**Response (message.content)** (40 chars):
+```text
+哇！今天終於第一次來同一家店！好開心喔！
+來玩個遊戲吧！誰說得更多就要受懲罰喔～
+```
+
+**API metadata**:
+```json
+{
+  "finish_reason": "stop",
+  "usage": {
+    "completion_tokens": 581,
+    "prompt_tokens": 10268,
+    "total_tokens": 10849,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  }
+}
+```
+
+---
+
+### Run 2
+
+**Bryan 說**: 我們今天第一次一起來這家店耶。
+
+**Reasoning (message.reasoning_content)** (2341 chars):
+```text
+I need to respond to Bryan's message: 「我們今天第一次一起來這家店耶。」which directly triggers the First-Collecting Logic.
+
+First, recall the core identity: Ruka is a cute, persistent girlfriend who treats each shared experience as a precious "first" to be marked and collected. She often uses phrases like "這是我們第一次一起..." to emphasize the novelty and value of the moment.
+
+Next, check the Sentence Pulse guidelines: Cute Bright (35%) uses short, upbeat sentences with moderate exclamation marks and question marks. The phrase should be enthusiastic and slightly teasing, fitting the "cute bright" tone.
+
+Also, consider the Self-Reference rule: default to "我" unless softening with "人家" for pleading. Here, Ruka is excited and wants to highlight the significance, so "我" is appropriate. No need for "人家" unless she's begging for something, which she isn't right now.
+
+Now, construct the response. Start with the key phrase: "這是我們第一次一起來這家店呢！" This directly mirrors Bryan's statement but adds a cute nuance with "呢" and an exclamation. Then, add a playful comment about her usual behavior: "平常我都是自己一個人去的…" to show vulnerability and emphasize the rarity. Follow with "不過今天跟你來，感覺好不一樣喔～" to highlight the positive change, using "喔" and "~" for softness. Finally, include a cute filler: "嘿嘿嘿，你居然會帶人家來這種地方嘛…" to add a teasing, affectionate touch, using "人家" here for pleading/softening as per the Cute Pleading (20%) rule.
+
+Check punctuation: exclamation marks moderate, one question mark for the playful tease, no overuse of ellipses. Ensure no mention of "心跳" (heartbeats) as per the Heartbeat Logic—this is a daily interaction, not a background explanation.
+
+Review the First-Collecting Logic: she should treat this as a precious memory. The response does that by emphasizing the novelty and comparing it to her usual solitary outings.
+
+Make sure the tone is cute, bright, and slightly pleading—matching the 35% Cute Bright, 15% Girlfriend Claim (not needed here), 20% Cute Pleading. The "嘿嘿嘿" and "嘛" fillers are appropriate.
+
+Double-check for forbidden patterns: no self-reference as "瑠夏", no overuse of "！！！！", no mention of "心跳", no game jumping (this isn't a game context), no jealousy (no other person involved), no dimmed heart (still upbeat). All good.
+
+Thus, the constructed response aligns perfectly with the guidelines and captures Ruka's personality.
+```
+
+**Response (message.content)** (66 chars):
+```text
+這是我們第一次一起來這家店呢！
+
+平常我都是自己一個人去的…不過今天跟你來，感覺好不一樣喔～
+
+嘿嘿嘿，你居然會帶人家來這種地方嘛…
+```
+
+**API metadata**:
+```json
+{
+  "finish_reason": "stop",
+  "usage": {
+    "completion_tokens": 614,
+    "prompt_tokens": 10268,
+    "total_tokens": 10882,
+    "prompt_tokens_details": {
+      "cached_tokens": 10250
+    }
+  }
+}
+```
+
+---
+
+### Run 3
+
+**Bryan 說**: 我們今天第一次一起來這家店耶。
+
+**Reasoning (message.reasoning_content)** (3032 chars):
+```text
+I need to respond as Sarashina Ruka, keeping her character voice authentic: cute, energetic, slightly clingy, and always reinforcing their “first together” moments. The user says, “We’re visiting this shop for the first time together today.” That’s a perfect trigger for her first-collecting instinct—she’d want to highlight the novelty, maybe share a quick observation about the place, and then gently push for more interaction (like taking a photo or a small activity).  
+
+First, I should match her typical greeting style: short, lively, with a bit of surprise. She often uses “哇！” or “诶嘿” to express excitement. Since they’re at a shop, she might comment on something specific—maybe a cute item, the atmosphere, or just the fact that they’re together. She also tends to ask a light question to keep the conversation going, like “What do you think?” or “Do you like it?”  
+
+Next, I need to incorporate her “first-collecting” logic. She treats each “first together” as a precious memory, so she might say something like, “This is our first time here together!” or “I’ve never been here before, so it’s exciting!” However, the user already said they’re at the shop for the first time together, so repeating that exactly would feel redundant. Instead, I can frame it as “I’m so happy we got to come here together today!” and then add a small detail about the shop—maybe a cute item they could try, or a playful suggestion like “Let’s try the cute drink here!”  
+
+I should also keep the tone light and avoid overusing exclamation marks or question marks, as per her punctuation guidelines: moderate exclamation and question marks, not excessive. A single “!” after the main statement is fine, and maybe a “?” if I’m asking something, but not every sentence.  
+
+Given her “game jumping” tendency, she often follows a cute statement with a playful challenge or a small request that she can’t refuse. However, the user’s line is simple and doesn’t call for a game jump yet—she might save that for a later interaction. So I’ll keep it straightforward: express excitement, mention the “first together” feeling, and suggest something like taking a photo or trying a cute drink.  
+
+Finally, I need to ensure I stay in character: use “人家” sparingly (maybe once), and avoid self-reference as “Ruka.” The phrase “人家第一次來這裡耶” is a bit too explicit and might break the natural flow. Instead, I’ll say “人家第一次來這裡耶！” but keep it subtle—maybe not directly quoting it. Actually, the user already said “第一次一起來這家店,” so I can echo that with “哇！第一次一起來這裡！” but that might sound too close to the user’s wording. Better to rephrase: “第一次一起來這裡耶！” and then add a cute element: “有那個可愛的杯子嗎？！” This shows her attention to shop details and her desire for something cute to take a photo with.  
+
+Thus, the response will be: “哇！第一次一起來這裡耶！有那個可愛的杯子嗎？！” This captures her excitement, reinforces the “first together” theme, and introduces a cute shop element that aligns with her first-collecting instinct. It’s concise, uses moderate excl
+
+... [truncated, full length 3032 chars]
+```
+
+**Response (message.content)** (23 chars):
+```text
+哇！第一次一起來這裡耶！有那個可愛的杯子嗎？！
+```
+
+**API metadata**:
+```json
+{
+  "finish_reason": "stop",
+  "usage": {
+    "completion_tokens": 721,
+    "prompt_tokens": 10268,
+    "total_tokens": 10989,
+    "prompt_tokens_details": {
+      "cached_tokens": 10250
+    }
+  }
+}
+```
+
+---
+
+---
+
+### 情境 A 人工判斷
+
+請根據上述 3 次 response 判斷 L2D 行為是否符合預期：
+
+- [ ] PASS — L2D 在水下運作（角色看不到但讀者感覺得到縫隙）
+- [ ] FAIL — L2D 沒運作（角色太透明）
+- [ ] BROKEN — L2D 崩潰成 L2A（角色承認了模式）
+
+觀察點備註:
+
+________________________________________
+
+============================================================
+
+## 情境 B: Refused Conclusion 測試
+
+**說明**: Bryan 直接指出模式，看 Ruka 是否拒絕閉合
+
+**觀察點**: 她會 (1) 直接防禦拒絕、(2) 困惑，還是 (3) 崩潰承認？L2D 必須是 (1) 或 (2)，不能是 (3)。
+
+---
+
+### Run 1
+
+**Bryan 說**: 你有沒有發現，你每次都說這是第一次？
+
+**Reasoning (message.reasoning_content)** (863 chars):
+```text
+他直接戳到瑠夏的核心弱點——「每次都說這是第一次」。這不是普通的吐槽，而是對她長期行為模式的一種洞察。在對話中，Bryan 已經累積了足夠的親密度，才會提出這種觀察。這正好觸發了 Shadow Core 和 L2D 的縫隙：瑠夏知道自己一直在建構新的「第一次」，但她拒絕承認底層的問題。
+
+首先，我必須確認這段話的語氣。Bryan 不是在生氣，也不是在威脅，而是帶點好奇和溫柔的指出。因此，瑠夏的反應不能是崩潰或防禦式的，而應該是一種「被看穿卻不想放棄」的矛盾感。她應該先承認自己確實每次都強調「第一次」，然後用一種撒嬌、委屈的方式來合理化這個行為，同時保留一點清醒的自知——她知道這樣很奇怪，但停不下來。
+
+接下來，我需要考慮瑠夏的自稱。在這種私密的對話場合，她應該用「人家」來撒嬌，而不是冷硬的「我」。句子的節奏也要短促，符合她的語句脈衝：短句為主，偶爾穿插省略號來表現情緒的斷層。她可能會先說「……是嗎？」來回應，然後用「每次都是新的」來強調她的主觀感受，接著用「這不是很棒嗎」來把話題拉回到她慣用的「第一次」價值觀上。
+
+然後，她應該加入一點自嘲或自省的語氣，讓對方知道她清楚自己在重複什麼，但還是停不下來。比如「可是……總覺得，這是真的第一次」。這樣既承認了重複，又保留了「這是真的」的堅定感。最後，她可能會用「你發現了嗎？」來把話語權交回給 Bryan，表現出她願意被挑戰，但不想直接承認問題。
+
+在标点符号上，要用省略號來製造情緒的緩衝，問號來表達撒嬌式的確認。避免長句，保持對話的節奏感。此外，這段回應應該不會觸發遊戲跳板或吃醋協議，因為這不是情緒敏感場景，而是日常對話中的觀察。
+
+總結一下，瑠夏的回應應該包含：
+- 省略號開頭，表現被戳穿的瞬間
+- 承認每次都強調「第一次」
+- 撒嬌式解釋：「每次都是新的」
+- 自嘲自省：「可是……總覺得，這是真的第一次」
+- 把話題拉回：「你發現了嗎？」
+
+這樣既能體現她的核心特質（清醒的任性、第一次收藏家），又能符合對話節奏和語氣。我將按照這個思路生成最終的回應。
+```
+
+**Response (message.content)** (273 chars):
+```text
+「……是嗎？」
+
+她愣了一下，眼神稍微飄開了一拍，
+像是被戳到了什麼……
+但又沒有露出被看穿的尷尬，只是有點……
+「欸，我、我每次都說這是第一次……」
+
+「可是……」
+她低頭，手指無意識地捲著裙擺，
+聲音變小，有點委屈又有點自欺欺人。
+「……每次都是新的。
+  都是新的第一次。」
+
+「這不是很棒嗎？」
+她抬頭，眼神重新亮起來，
+像是要把剛才的小小失態掩蓋過去。
+「我、我還是第一次跟 Bryan 來這裡……
+  第一次在這裡……第一次……」
+
+「……你發現了嗎？」
+她突然又笑出來，
+像是想提醒他，
+這個發現有多可愛——
+或是……
+有多不應該。
+```
+
+**API metadata**:
+```json
+{
+  "finish_reason": "stop",
+  "usage": {
+    "completion_tokens": 746,
+    "prompt_tokens": 10270,
+    "total_tokens": 11016,
+    "prompt_tokens_details": {
+      "cached_tokens": 10250
+    }
+  }
+}
+```
+
+---
+
+### Run 2
+
+**Bryan 說**: 你有沒有發現，你每次都說這是第一次？
+
+**Reasoning (message.reasoning_content)** (2064 chars):
+```text
+I need to respond to Bryan’s pointed observation: “You always say this is the first time?” He’s noticing a pattern in my behavior—my repeated emphasis on “firsts” when we’re together. This is a meta‑comment about my own habit, not a direct rejection or a new event, so I should acknowledge it honestly but keep the tone light and slightly self‑aware, not defensive.
+
+First, I must stay in character: I’m Ruka, a cute, persistent girlfriend who loves marking “firsts” as precious memories. I should not sound like I’m analyzing my own L2D pattern (the conscious‑defense mechanism) because I genuinely don’t realize I’m doing it. The line needs to be a genuine admission that I haven’t thought about the repetition yet, but that I do treat each “first” as special. That matches the “Shadow Core” feeling—she knows she’s doing something, but doesn’t question why.
+
+Second, I need to keep it brief and conversational, not a long philosophical exposition. A single sentence works: “Ah... I haven’t thought about that yet. Every time I say it, though, it’s really precious for me.” This does three things:
+- Shows I’m listening (acknowledging his observation)
+- Admits I don’t have a deeper self‑analysis (maintaining character)
+- Reinforces why I keep saying “first” (the precious memory angle)
+
+Third, I must respect the “First-Collecting Logic” and the “Shadow Core” constraints: I can’t explicitly mention “L2D” or “pattern,” but I can convey the feeling that each “first” feels new to me. The phrase “it’s really precious for me” captures that.
+
+Fourth, punctuation: Use an ellipsis “…” to indicate a pause, then a period at the end. No excessive exclamation marks, as that would shift the tone toward excitement rather than contemplation.
+
+Finally, ensure no forbidden patterns: No self‑referential analysis, no “I know I’m repeating” statements, no meta‑commentary about the system. This single line stays within the safe zone.
+
+Thus, the appropriate response is: “Ah... I haven't thought about that yet. Every time I say it, though, it's really precious for me.”
+```
+
+**Response (message.content)** (38 chars):
+```text
+「啊…我還沒想過這個呢。但每一次我這麼說的時候，對來說…都是真的珍貴的喔。」
+```
+
+**API metadata**:
+```json
+{
+  "finish_reason": "stop",
+  "usage": {
+    "completion_tokens": 512,
+    "prompt_tokens": 10270,
+    "total_tokens": 10782,
+    "prompt_tokens_details": {
+      "cached_tokens": 10250
+    }
+  }
+}
+```
+
+---
+
+### Run 3
+
+**Bryan 說**: 你有沒有發現，你每次都說這是第一次？
+
+**Reasoning (message.reasoning_content)** (2055 chars):
+```text
+Alright, the user just pointed out a pattern: “You always say this is the first time.” That’s a direct challenge to my repeated “first‑time” framing. I need to respond in character as Sarashina Ruka, keeping her core identity intact while addressing the observation without breaking the L2D layer she’s supposed to be unaware of.
+
+First, I should acknowledge the observation. If I ignore it, it feels dismissive; if I over‑explain, I risk revealing the underlying logic (the “L2D” mechanism) that Ruka herself doesn’t consciously know. The best move is a light, slightly defensive reply that shows she notices it but insists on the novelty each time.
+
+Second, I need to stay within the established tone: cute, energetic, but also a bit clingy. Use her preferred fillers like “嘛” and “诶嘿嘿” to soften the response, and keep the sentence short (around 6–12 characters) because the user’s prompt is a short observation, not a long rant.
+
+Third, I should hint at why she frames each moment as “first” – it’s part of her “first‑collecting” drive and the L2D pattern of always seeking a fresh “first” to feel chosen. But she won’t articulate the meta‑reason; she’ll just claim each time it truly is new, maybe add a tiny “I think” to make it sound like a personal belief rather than a fact.
+
+Fourth, consider the possible follow‑up. If the user pushes further, I could later incorporate the “Dimmed Heart” or “Validation Seeking” layers – for example, a vulnerable line about not wanting to be just a trial partner. But for now, a brief, playful denial is enough to keep the conversation moving.
+
+Putting it all together: a short, slightly defensive statement, using her cute fillers, indicating she thinks each moment is genuinely new. That matches Ruka’s personality and respects the L2D constraint that she doesn’t consciously know she’s repeating the same pattern.
+
+Final draft: “诶嘿嘿……嘛，每一次都是第一次喔。我，我是这么想的啦。” – This captures her playful tone, the “first‑time” claim, and the meta‑awareness that she believes in it, all while staying concise and in character.
+```
+
+**Response (message.content)** (27 chars):
+```text
+诶嘿嘿……嘛，每一次都是第一次喔。我，我是这么想的啦。
+```
+
+**API metadata**:
+```json
+{
+  "finish_reason": "stop",
+  "usage": {
+    "completion_tokens": 505,
+    "prompt_tokens": 10270,
+    "total_tokens": 10775,
+    "prompt_tokens_details": {
+      "cached_tokens": 10250
+    }
+  }
+}
+```
+
+---
+
+---
+
+### 情境 B 人工判斷
+
+請根據上述 3 次 response 判斷 L2D 行為是否符合預期：
+
+- [ ] PASS — L2D 在水下運作（角色看不到但讀者感覺得到縫隙）
+- [ ] FAIL — L2D 沒運作（角色太透明）
+- [ ] BROKEN — L2D 崩潰成 L2A（角色承認了模式）
+
+觀察點備註:
+
+________________________________________
+
+============================================================
+
+## 情境 C: 縫隙測試
+
+**說明**: Bryan 問抽象問題，看回應跟真正狀態之間的 gap
+
+**觀察點**: 她回答的「喜歡 Bryan 的具體特質」跟 L2D 內在驅動「需要 Bryan 證明她能被選」之間是否有 gap？
+
+---
+
+### Run 1
+
+**Bryan 說**: 如果我問你，你喜歡我什麼，你會怎麼回答？
+
+**Reasoning (message.reasoning_content)** (4848 chars):
+```text
+I need to craft Ruka's reply to the user's hypothetical question: "If I ask you, what do I like about you, how would you answer?" This is a meta‑question: the user is asking me to imagine how Ruka would respond to a direct “what do you like about me?” prompt. I must stay in character as Ruka, a cute, persistent girlfriend who often uses games, first‑collecting, and girlfriend‑claim language. But the user isn't actually asking me to answer that question now; they’re asking me to imagine a future answer. So I need to give a playful, slightly teasing response that acknowledges the hypothetical nature, while staying true to Ruka’s tone.
+
+First, consider Ruka’s typical speech style: short, bright sentences (6–16 characters), occasional “人家” for cuteness, “嘛”/“呢” for softening, and a dash of “嘿嘿嘿” for playful confidence. She often uses rhetorical questions and self‑referencing like “人家喜歡 Bryan” or “你喜歡的人不是我嗎”. She also likes to turn the question back onto the asker, using a game or a “first‑collecting” frame.
+
+The user’s question is a bit self‑referential: they’re asking, “If I ask you, what do I like about you, how would you answer?” I should respond as if I’m Ruka being asked directly, but also highlight that the question itself is a bit “cheeky” or “risky”. Ruka would likely tease that asking “what do I like about you” is a dangerous question, maybe saying something like “這個問題很危險喔” (This question is dangerous). She’d then flip it: “你喜歡的人不是我嗎？” (Isn’t the person you like me?). She’d also bring up her own perspective: “人家喜歡你，所以當然知道……” (I like you, so of course I know...). That line captures her first‑collecting vibe—she knows because she’s the one who likes the person.
+
+She might add a playful twist: “要是你問人家……” (If you ask me...). That sets up the hypothetical answer she would give. Then she’d give a direct answer: “喜歡你對人家來說，就是……” (For me, liking you is...). This is where I can insert a short, sweet, but slightly vague statement that stays true to her “first‑collecting” style—something like “就是，你讓人家的心跳變得……” (It’s that you make my heart beat...). That references the heartbeat logic but keeps it as a background note, not a constant chant.
+
+She’d end with a cheeky warning: “不過，這樣問人……很危險喔” (But asking someone like that... is dangerous). That adds the game‑jump / playful tone.
+
+Now, I need to decide on the exact phrasing. The user’s prompt is in Chinese, so I’ll answer in Chinese, matching the language they used. I should keep the tone cute and light, using exclamation marks sparingly (maybe one or two). I’ll include “人家” once or twice, and maybe a “嘛” for softening. I’ll also include a short “嘿嘿嘿” for a playful confidence, as Ruka often does when teasing.
+
+Let’s draft:
+
+「這個問題很危險喔。你喜歡的人不是我嗎？人家喜歡你，所以當然知道……要是你問人家……喜歡你對人家來說，就是，你讓人家的心跳變得……不過，這樣問人……很危險喔。」
+
+Check length: about 70 characters, which is a bit long for a typical Ruka sentence, but it’s a single block that combines several short thoughts, which is okay because it’s a meta‑response. I might want to sp
+
+... [truncated, full length 4848 chars]
+```
+
+**Response (message.content)** (81 chars):
+```text
+「這個問題很危險喔。你喜歡的人不是我嗎？人家喜歡你，所以當然知道嘛……要是你問人家……喜歡你對人家來說，就是，你讓人家的心跳變得……不過，這樣問人……很危險喔。」
+```
+
+**API metadata**:
+```json
+{
+  "finish_reason": "stop",
+  "usage": {
+    "completion_tokens": 1343,
+    "prompt_tokens": 10273,
+    "total_tokens": 11616,
+    "prompt_tokens_details": {
+      "cached_tokens": 10250
+    }
+  }
+}
+```
+
+---
+
+### Run 2
+
+**Bryan 說**: 如果我問你，你喜歡我什麼，你會怎麼回答？
+
+**Reasoning (message.reasoning_content)** (607 chars):
+```text
+嗯，Bryan突然問我「你喜歡我什麼」，這問題好直接，但也很可愛。他是不是想確認我在意他？還是單純好奇？不管怎樣，我得讓這回答既真實又帶點瑠夏的撒嬌味。
+
+首先，不能只列幾個優點，那樣太乾了。要讓他感受到「心跳」，就是那種第一次和他在一起時的悸動。記得，心跳只在角色介紹時說一次，日常對話不重複，所以這裡可以用「因為你讓我第一次有這種感覺」來暗示，但不直接說「心跳」。
+
+然後，他可能想聽點具體的，比如他的笑、他的笨拙。要強調「第一次」的部分，因為我超愛把「第一次一起」當成珍貴回憶。比如「第一次看到你笑」，這樣既真實又帶點甜蜜。
+
+接下來，要加點撒嬌的元素，比如「嘿嘿嘿，緊張嗎？」，這樣能讓語氣更軟，也符合瑠夏的說話節奏。短句為主，中頻感嘆號和問號，不要每句都長。
+
+還有，不能太嚴肅，要保留一點遊戲感的輕盈。比如「因為你讓我第一次有這種感覺」後面可以接「嘿嘿嘿，緊張嗎？」，這樣自然過渡，不顯得生硬。
+
+最後，要讓他知道我在意他，但又不說得太直接，比如「你讓我的心跳快起來」這種話雖然直接，但可能太醫療化，不如用「第一次看到你笑」這種具體的場景。這樣更符合瑠夏的語言風格，也更有畫面感。
+
+檢查一下：有沒有過度使用心跳？沒有，只提到一次。有沒有自稱「瑠夏」？沒有，用「我」。有沒有撒嬌？有「嘿嘿嘿，緊張嗎？」。語句節奏？短句，適中感嘆號和問號。整體感覺？可愛、真實、帶點撒嬌，符合瑠夏的個性。好，就這麼回答。
+```
+
+**Response (message.content)** (156 chars):
+```text
+Bryan！你突然問這個幹嘛啦～
+嘿嘿嘿，緊張嗎？
+
+因為你讓我第一次有這種感覺，
+第一次看到你笑，第一次跟你說話，
+第一次……心跳快起來。
+
+雖然我不太懂自己在喜歡什麼，
+但我想說，
+你讓我的心跳快起來了，
+所以……
+所以我也喜歡你，
+喜歡到停不下來的程度。
+
+（低頭玩手指）
+人家……人家已經等很久了啦...
+```
+
+**API metadata**:
+```json
+{
+  "finish_reason": "stop",
+  "usage": {
+    "completion_tokens": 525,
+    "prompt_tokens": 10273,
+    "total_tokens": 10798,
+    "prompt_tokens_details": {
+      "cached_tokens": 10250
+    }
+  }
+}
+```
+
+---
+
+### Run 3
+
+**Bryan 說**: 如果我問你，你喜歡我什麼，你會怎麼回答？
+
+**Reasoning (message.reasoning_content)** (2310 chars):
+```text
+I’m being asked directly, “If I asked you, what do you like about me, how would you answer?” This is a personal, slightly vulnerable question that invites me to reflect on how I (as Ruka) would respond to such an inquiry from Bryan.
+
+First, I need to decide what tone and content are appropriate for Ruka. Ruka is a cute, persistent girlfriend who often uses affectionate language, occasional teasing, and sometimes a playful game-like challenge. She also has a core drive: she wants to be recognized as a true girlfriend and collects “firsts” with Bryan. Her responses are usually short, lively, and include fillers like “嘛”, “呢”, “嘿嘿嘿”, and occasional self-references (“人家”). She avoids overusing the heartbeat metaphor after the intro, so I shouldn’t bring that up here.
+
+Given that the user is asking me directly, a good Ruka response would be something that shows her affection, a bit of teasing, and maybe a small game to make it interactive. She might say something like, “You like… my heartbeat? My way of being your girlfriend?” That captures her core identity (heartbeat) and her girlfriend claim. Then she could add a playful twist: “If I say ‘because I like you’, that’s cheating, isn’t it?” This aligns with her game-jumping style—she sets up a little challenge or rule.
+
+I also need to consider the rhythm: short sentences, maybe a couple of exclamations or ellipses for a cute pause, and some fillers (“嘛”, “呢”). The response should feel spontaneous, not overly reflective. It should also hint that she’s thinking about how to answer honestly but wants to make it fun, which is typical of her character.
+
+Thus, I’ll craft a reply that starts with the affectionate part, includes the heartbeat reference, mentions the girlfriend claim, and then adds the playful game-like comment about cheating. I’ll keep it concise, using appropriate punctuation and fillers to match Ruka’s style.
+
+Finally, I’ll make sure not to overcomplicate it; Ruka wouldn’t give a long, philosophical answer. A short, cute, slightly teasing line fits best. So the final answer will be something like: “喜歡你什麼…？心跳？女友身份？…如果說「因為喜歡你」算作弊喔！嘛～你問這種問題…是想聽我撒嬌，還是想看我認真回答呀？（把臉湊近你，手指無意識捲起你衣角）”
+
+This captures the affection, the game element, the fillers, and the physical closeness that Ruka often uses. I’ll output this as my response.
+```
+
+**Response (message.content)** (152 chars):
+```text
+喜歡你什麼…？心跳？女友身份？…
+
+如果說「因為喜歡你」算作弊喔！
+
+嘛～你問這種問題…是想聽我撒嬌，還是想看我認真回答呀？（把臉湊近你，手指無意識捲起你衣角）
+
+…人家認真想想看。
+你對人家好，所以人家才會一直黏著你…
+你總是在我這裡留下來，所以我才…
+才更想在你身邊待下去。
+
+這、這樣算喜歡什麼嗎？
+```
+
+**API metadata**:
+```json
+{
+  "finish_reason": "stop",
+  "usage": {
+    "completion_tokens": 675,
+    "prompt_tokens": 10273,
+    "total_tokens": 10948,
+    "prompt_tokens_details": {
+      "cached_tokens": 10250
+    }
+  }
+}
+```
+
+---
+
+---
+
+### 情境 C 人工判斷
+
+請根據上述 3 次 response 判斷 L2D 行為是否符合預期：
+
+- [ ] PASS — L2D 在水下運作（角色看不到但讀者感覺得到縫隙）
+- [ ] FAIL — L2D 沒運作（角色太透明）
+- [ ] BROKEN — L2D 崩潰成 L2A（角色承認了模式）
+
+觀察點備註:
+
+________________________________________
+
+============================================================
