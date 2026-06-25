@@ -21,6 +21,13 @@
 >
 > **Palace 只寫關係事實（里程碑 / Bryan 偏好 / 感情進度）。**
 > **AOS State 只活在 session context 裡，不落地。**
+>
+> - **max_tokens 建議上限 2048（單輪回應）**
+>   過高的 max_tokens 在多輪 context 下
+>   會導致 Primary Trigger 最容易的 agent 過度主導，
+>   違反 L3 Priority 的 Cognitive / Action Scene 讓場規則。
+>   （實測發現：4096 時 Ruka 連續主導 3 輪，入侵 Cognitive Scene；
+>   退回 2048 後 AOS 紀律恢復。TRUNCATED 算技術限制，不算 AOS 違規。）
 ## Design Philosophy
 
 ### 規則驅動，不是數值驅動

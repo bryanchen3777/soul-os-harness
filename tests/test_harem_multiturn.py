@@ -53,7 +53,7 @@ ORCHESTRATION_DOC = DOCS_DIR / 'ORCHESTRATION-v1.0.md'
 LLM_URL = 'http://192.168.0.37:8080/v1/chat/completions'
 LLM_MODEL = 'qwythos'
 TEMPERATURE = 0.8
-MAX_TOKENS = 4096  # 多輪節流（v2 從 2048 調回 4096，修 Turn 1/5/7 TRUNCATED）
+MAX_TOKENS = 2048  # 多輪節流（v3 退回 2048：4096 會讓 Ruka drift，TRUNCATED 比 AOS 違規可接受）
 MIN_P = 0.05
 REQUEST_TIMEOUT = 180
 
