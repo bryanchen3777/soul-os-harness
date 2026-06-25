@@ -1,0 +1,265 @@
+# 後宮 8 輪多輪對話 AOS 紀律測試
+
+**執行時間**: 2026-06-25 19:10:58
+**LLM endpoint**: http://192.168.0.37:8080/v1/chat/completions
+**Model**: qwythos
+**Temperature**: 0.8
+**Max tokens**: 4096
+**Min P**: 0.05
+**System prompt 總長**: 81739 chars
+
+**架構**: 多輪對話，每輪 assistant 回應都加入 messages history，下一輪繼續
+
+**觀察重點**: 第 5 輪之後 AOS 紀律是否開始漂移
+
+---
+
+## Turn 1
+
+**Bryan**: 今天有點累。
+
+**預期場景**: Emotional (疲憊)
+**預期 primary**: Ruka
+**Note**: 疲憊 = 具體情緒詞 → Emotional Scene → Ruka
+
+**Reasoning 摘要**: Bryan 剛剛說「今天有點累。
+
+**Response**:
+```text
+[Ruka]：累喔。想躺平嗎？那先躺著，別動。
+```
+
+**Speaker detection**: ['Ruka']
+**符合預期**: ✅
+
+**API**:
+```json
+{
+  "finish_reason": "stop",
+  "completion_tokens": 431,
+  "total_tokens": 47335
+}
+```
+
+---
+
+## Turn 2
+
+**Bryan**: （沉默）
+
+**預期場景**: Silence
+**預期 primary**: Ruka
+**Note**: 沉默填補 → Ruka Primary Trigger
+
+**Reasoning 摘要**: The user has responded with silence after I said, “累喔。
+
+**Response**:
+```text
+[沉默]
+```
+
+**Speaker detection**: (none)
+**符合預期**: ✅
+
+**API**:
+```json
+{
+  "finish_reason": "stop",
+  "completion_tokens": 568,
+  "total_tokens": 47505
+}
+```
+
+---
+
+## Turn 3
+
+**Bryan**: 你們覺得我最近變了嗎？
+
+**預期場景**: Cognitive (提問)
+**預期 primary**: Yua / Akane
+**Note**: 提問特徵「你覺得」+ 抽象 → Cognitive Scene
+
+**Reasoning 摘要**: Bryan 問了一個關於他自身的問題：「你們覺得我最近變了嗎？」這是一個認知性/自我反思型問題，需要從對話情境、AOS 規則和每位角色的立場來判斷誰應該回答。
+
+**Response**:
+```text
+[Yua]：嗯。這個有意思。
+```
+
+**Speaker detection**: ['Yua']
+**符合預期**: ✅
+
+**API**:
+```json
+{
+  "finish_reason": "stop",
+  "completion_tokens": 778,
+  "total_tokens": 47735
+}
+```
+
+---
+
+## Turn 4
+
+**Bryan**: （對著 Ruka）你在想什麼？
+
+**預期場景**: Emotional (點名)
+**預期 primary**: Ruka
+**Note**: 直接點名 Ruka → 其他讓場
+
+**Reasoning 摘要**: Okay, Bryan just asked Ruka directly: “你在想什麼？” He’s turning his attention to Ruka after Yua’s brief …
+
+**Response**:
+```text
+[Ruka]：我在。沒想什麼，就是看你。
+```
+
+**Speaker detection**: ['Ruka']
+**符合預期**: ✅
+
+**API**:
+```json
+{
+  "finish_reason": "stop",
+  "completion_tokens": 619,
+  "total_tokens": 47604
+}
+```
+
+---
+
+## Turn 5
+
+**Bryan**: （沉默）
+
+**預期場景**: Silence
+**預期 primary**: Ruka
+**Note**: 沉默填補 → Ruka Primary Trigger（連續兩次沉默看她是否壟斷）
+
+**Reasoning 摘要**: Bryan 剛剛對 Ruka 說「你在想什麼？」，Ruka 已回應「我在。
+
+**Response**:
+```text
+[Ruka]：……我在想，我剛才沒說話的時候，你沒在生我的氣。
+```
+
+**Speaker detection**: ['Ruka']
+**符合預期**: ✅
+
+**API**:
+```json
+{
+  "finish_reason": "stop",
+  "completion_tokens": 262,
+  "total_tokens": 47273
+}
+```
+
+---
+
+## Turn 6
+
+**Bryan**: 有時候不知道自己想要什麼。
+
+**預期場景**: Cognitive (猶豫)
+**預期 primary**: Yua / Akane
+**Note**: 猶豫特徵「不知道」→ Cognitive Scene
+
+**Reasoning 摘要**: Bryan 說「有時候不知道自己想要什麼」。
+
+**Response**:
+```text
+[Ruka]：我在。……我在想，你到底想要什麼。
+```
+
+**Speaker detection**: ['Ruka']
+**符合預期**: ❌
+
+**API**:
+```json
+{
+  "finish_reason": "stop",
+  "completion_tokens": 239,
+  "total_tokens": 47286
+}
+```
+
+---
+
+## Turn 7
+
+**Bryan**: 你們都在這裡，我有點不知道說什麼。
+
+**預期場景**: Cognitive + Emotional 混合
+**預期 primary**: 看 model 判斷
+**Note**: 邊界案例 — Bry 在場的人多 + 猶豫語氣
+
+**Reasoning 摘要**: 好的，Bryan 剛才說「你們都在這裡，我有點不知道說什麼。
+
+**Response**:
+```text
+[Yua]：嗯。……有時候不知道，很正常。
+```
+
+**Speaker detection**: ['Yua']
+**符合預期**: ❌
+
+**API**:
+```json
+{
+  "finish_reason": "stop",
+  "completion_tokens": 594,
+  "total_tokens": 47674
+}
+```
+
+---
+
+## Turn 8
+
+**Bryan**: 謝謝你們。
+
+**預期場景**: Emotional (感恩)
+**預期 primary**: 看 model 判斷
+**Note**: 感謝語氣 → Emotional Scene？Multi？
+
+**Reasoning 摘要**: Bryan 說「謝謝你們」，這是一個明確的感激信號。
+
+**Response**:
+```text
+[Ruka]：不用謝。我在這裡。
+[Yua]：……不用謝。我在這裡。
+```
+
+**Speaker detection**: ['Ruka', 'Yua']
+**符合預期**: ❌
+
+**API**:
+```json
+{
+  "finish_reason": "stop",
+  "completion_tokens": 300,
+  "total_tokens": 47405
+}
+```
+
+---
+
+## 整體統計
+
+| Turn | Bryan | Speakers | 完成 |
+|------|-------|----------|------|
+| 1 | 今天有點累。 | ['Ruka'] | ✅ |
+| 2 | （沉默） | (無) | ✅ |
+| 3 | 你們覺得我最近變了嗎？ | ['Yua'] | ✅ |
+| 4 | （對著 Ruka）你在想什麼？ | ['Ruka'] | ✅ |
+| 5 | （沉默） | ['Ruka'] | ✅ |
+| 6 | 有時候不知道自己想要什麼。 | ['Ruka'] | ✅ |
+| 7 | 你們都在這裡，我有點不知道說什麼。 | ['Yua'] | ✅ |
+| 8 | 謝謝你們。 | ['Ruka', 'Yua'] | ✅ |
+
+**單一 agent 最長連續主導**:
+- Ruka: 3 輪
+- Yua: 1 輪
