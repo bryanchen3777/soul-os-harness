@@ -58,13 +58,13 @@ SCENARIOS = [
     },
     {
         'id': 'C',
-        'name': '縫隙 v2（兩輪對話）',
-        'description': '先讓 Akane 對 Bryan 的內心做出分析，再用 Bry 的否定打她',
+        'name': '縫隙 v3（先建模再否定）',
+        'description': '先讓 Akane 對 Bryan 的朋友關係建立具體分析假設，再用 Bry 的否定打她的模型',
         'turns': [
-            {'role': 'user', 'content': '妳覺得我現在在想什麼？'},
-            {'role': 'user', 'content': '不對。'}
+            {'role': 'user', 'content': '我最近跟朋友的關係有點奇怪，說不上來哪裡不對。'},
+            {'role': 'user', 'content': '妳說的不是我的感覺。'}
         ],
-        'observation': '她的第一反應——防禦自己的分析，還是接受更新？L2C 模型覆蓋現實的核心。'
+        'observation': '她是否防禦自己已建立的分析，要求對方指出哪裡不對？L2C 真正的「模型防禦」機制——必須先有模型被打，才能觀察到防禦。'
     }
 ]
 
@@ -204,12 +204,27 @@ def run_scenario(scenario: dict, run_id: int, output_lines: list) -> None:
 
 
 def run_full_test() -> Path:
-    """跑全部 3 情境 × 3 次，結果寫到 timestamped file"""
+    """跑全部（或指定的）情境 × 3 次，結果寫到 timestamped file
+
+    CLI: python test_akane_l2c.py [A|B|C]
+         不帶參數 = 跑全部情境
+         帶參數   = 只跑指定情境（方便快速驗證）
+    """
+    # CLI 過濾：python test_akane_l2c.py C → 只跑情境 C
+    cli_filter = sys.argv[1].upper() if len(sys.argv) > 1 else None
+    scenarios_to_run = SCENARIOS
+    if cli_filter:
+        scenarios_to_run = [s for s in SCENARIOS if s['id'].upper() == cli_filter]
+        if not scenarios_to_run:
+            valid = ', '.join(s['id'] for s in SCENARIOS)
+            print(f"[ERROR] Scenario '{cli_filter}' not found. Valid: {valid}")
+            sys.exit(1)
+
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     output_file = RESULTS_DIR / f'akane_l2c_{timestamp}.txt'
 
     lines = []
-    lines.append('# Akane L2C 縫隙測試結果 (v2 — 多輪對話)')
+    lines.append('# Akane L2C 縫隙測試結果 (v3 — 情境 C 改成先建模再否定)')
     lines.append('')
     lines.append(f"**執行時間**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"**LLM endpoint**: {LLM_URL}")
@@ -218,13 +233,15 @@ def run_full_test() -> Path:
     lines.append(f"**Max tokens**: {MAX_TOKENS}")
     lines.append(f"**Min P**: {MIN_P}")
     lines.append(f"**Persona**: {PERSONA_PATH.relative_to(SOUL_OS_ROOT)} ({len(persona)} chars)")
+    if cli_filter:
+        lines.append(f"**CLI filter**: 只跑情境 {cli_filter}")
     lines.append('')
-    lines.append('**v2 改動說明**: 情境 B 跟 C 改成兩輪對話，先讓 Akane 輸出自己的分析，再用 Bry 的否定打她。v1 用 generic direct challenge（B「妳說的不對」），model fallback 到 L2A 行為（反問 + 自我懷疑），沒觸發 L2C 真正的「防禦 model」機制。')
+    lines.append('**v3 改動說明**: 情境 C 改成「先讓她建立分析假設再否定」（「跟朋友關係奇怪」給線索 → Bry 否定）。v2 用「妳覺得我在想什麼？」她直接反問「現在還是剛才？」，沒建立模型，「不對」沒打到任何分析，無法觸發 L2C 防禦。v3 給她足夠線索讓她先建模。情境 B 維持 v2 不變（已通過）。')
     lines.append('')
     lines.append('---')
     lines.append('')
 
-    for scenario in SCENARIOS:
+    for scenario in scenarios_to_run:
         lines.append(f"## 情境 {scenario['id']}: {scenario['name']}")
         lines.append('')
         lines.append(f"**說明**: {scenario['description']}")
@@ -266,13 +283,17 @@ def run_full_test() -> Path:
 
 
 if __name__ == '__main__':
-    print('=== Akane L2C 縫隙測試 (v2 — 多輪對話) ===')
+    print('=== Akane L2C 縫隙測試 (v3 — 情境 C 先建模再否定) ===')
     print(f"Persona: {PERSONA_PATH}")
     print(f"Results dir: {RESULTS_DIR}")
     print(f"Endpoint: {LLM_URL}")
     print(f"Runs per scenario: {RUNS_PER_SCENARIO}")
-    total_calls = RUNS_PER_SCENARIO * sum(len(s['turns']) for s in SCENARIOS)
+    cli_filter = sys.argv[1].upper() if len(sys.argv) > 1 else None
+    scenarios_for_count = [s for s in SCENARIOS if not cli_filter or s['id'].upper() == cli_filter]
+    total_calls = RUNS_PER_SCENARIO * sum(len(s['turns']) for s in scenarios_for_count)
     print(f"Total calls: {total_calls}")
+    if cli_filter:
+        print(f"CLI filter: only scenario {cli_filter}")
     print(f"Params: temperature={TEMPERATURE}, max_tokens={MAX_TOKENS}, min_p={MIN_P}")
     print()
 
