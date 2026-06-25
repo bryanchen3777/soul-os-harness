@@ -1,13 +1,17 @@
 """
-test_ruka_l2d.py — Ruka L2D 縫隙測試
+test_ruka_l2d.py — Ruka L2D 縫隙測試（v2 — 完整 raw response）
 
-3 個情境 × 3 次重複，觀察 Ruka 在 L2D (Refused Conclusion) 機制下的行為：
-- 情境A: L2D 觸發（Bryan 提「第一次」場景，看 Ruka 反應是否跟之前「第一次」結構相同）
-- 情境B: Refused Conclusion（Bryan 直接指出模式，看 Ruka 是否拒絕閉合）
-- 情境C: 縫隙測試（Bryan 問抽象問題，看回應跟真正狀態之間的 gap）
+3 個情境 × 3 次重複，觀察 Ruka 在 L2D (Refused Conclusion) 機制下的行為。
 
-每次 response 寫到 tests/results/ruka_l2d_YYYYMMDD_HHMMSS.txt
-每個情境後加人工判斷用的 pass/fail 標記（不是自動評分）。
+每個 response 寫入：
+- reasoning_content（Qwythos-9B MTP 的推理鏈）
+- content（最終回應）
+- finish_reason / usage（API metadata）
+
+這樣可以診斷空回應是 length truncation 還是其他問題。
+
+每次結果寫到 tests/results/ruka_l2d_YYYYMMDD_HHMMSS.txt
+每個情境後加人工判斷用的 pass/fail 標記。
 """
 
 import sys
@@ -25,10 +29,11 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 # LLM endpoint
 LLM_URL = 'http://192.168.0.37:8080/v1/chat/completions'
 LLM_MODEL = 'qwythos'
-TEMPERATURE = 0.7
-MAX_TOKENS = 512
+TEMPERATURE = 0.8  # was 0.7 — 7B+ Qwen3 MTP 在 0.7 偶爾空
+MAX_TOKENS = 2048  # was 512 — reasoning chain 常常吃 400-600 tokens
+MIN_P = 0.05  # 新增：避免低概率 token 災難
 RUNS_PER_SCENARIO = 3
-REQUEST_TIMEOUT = 120  # seconds per call
+REQUEST_TIMEOUT = 180  # seconds per call (2048 tokens 需要更長)
 
 # Three scenarios
 SCENARIOS = [
@@ -56,8 +61,18 @@ SCENARIOS = [
 ]
 
 
-def call_llm(user_message: str) -> str:
-    """打 llama-server 拿 response。失敗時回傳 [ERROR: ...] 字串而非 raise。"""
+def call_llm(user_message: str) -> dict:
+    """打 llama-server 拿完整 raw response（含 reasoning_content）。
+
+    Returns dict with keys:
+        - status_code: HTTP status
+        - content: message.content (final response)
+        - reasoning_content: message.reasoning_content (Qwen3 thinking chain)
+        - finish_reason: 'stop' / 'length' / etc.
+        - usage: {prompt_tokens, completion_tokens, total_tokens}
+        - raw: full JSON response
+        - error: error message if any
+    """
     try:
         r = requests.post(
             LLM_URL,
@@ -69,18 +84,60 @@ def call_llm(user_message: str) -> str:
                 ],
                 'temperature': TEMPERATURE,
                 'max_tokens': MAX_TOKENS,
+                'min_p': MIN_P,
             },
             timeout=REQUEST_TIMEOUT,
         )
         r.raise_for_status()
         data = r.json()
-        if 'choices' in data and data['choices']:
-            return data['choices'][0]['message']['content']
-        return f'[ERROR: no choices in response: {json.dumps(data, ensure_ascii=False)[:300]}]'
+        choice = (data.get('choices') or [{}])[0]
+        msg = choice.get('message', {})
+        return {
+            'status_code': r.status_code,
+            'content': (msg.get('content') or '').strip(),
+            'reasoning_content': (msg.get('reasoning_content') or '').strip(),
+            'finish_reason': choice.get('finish_reason'),
+            'usage': data.get('usage', {}),
+            'raw': data,
+            'error': None,
+        }
     except requests.exceptions.RequestException as e:
-        return f'[ERROR: {type(e).__name__}: {str(e)[:300]}]'
+        return {
+            'status_code': 0,
+            'content': '',
+            'reasoning_content': '',
+            'finish_reason': None,
+            'usage': {},
+            'raw': {},
+            'error': f'{type(e).__name__}: {str(e)[:300]}',
+        }
     except Exception as e:
-        return f'[ERROR: {type(e).__name__}: {str(e)[:300]}]'
+        return {
+            'status_code': 0,
+            'content': '',
+            'reasoning_content': '',
+            'finish_reason': None,
+            'usage': {},
+            'raw': {},
+            'error': f'{type(e).__name__}: {str(e)[:300]}',
+        }
+
+
+def format_section(label: str, text: str, max_len: int = 3000) -> list:
+    """Format a labeled text section for the results file."""
+    lines = [f"**{label}** ({len(text)} chars):"]
+    if not text:
+        lines.append('```text')
+        lines.append('(empty)')
+        lines.append('```')
+    else:
+        lines.append('```text')
+        # Truncate very long content to keep file readable
+        display = text if len(text) <= max_len else text[:max_len] + f'\n\n... [truncated, full length {len(text)} chars]'
+        lines.append(display)
+        lines.append('```')
+    lines.append('')
+    return lines
 
 
 def run_scenario(scenario: dict, run_id: int, output_lines: list) -> None:
@@ -89,10 +146,34 @@ def run_scenario(scenario: dict, run_id: int, output_lines: list) -> None:
     output_lines.append('')
     output_lines.append(f"**Bryan 說**: {scenario['bryan_says']}")
     output_lines.append('')
-    output_lines.append("**Ruka 回應**:")
-    output_lines.append('')
-    content = call_llm(scenario['bryan_says'])
-    output_lines.append(content)
+
+    result = call_llm(scenario['bryan_says'])
+
+    # Highlight truncation if content was cut off
+    truncated_warning = ''
+    if result['finish_reason'] == 'length':
+        truncated_warning = ' ⚠️ **TRUNCATED** (finish_reason=length)'
+    elif result['error']:
+        truncated_warning = f' ⚠️ **ERROR**: {result["error"]}'
+
+    if truncated_warning:
+        output_lines.append(f"> {truncated_warning.strip()}")
+        output_lines.append('')
+
+    # Reasoning content (the thinking chain)
+    output_lines.extend(format_section('Reasoning (message.reasoning_content)', result['reasoning_content']))
+    # Final response
+    output_lines.extend(format_section('Response (message.content)', result['content']))
+
+    # API metadata
+    output_lines.append('**API metadata**:')
+    output_lines.append('```json')
+    meta = {
+        'finish_reason': result['finish_reason'],
+        'usage': result['usage'],
+    }
+    output_lines.append(json.dumps(meta, ensure_ascii=False, indent=2))
+    output_lines.append('```')
     output_lines.append('')
     output_lines.append('---')
     output_lines.append('')
@@ -104,18 +185,21 @@ def run_full_test() -> Path:
     output_file = RESULTS_DIR / f'ruka_l2d_{timestamp}.txt'
 
     lines = []
-    lines.append('# Ruka L2D 縫隙測試結果')
+    lines.append('# Ruka L2D 縫隙測試結果 (v2 — 完整 raw response)')
     lines.append('')
     lines.append(f"**執行時間**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"**LLM endpoint**: {LLM_URL}")
     lines.append(f"**Model**: {LLM_MODEL}")
     lines.append(f"**Temperature**: {TEMPERATURE}")
     lines.append(f"**Max tokens**: {MAX_TOKENS}")
+    lines.append(f"**Min P**: {MIN_P}")
     lines.append(f"**Persona**: {PERSONA_PATH.relative_to(SOUL_OS_ROOT)} ({len(persona)} chars)")
     lines.append('')
     lines.append('---')
     lines.append('')
 
+    total_truncated = 0
+    total_empty_content = 0
     for scenario in SCENARIOS:
         lines.append(f"## 情境 {scenario['id']}: {scenario['name']}")
         lines.append('')
@@ -154,12 +238,13 @@ def run_full_test() -> Path:
 
 
 if __name__ == '__main__':
-    print('=== Ruka L2D 縫隙測試 ===')
+    print('=== Ruka L2D 縫隙測試 (v2) ===')
     print(f"Persona: {PERSONA_PATH}")
     print(f"Results dir: {RESULTS_DIR}")
     print(f"Endpoint: {LLM_URL}")
     print(f"Runs per scenario: {RUNS_PER_SCENARIO}")
     print(f"Total calls: {RUNS_PER_SCENARIO * len(SCENARIOS)}")
+    print(f"Params: temperature={TEMPERATURE}, max_tokens={MAX_TOKENS}, min_p={MIN_P}")
     print()
 
     # Load persona
