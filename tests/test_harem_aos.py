@@ -151,20 +151,51 @@ def call_llm(messages: list) -> dict:
         }
 
 
+# 角色名稱 mapping（LLM 會用全名 / 漢字 / 假名 variants，需要統一識別）
+# 注意：「更科」是 Ruka 的姓（更科るか），不用於識別（會誤判其他角色）
+NAME_ALIASES = {
+    'Yua':   ['Yua', '悠亜', 'ゆあ', 'ユア'],
+    'Rem':   ['Rem', '雷姆', 'レム'],
+    'Akane': ['Akane', '茜', 'あかね', 'アケネ', '黒川'],
+    'Ruka':  ['Ruka', '瑠夏', 'るか', 'ルカ'],
+}
+
+
 def detect_speakers(content: str) -> list:
-    """從 content 中偵測哪些角色發言了。"""
+    """從 content 中偵測哪些角色發言了。
+
+    支援的格式（任一）：
+    - [角色名]: 台詞 / [角色名]：台詞
+    - 角色名: 台詞 / 角色名：台詞
+    - [漢字名]: 台詞（透過 NAME_ALIASES 對照）
+    """
     speakers = []
     for line in content.split('\n'):
         line = line.strip()
         if not line:
             continue
-        for name in PERSONAS.keys():
-            # 匹配 [Name]: 或 [Name]： 或 Name: 開頭
-            if (line.startswith(f'[{name}]') or
-                line.startswith(f'{name}：') or
-                line.startswith(f'{name}:')):
-                if name not in speakers:
-                    speakers.append(name)
+        # 先剝掉 [..] 框（如 [Yua] / [瑠夏] / [Akane]）
+        stripped = line
+        if stripped.startswith('['):
+            close = stripped.find(']')
+            if close > 0:
+                stripped = stripped[close+1:].lstrip(' ：:')
+        # 然後匹配所有 aliases（括號中或冒號前）
+        for canonical, aliases in NAME_ALIASES.items():
+            for alias in aliases:
+                # 格式：[alias] 或 alias： 或 alias:
+                if line.startswith(f'[{alias}]'):
+                    if canonical not in speakers:
+                        speakers.append(canonical)
+                    break
+                # 冒號前是 alias
+                for sep in ['：', ':']:
+                    if alias + sep in stripped[:len(alias)+3] and stripped.startswith(alias):
+                        if canonical not in speakers:
+                            speakers.append(canonical)
+                        break
+                else:
+                    continue
                 break
     return speakers
 
