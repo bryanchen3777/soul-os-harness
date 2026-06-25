@@ -30,7 +30,7 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 LLM_URL = 'http://192.168.0.37:8080/v1/chat/completions'
 LLM_MODEL = 'qwythos'
 TEMPERATURE = 0.8  # was 0.7 — 7B+ Qwen3 MTP 在 0.7 偶爾空
-MAX_TOKENS = 2048  # was 512 — reasoning chain 常常吃 400-600 tokens
+MAX_TOKENS = 4096  # was 2048 — C3 reasoning degeneration 需要更大空間
 MIN_P = 0.05  # 新增：避免低概率 token 災難
 RUNS_PER_SCENARIO = 3
 REQUEST_TIMEOUT = 180  # seconds per call (2048 tokens 需要更長)
