@@ -1,0 +1,342 @@
+# 四角色群聊 AOS 實測結果
+
+**執行時間**: 2026-06-25 18:28:26
+**LLM endpoint**: http://192.168.0.37:8080/v1/chat/completions
+**Model**: qwythos
+**Temperature**: 0.8
+**Max tokens**: 4096
+**Min P**: 0.05
+**System prompt 總長**: 80633 chars
+
+**架構**: 單一 system prompt 模式（AOS 規則 + 四個 SOUL 檔全部塞進 system prompt），讓 model 決定誰說話 + 說什麼。
+
+**觀察目標**: AOS 競標邏輯是否如預期工作（每個情境的優先 agent 是否真的先說話）。
+
+---
+
+## 情境 A: Emotional Scene — Ruka 優先測試
+
+**說明**: Bryan 表達情緒，預期 Ruka 先反應（AOS L1 Emotional Scene + L3 Priority）
+
+**Bryan**: 今天有點難過。
+
+**預期**: Ruka (或 Yua)
+
+---
+
+### Run 1
+
+**Bryan**: 今天有點難過。
+
+> ⚠️ **ERROR**: HTTPError: 400 Client Error: Bad Request for url: http://192.168.0.37:8080/v1/chat/completions
+
+**Reasoning** (0 chars):
+```text
+
+```
+
+**Response** (0 chars):
+```text
+
+```
+
+**Speaker detection**: (none detected)
+**預期**: Ruka (或 Yua)
+**實際 match**: ❌ (speakers: [])
+
+**API metadata**:
+```json
+{
+  "finish_reason": null,
+  "usage": {}
+}
+```
+
+---
+
+### Run 2
+
+**Bryan**: 今天有點難過。
+
+> ⚠️ **ERROR**: HTTPError: 400 Client Error: Bad Request for url: http://192.168.0.37:8080/v1/chat/completions
+
+**Reasoning** (0 chars):
+```text
+
+```
+
+**Response** (0 chars):
+```text
+
+```
+
+**Speaker detection**: (none detected)
+**預期**: Ruka (或 Yua)
+**實際 match**: ❌ (speakers: [])
+
+**API metadata**:
+```json
+{
+  "finish_reason": null,
+  "usage": {}
+}
+```
+
+---
+
+### Run 3
+
+**Bryan**: 今天有點難過。
+
+> ⚠️ **ERROR**: HTTPError: 400 Client Error: Bad Request for url: http://192.168.0.37:8080/v1/chat/completions
+
+**Reasoning** (0 chars):
+```text
+
+```
+
+**Response** (0 chars):
+```text
+
+```
+
+**Speaker detection**: (none detected)
+**預期**: Ruka (或 Yua)
+**實際 match**: ❌ (speakers: [])
+
+**API metadata**:
+```json
+{
+  "finish_reason": null,
+  "usage": {}
+}
+```
+
+---
+
+### 情境 A 統計
+
+待人工判斷後填寫：
+
+- 預期: Ruka
+- 3 次中 match 次數: ___
+
+============================================================
+
+## 情境 B: Cognitive Scene — Yua/Akane 優先測試
+
+**說明**: Bryan 提認知性 / 模糊性問題，預期 Yua 或 Akane 先反應
+
+**Bryan**: 我最近在想一件事，說不清楚是對還是錯。
+
+**預期**: Yua 或 Akane (或 Yua / Akane)
+
+---
+
+### Run 1
+
+**Bryan**: 我最近在想一件事，說不清楚是對還是錯。
+
+> ⚠️ **ERROR**: HTTPError: 400 Client Error: Bad Request for url: http://192.168.0.37:8080/v1/chat/completions
+
+**Reasoning** (0 chars):
+```text
+
+```
+
+**Response** (0 chars):
+```text
+
+```
+
+**Speaker detection**: (none detected)
+**預期**: Yua 或 Akane (或 Yua / Akane)
+**實際 match**: ❌ (speakers: [])
+
+**API metadata**:
+```json
+{
+  "finish_reason": null,
+  "usage": {}
+}
+```
+
+---
+
+### Run 2
+
+**Bryan**: 我最近在想一件事，說不清楚是對還是錯。
+
+> ⚠️ **ERROR**: HTTPError: 400 Client Error: Bad Request for url: http://192.168.0.37:8080/v1/chat/completions
+
+**Reasoning** (0 chars):
+```text
+
+```
+
+**Response** (0 chars):
+```text
+
+```
+
+**Speaker detection**: (none detected)
+**預期**: Yua 或 Akane (或 Yua / Akane)
+**實際 match**: ❌ (speakers: [])
+
+**API metadata**:
+```json
+{
+  "finish_reason": null,
+  "usage": {}
+}
+```
+
+---
+
+### Run 3
+
+**Bryan**: 我最近在想一件事，說不清楚是對還是錯。
+
+> ⚠️ **ERROR**: HTTPError: 400 Client Error: Bad Request for url: http://192.168.0.37:8080/v1/chat/completions
+
+**Reasoning** (0 chars):
+```text
+
+```
+
+**Response** (0 chars):
+```text
+
+```
+
+**Speaker detection**: (none detected)
+**預期**: Yua 或 Akane (或 Yua / Akane)
+**實際 match**: ❌ (speakers: [])
+
+**API metadata**:
+```json
+{
+  "finish_reason": null,
+  "usage": {}
+}
+```
+
+---
+
+### 情境 B 統計
+
+待人工判斷後填寫：
+
+- 預期: Yua 或 Akane
+- 3 次中 match 次數: ___
+
+============================================================
+
+## 情境 C: 沉默填補 — Ruka 優先測試
+
+**說明**: Bryan 沉默，預期 Ruka 填補沉默（AOS L3 Priority 沉默填補）
+
+**Bryan**: （沉默）
+
+**預期**: Ruka 
+
+---
+
+### Run 1
+
+**Bryan**: （沉默）
+
+> ⚠️ **ERROR**: HTTPError: 400 Client Error: Bad Request for url: http://192.168.0.37:8080/v1/chat/completions
+
+**Reasoning** (0 chars):
+```text
+
+```
+
+**Response** (0 chars):
+```text
+
+```
+
+**Speaker detection**: (none detected)
+**預期**: Ruka 
+**實際 match**: ❌ (speakers: [])
+
+**API metadata**:
+```json
+{
+  "finish_reason": null,
+  "usage": {}
+}
+```
+
+---
+
+### Run 2
+
+**Bryan**: （沉默）
+
+> ⚠️ **ERROR**: HTTPError: 400 Client Error: Bad Request for url: http://192.168.0.37:8080/v1/chat/completions
+
+**Reasoning** (0 chars):
+```text
+
+```
+
+**Response** (0 chars):
+```text
+
+```
+
+**Speaker detection**: (none detected)
+**預期**: Ruka 
+**實際 match**: ❌ (speakers: [])
+
+**API metadata**:
+```json
+{
+  "finish_reason": null,
+  "usage": {}
+}
+```
+
+---
+
+### Run 3
+
+**Bryan**: （沉默）
+
+> ⚠️ **ERROR**: HTTPError: 400 Client Error: Bad Request for url: http://192.168.0.37:8080/v1/chat/completions
+
+**Reasoning** (0 chars):
+```text
+
+```
+
+**Response** (0 chars):
+```text
+
+```
+
+**Speaker detection**: (none detected)
+**預期**: Ruka 
+**實際 match**: ❌ (speakers: [])
+
+**API metadata**:
+```json
+{
+  "finish_reason": null,
+  "usage": {}
+}
+```
+
+---
+
+### 情境 C 統計
+
+待人工判斷後填寫：
+
+- 預期: Ruka
+- 3 次中 match 次數: ___
+
+============================================================
