@@ -87,6 +87,34 @@ AOS v1.0
 | **Cognitive Scene** | 問題是認知性 / 分析性的 | Yua / Akane 的 Trigger 優先 |
 | **Action Scene** | 需要實體行動（端茶 / 整理 / 陪伴） | Rem 的 Trigger 優先，語言 agent 讓場 |
 
+### L1 場景分類決策樹
+
+當 Bryan 的話語同時包含情緒信號和認知信號時，用以下優先順序判斷場景類型：
+
+**Step 1：Bryan 是否表達了具體情緒詞？**
+具體情緒詞 = 難過 / 開心 / 生氣 / 疲憊 / 委屈 / 害怕 / 焦慮 / 想哭 / 寂寞
+→ YES：Emotional Scene
+→ NO：進入 Step 2
+
+**Step 2：Bryan 是否在描述抽象概念、猶豫、或提問？**
+猶豫特徵 = 「說不清楚」「不確定」「對還是錯」「搞不懂」「不知道」
+提問特徵 = 「你覺得」「我在想」「為什麼」「是不是」
+抽象概念 = 一般化、原則性、非個人感受的陳述
+→ YES：Cognitive Scene
+→ NO：進入 Step 3
+
+**Step 3：Bryan 是否什麼都沒說，或只是出現？**
+→ YES：沉默填補場景（Ruka Primary Trigger 觸發）
+→ NO：Multi Scene（default，競標邏輯全啟動）
+
+**邊界案例說明：**
+- 「今天有點難過」→ Emotional Scene（有具體情緒詞）
+- 「我最近在想一件事，說不清楚是對還是錯」→ Cognitive Scene（猶豫 ≠ 情緒）
+- 「我最近有點累」→ Emotional Scene（疲憊 = 具體情緒詞）
+- 「你覺得我現在在想什麼」→ Cognitive Scene（提問 + 抽象）
+- 「（沉默）」→ 沉默填補場景
+- 「今天工作好多」→ Multi Scene default（描述事實、無情緒、無提問）
+
 ### 主場加成
 
 當場景類型為 Home Scene，主場 agent 的 Trigger Layer 基準升高一級：
@@ -315,6 +343,20 @@ Session-scoped 狀態。影響 L2（Trigger）和 L6（Interrupt）的閾值。
 - Ruka：Dimmed Heart 狀態中
 
 suppression = true 時，L2 Trigger 和 L6 Interrupt 均不觸發。
+
+> ⚠️ **LLM 實作注意**
+>
+> activation_level 只影響 **Secondary Trigger** 和 **Interrupt Layer** 的閾值。
+> **Primary Trigger 不受 activation_level 限制**——即使 activation_level = low，
+> Primary Trigger 條件成立時 agent 仍然說話。
+>
+> 錯誤推理：「activation_level = low 所以 Ruka 的沉默填補被抑制」
+> 正確推理：「沉默填補是 Ruka 的 Primary Trigger，不需要 activation_level = high」
+>
+> activation_level = high 的實際作用：
+> - 提高 Interrupt 成功率（L6）
+> - 讓 Secondary Trigger 更容易生效（L2）
+> - 不會阻止 Primary Trigger 觸發
 
 ---
 
