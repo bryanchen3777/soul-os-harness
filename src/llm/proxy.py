@@ -48,9 +48,23 @@ MAX_GROUP_SUMMARY = 10  # 私聊注入時的群聊摘要條數
 
 _GROUP_FILE = CONV_DIR / "group_chat.json"
 
+# KI-001: 用戶隔離 — 舊 hardcode bryan_ 前綴已改為 user_id 動態前綴
+# 向後相容：若新格式檔案不存在，fallback 讀舊 bryan_ 格式（既有 history 不會丟）
+_LEGACY_BRYAN_USER_ID = "bryan"  # 既有 history 檔案的隱式 owner
 
-def _group_path(agent_id: str) -> Path:
-    return CONV_DIR / f"bryan_{agent_id}_private.json"
+
+def _group_path(agent_id: str, user_id: str) -> Path:
+    """KI-001: 私聊 history 檔案路徑 — per (user, agent) 隔離
+
+    新格式：{user_id}_{agent_id}_private.json
+    向後相容：呼叫方若找不到新檔，自動 fallback 讀 _LEGACY_BRYAN_USER_ID 格式
+    """
+    return CONV_DIR / f"{user_id}_{agent_id}_private.json"
+
+
+def _legacy_group_path(agent_id: str) -> Path:
+    """舊格式路徑（bryan_ 前綴）— 僅供向後相容 fallback 使用"""
+    return CONV_DIR / f"{_LEGACY_BRYAN_USER_ID}_{agent_id}_private.json"
 
 
 def _load_group() -> List[Dict[str, Any]]:
@@ -67,18 +81,27 @@ def _save_group(history: List[Dict[str, Any]]) -> None:
     _GROUP_FILE.write_text(json.dumps(trimmed, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _load_private(agent_id: str) -> List[Dict[str, str]]:
-    path = _group_path(agent_id)
-    if path.exists():
+def _load_private(agent_id: str, user_id: str) -> List[Dict[str, str]]:
+    """KI-001: 載入私聊 history，帶 user-aware 路徑 + 向後相容 fallback"""
+    new_path = _group_path(agent_id, user_id)
+    if new_path.exists():
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return json.loads(new_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    # Fallback：嘗試舊 bryan_ 格式（既有 Bryan 的 history 仍可讀取）
+    legacy_path = _legacy_group_path(agent_id)
+    if legacy_path.exists() and user_id == _LEGACY_BRYAN_USER_ID:
+        try:
+            return json.loads(legacy_path.read_text(encoding="utf-8"))
         except Exception:
             return []
     return []
 
 
-def _save_private(agent_id: str, history: List[Dict[str, str]]) -> None:
-    path = _group_path(agent_id)
+def _save_private(agent_id: str, user_id: str, history: List[Dict[str, str]]) -> None:
+    """KI-001: 寫入私聊 history，永遠寫新格式（user-scoped）"""
+    path = _group_path(agent_id, user_id)
     trimmed = history[-MAX_PRIVATE:]
     path.write_text(json.dumps(trimmed, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -100,16 +123,22 @@ def _append_group_user(speaker: str, content: str) -> None:
     _save_group(history)
 
 
-def _session_key(agent_id: str) -> str:
-    """固定 session key，確保重啟後 history 能正確對應同一個 agent"""
-    return f"session_{agent_id}"
+def _session_key(agent_id: str, user_id: str) -> str:
+    """KI-001: per (user, agent) session key，確保多 owner 隔離
+
+    格式：session_{user_id}_{agent_id}
+    注意：這個 key 是 metadata，呼叫方不應依賴字串格式解析。
+    _add_to_history 的舊版「session_id.replace("session_", "")」反推 agent_id
+    邏輯已不適用，呼叫方應直接傳入 (agent_id, user_id) 而非解析。
+    """
+    return f"session_{user_id}_{agent_id}"
 
 
-def _append_private_history(agent_id: str, role: str, content: str) -> None:
-    """寫入私聊 history"""
-    history = _load_private(agent_id)
+def _append_private_history(agent_id: str, user_id: str, role: str, content: str) -> None:
+    """KI-001: 寫入私聊 history（user-scoped）"""
+    history = _load_private(agent_id, user_id)
     history.append({"role": role, "content": content})
-    _save_private(agent_id, history)
+    _save_private(agent_id, user_id, history)
 
 
 def _build_messages_group(
@@ -619,11 +648,15 @@ class LLMProxy:
 
         # 去重：追蹤正在處理中的 event_id，防止同一事件被處理兩次
         self._in_flight: set = set()
+        # KI-001: 預設 user_id（向後相容既有對話；運行時由 event.payload 覆蓋）
+        self._user_id_legacy_default = "bryan"
 
         # 啟動時從磁碟載入記憶
         self._group_history = _load_group()
+        # KI-001: 每個 agent 在每個 user 下都載入（目前只有 bryan，未來多 owner 自動擴展）
         for agent_id in ("agent_yua", "agent_ruka", "agent_akane"):
-            self._history[_session_key(agent_id)] = _load_private(agent_id)
+            for uid in (self._user_id_legacy_default,):  # 啟動時只載入舊 owner
+                self._history[_session_key(agent_id, uid)] = _load_private(agent_id, uid)
         logger.info(
             f"[LLMProxy] 載入 group={len(self._group_history)} 條, "
             f"private histories loaded"
@@ -672,6 +705,9 @@ class LLMProxy:
         reason = event.payload.get("reason", "unknown")
         draft = event.payload.get("draft", "")
         memory_context = event.payload.get("memory_context", "")
+        # KI-001: 從 event 抽 user_id（從 router/telegram 透傳的 target_user_id）
+        # 預設 "bryan" 維持向後相容（既有對話都是 bryan）
+        user_id = event.payload.get("target_user_id", "bryan")
 
         # 從 event payload 取 mode（gateway 寫入的）
         mode = event.payload.get("mode", "group")
@@ -794,9 +830,9 @@ class LLMProxy:
                         self._memory.append("group", "user", user_message, "bryan", is_private=False)
                         self._group_history = _load_group()
                     else:
-                        _append_private_history(agent_id, "user", user_message)
-                        self._memory.append(f"session_{agent_id}", "user", user_message, "bryan", is_private=True)
-                        self._history[_session_key(agent_id)] = _load_private(agent_id)
+                        _append_private_history(agent_id, user_id, "user", user_message)
+                        self._memory.append(f"session_{user_id}_{agent_id}", "user", user_message, "bryan", is_private=True)
+                        self._history[_session_key(agent_id, user_id)] = _load_private(agent_id, user_id)
                         _append_group(
                             speaker=agent_id,
                             content=f"（{agent_id} 與 Bryan 私聊中）",
@@ -815,17 +851,17 @@ class LLMProxy:
                 self._group_history = _load_group()
             else:
                 if user_message:
-                    _append_private_history(agent_id, "user", user_message)
-                    self._memory.append(f"session_{agent_id}", "user", user_message, "bryan", is_private=True)
+                    _append_private_history(agent_id, user_id, "user", user_message)
+                    self._memory.append(f"session_{user_id}_{agent_id}", "user", user_message, "bryan", is_private=True)
                     _append_group(
                         speaker=agent_id,
                         content=f"（{agent_id} 與 Bryan 私聊中）",
                         is_private=True,
                     )
-                _append_private_history(agent_id, "assistant", generated_text)
-                self._memory.append(f"session_{agent_id}", "assistant", generated_text, "agent_id", is_private=True)
-                _append_group(speaker=agent_id, content=generated_text, is_private=True)
-                self._history[_session_key(agent_id)] = _load_private(agent_id)
+                    _append_private_history(agent_id, user_id, "assistant", generated_text)
+                    self._memory.append(f"session_{user_id}_{agent_id}", "assistant", generated_text, "agent_id", is_private=True)
+                    _append_group(speaker=agent_id, content=generated_text, is_private=True)
+                    self._history[_session_key(agent_id, user_id)] = _load_private(agent_id, user_id)
                 self._group_history = _load_group()
 
             # ── 發布 AGENT_SPEAK ──────────────────────────
@@ -837,7 +873,8 @@ class LLMProxy:
                 source=agent_id,
                 target="broadcast",
                 priority=EventPriority.NORMAL,
-                session_id=_session_key(agent_id),
+                # KI-001: session_id 改為 per (user, agent)，跟 _session_key 一致
+                session_id=_session_key(agent_id, user_id),
                 correlation_id=event.correlation_id or event.event_id,
                 payload={
                     "text": generated_text,
