@@ -16,6 +16,9 @@ BASE_SCORES = {
     "agent_ruka":  (0.75, 0.35),   # 降低，避免壟斷
     "agent_akane": (0.35, 0.28),   # 比 Rem 更沉，靜默模式（TIER 13 對齊）
     "agent_rem":   (0.40, 0.30),   # Rem：不搶語言空間，做事優先（比 Akane 更低、更穩定）
+    # Phase 7 — Ram (Re:Zero · COS v1.0)
+    # 比 Rem 更沉默（Priority 0 佔比高），base < 0.40 才符合「比 Rem 搶話率更低」的設計意圖
+    "agent_ram":   (0.30, 0.20),
 }
 
 # 搶答視窗：收到 USER_MESSAGE 後，Agent 有這麼多 ms 提交 bid

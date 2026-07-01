@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -31,6 +32,14 @@ from .reader import MemoryReader
 from .evolution import MemoryEvolution
 from .models import Fact, ContextResult
 from .token_utils import TokenBudget, SummaryCompressor, PrefetchCache
+
+logger = logging.getLogger("soul_os.sage")
+
+# Phase 7 — Ram (Re:Zero · COS v1.0) no-diary 差異化
+# 任務書「Ram 沒有 feelings/diary.md」：soul-os-harness 的 SAGE 對應語意為
+# 「Ram 的對話不寫入 graph.sqlite facts」，情感狀態由 emotional-state.json 表達。
+# 注意：其他 agent 的 sync_turn/post_reply_commit 行為不受影響（回歸測試必跑）。
+NO_DIARY_AGENTS: set[str] = {"agent_ram"}
 
 
 class SAGELiteProvider:
@@ -156,8 +165,20 @@ class SAGELiteProvider:
         *,
         session_id: str,
     ) -> None:
-        """Sync 寫入。soul-os MemoryMiddleware 會包 asyncio.to_thread。"""
+        """
+        Sync 寫入。soul-os MemoryMiddleware 會包 asyncio.to_thread。
+
+        Phase 7 — no-diary 白名單：agent_ram 的對話不寫入 graph.sqlite，
+        情感狀態由 AgentConsciousness._on_session_end → emotional-state.json 表達。
+        其他 agent 行為不受影響（回歸測試驗證）。
+        """
         if not self._writer:
+            return
+        # Phase 7: NO_DIARY_AGENTS 白名單攔截
+        if self.profile_id in NO_DIARY_AGENTS:
+            logger.debug(
+                f"[SAGE] sync_turn skipped (no-diary agent): profile={self.profile_id}"
+            )
             return
         self._writer.write_turn(
             user_content, assistant_content, session_id=session_id
@@ -174,10 +195,20 @@ class SAGELiteProvider:
         last_user_msg: str,
         agent_reply: str,
     ) -> None:
-        """Async 寫入（內部已用 run_in_executor，不會阻塞 event loop）。
+        """
+        Async 寫入（內部已用 run_in_executor，不會阻塞 event loop）。
 
         這是 MemoryMiddleware 在 AGENT_SPEAK 階段呼叫的方法。
+
+        Phase 7 — no-diary 白名單：與 sync_turn 對齊，agent_ram 跳過圖譜寫入。
         """
+        # Phase 7: NO_DIARY_AGENTS 白名單攔截（async 對齊 sync 行為）
+        if self.profile_id in NO_DIARY_AGENTS:
+            logger.debug(
+                f"[SAGE] post_reply_commit skipped (no-diary agent): profile={self.profile_id}"
+            )
+            self._cache.invalidate()
+            return
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             None,

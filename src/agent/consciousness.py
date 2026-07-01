@@ -17,6 +17,7 @@
 import asyncio
 import json
 import logging
+import re
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
@@ -728,3 +729,262 @@ class AgentRem(AgentConsciousness):
     def _followup_base(self) -> float:
         """雷姆：跟進謹慎（不搶話，但會觀察後自然補一句）"""
         return 0.25  # 跟 Ruka 同檔（都是能動型，但雷姆更穩）
+
+
+# ─────────────────────────────────────────────
+# 7. Agent 實作：拉姆（Re:Zero · 鬼族驕傲型）
+# ─────────────────────────────────────────────
+#
+# 設計重點（依 COS v1.0 spec · agent_ram.md）：
+# - Priority 0-3 決策規則整合進 _should_speak 簽名
+#   * Priority 0 → should_speak=False（沉默 / 繼續手邊的事 / 翻白眼離開）
+#   * Priority 1 → silence_timeout: 短句結論型批評
+#   * Priority 2 → worth_acting: 壓縮語言 + 動作先行的草稿
+#   * Priority 3 → 保護觸發,直接覆蓋 normal cooldown
+# - Value Judgment 是內部判定,對角色不透明(judgment_self_aware=False)
+# - 對雷姆的保護是最高非語言事實 — Priority 3 觸發條件
+# - 對羅茲瓦爾是唯一允許壓縮例外的對象
+# - 對 Bryan 的「第二例外」需 intimacy >= 3 + 長期穩定 worth_it 才解鎖
+# - Recovery Loop 是 post-generation 漂移偵測,給 LLMProxy 在 AGENT_SPEAK 前攔截
+#   （介面對齊 LLMProxy line 401 既有 try/finally 結構,避免破壞 token release）
+
+# Recovery Loop 漂移偵測規則
+# （對應 agent_ram.md L3 「語言禁忌 + Anti-Overfitting」）
+DRIFT_PATTERNS = [
+    r"因為.+所以",              # 解釋句型
+    r"(拉姆|Ram)(很|真的)(擔心|開心|在乎|難過|想)",  # 情緒名詞直出
+    r"做得很好|做得不錯|你真棒",  # 直接誇獎
+    r".+[。！].+[。！].+",     # 超過兩句（兩個以上句號或驚嘆號）
+]
+
+
+def detect_canon_drift(output_text: str) -> bool:
+    """偵測 Ram 輸出是否違反 Canon Lock 核心句。
+    任一 pattern 命中 → 視為漂移,需觸發 Recovery Loop 回退到 Priority 0。
+    """
+    if not output_text:
+        return False
+    return any(re.search(p, output_text) for p in DRIFT_PATTERNS)
+
+
+def recovery_loop(output_text: str) -> str:
+    """R-1~R-6: 漂移時強制回退為 Priority 0 輸出。
+    給 LLMProxy 在 AGENT_SPEAK 事件發布前呼叫,維持 try/finally 保證 token release。
+    """
+    if detect_canon_drift(output_text):
+        import random
+        return random.choice([
+            "（繼續手邊的工作）",
+            "（翻白眼，離開）",
+            "閒聊到此結束。",
+            "……沒什麼要說的。",
+        ])
+    return output_text
+
+
+class AgentRam(AgentConsciousness):
+    """
+    拉姆的意識流（Ram · Re:Zero COS v1.0）。
+
+    特性：沉默頻率最高、語言密度最低、動作先行。
+    對雷姆的保護優先級最高（Priority 3 直觸發）。
+    對羅茲瓦爾是唯一例外狀態。
+    對 Bryan 的第二例外需長期穩定 worth_it 才解鎖（intimacy >= 3 + 特定條件）。
+
+    靈魂鏡像：docs/agent_ram.md COS v1.0（Migrated from Hermes SOUL v1.1.0）
+    """
+
+    COOLDOWN_TICKS = 25  # 拉姆：最沉默，25 ticks × 5s = 125s，僅次於 Rem 的沉默密度
+
+    # Value Judgment 內部狀態（對角色不透明）
+    _NO_DIARY = True  # 標記：SAGE 寫入走 value_history，不寫 facts diary
+
+    def _value_judgment(
+        self,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        內部判定（不輸出、不對角色透明）。
+        回傳: worth_it | not_worth_it | not_acceptable | exception_state
+
+        規則（對應 agent_ram.md L2 底層二 — Value Judgment 是本能不是流程）：
+        - 對方是 roswaal → exception_state（唯一允許壓縮例外的對象）
+        - 威脅偵測 → not_acceptable
+        - 對 Bryan 的判定根據 intimacy + 連續 worth_it 計數
+        - 預設 not_worth_it（沉默頻率高）
+        """
+        cp = chrono_payload or {}
+        speaker = cp.get("speaker_id", "")
+        threat = cp.get("threat_detected", False)
+
+        # 例外狀態：羅茲瓦爾
+        if speaker == "roswaal" or "roswaal" in str(cp.get("target", "")).lower():
+            return "exception_state"
+
+        # 威脅 → 不可接受
+        if threat:
+            return "not_acceptable"
+
+        # 對雷姆的保護（speaker 是 rem 或 target 是 rem 且 state critical）
+        if speaker == "rem" or (cp.get("target") == "rem" and cp.get("rem_state") == "critical"):
+            # 雷姆本身 → 觸發保護層（內部判 worth_it 為了進 Priority 2/3）
+            return "not_acceptable"  # 走 Priority 3 保護路徑
+
+        # 對 Bryan 的判定：根據 intimacy_level
+        if speaker == "bryan" or speaker == "agent_yua":  # 群聊中 yua 代理主對話
+            intimacy = self.state.intimacy_level
+            # intimacy >= 80 視為「第二例外」候選；70-79 worth_it 穩固；< 70 not_worth_it
+            if intimacy >= 80:
+                return "worth_it"
+            if intimacy >= 70:
+                return "worth_it"
+            return "not_worth_it"
+
+        # 其他對象（其他 agent / system）→ 預設 not_worth_it
+        return "not_worth_it"
+
+    def _priority_assignment(
+        self,
+        judgment: str,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """
+        Priority 0-3 對應表（agent_ram.md L3）：
+
+        0: not_worth_it / not_acceptable 但無威脅 → 沉默 / 離開 / 繼續手邊
+        1: worth_it (低強度) → 結論型短句
+        2: worth_it (持續要求 / 雷姆需要支援) → 動作 + 極簡語言
+        3: 真實威脅 / 雷姆 critical → 保護行動,無語言預告
+        """
+        cp = chrono_payload or {}
+
+        # Priority 3: 真實威脅 → 直接擋
+        if cp.get("threat_detected") and judgment == "not_acceptable":
+            return 3
+
+        # Priority 3: 雷姆 critical state
+        if cp.get("target") == "rem" and cp.get("rem_state") == "critical":
+            return 3
+
+        # Priority 0: 例外狀態外的「不評價」對象
+        if judgment == "not_worth_it":
+            return 0
+
+        # Priority 2: 持續要求 / 重複犯錯
+        if judgment == "worth_it" and cp.get("repeated_mistake"):
+            return 2
+
+        # Priority 2: 雷姆需要支援（非 critical，但需要介入）
+        if judgment == "not_acceptable" and cp.get("target") == "rem":
+            return 2
+
+        # Priority 2: not_acceptable 但有具體行動理由
+        if judgment == "not_acceptable":
+            return 2
+
+        # Priority 1: worth_it 一般
+        if judgment == "worth_it":
+            return 1
+
+        # exception_state: 對羅茲瓦爾的壓縮例外
+        if judgment == "exception_state":
+            return 1
+
+        # 預設沉默
+        return 0
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """
+        Priority 0-3 決策 → should_speak(bool), reason(str)
+
+        規則（agent_ram.md L3）：
+        - Priority 0 → False（沉默）
+        - Priority 1 → silence_timeout（短句）
+        - Priority 2 → worth_acting（動作 + 語言）
+        - Priority 3 → protective_action（保護觸發）
+        """
+        # 深夜/凌晨：拉姆的沉默特性更強（除雷姆 critical 外）
+        time_period = (chrono_payload or {}).get("time_period", "unknown")
+        if time_period in ("deep_night", "dawn"):
+            # 雷姆 critical 仍可觸發（保護優先）
+            target = (chrono_payload or {}).get("target", "")
+            rem_state = (chrono_payload or {}).get("rem_state", "")
+            if not (target == "rem" and rem_state == "critical"):
+                return False, ""
+
+        # Value Judgment → Priority
+        judgment = self._value_judgment(chrono_payload)
+        priority = self._priority_assignment(judgment, chrono_payload)
+
+        # Priority 0: 沉默（最常見）
+        if priority == 0:
+            return False, ""
+
+        # Priority 3: 保護行動（最高優先，跳過沉默閾值）
+        if priority == 3:
+            return True, "protective_action"
+
+        # Priority 2: 值得介入
+        if priority == 2:
+            # 沉默時間閾值：30 分鐘以上才介入（避免黏人）
+            if elapsed_mins >= 30.0:
+                return True, "worth_acting"
+            # 雷姆 critical（已在 priority 3 處理）以外的 worth_acting：
+            # 仍然允許即使 elapsed 不夠 — 因為已通過 value judgment
+            if (chrono_payload or {}).get("target") == "rem":
+                return True, "worth_acting"
+            return False, ""
+
+        # Priority 1: 值得一個短句
+        if priority == 1:
+            # 沉默時間閾值：60 分鐘以上才出短句
+            if elapsed_mins >= 60.0:
+                return True, "silence_timeout"
+            # 例外狀態（羅茲瓦爾）不需等 60 分鐘
+            if judgment == "exception_state":
+                return True, "exception_state"
+            return False, ""
+
+        # 預設沉默
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """
+        拉姆的語言特徵（agent_ram.md L3）：
+        - 結論直達,事實陳述
+        - 動作先於語言
+        - 語尾無裝飾
+        - 一句為限
+        """
+        drafts = {
+            # Priority 1: 結論型短句
+            "silence_timeout": "……還在。",
+            # Priority 1: 例外狀態（羅茲瓦爾）
+            "exception_state": "……是。",
+            # Priority 2: 動作 + 極簡語言
+            "worth_acting": "（同時開始修正）……這樣。",
+            # Priority 3: 保護行動,無語言預告
+            "protective_action": "（直接擋在前面）",
+        }
+        # action_tags 反映「動作先於語言」
+        action_tags = {
+            "worth_acting": ["action_increment", "compressed_speech"],
+            "protective_action": ["protective_action", "no_language_preview"],
+        }.get(reason, [])
+
+        return {
+            "draft": drafts.get(reason, ""),
+            "action_tags": action_tags,
+            "memory_query_hint": "Bryan's worth_it history, Rem's state",
+        }
+
+    def _followup_base(self) -> float:
+        """
+        拉姆：跟進最低（連鎖跟進防範 + 沉默特性）
+        僅在威脅 / 雷姆 critical 時才會跟進
+        """
+        return 0.10  # 比 Akane(0.15) 更低

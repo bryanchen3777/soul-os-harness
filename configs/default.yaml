@@ -22,6 +22,13 @@ agents:
     class: AgentRem
     intimacy_level: 45
     enabled: true
+  # Phase 7 — Ram (Re:Zero · COS v1.0)：第 5 個 agent
+  # 親密度 40 起步（Subaru-Ram 設定：鬼族驕傲、對話稀疏、intimacy 反映信任累積）
+  # 略低於 Rem（沉默頻率最高）。SAGE 寫入走 no-diary 白名單（見 provider.py）
+  - id: agent_ram
+    class: AgentRam
+    intimacy_level: 40
+    enabled: true
 
 heartbeat:
   # HeartbeatEngine 每隔幾秒發一次 SYSTEM_TICK

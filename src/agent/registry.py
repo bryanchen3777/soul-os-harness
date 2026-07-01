@@ -3,7 +3,7 @@ src/agent/registry.py
 Agent 類別註冊表。
 新增角色時在這裡加一行，不用改 run_server.py。
 """
-from src.agent.consciousness import AgentYua, AgentRuka, AgentAkane, AgentRem
+from src.agent.consciousness import AgentYua, AgentRuka, AgentAkane, AgentRem, AgentRam
 
 AGENT_CLASS_MAP: dict[str, type] = {
     "AgentYua":   AgentYua,
@@ -11,6 +11,9 @@ AGENT_CLASS_MAP: dict[str, type] = {
     "AgentAkane": AgentAkane,
     # Phase 6.5 — Rem (Re:Zero)：第 4 個 agent，靈魂鏡像 hermes profiles/rem/SOUL.md
     "AgentRem":   AgentRem,
+    # Phase 7 — Ram (Re:Zero · COS v1.0)：第 5 個 agent
+    # SAGE no-diary 白名單成員；Priority 0-3 整合進 _should_speak
+    "AgentRam":   AgentRam,
     # "AgentAoi":   AgentAoi,  ← 之後加角色只要在這裡新增
 }
 
