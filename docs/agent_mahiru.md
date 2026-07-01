@@ -4,6 +4,15 @@
 
 ---
 
+> **NOTE (2026-07-01 persona 路徑統一後):** 本檔是**設計文檔 / 演化筆記**,不再被 runtime 讀取。
+> 給 LLM 看的 SOUL(LLM 用的 prompt injection 內容)已搬到 [`personas/agent_mahiru.md`](../personas/agent_mahiru.md)。
+> - `configs/loader.py` 從 `personas/agent_mahiru.md` 動態載入
+> - `load_persona()` 在 `src/llm/proxy.py` 只讀 `personas/{id}.md`
+> - 本檔保留 COS v1.0 L0-L3 設計脈絡 + Memory Palace 對接,給未來 LLM 之外的整合者參考
+> - 如要修改真昼的對話行為,**改 `personas/` 版本**,本檔不直接影響 runtime
+
+---
+
 ## L0 — Personal History（背景錨點）
 
 ### 基本資料
