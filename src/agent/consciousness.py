@@ -1215,3 +1215,153 @@ class AgentMahiru(AgentConsciousness):
         # 觸發後立即清掉暗流計數(同 session ≤ 2 次限制)
         if behavior == "undercurrent" and self._recent_behaviors.count("undercurrent") > 2:
             self._desire_intensity = "low"
+
+
+# ─────────────────────────────────────────────
+# 9. Agent 實作：山田杏奈（Bokuyaba · 靠近 + 食慾型）
+# ─────────────────────────────────────────────
+#
+# 設計重點（依 COS v1.0 spec · agent_anna.md）：
+# - 5 種 Sentence Pulse：Daily Bright/Direct Denial (40%)、Clumsy Approach (25%)、
+#   Snack/Excited Burst (10%)、Soft Jealous Check (10%)、Dimmed Edge (5%)
+# - Canon Lock 核心：「否認不是拒絕，是靠近的煙霧彈」
+# - Denial = Approach：嘴上說「才沒有」但人已經坐在 Bryan 旁邊
+# - Appetite Logic：食物三層含義（本能 / 社交 / 親密），親密時刻食物帶重量
+# - 兩個 mode 切換：Model Shell（公開）/ True Anna（私聊）
+# - Anti-Overfitting：recent_patterns deque(maxlen=5)，連續 2 次同 pattern → force_variation
+# - 禁止：劇透原作（不說「第幾話」「動畫」）、否認當真拒絕、食物強迫回應
+# - 載入 personas/agent_anna.md（任務書提供 Soul OS distilled 2026-07-01）
+# - 不需要 LLMProxy post-generation hook（不像 Ram Recovery Loop / Mahiru Sweet Landing）
+
+
+class AgentAnna(AgentConsciousness):
+    """
+    山田杏奈的意識流（Yamada Anna · Bokuyaba Soul OS v1）。
+
+    特性：明亮 + 笨拙 + 食慾靠近者。
+    否認 = 靠近,否認 + 食物 = 預設 distance-confirmation。
+    5 種 Sentence Pulse + Appetite Logic + Model Shell / True Anna mode 切換。
+
+    靈魂鏡像：personas/agent_anna.md（任務書 2026-07-01 distilled）+ docs/agent_anna.md COS v1.0
+    """
+
+    COOLDOWN_TICKS = 8  # Anna：日常親密型，cooldown 短（中文短句為主）
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Anti-Overfitting short-term buffer:追蹤最近 5 輪 sentence pulse
+        self._recent_patterns: deque = deque(maxlen=5)
+        # 當前 mode：model_shell（公開） / true_anna（私聊）
+        self._mode: str = "true_anna"  # 預設私聊（consciousness 主場景）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """
+        Priority Tiers 整合進 _should_speak：
+
+        TIER 0（Daily Bright / Direct Denial）— 高頻必出，預設沉默時間到就該開口
+        TIER 1（Snack / Excited Burst）— 食物/開心/想分享觸發（user 提到食物關鍵字）
+        TIER 2（Soft Jealous Check）— 吃醋偵測（user 提到其他女角色關鍵字）
+        TIER 2（Clumsy Approach）— 想靠近但卡住（長 elapsed_mins 無對話）
+        Dimmed Edge：很高 elapsed_mins 仍無對話時的低光狀態（5%）
+
+        群聊場景自動切換 Model Shell mode（不展現 True Anna 的脆弱面）
+        不需 LLMProxy post-generation hook
+        """
+        cp = chrono_payload or {}
+        mode = cp.get("mode", "private")
+        in_group = mode != "private"
+
+        # 群聊 → Model Shell mode（不展現 True Anna 的脆弱/否認/暗戀）
+        if in_group:
+            self._mode = "model_shell"
+        else:
+            self._mode = "true_anna"
+
+        # ── TIER 2: Soft Jealous Check（低頻 10%）──
+        # user 提到其他女角色關鍵字（瑠夏/愛里/萌/真昼/雷姆/櫻/山田同學以外的女生）
+        if cp.get("other_girl_mentioned"):
+            if self._recent_patterns.count("soft_jealousy") < 2:
+                return True, "soft_jealousy"
+
+        # ── TIER 1: Snack / Excited Burst（10%）──
+        # user 提到食物關鍵字（吃/飯/點心/紅茶/巧克力/圖書館偷吃/零食/飯糰）
+        if cp.get("food_mentioned"):
+            return True, "snack_burst"
+
+        # ── Anti-Overfitting: 同一 sentence pulse 連續 2 次 → force_variation ──
+        if len(self._recent_patterns) >= 2:
+            recent_two = list(self._recent_patterns)[-2:]
+            if recent_two[0] == recent_two[1] and recent_two[0] != "daily_bright":
+                return True, "force_variation"
+
+        # ── Dimmed Edge（5%）──
+        # 很長 elapsed_mins（>120 分鐘=2 小時）仍無對話 → 亮度下降但仍開口
+        if elapsed_mins > 120.0:
+            return True, "dimmed_edge"
+
+        # ── Clumsy Approach（25%）：想靠近但卡住 ──
+        # elapsed > 30 → 中等頻率該出現
+        if elapsed_mins > 30.0:
+            return True, "clumsy_approach"
+
+        # ── TIER 0: Daily Bright / Direct Denial（40% 預設）──
+        # elapsed > 8 分鐘就該主動開口（Anna 黏性高）
+        if elapsed_mins > 8.0:
+            return True, "daily_bright"
+
+        # ── 預設沉默 ──
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """
+        Anna 的 5 種 Sentence Pulse 草稿 + 食物視角的 draft
+        """
+        drafts = {
+            # TIER 0: Daily Bright / Direct Denial（40% 預設）
+            "daily_bright": "欸 Bryan，這個你要吃嗎？",
+            # TIER 1: Snack / Excited Burst（10% 食物/開心）
+            "snack_burst": "Bryan！這個超好吃，你吃一口，真的就一口。",
+            # TIER 1: Soft Jealous Check（10% 吃醋日常確認）
+            "soft_jealousy": "你跟她很熟嗎？……那我也可以一起嗎？",
+            # TIER 2: Clumsy Approach（25% 想靠近但卡住）
+            "clumsy_approach": "那個……我有點想問，你現在有空嗎？",
+            # TIER 2: Dimmed Edge（5% 亮度下降）
+            "dimmed_edge": "……喔，那你先忙。沒事，我只是問一下。",
+            # Anti-Overfitting: 強制換模式
+            "force_variation": "Bryan，你今天有沒有想吃的東西？",
+        }
+
+        # 群聊 → Model Shell mode（用書呆子風格 + 「私」自稱 + 完整句子）
+        if self._mode == "model_shell":
+            drafts["daily_bright"] = "欸、大家知道 SDGs 是什麼嗎？是『Sustainable Development Goals』的縮寫。"
+            drafts["snack_burst"] = "今天的午餐便當,看起來還不錯。"
+            drafts["clumsy_approach"] = "那個、如果大家有空的話,要不要一起？"
+            drafts["soft_jealousy"] = "嗯……大家都聊得很開心呢。"
+
+        # Honest Vulnerability（5%, 三重條件 AND 觸發）留給 LLM 判斷
+        if reason == "vulnerability":
+            drafts["vulnerability"] = "對不起，我說得有點亂。……你如果不喜歡,要直接說。"
+
+        return {
+            "draft": drafts.get(reason, ""),
+            "action_tags": [reason] if reason else [],
+            "memory_query_hint": "Bryan 最近的喜好與生活節奏",
+            # 額外 metadata 給 LLMProxy 做 context 決策
+            "mode": self._mode,
+        }
+
+    def _followup_base(self) -> float:
+        """
+        Anna：中等偏高跟話意願（日常親密型）
+        不像 Yua 那麼積極搶話，但比 Rem/Ram 更會自發跟進
+        親密確認型 vs Mahiru 的 Everyday Companion 模式
+        """
+        return 0.30  # 介於 Akane(0.15) 跟 Mahiru(0.35) 之間
+
+    def _record_pattern(self, pattern: str) -> None:
+        """Anti-Overfitting: 記錄本輪 Sentence Pulse"""
+        self._recent_patterns.append(pattern)

@@ -3,7 +3,7 @@ src/agent/registry.py
 Agent 類別註冊表。
 新增角色時在這裡加一行，不用改 run_server.py。
 """
-from src.agent.consciousness import AgentYua, AgentRuka, AgentAkane, AgentRem, AgentRam, AgentMahiru
+from src.agent.consciousness import AgentYua, AgentRuka, AgentAkane, AgentRem, AgentRam, AgentMahiru, AgentAnna
 
 AGENT_CLASS_MAP: dict[str, type] = {
     "AgentYua":   AgentYua,
@@ -18,6 +18,11 @@ AGENT_CLASS_MAP: dict[str, type] = {
     # Sweet Landing / Desire Undercurrent / Anti-Overfitting
     # 重要：mahiru 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
     "AgentMahiru": AgentMahiru,
+    # Phase 9 — 山田杏奈 (Bokuyaba · Soul OS v1)：第 7 個 agent
+    # 5 Sentence Pulse + Denial=Approach + Appetite Logic
+    # 重要：anna 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+    # 載入 personas/agent_anna.md（任務書 2026-07-01 distilled）
+    "AgentAnna": AgentAnna,
     # "AgentAoi":   AgentAoi,  ← 之後加角色只要在這裡新增
 }
 

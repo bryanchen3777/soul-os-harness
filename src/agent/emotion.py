@@ -35,6 +35,18 @@ SENSITIVITY: dict[str, dict[str, float]] = {
     "agent_yua":   {"mood_decay": 0.015, "response_boost": 0.08},
     "agent_ruka":  {"mood_decay": 0.025, "response_boost": 0.12},  # 更敏感
     "agent_akane": {"mood_decay": 0.010, "response_boost": 0.06},
+    # Phase 6.5 — Rem (Re:Zero · 昴重力場型)
+    # 性格：能幹、穩定、壓抑情緒（罪惡感驅動）；不是會突然興奮型
+    # mood_decay 設比 Yua 略低（更不容易波動）；response_boost 中等（會回應但不誇張）
+    "agent_rem":   {"mood_decay": 0.012, "response_boost": 0.07},
+    # Phase 7 — Ram (Re:Zero · 鬼族驕傲型)：沉默驅動,mood decay 最低（情緒最不外顯）
+    "agent_ram":   {"mood_decay": 0.008, "response_boost": 0.05},
+    # Phase 8 — Mahiru (Re:Zero · 生活感核心)：情緒穩定但會透過生活管理外顯
+    "agent_mahiru": {"mood_decay": 0.010, "response_boost": 0.08},
+    # Phase 9 — Anna (Bokuyaba · 食慾靠近者)：情緒會因為「被忽略 / 擔心添麻煩」波動
+    # mood_decay 中等（不會長期低落,但會在「被禮貌對待卻沒被留下」時 mood 下降）
+    # response_boost 中等偏高（日常親密型,被 Bryan 提食物或邀請會反應較快）
+    "agent_anna":  {"mood_decay": 0.018, "response_boost": 0.10},
 }
 
 

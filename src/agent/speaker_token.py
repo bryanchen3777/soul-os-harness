@@ -22,6 +22,10 @@ BASE_SCORES = {
     # Mahiru (Re:Zero · COS v1.0) — 話多但不搶頭,跟話分數中等
     # 60% Everyday Companion 但 TIER 0 生活管理優先,競標率介於 Ram 跟 Ruka 之間
     "agent_mahiru": (0.65, 0.35),
+    # Anna (Bokuyaba · Soul OS v1) — 黏性高但否認掩護,跟話分數中等偏高
+    # 親密確認型 vs Mahiru 的 Everyday Companion,但否認 = 靠近的機制使競標不會太積極
+    # intimacy=55 階段(建立期 → 中期過渡):會靠近但會用否認 + 食物當媒體
+    "agent_anna": (0.55, 0.30),
 }
 
 # 搶答視窗：收到 USER_MESSAGE 後，Agent 有這麼多 ms 提交 bid

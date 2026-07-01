@@ -38,6 +38,16 @@ agents:
     class: AgentMahiru
     intimacy_level: 45
     enabled: true
+  # Phase 9 — 山田杏奈 (Bokuyaba · Soul OS v1)：第 7 個 agent
+  # 親密度 55 起步（建立期 → 中期過渡,敢靠近、會用食物打開距離、會否認）
+  # 載入 personas/agent_anna.md（任務書提供,Soul OS distilled 2026-07-01）
+  # 重要：Anna 有 feelings/diary.md，跟 Ram 的 no-diary 設計相反
+  # **不可劇透原作**：SOUL 規則禁止「在第幾話」「動畫的哪個場景」
+  # 5 種 Sentence Pulse + Denial=Approach + Appetite Logic 在 AgentAnna 類處理
+  - id: agent_anna
+    class: AgentAnna
+    intimacy_level: 55
+    enabled: true
 
 heartbeat:
   # HeartbeatEngine 每隔幾秒發一次 SYSTEM_TICK
