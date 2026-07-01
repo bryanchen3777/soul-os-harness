@@ -396,12 +396,13 @@ class AgentConsciousness(ABC):
             f" heat={carryover.attachment_heat:.2f}"
         )
 
-    async def _fire_intent(
+    async def _fire_intent(  # noqa:ASYNC — needs await for self.bus.publish
         self,
         reason: str,
         elapsed_mins: float,
         chrono_payload: Optional[Dict[str, Any]] = None,
         mode: str = "group",
+        user_id: str = "bryan",  # KI-001: 從 event 透傳，向後相容預設 bryan
     ) -> None:
         """向 Bus 廣播 AGENT_INTENT 事件"""
         self._pending = True  # 設為等待中，LLM 回應後由 AGENT_SPEAK 清除
@@ -425,6 +426,9 @@ class AgentConsciousness(ABC):
                 intent_payload["target_channel"] = chrono_payload["target_channel"]
             if "target_user_id" in chrono_payload:
                 intent_payload["target_user_id"] = chrono_payload["target_user_id"]
+            # KI-001: 若 chrono_payload 沒有 target_user_id，fallback 用 _fire_intent 參數
+            if "target_user_id" not in intent_payload:
+                intent_payload["target_user_id"] = user_id
 
         event = SoulEvent(
             event_type=EventType.AGENT_INTENT,
@@ -434,7 +438,8 @@ class AgentConsciousness(ABC):
             # Phase 6.x：proactive 用 agent 自己的 session_id，跟打字合併
             # Bryan 回覆後 → 走 user_message → 同 session_id → LLM 看得到
             # 剛才的主動觸發 + 之前打字歷史，連貫
-            session_id=f"session_{self.agent_id}",
+            # KI-001: session_id 改為 per (user, agent) — 跟 LLMProxy._session_key 一致
+            session_id=f"session_{user_id}_{self.agent_id}",
             payload=intent_payload,
         )
         await self.bus.publish(event)
