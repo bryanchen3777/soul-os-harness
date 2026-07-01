@@ -806,12 +806,19 @@ class AgentRam(AgentConsciousness):
         """
         內部判定（不輸出、不對角色透明）。
         回傳: worth_it | not_worth_it | not_acceptable | exception_state
+              | bryan_second_exception (KI-004)
 
         規則（對應 agent_ram.md L2 底層二 — Value Judgment 是本能不是流程）：
         - 對方是 roswaal → exception_state（唯一允許壓縮例外的對象）
         - 威脅偵測 → not_acceptable
         - 對 Bryan 的判定根據 intimacy + 連續 worth_it 計數
         - 預設 not_worth_it（沉默頻率高）
+
+        KI-004 第二例外（對 Bryan）：三條件 AND（per agent_ram.md L3）
+        - long_term_worth_it: intimacy >= 70
+        - private_context: 僅 Bryan 與 Ram 獨處（mode=private + target=agent_ram）
+        - pause_event: 本輪是否觸發「讓她停頓很久的事」（KI-004 partial fix:
+          訊號來源未找到可靠實作，hardcode False，狀態標「部分修復 / 進行中」）
         """
         cp = chrono_payload or {}
         speaker = cp.get("speaker_id", "")
@@ -833,7 +840,30 @@ class AgentRam(AgentConsciousness):
         # 對 Bryan 的判定：根據 intimacy_level
         if speaker == "bryan" or speaker == "agent_yua":  # 群聊中 yua 代理主對話
             intimacy = self.state.intimacy_level
-            # intimacy >= 80 視為「第二例外」候選；70-79 worth_it 穩固；< 70 not_worth_it
+
+            # ── KI-004: 三條件 AND 判定（嚴格 AND，不加權平均）──
+            # 條件 1: 長期穩定 worth_it（既有數值門檻，穩固觀察期）
+            long_term_worth_it = intimacy >= 70
+
+            # 條件 2: 極私下獨處
+            #   嚴格定義需要 mode=private AND target=agent_ram，
+            #   第三條件 participants 檢查因架構保證（channel/router.py line 215
+            #   私聊模式從不填 participants）而省略。若未來 router 改變保證需重評。
+            private_context = (
+                cp.get("mode") == "private"
+                and cp.get("target_agent") == "agent_ram"
+            )
+
+            # 條件 3: 讓她停頓很久的事
+            #   KI-004 partial fix: 訊號來源本次未找到可靠實作，
+            #   hardcode False（保守預設，避免假陽性觸發角色崩壞）。
+            #   真正的訊號抽取需另立子任務。
+            pause_event = cp.get("pause_event", False)
+
+            if long_term_worth_it and private_context and pause_event:
+                return "bryan_second_exception"  # KI-004 新增判定值
+
+            # 既有邏輯：intimacy 數值門檻
             if intimacy >= 80:
                 return "worth_it"
             if intimacy >= 70:
