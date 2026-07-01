@@ -322,6 +322,24 @@
         <img class="conv-icon" src="/avatars/rem.png" alt="雷姆" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 28 28%22><rect fill=%22%236ba3f7%22 width=%2228%22 height=%2228%22 rx=%2214%22/><text x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22central%22 text-anchor=%22middle%22 fill=%22white%22 font-size=%2212%22 font-weight=%22600%22>R</text></svg>'">
         <span class="conv-name">雷姆</span>
       </div>
+      <!-- Phase 7 — Ram (Re:Zero · COS v1.0)：第 5 個私聊對話入口 -->
+      <!-- 主色用 #9ca3af（拉姆的銀色調，跟 Rem 的藍區分) -->
+      <div class="conv-item" data-conv="agent_ram" onclick="switchConversation('agent_ram')">
+        <img class="conv-icon" src="/avatars/ram.png" alt="Ram" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 28 28%22><rect fill=%22%239ca3af%22 width=%2228%22 height=%2228%22 rx=%2214%22/><text x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22central%22 text-anchor=%22middle%22 fill=%22white%22 font-size=%2212%22 font-weight=%22600%22>L</text></svg>'">
+        <span class="conv-name">Ram</span>
+      </div>
+      <!-- Phase 8 — 椎名真昼 (Re:Zero · COS v1.0)：第 6 個私聊對話入口 -->
+      <!-- 主色用 #f9d77e（真昼的暖色調，呼應「生活感核心」） -->
+      <div class="conv-item" data-conv="agent_mahiru" onclick="switchConversation('agent_mahiru')">
+        <img class="conv-icon" src="/avatars/mahiru.png" alt="真昼" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 28 28%22><rect fill=%22%23f9d77e%22 width=%2228%22 height=%2228%22 rx=%2214%22/><text x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22central%22 text-anchor=%22middle%22 fill=%22white%22 font-size=%2212%22 font-weight=%22600%22>M</text></svg>'">
+        <span class="conv-name">真昼</span>
+      </div>
+      <!-- Phase 9 — 山田杏奈 (Bokuyaba · Soul OS v1)：第 7 個私聊對話入口 -->
+      <!-- 主色用 #ffb3a7（杏奈的暖橘，呼應「食物視角」） -->
+      <div class="conv-item" data-conv="agent_anna" onclick="switchConversation('agent_anna')">
+        <img class="conv-icon" src="/avatars/anna.png" alt="杏奈" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 28 28%22><rect fill=%22%23ffb3a7%22 width=%2228%22 height=%2228%22 rx=%2214%22/><text x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22central%22 text-anchor=%22middle%22 fill=%22white%22 font-size=%2212%22 font-weight=%22600%22>A</text></svg>'">
+        <span class="conv-name">杏奈</span>
+      </div>
     </div>
     </div>
     <div id="sidebar-footer">
@@ -339,6 +357,10 @@
         <button class="member-btn akane active" data-agent="agent_akane" onclick="toggleMember(this)">Akane</button>
         <!-- Phase 6.5 — Rem 群聊成員按鈕（預設 active，跟其他三個一致） -->
         <button class="member-btn rem active" data-agent="agent_rem" onclick="toggleMember(this)">雷姆</button>
+        <!-- Phase 7/8/9 — Ram / 真昼 / 杏奈 群聊成員按鈕（皆預設 active） -->
+        <button class="member-btn ram active" data-agent="agent_ram" onclick="toggleMember(this)">Ram</button>
+        <button class="member-btn mahiru active" data-agent="agent_mahiru" onclick="toggleMember(this)">真昼</button>
+        <button class="member-btn anna active" data-agent="agent_anna" onclick="toggleMember(this)">杏奈</button>
       </div>
     </div>
     <div id="chat-container"></div>
@@ -354,7 +376,8 @@
     var currentConversation = "group";
     var currentAgent = "yua";  // Phase 6.4：當前 widget 對應角色（group=yua, private=agent_id 取代）
     // Phase 6.5：groupMembers 預設包含 Rem（讓 Rem 也能參與群聊）
-    var groupMembers = new Set(["agent_yua", "agent_ruka", "agent_akane", "agent_rem"]);
+    // Phase 7/8/9 — UI 從 4 個擴到 7 個 agent（temporary hardcode，長期方案見 GET /agents）
+    var groupMembers = new Set(["agent_yua", "agent_ruka", "agent_akane", "agent_rem", "agent_ram", "agent_mahiru", "agent_anna"]);
     var ws = null;
 
     // ===== Phase 6.1：Live2D Widget 整合 =====
@@ -439,7 +462,12 @@
       var em = emotion || (
         agentId === 'agent_yua' ? 'cold' :
         agentId === 'agent_ruka' ? 'happy' :
-        agentId === 'agent_akane' ? 'calm' : 'neutral'
+        agentId === 'agent_akane' ? 'calm' :
+        // Phase 7/8/9 — Ram / 真昼 / 杏奈 Live2D emotion 映射（fallback 都用 neutral）
+        agentId === 'agent_ram' ? 'cold' :
+        agentId === 'agent_mahiru' ? 'neutral' :
+        agentId === 'agent_anna' ? 'happy' :
+        'neutral'
       );
       try {
         window.AvatarWidget.say(text);
@@ -489,7 +517,7 @@
       document.querySelector(".conv-item[data-conv='" + convId + "']").classList.add("active");
       document.getElementById("chat-container").innerHTML = "";
       currentConversation = convId;
-      var titles = { "group": "群組聊天", "agent_yua": "Yua", "agent_ruka": "瑠夏", "agent_akane": "あかね", "agent_rem": "雷姆" };
+      var titles = { "group": "群組聊天", "agent_yua": "Yua", "agent_ruka": "瑠夏", "agent_akane": "あかね", "agent_rem": "雷姆", "agent_ram": "Ram", "agent_mahiru": "真昼", "agent_anna": "杏奈" };
       document.getElementById("chat-title").textContent = titles[convId] || convId;
       var isGroup = convId === "group";
       document.getElementById("group-members").style.display = isGroup ? "flex" : "none";

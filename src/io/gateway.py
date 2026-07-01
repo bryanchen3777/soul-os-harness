@@ -98,6 +98,24 @@ DEMO_HTML = """
 """
 
 
+def _default_group_members() -> list[str]:
+    """
+    UI → Backend 群聊 /group_members 的 fallback:
+    從 configs/default.yaml 動態讀所有 enabled 的 agent_id,
+    不再寫死 4 個 (Phase 7/8/9 加 Ram/Mahiru/Anna 後,前端動到 7 個,此函式同步對齊)。
+    """
+    try:
+        from configs.loader import load_config
+        cfg = load_config()
+        return [
+            a["id"] for a in cfg.get("agents", [])
+            if a.get("enabled", True) and "id" in a
+        ]
+    except Exception as e:
+        logger.warning(f"[Gateway] _default_group_members fallback failed: {e}, using 4-agent hardcoded list")
+        return ["agent_yua", "agent_ruka", "agent_akane", "agent_rem"]
+
+
 class ConnectionManager:
     """管理所有 WebSocket 連線"""
 
@@ -402,7 +420,7 @@ class IOGateway:
                             mode = msg.get("mode", "private")
                             # Bug 3 fix: 統一 group_members → participants，並確保預設全員
                             if mode == "group":
-                                participants = msg.get("group_members") or msg.get("participants") or ["agent_yua", "agent_ruka", "agent_akane", "agent_rem"]
+                                participants = msg.get("group_members") or msg.get("participants") or _default_group_members()
                                 target = "broadcast"
                             else:
                                 participants = None
