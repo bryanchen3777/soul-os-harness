@@ -823,6 +823,19 @@ class LLMProxy:
                         f"agent={agent_id} drift detected, output replaced"
                     )
 
+            # ── Mahiru Sweet Landing (S2 甜度著陸機制) ──
+            # Mahiru 獨有：說完甜的話必須接著陸句,否則自動 append 吐槽型著陸句
+            # 介面跟 KI-002 一樣：try 內,agent-specific,不改 finally
+            if agent_id == "agent_mahiru":
+                from src.agent.consciousness import sweet_landing_postprocess
+                before_text = generated_text
+                generated_text = sweet_landing_postprocess(generated_text)
+                if before_text != generated_text:
+                    logger.info(
+                        f"[LLMProxy] Mahiru Sweet Landing triggered: "
+                        f"agent={agent_id} sweet keyword detected, landing appended"
+                    )
+
             if generated_text is None:
                 # 即使 LLM 失敗也要把 user 訊息寫入（避免下次再問一次同樣的）
                 if user_message:

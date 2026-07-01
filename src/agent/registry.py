@@ -3,7 +3,7 @@ src/agent/registry.py
 Agent 類別註冊表。
 新增角色時在這裡加一行，不用改 run_server.py。
 """
-from src.agent.consciousness import AgentYua, AgentRuka, AgentAkane, AgentRem, AgentRam
+from src.agent.consciousness import AgentYua, AgentRuka, AgentAkane, AgentRem, AgentRam, AgentMahiru
 
 AGENT_CLASS_MAP: dict[str, type] = {
     "AgentYua":   AgentYua,
@@ -14,6 +14,10 @@ AGENT_CLASS_MAP: dict[str, type] = {
     # Phase 7 — Ram (Re:Zero · COS v1.0)：第 5 個 agent
     # SAGE no-diary 白名單成員；Priority 0-3 整合進 _should_speak
     "AgentRam":   AgentRam,
+    # Phase 8 — 椎名真昼 (Re:Zero · COS v1.0)：第 6 個 agent
+    # Sweet Landing / Desire Undercurrent / Anti-Overfitting
+    # 重要：mahiru 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+    "AgentMahiru": AgentMahiru,
     # "AgentAoi":   AgentAoi,  ← 之後加角色只要在這裡新增
 }
 

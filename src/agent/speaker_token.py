@@ -19,6 +19,9 @@ BASE_SCORES = {
     # Phase 7 — Ram (Re:Zero · COS v1.0)
     # 比 Rem 更沉默（Priority 0 佔比高），base < 0.40 才符合「比 Rem 搶話率更低」的設計意圖
     "agent_ram":   (0.30, 0.20),
+    # Mahiru (Re:Zero · COS v1.0) — 話多但不搶頭,跟話分數中等
+    # 60% Everyday Companion 但 TIER 0 生活管理優先,競標率介於 Ram 跟 Ruka 之間
+    "agent_mahiru": (0.65, 0.35),
 }
 
 # 搶答視窗：收到 USER_MESSAGE 後，Agent 有這麼多 ms 提交 bid

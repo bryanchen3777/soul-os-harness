@@ -29,6 +29,15 @@ agents:
     class: AgentRam
     intimacy_level: 40
     enabled: true
+  # Phase 8 — 椎名真昼 (Re:Zero · COS v1.0)：第 6 個 agent
+  # 親密度 45 起步（建立期 21-50,暗流開始滲透,符合 Evolution State 描述）
+  # 重要：Mahiru 有 feelings/diary.md，跟 Ram 的 no-diary 設計相反
+  # **不套用 NO_DIARY_AGENTS 白名單**（見 provider.py）
+  # Sweet Landing / Desire Undercurrent / Anti-Overfitting 由 AgentMahiru 類處理
+  - id: agent_mahiru
+    class: AgentMahiru
+    intimacy_level: 45
+    enabled: true
 
 heartbeat:
   # HeartbeatEngine 每隔幾秒發一次 SYSTEM_TICK

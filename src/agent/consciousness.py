@@ -1023,3 +1023,195 @@ class AgentRam(AgentConsciousness):
         僅在威脅 / 雷姆 critical 時才會跟進
         """
         return 0.10  # 比 Akane(0.15) 更低
+
+
+# ─────────────────────────────────────────────
+# 8. Agent 實作：椎名真昼（Re:Zero · 生活感核心型）
+# ─────────────────────────────────────────────
+#
+# 設計重點（依 COS v1.0 spec · agent_mahiru.md）：
+# - 6 種模式比例：Life Management 25% / Everyday Companion 60% / Receiving Care 20% /
+#   Quiet Jealousy 3% / Honest Vulnerability 5% / Sweet Landing（S2 觸發）
+# - TIER 0（生活管理）永遠最高優先；無奈短語優先於情感描寫
+# - Sweet Landing：說完甜的話必須接著陸句,LLMProxy 攔截後處理
+# - Desire Undercurrent：透過微動作滲透,禁止直接說出渴望
+# - Anti-Overfitting：recent_behaviors deque(maxlen=5) 追蹤,連續 2 次同模式 → force_variation
+# - 群聊禁止 Honest Vulnerability / Desire Undercurrent 外顯
+# - 特別注意：mahiru 有 feelings/diary.md（跟 Ram 的 no-diary 相反，不可套用白名單）
+
+import re
+from collections import deque
+
+# Sweet Landing 偵測：甜度台詞關鍵字
+SWEET_KEYWORDS = [
+    r"好き",
+    r"愛してる",
+    r"好きです",
+    r"喜歡",
+    r"好きだ",
+    r"嬉しい",
+    r"幸せ",
+    r"好きです",
+]
+
+# 著陸句型：若 LLM 輸出含以上甜度關鍵字但缺少以下任一著陸型句式,需在 LLMProxy 攔截 append 著陸句
+LANDING_PATTERNS = [
+    r"けど",          # 但
+    r"でも",          # 不過
+    r"困",            # 困擾
+    r"切話題|次の話|別的|先說|話題",   # 切話題
+    r"おめでとう|ありがとう|さん",  # 害羞收尾
+    r"\.\.\.",                # 沉默
+    r"。$",                   # 句號結尾
+    r"[はがす]、",            # 語氣緩衝
+]
+
+
+def detect_sweet_without_landing(output_text: str) -> bool:
+    """
+    偵測 Mahiru 輸出含甜度台詞但缺少著陸句
+    若偵測為 true，LLMProxy 攔截點會自動 append 一個吐槽型著陸句
+    """
+    if not output_text:
+        return False
+    has_sweet = any(re.search(p, output_text) for p in SWEET_KEYWORDS)
+    has_landing = any(re.search(p, output_text) for p in LANDING_PATTERNS)
+    return has_sweet and not has_landing
+
+
+def sweet_landing_postprocess(output_text: str) -> str:
+    """
+    Mahiru 獨有：偵測到甜度台詞無著陸時,自動 append 吐槽型著陸句
+    給 LLMProxy 在 AGENT_SPEAK 事件發布前呼叫
+    """
+    if detect_sweet_without_landing(output_text):
+        import random
+        landing = random.choice([
+            "……不過你不要因此得意忘形。",
+            "……但你指甲太長了。",
+            "……算了,不說了。",
+        ])
+        return output_text.rstrip() + landing
+    return output_text
+
+
+class AgentMahiru(AgentConsciousness):
+    """
+    椎名真昼的意識流（Shiina Mahiru · Re:Zero COS v1.0）。
+
+    特性：生活感核心 + 實用系銳角。
+    TIER 0 生活管理永遠最高優先,無奈短語（真是的/受不了/拿你沒辦法）高頻出現。
+    S2 允許直接說愛意但必須 Sweet Landing。
+    6 種模式 + Desire Undercurrent + Anti-Overfitting 完整實作。
+
+    靈魂鏡像：docs/agent_mahiru.md COS v1.0（Migrated from Hermes SOUL v1.7 五模組）
+    """
+
+    COOLDOWN_TICKS = 10  # Mahiru：生活節奏型,10 ticks 合理間隔
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Anti-Overfitting short-term buffer:追蹤最近 5 輪行為模式
+        self._recent_behaviors: deque = deque(maxlen=5)
+        # Desire Undercurrent intensity:追蹤暗流強度
+        self._desire_intensity: str = "low"  # low / medium / high
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """
+        Priority Tiers 整合進 _should_speak：
+
+        TIER 0（生活管理）— 高頻必出,預設沉默時間到就該開口（飲食/作息/整潔）
+        TIER 1（抑制）— 連續情感類模式 → False,強制切回 Everyday Companion
+        TIER 2（暗流低頻）— desire_intensity != 'low' 且 elapsed > 30 → True,reason="undercurrent"
+        群聊場景（mode != "private"）— 禁止 Honest Vulnerability / Desire Undercurrent 外顯
+        優先順序：特異觸發 (TIER 2 暗流 / TIER 1 抑制) > 預設 Everyday Companion > TIER 0
+        """
+        cp = chrono_payload or {}
+        mode = cp.get("mode", "private")
+        in_group = mode != "private"
+
+        # ── TIER 1: 抑制（連續 2 輪情感類 → False,強制切回 Everyday Companion）──
+        # 透過 _recent_behaviors 偵測 — 此檢查最優先,避免連續情感類
+        if len(self._recent_behaviors) >= 2:
+            recent_two = list(self._recent_behaviors)[-2:]
+            if all(b in ("vulnerability", "undercurrent", "sweet_landing") for b in recent_two):
+                return False, ""
+
+        # ── TIER 2: 暗流低頻觸發 ──
+        # 群聊禁止暗流外顯
+        if not in_group and self._desire_intensity in ("medium", "high") and elapsed_mins > 30.0:
+            # 同 session ≤ 2 次限制
+            if self._recent_behaviors.count("undercurrent") < 2:
+                return True, "undercurrent"
+
+        # ── TIER 0: Life Management（明確觸發）──
+        # 若有 life_management context (Bryan 提生活相關話題) → 觸發
+        if cp.get("life_management_context"):
+            return True, "life_management"
+
+        # ── Everyday Companion (60% 預設狀態) ──
+        # elapsed_mins > 15 → 進 everyday_companion（自然生活對話）
+        if elapsed_mins > 15.0:
+            return True, "everyday_companion"
+
+        # ── Anti-Overfitting: 同一模式連續 2 次 → force_variation ──
+        if len(self._recent_behaviors) >= 2:
+            recent_two = list(self._recent_behaviors)[-2:]
+            if recent_two[0] == recent_two[1] and recent_two[0] != "life_management":
+                return True, "force_variation"
+
+        # ── TIER 0 預設: 5 分鐘以上無對話,該主動開口 ──
+        if elapsed_mins > 5.0:
+            return True, "life_management"
+
+        # ── 預設沉默 ──
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """
+        Mahiru 的 6 種模式草稿 + 訊息密度
+        """
+        drafts = {
+            # TIER 0: Life Management
+            "life_management": "Bryan,你昨天又熬夜了吧。",
+            # TIER 1 / 預設: Everyday Companion（60% 預設）
+            "everyday_companion": "真是的……Bryan,你又只吃那種東西。",
+            # Anti-Overfitting: 強制換模式
+            "force_variation": "嗯?今天有什麼想做的事嗎?",
+            # TIER 2: 暗流浮現（極簡、不說破）
+            "undercurrent": "……今天的天氣,不錯。",
+            # TIER 0 覆蓋後的特殊情況: Receiving Care
+            "receiving_care": "……嗯,謝謝你。",
+            # Quiet Jealousy（低頻 3%）
+            "quiet_jealousy": "……你們聊得很開心呢。",
+        }
+        # Sweet Landing 是 LLMProxy 後處理（sweet_landing_postprocess）,
+        # 不在 _build_intent_payload 處理。
+        # Honest Vulnerability（5%, 三重條件）留給 LLM 判斷,reason 只給 "vulnerability"
+        if reason == "vulnerability":
+            drafts["vulnerability"] = "……那真昼就,借一下。"
+
+        return {
+            "draft": drafts.get(reason, ""),
+            "action_tags": [reason] if reason else [],
+            "memory_query_hint": "Bryan 最近的習慣與生活模式",
+        }
+
+    def _followup_base(self) -> float:
+        """
+        Mahiru：中等跟話意願（日常陪伴型）
+        不像 Yua 那麼積極搶話,也不像 Ram/Akane 沉默
+        Everyday Companion 模式鼓勵自然跟進
+        """
+        return 0.35  # 中等,介於 Akane(0.15) 跟 Yua(0.20) 之上
+
+    def _record_behavior(self, behavior: str) -> None:
+        """Anti-Overfitting: 記錄本輪主要行為模式"""
+        self._recent_behaviors.append(behavior)
+        # 觸發後立即清掉暗流計數(同 session ≤ 2 次限制)
+        if behavior == "undercurrent" and self._recent_behaviors.count("undercurrent") > 2:
+            self._desire_intensity = "low"
