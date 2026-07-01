@@ -70,6 +70,73 @@
 
 ---
 
+## KI-005: MemoryStore 歷史 session_id 未 migration (303 rows RAG-unreachable)
+
+**狀態**: 待修  **優先級**: P1  **發現**: 2026-06-30
+**關聯**: commit `512d56b` (KI-001 Stage 3) — 跟 KI-001 同一次修復的副作用,獨立成 KI 是因為性質不同(不是 bug,是已知 data 副作用)
+
+**描述**: KI-001 把 MemoryStore.append 的 session_id 從 `f"session_{agent_id}"` 改成 `f"session_{user_id}_{agent_id}"`(commit `512d56b`)。**但沒做 migration**。SQLite `data/memory.db` 的 `messages` 表內,KI-001 commit 之前用舊 session_id 寫入的歷史 rows,**永遠不會被新 code 查到** — 因為新 query 用 `f"session_bryan_agent_yua"`,但這些 rows 在 `f"session_agent_yua"` 鍵下。
+
+**影響**:
+- **303 rows 永久 RAG-unreachable**(具體分布):
+  - `session_agent_yua`: 185 rows (2026-06-07 ~ 2026-06-30,3 週對話紀錄)
+  - `session_agent_rem`: 64 rows
+  - `session_agent_ruka`: 42 rows
+  - `session_agent_akane`: 12 rows
+  - 總計 **303 rows / 1820+ total = 17%** 訊息 RAG 失效
+- `MemoryStore.get_recent()` 查詢:LMM 注入的歷史 context 缺這些 rows
+- `MemoryStore.search()` FTS5: 仍命中這些 rows(因為 FTS5 索引的是 `rowid`,不存 session_id 副本),所以**搜尋仍能命中**,但**若 query 過濾特定 session_id**(排除當下 session)會漏
+- **新寫入完全不受影響** — KI-001 commit 後新對話全用新 session_id 正常運作
+
+**FTS5 模式確認**(`src/memory/store.py` line 47-53):
+- FTS5 用 `content='messages'` 模式(外部內容表),不是獨立儲存內容
+- FTS5 索引的是 `rowid` 對應關係,**不存 session_id 副本**
+- 改 `messages.session_id` **不會**讓 FTS5 索引失效
+- 確認方式:migration 後跑 `INSERT INTO messages_fts(messages_fts) VALUES('rebuild')` 即可(但其實不需要)
+
+**觸發條件**:
+- Bryan 觀察到 LLM 對話中**缺失 3 週前的記憶細節**(雖然 RAG 仍可能命中)
+- 任何 user 反應「為什麼 Ram/Yua 忘記 X 之前發生過的事」
+
+**修法** (推薦 A):
+1. **Migration 前**:`cp data/memory.db data/memory.db.backup-2026-06-30`(單檔 backup,~320KB)
+2. **Migration**:`UPDATE messages SET session_id = 'session_bryan_' || SUBSTR(session_id, 9) WHERE session_id LIKE 'session_%' AND session_id NOT LIKE 'session_%_%'`
+   - `LIKE 'session_%'` 排除 `session_id = 'group'`(群聊,不受 user_id 影響)
+   - `LIKE 'session_%_%'` 排除已是新格式的 rows(避免重複前綴)
+   - 預期 affected rows: **303**(完全等於待辦 1 統計)
+3. **Migration 後**:
+   - 跑 `SELECT COUNT(*) FROM messages WHERE session_id LIKE 'session_%' AND session_id NOT LIKE 'session_%_%'` 應回傳 0
+   - 跑 `SELECT COUNT(*) FROM messages WHERE session_id = 'group'` 應等於 migration 前的值(602 rows)
+4. **FTS5 索引**:`messages_fts` 不需要 rebuild(因為外部內容表)
+5. **驗證**:
+   - 加 integration test 確保 303 rows 都能被 `_handle_event_impl` 透過 `get_recent` 讀到
+   - 跑 `hermes-verify-ki001-multi-user-isolation.py` 確認無 regression
+   - 跑 `hermes-verify-ram-integration.py` 確認 5-agent 不受影響
+
+**為什麼 P1 不是 P3**:
+- 303 rows 影響 RAG 查詢準確度(估計 ~17% 訊息 RAG 失效)
+- 涉及 3 週真實對話紀錄的記憶損失
+- 但**不等於 P0**:新對話全 OK,RAG 搜尋仍能命中(只是 session 過濾漏)
+- 業務影響是「細節記憶偶爾缺失」,不是「整個系統壞掉」
+
+**為什麼不選 B(read fallback)**:
+- 修法 B 改 `MemoryStore.get_recent` 跟 `search` 查詢邏輯,加入「舊 session_id 也查」分支
+- 但**舊 session_id rows 跟新 session_id rows 在 MemoryStore 層無法區分「哪些是 user=bryan 寫的」** — 因為舊格式完全沒 user_id 概念
+- 假設: 所有 303 rows 都是 bryan 寫的(只有一個 user),fallback 邏輯可以寫成「若新 session_id 0 rows,fallback 查舊 session_id」 — 但這只是特例,未來加 Subaru 時又要重新設計
+- **比 A 複雜且語意不清**
+
+**為什麼不選 C(不處理)**:
+- 17% RAG 失效是可量化的記憶損失,不算「可忽略」
+- 「新對話會慢慢填補」需要 3 個月才稀釋到不影響(假設每天 ~10 條新訊息)
+- 期間 LLM 體驗會持續不穩定
+
+**估算**: 30 分鐘(含 backup + SQL + 驗證 test)
+**執行時機**: 等 Bryan 確認 backup DB 流程後排程,**不急著今晚跑**
+
+**關聯 commit**: KI-001 `512d56b` (Stage 3 — MemoryStore.append 改了 session_id 但沒 migration)
+
+---
+
 ## KI-002: Ram Recovery Loop 未接入 LLMProxy
 
 **狀態**: 已修  **優先級**: P2  **發現**: 2026-06-30  **修復**: 2026-06-30
@@ -226,4 +293,4 @@ windowed scoring signal extraction 機制需要另立子任務評估是否可複
 
 ---
 
-**最後更新**: 2026-06-30 (KI-001 → 已修,KI-002 → 已修,KI-004 → 部分修復) · **維護者**: Bryan + MiniMax M3
+**最後更新**: 2026-06-30 (KI-001 → 已修,KI-002 → 已修,KI-004 → 部分修復,KI-005 → 待修) · **維護者**: Bryan + MiniMax M3
