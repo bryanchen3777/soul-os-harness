@@ -773,6 +773,19 @@ class LLMProxy:
                 )
                 return
 
+            # ── KI-002: Recovery Loop (Ram Canon Lock drift) ──
+            # 嚴格限定在 try 區塊內，僅對 agent_ram 生效。
+            # 不能動 finally 區塊（token release 保證）。
+            if agent_id == "agent_ram":
+                from src.agent.consciousness import recovery_loop
+                before_text = generated_text
+                generated_text = recovery_loop(generated_text)
+                if before_text != generated_text:
+                    logger.info(
+                        f"[LLMProxy] KI-002 Recovery Loop triggered: "
+                        f"agent={agent_id} drift detected, output replaced"
+                    )
+
             if generated_text is None:
                 # 即使 LLM 失敗也要把 user 訊息寫入（避免下次再問一次同樣的）
                 if user_message:
