@@ -36,8 +36,8 @@
 
 ## KI-002: Ram Recovery Loop 未接入 LLMProxy
 
-**狀態**: 待修  **優先級**: P2  **發現**: 2026-06-30
-**關聯**: commit `8913498` (Ram 整合)
+**狀態**: 已修  **優先級**: P2  **發現**: 2026-06-30  **修復**: 2026-06-30
+**關聯**: commit `8913498` (Ram 整合) → commit `d86ce55` (修復落地)
 
 **描述**: `recovery_loop()` / `detect_canon_drift()` 函式已實作在 `src/agent/consciousness.py` 模組層(commit `8913498` 含 4 條 DRIFT_PATTERNS 規則),但 `src/llm/proxy.py` 的 LLM 回應處理路徑**還沒呼叫它**。意思是 Ram 違反 Canon Lock 核心句的漂移輸出(例如「拉姆很擔心你」「因為你說謊,所以...」)會直接發 AGENT_SPEAK,不會被攔截回退為 Priority 0。
 
@@ -54,11 +54,22 @@ reply_text = recovery_loop(reply_text)
 ```
 (約 5 行 patch,不破壞既有 token release 的 try/finally 結構)
 
-**為什麼獨立 commit 為 P2**: LLM 本身對 Ram 的 system prompt 已經有 Canon Lock 約束(透過 `SOUL.md` / `agent_ram.md` 注入),Recovery Loop 是**第二層防線**。短期內 P2 觀察即可,不阻塞 Ram 上線。
+**關聯 commit**: `8913498`
+
+**修復紀錄** (commit `d86ce55`): `recovery_loop()` 已接入 `src/llm/proxy.py` 的
+`_handle_event_impl` 內(line 776,在空 text 早 return 之後、寫入 history 之前),
+**嚴格限定**:
+- 僅在 `agent_id == "agent_ram"` 時觸發(Yua/Ruka/Akane/Rem 不受影響)
+- 完全在既有 `try` 區塊內(line 759),`finally` 區塊(line 857)未動
+- 4 個 fallback 回退語句(動作優先 + 極簡語言)從 `consciousness.py` 模組層取得
+
+**驗證**: `hermes-verify-ki002-recovery-loop-in-proxy.py` 8/8 PASS
+- 4 靜態測試(import OK / patch 存在 / try 範圍正確 / finally 未動)
+- 4 行為測試(ram+drift 替換 / ram+clean passthrough / yua+rem+drift 無影響)
 
 **估算**: 0.5 小時
 
-**關聯 commit**: `8913498`
+**為什麼獨立 commit 為 P2**: LLM 本身對 Ram 的 system prompt 已經有 Canon Lock 約束(透過 `SOUL.md` / `agent_ram.md` 注入),Recovery Loop 是**第二層防線**。短期內 P2 觀察即可,不阻塞 Ram 上線。
 
 ---
 
@@ -93,8 +104,8 @@ reply_text = recovery_loop(reply_text)
 
 ## KI-004: Ram 第二例外(對 Bryan)觸發條件被簡化
 
-**狀態**: 待修  **優先級**: P2  **發現**: 2026-06-30
-**關聯**: commit `8913498` (Ram 整合)
+**狀態**: 部分修復 / 進行中  **優先級**: P2  **發現**: 2026-06-30  **部分修復**: 2026-06-30
+**關聯**: commit `8913498` (Ram 整合) → commit `71dc11a` (部分修復)
 
 **描述**: `agent_ram.md` L3 設計 Ram 的「極窄第二例外」需三項條件**同時成立**:
 1. (a) 長期穩定 worth_it
@@ -133,7 +144,36 @@ reply_text = recovery_loop(reply_text)
 
 **估算**: 1-2 小時(含 chrono 規格定義)
 
-**關聯 commit**: `8913498`
+**部分修復紀錄** (commit `71dc11a`):
+已實作 `private_context` 判定(`mode == "private" AND target_agent == "agent_ram"`),
+**群聊防呆測試通過**: intimacy=99 + `private_context=False` 在 3 種群聊變體下
+都絕對不會觸發 `bryan_second_exception`(Task D ⭐ 群聊防呆測試)。
+
+**未完成部分**: `pause_event`(「讓她停頓很久的事」觸發訊號)目前 **hardcode 為 False**,
+尚無可靠的深層情感訊號來源可用(非簡單關鍵詞匹配可解決,類似 Akane 的
+windowed scoring signal extraction 機制需要另立子任務評估是否可複用或需
+重新設計)。
+
+**實際效果**: 因為三條件是嚴格 AND,其中 `pause_event` 恆為 False,
+`bryan_second_exception` 判定目前實質上**永遠不會被觸發**。
+此為刻意的保守設計 — 假陽性風險 > 功能缺失風險。
+
+**關閉條件**: 需設計並驗證 `pause_event` 的可靠訊號來源後,狀態才能轉為「已修」。
+- 訊號抽取需獨立子任務評估(可行性 + 既有 signal extraction 機制是否可複用)
+- 設計完成後需新增單元測試覆蓋正面/反面案例,並跑過 Ram 5-agent 整合 regression
+- 完成後 commit 時同時更新本節與狀態欄位
+
+**驗證**: `hermes-verify-ki004-second-exception-guard.py` 8/8 PASS
+- A. 三條件全滿足 → `bryan_second_exception`
+- B. 群聊 (缺 `private_context`) → `worth_it`
+- C. `pause_event=False` → `worth_it`
+- D. ⭐ 群聊防呆 intimacy=99 → 絕不觸發 (3 種群聊變體)
+- E. intimacy<70 → `not_worth_it`
+- F. Roswaal 例外 (regression)
+- G. Threat `not_acceptable` (regression)
+- H. 5-agent Ram integration (regression)
+
+**關聯 commit**: `8913498` (Ram 整合) → `71dc11a` (部分修復落地)
 
 ---
 
@@ -150,4 +190,4 @@ reply_text = recovery_loop(reply_text)
 
 ---
 
-**最後更新**: 2026-06-30 · **維護者**: Bryan + MiniMax M3
+**最後更新**: 2026-06-30 (KI-002 → 已修,KI-004 → 部分修復) · **維護者**: Bryan + MiniMax M3
