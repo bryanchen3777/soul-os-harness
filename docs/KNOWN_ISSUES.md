@@ -10,8 +10,8 @@
 
 ## KI-001: Telegram session 記憶隔離漏洞
 
-**狀態**: 待修  **優先級**: P0  **發現**: 2026-06-27
-**關聯**: 尚未修復(原始記錄在 `C:\Users\bbfcc\AppData\Local\Temp\soul-os-day6-report.md` Day 6,從未正式建檔到 repo)
+**狀態**: 已修  **優先級**: P0  **發現**: 2026-06-27  **修復**: 2026-06-30
+**關聯**: commit `9e8831b` (Stage 1) → commit `8afa120` (Stage 2) → commit `512d56b` (Stage 3)
 
 **描述**: `_group_path(agent_id)` 內 hardcode `"bryan_"` 前綴,寫入 history 檔案時**完全沒參考** `event.session_id`。所有對話紀錄都被強制歸到同一個以 `bryan_` 開頭的目錄。
 
@@ -30,7 +30,43 @@
 
 **估算**: 2-3 小時(含測試)
 
-**關聯 commit**: 無(尚未修復)
+**修復紀錄** (3-stage commit, 2026-06-30):
+
+**Stage 1 (`9e8831b`)** — `src/llm/proxy.py` 檔案路徑 + cache 範圍:
+- `_group_path(agent_id)` → `_group_path(agent_id, user_id)` 簽名
+- `_load_private / _save_private / _append_private_history` 全加 `user_id` 參數
+- `_session_key(agent_id)` → `_session_key(agent_id, user_id)`: `session_{user_id}_{agent_id}`
+- `_load_private` 向後相容:若新格式檔案不存在,fallback 讀 `bryan_<agent>_private.json`
+- `_handle_event_impl` 開頭抽 `user_id = event.payload.get("target_user_id", "bryan")`
+- AGENT_SPEAK `session_id` 改 per (user, agent) — 跟 `self._history` cache 一致
+
+**Stage 2 (`8afa120`)** — `src/agent/consciousness.py` AGENT_INTENT 發布:
+- `_fire_intent(reason, elapsed_mins, chrono_payload, mode, user_id='bryan')` 加 user_id 參數
+- AGENT_INTENT `session_id`: `session_{agent_id}` → `session_{user_id}_{agent_id}`
+- `intent_payload.target_user_id` 從 `_fire_intent` 參數 fallback（defense in depth）
+
+**Stage 3 (`512d56b`)** — `src/llm/proxy.py` 漏網 `get_recent`:
+- `_build_messages_private(agent_id, soul, current_input, memory_context, memory, mood, user_id='bryan')` 加 user_id
+- `memory.get_recent(f"session_{user_id}_{agent_id}", limit=MAX_PRIVATE)` 改 per-(user, agent)
+
+**為什麼分 3 stage 獨立 commit**: 中間任一 commit 失敗,可獨立 revert 定位問題,不會拖累其他 commit。**每個 commit 都跑了 5-agent Ram + KI-002 + KI-004 完整 regression,無破壞**。
+
+**2 分鐘掃描確認** `event.session_id` 在所有 13 個檔案中**0 處** `==` / `in` / `split` 語意比較(僅 2 處 f-string log),確認語意改為 per-(user, agent) **零跟話邏輯風險**。
+
+**驗證** (`hermes-verify-ki001-multi-user-isolation.py`):
+- 兩個 user_id 對同一 agent 產生獨立檔案,內容互不污染
+- Bryan 既有 legacy 檔案向後相容可讀
+- 新格式寫入不覆蓋舊 bryan 檔案
+- `_session_key` 對 (user, agent) 組合唯一
+- 5-agent Ram + KI-002 + KI-004 regression 全綠
+- AD-HOC PASS 5/5
+
+**防呆備註**:
+- `_user_id_legacy_default = "bryan"` 在 LLMProxy `__init__` 中,所有 fallback 預設 = "bryan",確保既有對話全部走向後相容路徑
+- 若未來 router 改變 `target_user_id` 注入邏輯(例如改用 `user_id` key 名),只需在 `_handle_event_impl` 開頭那 1 行 `.get("target_user_id", "bryan")` 修改
+- 若新增 owner,只需在 `__init__` 的 `_load_private` 雙層迴圈中加新 user_id tuple 值(`(self._user_id_legacy_default, "subaru", ...)`)
+
+**關聯 commit**: `9e8831b` (Stage 1) / `8afa120` (Stage 2) / `512d56b` (Stage 3)
 
 ---
 
@@ -190,4 +226,4 @@ windowed scoring signal extraction 機制需要另立子任務評估是否可複
 
 ---
 
-**最後更新**: 2026-06-30 (KI-002 → 已修,KI-004 → 部分修復) · **維護者**: Bryan + MiniMax M3
+**最後更新**: 2026-06-30 (KI-001 → 已修,KI-002 → 已修,KI-004 → 部分修復) · **維護者**: Bryan + MiniMax M3
