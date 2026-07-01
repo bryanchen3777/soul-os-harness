@@ -200,6 +200,7 @@ def _build_messages_private(
     memory_context: str,
     memory,
     mood: float = 0.0,
+    user_id: str = "bryan",  # KI-001: per-user history scope
 ) -> List[Dict[str, str]]:
     """
     私聊模式的 messages 組裝：
@@ -227,8 +228,8 @@ def _build_messages_private(
     # 私人聊天只應該看到私聊歷史，不應該看到其他 Agent 的訊息
     # 這確保每個 Agent 的靈魂不會被其他 Agent 影響
 
-    # 私聊歷史
-    private = memory.get_recent(f"session_{agent_id}", limit=MAX_PRIVATE)
+    # 私聊歷史 — KI-001: per (user, agent) 隔離
+    private = memory.get_recent(f"session_{user_id}_{agent_id}", limit=MAX_PRIVATE)
     for m in private:
         messages.append({"role": m["role"], "content": m["content"]})
 
@@ -777,7 +778,7 @@ class LLMProxy:
         if mode == "group":
             messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood)
         else:
-            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood)
+            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id)
 
         # Phase 5c：DEBUG log 改 logger.debug，避免 user 訊息 / system prompt
         # 全文被印到 log 檔（leak 隱私）
