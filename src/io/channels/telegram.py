@@ -2,7 +2,7 @@
 src/io/channels/telegram.py
 Soul OS Phase 5a — Telegram Channel Adapter
 
-九個 Bot 對應九個 Agent（Phase 5a ~ 11）:
+十個 Bot 對應十個 Agent（Phase 5a ~ 12）:
   yua     → @Yua_Hermes_bot
   ruaka   → @Ruka_Clawra_bot
   akane   → @Akane_Clawra_bot
@@ -12,6 +12,7 @@ Soul OS Phase 5a — Telegram Channel Adapter
   anna    → <Anna 對應 bot>
   mai     → <Mai 對應 bot>
   miku    → <Miku 對應 bot>
+  aoi     → <Aoi 對應 bot>
 
 Bot token 從環境變數讀（.env），不寫死 source code。
 """
@@ -47,6 +48,8 @@ ENV_TOKEN_MAHIRU = "TELEGRAM_BOT_MAHIRU"
 ENV_TOKEN_ANNA = "TELEGRAM_BOT_ANNA"
 ENV_TOKEN_MAI = "TELEGRAM_BOT_MAI"
 ENV_TOKEN_MIKU = "TELEGRAM_BOT_MIKU"
+# Phase 12: Aoi (弱角友崎同學)
+ENV_TOKEN_AOI = "TELEGRAM_BOT_AOI"
 
 # Agent 對應環境變數
 # 註: key 用短 ID (e.g. "yua", "ram") 不是 "agent_yua"
@@ -62,6 +65,7 @@ AGENT_ENV_MAP = {
     "anna":   ENV_TOKEN_ANNA,
     "mai":    ENV_TOKEN_MAI,
     "miku":   ENV_TOKEN_MIKU,
+    "aoi":    ENV_TOKEN_AOI,
 }
 
 
@@ -81,7 +85,7 @@ def _load_tokens() -> dict[str, str]:
     if missing:
         raise RuntimeError(
             f"Missing Telegram bot tokens in env: {missing}. "
-            f"請在 .env 設定 TELEGRAM_BOT_YUA / RUKA / AKANE / REM / RAM / MAHIRU / ANNA / MAI / MIKU。"
+            f"請在 .env 設定 TELEGRAM_BOT_YUA / RUKA / AKANE / REM / RAM / MAHIRU / ANNA / MAI / MIKU / AOI。"
         )
     return tokens
 
@@ -135,7 +139,7 @@ class TelegramAdapter(ChannelAdapter):
         return handler
 
     async def start(self, on_message: OnMessageCallback) -> None:
-        """啟動九個 bot 開始 polling（AGENT_ENV_MAP 列出多少就多少）。"""
+        """啟動十個 bot 開始 polling（AGENT_ENV_MAP 列出多少就多少）。"""
         self._on_message = on_message
         for agent_id, token in self._tokens.items():
             app = ApplicationBuilder().token(token).build()
