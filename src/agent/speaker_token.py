@@ -26,6 +26,11 @@ BASE_SCORES = {
     # 親密確認型 vs Mahiru 的 Everyday Companion,但否認 = 靠近的機制使競標不會太積極
     # intimacy=55 階段(建立期 → 中期過渡):會靠近但會用否認 + 食物當媒體
     "agent_anna": (0.55, 0.30),
+    # Mai (Bunny Girl Senpai · Soul OS v1) — 國民級女演員,會說但不洗版
+    # 親密確認型 vs Mahiru 互索甜度,但 Mai 用 dry banter + 直球而非甜句著陸
+    # intimacy=60 階段(等級 3 接受期):直接講「消失」「症候」過去,接受脆弱
+    # 0.58 = 高於 Anna(0.55)但低於 Mahiru(0.65),反應快但不刷句
+    "agent_mai":  (0.58, 0.35),
 }
 
 # 搶答視窗：收到 USER_MESSAGE 後，Agent 有這麼多 ms 提交 bid

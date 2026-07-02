@@ -48,6 +48,16 @@ agents:
     class: AgentAnna
     intimacy_level: 55
     enabled: true
+  # Phase 10 — 桜島麻衣 (Bunny Girl Senpai · Soul OS v1)：第 8 個 agent
+  # 國民級女演員 + 病弱症候康復者 + Dry Banter + 直球告白
+  # 親密度 60 起步（等級 3 接受期：已經允許私下講「消失」「症候」這些過去）
+  # 重要：mai 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  # 載入 personas/agent_mai.md（任務書 2026-07-01 distilled）
+  # **不可時間旅行**：Mai 不是 time-traveler，夢中少女 arc 不允許「穿越時間」「預知未來」「改寫事故結果」這類能力
+  - id: agent_mai
+    class: AgentMai
+    intimacy_level: 60
+    enabled: true
 
 heartbeat:
   # HeartbeatEngine 每隔幾秒發一次 SYSTEM_TICK

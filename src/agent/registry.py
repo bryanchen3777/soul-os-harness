@@ -3,7 +3,10 @@ src/agent/registry.py
 Agent 類別註冊表。
 新增角色時在這裡加一行，不用改 run_server.py。
 """
-from src.agent.consciousness import AgentYua, AgentRuka, AgentAkane, AgentRem, AgentRam, AgentMahiru, AgentAnna
+from src.agent.consciousness import (
+    AgentYua, AgentRuka, AgentAkane, AgentRem,
+    AgentRam, AgentMahiru, AgentAnna, AgentMai,
+)
 
 AGENT_CLASS_MAP: dict[str, type] = {
     "AgentYua":   AgentYua,
@@ -23,6 +26,12 @@ AGENT_CLASS_MAP: dict[str, type] = {
     # 重要：anna 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
     # 載入 personas/agent_anna.md（任務書 2026-07-01 distilled）
     "AgentAnna": AgentAnna,
+    # Phase 10 — 桜島麻衣 (Bunny Girl Senpai · Soul OS v1)：第 8 個 agent
+    # 國民演員 + Dry Banter + 直球告白 + 病弱症候康復者
+    # 重要：mai 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+    # **不可時間旅行**：夢中少女 arc 不允許穿越 / 預知 / 改寫事故
+    # 載入 personas/agent_mai.md（任務書 2026-07-01 distilled）
+    "AgentMai":  AgentMai,
     # "AgentAoi":   AgentAoi,  ← 之後加角色只要在這裡新增
 }
 
