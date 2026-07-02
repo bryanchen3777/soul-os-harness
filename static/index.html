@@ -342,18 +342,35 @@
     var ws = null;
 
     // ===== Phase 2 Dynamic UI: 從後端拉 agents 清單 =====
+    // Cache-bust: ?_=Date.now() 防止瀏覽器用 304 + 舊 HTML
+    // cache: 'no-store' 告訴 fetch 不要用 cache
     async function initAgents() {
       try {
-        const res = await fetch('/agents');
-        const json = await res.json();
-        agents = (json.agents || []);
+        const url = '/agents?_=' + Date.now();
+        console.log('[Soul OS] fetching agents from', url);
+        const res = await fetch(url, { cache: 'no-store' });
+        console.log('[Soul OS] /agents status =', res.status);
+
+        const data = await res.json();
+        console.log('[Soul OS] /agents body =', data);
+
+        // 防呆：data.agents 不存在或不是 array 時，回空陣列（不要讓 agents = data 變 object）
+        agents = Array.isArray(data && data.agents) ? data.agents : [];
+        console.log('[Soul OS] agents parsed =', agents.map(a => a.id));
+
         renderAgentConvList();
         renderAgentMemberList();
         updateGroupMembersSet();
-        console.log(`[Soul OS] 動態載入 ${agents.length} 個 agent:`, agents.map(a => a.id).join(', '));
       } catch (e) {
         console.warn('[Soul OS] initAgents 失敗,使用 fallback(空清單):', e);
       }
+    }
+
+    // 載入完成後啟動
+    if (document.readyState === 'loading') {
+      window.addEventListener('DOMContentLoaded', initAgents);
+    } else {
+      initAgents();
     }
 
     function renderAgentConvList() {
