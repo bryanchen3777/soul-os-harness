@@ -108,7 +108,14 @@ class MemoryMiddleware:
         （若 LLMProxy 跟 MemoryMiddleware 都訂閱 AGENT_INTENT，
          MemoryMiddleware 處理完 re-publish，自己又會收到）。
         """
-        agent_id = event.payload.get("agent_id", event.source)
+        agent_id = event.payload.get("agent_id")
+        if not agent_id:
+            # 修 KI-006 前置:不再靜默吞掉,留可追蹤異常
+            logger.warning(
+                f"[MemoryMiddleware] _on_agent_intent event missing agent_id, "
+                f"source={event.source!r}, session={event.session_id!r}"
+            )
+            agent_id = f"unknown:{event.source}"
         # query 優先順序：memory_query_hint > draft > 整個 payload 文字
         query = (
             event.payload.get("memory_query_hint")
@@ -151,7 +158,14 @@ class MemoryMiddleware:
 
         Phase 4 加節流：同 agent 5s 內只寫一次，防 N² 寫入爆炸。
         """
-        agent_id = event.payload.get("agent_id", event.source)
+        agent_id = event.payload.get("agent_id")
+        if not agent_id:
+            # 修 KI-006 前置:不再靜默吞掉,留可追蹤異常
+            logger.warning(
+                f"[MemoryMiddleware] _on_agent_speak event missing agent_id, "
+                f"source={event.source!r}, session={event.session_id!r}"
+            )
+            agent_id = f"unknown:{event.source}"
         session_id = event.session_id or "_no_session"
 
         # Phase 4 節流：同 agent 在 COMMIT_COOLDOWN_SECS 內的 AGENT_SPEAK 跳過寫入
