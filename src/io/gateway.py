@@ -116,6 +116,52 @@ def _default_group_members() -> list[str]:
         return ["agent_yua", "agent_ruka", "agent_akane", "agent_rem"]
 
 
+# Display name 映射（Phase 2 動態 UI）
+# Source: 第一優先是這個 dict;fallback 是從 agent_id 去掉 "agent_" 前綴並 title-case
+# 新增 agent 時在此加一行（最低成本維護路徑）
+AGENT_DISPLAY_NAMES: dict[str, str] = {
+    "agent_yua":    "Yua",
+    "agent_ruka":   "更科瑠夏",   # Sarashina Ruka
+    "agent_akane":  "黒川あかね",  # Kurokawa Akane
+    "agent_rem":    "雷姆",        # Rem（顯示用繁中）
+    "agent_ram":    "Ram",         # 拉姆
+    "agent_mahiru": "真昼",        # 椎名真昼
+    "agent_anna":   "杏奈",        # 山田杏奈
+    "agent_mai":    "麻衣",        # 桜島麻衣
+}
+
+
+def _list_agents() -> list[dict]:
+    """
+    Phase 2: 回傳所有 enabled agent 的 metadata 給 UI。
+    與 _default_group_members 同源（都從 configs/default.yaml 的 agents 清單讀）,
+    確保 UI 顯示的 agent 數 == fallback group_members 數。
+    """
+    try:
+        from configs.loader import load_config
+        cfg = load_config()
+        agents_cfg = cfg.get("agents", [])
+        result = []
+        for a in agents_cfg:
+            if not a.get("enabled", True):
+                continue
+            if "id" not in a:
+                continue
+            aid = a["id"]
+            result.append({
+                "id": aid,
+                "name": AGENT_DISPLAY_NAMES.get(aid, aid.replace("agent_", "").title()),
+                "class": a.get("class", ""),
+                "intimacy_level": a.get("intimacy_level", 0),
+                "enabled": True,
+                "persona_path": f"personas/{aid}.md",  # 假設 runtime 都讀 personas/（legacy docs/ 例外）
+            })
+        return result
+    except Exception as e:
+        logger.warning(f"[Gateway] _list_agents failed: {e}")
+        return []
+
+
 class ConnectionManager:
     """管理所有 WebSocket 連線"""
 
@@ -245,6 +291,18 @@ class IOGateway:
                 "connections": self.manager.count,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
+
+        @self.app.get("/agents")
+        async def list_agents():
+            """
+            Phase 2 動態 UI:回傳所有 enabled agent 的 metadata。
+
+            同源:跟 _default_group_members 一樣讀 configs/default.yaml,
+            確保 UI 顯示的數量 == fallback group_members 數量。
+
+            Response: JSON array of {id, name, class, intimacy_level, enabled, persona_path}
+            """
+            return {"agents": _list_agents()}
 
         @self.app.post("/inject/tick")
         async def inject_tick(elapsed_mins: float = 35.0, time_period: str = "morning"):
