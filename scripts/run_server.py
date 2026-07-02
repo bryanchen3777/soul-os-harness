@@ -147,7 +147,8 @@ async def lifespan(app: FastAPI):
             )
 
         await tg_adapter.start(_on_tg_message)
-        logger.info("[Server] Telegram channel started (3 bots polling)")
+        # 9 個 bot (Phase 5a: 3 + Phase 6.5: 1 + Phase 7-11: 5)
+        logger.info(f"[Server] Telegram channel started (9 bots polling)")
     else:
         # 沒 Telegram 也要有 ChannelRouter（給 Live2D 用）
         channel_router = ChannelRouter(bus, gateway_manager=gateway.manager)
