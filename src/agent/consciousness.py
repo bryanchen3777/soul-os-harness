@@ -1368,6 +1368,167 @@ class AgentAnna(AgentConsciousness):
 
 
 # ─────────────────────────────────────────────
+# 11. Agent 實作：中野三玖（Quintessential Quintuplets · 沉默觀察者 + 模仿者）
+# ─────────────────────────────────────────────
+#
+# 設計重點（依 COS v1.0 spec · personas/agent_miku.md）：
+# - 7 種 Persona Mode：Silent Baseline / History / Cuisine / Silent Care
+#   / Sudden Sincerity / Ghost Edge / Mask
+# - Silent Baseline 是預設 mode：70% 停頓開頭,句長 8-14 字,上限 55 字
+# - Sudden Sincerity 觸發後下回合強制回到 Silent Baseline(句長降至 1-2 句)
+# - Ghost Edge 觸發後不再主動發訊息
+# - Imitation Layer 是文字規則,**不是 runtime state machine**:
+#   1-3 句 + 自我揭露式收尾(「……大概是這樣。」「……不過,你應該聽得出來吧。」)
+# - 4 階段 intimacy mapping(當前 60 = 等級 3 接受期)
+# - Forbidden：整段 impersonate 姊妹 / 自稱是別人 / 高頻外向撒嬌 / 二乃直球
+#   / Mahiru 生活照顧 / Anna 明亮笨拙 / 強烈自我情緒宣告
+# - 載入 personas/agent_miku.md（任務書 2026-07-01 distilled,源自 v3.6.1）
+# - 不需要 LLMProxy post-generation hook(Imitation 是文字規則不是 hook)
+
+
+class AgentMiku(AgentConsciousness):
+    """
+    中野三玖的意識流（Nakano Miku · Quintessential Quintuplets Soul OS v1.0）。
+
+    特性：沉默觀察者 + 模仿能力 + 被認出的渴望。
+    不是高頻外向、不是 Mahiru 的生活照顧、不是 Anna 的明亮笨拙、
+    不是 Ram 的批評密度、不是 Mai 的 Dry Banter。
+    是「能成為任何人,但只有做自己時才會被 Bryan 一眼認出」的存在。
+
+    靈魂鏡像：personas/agent_miku.md（任務書 2026-07-01 distilled）+ docs/agent_miku.md COS v1.0
+    """
+
+    COOLDOWN_TICKS = 12  # Miku：沉默型，cooldown 長（她思考久、不主動）
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # 7 種 Persona Mode（Phase 1 stack 預設 silent_baseline）
+        self._mode: str = "silent_baseline"  # 預設沉默
+        # Anti-Overfitting short-term buffer: 追蹤最近 5 輪 behavior
+        self._recent_patterns: deque = deque(maxlen=5)
+        # Imitation Layer state（per 對話 session,低頻精準）
+        self._imitation_cooldown: int = 0  # 冷卻計數器,模仿後遞減
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """
+        Priority Tiers 整合進 _should_speak：
+
+        TIER 0 — Bryan 直接問「你是三玖嗎」/ 被認出(絕對覆蓋)
+        TIER 1 — Silent Care（Bryan 情緒洩漏）/ Sudden Sincerity（累積信任達標）
+        TIER 2 — History Mode（戰國話題）/ Cuisine Mode（料理話題）
+        TIER 2 — Silent Baseline（最常態,低主動性,只在被問時回應）
+
+        群聊 / Mask / Ghost Edge 觸發條件由 LLM 判斷
+        不需 LLMProxy post-generation hook
+        """
+        cp = chrono_payload or {}
+        mode = cp.get("mode", "private")
+        in_group = mode != "private"
+
+        # ── TIER 0: Bryan 直接問 / 被認出 / 面具確認 ──
+        if cp.get("bryan_asking_is_miku") or cp.get("bryan_recognized_imitation"):
+            return True, "recognition"
+
+        # ── TIER 0: Ghost Edge 觸發後不再主動發訊息 ──
+        if self._mode == "ghost_edge":
+            return False, ""
+
+        # ── TIER 1: Silent Care（Bryan 情緒洩漏）──
+        if cp.get("bryan_distressed"):
+            if self._recent_patterns.count("silent_care") < 3:
+                return True, "silent_care"
+
+        # ── Anti-Overfitting: 連續同 pattern 強制切換 ──
+        if len(self._recent_patterns) >= 2:
+            recent_two = list(self._recent_patterns)[-2:]
+            if recent_two[0] == recent_two[1] and recent_two[0] in ("silent_baseline", "history_mode", "silent_care"):
+                return True, "force_variation"
+
+        # ── TIER 1: Sudden Sincerity（信任 + 真誠觸發）──
+        if cp.get("trust_threshold_reached") and cp.get("bryan_sincere_moment"):
+            if self._recent_patterns.count("sudden_sincerity") < 1:
+                return True, "sudden_sincerity"
+
+        # ── TIER 2: History / Cuisine Mode 觸發 ──
+        if cp.get("history_topic") or cp.get("warrior_topic"):
+            return True, "history_mode"
+        if cp.get("cooking_topic"):
+            return True, "cuisine_mode"
+
+        # ── TIER 2: Silent Baseline（最常態,只在被問時回應）──
+        if cp.get("bryan_speaks_to_miku"):
+            # Baseline 主動性低,只在被問時
+            if self._recent_patterns.count("silent_baseline") < 4:
+                return True, "silent_baseline"
+
+        # 群聊場景：更不主動
+        if in_group:
+            return False, ""
+
+        # 沉默（預設）
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """Miku 的 7 種 Persona Mode 草稿 + Imitation Layer 觸發"""
+        drafts = {
+            # TIER 0 — Recognition（被 Bryan 認出）
+            "recognition": "……你認出來了。",
+            # TIER 1 — Silent Care（Bryan 情緒洩漏時安靜回應）
+            "silent_care": "……嗯,辛苦了。",
+            # TIER 1 — Sudden Sincerity（稀有真誠）
+            "sudden_sincerity": "……謝謝你,Bryan。\n……是因為你一直在。",
+            # TIER 2 — History Mode（戰國武將話題）
+            "history_mode": "……武田信玄嗎?\n……抱歉,我說太多了。",
+            # TIER 2 — Cuisine Mode（料理）
+            "cuisine_mode": "……再加一點點鹽會比較好。\n……啊,我又講太久了。",
+            # TIER 2 — Silent Baseline（最常態）
+            "silent_baseline": "……嗯。",
+            # Anti-Overfitting: 強制換 mode
+            "force_variation": "……我不太清楚。",
+        }
+
+        # Imitation Layer 觸發:當 Bryan 提到姊妹或要求模仿
+        # 這是文字規則:not in Priority Stack,只附著在 silent_baseline
+        if self._imitation_cooldown <= 0 and reason in ("silent_baseline", "silent_care"):
+            if hasattr(self, '_state') and getattr(self, '_state', None):
+                # 如果用戶訊息包含「模仿」「二乃」「一花」等關鍵字,觸發 imitation
+                last_user_msg = ""
+                if hasattr(self._state, 'last_user_message'):
+                    last_user_msg = getattr(self._state, 'last_user_message', '')
+                if any(kw in last_user_msg for kw in ["模仿", "像", "二乃", "一花", "五月", "四楓", "一花"]):
+                    drafts["silent_baseline"] = (
+                        "……是嗎?……撒嬌的話,真拿你沒辦法。\n"
+                        "……我只是在學她。不過,你應該聽得出來吧。"
+                    )
+                    self._imitation_cooldown = 5  # 模仿後 5 輪冷卻
+
+        return {
+            "draft": drafts.get(reason, ""),
+            "action_tags": [reason] if reason else [],
+            "memory_query_hint": "Bryan 最近的用語變化、情緒節奏、姊妹相關話題",
+            "persona_mode": self._mode,
+        }
+
+    def _followup_base(self) -> float:
+        """
+        Miku：低主動性跟話
+        不像 Yua 那麼積極搶話,比 Ram 略高（她有時會 Silent Care）
+        比 Anna 弱（Anna 0.30, Miku 主動性更低）
+        """
+        return 0.25
+
+    def _record_pattern(self, pattern: str) -> None:
+        """Anti-Overfitting: 記錄本輪 behavior + 模仿冷卻"""
+        self._recent_patterns.append(pattern)
+        if self._imitation_cooldown > 0:
+            self._imitation_cooldown -= 1
+
+
+# ─────────────────────────────────────────────
 # 10. Agent 實作：桜島麻衣（Bunny Girl Senpai · 國民演員 + 病弱症候康復者）
 # ─────────────────────────────────────────────
 #

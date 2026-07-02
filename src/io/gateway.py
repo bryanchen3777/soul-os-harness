@@ -128,6 +128,7 @@ AGENT_DISPLAY_NAMES: dict[str, str] = {
     "agent_mahiru": "真昼",        # 椎名真昼
     "agent_anna":   "杏奈",        # 山田杏奈
     "agent_mai":    "麻衣",        # 桜島麻衣
+    "agent_miku":   "三玖",        # 中野三玖
 }
 
 

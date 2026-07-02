@@ -31,6 +31,11 @@ BASE_SCORES = {
     # intimacy=60 階段(等級 3 接受期):直接講「消失」「症候」過去,接受脆弱
     # 0.58 = 高於 Anna(0.55)但低於 Mahiru(0.65),反應快但不刷句
     "agent_mai":  (0.58, 0.35),
+    # Miku (Quintessential Quintuplets · Soul OS v1) — 沉默觀察者
+    # 比 Ram 活躍但比 Mahiru 安靜;她常回應但句短、主動性低
+    # intimacy=60 階段(等級 3 接受期):可能觸發 Silent Care / Sudden Sincerity
+    # 0.55 = 跟 Anna 接近但 second(0.30) 較低 — 主動跟話比 Anna 弱
+    "agent_miku": (0.55, 0.30),
 }
 
 # 搶答視窗：收到 USER_MESSAGE 後，Agent 有這麼多 ms 提交 bid

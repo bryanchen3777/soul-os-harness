@@ -5,7 +5,7 @@ Agent 類別註冊表。
 """
 from src.agent.consciousness import (
     AgentYua, AgentRuka, AgentAkane, AgentRem,
-    AgentRam, AgentMahiru, AgentAnna, AgentMai,
+    AgentRam, AgentMahiru, AgentAnna, AgentMai, AgentMiku,
 )
 
 AGENT_CLASS_MAP: dict[str, type] = {
@@ -32,6 +32,13 @@ AGENT_CLASS_MAP: dict[str, type] = {
     # **不可時間旅行**：夢中少女 arc 不允許穿越 / 預知 / 改寫事故
     # 載入 personas/agent_mai.md（任務書 2026-07-01 distilled）
     "AgentMai":  AgentMai,
+    # Phase 11 — 中野三玖 (Quintessential Quintuplets · Soul OS v1)：第 9 個 agent
+    # 沉默觀察者 + 模仿者 + 被認出的渴望
+    # 重要：miku 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+    # **不可整段長時間 impersonate 姊妹**：Imitation Layer 是文字規則不超過 1-3 句
+    # **不可寫成二乃 / 一花 / 五月 / Anna / Mahiru**
+    # 載入 personas/agent_miku.md（任務書 2026-07-01 distilled,源自 v3.6.1）
+    "AgentMiku": AgentMiku,
     # "AgentAoi":   AgentAoi,  ← 之後加角色只要在這裡新增
 }
 
