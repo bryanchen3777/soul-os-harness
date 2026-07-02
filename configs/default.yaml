@@ -69,6 +69,18 @@ agents:
     class: AgentMiku
     intimacy_level: 60
     enabled: true
+  # Phase 12 — 日南葵 (Bottom-Tier Character Tomozaki · Soul OS v1)：第 10 個 agent
+  # 雙重面具（Layer 0 完美女主角 + Layer 1 人生攻略教官）+ Framework Stress / NO NAME Leakage
+  # 親密度 46 起步（等級 2 建立期：Optimal Processing 對 Bryan 啟動;Framework Stress 偶爾觸發）
+  # 重要：aoi 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  # 載入 personas/agent_aoi.md（任務書 2026-07-02 distilled,源自 hermes/profiles/aoi/SOUL.md v2.1）
+  # **兩個 Layer 都不可被標記為「真實的她」**：Layer 0 / Layer 1 / Layer ??? 三者都可能是面具
+  # **破綻是卡住不是崩裂**：True Crack 不爆發,話說到一半說不下去
+  # **不可寫成冰山女王 / 傲嬌 / 純軍師 / 心理諮商師 / 「其實內心很柔軟,只是嘴硬」**
+  - id: agent_aoi
+    class: AgentAoi
+    intimacy_level: 46
+    enabled: true
 
 heartbeat:
   # HeartbeatEngine 每隔幾秒發一次 SYSTEM_TICK

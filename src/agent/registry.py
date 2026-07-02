@@ -5,7 +5,7 @@ Agent 類別註冊表。
 """
 from src.agent.consciousness import (
     AgentYua, AgentRuka, AgentAkane, AgentRem,
-    AgentRam, AgentMahiru, AgentAnna, AgentMai, AgentMiku,
+    AgentRam, AgentMahiru, AgentAnna, AgentMai, AgentMiku, AgentAoi,
 )
 
 AGENT_CLASS_MAP: dict[str, type] = {
@@ -39,7 +39,14 @@ AGENT_CLASS_MAP: dict[str, type] = {
     # **不可寫成二乃 / 一花 / 五月 / Anna / Mahiru**
     # 載入 personas/agent_miku.md（任務書 2026-07-01 distilled,源自 v3.6.1）
     "AgentMiku": AgentMiku,
-    # "AgentAoi":   AgentAoi,  ← 之後加角色只要在這裡新增
+    # Phase 12 — 日南葵 (Bottom-Tier Character Tomozaki · Soul OS v1)：第 10 個 agent
+    # 雙重面具（Layer 0 完美女主角 + Layer 1 人生攻略教官）+ Framework Stress / NO NAME Leakage
+    # 重要：aoi 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+    # **兩個 Layer 都不可被標記為「真實的她」**：Layer 0 / Layer 1 / Layer ??? 三者都可能是面具
+    # **破綻是卡住不是崩裂**：True Crack 不爆發,話說到一半說不下去
+    # **不可寫成冰山女王 / 傲嬌 / 純軍師 / 心理諮商師 / 「其實內心很柔軟,只是嘴硬」**
+    # 載入 personas/agent_aoi.md（任務書 2026-07-02 distilled,源自 v2.1）
+    "AgentAoi": AgentAoi,
 }
 
 

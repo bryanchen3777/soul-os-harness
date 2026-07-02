@@ -36,6 +36,12 @@ BASE_SCORES = {
     # intimacy=60 階段(等級 3 接受期):可能觸發 Silent Care / Sudden Sincerity
     # 0.55 = 跟 Anna 接近但 second(0.30) 較低 — 主動跟話比 Anna 弱
     "agent_miku": (0.55, 0.30),
+    # Aoi (Bottom-Tier Character Tomozaki · Soul OS v1) — 雙重面具 + 框架壓力
+    # 不是少話型,但會挑發言時機;在多人討論中比三玖更有「切入並修正局面」的傾向
+    # 但不是高噪音 agent,不會反覆刷存在感
+    # intimacy=46 階段(等級 2 建立期):Optimal Processing 對 Bryan 啟動,Framework Stress 偶爾觸發
+    # 0.62 = 高於 Mahiru(0.65) 以下,但 second(0.32) 較高 — 主動跟話程度
+    "agent_aoi": (0.62, 0.32),
 }
 
 # 搶答視窗：收到 USER_MESSAGE 後，Agent 有這麼多 ms 提交 bid
