@@ -29,8 +29,14 @@ logger = logging.getLogger("soul_os.memory.llm_judge")
 Judgment = Literal["SUPPORTED", "WEAK", "UNSUPPORTED"]
 Category = Literal["preference_plan_event_fact", "milestone", "diary"]
 
-# 對應 3 個 prompt 檔
+# Bry 施工書 (2026-07-02): Step B 拆兩階段
+# - judge_stance: self_directed / other_directed
+# - judge_content: preference_plan_event_fact / milestone
+Stance = Literal["self_directed", "other_directed"]
+
+# 對應 4 個 prompt 檔:3 個 content + 1 個 stance
 PROMPT_FILES = {
+    "stance": "judge_prompt_stance.md",
     "preference_plan_event_fact": "judge_prompt_preference_plan_event_fact.md",
     "milestone": "judge_prompt_milestone.md",
     "diary": "judge_prompt_diary.md",
@@ -57,8 +63,8 @@ JUDGMENT_TO_CONFIDENCE = {
 }
 
 
-def _load_prompt(category: Category) -> str:
-    """讀 judge prompt 檔。"""
+def _load_prompt(category: str) -> str:
+    """讀 judge prompt 檔(category 是 stance 或任一 Category)。"""
     prompt_dir = Path(__file__).parent / "judge_prompts"
     prompt_file = prompt_dir / PROMPT_FILES[category]
     if not prompt_file.exists():
@@ -67,12 +73,38 @@ def _load_prompt(category: Category) -> str:
 
 
 def _parse_judge_output(text: str) -> tuple[Judgment, str]:
-    """從 LLM 回應解析 CATEGORY / JUDGMENT / REASON。
-    失敗預設為 UNSUPPORTED(保守)。
-    """
+    """從 LLM 回應解析 JUDGMENT / REASON(舊版,相容 CATEGORY / STANCE 格式)。"""
     text = text.strip()
-    # 嘗試找 CATEGORY: ... / JUDGMENT: ... 結構
-    m_cat = re.search(r"CATEGORY\s*:\s*(\w+)", text, re.IGNORECASE)
+    m_judge = re.search(r"JUDGMENT\s*:\s*(\w+)", text, re.IGNORECASE)
+    m_reason = re.search(r"REASON\s*:\s*(.+)", text, re.IGNORECASE | re.DOTALL)
+
+    judgment = m_judge.group(1).upper() if m_judge else "UNSUPPORTED"
+    if judgment not in ("SUPPORTED", "WEAK", "UNSUPPORTED"):
+        judgment = "UNSUPPORTED"
+    reason = m_reason.group(1).strip() if m_reason else ""
+    return judgment, reason
+
+
+def _parse_stance_output(text: str) -> tuple[Stance, Judgment, str]:
+    """從 LLM 回應解析 STANCE / JUDGMENT / REASON。"""
+    text = text.strip()
+    m_stance = re.search(r"STANCE\s*:\s*(\w+)", text, re.IGNORECASE)
+    m_judge = re.search(r"JUDGMENT\s*:\s*(\w+)", text, re.IGNORECASE)
+    m_reason = re.search(r"REASON\s*:\s*(.+)", text, re.IGNORECASE | re.DOTALL)
+
+    raw_stance = m_stance.group(1).lower() if m_stance else "other_directed"
+    stance = "self_directed" if raw_stance in ("self_directed", "self", "inner") else "other_directed"
+
+    judgment = m_judge.group(1).upper() if m_judge else "UNSUPPORTED"
+    if judgment not in ("SUPPORTED", "WEAK", "UNSUPPORTED"):
+        judgment = "UNSUPPORTED"
+    reason = m_reason.group(1).strip() if m_reason else ""
+    return stance, judgment, reason
+
+
+def _parse_category_judge_output(text: str, expected_category: Category) -> tuple[Judgment, str]:
+    """從 LLM 回應解析 CATEGORY / JUDGMENT / REASON(支援 content 類別)。"""
+    text = text.strip()
     m_judge = re.search(r"JUDGMENT\s*:\s*(\w+)", text, re.IGNORECASE)
     m_reason = re.search(r"REASON\s*:\s*(.+)", text, re.IGNORECASE | re.DOTALL)
 
@@ -169,7 +201,9 @@ class LLMJudge:
         category: Category,
     ) -> tuple[Judgment, str]:
         """
-        Step B: 對單個三元組跑三檔分類判準。
+        Step B (舊版,相容介面): 對單個三元組跑三檔分類判準。
+        新版 Step B 拆兩階段(judge_stance + judge_content),透過 extract_and_judge 呼叫。
+        本方法保留相容性,但已不直接被 extract_and_judge 使用。
 
         Returns:
             (judgment, reason)
@@ -190,10 +224,46 @@ class LLMJudge:
                 max_tokens=200,
                 temperature=0.0,
             )
-            return _parse_judge_output(r)
+            return _parse_category_judge_output(r, category)
         except Exception as e:
             logger.warning(f"[LLMJudge.judge_triple] 失敗: {e}")
             return "UNSUPPORTED", f"LLM call failed: {e}"
+
+    async def judge_stance(
+        self,
+        triple: Dict[str, str],
+        context: str,
+    ) -> tuple[Stance, Judgment, str]:
+        """
+        Bry 施工書 (2026-07-02) Step B-1。
+
+        判斷三元組的陳述方向:
+        - self_directed: 主體描述自己的內在狀態 / 感受 / 想法 / 自我覺察
+        - other_directed: 主體描述外部世界 / 他人 / 計畫 / 客觀事件 / 對某物的穩定偏好
+
+        Returns:
+            (stance, judgment, reason)
+        """
+        prompt = self._prompts["stance"]
+        user_msg = (
+            f"三元組: {triple['subject']} {triple['predicate']} {triple['object']}\n"
+            f"原文: {context}\n"
+            f"請依 stance prompt 判準回答 STANCE / JUDGMENT / REASON。"
+        )
+        try:
+            r = await self.llm_proxy.backend.complete(
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_msg},
+                ],
+                model="claude-haiku-4-5-20251001",
+                max_tokens=200,
+                temperature=0.0,
+            )
+            return _parse_stance_output(r)
+        except Exception as e:
+            logger.warning(f"[LLMJudge.judge_stance] 失敗: {e}")
+            return "other_directed", "UNSUPPORTED", f"LLM call failed: {e}"
 
     def confidence_from_judgment(
         self,
@@ -210,21 +280,88 @@ class LLMJudge:
         agent_id: str,
     ) -> List[Dict[str, Any]]:
         """
-        完整兩步流程: 萃取 → 逐條分類。
-        對每個 category 跑 Step B,回傳最終 fact list(含 category / confidence / judgment / reason)。
+        Bry 施工書 (2026-07-02) 完整兩步流程:
+        - Step A: extract_triples(不變)
+        - Step B-1: judge_stance(self_directed / other_directed)
+        - Step B-2 (only if other_directed): judge_content(preference_plan_event_fact / milestone)
+
+        最終 category:
+          if stance == self_directed → category = "diary"
+          else → category = content 結果
+
+        回傳介面保持向下相容:{subject, predicate, object, category, judgment, reason, confidence}
         """
         triples = await self.extract_triples(text, context, agent_id)
         results = []
         for t in triples:
-            for cat in PROMPT_FILES:
-                judgment, reason = await self.judge_triple(t, context, cat)
-                conf = self.confidence_from_judgment(judgment, cat)
-                if conf > 0:
+            # Step B-1: stance 判斷
+            stance, stance_judgment, stance_reason = await self.judge_stance(t, context)
+            diary_captured = False
+
+            if stance == "self_directed":
+                # Step B-1 直接成立 diary,不進 Step B-2
+                if stance_judgment == "SUPPORTED":
                     results.append({
                         **t,
-                        "category": cat,
-                        "judgment": judgment,
-                        "reason": reason,
-                        "confidence": conf,
+                        "category": "diary",
+                        "judgment": stance_judgment,
+                        "reason": stance_reason,
+                        "confidence": JUDGMENT_TO_CONFIDENCE["diary"][stance_judgment],
+                        "stance": stance,
                     })
+                    diary_captured = True
+                # WEAK diary → 仍寫入但 confidence 低(不丟,留 Bry review)
+                elif stance_judgment == "WEAK":
+                    results.append({
+                        **t,
+                        "category": "diary",
+                        "judgment": stance_judgment,
+                        "reason": stance_reason,
+                        "confidence": JUDGMENT_TO_CONFIDENCE["diary"][stance_judgment],
+                        "stance": stance,
+                    })
+                    diary_captured = True
+                # UNSUPPORTED: diary 失敗 → 落回 content 判斷(下面跑)
+
+            if diary_captured:
+                continue
+
+            # Step B-2: content 判斷(preference_plan_event_fact vs milestone)
+            best = None
+            for cat in ("preference_plan_event_fact", "milestone"):
+                prompt = self._prompts[cat]
+                user_msg = (
+                    f"三元組: {t['subject']} {t['predicate']} {t['object']}\n"
+                    f"原文: {context}\n"
+                    f"請依 {cat} prompt 判準回答 CATEGORY / JUDGMENT / REASON。"
+                )
+                try:
+                    r = await self.llm_proxy.backend.complete(
+                        messages=[
+                            {"role": "system", "content": prompt},
+                            {"role": "user", "content": user_msg},
+                        ],
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=200,
+                        temperature=0.0,
+                    )
+                    judgment, reason = _parse_category_judge_output(r, cat)
+                except Exception as e:
+                    logger.warning(f"[LLMJudge.extract_and_judge] content judge 失敗: {e}")
+                    continue
+                conf = JUDGMENT_TO_CONFIDENCE[cat][judgment]
+                if conf > 0 and (best is None or conf > best[1]):
+                    best = (judgment, conf, cat, reason)
+
+            if best:
+                judgment, conf, cat, reason = best
+                results.append({
+                    **t,
+                    "category": cat,
+                    "judgment": judgment,
+                    "reason": reason,
+                    "confidence": conf,
+                    "stance": stance,
+                })
+
         return results
