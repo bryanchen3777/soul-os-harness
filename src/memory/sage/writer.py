@@ -1,9 +1,16 @@
+import asyncio
+import logging
+import os
 import re
 import time
 import datetime
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple
+
 from .models import Fact
 from .graph_store import GraphStore
+from .token_utils import TokenBudget, SummaryCompressor
+
+logger = logging.getLogger("soul_os.memory.writer")
 
 # Predicate 同義詞正規化表（W-2）
 _PREDICATE_SYNONYMS: dict[str, str] = {
@@ -331,6 +338,80 @@ class MemoryWriter:
         self, text: str, subject_hint: Optional[str],
         session_id: str, source: str
     ) -> list[Fact]:
+        # Feature flag: USE_LLM_JUDGE=true/false 切換 LLM judge 跟 regex heuristic
+        # 預設開啟 LLM judge;失敗 fallback 舊 regex
+        use_llm = os.environ.get("USE_LLM_JUDGE", "true").lower() == "true"
+        if use_llm:
+            try:
+                return self._extract_facts_llm(text, subject_hint, session_id, source)
+            except Exception as e:
+                logger.warning(
+                    f"[MemoryWriter] LLM judge 失敗,fallback heuristic: {e}"
+                )
+        # fallback 舊 regex
+        return self._extract_facts_heuristic_fallback(
+            text, subject_hint, session_id, source
+        )
+
+    def _extract_facts_llm(
+        self, text: str, subject_hint: Optional[str],
+        session_id: str, source: str
+    ) -> list[Fact]:
+        """
+        LLM-as-judge 版的 fact 萃取。
+        同步介面但內部呼叫 asyncio.run() 跑 async LLMJudge。
+        失敗拋 exception,由 _extract_facts 統一 fallback。
+        """
+        # 取得 LLMJudge(從 _llm_judge 屬性或 lazy init)
+        judge = self._get_llm_judge()
+        if judge is None:
+            raise RuntimeError("LLMJudge not available")
+        # 跑 async extract_and_judge
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        results = loop.run_until_complete(
+            judge.extract_and_judge(text, context="", agent_id=subject_hint or "")
+        )
+        # 轉成 Fact 物件
+        facts = []
+        seen: set[tuple[str, str, str]] = set()
+        for r in results:
+            subj = self._normalize_entity(r["subject"], subject_hint)
+            obj = self._normalize_object(r["object"])
+            if not subj or not obj:
+                continue
+            key = (subj.lower(), r["predicate"].lower(), obj.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            weight = 0.5 * (0.8 if source == "inference" else 1.0)
+            facts.append(Fact(
+                subject=subj, predicate=r["predicate"], object=obj,
+                timestamp=time.time(), event_time=None,
+                weight=weight, confidence=r["confidence"],
+                source=source, session_id=session_id,
+            ))
+        return facts
+
+    def _get_llm_judge(self):
+        """Lazy init LLMJudge。需要 LLMProxy 跟 LLM backend 已經 set up。"""
+        if hasattr(self, "_llm_judge_cached") and self._llm_judge_cached is not None:
+            return self._llm_judge_cached
+        # 從 GraphStore 路徑反向找 LLMProxy(從 process-global 變數)
+        llm_proxy = globals().get("_global_llm_proxy") or _find_llm_proxy()
+        if llm_proxy is None:
+            return None
+        from src.memory.llm_judge import LLMJudge
+        self._llm_judge_cached = LLMJudge(llm_proxy)
+        return self._llm_judge_cached
+
+    def _extract_facts_heuristic_fallback(
+        self, text: str, subject_hint: Optional[str],
+        session_id: str, source: str
+    ) -> list[Fact]:
         facts: list[Fact] = []
         seen: set[tuple[str, str, str]] = set()
         # Primary split: sentence-ending punctuation or newlines
@@ -373,3 +454,20 @@ class MemoryWriter:
                         source=source, session_id=session_id,
                     ))
         return facts
+
+
+def _find_llm_proxy():
+    """從 process-global 或 runner 變數找 LLMProxy。
+
+    為什麼需要:MemoryWriter._get_llm_judge() 需要 LLMProxy 實例,
+    但 MemoryWriter 是由 SAGELiteProvider 在 lifespan 內建構,
+    沒辦法直接 import run_server 的 proxy 全域變數。
+    解法:MemoryMiddleware 或 run_server 透過 set_llm_proxy() 設定,
+    這裡 fallback 到 process-global 變數查詢。
+    """
+    return globals().get("_soul_os_llm_proxy")
+
+
+def set_llm_proxy(llm_proxy):
+    """設定 process-global LLMProxy reference,讓 MemoryWriter 可以拿到。"""
+    globals()["_soul_os_llm_proxy"] = llm_proxy

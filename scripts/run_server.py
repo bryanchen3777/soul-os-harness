@@ -102,6 +102,12 @@ async def lifespan(app: FastAPI):
         llm = create_llm_proxy(cfg, bus)
     llm.register()
 
+    # Phase 12 LLM-as-judge: 設定 process-global LLMProxy reference,
+    # 讓 MemoryWriter._get_llm_judge() 跨模組邊界可以拿到
+    from src.memory.sage.writer import set_llm_proxy
+    set_llm_proxy(llm)
+    logger.info("[Server] LLMProxy wired into MemoryWriter (LLM judge ready)")
+
     # 動態載入所有 enabled Agent（帶 SpeakerTokenBus）
     agents = create_agents(cfg, bus, speaker_token_bus=speaker_token_bus)
     agent_ids = [a.agent_id for a in agents]
