@@ -359,7 +359,7 @@ class LLMJudge:
                 prompt = self._prompts[cat]
                 user_msg = (
                     f"三元組: {t['subject']} {t['predicate']} {t['object']}\n"
-                    f"原文: {context}\n"
+                    f"原文: {text}\n"  # Bry §4 (2026-07-02) bug 修:用 text 不用 context
                     f"請依 {cat} prompt 判準回答 CATEGORY / JUDGMENT / REASON。"
                 )
                 try:
