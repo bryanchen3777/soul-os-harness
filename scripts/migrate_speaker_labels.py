@@ -170,7 +170,43 @@ def main():
             cnt = cur.fetchone()[0]
             print(f"  {aid}: {cnt} messages with speaker = {aid!r}")
 
-    elif args.dry_run:
+    # Sanity check: 不論 dry-run 或 WRITE,都驗證 fixed + preserved + legacy == total
+    # 確保沒有任何訊息在遷移計算中被漏算
+    # (Bry 規範:migration 必須有合計驗證,避免漏算)
+    print(f"\n--- 合計 Sanity Check ---")
+    # total_before 包含「已經被修過的 + 還沒被修的」
+    # preserved_users = total_before - 「這次掃到的模糊」(含已被修過的 bryan/已修 agent_id)
+    # 但 preserved_users 包含兩種訊息:
+    #   A. bryan/user 等「正確標記」訊息(從未被納入 AMBIGUOUS_SPEAKERS)
+    #   B. 之前已遷移完成的訊息(這次 dry-run 看到 0 個模糊 = 已修完)
+    # 所以 preserved = total - (重新掃到的模糊) 跟 fixed + legacy 是**互斥 partition**
+    preserved_users = total_before - sum(ambiguous_before.values())
+    fixed_count = len(plan['fixed'])
+    legacy_count = len(plan['unfixable'])
+    accounted = fixed_count + legacy_count + preserved_users
+    diff = total_before - accounted
+    print(f"  total_before    : {total_before}")
+    print(f"  fixed (this run)  : {fixed_count}")
+    print(f"  legacy (this run) : {legacy_count}")
+    print(f"  preserved (其他): {preserved_users} (含 bryan/user 訊息 + 之前遷移的結果)")
+    print(f"  fixed+legacy+preserved = {accounted}")
+    print(f"  diff vs total   : {diff} (should be 0)")
+    if diff != 0:
+        logger.error(
+            f"[Migrate] Sanity check FAIL: {diff} 筆訊息未被會計入"
+        )
+        raise SystemExit(1)
+    else:
+        ok_msg = "✓ 合計驗證 PASS (所有訊息都有歸屬)"
+        print(f"  {ok_msg}")
+        # 順便算遷移覆蓋率(若有 fixed 的話)
+        if sum(ambiguous_before.values()) > 0:
+            coverage = (fixed_count + legacy_count) / sum(ambiguous_before.values()) * 100
+            print(f"  遷移覆蓋率       : {coverage:.1f}% ({fixed_count+legacy_count}/{sum(ambiguous_before.values())} 模糊 → 已分類)")
+        else:
+            print(f"  遷移覆蓋率       : N/A (無模糊訊息,可能之前已遷移完)")
+
+    if args.dry_run:
         print(f"\n⚠️  DRY-RUN 模式,未實際寫入")
         print(f"   重新跑不加 --dry-run 來執行遷移")
 
