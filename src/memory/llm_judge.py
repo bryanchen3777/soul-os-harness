@@ -292,14 +292,38 @@ class LLMJudge:
         回傳介面保持向下相容:{subject, predicate, object, category, judgment, reason, confidence}
         """
         triples = await self.extract_triples(text, context, agent_id)
+        # Bry 暫緩收工 (2026-07-02): 加 trace log 只記錄每步成功/失敗路徑,
+        # 不影響判斷邏輯、不引入新 schema。
+        # 即使 triples 為空(extract 失敗或無可萃取),也要記錄這次呼叫斷在哪一步
+        trace = {
+            "extract": {"n_triples": len(triples) if triples else 0},
+            "stance_calls": 0,
+            "stance_fail": 0,
+            "stance_self_directed": 0,
+            "stance_other_directed": 0,
+            "content_calls": 0,
+            "content_fail": 0,
+        }
         results = []
         for t in triples:
             # Step B-1: stance 判斷
-            stance, stance_judgment, stance_reason = await self.judge_stance(t, context)
+            trace["stance_calls"] += 1
+            try:
+                stance, stance_judgment, stance_reason = await self.judge_stance(t, context)
+                if stance == "self_directed":
+                    trace["stance_self_directed"] += 1
+                else:
+                    trace["stance_other_directed"] += 1
+            except Exception as e:
+                trace["stance_fail"] += 1
+                logger.warning(f"[LLMJudge.trace] stance 失敗: {e}")
+                # 失敗不丟 triple,讓它落回 content 路徑
+                stance = "other_directed"
+                stance_judgment = "UNSUPPORTED"
+                stance_reason = f"stance failed: {e}"
             diary_captured = False
 
             if stance == "self_directed":
-                # Step B-1 直接成立 diary,不進 Step B-2
                 if stance_judgment == "SUPPORTED":
                     results.append({
                         **t,
@@ -310,7 +334,6 @@ class LLMJudge:
                         "stance": stance,
                     })
                     diary_captured = True
-                # WEAK diary → 仍寫入但 confidence 低(不丟,留 Bry review)
                 elif stance_judgment == "WEAK":
                     results.append({
                         **t,
@@ -321,14 +344,14 @@ class LLMJudge:
                         "stance": stance,
                     })
                     diary_captured = True
-                # UNSUPPORTED: diary 失敗 → 落回 content 判斷(下面跑)
 
             if diary_captured:
                 continue
 
-            # Step B-2: content 判斷(preference_plan_event_fact vs milestone)
+            # Step B-2: content 判斷
             best = None
             for cat in ("preference_plan_event_fact", "milestone"):
+                trace["content_calls"] += 1
                 prompt = self._prompts[cat]
                 user_msg = (
                     f"三元組: {t['subject']} {t['predicate']} {t['object']}\n"
@@ -347,7 +370,8 @@ class LLMJudge:
                     )
                     judgment, reason = _parse_category_judge_output(r, cat)
                 except Exception as e:
-                    logger.warning(f"[LLMJudge.extract_and_judge] content judge 失敗: {e}")
+                    trace["content_fail"] += 1
+                    logger.warning(f"[LLMJudge.trace] content 失敗 ({cat}): {e}")
                     continue
                 conf = JUDGMENT_TO_CONFIDENCE[cat][judgment]
                 if conf > 0 and (best is None or conf > best[1]):
@@ -364,4 +388,6 @@ class LLMJudge:
                     "stance": stance,
                 })
 
+        # 回傳不變,trace 掛在 logger (Bry 暫緩收工 2026-07-02: 即使 triples 空也要 log)
+        logger.info(f"[LLMJudge.trace] text={text[:30]!r}: {trace}")
         return results
