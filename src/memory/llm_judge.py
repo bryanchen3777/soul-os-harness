@@ -303,6 +303,10 @@ class LLMJudge:
             "stance_other_directed": 0,
             "content_calls": 0,
             "content_fail": 0,
+            # Bry §3 (2026-07-02) 加 content 原始數值觀察點:
+            # 每個 content judgment call 記錄 (category, judgment, confidence)
+            # 不改判斷邏輯,純觀察用
+            "content_calls_detail": [],
         }
         results = []
         for t in triples:
@@ -372,8 +376,24 @@ class LLMJudge:
                 except Exception as e:
                     trace["content_fail"] += 1
                     logger.warning(f"[LLMJudge.trace] content 失敗 ({cat}): {e}")
+                    # Bry §3 (2026-07-02): 失敗的 call 也記錄原始數值,供診斷
+                    trace["content_calls_detail"].append({
+                        "category": cat,
+                        "triple": f"{t['subject']} {t['predicate']} {t['object']!r}",
+                        "judgment": "EXCEPTION",
+                        "confidence": None,
+                        "reason_snippet": str(e)[:80],
+                    })
                     continue
+                # Bry §3: 成功的 call 記錄原始 judgment + confidence
                 conf = JUDGMENT_TO_CONFIDENCE[cat][judgment]
+                trace["content_calls_detail"].append({
+                    "category": cat,
+                    "triple": f"{t['subject']} {t['predicate']} {t['object']!r}",
+                    "judgment": judgment,
+                    "confidence": conf,
+                    "reason_snippet": reason[:80],
+                })
                 if conf > 0 and (best is None or conf > best[1]):
                     best = (judgment, conf, cat, reason)
 
