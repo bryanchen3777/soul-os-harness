@@ -108,6 +108,13 @@ async def lifespan(app: FastAPI):
     set_llm_proxy(llm)
     logger.info("[Server] LLMProxy wired into MemoryWriter (LLM judge ready)")
 
+    # Bry §11 shadow mode (2026-07-02): 對每一筆真實訊息 v6 並行 observation
+    # 7 天自動到期, 不影響 prod 路徑結果
+    from src.memory.shadow import init_shadow_observer
+    shadow_dir = REPO / "data" / "shadow"
+    shadow_obs = init_shadow_observer(shadow_dir, enabled=True, llm_proxy=llm)
+    logger.info(f"[Server] Shadow mode 啟動 (7天): {shadow_dir}/shadow_log.jsonl")
+
     # 動態載入所有 enabled Agent（帶 SpeakerTokenBus）
     agents = create_agents(cfg, bus, speaker_token_bus=speaker_token_bus)
     agent_ids = [a.agent_id for a in agents]

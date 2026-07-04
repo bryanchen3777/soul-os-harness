@@ -198,6 +198,21 @@ class MemoryMiddleware:
             f"user_len={len(user_text)} | agent_len={len(agent_text)}"
         )
 
+        # Bry §11 shadow mode hook (2026-07-02):
+        # 並行掛一條 v6 observation 路徑, 完全不改 prod 行為。
+        # 包 try/except 確保 shadow 自己異常不影響 prod 路徑。
+        try:
+            from src.memory.shadow import maybe_observe
+            await maybe_observe(
+                text=agent_text,
+                agent_id=agent_id,
+                speaker=event.source or "",
+                context=user_text,
+                heuristic_facts=None,  # 現有 heuristic 由 provider 自己跑, 不傳入避免雙重計算
+            )
+        except Exception as _shadow_err:
+            logger.warning(f"[MemoryMiddleware] shadow hook 異常,不影響 prod: {_shadow_err}")
+
     # ── 維護 ─────────────────────────────────────────────────
 
     def shutdown(self) -> None:
