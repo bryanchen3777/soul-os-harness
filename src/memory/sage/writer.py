@@ -394,7 +394,76 @@ class MemoryWriter:
                 weight=weight, confidence=r["confidence"],
                 source=source, session_id=session_id,
             ))
+
+        # Perplexity 拍板 (Bry 轉, 2026-07-02): 並行寫進 v1 store
+        # - 只把 v6 judge 輸出的 (text, category, confidence, tags) 寫進去
+        # - metadata-only, 不做任何格式轉換 / 語意解讀 / 額外判斷
+        # - 主路徑(SAGE Graph write) 不變, v1 store 是平行鏡像,供 Loader 讀
+        try:
+            self._mirror_to_v1_store(
+                text=text,
+                results=results,
+                subject_hint=subject_hint,
+                session_id=session_id,
+                source=source,
+            )
+        except Exception as e:
+            # Perplexity spec: writer 寫進 v1 不失敗主路徑
+            logger.warning(f"[MemoryWriter] v1 store mirror 失敗, 不影響 SAGE: {e}")
+
         return facts
+
+    def _mirror_to_v1_store(
+        self,
+        text: str,
+        results: list,
+        subject_hint: Optional[str],
+        session_id: str,
+        source: str,
+    ) -> None:
+        """Perplexity 拍板 (Bry 轉, 2026-07-02): 把 v6 judge 結果鏡像到 v1 store。
+
+        Bry §12 spec:
+        - 寫 (text, category, confidence, tags) per fact
+        - 不做語意解讀 / 不做格式轉換
+        - 既有資料沒 category/confidence → None (Loader fail-safe 自然排除)
+
+        Data dir 路徑 (Perplexity spec: metadata-only, 不動 SAGE 主路徑):
+        - GraphStore 的 db_path = $data_dir/<agent>.db (SQLite)
+        - v1 Store 跟 GraphStore 共享同一個 data_dir
+        - 但檔案格式不同: GraphStore 用 .db, V1Store 用 .jsonl
+        - 所以從 self.store.db_path 反推 self.store.db_path.parent 當 v1 data_dir
+        """
+        import uuid as _uuid
+        from src.memory.v1.store import V1Store as _V1Store
+        from src.memory.v1.schema import Memory as _Memory
+
+        # 取得 v1 store data_dir (跟 GraphStore 共用 parent 目錄)
+        if not hasattr(self, "store") or self.store is None:
+            raise RuntimeError("V1 store 鏡像失敗: writer.store 不存在")
+        graph_db_path = getattr(self.store, "db_path", None)
+        if graph_db_path is None:
+            raise RuntimeError("V1 store 鏡像失敗: GraphStore.db_path 不存在")
+        v1_data_dir = Path(graph_db_path).parent
+
+        v1_store = _V1Store(v1_data_dir, subject_hint or "unknown")
+        for r in results:
+            subj = self._normalize_entity(r["subject"], subject_hint)
+            obj = self._normalize_object(r["object"])
+            if not subj or not obj:
+                continue
+            # 組裝 content: 簡單三元組文字 (Perplexity 拍: 不做語意解讀, 純組裝)
+            content = f"{subj} {r['predicate']} {obj}"
+            v1_store.add(_Memory(
+                memory_id=str(_uuid.uuid4()),
+                agent_id=subject_hint or "unknown",
+                content=content,
+                tags=r.get("tags", []),
+                created_at=time.time(),
+                # v1.1 schema 加的兩個 Optional 欄位, Perplexity (b)
+                category=r.get("category"),
+                confidence=r.get("confidence"),
+            ))
 
     def _get_llm_judge(self):
         """Lazy init LLMJudge。需要 LLMProxy 跟 LLM backend 已經 set up。"""
