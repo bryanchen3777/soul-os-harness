@@ -287,16 +287,75 @@ _SHARED_STOPWORDS = {
 
 
 def derive_query_tags(text: str) -> list:
-    """極簡字面切詞 (Perplexity Bry §15 拍板, 中英共用):
-    - 不使用 LLM, 不做任何語意判斷
-    - regex \\w+ 切 word, 過濾停用詞, 過濾 len<=1
+    """中英分詞切詞 (Perplexity Bry §16 拍板):
+    - 中文用 jieba (中英混排時 jieba 也能切英文單字)
+    - 英文/數字部分用 regex \\w+ 補強 (jieba 對純英文短語切成整段)
+    - 過濾 stopwords 跟 len<=1 的 token
+    - 不使用 LLM, 不做任何語意判斷 / 同義詞擴展
 
     使用者:
     - middleware._derive_query_tags (Bry §14 hook): query 切詞
     - writer._mirror_to_v1_store (Bry §15 patch): content 切詞追加進 memory.tags
 
     集中放這裡避免兩份不同步的切詞邏輯。
+
+    Perplexity Bry §16: \\w+ 對中文不切 (整段當 1 token), 必須用 jieba 真分詞,
+    否則真實 user 打字問 Rem 時查詢字面跟記憶字面不會 match。
     """
     import re as _re
-    words = _re.findall(r"\w+", text.lower())
-    return [w for w in words if len(w) > 1 and w not in _SHARED_STOPWORDS]
+
+    if not text:
+        return []
+
+    text_lower = text.lower().strip()
+    tokens: list = []
+
+    # ── 中文路徑: jieba 切詞 (對中英混排也 work, 英文單字也切出來) ──
+    # 用 lazy import 避免每次 Loader.load 重建 prefix dict (~0.5s)
+    try:
+        import jieba
+        # suppress jieba initial stderr noise (per-call)
+        import os as _os
+        import io as _io
+        from contextlib import redirect_stderr
+        try:
+            with redirect_stderr(_io.StringIO()):
+                jieba_cuts = list(jieba.cut(text_lower, cut_all=False))
+        except Exception:
+            jieba_cuts = []
+        # jieba 切詞後, 過濾空白跟標點, 保留中文詞 + 英文單字
+        for cut in jieba_cuts:
+            stripped = cut.strip()
+            if stripped and len(stripped) > 0:
+                tokens.append(stripped)
+    except ImportError:
+        # fallback: 沒裝 jieba 時用原本 regex (Bry §15 版本)
+        tokens.extend(_re.findall(r"\w+", text_lower))
+
+    # ── 英文/數字補強路徑: regex \\w+ 確保純英文短語也切對 ──
+    # jieba 對純英文短語 (e.g. "React useState") 切成 ['react', 'usestate'] 1 個 word
+    # regex \\w+ 會切 ['react', 'usestate'] 2 個 word
+    # 兩個路徑 union, 重複的 (e.g. lowercase) 自然在後面過濾
+    en_tokens = _re.findall(r"\w+", text_lower)
+    tokens.extend(en_tokens)
+
+    # ── 過濾 stopwords + 純數字 + len<=1 ──
+    result: list = []
+    seen: set = set()
+    for t in tokens:
+        t_clean = t.lower()
+        if t_clean in seen:
+            continue
+        seen.add(t_clean)
+        # 純數字 (像 '1234567') 排除
+        if t_clean.isdigit():
+            continue
+        # 單字符 (英文 1 字 / 中文標點) 排除
+        if len(t_clean) <= 1:
+            continue
+        # stopword 排除
+        if t_clean in _SHARED_STOPWORDS:
+            continue
+        result.append(t_clean)
+
+    return result
