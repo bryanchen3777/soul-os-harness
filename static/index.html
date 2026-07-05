@@ -461,8 +461,7 @@
             var payload = {
               type: 'USER_MESSAGE',
               content: text,
-              user_id: 'bryan_stt',
-              source: 'live2d_stt',  // 標記來源，方便 debug
+              user_id: '1696287850',  // Bry §28 spec: 向 Telegram user_id 看齊，打通跨介面 session
             };
             if (currentConversation === 'group') {
               payload.mode = 'group';
@@ -666,7 +665,7 @@
       var payload = {
         type: "USER_MESSAGE",
         content: text,
-        user_id: "bryan_" + Math.random().toString(36).slice(2, 7)
+        user_id: "1696287850"
       };
       if (currentConversation === "group") {
         payload.mode = "group";

@@ -486,15 +486,27 @@ class IOGateway:
                                 participants = None
                                 target = msg.get("target_agent", "agent_yua")
                             logger.info(f"[Gateway] USER_MESSAGE mode={mode} target={target} participants={participants}")
+                            # Bry §28 spec: WebSocket 事件加 session_id, 向 Telegram 格式看齊
+                            # session_id = session_{user_id}_{full_agent_id}
+                            # 跟 LLMProxy._session_key(agent_id, user_id) 對齊, 確保 history 連續
+                            ws_user_id = msg.get("user_id", "anonymous")
+                            ws_target = msg.get("target_agent", "agent_yua")
+                            # 確保 full_agent_id 格式 (跟 router.py 一致)
+                            ws_full_agent = ws_target if ws_target.startswith("agent_") else f"agent_{ws_target}"
+                            ws_session_id = f"session_{ws_user_id}_{ws_full_agent}"
+                            logger.info(f"[Gateway] WS session_id={ws_session_id} (user={ws_user_id}, agent={ws_full_agent})")
                             user_event = SoulEvent(
                                 event_type=EventType.USER_MESSAGE,
-                                source=msg.get("user_id", "anonymous"),
-                                target=target,
+                                source=ws_user_id,
+                                target=ws_target,
                                 priority=EventPriority.HIGH,
+                                session_id=ws_session_id,
                                 payload={
                                     "content": msg.get("content", ""),
-                                    "user_id": msg.get("user_id", "anonymous"),
-                                    "target_agent": target,
+                                    "text": msg.get("content", ""),
+                                    "user_id": ws_user_id,
+                                    "target_user_id": ws_user_id,  # Bry §28 spec: 給 LLMProxy 讀
+                                    "target_agent": ws_full_agent,
                                     "mode": mode,
                                     "participants": participants,
                                 },
