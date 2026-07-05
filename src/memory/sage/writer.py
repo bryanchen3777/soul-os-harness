@@ -400,17 +400,41 @@ class MemoryWriter:
         # - 只把 v6 judge 輸出的 (text, category, confidence, tags) 寫進去
         # - metadata-only, 不做任何格式轉換 / 語意解讀 / 額外判斷
         # - 主路徑(SAGE Graph write) 不變, v1 store 是平行鏡像,供 Loader 讀
+        # - Bry §23 spec (2026-07-02): log 從 warning 升 info + 顯式記錄 memory_id / agent_id / content
+        #   給 Bry 真實對話後, 直接從 log 跟 jsonl 看 mirror 真實寫入
         try:
-            self._mirror_to_v1_store(
+            mirror_count = self._mirror_to_v1_store(
                 text=text,
                 results=results,
                 subject_hint=subject_hint,
                 session_id=session_id,
                 source=source,
             )
+            # 顯式記錄: Bry §23 spec 要求 log 讓人一眼看出 mirror 寫了什麼
+            if mirror_count and mirror_count > 0:
+                logger.info(
+                    f"[MemoryWriter] v1 store mirror 成功 | "
+                    f"agent={subject_hint} | "
+                    f"source={source} | "
+                    f"n_facts_mirrored={mirror_count}/{len(results)} | "
+                    f"text={text[:50]!r}"
+                )
+            else:
+                logger.info(
+                    f"[MemoryWriter] v1 store mirror 0 筆 | "
+                    f"agent={subject_hint} | "
+                    f"source={source} | "
+                    f"v6 judge 抽出 {len(results)} 筆, 但 mirror 過濾後 0 筆 | "
+                    f"text={text[:50]!r}"
+                )
         except Exception as e:
-            # Perplexity spec: writer 寫進 v1 不失敗主路徑
-            logger.warning(f"[MemoryWriter] v1 store mirror 失敗, 不影響 SAGE: {e}")
+            # Bry §23 spec: writer 寫進 v1 不失敗主路徑, 但 log 從 warning 升到 ERROR (仍是 try/except 不中斷)
+            logger.error(
+                f"[MemoryWriter] v1 store mirror 失敗 | "
+                f"agent={subject_hint} | "
+                f"source={source} | "
+                f"error={e!r}"
+            )
 
         return facts
 
@@ -454,6 +478,8 @@ class MemoryWriter:
         # - 沒牽動 judge 的 category/confidence 判斷邏輯
         # - 純機械動作, 不用 LLM, 不做語意判斷
         from src.memory.v1.loader import derive_query_tags as _derive_tags
+        # Bry §23 spec: 回傳 mirror 筆數給 caller log 用
+        mirror_count = 0
         for r in results:
             subj = self._normalize_entity(r["subject"], subject_hint)
             obj = self._normalize_object(r["object"])
@@ -476,6 +502,8 @@ class MemoryWriter:
                 category=r.get("category"),
                 confidence=r.get("confidence"),
             ))
+            mirror_count += 1
+        return mirror_count
 
     def _get_llm_judge(self):
         """Lazy init LLMJudge。需要 LLMProxy 跟 LLM backend 已經 set up。"""

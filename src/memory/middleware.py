@@ -181,10 +181,14 @@ class MemoryMiddleware:
                 f"source={event.source!r}, session={event.session_id!r}"
             )
             agent_id = f"unknown:{event.source}"
-        # query 優先順序：memory_query_hint > draft > 整個 payload 文字
+        # Perplexity Bry §23 spec (2026-07-02) Bug 1 修法 (a):
+        # - draft 優先 (Bry 真實 user 對話)
+        # - draft 為空時 fallback 用 memory_query_hint (persona 設計的 RAG 模板)
+        # - 之前順序顛倒導致 query 永遠是 "Bryan 最近需要什麼、雷姆做過什麼" (per Rem persona template)
+        #   而不是 Bry 真實對話內容, Loader 永遠 fail-safe
         query = (
-            event.payload.get("memory_query_hint")
-            or event.payload.get("draft")
+            event.payload.get("draft")
+            or event.payload.get("memory_query_hint")
             or event.payload.get("text", "")
         )
         if not query:
