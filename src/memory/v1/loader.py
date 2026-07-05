@@ -154,9 +154,22 @@ class MemoryLoader:
         # Step 3: 過濾掉 agent_id 不同的 (multi-agent system 不混)
         same_agent = [m for m in all_memories if m.agent_id == agent_id]
 
+        # Perplexity Bry §18 (c): per-agent name stopword 從 memory.tags 排除
+        # "agent 自己的名字在自己記憶庫裡不具區分力" (雷姆 在 agent_rem store 裡幾乎每筆都有)
+        # 在計算 overlap 時, 從 memory.tags 拿掉 agent 自己名字, 不算命中
+        agent_name_stopwords = _PER_AGENT_NAME_STOPWORDS.get(agent_id, set())
+        # 注意: 不改 query_tags, 只改 memory.tags 的 overlap 計算
+
         # Step 4: 用 query_tags 過濾
+        # Perplexity Bry §18 (b): overlap 詞數 ≥ MIN_OVERLAP_FOR_CANDIDATE (默認 2)
+        # Bry §17 揭穿 "只命中 1 詞" 是弱證據, "雷姆" 這種高頻詞會導致 80% 噪音命中
         query_set = set(query_tags)
-        by_tags = [m for m in same_agent if query_set & set(m.tags)]
+        by_tags: List[Memory] = []
+        for m in same_agent:
+            mem_tags_filtered = set(m.tags) - agent_name_stopwords
+            overlap_count = len(query_set & mem_tags_filtered)
+            if overlap_count >= MIN_OVERLAP_FOR_CANDIDATE:
+                by_tags.append(m)
 
         # Step 5: 對每筆做 confidence threshold gating + 標 status
         candidates_with_status: List[Dict[str, Any]] = []
@@ -284,6 +297,23 @@ _SHARED_STOPWORDS = {
     "i", "you", "he", "she", "it", "we", "they", "my", "your", "his", "her",
     "this", "that", "these", "those", "and", "or", "but", "if", "so", "as",
 }
+
+
+# Perplexity Bry §18 拍板 (2026-07-02): per-agent high-frequency-name stopword
+# 理由: agent 自己的名字 (e.g. "雷姆" 在 agent_rem store 裡) 幾乎每筆記憶都有,
+# 跟 SHARED_STOPWORDS 排除虛詞同一邏輯, 只是 per-agent 而不是全局共用。
+# 不是語意判斷, 是機械規則 — "agent 自己的名字在自己記憶庫裡不具區分力"。
+#
+# 不用自動統計, 手動列已知專名:
+_PER_AGENT_NAME_STOPWORDS = {
+    "agent_rem": {"雷姆", "rem", "雷姆你", "昴"},
+    "agent_ram": {"拉姆", "ram", "昴"},
+}
+
+
+# Perplexity Bry §18 (b) 拍板: candidate 池准入條件從 overlap ≥ 1 改成 ≥ 2
+# 不管 memory 長短都一致適用, "只命中一個詞" 在任何文本裡都天然是弱證據。
+MIN_OVERLAP_FOR_CANDIDATE = 2
 
 
 def derive_query_tags(text: str) -> list:
