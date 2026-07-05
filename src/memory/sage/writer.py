@@ -447,6 +447,12 @@ class MemoryWriter:
         v1_data_dir = Path(graph_db_path).parent
 
         v1_store = _V1Store(v1_data_dir, subject_hint or "unknown")
+        # Perplexity Bry §15 拍板: 補齊 tags 的檢索用途缺陷
+        # - content 字面切詞追加進 tags (跟 middleware._derive_query_tags 同套邏輯)
+        # - category 標籤保留不刪
+        # - 沒牽動 judge 的 category/confidence 判斷邏輯
+        # - 純機械動作, 不用 LLM, 不做語意判斷
+        from src.memory.v1.loader import derive_query_tags as _derive_tags
         for r in results:
             subj = self._normalize_entity(r["subject"], subject_hint)
             obj = self._normalize_object(r["object"])
@@ -454,11 +460,16 @@ class MemoryWriter:
                 continue
             # 組裝 content: 簡單三元組文字 (Perplexity 拍: 不做語意解讀, 純組裝)
             content = f"{subj} {r['predicate']} {obj}"
+            # Bry §15: tags = 既有 tags (含 category) + content 切詞
+            # 兩者共存, 不覆蓋
+            existing_tags = list(r.get("tags", []))
+            content_tags = _derive_tags(content)
+            merged_tags = existing_tags + content_tags
             v1_store.add(_Memory(
                 memory_id=str(_uuid.uuid4()),
                 agent_id=subject_hint or "unknown",
                 content=content,
-                tags=r.get("tags", []),
+                tags=merged_tags,
                 created_at=time.time(),
                 # v1.1 schema 加的兩個 Optional 欄位, Perplexity (b)
                 category=r.get("category"),

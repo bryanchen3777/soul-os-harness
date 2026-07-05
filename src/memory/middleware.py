@@ -15,14 +15,21 @@ MemoryMiddleware — Soul OS Phase 2.0
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import uuid as _uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
 from src.memory.sage import SAGELiteProvider
+
+# Perplexity 拍板 (Bry 轉, 2026-07-02): Bry §14 最小端到端接線
+# 只對 agent_rem 開啟 v1 Loader 注入, 其他 agent 走原路徑
+# 不動 judge / writer, 不順手接其他 agent
+LOADER_ENABLED_FOR_AGENT = "agent_rem"
 
 logger = logging.getLogger("soul_os.memory.middleware")
 
@@ -52,6 +59,13 @@ class MemoryMiddleware:
         self._last_commit: Dict[str, datetime] = {}
         self.COMMIT_COOLDOWN_SECS = 5.0
 
+        # Perplexity Bry §14: Loader sidecar trace log
+        # 給 Bry 事後核對 trace 跟 Rem 回應是否一致 (Bry §14 第 3 點)
+        self._loader_trace_path = self.data_dir / "loader_trace.jsonl"
+        self._loader_trace_path.parent.mkdir(parents=True, exist_ok=True)
+        # Lazy Loader instance
+        self._loader = None
+
     def register(self) -> None:
         """向 Event Bus 註冊，開始接收三種事件。"""
         self.bus.subscribe(
@@ -80,6 +94,57 @@ class MemoryMiddleware:
             self._providers[agent_id] = provider
             logger.info(f"[MemoryMiddleware] 建立新 provider for {agent_id}")
         return self._providers[agent_id]
+
+    def _get_loader(self, agent_id: str):
+        """Perplexity Bry §14: Lazy init v1 Loader (per-agent v1 store)。"""
+        if self._loader is not None:
+            return self._loader
+        from src.memory.v1.store import V1Store
+        from src.memory.v1.loader import MemoryLoader
+        v1_data_dir = self.data_dir  # v1 store 跟 SAGE 共用 data_dir
+        # per-agent v1 store (跟 SAGE 一樣, per-agent dir)
+        v1_store = V1Store(v1_data_dir, agent_id)
+        # 單一 loader 跨 agent 共享 (Loader 內 store 各自獨)
+        # 但每個 agent loader 行為一樣, 共享 trace log
+        self._loader = MemoryLoader(store=v1_store, trace_log_path=self._loader_trace_path)
+        return self._loader
+
+    def _derive_query_tags(self, query: str) -> List[str]:
+        """Perplexity Bry §14 + §15: 委派給 loader 的共享 helper。
+
+        Bry §15 spec: 直接複用同一份切詞邏輯 (不要重寫一份),
+        loader.derive_query_tags 是 single source of truth,
+        這裡只委派避免兩份不同步。
+        """
+        from src.memory.v1.loader import derive_query_tags
+        return derive_query_tags(query)
+
+    def _append_loader_trace(
+        self,
+        event: SoulEvent,
+        query: str,
+        query_tags: List[str],
+        load_result: dict,
+        context_len: int,
+    ) -> None:
+        """Perplexity Bry §14: 寫 sidecar trace 給 Bry 事後核對 Rem 回應是否用到記憶。"""
+        try:
+            trace = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "agent_id": LOADER_ENABLED_FOR_AGENT,
+                "session_id": event.session_id,
+                "event_id": event.event_id,
+                "query": query[:200],
+                "query_tags": query_tags,
+                "eligible_count": load_result.get("trace", {}).get("eligible_count", 0),
+                "fail_safe_triggered": load_result.get("trace", {}).get("fail_safe_triggered"),
+                "candidates": load_result.get("trace", {}).get("candidates", []),
+                "context_len_after_loader": context_len,
+            }
+            with open(self._loader_trace_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(trace, ensure_ascii=False, default=str) + "\n")
+        except Exception as e:
+            logger.warning(f"[MemoryMiddleware] sidecar trace 寫入失敗: {e}")
 
     # ── 事件分派 ─────────────────────────────────────────────
 
@@ -131,6 +196,41 @@ class MemoryMiddleware:
         context = await asyncio.to_thread(
             provider.prefetch, query, session_id=event.session_id or "default"
         )
+
+        # Perplexity Bry §14: 最小端到端接線
+        # 只在 agent_rem 觸發 v1 Loader, 其他 agent 走原路徑
+        # - 從 query 文字做極簡 tokenization 當 query_tags (lower-case split 空白)
+        # - 跑 Loader.load 拿 eligible memories
+        # - format_for_prompt 塞進 context 字串
+        # - sidecar trace log 給 Bry 事後核對
+        if agent_id == LOADER_ENABLED_FOR_AGENT and query:
+            try:
+                loader = self._get_loader(agent_id)
+                # 極簡 query_tags: query 文字空白切 + 過濾常見停用詞
+                # 不做語意解讀 (Perplexity Bry §12 spec 排除)
+                query_tags = self._derive_query_tags(query)
+                load_result = await asyncio.to_thread(
+                    loader.load,
+                    query_tags,
+                    agent_id,
+                )
+                eligible = load_result["eligible_memories"]
+                if eligible:
+                    loader_block = format_for_prompt(eligible)
+                    context = (context + "\n\n" + loader_block).strip() if context else loader_block
+                # Sidecar trace: 給 Bry 事後核對 Rem 的回應是否用到記憶
+                self._append_loader_trace(
+                    event=event,
+                    query=query,
+                    query_tags=query_tags,
+                    load_result=load_result,
+                    context_len=len(context),
+                )
+            except Exception as _loader_err:
+                # Perplexity Bry §14: Loader 失敗不影響主路徑
+                logger.warning(
+                    f"[MemoryMiddleware] v1 Loader 失敗, 不影響 agent_rem 主路徑: {_loader_err}"
+                )
 
         # 把記憶注入 payload，re-publish 為新事件
         event.payload["memory_context"] = context

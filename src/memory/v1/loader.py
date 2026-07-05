@@ -269,3 +269,34 @@ def format_for_prompt(eligible_memories: List[Memory]) -> str:
         lines.append(f"- ({m.category}, conf {m.confidence:.2f}, tags={tag_str}): {m.content}")
     lines.append("[/Recall]")
     return "\n".join(lines)
+
+
+# ────────────────────────────────────────────────────────────
+# 共享 query/content 字面切詞 (Perplexity Bry §15 拍板)
+# ────────────────────────────────────────────────────────────
+
+# 極簡中英停用詞 (跟 middleware._derive_query_tags 同份, 集中放這裡)
+_SHARED_STOPWORDS = {
+    "的", "了", "是", "我", "你", "他", "她", "它", "在", "有", "沒", "和", "或",
+    "就", "也", "都", "還", "會", "要", "不", "嗎", "吧", "啊", "呢", "的話",
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could", "should",
+    "i", "you", "he", "she", "it", "we", "they", "my", "your", "his", "her",
+    "this", "that", "these", "those", "and", "or", "but", "if", "so", "as",
+}
+
+
+def derive_query_tags(text: str) -> list:
+    """極簡字面切詞 (Perplexity Bry §15 拍板, 中英共用):
+    - 不使用 LLM, 不做任何語意判斷
+    - regex \\w+ 切 word, 過濾停用詞, 過濾 len<=1
+
+    使用者:
+    - middleware._derive_query_tags (Bry §14 hook): query 切詞
+    - writer._mirror_to_v1_store (Bry §15 patch): content 切詞追加進 memory.tags
+
+    集中放這裡避免兩份不同步的切詞邏輯。
+    """
+    import re as _re
+    words = _re.findall(r"\w+", text.lower())
+    return [w for w in words if len(w) > 1 and w not in _SHARED_STOPWORDS]
