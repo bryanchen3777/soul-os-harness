@@ -161,14 +161,30 @@ class MemoryLoader:
         # 注意: 不改 query_tags, 只改 memory.tags 的 overlap 計算
 
         # Step 4: 用 query_tags 過濾
-        # Perplexity Bry §18 (b): overlap 詞數 ≥ MIN_OVERLAP_FOR_CANDIDATE (默認 2)
-        # Bry §17 揭穿 "只命中 1 詞" 是弱證據, "雷姆" 這種高頻詞會導致 80% 噪音命中
+        # Perplexity Bry §25 (b) 拍板 (2026-07-02): MIN_OVERLAP 按 content token 數分層
+        # - content tokens < 20 → MIN_OVERLAP=1
+        # - content tokens >= 20 → MIN_OVERLAP=2 (Bry §18 拍板的原值)
+        # - 機械可量化, 不涉及語意判斷, 跟 per-agent stopword 性質一致
+        # - Bry §25 spec 強調: 這不解決根本問題, 預期命中率從 0/5 變 1/5 左右
+        import re as _re_overlap
         query_set = set(query_tags)
         by_tags: List[Memory] = []
         for m in same_agent:
             mem_tags_filtered = set(m.tags) - agent_name_stopwords
             overlap_count = len(query_set & mem_tags_filtered)
-            if overlap_count >= MIN_OVERLAP_FOR_CANDIDATE:
+            # 計算 content token 數 (中文每字 1 token, 英文單字 1 token)
+            m_content = m.content or ""
+            m_content_tokens = (
+                len(_re_overlap.findall(r"[一-鿿]", m_content))
+                + len(_re_overlap.findall(r"\b\w+\b", m_content))
+            )
+            # 分層門檻
+            threshold_for_mem = (
+                MIN_OVERLAP_SHORT_CONTENT
+                if m_content_tokens < MIN_OVERLAP_CONTENT_BOUNDARY
+                else MIN_OVERLAP_LONG_CONTENT
+            )
+            if overlap_count >= threshold_for_mem:
                 by_tags.append(m)
 
         # Step 5: 對每筆做 confidence threshold gating + 標 status
@@ -313,7 +329,17 @@ _PER_AGENT_NAME_STOPWORDS = {
 
 # Perplexity Bry §18 (b) 拍板: candidate 池准入條件從 overlap ≥ 1 改成 ≥ 2
 # 不管 memory 長短都一致適用, "只命中一個詞" 在任何文本裡都天然是弱證據。
-MIN_OVERLAP_FOR_CANDIDATE = 2
+MIN_OVERLAP_FOR_CANDIDATE = 2  # 保留舊常數, 但 Bry §25 改用分層門檻
+
+
+# Perplexity Bry §25 (b) 拍板 (2026-07-02): MIN_OVERLAP 按 content token 數分層
+# - short content (< 20 tokens) → 較低門檻
+# - long content (>= 20 tokens) → 較高門檻 (跟 Bry §18 拍板原值一致)
+# - 機械可量化, 不涉及語意判斷
+# - 邊界值 20 tokens 是 Bry §25 spec 拍板的「簡單機械判斷」, 不是調參
+MIN_OVERLAP_CONTENT_BOUNDARY = 20
+MIN_OVERLAP_SHORT_CONTENT = 1
+MIN_OVERLAP_LONG_CONTENT = 2
 
 
 def derive_query_tags(text: str) -> list:
