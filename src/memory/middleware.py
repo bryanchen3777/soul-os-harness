@@ -26,10 +26,36 @@ from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
 from src.memory.sage import SAGELiteProvider
 
+# Bry 拍板 2026-07-18 Stage 1.2: 把 format_for_prompt 拉到模組頂
+# 之前 lazy import 區塊範圍太大, NameError 被 try/except 吞掉, Loader 永遠注入失敗
+from src.memory.v1.loader import format_for_prompt, derive_query_tags
+
+# Bry 拍板 2026-07-18 Stage 4.1: 整合 relationships (角色靜態關係圖)
+# USER_MESSAGE 觸發 target_agent 對 Bry touch (+0.05)
+# AGENT_SPEAK 觸發 speaker 對 session 內其他 agent touch (+0.02)
+# 詳細設計: src/soul/relationships.py
+# Stage 4.2 diary / 4.3 dynamic 互動不包含, 留待後續 stage
+try:
+    from src.soul.relationships import get_relationships_manager
+    _RELATIONSHIPS_AVAILABLE = True
+except ImportError as _rel_err:
+    # 模組缺失不影響 prod, 但要明顯 log
+    logger_init = logging.getLogger("soul_os.memory.middleware")
+    logger_init.warning(
+        f"[MemoryMiddleware] Stage 4.1 relationships 模組 import 失敗, "
+        f"略過整合不影響 prod: {_rel_err}"
+    )
+    _RELATIONSHIPS_AVAILABLE = False
+
 # Perplexity 拍板 (Bry 轉, 2026-07-02): Bry §14 最小端到端接線
 # 只對 agent_rem 開啟 v1 Loader 注入, 其他 agent 走原路徑
 # 不動 judge / writer, 不順手接其他 agent
-LOADER_ENABLED_FOR_AGENT = "agent_rem"
+#
+# Bry 拍板 2026-07-18 Stage 3: Loader 白名單從單一值改 frozenset, 循序開啟
+# - 順序 (Mavis 16:00 推論 + Bry 接受): Rem → Yua → Mahiru/Anna/Mai → Akane → Aoi/Miku → Ruka → Ram
+# - Stage 3 第一步: Rem 已是 Perplexity 7/2 拍的預設, 加 Yua 為第二隻
+# - 不一次開全部 9 隻: 觀察每隻命中數, persona 沒漏字, 才進下一隻
+LOADER_ENABLED_FOR_AGENTS = frozenset({"agent_rem", "agent_yua"})
 
 logger = logging.getLogger("soul_os.memory.middleware")
 
@@ -65,6 +91,17 @@ class MemoryMiddleware:
         self._loader_trace_path.parent.mkdir(parents=True, exist_ok=True)
         # Lazy Loader instance
         self._loader = None
+
+        # Bry 拍板 2026-07-18 Stage 4.1: 角色靜態關係圖整合
+        # session_agents: 追蹤該 session 內出現過的 agent, 給 AGENT_SPEAK 觸發
+        # 角色之間關係用 (4.3 動態互動會更精細, 4.1 第一刀先靠 session 共現)
+        self._session_agents: Dict[str, set] = {}
+        # 角色對 Bry 關係靠 user_id (TG: 1696287850, web: bryan_test 等)
+        # 統一視為 BRYAN_ENTITY_ID (Stage 4.1 簡化)
+        self._relationships_manager = (
+            get_relationships_manager(data_dir="data/soul")
+            if _RELATIONSHIPS_AVAILABLE else None
+        )
 
     def register(self) -> None:
         """向 Event Bus 註冊，開始接收三種事件。"""
@@ -116,7 +153,6 @@ class MemoryMiddleware:
         loader.derive_query_tags 是 single source of truth,
         這裡只委派避免兩份不同步。
         """
-        from src.memory.v1.loader import derive_query_tags
         return derive_query_tags(query)
 
     def _append_loader_trace(
@@ -131,7 +167,9 @@ class MemoryMiddleware:
         try:
             trace = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "agent_id": LOADER_ENABLED_FOR_AGENT,
+                # Bry 拍板 2026-07-18 Stage 3: sidecar trace 寫真實觸發的 agent_id
+                # (Rem 預設, Yua 第二隻) 而非常量
+                "agent_id": event.payload.get("agent_id", "unknown"),
                 "session_id": event.session_id,
                 "event_id": event.event_id,
                 "query": query[:200],
@@ -165,6 +203,24 @@ class MemoryMiddleware:
             logger.debug(
                 f"[MemoryMiddleware] 暫存 user_text | session={session_id}"
             )
+
+        # Bry 拍板 2026-07-18 Stage 4.1: target_agent 對 Bry touch
+        # 4.1 範圍: 角色對 Bry 認知累積 (其他 agent 對 Bry 留待 4.3 動態互動)
+        target_agent = event.payload.get("target_agent") or event.target
+        if (
+            self._relationships_manager
+            and target_agent
+            and target_agent != "broadcast"
+            and target_agent.startswith("agent_")  # 排除 user 開頭的 source
+        ):
+            try:
+                self._relationships_manager.on_user_message(target_agent)
+            except Exception as _rel_err:
+                # 「拒絕問, 強制讀」: 不影響 prod, 但要明顯 log
+                logger.warning(
+                    f"[MemoryMiddleware] Stage 4.1 relationships touch 失敗, "
+                    f"不影響 prod: {_rel_err}"
+                )
 
     async def _on_agent_intent(self, event: SoulEvent) -> None:
         """prefetch → 注入 memory_context → re-publish 為 AGENT_INTENT_ENRICHED。
@@ -202,26 +258,53 @@ class MemoryMiddleware:
         )
 
         # Perplexity Bry §14: 最小端到端接線
-        # 只在 agent_rem 觸發 v1 Loader, 其他 agent 走原路徑
+        # Bry 拍板 2026-07-18 Stage 3: Loader 白名單改 frozenset (Rem + Yua)
+        # 其他 agent 走原路徑, 不順手接
         # - 從 query 文字做極簡 tokenization 當 query_tags (lower-case split 空白)
         # - 跑 Loader.load 拿 eligible memories
         # - format_for_prompt 塞進 context 字串
         # - sidecar trace log 給 Bry 事後核對
-        if agent_id == LOADER_ENABLED_FOR_AGENT and query:
+        if agent_id in LOADER_ENABLED_FOR_AGENTS and query:
+            # Bry 拍板 2026-07-18 Stage 1.2: 縮小 try/except 範圍
+            # 之前整段 (含 _get_loader / derive_query_tags / format_for_prompt) 都被包,
+            # NameError 被吞掉 Loader 永遠注入失敗。改為只包 loader.load() 呼叫,
+            # 讓 import 錯誤跟 code bug 真的 crash 到主路徑 (不靜默)
+            query_tags = self._derive_query_tags(query)
             try:
                 loader = self._get_loader(agent_id)
-                # 極簡 query_tags: query 文字空白切 + 過濾常見停用詞
-                # 不做語意解讀 (Perplexity Bry §12 spec 排除)
-                query_tags = self._derive_query_tags(query)
                 load_result = await asyncio.to_thread(
                     loader.load,
                     query_tags,
                     agent_id,
                 )
+            except Exception as _loader_err:
+                # Loader 失敗不影響主路徑, 但要明顯 log
+                logger.warning(
+                    f"[MemoryMiddleware] v1 Loader 失敗, 不影響 {agent_id} 主路徑: {_loader_err}"
+                )
+                load_result = None
+
+            if load_result is not None:
                 eligible = load_result["eligible_memories"]
                 if eligible:
+                    # Bry 拍板 2026-07-18 Stage 1.3: eligible>0 時顯式 INFO log
+                    # 方便 Bry 即時確認 Loader 真的有注入 (不用翻 sidecar trace)
                     loader_block = format_for_prompt(eligible)
                     context = (context + "\n\n" + loader_block).strip() if context else loader_block
+                    logger.info(
+                        f"[MemoryMiddleware] v1 Loader 注入 | "
+                        f"agent={agent_id} | "
+                        f"eligible={len(eligible)} | "
+                        f"context_len={len(context)}"
+                    )
+                else:
+                    # Loader 跑了但 fail-safe, 仍要 log 知道有觸發
+                    logger.debug(
+                        f"[MemoryMiddleware] v1 Loader fail-safe | "
+                        f"agent={agent_id} | "
+                        f"eligible=0 | "
+                        f"fail_safe={load_result['trace'].get('fail_safe_triggered')}"
+                    )
                 # Sidecar trace: 給 Bry 事後核對 Rem 的回應是否用到記憶
                 self._append_loader_trace(
                     event=event,
@@ -229,11 +312,6 @@ class MemoryMiddleware:
                     query_tags=query_tags,
                     load_result=load_result,
                     context_len=len(context),
-                )
-            except Exception as _loader_err:
-                # Perplexity Bry §14: Loader 失敗不影響主路徑
-                logger.warning(
-                    f"[MemoryMiddleware] v1 Loader 失敗, 不影響 agent_rem 主路徑: {_loader_err}"
                 )
 
         # 把記憶注入 payload，re-publish 為新事件
@@ -271,6 +349,23 @@ class MemoryMiddleware:
             )
             agent_id = f"unknown:{event.source}"
         session_id = event.session_id or "_no_session"
+
+        # Bry 拍板 2026-07-18 Stage 4.1: 記 session 內 agent + 觸發角色之間 touch
+        # 4.1 範圍: 角色之間共現會 confidence 微升
+        # 4.3 動態互動會更精細 (LLM 抽 stance/情緒), 4.1 先用共現當底
+        if self._relationships_manager and agent_id.startswith("agent_"):
+            self._session_agents.setdefault(session_id, set()).add(agent_id)
+            try:
+                session_agents_list = list(self._session_agents[session_id])
+                self._relationships_manager.on_agent_speak(
+                    speaker_agent_id=agent_id,
+                    session_agents=session_agents_list,
+                )
+            except Exception as _rel_err:
+                logger.warning(
+                    f"[MemoryMiddleware] Stage 4.1 relationships on_agent_speak 失敗, "
+                    f"不影響 prod: {_rel_err}"
+                )
 
         # Phase 4 節流：同 agent 在 COMMIT_COOLDOWN_SECS 內的 AGENT_SPEAK 跳過寫入
         now = datetime.now(timezone.utc)

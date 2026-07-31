@@ -239,12 +239,11 @@ class IOGateway:
     同時提供靜態檔案服務（頭像、CSS 等）。
     """
 
-    def __init__(self, bus: SoulEventBus, app: FastAPI = None, live2d_config: dict = None):
+    def __init__(self, bus: SoulEventBus, app: FastAPI = None):
         self.bus = bus
         self.manager = ConnectionManager()
         self.app = app or FastAPI(title="Soul OS Gateway")
-        # Phase 6.4：Live2D config（從 run_server.py 傳入；可能 None 表示沒載入）
-        self.live2d_config = live2d_config or {}
+        # Live2D 已移除（Bry 拍板 2026-07-14）— 純文字 + STT 介面
         self._setup_routes()
 
     def register(self):
@@ -252,6 +251,39 @@ class IOGateway:
             "io_gateway",
             self._on_agent_speak,
             event_filter={EventType.AGENT_SPEAK},
+        )
+        # 階段 5.5+ (B 方案 2026-07-15 Bry 拍板):
+        # 訂閱 AGENT_AUDIO_READY — TTSService 寫完 mp3 後會廣播這個事件
+        # gateway 收到後,透過 WS broadcast 給所有 web client
+        # (前端收到 type=agent_audio_ready 事件,自動 fetch mp3 播)
+        # 這樣 web 端不用 poll /api/tts/recent
+        self.bus.subscribe(
+            "io_gateway_audio",
+            self._on_agent_audio_ready,
+            event_filter={EventType.AGENT_AUDIO_READY},
+        )
+
+    async def _on_agent_audio_ready(self, event: SoulEvent) -> None:
+        """
+        收到 TTSService 寫完 mp3 事件 → 透過 WS broadcast 給 web client
+        (Telegram 由 ChannelRouter 訂閱,各自處理)
+        """
+        payload = event.payload
+        # 廣播給所有 web client (前端收到後自動 fetch + 播)
+        await self.manager.broadcast({
+            "type": "agent_audio_ready",
+            "agent_id": payload.get("agent_id"),
+            "ts": payload.get("ts"),
+            "audio_url": payload.get("audio_url"),
+            "audio_path": payload.get("audio_path"),
+            "emotion": payload.get("emotion"),
+            "size": payload.get("size"),
+            "timestamp": event.timestamp.isoformat() if event.timestamp else None,
+            "session_id": getattr(event, "session_id", ""),
+        })
+        logger.info(
+            f"[Gateway] audio ready broadcast | agent={payload.get('agent_id')} "
+            f"url={payload.get('audio_url')}"
         )
 
     def _setup_routes(self):
@@ -261,24 +293,10 @@ class IOGateway:
             # 每次 GET / 都重讀 static/index.html（dev-friendly — 改 HTML 不用重啟 server）
             # _UI_HTML module-level cache 在開發迭代中累積太多 bug，犧牲一點 I/O 換可迭代性。
             # 部署環境可以加 if 條件或 reverse proxy cache 處理。
+            # Live2D 已移除 — 不再注入 LIVE2D_CONFIG
             if _STATIC_INDEX and _STATIC_INDEX.exists():
                 try:
                     html = _STATIC_INDEX.read_text(encoding="utf-8")
-                    # Phase 6.4：注入 live2d config 進 HTML（讓前端 embed.js 讀得到）
-                    # 用 JSON-safe escape，避免 </script> 等字元破壞 HTML
-                    import json as _json
-                    config_json = _json.dumps(self.live2d_config, ensure_ascii=False, default=str)
-                    # 找第一個 <script> 標籤前面插入 config global
-                    # 確保 config 在 embed.js 載入前可用
-                    # 用 HTML 註解 marker 標記已注入（避免重複注入）
-                    # 用更精準的 marker 判斷是否已注入（避免跟 JS 讀取程式碼撞）
-                    if '<!-- LIVE2D_CONFIG_INJECTED -->' not in html:
-                        inject = (
-                            f'<!-- LIVE2D_CONFIG_INJECTED -->\n'
-                            f'<script>window.LIVE2D_CONFIG = {config_json};</script>\n'
-                        )
-                        # 插在 <head> 內，</head> 前面
-                        html = html.replace('</head>', inject + '</head>', 1)
                     return HTMLResponse(html, media_type="text/html; charset=utf-8")
                 except Exception as e:
                     logger.warning(f"[Gateway] 重讀 index.html 失敗: {e}")
@@ -396,51 +414,103 @@ class IOGateway:
                 import traceback
                 return {"error": str(e), "trace": traceback.format_exc()}
 
-        # ── Phase 6.x TTS：msedge-tts endpoint for Live2D widget ──
-        # widget.html 呼叫：fetch('/api/tts?voice=zh-TW-HsiaoChenNeural&text=...')
-        # 預期回應：audio/mpeg (MP3) bytes
-        @self.app.get("/api/tts")
-        async def api_tts(voice: str = "", text: str = "", agent: str = ""):
+        # ── /api/tts/audio endpoint (B 方案 2026-07-15 Bry 拍板) ──
+        # FishTTSHandler 透過 TTSService 寫 mp3 到 data/tts/{agent_id}/{ts}.mp3
+        # 這 endpoint 把 mp3 開放給 web/telegram 讀
+        @self.app.get("/api/tts/audio/{agent_id}/{filename}")
+        async def serve_tts_audio(agent_id: str, filename: str):
             """
-            線上 TTS — 把文字轉 MP3 回傳給 Live2D widget 播放
+            serve mp3 給前端/telegram client
 
-            Phase 6.4 擴充：
-              - 支援 ?agent=yua 查詢 live2d_config.agents[agent].voice
-              - voice 沒給、agent 沒給 → 預設 DEFAULT_VOICE
-
-            - text 為空 / edge-tts 失敗 → 回 404（widget 自動 fallback 瀏覽器 TTS）
-            - 5 分鐘 in-memory cache（避免 heartbeat 重複觸發同樣 draft）
+            安全檢查:
+              - agent_id 必須是已知角色（防 path traversal 列出整個磁碟）
+              - filename 必須符合 ts 格式 + .mp3 結尾
             """
-            from src.io.tts import synthesize_speech, DEFAULT_VOICE
+            from fastapi.responses import FileResponse
+            from pathlib import Path
+            import re
 
-            if not text or not text.strip():
-                return {"error": "text is required"}, 400
+            # 防 path traversal
+            if not re.match(r"^agent_[a-z_]+$", agent_id):
+                raise HTTPException(status_code=400, detail="invalid agent_id")
+            if not re.match(r"^\d{8}T\d{6}_\d{6}\.mp3$", filename):
+                raise HTTPException(status_code=400, detail="invalid filename")
 
-            # Phase 6.4：依 agent 查 voice
-            if not voice and agent and self.live2d_config:
-                agents_cfg = (self.live2d_config.get("live2d", {}) or {}).get("agents", {}) or {}
-                agent_cfg = agents_cfg.get(agent) or {}
-                voice = agent_cfg.get("voice") or ""
-
-            mp3 = await synthesize_speech(
-                text=text,
-                voice=voice or DEFAULT_VOICE,
-            )
-            if mp3 is None:
-                # 故意回 404 + JSON（不是 500）— widget 端 404 走 fallback 路徑
-                return {"error": "tts synthesis failed", "voice": voice or DEFAULT_VOICE}, 404
-
-            # 回 MP3 stream
-            from fastapi.responses import Response
-            return Response(
-                content=mp3,
+            mp3_path = Path("data/tts") / agent_id / filename
+            if not mp3_path.exists():
+                raise HTTPException(status_code=404, detail="audio not found")
+            return FileResponse(
+                mp3_path,
                 media_type="audio/mpeg",
-                headers={
-                    "Content-Length": str(len(mp3)),
-                    "Cache-Control": "public, max-age=300",  # 配合 server 端 cache TTL
-                },
+                headers={"Cache-Control": "public, max-age=3600"},
             )
-        # ── Phase 6.x TTS end ─────────────────────────────
+
+        # ── /api/tts/recent endpoint ──
+        # 前端可以 poll 拿最新 mp3（不需要 AGENT_AUDIO_READY 事件訂閱也能播）
+        @self.app.get("/api/tts/recent")
+        async def list_recent_tts(agent_id: str, limit: int = 1):
+            """
+            列出某 agent 最近 N 個 mp3 (新到舊)
+            """
+            from src.voice.tts_service import TTSService
+            svc = TTSService(
+                bus=None,  # list mode 不 emit
+                output_dir=Path("data/tts"),
+                public_url_prefix="/api/tts/audio",
+            )
+            results = svc.list_recent(agent_id=agent_id, limit=limit)
+            return {"agent_id": agent_id, "count": len(results), "audios": results}
+
+        # ── /api/tts endpoint — Edge TTS 即時合成 (Bry 拍板 2026-07-22 20:59) ──
+        # JP rollback: Fish TTS 關了, 改 Edge TTS zh-CN-XiaoxiaoNeural 提供瀏覽器端中文語音
+        # ?text= 直接合成, ?voice= 預設 zh-CN-XiaoxiaoNeural
+        @self.app.get("/api/tts")
+        async def edge_tts_synthesize(
+            text: str,
+            voice: str = "zh-CN-XiaoxiaoNeural",
+            rate: str = "+0%",
+            pitch: str = "+0Hz",
+        ):
+            """
+            Edge TTS 即時合成 — 回傳 mp3 bytes
+
+            Args:
+                text: 要合成的文字
+                voice: Edge TTS voice name, 預設 zh-CN-XiaoxiaoNeural
+                rate: 語速, 預設 +0% (正常)
+                pitch: 音調, 預設 +0Hz (正常)
+
+            Returns:
+                audio/mpeg (mp3)
+            """
+            from fastapi.responses import Response
+            try:
+                import edge_tts
+            except ImportError:
+                raise HTTPException(status_code=500, detail="edge-tts not installed")
+            if not text or not text.strip():
+                raise HTTPException(status_code=400, detail="text required")
+            # Edge TTS 限制單次 text < 5000 chars
+            if len(text) > 5000:
+                text = text[:5000]
+            try:
+                communicate = edge_tts.Communicate(text=text, voice=voice, rate=rate, pitch=pitch)
+                mp3_bytes = b""
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        mp3_bytes += chunk["data"]
+                if not mp3_bytes:
+                    raise HTTPException(status_code=500, detail="Edge TTS returned empty audio")
+                return Response(
+                    content=mp3_bytes,
+                    media_type="audio/mpeg",
+                    headers={"Cache-Control": "public, max-age=3600"},
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.warning(f"[Gateway] Edge TTS failed: {e}")
+                raise HTTPException(status_code=500, detail=f"TTS failed: {e}")
 
         @self.app.get("/_admin/fast_forward")
         async def admin_fast_forward(minutes: float = 35.0):
@@ -485,6 +555,11 @@ class IOGateway:
                             else:
                                 participants = None
                                 target = msg.get("target_agent", "agent_yua")
+                            # JP rollback (Bry 拍板 2026-07-22 20:59): Plan A 砍掉
+                            # 不再 user 中文先翻日文, user_message 直接送 LLMProxy
+                            # (LLM 跑中文 persona 會回中文, 跟 user 對話一致)
+                            raw_content = msg.get("content", "")
+                            translated_content = raw_content
                             logger.info(f"[Gateway] USER_MESSAGE mode={mode} target={target} participants={participants}")
                             # Bry §28 spec: WebSocket 事件加 session_id, 向 Telegram 格式看齊
                             # session_id = session_{user_id}_{full_agent_id}
@@ -502,8 +577,8 @@ class IOGateway:
                                 priority=EventPriority.HIGH,
                                 session_id=ws_session_id,
                                 payload={
-                                    "content": msg.get("content", ""),
-                                    "text": msg.get("content", ""),
+                                    "content": raw_content,                # JP rollback: 中文 user_message 直接送 LLM
+                                    "text": raw_content,
                                     "user_id": ws_user_id,
                                     "target_user_id": ws_user_id,  # Bry §28 spec: 給 LLMProxy 讀
                                     "target_agent": ws_full_agent,
@@ -584,13 +659,37 @@ class IOGateway:
             logger.info(f"[Gateway] clear_memory agent={agent_id} result={result}")
             return result
     async def _on_agent_speak(self, event: SoulEvent):
+        # hotfix #11 (2026-07-16 Bry 拍板):
+        # proxy.py finally 區塊會補發 stub AGENT_SPEAK 觸發 consciousness._pending reset
+        # stub 帶 is_stub=True,IOGateway 這裡要 skip 廣播 (避免 Bry 在 web 看到空訊息)
+        if event.payload.get("is_stub"):
+            logger.debug(
+                f"[Gateway] stub AGENT_SPEAK, skip broadcast | "
+                f"agent={event.payload.get('agent_id') or event.source} "
+                f"reason={event.payload.get('stub_reason', 'unknown')}"
+            )
+            return
+
         ts = event.timestamp.isoformat() if hasattr(event, "timestamp") and event.timestamp else datetime.now(timezone.utc).isoformat()
+        # Bry 拍板 2026-07-18 10:50: payload 內 text 已是整合後的 (proxy.py 整合)
+        # 詳見 proxy.py L1854 整合邏輯 — 確保 IOGateway / ChannelRouter / Memory 三路都收到同份 text
         payload = {
             "type": "agent_speak",
             "agent_id": event.payload.get("agent_id", event.source),
             "text": event.payload.get("text", ""),
             "timestamp": ts,
             "session_id": getattr(event, "session_id", ""),
+            # 階段 3+ (Bry 拍板 2026-07-15): 補上 audio_text + emotion
+            # 之前只 broadcast text,client 端拿不到 TTS 素材
+            # 補上後前端可以直接用 audio_text 播放 + 顯示 emotion 圖示
+            # 整合後 audio_text 仍是純日文 (TTS 不念中文), Bry 拍板 2026-07-18
+            "audio_text": event.payload.get("audio_text", ""),
+            "emotion": event.payload.get("emotion", ""),
+            # 方向 C (Bry 拍板 2026-07-17 20:15): 補上 translation
+            # 之前 proxy.py L2014 寫進 event.payload 但 gateway 序列化時漏帶
+            # WS / TG client 收到的 broadcasting 沒 translation, 整條日文+中文並列設計失效
+            # 修法: event.payload.get("translation"), 預設 None (中文版角色 / 翻譯失敗)
+            "translation": event.payload.get("translation"),
         }
         # Write to trace.log directly for debugging
         try:

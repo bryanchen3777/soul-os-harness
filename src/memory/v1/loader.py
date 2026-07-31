@@ -158,7 +158,6 @@ class MemoryLoader:
         # "agent 自己的名字在自己記憶庫裡不具區分力" (雷姆 在 agent_rem store 裡幾乎每筆都有)
         # 在計算 overlap 時, 從 memory.tags 拿掉 agent 自己名字, 不算命中
         agent_name_stopwords = _PER_AGENT_NAME_STOPWORDS.get(agent_id, set())
-        # 注意: 不改 query_tags, 只改 memory.tags 的 overlap 計算
 
         # Step 4: 用 query_tags 過濾
         # Perplexity Bry §25 (b) 拍板 (2026-07-02): MIN_OVERLAP 按 content token 數分層
@@ -167,7 +166,10 @@ class MemoryLoader:
         # - 機械可量化, 不涉及語意判斷, 跟 per-agent stopword 性質一致
         # - Bry §25 spec 強調: 這不解決根本問題, 預期命中率從 0/5 變 1/5 左右
         import re as _re_overlap
-        query_set = set(query_tags)
+        # Bry 拍板 2026-07-18 Stage 2.2: symmetric stopword
+        # 之前只 strip memory 側, 導致 query="雷姆" 找不到 memory (因為唯一 match 的 tag 被 strip 掉)
+        # 修法: query 側跟 memory 側都 strip, 保持對稱, 符合 Bry §18 設計初衷
+        query_set = set(query_tags) - agent_name_stopwords
         by_tags: List[Memory] = []
         for m in same_agent:
             mem_tags_filtered = set(m.tags) - agent_name_stopwords

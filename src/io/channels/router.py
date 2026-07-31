@@ -14,7 +14,13 @@ Phase 5c 新增：fallback 邏輯
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import random
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.eventbus.schema import EventType, SoulEvent
@@ -23,6 +29,13 @@ if TYPE_CHECKING:
     from .base import ChannelAdapter
 
 logger = logging.getLogger("soul_os.channels.router")
+
+# Stage 4.3 (Mavis 拍板 2026-07-21 16:35): TG 推播 3 層分級 + cold start 豁免
+_PUSH_PROB_ACTIVE = 1.0         # count >= 1 → 100% 推
+_PUSH_PROB_COLD_START = 1.0/3.0 # count = 0 → 1/3 推 (讓 Bry 認識他們)
+_PUSH_PROB_STALE = 1.0/10.0     # last_interaction > 7 天 → 1/10 推
+_STALE_DAYS_THRESHOLD = 7.0
+_BRYAN_ENTITY_ID = "user_bryan"
 
 
 class ChannelRouter:
@@ -38,6 +51,19 @@ class ChannelRouter:
         self._last_tg_user: dict[str, int] = {}
         # Phase 5c+：記最近 tg session 對應的 session_id（給主動觸發帶上下文用）
         self._last_tg_session: dict[str, str] = {}
+        # Phase 5+ (2026-07-15 Bry 拍板): 配對 AGENT_SPEAK → AGENT_AUDIO_READY
+        # AGENT_SPEAK 送 text 到 telegram user X 後,把 (X, ts) 暫存到這;
+        # AGENT_AUDIO_READY 來時用 agent_id 找到 X,把 mp3 用 send_voice 推給他
+        # 過期 60s(正常 TTS 1-3s 完成,Lesson 36E Bry 拍板 2026-07-26 12:33: 60s 給 LLMJudge + provider 延遲緩衝, 30s 對 LLMJudge retry 撞 length 太短)
+        # v32 7/26 23:48 觀察: TTS 寫完 mp3 後 AGENT_AUDIO_READY event 在 bus queue 卡 4 分鐘才 fire (publish → consumer 延遲),
+        # 60s 過期太短 → voice 丟掉。Bry 拍板 v32.1 (7/26 23:54): 拉長到 300s 涵蓋 bus 排隊延遲。
+        # key = full agent_id (e.g. "agent_mahiru")
+        self._pending_voice_target: dict[str, tuple[int, float]] = {}
+        self._VOICE_PAIR_EXPIRY_SEC = 300.0
+        # Bry 2026-07-27 00:37 拍板: voice pair 開起來
+        # 00:00 disable (累了, 接受半吊子), 00:37 Bry 醒來不累, 把 TTS 開
+        # _on_agent_audio_handler 收到 AGENT_AUDIO_READY → send_voice 推送 TG
+        self._voice_enabled = True
 
     def register(self, adapter: "ChannelAdapter") -> None:
         """註冊一個 channel adapter（如 TelegramAdapter）。"""
@@ -54,14 +80,35 @@ class ChannelRouter:
             self._on_agent_speak,
             event_filter={EventType.AGENT_SPEAK},
         )
-        logger.info("[ChannelRouter] subscribed AGENT_SPEAK")
+        # Phase 5+ (2026-07-15 Bry 拍板): 同步訂閱 AGENT_AUDIO_READY
+        # 當 TTSService 寫完 mp3,推語音到剛才收 text 的 telegram user
+        self._bus.subscribe(
+            "channel_router_audio",
+            self._on_agent_audio_ready,
+            event_filter={EventType.AGENT_AUDIO_READY},
+        )
+        logger.info(
+            "[ChannelRouter] subscribed AGENT_SPEAK + AGENT_AUDIO_READY"
+        )
 
     async def stop(self) -> None:
         """取消訂閱（給 shutdown 用）。"""
         self._bus.unsubscribe("channel_router")
+        self._bus.unsubscribe("channel_router_audio")
         logger.info("[ChannelRouter] unsubscribed")
 
     async def _on_agent_speak(self, event: SoulEvent) -> None:
+        # hotfix #11 (2026-07-16 Bry 拍板):
+        # proxy.py finally 區塊會補發 stub AGENT_SPEAK 觸發 consciousness._pending reset
+        # stub 帶 is_stub=True,ChannelRouter 這裡要 skip (避免 Bry 收到空 Telegram 訊息)
+        if event.payload.get("is_stub"):
+            logger.debug(
+                f"[ChannelRouter] stub AGENT_SPEAK, skip | "
+                f"agent={event.payload.get('agent_id') or event.source} "
+                f"reason={event.payload.get('stub_reason', 'unknown')}"
+            )
+            return
+
         target_channel = event.payload.get("target_channel", "web")
         target_user_id = event.payload.get("target_user_id")
         agent_id = event.payload.get("agent_id", event.source)
@@ -91,6 +138,19 @@ class ChannelRouter:
         # Web 由 IOGateway 處理，這裡跳過避免重複送出
         if target_channel == "web":
             return
+
+        # ── Stage 4.3 (Mavis 拍板 2026-07-21 16:35): TG 推播過濾 ──
+        # 3 層分級: active (100%) / cold start (1/3) / stale (1/10)
+        # 夢境/事件豁免: source=dream/event 不過濾 (讓 Bry 看到「角色世界活著」)
+        if target_channel == "telegram":
+            event_source = event.payload.get("source", "")
+            if event_source not in ("dream", "event"):
+                if not self._should_push_to_bry(agent_id):
+                    logger.info(
+                        f"[ChannelRouter] TG push filtered | agent={agent_id} "
+                        f"reason=cold_start_or_stale (source={event_source or 'proactive'})"
+                    )
+                    return
 
         adapter = self._adapters.get(target_channel)
         if not adapter:
@@ -135,6 +195,17 @@ class ChannelRouter:
                     f"[ChannelRouter:{target_channel}] sent to "
                     f"{target_user_id} from {adapter_agent_id}: {text[:50]!r}"
                 )
+                # Phase 5+ (2026-07-15 Bry 拍板): text 成功送到 telegram 後,
+                # 暫存 (user_id, ts),等 AGENT_AUDIO_READY 把 mp3 也推過去
+                if target_channel == "telegram":
+                    self._pending_voice_target[agent_id] = (
+                        int(target_user_id),
+                        time.time(),
+                    )
+                    logger.debug(
+                        f"[ChannelRouter] pending voice target set: "
+                        f"{agent_id} → user {target_user_id}"
+                    )
             else:
                 logger.warning(
                     f"[ChannelRouter:{target_channel}] send failed "
@@ -143,6 +214,140 @@ class ChannelRouter:
         except Exception as e:
             logger.exception(
                 f"[ChannelRouter:{target_channel}] send error: {e}"
+            )
+
+    def _should_push_to_bry(self, agent_id: str) -> bool:
+        """
+        Stage 4.3 (Mavis 拍板 2026-07-21 16:35): 決定要不要把該 agent 的主動觸發推給 Bry.
+
+        3 層分級:
+        - active (count >= 1): 100% 推 (Bry 跟該角色聊過)
+        - cold start (count = 0): 1/3 機率推 (讓 Bry 認識他們)
+        - stale (last_interaction_at > 7 天): 1/10 機率推 (降噪)
+
+        夢境/事件豁免: source=dream/event 走另外路徑, 不走這個過濾
+        (在 _on_agent_speak 那邊用 event_source 判斷)
+        """
+        rel_path = Path("data/soul") / agent_id / "relationships.json"
+        if not rel_path.is_file():
+            # 沒 relationships → 視為 cold start
+            return random.random() < _PUSH_PROB_COLD_START
+        try:
+            data = json.loads(rel_path.read_text(encoding="utf-8"))
+            bry = data.get("others", {}).get(_BRYAN_ENTITY_ID, {})
+            count = bry.get("interaction_count", 0)
+            last_at = bry.get("last_interaction_at")
+        except Exception as e:
+            logger.warning(f"[ChannelRouter] 讀 {agent_id} relationships 失敗, 當 cold start: {e}")
+            return random.random() < _PUSH_PROB_COLD_START
+
+        # active: count >= 1
+        if count >= 1:
+            return random.random() < _PUSH_PROB_ACTIVE
+
+        # stale: last_interaction_at > 7 天
+        if last_at:
+            try:
+                last_dt = datetime.fromisoformat(last_at)
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                days_since = (datetime.now(timezone.utc) - last_dt).total_seconds() / 86400.0
+                if days_since > _STALE_DAYS_THRESHOLD:
+                    return random.random() < _PUSH_PROB_STALE
+            except Exception:
+                pass
+
+        # cold start: count = 0
+        return random.random() < _PUSH_PROB_COLD_START
+
+    async def _on_agent_audio_ready(self, event: SoulEvent) -> None:
+        """
+        Phase 5+ (2026-07-15 Bry 拍板): TTSService 寫完 mp3 後廣播的事件
+        - 找 _pending_voice_target 配對,若對得上就把 mp3 用 send_voice 推給 TG user
+        - 過期 60s 內的配對才有效（防 stale state; Lesson 36E Bry 拍板 2026-07-26 12:33 30s→60s）
+        - 只有配對上的 agent 才推,其他 channel（Telegram 主動觸發、web 等）不管
+
+        注意:這個 handler 跟 IOGateway._on_agent_audio_ready 是並行的,
+        IOGateway 廣播給 web client,這裡送 telegram。同一個 event 兩個 consumer。
+        """
+        agent_id = event.payload.get("agent_id", event.source)
+        audio_path = event.payload.get("audio_path", "")
+        if not audio_path:
+            logger.debug(
+                f"[ChannelRouter:audio] empty audio_path for {agent_id}, skip"
+            )
+            return
+
+        # Bry 2026-07-27 00:00 拍板 disable voice pair: 累了, 接受半吊子 ship
+        # text 100% 通, voice 之後再說。AGENT_AUDIO_READY 直接 skip, 不送 voice。
+        # AGENT_SPEAK 那邊的 text 推送路徑不受影響 (existing _pending_voice_target
+        # 暫存 + TG text 推送走的是另一條路, 在 _on_agent_speak 內)。
+        if not getattr(self, "_voice_enabled", True):
+            logger.debug(
+                f"[ChannelRouter:audio] voice pair disabled (Bry 7/27 00:00), "
+                f"skip voice push for {agent_id} (text already sent)"
+            )
+            return
+
+        # 找配對
+        target = self._pending_voice_target.get(agent_id)
+        if not target:
+            # 沒有 pending = 這個 audio 不是要送 TG 的（可能是 web 觸發）
+            # 也有可能過期了被清掉 → 屬於正常情況,不當 error
+            logger.debug(
+                f"[ChannelRouter:audio] no pending TG target for {agent_id}, "
+                f"skip voice push (可能是 web-only 觸發)"
+            )
+            return
+        user_id, ts = target
+        # 過期檢查
+        if time.time() - ts > self._VOICE_PAIR_EXPIRY_SEC:
+            logger.warning(
+                f"[ChannelRouter:audio] pending voice target expired "
+                f"({time.time() - ts:.1f}s > {self._VOICE_PAIR_EXPIRY_SEC}s) "
+                f"for {agent_id} → user {user_id}, drop"
+            )
+            # 清掉,避免重複檢查
+            self._pending_voice_target.pop(agent_id, None)
+            return
+
+        # 拿到就 pop,避免同一個 audio 推兩次
+        self._pending_voice_target.pop(agent_id, None)
+
+        # 找 telegram adapter
+        adapter = self._adapters.get("telegram")
+        if not adapter or not hasattr(adapter, "send_voice"):
+            logger.warning(
+                f"[ChannelRouter:audio] no telegram adapter or "
+                f"missing send_voice method, drop voice for {agent_id}"
+            )
+            return
+
+        # strip "agent_" prefix 對齊 adapter key
+        adapter_agent_id = (
+            agent_id[len("agent_"):] if agent_id.startswith("agent_")
+            else agent_id
+        )
+
+        try:
+            ok = await adapter.send_voice(
+                agent_id=adapter_agent_id,
+                audio_path=audio_path,
+                user_id=user_id,
+            )
+            if ok:
+                logger.info(
+                    f"[ChannelRouter:audio] voice pushed to TG | "
+                    f"agent={agent_id} user={user_id} file={audio_path}"
+                )
+            else:
+                logger.warning(
+                    f"[ChannelRouter:audio] TG send_voice returned False | "
+                    f"agent={agent_id} user={user_id}"
+                )
+        except Exception as e:
+            logger.exception(
+                f"[ChannelRouter:audio] TG send_voice error: {e}"
             )
 
     async def inbound(
@@ -154,6 +359,10 @@ class ChannelRouter:
     ) -> None:
         """Telegram / LINE / WeChat 收到 user 訊息 → 發 USER_MESSAGE 進 Event Bus。
 
+        安全：Phase 5c+ 加 owner whitelist。從 TELEGRAM_OWNER_ID env 讀取合法
+        user_id（支援多 owner 用逗號分隔，例如 "12345,67890"）。
+        不在白名單的 user → 靜默忽略（不回錯誤、不廣播）。
+
         session_id 對齊 LLMProxy 讀 history 的 key（_session_key(agent_id)
         回傳 "session_{agent_id}"），這樣 Telegram 跟 WebSocket 的對話歷史
         會寫進同一個 session，LLM 看得到。
@@ -162,6 +371,18 @@ class ChannelRouter:
         AgentConsciousness.register() 用 target_filter=agent_id
         （完整前綴）。早期 code 用 target=agent_id（短碼），bus match 不到。
         """
+        # Phase 5c+：owner whitelist（避免陌生人觸發 agent）
+        if channel == "telegram":
+            allowed_str = os.environ.get("TELEGRAM_OWNER_ID", "")
+            if allowed_str:
+                allowed = {int(x.strip()) for x in allowed_str.split(",") if x.strip().isdigit()}
+                if user_id not in allowed:
+                    logger.warning(
+                        f"[inbound:{channel}] REJECTED user_id={user_id} "
+                        f"(not in owner whitelist)"
+                    )
+                    return
+
         # Phase 5c：記「這個 agent 最近一次互動的 tg user」
         # 給主動觸發（heartbeat）fallback 用
         # 注意：key 必須是「完整 agent_id」（full_agent_id）
@@ -173,12 +394,15 @@ class ChannelRouter:
         )
         if channel == "telegram":
             self._last_tg_user[full_agent_id] = user_id
-            self._last_tg_session[full_agent_id] = f"session_{full_agent_id}"
+            # Step 1 fix: session 隔離每個 user，避免陌生人污染 Bryan 記憶
+            # Bryan: session_1696287850_agent_yua, 陌生人: session_99999999_agent_yua
+            tg_session = f"session_{user_id}_{full_agent_id}"
+            self._last_tg_session[full_agent_id] = tg_session
 
         # Phase 5c+ fix：session_id 跟 LLMProxy _session_key 對齊
-        # 之前用 f"tg_{full_agent_id}_{user_id}" 變成獨立 session
-        # LLM 讀 history 是用固定 "session_{agent_id}"，看不到 tg 對話
-        session_id = f"session_{full_agent_id}"
+        # Bryan 的 Telegram 記憶: session_1696287850_agent_yua
+        # 陌生人的 Telegram 記憶: session_99999999_agent_yua（永遠不混）
+        session_id = f"session_{user_id}_{full_agent_id}"
         event = SoulEvent(
             event_type=EventType.USER_MESSAGE,
             source=f"{channel}:{user_id}",

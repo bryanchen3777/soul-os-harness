@@ -89,24 +89,26 @@ heartbeat:
 
 llm:
   # 主要 LLM provider（"minimax" | "claude" | "openai" | "mock"）
-  # Phase 2.4+ 預設：minimax（Anthropic-compatible endpoint）
+  # Phase 2.4+ 預設：minimax（OpenAI-compatible endpoint）
+  # JP rollback (Bry 拍板 2026-07-22 20:59): 改回 minimax OpenAI endpoint + M2.7
+  # 之前 7/21 換 M3 anthropic 是為了 disable thinking, 整套 JP 砍掉後不需要
   # 其他可選：claude（直連 Anthropic）、openai、mock（不接真實 API）
   provider: minimax
 
   # 統一 model 欄位（env LLM_MODEL 會覆蓋）
-  # MiniMax-M2.7-highspeed：204K context、100 tps，對話場景推薦
-  # 其他選擇：MiniMax-M3（1M context，推理強）、M2-her（角色扮演）
-  model: MiniMax-M2.7-highspeed
+  # JP rollback 後預設 minimax-M2.7 (7/14-7/15 跑得很穩的版本)
+  # .env 通常會設 LLM_MODEL=minimax-M2.7
+  model: minimax-M2.7
 
   # provider 對應的備援 model（未指定 LLM_MODEL 時 fallback 用）
   openai_model: gpt-4o-mini
   claude_model: claude-haiku-4-5-20251001
-  minimax_model: MiniMax-M2.7-highspeed
+  minimax_model: minimax-M2.7
 
   # MiniMax 細節（llm.minimax.*）
-  # MiniMax 提供 Anthropic-compatible endpoint：
-  #   https://api.minimax.io/anthropic/v1/messages
-  # Phase 2.4 起直接複用 ClaudeBackend，只換 BASE_URL
+  # MiniMax 提供 OpenAI-compatible endpoint：
+  #   https://api.minimax.io/v1/chat/completions
+  # Phase 2.4+ 走 OpenAIBackend (跟 openai provider 共用 class)
   minimax:
     # 留空時必須由 env MINIMAX_API_KEY 注入
     api_key: ""
@@ -122,23 +124,16 @@ llm:
     api_key: ""
 
   # 生成參數
-  # max_tokens: 1024 — 對 MiniMax M2 系列（內建 extended thinking）來說
-  # 300 太低：thinking 預算吃 200-256 後剩 50-100 tokens 給 text，偶爾 text
-  # 被截斷成空 → LLMProxy 觸發 empty text filter → 漏 AGENT_SPEAK。
-  # 1024 給 thinking + text 都足夠緩衝。
-  max_tokens: 1024
-  temperature: 0.85
+  # 2026-07-25 Bry 拍板 (Perplexity 給 silent failure 治根方案): M2.x thinking 永遠開,
+  # 512 → 4000 給 thinking + JSON output 真正夠用的空間
+  # max_tokens key 名 loader 內部會轉成 max_completion_tokens (MiniMax 全系列 deprecate max_tokens)
+  # 2026-07-26 Bry 拍板 D-core 修訂: temperature 0.85→0.5 (tool_choice 強制呼叫路徑, 越低越穩,
+  # 社群驗證). 7/26 11:08 第一次改 L1603 LLMProxy.__init__ default 沒生效 (loader 從 config
+  # 餵 keyword arg 0.85 覆蓋 default), 7/26 12:05 v29 silent 撞見才發現, 12:18 修這層
+  # Lesson 32 升級條款: 改 default 前要 grep 所有 caller 確認沒被明確傳入覆蓋
+  max_tokens: 4000
+  temperature: 0.5
   max_retries: 3
-
-  # Extended thinking 控制（Anthropic Messages API 參數，MiniMax 透過
-  # Anthropic-compatible endpoint 也支援）
-  # enabled + budget_tokens: 256 給 character roleplay 留一點 reasoning 空間
-  # （如「現在該不該主動講話」「剛才 user 語氣是不是生氣」），但不讓它
-  # 預算吃滿 max_tokens 然後把 text 截掉。
-  # 想完全關掉 thinking 改成 type: "disabled"。
-  thinking:
-    type: enabled
-    budget_tokens: 256
 
   # 對話歷史保留最近幾輪（每輪 = user + assistant）
   max_history_turns: 10

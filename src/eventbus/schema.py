@@ -32,6 +32,7 @@ class EventType(str, Enum):
     # 輸出動作
     AGENT_SPEAK     = "agent_speak"       # Agent 正式輸出的文字（送往 I/O Gateway）
     AGENT_ACTION    = "agent_action"      # 實體動作指令（未來給機器人馬達、TTS 等）
+    AGENT_AUDIO_READY = "agent_audio_ready"  # TTS mp3 已寫入磁碟,廣播給 channel 訂閱者（web/telegram）
 
     # 系統管理
     SYSTEM_ERROR    = "system_error"      # 任何模組拋出的錯誤，統一匯報

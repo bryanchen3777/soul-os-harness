@@ -158,8 +158,10 @@ class LLMJudge:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_msg},
                 ],
-                model="claude-haiku-4-5-20251001",
-                max_tokens=500,
+                # JP rollback (Bry 拍板 2026-07-22 20:59): 從 LLMProxy backend model 動態拿
+                # 原本 hardcode claude-haiku 跟 minimax OpenAI endpoint 不相容, 會 400
+                model=self.llm_proxy.model,
+                max_tokens=1000,  # Lesson 36D Bry 拍板 2026-07-26 12:18: 升 1000+ 解 41.5% length 截斷 (v31 ship)
                 temperature=0.0,  # 三元組萃取要 deterministic
             )
             return self._parse_triples(r)
@@ -220,8 +222,8 @@ class LLMJudge:
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": user_msg},
                 ],
-                model="claude-haiku-4-5-20251001",
-                max_tokens=200,
+                model=self.llm_proxy.model,
+                max_tokens=1000,  # Lesson 36D Bry 拍板 2026-07-26 12:18: 升 1000+ 解 length 截斷 (v31 ship)
                 temperature=0.0,
             )
             return _parse_category_judge_output(r, category)
@@ -256,8 +258,8 @@ class LLMJudge:
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": user_msg},
                 ],
-                model="claude-haiku-4-5-20251001",
-                max_tokens=200,
+                model=self.llm_proxy.model,
+                max_tokens=1000,  # Lesson 36D Bry 拍板 2026-07-26 12:18: 升 1000+ 解 length 截斷 (v31 ship)
                 temperature=0.0,
             )
             return _parse_stance_output(r)
@@ -368,8 +370,8 @@ class LLMJudge:
                             {"role": "system", "content": prompt},
                             {"role": "user", "content": user_msg},
                         ],
-                        model="claude-haiku-4-5-20251001",
-                        max_tokens=200,
+                        model=self.llm_proxy.model,
+                        max_tokens=1000,  # Lesson 36D Bry 拍板 2026-07-26 12:18: 升 1000+ 解 length 截斷 (v31 ship)
                         temperature=0.0,
                     )
                     judgment, reason = _parse_category_judge_output(r, cat)

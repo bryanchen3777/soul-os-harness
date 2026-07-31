@@ -103,8 +103,14 @@ def create_llm_backend(cfg: dict):
     llm_cfg = cfg.get("llm", {})
 
     if provider == "minimax":
-        # MiniMax 提供 Anthropic-compatible endpoint
-        # 直接複用 ClaudeBackend，只換 BASE_URL
+        # JP rollback (Bry 拍板 2026-07-22 20:59): 換回 M2.7 via OpenAI endpoint
+        # 原本 7/21 換 M3 + ClaudeBackend (anthropic endpoint) 是為了 disable thinking,
+        # 但整套 JP pipeline 砍掉後, LLM 跑中文 persona 沒需要特別 thinking 控制
+        # 退回 7/14 之前的 M2.7 OpenAI endpoint 方案 (7/15 7/16 跑得很穩)
+        # 階段 5.5 (Bry 拍板 2026-07-14): 走 OpenAI Chat Completions 端點
+        # 原因: Anthropic 風格 v1/messages 不支援 response_format,無法強制 JSON mode
+        # minimax 同時有 v1/chat/completions (OpenAI 標準) — 原生支援 response_format
+        # OpenAIBackend 改完支援 response_format (從 kwargs 抽出, 放進 body)
         minimax_cfg = llm_cfg.get("minimax", {})
         api_key = (
             minimax_cfg.get("api_key")
@@ -115,10 +121,10 @@ def create_llm_backend(cfg: dict):
                 "MINIMAX_API_KEY is required when LLM_PROVIDER=minimax. "
                 "Set it in .env or env."
             )
-        backend = ClaudeBackend(api_key=api_key)
-        # 覆寫 class-level BASE_URL（Python instance attr 優先於 class attr）
-        backend.BASE_URL = "https://api.minimax.io/anthropic/v1/messages"
-        return backend
+        return OpenAIBackend(
+            api_key=api_key,
+            base_url="https://api.minimax.io/v1/chat/completions",
+        )
 
     if provider == "openai":
         openai_cfg = llm_cfg.get("openai", {})
@@ -161,6 +167,10 @@ def create_llm_proxy(cfg: dict, bus):
         provider = llm_cfg.get("provider", "claude").lower()
         if provider == "openai":
             model = llm_cfg.get("openai_model", "gpt-4o-mini")
+        elif provider == "minimax":
+            # JP rollback (Bry 拍板 2026-07-22 20:59): minimax provider 預設 M2.7 via OpenAI endpoint
+            # .env LLM_MODEL=minimax-M2.7 會覆蓋這個
+            model = llm_cfg.get("minimax_model", "minimax-M2.7")
         else:
             model = llm_cfg.get("claude_model", "claude-haiku-4-5-20251001")
 
@@ -169,7 +179,7 @@ def create_llm_proxy(cfg: dict, bus):
         backend=backend,
         model=model,
         max_tokens=llm_cfg.get("max_tokens", 300),
-        temperature=llm_cfg.get("temperature", 0.85),
+        temperature=llm_cfg.get("temperature", 0.5),  # Bry 拍板 2026-07-26 12:18 D-core 修訂: 0.85→0.5 (loader 這層 default 也要跟, 不然會被 keyword arg 0.85 從 config 餵進來覆蓋掉 LLMProxy.__init__ 的 default 0.5)
         max_retries=llm_cfg.get("max_retries", 3),
         max_history_turns=llm_cfg.get("max_history_turns", 10),
         config=cfg,  # Phase 4: 傳完整 config 進去，RAG 等子模組從 self.config 讀

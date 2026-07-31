@@ -269,7 +269,7 @@
 
     /* Phase 6.x STT：Soul OS 主輸入框旁的麥克風按鈕 */
     .ctrl-mic {
-      background: linear-gradient(135deg, #8b6cf5, #5b54e8);  /* 紫色，跟 Live2D widget 風格一致 */
+      background: linear-gradient(135deg, #8b6cf5, #5b54e8);  /* 紫色 */
       color: #fff;
       border: none;
       padding: 12px 16px;
@@ -293,6 +293,31 @@
     @keyframes mic-pulse {
       0%, 100% { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.7); }
       50% { box-shadow: 0 0 0 8px rgba(248, 113, 113, 0); }
+    }
+
+    /* Phase 5+ (2026-07-15 Bry 拍板): TTS 重播按鈕
+       掛在 agent 最新一則訊息旁邊,點擊重播最近一次的 TTS 音檔 */
+    .replay-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      cursor: pointer;
+      font-size: 11px;
+      color: var(--blue);
+      padding: 2px 6px;
+      border-radius: 6px;
+      background: rgba(79, 140, 255, 0.1);
+      transition: background 0.2s, transform 0.1s;
+      user-select: none;
+    }
+    .replay-btn:hover {
+      background: rgba(79, 140, 255, 0.2);
+      transform: scale(1.05);
+    }
+    .replay-btn:active { transform: scale(0.95); }
+    .replay-btn.playing {
+      background: rgba(74, 222, 128, 0.2);
+      color: var(--success);
     }
   </style>
 </head>
@@ -341,6 +366,15 @@
     var agents = [];  // loaded by initAgents() — 動態生成的 agent 清單
     var ws = null;
 
+    // Phase 5+ (2026-07-15 Bry 拍板): TTS 重播快取
+    // key = agent_id (e.g. "agent_mahiru"), value = audio_url
+    // 由兩個來源更新:
+    //   1. WS agent_audio_ready 即時事件（自動播放的同一筆）
+    //   2. initAgents 完成時 primeTtsCacheForAllAgents() 從 /api/tts/recent 拉
+    // 重播按鈕一律用最新一筆（符合 Bry 需求:「重播最近一次」)
+    var lastAudioByAgent = {};
+    var currentPlayingAudio = null;  // 追蹤當前播放的 <audio>,避免重複觸發
+
     // ===== Phase 2 Dynamic UI: 從後端拉 agents 清單 =====
     // Cache-bust: ?_=Date.now() 防止瀏覽器用 304 + 舊 HTML
     // cache: 'no-store' 告訴 fetch 不要用 cache
@@ -361,6 +395,9 @@
         renderAgentConvList();
         renderAgentMemberList();
         updateGroupMembersSet();
+        // Phase 5+ (2026-07-15 Bry 拍板): agent 清單拉完,順便抓每個 agent
+        // 最近一筆 TTS 音檔,讓重播按鈕一進來就能用（不用等下次說話）
+        primeTtsCacheForAllAgents();
       } catch (e) {
         console.warn('[Soul OS] initAgents 失敗,使用 fallback(空清單):', e);
       }
@@ -407,6 +444,123 @@
       groupMembers = new Set(agents.map(a => a.id));
     }
 
+    // ===== Phase 5+ TTS 重播 helper =====
+    // 給定 agent_id 拉 /api/tts/recent,更新 lastAudioByAgent 快取
+    // 若該 agent 在當前對話有訊息,把 🔊 掛到最新一則
+    async function primeTtsCacheForAgent(agentId) {
+      try {
+        const res = await fetch(
+          '/api/tts/recent?agent_id=' + encodeURIComponent(agentId) + '&limit=1',
+          { cache: 'no-store' }
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data && data.audios && data.audios.length > 0) {
+          const audio = data.audios[0];
+          lastAudioByAgent[agentId] = audio.audio_url;
+          // 若該 agent 的最新訊息存在,順手把按鈕掛上
+          attachReplayButtonToLatest(agentId);
+        }
+      } catch (e) {
+        // 靜默失敗,沒有 audio 也不影響主功能
+      }
+    }
+
+    async function primeTtsCacheForAllAgents() {
+      // 平行 fetch,每個 agent 一次（10 個 agent 也才 10 個小 request）
+      for (const a of agents) {
+        primeTtsCacheForAgent(a.id);
+      }
+    }
+
+    // 給 agent 最新的訊息掛上（或更新）🔊 重播按鈕
+    function attachReplayButtonToLatest(agentId) {
+      const all = document.querySelectorAll(
+        '.message-agent[data-agent="' + agentId + '"]'
+      );
+      if (all.length === 0) return;
+      // 先把該 agent 所有訊息的舊按鈕拔掉,避免多則都有按鈕（Bry 講「最新一則」)
+      all.forEach(function (m) {
+        const old = m.querySelector('.replay-btn');
+        if (old) old.remove();
+      });
+      // 掛到最後一則
+      const last = all[all.length - 1];
+      const time = last.querySelector('.message-time');
+      if (!time) return;
+      const btn = document.createElement('span');
+      btn.className = 'replay-btn';
+      btn.title = '重播最近的語音';
+      btn.textContent = '🔊 重播';
+      btn.onclick = function (e) {
+        e.stopPropagation();
+        replayLastAudio(agentId, btn);
+      };
+      // 插在時間後面
+      time.parentNode.insertBefore(btn, time.nextSibling);
+    }
+
+    function replayLastAudio(agentId, btn) {
+      const url = lastAudioByAgent[agentId];
+      if (!url) {
+        console.warn('[TTS] no cached audio for', agentId);
+        if (btn) {
+          btn.textContent = '🔇 沒音檔';
+          setTimeout(function () {
+            if (btn.parentNode) {
+              btn.textContent = '🔊 重播';
+            }
+          }, 1500);
+        }
+        return;
+      }
+      // 停掉前一個播放（如果還在播）
+      if (currentPlayingAudio) {
+        try { currentPlayingAudio.pause(); } catch (e) {}
+        currentPlayingAudio = null;
+        // 把舊按鈕狀態復原
+        document.querySelectorAll('.replay-btn.playing').forEach(function (b) {
+          b.classList.remove('playing');
+          b.textContent = '🔊 重播';
+        });
+      }
+      const audio = new Audio(url);
+      audio.volume = 0.85;
+      if (btn) {
+        btn.classList.add('playing');
+        btn.textContent = '▶ 播放中';
+      }
+      audio.play().then(function () {
+        currentPlayingAudio = audio;
+        audio.onended = function () {
+          if (btn) {
+            btn.classList.remove('playing');
+            btn.textContent = '🔊 重播';
+          }
+          if (currentPlayingAudio === audio) currentPlayingAudio = null;
+        };
+        audio.onerror = function () {
+          if (btn) {
+            btn.classList.remove('playing');
+            btn.textContent = '🔇 失敗';
+            setTimeout(function () {
+              if (btn.parentNode) btn.textContent = '🔊 重播';
+            }, 1500);
+          }
+          currentPlayingAudio = null;
+        };
+      }).catch(function (err) {
+        console.warn('[TTS] replay 失敗:', err && err.message);
+        if (btn) {
+          btn.classList.remove('playing');
+          btn.textContent = '🔇 失敗';
+          setTimeout(function () {
+            if (btn.parentNode) btn.textContent = '🔊 重播';
+          }, 1500);
+        }
+      });
+    }
+
     // ===== Phase 2 Dynamic UI: titles 字典 =====
     // 由 initAgents 透過 getTitleFor 函數動態提供,不再寫死 dict
     function getTitleFor(convId) {
@@ -422,101 +576,9 @@
       initAgents();
     }
 
-    // ===== Phase 6.1：Live2D Widget 整合 =====
-    // 載入 embed.js，window.AvatarWidget 會自動可用
-    // Live2D widget 顯示在右下角浮動，現有對話體驗不破壞
-    (function() {
-      var s = document.createElement('script');
-      // ?v=1 cache-bust（避免瀏覽器卡舊版 embed.js）
-      s.src = '/static/embed.js?v=7';
-      // Phase 6.4：從 window.LIVE2D_CONFIG（server 注入）讀預設 agent 的 model + voice
-      // 沒注入時 fallback 到 Haru + 曉曉（向後相容 dev 模式直接開 index.html）
-      var live2dCfg = (window.LIVE2D_CONFIG || {}).live2d || {};
-      var defaultAgent = live2dCfg.default_agent || 'yua';
-      var defaultAgentCfg = (live2dCfg.agents || {})[defaultAgent] || {};
-      var defaultModelKey = defaultAgentCfg.model || 'haru';
-      var defaultVoice = defaultAgentCfg.voice || 'zh-CN-XiaoxiaoNeural';
-      var defaultModelUrl = (live2dCfg.models || {})[defaultModelKey] || 'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json';
-      s.setAttribute('data-model', defaultModelUrl);
-      s.setAttribute('data-voice', defaultVoice);
-      s.setAttribute('data-agent', defaultAgent);
-      s.setAttribute('data-knowledge', '/static/knowledge.js?v=1');
-      // Phase 6.x TTS：絕對路徑指向 Soul OS /api/tts endpoint
-      // 不加的話 widget 預設相對路徑會被解析成 /static/api/tts（404）
-      s.setAttribute('data-api', '/api/tts');
-
-      // Phase 6.2 路線 D：STT → Soul OS WS 接 chain
-      // 設好 onUserInput callback（embed.js 載入完才能設，所以等 onload）
-      s.onload = function () {
-        if (window.AvatarWidget) {
-          window.AvatarWidget.onUserInput = function (text) {
-            // 把 STT 結果當成 user 訊息送進 Soul OS（走真實 LLM）
-            if (!text || !text.trim()) return;
-            if (!ws || ws.readyState !== WebSocket.OPEN) {
-              console.warn('[Live2D] WS not open, STT text dropped:', text);
-              return;
-            }
-            // 先在 text chat 顯示自己說的話（跟手動輸入一致）
-            appendMessage({ speaker: 'bryan', content: text, timestamp: Math.floor(Date.now() / 1000) });
-            var payload = {
-              type: 'USER_MESSAGE',
-              content: text,
-              user_id: '1696287850',  // Bry §28 spec: 向 Telegram user_id 看齊，打通跨介面 session
-            };
-            if (currentConversation === 'group') {
-              payload.mode = 'group';
-              payload.participants = [...groupMembers];
-            } else {
-              payload.mode = 'private';
-              payload.target_agent = currentConversation;
-            }
-            ws.send(JSON.stringify(payload));
-            console.log('[Live2D] STT → Soul OS:', text);
-          };
-          // Phase 6.4：embed.js 載入後 → 依當前 conversation 通知 widget 切 agent + model + voice
-          // 預設在 group 模式 → 語音關、私聊 → 語音開
-          var initAgent = currentConversation === 'group'
-            ? (window.LIVE2D_CONFIG?.live2d?.default_agent || 'yua')
-            : currentConversation.replace('agent_', '');
-          var initCfg = (window.LIVE2D_CONFIG?.live2d?.agents || {})[initAgent] || {};
-          var initModel = (window.LIVE2D_CONFIG?.live2d?.models || {})[initCfg.model] || null;
-          window.AvatarWidget.switchAgent(initAgent, initModel, initCfg.voice);
-          window.AvatarWidget.setVoiceEnabled(currentConversation !== 'group');
-          console.log('[Live2D] init state:', { agent: initAgent, model: initModel, voice: initCfg.voice, voiceEnabled: currentConversation !== 'group' });
-          console.log('[Live2D] onUserInput callback installed');
-        }
-      };
-      s.setAttribute('data-open', 'true');
-      s.async = true;
-      s.onerror = function() {
-        console.warn('[Live2D] embed.js 載入失敗，繼續用純文字對話');
-      };
-      document.head.appendChild(s);
-    })();
-
-    // Live2D say() wrapper — emotion 預設 neutral，之後從 mood 推導
-    function live2dSay(agentId, text, emotion) {
-      if (!window.AvatarWidget) {
-        console.debug('[Live2D] AvatarWidget not ready yet');
-        return;
-      }
-      var em = emotion || (
-        agentId === 'agent_yua' ? 'cold' :
-        agentId === 'agent_ruka' ? 'happy' :
-        agentId === 'agent_akane' ? 'calm' :
-        // Phase 7/8/9 — Ram / 真昼 / 杏奈 Live2D emotion 映射（fallback 都用 neutral）
-        agentId === 'agent_ram' ? 'cold' :
-        agentId === 'agent_mahiru' ? 'neutral' :
-        agentId === 'agent_anna' ? 'happy' :
-        'neutral'
-      );
-      try {
-        window.AvatarWidget.say(text);
-        console.log('[Live2D] say:', agentId, em, text.slice(0, 30));
-      } catch (e) {
-        console.error('[Live2D] say error:', e);
-      }
-    }
+    // Live2D 已移除 — Bry 拍板砍掉 Live2D 視覺呈現（2026-07-14）
+    // 介面保留純文字對話 + STT 語音輸入（瀏覽器原生 SpeechRecognition API）
+    // 語音輸出走 Fish TTS → 寫 mp3 到 data/tts/{agent_id}/,Bry 自己聽
 
     function getStorageKey(convId) {
       return "soul_os_" + convId + "_history";
@@ -564,21 +626,8 @@
       document.getElementById("group-members").style.display = isGroup ? "flex" : "none";
       document.getElementById("clear-memory-btn").style.display = "inline-block";
       loadHistory();
-      // Phase 6.4：切換 conversation → 通知 widget 切 agent + model + voice
-      // 群聊不支援語音（避免多 agent 一起唸）；private 模式開語音
-      var agentShort = convId === 'group' ? (window.LIVE2D_CONFIG?.live2d?.default_agent || 'yua') : convId.replace('agent_', '');
-      currentAgent = agentShort;
-      if (window.AvatarWidget) {
-        // 從 live2d config 拿該 agent 的 model + voice URL
-        var live2dCfg = (window.LIVE2D_CONFIG || {}).live2d || {};
-        var agentCfg = (live2dCfg.agents || {})[agentShort] || {};
-        var modelKey = agentCfg.model;
-        var modelUrl = (live2dCfg.models || {})[modelKey] || null;
-        var voice = agentCfg.voice || null;
-        // 切換：傳 agent + 可選的 model/voice（widget 動態重建 Live2DModel + 改 NEURAL_VOICE）
-        window.AvatarWidget.switchAgent(agentShort, modelUrl, voice);
-        window.AvatarWidget.setVoiceEnabled(convId !== 'group');
-      }
+      // Live2D 已移除 — 不再切換 widget
+      currentAgent = convId === 'group' ? 'yua' : convId.replace('agent_', '');
     }
 
     function toggleMember(btn) {
@@ -776,11 +825,7 @@
     ws.onmessage = function(event) {
       try {
         var d = JSON.parse(event.data);
-        // Phase 6.1：Live2D 訊息 — 觸發 widget 說話
-        if (d.type === "live2d" && d.text) {
-          live2dSay(d.agent_id, d.text, d.emotion);
-          return;
-        }
+        // Live2D type 已移除 — 只處理 agent_speak 純文字
         if (d.type === "agent_speak" && d.text) {
           var speaker = d.agent_id || "agent_yua";
           if (currentConversation === "group") {
@@ -789,11 +834,25 @@
             if (speaker !== currentConversation) return;
           }
           appendMessage({ speaker: speaker, content: d.text, timestamp: Math.floor(Date.now() / 1000) });
-          // Phase 6.x：Soul OS agent_speak 統一觸發 Live2D 對嘴 + 語音
-          // （之前只有 type==="live2d" 才觸發，但 Soul OS 內部都用 agent_speak，
-          //  所以打字輸入路徑完全沒讓 Live2D 動過）
-          // emotion 暫時傳 "neutral"，Phase 6.4 之後從 mood 計算
-          live2dSay(speaker, d.text, "neutral");
+        }
+        // 階段 5.5+ (B 方案 2026-07-15 Bry 拍板):
+        // TTSService 寫完 mp3 → gateway broadcast agent_audio_ready
+        // 前端收到自動 <audio> 播放日文語音 + 掛重播按鈕到該 agent 最新訊息
+        if (d.type === "agent_audio_ready" && d.audio_url) {
+          var agentId = d.agent_id;
+          // 1. 更新快取（重播按鈕用）
+          if (agentId) {
+            lastAudioByAgent[agentId] = d.audio_url;
+            // 2. 把該 agent 最新訊息掛上 🔊 按鈕
+            attachReplayButtonToLatest(agentId);
+          }
+          // 3. 自動播放
+          var audio = new Audio(d.audio_url);
+          audio.volume = 0.85;
+          audio.play().catch(function(err){
+            // autoplay 失敗很正常 (瀏覽器政策),降為靜默失敗
+            console.warn("[TTS] autoplay 失敗:", err.message);
+          });
         }
       } catch(err) {
         console.error("WS message error:", err);

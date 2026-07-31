@@ -109,11 +109,14 @@ class TelegramAdapter(ChannelAdapter):
         ):
             if not update.message:
                 return
-            text = update.message.text or ""
+            raw_text = update.message.text or ""
             user = update.message.from_user
             if not user:
                 return
             user_id = user.id
+            # JP rollback (Bry 拍板 2026-07-22 20:59): Plan A 砍掉
+            # 不再 user 中文先翻日文, text 直接送 LLMProxy
+            text = raw_text
             logger.info(
                 f"[TG:{agent_id}] recv from {user_id} "
                 f"(@{user.username or '?'}): {text[:50]!r}"
@@ -174,6 +177,49 @@ class TelegramAdapter(ChannelAdapter):
             return True
         except Exception as e:
             logger.error(f"[TG:{agent_id}] send error: {e}")
+            return False
+
+    async def send_voice(self, agent_id: str, audio_path: str,
+                         user_id: "int | str") -> bool:
+        """送語音訊息給指定 user（給 mp3 檔路徑，會用 bot.send_voice 上傳）。
+
+        Phase 5+ (2026-07-15 Bry 拍板): 配合 TTSService 寫完 mp3 後的
+        AGENT_AUDIO_READY 事件，把日文 TTS 結果也推到 Telegram 給 user 聽。
+        用 ptb 的 send_voice 走 voice bubble（不是普通 audio 附件），
+        手機端可以直接 inline 播。
+
+        Args:
+            agent_id: "yua" | "mahiru" | ... (短碼，跟 self._apps 對齊)
+            audio_path: 本地 mp3 檔絕對路徑（從 AGENT_AUDIO_READY.payload.audio_path）
+            user_id: Telegram user id
+        """
+        from pathlib import Path
+        app = self._apps.get(agent_id)
+        if not app:
+            logger.warning(f"[TG] No app for agent [{agent_id}] (send_voice)")
+            return False
+        p = Path(audio_path)
+        if not p.exists():
+            logger.warning(
+                f"[TG:{agent_id}] audio file not found: {audio_path}"
+            )
+            return False
+        try:
+            # ptb v13+ send_voice 接受 file path / file-like / InputFile
+            # 用 open() 確保 with 區塊內 file handle 還在
+            with open(p, "rb") as f:
+                await app.bot.send_voice(
+                    chat_id=int(user_id),
+                    voice=f,
+                    filename=p.name,
+                )
+            logger.info(
+                f"[TG:{agent_id}] voice sent to {user_id}: "
+                f"{p.name} ({p.stat().st_size} bytes)"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"[TG:{agent_id}] send_voice error: {e}")
             return False
 
     async def _keep_typing(self, agent_id: str, user_id: int) -> None:

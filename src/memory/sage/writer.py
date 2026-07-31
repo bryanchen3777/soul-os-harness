@@ -133,9 +133,19 @@ class MemoryWriter:
 
     ANCHOR_WEIGHT_THRESHOLD = 1.8
 
-    def __init__(self, graph_store: GraphStore, default_session_id: str = ""):
+    def __init__(
+        self,
+        graph_store: GraphStore,
+        default_session_id: str = "",
+        agent_id: str = "",
+    ):
         self.store = graph_store
         self.default_session_id = default_session_id
+        # Bry 拍板 2026-07-18 Stage 1.6: 區分 subject_hint (role = user/assistant) 跟真正的 agent_id
+        # 之前 _mirror_to_v1_store 把 subject_hint 當 agent_id 寫進 memory.agent_id,
+        # 結果 Loader 用 m.agent_id == "agent_rem" 過濾時全部不符, 觸發 fail-safe。
+        # 修法: writer.__init__ 接 agent_id, provider 傳 profile_id, _mirror_to_v1_store 用 self.agent_id
+        self.agent_id = agent_id
 
     # ── 公開 API ──────────────────────────────────────────────
 
@@ -163,7 +173,13 @@ class MemoryWriter:
         source: str = "user",
     ) -> list[str]:
         sid = session_id or self.default_session_id
-        facts = self._extract_facts(text, subject_hint, sid, source)
+        facts, raw_results = self._extract_facts(text, subject_hint, sid, source)
+        # Bry 拍板 2026-07-18 Stage 1.5 fix: mirror 移到 _extract_facts 父層,
+        # 兩條路徑 (LLM + heuristic) 都會跑, 解決 heuristic fallback 不寫 v1 的 bug
+        self._mirror_extraction(
+            text=text, raw_results=raw_results,
+            subject_hint=subject_hint, session_id=sid, source=source,
+        )
         return self.add_facts_batch(facts)
 
     def extract(
@@ -173,17 +189,53 @@ class MemoryWriter:
         session_id: Optional[str] = None,
         source: str = "user",
     ) -> list[Fact]:
-        """只抽取事實、不寫入 graph。測試用與下游預處理層用。"""
+        """只抽取事實、不寫入 graph。測試用與下游預處理層用。
+
+        Bry 拍板 2026-07-18 Stage 1.5 fix: extract 也要 mirror (v1 是結構化備忘,
+        即使沒寫 graph 也要留底), 跟 extract_and_write 走同一條 mirror 路徑。
+        """
         sid = session_id or self.default_session_id
-        return self._extract_facts(text, subject_hint, sid, source)
+        facts, raw_results = self._extract_facts(text, subject_hint, sid, source)
+        self._mirror_extraction(
+            text=text, raw_results=raw_results,
+            subject_hint=subject_hint, session_id=sid, source=source,
+        )
+        return facts
 
     def write_turn(
         self,
         user_content: str,
         assistant_content: str,
         session_id: Optional[str] = None,
+        skip_graph: bool = False,
     ) -> list[str]:
+        """寫一輪 user + assistant。
+
+        Args:
+            skip_graph: Bry 拍板 2026-07-18 Stage 2.1 用, NO_DIARY agents (Ram) 設為 True。
+                - True: 跳過 graph.sqlite 寫入, 但仍跑 LLM judge + v1 mirror
+                  (理由: v1 mirror 是結構化備忘, 跟 diary 是不同概念,
+                  Ram 不寫 diary 仍可以有 v1 facts)
+                - False (default): 原路徑 (graph + v1 mirror)
+        """
         sid = session_id or self.default_session_id
+        if skip_graph:
+            # 走 extract 路徑 (只抽事實 + mirror, 不 add_fact 寫 graph)
+            logger.debug(
+                f"[MemoryWriter] write_turn skip_graph=True: session={sid}"
+            )
+            if user_content:
+                self.extract(
+                    user_content, subject_hint="user",
+                    session_id=sid, source="user"
+                )
+            if assistant_content:
+                self.extract(
+                    assistant_content, subject_hint="assistant",
+                    session_id=sid, source="inference"
+                )
+            return []
+        # 原路徑
         user_ids = self.extract_and_write(
             user_content, subject_hint="user",
             session_id=sid, source="user"
@@ -338,7 +390,14 @@ class MemoryWriter:
     def _extract_facts(
         self, text: str, subject_hint: Optional[str],
         session_id: str, source: str
-    ) -> list[Fact]:
+    ) -> tuple[list[Fact], list[dict]]:
+        """抽出事實 + 同步回傳 raw_results 給 caller 跑 v1 mirror。
+
+        Bry 拍板 2026-07-18 Stage 1.5 fix: 回傳 (facts, raw_results) tuple,
+        讓 caller (extract / extract_and_write / write_turn) 統一在父層呼叫 mirror。
+        之前 mirror 嵌在 _extract_facts_llm 內部, heuristic fallback 完全沒跑 mirror,
+        結果 LLM judge 400 時所有 agent v1 都寫 0 筆 (Ram 之外其他 agent 也是)。
+        """
         # Feature flag: USE_LLM_JUDGE=true/false 切換 LLM judge 跟 regex heuristic
         # 預設開啟 LLM judge;失敗 fallback 舊 regex
         use_llm = os.environ.get("USE_LLM_JUDGE", "true").lower() == "true"
@@ -349,7 +408,7 @@ class MemoryWriter:
                 logger.warning(
                     f"[MemoryWriter] LLM judge 失敗,fallback heuristic: {e}"
                 )
-        # fallback 舊 regex
+        # fallback 舊 regex (同樣回傳 tuple 結構, 讓 caller mirror 路徑一致)
         return self._extract_facts_heuristic_fallback(
             text, subject_hint, session_id, source
         )
@@ -357,11 +416,15 @@ class MemoryWriter:
     def _extract_facts_llm(
         self, text: str, subject_hint: Optional[str],
         session_id: str, source: str
-    ) -> list[Fact]:
+    ) -> tuple[list[Fact], list[dict]]:
         """
         LLM-as-judge 版的 fact 萃取。
         同步介面但內部呼叫 asyncio.run() 跑 async LLMJudge。
         失敗拋 exception,由 _extract_facts 統一 fallback。
+
+        Bry 拍板 2026-07-18 Stage 1.5 fix: 不再內部跑 mirror, 改回傳 (facts, raw_results),
+        由 _extract_facts caller (extract / extract_and_write) 統一在父層跑 mirror。
+        之前 mirror 嵌這裡導致 heuristic fallback 完全沒 mirror, 修完兩條路徑對齊。
         """
         # 取得 LLMJudge(從 _llm_judge 屬性或 lazy init)
         judge = self._get_llm_judge()
@@ -396,27 +459,41 @@ class MemoryWriter:
                 source=source, session_id=session_id,
             ))
 
-        # Perplexity 拍板 (Bry 轉, 2026-07-02): 並行寫進 v1 store
-        # - 只把 v6 judge 輸出的 (text, category, confidence, tags) 寫進去
-        # - metadata-only, 不做任何格式轉換 / 語意解讀 / 額外判斷
-        # - 主路徑(SAGE Graph write) 不變, v1 store 是平行鏡像,供 Loader 讀
-        # - Bry §23 spec (2026-07-02): log 從 warning 升 info + 顯式記錄 memory_id / agent_id / content
-        #   給 Bry 真實對話後, 直接從 log 跟 jsonl 看 mirror 真實寫入
+        # Stage 1.5 fix: mirror 不在這裡, 統一在 _extract_facts caller 跑
+        return facts, results
+
+    def _mirror_extraction(
+        self,
+        text: str,
+        raw_results: list,
+        subject_hint: Optional[str],
+        session_id: str,
+        source: str,
+    ) -> None:
+        """Stage 1.5 fix (Bry 拍板 2026-07-18): 統一 mirror 入口。
+
+        從 _extract_facts_llm 抽出, 移到 _extract_facts 父層,
+        讓 heuristic fallback 也能跑 mirror。
+        不論 LLM 路徑或 heuristic 路徑, caller 都呼叫這裡一次。
+
+        保留 Bry §23 spec log 格式 (warning → info + 顯式 n_facts_mirrored / text 預覽),
+        跟原 _extract_facts_llm 內部的 log 一致, 不影響 Bry 觀察 mirror 真實寫入。
+        """
+        # 0 筆短路: log 仍要 fire, 跟原 LLM 路徑 log 對齊 (鏡像觸發了但過濾後 0 筆)
         try:
             mirror_count = self._mirror_to_v1_store(
                 text=text,
-                results=results,
+                results=raw_results,
                 subject_hint=subject_hint,
                 session_id=session_id,
                 source=source,
             )
-            # 顯式記錄: Bry §23 spec 要求 log 讓人一眼看出 mirror 寫了什麼
             if mirror_count and mirror_count > 0:
                 logger.info(
                     f"[MemoryWriter] v1 store mirror 成功 | "
                     f"agent={subject_hint} | "
                     f"source={source} | "
-                    f"n_facts_mirrored={mirror_count}/{len(results)} | "
+                    f"n_facts_mirrored={mirror_count}/{len(raw_results)} | "
                     f"text={text[:50]!r}"
                 )
             else:
@@ -424,19 +501,17 @@ class MemoryWriter:
                     f"[MemoryWriter] v1 store mirror 0 筆 | "
                     f"agent={subject_hint} | "
                     f"source={source} | "
-                    f"v6 judge 抽出 {len(results)} 筆, 但 mirror 過濾後 0 筆 | "
+                    f"judge 抽出 {len(raw_results)} 筆, 但 mirror 過濾後 0 筆 | "
                     f"text={text[:50]!r}"
                 )
         except Exception as e:
-            # Bry §23 spec: writer 寫進 v1 不失敗主路徑, 但 log 從 warning 升到 ERROR (仍是 try/except 不中斷)
+            # Bry §23 spec: writer 寫進 v1 不失敗主路徑, 但 log 從 warning 升到 ERROR
             logger.error(
                 f"[MemoryWriter] v1 store mirror 失敗 | "
                 f"agent={subject_hint} | "
                 f"source={source} | "
                 f"error={e!r}"
             )
-
-        return facts
 
     def _mirror_to_v1_store(
         self,
@@ -463,15 +538,29 @@ class MemoryWriter:
         from src.memory.v1.store import V1Store as _V1Store
         from src.memory.v1.schema import Memory as _Memory
 
-        # 取得 v1 store data_dir (跟 GraphStore 共用 parent 目錄)
+        # 取得 v1 store data_dir (Bry 拍板 Stage 1.1 路徑統一, 2026-07-18)
+        # - 改用 GraphStore.db_path.parent.parent 因為新路徑約定:
+        #   GraphStore 寫到 {data_dir}/{agent_id}/graph.sqlite
+        #   v1 Store   寫到 {data_dir}/{agent_id}/memories.jsonl (同 agent 子目錄)
+        # - 傳給 V1Store 的 data_dir 必須是父目錄 (不含 agent_id 子目錄)
         if not hasattr(self, "store") or self.store is None:
             raise RuntimeError("V1 store 鏡像失敗: writer.store 不存在")
         graph_db_path = getattr(self.store, "db_path", None)
         if graph_db_path is None:
             raise RuntimeError("V1 store 鏡像失敗: GraphStore.db_path 不存在")
-        v1_data_dir = Path(graph_db_path).parent
+        # graph_db_path = data/{data_dir}/{agent_id}/graph.sqlite
+        # v1_data_dir  = data/{data_dir}/  (parent.parent)
+        v1_data_dir = Path(graph_db_path).parent.parent
 
-        v1_store = _V1Store(v1_data_dir, subject_hint or "unknown")
+        # Bry 拍板 2026-07-18 Stage 1.6: V1Store agent_id 必須是真正的 agent id (e.g. "agent_rem"),
+        # 不是 subject_hint ("user"/"assistant")。subject_hint 是 role 概念, 跟 v1 鏡像歸屬無關。
+        # priority: self.agent_id > subject_hint if it looks like agent_id (starts with "agent_") > "unknown"
+        v1_agent_id = (
+            self.agent_id
+            if self.agent_id
+            else (subject_hint if (subject_hint and subject_hint.startswith("agent_")) else "unknown")
+        )
+        v1_store = _V1Store(v1_data_dir, v1_agent_id)
         # Perplexity Bry §15 拍板: 補齊 tags 的檢索用途缺陷
         # - content 字面切詞追加進 tags (跟 middleware._derive_query_tags 同套邏輯)
         # - category 標籤保留不刪
@@ -494,7 +583,7 @@ class MemoryWriter:
             merged_tags = existing_tags + content_tags
             v1_store.add(_Memory(
                 memory_id=str(_uuid.uuid4()),
-                agent_id=subject_hint or "unknown",
+                agent_id=v1_agent_id,
                 content=content,
                 tags=merged_tags,
                 created_at=time.time(),
@@ -520,7 +609,13 @@ class MemoryWriter:
     def _extract_facts_heuristic_fallback(
         self, text: str, subject_hint: Optional[str],
         session_id: str, source: str
-    ) -> list[Fact]:
+    ) -> tuple[list[Fact], list[dict]]:
+        """Bry 拍板 2026-07-18 Stage 1.5 fix: 改回傳 (facts, raw_results) tuple。
+
+        raw_results 從 facts 機械合成 (subject/predicate/object 從 Fact 拿,
+        category="heuristic", confidence=base_weight, tags=[]),
+        跟 LLM 路徑的 results 結構對齊, 讓 _mirror_to_v1_store 統一處理。
+        """
         facts: list[Fact] = []
         seen: set[tuple[str, str, str]] = set()
         # Primary split: sentence-ending punctuation or newlines
@@ -562,7 +657,25 @@ class MemoryWriter:
                         weight=weight, confidence=base_weight,
                         source=source, session_id=session_id,
                     ))
-        return facts
+
+        # Stage 1.5 fix: 機械合成 raw_results 給 mirror 路徑用
+        # 結構跟 LLM 路徑的 results 對齊:
+        #   subject / predicate / object 從 Fact 拿
+        #   category 固定 "heuristic" (Loader 看得懂, 跟 LLM 區分)
+        #   confidence 用 Fact.confidence (= base_weight)
+        #   tags=[] (heuristic 沒有 LLM 切的 tag, 但 _mirror_to_v1_store 內部會
+        #   透過 _derive_tags(content) 補 content 切詞, 所以 tags 不會空)
+        raw_results: list[dict] = []
+        for f in facts:
+            raw_results.append({
+                "subject":   f.subject,
+                "predicate": f.predicate,
+                "object":    f.object,
+                "category":  "heuristic",
+                "confidence": f.confidence,
+                "tags":      [],
+            })
+        return facts, raw_results
 
 
 def _find_llm_proxy():

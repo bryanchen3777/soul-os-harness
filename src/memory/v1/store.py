@@ -12,6 +12,12 @@ Constitution:
 - 不做 dedup / merge / decay
 - 不支援 update / delete
 - 不維護索引(讓 v1 看到真實的全量掃描成本)
+
+路徑約定 (Bry 拍板 2026-07-18, Stage 1.1):
+  - 單一真相: data/{data_dir}/{agent_id}/memories.jsonl
+  - 傳入 data_dir = 父目錄 (例如 data/memory), 不再傳 agent 子目錄
+  - 不再用 "{agent_id}_memories.jsonl" 命名, 統一 "memories.jsonl"
+  - 跟 SAGE GraphStore 共用同一個 agent 子目錄, 不同檔名 (.jsonl vs .sqlite)
 """
 import json
 from pathlib import Path
@@ -20,13 +26,20 @@ from .schema import Memory
 
 
 class V1Store:
-    """per-agent append-only JSONL store。"""
+    """per-agent append-only JSONL store。
+
+    接受「父目錄 + agent_id」, 自動組出標準路徑:
+        {data_dir}/{agent_id}/memories.jsonl
+    """
 
     def __init__(self, data_dir: Path, agent_id: str):
         self.agent_id = agent_id
-        self.data_dir = data_dir
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.store_file = data_dir / f"{agent_id}_memories.jsonl"
+        self.data_dir = Path(data_dir)
+        # 統一路徑: data_dir/{agent_id}/memories.jsonl
+        # 自動建立 agent 子目錄, 跟 SAGE GraphStore 共用
+        self.agent_dir = self.data_dir / agent_id
+        self.agent_dir.mkdir(parents=True, exist_ok=True)
+        self.store_file = self.agent_dir / "memories.jsonl"
 
     def add(self, memory: Memory) -> None:
         """append 一筆。"""

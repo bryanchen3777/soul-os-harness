@@ -99,8 +99,11 @@ class SAGELiteProvider:
         if self._store:
             self._store.close()
         self._store = GraphStore(db_path=self._db_path())
+        # Bry 拍板 2026-07-18 Stage 1.6: 傳 profile_id 給 writer, 讓 v1 mirror 知道歸屬哪個 agent
         self._writer = MemoryWriter(
-            self._store, default_session_id=self._session_id
+            self._store,
+            default_session_id=self._session_id,
+            agent_id=self.profile_id,
         )
         self._reader = MemoryReader(
             self._store,
@@ -201,11 +204,23 @@ class SAGELiteProvider:
         這是 MemoryMiddleware 在 AGENT_SPEAK 階段呼叫的方法。
 
         Phase 7 — no-diary 白名單：與 sync_turn 對齊，agent_ram 跳過圖譜寫入。
+
+        Bry 拍板 2026-07-18 Stage 2.1: NO_DIARY agents 仍跑 v1 mirror (skip_graph=True),
+        理由: v1 mirror 是結構化備忘, 跟 diary (graph.sqlite) 是不同概念, Ram 不寫 diary
+        仍可以有 v1 facts。
         """
-        # Phase 7: NO_DIARY_AGENTS 白名單攔截（async 對齊 sync 行為）
+        # Phase 7 + Bry 拍板 Stage 2.1: NO_DIARY_AGENTS 跳 graph 寫入, 但仍 mirror
         if self.profile_id in NO_DIARY_AGENTS:
             logger.debug(
-                f"[SAGE] post_reply_commit skipped (no-diary agent): profile={self.profile_id}"
+                f"[SAGE] post_reply_commit no-diary: profile={self.profile_id} "
+                f"(跳 graph 寫入, 仍 v1 mirror)"
+            )
+            loop = asyncio.get_event_loop()
+            from functools import partial
+            await loop.run_in_executor(
+                None,
+                partial(self._writer.write_turn, skip_graph=True),
+                last_user_msg, agent_reply, session_id,
             )
             self._cache.invalidate()
             return
