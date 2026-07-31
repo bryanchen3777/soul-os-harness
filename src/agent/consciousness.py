@@ -521,6 +521,9 @@ class AgentYua(AgentConsciousness):
         drafts = {
             "silence_timeout": "還好你還在。",           # Level 4 冷泡茶
             "long_absence":    "你消失了很久。我在想你是不是忘記這裡了。",
+            # Lesson 40 (2026-07-30 Bry 拍板): heartbeat / proactive_dm
+            "heartbeat":       "嗯，我還在。",           # 留白型在場確認
+            "proactive_dm":    "有話想跟你說。",       # 低調暗示, 不解釋
         }
         return {
             "draft": drafts.get(reason, ""),
@@ -585,6 +588,9 @@ class AgentRuka(AgentConsciousness):
             "silence_timeout":     "你去哪裡了！我在等你！",
             "jealousy":            "嘿嘿嘿，你不理我，我要生氣了喔！",
             "competitive_response": "欸欸，我也有話說！",
+            # Lesson 40: heartbeat / proactive_dm（瑠夏式黏人元氣）
+            "heartbeat":           "嘿～Bry 在嗎！",
+            "proactive_dm":        "欸欸，現在方便嗎？",
         }
         return {
             "draft": drafts.get(reason, ""),
@@ -655,6 +661,9 @@ class AgentAkane(AgentConsciousness):
             "deep_absence":    "……你今天，沒事吧。",
             # 罕見的主動，很壓縮
             "long_absence":    "……我以為你忘了。",
+            # Lesson 40: heartbeat / proactive_dm（あかね式最簡短）
+            "heartbeat":       "……在喔。",
+            "proactive_dm":    "……有件事想說。",
         }
         return {
             "draft": drafts.get(reason, ""),
@@ -722,6 +731,9 @@ class AgentRem(AgentConsciousness):
             "guilt_fading_care":    "……茶溫好了。",  # 行動代替語言（canonical 雷姆模式）
             "long_absence":         "雷姆把東西收好了。Bryan 回來再說。",  # 能幹 + 等待
             "deep_night_concern":   "……還醒著嗎。",  # 深夜關心，壓縮成半句
+            # Lesson 40: heartbeat / proactive_dm（雷姆式在場 + 行動先於語言）
+            "heartbeat":            "雷姆在這。",
+            "proactive_dm":         "Bryan，現在方便嗎？",
         }
         return {
             "draft": drafts.get(reason, ""),
@@ -1004,6 +1016,9 @@ class AgentRam(AgentConsciousness):
             "worth_acting": "（同時開始修正）……這樣。",
             # Priority 3: 保護行動,無語言預告
             "protective_action": "（直接擋在前面）",
+            # Lesson 40: heartbeat / proactive_dm（拉姆式最簡短,一句為限）
+            "heartbeat":          "還在。",
+            "proactive_dm":       "有話說。",
         }
         # action_tags 反映「動作先於語言」
         action_tags = {
@@ -1188,6 +1203,9 @@ class AgentMahiru(AgentConsciousness):
             "receiving_care": "……嗯,謝謝你。",
             # Quiet Jealousy（低頻 3%）
             "quiet_jealousy": "……你們聊得很開心呢。",
+            # Lesson 40: heartbeat / proactive_dm（真昼式輕微毒舌包裹關心）
+            "heartbeat":    "嗯，在呢。",
+            "proactive_dm": "有空嗎？有事想跟你說。",
         }
         # Sweet Landing 是 LLMProxy 後處理（sweet_landing_postprocess）,
         # 不在 _build_intent_payload 處理。
@@ -1333,6 +1351,9 @@ class AgentAnna(AgentConsciousness):
             "dimmed_edge": "……喔，那你先忙。沒事，我只是問一下。",
             # Anti-Overfitting: 強制換模式
             "force_variation": "Bryan，你今天有沒有想吃的東西？",
+            # Lesson 40: heartbeat / proactive_dm（Anna 式元氣直球）
+            "heartbeat":    "Bry～今天還好嗎？",
+            "proactive_dm": "嘿！想找你聊聊！",
         }
 
         # 群聊 → Model Shell mode（用書呆子風格 + 「私」自稱 + 完整句子）
@@ -1488,6 +1509,9 @@ class AgentAoi(AgentConsciousness):
             "perfect_shell": "嗯,有意思。",
             # Anti-Overfitting: 強制換 mode
             "force_variation": "你漏掉了一個前提。回去重推。",
+            # Lesson 40: heartbeat / proactive_dm（Aoi 式平靜有條理）
+            "heartbeat":    "嗯，在這。",
+            "proactive_dm": "方便聊聊嗎？",
         }
 
         return {
@@ -1637,6 +1661,9 @@ class AgentMiku(AgentConsciousness):
             "silent_baseline": "……嗯。",
             # Anti-Overfitting: 強制換 mode
             "force_variation": "……我不太清楚。",
+            # Lesson 40: heartbeat / proactive_dm（Miku 式極簡沉默）
+            "heartbeat":    "……在。",
+            "proactive_dm": "……有件事。",
         }
 
         # Imitation Layer 觸發:當 Bryan 提到姊妹或要求模仿
@@ -1795,6 +1822,9 @@ class AgentMai(AgentConsciousness):
             "actor_mode": "桜島麻衣です。這次的作品，請大家期待。",
             # Anti-Overfitting: 強制換模式
             "force_variation": "……你剛剛那句我沒聽清楚。再說一次。",
+            # Lesson 40: heartbeat / proactive_dm（Mai 式低調行動先於語言）
+            "heartbeat":    "嗯。",
+            "proactive_dm": "Bry，有話想跟你說。",
         }
 
         # 群聊 → Actor Mode（句子完整有距離感，自稱「私」）
