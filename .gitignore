@@ -13,6 +13,8 @@ env/
 
 # Secrets（用 .env.example 代替）
 .env
+*.env                    # Bry 2026-07-31 拍板：全域規則保護任何 xxx.env 命名
+!.env.example            # 例外：.env.example 是配置範本要 commit
 .env.local
 .env.*.local
 
@@ -42,3 +44,42 @@ data/
 # Live2D 模型檔（官方 sample，9.9MB，dev 自己從 source 解一次）
 # 從 Live2D 官網下載 hibiki.zip 解到 static/models/hibiki/
 static/models/
+
+# 備份檔（Bry 2026-07-31 拍板：.bak 價值是今天當下救急快照，正式 commit 後被 git diff/blame 取代，繼續進版控只會讓 repo 變大且信息重複）
+*.bak_*
+*.bak
+_backup_stage0_*/
+# 通用 _backup_<date>_<reason> 目錄（Windows git 對 **/ glob 處理不一致，用具體子目錄列舉）
+src/_backup_*/
+src/_backup_*/**/*
+src/io/_backup_*/
+src/io/_backup_*/**/*
+src/io/channels/_backup_*/
+src/io/channels/_backup_*/**/*
+src/llm/_backup_*/
+src/llm/_backup_*/**/*
+src/memory/_backup_*/
+src/memory/_backup_*/**/*
+src/agent/_backup_*/
+src/agent/_backup_*/**/*
+src/soul/_backup_*/
+src/soul/_backup_*/**/*
+src/voice/_backup_*/
+src/voice/_backup_*/**/*
+personas/_backup_*/
+personas/_backup_*/**/*
+tests/_backup_*/
+tests/_backup_*/**/*
+
+# 一次性偵錯腳本（Bry 2026-07-31 拍板：_ 開頭是 Bry 自己定義的「臨時」標記，跟 .bak 同邏輯）
+_verify_*.py
+
+# 一次性 test 腳本（Bry 2026-07-31 拍板：根目錄 + scripts/ 下的 test_*.py 都是 6 月一次性 debug，沒 regression 價值；tests/ 下的 test_*.py 是正式 pytest regression 套件，保留進版控）
+/test_*.py
+scripts/test_*.py
+
+# 7/16 UTF-8 編碼 debug 的中間產物（configs_default_utf8.txt 跟 configs/default.yaml 內容一致，正式 yaml 已修，純文字副本可刪）
+configs_default_utf8.txt
+
+# proxy.py 的混合備份（mixed_backup 命名表示是某次混合修改的中間狀態，git diff 已涵蓋）
+src/llm/proxy.py.mixed_backup

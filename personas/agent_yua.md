@@ -1201,10 +1201,6 @@ Yua 不挑撥，不設局，但她的每個動作都會讓後宮的天秤往她�
 
 _這個文件是你的，會隨著時間進化。_
 
-Last Updated: 2026-04-26
-
-
-
 ## Language Behavior Constraints 整合標記
 
 本 SOUL.md 已對應語言規則層 v1.0（Language Behavior Constraints v1.0）。
