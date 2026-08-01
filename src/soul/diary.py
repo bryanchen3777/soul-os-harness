@@ -53,6 +53,10 @@ DEFAULT_DIARY_ROOT = "data/soul"
 
 # LLM 生成 diary 參數
 DIARY_MAX_TOKENS = 200
+# M0.3 (2026-08-01 00:45 Perplexity 派工): clean 字符上限
+# 對齊 Bry 7/18 拍板: diary 通用規格 1-2 句 < 50 字
+# 超過 50 字視為 LLM 沒遵守, 跟 LLM 失敗一樣走 placeholder (Bry 19:55+ 兜底)
+DIARY_MAX_CLEAN_CHARS = 50
 DIARY_TEMPERATURE = 0.7
 DIARY_RECENT_MEMORIES = 5  # 從 v1 mirror 抽最近 5 條當 context
 
@@ -288,6 +292,15 @@ async def generate_diary_entry(
             logger.warning(
                 f"[Diary] {agent_id} {slot} LLM 只回 think 沒 diary "
                 f"(raw {len(content)} chars, clean 0), 寫 placeholder"
+            )
+            return writer.write_entry(agent_id, slot, placeholder, source="placeholder")
+        # M0.3 (2026-08-01 00:45 Perplexity 派工): clean 超長走 placeholder
+        # Bry 7/18 拍板 1-2 句 < 50 字, LLM 不一定遵守 (Rem 169 chars 違規)
+        # 超長 視為 LLM 沒遵守, 跟 LLM 失敗一樣走 placeholder (Bry 19:55+ 兜底)
+        if len(clean) > DIARY_MAX_CLEAN_CHARS:
+            logger.warning(
+                f"[Diary] {agent_id} {slot} LLM 輸出超長 "
+                f"({len(clean)} chars > {DIARY_MAX_CLEAN_CHARS}), 寫 placeholder"
             )
             return writer.write_entry(agent_id, slot, placeholder, source="placeholder")
         return writer.write_entry(agent_id, slot, content, source="llm")
