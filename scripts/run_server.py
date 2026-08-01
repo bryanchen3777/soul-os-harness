@@ -231,11 +231,15 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("[Server] FISH_TTS_ENABLED=0, skip FishTTSHandler")
 
-    heartbeat = create_heartbeat(cfg, bus, agent_ids=agent_ids)
-    # 注入 gateway 的 connection manager — heartbeat 會在無人連線時跳過 tick
-    heartbeat._manager = gateway.manager
-    await heartbeat.start()
-    app.state._heartbeat = heartbeat  # expose for /_admin/fast_forward
+    # M1.2 (2026-07-31 23:30 Perplexity 派工): Heartbeat Engine 停用
+    # 跟 scheduler heartbeat (Lesson 39, 30-60 min 隨機) 兩套並存, 停止 src/heartbeat/
+    # 60s tick 改由 scheduler 觸發 + 角色自主行為負責。
+    # 保留 create_heartbeat import 待 M1.3 回歸測試確認後決定刪除。
+    # app.state._heartbeat = None 讓 /_admin/fast_forward 知道沒有了
+    # heartbeat = create_heartbeat(cfg, bus, agent_ids=agent_ids)
+    # heartbeat._manager = gateway.manager
+    # await heartbeat.start()
+    app.state._heartbeat = None  # Heartbeat Engine 停用 (M1.2)
 
     # ── Stage 4.2 (Bry 拍板 2026-07-18 18:24+): 排程器 + diary ───────
     # morning 08:00 / night 22:00 自動觸發, 1 天驗殘留感
@@ -420,7 +424,8 @@ async def lifespan(app: FastAPI):
     if tg_adapter is not None:
         await tg_adapter.stop()
         logger.info("[Server] Telegram channel stopped")
-    await heartbeat.stop()
+    # M1.2: Heartbeat Engine 停用, stop 也跳過
+    # await heartbeat.stop()
     # Stage 4.2 (Bry 拍板 2026-07-18 18:24+): 排程器 shutdown
     if getattr(app.state, "_scheduler", None) is not None:
         try:
