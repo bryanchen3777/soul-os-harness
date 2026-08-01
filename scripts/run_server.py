@@ -160,7 +160,7 @@ class MockLLMBackend:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """所有初始化在同一個 event loop 裡，避免跨 loop 問題。"""
-    from configs.loader import load_config, create_llm_proxy, create_heartbeat, create_agents
+    from configs.loader import load_config, create_llm_proxy, create_agents
     from src.eventbus import SoulEventBus
     from src.eventbus.token_manager import SpeakerTokenManager
     from src.agent.speaker_token import SpeakerTokenBus
