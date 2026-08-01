@@ -31,6 +31,16 @@ import random
 from datetime import datetime, time, timedelta
 from typing import Awaitable, Callable, Dict, List, Optional
 
+# M1.1 (2026-07-31 23:30 Perplexity 派工): Event Bus 整合
+# 觸發後、callback 跑之前發布 AGENT_INTENT, 讓 MemoryMiddleware 跟 SpeakerTokenManager
+# 能像處理其他事件一樣接手。bus 為 Optional, 沒注入就 skip (向後相容)。
+try:
+    from src.eventbus import SoulEventBus
+    from src.eventbus.schema import EventPriority, EventType, SoulEvent
+    _EVENTBUS_AVAILABLE = True
+except ImportError:
+    _EVENTBUS_AVAILABLE = False
+
 logger = logging.getLogger("soul_os.soul.scheduler")
 
 # ───────────────────────────────────────────────────────────
@@ -87,6 +97,9 @@ class SoulScheduler:
         proactive_dm_cooldown_seconds: int = 7200,  # 2 小時冷卻
         quiet_hours_start: int = 23,                # 23:00 開始靜音
         quiet_hours_end: int = 8,                   # 08:00 結束靜音
+        # M1.1 (2026-07-31 23:30 Perplexity 派工): Event Bus 注入
+        # 沒注入就 skip 發布 (向後相容, 測試不依賴 bus)
+        bus: Optional["SoulEventBus"] = None,
     ):
         self.morning_time = morning_time
         self.night_time = night_time
@@ -103,6 +116,8 @@ class SoulScheduler:
         self.proactive_dm_cooldown_seconds = proactive_dm_cooldown_seconds
         self.quiet_hours_start = quiet_hours_start
         self.quiet_hours_end = quiet_hours_end
+        # M1.1: Event Bus 注入 (None = skip 發布, 向後相容)
+        self._bus = bus
 
         # agent_id -> {slot -> callback}
         self._callbacks: Dict[str, Dict[str, DiaryCallback]] = {}
@@ -122,6 +137,58 @@ class SoulScheduler:
         self._next_heartbeat_time: Optional[datetime] = None
         self._next_proactive_dm_time: Optional[datetime] = None
         self._last_proactive_dm_time: Optional[datetime] = None
+
+    # ───────────────────────────────────────────────────────────
+    # M1.1: Event Bus 發布層
+    # 觸發後、callback 跑之前發布 AGENT_INTENT, 讓 MemoryMiddleware 跟
+    # SpeakerTokenManager 跟其他訂閱者能像處理其他事件一樣接手。
+    # 失敗 log warning 不 raise (「拒絕問, 強制讀」原則)。
+    # ───────────────────────────────────────────────────────────
+
+    async def _publish_agent_intent(
+        self,
+        agent_id: str,
+        reason: str,
+        draft: str = "",
+        elapsed_mins: float = 0.0,
+    ) -> None:
+        """包成 AGENT_INTENT SoulEvent 發到 bus.
+
+        Args:
+            agent_id: 觸發的 agent (e.g. "agent_yua")
+            reason: 觸發原因 (morning / night / dream / event / heartbeat / proactive_dm)
+            draft: 從 _build_intent_payload 拿的起始提示 (heartbeat / proactive_dm 有,
+                morning/night/dream/event 預設空字串)
+            elapsed_mins: 距上次觸發的分鐘數 (heartbeat / proactive_dm 用)
+
+        Returns:
+            None. 失敗 log warning, 不 raise.
+        """
+        if self._bus is None:
+            return  # 沒注入 bus 就 skip, 向後相容
+        if not _EVENTBUS_AVAILABLE:
+            return  # eventbus 模組沒裝, skip
+        try:
+            intent = SoulEvent(
+                event_type=EventType.AGENT_INTENT,
+                source="soul_scheduler",
+                target=agent_id,
+                priority=EventPriority.NORMAL,
+                payload={
+                    "agent_id": agent_id,
+                    "reason": reason,
+                    "draft": draft,
+                    "elapsed_mins": elapsed_mins,
+                    "trigger_source": "scheduler",
+                },
+            )
+            await self._bus.publish(intent)
+        except Exception as e:
+            # 「拒絕問, 強制讀」: 發布失敗不影響 scheduler 排程
+            logger.warning(
+                f"[Scheduler] AGENT_INTENT 發布失敗 (不影響觸發): "
+                f"agent={agent_id} reason={reason} err={e}"
+            )
 
     def register(self, agent_id: str, callback: DiaryCallback) -> None:
         """註冊一個 agent 的 morning + night callback (同一個 callback 處理兩種 slot)."""
@@ -304,6 +371,8 @@ class SoulScheduler:
             target = _pick_dream_target(dreamer, self._all_agents, data_dir)
             if target is None:
                 continue
+            # M1.1: 觸發後、callback 之前發布 AGENT_INTENT
+            await self._publish_agent_intent(dreamer, reason="dream")
             try:
                 await self._dream_callback(dreamer, target)
             except Exception as e:
@@ -325,6 +394,8 @@ class SoulScheduler:
         agents = _r.sample(self._all_agents, n)
         logger.info(f"[Scheduler] ✨ 事件觸發: {len(agents)} 隻角色 ({agents})")
         for agent_id in agents:
+            # M1.1: 觸發後、callback 之前發布 AGENT_INTENT
+            await self._publish_agent_intent(agent_id, reason="event")
             try:
                 await self._event_callback(agent_id, "event")
             except Exception as e:
@@ -376,6 +447,9 @@ class SoulScheduler:
         picks = random.sample(self._all_agents, n)
         logger.info(f"[Scheduler] 💓 heartbeat 觸發: {picks}")
         for agent_id in picks:
+            # M1.1: 觸發後、callback 之前發布 AGENT_INTENT
+            # draft / elapsed_mins 從 callback 內部 _build_intent_payload 拿
+            await self._publish_agent_intent(agent_id, reason="heartbeat")
             try:
                 await self._heartbeat_callback(agent_id)
             except Exception as e:
@@ -432,6 +506,8 @@ class SoulScheduler:
         # 3. 觸發
         agent_id = random.choice(self._all_agents)
         logger.info(f"[Scheduler] 💬 proactive_dm 觸發: {agent_id}")
+        # M1.1: 觸發後、callback 之前發布 AGENT_INTENT
+        await self._publish_agent_intent(agent_id, reason="proactive_dm")
         try:
             await self._proactive_dm_callback(agent_id)
             self._last_proactive_dm_time = datetime.now()
@@ -508,6 +584,8 @@ class SoulScheduler:
             cb = cbs.get(slot)
             if cb is None:
                 continue
+            # M1.1: 觸發後、callback 之前發布 AGENT_INTENT (slot=morning/night)
+            await self._publish_agent_intent(agent_id, reason=slot)
             try:
                 await cb(agent_id, slot)
                 self._last_trigger_date[key] = today

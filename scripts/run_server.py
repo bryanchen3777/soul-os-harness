@@ -246,7 +246,9 @@ async def lifespan(app: FastAPI):
         from src.soul.dream_event import get_dream_event_writer
         # Lesson 39 (正式值): heartbeat 30-60 分鐘隨機,proactive DM 2-4 小時隨機
         # 測試時可暫時改成 1-2 分鐘驗證路徑
-        scheduler = get_scheduler()
+        # M1.1 (2026-07-31 23:30 Perplexity 派工): 傳 bus 給 scheduler,
+        # 讓 5 個 _fire_* 觸發點 callback 跑之前發布 AGENT_INTENT 到 bus
+        scheduler = get_scheduler(bus=bus)
         for aid in agent_ids:
             cb = await diary_callback_factory(aid)
             scheduler.register(aid, cb)
