@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -277,7 +278,18 @@ async def generate_diary_entry(
     )
     content = await _call_minimax_for_diary(system, user, writer.api_key)
 
+    # M0.2 (2026-08-01 00:35 Perplexity 派工): 抽掉 think block 後檢查 clean
+    # 修法動機: LLM 偶爾只回 <think>...</think> 沒實際 diary, raw content non-empty 但 clean empty.
+    # 之前 `if content` 走 source=llm 寫入, 導致 0 chars empty 污染 diary.
+    # 對齊 Bry 19:55+ 「拒絕問, 強制讀」+ 兜底原則: clean empty 跟 LLM 失敗一樣走 placeholder.
     if content:
+        clean = re.sub(r"^<think>.*?</think>\s*", "", content, flags=re.DOTALL).strip()
+        if not clean:
+            logger.warning(
+                f"[Diary] {agent_id} {slot} LLM 只回 think 沒 diary "
+                f"(raw {len(content)} chars, clean 0), 寫 placeholder"
+            )
+            return writer.write_entry(agent_id, slot, placeholder, source="placeholder")
         return writer.write_entry(agent_id, slot, content, source="llm")
     else:
         logger.warning(f"[Diary] {agent_id} {slot} LLM 失敗, 寫 placeholder")
