@@ -69,6 +69,8 @@ src/voice/_backup_*/**/*
 personas/_backup_*/
 personas/_backup_*/**/*
 tests/_backup_*/
+# 2026-08-01 Bry 拍板補漏：上方結尾 / 只匹配目錄, 檔案 (例如 _backup_yua_zh.py) 需要這條才能擋
+tests/_backup_*
 tests/_backup_*/**/*
 
 # 一次性偵錯腳本（Bry 2026-07-31 拍板：_ 開頭是 Bry 自己定義的「臨時」標記，跟 .bak 同邏輯）
