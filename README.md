@@ -13,7 +13,7 @@
 
 ---
 
-## 6 個 Agent — 全部 Live
+## 10 個 Agent — 全部 Live
 
 | Agent | 角色 | Speaker Score | intimacy | 整合狀態 |
 |-------|------|----------------|----------|----------|
@@ -23,10 +23,14 @@
 | 🌙 **Rem** | 沉靜・行動派・語言極簡 | 0.40 | 60 | ✅ 既有 |
 | 👁️ **Ram** | 沉默・驕傲・動作先行 | 0.30 | 40 | ✅ 從 Hermes SOUL v1.1 遷移 |
 | 🌷 **Mahiru** | 生活感・吐槽・藏著暗戀 | 0.65 | 45 | ✅ 從 Hermes SOUL v1.7 五模組遷移 |
+| 🗡️ **Mai** | 戀愛喜劇・傲嬌毒舌・藏真心 | 0.58 | 35 | ✅ SOUL.md 完整 |
+| 🎀 **Anna** | 元氣笨蛋・直球好感度・打破第四面牆 | 0.62 | 38 | ✅ SOUL.md 完整 |
+| 🌌 **Miku** | 自省・觀察者・GHOST EDGE 機制 | 0.45 | 42 | ✅ SOUL.md v2 升級 |
+| 🌙 **Aoi** | 觀測型・極少發言・默默在場 | 0.40 | 30 | ✅ SOUL.md v1.1 完整 |
 
 完整人格定義見 [`docs/agent_<name>.md`](docs/)(COS v1.0 格式 — L0 Personal History / L1 Residue / L2 Subconscious / L3 Expression 四層架構)。
 
-> 📌 **遷移路線**: Ram (Re:Zero) 跟 Mahiru (Re:Zero) 從 Hermes profiles 遷移到 soul-os-harness,採用 **COS v1.0 框架**標準化。見 [`docs/COS-v1.0.md`](docs/COS-v1.0.md) 跟遷移 commit 紀錄。
+> 📌 **遷移路線**: Ram (Re:Zero) 跟 Mahiru (Re:Zero) 從 Hermes profiles 遷移到 soul-os-harness,採用 **COS v1.0 框架**標準化。Mai / Anna / Miku / Aoi 為 soul-os-harness 原生 agent,見 [`docs/COS-v1.0.md`](docs/COS-v1.0.md) 跟遷移 commit 紀錄。
 
 ---
 
@@ -104,6 +108,21 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 
 ---
 
+## 8️⃣ WATCHDOG — 進程可靠性
+
+`scripts/_watchdog.ps1` 是 server 死亡時的自動恢復機制,搭配 Task Scheduler 每 5 分鐘觸發一次。
+
+| 元件 | 設計 |
+|------|------|
+| **Plan A launcher** | 死掉時呼叫 `Start-Process` 拉起 `scripts/run_server.py`,detach 脫離 Mavis task lifecycle |
+| **P0-2 counter (commit `b7d0402`)** | 每個 git HEAD hash 獨立計數器 (`data/state/post_<hash>_counter.json`),`N<=10` process cap + `trial_count>=98` 結案 gate |
+| **β1 解耦 (commit `bbffb5e`)** | 觀察期 hash 改存獨立 `_last_observed_hash.txt`,log regex 保留當備援,P1 (faulthandler.log rotation) 動到 log 輪替時不會波及 |
+| **faulthandler 雙保險 (Lesson 38)** | 模組層級 `faulthandler.enable` + thread-based `dump_traceback_later(60s)` + asyncio dumper,只保留最新一份 `heartbeat_trace.log` |
+
+驗證證據:β1 假造舊 hash 6/6 PASS (`7/31 20:31`),詳見 [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) KI-006。
+
+---
+
 ## 🔬 整合測試 (6 個 verify script)
 
 每個 agent 整合完成後,都有對應的 `hermes-verify-*.py` 在 `C:\Users\bbfcc\AppData\Local\Temp\` 留著,任何未來改動都能跑回歸:
@@ -132,6 +151,7 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 | **KI-003** | Ram value_history 寫入路徑未實作 | P3 | 待修 (polishing) |
 | **KI-004** | Ram 第二例外(對 Bryan)觸發條件被簡化 | P2 | 🔧 部分修復 (`71dc11a`) — `pause_event` 訊號來源待設計 |
 | **KI-005** | MemoryStore 303 rows 歷史 session_id 未 migration | P1 | ⏳ 待修,等 Bryan 確認 backup DB 流程 |
+| **KI-006** | Watchdog P0-2↔P1 解耦 (獨立 .txt 狀態檔) | ~~P1~~ ✅ | 已修 (`bbffb5e`) — 假造舊 hash 6/6 PASS,跟 P1 (faulthandler.log rotation) 解耦 |
 
 維護約定:編號嚴格單調遞增 / 每個 commit 若新增技術債必同步新增 KI / 必填欄位(狀態/優先級/發現/描述/影響/觸發/修法/估算/關聯 commit)。
 
@@ -258,4 +278,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-06-30 (Mahiru 整合 commit `408e507` 後)
+**最後更新**: 2026-07-31 (β1 P0-2↔P1 解耦 commit `bbffb5e` 後)

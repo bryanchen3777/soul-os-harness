@@ -280,6 +280,50 @@ windowed scoring signal extraction 機制需要另立子任務評估是否可複
 
 ---
 
+## KI-006: Watchdog P0-2↔P1 解耦方案 2 (獨立 .txt 狀態檔)
+
+**優先級**: ~~P1~~ ✅  **完成狀態**: 已修  **發現**: 2026-07-31  **修復**: 2026-07-31
+
+**關聯 commit**: `bbffb5e` (基於 `b7d0402` 的後續修正)
+
+**問題**:
+P0-2 原本依賴 `watchdog.log` 最後一筆 `post-<hash>` 標籤做 rotation 偵測。P1 (`faulthandler.log` rotation 50MB size-based) 之後動到 log 輪替策略時,log 一輪替會讓 hash-change 偵測誤判成「沒有 log → 第一次」,導致不該重置的時候被重置。隱性耦合,時間拉長後必然會被忘記一次。
+
+**方案 2 (Bry 拍板勝出)**:
+* 觀察期 hash 改存 `_last_observed_hash.txt` 獨立狀態檔
+* 偵測時優先讀 `.txt`,失敗才 fallback 到 `watchdog.log` regex parse (雙保險, P0-2 原始邏輯保留)
+* rotation / init 兩處同步原子寫入 `.txt` (跟 counter 一起保持原子性)
+* fallback 成功時順便把 log 解析的 hash 同步寫入 `.txt`,讓 `.txt` 跟現有 state 接軌
+
+**方案 1 否決理由**:
+保留 log 最後一筆 tag 是「把耦合換位置」,沒有真的解掉 — 它要求任何以後動 log 輪替的人 (不管是 Bry 自己還是 Mavis 未來某次重構) 都要記得「這行不能被輪替掉」,這種靠人記得維護的隱性約束,時間拉長後幾乎必然會被忘記一次,然後 P0-2 的 hash-change 偵測就悄悄壞掉而不報錯。
+
+**新機制脆弱點 (Bry 要求明標)**:
+1. `_last_observed_hash.txt` 依賴 atomic write (tmp + `Move-Item -Force`),寫入失敗 log 但不 throw
+2. 檔案被外部刪除時會 fallback log regex,恢復時順便 sync 回 `.txt`
+3. 格式驗證 (`^[a-f0-9]{7,40}$`) 失敗回傳 `null`,視同首次觀察期走 init 路徑
+
+**驗證 (假造舊 hash 最小驗證 6/6 PASS, `2026-07-31 20:31`)**:
+1. `.txt` 寫 `deadbe0` → 跑 watchdog → rotation 觸發
+2. rotation log: `observation window rotated: post-deadbe0 -> post-b7d0402`
+3. `.txt` 被覆寫成 `b7d0402` (當前 git HEAD)
+4. counter `trial_count=1`,`n_restarts=0`,`git_short_hash=b7d0402`
+5. counter `n_restarts=0`
+6. counter `git_short_hash=b7d0402`
+7. 第二次 tick `trial_count 1→2` (確認後續走 `.txt` 路徑,不是每次都 rotation)
+
+**位置**:
+- `scripts/_watchdog.ps1` (+56/-7, 10576 bytes, BOM EF BB BF 保留)
+- `data/state/_last_observed_hash.txt` (新狀態檔, `.gitignore` `data/` 已涵蓋,自動排除版控)
+- 觀察期標籤採用 `post-<hash>` 格式,反映真實 code 狀態 (見 `watchdog.log` `post_943486a` / `post_b7d0402` 已驗證)
+
+**Lesson 35 + 36A 連動**:
+Lesson 35 明確「跨重啟樣本不能合併」,P0-2 用 git HEAD hash 當觀察窗口,讓 process 重啟時 sample 起點明確;β1 解耦則讓 P1 (faulthandler.log rotation) 之後動 log 輪替時不會波及偵測,兩條原則一起撐起「n≥98 結案 gate 在有 watchdog 環境下真的可達」。
+
+**Bry 拍板重點** (`2026-07-31 20:25`): 「方案 2 才是真正的解耦,方案 1 只是把問題往後延」「解耦的判斷標準不是『更乾淨』而是『消除隱性約束』」。
+
+---
+
 ## Backlog 維護約定
 
 - **編號嚴格單調遞增** — 不要複用 KI-NNN,刪除 KI 時保留 entry 加 `**狀態**: 已棄用` 而非整段刪
