@@ -1,4 +1,4 @@
-# Soul OS Watchdog (P0-2 升級版)
+﻿# Soul OS Watchdog (P0-2 升級版)
 # - 每 5 分鐘被 Task Scheduler 叫一次
 # - 檢查 port 8000 是不是還 listen + run_server.py 還活著
 # - 死了就呼叫 Plan A launcher 拉起來
@@ -14,6 +14,10 @@ $port = 8000
 $harness = 'C:\Users\bbfcc\.local\bin\soul-os-harness'
 $logFile = Join-Path $harness 'data\logs\watchdog.log'
 $stateDir = Join-Path $harness 'data\state'
+# P0-2↔P1 解耦 (Bry 拍板 2026-07-31 20:25, β1 方案 2): 獨立狀態檔,
+# 不依賴 watchdog.log 完整性 / regex 解析, 之後 P1 (faulthandler.log rotation)
+# 動到 log 輪替策略時不會波及 hash-change 偵測
+$lastObservedHashFile = Join-Path $stateDir '_last_observed_hash.txt'
 $N_CAP = 10
 $TRIAL_TARGET = 98
 
@@ -76,19 +80,59 @@ function Write-Counter-Atomic {
 }
 
 # === P0-2: 計數器管理 (hash 變更自動 reset) ===
-# 設計: per-hash counter file + 用 watchdog log 最後一筆 post-XXXXX 標籤作為「上次 hash」
-# 為什麼不用 _current_window.txt: Bry 拍板的 log 標籤就是用來識別觀察期, log 自己就是 state, 不需多一個檔
+# 設計 (β1 方案 2 升級, Bry 拍板 2026-07-31 20:25):
+#   * 觀察期 hash 改存 _last_observed_hash.txt (獨立狀態檔), 不依賴 watchdog.log
+#   * log regex parse 保留當備援 (雙保險, P0-2 原始設計)
+#   * 解耦理由: P1 (faulthandler.log rotation) 動到 log 輪替策略時不會波及偵測
+#   * 方案 1 (保留 log 最後一筆 tag) 被 Bry 7/31 20:25 拍板否決:
+#     隱性約束靠人記得維護, 時間拉長後必然會被忘記一次
+
+function Read-LastObservedHashFile {
+    # 從 _last_observed_hash.txt 讀, 成功回傳 hash, 失敗回傳 $null
+    # 失敗情境: 檔案不存在 (首次觀察期), 或檔案內容空白, 或讀取錯誤
+    try {
+        if (-not (Test-Path $lastObservedHashFile)) { return $null }
+        $content = [System.IO.File]::ReadAllText($lastObservedHashFile, [System.Text.Encoding]::UTF8)
+        $isBlank = ($content -eq '') -or ($content -eq $null)
+        if ($isBlank) { return $null }
+        $hash = $content.Trim()
+        # 驗證格式: 7 字符 hex (git short hash) 或 40 字符 hex (full hash) 或 'unknown'
+        if ($hash -match '^[a-f0-9]{7,40}$') { return $hash }
+        return $null
+    } catch { return $null }
+}
+
+function Write-LastObservedHashFile-Atomic {
+    # 寫入 _last_observed_hash.txt, atomic write 防 race
+    # 寫入失敗會 log 但不 throw (counter 寫入失敗也容許繼續)
+    param([string]$hash)
+    try {
+        $tmpFile = "$lastObservedHashFile.tmp.$([System.Diagnostics.Process]::GetCurrentProcess().Id)"
+        [System.IO.File]::WriteAllText($tmpFile, $hash, [System.Text.Encoding]::UTF8)
+        Move-Item -Path $tmpFile -Destination $lastObservedHashFile -Force
+    } catch {
+        Log-Watch "  ERROR writing _last_observed_hash.txt: $_"
+    }
+}
 
 function Get-LastObservedHash {
-    # 從 watchdog.log 最後一筆 OK/WARN/ERROR log 解析 post-<hash> 標籤
-    # 如果 log 為空 或 沒 post-XXXXX 標籤 → 回傳 $null (代表首次觀察期)
+    # β1 方案 2: 優先讀 _last_observed_hash.txt, 失敗才 fallback log regex (備援)
+    # 這層 fallback 保留 P0-2 原始邏輯, 確保 _last_observed_hash.txt 被外部刪除
+    # 或損壞時, watchdog 仍能從 log 偵測 rotation
+    $hash = Read-LastObservedHashFile
+    if ($null -ne $hash) { return $hash }
+
+    # fallback: 從 watchdog.log 最後一筆 OK/WARN/ERROR log 解析 post-XXXXX 標籤
     try {
         if (-not (Test-Path $logFile)) { return $null }
-        # 讀最後 20 行找最近一筆 post-XXXXX (避免 log 被 rotation 後 last line 不是 post-XXXXX)
         $tail = Get-Content $logFile -Tail 20 -Encoding UTF8 -ErrorAction SilentlyContinue
         for ($i = $tail.Count - 1; $i -ge 0; $i--) {
             if ($tail[$i] -match 'post-([a-f0-9]+)') {
-                return $matches[1]
+                $logHash = $matches[1]
+                # fallback 成功: 順便把 log 解析的 hash 同步寫入 .txt
+                # 讓 .txt 跟現有 state 接軌, 下次 tick 直接走 .txt 路徑
+                Write-LastObservedHashFile-Atomic $logHash
+                return $logHash
             }
         }
         return $null
@@ -120,6 +164,9 @@ function Get-Or-Create-Counter {
             last_update_ts = $now
         }
         Write-Counter-Atomic $file $counter
+        # β1 方案 2: 同步寫 _last_observed_hash.txt, 跟 counter 一起保持原子性
+        # 這樣下次 tick 直接走 .txt 路徑, 不再依賴 log regex
+        Write-LastObservedHashFile-Atomic $shortHash
         Log-Watch "  observation window rotated: post-$lastObservedHash -> post-$shortHash (counter reset, n_restarts=0, trial_count=0)"
     } elseif ($null -eq $counter) {
         # 首次觀察期 (沒 log 或 log 沒 post-XXXXX)
@@ -135,6 +182,8 @@ function Get-Or-Create-Counter {
             last_update_ts = $now
         }
         Write-Counter-Atomic $file $counter
+        # β1 方案 2: 首次觀察期也同步寫 _last_observed_hash.txt
+        Write-LastObservedHashFile-Atomic $shortHash
         Log-Watch "  new observation window: post-$shortHash (counter initialized, n_restarts=0, trial_count=0)"
     }
     # else: 同觀察期, 沿用現有 counter (下面 main 會 trial++)
