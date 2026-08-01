@@ -1,4 +1,4 @@
-"""
+﻿"""
 src/soul/scheduler.py — Soul OS Stage 4.2 (Part 1)
 
 排程器 (SoulScheduler)
@@ -28,7 +28,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
+
+# M0.4 (2026-08-01 00:50 Perplexity 派工): 全部 datetime.now(ASIA_TZ) 改 Asia/Taipei aware
+# 動機: scheduler 設計觸發時間是 Asia/Taipei 08:00 morning + 22:00 night,
+# 但 Windows 系統時區是 EDT (UTC-4), datetime.now(ASIA_TZ) 拿 server local time
+# (EDT 8:00 = Asia/Taipei 20:00), 觸發跟 Bry 預期差 12 小時.
+# 修法: ASIA_TZ 是 UTC+8 fixed offset (Windows 沒 zoneinfo 可用, 用 timezone(timedelta)).
+# 用法: 11 處 datetime.now(ASIA_TZ) 改 datetime.now(ASIA_TZ) (aware),
+# 比較時保留 tz 一致, 寫入 .jsonl 的 strftime 跟 ts 跟 Bry 預期一致.
+ASIA_TZ = timezone(timedelta(hours=8))
 from typing import Awaitable, Callable, Dict, List, Optional
 
 # M1.1 (2026-07-31 23:30 Perplexity 派工): Event Bus 整合
@@ -216,7 +225,7 @@ class SoulScheduler:
             self.event_min_interval_minutes,
             self.event_max_interval_minutes,
         )
-        self._next_event_time = datetime.now() + timedelta(minutes=mins)
+        self._next_event_time = datetime.now(ASIA_TZ) + timedelta(minutes=mins)
         logger.info(
             f"[Scheduler] 註冊 dream + event ✓ "
             f"next_event={self._next_event_time.strftime('%H:%M')} "
@@ -234,7 +243,7 @@ class SoulScheduler:
             self.heartbeat_min_interval_minutes,
             self.heartbeat_max_interval_minutes,
         )
-        self._next_heartbeat_time = datetime.now() + timedelta(minutes=mins)
+        self._next_heartbeat_time = datetime.now(ASIA_TZ) + timedelta(minutes=mins)
         logger.info(
             f"[Scheduler] 註冊 heartbeat ✓ "
             f"next={self._next_heartbeat_time.strftime('%H:%M:%S')} "
@@ -257,7 +266,7 @@ class SoulScheduler:
             self.proactive_dm_min_interval_minutes,
             self.proactive_dm_max_interval_minutes,
         )
-        self._next_proactive_dm_time = datetime.now() + timedelta(minutes=mins)
+        self._next_proactive_dm_time = datetime.now(ASIA_TZ) + timedelta(minutes=mins)
         logger.info(
             f"[Scheduler] 註冊 proactive_dm ✓ "
             f"next={self._next_proactive_dm_time.strftime('%H:%M:%S')} "
@@ -408,7 +417,7 @@ class SoulScheduler:
             self.event_min_interval_minutes,
             self.event_max_interval_minutes,
         )
-        self._next_event_time = datetime.now() + timedelta(minutes=mins)
+        self._next_event_time = datetime.now(ASIA_TZ) + timedelta(minutes=mins)
         logger.info(
             f"[Scheduler] ✨ 下次事件: {self._next_event_time.strftime('%Y-%m-%d %H:%M')}"
         )
@@ -460,7 +469,7 @@ class SoulScheduler:
             self.heartbeat_min_interval_minutes,
             self.heartbeat_max_interval_minutes,
         )
-        self._next_heartbeat_time = datetime.now() + timedelta(minutes=mins)
+        self._next_heartbeat_time = datetime.now(ASIA_TZ) + timedelta(minutes=mins)
         logger.info(
             f"[Scheduler] 💓 下次 heartbeat: {self._next_heartbeat_time.strftime('%H:%M:%S')}"
         )
@@ -479,7 +488,7 @@ class SoulScheduler:
 
         # 1. 冷卻窗檢查
         if self._last_proactive_dm_time is not None:
-            elapsed = (datetime.now() - self._last_proactive_dm_time).total_seconds()
+            elapsed = (datetime.now(ASIA_TZ) - self._last_proactive_dm_time).total_seconds()
             if elapsed < self.proactive_dm_cooldown_seconds:
                 remaining = int(self.proactive_dm_cooldown_seconds - elapsed)
                 logger.debug(
@@ -490,11 +499,11 @@ class SoulScheduler:
                     self.proactive_dm_min_interval_minutes,
                     self.proactive_dm_max_interval_minutes,
                 )
-                self._next_proactive_dm_time = datetime.now() + timedelta(minutes=mins)
+                self._next_proactive_dm_time = datetime.now(ASIA_TZ) + timedelta(minutes=mins)
                 return
 
         # 2. 靜音時段檢查
-        now = datetime.now()
+        now = datetime.now(ASIA_TZ)
         if self._is_quiet_hours(now):
             logger.debug(
                 f"[Scheduler] 💬 proactive_dm 靜音時段 ({now.hour}:xx), 跳過"
@@ -510,7 +519,7 @@ class SoulScheduler:
         await self._publish_agent_intent(agent_id, reason="proactive_dm")
         try:
             await self._proactive_dm_callback(agent_id)
-            self._last_proactive_dm_time = datetime.now()
+            self._last_proactive_dm_time = datetime.now(ASIA_TZ)
         except Exception as e:
             # 「拒絕問, 強制讀」: 失敗不中斷排程器
             logger.exception(f"[Scheduler] proactive_dm {agent_id} 失敗: {e}")
@@ -519,7 +528,7 @@ class SoulScheduler:
             self.proactive_dm_min_interval_minutes,
             self.proactive_dm_max_interval_minutes,
         )
-        self._next_proactive_dm_time = datetime.now() + timedelta(minutes=mins)
+        self._next_proactive_dm_time = datetime.now(ASIA_TZ) + timedelta(minutes=mins)
         logger.info(
             f"[Scheduler] 💬 下次 proactive_dm: {self._next_proactive_dm_time.strftime('%H:%M:%S')}"
         )
@@ -530,7 +539,7 @@ class SoulScheduler:
         last_health_log = 0.0
         while self._running:
             try:
-                now = datetime.now()
+                now = datetime.now(ASIA_TZ)
                 # 1. morning / night slot
                 slot = self._slot_for_time(now)
                 if slot:
