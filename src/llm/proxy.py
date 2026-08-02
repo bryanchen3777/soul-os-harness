@@ -1465,6 +1465,25 @@ def _extract_japanese_segment(text: str) -> str:
     return max(candidates_with_kana, key=len)
 
 
+# M2.X (2026-08-02 11:30 Bry + Perplexity 派工): LLM 字面 \n → 真換行
+def _unescape_llm_text(s: str) -> str:
+    """把 LLM 偶爾輸出的字面 \\n (0x5c 0x6e) 換成真換行 (0x0a).
+
+    為什麼會有字面 \\n: L1072-1073 的 prompt 範例 `\\n` 字面 escape,
+    LLM 學會輸出字面 \\n 而不是真換行 0x0a. 不修的話 Bry 在 TG 看到的是
+    字面 `\\n` 兩個字元而不是真的分行.
+
+    只處理 \\n, 其他 escape 序列 (\\t, \\r, \\\\) 不動 — Bry 派工字面
+    只要求 \\n, 過度修風險更大.
+
+    風險: 角色聊天情境下, 真的有內容要講解 `\\n` 字符本身 (例如教別人
+    escape sequence) 的機率極低, Bry 拍板接受這個風險.
+    """
+    if not s:
+        return s
+    return s.replace("\\n", "\n")
+
+
 def _parse_llm_output(raw: str, agent_id: str) -> Dict[str, str]:
     """3 層容錯解析 LLM 輸出,返回 {text, audio_text, emotion}。
 
@@ -1607,6 +1626,16 @@ def _parse_llm_output(raw: str, agent_id: str) -> Dict[str, str]:
     text = _strip_emotion_tags_from_text(text)
     audio_text = _strip_fake_function_calls(audio_text)
     audio_text = _EMOTION_TAG_LINE_PREFIX.sub("", audio_text, count=1).lstrip()
+
+    # M2.X (2026-08-02 11:30 Bry + Perplexity 派工): LLM 字面 \n → 真換行
+    # LLM (minimax-M2.7) 偶爾會輸出字面 \n (0x5c 0x6e) 而不是真換行 (0x0a),
+    # 特別是中日雙語輸出格式. 根因: L1072-1073 的 prompt 範例用 `\\n` (字面)
+    # 教 LLM 學會輸出字面 \n. 修法: 在 _parse_llm_output 出口對 text 跟 audio_text
+    # 都跑 _unescape_llm_text, 後續 AGENT_SPEAK 廣播 / history 寫入 / TG 送出 /
+    # audio TTS 全部用修正後文字. 風險: 角色聊天情境下, 真的有內容要講解 \n
+    # 字符本身的機率極低, Bry 拍板接受這個風險.
+    text = _unescape_llm_text(text)
+    audio_text = _unescape_llm_text(audio_text)
 
     # emotion 白名單驗證
     whitelist = _get_emotion_whitelist(agent_id)
