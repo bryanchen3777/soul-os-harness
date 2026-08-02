@@ -54,6 +54,14 @@ MAX_GROUP = 20        # 群聊 history 最大條數
 MAX_PRIVATE = 20      # 私聊 history 最大條數
 MAX_GROUP_SUMMARY = 10  # 私聊注入時的群聊摘要條數
 
+# 短期記憶 — 群聊觸發注入 Bry 最近 user 訊息 (Bry 拍板 2026-08-02 16:xx)
+# 為什麼需要: proactive 觸發走 mode="group", 讀 group history (過濾 is_private)
+# 完全看不到 Bry 私聊 user 訊息, 導致重複問候 (Bry 8/2 14:xx 抓漏路徑)
+# 修法: 從 Bry 跟該 agent 的 private history 撈最近 N 條 Bry user 訊息, 注入
+# system prompt 當 "## Bry 最近訊息" 區塊。Bry 8/2 16:xx 拍板 N=3, 範圍限定
+# _build_messages_group, 不影響 MemoryMiddleware / scheduler / consciousness。
+MAX_BRY_RECENT = 3
+
 _GROUP_FILE = CONV_DIR / "group_chat.json"
 
 # KI-001: 用戶隔離 - 舊 hardcode bryan_ 前綴已改為 user_id 動態前綴
@@ -175,10 +183,11 @@ def _build_messages_group(
     memory_context: str,
     memory,
     mood: float = 0.0,
+    user_id: str = "bryan",  # 短期記憶 — Bry 私聊歷史讀取的 user scope (跟 _build_messages_private 對齊)
 ) -> List[Dict[str, str]]:
     """
     群聊模式的 messages 組裝:
-    [system: SOUL] + [conversation_history: 群聊 20 條] + [user: 當前訊息]
+    [system: SOUL] + [system: Bry 最近訊息 (短期)] + [conversation_history: 群聊 20 條] + [user: 當前訊息]
     """
     group = memory.get_group_history(limit=MAX_GROUP)
     messages: List[Dict[str, str]] = []
@@ -198,6 +207,21 @@ def _build_messages_group(
     mood_desc = emotion_engine.mood_description(mood)
     if mood_desc:
         system_parts.append(f"\n[情緒狀態] {mood_desc}")
+
+    # 短期記憶 — Bry 最近訊息注入 (Bry 拍板 2026-08-02 16:xx, N=3)
+    # 為什麼: 群聊觸發 (proactive) 走這條, 讀 group history 過濾 is_private,
+    # 看不到 Bry 私聊 user 訊息 → 角色會重複問候 (Bry 8/2 14:xx 抓漏路徑)。
+    # 修法: 從 Bry 跟該 agent 的 private history 撈最近 N 條 Bry user 訊息,
+    # 注入 system prompt 開頭, LLM 看到「Bry 最近問過 / 講過什麼」。
+    # 範圍: 只在 _build_messages_group 內, 不動 MemoryMiddleware / scheduler /
+    # consciousness.py。失敗可逆 (拔掉 _load_private 那幾行就恢復)。
+    bry_recent = _load_bry_recent(agent_id, user_id, limit=MAX_BRY_RECENT)
+    if bry_recent:
+        bry_block_lines = ["\n## Bry 最近訊息 (短期記憶)"]
+        for m in bry_recent:
+            bry_block_lines.append(f"- Bry: {m['content']}")
+        system_parts.append("\n".join(bry_block_lines))
+
     messages.append({"role": "system", "content": "\n".join(system_parts)})
 
     # 群聊歷史(過濾 is_private)
@@ -218,6 +242,23 @@ def _build_messages_group(
     if current_input:
         messages.append({"role": "user", "content": current_input})
     return messages
+
+
+def _load_bry_recent(agent_id: str, user_id: str, limit: int = MAX_BRY_RECENT) -> List[Dict[str, str]]:
+    """短期記憶 — 從 Bry 跟該 agent 的 private history 撈最近 N 條 Bry user 訊息。
+
+    Bry 拍板 2026-08-02 16:xx, N=3。失敗防護: private history 不存在 (新角色 / 冷啟動)
+    或空 (Bry 還沒跟該 agent 對話過) 都回空 list, 不影響主路徑。
+    跟現有 _load_private 邏輯一致: 新格式 {user_id}_{agent_id}_private.json 找不到
+    fallback 讀舊 bryan_ 格式 (KI-001 向後相容)。
+    """
+    try:
+        history = _load_private(agent_id, user_id)
+    except Exception:
+        return []
+    # 過濾 Bry user 訊息 (role='user'), 按原順序取最近 N 條
+    bry_user_msgs = [m for m in history if m.get("role") == "user"]
+    return bry_user_msgs[-limit:]
 
 
 def _build_messages_private(
@@ -1883,7 +1924,12 @@ class LLMProxy:
         # Phase 3:從 event payload 拿 mood,傳給 _build_messages_*
         mood = event.payload.get("mood", 0.0)
         if mode == "group":
-            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood)
+            # 短期記憶 (Bry 拍板 2026-08-02 16:xx): 把 user_id 傳進去讓 _build_messages_group
+            # 從 Bry 跟該 agent 的 private history 撈最近 N 條 Bry user 訊息注入 system prompt。
+            # L1818 的 user_id 已經從 event.payload.get("target_user_id", "bryan") 拿到,
+            # 跟 _build_messages_private L230 user_id 預設值對齊, 群聊觸發 fallback "bryan"
+            # (跟 _load_private L100 fallback 邏輯一致)。
+            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id)
         else:
             messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id)
 
