@@ -26,9 +26,23 @@ M0.5 (2026-08-02 10:35 Bry 派工): last_tg_user 全域共享 + Bry 沒回應 th
   - throttle 只限 proactive_dm (Bry 派工字面), 不影響 dream/event/
     heartbeat/night slot (那些有其他規則管控)
   - commit-only, 不重啟 server, 等 Bry 下次重啟套用
+
+M2 (2026-08-02 10:51 Perplexity 派工, Bry 維持原本判斷): 訊息分級 TG/web/離線緩衝
+  - 修法動機: Bry 8/1 10:30 報「我收到的訊息都雲裡霧裡」, 排查發現 Bry 不在線時
+    角色訊息裸投堆積 (anna 4:21-5:37 累積 6 條) 或直接丟掉 (miku 留 web 但
+    web 0 conn 沒人接). Bry 派的 M0.5 修了 last_tg_user 全域 + throttle 4h,
+    但 Bry 4h 後上線時, 中間 4h 累積的訊息全沒了. M2 task 2 補這塊:
+  - 修法: ChannelRouter._on_agent_speak 偵測到 Bry 不在 web + 沒 last_tg_user
+    時, 不丟訊息, append 進 data/state/outbox.json (離線 buffer).
+  - Flush 條件:
+    1. 累積 >= 10 條 → 自動 flush, 透過全域 last_tg_user 推 TG 摘要
+    2. Bry 重新上線 (inbound 收到 Bry 訊息) → 立即 flush
+  - 摘要格式: 「過去 X 小時錯過 Y 條訊息: 角色清單 + 第一句 preview」
+  - commit-only, 不重啟 server, 等 Bry 下次重啟套用 (跟 M0.5 同模式)
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -62,6 +76,14 @@ _STATE_DIR = Path("data/state")
 _LAST_TG_USER_FILE = _STATE_DIR / "last_tg_user.json"
 _BRYAN_LAST_SEEN_FILE = _STATE_DIR / "bryan_last_seen.json"
 
+# M2 (2026-08-02 10:51 Perplexity 派工): 離線 buffer
+# Bry 不在 web + 沒 last_tg_user 時, 主動觸發訊息 append 進 outbox
+# 累積 N 條或 Bry 上線時 flush 摘要
+_OUTBOX_FILE = _STATE_DIR / "outbox.json"
+# 累積 10 條自動 flush, 避免 Bry 離線 24h 累積 20+ 條時一次推爆
+# (proactive_dm 2-4h + heartbeat 30-60min + event 4-8h = 24h 約 12-20 條主動)
+OUTBOX_FLUSH_THRESHOLD = 10
+
 
 class ChannelRouter:
     """Phase 5b：把 AGENT_SPEAK 依 target_channel 分發到對應 ChannelAdapter。"""
@@ -83,6 +105,8 @@ class ChannelRouter:
         self._last_tg_user_global: int | None = self._load_last_tg_user_global()
         # M0.5: Bry 最後一次主動訊息時間, throttle proactive_dm 用
         self._bryan_last_seen: datetime | None = self._load_bryan_last_seen()
+        # M2: 離線 buffer, Bry 不在線時主動觸發 append 進這裡
+        self._outbox: list[dict] = self._load_outbox()
         # Phase 5+ (2026-07-15 Bry 拍板): 配對 AGENT_SPEAK → AGENT_AUDIO_READY
         # AGENT_SPEAK 送 text 到 telegram user X 後,把 (X, ts) 暫存到這;
         # AGENT_AUDIO_READY 來時用 agent_id 找到 X,把 mp3 用 send_voice 推給他
@@ -166,12 +190,22 @@ class ChannelRouter:
                     target_channel = "telegram"
                     target_user_id = last_user
                 else:
-                    # 從來沒跟 user 互動過，沒辦法送
-                    # 留給 web 廣播（雖然沒人接，總比丟掉好）
+                    # M2 (Bry 8/2 10:51 派工): Bry 不在 web + 沒 last_tg_user
+                    # → 進 outbox, 等 Bry 上線時 flush 摘要
+                    # 取代原本「留 web」 (web 0 conn 沒人接, 等於丟掉)
                     logger.info(
-                        f"[ChannelRouter] {agent_id} 主動觸發，"
-                        f"web 0 conn 但沒有 last_tg_user, 留 web"
+                        f"[ChannelRouter] {agent_id} 主動觸發, "
+                        f"web 0 conn 沒 last_tg_user, enqueue outbox"
                     )
+                    # 抓 event 的 text 跟 reason
+                    event_text = event.payload.get("text", "")
+                    event_reason = event.payload.get("reason", "proactive")
+                    self._enqueue_outbox(agent_id, event_text, event_reason)
+                    # 排程 flush 檢查 (累積達標自動 flush)
+                    # 這裡不能 await (在 _on_agent_speak 流程內),
+                    # 但 _on_agent_speak 是 async 所以可以直接 await
+                    # 為了不阻塞主流程, 排成 task
+                    asyncio.create_task(self._maybe_flush_outbox())
         # ── Phase 5c fallback end ──────────────────────────
 
         # Web 由 IOGateway 處理，這裡跳過避免重複送出
@@ -533,6 +567,178 @@ class ChannelRouter:
                 f"[ChannelRouter] 寫 {_BRYAN_LAST_SEEN_FILE.name} 失敗: {e}"
             )
 
+    # ── M2 (2026-08-02 10:51 Perplexity 派工): 離線 outbox ──
+    # 修法動機: Bry 8/1 報「角色突然全部消失」/「訊息雲裡霧裡」, 排查發現
+    # Bry 完全離線 (不在 web + 沒 last_tg_user) 時, 角色主動觸發會:
+    # - 原本 log "留 web" 但 web 0 conn 沒人接, 訊息丟掉
+    # - 或 fallback 到 per-agent last_tg_user (假設 miku 從沒跟 Bry 對話)
+    # 修法: 不丟訊息, append 進 outbox. 累積 N 條或 Bry 上線時 flush 摘要.
+    def _load_outbox(self) -> list[dict]:
+        if not _OUTBOX_FILE.is_file():
+            return []
+        try:
+            data = json.loads(_OUTBOX_FILE.read_text(encoding="utf-8"))
+            msgs = data.get("messages", [])
+            if isinstance(msgs, list):
+                return msgs
+        except Exception as e:
+            logger.warning(
+                f"[ChannelRouter] 讀 {_OUTBOX_FILE.name} 失敗: {e}"
+            )
+        return []
+
+    def _save_outbox(self) -> None:
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            _OUTBOX_FILE.write_text(
+                json.dumps(
+                    {"messages": self._outbox},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.warning(
+                f"[ChannelRouter] 寫 {_OUTBOX_FILE.name} 失敗: {e}"
+            )
+
+    def _enqueue_outbox(
+        self, agent_id: str, text: str, reason: str
+    ) -> None:
+        """Bry 不在 web + 沒 last_tg_user 時, append 進 outbox.
+
+        Bry 派工 8/2 10:35 維持 throttle 只限 proactive_dm,
+        這裡 outbox 接收所有主動觸發 (heartbeat / event / dream / proactive_dm),
+        給 Bry 重新上線時的摘要. Night / morning slot 走 diary 不走 AGENT_SPEAK,
+        不會進 outbox.
+        """
+        now_utc = datetime.now(timezone.utc).isoformat()
+        self._outbox.append(
+            {
+                "ts": now_utc,
+                "agent_id": agent_id,
+                "reason": reason,
+                "text": text,
+            }
+        )
+        self._save_outbox()
+        logger.info(
+            f"[ChannelRouter] outbox enqueue | "
+            f"agent={agent_id} reason={reason} "
+            f"size={len(self._outbox)}/{OUTBOX_FLUSH_THRESHOLD}"
+        )
+
+    async def _flush_outbox_to_bry(self) -> None:
+        """Outbox 累積達標或 Bry 上線時, 生成摘要送 Bry 的 TG.
+
+        摘要格式: 「過去 X 小時錯過 Y 條訊息: 角色清單 + 每隻第一句 preview」
+        限制: 摘要不超過 800 字 (TG single message 4096 char, 留 buffer)
+        發送目標: 全域 last_tg_user (M0.5 修完後 Bry 跟任一角色對話就有)
+        """
+        if not self._outbox:
+            return
+        if self._last_tg_user_global is None:
+            # 沒有全域 user_id (Bry 從沒跟任何角色對話過, 不可能 flush)
+            logger.debug(
+                f"[ChannelRouter] outbox 有 {len(self._outbox)} 條但 "
+                f"沒有 last_tg_user_global, 留著等 Bry 對話後再 flush"
+            )
+            return
+
+        # 算時段
+        first_ts = self._outbox[0].get("ts", "")
+        last_ts = self._outbox[-1].get("ts", "")
+        try:
+            first_dt = datetime.fromisoformat(first_ts)
+            last_dt = datetime.fromisoformat(last_ts)
+            if first_dt.tzinfo is None:
+                first_dt = first_dt.replace(tzinfo=timezone.utc)
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            hours_span = (last_dt - first_dt).total_seconds() / 3600.0
+        except Exception:
+            hours_span = 0.0
+
+        # 角色 + 第一句 preview (去重複角色, 每隻角色只列第一條)
+        seen_agents: dict[str, str] = {}
+        for m in self._outbox:
+            aid = m.get("agent_id", "?")
+            if aid not in seen_agents:
+                seen_agents[aid] = m.get("text", "")[:50]
+
+        # 組摘要
+        lines = [
+            f"你離線 {hours_span:.1f} 小時, "
+            f"錯過 {len(self._outbox)} 條角色主動訊息:",
+        ]
+        for aid, preview in seen_agents.items():
+            lines.append(f"  - {aid}: {preview}")
+        if len(seen_agents) < len(self._outbox):
+            lines.append(
+                f"  (其他 {len(self._outbox) - len(seen_agents)} 條同角色略)"
+            )
+        summary = "\n".join(lines)
+        if len(summary) > 800:
+            summary = summary[:797] + "..."
+
+        # 透過 telegram adapter 送 Bry
+        adapter = self._adapters.get("telegram")
+        if not adapter:
+            logger.warning(
+                f"[ChannelRouter] outbox flush 失敗: 沒有 telegram adapter"
+            )
+            return
+
+        # adapter key 是短碼 (e.g. "yua"), 但 Bry 收到的應該是 broadcast channel
+        # 用 "system" 短碼 (M2 預留 channel 給 system 訊息, 不存在)
+        # 改: 借用任一 adapter instance 都可以, 因為 send() 只用 user_id
+        # 找第一個 adapter 來呼叫 send
+        first_adapter = next(iter(self._adapters.values()), None)
+        if not first_adapter:
+            logger.warning(
+                f"[ChannelRouter] outbox flush 失敗: 沒任何 adapter"
+            )
+            return
+
+        try:
+            ok = await first_adapter.send(
+                agent_id="system",
+                text=summary,
+                user_id=self._last_tg_user_global,
+            )
+            if ok:
+                logger.info(
+                    f"[ChannelRouter] outbox flush sent to Bry | "
+                    f"size={len(self._outbox)} summary_len={len(summary)}"
+                )
+                # 清 outbox (已經送達)
+                flushed_size = len(self._outbox)
+                self._outbox = []
+                self._save_outbox()
+                logger.info(
+                    f"[ChannelRouter] outbox cleared after flush | "
+                    f"was {flushed_size} msgs"
+                )
+            else:
+                logger.warning(
+                    f"[ChannelRouter] outbox flush send failed, "
+                    f"outbox 保留 (下次再試)"
+                )
+        except Exception as e:
+            logger.exception(
+                f"[ChannelRouter] outbox flush error: {e}"
+            )
+
+    async def _maybe_flush_outbox(self) -> None:
+        """累積達標自動 flush. 由 _on_agent_speak 在 append 之後呼叫."""
+        if len(self._outbox) >= OUTBOX_FLUSH_THRESHOLD:
+            logger.info(
+                f"[ChannelRouter] outbox 達標 {len(self._outbox)} >= "
+                f"{OUTBOX_FLUSH_THRESHOLD}, 自動 flush"
+            )
+            await self._flush_outbox_to_bry()
+
     async def inbound(
         self,
         agent_id: str,
@@ -582,6 +788,15 @@ class ChannelRouter:
             self._save_last_tg_user_global(user_id, full_agent_id)
             # M0.5: 記 Bry 最後一次訊息時間, throttle proactive_dm 用
             self._save_bryan_last_seen(full_agent_id, text)
+            # M2 (Bry 8/2 10:51 派工): Bry 上線了, 立即 flush outbox
+            # Bry 重新上線是「過去累積的訊息要立刻摘要給 Bry 看」的信號
+            if self._outbox:
+                logger.info(
+                    f"[ChannelRouter] Bry 上線, 立即 flush outbox | "
+                    f"size={len(self._outbox)}"
+                )
+                # 排程 flush (不阻塞 inbound 流程)
+                asyncio.create_task(self._flush_outbox_to_bry())
             # Step 1 fix: session 隔離每個 user，避免陌生人污染 Bryan 記憶
             # Bryan: session_1696287850_agent_yua, 陌生人: session_99999999_agent_yua
             tg_session = f"session_{user_id}_{full_agent_id}"
