@@ -114,12 +114,21 @@ def _save_private(agent_id: str, user_id: str, history: List[Dict[str, str]]) ->
     path.write_text(json.dumps(trimmed, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _append_group(speaker: str, content: str, is_private: bool = False) -> None:
-    """Append to group history with correct role based on speaker."""
+def _append_group(speaker: str, content: str, is_private: bool = False, triggered_by: Optional[str] = None) -> None:
+    """Append to group history with correct role based on speaker.
+
+    M2 task 4 (Bry 8/2 14:14 派工): 加 triggered_by metadata 區分
+    Bry 真實對話 vs proactive 觸發。Bry 抓漏: 之前 heartbeat/proactive_dm
+    觸發的 assistant 訊息沒有任何 metadata 標記,將來 LLM 讀歷史時
+    無法區分哪些是 Bry 真實觸發後的角色回應, 哪些是角色自己主動搭話。
+    """
     role = "user" if speaker == "bryan" else "assistant"
+    entry = {"role": role, "content": content,
+             "speaker": speaker, "is_private": is_private}
+    if triggered_by:
+        entry["triggered_by"] = triggered_by
     history = _load_group()
-    history.append({"role": role, "content": content,
-                    "speaker": speaker, "is_private": is_private})
+    history.append(entry)
     _save_group(history)
 
 
@@ -142,10 +151,20 @@ def _session_key(agent_id: str, user_id: str) -> str:
     return f"session_{user_id}_{agent_id}"
 
 
-def _append_private_history(agent_id: str, user_id: str, role: str, content: str) -> None:
-    """KI-001: 寫入私聊 history(user-scoped)"""
+def _append_private_history(agent_id: str, user_id: str, role: str, content: str, triggered_by: Optional[str] = None) -> None:
+    """KI-001: 寫入私聊 history(user-scoped)。
+
+    M2 task 4 (Bry 8/2 14:14 派工): 加 triggered_by metadata。
+    Bry 真實對話的 entry 不帶 triggered_by (預設 None 不寫進 entry)；
+    proactive 觸發 (heartbeat / proactive_dm / event / dream / morning / night)
+    的 assistant 訊息會帶 triggered_by 標記, 將來組 prompt 讀歷史時
+    可以區分哪些是 Bry 真實觸發後的回應, 哪些是角色自己主動搭話。
+    """
     history = _load_private(agent_id, user_id)
-    history.append({"role": role, "content": content})
+    entry = {"role": role, "content": content}
+    if triggered_by:
+        entry["triggered_by"] = triggered_by
+    history.append(entry)
     _save_private(agent_id, user_id, history)
 
 
@@ -1988,7 +2007,10 @@ class LLMProxy:
 
             if generated_text is None:
                 # 即使 LLM 失敗也要把 user 訊息寫入(避免下次再問一次同樣的)
-                if user_message:
+                # M2 task 4 (Bry 8/2 14:14 派工): 只在 reason == "user_message" 才寫 user,
+                # proactive 觸發的 draft (heartbeat / proactive_dm / event / dream / morning / night)
+                # 不是 Bry 真實輸入, 寫進 history 會污染 (Bry 抓漏 8/2 13:45)。
+                if user_message and reason == "user_message":
                     if mode == "group":
                         _append_group_user("bryan", user_message)
                         self._memory.append("group", "user", user_message, "bryan", is_private=False)
@@ -2007,14 +2029,16 @@ class LLMProxy:
 
             # ── 寫入歷史(user + assistant 一起寫)──────────
             # 這樣保證 LLM 看到的 prompt 跟實際 history 一致,不會出現「你問兩遍」的重複問題
+            # M2 task 4 (Bry 8/2 14:14 派工): user 訊息只在 reason == "user_message" 才寫,
+            # 角色實際輸出 (assistant) 永遠寫入但加 triggered_by metadata 標記主動觸發。
             if mode == "group":
-                if user_message:
+                if user_message and reason == "user_message":
                     _append_group_user("bryan", user_message)
                     self._memory.append("group", "user", user_message, "bryan", is_private=False)
-                _append_group(speaker=agent_id, content=generated_text)
+                _append_group(speaker=agent_id, content=generated_text, triggered_by=reason)
                 self._group_history = _load_group()
             else:
-                if user_message:
+                if user_message and reason == "user_message":
                     _append_private_history(agent_id, user_id, "user", user_message)
                     self._memory.append(f"session_{user_id}_{agent_id}", "user", user_message, "bryan", is_private=True)
                     _append_group(
@@ -2022,9 +2046,16 @@ class LLMProxy:
                         content=f"({agent_id} 與 Bryan 私聊中)",
                         is_private=True,
                     )
-                    _append_private_history(agent_id, user_id, "assistant", generated_text)
+                    _append_private_history(agent_id, user_id, "assistant", generated_text, triggered_by=reason)
                     self._memory.append(f"session_{user_id}_{agent_id}", "assistant", generated_text, "agent_id", is_private=True)
-                    _append_group(speaker=agent_id, content=generated_text, is_private=True)
+                    _append_group(speaker=agent_id, content=generated_text, is_private=True, triggered_by=reason)
+                    self._history[_session_key(agent_id, user_id)] = _load_private(agent_id, user_id)
+                else:
+                    # Proactive 觸發: 不寫 user, 但 assistant 訊息要寫入保持上下文連貫
+                    # 加 triggered_by metadata 標記這是主動搭話, 不是 Bry 真實對話後的回應
+                    _append_private_history(agent_id, user_id, "assistant", generated_text, triggered_by=reason)
+                    self._memory.append(f"session_{user_id}_{agent_id}", "assistant", generated_text, "agent_id", is_private=True)
+                    _append_group(speaker=agent_id, content=generated_text, is_private=True, triggered_by=reason)
                     self._history[_session_key(agent_id, user_id)] = _load_private(agent_id, user_id)
                 self._group_history = _load_group()
 
