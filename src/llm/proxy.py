@@ -1848,6 +1848,46 @@ class LLMProxy:
         else:
             messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id)
 
+        # ── M2 task 3 (Bry + Perplexity 8/2 12:05 派工): proactive draft user → system ──
+        # 修法動機: heartbeat / proactive_dm 觸發時, _build_intent_payload 組的 draft
+        # (例: ram "還在。", akane "……在喔。") 經 _build_messages_* 當 user role 傳給 LLM.
+        # LLM 看到 user role "還在。", 認為 Bry 對角色問「你還在嗎」, 角色生成回應, Bry 收到
+        # 沒上下文的訊息 (例: "（繼續手邊的工作）" / "……你還在吧。")
+        # 修法: 從 messages 內 pop 出 user role 的 draft, 改 append 為 system role 帶 reason 標記.
+        # 跨全部角色套用 (reason != "user_message" 全部走這條路).
+        # 不影響 user_message 真實對話 (Bry 自己發訊息還是 user role 正常傳).
+        if reason != "user_message" and user_message:
+            for _i in range(len(messages) - 1, -1, -1):
+                if (
+                    messages[_i]["role"] == "user"
+                    and messages[_i]["content"] == user_message
+                ):
+                    messages.pop(_i)
+                    reason_label_map = {
+                        "heartbeat": "heartbeat (Bry 沒主動發言, 這是定期在場確認的主動搭話)",
+                        "proactive_dm": "proactive_dm (Bry 沒主動發言, 這是基於親密度的主動搭話)",
+                        "event": "event (Bry 沒主動發言, 這是角色世界事件觸發的主動訊息)",
+                        "dream": "dream (Bry 沒主動發言, 這是夢境內容)",
+                        "morning": "morning slot (Bry 沒主動發言, 這是早晨主動日記/搭話)",
+                        "night": "night slot (Bry 沒主動發言, 這是夜晚主動日記/搭話)",
+                    }
+                    reason_label = reason_label_map.get(
+                        reason,
+                        f"{reason} (Bry 沒主動發言, 這是 {reason} 觸發的主動訊息)",
+                    )
+                    system_msg = (
+                        f"\n[主動觸發標記] {reason_label}。"
+                        f"草稿供參考: 「{user_message}」"
+                        f"\n請把草稿當作「內心想說的話」, 不要當作 Bry 對你說的話。"
+                        f"生成主動搭話訊息時, 參考草稿但用你自己的話表達。\n"
+                    )
+                    messages.append({"role": "system", "content": system_msg})
+                    logger.info(
+                        f"[LLMProxy] M2 task 3: proactive draft 從 user role 改成 system role | "
+                        f"agent={agent_id} reason={reason} draft={user_message[:50]!r}"
+                    )
+                    break
+
         # Phase 5c:DEBUG log 改 logger.debug,避免 user 訊息 / system prompt
         # 全文被印到 log 檔(leak 隱私)
         logger.debug(f"[LLMProxy] agent={agent_id} mode={mode} messages={len(messages)}")
