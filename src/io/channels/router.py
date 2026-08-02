@@ -11,6 +11,21 @@ Phase 5c 新增：fallback 邏輯
     → 改送 telegram（最近一次 inbound 的 user）
   - 如果 user 不在 web → 透過 Telegram 找她
   - 用「最近 tg user」mapping，避免每次都要 query 記憶表
+
+M0.5 (2026-08-02 10:35 Bry 派工): last_tg_user 全域共享 + Bry 沒回應 throttle
+  - 修法 1: 任何角色 bot 收到 Bry 訊息時,把 user_id 寫進
+    data/state/last_tg_user.json (全域共享, 不是 per-agent)
+    ChannelRouter._on_agent_speak fallback 優先讀全域, 之後 miku / aoi 等
+    還沒跟 Bry 對話過的角色也能 fallback 送 TG (Bry 8/1 報 miku proactive_dm
+    沒送達的根因)
+  - 修法 2: data/state/bryan_last_seen.json 記 Bry 最後一次訊息時間
+    距離 Bry 最後一條 recv > 4h 就 skip proactive_dm (Bry 8/1 報
+    anna 累積 6 條「沒頭沒尾」訊息的成因)
+  - 兩個 state file 都排除 git 版控 (.gitignore 涵蓋 data/state/),
+    跟 P0-2 watchdog counter 同一個目錄, 設計一致
+  - throttle 只限 proactive_dm (Bry 派工字面), 不影響 dream/event/
+    heartbeat/night slot (那些有其他規則管控)
+  - commit-only, 不重啟 server, 等 Bry 下次重啟套用
 """
 from __future__ import annotations
 
@@ -37,6 +52,16 @@ _PUSH_PROB_STALE = 1.0/10.0     # last_interaction > 7 天 → 1/10 推
 _STALE_DAYS_THRESHOLD = 7.0
 _BRYAN_ENTITY_ID = "user_bryan"
 
+# M0.5 (2026-08-02 10:35 Bry 派工): 「Bry 沒回應 N 小時」proactive_dm throttle
+# 修法: 距離 Bry 最後一條 user 訊息超過這個小時數 → skip proactive_dm
+# 4h 是 Bry 派工時的初始值, 之後觀察期可調 (太小會誤殺, 太大會堆積)
+PROACTIVE_DM_BRYAN_INACTIVE_HOURS = 4.0
+
+# M0.5: 兩個 state file 路徑 (跟 P0-2 watchdog counter 同目錄, 設計一致)
+_STATE_DIR = Path("data/state")
+_LAST_TG_USER_FILE = _STATE_DIR / "last_tg_user.json"
+_BRYAN_LAST_SEEN_FILE = _STATE_DIR / "bryan_last_seen.json"
+
 
 class ChannelRouter:
     """Phase 5b：把 AGENT_SPEAK 依 target_channel 分發到對應 ChannelAdapter。"""
@@ -51,6 +76,13 @@ class ChannelRouter:
         self._last_tg_user: dict[str, int] = {}
         # Phase 5c+：記最近 tg session 對應的 session_id（給主動觸發帶上下文用）
         self._last_tg_session: dict[str, str] = {}
+        # M0.5 (Bry 8/1 10:35 派工): 全域共享 last_tg_user
+        # 任何角色 bot 收到 Bry 訊息都會更新, 之後 miku / aoi 等
+        # 還沒跟 Bry 對話過的角色也能 fallback 送 TG
+        # 從 disk 載入, server 重啟不丟失
+        self._last_tg_user_global: int | None = self._load_last_tg_user_global()
+        # M0.5: Bry 最後一次主動訊息時間, throttle proactive_dm 用
+        self._bryan_last_seen: datetime | None = self._load_bryan_last_seen()
         # Phase 5+ (2026-07-15 Bry 拍板): 配對 AGENT_SPEAK → AGENT_AUDIO_READY
         # AGENT_SPEAK 送 text 到 telegram user X 後,把 (X, ts) 暫存到這;
         # AGENT_AUDIO_READY 來時用 agent_id 找到 X,把 mp3 用 send_voice 推給他
@@ -118,11 +150,18 @@ class ChannelRouter:
         # 但如果 user 不在 Web UI → 改成走 Telegram（她「找得到你」的方式）
         if target_channel == "web" and self._gateway_manager is not None:
             if self._gateway_manager.count == 0:
-                last_user = self._last_tg_user.get(agent_id)
+                # M0.5 (Bry 8/1 10:35 派工): 優先讀全域共享 last_tg_user
+                # (任何角色被 Bry 對話過就 fallback TG), fallback 讀 per-agent
+                # (觀察期 _should_push_to_bry 仍需要 per-agent 計數)
+                last_user = (
+                    self._last_tg_user_global or self._last_tg_user.get(agent_id)
+                )
+                source = "global" if self._last_tg_user_global else "per-agent"
                 if last_user:
                     logger.info(
                         f"[ChannelRouter] web 0 conn, "
-                        f"fallback telegram: {agent_id} → user {last_user}"
+                        f"fallback telegram: {agent_id} → user {last_user} "
+                        f"(source={source})"
                     )
                     target_channel = "telegram"
                     target_user_id = last_user
@@ -138,6 +177,31 @@ class ChannelRouter:
         # Web 由 IOGateway 處理，這裡跳過避免重複送出
         if target_channel == "web":
             return
+
+        # ── M0.5 (Bry 8/1 10:35 派工): 「Bry 沒回應 N 小時」proactive_dm throttle ──
+        # 解決 Bry 8/1 報「anna 8/2 4:21-5:37 累積 6 條沒頭沒尾訊息」的成因:
+        # scheduler 每 2-4h 觸發 proactive_dm, 不管 Bry 上一條有沒有讀, 一直堆
+        # 修法: 距離 Bry 最後一條 user 訊息 > 4h 就 skip proactive_dm
+        # 只 throttle proactive_dm (Bry 派工字面), 不影響 dream/event/heartbeat
+        # (夢境/事件豁免保留「角色世界活著」的 Bry 觀察意圖, heartbeat 留 M2 候選)
+        # 冷啟動: Bry 從沒發過訊息 (self._bryan_last_seen is None) 不 throttle
+        if target_channel == "telegram":
+            event_reason = event.payload.get("reason", "")
+            if event_reason == "proactive_dm" and self._bryan_last_seen is not None:
+                now_utc = datetime.now(timezone.utc)
+                hours_since = (
+                    (now_utc - self._bryan_last_seen).total_seconds() / 3600.0
+                )
+                if hours_since > PROACTIVE_DM_BRYAN_INACTIVE_HOURS:
+                    logger.info(
+                        f"[ChannelRouter] proactive_dm THROTTLED | "
+                        f"agent={agent_id} "
+                        f"bryan_last_seen={self._bryan_last_seen.isoformat()} "
+                        f"hours_since={hours_since:.1f} > "
+                        f"{PROACTIVE_DM_BRYAN_INACTIVE_HOURS}h"
+                    )
+                    return
+        # ── M0.5 throttle end ──────────────────────────
 
         # ── Stage 4.3 (Mavis 拍板 2026-07-21 16:35): TG 推播過濾 ──
         # 3 層分級: active (100%) / cold start (1/3) / stale (1/10)
@@ -350,6 +414,125 @@ class ChannelRouter:
                 f"[ChannelRouter:audio] TG send_voice error: {e}"
             )
 
+    # ── M0.5 (Bry 8/1 10:35 派工): 全域 last_tg_user 持久化 ──
+    # 修法動機: 原 _last_tg_user 是 per-agent in-memory dict, miku / aoi
+    # 等還沒跟 Bry 對話過的角色永遠拿不到 last_tg_user, proactive_dm
+    # 永遠走 web fallback 失敗, 留 web buffer (Bry 8/1 報的 miku miss)
+    # 修法: 任何角色 inbound 收到 Bry 訊息都寫進 data/state/last_tg_user.json,
+    # ChannelRouter 啟動時載入, 之後所有角色都能讀到 Bry 在 TG
+    # Bry 拍板: commit-only 不重啟, server 還在跑, 重啟才生效 (跟 M1 一樣)
+    def _load_last_tg_user_global(self) -> int | None:
+        if not _LAST_TG_USER_FILE.is_file():
+            return None
+        try:
+            data = json.loads(_LAST_TG_USER_FILE.read_text(encoding="utf-8"))
+            uid = data.get("user_id")
+            if uid is not None:
+                return int(uid)
+        except Exception as e:
+            logger.warning(
+                f"[ChannelRouter] 讀 {_LAST_TG_USER_FILE.name} 失敗: {e}"
+            )
+        return None
+
+    def _save_last_tg_user_global(self, user_id: int, full_agent_id: str) -> None:
+        """任何角色 inbound 收到 Bry 訊息都會更新這個檔。
+
+        合併邏輯:
+        - user_id 跟現有相同 → 只更新 set_by_agents 跟 set_at
+        - user_id 跟現有不同 → 整個覆蓋 (理論上 owner whitelist 已經擋住,
+          但寫盤時做 sanity check 避免污染)
+        """
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        payload: dict = {
+            "user_id": user_id,
+            "set_at": datetime.now(timezone.utc).isoformat(),
+            "set_by_agents": [full_agent_id],
+        }
+        if _LAST_TG_USER_FILE.is_file():
+            try:
+                existing = json.loads(
+                    _LAST_TG_USER_FILE.read_text(encoding="utf-8")
+                )
+                existing_uid = existing.get("user_id")
+                if existing_uid == user_id:
+                    # 同 user, 累積 set_by_agents, 保留 set_at
+                    agents = list(
+                        set(
+                            existing.get("set_by_agents", []) + [full_agent_id]
+                        )
+                    )
+                    payload["set_by_agents"] = agents
+                    payload["set_at"] = existing.get(
+                        "set_at", payload["set_at"]
+                    )
+                else:
+                    # 不同 user (理論上 owner whitelist 擋住, 這裡只 log)
+                    logger.warning(
+                        f"[ChannelRouter] last_tg_user.json user_id "
+                        f"changed: {existing_uid} → {user_id} "
+                        f"(owner whitelist 應該擋住, sanity check 觸發)"
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"[ChannelRouter] 讀現有 {_LAST_TG_USER_FILE.name} "
+                    f"失敗, 覆蓋: {e}"
+                )
+        try:
+            _LAST_TG_USER_FILE.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            self._last_tg_user_global = user_id
+        except Exception as e:
+            logger.warning(
+                f"[ChannelRouter] 寫 {_LAST_TG_USER_FILE.name} 失敗: {e}"
+            )
+
+    def _load_bryan_last_seen(self) -> datetime | None:
+        if not _BRYAN_LAST_SEEN_FILE.is_file():
+            return None
+        try:
+            data = json.loads(
+                _BRYAN_LAST_SEEN_FILE.read_text(encoding="utf-8")
+            )
+            ts = data.get("last_recv_ts")
+            if ts:
+                # naive 字串補 UTC (跟現有 relationships.json 對齊)
+                dt = datetime.fromisoformat(ts)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+        except Exception as e:
+            logger.warning(
+                f"[ChannelRouter] 讀 {_BRYAN_LAST_SEEN_FILE.name} 失敗: {e}"
+            )
+        return None
+
+    def _save_bryan_last_seen(self, full_agent_id: str, text: str) -> None:
+        """任何角色 inbound 收到 Bry 訊息都會更新 Bry 最後看見時間。
+
+        給 _on_agent_speak proactive_dm throttle 用:
+        距離 Bry 最後一條訊息 > 4h → skip proactive_dm
+        """
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        now_utc = datetime.now(timezone.utc)
+        payload = {
+            "last_recv_ts": now_utc.isoformat(),
+            "last_recv_agent": full_agent_id,
+            "last_recv_preview": text[:50],
+        }
+        try:
+            _BRYAN_LAST_SEEN_FILE.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            self._bryan_last_seen = now_utc
+        except Exception as e:
+            logger.warning(
+                f"[ChannelRouter] 寫 {_BRYAN_LAST_SEEN_FILE.name} 失敗: {e}"
+            )
+
     async def inbound(
         self,
         agent_id: str,
@@ -394,6 +577,11 @@ class ChannelRouter:
         )
         if channel == "telegram":
             self._last_tg_user[full_agent_id] = user_id
+            # M0.5: 寫入全域共享 + persistent state, miku 等沒跟 Bry 對話過
+            # 的角色也能 fallback TG (Bry 8/1 報 miku miss 的根因)
+            self._save_last_tg_user_global(user_id, full_agent_id)
+            # M0.5: 記 Bry 最後一次訊息時間, throttle proactive_dm 用
+            self._save_bryan_last_seen(full_agent_id, text)
             # Step 1 fix: session 隔離每個 user，避免陌生人污染 Bryan 記憶
             # Bryan: session_1696287850_agent_yua, 陌生人: session_99999999_agent_yua
             tg_session = f"session_{user_id}_{full_agent_id}"
