@@ -135,6 +135,13 @@ llm:
   temperature: 0.5
   max_retries: 3
 
+  # Bry 拍板 2026-08-03 18:21: 時區設定
+  # 動機: 12 小時錯位 (M0.4 跟 f9105f1 預設 Asia/Taipei UTC+8, 但 Bry 人在紐約 EDT/EST)
+  # 統一從 src.timezone_utils.get_local_tz 拿 (優先序: env SOULOS_TIMEZONE > 這個 > default)
+  # 之前 M0.4 跟 f9105f1 假設 "Windows 沒 zoneinfo" 錯了, 改用 zoneinfo 自動處理 EDT/EST 切換
+  # Bry 移地改這個就好, 不用改 code
+  timezone: America/New_York
+
   # 對話歷史保留最近幾輪（每輪 = user + assistant）
   max_history_turns: 10
 

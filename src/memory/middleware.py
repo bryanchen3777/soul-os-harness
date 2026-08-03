@@ -539,10 +539,10 @@ class MemoryMiddleware:
         失敗靜默 log warning, 不影響主路徑.
         """
         import json as _json
-        from datetime import timezone as _tz, timedelta as _td
-
-        asia_tz = _tz(_td(hours=8))
-        local_date = event.timestamp.astimezone(asia_tz).strftime("%Y-%m-%d")
+        # β2.1 寫死 hours=8 改成從 src.timezone_utils 拿 LOCAL_TZ
+        # (Bry 派工 2026-08-03 18:21: 統一時區來源, 不再各檔案 hardcode)
+        from src.timezone_utils import LOCAL_TZ
+        local_date = event.timestamp.astimezone(LOCAL_TZ).strftime("%Y-%m-%d")
         events_file = self._events_dir / f"{local_date}.jsonl"
 
         log_entry = {

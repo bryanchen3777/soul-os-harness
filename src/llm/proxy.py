@@ -26,49 +26,15 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Bry 拍板 2026-08-02 20:xx: 當下時間感知 — 跟 M0.4 修法用同一個 ASIA_TZ (UTC+8 fixed offset,
-# Windows 沒 zoneinfo 可用, 跟 scheduler.py L40 一致)
-ASIA_TZ = timezone(timedelta(hours=8))
+# Bry 拍板 2026-08-03 18:21: 從 ASIA_TZ (UTC+8) 改 America/New_York (Bry 人在紐約)
+# 統一從 src.timezone_utils 拿 LOCAL_TZ (ZoneInfo("America/New_York")),
+# 自動處理 EDT/EST 切換 (M0.4 跟 f9105f1 假設 "Windows 沒 zoneinfo" 錯了,
+# Python 3.9+ 內建, Windows 也能用)
+from src.timezone_utils import format_localized as _format_event_timestamp
 
-# 中文字段名 (週幾)
-_WEEKDAY_CN = ["週日", "週一", "週二", "週三", "週四", "週五", "週六"]
-
-
-def _format_event_timestamp(event_ts: datetime) -> str:
-    """把 SoulEvent.timestamp (UTC) 轉成 Asia/Taipei 顯示字串, 注入 LLM system prompt 當
-    「## 當下時間」區塊。
-
-    Bry 拍板 2026-08-02 20:xx, 選項 A: 單一時間來源 (event.timestamp, schema 層級 default_factory
-    `datetime.now(timezone.utc)`), 所有事件 (TG inbound / scheduler 6 種 reason) 都有正確值。
-    轉成 ASIA_TZ (UTC+8) + 中文週幾 + 時段標籤, 給 LLM 明確的當下時間感知, 解決 Bry 抓漏路徑
-    (akane 16:11「還沒睡著?」對 Bry 私聊「現在中午喔」/ mahiru 04:10「早餐給你放桌上了」)。
-
-    失敗防護: event_ts 為 None / naive datetime 都 fallback 回傳「時間未知」, 不影響主路徑。
-    """
-    try:
-        if event_ts is None:
-            return "時間未知"
-        # 若 event_ts 沒帶時區, 假設 UTC (跟 SoulEvent schema 預設一致)
-        if event_ts.tzinfo is None:
-            event_ts = event_ts.replace(tzinfo=timezone.utc)
-        local = event_ts.astimezone(ASIA_TZ)
-        weekday = _WEEKDAY_CN[local.weekday()]
-        hour = local.hour
-        if 5 <= hour < 11:
-            period = "早上"
-        elif 11 <= hour < 13:
-            period = "中午"
-        elif 13 <= hour < 17:
-            period = "下午"
-        elif 17 <= hour < 19:
-            period = "傍晚"
-        elif 19 <= hour < 23:
-            period = "晚上"
-        else:
-            period = "凌晨"
-        return f"{local.strftime('%Y-%m-%d')} {weekday} {local.strftime('%H:%M')} Asia/Taipei（{period}）"
-    except Exception:
-        return "時間未知"
+# 中文字段名 (週幾) 跟時段標籤 (早上/中午/...) 已經移到 src.timezone_utils 內部,
+# 因為 Bry 派工單要求 "可以用 zoneinfo 物件自己輸出, 不用再手動寫死字串",
+# _format_event_timestamp 跟 _WEEKDAY_CN 都在 timezone_utils 內.
 
 import httpx  # 使用 httpx 做非同步 HTTP,避免 requests 阻塞事件迴圈
 

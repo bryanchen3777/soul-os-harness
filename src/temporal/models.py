@@ -9,6 +9,9 @@ from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+# Bry 派板 2026-08-03 18:21: 統一時區來源
+from src.timezone_utils import LOCAL_TZ
+
 
 # ── Time Period Definitions ──────────────────────────────────────────────────
 
@@ -107,4 +110,4 @@ class PersonaConfig:
     vulnerability_silence_min: float = 4.0
     worry_resolution_delta: float = 0.6
     attachment_heat_bump: float = 0.1
-    timezone: ZoneInfo = field(default_factory=lambda: ZoneInfo("Asia/Tokyo"))
+    timezone: ZoneInfo = field(default_factory=lambda: LOCAL_TZ)
