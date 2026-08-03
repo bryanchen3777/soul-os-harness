@@ -214,11 +214,39 @@ $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction 
     Where-Object { $_.CommandLine -like '*run_server.py*' }
 $healthy = ($null -ne $listener) -and ($procs.Count -ge 2)
 
+# 4.5 Bry 拍板 2026-08-03 13:40: event loop self-check 偵測
+# 動機: 2026-08-03 02:15 hang (d190c96 觀察期) 之前沒早期信號, 4 小時才被 port 偵測
+# 抓出. self-check 寫 data/state/event_loop_alive.json, 這裡順便看最後修改時間.
+# 超過 interval * 2.5 (預設 25 min) 沒更新 → WARN (給 Bry 看, 不自動重啟).
+# 跟 port 偵測並行, 兩條都 OK 算健康; 任一條 WARN 給 Bry 看.
+$selfCheckPath = Join-Path $stateDir 'event_loop_alive.json'
+$selfCheckStale = $false
+$selfCheckSecondsSinceUpdate = $null
+if (Test-Path $selfCheckPath) {
+    $lastAlive = (Get-Item $selfCheckPath).LastWriteTime
+    $selfCheckSecondsSinceUpdate = [int]((Get-Date) - $lastAlive).TotalSeconds
+    # 從檔案讀 interval (預設 600s, 跟 run_server SOULOS_SELF_CHECK_INTERVAL_SECS 一致)
+    $selfCheckInterval = 600
+    try {
+        $sc = Get-Content $selfCheckPath -Raw | ConvertFrom-Json
+        if ($sc.interval_seconds) { $selfCheckInterval = [int]$sc.interval_seconds }
+    } catch {}
+    $selfCheckWarnThreshold = $selfCheckInterval * 2.5
+    if ($selfCheckSecondsSinceUpdate -gt $selfCheckWarnThreshold) {
+        $selfCheckStale = $true
+        Log-Watch "WARN  self-check 超過 ${selfCheckWarnThreshold}s 沒更新 (實際 ${selfCheckSecondsSinceUpdate}s, interval=${selfCheckInterval}s), 給 Bry 看但不重啟"
+    }
+}
+
 # 5. 健康: 寫 OK + 帶 observation window 標籤 + 存計數器 (只更新 trial)
 $counterFile = Get-CounterFilePath $shortHash
 if ($healthy) {
     Write-Counter-Atomic $counterFile $counter
-    Log-Watch "OK  post-$shortHash N=$($counter.n_restarts)/$N_CAP trial=$($counter.trial_count)/$TRIAL_TARGET port=$port listener=$($listener.OwningProcess) procs=$($procs.Count)"
+    if ($selfCheckStale) {
+        Log-Watch "OK+SELFWARN  post-$shortHash N=$($counter.n_restarts)/$N_CAP trial=$($counter.trial_count)/$TRIAL_TARGET port=$port listener=$($listener.OwningProcess) procs=$($procs.Count) self_check=${selfCheckSecondsSinceUpdate}s"
+    } else {
+        Log-Watch "OK  post-$shortHash N=$($counter.n_restarts)/$N_CAP trial=$($counter.trial_count)/$TRIAL_TARGET port=$port listener=$($listener.OwningProcess) procs=$($procs.Count)"
+    }
     exit 0
 }
 

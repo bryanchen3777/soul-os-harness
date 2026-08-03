@@ -4,11 +4,13 @@ Soul OS — 主啟動入口
 啟動 Event Bus + 所有模組 + FastAPI WebSocket Gateway
 """
 import asyncio
+import json
 import logging
 import os
 import sys
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import uvicorn
@@ -155,6 +157,56 @@ class MockLLMBackend:
             return mock_responses[agent_id]
         # fallback
         return '{"text": "[MOCK] fallback", "audio_text": "[calm] [MOCK]", "emotion": "calm"}'
+
+
+# === Event loop self-check (Bry 拍板 2026-08-03 13:40, module level) ===
+# 跟 Lesson 38 dumper 互補: dumper 寫 thread dump 給 developer 除錯,
+# self-check 寫簡單 timestamp 給 Bry / watchdog 看 event loop 存活.
+# 範圍: 整個 server process, 不限特定 reason/角色.
+# 失敗: 寫檔失敗 log warning, 不影響主路徑.
+# 暴露為 module-level function 方便 mock test 直接 import 測.
+async def event_loop_self_check(
+    state_dir: Path,
+    interval_seconds: int,
+    first_delay_seconds: int = 60,
+) -> None:
+    """
+    Args:
+        state_dir: data/state/ 路徑, 寫 event_loop_alive.json 在這
+        interval_seconds: 寫檔間隔 (預設 600s = 10 min,
+            環境變數 SOULOS_SELF_CHECK_INTERVAL_SECS 可覆寫)
+        first_delay_seconds: 第一次寫檔前的延遲 (預設 60s, 讓 init 跑完)
+    """
+    _path = state_dir / "event_loop_alive.json"
+    _path.parent.mkdir(parents=True, exist_ok=True)
+    _first = True
+    while True:
+        try:
+            await asyncio.sleep(first_delay_seconds if _first else interval_seconds)
+            _first = False
+            _payload = {
+                "last_alive_at": datetime.now(timezone.utc).isoformat(),
+                "interval_seconds": interval_seconds,
+                "source": "run_server_event_loop_self_check",
+            }
+            # atomic write: 寫到 .tmp 再 rename (跟 _last_observed_hash.txt 風格一致)
+            _tmp = _path.with_suffix(".json.tmp")
+            _tmp.write_text(
+                json.dumps(_payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            _tmp.replace(_path)
+            logger.debug(
+                f"[self_check] event loop alive, wrote {_path.name}"
+            )
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            # 寫檔失敗不該殺掉 self-check 自己, 靜默 log
+            try:
+                logger.warning(f"[self_check] write failed: {e}")
+            except Exception:
+                pass
 
 
 @asynccontextmanager
@@ -409,6 +461,25 @@ async def lifespan(app: FastAPI):
     app.state._dumper_task = asyncio.create_task(_heartbeat_dumper())
     logger.info("[Server] heartbeat dumper 啟動 (60s/次, 寫 data/heartbeat_trace.log)")
 
+    # ── Event loop self-check (Bry 拍板 2026-08-03 13:40) ───────
+    # 跟 Lesson 38 dumper 互補:
+    #   - dumper (60s): 寫 thread dump 給 developer 除錯用
+    #   - self-check (10 min 預設): 寫簡單 timestamp 給 Bry / watchdog 看存活
+    # 動機: 2026-08-03 02:15 hang (d190c96 observation window) 之前沒任何早期信號,
+    # 4 小時才被 watchdog port 偵測發現; self-check 讓 hang 在 interval*2.5 內被抓到.
+    # 失敗靜默 log warning, 不影響主路徑.
+    _self_check_interval = int(os.getenv("SOULOS_SELF_CHECK_INTERVAL_SECS", "600"))
+    app.state._self_check_task = asyncio.create_task(
+        event_loop_self_check(
+            _root / "data" / "state",
+            _self_check_interval,
+        )
+    )
+    logger.info(
+        f"[Server] event loop self-check 啟動 "
+        f"({_self_check_interval}s/次, 寫 data/state/event_loop_alive.json)"
+    )
+
     yield
 
     # ── Shutdown ────────────────────────────────────────────
@@ -421,6 +492,16 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         logger.info("[Server] heartbeat dumper 停止 ✓")
+
+    # Bry 拍板 2026-08-03 13:40: 停掉 event loop self-check
+    self_check = getattr(app.state, "_self_check_task", None)
+    if self_check is not None:
+        self_check.cancel()
+        try:
+            await self_check
+        except asyncio.CancelledError:
+            pass
+        logger.info("[Server] event loop self-check 停止 ✓")
 
     if channel_router is not None:
         await channel_router.stop()
