@@ -22,8 +22,53 @@ import re
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# Bry 拍板 2026-08-02 20:xx: 當下時間感知 — 跟 M0.4 修法用同一個 ASIA_TZ (UTC+8 fixed offset,
+# Windows 沒 zoneinfo 可用, 跟 scheduler.py L40 一致)
+ASIA_TZ = timezone(timedelta(hours=8))
+
+# 中文字段名 (週幾)
+_WEEKDAY_CN = ["週日", "週一", "週二", "週三", "週四", "週五", "週六"]
+
+
+def _format_event_timestamp(event_ts: datetime) -> str:
+    """把 SoulEvent.timestamp (UTC) 轉成 Asia/Taipei 顯示字串, 注入 LLM system prompt 當
+    「## 當下時間」區塊。
+
+    Bry 拍板 2026-08-02 20:xx, 選項 A: 單一時間來源 (event.timestamp, schema 層級 default_factory
+    `datetime.now(timezone.utc)`), 所有事件 (TG inbound / scheduler 6 種 reason) 都有正確值。
+    轉成 ASIA_TZ (UTC+8) + 中文週幾 + 時段標籤, 給 LLM 明確的當下時間感知, 解決 Bry 抓漏路徑
+    (akane 16:11「還沒睡著?」對 Bry 私聊「現在中午喔」/ mahiru 04:10「早餐給你放桌上了」)。
+
+    失敗防護: event_ts 為 None / naive datetime 都 fallback 回傳「時間未知」, 不影響主路徑。
+    """
+    try:
+        if event_ts is None:
+            return "時間未知"
+        # 若 event_ts 沒帶時區, 假設 UTC (跟 SoulEvent schema 預設一致)
+        if event_ts.tzinfo is None:
+            event_ts = event_ts.replace(tzinfo=timezone.utc)
+        local = event_ts.astimezone(ASIA_TZ)
+        weekday = _WEEKDAY_CN[local.weekday()]
+        hour = local.hour
+        if 5 <= hour < 11:
+            period = "早上"
+        elif 11 <= hour < 13:
+            period = "中午"
+        elif 13 <= hour < 17:
+            period = "下午"
+        elif 17 <= hour < 19:
+            period = "傍晚"
+        elif 19 <= hour < 23:
+            period = "晚上"
+        else:
+            period = "凌晨"
+        return f"{local.strftime('%Y-%m-%d')} {weekday} {local.strftime('%H:%M')} Asia/Taipei（{period}）"
+    except Exception:
+        return "時間未知"
 
 import httpx  # 使用 httpx 做非同步 HTTP,避免 requests 阻塞事件迴圈
 
@@ -184,10 +229,11 @@ def _build_messages_group(
     memory,
     mood: float = 0.0,
     user_id: str = "bryan",  # 短期記憶 — Bry 私聊歷史讀取的 user scope (跟 _build_messages_private 對齊)
+    current_time: str = "",  # 當下時間 — Bry 拍板 2026-08-02 20:xx, 選項 A (見 _handle_event_impl 註解)
 ) -> List[Dict[str, str]]:
     """
     群聊模式的 messages 組裝:
-    [system: SOUL] + [system: Bry 最近訊息 (短期)] + [conversation_history: 群聊 20 條] + [user: 當前訊息]
+    [system: SOUL] + [system: Bry 最近訊息 (短期)] + [system: 當下時間] + [conversation_history: 群聊 20 條] + [user: 當下訊息]
     """
     group = memory.get_group_history(limit=MAX_GROUP)
     messages: List[Dict[str, str]] = []
@@ -207,6 +253,10 @@ def _build_messages_group(
     mood_desc = emotion_engine.mood_description(mood)
     if mood_desc:
         system_parts.append(f"\n[情緒狀態] {mood_desc}")
+
+    # 當下時間 — Bry 拍板 2026-08-02 20:xx, 選項 A (見 _handle_event_impl 註解)
+    if current_time:
+        system_parts.append(f"\n## 當下時間\n{current_time}")
 
     # 短期記憶 — Bry 最近訊息注入 (Bry 拍板 2026-08-02 16:xx, N=3)
     # 為什麼: 群聊觸發 (proactive) 走這條, 讀 group history 過濾 is_private,
@@ -269,10 +319,11 @@ def _build_messages_private(
     memory,
     mood: float = 0.0,
     user_id: str = "bryan",  # KI-001: per-user history scope
+    current_time: str = "",  # 當下時間 — Bry 拍板 2026-08-02 20:xx, 選項 A (見 _handle_event_impl 註解)
 ) -> List[Dict[str, str]]:
     """
     私聊模式的 messages 組裝:
-    [system: SOUL] + [system: 群聊摘要 10 條] + [私聊歷史 20 條] + [user: 當前訊息]
+    [system: SOUL] + [system: 當下時間] + [私聊歷史 20 條] + [user: 當前訊息]
     """
     messages: List[Dict[str, str]] = []
 
@@ -290,6 +341,11 @@ def _build_messages_private(
     mood_desc = emotion_engine.mood_description(mood)
     if mood_desc:
         system_parts.append(f"\n[情緒狀態] {mood_desc}")
+
+    # 當下時間 — Bry 拍板 2026-08-02 20:xx, 選項 A (見 _handle_event_impl 註解)
+    if current_time:
+        system_parts.append(f"\n## 當下時間\n{current_time}")
+
     messages.append({"role": "system", "content": "\n".join(system_parts)})
 
     # 私人聊天:完全隔離,不注入群聊摘要
@@ -1860,6 +1916,18 @@ class LLMProxy:
 
         # 從 event payload 取 mode(gateway 寫入的)
         mode = event.payload.get("mode", "group")
+
+        # 當下時間感知 (Bry 拍板 2026-08-02 20:xx, 選項 A):
+        # event.timestamp 是 SoulEvent schema 層級內建欄位 (UTC, default_factory),
+        # 所有事件都有 (TG inbound USER_MESSAGE / scheduler AGENT_INTENT / ...),
+        # 單一時間來源, 避免跟 scheduler 額外塞 now_iso/now_period 兩套不一致。
+        # 轉成 Asia/Taipei (UTC+8) 顯示給 LLM, 解決 Bry 抓漏路徑:
+        #   - akane 16:11 觸發「還沒睡著?」對 Bry 私聊「現在中午喔」時間錯亂
+        #   - mahiru 04:10 觸發「早餐給你放桌上了」時間對不上 Bry 端實際時段
+        # 範圍: 只在 _handle_event_impl 算 + 傳給 _build_messages_*, 不動 scheduler /
+        # consciousness / MemoryMiddleware / personas。失敗可逆。
+        current_time_str = _format_event_timestamp(event.timestamp)
+
         user_message = draft if reason == "user_message" else ""
         logger.info(f"[LLMProxy] user_message set to: {user_message[:50]!r}")
         # Fix Bug 1&2: proactive (silence_timeout) 的 draft 也應該當作 user_message 傳入
@@ -1929,9 +1997,9 @@ class LLMProxy:
             # L1818 的 user_id 已經從 event.payload.get("target_user_id", "bryan") 拿到,
             # 跟 _build_messages_private L230 user_id 預設值對齊, 群聊觸發 fallback "bryan"
             # (跟 _load_private L100 fallback 邏輯一致)。
-            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id)
+            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str)
         else:
-            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id)
+            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str)
 
         # ── M2 task 3 (Bry + Perplexity 8/2 12:05 派工): proactive draft user → system ──
         # 修法動機: heartbeat / proactive_dm 觸發時, _build_intent_payload 組的 draft
