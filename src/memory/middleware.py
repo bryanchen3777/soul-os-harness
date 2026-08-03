@@ -26,6 +26,10 @@ from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
 from src.memory.sage import SAGELiteProvider
 
+# β2.1 (Bry 拍板 2026-08-02 21:48): LLMProxy 引用 (Optional, 給 type hint 用)
+# 實際 import 延遲到 _maybe_generate_event 內部避免循環引用
+# (LLMProxy 可能 import 跟 memory 相關的東西, 雖然目前沒, 但保險起見 lazy)
+
 # Bry 拍板 2026-07-18 Stage 1.2: 把 format_for_prompt 拉到模組頂
 # 之前 lazy import 區塊範圍太大, NameError 被 try/except 吞掉, Loader 永遠注入失敗
 from src.memory.v1.loader import format_for_prompt, derive_query_tags
@@ -69,7 +73,16 @@ class MemoryMiddleware:
         {data_dir}/{agent_id}/graph.sqlite
     """
 
-    def __init__(self, bus: SoulEventBus, data_dir: str = "data/memory"):
+    def __init__(
+        self,
+        bus: SoulEventBus,
+        data_dir: str = "data/memory",
+        # β2.1 (Bry 拍板 2026-08-02 21:48): 事件生成用 LLMProxy 參考
+        # 沒傳就 skip 事件生成 (向後相容, 測試不依賴真實 LLM)
+        llm_proxy: Optional["LLMProxy"] = None,
+        # β2.1: 事件 jsonl 寫入路徑, 預設 data/events/{YYYY-MM-DD}.jsonl
+        events_dir: str = "data/events",
+    ):
         self.bus = bus
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -78,6 +91,11 @@ class MemoryMiddleware:
         # Phase 2 假設單 session 單 agent；Phase 4 多 agent 同一 session 時
         # 需改成 (session_id, agent_id) 並設計配對策略
         self._pending_user_text: Dict[str, str] = {}
+
+        # β2.1: 事件生成跟寫檔依賴
+        self._llm_proxy = llm_proxy
+        self._events_dir = Path(events_dir)
+        self._events_dir.mkdir(parents=True, exist_ok=True)
 
         # Phase 4：寫入節流，防止 N² 寫入爆炸
         # 多 agent 同時說話時（Speaker Token 釋放後 queue 觸發連發），
@@ -316,6 +334,25 @@ class MemoryMiddleware:
 
         # 把記憶注入 payload，re-publish 為新事件
         event.payload["memory_context"] = context
+
+        # β2.1 (Bry 拍板 2026-08-02 21:48): 事件背景生成 + 寫檔
+        # 範圍限定 pilot: 僅 agent_akane + reason=heartbeat 觸發
+        # 不符合條件或 LLMProxy 沒注入 → 靜默 skip, 不影響主路徑
+        event_text = await self._maybe_generate_event(event)
+        if event_text:
+            event.payload["event"] = event_text
+            event.payload["event_meta"] = {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "agent_id": agent_id,
+                "reason": event.payload.get("reason"),
+                "model": (
+                    self._llm_proxy.model
+                    if self._llm_proxy is not None
+                    else None
+                ),
+            }
+            await self._write_event_log(event, event_text)
+
         enriched = SoulEvent(
             event_type=EventType.AGENT_INTENT_ENRICHED,
             source=event.source,
@@ -411,6 +448,138 @@ class MemoryMiddleware:
             )
         except Exception as _shadow_err:
             logger.warning(f"[MemoryMiddleware] shadow hook 異常,不影響 prod: {_shadow_err}")
+
+    # ───────────────────────────────────────────────────────────
+    # β2.1 (Bry 拍板 2026-08-02 21:48): 事件背景生成
+    # 範圍限定 pilot: 僅 agent_akane + reason=heartbeat
+    # 失敗靜默 skip, 不影響主路徑 (「拒絕問, 強制讀」原則)
+    # ───────────────────────────────────────────────────────────
+
+    async def _maybe_generate_event(
+        self,
+        event: SoulEvent,
+    ) -> Optional[str]:
+        """
+        β2.1 事件生成 hook.
+
+        Returns:
+            事件描述字串 (一句話 + tag), 失敗/不符合條件 → None.
+        """
+        agent_id = event.payload.get("agent_id", "")
+        reason = event.payload.get("reason", "")
+        # β2.1 pilot 範圍: 僅 agent_akane + heartbeat
+        if agent_id != "agent_akane" or reason != "heartbeat":
+            return None
+        if self._llm_proxy is None:
+            return None
+
+        # 組事件生成 prompt
+        try:
+            from src.llm.proxy import _format_event_timestamp
+            current_time_str = _format_event_timestamp(event.timestamp)
+        except Exception:
+            current_time_str = "時間未知"
+
+        mood = event.payload.get("mood", 0.0)
+        # 從 emotion_engine 拿 intimacy (跟 consciousness.py 對齊)
+        try:
+            from src.agent.emotion import emotion_engine
+            _m, intimacy = emotion_engine.get(agent_id)
+        except Exception:
+            intimacy = 50.0
+
+        system_prompt = (
+            "你是一個世界觀敘事者。基於以下角色狀態, "
+            "生成一句「這角色現在的處境」描述 (10-30 字)。\n\n"
+            f"角色: 黒川あかね (agent_akane)\n"
+            f"當下時間: {current_time_str}\n"
+            f"觸發原因: heartbeat\n"
+            f"最近情緒: mood={mood:.2f}, intimacy={intimacy:.0f}\n\n"
+            "請生成一行, 格式為:\n"
+            "[場所:...] [對象:...] [情緒:...]  {一句話場景描述}\n\n"
+            "要求:\n"
+            "- 場所、對象、情緒 三個 tag 都要有\n"
+            "- 一句話場景描述不超過 30 字\n"
+            "- heartbeat 是輕量在場確認, "
+            "場景描述要簡單、平淡、有「剛才還在/還沒離開」感\n"
+            "- 用繁體中文"
+        )
+        user_prompt = "請生成。"
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        try:
+            event_text = await self._llm_proxy.generate_event_text(
+                messages, agent_id=agent_id
+            )
+            if event_text:
+                logger.info(
+                    f"[MemoryMiddleware] β2.1 事件生成成功 | "
+                    f"agent={agent_id} content={event_text[:40]!r}"
+                )
+            return event_text
+        except Exception as e:
+            logger.warning(
+                f"[MemoryMiddleware] β2.1 事件生成失敗, "
+                f"不影響主路徑 | agent={agent_id} err={e}"
+            )
+            return None
+
+    async def _write_event_log(
+        self,
+        event: SoulEvent,
+        event_text: str,
+    ) -> None:
+        """
+        β2.1: 寫事件到 data/events/{YYYY-MM-DD}.jsonl (Asia/Taipei 日期).
+        用 asyncio.to_thread 避免阻塞 event loop.
+        失敗靜默 log warning, 不影響主路徑.
+        """
+        import json as _json
+        from datetime import timezone as _tz, timedelta as _td
+
+        asia_tz = _tz(_td(hours=8))
+        local_date = event.timestamp.astimezone(asia_tz).strftime("%Y-%m-%d")
+        events_file = self._events_dir / f"{local_date}.jsonl"
+
+        log_entry = {
+            "event_id": event.event_id,
+            "timestamp": event.timestamp.isoformat(),
+            "agent_id": event.payload.get("agent_id"),
+            "reason": event.payload.get("reason"),
+            "content": event_text,
+            "model": (
+                self._llm_proxy.model
+                if self._llm_proxy is not None
+                else None
+            ),
+        }
+
+        def _write_atomic() -> None:
+            events_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(
+                events_file, "a", encoding="utf-8", newline=""
+            ) as f:
+                f.write(
+                    _json.dumps(log_entry, ensure_ascii=False) + "\n"
+                )
+
+        try:
+            await asyncio.to_thread(_write_atomic)
+            logger.info(
+                f"[MemoryMiddleware] β2.1 事件已寫入 | "
+                f"file={events_file.name} "
+                f"agent={event.payload.get('agent_id')} "
+                f"content={event_text[:40]!r}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"[MemoryMiddleware] β2.1 事件寫入失敗, "
+                f"不影響主路徑: {e}"
+            )
 
     # ── 維護 ─────────────────────────────────────────────────
 

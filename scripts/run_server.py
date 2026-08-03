@@ -175,9 +175,6 @@ async def lifespan(app: FastAPI):
     bus = SoulEventBus()
     await bus.start()
 
-    mw = MemoryMiddleware(bus=bus, data_dir="data/memory")
-    mw.register()
-
     token_mgr = SpeakerTokenManager(bus, token_timeout_secs=120.0)
     token_mgr.register()
 
@@ -195,6 +192,12 @@ async def lifespan(app: FastAPI):
         logger.info(f"[Server] LLM backend: real {provider}")
         llm = create_llm_proxy(cfg, bus)
     llm.register()
+
+    # β2.1 (Bry 拍板 2026-08-02 21:48): MemoryMiddleware 接受 llm_proxy 參考
+    # 讓 middleware 在 _on_agent_intent 對 agent_akane + heartbeat 觸發事件生成
+    # 範圍限定 pilot, 不影響其他 reason/角色
+    mw = MemoryMiddleware(bus=bus, data_dir="data/memory", llm_proxy=llm)
+    mw.register()
 
     # Phase 12 LLM-as-judge: 設定 process-global LLMProxy reference,
     # 讓 MemoryWriter._get_llm_judge() 跨模組邊界可以拿到

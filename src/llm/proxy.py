@@ -1846,6 +1846,12 @@ class LLMProxy:
             thinking = (self.config.get("llm", {}) or {}).get("thinking")
         self.thinking = thinking  # None = 不送 thinking 給 backend (M3 / OpenAI 預設行為)
 
+        # β2.1 (Bry 拍板 2026-08-02 21:48): 事件生成 LLM call 用獨立 max_tokens/temperature
+        # 跟角色訊息生成 (max_tokens=1000, temperature=self.temperature) 完全分開
+        # 事件只需要一句話 (10-30 字), max_tokens 200 夠用, temperature 0.7 給 LLM 自由發揮
+        self.event_max_tokens = 200
+        self.event_temperature = 0.7
+
         # 簡易對話歷史快取:{session_id: [messages]}
         # Phase 2 升級點:改為持久化到 SQLite
         self._memory = MemoryStore()  # Phase 2: SQLite 持久化
@@ -2040,6 +2046,27 @@ class LLMProxy:
                         f"agent={agent_id} reason={reason} draft={user_message[:50]!r}"
                     )
                     break
+
+        # β2.1 (Bry 拍板 2026-08-02 21:48): 事件背景注入
+        # MemoryMiddleware 透過 event.payload["event"] 注入角色當下情境,
+        # 進 system prompt 給 LLM 看到「角色目前處於什麼場景」, 自然帶因果脈絡。
+        # 範圍: pilot 限定 agent_akane + heartbeat, 但注入是無條件的 (有就注入,
+        # 沒就 skip), 不影響其他 reason/角色。
+        # 注入位置: M2 task 3 patch 之後, _complete_with_retry 之前, 確保
+        # 不會被 M2 task 3 的 user→system 替換邏輯影響 (M2 task 3 只動 user role)。
+        event_text = event.payload.get("event", "")
+        if event_text:
+            event_block = (
+                f"\n[當下事件] {event_text}\n"
+                f"這是角色目前所處的情境, 請自然地反映在訊息中, "
+                f"不要直接複述或解釋這個事件描述, 也不要重複 tag。\n"
+            )
+            messages.append({"role": "system", "content": event_block})
+            logger.info(
+                f"[LLMProxy] β2.1 事件背景注入 | "
+                f"agent={agent_id} reason={reason} "
+                f"event={event_text[:40]!r}"
+            )
 
         # Phase 5c:DEBUG log 改 logger.debug,避免 user 訊息 / system prompt
         # 全文被印到 log 檔(leak 隱私)
@@ -2461,4 +2488,83 @@ class LLMProxy:
                 },
             )
         )
+        return None
+
+    # ───────────────────────────────────────────────────────────
+    # β2.1 (Bry 拍板 2026-08-02 21:48): 事件生成 LLM call
+    # 給 MemoryMiddleware 用, 跟角色訊息生成的 LLM call 完全分開
+    # (不同 prompt, 不同 max_tokens, 簡化 retry, 失敗不污染訊息路徑)
+    # ───────────────────────────────────────────────────────────
+
+    async def generate_event_text(
+        self,
+        messages: List[Dict[str, str]],
+        agent_id: str = "system",
+    ) -> Optional[str]:
+        """
+        β2.1 事件生成 LLM call. 走同一個 backend 跟 model, 但:
+        - 純文字輸出 (沒 function calling, 沒 JSON mode)
+        - max_tokens=200 夠用 (一句話 + tag)
+        - temperature=0.7 給 LLM 自由發揮
+        - 1 retry on 5xx/429/timeout, 4xx 不重試
+        - 失敗回 None, 不 raise (跟 MemoryMiddleware 「拒絕問, 強制讀」一致)
+
+        Args:
+            messages: 事件生成 prompt (system + user)
+            agent_id: 觸發的角色 (僅 log 用)
+
+        Returns:
+            純文字事件描述 (一句話 + tag), 失敗回 None
+        """
+        # β2.1 簡化 retry: 1 次 (即 attempt 0 + attempt 1 = 最多 2 次)
+        for attempt in range(2):
+            try:
+                result = await self.backend.complete(
+                    messages=messages,
+                    model=self.model,
+                    max_tokens=self.event_max_tokens,
+                    temperature=self.event_temperature,
+                    thinking=None,  # 事件生成不需要 thinking
+                )
+                if result and result.strip():
+                    logger.info(
+                        f"[LLMProxy] β2.1 事件生成成功 | "
+                        f"agent={agent_id} len={len(result)}"
+                    )
+                    return result.strip()
+                logger.warning(
+                    f"[LLMProxy] β2.1 事件生成回傳空字串 | agent={agent_id}"
+                )
+                return None
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (429, 500, 502, 503, 504) and attempt == 0:
+                    logger.warning(
+                        f"[LLMProxy] β2.1 事件生成 HTTP "
+                        f"{e.response.status_code}, 1s 後重試 (1/1)"
+                    )
+                    await asyncio.sleep(1)
+                else:
+                    logger.error(
+                        f"[LLMProxy] β2.1 事件生成 HTTP "
+                        f"{e.response.status_code} 放棄 | agent={agent_id}"
+                    )
+                    return None
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                if attempt == 0:
+                    logger.warning(
+                        f"[LLMProxy] β2.1 事件生成網路錯誤 "
+                        f"{type(e).__name__}, 1s 後重試 (1/1)"
+                    )
+                    await asyncio.sleep(1)
+                else:
+                    logger.error(
+                        f"[LLMProxy] β2.1 事件生成網路錯誤放棄: {e}"
+                    )
+                    return None
+            except Exception as e:
+                logger.error(
+                    f"[LLMProxy] β2.1 事件生成未預期錯誤: {e}",
+                    exc_info=True,
+                )
+                return None
         return None
