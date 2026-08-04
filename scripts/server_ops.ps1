@@ -21,35 +21,72 @@ $root = 'C:\Users\bbfcc\.local\bin\soul-os-harness'
 $pidFile = Join-Path $root 'data\server.pid'
 $outLog = Join-Path $root 'data\server_nohup.log'
 $errLog = Join-Path $root 'data\server_nohup.err'
+# 跟 _start_plan_a.ps1 一致 (Bry 拍板 2026-08-03 23:33 修法):
+# 明確指定 hermes-agent venv python, 不依賴系統 PATH (避免 uvicorn ModuleNotFoundError)
+# 跟 8/2 15:20 miku 教訓 + 8/3 23:25:05 server_ops 重啟失敗同類問題
+$python = 'C:\Users\bbfcc\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe'
+$opsLog = Join-Path $root 'data\logs\server_ops.log'
 
 function Get-ServerProcess {
     Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -like '*run_server.py*' }
 }
 
+function Write-OpsLog([string]$msg) {
+    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $line = "[$ts] $msg"
+    Write-Host $line
+    try {
+        $opsLogDir = Split-Path -Path $opsLog -Parent
+        if (-not (Test-Path $opsLogDir)) {
+            New-Item -ItemType Directory -Path $opsLogDir -Force | Out-Null
+        }
+        Add-Content -Path $opsLog -Value $line -Encoding UTF8
+    } catch {
+        Write-Host "[server_ops] WARN log write failed: $_"
+    }
+}
+
 function Start-SoulOsServer {
     if (Get-ServerProcess) {
-        Write-Host '[skip] Server already running'
+        Write-OpsLog "[skip] Server already running"
         Get-ServerProcess | Select-Object ProcessId, StartTime | Format-Table
         return
     }
+    # 啟動前 sanity check (跟 _start_plan_a.ps1 一致): python 存在 + uvicorn 可 import
+    # 避免 8/3 23:25:05 ModuleNotFoundError 啟動後才死, 浪費 5 分鐘 tick
+    if (-not (Test-Path $python)) {
+        Write-OpsLog "ERROR python not found at $python - start FAILED"
+        exit 1
+    }
+    try {
+        $uvCheck = & $python -c "import uvicorn; print('uvicorn', uvicorn.__version__)" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-OpsLog "ERROR uvicorn import failed: $uvCheck - start FAILED"
+            exit 1
+        }
+        Write-OpsLog "pre-check OK: $uvCheck"
+    } catch {
+        Write-OpsLog "ERROR pre-check exception: $_ - start FAILED"
+        exit 1
+    }
     $env:PYTHONIOENCODING = 'utf-8'
-    $proc = Start-Process -FilePath 'python' `
+    $proc = Start-Process -FilePath $python `
         -ArgumentList "$root\scripts\run_server.py" `
         -RedirectStandardOutput $outLog `
         -RedirectStandardError $errLog `
         -NoNewWindow -PassThru `
         -WorkingDirectory $root
     $proc.Id | Out-File -Encoding utf8 $pidFile
-    Write-Host "[ok] Server started PID=$($proc.Id)"
-    Write-Host "     Logs: $outLog"
-    Write-Host "           $errLog"
+    Write-OpsLog "[ok] Server started PID=$($proc.Id) python=$python"
+    Write-OpsLog "     Logs: $outLog"
+    Write-OpsLog "           $errLog"
     Start-Sleep -Seconds 3
     try {
         $r = Invoke-WebRequest http://127.0.0.1:8000/health -UseBasicParsing -TimeoutSec 5
-        Write-Host "     /health = $($r.StatusCode)"
+        Write-OpsLog "     /health = $($r.StatusCode)"
     } catch {
-        Write-Host "     /health failed: $($_.Exception.Message)"
+        Write-OpsLog "     /health failed: $($_.Exception.Message)"
     }
 }
 
