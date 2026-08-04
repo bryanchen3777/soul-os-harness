@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections import defaultdict
@@ -9,6 +10,8 @@ import networkx as nx
 
 from .models import Fact, ContextResult
 from .graph_store import GraphStore
+
+logger = logging.getLogger("soul_os.memory.reader")
 
 MAX_TOKENS_DEFAULT = 800
 CHARS_PER_TOKEN = 4
@@ -48,6 +51,13 @@ class MemoryReader:
         min_weight: float = 0.1,
         mode: RecallMode = "balanced",
         boost_tags: Optional[list[str]] = None,
+        # 修法 1 (Bry 拍板 2026-08-03 22:xx, 方案 B): source_pair 過濾白名單
+        # 格式: set of "<user_id>:<agent_id>", 例 {"bryan:agent_ruka"}
+        # 對每條 candidate fact, 如果 source_pair 非空且不在這個 set 內 → 過濾掉
+        # (避免 ram/miku/yua 撈到 Bry-mai/Bry-ruka 私域喇稱)
+        # None = 不過濾 (向後相容)
+        # Bry 拍板防呆: 空 source_pair (既有 5040 facts 沒標記) 一律視為可見, 不被過濾
+        source_pair_filter: Optional[set[str]] = None,
     ) -> ContextResult:
         if self.store.edge_count == 0:
             return ContextResult(facts=[], chains=[], summary="",
@@ -55,11 +65,25 @@ class MemoryReader:
 
         keywords = self._extract_keywords(query)
         if not keywords:
-            return self._fallback_recent(top_k, max_tokens)
+            return self._fallback_recent(top_k, max_tokens, source_pair_filter=source_pair_filter)
 
         candidates = self._gather_candidates(keywords, min_weight)
         if not candidates:
-            return self._fallback_recent(top_k, max_tokens)
+            return self._fallback_recent(top_k, max_tokens, source_pair_filter=source_pair_filter)
+
+        # 修法 1: source_pair 過濾 (在 _score_and_normalize 之前, 避免無效打分)
+        if source_pair_filter is not None:
+            before_count = len(candidates)
+            candidates = [
+                f for f in candidates
+                if f.source_pair is None or f.source_pair == "" or f.source_pair in source_pair_filter
+            ]
+            filtered_count = before_count - len(candidates)
+            if filtered_count > 0:
+                logger.debug(
+                    f"[MemoryReader] source_pair 過濾: {before_count} -> {len(candidates)} "
+                    f"(過濾掉 {filtered_count} 條 other-pair 事實)"
+                )
 
         scored = self._score_and_normalize(candidates, keywords, boost_tags)
         diverse = self._apply_diversity_filter(scored, top_k, mode)
@@ -276,8 +300,19 @@ class MemoryReader:
                     used += len(line)
         return "\n".join(lines)
 
-    def _fallback_recent(self, top_k: int, max_tokens: int) -> ContextResult:
+    def _fallback_recent(
+        self, top_k: int, max_tokens: int,
+        # 修法 1 (Bry 拍板 2026-08-03 22:xx, 方案 B): fallback 路徑也要過濾
+        # 避免新寫入的私域事實在 fallback 路徑 (query 沒 match) 漏過
+        source_pair_filter: Optional[set[str]] = None,
+    ) -> ContextResult:
         facts = self.store.get_all_facts(min_weight=0.5)[:top_k]
+        # 修法 1: 跟 _gather_candidates 一致, Bry 拍板防呆「空 source_pair 保留」
+        if source_pair_filter is not None:
+            facts = [
+                f for f in facts
+                if f.source_pair is None or f.source_pair == "" or f.source_pair in source_pair_filter
+            ]
         summary = self._build_summary(facts, [], max_tokens, "precise")
         return ContextResult(
             facts=facts, chains=[], summary=summary,

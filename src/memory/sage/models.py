@@ -19,6 +19,14 @@ class Fact:
     is_anchor: bool = False
     merged_from: Optional[list[str]] = None
     merge_reason: Optional[str] = None
+    # 修法 1 (Bry 拍板 2026-08-03 22:xx, 方案 B + 防呆規則):
+    # 標記這條事實原始是哪兩個 entity 之間的對話, 格式 "<user_id>:<agent_id>"
+    # 例: "bryan:agent_ruka" = Bry user 跟 agent_ruka 的對話事實
+    # prefetch 時, middleware 拿 self agent_id 組成 allowed_pairs, 過濾掉
+    # source_pair 非空且不在 allowed_pairs 內的事實 (避免 ram/miku/yua 撈到
+    # Bry-mai/Bry-ruka 的私域喇稱記憶)
+    # Bry 拍板防呆: 空 source_pair (既有 5040 facts 沒標記) 一律視為可見, 不過濾
+    source_pair: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -35,6 +43,7 @@ class Fact:
             "is_anchor":    self.is_anchor,
             "merged_from":  self.merged_from,
             "merge_reason": self.merge_reason,
+            "source_pair":  self.source_pair,
         }
 
     @classmethod
@@ -44,6 +53,7 @@ class Fact:
         d.setdefault("confidence",   1.0)
         d.setdefault("merged_from",  None)
         d.setdefault("merge_reason", None)
+        d.setdefault("source_pair",  None)
         return cls(**d)
 
     def validate(self) -> list[str]:

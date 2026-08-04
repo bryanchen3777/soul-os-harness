@@ -171,9 +171,19 @@ class MemoryWriter:
         subject_hint: Optional[str] = None,
         session_id: Optional[str] = None,
         source: str = "user",
+        # 修法 1 (Bry 拍板 2026-08-03 22:xx, 方案 B):
+        # 標記這個 turn 寫入的事實是誰跟誰對話產生的, 格式 "<user_id>:<agent_id>"
+        # 例: "bryan:agent_ruka" = Bry 跟 ruka 的對話事實
+        # reader 撈事實時, middleware 會用這個標記過濾 (避免其他角色撈到 Bry-其他角色的私域)
+        # None = 不標記, reader 視為「未標記」一律保留 (Bry 拍板防呆)
+        source_pair: Optional[str] = None,
     ) -> list[str]:
         sid = session_id or self.default_session_id
         facts, raw_results = self._extract_facts(text, subject_hint, sid, source)
+        # 修法 1: 把 source_pair 套到這個 turn 抽出的所有 fact
+        if source_pair is not None:
+            for f in facts:
+                f.source_pair = source_pair
         # Bry 拍板 2026-07-18 Stage 1.5 fix: mirror 移到 _extract_facts 父層,
         # 兩條路徑 (LLM + heuristic) 都會跑, 解決 heuristic fallback 不寫 v1 的 bug
         self._mirror_extraction(
@@ -208,6 +218,11 @@ class MemoryWriter:
         assistant_content: str,
         session_id: Optional[str] = None,
         skip_graph: bool = False,
+        # 修法 1 (Bry 拍板 2026-08-03 22:xx, 方案 B): 寫入時帶 source_pair 標記
+        # 格式 "<user_id>:<agent_id>", 例 "bryan:agent_ruka"
+        # middleware._on_agent_speak 從 event.payload 拿 target_user_id + agent_id 組成
+        # None = 不標記, reader 視為「未標記」一律保留
+        source_pair: Optional[str] = None,
     ) -> list[str]:
         """寫一輪 user + assistant。
 
@@ -217,6 +232,7 @@ class MemoryWriter:
                   (理由: v1 mirror 是結構化備忘, 跟 diary 是不同概念,
                   Ram 不寫 diary 仍可以有 v1 facts)
                 - False (default): 原路徑 (graph + v1 mirror)
+            source_pair: 修法 1 加, 標記這 turn 寫入的事實是誰跟誰的對話。
         """
         sid = session_id or self.default_session_id
         if skip_graph:
@@ -238,11 +254,11 @@ class MemoryWriter:
         # 原路徑
         user_ids = self.extract_and_write(
             user_content, subject_hint="user",
-            session_id=sid, source="user"
+            session_id=sid, source="user", source_pair=source_pair,
         )
         assistant_ids = self.extract_and_write(
             assistant_content, subject_hint="assistant",
-            session_id=sid, source="inference"
+            session_id=sid, source="inference", source_pair=source_pair,
         )
         return user_ids + assistant_ids
 

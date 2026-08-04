@@ -13,7 +13,7 @@ from .models import Fact
 
 # 每累積 N 次寫入才 commit（WAL 模式下安全）
 _BATCH_SIZE = 20
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 
 class GraphStore:
@@ -155,6 +155,18 @@ class GraphStore:
             except sqlite3.OperationalError:
                 pass
 
+        if from_version < 5:
+            # 修法 1 (Bry 拍板 2026-08-03 22:xx, 方案 B): 加 source_pair 欄位
+            # 格式: "<user_id>:<agent_id>", 例 "bryan:agent_ruka"
+            # 既有 5040 facts 沒 source_pair, 預設空字串, reader 視為「未標記」一律保留
+            # (Bry 拍板防呆規則, 不主動二選一決定「保留 vs 過濾」)
+            try:
+                conn.execute(
+                    "ALTER TABLE facts ADD COLUMN source_pair TEXT NOT NULL DEFAULT ''"
+                )
+            except sqlite3.OperationalError:
+                pass
+
     def _row_to_fact(self, row: sqlite3.Row) -> Fact:
         d = dict(row)
         d.pop("tags", None)
@@ -163,6 +175,9 @@ class GraphStore:
         d.setdefault("confidence", 1.0)
         d.setdefault("merged_from", None)
         d.setdefault("merge_reason", None)
+        # 修法 1: source_pair 從 SQL 讀出, 空字串轉 None (跟 Fact dataclass Optional 對齊)
+        raw_sp = d.get("source_pair", "")
+        d["source_pair"] = raw_sp if raw_sp else None
         return Fact(**d)
 
     def _load_from_db(self) -> None:
@@ -199,11 +214,12 @@ class GraphStore:
             """INSERT OR REPLACE INTO facts
                (fact_id, subject, predicate, object,
                 timestamp, event_time, weight, source,
-                session_id, tags, is_anchor)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                session_id, tags, is_anchor, source_pair)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (fact.fact_id, fact.subject, fact.predicate, fact.object,
              fact.timestamp, fact.event_time, fact.weight, fact.source,
-             fact.session_id, "", int(fact.is_anchor)),
+             fact.session_id, "", int(fact.is_anchor),
+             fact.source_pair or ""),
         )
         self._pending_writes += 1
         if self._pending_writes >= self.batch_size:

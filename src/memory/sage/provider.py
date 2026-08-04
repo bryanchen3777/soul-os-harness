@@ -124,6 +124,13 @@ class SAGELiteProvider:
         *,
         session_id: str,
         boost_tags: Optional[list[str]] = None,
+        # 修法 1 (Bry 拍板 2026-08-03 22:xx, 方案 B): source_pair 過濾白名單
+        # 格式: set of "<user_id>:<agent_id>", 例 {"bryan:agent_ruka"}
+        # reader 撈事實時, 過濾掉 source_pair 非空且不在這個 set 內的事實
+        # (避免 ram/miku/yua 撈到 Bry-mai/Bry-ruka 私域喇稱)
+        # None = 不過濾 (向後相容)
+        # Bry 拍板防呆: 空 source_pair (既有資料) 一律視為可見, 不被過濾
+        source_pair_filter: Optional[set[str]] = None,
     ) -> str:
         """查詢相關記憶，回傳 token-bounded 字串。
 
@@ -141,6 +148,7 @@ class SAGELiteProvider:
             max_tokens=self.max_tokens,
             mode=self.recall_mode,
             boost_tags=boost_tags,
+            source_pair_filter=source_pair_filter,
         )
         if result.is_empty:
             return ""
@@ -167,6 +175,8 @@ class SAGELiteProvider:
         assistant_content: str,
         *,
         session_id: str,
+        # 修法 1 (Bry 拍板 2026-08-03 22:xx, 方案 B): 寫入帶 source_pair 標記
+        source_pair: Optional[str] = None,
     ) -> None:
         """
         Sync 寫入。soul-os MemoryMiddleware 會包 asyncio.to_thread。
@@ -184,7 +194,8 @@ class SAGELiteProvider:
             )
             return
         self._writer.write_turn(
-            user_content, assistant_content, session_id=session_id
+            user_content, assistant_content,
+            session_id=session_id, source_pair=source_pair,
         )
         self._turn_count += 1
         self._cache.invalidate()
@@ -197,6 +208,10 @@ class SAGELiteProvider:
         session_id: str,
         last_user_msg: str,
         agent_reply: str,
+        # 修法 1 (Bry 拍板 2026-08-03 22:xx, 方案 B): 寫入帶 source_pair 標記
+        # middleware._on_agent_speak 從 event.payload 拿 target_user_id + agent_id 組成
+        # 例: "bryan:agent_ruka" = Bry 跟 ruka 的對話事實
+        source_pair: Optional[str] = None,
     ) -> None:
         """
         Async 寫入（內部已用 run_in_executor，不會阻塞 event loop）。
@@ -219,7 +234,7 @@ class SAGELiteProvider:
             from functools import partial
             await loop.run_in_executor(
                 None,
-                partial(self._writer.write_turn, skip_graph=True),
+                partial(self._writer.write_turn, skip_graph=True, source_pair=source_pair),
                 last_user_msg, agent_reply, session_id,
             )
             self._cache.invalidate()
@@ -231,6 +246,7 @@ class SAGELiteProvider:
             last_user_msg,
             agent_reply,
             session_id,
+            source_pair,
         )
         self._cache.invalidate()
 

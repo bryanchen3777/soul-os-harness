@@ -270,9 +270,18 @@ class MemoryMiddleware:
 
         provider = self._get_provider(agent_id)
 
+        # 修法 1 (Bry 拍板 2026-08-03 22:xx, 方案 B): prefetch 帶 source_pair_filter
+        # 只放行 self pair (bryan:<agent_id>) + 未標記既有資料 (Bry 拍板防呆)
+        # 過濾掉 other pair (bryan:<other_agent>, where other != self) 的事實
+        # 避免 ram/miku/yua 撈到 Bry-mai/Bry-ruka 私域喇稱記憶
+        target_user_id = event.payload.get("target_user_id", "bryan")
+        source_pair_filter = {f"{target_user_id}:{agent_id}"}
+
         # prefetch 是 sync；包進 thread executor 不阻塞 event loop
         context = await asyncio.to_thread(
-            provider.prefetch, query, session_id=event.session_id or "default"
+            provider.prefetch, query,
+            session_id=event.session_id or "default",
+            source_pair_filter=source_pair_filter,
         )
 
         # Perplexity Bry §14: 最小端到端接線
@@ -426,8 +435,14 @@ class MemoryMiddleware:
             return
 
         provider = self._get_provider(agent_id)
+        # 修法 1 (Bry 拍板 2026-08-03 22:xx, 方案 B): 寫入帶 source_pair 標記
+        # 格式: "<target_user_id>:<agent_id>", 例 "bryan:agent_ruka"
+        # 未來 prefetch 對 agent_X 撈事實, 看到 source_pair="bryan:<other>" 會被過濾
+        target_user_id = event.payload.get("target_user_id", "bryan")
+        source_pair = f"{target_user_id}:{agent_id}"
         await provider.post_reply_commit(
-            session_id, user_text, agent_text
+            session_id, user_text, agent_text,
+            source_pair=source_pair,
         )
         logger.info(
             f"[MemoryMiddleware] 寫入 graph | agent={agent_id} | "
