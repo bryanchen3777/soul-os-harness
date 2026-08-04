@@ -231,9 +231,20 @@ def _build_messages_group(
     # 注入 system prompt 開頭, LLM 看到「Bry 最近問過 / 講過什麼」。
     # 範圍: 只在 _build_messages_group 內, 不動 MemoryMiddleware / scheduler /
     # consciousness.py。失敗可逆 (拔掉 _load_private 那幾行就恢復)。
+    #
+    # 修法 2 (Bry 拍板 2026-08-03 22:xx): 在 bry_block 開頭加反框架語句
+    # 根因: ruka 8/3 8 條訊息中 7 條 LLM 自創, 把「Bry 最近訊息」當成要回應的對象
+    # 嘗試靠調整區塊順序或距離證明無效 (ruka 那條例子中間隔了 4 個區塊還是被誤讀)
+    # 改在資訊本身旁邊加使用說明, 跟 β2.1 事件背景「請自然反映在訊息中, 不要直接
+    # 複述」的做法一致: 在資訊本身旁邊加使用說明, 不是靠位置順序。
     bry_recent = _load_bry_recent(agent_id, user_id, limit=MAX_BRY_RECENT)
     if bry_recent:
-        bry_block_lines = ["\n## Bry 最近訊息 (短期記憶)"]
+        bry_block_lines = [
+            "\n[使用說明] 以下是背景參考, 不代表 Bry 現在正在跟你對話。"
+            "除非有主動觸發標記明確說明, 否則這不是要立即回應的問題,"
+            "根據上下文需要自然運用即可, 不要逐條回應。",
+            "\n## Bry 最近訊息 (短期記憶)",
+        ]
         for m in bry_recent:
             bry_block_lines.append(f"- Bry: {m['content']}")
         system_parts.append("\n".join(bry_block_lines))
