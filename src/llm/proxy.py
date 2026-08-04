@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import sys
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -72,6 +73,15 @@ MAX_GROUP_SUMMARY = 10  # 私聊注入時的群聊摘要條數
 # system prompt 當 "## Bry 最近訊息" 區塊。Bry 8/2 16:xx 拍板 N=3, 範圍限定
 # _build_messages_group, 不影響 MemoryMiddleware / scheduler / consciousness。
 MAX_BRY_RECENT = 3
+
+# 修法 7 (Bry 拍板 2026-08-04 13:24): stale Bry user 訊息過濾閾值
+# 跟 proactive_dm silence_timeout 對齊, 30 分鐘內 Bry 沒訊息 = Bry 不在線
+# 角色不該把幾小時/幾天前的 Bry 訊息當成 Bry 剛講的話回覆
+# 為什麼不是模板路線: M2 task 3 修法有加 system role, 模板是「主動開場」模板,
+# 但 group/private history 內 stale Bry 訊息 role=user 直接餵給 LLM,
+# LLM 看到「Bry 剛說 X」就「回覆 X」, 這是 stale data 問題不是模板問題,
+# 從源頭過濾比再疊一條反框架語句更治本
+STALE_THRESHOLD_SEC = 30 * 60  # 30 分鐘
 
 _GROUP_FILE = CONV_DIR / "group_chat.json"
 
@@ -202,6 +212,15 @@ def _build_messages_group(
     [system: SOUL] + [system: Bry 最近訊息 (短期)] + [system: 當下時間] + [conversation_history: 群聊 20 條] + [user: 當下訊息]
     """
     group = memory.get_group_history(limit=MAX_GROUP)
+    # 修法 7 (Bry 拍板 2026-08-04 13:24): 過濾 stale Bry user 訊息
+    # 根因: 凌晨 07:07-07:56 EDT 多角色主動傳訊, Bry 在睡覺, group history 內 Bry 訊息
+    # 是 stale (Bry 最後一條可能是 4h+ 前), LLM 看到就「回覆 X」跟現實脫節
+    # 修法: 看 Bry 最新一條 user 訊息 timestamp, 過 STALE_THRESHOLD_SEC = Bry 不在線
+    # → 過濾 Bry user 訊息 (group 內其他角色訊息保留)
+    # 範圍: 只在 _build_messages_group group 歷史組裝這段, 不動 _load_group /
+    # _load_bry_recent / 修法 1 (source_pair) / 修法 2/3 (反框架語句)
+    now = int(time.time())
+    bry_online = _is_bry_online(group, now)
     messages: List[Dict[str, str]] = []
 
     # system prompt
@@ -275,6 +294,10 @@ def _build_messages_group(
         if m.get("is_private"):
             continue
         if m["speaker"] == "bryan":
+            # 修法 7 (Bry 拍板 2026-08-04 13:24): Bry 不在線時過濾 stale Bry user 訊息
+            # 避免 LLM 看到「Bry 剛說 X」是幾小時/幾天前的訊息而誤判成要立即回覆
+            if not bry_online:
+                continue
             messages.append({"role": "user", "content": m["content"]})
         elif m["speaker"] == agent_id:
             messages.append({"role": "assistant", "content": m["content"]})
@@ -288,6 +311,30 @@ def _build_messages_group(
     if current_input:
         messages.append({"role": "user", "content": current_input})
     return messages
+
+
+def _is_bry_online(messages_with_meta: List[Dict[str, Any]], now: int) -> bool:
+    """修法 7 (Bry 拍板 2026-08-04 13:24): Bry 整體在線判定
+
+    看 messages 內 Bry 最新一條 user 訊息的 timestamp, 如果在 STALE_THRESHOLD_SEC 內
+    = Bry 在線 (Bry 拍板 8/4 13:24 邏輯: 30 分鐘內 Bry 有訊息 = Bry 在線,
+    跟 proactive_dm silence_timeout 對齊)
+
+    Args:
+        messages_with_meta: 含 timestamp 欄位的 messages list
+            (memory.get_group_history / memory.get_recent_with_meta 回傳格式)
+        now: 當下時間 (int(time.time()))
+
+    Returns:
+        True = Bry 在線 (不要過濾 Bry user 訊息)
+        False = Bry 不在線 (過濾 Bry user 訊息, 避免 LLM 看到 stale Bry 訊息
+                當成 Bry 剛講的話回覆)
+    """
+    bry_user_msgs = [m for m in messages_with_meta if m.get("role") == "user"]
+    if not bry_user_msgs:
+        return False
+    latest_ts = max(m.get("timestamp", 0) for m in bry_user_msgs)
+    return (now - latest_ts) <= STALE_THRESHOLD_SEC
 
 
 def _load_bry_recent(agent_id: str, user_id: str, limit: int = MAX_BRY_RECENT) -> List[Dict[str, str]]:
@@ -349,8 +396,18 @@ def _build_messages_private(
     # 這確保每個 Agent 的靈魂不會被其他 Agent 影響
 
     # 私聊歷史 - KI-001: per (user, agent) 隔離
-    private = memory.get_recent(f"session_{user_id}_{agent_id}", limit=MAX_PRIVATE)
+    # 修法 7 (Bry 拍板 2026-08-04 13:24): 改用 get_recent_with_meta 拿 timestamp
+    # 原因: get_recent 不回 timestamp, 過濾 stale Bry user 訊息需要 timestamp
+    # get_recent_with_meta 是 MemoryStore 既有 method (store.py L139-162), 沒改 store.py
+    private = memory.get_recent_with_meta(f"session_{user_id}_{agent_id}", limit=MAX_PRIVATE)
+    # 修法 7: 看 Bry 是否在線 (Bry 不在線 → 過濾 Bry user 訊息)
+    now = int(time.time())
+    bry_online = _is_bry_online(private, now)
     for m in private:
+        if m.get("role") == "user" and not bry_online:
+            # 修法 7 (Bry 拍板 2026-08-04 13:24): Bry 不在線時過濾 stale Bry user 訊息
+            # 避免 LLM 看到「Bry 剛說 X」是幾小時/幾天前的訊息而誤判成要立即回覆
+            continue
         messages.append({"role": m["role"], "content": m["content"]})
 
     if current_input:
