@@ -638,6 +638,19 @@ class OpenAIBackend(LLMBackend):
                 f"has tool_calls={'tool_calls' in msg}, "
                 f"content_len={len(msg.get('content') or '')}"
             )
+            # 修法 6 D.1 (Bry 拍板 2026-08-03 23:48): finish_reason=length 升級 logger.warning
+            # 修法動機: anna 8/3 21:42 退化重複事件就是因為 finish_reason=length
+            #   (completion=4000 打滿 max_tokens, 內容 50+「嗯。」退化)
+            #   - finish_reason=length 是退化訊號, 應該明顯標記讓 Bry / watchdog 看到
+            #   - 之前只有 logger.info, Bry 容易忽略
+            #   - 修法 6 B (output post-processing 截斷) + D.2 (Layer 3 E 兜底 emotion 改 confused)
+            #     已經是後備, D.1 是給 Bry / watchdog 看的「早期警告」
+            if _c1_finish == "length":
+                logger.warning(
+                    f"[OpenAIBackend][修法 6 D.1] finish_reason=length "
+                    f"(completion 打滿 max_tokens={max_tokens}, 可能退化重複). "
+                    f"修法 6 B 已套用 _truncate_repetition, 修法 6 D.2 Layer 3 E 兜底 emotion 改 confused."
+                )
             tool_calls = msg.get("tool_calls")
             if tool_calls:
                 # OpenAI standard 格式: tool_calls[0].function.arguments 是 JSON string
@@ -1334,6 +1347,41 @@ def _get_safe_emotion(agent_id: str) -> str:
     return whitelist[0] if whitelist else "calm"
 
 
+# 修法 6 (Bry 拍板 2026-08-03 23:48): 輸出後處理截斷
+# 防止 anna 8/3 21:42 退化重複事件: tool_calls 內 50+「嗯。」(3851 chars, 60+ 次重複)
+# finish_reason=length, completion=4000 打滿 max_tokens
+# 修法 B: 偵測連續 max_repeat+ 重複字串/片段, 截斷在第一次重複之前 (留 1 個原版)
+# Bry 派工原話建議: max_repeat=5 (保守, 避免 false positive 像「我我我」這種 1-2 字重複)
+# Bry 派工原話: 「連續 5+ 重複就截斷在第一次重複之前」
+# 例: 「嗯。嗯。嗯。嗯。嗯。嗯。」(6 個連續) → 截斷成「嗯。」(1 個原版)
+#     「是是是是是」(5 個連續) → 截斷成「是」(1 個)
+#     「啊啊啊」(3 個連續) → 不截斷 (< 5)
+#     正常對話「你好, 今天天氣很好」→ 不截斷 (沒連續重複)
+def _truncate_repetition(text: str, max_repeat: int = 5) -> str:
+    """偵測連續 max_repeat+ 重複字串/片段, 截斷在第一次重複之前。
+
+    Args:
+        text: 原始字串
+        max_repeat: 連續重複次數閾值 (>= max_repeat 個連續重複就截斷), 預設 5
+
+    Returns:
+        截斷後的字串 (如果原字串沒退化重複, 回傳原字串)
+    """
+    if not text or len(text) < max_repeat:
+        return text
+    # 偵測連續重複: (任意 1-30 字元) 重複 >= max_repeat 次
+    # 用 re.sub 替換為 1 個原版, 簡潔且不破壞非重複部分
+    pattern = re.compile(r"(.{1,30}?)\1{" + str(max_repeat) + r",}")
+    truncated = pattern.sub(r"\1", text)
+    if truncated != text:
+        # 記錄 log 方便 Bry debug
+        logger.warning(
+            f"[LLMProxy] _truncate_repetition 截斷: {len(text)} -> {len(truncated)} chars "
+            f"(max_repeat={max_repeat}, 偵測到連續重複)"
+        )
+    return truncated
+
+
 def _parse_json_layer1(raw: str) -> Optional[Dict[str, Any]]:
     """Layer 1: 直接 json.loads。"""
     try:
@@ -1635,7 +1683,7 @@ def _parse_llm_output(raw: str, agent_id: str) -> Dict[str, str]:
         return {
             "text": "",
             "audio_text": "",
-            "emotion": _get_safe_emotion(agent_id),
+            "emotion": "confused",  # 修法 6 D.2: 從 _get_safe_emotion 改 confused
             "_parse_failed": True,  # hotfix #7: 空 raw 也是失敗
         }
 
@@ -1649,7 +1697,7 @@ def _parse_llm_output(raw: str, agent_id: str) -> Dict[str, str]:
         return {
             "text": "",
             "audio_text": "",
-            "emotion": _get_safe_emotion(agent_id),
+            "emotion": "confused",  # 修法 6 D.2: 從 _get_safe_emotion 改 confused
             "_parse_failed": True,  # hotfix #7: 剝 think 後空也是失敗
         }
 
@@ -1681,16 +1729,22 @@ def _parse_llm_output(raw: str, agent_id: str) -> Dict[str, str]:
             #   - Bry 看了覺得很怪,失敗時就直接顯示純日文,讓 audio 跟 text 對得上
             #   - 中文翻譯欄位沒就是沒,user 聽日文 audio 也能懂
             cleaned_text = extracted_ja
+            # 修法 6 B: 套用 _truncate_repetition 截斷退化重複 (anna 8/3 21:42 50+「嗯。」案例)
+            cleaned_text = _truncate_repetition(cleaned_text)
+            extracted_ja = _truncate_repetition(extracted_ja)
+            # 修法 6 D.2: Layer 3 E 兜底 emotion 從 _get_safe_emotion (anna "bright") 改 "confused"
+            # 修法動機: Bry 從情緒標記感覺出「這條有問題」, 而不是收到一坨語音噪音
+            # "confused" 不在白名單但 Layer 3 E 兜底 emotion 不再走白名單驗證 (early return), 直接傳給 Bry
             logger.warning(
                 f"[LLMProxy] {agent_id} LLM 輸出 JSON 解析完全失敗 (2 層都沒救),"
                 f"E 兜底從 raw 抽出日文片段 audio_text={extracted_ja[:40]!r} "
-                f"({len(extracted_ja)} chars), emotion 用 safe default "
-                f"({_get_safe_emotion(agent_id)}); text 不再吃 raw 避免污染 Bry 視窗"
+                f"({len(extracted_ja)} chars), emotion=confused (Bry 拍板 2026-08-03 修法 6 D.2); "
+                f"text 不再吃 raw 避免污染 Bry 視窗"
             )
             return {
                 "text": cleaned_text,
                 "audio_text": extracted_ja,
-                "emotion": _get_safe_emotion(agent_id),
+                "emotion": "confused",  # 修法 6 D.2: 從 _get_safe_emotion (anna "bright") 改 confused
                 "_parse_failed": True,  # 階段 5.5+ hotfix #7 marker
             }
         else:
@@ -1707,15 +1761,18 @@ def _parse_llm_output(raw: str, agent_id: str) -> Dict[str, str]:
                 cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
                 cleaned = re.sub(r"\n?```$", "", cleaned)
             if cleaned:
+                # 修法 6 B: 套用 _truncate_repetition 截斷退化重複
+                cleaned = _truncate_repetition(cleaned)
+                # 修法 6 D.2: emotion 從 _get_safe_emotion 改 "confused" (Bry 從情緒標記感覺出問題)
                 logger.warning(
                     f"[LLMProxy] {agent_id} 純 text 兜底 (Bry 7/27 00:15 拍板), "
                     f"raw 當 text + audio_text ({len(cleaned)} chars), "
-                    f"emotion 用 safe default ({_get_safe_emotion(agent_id)})"
+                    f"emotion=confused (Bry 拍板 2026-08-03 修法 6 D.2)"
                 )
                 return {
                     "text": cleaned,
                     "audio_text": cleaned,
-                    "emotion": _get_safe_emotion(agent_id),
+                    "emotion": "confused",  # 修法 6 D.2
                     "_parse_failed": True,
                 }
             # 純中文 LLM 救不回 - silent failure
@@ -1723,16 +1780,16 @@ def _parse_llm_output(raw: str, agent_id: str) -> Dict[str, str]:
             #   - Bry 看了覺得奇怪,而且跟 agent 人設脫節
             #   - audio_text 已經是空 (沒 audio),text 也空,讓 frontend silent
             #   - log 還是有 WARNING 留 trace
+            # 修法 6 D.2: emotion 從 _get_safe_emotion 改 "confused" (Bry 從情緒標記感覺出問題)
             logger.warning(
                 f"[LLMProxy] {agent_id} LLM 輸出 JSON 解析完全失敗 "
                 f"(2 層都沒救,純中文 E 也救不回),text silent, "
-                f"audio_text 空, emotion 用 safe default "
-                f"({_get_safe_emotion(agent_id)})"
+                f"audio_text 空, emotion=confused (Bry 拍板 2026-08-03 修法 6 D.2)"
             )
             return {
                 "text": "",
                 "audio_text": "",
-                "emotion": _get_safe_emotion(agent_id),
+                "emotion": "confused",  # 修法 6 D.2
                 "_parse_failed": True,
             }
 
@@ -1740,6 +1797,13 @@ def _parse_llm_output(raw: str, agent_id: str) -> Dict[str, str]:
     text = parsed.get("text", "")
     audio_text = parsed.get("audio_text", "")
     emotion = parsed.get("emotion", "")
+
+    # 修法 6 B (Bry 拍板 2026-08-03 23:48): 套用 _truncate_repetition 截斷退化重複
+    # Layer 1/2 解析成功的 text/audio_text 也可能有退化重複 (例: 雖然 JSON parse 成功,
+    # 但 LLM 還是在 text/audio_text 內寫了 50+「嗯。」, finish_reason=length)
+    # 防護網: 任何 text/audio_text 都套用, 防止音檔污染
+    text = _truncate_repetition(text)
+    audio_text = _truncate_repetition(audio_text)
 
     # 確保是 str (None / 數字 / list 都轉 str 或空)
     if not isinstance(text, str):
