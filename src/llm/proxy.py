@@ -252,6 +252,25 @@ def _build_messages_group(
     messages.append({"role": "system", "content": "\n".join(system_parts)})
 
     # 群聊歷史(過濾 is_private)
+    #
+    # 修法 3 (Bry 拍板 2026-08-03 23:08): 群聊歷史組裝段加反框架語句
+    # 根因: miku 8/2 21:42 / ram 8/3 22:04 觸發時, group session 內有 Bry 罵 mai
+    # 用的「豬頭」字眼, 沒註明這是 Bry 對特定對象的喇稱, LLM 看到後模仿用詞
+    # 修法: 在 group 歷史組裝之前, 加一段 [使用說明] system 訊息, 涵蓋
+    # 「Bry 對特定對象的喇稱/口頭禪, 不代表對你也用, 也不代表你該模仿」
+    # 跟修法 2 (短期記憶反框架語句) 做法一致: 在資訊本身旁邊加使用說明
+    # 範圍: 只在 _build_messages_group group 歷史組裝這段, 不動 _load_bry_recent /
+    # 修法 1 (source_pair) / 修法 2 (短期記憶反框架語句)
+    if group and not all(m.get("is_private") for m in group[-MAX_GROUP:]):
+        # 只在有非 private 群聊訊息時才加 (避免 private-only 場景無謂加 noise)
+        group_history_framing = (
+            "\n[使用說明] 以下是群聊中其他人 (包括 Bry) 對特定對象說過的話, "
+            "那是那段對話雙方的相處方式。Bry 對特定對象的喇稱/口頭禪 (例如對某人的暱稱、"
+            "罵人的字眼、撒嬌用語) 是那段對話專屬的, 不代表 Bry 對你也用, "
+            "也不代表你該模仿這些用詞。請用你自己的方式回應, 不要逐字複述或套用。"
+        )
+        messages.append({"role": "system", "content": group_history_framing})
+
     for m in group[-MAX_GROUP:]:
         if m.get("is_private"):
             continue
