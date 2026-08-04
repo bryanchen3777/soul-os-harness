@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional
 # 自動處理 EDT/EST 切換 (M0.4 跟 f9105f1 假設 "Windows 沒 zoneinfo" 錯了,
 # Python 3.9+ 內建, Windows 也能用)
 from src.timezone_utils import format_localized as _format_event_timestamp
+from src.timezone_utils import _period_label, LOCAL_TZ  # 修法 8 (Bry 拍板 2026-08-04 17:18)
 
 # 中文字段名 (週幾) 跟時段標籤 (早上/中午/...) 已經移到 src.timezone_utils 內部,
 # 因為 Bry 派工單要求 "可以用 zoneinfo 物件自己輸出, 不用再手動寫死字串",
@@ -82,6 +83,18 @@ MAX_BRY_RECENT = 3
 # LLM 看到「Bry 剛說 X」就「回覆 X」, 這是 stale data 問題不是模板問題,
 # 從源頭過濾比再疊一條反框架語句更治本
 STALE_THRESHOLD_SEC = 30 * 60  # 30 分鐘
+
+# 修法 8 (Bry 拍板 2026-08-04 17:18): proactive/heartbeat 觸發注入時間上下文
+# 根因 (兩個獨立觸發觀察):
+# - mai 4:36 EDT 觸發說「晚安」配下午 4:35 時段不合理 (缺現在時段資訊)
+# - miku 2:22 EDT 觸發讀起來像在回應 Bry 47.4 小時前的舊訊息 (缺沉默時長資訊)
+# 修法: 在 _build_messages_group / _build_messages_private 內, 緊接 f9105f1
+# 既有「## 當下時間」那行後面, 額外注入兩行明確文字:
+# - 時段行: 「現在是 2026-08-04 14:22 EDT（下午）」, 所有觸發都注入
+# - 沉默時長行: 「距離 Bry 上次跟你說話已經 X 小時/天」, 只在 Bry 不在線時注入
+# 跟 β2 event background 設計 (d190c96 β2.1) 同方向延伸, 不是新機制
+# 範圍: 只動 _build_messages_group / _build_messages_private, 跟修法 7 對齊
+# 邊界: Bry 從未講過話 (沒 role=user 訊息) → 跳過沉默時長這行 (不寫推測性文字)
 
 _GROUP_FILE = CONV_DIR / "group_chat.json"
 
@@ -206,6 +219,7 @@ def _build_messages_group(
     mood: float = 0.0,
     user_id: str = "bryan",  # 短期記憶 — Bry 私聊歷史讀取的 user scope (跟 _build_messages_private 對齊)
     current_time: str = "",  # 當下時間 — Bry 拍板 2026-08-02 20:xx, 選項 A (見 _handle_event_impl 註解)
+    event_ts: Optional[datetime] = None,  # 修法 8 (Bry 拍板 2026-08-04 17:18): 用於注入時段行
 ) -> List[Dict[str, str]]:
     """
     群聊模式的 messages 組裝:
@@ -240,8 +254,17 @@ def _build_messages_group(
         system_parts.append(f"\n[情緒狀態] {mood_desc}")
 
     # 當下時間 — Bry 拍板 2026-08-02 20:xx, 選項 A (見 _handle_event_impl 註解)
+    # 修法 8 (Bry 拍板 2026-08-04 17:18): 緊接 f9105f1「當下時間」注入兩行時間上下文
+    # - 時段行: 永遠注入 (如果 current_time 有內容)
+    # - 沉默時長行: 只在 Bry 不在線時注入, 跟修法 7 對齊
+    # Bry 派工原話「同一個時間資訊區塊, 時間資訊集中」: 修法 8 兩行 append 到
+    # f9105f1 同一個 system_parts string 內, 維持 LLM 看到時三行連在一起
     if current_time:
-        system_parts.append(f"\n## 當下時間\n{current_time}")
+        temporal_block = f"\n## 當下時間\n{current_time}\n{_format_temporal_context(event_ts)}"
+        silence_str = _compute_silence_str(group, now)
+        if silence_str:
+            temporal_block += f"\n{silence_str}"
+        system_parts.append(temporal_block)
 
     # 短期記憶 — Bry 最近訊息注入 (Bry 拍板 2026-08-02 16:xx, N=3)
     # 為什麼: 群聊觸發 (proactive) 走這條, 讀 group history 過濾 is_private,
@@ -337,6 +360,52 @@ def _is_bry_online(messages_with_meta: List[Dict[str, Any]], now: int) -> bool:
     return (now - latest_ts) <= STALE_THRESHOLD_SEC
 
 
+def _format_temporal_context(event_ts: Optional[datetime]) -> str:
+    """修法 8 (Bry 拍板 2026-08-04 17:18): 注入「現在是 X EDT (時段)」明確文字
+
+    Bry 派工原話根因: mai 4:36 EDT 觸發說「晚安」配下午時段不合理 (缺現在時段資訊)
+    f9105f1 注入的 current_time 是「2026-08-04 週一 14:22 America/New_York（下午）」
+    內含時段但 LLM 沒正確消化, 修法 8 額外加一行更明確的字眼, 同時段標籤沿用
+    _period_label (f9105f1 既有) 邏輯, 確保時段一致
+
+    格式: 「現在是 2026-08-04 14:22 EDT（下午）」
+    - 24h 制
+    - EDT/EST 縮寫 (zoneinfo tzname)
+    - 緊接 _period_label 標籤
+    """
+    if event_ts is None:
+        return ""
+    # 失敗防護: event_ts 為 naive datetime, 假設 UTC
+    if event_ts.tzinfo is None:
+        event_ts = event_ts.replace(tzinfo=timezone.utc)
+    local = event_ts.astimezone(LOCAL_TZ)
+    tz_name = local.tzname() or "EDT"
+    period = _period_label(local.hour)
+    return f"現在是 {local.strftime('%Y-%m-%d %H:%M')} {tz_name}（{period}）"
+
+
+def _compute_silence_str(messages_with_meta: List[Dict[str, Any]], now: int) -> Optional[str]:
+    """修法 8 (Bry 拍板 2026-08-04 17:18): 計算「距離 Bry 上次跟你說話已經 X 小時/天」
+
+    Bry 派工原話根因: miku 2:22 EDT 觸發讀起來像在回應 Bry 47.4 小時前的舊訊息
+    (缺沉默時長資訊, LLM 從 persona 慣性推斷). Bry 派工原話拍板:
+    - Bry 從未講過話 (沒 role=user 訊息) → 回 None (跳過這行)
+    - Bry 在線 (_is_bry_online() == True) → 回 None (跳過這行, 講了反而多餘)
+    - 否則 → 算沉默時長, <24h = "X 小時" (四捨五入) / >=24h = "X 天" (取整天數)
+    """
+    bry_user_msgs = [m for m in messages_with_meta if m.get("role") == "user"]
+    if not bry_user_msgs:
+        return None  # Bry 從未講過話
+    if _is_bry_online(messages_with_meta, now):
+        return None  # Bry 在線/剛講過話
+    bry_latest_ts = max(m.get("timestamp", 0) for m in bry_user_msgs)
+    delta_h = (now - bry_latest_ts) / 3600
+    if delta_h < 24:
+        return f"距離 Bry 上次跟你說話已經 {round(delta_h)} 小時"
+    days = int(delta_h // 24)
+    return f"距離 Bry 上次跟你說話已經 {days} 天"
+
+
 def _load_bry_recent(agent_id: str, user_id: str, limit: int = MAX_BRY_RECENT) -> List[Dict[str, str]]:
     """短期記憶 — 從 Bry 跟該 agent 的 private history 撈最近 N 條 Bry user 訊息。
 
@@ -363,6 +432,7 @@ def _build_messages_private(
     mood: float = 0.0,
     user_id: str = "bryan",  # KI-001: per-user history scope
     current_time: str = "",  # 當下時間 — Bry 拍板 2026-08-02 20:xx, 選項 A (見 _handle_event_impl 註解)
+    event_ts: Optional[datetime] = None,  # 修法 8 (Bry 拍板 2026-08-04 17:18): 用於注入時段行
 ) -> List[Dict[str, str]]:
     """
     私聊模式的 messages 組裝:
@@ -385,9 +455,28 @@ def _build_messages_private(
     if mood_desc:
         system_parts.append(f"\n[情緒狀態] {mood_desc}")
 
+    # 私聊歷史 - KI-001: per (user, agent) 隔離
+    # 修法 7 (Bry 拍板 2026-08-04 13:24): 改用 get_recent_with_meta 拿 timestamp
+    # 原因: get_recent 不回 timestamp, 過濾 stale Bry user 訊息需要 timestamp
+    # get_recent_with_meta 是 MemoryStore 既有 method (store.py L139-162), 沒改 store.py
+    # 提前到 f9105f1 注入位置之前, 讓修法 8 沉默時長行能跟 f9105f1 同一個 system message 注入
+    private = memory.get_recent_with_meta(f"session_{user_id}_{agent_id}", limit=MAX_PRIVATE)
+    # 修法 7: 看 Bry 是否在線 (Bry 不在線 → 過濾 Bry user 訊息)
+    now = int(time.time())
+    bry_online = _is_bry_online(private, now)
+
     # 當下時間 — Bry 拍板 2026-08-02 20:xx, 選項 A (見 _handle_event_impl 註解)
+    # 修法 8 (Bry 拍板 2026-08-04 17:18): 緊接 f9105f1「當下時間」注入兩行時間上下文
+    # - 時段行: 永遠注入 (如果 current_time 有內容)
+    # - 沉默時長行: 只在 Bry 不在線時注入, 跟修法 7 對齊
+    # Bry 派工原話「同一個時間資訊區塊, 時間資訊集中」: 修法 8 兩行 append 到
+    # f9105f1 同一個 system_parts string 內, 維持 LLM 看到時三行連在一起
     if current_time:
-        system_parts.append(f"\n## 當下時間\n{current_time}")
+        temporal_block = f"\n## 當下時間\n{current_time}\n{_format_temporal_context(event_ts)}"
+        silence_str = _compute_silence_str(private, now)
+        if silence_str:
+            temporal_block += f"\n{silence_str}"
+        system_parts.append(temporal_block)
 
     messages.append({"role": "system", "content": "\n".join(system_parts)})
 
@@ -395,14 +484,6 @@ def _build_messages_private(
     # 私人聊天只應該看到私聊歷史,不應該看到其他 Agent 的訊息
     # 這確保每個 Agent 的靈魂不會被其他 Agent 影響
 
-    # 私聊歷史 - KI-001: per (user, agent) 隔離
-    # 修法 7 (Bry 拍板 2026-08-04 13:24): 改用 get_recent_with_meta 拿 timestamp
-    # 原因: get_recent 不回 timestamp, 過濾 stale Bry user 訊息需要 timestamp
-    # get_recent_with_meta 是 MemoryStore 既有 method (store.py L139-162), 沒改 store.py
-    private = memory.get_recent_with_meta(f"session_{user_id}_{agent_id}", limit=MAX_PRIVATE)
-    # 修法 7: 看 Bry 是否在線 (Bry 不在線 → 過濾 Bry user 訊息)
-    now = int(time.time())
-    bry_online = _is_bry_online(private, now)
     for m in private:
         if m.get("role") == "user" and not bry_online:
             # 修法 7 (Bry 拍板 2026-08-04 13:24): Bry 不在線時過濾 stale Bry user 訊息
@@ -2050,6 +2131,9 @@ class LLMProxy:
         # 範圍: 只在 _handle_event_impl 算 + 傳給 _build_messages_*, 不動 scheduler /
         # consciousness / MemoryMiddleware / personas。失敗可逆。
         current_time_str = _format_event_timestamp(event.timestamp)
+        # 修法 8 (Bry 拍板 2026-08-04 17:18): 傳 event_ts 給 _build_messages_* 用於生成時段行
+        # event_ts 是 UTC datetime, _format_temporal_context 內會轉 LOCAL_TZ
+        event_ts_for_temporal = event.timestamp
 
         user_message = draft if reason == "user_message" else ""
         logger.info(f"[LLMProxy] user_message set to: {user_message[:50]!r}")
@@ -2120,9 +2204,9 @@ class LLMProxy:
             # L1818 的 user_id 已經從 event.payload.get("target_user_id", "bryan") 拿到,
             # 跟 _build_messages_private L230 user_id 預設值對齊, 群聊觸發 fallback "bryan"
             # (跟 _load_private L100 fallback 邏輯一致)。
-            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str)
+            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal)
         else:
-            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str)
+            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal)
 
         # ── M2 task 3 (Bry + Perplexity 8/2 12:05 派工): proactive draft user → system ──
         # 修法動機: heartbeat / proactive_dm 觸發時, _build_intent_payload 組的 draft
