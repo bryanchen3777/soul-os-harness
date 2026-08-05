@@ -793,9 +793,60 @@ class OpenAIBackend(LLMBackend):
                                 f"[LLMProxy] HTTP {e.response.status_code} (no retry), "
                                 f"response body written to {err_path}"
                             )
-                        except Exception as write_err:
-                            logger.error(f"[LLMProxy] failed to dump 4xx response: {write_err}")
-                        raise  # 不可 retry 的 HTTP error (e.g. 400, 401, 403) 直接 raise
+                        except Exception as dump_err:
+                            logger.error(f"[LLMProxy] 4xx response dump failed: {dump_err}")
+
+                        # [TEMP-DIAG] 2026-08-05 Bry 拍板 A1: 完整 request body dump
+                        # 寫到 data/logs/llm_4xx_full_request.log,跟 response 分開存
+                        # 完整 json_body 含 messages 陣列全部內容,不截斷不 redact
+                        # 目的: 跟 A2/A3 手工構造的 25k 版本逐行比對結構差異,定位 400 觸發點
+                        # 警告: 這是臨時診斷 log, 拿到根因後**必須**拔掉或降級
+                        # 避免正式環境長期印出完整對話內容到 log 造成隱私/體積問題
+                        # 預定 Bry 拍板拆除時的指令: 刪除 [TEMP-DIAG] block (約 L800-L855)
+                        # + 刪除 data/logs/llm_4xx_full_request.log 累積檔案
+                        try:
+                            full_req_path = "data/logs/llm_4xx_full_request.log"
+                            os.makedirs(os.path.dirname(full_req_path), exist_ok=True)
+                            with open(full_req_path, "a", encoding="utf-8") as f:
+                                f.write(f"\n=== HTTP {e.response.status_code} FULL REQUEST @ {datetime.now().isoformat()} ===\n")
+                                # 完整 json_body 結構,確保 messages 全部內容都印出
+                                # 從 LLMProxy._complete_with_retry 進來時的 _build_kwargs 結構
+                                f.write(json.dumps(
+                                    {
+                                        "endpoint": self.base_url,
+                                        "model": model,
+                                        "request_body": {
+                                            "model": model,
+                                            "messages": messages,  # 完整 messages 陣列
+                                            "max_completion_tokens": max_tokens,
+                                            "temperature": temperature,
+                                            **({"response_format": response_format} if response_format else {}),
+                                            **({"thinking": thinking} if thinking else {}),
+                                        },
+                                        "request_id": (
+                                            dict(e.request.headers).get("x-request-id", "N/A")
+                                            if e.request is not None else "N/A"
+                                        ),
+                                        "status_code": e.response.status_code,
+                                        "error_response": e.response.text,
+                                    },
+                                    ensure_ascii=False,
+                                    indent=2,
+                                ))
+                                f.write("\n")
+                            logger.error(
+                                f"[LLMProxy][TEMP-DIAG] HTTP {e.response.status_code} "
+                                f"完整 request body 寫到 {full_req_path}"
+                            )
+                        except Exception as full_dump_err:
+                            logger.error(
+                                f"[LLMProxy][TEMP-DIAG] full request body dump failed: {full_dump_err}"
+                            )
+
+                        # 保留 Lesson 41 raise 行為: 不可 retry 的 HTTP error
+                        # (e.g. 400, 401, 403) 直接 raise 出 _request,讓 LLMProxy
+                        # 知道這次 call 失敗,走 stub fallback
+                        raise
                     continue
                 except (httpx.ConnectError, httpx.TimeoutException) as e:
                     last_error = f"network {type(e).__name__}"
