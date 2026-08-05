@@ -821,7 +821,6 @@ class OpenAIBackend(LLMBackend):
                                             "max_completion_tokens": max_tokens,
                                             "temperature": temperature,
                                             **({"response_format": response_format} if response_format else {}),
-                                            **({"thinking": thinking} if thinking else {}),
                                         },
                                         "request_id": (
                                             dict(e.request.headers).get("x-request-id", "N/A")
