@@ -844,6 +844,17 @@ class OpenAIBackend(LLMBackend):
             #   - 之前只有 logger.info, Bry 容易忽略
             #   - 修法 6 B (output post-processing 截斷) + D.2 (Layer 3 E 兜底 emotion 改 confused)
             #     已經是後備, D.1 是給 Bry / watchdog 看的「早期警告」
+            #
+            # 修法 10 (Bry 拍板 2026-08-04 23:33): finish_reason=length 觸發時強制截斷 raw
+            # 根因: anna 連續重複 (修法 6 B regex 抓得到) 跟 mahiru 週期性交替
+            #   (id=20661/20687, 修法 6 B regex 抓不到) 共同根因都是 finish_reason=length
+            # Bry 派工原話: 「週期性交替重複跟連續重複根本是兩種不同的病,
+            #   不是升級 regex 就能解決的」「唯一共同、可靠的訊號其實是 finish_reason=length」
+            #   「不管未來退化長成什麼新花樣, 只要卡進 max_tokens 就會被攔住」
+            # 修法: 抽 _safe_truncate_on_length helper, finish_reason=length 觸發時呼叫
+            # 截斷到 200 字元內, 取最後一個完整標點斷點, 不硬切字中間
+            # _truncate_repetition (修法 6 B) 保留當第二層防護, 處理沒打滿 max_tokens
+            #   但已小段連續重複的情況
             if _c1_finish == "length":
                 logger.warning(
                     f"[OpenAIBackend][修法 6 D.1] finish_reason=length "
@@ -855,9 +866,16 @@ class OpenAIBackend(LLMBackend):
                 # OpenAI standard 格式: tool_calls[0].function.arguments 是 JSON string
                 arguments_str = tool_calls[0]["function"]["arguments"]
                 # 已經是合法 JSON string, 直接返回 (給 _parse_llm_output 處理)
-                return arguments_str
-            # fall back content 解析 (舊路徑, response_format 模式)
-            return msg["content"].strip()
+                raw = arguments_str
+            else:
+                # fall back content 解析 (舊路徑, response_format 模式)
+                raw = msg["content"].strip()
+            # 修法 10: finish_reason=length 觸發時強制截斷 raw (取最後 200 字, 找標點斷點)
+            # Bry 派工原話「Bry 派工精神」: 不管 _truncate_repetition (修法 6 B) 有沒有匹配到,
+            # 只要 finish_reason=length 就強制截斷 (治本優先, 治標疊語句次之)
+            if _c1_finish == "length":
+                raw = _safe_truncate_on_length(raw)
+            return raw
 
 
 class ClaudeBackend(LLMBackend):
@@ -1579,6 +1597,65 @@ def _truncate_repetition(text: str, max_repeat: int = 5) -> str:
             f"(max_repeat={max_repeat}, 偵測到連續重複)"
         )
     return truncated
+
+
+def _safe_truncate_on_length(raw: str, max_chars: int = 200) -> str:
+    """修法 10 (Bry 拍板 2026-08-04 23:33): finish_reason=length 觸發時強制截斷 raw
+
+    根因: 正常結束的 LLM 會自然停在句子邊界, 只有卡進某種退化循環才會打滿 max_tokens。
+    兩個案例共同根因:
+    - anna 8/3 21:42 (id=20516): 連續重複, 1913 個「嗯」(修法 6 B regex 抓得到)
+    - mahiru 8/4 19:55/23:09 (id=20661/20687): 週期性交替, ~237 組 6-9 短語循環
+      (修法 6 B regex 抓不到, 因為 (.{1,30}?)\\1{5,} 是「逐字完全相同重複」,
+      「結構重複 + 內容微變」的模式抓不到)
+
+    修法: 把 finish_reason=length 當主要觸發訊號, 強制截斷到 max_chars 內。
+    截斷策略: 取 raw 最後 max_chars 字, 找最後一個完整標點斷點, 不硬切字中間。
+    若都沒標點, fallback 硬切到 max_chars。
+
+    Bry 派工原話精神 (Bry 拍板 2026-08-04 23:33):
+    - 「週期性交替重複跟連續重複根本是兩種不同的病」
+    - 「不是升級 regex 就能解決的」
+    - 「唯一共同、可靠的訊號其實是 finish_reason=length」
+    - 「不管未來退化長成什麼新花樣, 只要卡進 max_tokens 就會被攔住」
+
+    200 字元上限合理性 (check_response_length_dist.py 確認):
+    - 全部 157 條「正常」訊息 max=97, p99=94, 全部 0 條 > 200
+    - 全部 10 個角色 (akane/anna/aoi/mahiru/mai/miku/ram/rem/ruka/yua) max ≤ 97
+    - 不會誤切任何正常訊息
+
+    範圍: 只在 OpenAIBackend.complete 內 finish_reason=length 觸發時呼叫
+    _truncate_repetition (修法 6 B) 保留當第二層防護, 處理沒打滿 max_tokens
+    但已小段連續重複的情況 (Bry 派工原話精神「保留當第二層」)。
+
+    Args:
+        raw: LLM 原始輸出 (從 tool_calls.arguments 或 msg.content)
+        max_chars: 截斷上限, 預設 200 (Bry 派板 200 字元)
+
+    Returns:
+        截斷後的字串 (raw 本身 ≤ max_chars 直接 return)
+    """
+    if not raw or len(raw) <= max_chars:
+        return raw
+    # 取最後 max_chars 字範圍
+    tail = raw[-max_chars:]
+    # 在這範圍內找最後一個完整標點斷點
+    # 中英標點都算: 。 ! ? ！ ? —— …… . , ，
+    punct_positions = []
+    for p in ['。', '!', '?', '！', '?', '——', '……', '.', ',', '，']:
+        idx = tail.rfind(p)
+        if idx >= 0:
+            punct_positions.append(idx + len(p))  # 包含標點本身
+    if punct_positions:
+        # 找最晚的標點位置 (在 tail 範圍內)
+        cut_pos = max(punct_positions)
+        return tail[:cut_pos]
+    # 沒找到任何標點, fallback 硬切 (但有 max_chars 內容, 不會太慘)
+    logger.warning(
+        f"[修法 10] _safe_truncate_on_length: 最後 {max_chars} 字內找不到標點斷點, "
+        f"fallback 硬切到 {max_chars} 字"
+    )
+    return tail
 
 
 def _parse_json_layer1(raw: str) -> Optional[Dict[str, Any]]:
