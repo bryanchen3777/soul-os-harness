@@ -95,6 +95,19 @@ STALE_THRESHOLD_SEC = 30 * 60  # 30 分鐘
 # 跟 β2 event background 設計 (d190c96 β2.1) 同方向延伸, 不是新機制
 # 範圍: 只動 _build_messages_group / _build_messages_private, 跟修法 7 對齊
 # 邊界: Bry 從未講過話 (沒 role=user 訊息) → 跳過沉默時長這行 (不寫推測性文字)
+#
+# 修法 9 (Bry 拍板 2026-08-04 20:37): 跨 session 判斷 Bry 在線狀態
+# 根因: 修法 7 _is_bry_online 只看當前 session 自己的 Bry 最後訊息時間
+# 沒把 Bry 在其他 session (TG / 群聊) 的活躍狀態算進去
+# 案例: akane 19:12 EDT 觸發時, main session Bry 52.26h 前講過, TG session Bry 6.5h 前講過
+# 修法 7 判定 Bry 不在線 (52.26h > 30min), 修法 8 沉默時長顯示 2 天
+# 但 Bry 6.5h 前才在跟 akane 講話 (另一個視窗), 邏輯應該 Bry 整體 6.5h 前活躍
+# 修法: 同一個 agent 底下, 所有 session Bry 最後一條 user 訊息時間取最大值
+# 拿這個最大值去跟現在時間比對是否在 30 分鐘閾值內
+# 範圍: 限定同一個 agent 對 Bry 的所有 session, 不跨到別的 agent
+# 影響: 修法 7 過濾 Bry user 訊息 + 修法 8 沉默時長 都用跨 session Bry 最後時間
+# 副作用: _is_bry_online / _compute_silence_str 改接受 bry_latest_ts
+# 而不是 messages_with_meta 參數
 
 _GROUP_FILE = CONV_DIR / "group_chat.json"
 
@@ -220,21 +233,25 @@ def _build_messages_group(
     user_id: str = "bryan",  # 短期記憶 — Bry 私聊歷史讀取的 user scope (跟 _build_messages_private 對齊)
     current_time: str = "",  # 當下時間 — Bry 拍板 2026-08-02 20:xx, 選項 A (見 _handle_event_impl 註解)
     event_ts: Optional[datetime] = None,  # 修法 8 (Bry 拍板 2026-08-04 17:18): 用於注入時段行
+    bry_latest_ts: int = 0,  # 修法 9 (Bry 拍板 2026-08-04 20:37): 跨 session Bry 最後 user 訊息 timestamp
 ) -> List[Dict[str, str]]:
     """
     群聊模式的 messages 組裝:
     [system: SOUL] + [system: Bry 最近訊息 (短期)] + [system: 當下時間] + [conversation_history: 群聊 20 條] + [user: 當下訊息]
     """
     group = memory.get_group_history(limit=MAX_GROUP)
-    # 修法 7 (Bry 拍板 2026-08-04 13:24): 過濾 stale Bry user 訊息
-    # 根因: 凌晨 07:07-07:56 EDT 多角色主動傳訊, Bry 在睡覺, group history 內 Bry 訊息
+    # 修法 7+9 (Bry 拍板 2026-08-04 13:24 / 20:37): 過濾 stale Bry user 訊息
+    # 修法 7 根因: 凌晨 07:07-07:56 EDT 多角色主動傳訊, Bry 在睡覺, group history 內 Bry 訊息
     # 是 stale (Bry 最後一條可能是 4h+ 前), LLM 看到就「回覆 X」跟現實脫節
-    # 修法: 看 Bry 最新一條 user 訊息 timestamp, 過 STALE_THRESHOLD_SEC = Bry 不在線
+    # 修法 9 根因: 修法 7 只看當前 session, 沒考慮 Bry 在其他 session (TG / 群聊) 活躍
+    # 案例: akane 19:12 EDT 觸發時, main session Bry 52.26h 前講過, TG session Bry 6.5h 前講過
+    # 修法 7 判定 Bry 不在線 (52.26h > 30min), 修法 9 跨 session → Bry 整體 6.5h 前活躍
+    # 修法: bry_latest_ts 由 _handle_event_impl 提前算 (跨 session SQL 查詢)
     # → 過濾 Bry user 訊息 (group 內其他角色訊息保留)
     # 範圍: 只在 _build_messages_group group 歷史組裝這段, 不動 _load_group /
     # _load_bry_recent / 修法 1 (source_pair) / 修法 2/3 (反框架語句)
     now = int(time.time())
-    bry_online = _is_bry_online(group, now)
+    bry_online = _is_bry_online(bry_latest_ts, now)
     messages: List[Dict[str, str]] = []
 
     # system prompt
@@ -261,7 +278,7 @@ def _build_messages_group(
     # f9105f1 同一個 system_parts string 內, 維持 LLM 看到時三行連在一起
     if current_time:
         temporal_block = f"\n## 當下時間\n{current_time}\n{_format_temporal_context(event_ts)}"
-        silence_str = _compute_silence_str(group, now)
+        silence_str = _compute_silence_str(bry_latest_ts, now)
         if silence_str:
             temporal_block += f"\n{silence_str}"
         system_parts.append(temporal_block)
@@ -336,16 +353,24 @@ def _build_messages_group(
     return messages
 
 
-def _is_bry_online(messages_with_meta: List[Dict[str, Any]], now: int) -> bool:
-    """修法 7 (Bry 拍板 2026-08-04 13:24): Bry 整體在線判定
+def _is_bry_online(bry_latest_ts: int, now: int) -> bool:
+    """修法 7+9 (Bry 拍板 2026-08-04 13:24 / 20:37): Bry 整體在線判定 (跨 session)
 
-    看 messages 內 Bry 最新一條 user 訊息的 timestamp, 如果在 STALE_THRESHOLD_SEC 內
-    = Bry 在線 (Bry 拍板 8/4 13:24 邏輯: 30 分鐘內 Bry 有訊息 = Bry 在線,
-    跟 proactive_dm silence_timeout 對齊)
+    修法 7 原始定義: 看 messages 內 Bry 最新一條 user 訊息的 timestamp,
+    如果在 STALE_THRESHOLD_SEC 內 = Bry 在線.
+
+    修法 9 改 signature: 改接受 bry_latest_ts 直接時間比對, 不再傳 messages_with_meta.
+    為什麼: 修法 7 只看當前 session, 沒考慮 Bry 在其他 session (TG / 群聊) 的活躍.
+    案例: akane 19:12 EDT 觸發時, main session Bry 52.26h 前, TG session Bry 6.5h 前,
+    修法 7 判定 Bry 不在線, 修法 9 跨 session 取最大值 → Bry 整體 6.5h 前活躍.
+    bry_latest_ts 由 _get_bry_latest_ts(memory, agent_id) 統一算 (跨 session SQL 查詢).
+
+    Bry 派工原話「Bry 在線/剛講過話時不需要這行, 講了反而多餘」: 在線判定用 pure
+    function, 跨 session 邏輯統一在 _get_bry_latest_ts 處理.
 
     Args:
-        messages_with_meta: 含 timestamp 欄位的 messages list
-            (memory.get_group_history / memory.get_recent_with_meta 回傳格式)
+        bry_latest_ts: Bry 跨 session 最後 user 訊息 timestamp (從 _get_bry_latest_ts)
+                      0 表示 Bry 從未跟這個 agent 講過話
         now: 當下時間 (int(time.time()))
 
     Returns:
@@ -353,11 +378,42 @@ def _is_bry_online(messages_with_meta: List[Dict[str, Any]], now: int) -> bool:
         False = Bry 不在線 (過濾 Bry user 訊息, 避免 LLM 看到 stale Bry 訊息
                 當成 Bry 剛講的話回覆)
     """
-    bry_user_msgs = [m for m in messages_with_meta if m.get("role") == "user"]
-    if not bry_user_msgs:
-        return False
-    latest_ts = max(m.get("timestamp", 0) for m in bry_user_msgs)
-    return (now - latest_ts) <= STALE_THRESHOLD_SEC
+    if bry_latest_ts <= 0:
+        return False  # Bry 從未講過話
+    return (now - bry_latest_ts) <= STALE_THRESHOLD_SEC
+
+
+def _get_bry_latest_ts(memory, agent_id: str) -> int:
+    """修法 9 (Bry 拍板 2026-08-04 20:37): 跨 session 取 Bry 最後 user 訊息 timestamp
+
+    Bry 派工原話: 同一個 agent 底下, 所有 session (私訊 + 群聊/TG) Bry 最後一條訊息
+    時間取最大值, 拿這個最大值去跟現在時間比對是否在 30 分鐘閾值內
+    範圍: 限定同一個 agent 對 Bry 的所有 session, 不跨到別的 agent
+
+    為什麼: 修法 7 _is_bry_online 只看當前 session, 沒考慮 Bry 在其他 session
+    的活躍狀態. 案例: akane 19:12 EDT 觸發時, main session Bry 52.26h 前講過,
+    TG session Bry 6.5h 前講過. 修法 7 判定 Bry 不在線 (52.26h > 30min),
+    修法 8 沉默時長顯示 2 天, 但 Bry 6.5h 前才在跟 akane 講話 (另一個視窗),
+    邏輯應該 Bry 整體 6.5h 前活躍
+
+    Args:
+        memory: MemoryStore 實例, 從其 conn 查 messages table
+        agent_id: agent ID (e.g. 'agent_akane', 'agent_mai')
+
+    Returns:
+        Bry 跨 session 最後 user 訊息 timestamp, 0 表示 Bry 從未跟這個 agent 講過話
+    """
+    suffix = f"_agent_{agent_id}"
+    try:
+        cursor = memory.conn.execute(
+            "SELECT session_id, timestamp FROM messages "
+            "WHERE role = 'user' AND speaker = 'bryan'"
+        )
+        ts_list = [ts for sid, ts in cursor.fetchall() if sid.endswith(suffix) and ts]
+        return max(ts_list) if ts_list else 0
+    except Exception as e:
+        logger.warning(f"[修法 9] _get_bry_latest_ts 失敗: {e}")
+        return 0
 
 
 def _format_temporal_context(event_ts: Optional[datetime]) -> str:
@@ -384,21 +440,22 @@ def _format_temporal_context(event_ts: Optional[datetime]) -> str:
     return f"現在是 {local.strftime('%Y-%m-%d %H:%M')} {tz_name}（{period}）"
 
 
-def _compute_silence_str(messages_with_meta: List[Dict[str, Any]], now: int) -> Optional[str]:
-    """修法 8 (Bry 拍板 2026-08-04 17:18): 計算「距離 Bry 上次跟你說話已經 X 小時/天」
+def _compute_silence_str(bry_latest_ts: int, now: int) -> Optional[str]:
+    """修法 8+9 (Bry 拍板 2026-08-04 17:18 / 20:37): 計算「距離 Bry 上次跟你說話已經 X 小時/天」
 
     Bry 派工原話根因: miku 2:22 EDT 觸發讀起來像在回應 Bry 47.4 小時前的舊訊息
     (缺沉默時長資訊, LLM 從 persona 慣性推斷). Bry 派工原話拍板:
-    - Bry 從未講過話 (沒 role=user 訊息) → 回 None (跳過這行)
+    - Bry 從未講過話 (bry_latest_ts <= 0) → 回 None (跳過這行)
     - Bry 在線 (_is_bry_online() == True) → 回 None (跳過這行, 講了反而多餘)
     - 否則 → 算沉默時長, <24h = "X 小時" (四捨五入) / >=24h = "X 天" (取整天數)
+
+    修法 9 改 signature: 接受 bry_latest_ts 直接算, 跨 session 邏輯統一在
+    _get_bry_latest_ts 處理. _is_bry_online / _compute_silence_str 都變 pure function.
     """
-    bry_user_msgs = [m for m in messages_with_meta if m.get("role") == "user"]
-    if not bry_user_msgs:
+    if bry_latest_ts <= 0:
         return None  # Bry 從未講過話
-    if _is_bry_online(messages_with_meta, now):
+    if _is_bry_online(bry_latest_ts, now):
         return None  # Bry 在線/剛講過話
-    bry_latest_ts = max(m.get("timestamp", 0) for m in bry_user_msgs)
     delta_h = (now - bry_latest_ts) / 3600
     if delta_h < 24:
         return f"距離 Bry 上次跟你說話已經 {round(delta_h)} 小時"
@@ -433,6 +490,7 @@ def _build_messages_private(
     user_id: str = "bryan",  # KI-001: per-user history scope
     current_time: str = "",  # 當下時間 — Bry 拍板 2026-08-02 20:xx, 選項 A (見 _handle_event_impl 註解)
     event_ts: Optional[datetime] = None,  # 修法 8 (Bry 拍板 2026-08-04 17:18): 用於注入時段行
+    bry_latest_ts: int = 0,  # 修法 9 (Bry 拍板 2026-08-04 20:37): 跨 session Bry 最後 user 訊息 timestamp
 ) -> List[Dict[str, str]]:
     """
     私聊模式的 messages 組裝:
@@ -456,24 +514,27 @@ def _build_messages_private(
         system_parts.append(f"\n[情緒狀態] {mood_desc}")
 
     # 私聊歷史 - KI-001: per (user, agent) 隔離
-    # 修法 7 (Bry 拍板 2026-08-04 13:24): 改用 get_recent_with_meta 拿 timestamp
-    # 原因: get_recent 不回 timestamp, 過濾 stale Bry user 訊息需要 timestamp
+    # 修法 7+9 (Bry 拍板 2026-08-04 13:24 / 20:37): 改用 get_recent_with_meta 拿 timestamp
+    # 修法 7 原因: get_recent 不回 timestamp, 過濾 stale Bry user 訊息需要 timestamp
     # get_recent_with_meta 是 MemoryStore 既有 method (store.py L139-162), 沒改 store.py
+    # 修法 9 原因: 修法 7 _is_bry_online 只看當前 session, 沒考慮 Bry 在其他 session
+    # 活躍. bry_latest_ts 由 _handle_event_impl 提前算 (跨 session SQL 查詢),
+    # 不再從 private 這個 session 自己算.
     # 提前到 f9105f1 注入位置之前, 讓修法 8 沉默時長行能跟 f9105f1 同一個 system message 注入
     private = memory.get_recent_with_meta(f"session_{user_id}_{agent_id}", limit=MAX_PRIVATE)
-    # 修法 7: 看 Bry 是否在線 (Bry 不在線 → 過濾 Bry user 訊息)
+    # 修法 7+9: 看 Bry 是否在線 (Bry 不在線 → 過濾 Bry user 訊息, 用跨 session bry_latest_ts)
     now = int(time.time())
-    bry_online = _is_bry_online(private, now)
+    bry_online = _is_bry_online(bry_latest_ts, now)
 
     # 當下時間 — Bry 拍板 2026-08-02 20:xx, 選項 A (見 _handle_event_impl 註解)
-    # 修法 8 (Bry 拍板 2026-08-04 17:18): 緊接 f9105f1「當下時間」注入兩行時間上下文
+    # 修法 8+9 (Bry 拍板 2026-08-04 17:18 / 20:37): 緊接 f9105f1「當下時間」注入兩行時間上下文
     # - 時段行: 永遠注入 (如果 current_time 有內容)
     # - 沉默時長行: 只在 Bry 不在線時注入, 跟修法 7 對齊
-    # Bry 派工原話「同一個時間資訊區塊, 時間資訊集中」: 修法 8 兩行 append 到
+    # Bry 派工原話「同一個時間資訊集中」: 修法 8+9 兩行 append 到
     # f9105f1 同一個 system_parts string 內, 維持 LLM 看到時三行連在一起
     if current_time:
         temporal_block = f"\n## 當下時間\n{current_time}\n{_format_temporal_context(event_ts)}"
-        silence_str = _compute_silence_str(private, now)
+        silence_str = _compute_silence_str(bry_latest_ts, now)
         if silence_str:
             temporal_block += f"\n{silence_str}"
         system_parts.append(temporal_block)
@@ -2198,15 +2259,20 @@ class LLMProxy:
         soul = load_persona(agent_id)
         # Phase 3:從 event payload 拿 mood,傳給 _build_messages_*
         mood = event.payload.get("mood", 0.0)
+        # 修法 9 (Bry 拍板 2026-08-04 20:37): 跨 session Bry 在線判定
+        # 提前算 bry_latest_ts, 讓 _build_messages_group / _build_messages_private 都用
+        # 跨 session 邏輯, 不用各自從 group/private 自己算 (修法 7 的 bug 根因)
+        # 範圍: 限定同一個 agent 對 Bry 的所有 session, 不跨到別的 agent
+        bry_latest_ts = _get_bry_latest_ts(self._memory, agent_id)
         if mode == "group":
             # 短期記憶 (Bry 拍板 2026-08-02 16:xx): 把 user_id 傳進去讓 _build_messages_group
             # 從 Bry 跟該 agent 的 private history 撈最近 N 條 Bry user 訊息注入 system prompt。
             # L1818 的 user_id 已經從 event.payload.get("target_user_id", "bryan") 拿到,
             # 跟 _build_messages_private L230 user_id 預設值對齊, 群聊觸發 fallback "bryan"
             # (跟 _load_private L100 fallback 邏輯一致)。
-            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal)
+            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts)
         else:
-            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal)
+            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts)
 
         # ── M2 task 3 (Bry + Perplexity 8/2 12:05 派工): proactive draft user → system ──
         # 修法動機: heartbeat / proactive_dm 觸發時, _build_intent_payload 組的 draft

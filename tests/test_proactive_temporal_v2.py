@@ -132,6 +132,7 @@ class TestProactiveTemporalPost(unittest.TestCase):
                 user_id="bryan",
                 current_time="2026-08-04 週一 14:22 America/New_York（下午）",
                 event_ts=EVENT_TS_MIKU,
+                bry_latest_ts=BRY_STALE_47H_TS,  # 修法 9: Bry 47.4h 前講過話
             )
 
             all_system_content = "\n".join(
@@ -167,6 +168,7 @@ class TestProactiveTemporalPost(unittest.TestCase):
                 user_id="bryan",
                 current_time="2026-08-04 週一 14:22 America/New_York（下午）",
                 event_ts=EVENT_TS_MIKU,
+                bry_latest_ts=BRY_STALE_47H_TS,  # 修法 9: Bry 47.4h 前講過話
             )
 
             all_system_content = "\n".join(
@@ -202,6 +204,7 @@ class TestProactiveTemporalPost(unittest.TestCase):
                 user_id="bryan",
                 current_time="2026-08-04 週一 14:22 America/New_York（下午）",
                 event_ts=EVENT_TS_MIKU,
+                bry_latest_ts=BRY_FRESH_5MIN_TS,  # 修法 9: Bry 在線 (5 分鐘前)
             )
 
             all_system_content = "\n".join(
@@ -237,6 +240,7 @@ class TestProactiveTemporalPost(unittest.TestCase):
                 user_id="bryan",
                 current_time="2026-08-04 週一 16:35 America/New_York（下午）",
                 event_ts=EVENT_TS_MAI,
+                bry_latest_ts=BRY_STALE_47H_TS,  # 修法 9: Bry 47.4h 前講過話 (mai 觸發 49.6h)
             )
 
             all_system_content = "\n".join(
@@ -273,6 +277,7 @@ class TestProactiveTemporalPost(unittest.TestCase):
                 user_id="bryan",
                 current_time="2026-08-04 週一 14:22 America/New_York（下午）",
                 event_ts=EVENT_TS_MIKU,
+                bry_latest_ts=0,  # 修法 9: Bry 從未講過話
             )
 
             all_system_content = "\n".join(
@@ -315,6 +320,7 @@ class TestProactiveTemporalPost(unittest.TestCase):
                 user_id="bryan",
                 current_time="2026-08-04 週一 14:22 America/New_York（下午）",
                 event_ts=EVENT_TS_MIKU,
+                bry_latest_ts=BRY_STALE_47H_TS,  # 修法 9: Bry 47.4h 前講過話
             )
 
             all_system_content = "\n".join(

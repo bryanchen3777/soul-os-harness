@@ -107,6 +107,7 @@ class TestStaleFilterPost(unittest.TestCase):
                 mood=0.0,
                 user_id="bryan",
                 current_time="2026-08-04 07:30 (EDT)",
+                bry_latest_ts=BRY_STALE_TS,  # 修法 9: 跨 session Bry 最後時間, 這裡 Bry 不在線
             )
 
             # 找 user role 訊息 (Bry 訊息)
@@ -150,6 +151,7 @@ class TestStaleFilterPost(unittest.TestCase):
                 mood=0.0,
                 user_id="bryan",
                 current_time="2026-08-04 07:30 (EDT)",
+                bry_latest_ts=BRY_STALE_TS,  # 修法 9: 跨 session Bry 最後時間, Bry 3.5 天前講過
             )
 
             user_msgs = [m for m in messages if m["role"] == "user"]
@@ -203,6 +205,7 @@ class TestStaleFilterPost(unittest.TestCase):
                 mood=0.0,
                 user_id="bryan",
                 current_time="2026-08-04 07:30 (EDT)",
+                bry_latest_ts=BRY_STALE_TS,  # 修法 9: Bry 不在線
             )
 
             # 至少要有 system 訊息 (SOUL + 當下時間)
@@ -241,6 +244,7 @@ class TestStaleFilterPost(unittest.TestCase):
                 mood=0.0,
                 user_id="bryan",
                 current_time="2026-08-04 07:30 (EDT)",
+                bry_latest_ts=BRY_STALE_TS,  # 修法 9: Bry 不在線
             )
 
             system_msgs = [m for m in messages if m["role"] == "system"]
@@ -293,6 +297,7 @@ class TestStaleFilterPost(unittest.TestCase):
                 mood=0.0,
                 user_id="bryan",
                 current_time="2026-08-04 07:30 (EDT)",
+                bry_latest_ts=BRY_FRESH_TS,  # 修法 9: Bry 在線 (5 分鐘前)
             )
 
             user_msgs = [m for m in messages if m["role"] == "user"]
