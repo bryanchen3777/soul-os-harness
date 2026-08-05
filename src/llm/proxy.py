@@ -679,21 +679,37 @@ class OpenAIBackend(LLMBackend):
         - Lesson 24: 任何 LLM API extra_body 改動都要先在 dev 環境印 raw response 結構驗證假設,
           不能直接信文件
 
+        2026-08-05 拍板 Lesson 32 (Bry 拍板 revert D 路徑, 治 P0 事故):
+        - 根因: D 路徑 (d49c75d 7/31 ship) 從 8/2 12:00 v30 重啟起, M2.7 endpoint
+          持續回 HTTP 400 "invalid params, chat content is empty (2013)".
+          M2.7 不接受 D 路徑強制的 tools+tool_choice 結構 (雖然走 OpenAI standard
+          tool_calls, 但某些 prompt 情境下 M2.7 認為 chat content 為空 → 拒絕).
+        - 修法: 砍掉 tools + tool_choice 強制, 改回 response_format={"type":"json_object"}
+          純一路. Lesson 32 拍板方向 (Bry 7/25), 當時 Mavis 沒 ship, 7/31 D 路徑
+          蓋過去. 現在 revert 補回 Lesson 32.
+        - Lesson 32 vs D 的差異: Lesson 32 走純 content 解析, Mavis _parse_llm_output
+          已經有 4 層容錯 (Layer 1 直接 json.loads / Layer 2 多策略抓 {...} /
+          Layer 3 split-mode fallback / Layer 4 raw text fallback), 不需要
+          function call 強制保證 JSON 結構.
+        - Lesson 32 配套: D 1 / D 3 在 OpenAIBackend 跟 LLMProxy 兩處的 tools/tool_choice
+          注入邏輯全部拿掉, parser 回歸純 content. D 2 retry 機制保留 (對的).
+        - Lesson 41 pre-request log 保留 (含 has tools / has tool_choice 印),
+          重啟後 log 會顯示 has response_format=True / has tools=False, 確認 revert 成功.
+
+        [SUPERSEDED 2026-08-05 by Lesson 32]
         2026-07-25 拍板 D (Bry 拍板 chain fail, silent failure 治根):
         - D 1: 取代 response_format=json_object 改用 tools + tool_choice 強制 function call
           - 業界公認 function calling 比 JSON mode 穩定 (OpenAI 社群多次報告)
           - 2026-07-25 raw debug (data/raw_debug_minimax_toolcall.py) 確認 MiniMax M2.7
             走 OpenAI standard tool_calls 格式 (不是 <tool_call> 特殊 token,Perplexity 警告不適用)
           - arguments 欄位是 JSON string,需要 json.loads() parse
-        - D 2: 加 retry-with-backoff 機制 (capped exponential backoff + jitter)
-          - 30 min v24 log 樣本內 2 次 HTTP 529 (server overload, provider 端 cluster 問題)
-          - retry 觸發: 5xx / 429 / 529, max 3 retries, backoff 1s → 2s → 4s + random jitter
-          - 取代之前「retry 3 次後直接 fail」的硬切,給 provider 喘息空間
+        - D 2: 加 retry-with-backoff 機制 (capped exponential backoff + jitter) [保留]
         - D 3: parser 改讀 tool_calls[0].function.arguments,fall back content 兼容舊路徑
         """
         response_format = kwargs.pop("response_format", None)
-        tools = kwargs.pop("tools", None)            # 2026-07-25 拍板 D 1: 接收 tools
-        tool_choice = kwargs.pop("tool_choice", None) # 2026-07-25 拍板 D 1: 接收 tool_choice
+        # 2026-08-05 拍板 Lesson 32 (Bry 拍板 revert D 1): 拿掉 tools + tool_choice 接收
+        tools = kwargs.pop("tools", None)            # 保留 pop 避免 caller 帶入殘留
+        tool_choice = kwargs.pop("tool_choice", None) # 保留 pop 避免 caller 帶入殘留
         max_retries = kwargs.pop("max_retries", 3)     # 2026-07-25 拍板 D 2: retry 預設 3 次
         # kwargs 剩下的 (e.g. thinking) OpenAI 不支援, ignore
 
@@ -703,12 +719,8 @@ class OpenAIBackend(LLMBackend):
             "max_completion_tokens": max_tokens,  # 2026-07-25 Bry 拍板: 替換 legacy max_tokens, F 保留
             "temperature": temperature,
         }
-        # 2026-07-25 拍板 D 1: 優先用 tool_choice (穩定), fall back response_format (舊)
-        if tools:
-            json_body["tools"] = tools
-        if tool_choice:
-            json_body["tool_choice"] = tool_choice
-        if response_format and not tools:
+        # 2026-08-05 拍板 Lesson 32 (Bry 拍板 revert D 1): 只用 response_format 純一路
+        if response_format:
             json_body["response_format"] = response_format
 
         # 2026-07-25 拍板 D 2: retry-with-backoff 機制
@@ -861,15 +873,11 @@ class OpenAIBackend(LLMBackend):
                     f"(completion 打滿 max_tokens={max_tokens}, 可能退化重複). "
                     f"修法 6 B 已套用 _truncate_repetition, 修法 6 D.2 Layer 3 E 兜底 emotion 改 confused."
                 )
-            tool_calls = msg.get("tool_calls")
-            if tool_calls:
-                # OpenAI standard 格式: tool_calls[0].function.arguments 是 JSON string
-                arguments_str = tool_calls[0]["function"]["arguments"]
-                # 已經是合法 JSON string, 直接返回 (給 _parse_llm_output 處理)
-                raw = arguments_str
-            else:
-                # fall back content 解析 (舊路徑, response_format 模式)
-                raw = msg["content"].strip()
+            # 2026-08-05 拍板 Lesson 32 (Bry 拍板 revert D 3): 純 content 路徑
+            # [SUPERSEDED 2026-08-05 by Lesson 32]
+            # 2026-07-25 拍板 D 3: 優先讀 tool_calls 拿乾淨 JSON, fall back content 兼容舊路徑
+            #   改成純 msg["content"] (response_format 模式, M2.7 確保回傳合法 JSON)
+            raw = msg["content"].strip()
             # 修法 10: finish_reason=length 觸發時強制截斷 raw (取最後 200 字, 找標點斷點)
             # Bry 派工原話「Bry 派工精神」: 不管 _truncate_repetition (修法 6 B) 有沒有匹配到,
             # 只要 finish_reason=length 就強制截斷 (治本優先, 治標疊語句次之)
@@ -2743,29 +2751,15 @@ class LLMProxy:
 
         for attempt in range(self.max_retries):
             try:
+                # 2026-08-05 拍板 Lesson 32 (Bry 拍板 revert D 路徑): 純 response_format=json_object
+                # [SUPERSEDED 2026-08-05 by Lesson 32]
                 # 2026-07-25 拍板 D: 用 tool_choice 取代 response_format=json_object
-                # 業界公認 function calling 比 JSON mode 穩定
+                # 業界公認 function calling 比 JSON mode 穩定 [但 M2.7 拒絕, Lesson 32 revert]
                 # raw debug (data/raw_debug_minimax_toolcall.py) 確認 MiniMax M2.7 走 OpenAI standard tool_calls
-                # arguments 欄位是 JSON string, 給 _parse_llm_output 處理
-                # response_format={"type": "json_object"} 從 kwargs 移除
-                # (原本是階段 5.5 Bry 拍板 2026-07-14, D 路徑下不需要)
-                emit_tools = [{
-                    "type": "function",
-                    "function": {
-                        "name": "emit_response",
-                        "description": "Emit a structured response for the soul agent.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "text": {"type": "string", "description": "對話內容(純中文)"},
-                                "audio_text": {"type": "string", "description": "語音版本(純中文)"},
-                                "emotion": {"type": "string", "description": "情緒標籤"},
-                            },
-                            "required": ["text", "audio_text", "emotion"],
-                        },
-                    },
-                }]
-                emit_tool_choice = {"type": "function", "function": {"name": "emit_response"}}
+                # arguments 欄位是 JSON string, 給 _parse_llm_output 處理 [現在改回純 content]
+                # response_format={"type": "json_object"} 從 kwargs 移除 [現在加回]
+                # (原本是階段 5.5 Bry 拍板 2026-07-14, D 路徑下不需要 [Lesson 32 加回])
+                emit_response_format = {"type": "json_object"}
 
                 result = await self.backend.complete(
                     messages=messages,
@@ -2773,8 +2767,7 @@ class LLMProxy:
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                     thinking=self.thinking,
-                    tools=emit_tools,
-                    tool_choice=emit_tool_choice,
+                    response_format=emit_response_format,
                 )
                 if attempt > 0:
                     logger.info(
