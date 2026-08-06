@@ -165,6 +165,22 @@ class ChannelRouter:
             )
             return
 
+        # Bry 拍板 2026-08-05 21:08: dry_run 隔離
+        # /api/test/spawn_intent?dry_run=true 觸發時, event.payload["dry_run"]=True
+        # 走完 LLM/MemoryWriter pipeline 但不送到 Bry 的 TG channel
+        # 設計動機: 之前 LLM 400 時測試不會誤傷 Bry (stub fallback 不推 TG);
+        # 修 LLM 400 之後 10 個 agent 同時觸發 + speaker_token 串接, Bry 短時間
+        # 收到 11 條 TG 訊息被轟炸。dry-run 隔離讓測試仍能跑 pipeline 但不送 Bry。
+        # 其他 subscriber (memory_middleware, speaker_token_manager) 還是會收到事件,
+        # 測試 LLM judge / mirror 寫入邏輯不受影響。
+        if event.payload.get("dry_run"):
+            logger.info(
+                f"[ChannelRouter][DRY_RUN] skip TG 推播 | "
+                f"agent={event.payload.get('agent_id') or event.source} "
+                f"text={event.payload.get('text', '')[:80]!r}"
+            )
+            return
+
         target_channel = event.payload.get("target_channel", "web")
         target_user_id = event.payload.get("target_user_id")
         agent_id = event.payload.get("agent_id", event.source)

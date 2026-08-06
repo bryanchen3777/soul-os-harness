@@ -594,8 +594,14 @@ async def test_spawn_cold_intents():
 
 
 @app.post("/api/test/spawn_intent")
-async def test_spawn_intent(agent_id: str):
-    """灌指定 1 隻 agent 的 AGENT_INTENT (單隻驗證用)"""
+async def test_spawn_intent(agent_id: str, dry_run: bool = False):
+    """灌指定 1 隻 agent 的 AGENT_INTENT (單隻驗證用)
+
+    dry_run 模式 (Bry 拍板 2026-08-05 21:08): 測試觸發不走正式 TG 廣播管道,
+    ChannelRouter 看到 AGENT_SPEAK event payload 帶 dry_run=True → log + skip TG 推播。
+    LLM / MemoryWriter pipeline 還是會跑 (verify_stage1.py 仍能驗證記憶寫入邏輯)。
+    預設 False (保持原行為, Bry 派工要求先做 dry-run 隔離再恢復 verify_stage1.py 跑)。
+    """
     agents = getattr(app.state, "_agents", None)
     if not agents:
         return {"ok": False, "error": "agents not initialized"}
@@ -621,6 +627,10 @@ async def test_spawn_intent(agent_id: str):
             # 修法 1 範圍限定 run_server.py test endpoint, 不影響 proactive / heartbeat
             # 觸發鏈 (那邊 draft 從 _build_intent_payload 構造, 不依賴 chrono)。
             "draft": f"（verify_stage1.py 測試觸發，agent_id={agent_id}，Bry 尚未主動發言，請以角色身份自然回應。）",
+            # Bry 拍板 2026-08-05 21:08: dry_run 標記從 chrono_payload 透傳到
+            # intent_payload → AGENT_INTENT event → AGENT_SPEAK event,
+            # ChannelRouter 看到 dry_run=True → log + skip TG 推播。
+            "dry_run": dry_run,
         }
         await target._fire_intent(
             reason="manual_cold_test_single",
@@ -632,6 +642,7 @@ async def test_spawn_intent(agent_id: str):
             "agent_id": agent_id,
             "status": "intent_fired",
             "target_channel": "telegram",
+            "dry_run": dry_run,
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}

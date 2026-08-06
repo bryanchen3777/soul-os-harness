@@ -2617,6 +2617,11 @@ class LLMProxy:
                     # Phase 5b:channel routing
                     "target_channel": event.payload.get("target_channel", "web"),
                     "target_user_id": event.payload.get("target_user_id"),
+                    # Bry 拍板 2026-08-05 21:08: dry_run 從 AGENT_INTENT event 透傳
+                    # 觸發鏈: chrono_payload["dry_run"] (run_server.py) → consciousness →
+                    # intent_payload → AGENT_INTENT event.payload → LLMProxy →
+                    # AGENT_SPEAK event.payload → ChannelRouter 看到 True 跳過 TG 推播
+                    "dry_run": event.payload.get("dry_run", False),
                 },
             )
             await self.bus.publish(speak_event)

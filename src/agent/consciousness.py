@@ -426,6 +426,11 @@ class AgentConsciousness(ABC):
                 intent_payload["target_channel"] = chrono_payload["target_channel"]
             if "target_user_id" in chrono_payload:
                 intent_payload["target_user_id"] = chrono_payload["target_user_id"]
+            # Bry 拍板 2026-08-05 21:08: dry_run 標記從 chrono_payload 透傳
+            # 觸發鏈 chrono_payload → intent_payload → AGENT_INTENT event → LLMProxy →
+            # AGENT_SPEAK event → ChannelRouter (看到 dry_run=True 跳過 TG 推播)
+            if "dry_run" in chrono_payload:
+                intent_payload["dry_run"] = chrono_payload["dry_run"]
             # KI-001: 若 chrono_payload 沒有 target_user_id，fallback 用 _fire_intent 參數
             if "target_user_id" not in intent_payload:
                 intent_payload["target_user_id"] = user_id
