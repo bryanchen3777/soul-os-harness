@@ -598,6 +598,14 @@ async def test_spawn_intent(agent_id: str):
         chrono = {
             "target_channel": "telegram",
             "target_user_id": BRYAN_TG_ID,
+            # Bry 拍板 2026-08-05 20:13: spawn_intent 是測試觸發,不是 Bry 真實對話,
+            # 但 LLMProxy 構造 messages 需要 user 訊息 (M2.7 收到「user 訊息空」會回 400
+            # "chat content is empty (2013)")。修法: 從 trigger context 構造一段 draft
+            # 讓 chain 通 (consciousness._fire_intent 拿 draft → intent_payload["draft"]
+            # → LLMProxy user_message → _build_messages_group append user role)。
+            # 修法 1 範圍限定 run_server.py test endpoint, 不影響 proactive / heartbeat
+            # 觸發鏈 (那邊 draft 從 _build_intent_payload 構造, 不依賴 chrono)。
+            "draft": f"（verify_stage1.py 測試觸發，agent_id={agent_id}，Bry 尚未主動發言，請以角色身份自然回應。）",
         }
         await target._fire_intent(
             reason="manual_cold_test_single",
