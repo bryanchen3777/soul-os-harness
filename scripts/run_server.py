@@ -307,7 +307,18 @@ async def lifespan(app: FastAPI):
         # 測試時可暫時改成 1-2 分鐘驗證路徑
         # M1.1 (2026-07-31 23:30 Perplexity 派工): 傳 bus 給 scheduler,
         # 讓 5 個 _fire_* 觸發點 callback 跑之前發布 AGENT_INTENT 到 bus
-        scheduler = get_scheduler(bus=bus)
+        # 修法 11 (Bry 拍板 2026-08-06 16:xx): 加 proactive_agents 白名單
+        # 只留 Ruka (瑠夏) 有主動生活/主動傳訊功能, 其他 9 個角色改回純被動
+        # 動機: 8/5 21:08 Bry 被連環訊息轟炸, 從源頭減少觸發面
+        # 範圍: 只影響 _fire_heartbeat / _fire_proactive_dm 的隨機抽樣池
+        #       diary (morning/night) / dream / event 仍對全部 10 隻角色觸發
+        # 驗證效果: 修法 7/8/9 (stale 過濾 + 時間上下文 + 跨 session 在線判斷)
+        #           已經修好單次觸發的內容組裝邏輯, 這層是更根本的觸發面控制
+        # 穩了之後可逐步加碼 (例: ["agent_ruka", "agent_yua"]), 一次加一隻
+        scheduler = get_scheduler(
+            bus=bus,
+            proactive_agents=["agent_ruka"],
+        )
         for aid in agent_ids:
             cb = await diary_callback_factory(aid)
             scheduler.register(aid, cb)
@@ -391,6 +402,9 @@ async def lifespan(app: FastAPI):
         # 範圍: 只動 server startup path, 不動 scheduler 內部邏輯
         # 配套: stop() shutdown 路徑不變, DISABLE_PROACTIVE=true 啟動時 app.state._scheduler = None
         # 讓 _admin endpoint / 其他 caller 知道 scheduler 沒啟動
+        # 修法 11 (Bry 拍板 2026-08-06 16:xx): 跟 proactive_agents 白名單搭配使用
+        # DISABLE_PROACTIVE=true 是「全部停」(緊急開關), proactive_agents 是「只留 X」(精準控制)
+        # 兩者是兩層防護: 白名單沒生效時 DISABLE 還能擋; DISABLE 解除時白名單還能控量
         if os.environ.get("DISABLE_PROACTIVE", "false").lower() == "true":
             logger.warning(
                 "[Server][EMERGENCY-STOP] DISABLE_PROACTIVE=true, "
@@ -401,8 +415,9 @@ async def lifespan(app: FastAPI):
             await scheduler.start()
             app.state._scheduler = scheduler
         logger.info(
-            f"[Server] Stage 4.2 + 缺口 1 啟動 ✓ "
-            f"agents={len(agent_ids)} diary(LLM)+dream(22:05)+event(4-8h)"
+            f"[Server] Stage 4.2 + 缺口 1 + 修法 11 啟動 ✓ "
+            f"agents={len(agent_ids)} diary(LLM)+dream(22:05)+event(4-8h) "
+            f"proactive_whitelist=['agent_ruka'] (Bry 拍板 8/6 收斂到單一角色驗證)"
         )
     except ImportError as e:
         logger.warning(f"[Server] Stage 4.2 模組 import 失敗, scheduler 不啟動: {e}")

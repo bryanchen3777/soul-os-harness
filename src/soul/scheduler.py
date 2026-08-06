@@ -108,6 +108,13 @@ class SoulScheduler:
         # M1.1 (2026-07-31 23:30 Perplexity 派工): Event Bus 注入
         # 沒注入就 skip 發布 (向後相容, 測試不依賴 bus)
         bus: Optional["SoulEventBus"] = None,
+        # 修法 11 (Bry 拍板 2026-08-06 16:xx): proactive whitelist
+        # 只允許白名單內的 agent 觸發 proactive_dm / heartbeat, 其他角色改回純被動
+        # None = 不過濾 (向後相容, 預設行為); list = 白名單 (例: ["agent_ruka"])
+        # 範圍: 只影響 _fire_heartbeat / _fire_proactive_dm 的隨機抽樣池
+        #       diary / dream / event 仍對 _all_agents 全部觸發, 不受影響
+        # 動機: 8/5 21:08 Bry 被連環訊息轟炸, DISABLE_PROACTIVE 緊急關閉後的下一刀
+        proactive_agents: Optional[List[str]] = None,
     ):
         self.morning_time = morning_time
         self.night_time = night_time
@@ -126,6 +133,10 @@ class SoulScheduler:
         self.quiet_hours_end = quiet_hours_end
         # M1.1: Event Bus 注入 (None = skip 發布, 向後相容)
         self._bus = bus
+        # 修法 11: proactive whitelist 儲存 (None = 不過濾)
+        # 實際可觸發清單在 _get_proactive_agents() lazy 算
+        # (跟 _all_agents 動態 register() 對齊, 避免初始化時 whitelist 還沒對應到 agent)
+        self._proactive_agents_whitelist: Optional[List[str]] = proactive_agents
 
         # agent_id -> {slot -> callback}
         self._callbacks: Dict[str, Dict[str, DiaryCallback]] = {}
@@ -435,6 +446,31 @@ class SoulScheduler:
             return False
         return now >= self._next_proactive_dm_time
 
+    def _get_proactive_agents(self) -> List[str]:
+        """
+        修法 11 (Bry 拍板 2026-08-06 16:xx): 計算實際可觸發 proactive 的 agent 列表.
+
+        規則:
+          - 白名單 None → 回傳全部 _all_agents (向後相容, 預設行為)
+          - 白名單 list → 回傳白名單 ∩ _all_agents (允許動態 register, 沒交集就空)
+          - 空集合 + 有 _all_agents → log warning (避免靜默失效)
+
+        Lazy 計算 (不在 __init__ 預先算) 的原因:
+          _all_agents 是逐步 register() 加進來的, __init__ 時通常還是空的
+          每次 _fire_* 觸發前重算, 才能反映最新註冊狀態
+        """
+        if self._proactive_agents_whitelist is None:
+            return list(self._all_agents)
+        eligible = [a for a in self._proactive_agents_whitelist if a in self._all_agents]
+        if not eligible and self._all_agents:
+            # 配錯了: 白名單跟已註冊 agents 沒交集 (例如 whitelist 列了 ruka 但 ruka 沒註冊)
+            logger.warning(
+                f"[Scheduler] ⚠️ proactive whitelist {self._proactive_agents_whitelist} "
+                f"跟已註冊 agents {self._all_agents} 沒交集, "
+                f"沒有 agent 可觸發 proactive (心跳 + 主動傳訊都會 skip)"
+            )
+        return eligible
+
     def _is_quiet_hours(self, now: datetime) -> bool:
         """Lesson 39: 23:00-08:00 靜音時段檢查 (含跨午夜的 wrap-around)."""
         h = now.hour
@@ -448,12 +484,23 @@ class SoulScheduler:
         """
         Lesson 39: 觸發 1-2 隻角色的 heartbeat.
         輕量 check-in 訊息, callback 內部應該用 LLM_CONCURRENCY_LIMIT.
+
+        修法 11 (Bry 拍板 2026-08-06 16:xx): 從 proactive whitelist 抽
+        whitelist 決定「誰有資格觸發」, 隨機抽樣只在 whitelist 內做
         """
-        if not self._all_agents or self._heartbeat_callback is None:
+        candidates = self._get_proactive_agents()
+        if not candidates or self._heartbeat_callback is None:
             return
-        n = min(random.randint(1, 2), len(self._all_agents))
-        picks = random.sample(self._all_agents, n)
-        logger.info(f"[Scheduler] 💓 heartbeat 觸發: {picks}")
+        n = min(random.randint(1, 2), len(candidates))
+        raw_picks = random.sample(candidates, n)
+        # 雙重保險: 過濾掉不在 candidates 的 (正常 random.sample 已是子集, 但 mock 測試場景要防呆)
+        picks = [a for a in raw_picks if a in candidates]
+        if not picks:
+            return
+        logger.info(
+            f"[Scheduler] 💓 heartbeat 觸發: {picks} "
+            f"(whitelist={self._proactive_agents_whitelist})"
+        )
         for agent_id in picks:
             # M1.1: 觸發後、callback 之前發布 AGENT_INTENT
             # draft / elapsed_mins 從 callback 內部 _build_intent_payload 拿
@@ -481,8 +528,12 @@ class SoulScheduler:
           1. 冷卻窗: 上次 DM 到現在 < cooldown_seconds → 跳過
           2. 靜音時段: 23:00-08:00 → 跳過 (會自動排到 8:00 之後)
           3. semaphore: callback 內部用 LLM_CONCURRENCY_LIMIT (在 run_server.py)
+
+        修法 11 (Bry 拍板 2026-08-06 16:xx): 加第 0 道防護 — proactive whitelist
+        whitelist 決定「誰有資格觸發」, whitelist 外的角色 (即使 random 命中) 也 silent skip
         """
-        if not self._all_agents or self._proactive_dm_callback is None:
+        candidates = self._get_proactive_agents()
+        if not candidates or self._proactive_dm_callback is None:
             return
 
         # 1. 冷卻窗檢查
@@ -511,9 +562,26 @@ class SoulScheduler:
             self._next_proactive_dm_time = now + timedelta(minutes=30)
             return
 
-        # 3. 觸發
-        agent_id = random.choice(self._all_agents)
-        logger.info(f"[Scheduler] 💬 proactive_dm 觸發: {agent_id}")
+        # 3. 觸發 (whitelist 過濾後)
+        raw_choice = random.choice(candidates)
+        # 雙重保險: 過濾掉不在 candidates 的 (防呆, mock 測試場景)
+        if raw_choice not in candidates:
+            logger.debug(
+                f"[Scheduler] 💬 proactive_dm random.choice {raw_choice} "
+                f"不在 candidates {candidates}, 跳過"
+            )
+            # 排下次但不要立刻再試
+            mins = random.randint(
+                self.proactive_dm_min_interval_minutes,
+                self.proactive_dm_max_interval_minutes,
+            )
+            self._next_proactive_dm_time = now_local() + timedelta(minutes=mins)
+            return
+        agent_id = raw_choice
+        logger.info(
+            f"[Scheduler] 💬 proactive_dm 觸發: {agent_id} "
+            f"(whitelist={self._proactive_agents_whitelist})"
+        )
         # M1.1: 觸發後、callback 之前發布 AGENT_INTENT
         await self._publish_agent_intent(agent_id, reason="proactive_dm")
         try:
