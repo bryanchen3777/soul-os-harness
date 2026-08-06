@@ -383,8 +383,23 @@ async def lifespan(app: FastAPI):
         scheduler.register_heartbeat(_heartbeat_callback)
         scheduler.register_proactive_dm(_proactive_dm_callback)
 
-        await scheduler.start()
-        app.state._scheduler = scheduler
+        # [TEMP-EMERGENCY-STOP] Bry 拍板 2026-08-05 21:08: 立刻停 proactive
+        # Bry 派工原文: 暫停主動傳訊 (proactive_dm / heartbeat 觸發), Bry 被連環訊息轟炸
+        # 根因懷疑: 33ab57e (spawn_intent chrono draft) + 317900b (M2 task 3 placeholder user role)
+        # 修完後 proactive 觸發變迴圈, Bry 拍板環境變數 DISABLE_PROACTIVE=true 整個 skip
+        # 修法: env var 開關, default False (保持原行為), 設 true 完全 skip scheduler start
+        # 範圍: 只動 server startup path, 不動 scheduler 內部邏輯
+        # 配套: stop() shutdown 路徑不變, DISABLE_PROACTIVE=true 啟動時 app.state._scheduler = None
+        # 讓 _admin endpoint / 其他 caller 知道 scheduler 沒啟動
+        if os.environ.get("DISABLE_PROACTIVE", "false").lower() == "true":
+            logger.warning(
+                "[Server][EMERGENCY-STOP] DISABLE_PROACTIVE=true, "
+                "scheduler.start() SKIPPED — proactive_dm / heartbeat 不會觸發"
+            )
+            app.state._scheduler = None
+        else:
+            await scheduler.start()
+            app.state._scheduler = scheduler
         logger.info(
             f"[Server] Stage 4.2 + 缺口 1 啟動 ✓ "
             f"agents={len(agent_ids)} diary(LLM)+dream(22:05)+event(4-8h)"
