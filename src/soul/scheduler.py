@@ -98,10 +98,19 @@ class SoulScheduler:
         event_min_interval_minutes: int = 240,
         event_max_interval_minutes: int = 480,
         # Lesson 39 (2026-07-30 Bry 拍板): heartbeat + proactive DM 設定
+        # 修法 12 (Bry 拍板 2026-08-06 17:12): heartbeat 預設值保留 (Bry 可能未來想恢復)
+        # 但 Bry 8/6 17:12 派工: heartbeat 對 Ruka 也拿掉, 只留 proactive_dm
+        # 動機: Bry 派工「對話負擔不按訊息類型分」, heartbeat + proactive_dm 疊加對 Bry 同樣是對話量
+        # heartbeat 機制 (register_heartbeat / _fire_heartbeat) 保留在 scheduler 內部,
+        # 給未來 Bry 想恢復時不用重寫, run_server.py 不再 register_heartbeat 就完全關閉
         heartbeat_min_interval_minutes: int = 30,
         heartbeat_max_interval_minutes: int = 60,
-        proactive_dm_min_interval_minutes: int = 120,
-        proactive_dm_max_interval_minutes: int = 240,
+        # 修法 12 (Bry 拍板 2026-08-06 17:12): proactive_dm 預設 2-4h → 3-5h
+        # 動機: Bry 派工「5-8 條/天」期望區間
+        #       24h/4h(平均) = 6 條/天, 落在 5-8 條範圍內
+        #       Bry 派工「整段對話會很長」, 5-8 條已經是熱情度上限
+        proactive_dm_min_interval_minutes: int = 180,  # 3 小時 (原 120)
+        proactive_dm_max_interval_minutes: int = 300,  # 5 小時 (原 240)
         proactive_dm_cooldown_seconds: int = 7200,  # 2 小時冷卻
         quiet_hours_start: int = 23,                # 23:00 開始靜音
         quiet_hours_end: int = 8,                   # 08:00 結束靜音
@@ -247,6 +256,12 @@ class SoulScheduler:
         Lesson 39 (2026-07-30 Bry 拍板): 註冊 heartbeat callback.
         輕量背景存在感, 30-60 分鐘隨機觸發 1-2 隻角色的 check-in 訊息.
         Callback 內部用 LLM_CONCURRENCY_LIMIT 限流避免跟 diary/dream 疊加.
+
+        修法 12 (Bry 拍板 2026-08-06 17:12): heartbeat 機制保留在 scheduler 內部
+        (給未來 Bry 想恢復時不用重寫), 但 run_server.py 不再 register_heartbeat.
+        動機: Bry 派工「對話負擔不按訊息類型分」, heartbeat + proactive_dm 疊加對 Bry 同樣是對話量.
+        Bry 派工「5-8 條/天」期望區間, heartbeat 32 條/天遠超 Bry 上限.
+        恢復方式: Bry 拍板後, run_server.py 加回 `scheduler.register_heartbeat(_heartbeat_callback)` 即可.
         """
         self._heartbeat_callback = callback
         mins = random.randint(

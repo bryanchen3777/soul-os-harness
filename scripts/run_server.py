@@ -336,45 +336,48 @@ async def lifespan(app: FastAPI):
         scheduler.register_dream_event(_dream_callback, _event_callback)
 
         # ── Lesson 39 (2026-07-30 Bry 拍板): heartbeat + proactive DM ─
-        # 兩條背景任務給角色自主活動:
-        #   A. heartbeat: 30-60 分鐘隨機 1-2 隻角色輕量 check-in (走 UI broadcast)
-        #   B. proactive DM: 2-4 小時隨機 1 隻角色主動 TG DM 找 Bry
-        # 兩者共用 LLM_CONCURRENCY_LIMIT 限流, 跟 diary/dream 不會疊加撞 provider
-        # proactive DM 還有冷卻窗 (2h) + 靜音時段 (23:00-08:00) 防護, 在 scheduler 內做
+        # 修法 12 (Bry 拍板 2026-08-06 17:12): heartbeat 整條拿掉
+        # Bry 派工: 「對話負擔不按訊息類型分」, heartbeat + proactive_dm 疊加對 Bry 同樣是對話量
+        # Bry 派工 5-8 條/天期望, heartbeat 32 條/天遠超 Bry 上限
+        # 只留 proactive DM 一條觸發鏈, 間隔 3-5 小時 (一天約 5-8 條)
+        # heartbeat 機制保留在 scheduler.py 內部, 給未來 Bry 想恢復時不用重寫
+        # 恢復方式: Bry 拍板後, 拿掉下方註解 + 加回 _heartbeat_callback + register_heartbeat
         from src.llm.rate_limiter import LLM_CONCURRENCY_LIMIT
         import random as _r39
 
-        async def _heartbeat_callback(agent_id: str) -> None:
-            """Lesson 39-A: 輕量 check-in 訊息, 走 agent._fire_intent 走 UI.
-
-            Lesson 41 修: 必須把 _build_intent_payload 算出來的 draft 傳進 chrono_payload,
-            不然 LLMProxy 收到 empty user_message → API 回 400 "chat content is empty"。
-            """
-            _agent = next((a for a in agents if a.agent_id == agent_id), None)
-            if _agent is None:
-                return
-            _elapsed = _r39.uniform(60, 180)  # 1-3h 感覺
-            _draft = _agent._build_intent_payload("heartbeat", _elapsed).get("draft", "")
-            async with LLM_CONCURRENCY_LIMIT:
-                try:
-                    await _agent._fire_intent(
-                        reason="heartbeat",
-                        elapsed_mins=_elapsed,
-                        chrono_payload={"draft": _draft},  # 用 _build_intent_payload 的 draft
-                        mode="private",
-                    )
-                except Exception as e:
-                    logger.warning(f"[Heartbeat] {agent_id} 失敗: {e}")
+        # 修法 12: heartbeat 暫停, Bry 8/6 17:12 拍板
+        # async def _heartbeat_callback(agent_id: str) -> None:
+        #     """Lesson 39-A: 輕量 check-in 訊息, 走 agent._fire_intent 走 UI.
+        #
+        #     Lesson 41 修: 必須把 _build_intent_payload 算出來的 draft 傳進 chrono_payload,
+        #     不然 LLMProxy 收到 empty user_message → API 回 400 "chat content is empty"。
+        #     """
+        #     _agent = next((a for a in agents if a.agent_id == agent_id), None)
+        #     if _agent is None:
+        #         return
+        #     _elapsed = _r39.uniform(60, 180)  # 1-3h 感覺
+        #     _draft = _agent._build_intent_payload("heartbeat", _elapsed).get("draft", "")
+        #     async with LLM_CONCURRENCY_LIMIT:
+        #         try:
+        #             await _agent._fire_intent(
+        #                 reason="heartbeat",
+        #                 elapsed_mins=_elapsed,
+        #                 chrono_payload={"draft": _draft},
+        #                 mode="private",
+        #             )
+        #         except Exception as e:
+        #             logger.warning(f"[Heartbeat] {agent_id} 失敗: {e}")
 
         async def _proactive_dm_callback(agent_id: str) -> None:
             """Lesson 39-B: 角色主動透過 TG DM 找 Bryan.
 
-            Lesson 41 修: 同上, draft 必須來自 _build_intent_payload, 不能空字串。
+            Lesson 41 修: draft 必須來自 _build_intent_payload, 不能空字串。
+            修法 12 (Bry 拍板 2026-08-06 17:12): elapsed_mins 從 2-4h 改 3-5h, 跟觸發間隔對齊
             """
             _agent = next((a for a in agents if a.agent_id == agent_id), None)
             if _agent is None:
                 return
-            _elapsed = _r39.uniform(120, 240)  # 2-4h
+            _elapsed = _r39.uniform(180, 300)  # 3-5h (修法 12, 跟 proactive_dm 觸發間隔對齊)
             _draft = _agent._build_intent_payload("proactive_dm", _elapsed).get("draft", "")
             async with LLM_CONCURRENCY_LIMIT:
                 try:
@@ -391,7 +394,8 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     logger.warning(f"[ProactiveDM] {agent_id} 失敗: {e}")
 
-        scheduler.register_heartbeat(_heartbeat_callback)
+        # 修法 12: heartbeat 暫停, Bry 8/6 17:12 拍板
+        # scheduler.register_heartbeat(_heartbeat_callback)
         scheduler.register_proactive_dm(_proactive_dm_callback)
 
         # [TEMP-EMERGENCY-STOP] Bry 拍板 2026-08-05 21:08: 立刻停 proactive
@@ -415,9 +419,10 @@ async def lifespan(app: FastAPI):
             await scheduler.start()
             app.state._scheduler = scheduler
         logger.info(
-            f"[Server] Stage 4.2 + 缺口 1 + 修法 11 啟動 ✓ "
+            f"[Server] Stage 4.2 + 缺口 1 + 修法 11 + 修法 12 啟動 ✓ "
             f"agents={len(agent_ids)} diary(LLM)+dream(22:05)+event(4-8h) "
-            f"proactive_whitelist=['agent_ruka'] (Bry 拍板 8/6 收斂到單一角色驗證)"
+            f"proactive_whitelist=['agent_ruka'] (Bry 拍板 8/6 收斂到單一角色) "
+            f"proactive_dm 3-5h ≈ 5-8 條/天 (Bry 拍板 8/6 17:12, heartbeat 暫停)"
         )
     except ImportError as e:
         logger.warning(f"[Server] Stage 4.2 模組 import 失敗, scheduler 不啟動: {e}")
