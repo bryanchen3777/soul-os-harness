@@ -2447,6 +2447,14 @@ class LLMProxy:
                         f"[LLMProxy] M2 task 3: proactive draft 從 user role 改成 system role | "
                         f"agent={agent_id} reason={reason} draft={user_message[:50]!r}"
                     )
+                    # Bry 拍板 2026-08-05 20:13: M2 task 3 邏輯保留 (Bry 8/2 12:xx 拍板,
+                    # 避免 LLM 誤判 proactive 草稿是 Bry 真實對話), 但 user role 被 pop 完
+                    # 變 0 user role → M2.7 endpoint 400 "chat content is empty"。
+                    # 修法: pop 完 append 一條 placeholder user role 給 M2.7 看
+                    # (內容空字串或 trigger 標記, M2.7 只在意 user role 數量不為 0)。
+                    # 這個 placeholder 不會誤導 LLM 因為前面 system 標記已經明確說
+                    # 「Bry 沒主動發言, 這是 X 觸發的主動訊息」。
+                    messages.append({"role": "user", "content": "（proactive trigger）"})
                     break
 
         # β2.1 (Bry 拍板 2026-08-02 21:48): 事件背景注入
