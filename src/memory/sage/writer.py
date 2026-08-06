@@ -497,12 +497,26 @@ class MemoryWriter:
         """
         # 0 筆短路: log 仍要 fire, 跟原 LLM 路徑 log 對齊 (鏡像觸發了但過濾後 0 筆)
         try:
+            # [TEMP-DIAG2] Bry 拍板 2026-08-05 20:13: trace MemoryWriter 全鏈路
+            # LLMJudge.trace 顯示 n_triples>0 + 1 個 SUPPORTED 抽出來, 但 mirror 0 筆
+            # 矛盾 → 看 raw_results 真實內容 + normalize 後值
+            logger.info(
+                f"[TEMP-DIAG2] MemoryWriter mirror input | "
+                f"agent={subject_hint} | source={source} | "
+                f"raw_results_len={len(raw_results)} | "
+                f"raw_results={raw_results!r} | "
+                f"text={text[:80]!r}"
+            )
             mirror_count = self._mirror_to_v1_store(
                 text=text,
                 results=raw_results,
                 subject_hint=subject_hint,
                 session_id=session_id,
                 source=source,
+            )
+            logger.info(
+                f"[TEMP-DIAG2] MemoryWriter mirror output | "
+                f"agent={subject_hint} | mirror_count={mirror_count}"
             )
             if mirror_count and mirror_count > 0:
                 logger.info(
