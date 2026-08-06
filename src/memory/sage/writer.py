@@ -591,6 +591,16 @@ class MemoryWriter:
             else (subject_hint if (subject_hint and subject_hint.startswith("agent_")) else "unknown")
         )
         v1_store = _V1Store(v1_data_dir, v1_agent_id)
+        # [TEMP-DIAG2] Bry 拍板 2026-08-05 20:13: 印 v1_store 寫入路徑 + self.agent_id
+        # 確認 mirror 寫到哪個檔案 (Bry 派工「要看內容判斷在哪一步被歸零」)
+        logger.info(
+            f"[TEMP-DIAG2] v1_store path | "
+            f"self.agent_id={self.agent_id!r} | "
+            f"subject_hint={subject_hint!r} | "
+            f"v1_agent_id={v1_agent_id!r} | "
+            f"v1_data_dir={v1_data_dir} | "
+            f"v1_store_file={v1_store.store_file}"
+        )
         # Perplexity Bry §15 拍板: 補齊 tags 的檢索用途缺陷
         # - content 字面切詞追加進 tags (跟 middleware._derive_query_tags 同套邏輯)
         # - category 標籤保留不刪
