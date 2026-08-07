@@ -2367,45 +2367,50 @@ class LLMProxy:
         # 修法: 從 messages 內 pop 出 user role 的 draft, 改 append 為 system role 帶 reason 標記.
         # 跨全部角色套用 (reason != "user_message" 全部走這條路).
         # 不影響 user_message 真實對話 (Bry 自己發訊息還是 user role 正常傳).
-        if reason != "user_message" and user_message:
-            for _i in range(len(messages) - 1, -1, -1):
-                if (
-                    messages[_i]["role"] == "user"
-                    and messages[_i]["content"] == user_message
-                ):
-                    messages.pop(_i)
-                    reason_label_map = {
-                        "heartbeat": "heartbeat (Bry 沒主動發言, 這是定期在場確認的主動搭話)",
-                        "proactive_dm": "proactive_dm (Bry 沒主動發言, 這是基於親密度的主動搭話)",
-                        "event": "event (Bry 沒主動發言, 這是角色世界事件觸發的主動訊息)",
-                        "dream": "dream (Bry 沒主動發言, 這是夢境內容)",
-                        "morning": "morning slot (Bry 沒主動發言, 這是早晨主動日記/搭話)",
-                        "night": "night slot (Bry 沒主動發言, 這是夜晚主動日記/搭話)",
-                    }
-                    reason_label = reason_label_map.get(
-                        reason,
-                        f"{reason} (Bry 沒主動發言, 這是 {reason} 觸發的主動訊息)",
-                    )
-                    system_msg = (
-                        f"\n[主動觸發標記] {reason_label}。"
-                        f"草稿供參考: 「{user_message}」"
-                        f"\n請把草稿當作「內心想說的話」, 不要當作 Bry 對你說的話。"
-                        f"生成主動搭話訊息時, 參考草稿但用你自己的話表達。\n"
-                    )
-                    messages.append({"role": "system", "content": system_msg})
-                    logger.info(
-                        f"[LLMProxy] M2 task 3: proactive draft 從 user role 改成 system role | "
-                        f"agent={agent_id} reason={reason} draft={user_message[:50]!r}"
-                    )
-                    # Bry 拍板 2026-08-05 20:13: M2 task 3 邏輯保留 (Bry 8/2 12:xx 拍板,
-                    # 避免 LLM 誤判 proactive 草稿是 Bry 真實對話), 但 user role 被 pop 完
-                    # 變 0 user role → M2.7 endpoint 400 "chat content is empty"。
-                    # 修法: pop 完 append 一條 placeholder user role 給 M2.7 看
-                    # (內容空字串或 trigger 標記, M2.7 只在意 user role 數量不為 0)。
-                    # 這個 placeholder 不會誤導 LLM 因為前面 system 標記已經明確說
-                    # 「Bry 沒主動發言, 這是 X 觸發的主動訊息」。
-                    messages.append({"role": "user", "content": "（proactive trigger）"})
-                    break
+        if reason != "user_message":
+            # M1.5 (Bry 拍板 2026-08-06 22:00): placeholder 從 pop 邏輯內 for loop 拉出來
+            # 修法動機: 修法 317900b (Bry 8/5 20:13) 的 placeholder 加在 pop 邏輯內,
+            #   條件 `if reason != "user_message" and user_message` 變成 user_message=""
+            #   時整個 block skip (例: reason=night + draft=""), 修法失效
+            #   → M2.7 endpoint 400 "chat content is empty (2013)"
+            # 修法: 拆成兩段 — pop 邏輯只在 user_message 非空時跑 (Bry 8/2 拍板意圖不動),
+            #   placeholder 一定加, 條件 `if reason != "user_message"` (任何 proactive 觸發)
+            if user_message:
+                # M2 task 3 pop 邏輯 (Bry 8/2 拍板, 避免 LLM 誤判 proactive 草稿是 Bry 真實對話)
+                for _i in range(len(messages) - 1, -1, -1):
+                    if (
+                        messages[_i]["role"] == "user"
+                        and messages[_i]["content"] == user_message
+                    ):
+                        messages.pop(_i)
+                        reason_label_map = {
+                            "heartbeat": "heartbeat (Bry 沒主動發言, 這是定期在場確認的主動搭話)",
+                            "proactive_dm": "proactive_dm (Bry 沒主動發言, 這是基於親密度的主動搭話)",
+                            "event": "event (Bry 沒主動發言, 這是角色世界事件觸發的主動訊息)",
+                            "dream": "dream (Bry 沒主動發言, 這是夢境內容)",
+                            "morning": "morning slot (Bry 沒主動發言, 這是早晨主動日記/搭話)",
+                            "night": "night slot (Bry 沒主動發言, 這是夜晚主動日記/搭話)",
+                        }
+                        reason_label = reason_label_map.get(
+                            reason,
+                            f"{reason} (Bry 沒主動發言, 這是 {reason} 觸發的主動訊息)",
+                        )
+                        system_msg = (
+                            f"\n[主動觸發標記] {reason_label}。"
+                            f"草稿供參考: 「{user_message}」"
+                            f"\n請把草稿當作「內心想說的話」, 不要當作 Bry 對你說的話。"
+                            f"生成主動搭話訊息時, 參考草稿但用你自己的話表達。\n"
+                        )
+                        messages.append({"role": "system", "content": system_msg})
+                        logger.info(
+                            f"[LLMProxy] M2 task 3: proactive draft 從 user role 改成 system role | "
+                            f"agent={agent_id} reason={reason} draft={user_message[:50]!r}"
+                        )
+                        break
+            # M1.5: placeholder 一定加 (跟 pop 邏輯解耦, 條件放寬為 `reason != "user_message"`)
+            # 原因: M2.7 endpoint 看到 0 user role 就 400, 任何 proactive 觸發都要補 placeholder
+            # 跟 Bry 8/5 20:13 修法 317900b 邏輯一致, 只是條件放寬
+            messages.append({"role": "user", "content": "（proactive trigger）"})
 
         # β2.1 (Bry 拍板 2026-08-02 21:48): 事件背景注入
         # MemoryMiddleware 透過 event.payload["event"] 注入角色當下情境,
