@@ -84,6 +84,27 @@ MAX_BRY_RECENT = 3
 # 從源頭過濾比再疊一條反框架語句更治本
 STALE_THRESHOLD_SEC = 30 * 60  # 30 分鐘
 
+# M2.0 (Bry 拍板 2026-08-07 15:44): 內在人生記憶注入
+# 根因: Bry 8/7 15:34 查證發現「內在人生記憶完全斷開」, diary/dream/event 寫進了
+# data/soul/{agent_id}/diary/{date}.jsonl, 但對話組裝時完全沒讀
+# → 角色在對話中無法主動提起「今天夢到 XX」「昨天寫了 XX」
+# → 違反 Bry §18 殘留感設計意圖「diary 寫進 history, 後續對話角色會引用」
+#
+# 修法: 加 _format_recent_inner_life(agent_id) helper, 從 data/soul/{agent_id}/diary/
+# 讀最近 INNER_LIFE_DAYS 天 entry (slot in morning/night/dream/event), 注入到
+# _build_messages_group / _build_messages_private 的 system_parts
+#
+# 跟 β2.1 事件背景 (L2472-2479) 同方向: 注入 system message 字串給 LLM 參考
+# 派工精神: 「現成先例可循優先於設計新模式」+ 「只加輕量字串」+
+# 「範圍限定在 proxy.py」+ 「不動 SAGE/v1/Loader/consciousness 任何既有邏輯」
+# Bry 拒絕 B (改 agent_intent 出口) / C (mirror 進 v1 store) 方案
+# Bry 派工原話: 「Bry 拒絕把 diary 當事實送進長期記憶圖譜, 語意上不太對」
+# 「日計是主觀生活片段, 不是需要 LLMJudge 判斷真假的對話事實」
+INNER_LIFE_DATA_DIR = "data/soul"  # 跟 diary.py DEFAULT_DIARY_ROOT 對齊
+INNER_LIFE_DAYS = 3  # 讀最近 3 天 diary jsonl
+INNER_LIFE_MAX_ENTRIES = 5  # 最多 5 條 entry
+INNER_LIFE_MAX_CHARS_PER_ENTRY = 60  # 截斷 (Bry 派工: 「只加輕量字串」)
+
 # 修法 8 (Bry 拍板 2026-08-04 17:18): proactive/heartbeat 觸發注入時間上下文
 # 根因 (兩個獨立觸發觀察):
 # - mai 4:36 EDT 觸發說「晚安」配下午 4:35 時段不合理 (缺現在時段資訊)
@@ -195,6 +216,63 @@ def _append_group_user(speaker: str, content: str) -> None:
     _save_group(history)
 
 
+def _format_recent_inner_life(agent_id: str) -> str:
+    """
+    M2.0 (Bry 拍板 2026-08-07 15:44): 從 diary jsonl 撈最近內在生活片段
+
+    跟 β2.1 事件背景 (L2472-2479) 同方向, 範圍限定 proxy.py
+    讀 data/soul/{agent_id}/diary/{date}.jsonl, 過濾 slot in (morning, night, dream, event)
+
+    Bry 派工原話:
+    - 「在 _build_messages_group/_build_messages_private (呼應 β2.1 事件背景那段的做法)
+       注入一小段『最近 diary/dream/event』摘要文字, 只加輕量字串」
+    - 「不動 SAGE/v1/Loader/consciousness 任何既有邏輯, 範圍限定在 proxy.py 這一個檔案」
+    - 「Bry 拒絕把 diary 當事實送進長期記憶圖譜, 語意上不太對」
+
+    返回:
+    - 空字串: 沒 diary jsonl / 沒 entry / 解析失敗 (注入 caller 跳過)
+    - 多行字串: "- [date slot] snippet" 格式, 最多 INNER_LIFE_MAX_ENTRIES 條
+
+    邊界:
+    - agent 沒 diary jsonl → 回空 (Ram 雖然是 _NO_DIARY 旗標但 Scheduler 仍觸發,
+      沒有 diary jsonl 的 agent 自動跳過, 不需要 hardcode whitelist)
+    - 壞 JSON 行 / 缺欄位 → 跳過那行, 不 crash
+    - slot 不在 (morning, night, dream, event) → 跳過 (e.g. debug/test slot)
+    """
+    out_lines: List[str] = []
+    today = datetime.now()
+    for i in range(INNER_LIFE_DAYS):
+        date_str = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        path = Path(INNER_LIFE_DATA_DIR) / agent_id / "diary" / f"{date_str}.jsonl"
+        if not path.is_file():
+            continue
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            slot = entry.get("slot", "")
+            if slot not in ("morning", "night", "dream", "event"):
+                continue
+            content = entry.get("content", "").strip()
+            if not content:
+                continue
+            # 截斷 (Bry 派工: 「只加輕量字串」)
+            if len(content) > INNER_LIFE_MAX_CHARS_PER_ENTRY:
+                content = content[:INNER_LIFE_MAX_CHARS_PER_ENTRY - 3] + "..."
+            out_lines.append(f"- [{date_str} {slot}] {content}")
+    if not out_lines:
+        return ""
+    return "\n".join(out_lines[-INNER_LIFE_MAX_ENTRIES:])
+
+
 def _session_key(agent_id: str, user_id: str) -> str:
     """KI-001: per (user, agent) session key,確保多 owner 隔離
 
@@ -269,6 +347,20 @@ def _build_messages_group(
     mood_desc = emotion_engine.mood_description(mood)
     if mood_desc:
         system_parts.append(f"\n[情緒狀態] {mood_desc}")
+
+    # M2.0 (Bry 拍板 2026-08-07 15:44): 內在人生記憶注入
+    # 跟 β2.1 事件背景 (L2472-2479) 同方向, 範圍限定 proxy.py
+    # 從 data/soul/{agent_id}/diary/ 撈最近 3 天 diary/dream/event 摘要
+    # 注入位置: mood_desc 之後, 當下時間之前 (跟修法 8 對齊)
+    # 派工精神: 「只加輕量字串」+ 「呼應 β2.1 事件背景那段的做法」
+    inner_life = _format_recent_inner_life(agent_id)
+    if inner_life:
+        system_parts.append(
+            f"\n[最近內在生活] 以下是你最近的日記/夢境/事件摘要。"
+            f"這些都是你自己經歷過的事情, 根據對話上下文自然運用即可, "
+            f"不要逐條複述或解釋, 也不要重複 tag。\n"
+            f"## 你的最近內在生活\n{inner_life}\n"
+        )
 
     # 當下時間 — Bry 拍板 2026-08-02 20:xx, 選項 A (見 _handle_event_impl 註解)
     # 修法 8 (Bry 拍板 2026-08-04 17:18): 緊接 f9105f1「當下時間」注入兩行時間上下文
@@ -512,6 +604,20 @@ def _build_messages_private(
     mood_desc = emotion_engine.mood_description(mood)
     if mood_desc:
         system_parts.append(f"\n[情緒狀態] {mood_desc}")
+
+    # M2.0 (Bry 拍板 2026-08-07 15:44): 內在人生記憶注入
+    # 跟 β2.1 事件背景 (L2472-2479) 同方向, 範圍限定 proxy.py
+    # 從 data/soul/{agent_id}/diary/ 撈最近 3 天 diary/dream/event 摘要
+    # 注入位置: mood_desc 之後, 當下時間之前 (跟 _build_messages_group 對齊)
+    # 派工精神: 「只加輕量字串」+ 「呼應 β2.1 事件背景那段的做法」
+    inner_life = _format_recent_inner_life(agent_id)
+    if inner_life:
+        system_parts.append(
+            f"\n[最近內在生活] 以下是你最近的日記/夢境/事件摘要。"
+            f"這些都是你自己經歷過的事情, 根據對話上下文自然運用即可, "
+            f"不要逐條複述或解釋, 也不要重複 tag。\n"
+            f"## 你的最近內在生活\n{inner_life}\n"
+        )
 
     # 私聊歷史 - KI-001: per (user, agent) 隔離
     # 修法 7+9 (Bry 拍板 2026-08-04 13:24 / 20:37): 改用 get_recent_with_meta 拿 timestamp
