@@ -1418,10 +1418,16 @@ intimacy_level 分四階段(對齊 agent 普遍 4 階段):
 
 _AGENT_DIALOGUE_RULES = """【語言分工 - 跟上面 FORMAT_RULES 一致】
 - `audio_text` 字段:使用日文(見上面「該角色專屬的日文輸出規則」),TTS 來源
+  - **Bry 拍板 2026-08-07 00:16: audio_text 只寫「可被聽見的話」**, 不要寫
+    動作描述（例：「（輕輕靠近）」「（微微低頭）」）、心理描述、場景描述。
+    這些會被 TTS 唸出來, 語音掉價。動作/心理描述放在 text 第 2 行起的
+    中文翻譯區段, 或省略。audio_text 範例: 「在喔, Bryan。」(純對話, 不含動作)
 - `text` 字段:第 1 行日文原文(含情緒 tag,跟 audio_text 完全相同)+ 換行 + 第 2 行起括號包中文翻譯
   - 例:`[calm] こんにちは。\\n(你好。)`
   - 例:`[teasing] --また来た。\\n(--又來了。)`
   - 中文部分使用繁體中文(台灣用語),**禁止簡體字符出現**
+  - 第 2 行起可放動作/心理描述中文版（例：「(輕輕靠近。)」「(微微低頭。)」
+    給 Bry 用戶端看, 不會被 TTS 唸）
 
 不要用 * 包裹動作描述。直接說話,不要自我介紹。保持簡短,1-3 句。
 絕對禁止:
@@ -1664,6 +1670,42 @@ def _safe_truncate_on_length(raw: str, max_chars: int = 200) -> str:
         f"fallback 硬切到 {max_chars} 字"
     )
     return tail
+
+
+def _strip_action_descriptions(text: str) -> str:
+    """Bry 拍板 2026-08-07 00:16: 過濾 TTS 不該唸的動作/心理描述.
+
+    根因: LLM (M2.7) 寫 audio_text 時把「（輕輕靠近）」「（微微低頭）」
+    這類動作/心理描述也寫進 audio_text 那行日文, 結果 Fish TTS 連同
+    動作描述一起唸出來, 語音掉價。850 條樣本統計:
+    - 全形括號 （...）: 36+ 條 (Bry 派工 8/7 00:xx 統計), rem/akane 是重災戶
+    - 雙破折號 ——...——: 11 條 (Bry 派工統計), 但實務檢查這 11 條**全是
+      mahiru 對話風格 (用 —— 當句子分隔, 不是動作描述)**, 8/7 派工後
+      細看樣本後確認, 暫不剝避免誤殺對話 (Bry 派工精神: 拒絕大改)
+    - 日文角括號 「...」: 12 條, Bry 警告「可能是對話不是動作」, 跳過不處理
+
+    修法 (Bry 拍板 8/7 00:16 選項 C, A 為主):
+    - regex 只剝全形/半形括號包動作描述, audio_text 出口階段
+    - prompt 補一句「audio_text 那行日文只寫可被聽見的話」, 從源頭降低髒資料
+    - 不改固定標記格式, 拒絕大改 (跟 8/6 21:44 派工精神一致)
+    - 雙破折號暫不處理 (Bry 派工原話: 「若有問題再細修」, 實務確認是對話)
+
+    Args:
+        text: audio_text 字串 (已通過 _unescape_llm_text 階段)
+
+    Returns:
+        過濾後的 audio_text, 動作描述已剝
+    """
+    if not text:
+        return text
+    # 全形/半形括號包動作描述: （動作） / (action)
+    # 11 條破折號樣本檢查後確認是 mahiru 對話風格, 暫不剝 (避免誤殺)
+    text = re.sub(r"[（(][^（）)\n]+[）)]", "", text)
+    # 清掉多餘空白 (regex 剝掉後會留連續空格)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = text.strip()
+    return text
 
 
 def _parse_json_layer1(raw: str) -> Optional[Dict[str, Any]]:
@@ -2116,6 +2158,11 @@ def _parse_llm_output(raw: str, agent_id: str) -> Dict[str, str]:
     # 字符本身的機率極低, Bry 拍板接受這個風險.
     text = _unescape_llm_text(text)
     audio_text = _unescape_llm_text(audio_text)
+
+    # Bry 拍板 2026-08-07 00:16: 過濾 TTS 不該唸的動作/心理描述
+    # 850 條樣本中 ~47 條 (5.5%) 含全形括號/雙破折號動作描述, rem/akane 是重災戶
+    # 注意: 只動 audio_text, text 保留 (Bry 用戶端要看到動作描述, 跟 TTS 分離)
+    audio_text = _strip_action_descriptions(audio_text)
 
     # emotion 白名單驗證
     whitelist = _get_emotion_whitelist(agent_id)
