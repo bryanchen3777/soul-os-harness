@@ -56,7 +56,10 @@ DIARY_MAX_TOKENS = 200
 # M0.3 (2026-08-01 00:45 Perplexity 派工): clean 字符上限
 # 對齊 Bry 7/18 拍板: diary 通用規格 1-2 句 < 50 字
 # 超過 50 字視為 LLM 沒遵守, 跟 LLM 失敗一樣走 placeholder (Bry 19:55+ 兜底)
-DIARY_MAX_CLEAN_CHARS = 50
+# M0.4 (2026-08-06 21:30 Bry 拍板): 50 → 80
+# 動機: 8/6 Rem sim 跑出 6 條 placeholder, 全部是「超過 50 字」觸發 (非 LLM 失敗)
+# 50 字對中文 LLM 太嚴格, 放寬到 80 給 LLM 自然表達空間
+DIARY_MAX_CLEAN_CHARS = 80
 DIARY_TEMPERATURE = 0.7
 DIARY_RECENT_MEMORIES = 5  # 從 v1 mirror 抽最近 5 條當 context
 
@@ -158,6 +161,19 @@ class DiaryWriter:
     def _diary_path(self, agent_id: str, date_str: str) -> Path:
         return self.data_dir / agent_id / "diary" / f"{date_str}.jsonl"
 
+    @staticmethod
+    def _strip_think(content: str) -> str:
+        """
+        M0.4 (Bry 拍板 2026-08-06 21:30): 剝掉 <think>...</think> 區塊。
+
+        M2.7 / M3 偶爾會在 content 內夾帶 think block 推理痕跡。
+        修法前: write_entry 寫 raw, jsonl 內殘留 think + 沒實際 diary。
+        修法後: write_entry 寫 clean (think 已被剝), jsonl 乾淨。
+
+        返回 stripped content. 若原 content 沒有 think block, 原樣返回。
+        """
+        return re.sub(r"^<think>.*?</think>\s*", "", content, flags=re.DOTALL).strip()
+
     def write_entry(
         self,
         agent_id: str,
@@ -168,16 +184,32 @@ class DiaryWriter:
         """
         寫一條 diary entry 到今天的 jsonl。
         回傳寫入的路徑 (None 表示失敗)。
+
+        M0.4 (Bry 拍板 2026-08-06 21:30):
+        - 寫入前先剝 think block, 拿 clean 寫入 (jsonl 乾淨)
+        - clean 空 → 拒絕寫入 (return None), 強迫 caller 走 placeholder
+          修法前: 7 條 think_only (raw 200+ chars, clean 0) 被誤判成 source=llm 寫入
+          修法後: write_entry 看到 clean 空直接擋掉, caller 必須改傳 placeholder
         """
         if slot not in ("morning", "night"):
             logger.warning(f"[Diary] {agent_id} 未知 slot={slot}, 跳過")
+            return None
+        # M0.4: 寫入前 strip think, 拿 clean 寫入
+        clean = self._strip_think(content)
+        if not clean:
+            # think_only 情況: LLM 只回 think block 沒實際 diary
+            # 修法前會被當 source=llm 寫入, 修法後直接擋掉
+            logger.warning(
+                f"[Diary] {agent_id} {slot} 拒絕寫入: clean 為空 "
+                f"(raw {len(content)} chars, 可能 LLM 只回 think 沒實際 diary)"
+            )
             return None
         today = datetime.now().strftime("%Y-%m-%d")
         path = self._diary_path(agent_id, today)
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "slot": slot,
-            "content": content,
+            "content": clean,  # M0.4: 寫 clean (不是 raw), jsonl 內不會有 think block
             "source": source,
         }
         with self._lock:
@@ -187,7 +219,7 @@ class DiaryWriter:
                     f.write(json.dumps(entry, ensure_ascii=False) + "\n")
                 logger.info(
                     f"[Diary] ✓ 寫入 {agent_id} {slot} → {path.name} "
-                    f"({len(content)} chars, source={source})"
+                    f"({len(clean)} chars, source={source})"
                 )
                 return path
             except Exception as e:
@@ -286,6 +318,7 @@ async def generate_diary_entry(
     # 修法動機: LLM 偶爾只回 <think>...</think> 沒實際 diary, raw content non-empty 但 clean empty.
     # 之前 `if content` 走 source=llm 寫入, 導致 0 chars empty 污染 diary.
     # 對齊 Bry 19:55+ 「拒絕問, 強制讀」+ 兜底原則: clean empty 跟 LLM 失敗一樣走 placeholder.
+    # M0.4 (2026-08-06 21:30 Bry 拍板): 邏輯收斂到 write_entry 內做, 這裡只負責算 clean
     if content:
         clean = re.sub(r"^<think>.*?</think>\s*", "", content, flags=re.DOTALL).strip()
         if not clean:
@@ -294,9 +327,10 @@ async def generate_diary_entry(
                 f"(raw {len(content)} chars, clean 0), 寫 placeholder"
             )
             return writer.write_entry(agent_id, slot, placeholder, source="placeholder")
-        # M0.3 (2026-08-01 00:45 Perplexity 派工): clean 超長走 placeholder
+        # M0.3 (2026-08-01 00:45 Perplexity 派工) + M0.4 (2026-08-06 21:30 Bry 拍板): clean 超長走 placeholder
         # Bry 7/18 拍板 1-2 句 < 50 字, LLM 不一定遵守 (Rem 169 chars 違規)
-        # 超長 視為 LLM 沒遵守, 跟 LLM 失敗一樣走 placeholder (Bry 19:55+ 兜底)
+        # M0.4 50 → 80: 50 字對中文 LLM 太嚴格, 8/6 sim 跑出 6 條都是「超過 50 字」觸發
+        # Bry 拍板放寬到 80, 給 LLM 自然表達空間
         if len(clean) > DIARY_MAX_CLEAN_CHARS:
             logger.warning(
                 f"[Diary] {agent_id} {slot} LLM 輸出超長 "

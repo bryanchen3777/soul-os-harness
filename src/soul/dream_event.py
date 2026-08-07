@@ -221,9 +221,35 @@ class DreamEventWriter:
     def _diary_path(self, agent_id: str, date_str: str) -> Path:
         return self.data_dir / agent_id / "diary" / f"{date_str}.jsonl"
 
+    @staticmethod
+    def _strip_think(content: str) -> str:
+        """
+        M0.4 (Bry 拍板 2026-08-06 21:30): 剝掉 <think>...</think> 區塊。
+
+        跟 diary.py 同 pattern, 確保 dream/event slot 寫入 jsonl 也是乾淨的。
+        8/6 Rem sim 跑出 5 條 think_only event, 修法後應被歸類到 placeholder。
+        """
+        import re
+        return re.sub(r"^<think>.*?</think>\s*", "", content, flags=re.DOTALL).strip()
+
     def _write_entry(
         self, agent_id: str, slot: str, content: str, source: str
     ) -> Optional[Path]:
+        """
+        M0.4 (Bry 拍板 2026-08-06 21:30):
+        - 寫入前先剝 think block, 拿 clean 寫入
+        - clean 空 → 拒絕寫入 (return None), 強迫 caller 走 placeholder
+          修法前: 5 條 think_only event 被當 source=llm 寫入, jsonl 含 think 沒 diary
+          修法後: write_entry 看到 clean 空直接擋掉, caller 必須改傳 placeholder
+        """
+        # M0.4: 寫入前 strip think, 拿 clean 寫入
+        clean = self._strip_think(content)
+        if not clean:
+            logger.warning(
+                f"[DreamEvent] {agent_id} {slot} 拒絕寫入: clean 為空 "
+                f"(raw {len(content)} chars, 可能 LLM 只回 think 沒實際 diary/event)"
+            )
+            return None
         today = datetime.now().strftime("%Y-%m-%d")
         path = self._diary_path(agent_id, today)
         import json
@@ -231,7 +257,7 @@ class DreamEventWriter:
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "slot": slot,
-            "content": content,
+            "content": clean,  # M0.4: 寫 clean, jsonl 不含 think block
             "source": source,
         }
         with self._lock:
@@ -241,7 +267,7 @@ class DreamEventWriter:
                     f.write(json.dumps(entry, ensure_ascii=False) + "\n")
                 logger.info(
                     f"[DreamEvent] ✓ 寫入 {agent_id} {slot} → {path.name} "
-                    f"({len(content)} chars, source={source})"
+                    f"({len(clean)} chars, source={source})"
                 )
                 return path
             except Exception as e:
@@ -280,11 +306,17 @@ class DreamEventWriter:
             f"夢境內容:"
         )
         content = await _call_minimax_for_dream_event(system, user, self.api_key)
+        # M0.4 (Bry 拍板 2026-08-06 21:30): think_only 直接走 placeholder, 不留空字串
+        # 修法前: LLM 只回 think block 沒實際 dream, _write_entry 仍寫 source=llm 進 jsonl
+        # 修法後: _write_entry 看到 clean 空 return None, 這裡 fallback 寫 placeholder
         if not content:
-            content = DREAM_FALLBACK_TEMPLATE.format(date=today)
-            result = self._write_entry(agent_id, "dream", content, source="placeholder")
+            result = self._write_entry(agent_id, "dream", DREAM_FALLBACK_TEMPLATE.format(date=today), source="placeholder")
         else:
             result = self._write_entry(agent_id, "dream", content, source="llm")
+            if result is None:
+                # M0.4: LLM 回了東西但 clean 空 (think_only), 改寫 placeholder
+                logger.warning(f"[DreamEvent] {agent_id} dream think_only, fallback placeholder")
+                result = self._write_entry(agent_id, "dream", DREAM_FALLBACK_TEMPLATE.format(date=today), source="placeholder")
 
         # Stage 4.3: 雙向 touch (失敗 try/except, 不中斷夢境流程)
         try:
@@ -343,11 +375,15 @@ class DreamEventWriter:
             f"事件內容:"
         )
         content = await _call_minimax_for_dream_event(system, user, self.api_key)
+        # M0.4 (Bry 拍板 2026-08-06 21:30): think_only 直接走 placeholder, 不留空字串
         if not content:
-            content = EVENT_FALLBACK_TEMPLATE.format(date=today, time_str=time_str)
-            result = self._write_entry(agent_id, "event", content, source="placeholder")
+            result = self._write_entry(agent_id, "event", EVENT_FALLBACK_TEMPLATE.format(date=today, time_str=time_str), source="placeholder")
         else:
             result = self._write_entry(agent_id, "event", content, source="llm")
+            if result is None:
+                # M0.4: LLM 回了東西但 clean 空 (think_only), 改寫 placeholder
+                logger.warning(f"[DreamEvent] {agent_id} event think_only, fallback placeholder")
+                result = self._write_entry(agent_id, "event", EVENT_FALLBACK_TEMPLATE.format(date=today, time_str=time_str), source="placeholder")
 
         # Stage 4.3: agent 對 Bry 微量 touch (Bry 不在場, 事件觸發「想到 Bry」)
         try:
