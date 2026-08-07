@@ -419,14 +419,52 @@ class SoulScheduler:
         4.2+缺口 1 + 4.3: 觸發事件. 2 隻角色/次, 場景模板.
 
         Mavis 拍板 2026-07-21 16:35: 1 → 2
+
+        M1.7 (Bry 拍板 2026-08-07 15:00): event 也過 proactive whitelist
+        動機: 8/7 12:30 anna + ram 主動發訊息證實 event 觸發會繞過修法 11 whitelist
+              (修法 11 narrow 派工時漏了 event, 只過濾了 proactive_dm / heartbeat)
+        修法: event 從 _all_agents 抽, 然後 filter 過 candidates (跟 _fire_heartbeat 修法 11 pattern 一致)
+        不用「從 candidates 抽」是為了跟修法 11 的 _fire_heartbeat 邏輯對齊,
+        測試可以 mock sample return_value 強制回全名單, filter 自動過濾
+
+        共用而不是新增獨立 event whitelist 參數: Bry 派工「目前系統裡實際會主動發訊息給 Bry 的路徑
+              只有 proactive_dm + event 兩個, 共用同一個 whitelist 就足夠」
+
+        Bry 派工精神:
+        - 「A 方案就足夠, 不用做到 B」 (B 是在所有 agent_intent 出口套 whitelist, 改動更大)
+        - 「不為假設中的未來灑過濾網」 (未來若長出第三條路徑再說, 不預先過度設計)
+        - 「更貼合修法 11 當初 narrow 派工的精神」 (跟 proactive_dm / heartbeat 一樣 pattern, 不擴大)
+        - 向後相容: whitelist=None → _get_proactive_agents() 回 _all_agents, agents 全部保留, 行為不變
         """
         if not self._all_agents or self._event_callback is None:
             return
-        import random as _r
-        # Stage 4.3: 一次抽 2 隻, 不重複
+        # M1.7: 從 _all_agents 抽, 然後 filter 過 whitelist (跟 _fire_heartbeat 修法 11 一致)
+        # 用 module-level random (跟 _fire_heartbeat 一致) 而非 local import, 方便測試 mock
         n = min(2, len(self._all_agents))
-        agents = _r.sample(self._all_agents, n)
-        logger.info(f"[Scheduler] ✨ 事件觸發: {len(agents)} 隻角色 ({agents})")
+        raw_picks = random.sample(self._all_agents, n)
+        # 過濾掉非 candidates 的 (跟 _fire_heartbeat 修法 11 的 `picks = [a for a in raw_picks if a in candidates]` 一致)
+        candidates = self._get_proactive_agents()
+        agents = [a for a in raw_picks if a in candidates]
+        if not agents:
+            # 全部被 filter 掉 (例如 whitelist 配錯或太嚴), silent skip
+            logger.debug(
+                f"[Scheduler] ✨ event 抽到的 {len(raw_picks)} 隻全部不在 whitelist, 跳過 "
+                f"(raw={raw_picks}, whitelist={self._proactive_agents_whitelist})"
+            )
+            # 排下次 (跟原本一樣的排程邏輯, 避免下次又被卡住)
+            mins = random.randint(
+                self.event_min_interval_minutes,
+                self.event_max_interval_minutes,
+            )
+            self._next_event_time = now_local() + timedelta(minutes=mins)
+            logger.info(
+                f"[Scheduler] ✨ 下次事件: {self._next_event_time.strftime('%Y-%m-%d %H:%M')}"
+            )
+            return
+        logger.info(
+            f"[Scheduler] ✨ 事件觸發: {len(agents)} 隻角色 ({agents}) "
+            f"(whitelist={self._proactive_agents_whitelist}, raw={raw_picks})"
+        )
         for agent_id in agents:
             # M1.1: 觸發後、callback 之前發布 AGENT_INTENT
             await self._publish_agent_intent(agent_id, reason="event")
@@ -436,9 +474,7 @@ class SoulScheduler:
                 logger.exception(f"[Scheduler] event {agent_id} 失敗: {e}")
 
         # 排下次事件 (4-8 小時後)
-        from datetime import timedelta
-        import random as _r2
-        mins = _r2.randint(
+        mins = random.randint(
             self.event_min_interval_minutes,
             self.event_max_interval_minutes,
         )
