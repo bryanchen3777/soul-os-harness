@@ -174,6 +174,26 @@ class TestM16Fix(unittest.TestCase):
         # text 保留 (Bry 用戶端要看)
         self.assertIn("她不再回應", result["text"])
 
+    def test_16_double_application_idempotent(self):
+        """M1.6 雙重套用是 idempotent (helper 跑兩次跟跑一次結果一樣).
+
+        Bry 7/22 JP rollback (audio_text = generated_text) 在 _handle_event_impl 內,
+        會用 generated_text 覆蓋 _parse_llm_output return 的 audio_text. 所以
+        M1.6 必須在 _handle_event_impl 內 (JP rollback 之後) 再套一次, 確保
+        fish_tts_handler 拿到的 audio_text 是乾淨的.
+        兩次套用是 idempotent (helper 對已剝的 audio_text 跑 regex 沒效果).
+        """
+        from src.llm.proxy import _strip_action_descriptions
+        case = "——（微微靠近）在喔，Bryan。"
+        once = _strip_action_descriptions(case)
+        twice = _strip_action_descriptions(once)
+        # 兩次套用結果應該一樣 (idempotent)
+        self.assertEqual(once, twice,
+            "M1.6 helper 應該 idempotent, 雙重套用不會破壞")
+        # 套完兩次括號還是剝掉
+        self.assertNotIn("（微微靠近）", twice)
+        self.assertIn("在喔", twice)
+
 
 if __name__ == "__main__":
     print("=" * 60)

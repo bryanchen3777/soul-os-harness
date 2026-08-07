@@ -2160,8 +2160,11 @@ def _parse_llm_output(raw: str, agent_id: str) -> Dict[str, str]:
     audio_text = _unescape_llm_text(audio_text)
 
     # Bry 拍板 2026-08-07 00:16: 過濾 TTS 不該唸的動作/心理描述
-    # 850 條樣本中 ~47 條 (5.5%) 含全形括號/雙破折號動作描述, rem/akane 是重災戶
-    # 注意: 只動 audio_text, text 保留 (Bry 用戶端要看到動作描述, 跟 TTS 分離)
+    # 850 條樣本中 ~47 條 (5.5%) 含全形括號動作描述, rem/akane 是重災戶
+    # 注意 1: 只動 audio_text, text 保留 (Bry 用戶端要看到動作描述)
+    # 注意 2: 必須在主 return 之前 (不然 _parse_llm_output return 含括號的 audio_text)
+    # 注意 3: JP rollback 7/22 會在 L2539 用 generated_text 覆蓋 audio_text,
+    #   雙重套用 (L2540 還有) 確保 fish_tts_handler 拿到的 audio_text 是乾淨的
     audio_text = _strip_action_descriptions(audio_text)
 
     # emotion 白名單驗證
@@ -2537,6 +2540,12 @@ class LLMProxy:
             # - Fish TTS handler 已被 .env FISH_TTS_ENABLED=0 關掉 (TG 端純文字, browser 走 Edge TTS)
             # - 不再 retry 強制日文 audio_text (LLM 跑中文 persona 已經會吐中文)
             audio_text = generated_text
+            # Bry 拍板 2026-08-07 00:16: 過濾 TTS 不該唸的動作/心理描述
+            # 850 條樣本中 ~47 條 (5.5%) 含全形括號/雙破折號動作描述, rem/akane 是重災戶
+            # 注意: 必須在 audio_text = generated_text 之後套用 (JP rollback 會把
+            # _strip_action_descriptions 結果覆蓋掉, 所以放在這之後)
+            # 只動 audio_text, text 保留 (Bry 用戶端要看到動作描述, 跟 TTS 分離)
+            audio_text = _strip_action_descriptions(audio_text)
             # 解析後二次空檢查(防止 LLM 輸出有效 JSON 但 text 為空)
             # Bry 拍板 2026-07-25:
             # - Revert per-agent stub「(沉默。)」(Bry 看到覺得「不正確」= hack,不是真的回應)
