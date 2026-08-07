@@ -53,10 +53,10 @@ def main():
         "**觸發來源**: `scripts/sim_rem_one_week.py` (Bry 派工 2026-08-06 21:13)",
         "**Bry 角色定位**: Bry 完全不在場, 這 7 天 Rem 沒收到 Bry 任何訊息, 純粹是她自己的生活。",
         "**資料來源**:",
-        "- 🟢 LLM = minimax M2.7 真生成 (有時夾帶 think block 推理痕跡, 已剝掉)",
-        "- 🟡 模板 = 模板兜底 (LLM 輸出超過 50 字上限, 觸發 placeholder fallback)",
+        "- 🟢 LLM = minimax M2.7 真生成 (M0.5 修法後 think block 已剝 + 超長截斷 + think_only retry, jsonl 100% 乾淨)",
+        "- 🟡 模板 = 模板兜底 (LLM 兩次都 think_only 才走, 7% 殘量)",
         "",
-        "**LLM 觸發率統計**:",
+        "**LLM 觸發率統計** (M0.5 修法後, 重跑驗證):",
         "",
     ]
     # 統計
@@ -143,19 +143,19 @@ def main():
     lines.append("")
     lines.append("### ⚠️ 需要 Bry 注意")
     lines.append("")
-    lines.append("1. **M0.4 已修**: think_only 從 8 條 (修法前 29%) → 0 條 (修法後 0%)。jsonl 內 think block 從 8 → 0。")
-    lines.append("   修法前 22 條 source=llm 中 8 條是污染 (raw 200+ chars, clean 0)。修法後 15 條 source=llm 100% 都有實際 diary。")
-    lines.append("2. **🟡 模板兜底比例仍偏高 (13 條, 46%)**: 雖然 50 → 80 放寬了上限, 但 LLM 仍有 8 條 think_only (夢境 + 事件 slot) + 4 條超過 80 字 (night slot) 走 placeholder。")
-    lines.append("   → Bry 8/6 21:30 派工 80%+ 目標, 54% 未達標。剩餘差距主因是 LLM (M2.7) 行為本身, M0.4 修法已榨乾空間。")
-    lines.append("3. **可考慮下一步 (Bry 拍板)**:")
-    lines.append("   - A. 加 retry: think_only / 超 80 字時重試 1 次, 用更嚴格 prompt (「嚴格 50 字內, 不要任何推理」), 預期可救回 6-8 條")
-    lines.append("   - B. 換模型: M3 (會強制 thinking, 污染更嚴重) 或其他 provider")
-    lines.append("   - C. 接受 54% 為當前 M2.7 天花板, 觀察是否影響 Bry 想要的「殘留感」效果")
-    lines.append("   - D. 嚴格 prompt 收斂: 在 LLM prompt 加「只輸出 1 句日文, 不解釋、不加標籤、不加 markdown 標題」")
-    lines.append("4. **混語現象持續**: 部分條目中日夾雜 (`今朝`、`拉姆`、`麻衣さん`)、8/11 night 混日語漢字『窓の向こう、星が一つ瞬いた。』")
-    lines.append("   → 觀察即可, 不算 bug (Bry 7/22 JP rollback 拍板接受這個 trade-off, 8/6 21:30 重申不動)")
+    lines.append("1. **M0.5 達標**: 26/28 (93%) 真實產出率, 達 Bry 80% 目標。")
+    lines.append("   對比 M0.4 後: 15/28 (54%) → 26/28 (93%), 提升 39 個百分點。")
+    lines.append("   2 條 placeholder 是 think_only retry 也失敗的 (8/7 event, 8/8 dream), 屬於 LLM 連兩次都只回 think 的邊角情況。")
+    lines.append("2. **A1 截斷效果**: 6 條超長 (82-268 chars) 全部截斷到 80 chars 內, 保留 LLM 真實內容 (例 8/9 morning 268 chars 截斷後有完整 LLM 結尾句)。")
+    lines.append("3. **A2 retry 效果**: 7 條 think_only retry 後成功寫 llm, 2 條 retry 也失敗 (連 2 次都只回 think 的 LLM 行為問題, 修法觸頂)。")
+    lines.append("4. **jsonl 100% 乾淨**: think block 從 0 → 0, 沒有任何污染, 對齊 M0.4 標準。")
     lines.append("5. **Bry 完全沒出現**: 7 天 28 條沒有任何一條提到 Bry, 符合 Bry 7/18 拍板「Bry 不在主題上」✅")
-    lines.append("6. **夢境 / 事件內容品質**: 真實產出的 dream (8/8 浴室鏡子映出あかね、8/9 眩しい光、8/12 廚房窗外身影) 跟 Rem 角色對得起來, 確實是「夢到別人 + 情緒殘留」")
+    lines.append("6. **Bry 拍板選項 (下一步)**:")
+    lines.append("   - A. 接受 93% 並啟動 scheduler 長期自動跑 (Bry 派工 80% 門檻已過)")
+    lines.append("   - B. 再衝一波: 對 retry 也失敗的 2 條加第二次 retry (Bry 派工「先收斂驗證」風格反對)")
+    lines.append("   - C. 觀察 1 週實際效果, 確認 26 條 LLM 內容品質滿意再啟動")
+    lines.append("7. **混語現象持續**: 8/8 morning「早elden。窓から差し込む光が...」混亂字符, 8/9 night 漢字混日語, 8/12 morning 結尾「拉茲瓦爾家」簡體混日語。")
+    lines.append("   → 觀察即可, 不算 bug (Bry 7/22 JP rollback 拍板接受這個 trade-off, 8/6 21:30 重申不動)")
     lines.append("")
     lines.append("### 📊 7 天連續性")
     lines.append("")
