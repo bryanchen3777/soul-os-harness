@@ -71,6 +71,22 @@ function Start-SoulOsServer {
         exit 1
     }
     $env:PYTHONIOENCODING = 'utf-8'
+
+    # Bry 拍板 2026-08-07 18:19: 啟動前備份舊 log 為帶時間戳檔名,沿用舊 server_ops 備份模式
+    # (派工原話: 「沿用既有修法拼湊拒絕大改」)
+    # 解決 8/7 17:31 cron 修法 12 一天回顧報告 ⚠️ (24h scheduler log 全丟, 因為 Start-Process
+    # -RedirectStandardOutput 是 truncate 模式, 每次重啟都把歷史 log 清掉)
+    # 範圍: 只動 server_ops.ps1, 不加 log rotate / size limit 邏輯
+    # (Bry 派工 spirit: 「不為假設中的未來灑過濾網」)
+    $backupDir = Join-Path $root 'data\logs'
+    $backupTs = Get-Date -Format 'yyyyMMdd_HHmmss'
+    if (Test-Path $outLog) {
+        Move-Item -Path $outLog -Destination (Join-Path $backupDir "server_${backupTs}.log")
+    }
+    if (Test-Path $errLog) {
+        Move-Item -Path $errLog -Destination (Join-Path $backupDir "server_${backupTs}.err")
+    }
+
     $proc = Start-Process -FilePath $python `
         -ArgumentList "$root\scripts\run_server.py" `
         -RedirectStandardOutput $outLog `
