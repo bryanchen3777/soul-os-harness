@@ -312,6 +312,13 @@ async def generate_diary_entry(
         f"最近的事:\n{memories_section}\n\n"
         f"寫一條今天的 {slot_zh}:"
     )
+    # M0.5 A1+A2 (Bry 派工 2026-08-06 21:44): 截斷保留 LLM 內容 + think_only retry 一次
+    # Bry 派工精神:
+    #   - 截斷 (A1): 沿用修法 10 _safe_truncate_on_length, max_chars=80, 保留 LLM 真實產出
+    #   - retry (A2): think_only 才 retry, 加輕量 hint (「請直接輸出最終內容」)
+    #   - 不要做 D 那種嚴格收斂 prompt, 過度收斂會把好例子的空間壓沒
+    from src.llm.proxy import _safe_truncate_on_length  # 沿用修法 10 的截斷 helper
+    RETRY_HINT = "\n\n（請直接輸出最終內容，不要輸出思考過程。）"
     content = await _call_minimax_for_diary(system, user, writer.api_key)
 
     # M0.2 (2026-08-01 00:35 Perplexity 派工): 抽掉 think block 後檢查 clean
@@ -319,24 +326,34 @@ async def generate_diary_entry(
     # 之前 `if content` 走 source=llm 寫入, 導致 0 chars empty 污染 diary.
     # 對齊 Bry 19:55+ 「拒絕問, 強制讀」+ 兜底原則: clean empty 跟 LLM 失敗一樣走 placeholder.
     # M0.4 (2026-08-06 21:30 Bry 拍板): 邏輯收斂到 write_entry 內做, 這裡只負責算 clean
+    # M0.5 (2026-08-06 21:44 Bry 拍板): think_only 加 retry, 超長改截斷
     if content:
         clean = re.sub(r"^<think>.*?</think>\s*", "", content, flags=re.DOTALL).strip()
         if not clean:
+            # M0.5 A2: think_only retry 一次
             logger.warning(
                 f"[Diary] {agent_id} {slot} LLM 只回 think 沒 diary "
-                f"(raw {len(content)} chars, clean 0), 寫 placeholder"
+                f"(raw {len(content)} chars, clean 0), retry 一次"
             )
-            return writer.write_entry(agent_id, slot, placeholder, source="placeholder")
-        # M0.3 (2026-08-01 00:45 Perplexity 派工) + M0.4 (2026-08-06 21:30 Bry 拍板): clean 超長走 placeholder
-        # Bry 7/18 拍板 1-2 句 < 50 字, LLM 不一定遵守 (Rem 169 chars 違規)
-        # M0.4 50 → 80: 50 字對中文 LLM 太嚴格, 8/6 sim 跑出 6 條都是「超過 50 字」觸發
-        # Bry 拍板放寬到 80, 給 LLM 自然表達空間
-        if len(clean) > DIARY_MAX_CLEAN_CHARS:
+            content = await _call_minimax_for_diary(system, user + RETRY_HINT, writer.api_key)
+            if content:
+                clean = re.sub(r"^<think>.*?</think>\s*", "", content, flags=re.DOTALL).strip()
+        if not clean:
+            # retry 也失敗, 才走 placeholder
             logger.warning(
-                f"[Diary] {agent_id} {slot} LLM 輸出超長 "
-                f"({len(clean)} chars > {DIARY_MAX_CLEAN_CHARS}), 寫 placeholder"
+                f"[Diary] {agent_id} {slot} LLM retry 後仍 think_only / 失敗, 寫 placeholder"
             )
             return writer.write_entry(agent_id, slot, placeholder, source="placeholder")
+        # M0.5 A1: 超長改截斷, 不再整段丟棄
+        # Bry 8/6 21:44 派工: 保留 LLM 真正寫出來的內容, 只是裁短, 不是整段作廢
+        if len(clean) > DIARY_MAX_CLEAN_CHARS:
+            truncated = _safe_truncate_on_length(clean, max_chars=DIARY_MAX_CLEAN_CHARS)
+            logger.info(
+                f"[Diary] {agent_id} {slot} LLM 輸出超長 "
+                f"({len(clean)} chars > {DIARY_MAX_CLEAN_CHARS}), 截斷到 {len(truncated)} chars (修法 10 pattern)"
+            )
+            # 截斷後的內容還是要通過 write_entry 的 strip_think 檢查
+            return writer.write_entry(agent_id, slot, truncated, source="llm")
         return writer.write_entry(agent_id, slot, content, source="llm")
     else:
         logger.warning(f"[Diary] {agent_id} {slot} LLM 失敗, 寫 placeholder")

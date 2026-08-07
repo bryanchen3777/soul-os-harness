@@ -114,13 +114,16 @@ class TestM04Fix(unittest.TestCase):
             entry = json.loads(path.read_text(encoding="utf-8").strip())
             self.assertEqual(entry["source"], "llm")
 
-    def test_08_diary_85_chars_still_blocked_in_generate(self):
-        """85 chars 在 generate_diary_entry 應走 placeholder (超過 80 上限)."""
+    def test_08_diary_85_chars_truncated_in_generate(self):
+        """M0.5 (Bry 派工 2026-08-06 21:44): 85 chars 超 80 上限, 截斷保留 LLM 內容.
+
+        修法前 (M0.4): 85 chars → placeholder
+        修法後 (M0.5): 85 chars → 截斷到 ≤80 chars, 寫 source=llm (沿用修法 10)
+        """
         async def run_test():
-            clean_85 = "あ" * 85
+            clean_85 = "あ" * 84 + "。"  # 85 chars, 句號在最後
             with tempfile.TemporaryDirectory() as tmp:
                 writer = diary_mod.DiaryWriter(data_dir=tmp)
-                # mock LLM 回 85 chars
                 with patch.object(diary_mod, "_call_minimax_for_diary",
                                   new=AsyncMock(return_value=clean_85)):
                     path = await diary_mod.generate_diary_entry(
@@ -130,10 +133,11 @@ class TestM04Fix(unittest.TestCase):
                     )
                 self.assertIsNotNone(path)
                 entry = json.loads(path.read_text(encoding="utf-8").strip())
-                # 應該走 placeholder (不是 LLM 原始 85 chars)
-                self.assertEqual(entry["source"], "placeholder")
-                # placeholder 內容應該是 morning 模板
-                self.assertIn("早上", entry["content"])
+                # M0.5: 超長 → 截斷, 寫 llm
+                self.assertEqual(entry["source"], "llm")
+                self.assertLessEqual(len(entry["content"]), 80)
+                # placeholder 內容不該出現
+                self.assertNotIn("起牀了", entry["content"])
         asyncio.run(run_test())
 
     def test_09_diary_70_chars_passes_in_generate(self):

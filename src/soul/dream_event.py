@@ -62,6 +62,10 @@ EVENT_MIN_INTERVAL_MINUTES = 240       # 4 小時
 EVENT_MAX_INTERVAL_MINUTES = 480       # 8 小時
 EVENT_AGENTS_PER_TICK = 2              # Stage 4.3 (Mavis 拍板 2026-07-21 16:35): 1 → 2, 每次 2 隻角色
 
+# M0.5 (Bry 派工 2026-08-06 21:44): clean 字數上限, 跟 diary.py 的 DIARY_MAX_CLEAN_CHARS=80 對齊
+# Bry 派工 A1 截斷邏輯: 沿用修法 10 _safe_truncate_on_length, 保留 LLM 內容裁短到 80 字
+DREAM_EVENT_MAX_CLEAN_CHARS = 80
+
 # 場景池 (夢境 / 事件共用)
 SCENE_POOL = [
     "走廊的盡頭",
@@ -306,17 +310,36 @@ class DreamEventWriter:
             f"夢境內容:"
         )
         content = await _call_minimax_for_dream_event(system, user, self.api_key)
-        # M0.4 (Bry 拍板 2026-08-06 21:30): think_only 直接走 placeholder, 不留空字串
-        # 修法前: LLM 只回 think block 沒實際 dream, _write_entry 仍寫 source=llm 進 jsonl
-        # 修法後: _write_entry 看到 clean 空 return None, 這裡 fallback 寫 placeholder
+        # M0.5 (Bry 派工 2026-08-06 21:44): A1 截斷 + A2 retry (沿用修法 10 _safe_truncate_on_length)
+        from src.llm.proxy import _safe_truncate_on_length
+        RETRY_HINT = "\n\n（請直接輸出最終內容，不要輸出思考過程。）"
+        # A2: think_only → retry 一次
+        if content:
+            clean_check = self._strip_think(content)
+            if not clean_check:
+                logger.warning(
+                    f"[DreamEvent] {agent_id} dream LLM 只回 think 沒 diary "
+                    f"(raw {len(content)} chars, clean 0), retry 一次"
+                )
+                content = await _call_minimax_for_dream_event(system, user + RETRY_HINT, self.api_key)
+        # M0.4: 沒拿到 content (或 retry 也失敗) → placeholder; 有 content 但超長 → 截斷
         if not content:
             result = self._write_entry(agent_id, "dream", DREAM_FALLBACK_TEMPLATE.format(date=today), source="placeholder")
         else:
-            result = self._write_entry(agent_id, "dream", content, source="llm")
-            if result is None:
-                # M0.4: LLM 回了東西但 clean 空 (think_only), 改寫 placeholder
-                logger.warning(f"[DreamEvent] {agent_id} dream think_only, fallback placeholder")
+            clean = self._strip_think(content)
+            if not clean:
+                logger.warning(f"[DreamEvent] {agent_id} dream retry 後仍 think_only, fallback placeholder")
                 result = self._write_entry(agent_id, "dream", DREAM_FALLBACK_TEMPLATE.format(date=today), source="placeholder")
+            elif len(clean) > DREAM_EVENT_MAX_CLEAN_CHARS:
+                # A1: 截斷, 保留 LLM 內容
+                truncated = _safe_truncate_on_length(clean, max_chars=DREAM_EVENT_MAX_CLEAN_CHARS)
+                logger.info(
+                    f"[DreamEvent] {agent_id} dream LLM 輸出超長 "
+                    f"({len(clean)} chars > {DREAM_EVENT_MAX_CLEAN_CHARS}), 截斷到 {len(truncated)} chars"
+                )
+                result = self._write_entry(agent_id, "dream", truncated, source="llm")
+            else:
+                result = self._write_entry(agent_id, "dream", content, source="llm")
 
         # Stage 4.3: 雙向 touch (失敗 try/except, 不中斷夢境流程)
         try:
@@ -375,15 +398,34 @@ class DreamEventWriter:
             f"事件內容:"
         )
         content = await _call_minimax_for_dream_event(system, user, self.api_key)
-        # M0.4 (Bry 拍板 2026-08-06 21:30): think_only 直接走 placeholder, 不留空字串
+        # M0.5 (Bry 派工 2026-08-06 21:44): A1 截斷 + A2 retry (跟 write_dream 同 pattern)
+        from src.llm.proxy import _safe_truncate_on_length
+        RETRY_HINT = "\n\n（請直接輸出最終內容，不要輸出思考過程。）"
+        # A2: think_only → retry
+        if content:
+            clean_check = self._strip_think(content)
+            if not clean_check:
+                logger.warning(
+                    f"[DreamEvent] {agent_id} event LLM 只回 think 沒 diary "
+                    f"(raw {len(content)} chars, clean 0), retry 一次"
+                )
+                content = await _call_minimax_for_dream_event(system, user + RETRY_HINT, self.api_key)
         if not content:
             result = self._write_entry(agent_id, "event", EVENT_FALLBACK_TEMPLATE.format(date=today, time_str=time_str), source="placeholder")
         else:
-            result = self._write_entry(agent_id, "event", content, source="llm")
-            if result is None:
-                # M0.4: LLM 回了東西但 clean 空 (think_only), 改寫 placeholder
-                logger.warning(f"[DreamEvent] {agent_id} event think_only, fallback placeholder")
+            clean = self._strip_think(content)
+            if not clean:
+                logger.warning(f"[DreamEvent] {agent_id} event retry 後仍 think_only, fallback placeholder")
                 result = self._write_entry(agent_id, "event", EVENT_FALLBACK_TEMPLATE.format(date=today, time_str=time_str), source="placeholder")
+            elif len(clean) > DREAM_EVENT_MAX_CLEAN_CHARS:
+                truncated = _safe_truncate_on_length(clean, max_chars=DREAM_EVENT_MAX_CLEAN_CHARS)
+                logger.info(
+                    f"[DreamEvent] {agent_id} event LLM 輸出超長 "
+                    f"({len(clean)} chars > {DREAM_EVENT_MAX_CLEAN_CHARS}), 截斷到 {len(truncated)} chars"
+                )
+                result = self._write_entry(agent_id, "event", truncated, source="llm")
+            else:
+                result = self._write_entry(agent_id, "event", content, source="llm")
 
         # Stage 4.3: agent 對 Bry 微量 touch (Bry 不在場, 事件觸發「想到 Bry」)
         try:
