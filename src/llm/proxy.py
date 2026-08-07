@@ -261,6 +261,14 @@ def _format_recent_inner_life(agent_id: str) -> str:
             slot = entry.get("slot", "")
             if slot not in ("morning", "night", "dream", "event"):
                 continue
+            # Bry 拍板 2026-08-07 16:46: 過濾 placeholder (source != "llm")
+            # 派工原話: 「只注入 source=llm 的真實內容, placeholder 是 stub 頂替文字
+            # (不是角色真的寫的日記), 把它塞進對話 context 等於讓角色引用一段
+            # 假造的內在生活, 這剛好違反你們一直在守的『No Memory > Wrong Memory』原則」
+            # 跟 v1/loader.py:11 「No Memory > Wrong Memory」 精神一致
+            # (M0.6 派工 2026-08-06 17:12 跟 v1 Loader by design 不抽 0 筆同方向)
+            if entry.get("source") != "llm":
+                continue
             content = entry.get("content", "").strip()
             if not content:
                 continue

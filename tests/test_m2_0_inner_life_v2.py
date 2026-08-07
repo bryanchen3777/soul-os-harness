@@ -249,6 +249,67 @@ class TestM20InnerLifeHelper(unittest.TestCase):
         self.assertNotIn("沒 slot 欄位", out)
         print(f"[v2] helper 容忍缺欄位 / 壞 JSON, 不 crash")
 
+    def test_g_helper_filters_placeholder(self):
+        """v2: Bry 拍板 2026-08-07 16:46 — 過濾 placeholder (source != "llm")
+
+        Bry 派工原話:
+        - 「只注入 source=llm 的真實內容, placeholder 是 stub 頂替文字
+          (不是角色真的寫的日記), 把它塞進對話 context 等於讓角色引用一段
+          假造的內在生活, 這剛好違反你們一直在守的『No Memory > Wrong Memory』原則」
+        - 跟 v1/loader.py:11 「No Memory > Wrong Memory」 精神一致
+          (M0.6 派工 2026-08-06 17:12 跟 v1 Loader by design 不抽 0 筆同方向)
+
+        Mock 場景: jsonl 內有 2 條 entry, 一條 source=llm 真實 diary, 一條 source=placeholder
+        預期: helper 輸出只含真實 diary, placeholder 內容不被注入
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            agent_id = "agent_test"
+            agent_dir = Path(tmp) / agent_id / "diary"
+            agent_dir.mkdir(parents=True, exist_ok=True)
+            today = datetime.now().strftime("%Y-%m-%d")
+            with (agent_dir / f"{today}.jsonl").open("w", encoding="utf-8") as f:
+                # 真實 LLM 寫的 diary (morning)
+                f.write(json.dumps({
+                    "ts": "2026-08-07T01:00:00+00:00", "slot": "morning",
+                    "content": "今天早上下了一點小雨。",
+                    "source": "llm",
+                }, ensure_ascii=False) + "\n")
+                # placeholder stub (morning, Bry 拍板要過濾掉)
+                f.write(json.dumps({
+                    "ts": "2026-08-07T01:00:00+00:00", "slot": "morning",
+                    "content": "（2026-08-07 早上）起牀了。窗外還沒什麼聲音。",
+                    "source": "placeholder",
+                }, ensure_ascii=False) + "\n")
+                # placeholder stub (night)
+                f.write(json.dumps({
+                    "ts": "2026-08-07T20:00:00+00:00", "slot": "night",
+                    "content": "（2026-08-07 晚上）今天過完了。",
+                    "source": "placeholder",
+                }, ensure_ascii=False) + "\n")
+                # 真實 LLM 寫的 dream (Bry 拍板要保留)
+                f.write(json.dumps({
+                    "ts": "2026-08-07T03:00:00+00:00", "slot": "dream",
+                    "content": "夢到在一片花田裡走。",
+                    "source": "llm",
+                }, ensure_ascii=False) + "\n")
+
+            with patch.object(proxy, "INNER_LIFE_DATA_DIR", tmp):
+                out = proxy._format_recent_inner_life(agent_id)
+
+        # 預期: 真實 LLM 內容進入輸出
+        self.assertIn("今天早上下了一點小雨", out, "v2 期望 source=llm 真實 morning 進入")
+        self.assertIn("夢到在一片花田裡走", out, "v2 期望 source=llm 真實 dream 進入")
+        # 預期: placeholder 內容被過濾掉 (Bry 拍工: 「No Memory > Wrong Memory」)
+        self.assertNotIn(
+            "起牀了", out,
+            f"v2 期望 source=placeholder 被過濾 (Bry 拍工 16:46), 但 placeholder 漏出去了: {out}"
+        )
+        self.assertNotIn(
+            "今天過完了", out,
+            f"v2 期望 source=placeholder 被過濾 (Bry 拍工 16:46), 但 placeholder 漏出去了: {out}"
+        )
+        print(f"[v2] helper 過濾 placeholder (Bry 16:46 拍工精神: No Memory > Wrong Memory)")
+
 
 class TestM20InnerLifeInjection(unittest.TestCase):
     """驗證 _build_messages_group / _build_messages_private 注入邏輯"""
