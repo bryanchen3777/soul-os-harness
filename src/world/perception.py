@@ -54,6 +54,12 @@ class WorldEvent:
     對應 EventType.WORLD_EVENT 的 payload (見 schema.py)。
     注意: WorldEvent 是純資料結構, 不進入 bus 直接用 dataclass 傳遞。
     bus 上的 WorldEvent 是包在 SoulEvent.payload 裡的 dict。
+
+    M3.1 Phase B (Bry 拍板 2026-08-08 02:59): 新增 priority 欄位
+    - default = 0 (backward compatible, 既有 M3 caller 不需改)
+    - 只用於 source 端 optional 提示 (Phase C/D routing 參考), 不進既有 payload
+    - validation: 必須是 int (拒絕 str/float/list)
+    - 不發明 priority range constraint (Bry 派工明確禁止)
     """
     source: str                     # "weather" | "news" | "calendar" | "social" | "synthetic"
     type: str                       # 細分類型 e.g. "rain_started", "celebrity_news", "calendar_event"
@@ -61,9 +67,27 @@ class WorldEvent:
     ts: str                         # ISO 8601 UTC timestamp
     summary: str                    # 一句話客觀描述
     data: Dict[str, Any] = field(default_factory=dict)
+    priority: int = 0               # M3.1 Phase B 新增, 預設 0
+
+    def __post_init__(self) -> None:
+        """
+        M3.1 Phase B minimal validation (Bry 拍板 02:59):
+        - priority 必須是 int (拒絕 str / float / list / None)
+        - 不動其他既有欄位 validation (validation.py 維持現狀)
+        - 不發明 priority range constraint
+        """
+        if not isinstance(self.priority, int) or isinstance(self.priority, bool):
+            # 拒絕 bool 因為 bool 是 int 的 subclass, 語意上 priority 不該是 bool
+            raise TypeError(
+                f"WorldEvent.priority 必須是 int, 得到 {type(self.priority).__name__}"
+            )
 
     def to_payload(self) -> Dict[str, Any]:
-        """轉成 SoulEvent.payload dict。"""
+        """轉成 SoulEvent.payload dict。
+
+        M3.1 Phase B: 既有 M3 bus payload format 100% 保留, 不含 priority 欄位
+        (Bry 拍板: 不改既有 bus serialization, 既有 M3 downstream 不感知 priority)。
+        """
         return {
             "source": self.source,
             "type": self.type,

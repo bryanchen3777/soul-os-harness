@@ -1,5 +1,5 @@
 """
-src/world/source/synthetic.py — Soul OS M3.1 Phase A
+src/world/source/synthetic.py — Soul OS M3.1 Phase A + Phase B
 
 SyntheticWorldEventSource (M3 Phase 1 既有邏輯, 完全保留):
 
@@ -13,6 +13,14 @@ M3.1 Phase A (Bry 拍板 2026-08-08 01:57): conform WorldEventSource 介面
 - start() / stop() 都是 no-op (沒有 background process)
 - build_*() factory methods 全部保留 (不重寫 event generation logic)
 
+M3.1 Phase B (Bry 拍板 2026-08-08 02:59): injection capability
+- 新增 __init__(injector=None) optional constructor
+- 新增 set_injector(injector) capability detection method
+  (Registry 透過 getattr(source, "set_injector", None) 呼叫)
+- 新增 emit_event(...) async method: 建 M3 WorldEvent → 透過已 attach injector 注入
+- injector.inject() exception 必須 propagate (不 silent swallow, 不 retry)
+- 既有 build_*() 100% 保留
+
 位置說明:
   Bry 派工 A' cleanup (2026-08-08 02:21):
   - 這個檔案是 SyntheticWorldEventSource 邏輯的 canonical 位置
@@ -25,9 +33,10 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ..base import WorldEventSource
+from ..injector import WorldEventInjector
 from ..perception import WorldEvent
 
 logger = logging.getLogger("soul_os.world.source")
@@ -88,7 +97,7 @@ class SyntheticWorldEventSource(WorldEventSource):
 
     設計:
     - build_*() helper: 回 WorldEvent (不直接 publish, 給 test 驗資料用)
-    - publish_*() helper: 透過 callback (通常是 WorldPerceptionMiddleware._publish_event_to_bus) 進 bus
+    - emit_event() async: 建 WorldEvent + 透過已 attach injector 注入
     - 不寫死 user context: user context 由 WorldPerceptionMiddleware 從 event bus 拿
       (這也是 Bry 拍板: 「personal_significance 不能從 event payload 拿」)
 
@@ -96,12 +105,49 @@ class SyntheticWorldEventSource(WorldEventSource):
     - source_id = "synthetic"
     - start() / stop() 都是 no-op (沒有 background process)
     - build_*() factory methods 全部保留 (不重寫 event generation logic)
+
+    M3.1 Phase B (Bry 拍板 2026-08-08 02:59): injection capability
+    - __init__(injector=None) optional constructor (向後兼容 Phase A 的 SyntheticWorldEventSource())
+    - set_injector(injector) capability detection method (Registry 用 getattr 呼叫)
+    - emit_event(...) async method
+    - 沒有 injector 時 emit_event 仍可 work (建 event 但不 inject, return event 給 caller)
     """
+
+    def __init__(self, injector: Optional[WorldEventInjector] = None) -> None:
+        """
+        M3.1 Phase B: optional injector constructor.
+
+        向後兼容: SyntheticWorldEventSource() 仍可呼叫 (Phase A 行為 100% 保留)
+        """
+        self._injector: Optional[WorldEventInjector] = injector
 
     @property
     def source_id(self) -> str:
         """M3.1 Phase A: source category identifier。對齊 VALID_SOURCES。"""
         return "synthetic"
+
+    # ── M3.1 Phase B: capability detection method ──
+
+    def set_injector(self, injector: Optional[WorldEventInjector]) -> None:
+        """
+        M3.1 Phase B: capability detection method.
+
+        Registry.attach_injector() 用 getattr(source, "set_injector", None)
+        呼叫這個 method (如果有), 沒有的 source 跳過。
+
+        Args:
+            injector: WorldEventInjector 實作, 或 None (detach)
+        """
+        self._injector = injector
+        logger.debug(
+            f"[SyntheticWorldEventSource] set_injector({injector!r})"
+        )
+
+    def get_injector(self) -> Optional[WorldEventInjector]:
+        """Phase B: 給 test / debug 拿當前 injector (Optional[None] = 沒 attach)。"""
+        return self._injector
+
+    # ── M3.1 Phase A: lifecycle (no-op) ──
 
     async def start(self) -> None:
         """
@@ -119,9 +165,71 @@ class SyntheticWorldEventSource(WorldEventSource):
         """
         logger.debug("[SyntheticWorldEventSource] stop() — no-op (synthetic)")
 
+    # ── helpers ──
+
     @staticmethod
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    # ── M3.1 Phase B: emit_event ──
+
+    async def emit_event(
+        self,
+        type: str,
+        summary: str,
+        novelty_id: str,
+        data: Optional[Dict[str, Any]] = None,
+        priority: int = 0,
+        ts: Optional[str] = None,
+    ) -> WorldEvent:
+        """
+        M3.1 Phase B (Bry 拍板 02:59): emit a new WorldEvent and inject via attached injector.
+
+        Flow:
+          1. construct M3 WorldEvent (source 自動 hardcode 為 "synthetic")
+          2. __post_init__ validation 自動跑 (priority 必須是 int)
+          3. 如果 self._injector is not None → await injector.inject(event)
+          4. return event
+
+        Args:
+            type: 細分類型 e.g. "rain_started"
+            summary: 一句話客觀描述
+            novelty_id: 同一事實識別 (去重 key, 沿用 M3 既有欄位)
+            data: optional 額外 payload, default = {} (沿用 M3 default_factory)
+            priority: 預設 0, 必須是 int (M3.1 Phase B 新增)
+            ts: optional ISO 8601 UTC timestamp, default = datetime.now()
+
+        Returns:
+            WorldEvent (M3 既有 class, 多了 priority 欄位)
+
+        Contract:
+          - Injector exception 必須 propagate (不 silent swallow, 不 retry)
+          - 沒有 injector 時仍 return event (只 build, 不 inject)
+          - 不改既有 build_*() factory methods
+          - 不發起 background task / scheduler
+        """
+        if data is None:
+            data = {}
+        if ts is None:
+            ts = SyntheticWorldEventSource._now_iso()
+
+        event = WorldEvent(
+            source=self.source_id,  # 永遠 "synthetic"
+            type=type,
+            novelty_id=novelty_id,
+            ts=ts,
+            summary=summary,
+            data=data,
+            priority=priority,
+        )
+
+        if self._injector is not None:
+            # 必須 propagate, 不 silent swallow
+            await self._injector.inject(event)
+
+        return event
+
+    # ── M3 既有 build_*() factory methods (100% 保留) ──
 
     @staticmethod
     def build_rain_started() -> WorldEvent:
