@@ -9,26 +9,47 @@ Soul OS — Phase 4: 發言權仲裁器
   - queue 容量 maxsize=100，滿了丟新進來的（推薦選項 1-C）
   - 持有超時自動強制釋放（推薦選項 2-A，同時 emit SPEAKER_TOKEN_RELEASED）
   - 非 holder 的 AGENT_SPEAK 靜默忽略（推薦選項 3-A）
+
+M3 Phase 1 (Bry 拍板 2026-08-07 19:40 + 2026-08-07 20:02 hardening):
+  - Production 路徑: 訂閱 AGENT_INTENT_PERCEIVED 為唯一正常入口
+  - Fallback: 測試 / isolated test environment (無 WorldPerceptionMiddleware) 可訂閱 ENRICHED
+  - 透過 intake_event_types config 控制, production 必須顯式傳 [AGENT_INTENT_PERCEIVED]
+    避免 double-process (一個 intent 走 ENRICHED + PERCEIVED 兩條路徑)
 """
 from __future__ import annotations
 
 import logging
 from collections import deque
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Iterable, Optional, Set
 
 from .bus import SoulEventBus
 from .schema import EventType, SoulEvent
 
 logger = logging.getLogger("soul_os.token_manager")
 
+# Bry 拍板 2026-08-07 20:02 hardening:
+# Production 預設入口 — 必須是 AGENT_INTENT_PERCEIVED (經過 M3 WorldPerceptionMiddleware)
+# Fallback (測試 / 無 M3 環境) 走 AGENT_INTENT_ENRICHED
+# default 保留兩個 = 向後相容既有 test_e2e_full_flow 等測試
+# run_server.py (production) 必須顯式傳 [AGENT_INTENT_PERCEIVED]
+PRODUCTION_INTAKE_EVENT_TYPES: Set[EventType] = {EventType.AGENT_INTENT_PERCEIVED}
+LEGACY_INTAKE_EVENT_TYPES: Set[EventType] = {
+    EventType.AGENT_INTENT_PERCEIVED,
+    EventType.AGENT_INTENT_ENRICHED,
+}
+
 
 class SpeakerTokenManager:
     """
     發言權仲裁器。
 
-    事件流：
-      AGENT_INTENT_ENRICHED
+    事件流 (M3 Phase 1 production):
+      AGENT_INTENT
+        → MemoryMiddleware 注入 memory_context
+        → AGENT_INTENT_ENRICHED
+        → WorldPerceptionMiddleware 注入 world_context
+        → AGENT_INTENT_PERCEIVED  ← 我訂閱這個 (唯一入口, 避免 double-process)
         → 授予（若無 holder）或 queue
         → 授予時 re-publish: SPEAKER_TOKEN_GRANTED
           → LLMProxy 收到、生產、發 AGENT_SPEAK
@@ -41,9 +62,16 @@ class SpeakerTokenManager:
         self,
         bus: SoulEventBus,
         token_timeout_secs: float = 10.0,
+        # M3 Phase 1 hardening: 預設兩種都訂 (向後相容), production 應顯式傳 PRODUCTION_INTAKE_EVENT_TYPES
+        intake_event_types: Optional[Iterable[EventType]] = None,
     ):
         self.bus = bus
         self.timeout = token_timeout_secs
+        # 規範化為 set[EventType] (handles list, set, frozenset 傳入)
+        if intake_event_types is None:
+            self.intake_event_types: Set[EventType] = set(LEGACY_INTAKE_EVENT_TYPES)
+        else:
+            self.intake_event_types = set(intake_event_types)
         self._holder: Optional[str] = None
         self._queue: deque = deque(maxlen=self.QUEUE_MAXSIZE)
         self._held_since: Optional[datetime] = None
@@ -54,20 +82,35 @@ class SpeakerTokenManager:
 
     def register(self) -> None:
         """向 Event Bus 註冊，開始仲裁。"""
+        # Bry 拍板 2026-08-07 20:02: event_filter 從 self.intake_event_types 拿
+        # production 應只含 AGENT_INTENT_PERCEIVED (避免 double-process)
+        # test / isolated env 可含 AGENT_INTENT_ENRICHED (fallback)
+        event_filter = set(self.intake_event_types)
+        event_filter.add(EventType.AGENT_SPEAK)  # 永遠訂 AGENT_SPEAK 釋放
         self.bus.subscribe(
             subscriber_id="speaker_token_manager",
             handler=self.handle_event,
-            event_filter={
-                EventType.AGENT_INTENT_ENRICHED,  # 只訂閱已 enrichment 的版本
-                EventType.AGENT_SPEAK,
-            },
+            event_filter=event_filter,
         )
-        logger.info("[Token] 發言權仲裁器已上線 ✓")
+        # 觀察性: 明確記下 production vs fallback 模式
+        if self.intake_event_types == PRODUCTION_INTAKE_EVENT_TYPES:
+            mode = "PRODUCTION (PERCEIVED only)"
+        elif self.intake_event_types == LEGACY_INTAKE_EVENT_TYPES:
+            mode = "LEGACY (PERCEIVED + ENRICHED fallback)"
+        else:
+            mode = f"CUSTOM ({sorted(self.intake_event_types)})"
+        logger.info(
+            f"[Token] 發言權仲裁器已上線 ✓ mode={mode} "
+            f"intake_event_types={[e.value for e in self.intake_event_types]}"
+        )
 
     # ── 事件分派 ─────────────────────────────────────────────
 
     async def handle_event(self, event: SoulEvent) -> None:
-        if event.event_type in (EventType.AGENT_INTENT, EventType.AGENT_INTENT_ENRICHED):
+        # Bry 拍板 2026-08-07 20:02: 從 self.intake_event_types 動態判斷
+        # (Bus 已經先 filter, 這裡是雙重保險)
+        if event.event_type in self.intake_event_types or event.event_type == EventType.AGENT_INTENT:
+            # AGENT_INTENT 永遠不應該到這裡 (不在 intake_event_types), 但保留 fallback
             await self._request_token(event)
         elif event.event_type == EventType.AGENT_SPEAK:
             speaker = event.payload.get("agent_id", event.source)
@@ -78,7 +121,7 @@ class SpeakerTokenManager:
     async def _request_token(self, intent_event: SoulEvent) -> None:
         agent_id = intent_event.payload.get("agent_id")
         if not agent_id:
-            logger.warning("[Token] AGENT_INTENT_ENRICHED 缺 agent_id，略過")
+            logger.warning(f"[Token] {event.event_type} 缺 agent_id，略過")
             return
 
         logger.info(f"[Token] _request_token: agent_id={agent_id} holder={self._holder}")

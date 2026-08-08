@@ -20,7 +20,13 @@ class EventType(str, Enum):
 
     # 內部流轉
     AGENT_INTENT          = "agent_intent"             # Agent 想發言的意圖（搶奪發言權）
-    AGENT_INTENT_ENRICHED = "agent_intent_enriched"    # 記憶已注入的 intent（MemoryMiddleware → SpeakerTokenManager）
+    AGENT_INTENT_ENRICHED = "agent_intent_enriched"    # 記憶已注入的 intent（MemoryMiddleware → WorldPerceptionMiddleware）
+    # M3 Phase 1: WorldPerceptionMiddleware 在 MemoryMiddleware 之後接管,
+    # 算 top-N world_context 後 re-publish 為 AGENT_INTENT_PERCEIVED,
+    # SpeakerTokenManager 訂閱此 type (取代 AGENT_INTENT_ENRICHED)。
+    AGENT_INTENT_PERCEIVED = "agent_intent_perceived"  # 世界感知已注入的 intent（WorldPerceptionMiddleware → SpeakerTokenManager）
+    # M3 Phase 1: 外部世界事件 source 發布, WorldPerceptionMiddleware 訂閱更新 WorldPerceptionState
+    WORLD_EVENT           = "world_event"              # 外部世界事件 (weather / news / calendar / ...)
     SPEAKER_TOKEN_REQUEST = "speaker_token_request"   # 發言權申請（保留命名，現階段用 ENRICHED 觸發）
     SPEAKER_TOKEN_GRANTED = "speaker_token_granted"   # 發言權已授予（SpeakerTokenManager → LLMProxy）
     SPEAKER_TOKEN_RELEASED = "speaker_token_released"  # 發言權已釋放（給監聽者、debug 用）
@@ -191,6 +197,32 @@ class SoulEvent(BaseModel):
 #       "next_holder": str | None, # 下一個被授予的 agent（如果有 queue 等待者）
 #   }
 #   用途：純觀察事件，給監聽者 / debug 用，不影響業務邏輯。
+#
+# EventType.WORLD_EVENT (M3 Phase 1, Bry 拍板 2026-08-07 19:40):
+#   payload = {
+#       "source": str,             # "weather" | "news" | "calendar" | "social" | "synthetic"
+#       "type": str,               # "rain_started" | "celebrity_news" | "calendar_event" | ...
+#       "novelty_id": str,         # 同一事實的識別 (e.g. "weather_rain_2026-08-07"),
+#                                  # 用途: novelty 去重, 同一 novelty_id 在 NOVELTY_WINDOW 內
+#                                  # 多次觸發會降低 novelty_score
+#       "ts": str,                 # 事件發生時間 (ISO 8601, UTC)
+#       "summary": str,            # 一句話描述 (純客觀事實, 不含 user relevance)
+#       "data": dict,              # 結構化 payload (隨 source/type 變動)
+#   }
+#   用途: 外部世界 source (Phase 1 = synthetic) 發布, WorldPerceptionMiddleware 訂閱
+#   更新 WorldPerceptionState (in-memory, ephemeral, 不進 SAGE / 長期 memory)。
+#   Invalid event → reject → trace → no context → no memory。
+#
+# EventType.AGENT_INTENT_PERCEIVED (M3 Phase 1, Bry 拍板 2026-08-07 19:40):
+#   payload = AGENT_INTENT_ENRICHED 全部欄位 +
+#       "world_context": str,      # WorldPerceptionMiddleware 注入的世界感知區塊
+#                                  # (跟 inner_life / memory_context 同風格, 輕量字串)
+#                                  # 沒有 world 事件 accept 時 = "" (注入 skip)
+#       "world_perception_meta": dict,  # observability 用的 metadata
+#                                  # {accepted_count, rejected_count, top_event_ids}
+#   用途: WorldPerceptionMiddleware 接收 AGENT_INTENT_ENRICHED, 讀 WorldPerceptionState
+#   算 top-N world_context, re-publish 為 AGENT_INTENT_PERCEIVED。
+#   SpeakerTokenManager 訂閱此 type (取代 AGENT_INTENT_ENRICHED)。
 #
 # EventType.AGENT_SPEAK:
 #   payload = {

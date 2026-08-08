@@ -227,9 +227,6 @@ async def lifespan(app: FastAPI):
     bus = SoulEventBus()
     await bus.start()
 
-    token_mgr = SpeakerTokenManager(bus, token_timeout_secs=120.0)
-    token_mgr.register()
-
     # ── SpeakerTokenBus：USER_MESSAGE 仲裁 ─────────────────────
     speaker_token_bus = SpeakerTokenBus(cooldown_secs=4.0)
     # submit_bid 採用 lazy open，不需要單獨的 listener
@@ -245,11 +242,53 @@ async def lifespan(app: FastAPI):
         llm = create_llm_proxy(cfg, bus)
     llm.register()
 
+    # Bry 拍板 2026-08-07 20:02 P7 hardening: 註冊順序明確為
+    #   MemoryMiddleware → WorldPerceptionMiddleware → SpeakerTokenManager
+    # 跟生產 path 對應: AGENT_INTENT → ENRICHED → PERCEIVED → TOKEN_GRANTED
+    # 範圍: 跟 P5 一致只動這三個的順序, 不動其他模組
+
     # β2.1 (Bry 拍板 2026-08-02 21:48): MemoryMiddleware 接受 llm_proxy 參考
     # 讓 middleware 在 _on_agent_intent 對 agent_akane + heartbeat 觸發事件生成
     # 範圍限定 pilot, 不影響其他 reason/角色
     mw = MemoryMiddleware(bus=bus, data_dir="data/memory", llm_proxy=llm)
     mw.register()
+
+    # M3 Phase 1 (Bry 拍板 2026-08-07 19:40 + 2026-08-07 20:02 hardening):
+    # WorldPerceptionMiddleware 在 MemoryMiddleware 之後接管
+    # AGENT_INTENT_ENRICHED → AGENT_INTENT_PERCEIVED
+    # 預設啟用 (production path), 緊急時可 SOULOS_WORLD_PERCEPTION_ENABLED=0 關閉
+    # 對齊 2026-08-05 21:08 DISABLE_PROACTIVE 派工精神
+    world_perception_enabled = os.getenv("SOULOS_WORLD_PERCEPTION_ENABLED", "1") == "1"
+    if world_perception_enabled:
+        from src.world import WorldPerceptionMiddleware
+        world_perception = WorldPerceptionMiddleware(bus=bus)
+        world_perception.register()
+        # Production SpeakerTokenManager 只訂閱 AGENT_INTENT_PERCEIVED (避免 double-process)
+        token_mgr = SpeakerTokenManager(
+            bus, token_timeout_secs=120.0,
+            intake_event_types={EventType.AGENT_INTENT_PERCEIVED},
+        )
+        logger.info("[Server] M3 WorldPerception 啟用 ✓ (production mode)")
+
+        # P8 hardening: Synthetic World Source Seam (validation only)
+        # SOULOS_WORLD_PERCEPTION_TEST_SOURCE=1 → 注入 1 個 deterministic rain event
+        # 給 production smoke test 用, 確認 LLM 收到 world_context
+        # Production default 永遠 OFF (環境變數預設 "0")
+        if os.getenv("SOULOS_WORLD_PERCEPTION_TEST_SOURCE", "0") == "1":
+            from src.world import SyntheticWorldEventSource
+            async def _smoke_inject():
+                await asyncio.sleep(2)  # 等 server 跟 bus 完全 ready
+                await world_perception.inject_synthetic_events_for_smoke_test([
+                    SyntheticWorldEventSource.build_rain_started(),
+                ])
+                logger.info("[Server] M3 synthetic smoke test event injected ✓")
+            asyncio.create_task(_smoke_inject())
+    else:
+        # Fallback: 無 M3 時, SpeakerTokenManager 走 LEGACY (訂 ENRICHED + PERCEIVED)
+        world_perception = None
+        token_mgr = SpeakerTokenManager(bus, token_timeout_secs=120.0)
+        logger.warning("[Server] M3 WorldPerception 關閉 (legacy mode, SOULOS_WORLD_PERCEPTION_ENABLED=0)")
+    token_mgr.register()
 
     # Phase 12 LLM-as-judge: 設定 process-global LLMProxy reference,
     # 讓 MemoryWriter._get_llm_judge() 跨模組邊界可以拿到

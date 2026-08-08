@@ -320,6 +320,7 @@ def _build_messages_group(
     current_time: str = "",  # 當下時間 — Bry 拍板 2026-08-02 20:xx, 選項 A (見 _handle_event_impl 註解)
     event_ts: Optional[datetime] = None,  # 修法 8 (Bry 拍板 2026-08-04 17:18): 用於注入時段行
     bry_latest_ts: int = 0,  # 修法 9 (Bry 拍板 2026-08-04 20:37): 跨 session Bry 最後 user 訊息 timestamp
+    world_context: str = "",  # M3 Phase 1 (Bry 拍板 2026-08-07 19:40): WorldPerception 注入的世界感知
 ) -> List[Dict[str, str]]:
     """
     群聊模式的 messages 組裝:
@@ -369,6 +370,16 @@ def _build_messages_group(
             f"不要逐條複述或解釋, 也不要重複 tag。\n"
             f"## 你的最近內在生活\n{inner_life}\n"
         )
+
+    # M3 Phase 1 (Bry 拍板 2026-08-07 19:40): 世界感知注入
+    # 注入位置: inner_life 之後, 當下時間 (含 chrono-social) 之前
+    # 派工精神: 「Inner Life → World Context → Chrono-Social」
+    # 來源: WorldPerceptionMiddleware 在 AGENT_INTENT_ENRICHED → AGENT_INTENT_PERCEIVED
+    #       注入 world_context 到 event.payload["world_context"]
+    # 範圍: 只在 _build_messages_group / _build_messages_private 注入, 不動 SAGE/v1/Loader
+    #       沒 world events 時 = "" (注入 skip, 跟 memory_context 一致)
+    if world_context and world_context.strip():
+        system_parts.append(world_context.strip() + "\n")
 
     # 當下時間 — Bry 拍板 2026-08-02 20:xx, 選項 A (見 _handle_event_impl 註解)
     # 修法 8 (Bry 拍板 2026-08-04 17:18): 緊接 f9105f1「當下時間」注入兩行時間上下文
@@ -591,6 +602,7 @@ def _build_messages_private(
     current_time: str = "",  # 當下時間 — Bry 拍板 2026-08-02 20:xx, 選項 A (見 _handle_event_impl 註解)
     event_ts: Optional[datetime] = None,  # 修法 8 (Bry 拍板 2026-08-04 17:18): 用於注入時段行
     bry_latest_ts: int = 0,  # 修法 9 (Bry 拍板 2026-08-04 20:37): 跨 session Bry 最後 user 訊息 timestamp
+    world_context: str = "",  # M3 Phase 1 (Bry 拍板 2026-08-07 19:40): WorldPerception 注入的世界感知
 ) -> List[Dict[str, str]]:
     """
     私聊模式的 messages 組裝:
@@ -626,6 +638,11 @@ def _build_messages_private(
             f"不要逐條複述或解釋, 也不要重複 tag。\n"
             f"## 你的最近內在生活\n{inner_life}\n"
         )
+
+    # M3 Phase 1 (Bry 拍板 2026-08-07 19:40): 世界感知注入 (跟 _build_messages_group 對齊)
+    # 注入位置: inner_life 之後, 當下時間 (含 chrono-social) 之前
+    if world_context and world_context.strip():
+        system_parts.append(world_context.strip() + "\n")
 
     # 私聊歷史 - KI-001: per (user, agent) 隔離
     # 修法 7+9 (Bry 拍板 2026-08-04 13:24 / 20:37): 改用 get_recent_with_meta 拿 timestamp
@@ -2513,15 +2530,19 @@ class LLMProxy:
         # 跨 session 邏輯, 不用各自從 group/private 自己算 (修法 7 的 bug 根因)
         # 範圍: 限定同一個 agent 對 Bry 的所有 session, 不跨到別的 agent
         bry_latest_ts = _get_bry_latest_ts(self._memory, agent_id)
+        # M3 Phase 1 (Bry 拍板 2026-08-07 19:40): 從 event.payload 讀 world_context
+        # WorldPerceptionMiddleware 在 AGENT_INTENT_ENRICHED → AGENT_INTENT_PERCEIVED 注入
+        # 沒 world events 時 = "" (注入 skip, 跟 memory_context 一致)
+        world_context = event.payload.get("world_context", "")
         if mode == "group":
             # 短期記憶 (Bry 拍板 2026-08-02 16:xx): 把 user_id 傳進去讓 _build_messages_group
             # 從 Bry 跟該 agent 的 private history 撈最近 N 條 Bry user 訊息注入 system prompt。
             # L1818 的 user_id 已經從 event.payload.get("target_user_id", "bryan") 拿到,
             # 跟 _build_messages_private L230 user_id 預設值對齊, 群聊觸發 fallback "bryan"
             # (跟 _load_private L100 fallback 邏輯一致)。
-            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts)
+            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context)
         else:
-            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts)
+            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context)
 
         # ── M2 task 3 (Bry + Perplexity 8/2 12:05 派工): proactive draft user → system ──
         # 修法動機: heartbeat / proactive_dm 觸發時, _build_intent_payload 組的 draft
