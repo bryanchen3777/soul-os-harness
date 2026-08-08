@@ -348,6 +348,9 @@ class WorldPerceptionMiddleware:
                 anticipatory_flavor=anticipatory_flavor,
                 vulnerability_window=vulnerability_window,
                 silence_hours=0.0,
+                # M3.2-A (Bry 拍板 2026-08-08 11:36): priority 進場, 內部 read world_event.priority
+                # 既有 5 維度 scoring 邏輯 0 改, additive priority_boost 進 final_score
+                event_priority=world_event.priority,
             )
             accepted, reason = should_accept(scores, threshold=self.accept_threshold)
             decision = PerceptionDecision(
@@ -397,6 +400,8 @@ class WorldPerceptionMiddleware:
                     "anticipatory_flavor": anticipatory_flavor,
                     "vulnerability_window": vulnerability_window,
                     "user_keyword_count": len(user_keywords),
+                    # M3.2-A (Bry 拍板 2026-08-08 11:36): priority 進 trace observability
+                    "world_event_priority": world_event.priority,
                 },
             ))
 

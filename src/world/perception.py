@@ -117,7 +117,16 @@ class WorldEvent:
 @dataclass
 class PerceptionScores:
     """
-    4 維評分 (Bry 拍板 Phase 1 範圍, Phase 2 可擴)。
+    6 維評分 (Bry 拍板 Phase 1 範圍 + M3.2-A 擴充)。
+
+    原有 5 維 (Bry 拍板 Phase 1 範圍, Phase 2 可擴):
+      relevance / novelty / personal_significance /
+      emotional_significance / temporal_significance
+
+    M3.2-A (Bry 拍板 2026-08-08 11:36) 新增:
+      priority_boost — WorldEvent.priority 的 semantic 進場,
+                       讓 source 端的 priority hint 真的影響 Soul 是否注意到。
+                       不進 payload, 不進 routing, 只進 scoring。
 
     每個分數 0.0 ~ 1.0, 越高 = 越值得被 Soul 注意。
     final_score = 加權平均 (權重見 SCORE_WEIGHTS)
@@ -127,24 +136,45 @@ class PerceptionScores:
     personal_significance: float = 0.0   # 對 Bry/當下情境的意義 (不從 payload 拿, 從 evaluator 算)
     emotional_significance: float = 0.0  # 跟當下 emotional state 的共鳴度 (e.g. vulnerability window)
     temporal_significance: float = 0.0   # 跟當下時段的契合度 (e.g. calendar 30min 前 = 高)
+    priority_boost: float = 0.0     # M3.2-A: WorldEvent.priority 經 _map_priority_to_boost 線性映射
 
     def final(self) -> float:
-        """加權平均 (跟 SCORE_WEIGHTS 對齊)。"""
-        weights = SCORE_WEIGHTS
-        total_w = sum(weights.values())
-        if total_w == 0:
-            return 0.0
-        return (
-            weights["relevance"] * self.relevance
-            + weights["novelty"] * self.novelty
-            + weights["personal_significance"] * self.personal_significance
-            + weights["emotional_significance"] * self.emotional_significance
-            + weights["temporal_significance"] * self.temporal_significance
-        ) / total_w
+        """
+        加權 final score (M3.2-A REVISION 2026-08-08 13:21 additive model)。
+
+        既有 5 維度用 SCORE_WEIGHTS 算 legacy 加權 (sum=1.00, behavior 100% 保留)。
+        priority 維度用 PRIORITY_BOOST_WEIGHT 獨立 additive contribution:
+          final = min(1.0, legacy_5_weighted + priority_boost * PRIORITY_BOOST_WEIGHT)
+
+        為什麼 additive 而不是 replace:
+          - priority = 0 時, contribution = 0, final = legacy → 既有 175 tests boundary
+            (例 test_duplicate_novelty_decay final=0.35) 100% 保留
+          - priority > 0 時, contribution 受控小幅 (max +0.05) 不會 dominance legacy
+          - 符合派工 #8 「受控的小幅 additive contribution, 而不是重新縮放 legacy score」
+
+        Clamp 到 [0.0, 1.0]: 5 維度 max 是 1.0, +priority max +0.05 → 1.05 clamp 到 1.0
+        """
+        legacy = (
+            SCORE_WEIGHTS["relevance"] * self.relevance
+            + SCORE_WEIGHTS["novelty"] * self.novelty
+            + SCORE_WEIGHTS["personal_significance"] * self.personal_significance
+            + SCORE_WEIGHTS["emotional_significance"] * self.emotional_significance
+            + SCORE_WEIGHTS["temporal_significance"] * self.temporal_significance
+        )
+        priority_contribution = PRIORITY_BOOST_WEIGHT * self.priority_boost
+        return min(1.0, max(0.0, legacy + priority_contribution))
 
 
-# Bry 拍板: Phase 1 初始權重 (跟 SAGE reader 風格一致, 全部 deterministic, 不調 LLM)
-# 理由: 「Bry 對假設中的未來灑過濾網」拒絕 — 只用現有 4 維, 不加第五第六維
+# Bry 拍板 M3.2-A REVISION (2026-08-08 13:21): priority 改為 additive semantic enrichment,
+# 不重新縮放既有 5 維度權重。SCORE_WEIGHTS 保留 legacy 5 維度 (sum = 1.00)。
+# priority 用獨立 PRIORITY_BOOST_WEIGHT 常數, final() 採 additive:
+#
+#   final = min(1.0, sum_5_weighted + priority_boost * PRIORITY_BOOST_WEIGHT)
+#
+# priority = 0 → priority_boost = 0 → final == legacy 5 維度加權結果
+# priority > 0 → priority_boost 線性映射, 加權 PRIORITY_BOOST_WEIGHT (= 0.05, max +0.05)
+#
+# 確保既有 test boundary (例 test_duplicate_novelty_decay, final == 0.35) 不被破壞。
 SCORE_WEIGHTS: Dict[str, float] = {
     "relevance": 0.30,
     "novelty": 0.20,
@@ -152,6 +182,14 @@ SCORE_WEIGHTS: Dict[str, float] = {
     "emotional_significance": 0.10,
     "temporal_significance": 0.15,
 }
+# sum = 1.00 (legacy M3 Phase 1 baseline, M3.2-A 0 change)
+
+# M3.2-A REVISION: priority_boost 獨立加權常數, 不混進 SCORE_WEIGHTS
+# 派工 #9 明說: 「可以使用獨立 PRIORITY_BOOST_WEIGHT 或等價 additive mechanism」
+# 選 0.05 → max boost = 0.05 (priority >= 12.5)
+# priority=5 → +0.02, priority=10 → +0.04, priority=20 → +0.05
+# 受控的小幅 additive, 跟 legacy 5 維度加權解耦
+PRIORITY_BOOST_WEIGHT: float = 0.05
 
 
 # ───────────────────────────────────────────────────────────
@@ -353,6 +391,35 @@ def _extract_cjk_ngrams(text: str) -> set:
     return tokens
 
 
+def _map_priority_to_boost(priority: int) -> float:
+    """
+    M3.2-A (Bry 拍板 2026-08-08 11:36): WorldEvent.priority 線性映射成 [0.0, 1.0]。
+
+    Anchor 點 (派工原文 mandatory):
+      priority <= 0   → 0.0
+      priority = 5    → 0.4
+      priority = 10   → 0.8
+      priority >= 20  → 1.0
+
+    Linear formula (clamped at 0 / 1):
+      boost = min(max(priority, 0) / 12.5, 1.0)
+
+    驗證 anchor:
+      priority = 0   → 0 / 12.5 = 0.0
+      priority = 5   → 5 / 12.5 = 0.4
+      priority = 10  → 10 / 12.5 = 0.8
+      priority = 12.5 → 12.5 / 12.5 = 1.0
+      priority = 20  → clamp(20 / 12.5) = 1.0
+      priority = 100 → clamp(100 / 12.5) = 1.0
+
+    Deterministic, no LLM, no external call.
+    Negative priority 視為 0 (clamp at 0)。
+    """
+    if priority <= 0:
+        return 0.0
+    return min(priority / 12.5, 1.0)
+
+
 def compute_scores(
     event: WorldEvent,
     novelty_count: int,
@@ -361,14 +428,17 @@ def compute_scores(
     anticipatory_flavor: str = "none",     # "none" | "longing" | "worried" | "anxious"
     vulnerability_window: bool = False,
     silence_hours: float = 0.0,
+    event_priority: int = 0,               # M3.2-A: WorldEvent.priority 進場, default 0 向後相容
 ) -> PerceptionScores:
     """
-    計算 4 維評分 (deterministic, 不打 LLM)。
+    計算 6 維評分 (deterministic, 不打 LLM)。
 
     Bry 拍板:
     - personal_significance 不能從 event payload 拿
     - 必須由 evaluator 從「event + 現有 context + chrono-social」算
     - Phase 1 不上 LLM judge
+    - M3.2-A (Bry 拍板 2026-08-08 11:36): event_priority 進場, 經 _map_priority_to_boost 線性映射
+      為 priority_boost, 既有 5 維度邏輯 0 改 (additive)
 
     Args:
         event: 客觀世界事件
@@ -379,6 +449,8 @@ def compute_scores(
         anticipatory_flavor: 從 chrono-social 拿 (none/longing/worried/anxious)
         vulnerability_window: 從 chrono-social 拿 (bool)
         silence_hours: 從 chrono-social 拿
+        event_priority: M3.2-A — WorldEvent.priority 來源, default 0 向後相容
+                        (WorldPerceptionMiddleware 從 world_event.priority 讀出後傳入)
     """
     # ── novelty: 跟 novelty_count 成反比
     # 1 次 = 1.0, 2 次 = 0.5, 3 次 = 0.33, ...
@@ -448,6 +520,7 @@ def compute_scores(
         personal_significance=min(1.0, personal_significance),
         emotional_significance=min(1.0, emotional_significance),
         temporal_significance=min(1.0, temporal_significance),
+        priority_boost=_map_priority_to_boost(event_priority),  # M3.2-A: priority → boost 進場
     )
 
 
@@ -485,12 +558,14 @@ def should_accept(
             f"(rel={scores.relevance:.2f} nov={scores.novelty:.2f} "
             f"per={scores.personal_significance:.2f} "
             f"emo={scores.emotional_significance:.2f} "
-            f"tmp={scores.temporal_significance:.2f})"
+            f"tmp={scores.temporal_significance:.2f} "
+            f"pri={scores.priority_boost:.2f})"  # M3.2-A: priority_boost 進 reason
         )
     return True, (
         f"final_score={final:.2f} >= threshold={threshold:.2f} "
         f"(rel={scores.relevance:.2f} nov={scores.novelty:.2f} "
         f"per={scores.personal_significance:.2f} "
         f"emo={scores.emotional_significance:.2f} "
-        f"tmp={scores.temporal_significance:.2f})"
+        f"tmp={scores.temporal_significance:.2f} "
+        f"pri={scores.priority_boost:.2f})"  # M3.2-A: priority_boost 進 reason
     )

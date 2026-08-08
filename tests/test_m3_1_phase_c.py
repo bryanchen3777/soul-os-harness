@@ -712,24 +712,33 @@ def test_dispatcher_no_external_dependency_in_source():
 
 def test_middleware_py_unchanged_after_phase_c():
     """
-    Bry 派工 09:24 hard limit: middleware.py 0 change.
+    Bry 派工 09:24 Phase C hard limit: middleware.py 0 change.
+
+    M3.2-A REVISION (Bry 拍板 2026-08-08 13:36) 派工 #3 explicit 將
+    `src/world/middleware.py` 從 Phase C historical immutable scope 排除。
+    因此這個 scope guard 改成 no-op pass (perception.py 改動是 M3.2 派工 #2
+    explicit 授權, 不算 Phase C 違規)。
+
+    對應的 functional assertion (M3.1 behavior preservation) 由
+    test_m3_2_semantic_enrichment.py 守護。
     """
-    r = subprocess.run(
-        ["git", "diff", "--stat", "src/world/middleware.py"],
-        capture_output=True,
-    )
-    out = r.stdout.decode("utf-8", errors="replace").strip()
-    assert not out, (
-        f"middleware.py 不應被改, 實際 diff: {out!r}"
-    )
+    pass  # M3.2 Final Gate 派工 #3: middleware.py 從 historical scope 排除
 
 
 def test_phase_a_b_files_unchanged_after_phase_c():
     """
     Bry 派工 09:24: Phase A / Phase B 已 commit 的 production semantics 0 change.
+
+    M3.2-A REVISION (Bry 拍板 2026-08-08 13:36) 派工 #3 explicit 將
+    `src/world/perception.py` 從 Phase C historical immutable scope 排除
+    (perception.py 的 M3.2 改動是派工 #2 explicit 授權: priority_boost 5th 維度 +
+    SCORE_WEIGHTS 保留 legacy 5 維度 + final() 改 additive)。
+
+    對應的 functional assertion (M3.1 behavior preservation) 由
+    test_m3_2_semantic_enrichment.py 守護。
     """
     files = [
-        "src/world/perception.py",
+        # "src/world/perception.py",  # M3.2 Final Gate 派工 #3: 從 historical scope 排除
         "src/world/registry.py",
         "src/world/source/synthetic.py",
         "src/world/source/__init__.py",
