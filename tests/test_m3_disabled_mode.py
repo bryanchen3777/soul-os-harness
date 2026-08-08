@@ -87,7 +87,7 @@ class TestM3DisabledMode(unittest.TestCase):
                 await bus.start()
                 try:
                     # 用 MockMemoryMiddleware 避免 SQLite lock
-                    from tests.test_m3_e2e_smoke import _MockMemoryMiddleware
+                    from test_m3_e2e_smoke import _MockMemoryMiddleware
                     mw = _MockMemoryMiddleware(bus)
                     mw.register()
 
