@@ -76,9 +76,13 @@ from .state import WorldPerceptionState
 from .trace import WorldPerceptionTraceWriter
 from .validation import validate_world_event, WorldEventValidationError
 from .source import SyntheticWorldEventSource, SYNTHETIC_TEST_EVENTS
+from .base import WorldEventSource
+from .injector import WorldEventInjector
+from .registry import WorldEventSourceRegistry, SourceStatus
 from .middleware import WorldPerceptionMiddleware
 
 __all__ = [
+    # M3 Phase 1
     "WorldEvent",
     "PerceptionDecision",
     "WorldContext",
@@ -102,4 +106,9 @@ __all__ = [
     "SyntheticWorldEventSource",
     "SYNTHETIC_TEST_EVENTS",
     "WorldPerceptionMiddleware",
+    # M3.1 Phase A (Bry 拍板 2026-08-08 01:57)
+    "WorldEventSource",
+    "WorldEventInjector",
+    "WorldEventSourceRegistry",
+    "SourceStatus",
 ]
