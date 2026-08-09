@@ -2353,6 +2353,8 @@ class LLMProxy:
         max_history_turns: int = 10,  # 保留最近幾輪對話,防 context 爆炸
         config: Optional[dict] = None,  # Phase 4: 完整 config(讓 RAG 等子模組讀取)
         thinking: Optional[Dict] = None,  # Phase 6.x: 從 config.llm.thinking 讀,控 MiniMax thinking budget
+        memory_store: Optional["MemoryStore"] = None,  # P0 (Bry 派工 2026-08-09): 允許 test 注入隔離 store
+        conversation_dir: Optional[Path] = None,  # P0 (Bry 派工 2026-08-09): 允許 test 注入隔離 conversation dir
     ):
         self.bus = bus
         self.backend = backend
@@ -2377,9 +2379,20 @@ class LLMProxy:
         self.event_max_tokens = 200
         self.event_temperature = 0.7
 
+        # P0 (Bry 派工 2026-08-09 19:18): 隔離 persistence dependencies
+        # Production: 兩個 param 都 None → 走原本 production path (向後相容)
+        # Test: 兩個都傳 → 走 tmp_path 隔離 (不碰 production)
+        if memory_store is not None:
+            self._memory = memory_store
+        else:
+            self._memory = MemoryStore()  # Phase 2: SQLite 持久化, production default
+        if conversation_dir is not None:
+            self._conversation_dir = Path(conversation_dir)
+            self._conversation_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            self._conversation_dir = None  # sentinel: 走 module-level CONV_DIR
+
         # 簡易對話歷史快取:{session_id: [messages]}
-        # Phase 2 升級點:改為持久化到 SQLite
-        self._memory = MemoryStore()  # Phase 2: SQLite 持久化
         self._history: Dict[str, List[Dict[str, Any]]] = {}
 
         # 去重:追蹤正在處理中的 event_id,防止同一事件被處理兩次
@@ -2388,15 +2401,110 @@ class LLMProxy:
         self._user_id_legacy_default = "bryan"
 
         # 啟動時從磁碟載入記憶
-        self._group_history = _load_group()
+        self._group_history = self._load_group_instance()
         # KI-001: 每個 agent 在每個 user 下都載入(目前只有 bryan,未來多 owner 自動擴展)
         for agent_id in ("agent_yua", "agent_ruka", "agent_akane"):
             for uid in (self._user_id_legacy_default,):  # 啟動時只載入舊 owner
-                self._history[_session_key(agent_id, uid)] = _load_private(agent_id, uid)
+                self._history[_session_key(agent_id, uid)] = self._load_private_instance(agent_id, uid)
         logger.info(
             f"[LLMProxy] 載入 group={len(self._group_history)} 條, "
             f"private histories loaded"
         )
+
+    # ───────────────────────────────────────────────────────────
+    # P0 (Bry 派工 2026-08-09 19:18): Persistence DI 入口
+    # 給 LLMProxy 自己的 conversation history persistence 用的 instance methods
+    # 當 conversation_dir=None 時,走 module-level CONV_DIR (production 預設)
+    # 當 conversation_dir!=None 時,走 self._conversation_dir (test 隔離)
+    # Module-level _load_group / _save_group / _load_private / _save_private 保留不動
+    # (其他 caller 可能仍會用,且向後相容)
+    # ───────────────────────────────────────────────────────────
+
+    def _group_file_path(self) -> Path:
+        """P0: 解析 group_chat.json 的最終路徑 (per-instance)"""
+        if self._conversation_dir is not None:
+            return self._conversation_dir / "group_chat.json"
+        return _GROUP_FILE
+
+    def _private_history_path(self, agent_id: str, user_id: str) -> Path:
+        """P0: 解析 per-(user, agent) private JSON 的最終路徑 (per-instance)"""
+        if self._conversation_dir is not None:
+            return self._conversation_dir / f"{user_id}_{agent_id}_private.json"
+        return CONV_DIR / f"{user_id}_{agent_id}_private.json"
+
+    def _load_group_instance(self) -> List[Dict[str, Any]]:
+        """P0: 載入 group history (走 self._group_file_path)"""
+        path = self._group_file_path()
+        if path.exists():
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                return []
+        return []
+
+    def _save_group_instance(self, history: List[Dict[str, Any]]) -> None:
+        """P0: 寫入 group history (走 self._group_file_path)"""
+        path = self._group_file_path()
+        trimmed = history[-MAX_GROUP:]
+        path.write_text(json.dumps(trimmed, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _load_private_instance(self, agent_id: str, user_id: str) -> List[Dict[str, str]]:
+        """P0: 載入 per-(user, agent) private history
+
+        隔離模式 (self._conversation_dir != None): 只看 self 路徑, 不 fallback 到 production
+        production 模式 (self._conversation_dir == None): 看新格式, fallback 到舊 bryan_ 格式
+        """
+        new_path = self._private_history_path(agent_id, user_id)
+        if new_path.exists():
+            try:
+                return json.loads(new_path.read_text(encoding="utf-8"))
+            except Exception:
+                return []
+        if self._conversation_dir is not None:
+            # 隔離模式: 不 fallback, 避免污染或洩漏
+            return []
+        # production fallback (KI-001 向後相容)
+        legacy_path = _legacy_group_path(agent_id)
+        if legacy_path.exists() and user_id == _LEGACY_BRYAN_USER_ID:
+            try:
+                return json.loads(legacy_path.read_text(encoding="utf-8"))
+            except Exception:
+                return []
+        return []
+
+    def _save_private_instance(self, agent_id: str, user_id: str, history: List[Dict[str, str]]) -> None:
+        """P0: 寫入 per-(user, agent) private history (走 self._private_history_path)"""
+        path = self._private_history_path(agent_id, user_id)
+        trimmed = history[-MAX_PRIVATE:]
+        path.write_text(json.dumps(trimmed, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _append_group_instance(
+        self, speaker: str, content: str, is_private: bool = False, triggered_by: Optional[str] = None
+    ) -> None:
+        """P0: Append 到 group history, 走 self._group_file_path"""
+        history = self._load_group_instance()
+        entry: Dict[str, Any] = {"role": speaker, "content": content, "is_private": is_private}
+        if triggered_by:
+            entry["triggered_by"] = triggered_by
+        history.append(entry)
+        self._save_group_instance(history)
+
+    def _append_group_user_instance(self, speaker: str, content: str) -> None:
+        """P0: Append user 訊息到 group history, 走 self._group_file_path"""
+        history = self._load_group_instance()
+        history.append({"role": speaker, "content": content})
+        self._save_group_instance(history)
+
+    def _append_private_history_instance(
+        self, agent_id: str, user_id: str, role: str, content: str, triggered_by: Optional[str] = None
+    ) -> None:
+        """P0: Append 到 per-(user, agent) private history, 走 self._private_history_path"""
+        history = self._load_private_instance(agent_id, user_id)
+        entry: Dict[str, str] = {"role": role, "content": content}
+        if triggered_by:
+            entry["triggered_by"] = triggered_by
+        history.append(entry)
+        self._save_private_instance(agent_id, user_id, history)
 
     def register(self) -> None:
         """向 Event Bus 註冊,開始監聽 SPEAKER_TOKEN_GRANTED
@@ -2729,19 +2837,19 @@ class LLMProxy:
                 # 不是 Bry 真實輸入, 寫進 history 會污染 (Bry 抓漏 8/2 13:45)。
                 if user_message and reason == "user_message":
                     if mode == "group":
-                        _append_group_user("bryan", user_message)
+                        self._append_group_user_instance("bryan", user_message)
                         self._memory.append("group", "user", user_message, "bryan", is_private=False)
-                        self._group_history = _load_group()
+                        self._group_history = self._load_group_instance()
                     else:
-                        _append_private_history(agent_id, user_id, "user", user_message)
+                        self._append_private_history_instance(agent_id, user_id, "user", user_message)
                         self._memory.append(f"session_{user_id}_{agent_id}", "user", user_message, "bryan", is_private=True)
-                        self._history[_session_key(agent_id, user_id)] = _load_private(agent_id, user_id)
-                        _append_group(
+                        self._history[_session_key(agent_id, user_id)] = self._load_private_instance(agent_id, user_id)
+                        self._append_group_instance(
                             speaker=agent_id,
                             content=f"({agent_id} 與 Bryan 私聊中)",
                             is_private=True,
                         )
-                        self._group_history = _load_group()
+                        self._group_history = self._load_group_instance()
                 return
 
             # ── 寫入歷史(user + assistant 一起寫)──────────
@@ -2750,31 +2858,31 @@ class LLMProxy:
             # 角色實際輸出 (assistant) 永遠寫入但加 triggered_by metadata 標記主動觸發。
             if mode == "group":
                 if user_message and reason == "user_message":
-                    _append_group_user("bryan", user_message)
+                    self._append_group_user_instance("bryan", user_message)
                     self._memory.append("group", "user", user_message, "bryan", is_private=False)
-                _append_group(speaker=agent_id, content=generated_text, triggered_by=reason)
-                self._group_history = _load_group()
+                self._append_group_instance(speaker=agent_id, content=generated_text, triggered_by=reason)
+                self._group_history = self._load_group_instance()
             else:
                 if user_message and reason == "user_message":
-                    _append_private_history(agent_id, user_id, "user", user_message)
+                    self._append_private_history_instance(agent_id, user_id, "user", user_message)
                     self._memory.append(f"session_{user_id}_{agent_id}", "user", user_message, "bryan", is_private=True)
-                    _append_group(
+                    self._append_group_instance(
                         speaker=agent_id,
                         content=f"({agent_id} 與 Bryan 私聊中)",
                         is_private=True,
                     )
-                    _append_private_history(agent_id, user_id, "assistant", generated_text, triggered_by=reason)
+                    self._append_private_history_instance(agent_id, user_id, "assistant", generated_text, triggered_by=reason)
                     self._memory.append(f"session_{user_id}_{agent_id}", "assistant", generated_text, "agent_id", is_private=True)
-                    _append_group(speaker=agent_id, content=generated_text, is_private=True, triggered_by=reason)
-                    self._history[_session_key(agent_id, user_id)] = _load_private(agent_id, user_id)
+                    self._append_group_instance(speaker=agent_id, content=generated_text, is_private=True, triggered_by=reason)
+                    self._history[_session_key(agent_id, user_id)] = self._load_private_instance(agent_id, user_id)
                 else:
                     # Proactive 觸發: 不寫 user, 但 assistant 訊息要寫入保持上下文連貫
                     # 加 triggered_by metadata 標記這是主動搭話, 不是 Bry 真實對話後的回應
-                    _append_private_history(agent_id, user_id, "assistant", generated_text, triggered_by=reason)
+                    self._append_private_history_instance(agent_id, user_id, "assistant", generated_text, triggered_by=reason)
                     self._memory.append(f"session_{user_id}_{agent_id}", "assistant", generated_text, "agent_id", is_private=True)
-                    _append_group(speaker=agent_id, content=generated_text, is_private=True, triggered_by=reason)
-                    self._history[_session_key(agent_id, user_id)] = _load_private(agent_id, user_id)
-                self._group_history = _load_group()
+                    self._append_group_instance(speaker=agent_id, content=generated_text, is_private=True, triggered_by=reason)
+                    self._history[_session_key(agent_id, user_id)] = self._load_private_instance(agent_id, user_id)
+                self._group_history = self._load_group_instance()
 
             # ── 發布 AGENT_SPEAK (JP rollback 簡化版) ────────
             # Phase 5b:把觸發事件裡的 target_channel / target_user_id 透傳

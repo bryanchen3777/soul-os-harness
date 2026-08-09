@@ -131,6 +131,10 @@ class _MockMemoryMiddleware:
 class _E2EPipeline:
     """
     完整 production chain setup (除 MemoryMiddleware 用 mock, 避免 SQLite lock)。
+
+    P0 (Bry 派工 2026-08-09 19:18): LLMProxy 透過 memory_store + conversation_dir
+    兩個 optional kwargs 注入 tmp_path 隔離的 store / dir, 避免污染 production
+    data/memory.db 跟 data/conversations/。
     """
 
     def __init__(self, trace_dir: Path):
@@ -138,6 +142,11 @@ class _E2EPipeline:
         self.trace_path = trace_dir / "perception_trace.jsonl"
         self.state = WorldPerceptionState()
         self.trace_writer = WorldPerceptionTraceWriter(self.trace_path)
+
+        # P0: 隔離 persistence dependencies (tmp_path)
+        self.isolation_dir = trace_dir
+        self.isolation_memory_path = trace_dir / "memory.db"
+        self.isolation_conversations_dir = trace_dir / "conversations"
 
         # 觀察
         self.grants: List[SoulEvent] = []
@@ -152,6 +161,7 @@ class _E2EPipeline:
         # 註冊順序 (Bry 拍板 2026-08-07 20:02 P7):
         #   (Mock)MemoryMiddleware → WorldPerceptionMiddleware → SpeakerTokenManager → LLMProxy
         from src.llm.proxy import LLMProxy
+        from src.memory.store import MemoryStore
 
         # 1. Mock MemoryMiddleware
         self.mw = _MockMemoryMiddleware(self.bus)
@@ -171,8 +181,15 @@ class _E2EPipeline:
         self.token_mgr.register()
 
         # 4. LLMProxy (真實 + MockLLM backend)
+        # P0: 注入 isolation 用的 MemoryStore + conversation_dir (避免寫 production)
+        self.isolation_memory = MemoryStore(db_path=self.isolation_memory_path)
         self.llm = LLMProxy(
-            bus=self.bus, backend=_MockLLMBackend(), model="mock", max_tokens=200,
+            bus=self.bus,
+            backend=_MockLLMBackend(),
+            model="mock",
+            max_tokens=200,
+            memory_store=self.isolation_memory,
+            conversation_dir=self.isolation_conversations_dir,
         )
         self.llm.register()
 
@@ -205,6 +222,13 @@ class _E2EPipeline:
             await self.bus.stop()
         except Exception:
             pass  # Bus stop 在測試環境可以寬容
+        # P0 (Bry 派工 2026-08-09 19:18): 關閉 isolation MemoryStore 的 SQLite 連線
+        # 否則 Windows 上 tempfile.TemporaryDirectory() cleanup 時會撞 file lock
+        if hasattr(self, "isolation_memory") and self.isolation_memory is not None:
+            try:
+                self.isolation_memory.close()
+            except Exception:
+                pass
 
     async def publish_world_event(self, ev: WorldEvent):
         await self.world_perception.process_world_event_direct(ev)

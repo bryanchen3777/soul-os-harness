@@ -25,6 +25,20 @@ class MemoryStore:
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._init_schema()
 
+    def close(self) -> None:
+        """P0 (Bry 派工 2026-08-09 19:18): 明確關閉 SQLite 連線
+
+        Test isolation 用: 隔離測試結束時需要關閉 connection 才能刪除 tmp DB file
+        (Windows 上 SQLite file lock 會阻止檔案刪除)。
+
+        Production 預設不會呼叫 close() — connection 跟 process lifetime 綁定,
+        process 結束時由 OS 回收。向後相容。
+        """
+        try:
+            self.conn.close()
+        except Exception:
+            pass  # 已經關閉, idempotent
+
     def _init_schema(self):
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
