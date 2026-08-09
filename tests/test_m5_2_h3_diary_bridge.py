@@ -82,16 +82,11 @@ def make_diary_payload(agent_id: str = "agent_yua", slot: str = "morning") -> Di
 def make_recording_scheduler(
     agents: List[str], whitelist: List[str] = None
 ):
-    """建一個 scheduler, 註冊 recording callbacks (morning + night)。"""
-    record = {"called_with": []}
-
-    async def cb(agent_id: str, slot: str) -> None:
-        record["called_with"].append((agent_id, slot))
-
+    """建一個 scheduler 並註冊 agents (R-3 起不再註冊 callback)。"""
     scheduler = SoulScheduler(proactive_agents=whitelist)
     for aid in agents:
         scheduler.register(aid)
-    return scheduler, record
+    return scheduler
 
 
 # ─── Test H3-I1: morning → AGENCY_TRIGGER ──────────────
@@ -112,7 +107,7 @@ def test_h3_i1_morning_publishes_agency_trigger():
 
     async def _run():
         bus = _CapturingBus()
-        scheduler, _ = make_recording_scheduler(["agent_yua", "agent_ruka"])
+        scheduler = make_recording_scheduler(["agent_yua", "agent_ruka"])
         scheduler._bus = bus
         await scheduler._fire_all("morning", today="2026-08-08")
 
@@ -141,7 +136,7 @@ def test_h3_i2_night_publishes_agency_trigger():
 
     async def _run():
         bus = _CapturingBus()
-        scheduler, _ = make_recording_scheduler(["agent_yua", "agent_ruka"])
+        scheduler = make_recording_scheduler(["agent_yua", "agent_ruka"])
         scheduler._bus = bus
         await scheduler._fire_all("night", today="2026-08-08")
 
@@ -298,7 +293,7 @@ def test_h3_i8_dedup_preserved():
 
     async def _run():
         bus = _CapturingBus()
-        scheduler, _ = make_recording_scheduler(["agent_yua", "agent_ruka"])
+        scheduler = make_recording_scheduler(["agent_yua", "agent_ruka"])
         scheduler._bus = bus
 
         # 第一次 morning
@@ -337,7 +332,7 @@ def test_h3_i9_registered_agent_iteration_preserved():
     async def _run():
         bus = _CapturingBus()
         agents = ["agent_yua", "agent_ruka", "agent_akane", "agent_rem"]
-        scheduler, _ = make_recording_scheduler(agents)
+        scheduler = make_recording_scheduler(agents)
         scheduler._bus = bus
 
         await scheduler._fire_all("morning", today="2026-08-08")
@@ -418,7 +413,7 @@ def test_h3_i11_callback_cannot_double_execute():
 
     async def _run():
         bus = _CapturingBus()
-        scheduler, _ = make_recording_scheduler(["agent_yua"])
+        scheduler = make_recording_scheduler(["agent_yua"])
         scheduler._bus = bus
 
         # Wire DiaryHandler
