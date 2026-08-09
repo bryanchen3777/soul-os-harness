@@ -169,11 +169,18 @@ class MemoryLoader:
         # Bry 拍板 2026-07-18 Stage 2.2: symmetric stopword
         # 之前只 strip memory 側, 導致 query="雷姆" 找不到 memory (因為唯一 match 的 tag 被 strip 掉)
         # 修法: query 側跟 memory 側都 strip, 保持對稱, 符合 Bry §18 設計初衷
-        query_set = set(query_tags) - agent_name_stopwords
+        #
+        # M5.3-S2-B (Bry 派工 2026-08-09 15:27): symmetric tag normalization
+        # 病因: memory.tags 是 phrase-based (e.g. "雷姆和姊姊", "姊姊的角"),
+        #       query 端用 jieba tokenize 切成 ["雷姆", "姊姊"], 結構性 mismatch 導致 by_tags_empty.
+        # 修法: query 跟 memory 兩端都用同一份 derive_query_tags() 展開成 component set,
+        #       overlap 在 component level 計算, 維持 token boundary (jieba 不引入 substring collision).
+        # 保留: MIN_OVERLAP 門檻 / is_candidate_eligible / confidence gate / fail_safe 全部不動.
+        query_components = _expand_tag_components(query_tags) - agent_name_stopwords
         by_tags: List[Memory] = []
         for m in same_agent:
-            mem_tags_filtered = set(m.tags) - agent_name_stopwords
-            overlap_count = len(query_set & mem_tags_filtered)
+            mem_components = _expand_tag_components(m.tags) - agent_name_stopwords
+            overlap_count = len(query_components & mem_components)
             # 計算 content token 數 (中文每字 1 token, 英文單字 1 token)
             m_content = m.content or ""
             m_content_tokens = (
@@ -342,6 +349,32 @@ MIN_OVERLAP_FOR_CANDIDATE = 2  # 保留舊常數, 但 Bry §25 改用分層門�
 MIN_OVERLAP_CONTENT_BOUNDARY = 20
 MIN_OVERLAP_SHORT_CONTENT = 1
 MIN_OVERLAP_LONG_CONTENT = 2
+
+
+def _expand_tag_components(tags: List[str]) -> set:
+    """M5.3-S2-B (Bry 派工 2026-08-09 15:27): Symmetric tag normalization.
+
+    對 input list of tags 每個元素跑 derive_query_tags() 取 component tokens,
+    union 成一個 set. 確保 query 端跟 memory 端用同一份 normalization semantics
+    做 overlap 比較.
+
+    Same input semantics → same normalization → same overlap calculation.
+
+    Safety:
+    - 單 token tag (e.g. "雷姆", "bryan") → derive_query_tags 輸出同樣單 token
+    - Phrase tag (e.g. "雷姆和姊姊") → derive_query_tags 拆成 ["雷姆", "姊姊", "雷姆和姊姊"]
+    - No substring matching (jieba 維持 token boundary, 不會 "京" 拆 "東京")
+    - 1-char tokens filtered (在 derive_query_tags 內)
+    - Stopwords filtered (在 derive_query_tags 內)
+    - 數字 / 純標點 filtered (在 derive_query_tags 內)
+
+    用法: 對 query_tags 跟 m.tags 都用這個展開, 然後在 component level 做 set intersection.
+    """
+    components: set = set()
+    for tag in tags:
+        for tok in derive_query_tags(tag):
+            components.add(tok)
+    return components
 
 
 def derive_query_tags(text: str) -> list:
