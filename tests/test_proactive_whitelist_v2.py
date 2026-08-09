@@ -63,16 +63,16 @@ def _make_callback_recorder():
 
 
 def _make_scheduler_with_whitelist(whitelist):
-    """建立 SoulScheduler, 註冊 10 隻角色 + 兩個 callback (heartbeat + proactive_dm) + AGENCY_TRIGGER bus capture.
+    """建立 SoulScheduler, 註冊 10 隻角色 + heartbeat callback + AGENCY_TRIGGER bus capture.
 
-    M5.2-I Phase 5: proactive_dm test observation 點從 callback 改成 AGENCY_TRIGGER bus events
-    (production contract)。callback 仍 register 是 scheduler architecture gate
-    需求 (見 M5.2-I Phase 4)。
-    Heartbeat callback 保留 (test_d / test_h / test_j 仍使用, 那些測試是 M1.7 v1 era,
-    不在 I-5 target 內)。
+    Bry 派工 O-2: 移除 proactive_dm register call + proactive_record。
+    proactive_dm register 是 dead fixture — audit grep 確認 0 個 test 用 proactive_record,
+    proactive_dm 觀察點從 callback 改成 AGENCY_TRIGGER bus events (production contract)
+    (M5.2-I Phase 5)。
+    Heartbeat callback 保留 (test_d / test_h / test_j / test_k 仍用, heartbeat 走
+    callback-only path, 不在 O-2 範疇)。
     """
     heartbeat_cb, heartbeat_record = _make_callback_recorder()
-    proactive_cb, proactive_record = _make_callback_recorder()
     captured_events: List[SoulEvent] = []
 
     class _CapturingBus:
@@ -87,17 +87,16 @@ def _make_scheduler_with_whitelist(whitelist):
     bus = _CapturingBus()
     scheduler = SoulScheduler(bus=bus, proactive_agents=whitelist)
     scheduler.register_heartbeat(heartbeat_cb)
-    scheduler.register_proactive_dm(proactive_cb)
     for aid in ALL_AGENTS:
         scheduler._all_agents.append(aid)
-    return scheduler, heartbeat_record, proactive_record, captured_events
+    return scheduler, heartbeat_record, captured_events
 
 
 class TestProactiveWhitelistRukaOnly(unittest.TestCase):
     """驗證修法 — proactive_agents=["agent_ruka"] 只讓 ruka 觸發"""
 
     def setUp(self):
-        self.scheduler, self.heartbeat_record, self.proactive_record, self.captured_events = (
+        self.scheduler, self.heartbeat_record, self.captured_events = (
             _make_scheduler_with_whitelist(WHITELIST_RUKA)
         )
 
@@ -186,7 +185,7 @@ class TestProactiveWhitelistRukaOnly(unittest.TestCase):
         M5.2-I Phase 5: 觀察點從 callback 改成 AGENCY_TRIGGER bus events (production contract)。
         """
         # 重置 scheduler (因為 setUp 已建好, 但要乾淨環境)
-        scheduler, _, _, captured_events_f = _make_scheduler_with_whitelist(WHITELIST_RUKA)
+        scheduler, _, captured_events_f = _make_scheduler_with_whitelist(WHITELIST_RUKA)
 
         async def run():
             with patch("src.soul.scheduler.random.choice", return_value="agent_ruka"):
@@ -232,7 +231,7 @@ class TestProactiveWhitelistRukaOnly(unittest.TestCase):
         動機: SoulScheduler() 不傳參數時, 預設行為不能被破壞
               (測試程式碼 / 第三方 caller 可能直接實例化不傳 whitelist)
         """
-        scheduler_no_wl, heartbeat_record, _, _ = _make_scheduler_with_whitelist(None)
+        scheduler_no_wl, heartbeat_record, _ = _make_scheduler_with_whitelist(None)
         # sanity check: _proactive_agents_whitelist 應該是 None
         self.assertIsNone(scheduler_no_wl._proactive_agents_whitelist)
 
@@ -271,7 +270,7 @@ class TestProactiveWhitelistRukaOnly(unittest.TestCase):
         修法: _get_proactive_agents() 發現 whitelist ∩ _all_agents 是空, log warning
         """
         # 白名單列了不存在的 agent_xxx (typo 模擬)
-        scheduler_bad, heartbeat_record, _, _ = _make_scheduler_with_whitelist(["agent_xxx_typo"])
+        scheduler_bad, heartbeat_record, _ = _make_scheduler_with_whitelist(["agent_xxx_typo"])
 
         async def run():
             with patch("src.soul.scheduler.random.sample", return_value=list(ALL_AGENTS)):
@@ -298,7 +297,7 @@ class TestProactiveWhitelistMultiAgent(unittest.TestCase):
         驗證 _get_proactive_agents() 回傳 [ruka, yua], 其他 8 隻還是被過濾
         """
         multi_whitelist = ["agent_ruka", "agent_yua"]
-        scheduler, heartbeat_record, _, _ = _make_scheduler_with_whitelist(multi_whitelist)
+        scheduler, heartbeat_record, _ = _make_scheduler_with_whitelist(multi_whitelist)
 
         eligible = scheduler._get_proactive_agents()
         self.assertEqual(

@@ -98,20 +98,38 @@ class TestProactiveDensityFix(unittest.TestCase):
         )
         print("[v2] run_server.py 沒有 active _heartbeat_callback (Bry 派工: heartbeat 拿掉)")
 
-    def test_d_run_server_no_active_register_heartbeat(self):
-        """v2: run_server.py 沒有 active scheduler.register_heartbeat 呼叫"""
+    def test_d_run_server_event_bridge_active(self):
+        """v2: run_server.py 有 AGENCY_TRIGGER event bridge (取代舊 register contract)
+
+        Bry 派工 O-2: test contract migration 從 legacy register_proactive_dm 改成
+        production AGENCY_TRIGGER event bridge:
+          - AgencyTriggerHandler 訂閱 EventType.AGENCY_TRIGGER
+          - llm_executor=_proactive_dm_llm_executor 注入 (production LLM path)
+        舊 test 驗 `scheduler.register_proactive_dm` 存在 (legacy callback compat) 已
+        不代表 production 真正觸發鏈。
+        """
+        # heartbeat 整條拿掉
         self.assertNotIn(
             "scheduler.register_heartbeat", self.run_server_active,
             "v2 期望 run_server.py 沒有 active scheduler.register_heartbeat 呼叫, "
             "Bry 派工: heartbeat 整條拿掉"
         )
-        # 確認 proactive_dm 還在 register (沒被誤刪)
+        # 新 production path: AGENCY_TRIGGER event bridge
         self.assertIn(
-            "scheduler.register_proactive_dm", self.run_server_active,
-            "v2 期望 run_server.py 還有 scheduler.register_proactive_dm (Bry 派工: 只留 proactive_dm)"
+            "AgencyTriggerHandler", self.run_server_active,
+            "v2 期望 run_server.py 有 AgencyTriggerHandler (M5.2-G event bridge)"
         )
-        print("[v2] run_server.py 沒有 active scheduler.register_heartbeat, "
-              "但 scheduler.register_proactive_dm 還在")
+        self.assertIn(
+            "llm_executor=_proactive_dm_llm_executor", self.run_server_active,
+            "v2 期望 run_server.py 注入 _proactive_dm_llm_executor 到 AgencyTriggerHandler "
+            "(production LLM path, M5.2-G)"
+        )
+        self.assertIn(
+            "EventType.AGENCY_TRIGGER", self.run_server_active,
+            "v2 期望 run_server.py 訂閱 EventType.AGENCY_TRIGGER (event bridge filter)"
+        )
+        print("[v2] run_server.py 用 AGENCY_TRIGGER event bridge "
+              "(AgencyTriggerHandler + llm_executor 注入)")
 
     def test_e_scheduler_heartbeat_mechanism_preserved(self):
         """v2: scheduler.py 內部 heartbeat 機制 (register_heartbeat + _fire_heartbeat) 保留
@@ -162,20 +180,37 @@ class TestProactiveDensityFix(unittest.TestCase):
         )
         print("[v2] run_server.py 啟動 log 提到 5-8 條/天 + 修法 12")
 
-    def test_h_proactive_dm_callback_elapsed_aligned(self):
-        """v2: _proactive_dm_callback 的 elapsed_mins 從 2-4h 改 3-5h, 跟觸發間隔對齊
+    def test_h_agency_trigger_payload_includes_elapsed_mins(self):
+        """v2: AGENCY_TRIGGER payload 包含 elapsed_mins (scheduler 從 _last_proactive_dm_time 算)
 
-        動機: 避免 LLM 收到「2-4h 沒見 Bry」但實際觸發是 3-5h 沒見 Bry 的認知錯位
+        取代舊 test_d 直接驗證 callback 內 _elapsed = _r39.uniform(180, 300) —
+        舊 assertion 鎖的是 LLM intent construction detail (executor local random),
+        不是 trigger contract。新 contract 是 scheduler → AGENCY_TRIGGER event payload,
+        elapsed_mins 是 scheduler 算的可觀測欄位 (從 _last_proactive_dm_time 算)。
+
+        Bry 派工 O-2 拍板 A + C:
+          A 移除 callback 內 _elapsed assertion (不屬於 trigger contract 範疇)
+          C 新增驗證 AGENCY_TRIGGER payload 的 elapsed_mins (scheduler observable contract)
         """
-        # 用 active source (去掉註解) 找 _elapsed uniform, 避免抓到註解掉的 heartbeat 那行
-        match = re.search(
-            r"_elapsed\s*=\s*_r39\.uniform\(\s*(\d+)\s*,\s*(\d+)\s*\)",
-            self.run_server_active,
+        # 驗 scheduler._publish_agency_trigger 內有 elapsed_mins 計算
+        self.assertIn(
+            "elapsed_mins", self.scheduler_source,
+            "v2 期望 scheduler.py source 有 elapsed_mins 引用 "
+            "(M5.2-G _publish_agency_trigger payload)"
         )
-        self.assertIsNotNone(match, "v2 期望 run_server.py 有 _elapsed = _r39.uniform(...)")
-        min_v, max_v = int(match.group(1)), int(match.group(2))
-        self.assertEqual((min_v, max_v), (180, 300), f"v2 期望 _elapsed 3-5h (180, 300), 實際 ({min_v}, {max_v})")
-        print(f"[v2] _proactive_dm_callback 的 _elapsed = ({min_v}, {max_v}) 對齊觸發間隔 3-5h")
+        # 驗 payload 結構包含 elapsed_mins 欄位
+        self.assertIn(
+            '"elapsed_mins"', self.scheduler_source,
+            "v2 期望 scheduler.py publish AGENCY_TRIGGER payload 內含 elapsed_mins 欄位"
+        )
+        # 驗 _last_proactive_dm_time 存在 (elapsed_mins 計算 source)
+        self.assertIn(
+            "_last_proactive_dm_time", self.scheduler_source,
+            "v2 期望 scheduler.py 有 _last_proactive_dm_time 屬性 "
+            "(elapsed_mins 計算 source)"
+        )
+        print("[v2] scheduler.py AGENCY_TRIGGER payload 包含 elapsed_mins "
+              "(從 _last_proactive_dm_time 算, scheduler observable contract)")
 
 
 class TestProactiveDensityBackwardCompat(unittest.TestCase):
