@@ -34,10 +34,12 @@ import inspect
 import sys
 import unittest
 from pathlib import Path
+from typing import List
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.eventbus.schema import EventType, SoulEvent
 from src.soul.scheduler import SoulScheduler
 
 
@@ -61,22 +63,41 @@ def _make_callback_recorder():
 
 
 def _make_scheduler_with_whitelist(whitelist):
-    """建立 SoulScheduler, 註冊 10 隻角色 + 兩個 callback (heartbeat + proactive_dm)."""
+    """建立 SoulScheduler, 註冊 10 隻角色 + 兩個 callback (heartbeat + proactive_dm) + AGENCY_TRIGGER bus capture.
+
+    M5.2-I Phase 5: proactive_dm test observation 點從 callback 改成 AGENCY_TRIGGER bus events
+    (production contract)。callback 仍 register 是 scheduler architecture gate
+    需求 (見 M5.2-I Phase 4)。
+    Heartbeat callback 保留 (test_d / test_h / test_j 仍使用, 那些測試是 M1.7 v1 era,
+    不在 I-5 target 內)。
+    """
     heartbeat_cb, heartbeat_record = _make_callback_recorder()
     proactive_cb, proactive_record = _make_callback_recorder()
-    scheduler = SoulScheduler(proactive_agents=whitelist)
+    captured_events: List[SoulEvent] = []
+
+    class _CapturingBus:
+        async def publish(self, event: SoulEvent) -> None:
+            if event.event_type == EventType.AGENCY_TRIGGER:
+                captured_events.append(event)
+        async def start(self) -> None:
+            pass
+        async def stop(self) -> None:
+            pass
+
+    bus = _CapturingBus()
+    scheduler = SoulScheduler(bus=bus, proactive_agents=whitelist)
     scheduler.register_heartbeat(heartbeat_cb)
     scheduler.register_proactive_dm(proactive_cb)
     for aid in ALL_AGENTS:
         scheduler._all_agents.append(aid)
-    return scheduler, heartbeat_record, proactive_record
+    return scheduler, heartbeat_record, proactive_record, captured_events
 
 
 class TestProactiveWhitelistRukaOnly(unittest.TestCase):
     """驗證修法 — proactive_agents=["agent_ruka"] 只讓 ruka 觸發"""
 
     def setUp(self):
-        self.scheduler, self.heartbeat_record, self.proactive_record = (
+        self.scheduler, self.heartbeat_record, self.proactive_record, self.captured_events = (
             _make_scheduler_with_whitelist(WHITELIST_RUKA)
         )
 
@@ -135,47 +156,57 @@ class TestProactiveWhitelistRukaOnly(unittest.TestCase):
         print(f"[v2] _fire_heartbeat 只觸發: {called} (其他 9 隻被 whitelist 過濾)")
 
     def test_e_proactive_dm_filters_non_whitelisted_choice(self):
-        """v2: _fire_proactive_dm random.choice 回 yua (非白名單) → silent skip, 無 callback
+        """v2: _fire_proactive_dm random.choice 回 yua (非白名單) → silent skip, 0 AGENCY_TRIGGER
 
         模擬場景: random 抽中 yua (mock random.choice 回 yua), scheduler 必須過濾
         修法前: yua callback 被呼叫
-        修法後: 沒有任何 callback 被呼叫 (random.choice 回的非白名單, 雙重保險過濾)
+        修法後: 沒有任何 callback 被呼叫, 也沒有 AGENCY_TRIGGER published (random.choice 回的非白名單, 雙重保險過濾)
+
+        M5.2-I Phase 5: 觀察點從 callback 改成 AGENCY_TRIGGER bus events (production contract)。
         """
         async def run():
             with patch("src.soul.scheduler.random.choice", return_value="agent_yua"):
                 await self.scheduler._fire_proactive_dm()
-            return self.proactive_record["called_with"]
 
-        called = asyncio.run(run())
-        # v2 期望: 沒有任何 callback 被呼叫 (yua 是非白名單, 被過濾)
+        asyncio.run(run())
+        # v2 期望: 沒有任何 AGENCY_TRIGGER 被 published (yua 是非白名單, 被過濾)
         self.assertEqual(
-            called, [],
-            f"v2 期望 _fire_proactive_dm (yua 非白名單) 不觸發任何人, 實際: {called}"
+            len(self.captured_events), 0,
+            f"v2 期望 _fire_proactive_dm (yua 非白名單) 不 publish AGENCY_TRIGGER, 實際: {len(self.captured_events)}"
         )
-        print(f"[v2] _fire_proactive_dm yua (非白名單) silent skip, called={called}")
+        print(f"[v2] _fire_proactive_dm yua (非白名單) silent skip, AGENCY_TRIGGER count={len(self.captured_events)}")
 
     def test_f_proactive_dm_fires_whitelisted_agent(self):
-        """v2: _fire_proactive_dm random.choice 回 ruka (白名單) → ruka callback 被呼叫
+        """v2: _fire_proactive_dm random.choice 回 ruka (白名單) → ruka AGENCY_TRIGGER published
 
         模擬場景: random 抽中 ruka, scheduler 必須正確觸發
         修法前: ruka callback 被呼叫 (因為原本就沒過濾)
-        修法後: ruka callback 還是被呼叫 (因為 ruka 在白名單, 應該觸發)
+        修法後: ruka AGENCY_TRIGGER 還是被 published (因為 ruka 在白名單, 應該觸發)
+
+        M5.2-I Phase 5: 觀察點從 callback 改成 AGENCY_TRIGGER bus events (production contract)。
         """
-        # 重置 record (因為 setUp 已建好 scheduler, 但要乾淨環境)
-        scheduler, _, proactive_record = _make_scheduler_with_whitelist(WHITELIST_RUKA)
+        # 重置 scheduler (因為 setUp 已建好, 但要乾淨環境)
+        scheduler, _, _, captured_events_f = _make_scheduler_with_whitelist(WHITELIST_RUKA)
 
         async def run():
             with patch("src.soul.scheduler.random.choice", return_value="agent_ruka"):
                 await scheduler._fire_proactive_dm()
-            return proactive_record["called_with"]
 
-        called = asyncio.run(run())
-        # v2 期望: ruka callback 被呼叫
+        asyncio.run(run())
+        # v2 期望: ruka AGENCY_TRIGGER 被 published
         self.assertEqual(
-            called, ["agent_ruka"],
-            f"v2 期望 _fire_proactive_dm (ruka 白名單) 觸發 ruka, 實際: {called}"
+            len(captured_events_f), 1,
+            f"v2 期望 _fire_proactive_dm (ruka 白名單) publish 1 AGENCY_TRIGGER, 實際: {len(captured_events_f)}"
         )
-        print(f"[v2] _fire_proactive_dm ruka (白名單) 觸發: {called}")
+        self.assertEqual(
+            captured_events_f[0].payload["agent_id"], "agent_ruka",
+            f"v2 期望 AGENCY_TRIGGER agent_id == 'agent_ruka', 實際: {captured_events_f[0].payload['agent_id']}"
+        )
+        self.assertEqual(
+            captured_events_f[0].payload["trigger_type"], "proactive_dm",
+            f"v2 期望 trigger_type == 'proactive_dm', 實際: {captured_events_f[0].payload['trigger_type']}"
+        )
+        print(f"[v2] _fire_proactive_dm ruka (白名單) AGENCY_TRIGGER published: agent_id={captured_events_f[0].payload['agent_id']}")
 
     def test_g_diary_dream_event_unaffected(self):
         """v2: diary / dream / event 不受 whitelist 影響, 全 10 隻都還在 _all_agents
@@ -201,7 +232,7 @@ class TestProactiveWhitelistRukaOnly(unittest.TestCase):
         動機: SoulScheduler() 不傳參數時, 預設行為不能被破壞
               (測試程式碼 / 第三方 caller 可能直接實例化不傳 whitelist)
         """
-        scheduler_no_wl, heartbeat_record, _ = _make_scheduler_with_whitelist(None)
+        scheduler_no_wl, heartbeat_record, _, _ = _make_scheduler_with_whitelist(None)
         # sanity check: _proactive_agents_whitelist 應該是 None
         self.assertIsNone(scheduler_no_wl._proactive_agents_whitelist)
 
@@ -240,7 +271,7 @@ class TestProactiveWhitelistRukaOnly(unittest.TestCase):
         修法: _get_proactive_agents() 發現 whitelist ∩ _all_agents 是空, log warning
         """
         # 白名單列了不存在的 agent_xxx (typo 模擬)
-        scheduler_bad, heartbeat_record, _ = _make_scheduler_with_whitelist(["agent_xxx_typo"])
+        scheduler_bad, heartbeat_record, _, _ = _make_scheduler_with_whitelist(["agent_xxx_typo"])
 
         async def run():
             with patch("src.soul.scheduler.random.sample", return_value=list(ALL_AGENTS)):
@@ -267,7 +298,7 @@ class TestProactiveWhitelistMultiAgent(unittest.TestCase):
         驗證 _get_proactive_agents() 回傳 [ruka, yua], 其他 8 隻還是被過濾
         """
         multi_whitelist = ["agent_ruka", "agent_yua"]
-        scheduler, heartbeat_record, _ = _make_scheduler_with_whitelist(multi_whitelist)
+        scheduler, heartbeat_record, _, _ = _make_scheduler_with_whitelist(multi_whitelist)
 
         eligible = scheduler._get_proactive_agents()
         self.assertEqual(

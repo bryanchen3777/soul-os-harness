@@ -12,6 +12,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict
 
 import uvicorn
 from fastapi import FastAPI
@@ -358,21 +359,27 @@ async def lifespan(app: FastAPI):
             bus=bus,
             proactive_agents=["agent_ruka"],
         )
+        # M5.2-I Phase 7 (Bry 拍板 2026-08-08): 移除 _diary_noop_cb noop wrapper.
+        #
+        # I-6 Scheduler 已 AGENCY_TRIGGER-only (4 條 fire_* path 不再 invoke callback).
+        # I-7 進一步: Production 不再需要用 noop callback 假裝 callback execution 是必要的.
+        #
+        # Architectural: morning/night diary path 仍可走 scheduler → fire_all → AGENCY_TRIGGER → DiaryHandler
+        # (但 production 中 _callbacks 現在是 empty, _fire_all 不觸發 — 等 I-8+ iteration source 重構)
+        #
+        # DiaryHandler 仍 wired 到 bus (handler.executor 仍 lookup diary_callbacks_real)
+        diary_callbacks_real: Dict[str, Any] = {}  # agent_id -> real callback (供 DiaryHandler.executor 用)
         for aid in agent_ids:
-            cb = await diary_callback_factory(aid)
-            scheduler.register(aid, cb)
+            cb_real = await diary_callback_factory(aid)
+            diary_callbacks_real[aid] = cb_real
 
-        # 4.2+缺口 1: 註冊 dream + event callback (Bry 2026-07-20 19:03 拍板)
+        # 4.2+缺口 1: dream + event 觸發時機 (Bry 2026-07-20 19:03 拍板)
         # 夢境 22:05, 事件隨機 4-8 小時, 100% 觸發, 不做觀察期
-        async def _dream_callback(agent_id: str, target_agent_id: str):
-            writer = get_dream_event_writer()
-            await writer.write_dream(agent_id, target_agent_id, scheduler._all_agents)
-
-        async def _event_callback(agent_id: str, slot: str):
-            writer = get_dream_event_writer()
-            await writer.write_event(agent_id)
-
-        scheduler.register_dream_event(_dream_callback, _event_callback)
+        # M5.2-H Phase 1/2 (Bry 拍板 2026-08-08): dream + event 真實執行路徑
+        # 走 AGENCY_TRIGGER → DreamHandler / EventHandler (writer.write_dream / writer.write_event)
+        # M5.2-J Phase J-2 (Bry 拍板 2026-08-08): production noop callback
+        # (_dream_callback / _event_callback) 已無 runtime dependency, 完全移除。
+        # scheduler.register_dream_event() API 仍保留為 compat surface (見 scheduler.py)。
 
         # ── Lesson 39 (2026-07-30 Bry 拍板): heartbeat + proactive DM ─
         # 修法 12 (Bry 拍板 2026-08-06 17:12): heartbeat 整條拿掉
@@ -433,9 +440,160 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     logger.warning(f"[ProactiveDM] {agent_id} 失敗: {e}")
 
+        # M5.2-G: AgencyTriggerHandler LLM executor (從舊 callback LLM 路徑搬到 executor)
+        async def _proactive_dm_llm_executor(agent_id: str, trigger) -> None:
+            """
+            M5.2-G: 真正呼叫 LLM 的 executor, 由 AgencyTriggerHandler 在 decision=YES 時觸發。
+            邏輯沿用 Lesson 39-B 既有 LLM 觸發路徑 (build_intent_payload → LLM → TG DM)。
+            """
+            _agent = next((a for a in agents if a.agent_id == agent_id), None)
+            if _agent is None:
+                logger.warning(f"[AgencyTriggerHandler] agent {agent_id} 找不到, skip LLM")
+                return
+            _elapsed = _r39.uniform(180, 300)  # 3-5h (跟 proactive_dm 觸發間隔對齊)
+            _draft = _agent._build_intent_payload("proactive_dm", _elapsed).get("draft", "")
+            async with LLM_CONCURRENCY_LIMIT:
+                try:
+                    await _agent._fire_intent(
+                        reason="proactive_dm",
+                        elapsed_mins=_elapsed,
+                        chrono_payload={
+                            "draft": _draft,            # 非空 draft (Lesson 41)
+                            "target_channel": "telegram",
+                            "target_user_id": "1696287850",  # Bry 的 TG chat_id
+                        },
+                        mode="private",
+                    )
+                except Exception as e:
+                    logger.warning(f"[AgencyTriggerHandler] LLM executor {agent_id} 失敗: {e}")
+
         # 修法 12: heartbeat 暫停, Bry 8/6 17:12 拍板
         # scheduler.register_heartbeat(_heartbeat_callback)
         scheduler.register_proactive_dm(_proactive_dm_callback)
+
+        # M5.2-G: Wire AgencyTriggerHandler 訂閱 AGENCY_TRIGGER
+        # 從 src.agency import AgencyTriggerHandler (lazy import 避免循環)
+        from src.agency import AgencyTriggerHandler
+        _trigger_handler = AgencyTriggerHandler(
+            state=None,  # 用預設 AgencyState
+            llm_executor=_proactive_dm_llm_executor,
+        )
+        # 訂閱 AGENCY_TRIGGER event
+        bus.subscribe(
+            subscriber_id="agency_trigger_handler",
+            handler=_trigger_handler.handle_event,
+            event_filter={EventType.AGENCY_TRIGGER},
+        )
+        logger.info(
+            f"[M5.2-G] AgencyTriggerHandler 訂閱 AGENCY_TRIGGER ✓ (proactive_dm bridge active)"
+        )
+
+        # M5.2-H Phase 1 (Bry 拍板 2026-08-08): Wire EventHandler 訂閱 AGENCY_TRIGGER (trigger_type="event")
+        # 跟 AgencyTriggerHandler 平行, 過濾 trigger_type=="event",
+        # decision=YES 時呼叫 writer.write_event (WRITER_ONLY, 不調 LLM, 不發 AGENT_SPEAK)
+        from src.agency import EventHandler
+        async def _event_writer_executor(agent_id: str) -> None:
+            """M5.2-H: 真正寫 diary 的 executor, 由 EventHandler 在 decision=YES 時觸發.
+
+            邏輯沿用 M5.2-H Phase 1 event 觸發的 writer 路徑 (writer.write_event)。
+            搬出來獨立是因為 M5.2-J Phase J-2 後舊 _event_callback noop 已完全移除,
+            真實執行路徑走 EventHandler 透過 AGENCY_TRIGGER 觸發。
+            """
+            _writer = get_dream_event_writer()
+            await _writer.write_event(agent_id)
+
+        _event_handler = EventHandler(
+            state=None,  # 用預設 AgencyState
+            writer_executor=_event_writer_executor,
+        )
+        bus.subscribe(
+            subscriber_id="agency_event_handler",
+            handler=_event_handler.handle_event,
+            event_filter={EventType.AGENCY_TRIGGER},
+        )
+        logger.info(
+            f"[M5.2-H] EventHandler 訂閱 AGENCY_TRIGGER ✓ (event bridge active, WRITER_ONLY)"
+        )
+
+        # M5.2-H Phase 2 (Bry 拍板 2026-08-08): Wire DreamHandler 訂閱 AGENCY_TRIGGER (trigger_type="dream")
+        # 跟 AgencyTriggerHandler / EventHandler 平行, 過濾 trigger_type=="dream",
+        # decision=YES 時呼叫 writer.write_dream (WRITER_ONLY, 包含 relationship side effect)
+        from src.agency import DreamHandler
+        async def _dream_writer_executor(
+            dreamer: str,
+            target_agent_id: str,
+            all_agents: list,
+        ) -> None:
+            """M5.2-H Phase 2: 真正寫 dream 的 executor, 由 DreamHandler 在 decision=YES 時觸發.
+
+            邏輯沿用 M5.2-H Phase 2 dream 觸發的 writer 路徑 (writer.write_dream)。
+            writer.write_dream 內部會:
+              1. 生成 dream 內容 (LLM 或 placeholder)
+              2. 寫入 diary jsonl
+              3. on_dream touch (relationships.json)
+              4. _extract_impression 更新 relationships
+            全部都是 1 次 writer 內部,handler 不額外做任何 relationship 操作
+            M5.2-J Phase J-2 後舊 _dream_callback noop 已完全移除。
+            """
+            _writer = get_dream_event_writer()
+            await _writer.write_dream(dreamer, target_agent_id, all_agents)
+
+        _dream_handler = DreamHandler(
+            state=None,  # 用預設 AgencyState
+            dream_writer_executor=_dream_writer_executor,
+        )
+        bus.subscribe(
+            subscriber_id="agency_dream_handler",
+            handler=_dream_handler.handle_event,
+            event_filter={EventType.AGENCY_TRIGGER},
+        )
+        logger.info(
+            f"[M5.2-H2] DreamHandler 訂閱 AGENCY_TRIGGER ✓ "
+            f"(dream bridge active, WRITER_ONLY, relationship side effect via writer)"
+        )
+
+        # M5.2-H Phase 3 (Bry 拍板 2026-08-08): Wire DiaryHandler 訂閱 AGENCY_TRIGGER (morning + night)
+        # 一個 Handler 同時負責 morning + night (兩者都是 diary_callback_factory pattern)
+        # 過濾 trigger_type ∈ {morning, night}, decision=YES 時呼叫 diary_writer_executor(agent_id, slot)
+        # diary_writer_executor 在 production 從 diary_callbacks_real lookup 既有 callback 並執行
+        # (跟原 _fire_all 的 lookup 邏輯對齊, 但搬到 handler 端透過 Agency decision 控管)
+        from src.agency import DiaryHandler
+        async def _diary_writer_executor(agent_id: str, slot: str) -> None:
+            """M5.2-H Phase 3: 真正跑 diary generation 的 executor, 由 DiaryHandler 在 decision=YES 時觸發.
+
+            從 diary_callbacks_real lookup 既有 callback, 內部跑:
+              1. 載入 persona prompt
+              2. 抽最近 5 條 v1 mirror memory
+              3. 呼叫 generate_diary_entry() 走 minimax M2.7
+              4. 失敗 fallback placeholder
+              5. DiaryWriter 寫入 jsonl
+            Handler 不重新做這些, 只 delegate 回既有 callback.
+            """
+            cb_real = diary_callbacks_real.get(agent_id)
+            if cb_real is None:
+                logger.warning(
+                    f"[DiaryHandler] no real callback for {agent_id} {slot}, "
+                    f"skip (diary_callbacks_real lookup miss — "
+                    f"production 維護 dict 漏了這個 agent_id, "
+                    f"見 M5.2-I Phase 7 / M5.2-J Phase J-1 doc correction)"
+                )
+                return
+            await cb_real(agent_id, slot)
+
+        _diary_handler = DiaryHandler(
+            state=None,  # 用預設 AgencyState (跟其他 handler 共用)
+            diary_writer_executor=_diary_writer_executor,
+        )
+        bus.subscribe(
+            subscriber_id="agency_diary_handler",
+            handler=_diary_handler.handle_event,
+            event_filter={EventType.AGENCY_TRIGGER},
+        )
+        logger.info(
+            f"[M5.2-H3] DiaryHandler 訂閱 AGENCY_TRIGGER ✓ "
+            f"(morning + night bridge active, WRITER_ONLY, "
+            f"delegate 到既有 diary_callbacks_real)"
+        )
 
         # [TEMP-EMERGENCY-STOP] Bry 拍板 2026-08-05 21:08: 立刻停 proactive
         # Bry 派工原文: 暫停主動傳訊 (proactive_dm / heartbeat 觸發), Bry 被連環訊息轟炸
@@ -458,10 +616,11 @@ async def lifespan(app: FastAPI):
             await scheduler.start()
             app.state._scheduler = scheduler
         logger.info(
-            f"[Server] Stage 4.2 + 缺口 1 + 修法 11 + 修法 12 啟動 ✓ "
-            f"agents={len(agent_ids)} diary(LLM)+dream(22:05)+event(4-8h) "
+            f"[Server] Stage 4.2 + 缺口 1 + 修法 11 + 修法 12 + M5.2-H1/H2/H3 啟動 ✓ "
+            f"agents={len(agent_ids)} diary(LLM, Agency decision gate)+dream(22:05, Agency)+event(4-8h, Agency) "
             f"proactive_whitelist=['agent_ruka'] (Bry 拍板 8/6 收斂到單一角色) "
-            f"proactive_dm 3-5h ≈ 5-8 條/天 (Bry 拍板 8/6 17:12, heartbeat 暫停)"
+            f"proactive_dm 3-5h ≈ 5-8 條/天 (Bry 拍板 8/6 17:12, heartbeat 暫停) "
+            f"AGENCY_BYPASS: heartbeat suspended (per 修法 12), 其他 5 條 trigger 全部 migrated"
         )
     except ImportError as e:
         logger.warning(f"[Server] Stage 4.2 模組 import 失敗, scheduler 不啟動: {e}")

@@ -45,6 +45,13 @@ class EventType(str, Enum):
     AGENT_STATE_UPDATE = "agent_state_update"  # Agent 情緒/狀態變更通知
     SESSION_END     = "session_end"       # Heartbeat 偵測到 elapsed >= 30min，代表 session 自然結束
 
+    # M5.2-G: Scheduler → Agency bridge trigger
+    # Bry 拍板 2026-08-08 M5.2-F: 跟 AGENT_INTENT 語意分離
+    #   - AGENT_INTENT = "Agent 想發言的意圖" (搶奪發言權, 舊路徑)
+    #   - AGENCY_TRIGGER = "Scheduler 提議現在 act" (M5.2-G 新路徑)
+    # 既有 event type 名稱 / payload / semantics 不變, 純 additive
+    AGENCY_TRIGGER  = "agency_trigger"     # M5.2-G: Scheduler 發給 Agency 的 trigger (proactive_dm etc.)
+
 
 class EventPriority(int, Enum):
     """
@@ -244,3 +251,32 @@ class SoulEvent(BaseModel):
 #       "message": str,            # 錯誤描述
 #       "traceback": str | None    # 選填，完整 traceback
 #   }
+#
+# EventType.AGENCY_TRIGGER (M5.2-G + M5.2-J Phase J-1 doc 補充, Bry 拍板 2026-08-08):
+#   source = "soul_scheduler"
+#   target = agent_id (private, 對該 agent 觸發)
+#   payload = {
+#       "trigger_type": str,         # "proactive_dm" (M5.2-G) |
+#                                    # "event" (M5.2-H Phase 1) |
+#                                    # "dream" (M5.2-H Phase 2) |
+#                                    # "morning" | "night" (M5.2-H Phase 3)
+#       "agent_id": str,            # 應該 act 的 agent
+#       "reason": str,              # 觸發原因 (固定 "scheduler.{trigger_type}")
+#       "elapsed_mins": float,      # 距上次同類 trigger 的分鐘數
+#                                    # (從 _last_proactive_dm_time 算, production 對
+#                                    #  non-proactive_dm 觸發通常 = 0.0)
+#       "timestamp": str,           # ISO 8601 本地時間字串 (now_local().isoformat())
+#       "extra": dict,              # trigger_type 特定 context 傳遞 (M5.2-H Phase 2 起)
+#                                    # - dream: {"target_agent_id": str, "all_agents": list[str]}
+#                                    #   target_agent_id 必填 (H2-I13 reject safely if missing)
+#                                    #   all_agents 是 canonical agent list snapshot
+#                                    # - proactive_dm / event / morning / night: {}
+#   }
+#   用途: Scheduler → Agency bridge (M5.2-F frozen TriggerEnvelope 語意, 跟 AGENT_INTENT 分離)。
+#         4 個 handler 訂閱此 type, 各自過濾 trigger_type:
+#           - AgencyTriggerHandler (M5.2-G)   → "proactive_dm"  → LLM executor
+#           - EventHandler (M5.2-H Phase 1)  → "event"         → writer.write_event
+#           - DreamHandler (M5.2-H Phase 2)  → "dream"         → writer.write_dream
+#           - DiaryHandler (M5.2-H Phase 3)  → "morning"|"night" → diary_writer_executor
+#   Schema 定義 (EventType.AGENCY_TRIGGER 枚舉值 + SoulEvent 結構) 自 M5.2-G 起 frozen;
+#   J-1 只補 payload convention 文件, 不動 schema definition 本身。

@@ -37,7 +37,7 @@ from datetime import datetime, time, timedelta, timezone
 # 修法: 統一從 src.timezone_utils 拿 LOCAL_TZ (ZoneInfo("America/New_York")),
 # 自動處理 EDT/EST 切換 (M0.4 跟 f9105f1 假設 "Windows 沒 zoneinfo" 錯了, Python 3.9+ 內建)
 from src.timezone_utils import now_local
-from typing import Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 # M1.1 (2026-07-31 23:30 Perplexity 派工): Event Bus 整合
 # 觸發後、callback 跑之前發布 AGENT_INTENT, 讓 MemoryMiddleware 跟 SpeakerTokenManager
@@ -173,6 +173,59 @@ class SoulScheduler:
     # 失敗 log warning 不 raise (「拒絕問, 強制讀」原則)。
     # ───────────────────────────────────────────────────────────
 
+    async def _publish_agency_trigger(
+        self,
+        agent_id: str,
+        trigger_type: str,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        M5.2-G: Publish AGENCY_TRIGGER 到 bus。
+        AgencyTriggerHandler 訂閱此 type, 跑 4 stages 決定是否 invoke LLM。
+
+        跟 _publish_agent_intent 對比:
+          - _publish_agent_intent  → AGENT_INTENT      (legacy, AGENCY_BYPASS)
+          - _publish_agency_trigger → AGENCY_TRIGGER   (M5.2-G, 過 Agency decision)
+
+        兩者語意分離 (M5.2-F 凍結):
+          AGENT_INTENT   = "Agent 想發言的意圖" (搶奪發言權)
+          AGENCY_TRIGGER = "Scheduler 提議現在 act" (M5.2-G 過 Agency)
+
+        M5.2-H Phase 2 (Bry 拍板 2026-08-08): 加 optional `extra` 參數
+        供 trigger_type 特定 context 傳遞 (例: dream 的 target_agent_id / all_agents)。
+        TriggerEnvelope dataclass 仍 frozen (M5.2-F),extra 走 dict payload。
+        """
+        if self._bus is None:
+            return  # 沒注入 bus 就 skip, 向後相容
+        if not _EVENTBUS_AVAILABLE:
+            return  # eventbus 模組沒裝, skip
+        try:
+            # 計算 elapsed_mins
+            elapsed_mins = 0.0
+            if self._last_proactive_dm_time is not None:
+                elapsed_mins = (now_local() - self._last_proactive_dm_time).total_seconds() / 60.0
+            trigger_event = SoulEvent(
+                event_type=EventType.AGENCY_TRIGGER,
+                source="soul_scheduler",
+                target=agent_id,
+                priority=EventPriority.NORMAL,
+                payload={
+                    "trigger_type": trigger_type,
+                    "agent_id": agent_id,
+                    "reason": f"scheduler.{trigger_type}",
+                    "elapsed_mins": elapsed_mins,
+                    "timestamp": now_local().isoformat(),
+                    "extra": dict(extra) if extra else {},
+                },
+            )
+            await self._bus.publish(trigger_event)
+        except Exception as e:
+            # 「拒絕問, 強制讀」: 發布失敗不影響 scheduler 排程
+            logger.warning(
+                f"[Scheduler] AGENCY_TRIGGER 發布失敗 (不影響觸發): "
+                f"agent={agent_id} trigger_type={trigger_type} err={type(e).__name__}: {e}"
+            )
+
     async def _publish_agent_intent(
         self,
         agent_id: str,
@@ -180,17 +233,10 @@ class SoulScheduler:
         draft: str = "",
         elapsed_mins: float = 0.0,
     ) -> None:
-        """包成 AGENT_INTENT SoulEvent 發到 bus.
-
-        Args:
-            agent_id: 觸發的 agent (e.g. "agent_yua")
-            reason: 觸發原因 (morning / night / dream / event / heartbeat / proactive_dm)
-            draft: 從 _build_intent_payload 拿的起始提示 (heartbeat / proactive_dm 有,
-                morning/night/dream/event 預設空字串)
-            elapsed_mins: 距上次觸發的分鐘數 (heartbeat / proactive_dm 用)
-
-        Returns:
-            None. 失敗 log warning, 不 raise.
+        """
+        @deprecated: M5.2-G (2026-08-08) 起, _fire_proactive_dm 改用 _publish_agency_trigger。
+        其他 4 個 _fire_* (event / heartbeat / dream / morning / night) 仍用此方法 (legacy / migration candidate)。
+        完整 AGENCY_BYPASS 標記見 M5.2-F。
         """
         if self._bus is None:
             return  # 沒注入 bus 就 skip, 向後相容
@@ -218,8 +264,14 @@ class SoulScheduler:
                 f"agent={agent_id} reason={reason} err={e}"
             )
 
-    def register(self, agent_id: str, callback: DiaryCallback) -> None:
-        """註冊一個 agent 的 morning + night callback (同一個 callback 處理兩種 slot)."""
+    def register(self, agent_id: str, callback: Optional[DiaryCallback] = None) -> None:
+        """
+        註冊一個 agent 的 morning + night callback (同一個 callback 處理兩種 slot).
+
+        M5.2-I Phase 6 (Bry 拍板 2026-08-08): callback 改成 Optional.
+        向後相容: 不傳 callback 也可註冊 (scheduler iteration source 仍記錄 agent_id).
+        Scheduler 真實 trigger 透過 AGENCY_TRIGGER 觸發, callback 保留作為 backward compat.
+        """
         self._callbacks.setdefault(agent_id, {})["morning"] = callback
         self._callbacks.setdefault(agent_id, {})["night"] = callback
         if agent_id not in self._all_agents:
@@ -228,12 +280,15 @@ class SoulScheduler:
 
     def register_dream_event(
         self,
-        dream_callback: DiaryCallback,
-        event_callback: DiaryCallback,
+        dream_callback: Optional[DiaryCallback] = None,
+        event_callback: Optional[DiaryCallback] = None,
     ) -> None:
         """
         註冊 dream + event callback (4.2+缺口 1 用).
         Bry 拍板 2026-07-20 19:03: 夢境每晚 22:05, 事件隨機 4-8 小時.
+
+        M5.2-I Phase 6 (Bry 拍板 2026-08-08): callback 改成 Optional (default None).
+        向後相容: 不傳 callback 也可註冊.
         """
         self._dream_callback = dream_callback
         self._event_callback = event_callback
@@ -275,7 +330,9 @@ class SoulScheduler:
             f"interval={mins}min"
         )
 
-    def register_proactive_dm(self, callback: Callable[[str], Awaitable[None]]) -> None:
+    def register_proactive_dm(
+        self, callback: Optional[Callable[[str], Awaitable[None]]] = None
+    ) -> None:
         """
         Lesson 39: 註冊 proactive DM callback.
         角色主動透過 TG DM 找 Bryan, 隨機 2-4 小時觸發一次.
@@ -285,6 +342,9 @@ class SoulScheduler:
           2. 靜音時段: quiet_hours_start ~ quiet_hours_end 跳過
              (除非角色本身有夜間人設, 未來可加 per-character override)
           3. semaphore: callback 內用 LLM_CONCURRENCY_LIMIT 共用限流
+
+        M5.2-I Phase 6 (Bry 拍板 2026-08-08): callback 改成 Optional (default None).
+        向後相容: 不傳 callback 也可註冊.
         """
         self._proactive_dm_callback = callback
         mins = random.randint(
@@ -358,9 +418,11 @@ class SoulScheduler:
         """
         4.2+缺口 1: 判斷是否該觸發夢境 (night slot 後 N 分鐘, ±60s 窗口).
         Bry 拍板 2026-07-20 19:03: dream 100% 每天觸發, 不做觀察期.
+
+        M5.2-I Phase 6 (Bry 拍板 2026-08-08): 移除 _dream_callback is None gate.
+        Scheduler 不再依賴 callback 存在性, 只看時間窗口.
+        真實 trigger 透過 AGENCY_TRIGGER publish, callback 只是 backward compat layer.
         """
-        if self._dream_callback is None:
-            return False
         target = now.replace(
             hour=self.night_time.hour,
             minute=self.night_time.minute + self.dream_minutes_after_night,
@@ -376,8 +438,11 @@ class SoulScheduler:
     def _is_event_time(self, now: datetime) -> bool:
         """
         4.2+缺口 1: 判斷是否該觸發事件 (隨機間隔, 過了 _next_event_time 就觸發).
+
+        M5.2-I Phase 6 (Bry 拍板 2026-08-08): 移除 _event_callback is None gate.
+        只看 _next_event_time, 不看 callback 存在性.
         """
-        if self._event_callback is None or self._next_event_time is None:
+        if self._next_event_time is None:
             return False
         return now >= self._next_event_time
 
@@ -386,10 +451,15 @@ class SoulScheduler:
         4.2+缺口 1 + 4.3: 觸發夢境. 3-5 隻角色, 夢到 relationships 裡的其他角色.
 
         Mavis 拍板 2026-07-21 16:35: 1-3 → 3-5 覆蓋率↑
+
+        M5.2-I Phase 6 (Bry 拍板 2026-08-08): 移除 callback execution dependency.
+        - 移除 `or self._dream_callback is None` early-return gate
+        - 移除 `await self._dream_callback(...)` invocation
+        真實 trigger 透過 AGENCY_TRIGGER publish 給 DreamHandler 處理.
         """
         if self._last_dream_date == today:
             return  # 一天一次
-        if not self._all_agents or self._dream_callback is None:
+        if not self._all_agents:
             return
         from src.soul.dream_event import _pick_dream_agents, _pick_dream_target
         from pathlib import Path as _P
@@ -405,12 +475,18 @@ class SoulScheduler:
             target = _pick_dream_target(dreamer, self._all_agents, data_dir)
             if target is None:
                 continue
-            # M1.1: 觸發後、callback 之前發布 AGENT_INTENT
-            await self._publish_agent_intent(dreamer, reason="dream")
-            try:
-                await self._dream_callback(dreamer, target)
-            except Exception as e:
-                logger.exception(f"[Scheduler] dream {dreamer}→{target} 失敗: {e}")
+            # M5.2-H Phase 2 (Bry 拍板 2026-08-08): publish AGENCY_TRIGGER
+            # M5.2-I Phase 6: 移除 callback invocation. 真實 writer.write_dream + relationship
+            # side effect 由 DreamHandler 訂閱 AGENCY_TRIGGER 觸發.
+            # Target 透過 extra 傳遞 (per C1: TriggerEnvelope frozen, extra 走 dict payload)
+            await self._publish_agency_trigger(
+                agent_id=dreamer,
+                trigger_type="dream",
+                extra={
+                    "target_agent_id": target,
+                    "all_agents": list(self._all_agents),  # snapshot, 避免 handler 看到後續 mutation
+                },
+            )
 
         self._last_dream_date = today
 
@@ -435,8 +511,13 @@ class SoulScheduler:
         - 「不為假設中的未來灑過濾網」 (未來若長出第三條路徑再說, 不預先過度設計)
         - 「更貼合修法 11 當初 narrow 派工的精神」 (跟 proactive_dm / heartbeat 一樣 pattern, 不擴大)
         - 向後相容: whitelist=None → _get_proactive_agents() 回 _all_agents, agents 全部保留, 行為不變
+
+        M5.2-I Phase 6 (Bry 拍板 2026-08-08): 移除 callback execution dependency.
+        - 移除 `or self._event_callback is None` early-return gate
+        - 移除 `await self._event_callback(...)` invocation
+        真實 trigger 透過 AGENCY_TRIGGER publish 給 EventHandler 處理.
         """
-        if not self._all_agents or self._event_callback is None:
+        if not self._all_agents:
             return
         # M1.7: 從 _all_agents 抽, 然後 filter 過 whitelist (跟 _fire_heartbeat 修法 11 一致)
         # 用 module-level random (跟 _fire_heartbeat 一致) 而非 local import, 方便測試 mock
@@ -466,12 +547,10 @@ class SoulScheduler:
             f"(whitelist={self._proactive_agents_whitelist}, raw={raw_picks})"
         )
         for agent_id in agents:
-            # M1.1: 觸發後、callback 之前發布 AGENT_INTENT
-            await self._publish_agent_intent(agent_id, reason="event")
-            try:
-                await self._event_callback(agent_id, "event")
-            except Exception as e:
-                logger.exception(f"[Scheduler] event {agent_id} 失敗: {e}")
+            # M5.2-H Phase 1 (Bry 拍板 2026-08-08): publish AGENCY_TRIGGER
+            # M5.2-I Phase 6: 移除 callback invocation. 真實 writer.write_event
+            # 由 EventHandler 訂閱 AGENCY_TRIGGER 觸發.
+            await self._publish_agency_trigger(agent_id, trigger_type="event")
 
         # 排下次事件 (4-8 小時後)
         mins = random.randint(
@@ -493,7 +572,11 @@ class SoulScheduler:
         return now >= self._next_heartbeat_time
 
     def _is_proactive_dm_time(self, now: datetime) -> bool:
-        if self._proactive_dm_callback is None or self._next_proactive_dm_time is None:
+        """
+        M5.2-I Phase 6 (Bry 拍板 2026-08-08): 移除 _proactive_dm_callback is None gate.
+        只看 _next_proactive_dm_time, 不看 callback 存在性.
+        """
+        if self._next_proactive_dm_time is None:
             return False
         return now >= self._next_proactive_dm_time
 
@@ -582,9 +665,17 @@ class SoulScheduler:
 
         修法 11 (Bry 拍板 2026-08-06 16:xx): 加第 0 道防護 — proactive whitelist
         whitelist 決定「誰有資格觸發」, whitelist 外的角色 (即使 random 命中) 也 silent skip
+
+        M5.2-G (Bry 拍板 2026-08-08): 改成 publish AGENCY_TRIGGER 而非直接 call callback。
+        原本的 _proactive_dm_callback 欄位保留 (向後相容, 不再被呼叫)。
+        AgencyTriggerHandler 訂閱 AGENCY_TRIGGER → 跑 4 stages → if YES, invoke LLM。
+
+        仍然負責: 觸發時機 / quiet hours / scheduler cooldown / whitelist / target selection
+        不再負責: 觸發後是否 act (Agency decision) / LLM call (Agency execution)
         """
         candidates = self._get_proactive_agents()
-        if not candidates or self._proactive_dm_callback is None:
+        # 修 M5.2-G: 不再依賴 _proactive_dm_callback, 只要有 candidates 就走
+        if not candidates:
             return
 
         # 1. 冷卻窗檢查
@@ -633,14 +724,12 @@ class SoulScheduler:
             f"[Scheduler] 💬 proactive_dm 觸發: {agent_id} "
             f"(whitelist={self._proactive_agents_whitelist})"
         )
-        # M1.1: 觸發後、callback 之前發布 AGENT_INTENT
-        await self._publish_agent_intent(agent_id, reason="proactive_dm")
-        try:
-            await self._proactive_dm_callback(agent_id)
-            self._last_proactive_dm_time = now_local()
-        except Exception as e:
-            # 「拒絕問, 強制讀」: 失敗不中斷排程器
-            logger.exception(f"[Scheduler] proactive_dm {agent_id} 失敗: {e}")
+        # M5.2-G (Bry 拍板 2026-08-08): publish AGENCY_TRIGGER
+        # M5.2-I Phase 6: 移除 callback invocation. 真實 LLM
+        # 由 AgencyTriggerHandler 訂閱 AGENCY_TRIGGER 觸發.
+        await self._publish_agency_trigger(agent_id, trigger_type="proactive_dm")
+        # 記錄 last_proactive_dm_time (scheduler-level rate limit 不變)
+        self._last_proactive_dm_time = now_local()
         # 排下次 (隨機 2-4 小時)
         mins = random.randint(
             self.proactive_dm_min_interval_minutes,
@@ -701,25 +790,46 @@ class SoulScheduler:
         return candidates[0]
 
     async def _fire_all(self, slot: str, today: str) -> None:
-        """觸發所有註冊 agent 對應 slot 的 callback."""
-        if not self._callbacks:
+        """觸發所有 canonical agent 對應 slot 的 AGENCY_TRIGGER.
+
+        M5.2-H Phase 3 (Bry 拍板 2026-08-08): 改成 publish AGENCY_TRIGGER (取代原本的 _publish_agent_intent)
+        trigger_type 直接用 slot ("morning" / "night"), 跟 M5.2-F frozen contract 一致
+        (不新增 AGENCY_TRIGGER_MORNING / AGENCY_TRIGGER_NIGHT)
+
+        M5.2-I Phase 6 (Bry 拍板 2026-08-08): 移除 callback invocation dependency.
+
+        M5.2-I Phase 8 (Bry 拍板 2026-08-08): 移除 callback iteration-source dependency.
+        - 改用 `self._all_agents` 作為 iteration source (canonical agent list)
+        - 移除 `self._callbacks` iteration (per work order)
+        - 移除 `cb = cbs.get(slot); if cb is None: continue` (callback 完全不參與)
+        - 移除 `if not self._callbacks: return` early return
+
+        結果:
+          - scheduler._callbacks == {} 不再阻止 AGENCY_TRIGGER publish
+          - 只要 _all_agents 還有 agent, _fire_all 就會 publish AGENCY_TRIGGER
+          - callback registration 完全 optional (per I-6)
+          - 真實 diary execution 由 DiaryHandler 訂閱 AGENCY_TRIGGER 觸發
+          - 1 trigger → 1 handler writer call (handler.executor 仍可 lookup 真實 callback)
+
+        保留既有:
+          - dedup (_last_trigger_date per agent:slot per day)
+          - morning / night slot semantics
+          - agent iteration semantics (所有 _all_agents 內 agent 都觸發)
+          - _publish_agency_trigger() trigger payload
+        """
+        if not self._all_agents:
             return
-        for agent_id, cbs in list(self._callbacks.items()):
+        for agent_id in self._all_agents:
             key = f"{agent_id}:{slot}"
             if self._last_trigger_date.get(key) == today:
                 continue  # 同日不重觸
-            cb = cbs.get(slot)
-            if cb is None:
-                continue
-            # M1.1: 觸發後、callback 之前發布 AGENT_INTENT (slot=morning/night)
-            await self._publish_agent_intent(agent_id, reason=slot)
-            try:
-                await cb(agent_id, slot)
-                self._last_trigger_date[key] = today
-                logger.info(f"[Scheduler] ✓ 觸發 {agent_id} {slot}")
-            except Exception as e:
-                # 「拒絕問, 強制讀」: 失敗不中斷排程器
-                logger.exception(f"[Scheduler] ✗ {agent_id} {slot} callback 失敗: {e}")
+            # M5.2-I Phase 8: 完全脫離 callback dependency.
+            # _fire_all 不再查 _callbacks, 不再 invoke callback.
+            # 唯一路徑: 對每個 canonical agent publish AGENCY_TRIGGER.
+            await self._publish_agency_trigger(agent_id, trigger_type=slot)
+            # 標記今日已觸發
+            self._last_trigger_date[key] = today
+            logger.info(f"[Scheduler] ✓ 觸發 {agent_id} {slot} (AGENCY_TRIGGER published)")
 
 
 # ───────────────────────────────────────────────────────────

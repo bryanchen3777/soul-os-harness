@@ -43,10 +43,12 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from typing import Any, Dict, List
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.eventbus.schema import EventType, SoulEvent
 from src.soul.scheduler import SoulScheduler
 
 
@@ -70,23 +72,40 @@ def _make_event_callback_recorder():
 
 
 def _make_scheduler_with_whitelist(whitelist):
-    """建立 SoulScheduler, 註冊 10 隻角色 + event callback."""
+    """建立 SoulScheduler, 註冊 10 隻角色 + event callback + AGENCY_TRIGGER bus capture.
+
+    M5.2-I Phase 5: 觀察點從 callback 改成 AGENCY_TRIGGER bus events (production contract)。
+    callback 仍 register 是因為 scheduler._is_event_time 跟 _fire_event 的 early-return
+    gate 仍依賴 _event_callback is not None, 移除會破壞 scheduler 架構 (見 M5.2-I Phase 4)。
+    """
     event_cb, event_record = _make_event_callback_recorder()
-    scheduler = SoulScheduler(proactive_agents=whitelist)
+    captured_events: List[SoulEvent] = []
+
+    class _CapturingBus:
+        async def publish(self, event: SoulEvent) -> None:
+            if event.event_type == EventType.AGENCY_TRIGGER:
+                captured_events.append(event)
+        async def start(self) -> None:
+            pass
+        async def stop(self) -> None:
+            pass
+
+    bus = _CapturingBus()
+    scheduler = SoulScheduler(bus=bus, proactive_agents=whitelist)
     scheduler.register_dream_event(
         dream_callback=lambda a, s: asyncio.sleep(0),
         event_callback=event_cb,
     )
     for aid in ALL_AGENTS:
         scheduler._all_agents.append(aid)
-    return scheduler, event_record
+    return scheduler, event_record, captured_events
 
 
 class TestM17EventWhitelistRukaOnly(unittest.TestCase):
     """驗證修法 — proactive_agents=["agent_ruka"] 只讓 ruka 觸發 event"""
 
     def setUp(self):
-        self.scheduler, self.event_record = _make_scheduler_with_whitelist(WHITELIST_RUKA)
+        self.scheduler, self.event_record, self.captured_events = _make_scheduler_with_whitelist(WHITELIST_RUKA)
 
     def test_a_event_uses_get_proactive_agents(self):
         """v2: _fire_event 用 _get_proactive_agents() 抽, 跟 proactive_dm 共用 whitelist"""
@@ -115,24 +134,33 @@ class TestM17EventWhitelistRukaOnly(unittest.TestCase):
         print("[v2] _fire_event 引用 _get_proactive_agents(), 抽樣走 candidates (whitelist 過濾)")
 
     def test_b_event_filters_non_whitelisted(self):
-        """v2: _fire_event 即使 random.sample 回 10 隻, 只有 ruka callback 被呼叫
+        """v2: _fire_event 即使 random.sample 回 10 隻, 只有 ruka 被觸發
 
         模擬場景: 配 whitelist=ruka, mock 強制 sample 回 10 隻 (模擬 random 抽中全部)
         修法前: 沒 filter, 10 隻 callback 都被呼叫
-        修法後: filter 過 candidates (=[ruka]), 10 隻裡只有 ruka 通過, 1 隻 callback 被呼叫
+        修法後: filter 過 candidates (=[ruka]), 10 隻裡只有 ruka 通過, 1 個 AGENCY_TRIGGER published
+
+        M5.2-I Phase 5: 觀察點從 callback invocation 改為 AGENCY_TRIGGER bus events
+        (production contract)。semantic 完全保留: 1 trigger → 1 ruka AGENCY_TRIGGER。
         """
         async def run():
             with patch("src.soul.scheduler.random.sample", return_value=list(ALL_AGENTS)):
                 await self.scheduler._fire_event()
-            return self.event_record["called_with"]
 
-        called = asyncio.run(run())
-        # v2 期望: 只有 ruka 被觸發 (filter 過 whitelist)
+        asyncio.run(run())
+        # v2 期望: 只有 ruka 收到 AGENCY_TRIGGER (filter 過 whitelist)
+        agent_ids = [e.payload["agent_id"] for e in self.captured_events]
         self.assertEqual(
-            called, ["agent_ruka"],
-            f"v2 期望 _fire_event 只觸發 ruka, 實際觸發: {called}"
+            agent_ids, ["agent_ruka"],
+            f"v2 期望 _fire_event 只觸發 ruka, 實際 AGENCY_TRIGGER agent_ids: {agent_ids}"
         )
-        print(f"[v2] _fire_event 只觸發: {called} (其他 9 隻被 whitelist 過濾)")
+        # 額外驗證 trigger_type 是 event (semantic preservation)
+        for event in self.captured_events:
+            self.assertEqual(
+                event.payload["trigger_type"], "event",
+                f"v2 期望 trigger_type=event, 實際: {event.payload['trigger_type']}"
+            )
+        print(f"[v2] _fire_event AGENCY_TRIGGER 只觸發: {agent_ids} (其他 9 隻被 whitelist 過濾)")
 
     def test_c_event_logs_whitelist(self):
         """v2: _fire_event log 帶 whitelist 資訊, 跟 proactive_dm log 風格一致"""
@@ -183,39 +211,38 @@ class TestM17EventWhitelistRukaOnly(unittest.TestCase):
 
     def test_f_backward_compat_no_whitelist(self):
         """v2: 向後相容 — proactive_agents=None 維持現狀, 全部 10 隻都能觸發 event"""
-        scheduler_no_wl, event_record = _make_scheduler_with_whitelist(None)
+        scheduler_no_wl, _, captured_events_no_wl = _make_scheduler_with_whitelist(None)
         self.assertIsNone(scheduler_no_wl._proactive_agents_whitelist)
 
         async def run():
             with patch("src.soul.scheduler.random.sample", return_value=list(ALL_AGENTS)):
                 await scheduler_no_wl._fire_event()
-            return event_record["called_with"]
 
-        called = asyncio.run(run())
+        asyncio.run(run())
         # v2 期望: 10 隻全部觸發 (向後相容, _get_proactive_agents() 回 _all_agents, filter 全部通過)
+        agent_ids = sorted([e.payload["agent_id"] for e in captured_events_no_wl])
         self.assertEqual(
-            sorted(called), sorted(ALL_AGENTS),
+            agent_ids, sorted(ALL_AGENTS),
             f"v2 期望 proactive_agents=None 時 event 觸發全 10 隻, "
-            f"實際 {len(called)} 隻: {called}"
+            f"實際 {len(agent_ids)} 隻: {agent_ids}"
         )
-        print(f"[v2] 向後相容: proactive_agents=None event 觸發全部 {len(called)} 隻")
+        print(f"[v2] 向後相容: proactive_agents=None event AGENCY_TRIGGER 全部 {len(agent_ids)} 隻")
 
     def test_g_misconfigured_whitelist_silent_skip(self):
-        """v2: 配錯 whitelist (列了不存在的 agent) → silent skip, 0 callback 觸發"""
-        scheduler_bad, event_record = _make_scheduler_with_whitelist(["agent_xxx_typo"])
+        """v2: 配錯 whitelist (列了不存在的 agent) → silent skip, 0 AGENCY_TRIGGER"""
+        scheduler_bad, _, captured_events_bad = _make_scheduler_with_whitelist(["agent_xxx_typo"])
 
         async def run():
             with patch("src.soul.scheduler.random.sample", return_value=list(ALL_AGENTS)):
                 await scheduler_bad._fire_event()
-            return event_record["called_with"]
 
-        called = asyncio.run(run())
-        # v2 期望: 配錯 whitelist 時 sample 抽的 10 隻全部被 filter 掉, 0 callback
+        asyncio.run(run())
+        # v2 期望: 配錯 whitelist 時 sample 抽的 10 隻全部被 filter 掉, 0 AGENCY_TRIGGER
         self.assertEqual(
-            called, [],
-            f"v2 期望配錯 whitelist event 觸發 0 隻, 實際: {called}"
+            len(captured_events_bad), 0,
+            f"v2 期望配錯 whitelist event 觸發 0 AGENCY_TRIGGER, 實際: {len(captured_events_bad)}"
         )
-        print(f"[v2] 配錯 whitelist (['agent_xxx_typo']) event silent skip, called={called}")
+        print(f"[v2] 配錯 whitelist (['agent_xxx_typo']) event silent skip, AGENCY_TRIGGER count={len(captured_events_bad)}")
 
     def test_h_event_uses_same_whitelist_as_proactive_dm(self):
         """v2 派工精神: 「共用同一個 whitelist」
