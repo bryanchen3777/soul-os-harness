@@ -125,6 +125,17 @@ def validate_world_event(payload: Dict[str, Any]) -> WorldEvent:
     if not isinstance(data, dict):
         raise WorldEventValidationError(f"data 必須是 dict, got: {type(data).__name__}")
 
+    # ── 7. M5.4-3.1 priority pass-through (Bry 派工 2026-08-09 17:43)
+    # WorldEvent.priority 經 bus-payload 傳遞, 讓 M3.2-A priority_boost 在
+    # E2E path 恢復作用。向後相容: 舊 payload 沒有 priority key → 0,
+    # 既有 5 維度 scoring 行為 100% 保留。防禦性: 非 int 視為 0。
+    priority_raw = payload.get("priority", 0)
+    priority = (
+        priority_raw
+        if isinstance(priority_raw, int) and not isinstance(priority_raw, bool)
+        else 0
+    )
+
     return WorldEvent(
         source=source,
         type=type_,
@@ -132,4 +143,5 @@ def validate_world_event(payload: Dict[str, Any]) -> WorldEvent:
         ts=payload["ts"],
         summary=summary.strip(),
         data=data,
+        priority=priority,
     )

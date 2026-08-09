@@ -85,8 +85,14 @@ class WorldEvent:
     def to_payload(self) -> Dict[str, Any]:
         """轉成 SoulEvent.payload dict。
 
-        M3.1 Phase B: 既有 M3 bus payload format 100% 保留, 不含 priority 欄位
-        (Bry 拍板: 不改既有 bus serialization, 既有 M3 downstream 不感知 priority)。
+        M5.4-3.1 contract repair (Bry 派工 2026-08-09 17:43):
+          - WorldEvent.priority 經 bus-payload 傳遞, 讓 M3.2-A priority_boost
+            在 E2E path 上恢復作用
+          - 向後相容: 舊 payload (沒有 priority key) 仍可正常 round-trip,
+            from_payload/validate_world_event 會用 payload.get("priority", 0)
+            fallback 到 0, 既有 5 維度 scoring 行為 100% 保留
+          - frozen M3 contract ({source, type, novelty_id, ts, summary, data})
+            100% 保留, 只是 additive 加一個新欄位
         """
         return {
             "source": self.source,
@@ -95,11 +101,22 @@ class WorldEvent:
             "ts": self.ts,
             "summary": self.summary,
             "data": self.data,
+            "priority": self.priority,
         }
 
     @classmethod
     def from_payload(cls, payload: Dict[str, Any]) -> "WorldEvent":
-        """從 SoulEvent.payload 還原。"""
+        """從 SoulEvent.payload 還原。
+
+        M5.4-3.1: 讀 priority (向後相容舊 payload 沒有 priority key → default 0)。
+        防禦性: 非 int 視為 0 (避免 TypeError 從 __post_init__ 拋出 crash middleware)。
+        """
+        priority_raw = payload.get("priority", 0)
+        priority = (
+            priority_raw
+            if isinstance(priority_raw, int) and not isinstance(priority_raw, bool)
+            else 0
+        )
         return cls(
             source=payload["source"],
             type=payload["type"],
@@ -107,6 +124,7 @@ class WorldEvent:
             ts=payload["ts"],
             summary=payload["summary"],
             data=payload.get("data", {}),
+            priority=priority,
         )
 
 

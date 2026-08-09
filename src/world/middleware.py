@@ -480,6 +480,25 @@ class WorldPerceptionMiddleware:
         )
         await self._on_world_event(soul_event)
 
+    async def inject(self, event: WorldEvent) -> None:
+        """
+        M5.4-3.1 contract repair (Bry 派工 2026-08-09 17:43):
+        WorldEventInjector Protocol conform — middleware 可被
+        WorldEventDispatcher 當作 injector 使用。
+
+        Design (per 派工 4 條約束):
+          1. 對齊 WorldEventInjector.inject(event) 介面
+          2. 與 EventBus → Middleware 架構一致 (內部走 _on_world_event 同一個 handler)
+          3. 不建立第二條 processing path (委派給 process_world_event_direct)
+          4. exactly-once: 每次 inject 只跑一次 _on_world_event,
+             沒有 duplicate 處理, caller 自己負責 idempotency
+
+        對齊說明: 不直接走 bus.publish 是因為 middleware 自己就是 bus subscriber,
+        直接 publish 會 race (自己訂閱自己, 可能重複處理); 委派給
+        process_world_event_direct → _on_world_event 確保 single processing path。
+        """
+        await self.process_world_event_direct(event)
+
     async def inject_synthetic_events_for_smoke_test(
         self,
         events: List[WorldEvent],
