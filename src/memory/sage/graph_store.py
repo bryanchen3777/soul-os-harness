@@ -13,7 +13,7 @@ from .models import Fact
 
 # 每累積 N 次寫入才 commit（WAL 模式下安全）
 _BATCH_SIZE = 20
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 
 class GraphStore:
@@ -167,6 +167,20 @@ class GraphStore:
             except sqlite3.OperationalError:
                 pass
 
+        if from_version < 6:
+            # M5.4-5.2 (Bry 派工 2026-08-09 18:38): 加 inner_life_event_id 欄位
+            # 整合 M5.4-5.1 Inner Life Foundation — Fact 對應 InnerLifeEvent.event_id
+            # - 既有 5040 facts 沒 inner_life_event_id, 預設空字串, _row_to_fact 轉 None
+            # - 新 facts 由 SAGELiteProvider 配 optional inner_life_writer 生成 canonical event_id
+            # - 不影響 M5.3 retrieval: 純 metadata, 不參與 scoring / dedup / threshold
+            # - 不影響 SAGE: 不改 extraction logic, 只是 attach 一個 canonical reference
+            try:
+                conn.execute(
+                    "ALTER TABLE facts ADD COLUMN inner_life_event_id TEXT NOT NULL DEFAULT ''"
+                )
+            except sqlite3.OperationalError:
+                pass
+
     def _row_to_fact(self, row: sqlite3.Row) -> Fact:
         d = dict(row)
         d.pop("tags", None)
@@ -178,6 +192,9 @@ class GraphStore:
         # 修法 1: source_pair 從 SQL 讀出, 空字串轉 None (跟 Fact dataclass Optional 對齊)
         raw_sp = d.get("source_pair", "")
         d["source_pair"] = raw_sp if raw_sp else None
+        # M5.4-5.2: inner_life_event_id 從 SQL 讀出, 空字串轉 None (向後相容既有 records)
+        raw_ilid = d.get("inner_life_event_id", "")
+        d["inner_life_event_id"] = raw_ilid if raw_ilid else None
         return Fact(**d)
 
     def _load_from_db(self) -> None:
@@ -214,12 +231,14 @@ class GraphStore:
             """INSERT OR REPLACE INTO facts
                (fact_id, subject, predicate, object,
                 timestamp, event_time, weight, source,
-                session_id, tags, is_anchor, source_pair)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                session_id, tags, is_anchor, source_pair,
+                inner_life_event_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (fact.fact_id, fact.subject, fact.predicate, fact.object,
              fact.timestamp, fact.event_time, fact.weight, fact.source,
              fact.session_id, "", int(fact.is_anchor),
-             fact.source_pair or ""),
+             fact.source_pair or "",
+             fact.inner_life_event_id or ""),
         )
         self._pending_writes += 1
         if self._pending_writes >= self.batch_size:

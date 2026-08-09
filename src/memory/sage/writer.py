@@ -184,6 +184,18 @@ class MemoryWriter:
         if source_pair is not None:
             for f in facts:
                 f.source_pair = source_pair
+        # M5.4-5.2 (Bry 派工 2026-08-09 18:38): Inner Life canonical reference
+        # 為每個 fact 生成 inner_life_event_id (32 char hex), 設到 fact 跟 raw_result
+        # - fact.inner_life_event_id → 走 graph path (SQL inner_life_event_id 欄位)
+        # - r["inner_life_event_id"]  → 走 mirror path (v1 Memory.inner_life_event_id 欄位)
+        # 兩者同源, 確保 graph / mirror 對同一個 fact 的 inner_life_event_id 一致
+        # M5.4-2 mirror/graph divergence fix: 之前是 v1 / graph 可能對不上, 現在加上 inner_life_event_id
+        # 後, 兩路徑對同一個 fact 應該 refer 同一個 canonical event_id
+        import uuid as _uuid_ilid
+        for f, r in zip(facts, raw_results):
+            eid = _uuid_ilid.uuid4().hex
+            f.inner_life_event_id = eid
+            r["inner_life_event_id"] = eid
         # Bry 拍板 2026-07-18 Stage 1.5 fix: mirror 移到 _extract_facts 父層,
         # 兩條路徑 (LLM + heuristic) 都會跑, 解決 heuristic fallback 不寫 v1 的 bug
         self._mirror_extraction(
@@ -206,6 +218,13 @@ class MemoryWriter:
         """
         sid = session_id or self.default_session_id
         facts, raw_results = self._extract_facts(text, subject_hint, sid, source)
+        # M5.4-5.2: extract() (no graph write) 也要 mirror + 帶 inner_life_event_id
+        # 確保 mirror / graph 對同一個 fact 的 inner_life_event_id 來源一致
+        import uuid as _uuid_ilid
+        for f, r in zip(facts, raw_results):
+            eid = _uuid_ilid.uuid4().hex
+            f.inner_life_event_id = eid
+            r["inner_life_event_id"] = eid
         self._mirror_extraction(
             text=text, raw_results=raw_results,
             subject_hint=subject_hint, session_id=sid, source=source,
@@ -630,6 +649,9 @@ class MemoryWriter:
                 # v1.1 schema 加的兩個 Optional 欄位, Perplexity (b)
                 category=r.get("category"),
                 confidence=r.get("confidence"),
+                # M5.4-5.2: Inner Life canonical reference (mirror 跟 graph 同步)
+                # 由 extract_and_write 設定到 r["inner_life_event_id"] (跟 Fact.inner_life_event_id 同源)
+                inner_life_event_id=r.get("inner_life_event_id"),
             ))
             mirror_count += 1
         return mirror_count

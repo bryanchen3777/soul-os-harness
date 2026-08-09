@@ -27,6 +27,13 @@ class Memory:
     Perplexity 拍板 (Bry 轉, 2026-07-02): 升級 schema 改 append-only 加兩個欄位
     `category` 跟 `confidence`,不破壞既有 frozen dataclass。
     既有資料沒這兩個欄位的,可以是 None (由 Loader fail-safe 自然排除)。
+
+    M5.4-5.2 (Bry 派工 2026-08-09 18:38): 整合 M5.4-5.1 Inner Life Foundation
+    加 `inner_life_event_id` optional 欄位。
+    - 既有 records (pre-M5.4-5.1) 沒有這欄位 → `Memory(**data)` 用 default None 載入
+    - 設值: SAGELiteProvider 配 optional inner_life_writer 時, Memory 帶對應 InnerLifeEvent.event_id
+    - 不影響 M5.3 retrieval (loader 不讀這欄位): 純 metadata / provenance integration
+    - 不影響 M5.4-2 mirror / graph divergence: 兩個路徑都應該 reflect 同一個 event_id
     """
     memory_id: str          # uuid
     agent_id: str           # "agent_rem" / "agent_yua" / "agent_aoi" 等
@@ -38,6 +45,8 @@ class Memory:
     # confidence: 0.0-1.0 (Loader threshold gating)
     category: Optional[str] = None  # 升級加的欄位, Perplexity (b)
     confidence: Optional[float] = None  # 升級加的欄位, Perplexity (b)
+    # M5.4-5.2: Inner Life canonical reference (optional, 既有 records 為 None)
+    inner_life_event_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

@@ -27,6 +27,12 @@ class Fact:
     # Bry-mai/Bry-ruka 的私域喇稱記憶)
     # Bry 拍板防呆: 空 source_pair (既有 5040 facts 沒標記) 一律視為可見, 不過濾
     source_pair: Optional[str] = None
+    # M5.4-5.2 (Bry 派工 2026-08-09 18:38): inner_life_event_id 整合 M5.4-5.1 Inner Life Foundation
+    # Optional: None for existing 5040 facts (pre-M5.4-5.1) 跟無 inner_life_writer 的 case
+    # 設值: SAGELiteProvider 配 optional inner_life_writer 時, 每個 Fact 帶對應 InnerLifeEvent.event_id
+    # 不影響 M5.3 retrieval: 純 metadata, 不參與 scoring / dedup / threshold
+    # 不影響 SAGE: 不改 extraction logic, 只是 attach 一個 canonical reference
+    inner_life_event_id: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -44,6 +50,7 @@ class Fact:
             "merged_from":  self.merged_from,
             "merge_reason": self.merge_reason,
             "source_pair":  self.source_pair,
+            "inner_life_event_id": self.inner_life_event_id,
         }
 
     @classmethod
@@ -54,6 +61,8 @@ class Fact:
         d.setdefault("merged_from",  None)
         d.setdefault("merge_reason", None)
         d.setdefault("source_pair",  None)
+        # M5.4-5.2: backward compat for pre-integration Facts (M5.4-5.1 前的 facts 都沒有這個欄位)
+        d.setdefault("inner_life_event_id", None)
         return cls(**d)
 
     def validate(self) -> list[str]:
