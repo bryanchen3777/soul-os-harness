@@ -77,10 +77,10 @@ def make_diary_payload(agent_id: str = "agent_yua", slot: str = "morning") -> Di
 
 
 def make_recording_scheduler(
-    agents: List[str], whitelist: List[str] = None
+    agents: List[str]
 ):
     """建一個 scheduler 並註冊 agents (R-3 起不再註冊 callback)。"""
-    scheduler = SoulScheduler(proactive_agents=whitelist)
+    scheduler = SoulScheduler()
     for aid in agents:
         scheduler.register(aid)
     return scheduler
