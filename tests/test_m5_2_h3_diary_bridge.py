@@ -58,9 +58,6 @@ from src.soul.scheduler import SoulScheduler
 # ─── Helpers ───────────────────────────────────────────────
 
 
-def make_now(seconds_offset: int = 0) -> datetime:
-    base = datetime(2026, 8, 8, 15, 0, 0, tzinfo=timezone.utc)
-    return base + timedelta(seconds=seconds_offset)
 
 
 def make_diary_payload(agent_id: str = "agent_yua", slot: str = "morning") -> Dict[str, Any]:
