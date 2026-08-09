@@ -51,7 +51,6 @@ from src.agency import (
     TriggerEnvelope,
 )
 from src.agency.diary_handler import DiaryHandler as DirectDiaryHandler
-from src.eventbus.bus import SoulEventBus
 from src.eventbus.schema import EventType, EventPriority, SoulEvent
 from src.soul.scheduler import SoulScheduler
 
