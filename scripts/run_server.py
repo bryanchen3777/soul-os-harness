@@ -414,31 +414,9 @@ async def lifespan(app: FastAPI):
         #         except Exception as e:
         #             logger.warning(f"[Heartbeat] {agent_id} 失敗: {e}")
 
-        async def _proactive_dm_callback(agent_id: str) -> None:
-            """Lesson 39-B: 角色主動透過 TG DM 找 Bryan.
-
-            Lesson 41 修: draft 必須來自 _build_intent_payload, 不能空字串。
-            修法 12 (Bry 拍板 2026-08-06 17:12): elapsed_mins 從 2-4h 改 3-5h, 跟觸發間隔對齊
-            """
-            _agent = next((a for a in agents if a.agent_id == agent_id), None)
-            if _agent is None:
-                return
-            _elapsed = _r39.uniform(180, 300)  # 3-5h (修法 12, 跟 proactive_dm 觸發間隔對齊)
-            _draft = _agent._build_intent_payload("proactive_dm", _elapsed).get("draft", "")
-            async with LLM_CONCURRENCY_LIMIT:
-                try:
-                    await _agent._fire_intent(
-                        reason="proactive_dm",
-                        elapsed_mins=_elapsed,
-                        chrono_payload={
-                            "draft": _draft,            # Lesson 41: 非空 draft
-                            "target_channel": "telegram",
-                            "target_user_id": "1696287850",  # Bry 的 TG chat_id
-                        },
-                        mode="private",
-                    )
-                except Exception as e:
-                    logger.warning(f"[ProactiveDM] {agent_id} 失敗: {e}")
+        # M5.2-O-3 (Bry 拍板 2026-08-08): _proactive_dm_callback legacy def 移除
+        # production 真正路徑: AGENCY_TRIGGER → AgencyTriggerHandler → _proactive_dm_llm_executor
+        # 舊 callback 已無 production invocation (M5.2-G/I-6 後)
 
         # M5.2-G: AgencyTriggerHandler LLM executor (從舊 callback LLM 路徑搬到 executor)
         async def _proactive_dm_llm_executor(agent_id: str, trigger) -> None:
@@ -469,7 +447,9 @@ async def lifespan(app: FastAPI):
 
         # 修法 12: heartbeat 暫停, Bry 8/6 17:12 拍板
         # scheduler.register_heartbeat(_heartbeat_callback)
-        scheduler.register_proactive_dm(_proactive_dm_callback)
+        # M5.2-O-3 (Bry 拍板 2026-08-08): 移除 scheduler.register_proactive_dm(_proactive_dm_callback)
+        # legacy callback 已無 production invocation (M5.2-G/I-6 後),
+        # production 走 AGENCY_TRIGGER event bridge (下方 AgencyTriggerHandler 訂閱)
 
         # M5.2-G: Wire AgencyTriggerHandler 訂閱 AGENCY_TRIGGER
         # 從 src.agency import AgencyTriggerHandler (lazy import 避免循環)

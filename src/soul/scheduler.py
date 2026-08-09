@@ -147,8 +147,8 @@ class SoulScheduler:
         # (跟 _all_agents 動態 register() 對齊, 避免初始化時 whitelist 還沒對應到 agent)
         self._proactive_agents_whitelist: Optional[List[str]] = proactive_agents
 
-        # agent_id -> {slot -> callback}
-        self._callbacks: Dict[str, Dict[str, DiaryCallback]] = {}
+        # M5.2-P-3 (Bry 拍板 2026-08-08): _callbacks field 移除
+        # (production 0 invocation 從 M5.2-I-8 後, _callbacks 純 DEAD storage)
         self._task: Optional[asyncio.Task] = None
         self._running = False
         # 記錄上次觸發日期 (避免同日重複)
@@ -161,7 +161,8 @@ class SoulScheduler:
         self._all_agents: List[str] = []  # 4.2+缺口 1 用的 agent list (夢境抽 target 用)
         # Lesson 39: heartbeat + proactive DM 狀態
         self._heartbeat_callback: Optional[Callable[[str], Awaitable[None]]] = None
-        self._proactive_dm_callback: Optional[Callable[[str], Awaitable[None]]] = None
+        # M5.2-O-3 (Bry 拍板 2026-08-08): _proactive_dm_callback field 移除
+        # (production 0 invocation 從 M5.2-G/I-6 後)
         self._next_heartbeat_time: Optional[datetime] = None
         self._next_proactive_dm_time: Optional[datetime] = None
         self._last_proactive_dm_time: Optional[datetime] = None
@@ -266,14 +267,13 @@ class SoulScheduler:
 
     def register(self, agent_id: str, callback: Optional[DiaryCallback] = None) -> None:
         """
-        註冊一個 agent 的 morning + night callback (同一個 callback 處理兩種 slot).
+        註冊一個 agent 到 scheduler 的 canonical agent list.
 
         M5.2-I Phase 6 (Bry 拍板 2026-08-08): callback 改成 Optional.
-        向後相容: 不傳 callback 也可註冊 (scheduler iteration source 仍記錄 agent_id).
-        Scheduler 真實 trigger 透過 AGENCY_TRIGGER 觸發, callback 保留作為 backward compat.
+        M5.2-P-3 (Bry 拍板 2026-08-08): callback 不再被儲存 (_callbacks 移除).
+        保留 callback 參數是為了 backward compat (legacy test fixture 仍呼叫).
+        真實 trigger 路徑是 AGENCY_TRIGGER (M5.2-H Phase 3+), 跟 callback storage 解耦.
         """
-        self._callbacks.setdefault(agent_id, {})["morning"] = callback
-        self._callbacks.setdefault(agent_id, {})["night"] = callback
         if agent_id not in self._all_agents:
             self._all_agents.append(agent_id)
         logger.info(f"[Scheduler] 註冊 {agent_id} (morning + night)")
@@ -345,22 +345,30 @@ class SoulScheduler:
 
         M5.2-I Phase 6 (Bry 拍板 2026-08-08): callback 改成 Optional (default None).
         向後相容: 不傳 callback 也可註冊.
+
+        M5.2-O-3 (Bry 拍板 2026-08-08): API 改成 compatibility no-op.
+        0 production invocation 從 M5.2-G/I-6 後. production 真正路徑是
+        AGENCY_TRIGGER event bridge (AgencyTriggerHandler → decision=YES
+        → _proactive_dm_llm_executor). API 保留給 legacy test fixture +
+        v1 frozen baseline 兼容, callback 參數已不再保存 (compat no-op).
         """
-        self._proactive_dm_callback = callback
+        # M5.2-O-3: 不再保存 callback (compatibility no-op)
+        # 排下次時間保留 (跟原本行為一致, 確保 scheduler 排程不變)
         mins = random.randint(
             self.proactive_dm_min_interval_minutes,
             self.proactive_dm_max_interval_minutes,
         )
         self._next_proactive_dm_time = now_local() + timedelta(minutes=mins)
         logger.info(
-            f"[Scheduler] 註冊 proactive_dm ✓ "
+            f"[Scheduler] 註冊 proactive_dm ✓ (compatibility no-op) "
             f"next={self._next_proactive_dm_time.strftime('%H:%M:%S')} "
             f"interval={mins}min cooldown={self.proactive_dm_cooldown_seconds}s "
             f"quiet={self.quiet_hours_start}:00-{self.quiet_hours_end}:00"
         )
 
-    def registered_agents(self) -> List[str]:
-        return list(self._callbacks.keys())
+    # M5.2-P-3 (Bry 拍板 2026-08-08): registered_agents() 移除
+    # (P-1/P-2 已確認 0 production caller + 0 test caller + 0 external caller,
+    #  唯一資料來源 _callbacks 已 DEAD, accessor 本身也 DEAD)
 
     async def start(self) -> None:
         """啟動排程器背景 task."""
@@ -372,7 +380,7 @@ class SoulScheduler:
         logger.info(
             f"[Scheduler] 啟動 ✓ morning={self.morning_time} "
             f"night={self.night_time} prob={self.trigger_probability} "
-            f"agents={len(self._callbacks)}"
+            f"agents={len(self._all_agents)}"
         )
 
     async def stop(self) -> None:
