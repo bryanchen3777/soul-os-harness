@@ -48,7 +48,6 @@ from src.agency import (
     AgencyState,
     DiaryHandler,
     SUPPORTED_DIARY_SLOTS,
-    TriggerEnvelope,
 )
 from src.agency.diary_handler import DiaryHandler as DirectDiaryHandler
 from src.eventbus.schema import EventType, EventPriority, SoulEvent
