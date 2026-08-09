@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, time, timedelta
 
 # Bry 拍板 2026-08-03 18:21: 時區從 ASIA_TZ (UTC+8) 改 America/New_York (Bry 人在紐約)
 # 動機: Bry 抓漏 8/2 案例 (akane 16:11 EDT 觸發 → 現狀餵 LLM 04:11 Asia/Taipei 凌晨)
@@ -156,8 +156,8 @@ class SoulScheduler:
         # 4.2+缺口 1: dream/event 觸發記錄
         self._last_dream_date: Optional[str] = None  # 夢境每天觸發一次
         self._next_event_time: Optional[datetime] = None  # 下次事件時間
-        self._dream_callback: Optional[DiaryCallback] = None  # 夢境 callback (共用)
-        self._event_callback: Optional[DiaryCallback] = None  # 事件 callback (共用)
+        # M5.2-R-3 (Bry 拍板 2026-08-09): _dream_callback / _event_callback field 移除
+        # (0 read / 0 invocation 從 M5.2-I-6 後, setter 仍是 dead code)
         self._all_agents: List[str] = []  # 4.2+缺口 1 用的 agent list (夢境抽 target 用)
         # Lesson 39: heartbeat + proactive DM 狀態
         self._heartbeat_callback: Optional[Callable[[str], Awaitable[None]]] = None
@@ -265,13 +265,13 @@ class SoulScheduler:
                 f"agent={agent_id} reason={reason} err={e}"
             )
 
-    def register(self, agent_id: str, callback: Optional[DiaryCallback] = None) -> None:
+    def register(self, agent_id: str) -> None:
         """
         註冊一個 agent 到 scheduler 的 canonical agent list.
 
         M5.2-I Phase 6 (Bry 拍板 2026-08-08): callback 改成 Optional.
         M5.2-P-3 (Bry 拍板 2026-08-08): callback 不再被儲存 (_callbacks 移除).
-        保留 callback 參數是為了 backward compat (legacy test fixture 仍呼叫).
+        M5.2-R-3 (Bry 拍板 2026-08-09): callback 參數完全移除 (0 effect since M5.2-P-3).
         真實 trigger 路徑是 AGENCY_TRIGGER (M5.2-H Phase 3+), 跟 callback storage 解耦.
         """
         if agent_id not in self._all_agents:
@@ -289,10 +289,13 @@ class SoulScheduler:
 
         M5.2-I Phase 6 (Bry 拍板 2026-08-08): callback 改成 Optional (default None).
         向後相容: 不傳 callback 也可註冊.
+
+        M5.2-R-3 (Bry 拍板 2026-08-09): callback 不再保存 (compat shim 接受 kwargs 但 discard).
+        0 read / 0 invocation 從 M5.2-I-6 後. 真實觸發透過 AGENCY_TRIGGER publish 給 handler.
+        signature 保留給 frozen v1 兼容 (test_m1_7_event_whitelist_v1 L70 kwargs 呼叫).
         """
-        self._dream_callback = dream_callback
-        self._event_callback = event_callback
-        # 第一次事件時間: 隨機 4-8 小時後
+        # M5.2-R-3: 不再保存 dream_callback / event_callback (accept-and-discard compat shim)
+        # _next_event_time scheduling behavior 必須保留 (scheduler event 排程需要)
         import random
         from datetime import timedelta
         mins = random.randint(

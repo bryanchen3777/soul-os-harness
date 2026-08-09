@@ -90,7 +90,7 @@ def make_recording_scheduler(
 
     scheduler = SoulScheduler(proactive_agents=whitelist)
     for aid in agents:
-        scheduler.register(aid, cb)
+        scheduler.register(aid)
     return scheduler, record
 
 
