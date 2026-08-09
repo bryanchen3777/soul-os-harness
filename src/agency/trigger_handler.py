@@ -129,52 +129,8 @@ class AgencyTriggerHandler:
     def _parse_envelope(self, event: SoulEvent) -> Optional[TriggerEnvelope]:
         """
         從 AGENCY_TRIGGER payload 構造 TriggerEnvelope。
-        失敗 (缺欄位 / 型別錯) → log warning + return None。
+
+        M5.2-Q-4 (Bry 拍板 2026-08-08): 收斂到 TriggerEnvelope.from_payload
+        (Q-3 feasibility 確認 4 handler 100% 等價,Logger prefix 保留供 debuggability).
         """
-        payload = event.payload
-        if not isinstance(payload, dict):
-            logger.warning(
-                f"[AgencyTriggerHandler] payload 不是 dict: {type(payload).__name__}"
-            )
-            return None
-        
-        trigger_type = payload.get("trigger_type")
-        agent_id = payload.get("agent_id")
-        reason = payload.get("reason")
-        
-        if not isinstance(trigger_type, str):
-            logger.warning(f"[AgencyTriggerHandler] trigger_type 缺/非字串: {trigger_type!r}")
-            return None
-        if not isinstance(agent_id, str):
-            logger.warning(f"[AgencyTriggerHandler] agent_id 缺/非字串: {agent_id!r}")
-            return None
-        if not isinstance(reason, str):
-            logger.warning(f"[AgencyTriggerHandler] reason 缺/非字串: {reason!r}")
-            return None
-        
-        elapsed_mins = payload.get("elapsed_mins", 0.0)
-        if not isinstance(elapsed_mins, (int, float)):
-            elapsed_mins = 0.0
-        
-        # timestamp optional, default = now
-        timestamp_str = payload.get("timestamp")
-        timestamp = None
-        if isinstance(timestamp_str, str):
-            try:
-                from datetime import datetime as _dt
-                timestamp = _dt.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-            except (ValueError, TypeError):
-                timestamp = None
-        
-        extra = payload.get("extra", {})
-        if not isinstance(extra, dict):
-            extra = {}
-        
-        return TriggerEnvelope(
-            trigger_type=trigger_type,
-            agent_id=agent_id,
-            reason=reason,
-            elapsed_mins=float(elapsed_mins),
-            timestamp=timestamp if timestamp else None,
-            extra=extra,
-        )
+        return TriggerEnvelope.from_payload(event.payload, logger_name="[AgencyTriggerHandler]")
