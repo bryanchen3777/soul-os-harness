@@ -11,7 +11,7 @@ Bry 拍板 2026-08-08 M5.2-F:
   TriggerEnvelope 是獨立的 dataclass。
 
 M5.2-G Phase 1 限定 trigger_type="proactive_dm"。
-其他 5 種 trigger (event / heartbeat / dream / morning / night) 在後續 migration 才加入。
+(M5.2-H Phase 1/2/3 已將 event / dream / morning / night 全部 migrate, heartbeat 仍 legacy 走 _publish_agent_intent)
 """
 from __future__ import annotations
 

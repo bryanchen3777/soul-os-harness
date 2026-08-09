@@ -12,14 +12,14 @@ src/soul/scheduler.py — Soul OS Stage 4.2 (Part 1)
 最小可跑範圍 (Stage 4.2 第一刀):
 - asyncio 排程器, cron-like (每天 08:00 morning + 22:00 night)
 - 用本地時間 (Asia/Taipei, UTC+8)
-- callback 由 register() 註冊
+- register() 註冊 agent 到 _all_agents (R-3 起, 不再收 callback 參數)
 - Stage 4.3 LLM impression 留到下一刀, 這版先不做
 
 Bry 19:35+ 拍板 (對 4.1 觀察期): 0.7% 機率觸發 = 不每天都觸發
 - 4.2 第一刀先 100% 每天觸發, Bry 觀察 1 天後再決定要不要加 0.7% 機率
 
 約束 (沿用 4.1 紀律):
-- 「拒絕問, 強制讀」: callback 失敗 log warning, 不中斷排程器
+- 「拒絕問, 強制讀」: 發布失敗 log warning, 不中斷排程器
 - 「完成度標記要誠實」: 寫到哪就是哪
 - 「拍板先設計再開工」: 觀察期 1 天後 Bry 拍板要不要加 4.2 缺口 (排程器夢境/事件觸發)
 """
@@ -83,7 +83,7 @@ class SoulScheduler:
 
     用法:
         scheduler = SoulScheduler()
-        scheduler.register("agent_mahiru", my_diary_callback)
+        scheduler.register("agent_mahiru")
         await scheduler.start()
         # ... server 跑著的時候每天 08:00 / 22:00 自動觸發
         await scheduler.stop()  # shutdown 時
@@ -236,7 +236,8 @@ class SoulScheduler:
     ) -> None:
         """
         @deprecated: M5.2-G (2026-08-08) 起, _fire_proactive_dm 改用 _publish_agency_trigger。
-        其他 4 個 _fire_* (event / heartbeat / dream / morning / night) 仍用此方法 (legacy / migration candidate)。
+        M5.2-H Phase 1 (event) + Phase 2 (dream) + Phase 3 (morning/night via _fire_all) 也已 migrate。
+        目前 production 只剩 _fire_heartbeat 仍用此方法 (legacy / migration candidate)。
         完整 AGENCY_BYPASS 標記見 M5.2-F。
         """
         if self._bus is None:
@@ -678,14 +679,15 @@ class SoulScheduler:
         whitelist 決定「誰有資格觸發」, whitelist 外的角色 (即使 random 命中) 也 silent skip
 
         M5.2-G (Bry 拍板 2026-08-08): 改成 publish AGENCY_TRIGGER 而非直接 call callback。
-        原本的 _proactive_dm_callback 欄位保留 (向後相容, 不再被呼叫)。
+        (M5.2-O-3 移除 _proactive_dm_callback field, production 0 invocation 從 M5.2-G/I-6 後)
         AgencyTriggerHandler 訂閱 AGENCY_TRIGGER → 跑 4 stages → if YES, invoke LLM。
 
         仍然負責: 觸發時機 / quiet hours / scheduler cooldown / whitelist / target selection
         不再負責: 觸發後是否 act (Agency decision) / LLM call (Agency execution)
         """
         candidates = self._get_proactive_agents()
-        # 修 M5.2-G: 不再依賴 _proactive_dm_callback, 只要有 candidates 就走
+        # M5.2-G: AGENCY_TRIGGER path, 不再 invoke callback.
+        # (M5.2-O-3 移除 _proactive_dm_callback field, 0 invocation 從 M5.2-G/I-6 後)
         if not candidates:
             return
 
