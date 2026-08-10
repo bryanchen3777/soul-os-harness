@@ -272,6 +272,29 @@ async def lifespan(app: FastAPI):
         "NarrativeTraceWriter 已 injection → data/inner_life/trace.jsonl)"
     )
 
+    # ── M5.6-2 (Bry 派工 2026-08-10): ConversationQualification boundary ──
+    # v1 決定: USER_MESSAGE conversation 在 SESSION_END 時,
+    # 只有 duration >= 5min AND turn_depth >= 4 才 promote 成 InnerLifeEvent
+    # (canonical authority 是 InnerLifeWriter, Qualifier 絕不 fabricate identity)
+    # 派工精神:
+    #   - 訂閱 SESSION_END, payload 已經帶 last_session_id / last_user_id / last_agent_id
+    #     (M5.6-2 Phase 1 在 heartbeat/engine.py 補上, additive optional)
+    #   - Heartbeat M1.2 目前停用, SESSION_END 暫時不會被 publish
+    #     qualifier 訂閱就緒但不會觸發 — 之後 Heartbeat 重啟或被取代會自動接上
+    #   - Qualifier 永遠不會 fabricate identity, 只呼叫 inner_life_writer.create_event()
+    #   - 隱私: v1 只讀 conversation history 的 entry 數, 不讀 content
+    #   - 凍結契約: 全部 preserved (M5.4-5.1 InnerLifeWriter / Provenance /
+    #     SESSION_END schema / 4 既有 producer / Memory)
+    from src.conversation_qualification import ConversationQualification
+    conversation_qualifier = ConversationQualification(inner_life_writer=inner_life_writer)
+    conversation_qualifier.register(bus=bus)
+    app.state._conversation_qualifier = conversation_qualifier
+    logger.info(
+        "[M5.6-2] ConversationQualification 已 wired ✓ "
+        "(InnerLifeWriter 注入, 訂閱 SESSION_END, v1 policy: "
+        "duration>=5min AND turn_depth>=4)"
+    )
+
     # ── SpeakerTokenBus：USER_MESSAGE 仲裁 ─────────────────────
     speaker_token_bus = SpeakerTokenBus(cooldown_secs=4.0)
     # submit_bid 採用 lazy open，不需要單獨的 listener

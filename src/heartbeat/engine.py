@@ -63,6 +63,15 @@ class HeartbeatEngine:
         self._session_ended = False  # 防止 SESSION_END 重複觸發
         self._carryovers: dict[str, EmotionalCarryover] = {}
         self._agent_ids: list[str] = agent_ids or []  # 由外部注入，不 hardcode
+        # M5.6-2 (Bry 派工 2026-08-10): track last USER_MESSAGE identity for
+        # SESSION_END payload, so ConversationQualification can identify the
+        # affected session without redesigning Heartbeat. Additive — None
+        # means no USER_MESSAGE has been seen yet, payload fields are
+        # optional. Existing consumers that ignore unknown fields are
+        # unaffected.
+        self._last_session_id: Optional[str] = None
+        self._last_user_id: Optional[str] = None
+        self._last_agent_id: Optional[str] = None
         # Fix Bug 3: 全局靜默冷卻 — 任何人說話後 60 秒內不發 SYSTEM_TICK（避免連續觸發）
         self._last_any_speak: float = 0.0
         self.global_silence_secs: float = 60.0
@@ -125,7 +134,28 @@ class HeartbeatEngine:
         """每次使用者說話，重置活動計時器與 session 结束标记"""
         self.last_user_activity = event.timestamp
         self._session_ended = False  # 新訊息到來，代表新 session 開始
-        logger.debug("[Heartbeat] 活動計時器已重置，_session_ended=False")
+        # M5.6-2: capture last USER_MESSAGE identity for SESSION_END payload.
+        # Additive, optional — if extraction fails, fields stay None and
+        # ConversationQualification skips (graceful degradation).
+        # - session_id: from event.session_id (set by gateway ingestion)
+        # - user_id: from payload.target_user_id (set by gateway), or
+        #   fall back to event.source (e.g. "user_bryan")
+        # - agent_id: from payload.target_agent (only set for mode=private;
+        #   group mode may not have a single target, then None)
+        self._last_session_id = event.session_id
+        payload = event.payload or {}
+        self._last_user_id = (
+            payload.get("target_user_id")
+            or payload.get("user_id")
+            or (event.source if isinstance(event.source, str) else None)
+        )
+        target = payload.get("target_agent")
+        self._last_agent_id = target if isinstance(target, str) and target else None
+        logger.debug(
+            f"[Heartbeat] 活動計時器已重置，_session_ended=False, "
+            f"session={self._last_session_id}, user={self._last_user_id}, "
+            f"agent={self._last_agent_id}"
+        )
 
     async def _on_any_speak(self, event: SoulEvent) -> None:
         self._last_any_speak = time.time()
@@ -202,6 +232,13 @@ class HeartbeatEngine:
             # Phase 4 carryover 持久化：SESSION_END 偵測
             if elapsed_mins >= self.SESSION_END_THRESHOLD_MINS and not self._session_ended:
                 self._session_ended = True
+                # M5.6-2: SESSION_END payload 補上最小 session 識別資訊
+                # (additive, optional). ConversationQualification 訂閱 SESSION_END
+                # 後用 last_session_id 找出對應的 conversation history 跟
+                # 算 turn_depth。None 表示 USER_MESSAGE 還沒來過 → qualifier skip。
+                # 沒改變現有 payload 欄位 (elapsed_mins / last_user_activity 保留),
+                # 既有 SESSION_END 消費者 (consciousness._on_session_end carryover
+                # 計算) 完全不受影響 — 多讀 3 個 optional 欄位而已。
                 session_end_event = SoulEvent(
                     event_type=EventType.SESSION_END,
                     source="heartbeat_engine",
@@ -210,6 +247,10 @@ class HeartbeatEngine:
                     payload={
                         "elapsed_mins": round(elapsed_mins, 2),
                         "last_user_activity": self.last_user_activity.isoformat(),
+                        # M5.6-2 additive: session identity for ConversationQualification
+                        "last_session_id": self._last_session_id,
+                        "last_user_id": self._last_user_id,
+                        "last_agent_id": self._last_agent_id,
                     },
                 )
                 await self.bus.publish(session_end_event)
