@@ -38,6 +38,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
+# P0.5 (Bry 派工 2026-08-09 19:48): use data_root() for test isolation
+from src.paths import data_root
+
 # Lesson 38: 與 dream_event.py 共用單一 semaphore 限流
 # (避免 diary 5 + dream 5 疊加超出 provider 上限)
 from src.llm.rate_limiter import LLM_CONCURRENCY_LIMIT
@@ -49,7 +52,8 @@ logger = logging.getLogger("soul_os.soul.diary")
 # ───────────────────────────────────────────────────────────
 
 # diary 根目錄 (跟 relationships 同層)
-DEFAULT_DIARY_ROOT = "data/soul"
+# P0.5 (Bry 派工 2026-08-09 19:48): use data_root() for test isolation
+DEFAULT_DIARY_ROOT = str(data_root() / "soul")
 
 # LLM 生成 diary 參數
 DIARY_MAX_TOKENS = 200
@@ -142,7 +146,7 @@ class DiaryWriter:
     寫日記到 data/soul/{agent_id}/diary/YYYY-MM-DD.jsonl
 
     用法:
-        writer = DiaryWriter(data_dir="data/soul")
+        writer = DiaryWriter(data_dir=str(data_root() / "soul"))  # P0.5: data_root() for test isolation
         await writer.write_entry("agent_mahiru", "morning", content="おはよう", source="llm")
     """
 
@@ -404,7 +408,7 @@ async def diary_callback_factory(agent_id: str):
     recent_memories: List[str] = []
     try:
         from src.memory.v1.store import V1Store
-        v1_store = V1Store(Path("data/soul"), agent_id)
+        v1_store = V1Store(data_root() / "soul", agent_id)
         all_memories = v1_store.all()
         # 取最後 5 條 (時間序最新的)
         for m in all_memories[-DIARY_RECENT_MEMORIES:]:

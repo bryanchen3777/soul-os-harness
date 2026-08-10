@@ -9,6 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Set
 
+# P0.5 (Bry 派工 2026-08-09 19:48): use data_root() so test subprocess can
+# redirect via SOUL_OS_DATA_DIR. Production: defaults to "data/tts",
+# "data/conversations/..." unchanged.
+from src.paths import data_root
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -436,7 +441,7 @@ class IOGateway:
             if not re.match(r"^\d{8}T\d{6}_\d{6}\.mp3$", filename):
                 raise HTTPException(status_code=400, detail="invalid filename")
 
-            mp3_path = Path("data/tts") / agent_id / filename
+            mp3_path = data_root() / "tts" / agent_id / filename
             if not mp3_path.exists():
                 raise HTTPException(status_code=404, detail="audio not found")
             return FileResponse(
@@ -455,7 +460,7 @@ class IOGateway:
             from src.voice.tts_service import TTSService
             svc = TTSService(
                 bus=None,  # list mode 不 emit
-                output_dir=Path("data/tts"),
+                output_dir=data_root() / "tts",
                 public_url_prefix="/api/tts/audio",
             )
             results = svc.list_recent(agent_id=agent_id, limit=limit)
@@ -611,7 +616,7 @@ class IOGateway:
             from pathlib import Path as _Path
             
             result = {"cleared": False, "file": ""}
-            group_file = _Path("data/conversations/group_chat.json")
+            group_file = data_root() / "conversations" / "group_chat.json"
             if group_file.exists():
                 try:
                     group_file.unlink()
@@ -632,7 +637,7 @@ class IOGateway:
             result = {"agent_id": agent_id, "cleared": False, "files": []}
             
             # 清除私人對話歷史
-            private_file = _Path("data/conversations") / f"bryan_{agent_id}_private.json"
+            private_file = data_root() / "conversations" / f"bryan_{agent_id}_private.json"
             if private_file.exists():
                 try:
                     private_file.unlink()
@@ -642,7 +647,7 @@ class IOGateway:
                     result["error"] = str(e)
             
             # 清除群聊中該 Agent 的私人訊息標記
-            group_file = _Path("data/conversations/group_chat.json")
+            group_file = data_root() / "conversations" / "group_chat.json"
             if group_file.exists():
                 try:
                     history = _json.loads(group_file.read_text(encoding="utf-8"))

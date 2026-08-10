@@ -205,16 +205,21 @@ class DreamEventWriter:
     """
     夢境 / 事件生成 + 寫入 diary jsonl.
     用法:
-        writer = DreamEventWriter(data_dir="data/soul", api_key=...)
+        writer = DreamEventWriter(data_dir=str(data_root() / "soul"), api_key=...)  # P0.5: data_root() for test isolation
         await writer.write_dream(agent_id="agent_mahiru", target_agent_id="agent_yua")
         await writer.write_event(agent_id="agent_mahiru", scene="走廊的盡頭")
     """
 
     def __init__(
         self,
-        data_dir: str = "data/soul",
+        # P0.5 (Bry 派工 2026-08-09 19:48): default uses data_root() for test isolation
+        data_dir: Optional[str] = None,
         api_key: Optional[str] = None,
     ):
+        # P0.5 (Bry 派工 2026-08-09 19:48): resolve via data_root() for test isolation
+        from src.paths import data_root
+        if data_dir is None:
+            data_dir = str(data_root() / "soul")
         self.data_dir = Path(data_dir)
         self._lock = threading.Lock()
         if api_key is None:

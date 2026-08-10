@@ -47,12 +47,15 @@ class HeartbeatEngine:
         self,
         bus: SoulEventBus,
         tick_interval_seconds: int = 60,
-        data_dir: str = "data/agents",
+        # P0.5 (Bry 派工 2026-08-09 19:48): default uses data_root() for test isolation
+        data_dir: Optional[str] = None,
         agent_ids: list[str] | None = None,
     ):
         self.bus = bus
         self.tick_interval = tick_interval_seconds
-        self.data_dir = data_dir
+        # P0.5 (Bry 派工 2026-08-09 19:48): resolve via data_root() for test isolation
+        from src.paths import data_root
+        self.data_dir = data_dir if data_dir is not None else str(data_root() / "agents")
         self._running = False
         self._loop_task: Optional[asyncio.Task] = None
         self.tick_count = 0

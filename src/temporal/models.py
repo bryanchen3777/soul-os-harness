@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Optional
 from zoneinfo import ZoneInfo
 
 # Bry 派板 2026-08-03 18:21: 統一時區來源
@@ -37,9 +37,13 @@ class EmotionalCarryover:
     triggered_at: str = ""
     decay_rate: float = 0.12
 
-    def save(self, agent_id: str, base_path: str = "data/agents") -> None:
+    def save(self, agent_id: str, base_path: Optional[str] = None) -> None:
         import json
         from pathlib import Path
+        # P0.5 (Bry 派工 2026-08-09 19:48): use data_root() for test isolation
+        from src.paths import data_root
+        if base_path is None:
+            base_path = str(data_root() / "agents")
         path = Path(base_path) / agent_id / "carryover.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
@@ -48,8 +52,12 @@ class EmotionalCarryover:
         )
 
     @classmethod
-    def load(cls, agent_id: str, base_path: str = "data/agents") -> "EmotionalCarryover":
+    def load(cls, agent_id: str, base_path: Optional[str] = None) -> "EmotionalCarryover":
         import json
+        # P0.5 (Bry 派工 2026-08-09 19:48): use data_root() for test isolation
+        from src.paths import data_root
+        if base_path is None:
+            base_path = str(data_root() / "agents")
         from pathlib import Path
         path = Path(base_path) / agent_id / "carryover.json"
         if path.exists():

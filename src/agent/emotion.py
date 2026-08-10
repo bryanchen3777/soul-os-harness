@@ -26,7 +26,11 @@ from typing import Tuple
 
 logger = logging.getLogger("soul_os.emotion")
 
-DB_PATH = Path("data/memory.db")
+# P0.5 (Bry 派工 2026-08-09 19:48): use data_root() so test subprocess can
+# redirect via SOUL_OS_DATA_DIR.
+from src.paths import data_root
+
+DB_PATH = data_root() / "memory.db"
 
 # 各 agent 對情緒變化的敏感度
 # - response_boost：每次 user_message 給的 mood 增量（正向）

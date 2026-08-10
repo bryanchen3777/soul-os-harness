@@ -42,10 +42,15 @@ class TTSService:
     def __init__(
         self,
         bus: Any,  # 避開循環 import,型別用 Any
-        output_dir: Path = Path("data/tts"),
+        # P0.5 (Bry 派工 2026-08-09 19:48): default uses data_root() for test isolation
+        output_dir: Optional[Path] = None,
         public_url_prefix: str = "/api/tts/audio",
     ) -> None:
         self.bus = bus
+        # P0.5 (Bry 派工 2026-08-09 19:48): resolve via data_root() for test isolation
+        from src.paths import data_root
+        if output_dir is None:
+            output_dir = data_root() / "tts"
         self.output_dir = Path(output_dir)
         self.public_url_prefix = public_url_prefix.rstrip("/")
         self.output_dir.mkdir(parents=True, exist_ok=True)

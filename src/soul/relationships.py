@@ -347,7 +347,11 @@ class MultiAgentRelationshipsManager:
     所以「impression」欄位目前空著, 之後 4.3 開工時由 LLM 生成。
     """
 
-    def __init__(self, data_dir: str = "data/soul"):
+    def __init__(self, data_dir: Optional[str] = None):
+        # P0.5 (Bry 派工 2026-08-09 19:48): use data_root() for test isolation
+        from src.paths import data_root
+        if data_dir is None:
+            data_dir = str(data_root() / "soul")
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._stores: Dict[str, RelationshipsStore] = {}
@@ -456,7 +460,8 @@ _manager_lock = threading.Lock()
 
 
 def get_relationships_manager(
-    data_dir: str = "data/soul",
+    # P0.5 (Bry 派工 2026-08-09 19:48): default uses data_root() for test isolation
+    data_dir: Optional[str] = None,
 ) -> MultiAgentRelationshipsManager:
     """取得全域 MultiAgentRelationshipsManager (lazy singleton)。"""
     global _manager_singleton

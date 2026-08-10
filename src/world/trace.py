@@ -31,9 +31,11 @@ class WorldPerceptionTraceWriter:
         """
         Args:
             trace_log_path: 預設 data/world/perception_trace.jsonl (相對於 cwd)
+            P0.5 (Bry 派工 2026-08-09 19:48): default uses data_root() for test isolation
         """
         if trace_log_path is None:
-            trace_log_path = Path("data/world/perception_trace.jsonl")
+            from src.paths import data_root
+            trace_log_path = data_root() / "world" / "perception_trace.jsonl"
         self.trace_log_path = Path(trace_log_path)
         # 確保父目錄存在
         self.trace_log_path.parent.mkdir(parents=True, exist_ok=True)

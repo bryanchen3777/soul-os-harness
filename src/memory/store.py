@@ -10,7 +10,11 @@ import time
 from pathlib import Path
 from typing import List, Dict, Optional
 
-DB_PATH = Path("data/memory.db")
+# P0.5 (Bry 派工 2026-08-09 19:48): use data_root() so test subprocess can
+# redirect via SOUL_OS_DATA_DIR. Production: defaults to "data/memory.db".
+from src.paths import data_root
+
+DB_PATH = data_root() / "memory.db"
 
 
 class MemoryStore:

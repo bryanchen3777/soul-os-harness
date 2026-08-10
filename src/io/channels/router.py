@@ -72,7 +72,9 @@ _BRYAN_ENTITY_ID = "user_bryan"
 PROACTIVE_DM_BRYAN_INACTIVE_HOURS = 4.0
 
 # M0.5: 兩個 state file 路徑 (跟 P0-2 watchdog counter 同目錄, 設計一致)
-_STATE_DIR = Path("data/state")
+# P0.5 (Bry 派工 2026-08-09 19:48): use data_root() for test isolation
+from src.paths import data_root
+_STATE_DIR = data_root() / "state"
 _LAST_TG_USER_FILE = _STATE_DIR / "last_tg_user.json"
 _BRYAN_LAST_SEEN_FILE = _STATE_DIR / "bryan_last_seen.json"
 
@@ -342,7 +344,7 @@ class ChannelRouter:
         夢境/事件豁免: source=dream/event 走另外路徑, 不走這個過濾
         (在 _on_agent_speak 那邊用 event_source 判斷)
         """
-        rel_path = Path("data/soul") / agent_id / "relationships.json"
+        rel_path = data_root() / "soul" / agent_id / "relationships.json"
         if not rel_path.is_file():
             # 沒 relationships → 視為 cold start
             return random.random() < _PUSH_PROB_COLD_START

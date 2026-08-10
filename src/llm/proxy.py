@@ -54,7 +54,11 @@ from src.llm._agent_constants import _JP_AGENT_IDS, is_jp_agent  # noqa: E402
 logger = logging.getLogger("soul_os.llm_proxy")
 
 # ── 對話歷史持久化 ──────────────────────────────────
-CONV_DIR = Path("data/conversations")
+# P0.5 (Bry 派工 2026-08-09 19:48): use data_root() so test subprocess can
+# redirect via SOUL_OS_DATA_DIR. Production: defaults to "data/conversations".
+from src.paths import data_root
+
+CONV_DIR = data_root() / "conversations"
 CONV_DIR.mkdir(parents=True, exist_ok=True)
 MAX_PERSIST = 20      # 每份 history 最大條數(20 輪 ≈ 40 條)
 AGENT_NAMES = {
@@ -100,7 +104,7 @@ STALE_THRESHOLD_SEC = 30 * 60  # 30 分鐘
 # Bry 拒絕 B (改 agent_intent 出口) / C (mirror 進 v1 store) 方案
 # Bry 派工原話: 「Bry 拒絕把 diary 當事實送進長期記憶圖譜, 語意上不太對」
 # 「日計是主觀生活片段, 不是需要 LLMJudge 判斷真假的對話事實」
-INNER_LIFE_DATA_DIR = "data/soul"  # 跟 diary.py DEFAULT_DIARY_ROOT 對齊
+INNER_LIFE_DATA_DIR = str(data_root() / "soul")  # P0.5: redirected via data_root() for test isolation
 INNER_LIFE_DAYS = 3  # 讀最近 3 天 diary jsonl
 INNER_LIFE_MAX_ENTRIES = 5  # 最多 5 條 entry
 INNER_LIFE_MAX_CHARS_PER_ENTRY = 60  # 截斷 (Bry 派工: 「只加輕量字串」)
@@ -912,8 +916,10 @@ class OpenAIBackend(LLMBackend):
                         # 強制 UTF-8 解碼寫到 data/logs/llm_4xx_response.log
                         # 解決 mojibake 問題 + 保留 response body 供 debug
                         try:
-                            err_path = "data/logs/llm_4xx_response.log"
-                            os.makedirs(os.path.dirname(err_path), exist_ok=True)
+                            # P0.5 (Bry 派工 2026-08-09 19:48): redirect via data_root()
+                            err_dir = data_root() / "logs"
+                            err_dir.mkdir(parents=True, exist_ok=True)
+                            err_path = str(err_dir / "llm_4xx_response.log")
                             with open(err_path, "a", encoding="utf-8") as f:
                                 f.write(f"\n=== HTTP {e.response.status_code} ===\n")
                                 f.write(

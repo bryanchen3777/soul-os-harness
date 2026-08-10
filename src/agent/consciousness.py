@@ -65,8 +65,13 @@ class EmotionalState:
             "last_spoken_at": self.last_spoken_at.isoformat() if self.last_spoken_at else None,
         }
 
-    def save(self, base_path: str = "data/agents") -> None:
-        """Phase 3 實作：持久化至 JSON 檔案"""
+    def save(self, base_path: Optional[str] = None) -> None:
+        """Phase 3 實作：持久化至 JSON 檔案
+        P0.5 (Bry 派工 2026-08-09 19:48): default uses data_root() for test isolation
+        """
+        from src.paths import data_root
+        if base_path is None:
+            base_path = str(data_root() / "agents")
         path = Path(base_path) / self.agent_id / "emotional-state.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
@@ -75,8 +80,13 @@ class EmotionalState:
         )
 
     @classmethod
-    def load(cls, agent_id: str, base_path: str = "data/agents") -> "EmotionalState":
-        """Phase 3 實作：從 JSON 檔案讀取，不存在則使用預設值"""
+    def load(cls, agent_id: str, base_path: Optional[str] = None) -> "EmotionalState":
+        """Phase 3 實作：從 JSON 檔案讀取，不存在則使用預設值
+        P0.5 (Bry 派工 2026-08-09 19:48): default uses data_root() for test isolation
+        """
+        from src.paths import data_root
+        if base_path is None:
+            base_path = str(data_root() / "agents")
         path = Path(base_path) / agent_id / "emotional-state.json"
         if path.exists():
             content = path.read_text(encoding="utf-8").strip()

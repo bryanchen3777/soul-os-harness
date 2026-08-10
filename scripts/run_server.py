@@ -38,7 +38,10 @@ sys.path.insert(0, str(_root))
 # 檔案控制代碼是**模組層級變數**,**不能**放在函式內（會被 GC 導致 dump 寫到關閉的 handle）
 import faulthandler
 
-_FAULTHANDLER_PATH = _root / "data" / "faulthandler.log"
+# P0.5 (Bry 派工 2026-08-09 19:48): use data_root() for test isolation
+from src.paths import data_root
+
+_FAULTHANDLER_PATH = data_root() / "faulthandler.log"
 _FAULTHANDLER_PATH.parent.mkdir(parents=True, exist_ok=True)
 _FAULTHANDLER_FILE = open(_FAULTHANDLER_PATH, "a", encoding="utf-8", buffering=1)  # line-buffered
 faulthandler.enable(file=_FAULTHANDLER_FILE)
@@ -251,7 +254,8 @@ async def lifespan(app: FastAPI):
     # β2.1 (Bry 拍板 2026-08-02 21:48): MemoryMiddleware 接受 llm_proxy 參考
     # 讓 middleware 在 _on_agent_intent 對 agent_akane + heartbeat 觸發事件生成
     # 範圍限定 pilot, 不影響其他 reason/角色
-    mw = MemoryMiddleware(bus=bus, data_dir="data/memory", llm_proxy=llm)
+    # P0.5 (Bry 派工 2026-08-09 19:48): data_dir=None → use data_root() default
+    mw = MemoryMiddleware(bus=bus, data_dir=None, llm_proxy=llm)
     mw.register()
 
     # M3 Phase 1 (Bry 拍板 2026-08-07 19:40 + 2026-08-07 20:02 hardening):
@@ -300,7 +304,8 @@ async def lifespan(app: FastAPI):
     # Bry §11 shadow mode (2026-07-02): 對每一筆真實訊息 v6 並行 observation
     # 7 天自動到期, 不影響 prod 路徑結果
     from src.memory.shadow import init_shadow_observer
-    shadow_dir = _root / "data" / "shadow"
+    # P0.5 (Bry 派工 2026-08-09 19:48): use data_root() for test isolation
+    shadow_dir = data_root() / "shadow"
     shadow_obs = init_shadow_observer(shadow_dir, enabled=True, llm_proxy=llm)
     logger.info(f"[Server] Shadow mode 啟動 (7天): {shadow_dir}/shadow_log.jsonl")
 
@@ -320,7 +325,8 @@ async def lifespan(app: FastAPI):
         from src.llm.fish_tts_handler import FishTTSHandler
         tts_handler = FishTTSHandler(
             bus=bus,
-            output_dir=_root / "data" / "tts",
+            # P0.5 (Bry 派工 2026-08-09 19:48): output_dir=None → use data_root() default
+            output_dir=None,
         )
         tts_handler.register()
     else:
@@ -652,7 +658,8 @@ async def lifespan(app: FastAPI):
     # 每次 dump 覆寫 heartbeat_trace.log（只留最新一份）,可讀性高
     # 如果 event loop 死了,這條會停;faulthandler 的 thread-based dump 還是會繼續
     async def _heartbeat_dumper():
-        _dumper_path = _root / "data" / "heartbeat_trace.log"
+        # P0.5 (Bry 派工 2026-08-09 19:48): use data_root() for test isolation
+        _dumper_path = data_root() / "heartbeat_trace.log"
         _first = True
         while True:
             try:
@@ -684,7 +691,8 @@ async def lifespan(app: FastAPI):
     _self_check_interval = int(os.getenv("SOULOS_SELF_CHECK_INTERVAL_SECS", "600"))
     app.state._self_check_task = asyncio.create_task(
         event_loop_self_check(
-            _root / "data" / "state",
+            # P0.5 (Bry 派工 2026-08-09 19:48): use data_root() for test isolation
+            data_root() / "state",
             _self_check_interval,
         )
     )

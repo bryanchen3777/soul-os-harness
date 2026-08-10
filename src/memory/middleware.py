@@ -76,14 +76,24 @@ class MemoryMiddleware:
     def __init__(
         self,
         bus: SoulEventBus,
-        data_dir: str = "data/memory",
+        # P0.5 (Bry 派工 2026-08-09 19:48): default uses data_root() so test
+        # subprocess can redirect via SOUL_OS_DATA_DIR. Production unchanged
+        # (defaults to "data/memory").
+        data_dir: Optional[str] = None,
         # β2.1 (Bry 拍板 2026-08-02 21:48): 事件生成用 LLMProxy 參考
         # 沒傳就 skip 事件生成 (向後相容, 測試不依賴真實 LLM)
         llm_proxy: Optional["LLMProxy"] = None,
         # β2.1: 事件 jsonl 寫入路徑, 預設 data/events/{YYYY-MM-DD}.jsonl
-        events_dir: str = "data/events",
+        # P0.5: same data_root() redirection as data_dir
+        events_dir: Optional[str] = None,
     ):
         self.bus = bus
+        # P0.5 (Bry 派工 2026-08-09 19:48): resolve via data_root() for test isolation
+        from src.paths import data_root
+        if data_dir is None:
+            data_dir = str(data_root() / "memory")
+        if events_dir is None:
+            events_dir = str(data_root() / "events")
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._providers: Dict[str, SAGELiteProvider] = {}
@@ -117,7 +127,8 @@ class MemoryMiddleware:
         # 角色對 Bry 關係靠 user_id (TG: 1696287850, web: bryan_test 等)
         # 統一視為 BRYAN_ENTITY_ID (Stage 4.1 簡化)
         self._relationships_manager = (
-            get_relationships_manager(data_dir="data/soul")
+            # P0.5 (Bry 派工 2026-08-09 19:48): data_dir=None → use data_root() default
+            get_relationships_manager(data_dir=None)
             if _RELATIONSHIPS_AVAILABLE else None
         )
 

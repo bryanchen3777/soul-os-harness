@@ -167,11 +167,16 @@ class FishTTSHandler:
     def __init__(
         self,
         bus: SoulEventBus,
-        output_dir: Path = Path("data/tts"),
+        # P0.5 (Bry 派工 2026-08-09 19:48): default uses data_root() for test isolation
+        output_dir: Optional[Path] = None,
         *,
         enabled: bool = True,
     ):
         self.bus = bus
+        # P0.5 (Bry 派工 2026-08-09 19:48): resolve via data_root() for test isolation
+        from src.paths import data_root
+        if output_dir is None:
+            output_dir = data_root() / "tts"
         self.output_dir = Path(output_dir)
         self.enabled = enabled
         self._fish_tts_available = False  # import 成功才標 True

@@ -475,7 +475,9 @@ class SoulScheduler:
             return
         from src.soul.dream_event import _pick_dream_agents, _pick_dream_target
         from pathlib import Path as _P
-        data_dir = _P("data/soul")
+        # P0.5 (Bry 派工 2026-08-09 19:48): use data_root() for test isolation
+        from src.paths import data_root
+        data_dir = data_root() / "soul"
 
         # Stage 4.3: 抽 N 隻角色 (3-5, 上限依 agents 數, hardcode 避免循環 import)
         n = min(5, max(3, len(self._all_agents) // 2))  # 10 隻 → 5, 6 隻 → 5, 4 隻 → 5 但會被 sample cap
