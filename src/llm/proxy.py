@@ -2907,6 +2907,12 @@ class LLMProxy:
                 # KI-001: session_id 改為 per (user, agent),跟 _session_key 一致
                 session_id=_session_key(agent_id, user_id),
                 correlation_id=event.correlation_id or event.event_id,
+                # M5.4-6.2 (Bry 派工 2026-08-10): thread inner_life_event_id from
+                # upstream AGENT_INTENT (set by consciousness._fire_intent when
+                # executor wired it via chrono_payload). 只在 event 帶時透傳,
+                # None 是 backward-compat default (USER_MESSAGE / heartbeat /
+                # spawn_cold_intents 等路徑 event 沒有此欄位).
+                inner_life_event_id=event.inner_life_event_id,
                 payload={
                     # Bry 拍板 2026-07-18 整合後的 text (jp + zh 一條)
                     "text": _broadcast_text,
@@ -2981,6 +2987,10 @@ class LLMProxy:
                     priority=EventPriority.NORMAL,
                     session_id=_session_key(agent_id, user_id),
                     correlation_id=event.correlation_id or event.event_id,
+                    # M5.4-6.2: stub path 也透傳 inner_life_event_id (跟 regular path 一致,
+                    # 雖然 is_stub=True 會讓下游 consumer skip, 但 _pending reset
+                    # 仍是必要的, identity 一起帶過去保持 SoulEvent 語意一致)
+                    inner_life_event_id=event.inner_life_event_id,
                     payload={
                         "text": "",
                         "audio_text": "",

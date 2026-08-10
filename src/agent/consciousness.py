@@ -445,6 +445,20 @@ class AgentConsciousness(ABC):
             if "target_user_id" not in intent_payload:
                 intent_payload["target_user_id"] = user_id
 
+        # M5.4-6.2 (Bry 派工 2026-08-10): extract inner_life_event_id from chrono_payload
+        # 並寫到 AGENT_INTENT SoulEvent top-level 欄位. 用 payload dict 透傳
+        # 跟既有的 draft / target_channel / target_user_id / dry_run 走同樣 pattern.
+        # 為什麼用 top-level field: SoulEvent.inner_life_event_id 是 M5.4-5.5 凍結的
+        # canonical cross-reference 欄位, payload 是 event-type-specific, LLMProxy 直接
+        # 讀 event.inner_life_event_id 比讀 event.payload 然後 unwrap 更乾淨.
+        # backward compat: chrono_payload 沒 inner_life_event_id 鍵 → _event_id 維持 None
+        # (既有 caller / heartbeat / spawn_cold_intents / spawn_intent 全部不傳此鍵).
+        _event_id: Optional[str] = None
+        if chrono_payload and "inner_life_event_id" in chrono_payload:
+            _candidate = chrono_payload["inner_life_event_id"]
+            if isinstance(_candidate, str) and _candidate:
+                _event_id = _candidate
+
         event = SoulEvent(
             event_type=EventType.AGENT_INTENT,
             source=self.agent_id,
@@ -455,6 +469,9 @@ class AgentConsciousness(ABC):
             # 剛才的主動觸發 + 之前打字歷史，連貫
             # KI-001: session_id 改為 per (user, agent) — 跟 LLMProxy._session_key 一致
             session_id=f"session_{user_id}_{self.agent_id}",
+            # M5.4-6.2: thread inner_life_event_id through to downstream consumers
+            # (LLMProxy 從這裡讀 → 寫到 AGENT_SPEAK SoulEvent 的 inner_life_event_id 欄位)
+            inner_life_event_id=_event_id,
             payload=intent_payload,
         )
         await self.bus.publish(event)

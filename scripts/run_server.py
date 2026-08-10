@@ -246,6 +246,7 @@ async def lifespan(app: FastAPI):
     from src.inner_life import (
         InnerLifeWriter,
         Provenance,
+        TRIGGER_TYPE_AGENT_REPLY,
         TRIGGER_TYPE_DIARY_MORNING,
         TRIGGER_TYPE_DIARY_NIGHT,
         TRIGGER_TYPE_DREAM_DREAM,
@@ -455,6 +456,21 @@ async def lifespan(app: FastAPI):
             """
             M5.2-G: 真正呼叫 LLM 的 executor, 由 AgencyTriggerHandler 在 decision=YES 時觸發。
             邏輯沿用 Lesson 39-B 既有 LLM 觸發路徑 (build_intent_payload → LLM → TG DM)。
+
+            M5.4-6.2 (Bry 派工 2026-08-10): executor-level inner_life_event_id wiring
+            Range: 在 _agent._fire_intent 之前 create InnerLifeEvent (per-instance authority),
+                   拿 event_id 透過 chrono_payload 傳到 consciousness._fire_intent
+                   → 寫入 AGENT_INTENT SoulEvent top-level inner_life_event_id 欄位
+                   → LLMProxy 從 AGENT_INTENT 讀 → 寫到 AGENT_SPEAK SoulEvent。
+            Provenance: TRIGGER_TYPE_AGENT_REPLY (event.py:57 既有 enum, 語意: agent 自發 outbound)
+                        + actor_id=agent_id + source_system="narrative" (因為 proactive_dm
+                          是跨 memory/diary/dream 的 narrative-level lived experience)
+            不填 session_id/correlation_id/parent_event_id: 排程器觸發路徑沒有這些
+            既有可用值, 派工明列禁止 fabricate identity. (session_id 從 consciousness
+            _fire_intent 既有 f"session_{user_id}_{agent_id}" 自然生成, 不算 fabricated.)
+            失敗隔離: InnerLifeWriter.create_event 失敗 → logger.warning + event_id=None
+                      chrono_payload 沒 inner_life_event_id 鍵 → 既有 _fire_intent 行為不變
+                      (跟 M5.4-6.1 failure isolation 同精神, 失敗不污染主路徑)
             """
             _agent = next((a for a in agents if a.agent_id == agent_id), None)
             if _agent is None:
@@ -462,16 +478,41 @@ async def lifespan(app: FastAPI):
                 return
             _elapsed = _r39.uniform(180, 300)  # 3-5h (跟 proactive_dm 觸發間隔對齊)
             _draft = _agent._build_intent_payload("proactive_dm", _elapsed).get("draft", "")
+            # M5.4-6.2: create canonical InnerLifeEvent before _fire_intent
+            try:
+                _event = inner_life_writer.create_event(
+                    provenance=Provenance(
+                        trigger_type=TRIGGER_TYPE_AGENT_REPLY,
+                        actor_id=agent_id,
+                        source_system="narrative",
+                        extras={
+                            "trigger_source": "proactive_dm",
+                            "elapsed_mins": str(int(_elapsed)),
+                        },
+                    )
+                )
+                _event_id = _event.event_id
+            except Exception as _e:
+                logger.warning(
+                    f"[AgencyTriggerHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
+                    f"agent_id={agent_id} err={type(_e).__name__}: {_e}"
+                )
+                _event_id = None
+            _chrono_payload: Dict[str, Any] = {
+                "draft": _draft,            # 非空 draft (Lesson 41)
+                "target_channel": "telegram",
+                "target_user_id": "1696287850",  # Bry 的 TG chat_id
+            }
+            # M5.4-6.2: 透過既有 chrono_payload pattern 傳 inner_life_event_id
+            # (跟 target_channel / target_user_id / dry_run 走同樣透傳鏈)
+            if _event_id is not None:
+                _chrono_payload["inner_life_event_id"] = _event_id
             async with LLM_CONCURRENCY_LIMIT:
                 try:
                     await _agent._fire_intent(
                         reason="proactive_dm",
                         elapsed_mins=_elapsed,
-                        chrono_payload={
-                            "draft": _draft,            # 非空 draft (Lesson 41)
-                            "target_channel": "telegram",
-                            "target_user_id": "1696287850",  # Bry 的 TG chat_id
-                        },
+                        chrono_payload=_chrono_payload,
                         mode="private",
                     )
                 except Exception as e:
