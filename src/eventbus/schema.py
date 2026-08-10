@@ -138,6 +138,28 @@ class SoulEvent(BaseModel):
         )
     )
 
+    # ── Inner Life identity (M5.4-5.5 Bry 派工 2026-08-09 21:40) ──
+    # Cross-reference 到 canonical InnerLifeEvent.event_id (M5.4-5.1 InnerLifeWriter)。
+    # 跟 correlation_id / session_id 同性質: top-level Optional 跨事件 reference 欄位,
+    # 預設 None (向後相容, 既有 producer 不需要改)。
+    #
+    # 跟 correlation_id 的差別:
+    #   - correlation_id: 追蹤 event-chain causation (哪個 USER_MESSAGE 開始這條鏈)
+    #   - inner_life_event_id: 指向 canonical InnerLifeEvent (哪個 lived-experience 事件)
+    #
+    # Producer (e.g. LLMProxy / AgencyTriggerHandler) 可以在發布 SoulEvent 時
+    # 透過 InnerLifeWriter.create_event(...) 取得 event_id 後設到這欄。
+    # Consumer (e.g. MemoryMiddleware / DiaryWriter) 可以讀 event.inner_life_event_id
+    # 來跟 InnerLifeEvent registry 對應。
+    inner_life_event_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Cross-reference 到 canonical InnerLifeEvent.event_id (M5.4-5.1)。"
+            "M5.4-5.5 開始: producer 可選填, consumer 可讀取。"
+            "預設 None 表示此事件未跟特定 Inner Life event 綁定 (向後相容既有 producer)。"
+        )
+    )
+
     # ── 版本相容性 ──
     schema_version: str = Field(
         default="1.0",
