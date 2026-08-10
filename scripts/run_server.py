@@ -241,10 +241,23 @@ async def lifespan(app: FastAPI):
     #     重啟 = fresh state (跟 M5.3 WorldPerceptionState 一致)
     #   - 不創建 global singleton (Bry 派工明列禁止)
     #   - 不創建第二個 identity authority (跟 M5.4-5.1 frozen contract 一致)
-    #   - NarrativeTraceWriter 暫不注入 (trace 是 opt-in sidecar,
-    #     跟 M5.4-5.6 frozen contract 一致, 預設 None = 跟 M5.4-5.1 一樣的行為)
+    #
+    # M5.4-6.4 (Bry 派工 2026-08-10): NarrativeTraceWriter production activation
+    #   M5.4-6.3 audit 確認 safe for minimal production activation.
+    #   改動: trace_writer=NarrativeTraceWriter() 注入到 InnerLifeWriter constructor
+    #   範圍: 純 additive, 既有 4 producer (Diary / Dream / Event / Proactive DM)
+    #          自動 wired via inner_life_writer.create_event() → _append_trace()
+    #   凍結契約: M5.4-5.6 NarrativeTraceWriter schema / event_to_dict /
+    #             NarrativeTraceReader / InnerLifeEvent / Provenance / SoulEvent
+    #             全部 unchanged (audit 已驗證).
+    #   失敗隔離: 雙層 try/except 已存在 (writer.py:334-352, trace.py:112-123),
+    #             trace failure 不影響 4 producer.
+    #   預估影響: data/inner_life/trace.jsonl ~5-6 MB/year, append-only.
+    #   既有 production data 不變更: 既有 diary/dream/event jsonl / memory.db /
+    #             conversations / S0 backup 全部不動.
     from src.inner_life import (
         InnerLifeWriter,
+        NarrativeTraceWriter,
         Provenance,
         TRIGGER_TYPE_AGENT_REPLY,
         TRIGGER_TYPE_DIARY_MORNING,
@@ -252,10 +265,11 @@ async def lifespan(app: FastAPI):
         TRIGGER_TYPE_DREAM_DREAM,
         TRIGGER_TYPE_DREAM_EVENT,
     )
-    inner_life_writer = InnerLifeWriter()
+    inner_life_writer = InnerLifeWriter(trace_writer=NarrativeTraceWriter())
     logger.info(
-        "[M5.4-6.1] InnerLifeWriter 啟動 ✓ (per-instance authority, "
-        "diary/dream/event executor wiring 預備)"
+        "[M5.4-6.4] InnerLifeWriter 啟動 ✓ (per-instance authority, "
+        "diary/dream/event/proactive_dm producer wiring 預備, "
+        "NarrativeTraceWriter 已 injection → data/inner_life/trace.jsonl)"
     )
 
     # ── SpeakerTokenBus：USER_MESSAGE 仲裁 ─────────────────────
