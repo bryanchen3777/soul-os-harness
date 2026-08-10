@@ -77,17 +77,11 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 | 💗 **Emotional** | 情緒狀態持久化 | EmotionalState → `data/agents/<agent>/emotional-state.json` |
 | 🗄️ **v1 Sidecar** | 信心門檻的事實片段 | JSONL (`data/memory/<agent>/memories.jsonl`) — 向後相容/實驗性 |
 
-**Memory 隔離 (KI-001)**:私聊 history 檔案命名:`{user_id}_{agent_id}_private.json`；MemoryStore session_id:`session_{user_id}_{agent_id}`；向後相容:既有 `bryan_xxx_private.json` 自動 fallback。
+**Memory 隔離 (KI-001)**: 私聊 history 檔案命名:`{user_id}_{agent_id}_private.json`；MemoryStore session_id:`session_{user_id}_{agent_id}`；向後相容:既有 `bryan_xxx_private.json` 自動 fallback；多 user 隔離完成，第二 owner 上線即可用。
 
-**生產/測試隔離 (P0/P0.5)**:所有 runtime persistence 走 `src/paths.py` 的 `data_root()` — 生產 `data/`，測試 subprocess 由 `SOUL_OS_DATA_DIR` 環境變數隔離到 tmp 目錄。`LLMProxy` 支援 `memory_store` + `conversation_dir` 參數注入(P0 repair)。
+**生產/測試隔離 (P0/P0.5)**: 所有 runtime persistence 走 `src/paths.py` 的 `data_root()` — 生產 `data/`，測試 subprocess 由 `SOUL_OS_DATA_DIR` 環境變數隔離到 tmp 目錄。`LLMProxy` 支援 `memory_store` + `conversation_dir` 參數注入 (P0 repair)。
 
-**Memory 隔離 (KI-001)**:
-- 私聊 history 檔案命名:`{user_id}_{agent_id}_private.json`
-- MemoryStore session_id:`session_{user_id}_{agent_id}`
-- 向後相容:既有 `bryan_xxx_private.json` 自動 fallback 讀取
-- 多 user 隔離完成,第二 owner 上線即可用
-
-### 4️⃣ LLM PROXY (Post-Generation Hooks)
+### 5️⃣ LLM PROXY (Post-Generation Hooks)
 
 `src/llm/proxy.py` 的 `_handle_event_impl` 內,LLM 回應後、AGENT_SPEAK 發布前,支援 agent-specific 後處理:
 
@@ -98,7 +92,7 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 
 兩個 hook 共用同一個 try 區塊,**不動** finally(token release 保證完整)。**架構重構**(post-generation hook 註冊機制)留作 backlog。
 
-### 5️⃣ MULTIMODAL I/O GATEWAY
+### 6️⃣ MULTIMODAL I/O GATEWAY
 
 **事件來源**:USER_MESSAGE / TIMER_EVENT / SENSOR_EVENT / SYSTEM_EVENT / DEVICE_EVENT
 **輸出端點**:Web / 桌面 / 智慧音箱 / 機器人 / 穿戴 / VR/AR
@@ -106,7 +100,7 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 
 當前實作:Telegram / WebSocket / Live2D widget + msedge-tts 語音通道。
 
-### 6️⃣ WORLD PERCEPTION
+### 7️⃣ WORLD PERCEPTION
 
 外部世界事件感知 pipeline (M3 Phase 1)。
 
@@ -116,7 +110,7 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 
 **原則**: World Perception 是 ephemeral 的 — 不進 SAGE/長期 memory，不影響 production data。Invalid event → reject → trace → no context。
 
-### 7️⃣ AGENCY LAYER
+### 8️⃣ AGENCY LAYER
 
 最小化意圖-行動決策系統 (M5.2)，在 `AGENT_INTENT_PERCEIVED` 與 `AGENT_SPEAK` 中間。
 
@@ -130,7 +124,7 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 
 **Eligible / Decision / Selection / Execution** 四階段都是 deterministic — 無 LLM，無 persona。
 
-### 7️⃣ INNER LIFE
+### 9️⃣ INNER LIFE
 
 Canonical identity layer for lived experience (M5.4)。
 
