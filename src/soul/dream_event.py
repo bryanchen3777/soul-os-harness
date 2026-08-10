@@ -242,7 +242,17 @@ class DreamEventWriter:
         return re.sub(r"^<think>.*?</think>\s*", "", content, flags=re.DOTALL).strip()
 
     def _write_entry(
-        self, agent_id: str, slot: str, content: str, source: str
+        self,
+        agent_id: str,
+        slot: str,
+        content: str,
+        source: str = "llm",  # M5.4-5.4: default to "llm" for direct test calls
+        # M5.4-5.4 (Bry 派工 2026-08-09 21:29): canonical Inner Life event reference.
+        # Optional: if provided (and non-empty), attach to the entry dict so the
+        # dream/event row can be cross-referenced with the InnerLifeEvent.
+        # Backward-compat: None/empty means the field is omitted, so legacy
+        # readers that ignore unknown keys continue to work.
+        inner_life_event_id: Optional[str] = None,
     ) -> Optional[Path]:
         """
         M0.4 (Bry 拍板 2026-08-06 21:30):
@@ -250,6 +260,9 @@ class DreamEventWriter:
         - clean 空 → 拒絕寫入 (return None), 強迫 caller 走 placeholder
           修法前: 5 條 think_only event 被當 source=llm 寫入, jsonl 含 think 沒 diary
           修法後: write_entry 看到 clean 空直接擋掉, caller 必須改傳 placeholder
+
+        M5.4-5.4 (Bry 派工 2026-08-09 21:29):
+        - inner_life_event_id: optional canonical InnerLifeEvent.event_id reference
         """
         # M0.4: 寫入前 strip think, 拿 clean 寫入
         clean = self._strip_think(content)
@@ -269,6 +282,10 @@ class DreamEventWriter:
             "content": clean,  # M0.4: 寫 clean, jsonl 不含 think block
             "source": source,
         }
+        # M5.4-5.4: attach canonical Inner Life event reference if provided.
+        # Empty string treated as None for safety.
+        if inner_life_event_id:
+            entry["inner_life_event_id"] = inner_life_event_id
         with self._lock:
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -288,6 +305,9 @@ class DreamEventWriter:
         agent_id: str,
         target_agent_id: str,
         all_agents: List[str],
+        # M5.4-5.4 (Bry 派工 2026-08-09 21:29): canonical Inner Life event reference
+        # for this dream entry. Optional passthrough to _write_entry.
+        inner_life_event_id: Optional[str] = None,
     ) -> Optional[Path]:
         """
         生成夢境並寫入 diary.
@@ -296,6 +316,9 @@ class DreamEventWriter:
         Stage 4.3 額外 (Mavis 拍板 2026-07-21 16:35):
         1. LLM 抽 impression 寫進 relationships.json
         2. 雙向 touch (dreamer→target +0.05, target→dreamer +0.02)
+
+        M5.4-5.4 (Bry 派工 2026-08-09 21:29):
+        - inner_life_event_id: M5.4-5.4 — 對應 canonical InnerLifeEvent.event_id
         """
         today = datetime.now().strftime("%Y-%m-%d")
         scene = random.choice(SCENE_POOL)
@@ -329,12 +352,18 @@ class DreamEventWriter:
                 content = await _call_minimax_for_dream_event(system, user + RETRY_HINT, self.api_key)
         # M0.4: 沒拿到 content (或 retry 也失敗) → placeholder; 有 content 但超長 → 截斷
         if not content:
-            result = self._write_entry(agent_id, "dream", DREAM_FALLBACK_TEMPLATE.format(date=today), source="placeholder")
+            result = self._write_entry(
+                agent_id, "dream", DREAM_FALLBACK_TEMPLATE.format(date=today), source="placeholder",
+                inner_life_event_id=inner_life_event_id,
+            )
         else:
             clean = self._strip_think(content)
             if not clean:
                 logger.warning(f"[DreamEvent] {agent_id} dream retry 後仍 think_only, fallback placeholder")
-                result = self._write_entry(agent_id, "dream", DREAM_FALLBACK_TEMPLATE.format(date=today), source="placeholder")
+                result = self._write_entry(
+                    agent_id, "dream", DREAM_FALLBACK_TEMPLATE.format(date=today), source="placeholder",
+                    inner_life_event_id=inner_life_event_id,
+                )
             elif len(clean) > DREAM_EVENT_MAX_CLEAN_CHARS:
                 # A1: 截斷, 保留 LLM 內容
                 truncated = _safe_truncate_on_length(clean, max_chars=DREAM_EVENT_MAX_CLEAN_CHARS)
@@ -342,9 +371,15 @@ class DreamEventWriter:
                     f"[DreamEvent] {agent_id} dream LLM 輸出超長 "
                     f"({len(clean)} chars > {DREAM_EVENT_MAX_CLEAN_CHARS}), 截斷到 {len(truncated)} chars"
                 )
-                result = self._write_entry(agent_id, "dream", truncated, source="llm")
+                result = self._write_entry(
+                    agent_id, "dream", truncated, source="llm",
+                    inner_life_event_id=inner_life_event_id,
+                )
             else:
-                result = self._write_entry(agent_id, "dream", content, source="llm")
+                result = self._write_entry(
+                    agent_id, "dream", content, source="llm",
+                    inner_life_event_id=inner_life_event_id,
+                )
 
         # Stage 4.3: 雙向 touch (失敗 try/except, 不中斷夢境流程)
         try:
@@ -370,10 +405,16 @@ class DreamEventWriter:
     async def write_event(
         self,
         agent_id: str,
+        # M5.4-5.4 (Bry 派工 2026-08-09 21:29): canonical Inner Life event reference
+        # for this event entry. Optional passthrough to _write_entry.
+        inner_life_event_id: Optional[str] = None,
     ) -> Optional[Path]:
         """生成隨機事件並寫入 diary (場景 + 小描述).
 
         Stage 4.3 額外: 雙向 touch (agent 對 Bry +0.01).
+
+        M5.4-5.4 (Bry 派工 2026-08-09 21:29):
+        - inner_life_event_id: M5.4-5.4 — 對應 canonical InnerLifeEvent.event_id
         """
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
@@ -416,21 +457,33 @@ class DreamEventWriter:
                 )
                 content = await _call_minimax_for_dream_event(system, user + RETRY_HINT, self.api_key)
         if not content:
-            result = self._write_entry(agent_id, "event", EVENT_FALLBACK_TEMPLATE.format(date=today, time_str=time_str), source="placeholder")
+            result = self._write_entry(
+                agent_id, "event", EVENT_FALLBACK_TEMPLATE.format(date=today, time_str=time_str), source="placeholder",
+                inner_life_event_id=inner_life_event_id,
+            )
         else:
             clean = self._strip_think(content)
             if not clean:
                 logger.warning(f"[DreamEvent] {agent_id} event retry 後仍 think_only, fallback placeholder")
-                result = self._write_entry(agent_id, "event", EVENT_FALLBACK_TEMPLATE.format(date=today, time_str=time_str), source="placeholder")
+                result = self._write_entry(
+                    agent_id, "event", EVENT_FALLBACK_TEMPLATE.format(date=today, time_str=time_str), source="placeholder",
+                    inner_life_event_id=inner_life_event_id,
+                )
             elif len(clean) > DREAM_EVENT_MAX_CLEAN_CHARS:
                 truncated = _safe_truncate_on_length(clean, max_chars=DREAM_EVENT_MAX_CLEAN_CHARS)
                 logger.info(
                     f"[DreamEvent] {agent_id} event LLM 輸出超長 "
                     f"({len(clean)} chars > {DREAM_EVENT_MAX_CLEAN_CHARS}), 截斷到 {len(truncated)} chars"
                 )
-                result = self._write_entry(agent_id, "event", truncated, source="llm")
+                result = self._write_entry(
+                    agent_id, "event", truncated, source="llm",
+                    inner_life_event_id=inner_life_event_id,
+                )
             else:
-                result = self._write_entry(agent_id, "event", content, source="llm")
+                result = self._write_entry(
+                    agent_id, "event", content, source="llm",
+                    inner_life_event_id=inner_life_event_id,
+                )
 
         # Stage 4.3: agent 對 Bry 微量 touch (Bry 不在場, 事件觸發「想到 Bry」)
         try:
