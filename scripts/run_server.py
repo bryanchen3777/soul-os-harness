@@ -231,6 +231,32 @@ async def lifespan(app: FastAPI):
     bus = SoulEventBus()
     await bus.start()
 
+    # ── M5.4-6.1 (Bry 派工 2026-08-10): InnerLifeWriter instance ──
+    # 為 Diary / Dream / Event 三條 structured lived-experience 觸發
+    # (AgencyTriggerHandler/DiaryHandler/DreamHandler/EventHandler 的 executor)
+    # 提供 canonical identity authority.
+    #
+    # 派工精神:
+    #   - Per-instance authority (M5.4-5.1 設計): process-lifetime in-memory,
+    #     重啟 = fresh state (跟 M5.3 WorldPerceptionState 一致)
+    #   - 不創建 global singleton (Bry 派工明列禁止)
+    #   - 不創建第二個 identity authority (跟 M5.4-5.1 frozen contract 一致)
+    #   - NarrativeTraceWriter 暫不注入 (trace 是 opt-in sidecar,
+    #     跟 M5.4-5.6 frozen contract 一致, 預設 None = 跟 M5.4-5.1 一樣的行為)
+    from src.inner_life import (
+        InnerLifeWriter,
+        Provenance,
+        TRIGGER_TYPE_DIARY_MORNING,
+        TRIGGER_TYPE_DIARY_NIGHT,
+        TRIGGER_TYPE_DREAM_DREAM,
+        TRIGGER_TYPE_DREAM_EVENT,
+    )
+    inner_life_writer = InnerLifeWriter()
+    logger.info(
+        "[M5.4-6.1] InnerLifeWriter 啟動 ✓ (per-instance authority, "
+        "diary/dream/event executor wiring 預備)"
+    )
+
     # ── SpeakerTokenBus：USER_MESSAGE 仲裁 ─────────────────────
     speaker_token_bus = SpeakerTokenBus(cooldown_secs=4.0)
     # submit_bid 採用 lazy open，不需要單獨的 listener
@@ -484,9 +510,34 @@ async def lifespan(app: FastAPI):
             邏輯沿用 M5.2-H Phase 1 event 觸發的 writer 路徑 (writer.write_event)。
             搬出來獨立是因為 M5.2-J Phase J-2 後舊 _event_callback noop 已完全移除,
             真實執行路徑走 EventHandler 透過 AGENCY_TRIGGER 觸發。
+
+            M5.4-6.1 (Bry 派工 2026-08-10): executor-level inner_life_event_id wiring
+            Range: 在 writer.write_event 之前 create InnerLifeEvent (per-instance authority),
+                   拿 event_id 傳給 write_event 既有 inner_life_event_id 參數 (M5.4-5.4 凍結).
+            Provenance: TRIGGER_TYPE_DREAM_EVENT (event.py:62 既有 enum) + actor_id=agent_id
+                        + source_system="dream" (VALID_SOURCE_SYSTEMS 內, event.py:65)
+            不填 session_id/correlation_id/parent_event_id: 排程器觸發路徑沒有這些
+            既有可用值, 派工明列禁止 fabricate identity.
+            失敗隔離: InnerLifeWriter.create_event 失敗 → logger.warning + 不 invoke writer
+                      (跟 M5.4-5.6 trace failure isolation 同精神, 失敗不污染主路徑)
             """
+            try:
+                _event = inner_life_writer.create_event(
+                    provenance=Provenance(
+                        trigger_type=TRIGGER_TYPE_DREAM_EVENT,
+                        actor_id=agent_id,
+                        source_system="dream",
+                    )
+                )
+                _event_id = _event.event_id
+            except Exception as _e:
+                logger.warning(
+                    f"[EventHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
+                    f"agent_id={agent_id} err={type(_e).__name__}: {_e}"
+                )
+                _event_id = None
             _writer = get_dream_event_writer()
-            await _writer.write_event(agent_id)
+            await _writer.write_event(agent_id, inner_life_event_id=_event_id)
 
         _event_handler = EventHandler(
             state=None,  # 用預設 AgencyState
@@ -520,9 +571,42 @@ async def lifespan(app: FastAPI):
               4. _extract_impression 更新 relationships
             全部都是 1 次 writer 內部,handler 不額外做任何 relationship 操作
             M5.2-J Phase J-2 後舊 _dream_callback noop 已完全移除。
+
+            M5.4-6.1 (Bry 派工 2026-08-10): executor-level inner_life_event_id wiring
+            Range: 在 writer.write_dream 之前 create InnerLifeEvent (per-instance authority),
+                   拿 event_id 傳給 write_dream 既有 inner_life_event_id 參數 (M5.4-5.4 凍結).
+            Provenance: TRIGGER_TYPE_DREAM_DREAM (event.py:61 既有 enum) + actor_id=dreamer
+                        + source_system="dream" + extras={target_agent_id, all_agents_count}
+            不填 session_id/correlation_id/parent_event_id: 排程器觸發路徑沒有這些
+            既有可用值, 派工明列禁止 fabricate identity.
+            失敗隔離: InnerLifeWriter.create_event 失敗 → logger.warning + 不傳 event_id
+                      (跟 M5.4-5.6 trace failure isolation 同精神, 失敗不污染主路徑)
             """
+            try:
+                _event = inner_life_writer.create_event(
+                    provenance=Provenance(
+                        trigger_type=TRIGGER_TYPE_DREAM_DREAM,
+                        actor_id=dreamer,
+                        source_system="dream",
+                        extras={
+                            "target_agent_id": target_agent_id,
+                            "all_agents_count": str(len(all_agents)),
+                        },
+                    )
+                )
+                _event_id = _event.event_id
+            except Exception as _e:
+                logger.warning(
+                    f"[DreamHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
+                    f"dreamer={dreamer} target={target_agent_id} "
+                    f"err={type(_e).__name__}: {_e}"
+                )
+                _event_id = None
             _writer = get_dream_event_writer()
-            await _writer.write_dream(dreamer, target_agent_id, all_agents)
+            await _writer.write_dream(
+                dreamer, target_agent_id, all_agents,
+                inner_life_event_id=_event_id,
+            )
 
         _dream_handler = DreamHandler(
             state=None,  # 用預設 AgencyState
@@ -554,6 +638,18 @@ async def lifespan(app: FastAPI):
               4. 失敗 fallback placeholder
               5. DiaryWriter 寫入 jsonl
             Handler 不重新做這些, 只 delegate 回既有 callback.
+
+            M5.4-6.1 (Bry 派工 2026-08-10): executor-level inner_life_event_id wiring
+            Range: 在 cb_real invoke 之前 create InnerLifeEvent (per-instance authority),
+                   拿 event_id 透過 cb 既有 inner_life_event_id 參數 (M5.4-5.3 + 6.1 凍結)
+                   傳到 generate_diary_entry 最終寫到 diary jsonl entry.
+            Provenance: TRIGGER_TYPE_DIARY_MORNING (slot="morning") 或
+                        TRIGGER_TYPE_DIARY_NIGHT (slot="night") — event.py:58-59 既有 enum
+                        + actor_id=agent_id + source_system="diary"
+            不填 session_id/correlation_id/parent_event_id: 排程器觸發路徑沒有這些
+            既有可用值, 派工明列禁止 fabricate identity.
+            失敗隔離: InnerLifeWriter.create_event 失敗 → logger.warning + 不傳 event_id
+                      (跟 M5.4-5.6 trace failure isolation 同精神, 失敗不污染主路徑)
             """
             cb_real = diary_callbacks_real.get(agent_id)
             if cb_real is None:
@@ -564,7 +660,32 @@ async def lifespan(app: FastAPI):
                     f"見 M5.2-I Phase 7 / M5.2-J Phase J-1 doc correction)"
                 )
                 return
-            await cb_real(agent_id, slot)
+            # M5.4-6.1: create canonical InnerLifeEvent, propagate event_id
+            try:
+                _trigger_type = (
+                    TRIGGER_TYPE_DIARY_MORNING
+                    if slot == "morning"
+                    else TRIGGER_TYPE_DIARY_NIGHT
+                )
+                _event = inner_life_writer.create_event(
+                    provenance=Provenance(
+                        trigger_type=_trigger_type,
+                        actor_id=agent_id,
+                        source_system="diary",
+                        extras={"slot": slot},
+                    )
+                )
+                _event_id = _event.event_id
+            except Exception as _e:
+                logger.warning(
+                    f"[DiaryHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
+                    f"agent_id={agent_id} slot={slot} "
+                    f"err={type(_e).__name__}: {_e}"
+                )
+                _event_id = None
+            # M5.4-6.1: cb 接受 inner_life_event_id 參數 (M5.4-6.1 既有契約延伸,
+            # 預設 None, 不傳時跟 M5.2-H Phase 3 行為一致)
+            await cb_real(agent_id, slot, inner_life_event_id=_event_id)
 
         _diary_handler = DiaryHandler(
             state=None,  # 用預設 AgencyState (跟其他 handler 共用)

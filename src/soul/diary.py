@@ -452,17 +452,23 @@ async def diary_callback_factory(agent_id: str):
             f"[Diary] {agent_id} v1 memory 載入失敗, fallback 空: {_v_err}"
         )
 
-    async def cb(agent_id_inner: str, slot: str):
+    async def cb(agent_id_inner: str, slot: str, inner_life_event_id: Optional[str] = None):
         # Bry 拍板 2026-07-20 18:58: 升級 LLM 真生成
         # Bry 5.5 小時 Bry 拍板升級 (Bry 違反 7/18 「看完 1 天」Bry 拍板, Bry 拍板權最高)
         # LLM 失敗走 placeholder fallback (「拒絕問, 強制讀」Bry 拍板)
         # source 標清楚: source=llm 或 source=placeholder (「完成度標記要誠實」Bry 拍板)
+        #
+        # M5.4-6.1 (Bry 派工 2026-08-10): executor-level inner_life_event_id passthrough
+        # Range: optional kwarg, default None (preserves M5.2-H Phase 3 既有 diary_callbacks_real 呼叫契約)
+        # 後向相容: 不傳 inner_life_event_id 的 caller 仍可正常運作 (跟 M5.4-5.3 一致,
+        #          write_entry 收到 None 就不加 inner_life_event_id 進 entry dict)
         await generate_diary_entry(
             agent_id=agent_id_inner,
             slot=slot,
             persona_prompt=persona_prompt,
             recent_memories=recent_memories,
             writer=writer,
+            inner_life_event_id=inner_life_event_id,
         )
 
     return cb
