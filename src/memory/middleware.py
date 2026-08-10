@@ -451,9 +451,19 @@ class MemoryMiddleware:
         # 未來 prefetch 對 agent_X 撈事實, 看到 source_pair="bryan:<other>" 會被過濾
         target_user_id = event.payload.get("target_user_id", "bryan")
         source_pair = f"{target_user_id}:{agent_id}"
+        # M5.5-2 (Bry 派工 2026-08-10): thread canonical inner_life_event_id from
+        # AGENT_SPEAK SoulEvent (M5.4-5.5 frozen top-level field) into Memory.
+        # Memory 是 consumer/reference holder (不建立 InnerLifeEvent).
+        # - proactive_dm 路徑 (M5.4-6.2): AGENT_SPEAK.inner_life_event_id 是 canonical
+        #   event_id (32 hex), 透傳到 Memory fact (不再 generate synthetic UUID)
+        # - USER_MESSAGE / heartbeat / 等路徑: inner_life_event_id = None
+        #   → MemoryWriter fallback 到 backward-compat synthetic UUID
+        # 絕不 fabricate InnerLifeEvent (per ticket architectural rule)
+        canonical_event_id = event.inner_life_event_id
         await provider.post_reply_commit(
             session_id, user_text, agent_text,
             source_pair=source_pair,
+            inner_life_event_id=canonical_event_id,
         )
         logger.info(
             f"[MemoryMiddleware] 寫入 graph | agent={agent_id} | "

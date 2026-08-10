@@ -177,6 +177,9 @@ class SAGELiteProvider:
         session_id: str,
         # 修法 1 (Bry 拍板 2026-08-03 22:xx, 方案 B): 寫入帶 source_pair 標記
         source_pair: Optional[str] = None,
+        # M5.5-2 (Bry 派工 2026-08-10): canonical InnerLifeEvent reference
+        # 跟 post_reply_commit 對齊, sync / async 兩條路徑都吃 canonical event_id
+        inner_life_event_id: Optional[str] = None,
     ) -> None:
         """
         Sync 寫入。soul-os MemoryMiddleware 會包 asyncio.to_thread。
@@ -196,6 +199,7 @@ class SAGELiteProvider:
         self._writer.write_turn(
             user_content, assistant_content,
             session_id=session_id, source_pair=source_pair,
+            inner_life_event_id=inner_life_event_id,
         )
         self._turn_count += 1
         self._cache.invalidate()
@@ -212,6 +216,12 @@ class SAGELiteProvider:
         # middleware._on_agent_speak 從 event.payload 拿 target_user_id + agent_id 組成
         # 例: "bryan:agent_ruka" = Bry 跟 ruka 的對話事實
         source_pair: Optional[str] = None,
+        # M5.5-2 (Bry 派工 2026-08-10): canonical InnerLifeEvent reference
+        # 從 AGENT_SPEAK SoulEvent top-level field (M5.4-5.5 frozen) 透傳
+        # Memory 是 consumer, 絕不 create_event() 建立新的 InnerLifeEvent
+        # - proactive_dm 路徑 (M5.4-6.2): canonical event_id 從 executor 傳來
+        # - USER_MESSAGE / heartbeat / 等路徑: None → MemoryWriter fallback synthetic UUID
+        inner_life_event_id: Optional[str] = None,
     ) -> None:
         """
         Async 寫入（內部已用 run_in_executor，不會阻塞 event loop）。
@@ -234,7 +244,12 @@ class SAGELiteProvider:
             from functools import partial
             await loop.run_in_executor(
                 None,
-                partial(self._writer.write_turn, skip_graph=True, source_pair=source_pair),
+                partial(
+                    self._writer.write_turn,
+                    skip_graph=True,
+                    source_pair=source_pair,
+                    inner_life_event_id=inner_life_event_id,
+                ),
                 last_user_msg, agent_reply, session_id,
             )
             self._cache.invalidate()
@@ -247,6 +262,7 @@ class SAGELiteProvider:
             agent_reply,
             session_id,
             source_pair,
+            inner_life_event_id,
         )
         self._cache.invalidate()
 

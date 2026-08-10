@@ -177,6 +177,14 @@ class MemoryWriter:
         # reader 撈事實時, middleware 會用這個標記過濾 (避免其他角色撈到 Bry-其他角色的私域)
         # None = 不標記, reader 視為「未標記」一律保留 (Bry 拍板防呆)
         source_pair: Optional[str] = None,
+        # M5.5-2 (Bry 派工 2026-08-10): canonical InnerLifeEvent reference
+        # 從 AGENT_SPEAK SoulEvent top-level field (M5.4-5.5 frozen) 透傳
+        # 跟 M5.4-5.2 不同:
+        #   - M5.4-5.2: synthetic uuid.uuid4().hex (per-call, 不跟 canonical 串連)
+        #   - M5.5-2: 用 upstream 傳進來的 canonical event_id
+        #     (Memory 絕不 create_event() 建立新的 InnerLifeEvent)
+        # None = backward compat: 既有 caller 不傳 → 退回 M5.4-5.2 行為
+        inner_life_event_id: Optional[str] = None,
     ) -> list[str]:
         sid = session_id or self.default_session_id
         facts, raw_results = self._extract_facts(text, subject_hint, sid, source)
@@ -184,16 +192,24 @@ class MemoryWriter:
         if source_pair is not None:
             for f in facts:
                 f.source_pair = source_pair
-        # M5.4-5.2 (Bry 派工 2026-08-09 18:38): Inner Life canonical reference
-        # 為每個 fact 生成 inner_life_event_id (32 char hex), 設到 fact 跟 raw_result
-        # - fact.inner_life_event_id → 走 graph path (SQL inner_life_event_id 欄位)
-        # - r["inner_life_event_id"]  → 走 mirror path (v1 Memory.inner_life_event_id 欄位)
-        # 兩者同源, 確保 graph / mirror 對同一個 fact 的 inner_life_event_id 一致
-        # M5.4-2 mirror/graph divergence fix: 之前是 v1 / graph 可能對不上, 現在加上 inner_life_event_id
-        # 後, 兩路徑對同一個 fact 應該 refer 同一個 canonical event_id
+        # M5.4-5.2 + M5.5-2: Inner Life reference propagation
+        # 兩種路徑:
+        #   1. canonical (M5.5-2): 上游傳入 canonical event_id, 全部 facts 共用同一個 eid
+        #      - 來自 AGENT_SPEAK.inner_life_event_id (M5.4-5.5 frozen top-level field)
+        #      - 對應 proactive_dm / 等有 lived experience 的路徑
+        #   2. synthetic (M5.4-5.2 backward compat): 上游沒傳, 用 uuid.uuid4().hex
+        #      - 對應 USER_MESSAGE / heartbeat / 等沒有 InnerLifeEvent 的路徑
+        #      - 維持 M5.4-5.2 行為: per-fact unique eid (per F1 test, 每個 fact 自己的 identity)
+        # 永遠不 fabricate InnerLifeEvent (per ticket architectural rule)
         import uuid as _uuid_ilid
         for f, r in zip(facts, raw_results):
-            eid = _uuid_ilid.uuid4().hex
+            if inner_life_event_id is not None:
+                # M5.5-2: canonical event_id 共享給所有 facts (一個 lived experience
+                # → 多個 qualified facts, 全部 reference 同一個 canonical event)
+                eid = inner_life_event_id
+            else:
+                # M5.4-5.2 backward compat: per-fact unique synthetic UUID
+                eid = _uuid_ilid.uuid4().hex
             f.inner_life_event_id = eid
             r["inner_life_event_id"] = eid
         # Bry 拍板 2026-07-18 Stage 1.5 fix: mirror 移到 _extract_facts 父層,
@@ -210,6 +226,9 @@ class MemoryWriter:
         subject_hint: Optional[str] = None,
         session_id: Optional[str] = None,
         source: str = "user",
+        # M5.5-2 (Bry 派工 2026-08-10): canonical InnerLifeEvent reference
+        # 跟 extract_and_write 對齊, 確保 mirror / graph 對同一個 fact 來源一致
+        inner_life_event_id: Optional[str] = None,
     ) -> list[Fact]:
         """只抽取事實、不寫入 graph。測試用與下游預處理層用。
 
@@ -218,11 +237,16 @@ class MemoryWriter:
         """
         sid = session_id or self.default_session_id
         facts, raw_results = self._extract_facts(text, subject_hint, sid, source)
-        # M5.4-5.2: extract() (no graph write) 也要 mirror + 帶 inner_life_event_id
-        # 確保 mirror / graph 對同一個 fact 的 inner_life_event_id 來源一致
+        # M5.4-5.2 + M5.5-2: 跟 extract_and_write 共用同樣的 inner_life_event_id 邏輯
+        # 兩種路徑 (canonical / synthetic) per extract_and_write
         import uuid as _uuid_ilid
         for f, r in zip(facts, raw_results):
-            eid = _uuid_ilid.uuid4().hex
+            if inner_life_event_id is not None:
+                # M5.5-2: canonical event_id 共享
+                eid = inner_life_event_id
+            else:
+                # M5.4-5.2 backward compat: per-fact unique synthetic UUID
+                eid = _uuid_ilid.uuid4().hex
             f.inner_life_event_id = eid
             r["inner_life_event_id"] = eid
         self._mirror_extraction(
@@ -242,6 +266,12 @@ class MemoryWriter:
         # middleware._on_agent_speak 從 event.payload 拿 target_user_id + agent_id 組成
         # None = 不標記, reader 視為「未標記」一律保留
         source_pair: Optional[str] = None,
+        # M5.5-2 (Bry 派工 2026-08-10): canonical InnerLifeEvent reference
+        # 從 AGENT_SPEAK 透傳過來 (M5.4-5.5 frozen top-level field)
+        # 兩個 extract_and_write call (user + assistant) 共用同一個 canonical eid
+        # (一個 turn = 一個 lived experience = 一個 canonical event_id)
+        # None = 退回 M5.4-5.2 synthetic UUID 行為
+        inner_life_event_id: Optional[str] = None,
     ) -> list[str]:
         """寫一輪 user + assistant。
 
@@ -252,6 +282,7 @@ class MemoryWriter:
                   Ram 不寫 diary 仍可以有 v1 facts)
                 - False (default): 原路徑 (graph + v1 mirror)
             source_pair: 修法 1 加, 標記這 turn 寫入的事實是誰跟誰的對話。
+            inner_life_event_id: M5.5-2 加, canonical InnerLifeEvent reference。
         """
         sid = session_id or self.default_session_id
         if skip_graph:
@@ -262,22 +293,26 @@ class MemoryWriter:
             if user_content:
                 self.extract(
                     user_content, subject_hint="user",
-                    session_id=sid, source="user"
+                    session_id=sid, source="user",
+                    inner_life_event_id=inner_life_event_id,
                 )
             if assistant_content:
                 self.extract(
                     assistant_content, subject_hint="assistant",
-                    session_id=sid, source="inference"
+                    session_id=sid, source="inference",
+                    inner_life_event_id=inner_life_event_id,
                 )
             return []
         # 原路徑
         user_ids = self.extract_and_write(
             user_content, subject_hint="user",
             session_id=sid, source="user", source_pair=source_pair,
+            inner_life_event_id=inner_life_event_id,
         )
         assistant_ids = self.extract_and_write(
             assistant_content, subject_hint="assistant",
             session_id=sid, source="inference", source_pair=source_pair,
+            inner_life_event_id=inner_life_event_id,
         )
         return user_ids + assistant_ids
 
