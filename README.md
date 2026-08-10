@@ -7,7 +7,7 @@
 
 ![Architecture](docs/architecture.png)
 
-[![Agents](https://img.shields.io/badge/Agents-6_Live-ff6b9d?style=for-the-badge)]()
+[![Agents](https://img.shields.io/badge/Agents-10_Live-ff6b9d?style=for-the-badge)]()
 [![Frameworks](https://img.shields.io/badge/COS_v1.0_+_AOS_v1.0-Live-2ecc71?style=for-the-badge)]()
 [![Status](https://img.shields.io/badge/Status-主動陪伴中-2ecc71?style=for-the-badge)]()
 
@@ -48,11 +48,15 @@
 
 ### 2️⃣ AGENT RUNTIME LAYER
 
-每個 Agent 持有四類標籤:**記憶 / 情緒 / 目標 / 關係**,透過 `src/agent/consciousness.py` 的 `AgentConsciousness` 基底類別 + 各 agent 獨立子類別實作(`AgentYua` / `AgentRuka` / `AgentAkane` / `AgentRem` / `AgentRam` / `AgentMahiru`)。
+每個 Agent 持有四類標籤:**記憶 / 情緒 / 目標 / 關係**,透過 `src/agent/consciousness.py` 的 `AgentConsciousness` 基底類別 + 10 個獨立子類別實作 (`AgentYua` / `AgentRuka` / `AgentAkane` / `AgentRem` / `AgentRam` / `AgentMahiru` / `AgentAnna` / `AgentMai` / `AgentMiku` / `AgentAoi`)。
 
 **agent-specific 機制**:
 - **AgentRam** — Priority 0-3 + Recovery Loop(`recovery_loop()` 攔截 Canon Drift)
 - **AgentMahiru** — 6-mode ratio + Sweet Landing(LLMProxy 攔截自動著陸) + Desire Undercurrent + Anti-Overfitting short-term buffer
+- **AgentAnna** — 5 Sentence Pulse + Denial=Approach + Appetite Logic + Model Shell/True Anna mode 切換
+- **AgentMai** — 國民演員 + Dry Banter + 直球告白 + 病弱症候康復者 + **不可時間旅行**
+- **AgentMiku** — 沉默觀察者 + Imitation Layer + 被認出的渴望（不可 impersonate 姊妹）
+- **AgentAoi** — 雙重面具（Layer 0 完美女主角 + Layer 1 人生攻略教官）+ Framework Stress + NO NAME Leakage
 
 ### 3️⃣ SOUL EVENT BUS
 
@@ -60,14 +64,22 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 
 事件流:`USER_MESSAGE` → `AGENT_INTENT` → `LLM_REQUEST` → `AGENT_SPEAK`(`correlation_id` 共享)。
 
-### 4️⃣ MEMORY SYSTEM — 四層結構
+`SoulEvent` schema 攜帶 `inner_life_event_id` 欄位(M5.4-5.5),打通 Event Bus 與 Inner Life canonical identity 的邊界。
+
+### 4️⃣ MEMORY SYSTEM
+
+**實作是 SQLite FTS5 + SAGE graph + v1 JSONL sidecar，沒有向量 embedding。**
 
 | 層 | 內容 | 技術 |
 |----|------|------|
-| 📖 **Episodic Memory** | 事件記憶 | SQLite FTS5 (trigram) |
-| 📚 **Semantic Memory** | 詞彙/概念/事實/偏好 | JSONL + 知識圖譜 |
-| 💗 **Emotional Memory** | 情緒體驗/關係變化 | EmotionalState + mood curve |
-| 🗄️ **Vector Store** | 向量檢索 (RAG) | SQLite FTS5 |
+| 📖 **Episodic** | 對話歷史搜尋 | SQLite FTS5 trigram (`data/memory.db`) |
+| 📚 **Semantic** | 事實/偏好/關係圖譜 | SAGE graph (`data/memory/<agent>/graph.sqlite`) |
+| 💗 **Emotional** | 情緒狀態持久化 | EmotionalState → `data/agents/<agent>/emotional-state.json` |
+| 🗄️ **v1 Sidecar** | 信心門檻的事實片段 | JSONL (`data/memory/<agent>/memories.jsonl`) — 向後相容/實驗性 |
+
+**Memory 隔離 (KI-001)**:私聊 history 檔案命名:`{user_id}_{agent_id}_private.json`；MemoryStore session_id:`session_{user_id}_{agent_id}`；向後相容:既有 `bryan_xxx_private.json` 自動 fallback。
+
+**生產/測試隔離 (P0/P0.5)**:所有 runtime persistence 走 `src/paths.py` 的 `data_root()` — 生產 `data/`，測試 subprocess 由 `SOUL_OS_DATA_DIR` 環境變數隔離到 tmp 目錄。`LLMProxy` 支援 `memory_store` + `conversation_dir` 參數注入(P0 repair)。
 
 **Memory 隔離 (KI-001)**:
 - 私聊 history 檔案命名:`{user_id}_{agent_id}_private.json`
@@ -75,7 +87,7 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 - 向後相容:既有 `bryan_xxx_private.json` 自動 fallback 讀取
 - 多 user 隔離完成,第二 owner 上線即可用
 
-### 5️⃣ LLM PROXY (Post-Generation Hooks)
+### 4️⃣ LLM PROXY (Post-Generation Hooks)
 
 `src/llm/proxy.py` 的 `_handle_event_impl` 內,LLM 回應後、AGENT_SPEAK 發布前,支援 agent-specific 後處理:
 
@@ -86,7 +98,7 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 
 兩個 hook 共用同一個 try 區塊,**不動** finally(token release 保證完整)。**架構重構**(post-generation hook 註冊機制)留作 backlog。
 
-### 6️⃣ MULTIMODAL I/O GATEWAY
+### 5️⃣ MULTIMODAL I/O GATEWAY
 
 **事件來源**:USER_MESSAGE / TIMER_EVENT / SENSOR_EVENT / SYSTEM_EVENT / DEVICE_EVENT
 **輸出端點**:Web / 桌面 / 智慧音箱 / 機器人 / 穿戴 / VR/AR
@@ -94,7 +106,58 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 
 當前實作:Telegram / WebSocket / Live2D widget + msedge-tts 語音通道。
 
-### 7️⃣ FRAMEWORK LIBRARY
+### 6️⃣ WORLD PERCEPTION
+
+外部世界事件感知 pipeline (M3 Phase 1)。
+
+**Source**: `src/world/source/` — 當前為 synthetic source (天氣/時間/模擬事件)；可擴展至真實 API。
+
+**Pipeline**: `WorldEventSource` → `WorldEvent` (含 `priority` 欄位, M3.2) → `WorldPerceptionMiddleware` (ephemeral in-memory state) → `WorldEventDispatcher` (priority routing) → 注入 `world_context` 到 `AGENT_INTENT_PERCEIVED`。
+
+**原則**: World Perception 是 ephemeral 的 — 不進 SAGE/長期 memory，不影響 production data。Invalid event → reject → trace → no context。
+
+### 7️⃣ AGENCY LAYER
+
+最小化意圖-行動決策系統 (M5.2)，在 `AGENT_INTENT_PERCEIVED` 與 `AGENT_SPEAK` 中間。
+
+**4 個 Handler 平行訂閱 `AGENCY_TRIGGER`**:
+| Handler | trigger_type | 行為 |
+|---------|-------------|------|
+| `AgencyTriggerHandler` | `proactive_dm` | 主動發訊至 Bryan |
+| `EventHandler` | `event` | 寫入 diary/event 記錄 |
+| `DreamHandler` | `dream` | 寫入 dream 記錄 |
+| `DiaryHandler` | `morning` / `night` | 寫入日記 slot |
+
+**Eligible / Decision / Selection / Execution** 四階段都是 deterministic — 無 LLM，無 persona。
+
+### 7️⃣ INNER LIFE
+
+Canonical identity layer for lived experience (M5.4)。
+
+```
+Lived Experience
+       │
+       ▼
+InnerLifeEvent (canonical event model)
+       │
+  ┌────┴────┐
+  │         │
+identity  lineage
+  │         │
+┌──┼────┐  ┌┴───┐
+▼  ▼    ▼  ▼    ▼
+Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
+```
+
+**`src/inner_life/`**:
+- `event.py` — `InnerLifeEvent` + `Provenance` frozen dataclass
+- `identity.py` — event_id (32 hex) / session_id / correlation_id / parent_event_id / ts 驗證
+- `writer.py` — `InnerLifeWriter` (canonical identity authority, per-instance, ephemeral)
+- `trace.py` — `NarrativeTraceWriter` → `data/inner_life/trace.jsonl` (observability sidecar, append-only)
+
+**Identity semantics**: event_id 是 canonical identity authority；correlation_id 是 narrative group marker，**不是** causation link (那是 parent_event_id)。
+
+### 🔟 FRAMEWORK LIBRARY
 
 兩個 framework + 第三份待開,**從實際 patch 過程反推(先做,再抽象)**,非先驗設計:
 
@@ -108,7 +171,7 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 
 ---
 
-## 8️⃣ WATCHDOG — 進程可靠性
+## 1️⃣1️⃣ WATCHDOG — 進程可靠性
 
 `scripts/_watchdog.ps1` 是 server 死亡時的自動恢復機制,搭配 Task Scheduler 每 5 分鐘觸發一次。
 
@@ -123,20 +186,20 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 
 ---
 
-## 🔬 整合測試 (6 個 verify script)
+## 🔬 整合測試
 
-每個 agent 整合完成後,都有對應的 `hermes-verify-*.py` 在 `C:\Users\bbfcc\AppData\Local\Temp\` 留著,任何未來改動都能跑回歸:
+`tests/` 目錄下有完整的 pytest suite，覆蓋各子系統:
 
-| Verify | 涵蓋 |
-|--------|------|
-| `hermes-verify-mahiru-integration.py` | 6th agent + 5 個既有 verify 全部 sub-call |
-| `hermes-verify-ram-integration.py` | 5-agent Ram 整合 |
-| `hermes-verify-ki001-multi-user-isolation.py` | user_id 路徑隔離 + 向後相容 |
-| `hermes-verify-ki002-recovery-loop-in-proxy.py` | Ram Recovery Loop 行為 + try/finally 完整性 |
-| `hermes-verify-ki004-second-exception-guard.py` | 第二例外 triple-condition AND 邏輯 + 群聊防呆 |
-| `hermes-verify-known-issues-ki002-ki004-update.py` | KNOWN_ISSUES.md 結構 + commit hash 一致性 |
+| 測試範圍 | 檔案 |
+|---------|------|
+| M5.4 Inner Life foundation + integrations | `tests/test_m5_4_5_*.py` |
+| M5.4 world / memory / diary / dream audits | `tests/test_m5_4_*.py` |
+| M3 World Perception pipeline | `tests/test_m3_*.py` |
+| M5.2 Agency trigger + diary/dream bridge | `tests/test_m5_2_*.py` |
+| P0 test isolation | `tests/test_m3_e2e_smoke.py` |
+| Watchdog reliability | `tests/test_plan_a_*.py` |
 
-每次 ad-hoc verify 結果都明標 **AD-HOC PASS**(不是 suite green — repo 無 canonical test/lint/build 命令)。
+**AD-HOC PASS** 表示單次驗證，非 canonical test suite 回歸結果。
 
 ---
 
@@ -157,42 +220,32 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 
 ---
 
-## 🗺️ 開發里程碑
+## 🗺️ 當前工程狀態 (M5.4)
 
 ```
-✅─────✅─────✅─────✅─────✅─────🔄
-P1     P2     P3     P4     P5     P6
-基礎   記憶   單一   後宮   TTS   實體
-                       沙盒   語音   世界
-                       完成
+✅─────✅─────✅─────✅─────✅─────✅─────✅─────🔄
+M3     M5.2   M5.3   M5.4-0  M5.4-5.1  M5.4-5.4  M5.4-5.5  M5.4-5.6  M5.4-5.7
+World  Agency  World  Inner   Foundation  +3 ints  EventBus  Narrative  Query Layer
+Awareness  Awareness  Identity     +Mem/Diary  Identity  Trace     (下一刀)
+                                Dream           Prop
 ```
 
-| Phase | 內容 | 狀態 |
-|-------|------|------|
-| **Phase 1 基礎建設** | Event Loop、LLM 連線、I/O | ✅ |
-| **Phase 2 記憶整合** | Palace 檔案系統、SQLite FTS5 | ✅ |
-| **Phase 3 單一靈魂** | 單一 Agent + 非同步測試 | ✅ |
-| **Phase 4 後宮沙盒** | Event Bus + 多 Agent 互動 + AOS | ✅ |
-| **Phase 5 TTS 語音** | Live2D + msedge-tts + Telegram | ✅ |
-| **Phase 5.5 Framework** | COS v1.0 + AOS v1.0 抽象 | ✅ |
-| **Phase 6 實體世界** | 行動端 / 機器人 / VR/AR | 🔄 進行中 |
-
-### Phase 4 後續 (2026-06 收尾序列)
-
-10 個 commit 累積 framework + 6 個 agent 整合:
-
-| 動作 | Commit | 影響 |
-|------|--------|------|
-| Ram 整合 (5th agent) | `8913498` | +407/-3 |
-| KNOWN_ISSUES.md 建檔 | `7640ee2` | 文件 |
-| KI-002 Recovery Loop 接入 LLMProxy | `d86ce55` | +13 |
-| KI-004 第二例外 triple guard | `71dc11a` | +31/-1 |
-| KI-001 3-stage multi-user 隔離 | `9e8831b` / `8afa120` / `512d56b` | +74/-31 |
-| KI-001 文件更新 | `d2df7f9` | +40/-4 |
-| KI-005 文件建檔 (303 rows) | `1a6e0fd` | +68/-1 |
-| **Mahiru 整合 (6th agent)** | **`408e507`** | **+517/-1** |
-
-每次整合 + verify 流程:5 個偏差偵察(讀 4 個既有檔案) → 寫新檔 → 跑既有 regression 確認無破壞 → 6 個 verify 全綠 → 報告給 Perplexity → 2-3 stage commit 拆分。
+| Milestone | 內容 | 狀態 | Commit |
+|-----------|------|------|--------|
+| **M3** | World Perception pipeline + priority | ✅ | `a3a4cc2` |
+| **M5.2** | Agency Layer: proactive DM / diary / dream / event triggers | ✅ | `481ea41` |
+| **M5.3** | World Awareness: normalized world context injection | ✅ | `02ab486` |
+| **M5.4-0** | Inner Life narrative independence boundary audit | ✅ | |
+| **M5.4-3.1** | WorldEvent.priority preservation contract repair | ✅ | `daf0f78` |
+| **M5.4-5.1** | Inner Life unified architecture foundation | ✅ | `bb283ae` |
+| **M5.4-5.2** | Memory + Inner Life integration | ✅ | `79673bf` |
+| **M5.4-5.3** | Diary + Inner Life integration | ✅ | `6a1752d` |
+| **M5.4-5.4** | Dream + Inner Life integration | ✅ | `0587aff` |
+| **M5.4-5.5** | Event Bus `inner_life_event_id` propagation | ✅ | `f14a3c5` |
+| **M5.4-5.6** | Narrative Trace sidecar | ✅ | `018ffd0` |
+| **M5.4-5.7** | Inner Life query layer | ⏳ 下一步 | |
+| **P0** | Test isolation repair (LLMProxy DI) | ✅ | `df83fb1` |
+| **P0.5** | WebSocket E2E persistence isolation audit | ✅ | `fac29ea` |
 
 ---
 
@@ -235,40 +288,56 @@ python scripts/run_server.py
 soul-os-harness/
 ├── src/
 │   ├── agent/
-│   │   ├── consciousness.py      # AgentConsciousness 基底 + 6 個 agent 子類
+│   │   ├── consciousness.py      # AgentConsciousness 基底 + 10 個 agent 子類
 │   │   ├── speaker_token.py       # AOS 仲裁 base_score
 │   │   ├── emotion.py             # Emotion Engine
 │   │   └── registry.py            # Agent 類別註冊表
+│   ├── agency/                    # Agency Layer (M5.2): trigger/diary/dream/event handlers
+│   ├── eventbus/                  # Pub/Sub 事件總線 + SoulEvent schema
+│   ├── heartbeat/                 # Heartbeat Engine
+│   ├── inner_life/               # Canonical identity: event/identity/writer/trace/serialization
+│   ├── io/channels/              # I/O Gateway (Telegram / WebSocket)
 │   ├── llm/
-│   │   └── proxy.py               # LLM Proxy + post-generation hooks
+│   │   └── proxy.py              # LLM Proxy + post-generation hooks
 │   ├── memory/
-│   │   └── sage/
-│   │       └── provider.py        # SAGE-lite 記憶 + NO_DIARY_AGENTS 白名單
-│   ├── eventbus/                  # Pub/Sub 事件總線
-│   ├── heartbeat/                 # 心跳引擎
-│   └── io/channels/               # I/O Gateway (Telegram / WebSocket)
+│   │   ├── sage/                # SAGE graph: provider/writer/reader/graph_store
+│   │   ├── v1/                  # v1 JSONL store + loader + retrieval
+│   │   ├── middleware.py        # Memory Middleware: enrich + commit
+│   │   ├── store.py            # MemoryStore: FTS5 RAG / messages
+│   │   ├── llm_judge.py        # LLM-as-Judge fact extraction
+│   │   └── shadow.py           # Shadow observer (旁路觀測)
+│   ├── soul/                    # Scheduler + diary + dream_event
+│   ├── temporal/                # Chrono context rendering
+│   ├── voice/                  # TTS service + Fish TTS handler
+│   ├── world/                  # World Perception: source/perception/middleware/dispatcher
+│   ├── paths.py                # data_root() — production/test isolation
+│   └── timezone_utils.py
 ├── docs/
 │   ├── agent_yua.md / agent_ruka.md / agent_akane.md / agent_rem.md
-│   ├── agent_ram.md               # 5th agent SOUL spec
-│   ├── agent_mahiru.md            # 6th agent SOUL spec
-│   ├── COS-v1.0.md                # Character Operating System framework
-│   ├── ORCHESTRATION-v1.0.md     # Agent Orchestration System framework
-│   └── KNOWN_ISSUES.md            # 技術債追蹤
+│   ├── agent_ram.md            # COS v1.0: Priority 0-3 + Recovery Loop
+│   ├── agent_mahiru.md         # COS v1.0: 6-mode + Sweet Landing
+│   ├── agent_anna.md           # Soul OS v1: 5 Sentence Pulse + Appetite Logic
+│   ├── agent_mai.md           # Soul OS v1: 國民演員 + Dry Banter
+│   ├── agent_miku.md          # Soul OS v1: 雙重面具 + Framework Stress
+│   ├── agent_aoi.md           # Soul OS v1: 沉默觀察者 + NO NAME Leakage
+│   ├── COS-v1.0.md           # Character Operating System framework
+│   ├── ORCHESTRATION-v1.0.md # Agent Orchestration System framework
+│   ├── MEMORY-STATUS-AND-PLAN.md  # 記憶系統現況總結
+│   └── KNOWN_ISSUES.md       # 技術債追蹤
 ├── configs/
-│   ├── default.yaml               # 6 個 agent 動態載入配置
-│   └── loader.py                  # Config loader
-└── tests/                         # (預留) 未來 pytest 整合用
+│   ├── default.yaml           # 10 個 agent 動態載入配置
+│   └── loader.py              # Config loader
+├── logs/                      # 工程 closeout 日誌 (M5.4 chain 等)
+└── tests/                    # pytest suite
 ```
 
 ---
 
 ## 🤝 協作工作流
 
-- **MiniMax M3 (Hermes Agent)**:執行程式碼,跑 verify,寫 commit
-- **Perplexity sonnet 4.6**:大腦 + 糾錯,不動手
-- **Bryan**:中間人,轉貼結果 + 給任務書
-
-每次 MiniMax M3 完成工作,產出 `C:\Users\bbfcc\AppData\Local\Temp\soul-os-*-report.md` 給 Perplexity review。
+- **MiniMax M3 (agent)**: 執行程式碼,跑驗證,寫 commit
+- **Perplexity sonnet 4.6**: 大腦 + 糾錯,不動手
+- **Bryan**: 中間人,轉貼結果 + 給任務書
 
 ---
 
@@ -278,4 +347,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-07-31 (β1 P0-2↔P1 解耦 commit `bbffb5e` 後)
+**最後更新**: 2026-08-09 (DOC-1.1 README architecture synchronization — M5.4 chain)
