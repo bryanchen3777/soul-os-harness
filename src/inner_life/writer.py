@@ -2,6 +2,7 @@
 src/inner_life/writer.py — InnerLifeWriter (Canonical Identity Authority)
 
 M5.4-5.1 (Bry 派工 2026-08-09 18:25) — Inner Life Unified Architecture Foundation
+M5.4-5.6 (Bry 派工 2026-08-09 22:30) — Optional Narrative Trace sidecar
 
 派工精神:
   - "Don't just be a wrapper for the three existing writers"
@@ -9,10 +10,19 @@ M5.4-5.1 (Bry 派工 2026-08-09 18:25) — Inner Life Unified Architecture Found
      lineage, timestamp semantics, persistence responsibility, error semantics"
   - "Memory failure MUST NOT block Diary behavior"
   - "Unified architecture ≠ shared failure dependency"
+  - "Trace is OBSERVABILITY ONLY" (M5.4-5.6)
+  - "Trace failure cannot invalidate canonical event creation" (M5.4-5.6)
+  - "Existing event behavior must not change" (M5.4-5.6)
 
 InnerLifeWriter is the CANONICAL IDENTITY AUTHORITY for narrative events.
 It does NOT wrap Memory/Diary/Dream writers. It is a STANDALONE component
 that downstream systems will OPTIONALLY consume (future工單).
+
+M5.4-5.6 integration (additive, opt-in, zero behavior change for existing callers):
+  - __init__ accepts optional `trace_writer: Optional[NarrativeTraceWriter] = None`
+  - If None (default): NO trace, behavior identical to pre-M5.4-5.6
+  - If provided: every create_event() emits one trace record AFTER registration
+  - Trace failure isolated via try/except + logger.warning (主路徑不中斷)
 
 Key design:
   - All 3 downstream writers (Memory, Diary, Dream) work WITHOUT InnerLifeWriter
@@ -29,7 +39,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, TYPE_CHECKING
 
 from .event import InnerLifeEvent, Provenance
 from .identity import (
@@ -42,6 +52,10 @@ from .identity import (
     validate_parent_event_id,
     validate_session_id,
 )
+
+if TYPE_CHECKING:
+    # Avoid runtime import cycle (trace.py imports from .event / .serialization)
+    from .trace import NarrativeTraceWriter
 
 logger = logging.getLogger("soul_os.inner_life.writer")
 
@@ -85,7 +99,14 @@ class InnerLifeWriter:
     invariant for WorldPerceptionState — InnerLifeWriter follows same pattern).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, trace_writer: Optional["NarrativeTraceWriter"] = None) -> None:
+        """
+        Args:
+            trace_writer: Optional NarrativeTraceWriter instance.
+                           None (default) = trace disabled, behavior identical to pre-M5.4-5.6.
+                           If provided, every create_event() emits one trace record
+                           (failure isolated — does NOT invalidate canonical event).
+        """
         # 所有 known event_id (用於 existence check)
         self._known_event_ids: Set[str] = set()
         # event_id → InnerLifeEvent (event lookup)
@@ -98,6 +119,8 @@ class InnerLifeWriter:
         self._children_by_parent: Dict[str, List[str]] = {}
         # observability
         self._stats = InnerLifeWriterStats()
+        # M5.4-5.6: optional Narrative Trace sidecar (default None = disabled)
+        self._trace_writer: Optional["NarrativeTraceWriter"] = trace_writer
 
     # ─────────────────────────────────────────────────────────────
     # Event creation — the main public API
@@ -206,6 +229,10 @@ class InnerLifeWriter:
             f"correlation={correlation_id} trigger={provenance.trigger_type}"
         )
 
+        # 8. M5.4-5.6: optional Narrative Trace sidecar (after registration)
+        #    Failure isolated — does NOT invalidate canonical event
+        self._append_trace(event)
+
         return event
 
     # ─────────────────────────────────────────────────────────────
@@ -303,3 +330,24 @@ class InnerLifeWriter:
             self._children_by_parent.setdefault(
                 event.parent_event_id, []
             ).append(event.event_id)
+
+    def _append_trace(self, event: InnerLifeEvent) -> None:
+        """
+        M5.4-5.6: optional Narrative Trace sidecar append.
+
+        If `trace_writer` is None (default), this is a no-op.
+        If `trace_writer` is set, append canonical event to trace sidecar.
+        Failure is ISOLATED: try/except + logger.warning, never raise.
+        Canonical event is valid even if trace write fails.
+
+        Internal use only. Called from create_event() after registration.
+        """
+        if self._trace_writer is None:
+            return
+        try:
+            self._trace_writer.write(event)
+        except Exception as e:
+            logger.warning(
+                f"[InnerLifeWriter] trace append failed (不影響主路徑): "
+                f"{type(e).__name__}: {e}"
+            )
