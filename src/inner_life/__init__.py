@@ -103,6 +103,7 @@ from .serialization import (
     provenance_to_dict,
 )
 from .trace import NarrativeTraceWriter
+from .trace_reader import NarrativeTraceReader
 from .writer import InnerLifeWriter, InnerLifeWriterStats
 
 __all__ = [
@@ -112,6 +113,7 @@ __all__ = [
     "InnerLifeWriter",
     "InnerLifeWriterStats",
     "NarrativeTraceWriter",
+    "NarrativeTraceReader",
     # Validation
     "IdentityValidationError",
     "EVENT_ID_LENGTH",
