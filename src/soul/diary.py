@@ -184,6 +184,12 @@ class DiaryWriter:
         slot: str,  # "morning" | "night"
         content: str,
         source: str = "llm",  # "llm" | "placeholder"
+        # M5.4-5.3 (Bry 派工 2026-08-09 21:06): canonical Inner Life event reference.
+        # Optional: if provided (and non-empty), attach to the entry dict so the
+        # diary row can be cross-referenced with the InnerLifeEvent.
+        # Backward-compat: None/empty means the field is omitted from the entry
+        # dict, so legacy readers that ignore unknown keys continue to work.
+        inner_life_event_id: Optional[str] = None,
     ) -> Optional[Path]:
         """
         寫一條 diary entry 到今天的 jsonl。
@@ -194,6 +200,9 @@ class DiaryWriter:
         - clean 空 → 拒絕寫入 (return None), 強迫 caller 走 placeholder
           修法前: 7 條 think_only (raw 200+ chars, clean 0) 被誤判成 source=llm 寫入
           修法後: write_entry 看到 clean 空直接擋掉, caller 必須改傳 placeholder
+
+        M5.4-5.3 (Bry 派工 2026-08-09 21:06):
+        - inner_life_event_id: optional canonical InnerLifeEvent.event_id reference
         """
         if slot not in ("morning", "night"):
             logger.warning(f"[Diary] {agent_id} 未知 slot={slot}, 跳過")
@@ -216,6 +225,10 @@ class DiaryWriter:
             "content": clean,  # M0.4: 寫 clean (不是 raw), jsonl 內不會有 think block
             "source": source,
         }
+        # M5.4-5.3: attach canonical Inner Life event reference if provided.
+        # Empty string treated as None for safety (avoid corrupting jsonl with "" id).
+        if inner_life_event_id:
+            entry["inner_life_event_id"] = inner_life_event_id
         with self._lock:
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -281,6 +294,9 @@ async def generate_diary_entry(
     persona_prompt: str = "",
     recent_memories: Optional[List[str]] = None,
     writer: Optional[DiaryWriter] = None,
+    # M5.4-5.3 (Bry 派工 2026-08-09 21:06): canonical Inner Life event reference
+    # for the diary entry being generated. Optional passthrough to write_entry.
+    inner_life_event_id: Optional[str] = None,
 ) -> Optional[Path]:
     """
     給一個 agent + slot 產生並寫入 diary entry。
@@ -292,6 +308,7 @@ async def generate_diary_entry(
         persona_prompt: 角色 persona 摘要 (供 LLM 當 system prompt 用)
         recent_memories: 最近 v1 memory 列表 (供 LLM 當 context)
         writer: DiaryWriter (預設用 singleton)
+        inner_life_event_id: M5.4-5.3 — 對應 canonical InnerLifeEvent.event_id
     """
     if writer is None:
         writer = get_diary_writer()
@@ -347,7 +364,10 @@ async def generate_diary_entry(
             logger.warning(
                 f"[Diary] {agent_id} {slot} LLM retry 後仍 think_only / 失敗, 寫 placeholder"
             )
-            return writer.write_entry(agent_id, slot, placeholder, source="placeholder")
+            return writer.write_entry(
+                agent_id, slot, placeholder, source="placeholder",
+                inner_life_event_id=inner_life_event_id,
+            )
         # M0.5 A1: 超長改截斷, 不再整段丟棄
         # Bry 8/6 21:44 派工: 保留 LLM 真正寫出來的內容, 只是裁短, 不是整段作廢
         if len(clean) > DIARY_MAX_CLEAN_CHARS:
@@ -357,11 +377,20 @@ async def generate_diary_entry(
                 f"({len(clean)} chars > {DIARY_MAX_CLEAN_CHARS}), 截斷到 {len(truncated)} chars (修法 10 pattern)"
             )
             # 截斷後的內容還是要通過 write_entry 的 strip_think 檢查
-            return writer.write_entry(agent_id, slot, truncated, source="llm")
-        return writer.write_entry(agent_id, slot, content, source="llm")
+            return writer.write_entry(
+                agent_id, slot, truncated, source="llm",
+                inner_life_event_id=inner_life_event_id,
+            )
+        return writer.write_entry(
+            agent_id, slot, content, source="llm",
+            inner_life_event_id=inner_life_event_id,
+        )
     else:
         logger.warning(f"[Diary] {agent_id} {slot} LLM 失敗, 寫 placeholder")
-        return writer.write_entry(agent_id, slot, placeholder, source="placeholder")
+        return writer.write_entry(
+            agent_id, slot, placeholder, source="placeholder",
+            inner_life_event_id=inner_life_event_id,
+        )
 
 
 # ───────────────────────────────────────────────────────────
