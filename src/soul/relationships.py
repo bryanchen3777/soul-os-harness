@@ -441,7 +441,15 @@ class MultiAgentRelationshipsManager:
         )
 
     def get_store(self, agent_id: str) -> RelationshipsStore:
-        """對外提供單 store 讀取 (給 debug / 將來 4.2 diary 用)。"""
+        """
+        對外提供單 store 讀取 (給 debug / 將來 4.2 diary 用)。
+
+        M5.11-2 (Bry 派工 2026-08-11): Relationship read access 是 intentional boundary。
+        Stage 4.1 只做 write (touch/ensure/update_impression), read API 是預留介面,
+        為 Stage 4.2 (diary 串接) / Stage 4.3 (LLM impression) 預留。
+        目前 0 個 production consumer 調用 read API — 這是設計決策, 不是缺失。
+        Stage 4.2/4.3 範圍確定前不應主動實現 relationship read 邏輯。
+        """
         return self._get_store(agent_id)
 
     def stats(self) -> Dict:

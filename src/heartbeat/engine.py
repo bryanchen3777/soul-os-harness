@@ -207,6 +207,14 @@ class HeartbeatEngine:
 
                 # Phase 3.5：chrono-social-engine 時間感知（含 carryover 注入）
                 # Phase 4：取第一個已註冊 Agent 的 carryover inject 到 chrono_ctx
+                #
+                # M5.11-2 (Bry 派工 2026-08-11): EmotionalCarryover 不是死代碼。
+                # carryover 通過 build_temporal_context → render_temporal_block → chrono_block
+                # 流入 LLM prompt 生成階段 (consciousness._fire_intent → LLM → 回應)。
+                # EmotionalCarryover 不是 Agency decision-gating 的輸入:
+                #   - Agency Stage 1-4 不讀 carryover (M5.7-2 heartbeat constraint)
+                #   - carryover 用於 LLM 回應的時空情緒 flavor, 不是 decision 門控
+                #   - 這個分離是 intentional boundary (M5.7-2 拍板), 不是缺失
                 primary_agent = self._agent_ids[0] if self._agent_ids else None
                 carryover = (
                     self._carryovers.get(primary_agent, EmotionalCarryover())

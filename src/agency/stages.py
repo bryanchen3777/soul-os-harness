@@ -7,6 +7,17 @@ Stage 3: select_action         — minimal deterministic mapping
 Stage 4: execute_action_stub   — STUB only, no production side effect
 
 每個 stage 都是 pure function, 接收 input 回 result + reason。
+
+M5.11-2 (Bry 派工 2026-08-11): Stage 4 Architecture Boundary
+─────────────────────────────────────────────────────────────────
+Stage 4 是 M5.1 frozen contract 的設計決策:
+  - Stage 4 是 deterministic decision boundary (要不要 act?)
+  - Stage 4 不是 execution boundary (怎麼 act / bus.publish)
+  - 真正執行: run_server.py 注入的 llm_executor (_proactive_dm_llm_executor 等)
+    → _fire_intent → LLM → bus.publish(AGENT_SPEAK)
+  - Stage 4 不得擴展去複製 executor 行為 (不在 frozen scope 內)
+  - executor 層是 runtime wiring, 不是 frozen contract 的一部分
+─────────────────────────────────────────────────────────────────
 """
 from __future__ import annotations
 
@@ -193,6 +204,12 @@ def execute_action_stub(action_type: str) -> ExecutionResult:
 
     M5.1 contract: STUB only, 不真正觸發 production side effect。
     M5.2 範圍: 只驗證 execution contract / trace。
+
+    M5.11-2 (Bry 派工 2026-08-11):
+    Stage 4 是 frozen decision boundary, 不是 execution boundary。
+    真正 AGENT_SPEAK 發生在 executor layer (run_server.py):
+      _proactive_dm_llm_executor → _agent._fire_intent() → bus.publish(AGENT_SPEAK)。
+    execute_action_stub 的 STUB reason 是 frozen 輸出, 不應被視為缺失。
     """
     return ExecutionResult(
         executed=True,
