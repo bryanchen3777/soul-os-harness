@@ -195,11 +195,28 @@ class SoulScheduler:
         M5.2-H Phase 2 (Bry 拍板 2026-08-08): 加 optional `extra` 參數
         供 trigger_type 特定 context 傳遞 (例: dream 的 target_agent_id / all_agents)。
         TriggerEnvelope dataclass 仍 frozen (M5.2-F),extra 走 dict payload。
+
+        M5.8-4 (Bry 派工 2026-08-10): Inner Life → Agency Producer Gating
+        - 對 proactive_dm trigger_type, 在 bus.publish 之前 query 該 agent 的
+          Inner Life state。如果過去 GATE_PROACTIVE_DM_MIN_INTERVAL_MINUTES
+          分鐘內有 InnerLifeEvent, 則 GATED, skip publish。
+        - 其他 4 trigger_type (event / dream / morning / night) 不受影響 —
+          它們本身是 inner-life activity, 不是 inner-life consumer。
+        - Fail-open: gate query 失敗 → fall-through publish (preserve existing)。
+        - 0 frozen contract 變動 (Agency 4 stages, TriggerEnvelope, 4 handlers)。
         """
         if self._bus is None:
             return  # 沒注入 bus 就 skip, 向後相容
         if not _EVENTBUS_AVAILABLE:
             return  # eventbus 模組沒裝, skip
+
+        # M5.8-4: Inner Life producer-side gate (proactive_dm only)
+        if trigger_type == "proactive_dm":
+            should_publish = await self._inner_life_gate_check(agent_id)
+            if not should_publish:
+                # Gate already logged observability. Skip publish.
+                return
+
         try:
             # 計算 elapsed_mins
             elapsed_mins = 0.0
@@ -226,6 +243,75 @@ class SoulScheduler:
                 f"[Scheduler] AGENCY_TRIGGER 發布失敗 (不影響觸發): "
                 f"agent={agent_id} trigger_type={trigger_type} err={type(e).__name__}: {e}"
             )
+
+    async def _inner_life_gate_check(self, agent_id: str) -> bool:
+        """
+        M5.8-4 (Bry 派工 2026-08-10): Inner Life → Agency producer-side gate.
+
+        Returns True if trigger should be published, False if gated.
+
+        Fail-open: any failure → True (preserve existing Agency execution path).
+
+        不得 fabricate identity / create InnerLifeEvent / read conversation content。
+        不得引入 LLM / semantic / vector。
+        不得發明 mood score / confidence score / weighting。
+
+        Implementation note (M5.8-4):
+          必須使用 UTC `now` (不是 now_local()) 因為 InnerLifeEvent.ts
+          透過 `now_utc_iso()` 寫入 trace.jsonl (per inner_life/identity.py)。
+          若用 now_local() (EDT/EST) 計算 elapsed, 跟 UTC ts 比較會
+          出現 4-5 小時漂移, 導致 elapsed 永遠 >= 30 min 永遠 EMITTED,
+          gate 失去作用. 這是 P2-3 風險 (TZ drift), 必須用 UTC.
+        """
+        try:
+            from src.agency.inner_life_gate import (
+                gate_proactive_dm,
+                GateDecision,
+            )
+            from src.inner_life.trace_reader import NarrativeTraceReader
+            from datetime import timezone
+            gate_result = gate_proactive_dm(
+                agent_id=agent_id,
+                now=datetime.now(timezone.utc),
+                trace_reader=NarrativeTraceReader(),
+            )
+            if gate_result.decision == GateDecision.GATED:
+                # 觀察用 log (Bry 派工 §8 要求可區分狀態)
+                logger.info(
+                    f"[M5.8-4 Inner Life Gate] proactive_dm GATED: "
+                    f"agent={agent_id} "
+                    f"last_event_id={gate_result.last_event_id} "
+                    f"elapsed={gate_result.elapsed_minutes:.1f}min "
+                    f"reason={gate_result.reason}"
+                )
+                return False  # skip publish
+            elif gate_result.decision == GateDecision.UNAVAILABLE:
+                logger.debug(
+                    f"[M5.8-4 Inner Life Gate] proactive_dm UNAVAILABLE (fail-open = emit): "
+                    f"agent={agent_id} reason={gate_result.reason}"
+                )
+                return True
+            elif gate_result.decision == GateDecision.FAILURE:
+                logger.warning(
+                    f"[M5.8-4 Inner Life Gate] proactive_dm FAILURE (fail-open = emit): "
+                    f"agent={agent_id} reason={gate_result.reason}"
+                )
+                return True
+            else:  # EMITTED
+                logger.debug(
+                    f"[M5.8-4 Inner Life Gate] proactive_dm EMITTED: "
+                    f"agent={agent_id} "
+                    f"last_event_id={gate_result.last_event_id} "
+                    f"elapsed={gate_result.elapsed_minutes:.1f}min"
+                )
+                return True
+        except Exception as gate_err:
+            # 「拒絕問, 強制讀」: gate 失敗不影響 trigger 發布
+            logger.warning(
+                f"[M5.8-4 Inner Life Gate] gate exception (fail-open = emit): "
+                f"agent={agent_id} err={type(gate_err).__name__}: {gate_err}"
+            )
+            return True  # preserve existing behavior
 
     async def _publish_agent_intent(
         self,
