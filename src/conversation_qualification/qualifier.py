@@ -195,17 +195,33 @@ class ConversationQualification:
         """
         SESSION_END handler. Per M5.6-2 stop condition 9, this MUST NOT crash
         the bus — all exceptions are caught and logged.
+
+        Per M5.7-2 (Bry 派工 2026-08-10): when SESSION_END is received via bus
+        (the production path through Heartbeat Engine), this handler MUST
+        call promote() to actually create the InnerLifeEvent. The previous
+        implementation only logged and incremented stats without calling
+        promote(), which would cause the bus path to silently do nothing.
         """
         try:
             self._stats["session_end_seen"] += 1
             result = self.evaluate(event)
             if result.qualified:
-                self._stats["qualified"] += 1
-                self._stats["promoted_events"] += 1
-                logger.info(
-                    f"[ConversationQualification] PROMOTED session="
-                    f"{result.session_id} reason={result.reason}"
-                )
+                # M5.7-2: actual promotion — call writer.create_event()
+                event_id = self.promote(result)
+                if event_id is not None:
+                    self._stats["qualified"] += 1
+                    self._stats["promoted_events"] += 1
+                    logger.info(
+                        f"[ConversationQualification] PROMOTED session="
+                        f"{result.session_id} → event_id={event_id[:12]}... "
+                        f"reason={result.reason}"
+                    )
+                else:
+                    self._stats["promotion_failures"] += 1
+                    logger.warning(
+                        f"[ConversationQualification] promote() returned None "
+                        f"for session={result.session_id} (writer.create_event failed)"
+                    )
             else:
                 logger.debug(
                     f"[ConversationQualification] SKIPPED session="

@@ -134,12 +134,22 @@ class AgentConsciousness(ABC):
 
     def register(self) -> None:
         """向 Event Bus 註冊，開始接收事件"""
+        # M5.7-2 (Bry 派工 2026-08-10): SYSTEM_TICK 從 event_filter 拿掉
+        # 動機: Heartbeat 重新啟用後, SYSTEM_TICK 會重新 publish;
+        #       consciousness._on_tick 會 publish AGENT_INTENT (proactive)
+        #       違反 M5.7-2 constraint M: 「SYSTEM_TICK 不得啟動 proactive Agency
+        #       / Heartbeat tick 不得直接觸發第二套 Agency scheduler」。
+        # 解法: SYSTEM_TICK 仍 publish (給其他 consumer / 觀察用), consciousness
+        #       不再 consume → 不會從 SYSTEM_TICK 觸發 AGENT_INTENT。
+        # 自主行為仍由 scheduler AGENCY_TRIGGER 統一管 (morning/night/dream/event/
+        #       proactive_dm), 跟 M5.2-G 4-stage logic 保持一致。
+        # _on_tick method 保留 (dead code, 給未來觀察 / debug 用), 不會被呼叫。
         self.bus.subscribe(
             subscriber_id=self.agent_id,
             handler=self.handle_event,
             event_filter={
                 EventType.USER_MESSAGE,
-                EventType.SYSTEM_TICK,
+                # EventType.SYSTEM_TICK,  # M5.7-2: 拿掉, 避免 proactive Agency
                 EventType.AGENT_SPEAK,
                 EventType.SESSION_END,   # Phase 4 carryover 寫入觸發
             },

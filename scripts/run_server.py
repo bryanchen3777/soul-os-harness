@@ -216,7 +216,7 @@ async def event_loop_self_check(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """所有初始化在同一個 event loop 裡，避免跨 loop 問題。"""
-    from configs.loader import load_config, create_llm_proxy, create_agents
+    from configs.loader import load_config, create_llm_proxy, create_heartbeat, create_agents
     from src.eventbus import SoulEventBus
     from src.eventbus.token_manager import SpeakerTokenManager
     from src.agent.speaker_token import SpeakerTokenBus
@@ -396,15 +396,34 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("[Server] FISH_TTS_ENABLED=0, skip FishTTSHandler")
 
-    # M1.2 (2026-07-31 23:30 Perplexity 派工): Heartbeat Engine 停用
-    # 跟 scheduler heartbeat (Lesson 39, 30-60 min 隨機) 兩套並存, 停止 src/heartbeat/
-    # 60s tick 改由 scheduler 觸發 + 角色自主行為負責。
-    # 保留 create_heartbeat import 待 M1.3 回歸測試確認後決定刪除。
-    # app.state._heartbeat = None 讓 /_admin/fast_forward 知道沒有了
-    # heartbeat = create_heartbeat(cfg, bus, agent_ids=agent_ids)
-    # heartbeat._manager = gateway.manager
-    # await heartbeat.start()
-    app.state._heartbeat = None  # Heartbeat Engine 停用 (M1.2)
+    # M5.7-2 (Bry 派工 2026-08-10): Heartbeat Engine 重新啟用
+    # M1.2 (2026-07-31 23:30 Perplexity 派工) 原本因「跟 scheduler heartbeat (Lesson 39)
+    # 兩套並存」停用 — 但後續 修法 12 (2026-08-06) 跟 M5.2-I-8 (2026-08-08) 把 scheduler
+    # Lesson 39 變成 dead code, M1.2 理由不成立。
+    # M5.7-1 audit 確認 dual-conflict 已自然解決 → M5.7-2 重啟 Heartbeat。
+    #
+    # 職責分離 (Bry 派工):
+    #   Heartbeat = temporal observation / lifecycle detection (60s tick, 30min SESSION_END)
+    #   Scheduler = planned autonomous activities (morning/night/dream/event/proactive_dm)
+    # 兩者不應混淆。Heartbeat tick 不得直接觸發第二套 Agency scheduler。
+    #
+    # 範圍:
+    #   ✅ 重新啟動 Heartbeat Engine
+    #   ✅ 60s SYSTEM_TICK 重新 publish
+    #   ✅ 30min SESSION_END 重新 publish (含 last_session_id/last_user_id/last_agent_id)
+    #   ✅ M5.6-2 ConversationQualification 會從 SESSION_END 收事件, 可 promote conversation
+    #   ❌ 不恢復 scheduler Lesson 39 dead heartbeat (per M5.7-2 out-of-scope)
+    #   ❌ 不啟用 SYSTEM_TICK → proactive-agent autonomous execution
+    #     (M5.7-2 constraint M, 透過 consciousness event_filter 拿掉 SYSTEM_TICK 達成)
+    heartbeat = create_heartbeat(cfg, bus, agent_ids=agent_ids)
+    heartbeat._manager = gateway.manager  # 連線感知, 沒人連線就 skip tick
+    await heartbeat.start()
+    app.state._heartbeat = heartbeat  # M5.7-2: 不再是 None
+    logger.info(
+        "[M5.7-2] Heartbeat Engine 重新啟用 ✓ "
+        "(60s tick + 30min SESSION_END, 職責: temporal observation / "
+        "lifecycle detection, 跟 scheduler 自主排程分離)"
+    )
 
     # ── Stage 4.2 (Bry 拍板 2026-07-18 18:24+): 排程器 + diary ───────
     # morning 08:00 / night 22:00 自動觸發, 1 天驗殘留感
@@ -929,7 +948,13 @@ async def lifespan(app: FastAPI):
         await tg_adapter.stop()
         logger.info("[Server] Telegram channel stopped")
     # M1.2: Heartbeat Engine 停用, stop 也跳過
-    # await heartbeat.stop()
+    # M5.7-2 (Bry 派工 2026-08-10): Heartbeat 重新啟用, 對應 shutdown 也要 stop
+    if getattr(app.state, "_heartbeat", None) is not None:
+        try:
+            await app.state._heartbeat.stop()
+            logger.info("[M5.7-2] Heartbeat Engine 停止 ✓")
+        except Exception as _hb_stop_err:
+            logger.warning(f"[Server] heartbeat stop 失敗: {_hb_stop_err}")
     # Stage 4.2 (Bry 拍板 2026-07-18 18:24+): 排程器 shutdown
     if getattr(app.state, "_scheduler", None) is not None:
         try:
