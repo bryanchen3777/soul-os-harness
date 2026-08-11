@@ -557,20 +557,31 @@ class TestScenarioE(unittest.TestCase):
 
 class TestScenarioF(unittest.TestCase):
     """
-    M6.0-3 Scenario F: World event → proactive gate (M5.8-4).
+    M6.0-3 Scenario F: Agent-specific InnerLife event → proactive gate (M5.8-4).
+
+    M5.14-2 (Bry 派工 2026-08-11 18:37) reclassified F1-P1 (was M5.8-4 vs M5.9-3
+    contract conflict, reclassified to P3 test design issue): World events are
+    agent-agnostic by design (M5.9-2 spec §6 actor_id=None), so they correctly
+    do NOT gate any specific agent's proactive_dm. To validate the gate's
+    30-min cooldown semantic, F1-F3 must use canonical agent-specific producer
+    events (e.g. diary:morning from _diary_writer_executor at
+    scripts/run_server.py:812-817).
+
+    Fixture F now uses trigger_type="diary:morning" + actor_id="agent_yua"
+    — natural match for M5.8-4 gate filter (provenance.actor_id == agent_id),
+    not the artificial WorldEvent workaround used in M6.0-3 prior commit.
 
     Verifies:
-      - Recent InnerLifeEvent suppresses proactive_dm (GATED)
-      - Outside cooldown window allows EMITTED
+      - Recent diary:morning by same agent suppresses proactive_dm (GATED)
+      - Outside 30-min cooldown window allows EMITTED
       - No trace file → UNAVAILABLE (fail-open)
-      - Query exception → FAILURE (fail-open)
-      - event/dream/morning/night trigger types NOT gated
+      - event/dream/morning/night trigger types NOT gated (only proactive_dm)
     """
 
     def setUp(self):
         self.tmpdir_obj = _setup_isolated_env()
         self.tmp = Path(self.tmpdir_obj.name)
-        # Load trace.jsonl with a recent event
+        # Load trace.jsonl with a recent agent-specific event
         _load_fixture(
             self.tmp,
             "scenario_F/trace.jsonl",
@@ -581,13 +592,11 @@ class TestScenarioF(unittest.TestCase):
         _cleanup_tmpdir(self.tmpdir_obj)
 
     def test_f1_recent_event_gates_proactive_dm(self):
-        """F1: InnerLifeEvent < 30min ago → proactive_dm GATED.
+        """F1: diary:morning by same agent < 30min ago → proactive_dm GATED.
 
-        M5.8-4 contract: gate_proactive_dm requires `agent_id: str` (non-empty).
-        M5.9-3 spec: world events have provenance.actor_id set to a real agent
-        (per M5.9-3 implementation contract — see F-P1 finding in closeout).
-        Fixture F has actor_id="agent_yua", agent_id="agent_yua" matches → gate
-        fires on time check.
+        Fixture F has trigger_type="diary:morning" + actor_id="agent_yua",
+        matching M5.8-4 gate filter (provenance.actor_id == agent_id).
+        Gate fires on 15 min < 30 min threshold check.
         """
         runner = CheckpointRunner("Scenario F1")
 
@@ -611,7 +620,10 @@ class TestScenarioF(unittest.TestCase):
         runner.assert_all_passed()
 
     def test_f2_outside_cooldown_allows_emitted(self):
-        """F2: InnerLifeEvent > 30min ago → proactive_dm EMITTED."""
+        """F2: diary:morning by same agent > 30min ago → proactive_dm EMITTED.
+
+        Same fixture (ts=12:00), now=13:00 (60 min elapsed), past 30-min threshold.
+        """
         runner = CheckpointRunner("Scenario F2")
 
         from src.agency.inner_life_gate import gate_proactive_dm, GateDecision
@@ -657,7 +669,7 @@ class TestScenarioF(unittest.TestCase):
 
         runner.assert_all_passed()
 
-    def test_f4_other_trigger_types_not_gated_by_world_event(self):
+    def test_f4_other_trigger_types_not_gated(self):
         """F4: event/dream/morning/night producer paths are NOT gated by M5.8-4.
 
         M5.8-4 design: only proactive_dm is gated. The 4 producer types
