@@ -1,0 +1,1 @@
+{"event_id": "abc123def456789012345678901234ab", "session_id": null, "correlation_id": null, "parent_event_id": null, "ts": "2026-08-11T12:00:00+00:00", "provenance": {"trigger_type": "world:calendar_event", "actor_id": "agent_yua", "source_system": "narrative", "extras": {}}, "summary": "calendar_event: 30-min meeting"}
