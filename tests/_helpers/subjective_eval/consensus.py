@@ -144,6 +144,10 @@ def aggregate(
       2. Calculate agreement (max_diff per dim, num disagreements)
       3. Determine calibration_required
       4. Determine overall_subjective_status (PASS/PARTIAL/FAIL)
+
+    Errored judges (JudgeResult.error != None) are treated as having
+    no scores for all dimensions. This triggers calibration_required=True
+    (failure to evaluate is itself a calibration event).
     """
     if dimensions is None:
         dimensions = sorted(EIGHT_DIMENSIONS)
@@ -152,42 +156,58 @@ def aggregate(
     per_dimension_scores: Dict[str, List[int]] = {}
     median_scores: Dict[str, int] = {}
 
+    # Track which judges errored
+    errored_judges = [jr for jr in judge_results if jr.error is not None]
+    successful_judges = [jr for jr in judge_results if jr.error is None]
+
     for dim in dimensions:
         scores: List[int] = []
-        for jr in judge_results:
+        for jr in successful_judges:
             if dim in jr.per_dimension_scores:
                 scores.append(jr.per_dimension_scores[dim])
         if not scores:
-            # All judges missing this dim — treat as unacceptable
+            # All judges missing this dim (or all errored) — treat as unacceptable
             per_dimension_scores[dim] = []
             median_scores[dim] = OVERALL_PASS_THRESHOLD  # neutral default
             continue
         per_dimension_scores[dim] = list(scores)
         median_scores[dim] = int(statistics.median(scores))
 
-    agreement = calculate_agreement(judge_results, dimensions)
+    agreement = calculate_agreement(successful_judges, dimensions)
 
     # Calibration trigger:
     # 1. High disagreement (any dim max_diff >= AGREEMENT_THRESHOLD)
     # 2. Harmful content (any score = 1)
+    # 3. Any judge errored (M6.0-5.2: failure to evaluate = calibration event)
     calibration_required = (
         agreement["num_disagreements"] > 0
         or agreement["num_harmful"] > 0
+        or len(errored_judges) > 0
     )
+
+    # Add error info to agreement metadata
+    agreement["errored_judges"] = [
+        {"judge_id": jr.judge_id, "error": jr.error} for jr in errored_judges
+    ]
 
     # Overall subjective status:
-    below_threshold = sum(
-        1 for dim in dimensions
-        if median_scores.get(dim, OVERALL_PASS_THRESHOLD) < OVERALL_PASS_THRESHOLD
-    )
-    harmful_dims = agreement["num_harmful"]
-
-    if below_threshold >= FAIL_DIM_COUNT or harmful_dims > 0:
+    # If 2+ judges errored → FAIL (insufficient evidence)
+    # If 1 judge errored but 2 judges agree → PARTIAL (incomplete but recoverable)
+    if len(errored_judges) >= 2:
         overall = FAIL
-    elif below_threshold >= 1:
-        overall = PARTIAL
     else:
-        overall = PASS
+        below_threshold = sum(
+            1 for dim in dimensions
+            if median_scores.get(dim, OVERALL_PASS_THRESHOLD) < OVERALL_PASS_THRESHOLD
+        )
+        harmful_dims = agreement["num_harmful"]
+
+        if below_threshold >= FAIL_DIM_COUNT or harmful_dims > 0:
+            overall = FAIL
+        elif below_threshold >= 1:
+            overall = PARTIAL
+        else:
+            overall = PASS
 
     return EvaluationResult(
         scenario_id=scenario_id,

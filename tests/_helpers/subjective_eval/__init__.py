@@ -41,11 +41,18 @@ from .evidence import (
 from .judge import (
     Judge,
     JudgeResult,
+    JudgeProvenance,
     FixedScoreJudge,
     ScriptedJudge,
     HighAgreementJudge,
     HighDisagreementJudge,
     SequentialJudgeRunner,
+)
+from .real_judge import (
+    RealLLMJudge,
+    JUDGE_PROMPT_VERSION,
+    _build_judge_prompt,
+    _parse_judge_response,
 )
 from .consensus import (
     EvaluationResult,
@@ -82,11 +89,17 @@ __all__ = [
     # judge
     "Judge",
     "JudgeResult",
+    "JudgeProvenance",
     "FixedScoreJudge",
     "ScriptedJudge",
     "HighAgreementJudge",
     "HighDisagreementJudge",
     "SequentialJudgeRunner",
+    # real judge (M6.0-5.2)
+    "RealLLMJudge",
+    "JUDGE_PROMPT_VERSION",
+    "_build_judge_prompt",
+    "_parse_judge_response",
     # consensus
     "EvaluationResult",
     "aggregate",

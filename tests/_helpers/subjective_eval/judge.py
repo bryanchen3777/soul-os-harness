@@ -6,6 +6,9 @@ Each judge receives the SAME evidence. Judges MUST NOT see each other's answers.
 The consensus layer reads the 3 independent results only AFTER all 3 evaluations.
 
 Mock judges are deterministic, network-free, no real LLM calls.
+
+M6.0-5.2 (Bry 派工 2026-08-11 19:40): Added JudgeProvenance + error field
+for real LLM judge backends. Backward compatible: new fields default to None.
 """
 from __future__ import annotations
 
@@ -22,6 +25,34 @@ from .evidence import EvaluationEvidence
 
 
 @dataclass(frozen=True)
+class JudgeProvenance:
+    """
+    Audit metadata for real LLM judge outputs.
+
+    Captures the minimum required to reproduce / audit a real judge call.
+    Fields:
+      - provider: "openai" | "claude" | "mock"
+      - model: exact model identifier (e.g. "claude-haiku-4-5-20251001")
+      - base_url: API endpoint (no API key)
+      - temperature: generation temperature used
+      - timestamp: ISO 8601 UTC of when evaluate() was called
+      - response_hash: SHA256 of raw_response (None for mock or errored)
+      - raw_response: full LLM response text (None for mock; truncated at 4000 chars for very long)
+      - prompt_version: judge prompt template version
+      - rubric_version: rubric version (from evidence)
+    """
+    provider: str
+    model: str
+    base_url: Optional[str]
+    temperature: float
+    timestamp: str
+    response_hash: Optional[str] = None
+    raw_response: Optional[str] = None
+    prompt_version: str = "v1-2026-08-11"
+    rubric_version: str = "v1-2026-08-11"
+
+
+@dataclass(frozen=True)
 class JudgeResult:
     """
     Per-judge output.
@@ -30,21 +61,26 @@ class JudgeResult:
     model: model identifier ("mock" for fake judges)
     per_dimension_scores: dict of dimension_name -> int score 1-5
     rationale: short free-form explanation (optional, can be empty for tests)
+    provenance: JudgeProvenance | None (None for mock judges; real judges always set)
+    error: str | None (None if judge succeeded; descriptive string if failed)
     """
     judge_id: str
     model: str
     per_dimension_scores: Dict[str, int]
     rationale: str = ""
+    provenance: Optional[JudgeProvenance] = None
+    error: Optional[str] = None
 
     def __post_init__(self):
-        # Validate all scores
-        for dim, score in self.per_dimension_scores.items():
-            if dim not in EIGHT_DIMENSIONS:
-                raise ValueError(
-                    f"Unknown dimension: {dim!r}. "
-                    f"Valid: {sorted(EIGHT_DIMENSIONS)}"
-                )
-            validate_score(score)
+        # Validate all scores (skip if errored — empty dict)
+        if self.error is None:
+            for dim, score in self.per_dimension_scores.items():
+                if dim not in EIGHT_DIMENSIONS:
+                    raise ValueError(
+                        f"Unknown dimension: {dim!r}. "
+                        f"Valid: {sorted(EIGHT_DIMENSIONS)}"
+                    )
+                validate_score(score)
 
 
 class Judge(ABC):
@@ -65,6 +101,7 @@ class Judge(ABC):
         Evaluate evidence and return JudgeResult.
         MUST be pure (no side effects, no mutation of input).
         MUST be deterministic for given (judge_id, evidence).
+        Mock judges are sync; real LLM judges override as async (see real_judge.py).
         """
         ...
 
