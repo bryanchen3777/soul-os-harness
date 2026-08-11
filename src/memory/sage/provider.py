@@ -99,15 +99,19 @@ class SAGELiteProvider:
         if self._store:
             self._store.close()
         self._store = GraphStore(db_path=self._db_path())
+        # M5.10-2: 先建 reader (跟 writer 共用同一 GraphStore), 再傳給 writer
+        # 順序不可調換 — writer._memory_reader 需要 reader instance
+        self._reader = MemoryReader(
+            self._store,
+            on_retrieved=self._on_memory_retrieved,
+        )
         # Bry 拍板 2026-07-18 Stage 1.6: 傳 profile_id 給 writer, 讓 v1 mirror 知道歸屬哪個 agent
+        # M5.10-2: 傳 _reader 讓 _extract_facts_llm 在 call LLM Judge 前先取 v1 context
         self._writer = MemoryWriter(
             self._store,
             default_session_id=self._session_id,
             agent_id=self.profile_id,
-        )
-        self._reader = MemoryReader(
-            self._store,
-            on_retrieved=self._on_memory_retrieved,
+            memory_reader=self._reader,
         )
         self._evolution = MemoryEvolution(self._store)
 

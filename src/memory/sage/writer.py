@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
@@ -5,10 +7,14 @@ import re
 import time
 import datetime
 from pathlib import Path  # Bry §21: 修 Path import bug, Bry §12 _mirror_to_v1_store 用 Path 但 module 沒 import
-from typing import Any, Dict, List, Optional, Tuple
+
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from .models import Fact
 from .graph_store import GraphStore
+
+if TYPE_CHECKING:
+    from .reader import MemoryReader
 from .token_utils import TokenBudget, SummaryCompressor
 
 logger = logging.getLogger("soul_os.memory.writer")
@@ -138,6 +144,10 @@ class MemoryWriter:
         graph_store: GraphStore,
         default_session_id: str = "",
         agent_id: str = "",
+        # M5.10-2 (Bry 派工 2026-08-10): optional MemoryReader for v1 context in LLM Judge
+        # canonical source: SAGELiteProvider._reader (shares same GraphStore as writer)
+        # None = 向後相容 (既有 caller 不傳, _extract_facts_llm 退化到 context="")
+        memory_reader: Optional[MemoryReader] = None,
     ):
         self.store = graph_store
         self.default_session_id = default_session_id
@@ -146,6 +156,8 @@ class MemoryWriter:
         # 結果 Loader 用 m.agent_id == "agent_rem" 過濾時全部不符, 觸發 fail-safe。
         # 修法: writer.__init__ 接 agent_id, provider 傳 profile_id, _mirror_to_v1_store 用 self.agent_id
         self.agent_id = agent_id
+        # M5.10-2: optional reader for v1 context (see __init__ docstring)
+        self._memory_reader = memory_reader
 
     # ── 公開 API ──────────────────────────────────────────────
 
@@ -496,6 +508,24 @@ class MemoryWriter:
         由 _extract_facts caller (extract / extract_and_write) 統一在父層跑 mirror。
         之前 mirror 嵌這裡導致 heuristic fallback 完全沒 mirror, 修完兩條路徑對齊。
         """
+        # M5.10-2: 取 v1 memory context (如果 writer 有 reader 的話)
+        # - 用 text 本身當 query (找跟目前訊息相關的既有事實)
+        # - top_k=3 / mode=precise: 保守取, 避免 context 過長干擾 Judge prompt
+        # - source_pair_filter=None: 不過濾 (context 階段只看語意相關性, 不做 access control)
+        # - None reader → 向後相容退化到 context=""
+        memory_context = ""
+        if self._memory_reader is not None:
+            try:
+                reader_result = self._memory_reader.retrieve_context(
+                    text,
+                    top_k=3,
+                    max_tokens=400,
+                    mode="precise",
+                )
+                memory_context = reader_result.summary
+            except Exception:
+                # reader 失敗不 block 萃取, 退化到無 context
+                pass
         # 取得 LLMJudge(從 _llm_judge 屬性或 lazy init)
         judge = self._get_llm_judge()
         if judge is None:
@@ -506,8 +536,9 @@ class MemoryWriter:
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+        # M5.10-2: 傳 v1 memory context (可以是空字串, 跟舊行為一致)
         results = loop.run_until_complete(
-            judge.extract_and_judge(text, context="", agent_id=subject_hint or "")
+            judge.extract_and_judge(text, context=memory_context, agent_id=subject_hint or "")
         )
         # 轉成 Fact 物件
         facts = []
