@@ -359,6 +359,51 @@ async def lifespan(app: FastAPI):
         logger.warning("[Server] M3 WorldPerception 關閉 (legacy mode, SOULOS_WORLD_PERCEPTION_ENABLED=0)")
     token_mgr.register()
 
+    # ── M5.9-3.1 (Bry 派工 2026-08-10): World → Inner Life Adapter production wiring ──
+    # M5.9-3 實作了 WorldInnerLifeAdapter (type whitelist + dedup + InnerLifeWriter sole
+    # creator), 但 Engineering Brain review 發現 M5.9-3 沒 wire 到 production runtime.
+    # 這一段在 lifespan 內構造 + 註冊 adapter, 讓 production 真的啟用.
+    #
+    # 派工精神:
+    #   - 構造 exactly 1 個 WorldInnerLifeAdapter (no second)
+    #   - 注入既有的 canonical writer (canonical inner_life_writer @ line 268)
+    #   - 註冊到既有的 canonical bus (canonical SoulEventBus @ line 231)
+    #   - 不創建第二個 SoulEventBus / InnerLifeWriter / WorldEventSource
+    #   - 不修改 WorldEvent / InnerLifeEvent / Provenance / Event Bus / Agency / TriggerEnvelope
+    #   - 跟 WorldPerception 平行訂閱 WORLD_EVENT (SoulEventBus 支援 multi-subscriber)
+    #   - 跟 WorldPerception 獨立 (env SOULOS_WORLD_PERCEPTION_ENABLED 不影響 adapter)
+    #   - 不需要手動 unregister — bus.stop() 在 shutdown 自動清理所有 subscribers
+    #
+    # 凍結契約: 0 變動 (跟 M5.9-3 closeout 一致)
+    #   - WorldEvent schema unchanged
+    #   - InnerLifeEvent schema unchanged
+    #   - Provenance schema unchanged
+    #   - VALID_SOURCE_SYSTEMS unchanged
+    #   - TriggerEnvelope unchanged
+    #   - Stage 1-4 unchanged
+    #   - Event Bus contract unchanged
+    #   - NarrativeTrace unchanged
+    #   - writer identity authority unchanged
+    from src.world.inner_life_adapter import (
+        WorldInnerLifeAdapter,
+        WORLD_QUALIFYING_TYPES,
+        WORLD_DEDUP_MAX_SIZE,
+    )
+    world_inner_life_adapter = WorldInnerLifeAdapter(
+        inner_life_writer=inner_life_writer,
+    )
+    world_inner_life_adapter.register(bus=bus)
+    # 暴露到 app.state 給 observability / test 驗證
+    app.state._world_inner_life_adapter = world_inner_life_adapter
+    logger.info(
+        f"[M5.9-3.1] WorldInnerLifeAdapter 已 wired ✓ "
+        f"(qualifying_types={sorted(WORLD_QUALIFYING_TYPES)}, "
+        f"dedup_max_size={WORLD_DEDUP_MAX_SIZE}, "
+        f"subscribed=WORLD_EVENT, "
+        f"writer=canonical_inner_life_writer, "
+        f"env_gated=False)"
+    )
+
     # Phase 12 LLM-as-judge: 設定 process-global LLMProxy reference,
     # 讓 MemoryWriter._get_llm_judge() 跨模組邊界可以拿到
     from src.memory.sage.writer import set_llm_proxy
