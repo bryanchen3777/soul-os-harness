@@ -145,6 +145,41 @@ class SoulEventBus:
 
         這是非阻塞操作——發布者不等待事件被消費完成。
         事件的實際派發由 _worker 在背景處理。
+
+        Failure modes (per M5.7-4 documentation hardening):
+
+        1. Bus not started (self._running == False):
+           - event dropped silently (no exception raised)
+           - log warning (logger.warning)
+           - caller continues normally
+           - Reason: typical when caller publishes during shutdown window
+
+        2. Queue full (asyncio.QueueFull from put_nowait):
+           - event dropped silently (no exception raised)
+           - log error (logger.error) — includes event_type, source, id
+             so caller can identify which event was dropped
+           - increment `dropped_queue_full` stat (observable via
+             bus.get_stats())
+           - caller continues normally
+           - Reason: 1000-event queue overflow (theoretical only; current
+             event rate << 16 events/s, queue cannot realistically fill)
+
+        3. Other exceptions (event validation, bus state corruption, etc.):
+           - PROPAGATE to caller (uncaught)
+           - caller's responsibility: handle / log / continue
+           - Per M5.7-4 + M5.7-3: Heartbeat's _loop body wraps publish()
+             in try/except (catches Exception, NOT BaseException, so
+             CancelledError still propagates correctly on shutdown)
+
+        Architectural note:
+        - We do NOT add timeout / retry / circuit-breaker (per M5.7-4
+          "Do NOT add arbitrary timeout/retry infrastructure")
+        - The current design is observable: dropped_queue_full stat +
+          logger.error with event_type/source/id is enough for production
+          monitoring without expanding scope
+        - If queue-full becomes a real issue in the future, the fix
+          should be a separate ticket (queue size increase OR
+          subscriber backpressure, NOT a retry framework)
         """
         if not self._running:
             logger.warning(f"[Bus] 總線尚未啟動，事件被丟棄: {event.event_id}")
@@ -167,8 +202,11 @@ class SoulEventBus:
             )
         except asyncio.QueueFull:
             self._stats["dropped_queue_full"] += 1
+            # M5.7-4: explicit failure observability — include event_type
+            # and source in error log so dropped events are traceable
             logger.error(
-                f"[Bus] 佇列已滿，事件丟棄: {event.event_id} | "
+                f"[Bus] 佇列已滿，事件丟棄: type={event.event_type} "
+                f"source={event.source} id={event.event_id[:8]} | "
                 f"請檢查是否有訂閱者處理速度過慢"
             )
 

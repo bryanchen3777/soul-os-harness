@@ -174,9 +174,11 @@ class ConversationQualification:
         """
         Subscribe to SESSION_END events on the given bus.
 
-        Idempotent: re-registering with the same subscriber_id is safe
-        (bus dedups by id). Should be called once during lifespan setup,
-        after InnerLifeWriter is created.
+        Should be called ONCE during lifespan setup, after InnerLifeWriter
+        is created. NOT idempotent — re-registering would add a duplicate
+        subscriber (bus.subscribe just appends; M5.7-3 audit finding P3.1).
+        In production, register() is called once per
+        ConversationQualification instance, in run_server.py lifespan.
         """
         bus.subscribe(
             subscriber_id=self.SUBSCRIBER_ID,

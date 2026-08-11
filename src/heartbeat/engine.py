@@ -167,98 +167,130 @@ class HeartbeatEngine:
             if not self._running:
                 break
 
-            # 連線感知：沒人連線就不發 tick（不燒 LLM token、不浪費 chrono 計算）
-            if getattr(self, "_manager", None) is not None:
-                try:
-                    conn_count = self._manager.count
-                except Exception:
-                    conn_count = None
-                if conn_count == 0:
-                    logger.debug("[Heartbeat] 無客戶端連線，跳過本輪 tick")
+            # M5.7-4 (Bry 派工 2026-08-10): exception isolation for the tick body.
+            # Without this, an unexpected exception (e.g., a future bug in
+            # bus.publish() or chrono computation) would silently kill the
+            # long-lived Heartbeat task — turning a 60s tick into a forever
+            # dead runtime. The fix:
+            #   - Catch `Exception` (NOT `BaseException`) so asyncio.CancelledError
+            #     still propagates correctly when stop() cancels the task.
+            #   - Log with stack trace (logger.exception) for observability.
+            #   - Continue to next tick (loop survives, cadence preserved).
+            #   - Do NOT add retry / exponential backoff / circuit breaker —
+            #     per M5.7-4 "Do NOT introduce a new retry framework".
+            #   - Do NOT swallow CancelledError (per ticket: "Do NOT swallow
+            #     shutdown/cancellation semantics").
+            #
+            # The connection-awareness try/except (line 171-178) is INSIDE
+            # this block and is preserved (it returns None for conn_count
+            # on transient manager errors, then continues).
+            try:
+                # 連線感知：沒人連線就不發 tick（不燒 LLM token、不浪費 chrono 計算）
+                if getattr(self, "_manager", None) is not None:
+                    try:
+                        conn_count = self._manager.count
+                    except Exception:
+                        conn_count = None
+                    if conn_count == 0:
+                        logger.debug("[Heartbeat] 無客戶端連線，跳過本輪 tick")
+                        continue
+
+                # Fix Bug 3: 全局靜默保護 — 說話後 60 秒內不廣播 tick
+                now_local = time.time()
+                if now_local - self._last_any_speak < self.global_silence_secs:
+                    logger.debug("[Heartbeat] 全局靜默中，跳過本輪 tick")
                     continue
 
-            # Fix Bug 3: 全局靜默保護 — 說話後 60 秒內不廣播 tick
-            now_local = time.time()
-            if now_local - self._last_any_speak < self.global_silence_secs:
-                logger.debug("[Heartbeat] 全局靜默中，跳過本輪 tick")
-                continue
+                self.tick_count += 1
+                now = datetime.now(timezone.utc)
+                elapsed_mins = (now - self.last_user_activity).total_seconds() / 60.0
 
-            self.tick_count += 1
-            now = datetime.now(timezone.utc)
-            elapsed_mins = (now - self.last_user_activity).total_seconds() / 60.0
+                # Phase 3.5：chrono-social-engine 時間感知（含 carryover 注入）
+                # Phase 4：取第一個已註冊 Agent 的 carryover inject 到 chrono_ctx
+                primary_agent = self._agent_ids[0] if self._agent_ids else None
+                carryover = (
+                    self._carryovers.get(primary_agent, EmotionalCarryover())
+                    if primary_agent
+                    else EmotionalCarryover()
+                )
+                chrono_cfg = PersonaConfig(persona_id="heartbeat_system")
+                chrono_ctx = build_temporal_context(
+                    persona_id="heartbeat_system",
+                    last_msg_ts=self.last_user_activity.isoformat(),
+                    current_stress=0,
+                    carryover=carryover,
+                    config=chrono_cfg,
+                    now=now,
+                )
+                chrono_block = render_temporal_block(chrono_ctx)
 
-            # Phase 3.5：chrono-social-engine 時間感知（含 carryover 注入）
-            # Phase 4：取第一個已註冊 Agent 的 carryover inject 到 chrono_ctx
-            primary_agent = self._agent_ids[0] if self._agent_ids else None
-            carryover = (
-                self._carryovers.get(primary_agent, EmotionalCarryover())
-                if primary_agent
-                else EmotionalCarryover()
-            )
-            chrono_cfg = PersonaConfig(persona_id="heartbeat_system")
-            chrono_ctx = build_temporal_context(
-                persona_id="heartbeat_system",
-                last_msg_ts=self.last_user_activity.isoformat(),
-                current_stress=0,
-                carryover=carryover,
-                config=chrono_cfg,
-                now=now,
-            )
-            chrono_block = render_temporal_block(chrono_ctx)
-
-            tick = SoulEvent(
-                event_type=EventType.SYSTEM_TICK,
-                source="heartbeat_engine",
-                target="broadcast",
-                priority=EventPriority.LOW,
-                expires_at=now + timedelta(seconds=self.tick_interval),
-                payload={
-                    "tick_count": self.tick_count,
-                    "elapsed_mins": round(elapsed_mins, 2),
-                    "timestamp_utc": now.isoformat(),
-                    # Phase 3.5 chrono 豐富欄位
-                    "time_period": chrono_ctx.time_period,
-                    "vulnerability_window": chrono_ctx.momentum.vulnerability_window,
-                    "silence_hours": round(chrono_ctx.silence_hours, 2),
-                    "attachment_heat": round(chrono_ctx.carryover.attachment_heat, 2),
-                    "deviation_interpretation": chrono_ctx.deviation_interpretation,
-                    "preoccupation_flavor": chrono_ctx.anticipatory.preoccupation_flavor,
-                    "chrono_block": chrono_block,
-                },
-            )
-
-            await self.bus.publish(tick)
-
-            # Phase 4 carryover 持久化：SESSION_END 偵測
-            if elapsed_mins >= self.SESSION_END_THRESHOLD_MINS and not self._session_ended:
-                self._session_ended = True
-                # M5.6-2: SESSION_END payload 補上最小 session 識別資訊
-                # (additive, optional). ConversationQualification 訂閱 SESSION_END
-                # 後用 last_session_id 找出對應的 conversation history 跟
-                # 算 turn_depth。None 表示 USER_MESSAGE 還沒來過 → qualifier skip。
-                # 沒改變現有 payload 欄位 (elapsed_mins / last_user_activity 保留),
-                # 既有 SESSION_END 消費者 (consciousness._on_session_end carryover
-                # 計算) 完全不受影響 — 多讀 3 個 optional 欄位而已。
-                session_end_event = SoulEvent(
-                    event_type=EventType.SESSION_END,
+                tick = SoulEvent(
+                    event_type=EventType.SYSTEM_TICK,
                     source="heartbeat_engine",
                     target="broadcast",
                     priority=EventPriority.LOW,
+                    expires_at=now + timedelta(seconds=self.tick_interval),
                     payload={
+                        "tick_count": self.tick_count,
                         "elapsed_mins": round(elapsed_mins, 2),
-                        "last_user_activity": self.last_user_activity.isoformat(),
-                        # M5.6-2 additive: session identity for ConversationQualification
-                        "last_session_id": self._last_session_id,
-                        "last_user_id": self._last_user_id,
-                        "last_agent_id": self._last_agent_id,
+                        "timestamp_utc": now.isoformat(),
+                        # Phase 3.5 chrono 豐富欄位
+                        "time_period": chrono_ctx.time_period,
+                        "vulnerability_window": chrono_ctx.momentum.vulnerability_window,
+                        "silence_hours": round(chrono_ctx.silence_hours, 2),
+                        "attachment_heat": round(chrono_ctx.carryover.attachment_heat, 2),
+                        "deviation_interpretation": chrono_ctx.deviation_interpretation,
+                        "preoccupation_flavor": chrono_ctx.anticipatory.preoccupation_flavor,
+                        "chrono_block": chrono_block,
                     },
                 )
-                await self.bus.publish(session_end_event)
-                logger.info(
-                    f"[Heartbeat] SESSION_END 廣播（elapsed={elapsed_mins:.1f}m）"
-                )
 
-            logger.debug(
-                f"[Heartbeat] Tick #{self.tick_count}  "
-                f"elapsed={elapsed_mins:.1f}m  period={chrono_ctx.time_period}"
-            )
+                await self.bus.publish(tick)
+
+                # Phase 4 carryover 持久化：SESSION_END 偵測
+                if elapsed_mins >= self.SESSION_END_THRESHOLD_MINS and not self._session_ended:
+                    self._session_ended = True
+                    # M5.6-2: SESSION_END payload 補上最小 session 識別資訊
+                    # (additive, optional). ConversationQualification 訂閱 SESSION_END
+                    # 後用 last_session_id 找出對應的 conversation history 跟
+                    # 算 turn_depth。None 表示 USER_MESSAGE 還沒來過 → qualifier skip。
+                    # 沒改變現有 payload 欄位 (elapsed_mins / last_user_activity 保留),
+                    # 既有 SESSION_END 消費者 (consciousness._on_session_end carryover
+                    # 計算) 完全不受影響 — 多讀 3 個 optional 欄位而已。
+                    session_end_event = SoulEvent(
+                        event_type=EventType.SESSION_END,
+                        source="heartbeat_engine",
+                        target="broadcast",
+                        priority=EventPriority.LOW,
+                        payload={
+                            "elapsed_mins": round(elapsed_mins, 2),
+                            "last_user_activity": self.last_user_activity.isoformat(),
+                            # M5.6-2 additive: session identity for ConversationQualification
+                            "last_session_id": self._last_session_id,
+                            "last_user_id": self._last_user_id,
+                            "last_agent_id": self._last_agent_id,
+                        },
+                    )
+                    await self.bus.publish(session_end_event)
+                    logger.info(
+                        f"[Heartbeat] SESSION_END 廣播（elapsed={elapsed_mins:.1f}m）"
+                    )
+
+                logger.debug(
+                    f"[Heartbeat] Tick #{self.tick_count}  "
+                    f"elapsed={elapsed_mins:.1f}m  period={chrono_ctx.time_period}"
+                )
+            except asyncio.CancelledError:
+                # M5.7-4: do NOT swallow shutdown/cancellation.
+                # Re-raise so stop() can complete cleanly.
+                raise
+            except Exception as _tick_err:
+                # M5.7-4: log + continue. Loop survives, cadence preserved.
+                # This catches any unexpected exception (NOT asyncio.CancelledError
+                # which is handled above; NOT BaseException which would swallow
+                # CancelledError).
+                logger.exception(
+                    f"[Heartbeat] tick #{self.tick_count} 失敗, "
+                    f"繼續下輪: {type(_tick_err).__name__}: {_tick_err}"
+                )
+                # Continue to next iteration of while self._running loop.
