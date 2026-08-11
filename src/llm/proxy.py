@@ -285,6 +285,129 @@ def _format_recent_inner_life(agent_id: str) -> str:
     return "\n".join(out_lines[-INNER_LIFE_MAX_ENTRIES:])
 
 
+# ─────────────────────────────────────────────────────────────────────
+# M5.13-3 (Bry 派工 2026-08-11): Relationship Context Projection
+# ─────────────────────────────────────────────────────────────────────
+#
+# 設計動機 (M5.13-2 audit 結論):
+#   RelationshipsStore 寫了很多關係資料, 但 proxy.py 完全不讀,
+#   LLM 對角色跟 Bry 的信任程度零感知。
+#
+# 當前唯一有 stable behavioral signal 的欄位 = confidence
+# (M5.13-2 從 logs/relationships_before_m0_4.json 確認):
+#   - feeling    永遠 "neutral" (0 production callers)
+#   - impression 永遠 "" (Stage 4.3 LLM 還沒實作)
+#   - interaction_count / last_interaction_at / last_updated / created_at = META only
+#
+# M5.13-3 範圍 (Bry 派工 2026-08-11):
+#   - 只暴露 confidence band (不暴露 raw float)
+#   - 只查 THIS agent 對 BRYAN_ENTITY_ID (per-agent + per-target filter)
+#   - deterministic, bounded, fail-silent
+#   - 0 frozen contract 改動
+#   - 0 新 persistence / 0 新 schema / 0 新 LLM/vector/embedding
+#
+# 注入位置: _build_messages_group / _build_messages_private 兩處
+#   mood_desc 之後, inner_life 之前
+#   (per M5.13-2 Section 7: current persistent stance 層級)
+#
+# Fail-silent contract (M5.13-2 派工 spec):
+#   - relationship 不存在 / confidence 缺失 / malformed → return ""
+#   - store read exception → return "" (log debug, 不 crash prompt)
+#   - 任何失敗模式都不阻塞 LLM 呼叫
+# ─────────────────────────────────────────────────────────────────────
+
+
+# Band threshold constants (deterministic, M5.13-2 派工拍板)
+# 跟 src/soul/relationships.py:62-69 CONFIDENCE_* 對齊
+_RELATIONSHIP_BAND_MIN_THRESHOLD = 0.3   # 陌生以下不輸出 (沒 behavioral signal)
+_RELATIONSHIP_BAND_FAMILIAR = 0.5        # 熟悉
+_RELATIONSHIP_BAND_CLOSE = 0.7           # 親密
+_RELATIONSHIP_BAND_DEEP_TRUST = 0.9      # 深度信任
+
+
+def _format_relationship_block(agent_id: str) -> str:
+    """
+    M5.13-3 (Bry 派工 2026-08-11): 將 RelationshipsStore 投影成
+    deterministic, bounded, agent-scoped SOCIAL_CONTEXT block。
+
+    Per-agent 過濾: 只查 THIS agent 對 BRYAN_ENTITY_ID 的 relationship。
+    其他 relationships (agent↔agent, agent↔其他 user) 留給 Stage 4.2/4.3。
+
+    閾值 (per M5.13-2 派工):
+      - confidence < 0.3  → 陌生人, 沒 behavioral signal, 不輸出
+      - 0.3 <= c < 0.5    → 認識
+      - 0.5 <= c < 0.7    → 熟悉
+      - 0.7 <= c < 0.9    → 親密
+      - c >= 0.9          → 深度信任
+
+    Output format (deterministic):
+        [你跟 Bry 的關係]
+          熟悉度: {band_label}
+
+    Returns "" if:
+      - agent_id 缺失或不是 str
+      - relationship 不存在 (store.get returns None)
+      - confidence 缺失 / 不是 number / < 0.3
+      - store read exception (fail-silent)
+
+    Does NOT:
+      - 暴露 raw confidence float
+      - 暴露 feeling / impression / interaction_count / timestamps
+      - 寫入任何資料 (read-only)
+      - 引入 LLM / semantic / vector
+      - 修改 RelationshipsStore schema
+    """
+    if not isinstance(agent_id, str) or not agent_id:
+        return ""
+
+    try:
+        # Lazy import 避免 cycle (relationships.py 不應在 proxy module load 時拉)
+        from src.soul.relationships import (
+            get_relationships_manager,
+            BRYAN_ENTITY_ID,
+        )
+        manager = get_relationships_manager()
+        if manager is None:
+            return ""
+        store = manager.get_store(agent_id)
+        if store is None:
+            return ""
+        # store.get() 內部會跑 decay + flush, 但 Bry 派工: 「拒絕問, 強制讀」,
+        # 失敗由 RelationshipsStore 自己處理 (備份壞檔), 這裡 try/except 兜底
+        rel = store.get(BRYAN_ENTITY_ID)
+        if not rel or not isinstance(rel, dict):
+            return ""
+        # Defensive: confidence 必須是 number
+        confidence = rel.get("confidence")
+        if not isinstance(confidence, (int, float)):
+            return ""
+        # Defensive: clamp 到 [0.0, 1.0] (malformed data 不爆炸)
+        if confidence < 0.0:
+            confidence = 0.0
+        elif confidence > 1.0:
+            confidence = 1.0
+        # Band mapping (deterministic, ordered from highest to lowest)
+        if confidence >= _RELATIONSHIP_BAND_DEEP_TRUST:
+            band = "深度信任"
+        elif confidence >= _RELATIONSHIP_BAND_CLOSE:
+            band = "親密"
+        elif confidence >= _RELATIONSHIP_BAND_FAMILIAR:
+            band = "熟悉"
+        elif confidence >= _RELATIONSHIP_BAND_MIN_THRESHOLD:
+            band = "認識"
+        else:
+            # 0.0 - < 0.3: 陌生人, 不輸出
+            return ""
+        return f"[你跟 Bry 的關係]\n  熟悉度: {band}"
+    except Exception as e:
+        # Fail-silent: M5.13-2 派工 spec 任何錯誤不阻塞 LLM
+        logger.debug(
+            f"[M5.13-3 SOCIAL_CONTEXT] projection failed (fail-silent): "
+            f"agent={agent_id} err={type(e).__name__}: {e}"
+        )
+        return ""
+
+
 def _session_key(agent_id: str, user_id: str) -> str:
     """KI-001: per (user, agent) session key,確保多 owner 隔離
 
@@ -360,6 +483,13 @@ def _build_messages_group(
     mood_desc = emotion_engine.mood_description(mood)
     if mood_desc:
         system_parts.append(f"\n[情緒狀態] {mood_desc}")
+
+    # M5.13-3 (Bry 派工 2026-08-11): Relationship context block
+    # 注入位置: mood_desc 之後, inner_life 之前 (per M5.13-2 Section 7)
+    # 對 THIS agent 對 Bry 的 confidence band, deterministic + bounded + fail-silent
+    relationship_block = _format_relationship_block(agent_id)
+    if relationship_block:
+        system_parts.append(f"\n{relationship_block}")
 
     # M2.0 (Bry 拍板 2026-08-07 15:44): 內在人生記憶注入
     # 跟 β2.1 事件背景 (L2472-2479) 同方向, 範圍限定 proxy.py
@@ -628,6 +758,13 @@ def _build_messages_private(
     mood_desc = emotion_engine.mood_description(mood)
     if mood_desc:
         system_parts.append(f"\n[情緒狀態] {mood_desc}")
+
+    # M5.13-3 (Bry 派工 2026-08-11): Relationship context block
+    # 注入位置: mood_desc 之後, inner_life 之前 (per M5.13-2 Section 7)
+    # 對 THIS agent 對 Bry 的 confidence band, deterministic + bounded + fail-silent
+    relationship_block = _format_relationship_block(agent_id)
+    if relationship_block:
+        system_parts.append(f"\n{relationship_block}")
 
     # M2.0 (Bry 拍板 2026-08-07 15:44): 內在人生記憶注入
     # 跟 β2.1 事件背景 (L2472-2479) 同方向, 範圍限定 proxy.py
