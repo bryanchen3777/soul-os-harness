@@ -5,7 +5,7 @@
 **Owner**: Bryan (Mavis / Lin executes per Owner decisions).
 **Established**: GOV-2 (2026-08-12 00:03 EDT, commit `eb5715179647b963a4247272d9fcd4c639c7e6a3`).
 **Aligned**: GOV-2-R1 (2026-08-12, Owner Decision A: M5.14 / M6.0 / GOV-1 / GOV-2 all CLOSED; no ticket authorized).
-**M5.15 series progressed** (2026-08-12, M5.15-1 / M5.15-2 / M5.15-3 / M5.15-4 / M5.15-5 all CLOSED; M5.15-4 SUPERSEDED by M5.15-5; M5.15-6 CANDIDATE only).
+**M5.15 series progressed** (2026-08-12, M5.15-1 / M5.15-2 / M5.15-3 / M5.15-4 / M5.15-5 / M5.15-6 all CLOSED; M5.15-4 SUPERSEDED by M5.15-5; M5.15-6-PREFLIGHT + M5.15-6 RESUME Option 1 CLOSED; F1 + F2 + F3 + F4 all RESOLVED).
 **Predecessor audit**: GOV-1 — `C:\Users\bbfcc\gov_1_temp\gov_1_state_normalization_audit.md` (CLOSED, out-of-repo per GOV-1 spec).
 **Canonical homepage**: [`README.md`](../README.md) §Engineering Governance.
 
@@ -45,7 +45,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 
 ### Current HEAD
 
-- Current HEAD: `0aedbef25cf0cb8ba793a7620833ec6cfdb70db8` (M5.15-5 — WorldEvent ↔ InnerLifeEvent Identity Bridge, Layer 1 external causality)
+- Current HEAD: `c2de02c` (M5.15-6 — Real-World Calendar Source Integration, iCal/ICS via SHA256 UID)
+- M5.15-5 docs commit: `b36769681bb4a80482999aa2eb5830e4aad34892` (this commit's predecessor; updates canonical engineering state registry; **distinct from Current HEAD**)
+- M5.15-5 impl commit: `0aedbef25cf0cb8ba793a7620833ec6cfdb70db8` (Two-Layer Lineage Model + InnerLifeEvent.source_world_event_novelty_id)
 - M5.15-3 state docs commit: `4cd8b0d7fe0d8ae1a3554ea05b207e5c9fa407ae` (this commit's predecessor; updates §1 / §4.1 / §5.5 / §7 / §9 to reflect M5.15-3 closure; **distinct from Current HEAD**)
 - GOV-2-R1 alignment commit: `3539de2f8795ad3e516a619dc556563e8c357c68` (Owner Decision A alignment; recorded in §9 CHANGE LOG; **distinct from Current HEAD**)
 - GOV-2 establishment commit: `eb5715179647b963a4247272d9fcd4c639c7e6a3` (initial canonical state registry; superseded by GOV-2-R1)
@@ -58,7 +60,7 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 |-----------|--------|---------------|---------------|-------|
 | **M5.13** | **FUNCTIONALLY CLOSED** | `e6effd8` | `m5_13_4_2_strict_boundary_closeout.md` | M5.13-5 is OPTIONAL / DEFERRED per GOV-1 + GOV-2 |
 | **M5.14** | **OFFICIALLY CLOSED** | `29deab7` | `m5_14_3_m6_0_3_f_correction_closeout.md` | Per D1 RESOLVED (Option A): chain officially closed, no M5.14-4 |
-| **M5.15** | **F1 + F3 + F4 RESOLVED (M5.15-3 + M5.15-5 CLOSED)** | `0aedbef` | `m5_15_5_closeout.md` (out-of-repo) | M5.15-1 / M5.15-2 / M5.15-3 / M5.15-5 all CLOSED. M5.15-4 SUPERSEDED by M5.15-5. F2 CANDIDATE (M5.15-6) |
+| **M5.15** | **F1 + F2 + F3 + F4 RESOLVED (M5.15-3 + M5.15-5 + M5.15-6 CLOSED)** | `c2de02c` | `m5_15_6_closeout.md` (out-of-repo) | M5.15-1 / M5.15-2 / M5.15-3 / M5.15-5 / M5.15-6-PREFLIGHT / M5.15-6 all CLOSED. M5.15-4 SUPERSEDED by M5.15-5. F5-F7 P3 no action. |
 | **M6.0** | **CLOSED** | `540eac2` | `m6_0_5_6_configurable_evaluation_cost_ceiling_closeout.md` | M6.0-5.5-R1 is BLOCKED (credentials unavailable, correct by design) |
 | **GOV-1** | **CLOSED** | (docs only) | `gov_1_state_normalization_audit.md` (out-of-repo) | State normalization audit complete |
 | **GOV-2** | **CLOSED** | `eb57151` | `logs/ENGINEERING_STATE.md` (this registry) | Canonical engineering state registry established |
@@ -303,17 +305,15 @@ All decisions below are preserved as **UNRESOLVED** per GOV-1 + GOV-2 spec, exce
 | D2 | M5.13-5 Untouched-Entry Decay | M5.13-4.2 §12 | 1 function + ~5 tests |
 | D3 | M6.0-5.6.1 Budget profile registry | M6.0-5.6 §K | New enum + factory + tests |
 | D14 | M5.13-3 multi-line format | M5.13-2 design | Cosmetic |
-| M5.15-6 | F2 real-world source integration | M5.15-1 + M5.15-5 closeout | Select external API + implement WorldEventSource subclass |
 
-**Note**: M5.15-4 (cross-handler lineage) and M5.15-5 (identity bridge) have been RESOLVED
-by M5.15-5's additive `source_world_event_novelty_id` field. M5.15-4 is SUPERSEDED by M5.15-5.
+**Note**: M5.15-4 (cross-handler lineage) and M5.15-5 (identity bridge) and M5.15-6 (real-world source)
+have all been RESOLVED. M5.15-4 is SUPERSEDED by M5.15-5. M5.15-6 resolved F2 P2.
 
 ### 4.2 DEFERRED (explicitly postponed, requires authorization to start)
 
 | ID | Work | Source | Why deferred |
 |----|------|--------|--------------|
 | D4 | M5.12-1 P2.2 / P2.6 | M5.12-1 | Stage 2 territory; needs Bry decision |
-| D5 | Real-world API integration | M5.8-1 / M5.14-1 | External API integration; needs design |
 | D6 | M5.4-5.5 narrative trace dashboard | M5.4-6.4 | UI work, larger scope |
 | D7 | M5.4-6.2 cross-handler lineage | M5.4-6.2 | Requires future design |
 | D8 | M5.4-5.4 diary:night slot | M5.4-5.4 | Per memory |
@@ -322,6 +322,11 @@ by M5.15-5's additive `source_world_event_novelty_id` field. M5.15-4 is SUPERSED
 | D11 | M6.0-5.3+ Multi-provider circuit breaker | M6.0 | Per memory |
 | D12 | Cross-agent relationship projection | M5.13-2 | Different scope (new milestone) |
 | D13 | chrono-social duplication | M5.13-2 | Cross-section concern |
+
+**Note on D5 (Real-world API integration)**: RESOLVED by M5.15-6 (Calendar via iCal/ICS public feed).
+D5 retired — first real-world source is the calendar, the integration pattern (M5.15-3 canonical
+bus path + M5.15-5 Two-Layer Lineage Model + M5.15-6 SHA256 identity bridge) generalizes to
+weather/news/social when those candidates are authorized.
 
 ### 4.3 BLOCKED (external / dependency blocker)
 
@@ -421,7 +426,7 @@ M6.0-5.4 (initial) → M6.0-5.4-R1 (cost/retry correction) → M6.0-5.4-R2 (retr
 
 ### 5.5 M5.15 — WorldEventSource → Event Bus Canonical Integration
 
-**Status**: F1 + F3 + F4 RESOLVED. F2 CANDIDATE.
+**Status**: F1 + F2 + F3 + F4 RESOLVED. F5-F7 P3 no action. M5.15 series all CLOSED.
 
 | Ticket | Title | Commit | Status | Notes |
 |--------|-------|--------|--------|-------|
@@ -429,34 +434,50 @@ M6.0-5.4 (initial) → M6.0-5.4-R1 (cost/retry correction) → M6.0-5.4-R2 (retr
 | M5.15-2 | WorldEvent → Event Bus architecture decision analysis (READ-ONLY) | (docs only) | **CLOSED** | Owner authorized Option A. Out-of-repo report. |
 | M5.15-3 | WorldEventSource → Event Bus canonical integration (IMPLEMENTATION) | `b4b981a` | **CLOSED** | 31/31 new tests + 159/159 regression. 0 frozen contract. 0 production mutation. |
 | M5.15-4 | Cross-Handler Lineage Propagation (IMPLEMENTATION) | (none) | **STOPPED + SUPERSEDED** | Per M5.15-5 decision: parent_event_id contract cannot reference non-InnerLifeEvent. **SUPERSEDED by M5.15-5.** |
-| M5.15-5 | WorldEvent ↔ InnerLifeEvent Identity Bridge (IMPLEMENTATION) | `0aedbef` | **CLOSED** | 52/52 new tests + 285/285 regression. 1 additive frozen-contract amendment (InnerLifeEvent +1 Optional field `source_world_event_novelty_id`). 0 production mutation. **CANONICAL LATEST.** |
+| M5.15-5 | WorldEvent ↔ InnerLifeEvent Identity Bridge (IMPLEMENTATION) | `0aedbef` | **CLOSED** | 52/52 new tests + 285/285 regression. 1 additive frozen-contract amendment (InnerLifeEvent +1 Optional field `source_world_event_novelty_id`). 0 production mutation. |
+| M5.15-6-PREFLIGHT | Real-world source architecture decision (READ-ONLY) | (docs only) | **CLOSED** | Owner authorized Calendar via iCal/ICS public feed (only qualifying candidate). 12 owner decisions Q1-Q12. Out-of-repo. |
+| M5.15-6 | Real-World Calendar Source Integration (IMPLEMENTATION) | `c2de02c` | **CLOSED** | 55/55 new tests + 211/211 regression. 0 frozen contract change. 0 production mutation. **CANONICAL LATEST.** |
 
-**Architecture decision** (M5.15-2 + M5.15-5 Owner Option A):
+**Architecture decision** (M5.15-2 + M5.15-5 + M5.15-6 Owner Options A):
 - Event Bus = canonical integration transport for WorldEvent downstream consumers
 - New WorldEventSource MUST `bus.publish(SoulEvent(WORLD_EVENT, target="broadcast", priority=NORMAL, payload=world_event.to_payload()))`
 - `inject()` / `process_world_event_direct()` RETAIN as deprecated backward-compat (per M5.15-2 spec §4)
 - Single processing path per subscriber (no double perception, no recursive publish)
 - novelty_id dedup preserved (no duplicate InnerLifeEvent)
+- For sources with M3.1-incompatible identity strings (e.g., iCal UIDs with `@`/`.`/`-`):
+  use `SHA256(identity)[:32]` as `novelty_id`, preserve original in `data["<source>_id"]`
+  (M5.15-6 RESUME Option 1, 0 frozen contract change)
 
 **Two-Layer Lineage Model** (M5.15-5):
 - **Layer 1 (External Causality)**: `WorldEvent.novelty_id → InnerLifeEvent.source_world_event_novelty_id` (free string, no 32-hex, no existence check)
 - **Layer 2 (Internal Lineage)**: `InnerLifeEvent.parent_event_id → lineage_depth / lineage_path` (M5.4-5.1 frozen preserved)
 - 5 existing producers (Diary/Dream/Event/ProactiveDM/Conversation) keep source_world_event_novelty_id=None (backward compat 100%)
 
+**M5.15-6 Identity Model** (RESUME Option 1, Bry authorization 2026-08-12 19:37):
+- `WorldEvent.novelty_id = SHA256(VEVENT.UID)[:32]` (32-char lowercase hex, M3.1-compatible)
+- `WorldEvent.data["ical_uid"] = VEVENT.UID` (exact original, preserved for traceability)
+- `WorldEvent.data["ical_sequence"] = VEVENT.SEQUENCE` (if present, observability only — NOT in identity)
+- SEQUENCE excluded from hash (Q6: same UID + different SEQUENCE → same hash → adapter dedupes)
+- 128-bit collision space, deterministic, no timestamp/randomness mixed in
+
 **Closeout logs** (out-of-repo per M5.13-3.1 lesson):
 - M5.15-3: `C:\Users\bbfcc\gov_1_temp\m5_15_3_closeout.md`
 - M5.15-4 STOP: `C:\Users\bbfcc\gov_1_temp\m5_15_4_stop_report.md` (SUPERSEDED, historical)
 - M5.15-5: `C:\Users\bbfcc\gov_1_temp\m5_15_5_closeout.md` (canonical)
+- M5.15-6-PREFLIGHT: `C:\Users\bbfcc\gov_1_temp\m5_15_6_preflight_architecture_decision.md` (canonical)
+- M5.15-6 RESUME STOP: `C:\Users\bbfcc\gov_1_temp\m5_15_6_stop_report.md` (historical, M3.1 conflict)
+- M5.15-6: `C:\Users\bbfcc\gov_1_temp\m5_15_6_closeout.md` (canonical, RESUME Option 1)
 
-**M5.15-1 findings status** (post M5.15-5):
+**M5.15-1 findings status** (post M5.15-6):
 - **F1 P1** (source path doesn't publish to bus): **RESOLVED by M5.15-3** ✓
+- **F2 P2** (real-world source integration): **RESOLVED by M5.15-6** ✓ (Calendar via iCal/ICS)
 - **F3 P2** (cross-handler lineage): **RESOLVED by M5.15-5** ✓ (via Layer 1 + Layer 2)
-- **F4 P2** (identity bridge): **RESOLVED by M5.15-5** ✓ (same new field)
-- **F2 P2** (real-world source integration): DEFERRED, CANDIDATE (M5.15-6)
+- **F4 P2** (identity bridge): **RESOLVED by M5.15-5** ✓ (same new field, preserved by M5.15-6)
 - **F5-F7 P3** (intentional, test-only): no action
 
-**Next work** (CANDIDATE only, NOT authorized):
-- M5.15-6 (F2 real-world source)
+**Next work**: None. M5.15 chain is complete (F1-F4 all RESOLVED, F5-F7 no action). Future
+real-world source candidates (weather / news / social) can follow the M5.15-6 integration
+pattern when Bry authorizes them.
 
 ---
 
@@ -543,6 +564,9 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
   - M5.15-5 decision analysis: `C:\Users\bbfcc\gov_1_temp\m5_15_5_decision_analysis.md`
   - M5.15-5 closeout: `C:\Users\bbfcc\gov_1_temp\m5_15_5_closeout.md`
   - M5.15-5 implementation report: `C:\Users\bbfcc\gov_1_temp\m5_15_5_implementation_report.md`
+  - M5.15-6-PREFLIGHT decision: `C:\Users\bbfcc\gov_1_temp\m5_15_6_preflight_architecture_decision.md`
+  - M5.15-6 RESUME STOP report: `C:\Users\bbfcc\gov_1_temp\m5_15_6_stop_report.md` (historical, M3.1 conflict)
+  - M5.15-6 closeout: `C:\Users\bbfcc\gov_1_temp\m5_15_6_closeout.md` (canonical, RESUME Option 1)
 
 ### Out-of-repo references
 
@@ -586,6 +610,7 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-08-12 (M5.15-3) | WorldEventSource → Event Bus canonical integration (commit `b4b981a7b24678779551bccca2f4b6eb4dd20b3e`). 31/31 new tests + 159/159 regression PASS. 0 frozen contract change. 0 production mutation. M5.15 chain F1 RESOLVED; F2/F3/F4 remain CANDIDATEs (per M5.15-1 audit + M5.15-2 decision). 3 files changed: `src/world/source/synthetic.py` (+114 -6), `scripts/run_server.py` (+51), `tests/test_m5_15_3_canonical_bus_integration.py` (new +1089). Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m5_15_3_closeout.md`. | Mavis / Lin | M5.15-3 |
 | 2026-08-12 (M5.15-4) | Cross-Handler Lineage Propagation STOPPED. M5.15-4 inspection discovered parent_event_id contract (M5.4-5.1 frozen) requires parent to be a known InnerLifeEvent.event_id (writer.py:172 + 32-hex format check identity.py:195). Cannot reference SoulEvent.event_id (UUID with dashes) or WorldEvent.novelty_id (free string) without modifying frozen contract. 3 of 7 Stop conditions triggered. STOP report out-of-repo at `C:\Users\bbfcc\gov_1_temp\m5_15_4_stop_report.md`. Bry Decision: 0 implementation, await M5.15-5 architecture decision. | Mavis / Lin | M5.15-4 |
 | 2026-08-12 (M5.15-5) | WorldEvent ↔ InnerLifeEvent Identity Bridge (commit `0aedbef25cf0cb8ba793a7620833ec6cfdb70db8`). 52/52 new tests + 285/285 regression PASS. 1 additive frozen-contract amendment (M5.4-5.1 InnerLifeEvent +1 Optional field `source_world_event_novelty_id: Optional[str] = None`). 13 frozen contracts preserved (parent_event_id / lineage_depth / lineage_path / correlation_id / provenance all 0 change). 0 production mutation. Two-Layer Lineage Model established: Layer 1 External Causality (WorldEvent → InnerLifeEvent, free string) + Layer 2 Internal Lineage (InnerLifeEvent → InnerLifeEvent, M5.4-5.1 frozen preserved). M5.15-4 SUPERSEDED by M5.15-5 (per GOV-2 §2.5). F1 + F3 + F4 RESOLVED. F2 CANDIDATE (M5.15-6). 10 files changed: 6 source + 4 test. Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m5_15_5_closeout.md`. | Mavis / Lin | M5.15-5 |
+| 2026-08-12 (M5.15-6) | Real-World Calendar Source Integration (commit `c2de02c`). 55/55 new tests + 211/211 regression PASS. 0 frozen contract change across 15 contracts (M3 WorldEvent, M3.1 ABC, M3.1 Bus, M5.4-5.1 InnerLifeEvent 9 fields, M5.4-5.1 parent_event_id, M5.4-5.1 lineage, M5.9-2 QUALIFYING_TYPES, M5.9-3 Adapter, M5.15-3 canonical bus path, M5.15-5 source_world_event_novelty_id, VALID_SOURCES, _NOVELTY_ID_RE all unchanged). RESUME Option 1 (Bry authorization 2026-08-12 19:37): `novelty_id = SHA256(VEVENT.UID)[:32]`, `data["ical_uid"] = exact UID`, `data["ical_sequence"] = VEVENT.SEQUENCE` (observability only). SEQUENCE excluded from hash (Q6: same UID + different SEQUENCE → same hash → adapter dedupes). 0 production mutation (yua/relationships.json 10095B81... unchanged). IcalCalendarSource (src/world/source/calendar_ical.py): polling-driven (300s default), env-gated via SOULOS_CALENDAR_ICAL_URL, 24h lookahead default, parent-only RRULE (Q5), CANCELLED skipped (Q7), 1 URL = 1 source (Q9), library icalendar (PyPI MIT), HTTP via urllib stdlib + asyncio.run_in_executor (non-blocking), 30s timeout, MAX_EVENTS_PER_POLL=500 cap, failure observable (log+skip+retry, never crash, never silent). 4 files changed: src/world/source/calendar_ical.py (NEW, +476), src/world/source/__init__.py (+14), scripts/run_server.py (+65), tests/test_m5_15_6_calendar_ical_source.py (NEW, +1105). All 12 critical regression tests A-L PASS. 7 pre-existing baseline failures unchanged (M3.1 Phase B/C/D + M2.0); 1 pre-existing test ordering issue (test_m5_4_5_3::test_g2 env var setup). F1 + F2 + F3 + F4 all RESOLVED. M5.15 series all CLOSED. Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m5_15_6_closeout.md`. | Mavis / Lin | M5.15-6 |
 
 ---
 
