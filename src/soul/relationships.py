@@ -180,38 +180,52 @@ class RelationshipsStore:
 
     def _decay_locked(self) -> None:
         """自然衰減 (callers 必須持 lock)。
-        根據 last_decay_at 到現在的天數, 套 CONFIDENCE_DECAY_PER_DAY。
+
+        M5.13-4.2 (Bry 拍板 2026-08-11 22:40):
+        從 file-level `last_decay_at` 改為 per-entry anchor —
+        每個 entry 從自己的 `last_interaction_at` 起算 decay。
+        從未互動過的 entry (`last_interaction_at` is None) 跳過 decay,
+        確保 `ensure_relationship(0.3)` 第一次 read 不會被 FP 噪訊推過 0.3 邊界
+        (守 M5.13-2 strict contract: `confidence < 0.3 → 陌生人`, 沒 tolerance)。
+
+        - Touched entry: anchor = last_interaction_at, decay = days * 0.02
+        - Untouched entry (last_interaction_at is None): 跳過 (不 decay)
+        - 壞 timestamp / 無 tzinfo: 跳過該 entry (不 crash 整個 store)
+        - days <= 0: 跳過 (anchor 比 now 還新, 不可能但 defensive)
+        - last_decay_at 仍寫回當 backward-compat metadata (其他 code 不再讀來算 decay)
         """
         if self._cache is None:
             return
-        last = self._cache.get("last_decay_at")
-        if not last:
-            self._cache["last_decay_at"] = _now_iso()
-            return
-        try:
-            last_dt = datetime.fromisoformat(last)
-        except (ValueError, TypeError):
-            # 壞 timestamp 視為剛衰減過
-            self._cache["last_decay_at"] = _now_iso()
-            return
-        if last_dt.tzinfo is None:
-            last_dt = last_dt.replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
-        days = (now - last_dt).total_seconds() / 86400.0
-        if days <= 0:
-            return
-        decay = days * CONFIDENCE_DECAY_PER_DAY
         for entry in self._cache.get("others", {}).values():
+            # M5.13-4.2: per-entry anchor, 從 last_interaction_at 起算
+            anchor_iso = entry.get("last_interaction_at")
+            if not anchor_iso:
+                # 從未互動過的 entry (新建立 + 還沒 touch), 跳過 decay
+                # 這是 M5.13-2 strict 0.3 contract 要求的:
+                # ensure_relationship(0.3) → 第一次 read 必須還是 0.3
+                continue
+            try:
+                anchor_dt = datetime.fromisoformat(anchor_iso)
+            except (ValueError, TypeError):
+                # 壞 timestamp 跳過, 不 crash 整個 store
+                continue
+            if anchor_dt.tzinfo is None:
+                anchor_dt = anchor_dt.replace(tzinfo=timezone.utc)
+            days = (now - anchor_dt).total_seconds() / 86400.0
+            if days <= 0:
+                continue
+            decay = days * CONFIDENCE_DECAY_PER_DAY
             entry["confidence"] = max(
                 CONFIDENCE_MIN,
                 entry["confidence"] - decay,
             )
             # 衰減完也更新 last_updated
-            entry["last_updated"] = _now_iso()
+            entry["last_updated"] = now.isoformat()
+        # last_decay_at 保留當 backward-compat metadata (其他 code 不再用它算 decay)
         self._cache["last_decay_at"] = now.isoformat()
         logger.debug(
-            f"[RelationshipsStore] {self.agent_id} decay={decay:.3f} "
-            f"over {days:.2f} days"
+            f"[RelationshipsStore] {self.agent_id} per-entry decay applied"
         )
 
     # ── 公開 API ─────────────────────────────────────────
