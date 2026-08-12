@@ -44,8 +44,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 
 ### Current HEAD
 
-- Current HEAD: `3539de2f8795ad3e516a619dc556563e8c357c68` (GOV-2-R1 — canonical state alignment per Owner Decision A)
-- Predecessor canonical commit: `eb5715179647b963a4247272d9fcd4c639c7e6a3` (GOV-2 — initial canonical state registry established)
+- Current HEAD: `f31945e8a58a0d8fa323588437acae968e37da76` (GOV-2-R1 finalize — final canonical head reference; this commit)
+- GOV-2-R1 alignment commit: `3539de2f8795ad3e516a619dc556563e8c357c68` (Owner Decision A alignment; recorded in §9 CHANGE LOG; **distinct from Current HEAD**)
+- GOV-2 establishment commit: `eb5715179647b963a4247272d9fcd4c639c7e6a3` (initial canonical state registry; superseded by GOV-2-R1)
 - `origin/main` synced at HEAD
 - Working tree: 0 modified, 20 baseline untracked artifacts (M5.8-1 list + M5.4-5.x + M5.2-L)
 
@@ -523,7 +524,8 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | Date | Change | Author | Source ticket |
 |------|--------|--------|---------------|
 | 2026-08-12 00:03 EDT | Initial canonical state registry established (commit `eb57151`) | Mavis / Lin | GOV-2 |
-| 2026-08-12 (GOV-2-R1) | Owner Decision A alignment: GOV-2 / M5.14 / M6.0 / GOV-1 all CLOSED. D1 RESOLVED (Option A). 13 decisions remain UNRESOLVED. M5.15-1 remains CANDIDATE only. (commit `3539de2f8795ad3e516a619dc556563e8c357c68`) | Mavis / Lin | GOV-2-R1 |
+| 2026-08-12 (GOV-2-R1) | Owner Decision A alignment: GOV-2 / M5.14 / M6.0 / GOV-1 all CLOSED. D1 RESOLVED (Option A). 13 decisions remain UNRESOLVED. M5.15-1 remains CANDIDATE only. (alignment commit `3539de2f8795ad3e516a619dc556563e8c357c68`) | Mavis / Lin | GOV-2-R1 |
+| 2026-08-12 (GOV-2-R1 finalize) | Final canonical head reference correction. Current HEAD = `f31945e8a58a0d8fa323588437acae968e37da76` (this commit). GOV-2-R1 alignment commit = `3539de2f8795ad3e516a619dc556563e8c357c68` (distinct value; not off-by-one). 26/27 GOV-2 consistency checks PASSED + 1 obsolete assertion (pre-commit HEAD check expected `e6effd8`; obsolete after subsequent governance commits). | Mavis / Lin | GOV-2-R1 finalize |
 
 ---
 

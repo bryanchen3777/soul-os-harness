@@ -216,7 +216,7 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 
 ## 🗺️ 當前工程狀態
 
-**Current HEAD**: `3539de2f8795ad3e516a619dc556563e8c357c68` (GOV-2-R1 — canonical state alignment per Owner Decision A)
+**Current HEAD**: `f31945e8a58a0d8fa323588437acae968e37da76` (GOV-2-R1 finalize — final canonical head reference; **not** the GOV-2-R1 alignment commit `3539de2` which is recorded separately in the status table)
 **Current authorized ticket**: **NONE** (per Owner Decision A: M5.14 / M6.0 / GOV-1 / GOV-2 all CLOSED; no next ticket authorized; M5.15-1 remains CANDIDATE only — MUST NOT be dispatched)
 
 | Milestone | 內容 | 狀態 | Commit |
