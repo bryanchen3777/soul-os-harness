@@ -2,6 +2,8 @@
 tests/_helpers/subjective_eval/multi_model_runner.py
 M6.0-5.4 (Bry 派工 2026-08-11 20:17): Minimal Multi-Model Judge Orchestration.
 M6.0-5.4-R1 (Bry 派工 2026-08-11 21:00): Cost / Retry Budget Enforcement Correction.
+M6.0-5.4-R2 (Bry 派工 2026-08-11 21:00): Retry Budget Enforcement Completion.
+M6.0-5.6 (Bry 派工 2026-08-11 21:30): Configurable Evaluation Cost Ceiling.
 
 Adds:
   - DiversityValidator: validates 3 judges meet diversity requirements
@@ -17,6 +19,9 @@ Adds:
     function/rate table and make the provenance clearly indicate that the
     value is an estimate".
   - DEFAULT_PRICING: built-in rate table for known (provider, model) tuples.
+  - EvaluationBudgetConfig (M6.0-5.6): canonical, validated, deterministic
+    evaluation budget configuration surface (4 limits: max_judge_calls,
+    max_retries_per_judge, max_token_budget, max_cost_usd).
 
 Constraints (per Bry 派工 spec, frozen):
   - 3 judges must be 3 distinct judge configurations
@@ -33,6 +38,8 @@ Constraints (per Bry 派工 spec, frozen):
   - Real cost MUST be accumulated (R1: never silently treat as $0)
   - Retries MUST consume budget (R1)
   - Budget exhaustion MUST be re-evaluated after every call/usage update (R1)
+  - Denied retry MUST produce 0 extra HTTP, 0 sleep, 0 counter increment (R2)
+  - Config must be deterministic, validated, no silent unlimited fallback (5.6)
 
 Reuses existing Judge / RealLLMJudge / consensus / CalibrationQueue.
 Does NOT modify any frozen M5.x contract.
@@ -296,6 +303,100 @@ class CostBudget:
         return self.budget_exhausted_reason
 
 
+# ── EvaluationBudgetConfig (M6.0-5.6) ──
+
+@dataclass(frozen=True)
+class EvaluationBudgetConfig:
+    """
+    Canonical evaluation budget configuration (M6.0-5.6, Bry 派工 2026-08-11 21:30).
+
+    Single, explicit, validated surface for the 4 evaluation budget limits:
+      - max_judge_calls:     max total judge calls in one evaluation (0 = no calls)
+      - max_retries_per_judge: max retries per individual judge (0 = no calls)
+      - max_token_budget:    max tokens (input + output) per evaluation (0 = no calls)
+      - max_cost_usd:        max estimated USD cost per evaluation (0 = no calls)
+
+    Defaults (deterministic, NOT unlimited):
+      max_judge_calls=3, max_retries_per_judge=2,
+      max_token_budget=5000, max_cost_usd=0.05
+
+    Validation (per M6.0-5.6 spec, deterministic):
+      - negative limits: ValueError at construction
+      - zero limits: VALID (means "no calls" / "no retries" where applicable)
+      - non-numeric values: TypeError at construction (Python dataclass behavior)
+      - NO silent fallback to unlimited (defaults are documented above)
+
+    Cost is ESTIMATE only (not real billing). Pricing comes from PricingModel
+    rate table, never from provider network. See M6.0-5.4-R1.
+
+    Per M6.0-5.6: "configuration propagation into MultiModelJudgeRunner".
+    When passed to MultiModelJudgeRunner, this config:
+      - derives the runner's cost_budget (via to_cost_budget())
+      - propagates max_retries_per_judge to each RealLLMJudge.max_retries
+        for consistency between the judge loop bound and the budget limit
+    """
+    max_judge_calls: int = 3
+    max_retries_per_judge: int = 2
+    max_token_budget: int = 5000
+    max_cost_usd: float = 0.05
+
+    def __post_init__(self):
+        # Per M6.0-5.6 spec: negative limits → reject, zero limits → valid
+        if not isinstance(self.max_judge_calls, int) or isinstance(self.max_judge_calls, bool):
+            raise TypeError(
+                f"max_judge_calls must be int, got {type(self.max_judge_calls).__name__}"
+            )
+        if self.max_judge_calls < 0:
+            raise ValueError(
+                f"max_judge_calls must be >= 0, got {self.max_judge_calls}"
+            )
+        if not isinstance(self.max_retries_per_judge, int) or isinstance(self.max_retries_per_judge, bool):
+            raise TypeError(
+                f"max_retries_per_judge must be int, got {type(self.max_retries_per_judge).__name__}"
+            )
+        if self.max_retries_per_judge < 0:
+            raise ValueError(
+                f"max_retries_per_judge must be >= 0, got {self.max_retries_per_judge}"
+            )
+        if not isinstance(self.max_token_budget, int) or isinstance(self.max_token_budget, bool):
+            raise TypeError(
+                f"max_token_budget must be int, got {type(self.max_token_budget).__name__}"
+            )
+        if self.max_token_budget < 0:
+            raise ValueError(
+                f"max_token_budget must be >= 0, got {self.max_token_budget}"
+            )
+        if not isinstance(self.max_cost_usd, (int, float)) or isinstance(self.max_cost_usd, bool):
+            raise TypeError(
+                f"max_cost_usd must be numeric, got {type(self.max_cost_usd).__name__}"
+            )
+        if self.max_cost_usd < 0:
+            raise ValueError(
+                f"max_cost_usd must be >= 0, got {self.max_cost_usd}"
+            )
+
+    def to_cost_budget(self) -> "CostBudget":
+        """Derive a fresh CostBudget with these limits applied."""
+        return CostBudget(
+            max_judge_calls=self.max_judge_calls,
+            max_retries_per_judge=self.max_retries_per_judge,
+            max_token_budget=self.max_token_budget,
+            max_cost_usd=float(self.max_cost_usd),
+        )
+
+    def to_judge_max_retries(self) -> int:
+        """
+        Return the per-judge max_retries value to apply to RealLLMJudge.
+
+        RealLLMJudge treats max_retries as the loop bound (i.e. total attempts).
+        For consistency with CostBudget.max_retries_per_judge (which is the
+        per-judge retry limit), the judge loop should be allowed up to
+        (max_retries_per_judge + 1) attempts so the budget has the final say
+        via the on_retry callback (M6.0-5.4-R2).
+        """
+        return self.max_retries_per_judge
+
+
 # ── MultiModelJudgeRunner ──
 
 @dataclass
@@ -315,7 +416,8 @@ class MultiModelRunResult:
 
 class MultiModelJudgeRunner:
     """
-    Minimal multi-model judge orchestrator (M6.0-5.4, M6.0-5.4-R1).
+    Minimal multi-model judge orchestrator (M6.0-5.4, M6.0-5.4-R1, M6.0-5.4-R2,
+    M6.0-5.6).
 
     Accepts exactly 3 judge configurations. Validates diversity + self-evaluation
     guard. Runs judges independently with bounded cost budget. No auto-replacement.
@@ -324,6 +426,15 @@ class MultiModelJudgeRunner:
       - Real cost is now accumulated via PricingModel (never silently $0)
       - Token budget is re-evaluated immediately after each call returns
       - Retry events from RealLLMJudge are wired into CostBudget via callback
+    M6.0-5.4-R2 corrections:
+      - Retry callback is enforcement-capable (Callable[[], bool])
+      - Denied retry = 0 extra HTTP, 0 sleep, 0 counter increment
+    M6.0-5.6 corrections:
+      - Accepts canonical `budget_config: EvaluationBudgetConfig` parameter
+      - When provided, derives cost_budget AND propagates max_retries to
+        each RealLLMJudge (so the budget is the single source of truth)
+      - If both `budget_config` and `cost_budget` are passed, ValueError
+        (no silent override)
 
     Reuses existing Judge / RealLLMJudge / consensus.aggregate() / CalibrationQueue.
     """
@@ -333,12 +444,39 @@ class MultiModelJudgeRunner:
         response_model: str = "",
         cost_budget: Optional[CostBudget] = None,
         pricing_lookup: Optional[Callable[[str, str], PricingModel]] = None,
+        budget_config: Optional[EvaluationBudgetConfig] = None,
     ):
         # Pre-flight validation (fail-fast at construction)
         validate_diversity(judges, response_model=response_model)
         self.judges: List[RealLLMJudge] = list(judges)
         self.response_model = response_model
-        self.cost_budget: CostBudget = cost_budget or CostBudget()
+
+        # M6.0-5.6: canonical budget config surface
+        if budget_config is not None and cost_budget is not None:
+            raise ValueError(
+                "MultiModelJudgeRunner: cannot pass both `budget_config` and "
+                "`cost_budget`. Use `budget_config` (canonical M6.0-5.6 surface) "
+                "or `cost_budget` (legacy), not both."
+            )
+
+        if budget_config is not None:
+            # M6.0-5.6: budget_config is the canonical surface
+            self.budget_config: Optional[EvaluationBudgetConfig] = budget_config
+            self.cost_budget: CostBudget = budget_config.to_cost_budget()
+            # Propagate max_retries to each RealLLMJudge for consistency.
+            # RealLLMJudge.max_retries = total attempts; CostBudget.max_retries_per_judge
+            # = per-judge retry limit. To give the budget the final say via the
+            # on_retry callback (M6.0-5.4-R2), set judge.max_retries = cfg + 1.
+            # Edge case: cfg=0 → judge.max_retries=1 (1 initial attempt, 0 retries).
+            target_max_retries = budget_config.max_retries_per_judge + 1
+            for j in self.judges:
+                if isinstance(j, RealLLMJudge):
+                    j.max_retries = target_max_retries
+        else:
+            # Legacy path: cost_budget or defaults
+            self.budget_config = None
+            self.cost_budget: CostBudget = cost_budget or CostBudget()
+
         # M6.0-5.4-R1: pricing lookup (provider, model) -> PricingModel
         self.pricing_lookup: Callable[[str, str], PricingModel] = (
             pricing_lookup or default_pricing_lookup
