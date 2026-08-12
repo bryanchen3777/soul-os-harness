@@ -5,6 +5,7 @@
 **Owner**: Bryan (Mavis / Lin executes per Owner decisions).
 **Established**: GOV-2 (2026-08-12 00:03 EDT, commit `eb5715179647b963a4247272d9fcd4c639c7e6a3`).
 **Aligned**: GOV-2-R1 (2026-08-12, Owner Decision A: M5.14 / M6.0 / GOV-1 / GOV-2 all CLOSED; no ticket authorized).
+**M5.15-3 added** (2026-08-12, Owner authorized M5.15-3 implementation per Option A from M5.15-2; M5.15 series completed 3 tickets: M5.15-1 / M5.15-2 / M5.15-3).
 **Predecessor audit**: GOV-1 — `C:\Users\bbfcc\gov_1_temp\gov_1_state_normalization_audit.md` (CLOSED, out-of-repo per GOV-1 spec).
 **Canonical homepage**: [`README.md`](../README.md) §Engineering Governance.
 
@@ -44,7 +45,8 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 
 ### Current HEAD
 
-- Current HEAD: `f5423c8afc87929b1c46abda7f43cc152054b902` (GOV-2-R1 closeout correction — canonical head reference; this commit's predecessor)
+- Current HEAD: `b4b981a7b24678779551bccca2f4b6eb4dd20b3e` (M5.15-3 — WorldEventSource → Event Bus canonical integration)
+- M5.15-3 state docs commit: `4cd8b0d7fe0d8ae1a3554ea05b207e5c9fa407ae` (this commit's successor; updates §1 / §4.1 / §5.5 / §7 / §9 to reflect M5.15-3 closure; **distinct from Current HEAD**)
 - GOV-2-R1 alignment commit: `3539de2f8795ad3e516a619dc556563e8c357c68` (Owner Decision A alignment; recorded in §9 CHANGE LOG; **distinct from Current HEAD**)
 - GOV-2 establishment commit: `eb5715179647b963a4247272d9fcd4c639c7e6a3` (initial canonical state registry; superseded by GOV-2-R1)
 - `origin/main` synced at HEAD
@@ -56,6 +58,7 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 |-----------|--------|---------------|---------------|-------|
 | **M5.13** | **FUNCTIONALLY CLOSED** | `e6effd8` | `m5_13_4_2_strict_boundary_closeout.md` | M5.13-5 is OPTIONAL / DEFERRED per GOV-1 + GOV-2 |
 | **M5.14** | **OFFICIALLY CLOSED** | `29deab7` | `m5_14_3_m6_0_3_f_correction_closeout.md` | Per D1 RESOLVED (Option A): chain officially closed, no M5.14-4 |
+| **M5.15** | **F1 RESOLVED (M5.15-3 CLOSED)** | `b4b981a` | `m5_15_3_closeout.md` (out-of-repo) | M5.15-1 / M5.15-2 / M5.15-3 all CLOSED. F2/F3/F4 CANDIDATEs (see §4.1) |
 | **M6.0** | **CLOSED** | `540eac2` | `m6_0_5_6_configurable_evaluation_cost_ceiling_closeout.md` | M6.0-5.5-R1 is BLOCKED (credentials unavailable, correct by design) |
 | **GOV-1** | **CLOSED** | (docs only) | `gov_1_state_normalization_audit.md` (out-of-repo) | State normalization audit complete |
 | **GOV-2** | **CLOSED** | `eb57151` | `logs/ENGINEERING_STATE.md` (this registry) | Canonical engineering state registry established |
@@ -300,6 +303,9 @@ All decisions below are preserved as **UNRESOLVED** per GOV-1 + GOV-2 spec, exce
 | D2 | M5.13-5 Untouched-Entry Decay | M5.13-4.2 §12 | 1 function + ~5 tests |
 | D3 | M6.0-5.6.1 Budget profile registry | M6.0-5.6 §K | New enum + factory + tests |
 | D14 | M5.13-3 multi-line format | M5.13-2 design | Cosmetic |
+| M5.15-4 | F3 cross-handler lineage (parent_event_id) | M5.15-1 + M5.15-3 closeout | Extend adapter to set parent_event_id on InnerLifeEvent |
+| M5.15-5 | F4 identity bridge (WorldEvent ↔ InnerLifeEvent) | M5.15-1 + M5.15-3 closeout | Extend InnerLifeEvent with source_world_event_novelty_id |
+| M5.15-6 | F2 real-world source integration | M5.15-1 + M5.15-3 closeout | Select external API + implement WorldEventSource subclass |
 
 ### 4.2 DEFERRED (explicitly postponed, requires authorization to start)
 
@@ -412,6 +418,36 @@ M6.0-5.4 (initial) → M6.0-5.4-R1 (cost/retry correction) → M6.0-5.4-R2 (retr
 | Outcome | 0 production blockers, 1 STALE next-work-item reference identified (M6.0-5.6 §K) |
 | Follow-up | GOV-2 (this document) |
 
+### 5.5 M5.15 — WorldEventSource → Event Bus Canonical Integration
+
+**Status**: F1 RESOLVED (M5.15-3 CLOSED). F2/F3/F4 CANDIDATEs.
+
+| Ticket | Title | Commit | Status | Notes |
+|--------|-------|--------|--------|-------|
+| M5.15-1 | WorldEvent → Event Bus boundary audit (READ-ONLY) | (docs only) | **CLOSED** | 7 findings classified; F1 P1, F2-F4 P2, F5-F7 P3. Out-of-repo report. |
+| M5.15-2 | WorldEvent → Event Bus architecture decision analysis (READ-ONLY) | (docs only) | **CLOSED** | Owner authorized Option A. Out-of-repo report. |
+| M5.15-3 | WorldEventSource → Event Bus canonical integration (IMPLEMENTATION) | `b4b981a` | **CLOSED** | 31/31 new tests + 159/159 regression. 0 frozen contract. 0 production mutation. **CANONICAL LATEST** |
+
+**Architecture decision** (M5.15-2 Owner Option A):
+- Event Bus = canonical integration transport for WorldEvent downstream consumers
+- New WorldEventSource MUST `bus.publish(SoulEvent(WORLD_EVENT, target="broadcast", priority=NORMAL, payload=world_event.to_payload()))`
+- `inject()` / `process_world_event_direct()` RETAIN as deprecated backward-compat (per M5.15-2 spec §4)
+- Single processing path per subscriber (no double perception, no recursive publish)
+- novelty_id dedup preserved (no duplicate InnerLifeEvent)
+
+**Closeout log**: `C:\Users\bbfcc\gov_1_temp\m5_15_3_closeout.md` (out-of-repo, per M5.13-3.1 lesson)
+
+**Remaining M5.15-1 findings** (NOT in M5.15-3 scope):
+- **F2 P2** (real-world source integration): DEFERRED, CANDIDATE
+- **F3 P2** (cross-handler lineage / parent_event_id): DEFERRED, CANDIDATE
+- **F4 P2** (WorldEvent.novelty_id ↔ InnerLifeEvent.event_id identity bridge): DEFERRED, CANDIDATE
+- **F5-F7 P3** (intentional, test-only): no action
+
+**Next work** (CANDIDATEs, NOT authorized):
+- M5.15-4 (F3 cross-handler lineage)
+- M5.15-5 (F4 identity bridge)
+- M5.15-6 (F2 real-world source)
+
 ---
 
 ## 6. STALE REFERENCES (historical closeouts vs canonical state)
@@ -487,6 +523,13 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 - `logs/m6_0_5_5_r1_real_three_judge_e2e_validation_gate_blocked.md`
 - `logs/m6_0_5_6_configurable_evaluation_cost_ceiling_closeout.md`
 
+**M5.15**:
+- All closeout reports out-of-repo per M5.13-3.1 lesson (no `git stash -u + drop`):
+  - M5.15-1 boundary audit: `C:\Users\bbfcc\gov_1_temp\m5_15_1_boundary_audit.md`
+  - M5.15-2 decision analysis: `C:\Users\bbfcc\gov_1_temp\m5_15_2_decision_analysis.md`
+  - M5.15-3 closeout: `C:\Users\bbfcc\gov_1_temp\m5_15_3_closeout.md`
+  - M5.15-3 implementation report: `C:\Users\bbfcc\gov_1_temp\m5_15_3_implementation_report.md`
+
 ### Out-of-repo references
 
 - GOV-1 audit: `C:\Users\bbfcc\gov_1_temp\gov_1_state_normalization_audit.md`
@@ -526,6 +569,7 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-08-12 00:03 EDT | Initial canonical state registry established (commit `eb57151`) | Mavis / Lin | GOV-2 |
 | 2026-08-12 (GOV-2-R1) | Owner Decision A alignment: GOV-2 / M5.14 / M6.0 / GOV-1 all CLOSED. D1 RESOLVED (Option A). 13 decisions remain UNRESOLVED. M5.15-1 remains CANDIDATE only. (alignment commit `3539de2f8795ad3e516a619dc556563e8c357c68`) | Mavis / Lin | GOV-2-R1 |
 | 2026-08-12 (GOV-2-R1 finalize) | Established canonical head reference `f31945e8a58a0d8fa323588437acae968e37da76` (GOV-2-R1 finalize commit). GOV-2-R1 alignment commit = `3539de2f8795ad3e516a619dc556563e8c357c68` (distinct value; not off-by-one). 26/27 GOV-2 consistency checks PASSED + 1 obsolete assertion (pre-commit HEAD check expected `e6effd8`; obsolete after subsequent governance commits). Note: this row is a historical record; the **current** canonical head reference is recorded in §1. | Mavis / Lin | GOV-2-R1 finalize |
+| 2026-08-12 (M5.15-3) | WorldEventSource → Event Bus canonical integration (commit `b4b981a7b24678779551bccca2f4b6eb4dd20b3e`). 31/31 new tests + 159/159 regression PASS. 0 frozen contract change. 0 production mutation. M5.15 chain F1 RESOLVED; F2/F3/F4 remain CANDIDATEs (per M5.15-1 audit + M5.15-2 decision). 3 files changed: `src/world/source/synthetic.py` (+114 -6), `scripts/run_server.py` (+51), `tests/test_m5_15_3_canonical_bus_integration.py` (new +1089). Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m5_15_3_closeout.md`. | Mavis / Lin | M5.15-3 |
 
 ---
 
