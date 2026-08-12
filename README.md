@@ -214,32 +214,53 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 
 ---
 
-## 🗺️ 當前工程狀態 (M5.4)
+## 🗺️ 當前工程狀態
 
-```
-✅─────✅─────✅─────✅─────✅─────✅─────✅─────🔄
-M3     M5.2   M5.3   M5.4-0  M5.4-5.1  M5.4-5.4  M5.4-5.5  M5.4-5.6  M5.4-5.7
-World  Agency  World  Inner   Foundation  +3 ints  EventBus  Narrative  Query Layer
-Awareness  Awareness  Identity     +Mem/Diary  Identity  Trace     (下一刀)
-                                Dream           Prop
-```
+**Current HEAD**: `e6effd8861dc96f120105aa1bc0d84fadf62140f` (M5.13-4.2)
+**Current authorized ticket**: **NONE** (awaiting Owner decision; see `logs/ENGINEERING_STATE.md` §3)
 
 | Milestone | 內容 | 狀態 | Commit |
 |-----------|------|------|--------|
 | **M3** | World Perception pipeline + priority | ✅ | `a3a4cc2` |
-| **M5.2** | Agency Layer: proactive DM / diary / dream / event triggers | ✅ | `481ea41` |
+| **M5.2** | Agency Layer (proactive DM / diary / dream / event triggers) | ✅ | `481ea41` |
 | **M5.3** | World Awareness: normalized world context injection | ✅ | `02ab486` |
-| **M5.4-0** | Inner Life narrative independence boundary audit | ✅ | |
-| **M5.4-3.1** | WorldEvent.priority preservation contract repair | ✅ | `daf0f78` |
-| **M5.4-5.1** | Inner Life unified architecture foundation | ✅ | `bb283ae` |
-| **M5.4-5.2** | Memory + Inner Life integration | ✅ | `79673bf` |
-| **M5.4-5.3** | Diary + Inner Life integration | ✅ | `6a1752d` |
-| **M5.4-5.4** | Dream + Inner Life integration | ✅ | `0587aff` |
-| **M5.4-5.5** | Event Bus `inner_life_event_id` propagation | ✅ | `f14a3c5` |
-| **M5.4-5.6** | Narrative Trace sidecar | ✅ | `018ffd0` |
-| **M5.4-5.7** | Inner Life query layer | ⏳ 下一步 | |
+| **M5.4** | Inner Life (5.1~5.7 + 6.1~6.4) | ✅ | `bb283ae` (5.1) ... `2a8c7a7` (5.7) |
+| **M5.5** | Canonical `inner_life_event_id` propagation in Memory | ✅ | `7d5492a` |
+| **M5.6** | Conversation qualification boundary | ✅ | `6cddfb3` |
+| **M5.7** | Heartbeat runtime (reactivation + robustness) | ✅ | `20a1d58` |
+| **M5.8** | Inner Life → Agency producer gating | ✅ | `b0ac91e` |
+| **M5.9** | World → Inner Life adapter + production wiring | ✅ | `831f3f1` |
+| **M5.10** | Memory LLM judge v1 context visibility | ✅ | `21258fe` |
+| **M5.11** | P2 capability formal closures | ✅ | `f69f36f` |
+| **M5.12** | Remaining agency P2 convergence audit | ✅ | `48c3063` |
+| **M5.13** | Relationship context + boundary precision (functionally closed) | ✅ | `e6effd8` (4.2) |
+| **M5.14** | Cross-layer runtime convergence (officially closed) | ✅ | `29deab7` (3) |
+| **M6.0** | Lived context validation + subjective LLM evaluation | ✅ | `540eac2` (5.6) |
+| **M6.0-5.5-R1** | Real three-judge E2E validation gate | ⛔ BLOCKED | `9d21740` (credentials unavailable, correct by design) |
+| **GOV-1** | Engineering state normalization audit | ✅ | (out-of-repo) |
+| **GOV-2** | Canonical engineering state registry | ⏳ IN PROGRESS | (this section) |
 | **P0** | Test isolation repair (LLMProxy DI) | ✅ | `df83fb1` |
 | **P0.5** | WebSocket E2E persistence isolation audit | ✅ | `fac29ea` |
+
+> 📌 **Canonical state registry**: `logs/ENGINEERING_STATE.md` — single source-of-truth for all milestone / ticket status, supersession chain, active decisions, deferred / optional / blocked work, stale references. Per `logs/ENGINEERING_STATE.md` §2.6 Historical Document Rule, historical closeouts in `logs/` are preserved unchanged; any apparent contradiction with the registry is resolved in favor of the registry.
+>
+> **CANDIDATE ≠ AUTHORIZED** (per `logs/ENGINEERING_STATE.md` §2.4): A "next candidate" from a closeout's "Recommended Next" section is NOT an authorized ticket. It must pass Finding → Classification → Decision → Authorization → Work Order before becoming IN PROGRESS. Currently **0 tickets in IN PROGRESS**, **0 tickets authorized**.
+
+---
+
+## 📋 Engineering Governance
+
+Per GOV-2 (canonical registry at `logs/ENGINEERING_STATE.md`):
+
+- **Status vocabulary** (canonical, exhaustive): `NOT STARTED`, `IN PROGRESS`, `CLOSED`, `SUPERSEDED`, `DEFERRED`, `BLOCKED`, `OPTIONAL`
+- **Naming convention**: `M5.15` (milestone) / `M5.15-1` (work item) / `M5.15-1-R1` (revision). Forbidden: `M5.15-1a`, `M5.15-FIX`, compound suffixes outside canonical. Commit subjects use lowercase `m5.x-N`.
+- **Lifecycle** (canonical): `AUDIT → FINDING → CLASSIFICATION → DECISION → AUTHORIZATION → WORK ORDER → IMPLEMENT → TEST → REGRESSION → INTEGRITY → CLOSEOUT → CANONICAL STATE UPDATE`. **Owner (Bryan) authorization required at AUTHORIZATION step.**
+- **Supersession rule**: `SUPERSEDED ≠ FAILED`. Historical tickets are NOT deleted from registry. `superseded_by` field required, must reference a CLOSED ticket.
+- **Historical document rule**: Historical closeout / audit reports in `logs/` are preserved unchanged. Apparent contradictions resolved in favor of `logs/ENGINEERING_STATE.md`. Stale references documented in registry §6.
+- **Closeout gate**: Acceptance criteria met, regression PASS, production integrity verified (SHA256 + mtime), frozen contracts 0 change, closeout doc written, Owner acceptance, canonical state updated.
+- **Owner decision boundary**: Bryan is the sole authority for new ticket authorization, milestone transition, frozen contract change, historical document edit, and resolution of pending decisions. A "closeout recommendation" is **evidence, not authorization**.
+
+See `logs/ENGINEERING_STATE.md` for: full milestone / ticket lineage, supersession chains, 14 active Owner decisions, deferred / optional / blocked work, stale references, engineering ledger.
 
 ---
 
@@ -341,4 +362,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-08-09 (DOC-1.1 README architecture synchronization — M5.4 chain)
+**最後更新**: 2026-08-12 (GOV-2 — canonical engineering state governance + 🗺️ 當前工程狀態 updated to M5.13/M5.14/M6.0)
