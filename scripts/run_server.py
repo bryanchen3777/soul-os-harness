@@ -404,6 +404,57 @@ async def lifespan(app: FastAPI):
         f"env_gated=False)"
     )
 
+    # ── M5.15-3 (Bry 派工 2026-08-12 18:45): Bus-aware SyntheticWorldEventSource ──
+    # 構造一個 bus-aware SyntheticWorldEventSource, 證明 M5.15-3 canonical Event Bus
+    # path 在 production wiring 裡就緒, 給未來 real source (weather API / calendar API /
+    # social webhook) 接入時可以直接用.
+    #
+    # 派工精神:
+    #   - 構造 exactly 1 個 bus-aware source (no second)
+    #   - bus = canonical bus (line 231), injector = canonical world_perception
+    #   - 不創建第二個 SoulEventBus / InnerLifeWriter / WorldPerceptionMiddleware
+    #   - 既有的 SOULOS_WORLD_PERCEPTION_TEST_SOURCE=1 smoke test 100% 保留 (legacy
+    #     direct path via process_world_event_direct, 用途: 確認 LLM 收到 world_context)
+    #   - 這個 bus-aware source 預設 NOT auto-emit (沒有真實 source trigger), 純粹
+    #     pre-wired, 等未來 real source 接入或 M5.15-3+ bus smoke test 啟用
+    #
+    # Canonical Event Bus flow (M5.15-2 architecture decision):
+    #   Source.emit_event()
+    #     → bus.publish(SoulEvent(WORLD_EVENT, target="broadcast", priority=NORMAL,
+    #                              payload=world_event.to_payload()))
+    #     → bus dispatch
+    #       ├→ WorldPerceptionMiddleware.handle_event (subscriber_id="world_perception")
+    #       │   → _on_world_event → state.add + trace.write (no recursive publish)
+    #       └→ WorldInnerLifeAdapter.handle_event (subscriber_id="world_inner_life_adapter")
+    #           → qualify → dedup → InnerLifeWriter.create_event (no recursive publish)
+    #
+    # 凍結契約: 0 變動
+    #   - WorldEvent schema unchanged
+    #   - InnerLifeEvent schema unchanged
+    #   - Provenance schema unchanged
+    #   - VALID_SOURCES unchanged
+    #   - EventType.WORLD_EVENT unchanged
+    #   - WorldEventSource ABC unchanged
+    #   - WorldEventInjector Protocol unchanged
+    #   - Event Bus contract unchanged
+    #   - inject() / process_world_event_direct() 100% preserved as deprecated
+    #     backward-compat (per M5.15-2 spec §4)
+    if world_perception is not None:
+        from src.world import SyntheticWorldEventSource
+        # M5.15-3 canonical bus-aware construction (additive)
+        canonical_synthetic_source = SyntheticWorldEventSource(
+            bus=bus,              # canonical Event Bus path
+            injector=world_perception,  # fallback to legacy direct path if bus detached
+        )
+        # 暴露到 app.state 給 observability / future use 驗證
+        app.state._world_canonical_synthetic_source = canonical_synthetic_source
+        logger.info(
+            "[M5.15-3] Bus-aware SyntheticWorldEventSource 已 wired ✓ "
+            "(bus=canonical, injector=world_perception, "
+            "pre-wired for future real source integration, "
+            "auto_emit=disabled, env_gated_for_smoke_test=False)"
+        )
+
     # Phase 12 LLM-as-judge: 設定 process-global LLMProxy reference,
     # 讓 MemoryWriter._get_llm_judge() 跨模組邊界可以拿到
     from src.memory.sage.writer import set_llm_proxy
