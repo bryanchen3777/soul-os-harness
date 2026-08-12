@@ -63,6 +63,9 @@ from .multi_model_runner import (
     CostBudget,
     MultiModelJudgeRunner,
     MultiModelRunResult,
+    PricingModel,
+    DEFAULT_PRICING,
+    default_pricing_lookup,
 )
 from .consensus import (
     EvaluationResult,
@@ -119,6 +122,9 @@ __all__ = [
     "CostBudget",
     "MultiModelJudgeRunner",
     "MultiModelRunResult",
+    "PricingModel",
+    "DEFAULT_PRICING",
+    "default_pricing_lookup",
     # consensus
     "EvaluationResult",
     "aggregate",

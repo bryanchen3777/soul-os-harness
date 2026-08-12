@@ -391,11 +391,22 @@ class RealLLMJudge(Judge):
         self,
         evidence: EvaluationEvidence,
         http_client: Optional["httpx.AsyncClient"] = None,
+        on_retry: Optional[Callable[[], None]] = None,
     ) -> JudgeResult:
         """
         Evaluate evidence by calling real LLM API.
         Returns JudgeResult with scores on success, or error=... on failure.
         Never raises (fail-safe).
+
+        on_retry: optional callback invoked BEFORE each retry attempt.
+                  Per Bry 派工 M6.0-5.4-R1: "Option A — RealLLMJudge remains
+                  authoritative for retry count. CostBudget receives retry
+                  events/counters from that path." The MultiModelJudgeRunner
+                  passes a callback that records the retry in CostBudget.
+                  The callback is called inside the retry loop, before
+                  asyncio.sleep(2**attempt). It MUST be non-blocking; if it
+                  raises, the exception is caught and treated as no-retry
+                  (caller-side error handling).
         """
         timestamp = datetime.now(timezone.utc).isoformat()
         import time as _time
@@ -446,6 +457,13 @@ class RealLLMJudge(Judge):
                         # Retryable
                         last_error = f"http_{resp.status_code}: {resp.text[:200]}"
                         if attempt < self.max_retries - 1:
+                            # M6.0-5.4-R1: notify caller of retry event
+                            if on_retry is not None:
+                                try:
+                                    on_retry()
+                                except Exception:
+                                    # Callback errors must not break retry path
+                                    pass
                             import asyncio
                             await asyncio.sleep(2 ** attempt)
                             continue
@@ -461,6 +479,12 @@ class RealLLMJudge(Judge):
                 except httpx.TimeoutException as e:
                     last_error = f"timeout: {type(e).__name__}"
                     if attempt < self.max_retries - 1:
+                        # M6.0-5.4-R1: notify caller of retry event
+                        if on_retry is not None:
+                            try:
+                                on_retry()
+                            except Exception:
+                                pass
                         import asyncio
                         await asyncio.sleep(2 ** attempt)
                         continue

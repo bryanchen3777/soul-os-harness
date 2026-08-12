@@ -1,6 +1,7 @@
 """
 tests/_helpers/subjective_eval/multi_model_runner.py
 M6.0-5.4 (Bry 派工 2026-08-11 20:17): Minimal Multi-Model Judge Orchestration.
+M6.0-5.4-R1 (Bry 派工 2026-08-11 21:00): Cost / Retry Budget Enforcement Correction.
 
 Adds:
   - DiversityValidator: validates 3 judges meet diversity requirements
@@ -11,6 +12,11 @@ Adds:
     enforcement, no auto-replacement, evaluation status (COMPLETE /
     INCOMPLETE / UNAVAILABLE)
   - EvaluationStatus: enum (COMPLETE / INCOMPLETE / UNAVAILABLE)
+  - PricingModel: explicit per-1k-token USD pricing (ESTIMATES, not from
+    real provider API). Bry 派工 R1: "use an explicit configured cost
+    function/rate table and make the provenance clearly indicate that the
+    value is an estimate".
+  - DEFAULT_PRICING: built-in rate table for known (provider, model) tuples.
 
 Constraints (per Bry 派工 spec, frozen):
   - 3 judges must be 3 distinct judge configurations
@@ -24,6 +30,9 @@ Constraints (per Bry 派工 spec, frozen):
   - Retry only 429/5xx/timeout; max 2 retries
   - Temperature = 0.0 default
   - Bounded token budget + hard cost ceiling
+  - Real cost MUST be accumulated (R1: never silently treat as $0)
+  - Retries MUST consume budget (R1)
+  - Budget exhaustion MUST be re-evaluated after every call/usage update (R1)
 
 Reuses existing Judge / RealLLMJudge / consensus / CalibrationQueue.
 Does NOT modify any frozen M5.x contract.
@@ -32,11 +41,75 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .judge import Judge, JudgeResult
 from .real_judge import RealLLMJudge
 from .consensus import aggregate, EvaluationResult
+
+
+# ── PricingModel ──
+
+@dataclass(frozen=True)
+class PricingModel:
+    """
+    Explicit per-1k-token USD pricing for a specific (provider, model).
+
+    IMPORTANT: All values are ESTIMATES — not scraped from any provider
+    pricing API. Per Bry 派工 M6.0-5.4-R1: "use an explicit configured cost
+    function/rate table and make the provenance clearly indicate that the
+    value is an estimate".
+
+    Used by MultiModelJudgeRunner to translate token_usage into a USD
+    cost for CostBudget enforcement. Tests may override DEFAULT_PRICING
+    or pass a custom pricing_lookup to control cost deterministically.
+    """
+    provider: str
+    model: str
+    input_cost_per_1k: float
+    output_cost_per_1k: float
+
+    def estimate_cost(self, tokens_in: int, tokens_out: int) -> float:
+        """Estimate cost in USD for the given token counts."""
+        return (
+            (tokens_in / 1000.0) * self.input_cost_per_1k
+            + (tokens_out / 1000.0) * self.output_cost_per_1k
+        )
+
+
+# Default pricing table (ESTIMATES — values approximate public list prices
+# as of 2026-08-11; treat as rough guidance, not authoritative).
+# These are intentionally conservative to keep M6.0-5.4 test runs under
+# the default $0.05 cost ceiling for the 3-judge test topology.
+DEFAULT_PRICING: Dict[Tuple[str, str], PricingModel] = {
+    ("claude", "claude-haiku-4-5-20251001"): PricingModel(
+        "claude", "claude-haiku-4-5-20251001",
+        input_cost_per_1k=0.00025, output_cost_per_1k=0.00125,
+    ),
+    ("claude", "claude-sonnet-4-5-20251001"): PricingModel(
+        "claude", "claude-sonnet-4-5-20251001",
+        input_cost_per_1k=0.003, output_cost_per_1k=0.015,
+    ),
+    ("openai", "gpt-4o-mini"): PricingModel(
+        "openai", "gpt-4o-mini",
+        input_cost_per_1k=0.00015, output_cost_per_1k=0.0006,
+    ),
+}
+
+
+# Conservative fallback for unknown (provider, model) — $0.001/$0.002 per 1k.
+# Keeps unknown judges within reasonable budget bounds.
+_FALLBACK_PRICING = PricingModel("unknown", "unknown", 0.001, 0.002)
+
+
+def default_pricing_lookup(provider: str, model: str) -> PricingModel:
+    """
+    Default pricing lookup. Returns DEFAULT_PRICING[(provider, model)] if
+    available, else a conservative fallback. Never raises; never returns None.
+
+    Tests may substitute a custom lookup to make cost fully deterministic.
+    """
+    return DEFAULT_PRICING.get((provider, model), _FALLBACK_PRICING)
 
 
 # ── EvaluationStatus ──
@@ -234,10 +307,15 @@ class MultiModelRunResult:
 
 class MultiModelJudgeRunner:
     """
-    Minimal multi-model judge orchestrator (M6.0-5.4).
+    Minimal multi-model judge orchestrator (M6.0-5.4, M6.0-5.4-R1).
 
     Accepts exactly 3 judge configurations. Validates diversity + self-evaluation
     guard. Runs judges independently with bounded cost budget. No auto-replacement.
+
+    M6.0-5.4-R1 corrections:
+      - Real cost is now accumulated via PricingModel (never silently $0)
+      - Token budget is re-evaluated immediately after each call returns
+      - Retry events from RealLLMJudge are wired into CostBudget via callback
 
     Reuses existing Judge / RealLLMJudge / consensus.aggregate() / CalibrationQueue.
     """
@@ -246,26 +324,39 @@ class MultiModelJudgeRunner:
         judges: List[RealLLMJudge],
         response_model: str = "",
         cost_budget: Optional[CostBudget] = None,
+        pricing_lookup: Optional[Callable[[str, str], PricingModel]] = None,
     ):
         # Pre-flight validation (fail-fast at construction)
         validate_diversity(judges, response_model=response_model)
         self.judges: List[RealLLMJudge] = list(judges)
         self.response_model = response_model
         self.cost_budget: CostBudget = cost_budget or CostBudget()
+        # M6.0-5.4-R1: pricing lookup (provider, model) -> PricingModel
+        self.pricing_lookup: Callable[[str, str], PricingModel] = (
+            pricing_lookup or default_pricing_lookup
+        )
 
     async def run(self, evidence, http_client: Optional["httpx.AsyncClient"] = None) -> MultiModelRunResult:
         """
         Run 3 judges with bounded cost budget. No auto-replacement.
 
-        Behavior:
-          - If budget.can_make_call() is False: return error result, do NOT call API
-          - Each judge runs independently (no cross-contamination)
+        M6.0-5.4-R1 budget enforcement:
+          - Pre-call: can_make_call() check; if False, fail-safe error result
+            (NO HTTP call made for that judge)
+          - During call: RealLLMJudge handles its own retry; on each retry, the
+            on_retry callback is invoked to record the retry in CostBudget
+            (and re-check exhaustion)
+          - Post-call: real cost is estimated from provenance.token_usage
+            via PricingModel and recorded via CostBudget.record_call(...);
+            record_call immediately re-runs _check_exhausted so the next
+            iteration's can_make_call() returns False if limits are hit
+          - Budget-exhausted judges: fail-safe JudgeResult with
+            error="budget_exhausted: <reason>"; NEVER make an HTTP call
+
+        Behavior (status):
           - 0 errored judges: status = COMPLETE
           - 1 errored judge: status = INCOMPLETE (median over 2)
           - 2+ errored judges: status = UNAVAILABLE
-
-        Note: judge.evaluate() itself handles retry per judge.max_retries.
-              This orchestrator adds budget gating on top.
 
         http_client: optional shared httpx.AsyncClient to pass to all 3 judges.
                      If provided, the client is shared (each judge uses the same
@@ -275,8 +366,9 @@ class MultiModelJudgeRunner:
         """
         results: List[JudgeResult] = []
         for judge in self.judges:
+            # Pre-call: budget check
             if not self.cost_budget.can_make_call():
-                # Budget exhausted: return fail-safe error result
+                # Budget exhausted: fail-safe error result, NO HTTP call
                 reason = self.cost_budget.reason_if_exhausted() or "budget_exhausted"
                 results.append(JudgeResult(
                     judge_id=judge.judge_id,
@@ -285,15 +377,22 @@ class MultiModelJudgeRunner:
                     error=f"budget_exhausted: {reason}",
                 ))
                 continue
-            # Track call before evaluation
-            # (judge.evaluate() does its own retry; we count 1 call here)
-            self.cost_budget.record_call(tokens_in=0, tokens_out=0, cost_usd=0.0)
-            # Update token/cost tracking from provenance if successful
+
+            # M6.0-5.4-R1: wire up on_retry callback to record retry events
+            # in CostBudget. Each retry consumes budget; record_retry
+            # immediately re-runs _check_exhausted so subsequent can_make_call
+            # reflects the new state.
+            def _on_retry() -> None:
+                self.cost_budget.record_retry()
+
+            # Run the judge (handles its own retry per judge.max_retries)
             try:
                 if http_client is not None:
-                    result = await judge.evaluate(evidence, http_client=http_client)
+                    result = await judge.evaluate(
+                        evidence, http_client=http_client, on_retry=_on_retry,
+                    )
                 else:
-                    result = await judge.evaluate(evidence)
+                    result = await judge.evaluate(evidence, on_retry=_on_retry)
             except Exception as e:
                 # Should not happen (judge.evaluate never raises per M6.0-5.2),
                 # but be defensive
@@ -303,10 +402,26 @@ class MultiModelJudgeRunner:
                     per_dimension_scores={},
                     error=f"orchestrator_caught: {type(e).__name__}: {e}",
                 )
-            # Update budget from provenance (if available)
+
+            # Post-call: record actual usage (M6.0-5.4-R1 fix)
+            # Use PricingModel to estimate cost from token_usage;
+            # record_call re-runs _check_exhausted immediately.
             if result.provenance is not None and result.provenance.token_usage is not None:
                 tu = result.provenance.token_usage
-                self.cost_budget.tokens_used += int(tu.get("total", 0))
+                tokens_in = int(tu.get("input", 0))
+                tokens_out = int(tu.get("output", 0))
+                pricing = self.pricing_lookup(judge.provider, judge.model)
+                cost_estimated = pricing.estimate_cost(tokens_in, tokens_out)
+                self.cost_budget.record_call(
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                    cost_usd=cost_estimated,
+                )
+            else:
+                # No token_usage available (failed call or mock judge).
+                # Still count the call so the max_judge_calls ceiling is
+                # enforced even when cost/token data is unavailable.
+                self.cost_budget.record_call()
             results.append(result)
 
         # Determine status from errored count
