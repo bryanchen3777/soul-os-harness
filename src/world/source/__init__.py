@@ -9,6 +9,8 @@ Bry 拍板 2026-08-08 02:21 A' cleanup:
   目前內容:
     - synthetic.py:  SyntheticWorldEventSource (M3 既有邏輯,
                      M3.1 Phase A 改 conform WorldEventSource)
+    - calendar_ical.py: IcalCalendarSource (M5.15-6 IMPLEMENTATION)
+                     Real-world WorldEventSource for iCal/ICS public feeds.
 
   既有 M3 行為 100% 不變:
     - SyntheticWorldEventSource 的 build_*() factory methods 完全保留
@@ -25,10 +27,22 @@ Bry 拍板 2026-08-08 02:21 A' cleanup:
     永遠不會被加載; 但 compatibility shim 內容保留作為 path
     reference + documentation, 給未來 path 重組時 (例如刪除
     subpackage 把 source.py 重新啟用) 留伏筆。
+
+M5.15-6 (Bry 派工 2026-08-12 19:29) — Real-World Calendar Source Integration:
+  Added IcalCalendarSource (src/world/source/calendar_ical.py).
+  - 0 frozen contract change (M3 WorldEvent / M3.1 ABC / M3.1 Bus / M5.4-5.1 InnerLifeEvent / M5.9-2 / M5.15-3 / M5.15-5 all preserved)
+  - Public iCal URL (no OAuth, no credentials, no token store)
+  - Env-gated via SOULOS_CALENDAR_ICAL_URL
+  - Polling-driven (300s default), 24h lookahead default
+  - Parent-only for RRULE (no recurrence engine)
+  - CANCELLED skipped
+  - Library: icalendar (PyPI, MIT, mature)
 """
 from .synthetic import SyntheticWorldEventSource, SYNTHETIC_TEST_EVENTS
+from .calendar_ical import IcalCalendarSource
 
 __all__ = [
     "SyntheticWorldEventSource",
     "SYNTHETIC_TEST_EVENTS",
+    "IcalCalendarSource",  # M5.15-6
 ]

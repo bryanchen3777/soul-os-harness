@@ -455,6 +455,71 @@ async def lifespan(app: FastAPI):
             "auto_emit=disabled, env_gated_for_smoke_test=False)"
         )
 
+    # ── M5.15-6 (Bry 派工 2026-08-12 19:29): Real-World Calendar Source (env-gated) ──
+    # First real-world WorldEventSource (F2 from M5.15-1 audit resolved).
+    # Calendar iCal/ICS public feed (no OAuth, no token store, no webhook).
+    # 派工精神:
+    #   - Env-gated via SOULOS_CALENDAR_ICAL_URL (Q8): if absent, NO polling
+    #   - Polling-driven (300s default, Q3), scheduler-invoked via lifespan
+    #   - 1 URL = 1 source (Q9), parent-only for RRULE (Q5)
+    #   - CANCELLED skipped (Q7), SEQUENCE re-emit (Q6, adapter dedupes)
+    #   - Polling task 在 lifespan 內管理 (not a new scheduler subsystem)
+    #   - Failure observable, never silent, never crash server
+    #
+    # Canonical flow:
+    #   iCal HTTP GET → IcalCalendarSource.poll()
+    #     → bus.publish(SoulEvent(WORLD_EVENT, target="broadcast",
+    #                              priority=NORMAL, payload=event.to_payload()))
+    #     → WorldPerceptionMiddleware (state.add + trace.write)
+    #     → WorldInnerLifeAdapter (qualify calendar_event + dedup + create InnerLifeEvent)
+    #     → source_world_event_novelty_id (M5.15-5 Layer 1)
+    #
+    # 凍結契約: 0 變動
+    #   - WorldEvent (7 fields) unchanged
+    #   - WorldEventSource ABC (3 abstract) unchanged
+    #   - WorldEventInjector Protocol unchanged
+    #   - Event Bus contract unchanged
+    #   - WorldPerceptionMiddleware unchanged
+    #   - WorldInnerLifeAdapter unchanged ("calendar_event" already in QUALIFYING_TYPES)
+    #   - M5.15-3 canonical bus rule preserved
+    #   - M5.15-5 source_world_event_novelty_id preserved
+    calendar_ical_url = os.getenv("SOULOS_CALENDAR_ICAL_URL", "").strip()
+    if calendar_ical_url:
+        from src.world.source.calendar_ical import IcalCalendarSource
+        calendar_source = IcalCalendarSource(
+            ical_url=calendar_ical_url,
+            bus=bus,  # canonical Event Bus path
+        )
+        # Polling task in lifespan (uses existing asyncio loop, no new scheduler)
+        async def _calendar_poll_loop():
+            await asyncio.sleep(2)  # wait for server + bus to be fully ready
+            while True:
+                try:
+                    await calendar_source.poll()
+                except Exception as e:
+                    # poll() catches its own errors, but defensive catch
+                    logger.warning(
+                        f"[M5.15-6] calendar poll unexpected error: "
+                        f"{type(e).__name__}: {e}"
+                    )
+                await asyncio.sleep(calendar_source.polling_interval_secs)
+        asyncio.create_task(_calendar_poll_loop())
+        # Expose to app.state for observability
+        app.state._world_calendar_source = calendar_source
+        logger.info(
+            f"[M5.15-6] IcalCalendarSource 已 wired ✓ "
+            f"(env_gated=SOULOS_CALENDAR_ICAL_URL, "
+            f"polling_interval={calendar_source.polling_interval_secs}s, "
+            f"lookahead={calendar_source.lookahead_hours}h, "
+            f"source_id={calendar_source.source_id}, "
+            f"ical_url=...{calendar_ical_url[-30:]})"
+        )
+    else:
+        logger.info(
+            "[M5.15-6] IcalCalendarSource NOT wired "
+            "(SOULOS_CALENDAR_ICAL_URL not set, no calendar activity)"
+        )
+
     # Phase 12 LLM-as-judge: 設定 process-global LLMProxy reference,
     # 讓 MemoryWriter._get_llm_judge() 跨模組邊界可以拿到
     from src.memory.sage.writer import set_llm_proxy
