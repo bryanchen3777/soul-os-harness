@@ -393,7 +393,16 @@ def _format_relationship_block(agent_id: str) -> str:
             band = "親密"
         elif confidence >= _RELATIONSHIP_BAND_FAMILIAR:
             band = "熟悉"
-        elif confidence >= _RELATIONSHIP_BAND_MIN_THRESHOLD:
+        # M5.13-4.1: at the 0.3 boundary, round to 6 decimal places to handle
+        # FP representation noise from decay arithmetic.
+        # Per M5.13-4 audit: ensure_relationship(0.3) + store.get() yields
+        # 0.29999999965208335 (genuinely < 0.3 in IEEE 754), dropping the
+        # user's "認識" intent. round(0.29999999965208335, 6) = 0.3, restoring
+        # the boundary semantics. Other bands (0.5, 0.7, 0.9) are NOT
+        # touched — the spec requires "without weakening unrelated thresholds".
+        # Full-day decay (0.3 - 0.02 = 0.27999999999999997) rounds to 0.28
+        # which is correctly still below 0.3 (genuine decay drops the band).
+        elif round(confidence, 6) >= _RELATIONSHIP_BAND_MIN_THRESHOLD:
             band = "認識"
         else:
             # 0.0 - < 0.3: 陌生人, 不輸出
