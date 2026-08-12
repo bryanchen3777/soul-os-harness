@@ -40,6 +40,10 @@ class JudgeProvenance:
       - raw_response: full LLM response text (None for mock; truncated at 4000 chars for very long)
       - prompt_version: judge prompt template version
       - rubric_version: rubric version (from evidence)
+      - token_usage: optional dict with input/output/total token counts
+      - latency_ms: optional wall-clock time for the API call in milliseconds
+      - request_id: optional provider-specific request ID (for audit trail)
+      - stop_reason: optional reason the LLM stopped generating
     """
     provider: str
     model: str
@@ -50,6 +54,10 @@ class JudgeProvenance:
     raw_response: Optional[str] = None
     prompt_version: str = "v1-2026-08-11"
     rubric_version: str = "v1-2026-08-11"
+    token_usage: Optional[Dict[str, int]] = None
+    latency_ms: Optional[float] = None
+    request_id: Optional[str] = None
+    stop_reason: Optional[str] = None
 
 
 @dataclass(frozen=True)

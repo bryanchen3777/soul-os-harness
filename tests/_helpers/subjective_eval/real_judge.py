@@ -243,6 +243,7 @@ class RealLLMJudge(Judge):
         timeout: float = 60.0,
         max_retries: int = 2,
         api_key_env_var: str = "M6_LLM_API_KEY",
+        model_family: Optional[str] = None,
     ):
         super().__init__(judge_id, model)
         if provider not in ("openai", "claude"):
@@ -251,6 +252,9 @@ class RealLLMJudge(Judge):
         self.temperature = temperature
         self.timeout = timeout
         self.max_retries = max_retries
+        # M6.0-5.4: model_family for diversity validation.
+        # Defaults to provider (so 1 Claude + 1 OpenAI = 2 distinct families).
+        self.model_family = model_family or provider
 
         # Resolve API key: explicit > env var
         import os
@@ -334,6 +338,55 @@ class RealLLMJudge(Judge):
                 raise ValueError(f"Claude text is not str, got {type(text).__name__}")
             return text
 
+    def _extract_metadata(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """M6.0-5.4: Extract token_usage, request_id, stop_reason from API response."""
+        meta: Dict[str, Any] = {}
+        if self.provider == "openai":
+            # OpenAI: body["usage"] = {prompt_tokens, completion_tokens, total_tokens}
+            usage = body.get("usage", {})
+            if isinstance(usage, dict):
+                token_usage: Dict[str, int] = {}
+                if "prompt_tokens" in usage:
+                    token_usage["input"] = int(usage["prompt_tokens"])
+                if "completion_tokens" in usage:
+                    token_usage["output"] = int(usage["completion_tokens"])
+                if "total_tokens" in usage:
+                    token_usage["total"] = int(usage["total_tokens"])
+                if token_usage:
+                    meta["token_usage"] = token_usage
+            # body["id"] = "chatcmpl-..."
+            rid = body.get("id")
+            if isinstance(rid, str):
+                meta["request_id"] = rid
+            # body["choices"][0]["finish_reason"] = "stop" | "length" | "tool_calls"
+            choices = body.get("choices")
+            if isinstance(choices, list) and choices:
+                sr = choices[0].get("finish_reason")
+                if isinstance(sr, str):
+                    meta["stop_reason"] = sr
+        else:  # claude
+            # Claude: body["usage"] = {input_tokens, output_tokens}
+            usage = body.get("usage", {})
+            if isinstance(usage, dict):
+                token_usage = {}
+                if "input_tokens" in usage:
+                    token_usage["input"] = int(usage["input_tokens"])
+                if "output_tokens" in usage:
+                    token_usage["output"] = int(usage["output_tokens"])
+                if token_usage:
+                    total = token_usage.get("input", 0) + token_usage.get("output", 0)
+                    token_usage["total"] = total
+                    meta["token_usage"] = token_usage
+            # body["id"] = "msg_..."
+            rid = body.get("id")
+            if isinstance(rid, str):
+                meta["request_id"] = rid
+            # body["stop_reason"] = "end_turn" | "max_tokens" | "stop_sequence"
+            sr = body.get("stop_reason")
+            if isinstance(sr, str):
+                meta["stop_reason"] = sr
+        return meta
+
     async def evaluate(
         self,
         evidence: EvaluationEvidence,
@@ -345,6 +398,7 @@ class RealLLMJudge(Judge):
         Never raises (fail-safe).
         """
         timestamp = datetime.now(timezone.utc).isoformat()
+        import time as _time
 
         # Fail-safe 1: missing credentials
         if not self._api_key:
@@ -370,6 +424,9 @@ class RealLLMJudge(Judge):
         headers = self._build_headers()
         last_error: Optional[str] = None
         raw_response_text: Optional[str] = None
+        body: Dict[str, Any] = {}
+        latency_ms: Optional[float] = None
+        start_time = _time.monotonic()
 
         # Use provided http_client or create a new one
         owns_client = http_client is None
@@ -414,6 +471,8 @@ class RealLLMJudge(Judge):
                 except Exception as e:
                     last_error = f"unexpected: {type(e).__name__}: {e}"
                     break
+            # Record latency after loop (success or fail)
+            latency_ms = (_time.monotonic() - start_time) * 1000.0
         finally:
             if owns_client:
                 await http_client.aclose()
@@ -435,8 +494,12 @@ class RealLLMJudge(Judge):
                     raw_response=None,
                     prompt_version=JUDGE_PROMPT_VERSION,
                     rubric_version=evidence.rubric_version,
+                    latency_ms=latency_ms,
                 ),
             )
+
+        # Extract metadata (M6.0-5.4)
+        meta = self._extract_metadata(body)
 
         # Success: parse response
         try:
@@ -457,6 +520,10 @@ class RealLLMJudge(Judge):
                     raw_response=_truncate_response(raw_response_text),
                     prompt_version=JUDGE_PROMPT_VERSION,
                     rubric_version=evidence.rubric_version,
+                    latency_ms=latency_ms,
+                    request_id=meta.get("request_id"),
+                    stop_reason=meta.get("stop_reason"),
+                    token_usage=meta.get("token_usage"),
                 ),
             )
 
@@ -479,5 +546,9 @@ class RealLLMJudge(Judge):
                 raw_response=_truncate_response(raw_response_text),
                 prompt_version=JUDGE_PROMPT_VERSION,
                 rubric_version=evidence.rubric_version,
+                latency_ms=latency_ms,
+                request_id=meta.get("request_id"),
+                stop_reason=meta.get("stop_reason"),
+                token_usage=meta.get("token_usage"),
             ),
         )

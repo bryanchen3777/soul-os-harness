@@ -54,6 +54,16 @@ from .real_judge import (
     _build_judge_prompt,
     _parse_judge_response,
 )
+from .multi_model_runner import (
+    EvaluationStatus,
+    SelfEvaluationError,
+    DiversityError,
+    check_self_evaluation,
+    validate_diversity,
+    CostBudget,
+    MultiModelJudgeRunner,
+    MultiModelRunResult,
+)
 from .consensus import (
     EvaluationResult,
     aggregate,
@@ -100,6 +110,15 @@ __all__ = [
     "JUDGE_PROMPT_VERSION",
     "_build_judge_prompt",
     "_parse_judge_response",
+    # multi-model orchestrator (M6.0-5.4)
+    "EvaluationStatus",
+    "SelfEvaluationError",
+    "DiversityError",
+    "check_self_evaluation",
+    "validate_diversity",
+    "CostBudget",
+    "MultiModelJudgeRunner",
+    "MultiModelRunResult",
     # consensus
     "EvaluationResult",
     "aggregate",
