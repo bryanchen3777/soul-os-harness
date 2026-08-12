@@ -250,8 +250,16 @@ class CostBudget:
         return True
 
     def can_retry(self) -> bool:
+        """
+        Returns True if a retry is allowed under the current budget state.
+
+        M6.0-5.4-R2: also checks max_token_budget (previously only checked
+        retry-limit + cost). All three limits must allow a retry.
+        """
         max_total_retries = self.max_retries_per_judge * self.max_judge_calls
         if self.retries_made >= max_total_retries:
+            return False
+        if self.tokens_used >= self.max_token_budget:
             return False
         if self.cost_estimated >= self.max_cost_usd:
             return False
@@ -340,12 +348,16 @@ class MultiModelJudgeRunner:
         """
         Run 3 judges with bounded cost budget. No auto-replacement.
 
-        M6.0-5.4-R1 budget enforcement:
+        M6.0-5.4-R1 + R2 budget enforcement:
           - Pre-call: can_make_call() check; if False, fail-safe error result
             (NO HTTP call made for that judge)
           - During call: RealLLMJudge handles its own retry; on each retry, the
-            on_retry callback is invoked to record the retry in CostBudget
-            (and re-check exhaustion)
+            on_retry callback is invoked. Contract: returns True if retry is
+            allowed under CostBudget (can_retry checks retry limit + token +
+            cost), False if retry must NOT happen.
+            - Allowed: record_retry() is called; loop sleeps + continues
+            - Denied: NO record_retry, NO sleep, NO additional HTTP call;
+              the original retryable error is preserved
           - Post-call: real cost is estimated from provenance.token_usage
             via PricingModel and recorded via CostBudget.record_call(...);
             record_call immediately re-runs _check_exhausted so the next
@@ -378,12 +390,17 @@ class MultiModelJudgeRunner:
                 ))
                 continue
 
-            # M6.0-5.4-R1: wire up on_retry callback to record retry events
-            # in CostBudget. Each retry consumes budget; record_retry
-            # immediately re-runs _check_exhausted so subsequent can_make_call
-            # reflects the new state.
-            def _on_retry() -> None:
+            # M6.0-5.4-R1 / R2: enforcement-capable on_retry callback.
+            # Contract: returns True if retry is allowed under CostBudget,
+            # False if retry must NOT happen. Per R2 spec:
+            #   - if not allowed: return False (do NOT call record_retry)
+            #   - if allowed: call record_retry, then return True
+            # can_retry() checks retry limit + token + cost budgets.
+            def _on_retry() -> bool:
+                if not self.cost_budget.can_retry():
+                    return False
                 self.cost_budget.record_retry()
+                return True
 
             # Run the judge (handles its own retry per judge.max_retries)
             try:

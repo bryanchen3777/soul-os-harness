@@ -369,7 +369,7 @@ class TestRetryAccounting(unittest.TestCase):
     """Retry events wired into CostBudget via on_retry callback."""
 
     def test_retry_event_increments_retry_counting(self):
-        """Each retry inside RealLLMJudge triggers on_retry callback."""
+        """Each retry inside RealLLMJudge triggers on_retry callback (returns True)."""
         judge = RealLLMJudge(judge_id="A", model="m", api_key="k",
                               provider="claude", max_retries=3)
         retry_calls: List[int] = []
@@ -385,7 +385,7 @@ class TestRetryAccounting(unittest.TestCase):
                 # max_retries=3 means 3 total attempts; 2 retries needed
                 return await judge.evaluate(_make_evidence("retry_counting"),
                                             http_client=client,
-                                            on_retry=lambda: retry_calls.append(1))
+                                            on_retry=lambda: (retry_calls.append(1) or True))
 
         result = asyncio.run(run())
         # RealLLMJudge retries on 500 -> 2 retries before success
@@ -449,8 +449,14 @@ class TestRetryAccounting(unittest.TestCase):
 
                     def make_cb(jid):
                         def cb():
+                            # M6.0-5.4-R2: callback contract is Callable[[], bool]
+                            # R1 test scenarios always allowed retry, so return True
+                            # and record in the budget for accounting.
+                            if not runner.cost_budget.can_retry():
+                                return False
                             retry_counts_per_judge[jid] += 1
                             runner.cost_budget.record_retry()
+                            return True
                         return cb
 
                     result = await j.evaluate(ev, http_client=c, on_retry=make_cb(j.judge_id))
@@ -485,7 +491,7 @@ class TestRetryAccounting(unittest.TestCase):
             async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
                 return await judge.evaluate(_make_evidence("4xx_no_retry"),
                                             http_client=client,
-                                            on_retry=lambda: retry_calls.append(1))
+                                            on_retry=lambda: (retry_calls.append(1) or True))
 
         result = asyncio.run(run())
         # 401 is non-retryable; on_retry should NOT be called
@@ -505,7 +511,7 @@ class TestRetryAccounting(unittest.TestCase):
             async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
                 return await judge.evaluate(_make_evidence("max_2_retries"),
                                             http_client=client,
-                                            on_retry=lambda: retry_calls.append(1))
+                                            on_retry=lambda: (retry_calls.append(1) or True))
 
         result = asyncio.run(run())
         # max_retries=2: 2 total attempts; 1 retry event (between attempt 0 and 1)

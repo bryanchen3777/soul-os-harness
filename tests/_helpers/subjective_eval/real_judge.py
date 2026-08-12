@@ -391,22 +391,33 @@ class RealLLMJudge(Judge):
         self,
         evidence: EvaluationEvidence,
         http_client: Optional["httpx.AsyncClient"] = None,
-        on_retry: Optional[Callable[[], None]] = None,
+        on_retry: Optional[Callable[[], bool]] = None,
     ) -> JudgeResult:
         """
         Evaluate evidence by calling real LLM API.
         Returns JudgeResult with scores on success, or error=... on failure.
         Never raises (fail-safe).
 
-        on_retry: optional callback invoked BEFORE each retry attempt.
-                  Per Bry 派工 M6.0-5.4-R1: "Option A — RealLLMJudge remains
-                  authoritative for retry count. CostBudget receives retry
-                  events/counters from that path." The MultiModelJudgeRunner
-                  passes a callback that records the retry in CostBudget.
-                  The callback is called inside the retry loop, before
-                  asyncio.sleep(2**attempt). It MUST be non-blocking; if it
-                  raises, the exception is caught and treated as no-retry
-                  (caller-side error handling).
+        on_retry (M6.0-5.4-R1 / R2): optional enforcement-capable callback
+                  invoked BEFORE each retry attempt.
+
+        Contract (M6.0-5.4-R2):
+            - Return True  -> retry is allowed; loop sleeps + continues
+            - Return False -> retry MUST NOT happen; loop breaks immediately
+              (no sleep, no additional HTTP request). The original retryable
+              error is preserved as the JudgeResult.error.
+
+        The callback is called inside the retry loop for 429 / 5xx / timeout
+        failures. For 4xx (non-retryable) the callback is NOT called.
+
+        Callback errors are treated as "retry denied" (fail-safe: a buggy
+        callback must not let a retry bypass the budget). The original error
+        is preserved.
+
+        Per Bry 派工 M6.0-5.4-R1: "Option A — RealLLMJudge remains authoritative
+        for retry count. CostBudget receives retry events/counters from that
+        path."
+        Per Bry 派工 M6.0-5.4-R2: "Make retry callback enforcement-capable."
         """
         timestamp = datetime.now(timezone.utc).isoformat()
         import time as _time
@@ -457,13 +468,18 @@ class RealLLMJudge(Judge):
                         # Retryable
                         last_error = f"http_{resp.status_code}: {resp.text[:200]}"
                         if attempt < self.max_retries - 1:
-                            # M6.0-5.4-R1: notify caller of retry event
+                            # M6.0-5.4-R2: ask on_retry callback if retry allowed
                             if on_retry is not None:
                                 try:
-                                    on_retry()
+                                    allowed = on_retry()
                                 except Exception:
-                                    # Callback errors must not break retry path
-                                    pass
+                                    # Callback errors must not break retry path —
+                                    # treat as denied (fail-safe: buggy callback
+                                    # must NOT let retry bypass budget)
+                                    allowed = False
+                                if not allowed:
+                                    # Retry denied: no sleep, no extra HTTP call
+                                    break
                             import asyncio
                             await asyncio.sleep(2 ** attempt)
                             continue
@@ -479,12 +495,16 @@ class RealLLMJudge(Judge):
                 except httpx.TimeoutException as e:
                     last_error = f"timeout: {type(e).__name__}"
                     if attempt < self.max_retries - 1:
-                        # M6.0-5.4-R1: notify caller of retry event
+                        # M6.0-5.4-R2: ask on_retry callback if retry allowed
                         if on_retry is not None:
                             try:
-                                on_retry()
+                                allowed = on_retry()
                             except Exception:
-                                pass
+                                # Callback errors: treat as denied
+                                allowed = False
+                            if not allowed:
+                                # Retry denied: no sleep, no extra HTTP call
+                                break
                         import asyncio
                         await asyncio.sleep(2 ** attempt)
                         continue
