@@ -216,8 +216,8 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 
 ## 🗺️ 當前工程狀態
 
-**Current HEAD**: `b4b981a7b24678779551bccca2f4b6eb4dd20b3e` (M5.15-3 — WorldEventSource → Event Bus canonical integration)
-**Current authorized ticket**: **NONE** (per Owner Decision A + M5.15-2/M5.15-3 closeout: M5.14 / M6.0 / GOV-1 / GOV-2 / GOV-2-R1 / M5.15 all CLOSED; no next ticket authorized; M5.15-4/5/6 remain CANDIDATEs only)
+**Current HEAD**: `0aedbef25cf0cb8ba793a7620833ec6cfdb70db8` (M5.15-5 — WorldEvent ↔ InnerLifeEvent Identity Bridge)
+**Current authorized ticket**: **NONE** (per Owner Decision A + M5.15-5 closeout: M5.14 / M5.15 / M6.0 / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED; no next ticket authorized; M5.15-6 remains CANDIDATE only)
 
 | Milestone | 內容 | 狀態 | Commit |
 |-----------|------|------|--------|
@@ -235,7 +235,7 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 | **M5.12** | Remaining agency P2 convergence audit | ✅ | `48c3063` |
 | **M5.13** | Relationship context + boundary precision (functionally closed) | ✅ | `e6effd8` (4.2) |
 | **M5.14** | Cross-layer runtime convergence (officially closed) | ✅ | `29deab7` (3) |
-| **M5.15** | WorldEventSource → Event Bus canonical integration (F1 RESOLVED, F2-F4 CANDIDATE) | ✅ | `b4b981a` (3) |
+| **M5.15** | WorldEventSource → Event Bus canonical integration + identity bridge (F1 + F3 + F4 RESOLVED, F2 CANDIDATE) | ✅ | `0aedbef` (5) |
 | **M6.0** | Lived context validation + subjective LLM evaluation | ✅ | `540eac2` (5.6) |
 | **M6.0-5.5-R1** | Real three-judge E2E validation gate | ⛔ BLOCKED | `9d21740` (credentials unavailable, correct by design) |
 | **GOV-1** | Engineering state normalization audit | ✅ | (out-of-repo) |
@@ -364,4 +364,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-08-12 (M5.15-3 — WorldEventSource → Event Bus canonical integration, F1 RESOLVED; M5.14 / M5.15 / M6.0 / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED; M5.15-4/5/6 CANDIDATE only)
+**最後更新**: 2026-08-12 (M5.15-5 — WorldEvent ↔ InnerLifeEvent Identity Bridge, Two-Layer Lineage Model, F1 + F3 + F4 RESOLVED; M5.14 / M5.15 / M6.0 / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED; M5.15-6 CANDIDATE only)
