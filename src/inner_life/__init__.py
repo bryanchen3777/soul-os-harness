@@ -94,6 +94,7 @@ from .identity import (
     validate_event_id,
     validate_parent_event_id,
     validate_session_id,
+    validate_source_world_event_novelty_id,
     validate_ts,
 )
 from .serialization import (
@@ -126,6 +127,7 @@ __all__ = [
     "validate_session_id",
     "validate_correlation_id",
     "validate_parent_event_id",
+    "validate_source_world_event_novelty_id",
     "validate_ts",
     "derive_lineage",
     # Serialization

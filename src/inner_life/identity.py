@@ -2,6 +2,9 @@
 src/inner_life/identity.py — Inner Life Identity Validation & Generation
 
 M5.4-5.1 (Bry 派工 2026-08-09 18:25) — Inner Life Unified Architecture Foundation
+M5.15-5 (Bry 派工 2026-08-12 19:14) — WorldEvent ↔ InnerLifeEvent Identity Bridge
+  Adds source_world_event_novelty_id validator (format-only, accepts any non-empty str OR None).
+  0 change to existing validators (event_id / parent_event_id / correlation_id / session_id / ts).
 
 派工精神:
   - canonical identity semantics, not just fields
@@ -13,6 +16,10 @@ Identity rules (per派工):
   - session_id: optional, non-empty if set
   - correlation_id: optional, non-empty if set
   - parent_event_id: optional, must reference known event if set
+  - source_world_event_novelty_id (M5.15-5): optional, non-empty if set
+    — free string (NO 32-hex requirement, NO existence check)
+    — represents WorldEvent.novelty_id (the upstream causal source)
+    — does NOT replace parent_event_id (M5.4-5.1 frozen)
   - ts: ISO 8601 UTC, immutable
 
 This module is the SINGLE source of truth for:
@@ -193,6 +200,61 @@ def validate_parent_event_id(parent_event_id: object, *, allow_none: bool = True
             raise IdentityValidationError("parent_event_id 不可為 None")
         return None
     return validate_event_id(parent_event_id)
+
+
+def validate_source_world_event_novelty_id(
+    source_world_event_novelty_id: object,
+    *,
+    allow_none: bool = True,
+) -> Optional[str]:
+    """
+    M5.15-5 (Bry 派工 2026-08-12 19:14): Validate that a
+    source_world_event_novelty_id is either None or a non-empty string.
+
+    Distinct from validate_event_id (32-hex, for InnerLifeEvent.event_id)
+    and validate_parent_event_id (32-hex, must be known InnerLifeEvent).
+
+    This validator is INTENTIONALLY LENIENT:
+      - Accepts any non-empty string (NOT 32-hex format)
+      - Does NOT check existence (WorldEvent.novelty_id is external, not
+        in InnerLifeWriter._known_event_ids)
+      - WorldEvent.novelty_id remains its existing domain (free string
+        set by WorldEventSource)
+
+    Rationale (per M5.15-5 decision):
+      - WorldEvent.novelty_id is a free-form string set by WorldEventSource
+        (e.g., "weather_rain_20260807", "calendar_meeting_20260807_1500")
+      - It does NOT need to match the 32-char hex InnerLifeEvent.event_id format
+      - It is an EXTERNAL identity, not a sibling in the InnerLifeEvent tree
+      - parent_event_id remains InnerLifeEvent-only (M5.4-5.1 frozen)
+      - This validator is for cross-system causality, not internal lineage
+
+    Args:
+        source_world_event_novelty_id: candidate value
+        allow_none: if True, None is accepted (no WorldEvent parent)
+
+    Returns:
+        Optional[str]: validated source_world_event_novelty_id, or None if allowed
+
+    Raises:
+        IdentityValidationError: if not None and not a non-empty string
+    """
+    if source_world_event_novelty_id is None:
+        if not allow_none:
+            raise IdentityValidationError(
+                "source_world_event_novelty_id 不可為 None"
+            )
+        return None
+    if not isinstance(source_world_event_novelty_id, str):
+        raise IdentityValidationError(
+            f"source_world_event_novelty_id 必須是 str 或 None, got: "
+            f"{type(source_world_event_novelty_id).__name__}"
+        )
+    if not source_world_event_novelty_id.strip():
+        raise IdentityValidationError(
+            "source_world_event_novelty_id 不可為空字串"
+        )
+    return source_world_event_novelty_id
 
 
 def validate_ts(ts: object) -> str:

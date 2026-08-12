@@ -3,6 +3,10 @@ src/inner_life/writer.py — InnerLifeWriter (Canonical Identity Authority)
 
 M5.4-5.1 (Bry 派工 2026-08-09 18:25) — Inner Life Unified Architecture Foundation
 M5.4-5.6 (Bry 派工 2026-08-09 22:30) — Optional Narrative Trace sidecar
+M5.15-5 (Bry 派工 2026-08-12 19:14) — WorldEvent ↔ InnerLifeEvent Identity Bridge
+  Adds `source_world_event_novelty_id` parameter to create_event (additive, default None).
+  0 change to existing 4 parameters (provenance / session_id / correlation_id / parent_event_id / ts).
+  0 change to parent_event_id existence check (still InnerLifeEvent-only).
 
 派工精神:
   - "Don't just be a wrapper for the three existing writers"
@@ -51,6 +55,7 @@ from .identity import (
     validate_event_id,
     validate_parent_event_id,
     validate_session_id,
+    validate_source_world_event_novelty_id,
 )
 
 if TYPE_CHECKING:
@@ -133,6 +138,7 @@ class InnerLifeWriter:
         session_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
         parent_event_id: Optional[str] = None,
+        source_world_event_novelty_id: Optional[str] = None,
         ts: Optional[str] = None,
     ) -> InnerLifeEvent:
         """
@@ -143,6 +149,10 @@ class InnerLifeWriter:
             session_id: optional runtime session anchor (None for cross-session)
             correlation_id: optional narrative group marker
             parent_event_id: optional causation parent (must reference known event)
+            source_world_event_novelty_id: (M5.15-5) optional WorldEvent.novelty_id
+                for cross-system causality (Layer 1). Free string, no 32-hex format,
+                no existence check. WorldEvent-triggered InnerLifeEvents set this
+                to the WorldEvent's novelty_id. 5 existing producers leave None.
             ts: optional explicit ISO 8601 UTC timestamp (default: now)
 
         Returns:
@@ -160,6 +170,8 @@ class InnerLifeWriter:
         validate_session_id(session_id)
         validate_correlation_id(correlation_id)
         validate_parent_event_id(parent_event_id)
+        # M5.15-5: validate new field (format-only, accepts any non-empty str or None)
+        validate_source_world_event_novelty_id(source_world_event_novelty_id)
         # ts default to now
         if ts is None:
             ts = now_utc_iso()
@@ -169,6 +181,8 @@ class InnerLifeWriter:
 
         # 2. Validate parent existence (per-instance, not format-only)
         # 派工: "must reference known event if set"
+        # M5.15-5: 0 change — only applies to parent_event_id, NOT to
+        # source_world_event_novelty_id (which is external, not in _known_event_ids)
         if parent_event_id is not None and parent_event_id not in self._known_event_ids:
             raise IdentityValidationError(
                 f"parent_event_id {parent_event_id!r} 不在已知事件清單內 "
@@ -180,7 +194,11 @@ class InnerLifeWriter:
         # 派工: "event_id uniqueness" + "UUID collision probability 2^-122"
         new_event_id = generate_event_id()
 
-        # 4. Compute lineage from parent
+        # 4. Compute lineage from parent (M5.15-5: 0 change)
+        # lineage_depth / lineage_path are STILL derived from parent_event_id only,
+        # NOT from source_world_event_novelty_id. Two-layer model:
+        #   - Layer 1 (external causality): source_world_event_novelty_id (M5.15-5)
+        #   - Layer 2 (internal lineage): parent_event_id → lineage_depth/lineage_path
         if parent_event_id is None:
             # Root event
             lineage_depth, lineage_path = 0, new_event_id
@@ -202,6 +220,8 @@ class InnerLifeWriter:
             provenance=provenance,
             lineage_depth=lineage_depth,
             lineage_path=lineage_path,
+            # M5.15-5: pass through cross-system causality (Layer 1)
+            source_world_event_novelty_id=source_world_event_novelty_id,
         )
 
         # 6. Register in instance state

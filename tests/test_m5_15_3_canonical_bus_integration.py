@@ -635,9 +635,12 @@ class TestSectionE_FrozenContracts:
         from dataclasses import fields
         from src.inner_life import InnerLifeEvent
         field_names = {f.name for f in fields(InnerLifeEvent)}
+        # M5.15-5 (Bry 派工 2026-08-12 19:14): +1 field `source_world_event_novelty_id`
+        # additive frozen-contract amendment (M5.4-5.1 + 1 Optional field, Layer 1)
         assert field_names == {
             "event_id", "session_id", "correlation_id", "parent_event_id",
             "ts", "provenance", "lineage_depth", "lineage_path",
+            "source_world_event_novelty_id",
         }
 
     def test_e3_provenance_schema_unchanged(self):

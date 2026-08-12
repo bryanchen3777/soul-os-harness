@@ -2,6 +2,10 @@
 src/inner_life/serialization.py — Inner Life Event Serialization
 
 M5.4-5.1 (Bry 派工 2026-08-09 18:25) — Inner Life Unified Architecture Foundation
+M5.15-5 (Bry 派工 2026-08-12 19:14) — WorldEvent ↔ InnerLifeEvent Identity Bridge
+  Adds source_world_event_novelty_id to event_to_dict / event_from_dict (round-trip).
+  Backward compat: missing field → None (per M5.4-5.1 missing-field default pattern).
+  0 change to existing 8 fields' serialization.
 
 派工 派工 acceptance criteria:
   - serialization/deserialization
@@ -24,6 +28,7 @@ from .identity import (
     validate_event_id,
     validate_parent_event_id,
     validate_session_id,
+    validate_source_world_event_novelty_id,
     validate_ts,
 )
 
@@ -106,6 +111,7 @@ def event_to_dict(event: InnerLifeEvent) -> Dict[str, Any]:
         "provenance": {...},
         "lineage_depth": int,
         "lineage_path": str,
+        "source_world_event_novelty_id": str | None,  # M5.15-5
       }
     """
     return {
@@ -117,6 +123,8 @@ def event_to_dict(event: InnerLifeEvent) -> Dict[str, Any]:
         "provenance": provenance_to_dict(event.provenance),
         "lineage_depth": event.lineage_depth,
         "lineage_path": event.lineage_path,
+        # M5.15-5: cross-system causality (Layer 1), free string or None
+        "source_world_event_novelty_id": event.source_world_event_novelty_id,
     }
 
 
@@ -128,6 +136,8 @@ def event_from_dict(d: Dict[str, Any]) -> InnerLifeEvent:
       - Missing lineage_depth → 0 (default)
       - Missing lineage_path → "" (default)
       - Missing session_id/correlation_id/parent_event_id → None
+      - Missing source_world_event_novelty_id (M5.15-5) → None (default)
+        (old payloads without this field deserialize correctly)
 
     Raises:
         IdentityValidationError: on invalid fields
@@ -146,6 +156,10 @@ def event_from_dict(d: Dict[str, Any]) -> InnerLifeEvent:
     session_id = validate_session_id(d.get("session_id"))
     correlation_id = validate_correlation_id(d.get("correlation_id"))
     parent_event_id = validate_parent_event_id(d.get("parent_event_id"))
+    # M5.15-5: new field, missing → None (backward compat with old payloads)
+    source_world_event_novelty_id = validate_source_world_event_novelty_id(
+        d.get("source_world_event_novelty_id")
+    )
 
     # 衍生欄位 (lineage_depth + lineage_path 可能在舊 payload 缺)
     # 派工: "backward compatibility where applicable"
@@ -172,4 +186,6 @@ def event_from_dict(d: Dict[str, Any]) -> InnerLifeEvent:
         provenance=provenance,
         lineage_depth=lineage_depth,
         lineage_path=lineage_path,
+        # M5.15-5: pass through cross-system causality
+        source_world_event_novelty_id=source_world_event_novelty_id,
     )

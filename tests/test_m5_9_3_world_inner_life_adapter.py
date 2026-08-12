@@ -673,14 +673,17 @@ class TestSectionO_SoleCreator:
         assert not hasattr(inner_life_adapter, "create_inner_life_event")
 
     def test_o2_adapter_calls_writer_create_event(self, isolated_root):
-        """O.2: adapter delegates to writer.create_event (sole creator)."""
+        """O.2: adapter delegates to writer.create_event (sole creator).
+        M5.15-5 (2026-08-12): updated to include source_world_event_novelty_id parameter
+        (additive amendment to M5.4-5.1 InnerLifeWriter signature).
+        """
         # Use real writer (not mock) — verify by inspection that adapter
         # calls writer.create_event with proper Provenance
         writer = InnerLifeWriter(trace_writer=None)
         call_log: list = []
         original_create = writer.create_event
 
-        def tracked_create(*, provenance, session_id=None, correlation_id=None, parent_event_id=None, ts=None):
+        def tracked_create(*, provenance, session_id=None, correlation_id=None, parent_event_id=None, source_world_event_novelty_id=None, ts=None):
             call_log.append({
                 "trigger_type": provenance.trigger_type,
                 "actor_id": provenance.actor_id,
@@ -688,12 +691,15 @@ class TestSectionO_SoleCreator:
                 "session_id": session_id,
                 "correlation_id": correlation_id,
                 "parent_event_id": parent_event_id,
+                # M5.15-5: track new parameter to verify adapter passes it
+                "source_world_event_novelty_id": source_world_event_novelty_id,
             })
             return original_create(
                 provenance=provenance,
                 session_id=session_id,
                 correlation_id=correlation_id,
                 parent_event_id=parent_event_id,
+                source_world_event_novelty_id=source_world_event_novelty_id,
                 ts=ts,
             )
 
@@ -722,6 +728,8 @@ class TestSectionO_SoleCreator:
         assert call["session_id"] is None
         assert call["correlation_id"] is None
         assert call["parent_event_id"] is None
+        # M5.15-5: adapter passes WorldEvent.novelty_id as source_world_event_novelty_id
+        assert call["source_world_event_novelty_id"] == "sole_test"
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -974,13 +982,17 @@ class TestSectionW_FrozenContracts:
         }
 
     def test_w2_inner_life_event_schema_unchanged(self):
-        """W.2: InnerLifeEvent schema unchanged."""
+        """W.2: InnerLifeEvent schema has only the M5.15-5 additive field added.
+        M5.15-5 (Bry 派工 2026-08-12 19:14): +1 field `source_world_event_novelty_id`
+        additive frozen-contract amendment (M5.4-5.1 + 1 Optional field, Layer 1).
+        """
         from dataclasses import fields
         from src.inner_life import InnerLifeEvent
         field_names = {f.name for f in fields(InnerLifeEvent)}
         assert field_names == {
             "event_id", "session_id", "correlation_id", "parent_event_id",
             "ts", "provenance", "lineage_depth", "lineage_path",
+            "source_world_event_novelty_id",
         }
 
     def test_w3_provenance_schema_unchanged(self):

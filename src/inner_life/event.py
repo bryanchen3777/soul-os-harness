@@ -2,6 +2,11 @@
 src/inner_life/event.py — Inner Life Event & Provenance Dataclasses
 
 M5.4-5.1 (Bry 派工 2026-08-09 18:25) — Inner Life Unified Architecture Foundation
+M5.15-5 (Bry 派工 2026-08-12 19:14) — WorldEvent ↔ InnerLifeEvent Identity Bridge
+  Adds 9th field `source_world_event_novelty_id: Optional[str] = None` to InnerLifeEvent.
+  0 change to existing 8 fields. 0 change to parent_event_id / correlation_id /
+  provenance / lineage_depth / lineage_path semantics. 0 change to 5 existing
+  producer sites (Diary/Dream/Event/ProactiveDM/Conversation).
 
 派工精神:
   - canonical event model, not just fields
@@ -15,13 +20,22 @@ This is NOT a row in a DB. NOT a class to be persisted directly.
 It's the SEMANTIC MODEL that future工單's persistence layers will
 inherit / extend.
 
-派工 6 個 concept dimensions:
+派工 6 個 concept dimensions (M5.4-5.1):
   1. event_id: unique identity
   2. session_id: runtime session anchor
   3. correlation_id: narrative group (NOT causation)
-  4. parent_event_id: causation chain (tree)
+  4. parent_event_id: causation chain (tree, InnerLifeEvent-only)
   5. provenance: structured WHO/WHAT/WHERE/WHY
   6. lineage: depth + path (denormalized)
+
+M5.15-5 adds a 7th concept dimension:
+  7. source_world_event_novelty_id: cross-system causality (WorldEvent → InnerLifeEvent)
+     — Independent from parent_event_id (which is InnerLifeEvent → InnerLifeEvent)
+     — Optional, free string, no 32-hex format, no existence check
+     — When set, indicates this InnerLifeEvent was triggered by a WorldEvent
+       whose novelty_id matches this value
+     — Does NOT affect lineage_depth / lineage_path (which are still derived
+       from parent_event_id)
 """
 from __future__ import annotations
 
@@ -33,6 +47,7 @@ from .identity import (
     validate_event_id,
     validate_parent_event_id,
     validate_session_id,
+    validate_source_world_event_novelty_id,
     validate_ts,
     IdentityValidationError,
 )
@@ -146,6 +161,7 @@ class InnerLifeEvent:
          - Direct causation (B was caused by / derived from A)
          - Tree structure (one parent per event in v1)
          - lineage_depth + lineage_path denormalize the chain
+         - M5.4-5.1 frozen: must reference known InnerLifeEvent.event_id
 
       5. ts (str, ISO 8601 UTC):
          - Set at creation
@@ -164,6 +180,14 @@ class InnerLifeEvent:
          - Empty for root, "parent_path/own_id" otherwise
          - Denormalized for efficient query (no need to traverse)
 
+      9. source_world_event_novelty_id (Optional[str], M5.15-5):
+         - Cross-system causality (WorldEvent → InnerLifeEvent)
+         - Free string (NOT 32-hex format, NOT existence-checked)
+         - WorldEvent-triggered InnerLifeEvents set this to WorldEvent.novelty_id
+         - None for events without WorldEvent causal parent (5 existing producers)
+         - INDEPENDENT from parent_event_id (which is InnerLifeEvent-only)
+         - 0 change to lineage_depth / lineage_path (still derived from parent_event_id)
+
     frozen=True: event is immutable once created. To "modify", create a new event
     that references the old one via parent_event_id.
     """
@@ -175,6 +199,11 @@ class InnerLifeEvent:
     provenance: Provenance
     lineage_depth: int = 0
     lineage_path: str = ""
+    # M5.15-5 (Bry 派工 2026-08-12 19:14): cross-system causality (Layer 1)
+    # Default None preserves 100% backward compat with 5 existing producers.
+    # WorldInnerLifeAdapter sets this to WorldEvent.novelty_id for qualifying
+    # WorldEvent-triggered events.
+    source_world_event_novelty_id: Optional[str] = None
 
     def __post_init__(self) -> None:
         # 驗證每個欄位 (delegated to identity.py)
@@ -195,6 +224,20 @@ class InnerLifeEvent:
             raise IdentityValidationError(
                 f"lineage_path 必須是 str, got: {type(self.lineage_path).__name__}"
             )
+        # M5.15-5: validate new field (format-only, accepts any non-empty str or None)
+        # Independent validation: does NOT cross-check with parent_event_id
+        # or InnerLifeWriter._known_event_ids (per design, WorldEvent.novelty_id
+        # is external, not a sibling in the InnerLifeEvent tree).
+        validate_source_world_event_novelty_id(self.source_world_event_novelty_id)
+
+    def has_world_event_source(self) -> bool:
+        """
+        M5.15-5: Whether this event was triggered by a WorldEvent.
+
+        Returns:
+            bool: True if source_world_event_novelty_id is not None
+        """
+        return self.source_world_event_novelty_id is not None
 
     def is_root(self) -> bool:
         """是否為 root event (no parent)。"""

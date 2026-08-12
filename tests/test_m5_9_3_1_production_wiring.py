@@ -452,24 +452,30 @@ class TestSectionI_SoleCreator:
     """I. InnerLifeWriter is sole creator (M5.4-5.1 frozen contract)."""
 
     def test_i1_adapter_calls_writer_create_event(self, isolated_root):
-        """I.1: adapter delegates to writer.create_event (sole creator)."""
+        """I.1: adapter delegates to writer.create_event (sole creator).
+        M5.15-5 (2026-08-12): updated to include source_world_event_novelty_id parameter
+        (additive amendment to M5.4-5.1 InnerLifeWriter signature).
+        """
         # Build bus + tracked writer + 1 adapter
         bus = SoulEventBus()
         writer = InnerLifeWriter(trace_writer=None)
         call_log = []
         original_create = writer.create_event
 
-        def tracked_create(*, provenance, session_id=None, correlation_id=None, parent_event_id=None, ts=None):
+        def tracked_create(*, provenance, session_id=None, correlation_id=None, parent_event_id=None, source_world_event_novelty_id=None, ts=None):
             call_log.append({
                 "trigger_type": provenance.trigger_type,
                 "actor_id": provenance.actor_id,
                 "source_system": provenance.source_system,
+                # M5.15-5: track new parameter to verify adapter passes it
+                "source_world_event_novelty_id": source_world_event_novelty_id,
             })
             return original_create(
                 provenance=provenance,
                 session_id=session_id,
                 correlation_id=correlation_id,
                 parent_event_id=parent_event_id,
+                source_world_event_novelty_id=source_world_event_novelty_id,
                 ts=ts,
             )
 
@@ -495,6 +501,8 @@ class TestSectionI_SoleCreator:
         assert call["trigger_type"] == "world:calendar_event"
         assert call["actor_id"] is None
         assert call["source_system"] == "narrative"
+        # M5.15-5: adapter passes WorldEvent.novelty_id as source_world_event_novelty_id
+        assert call["source_world_event_novelty_id"] == "prod_sole_001"
 
     def test_i2_no_second_inner_life_writer_created(self, isolated_root):
         """I.2: wiring doesn't create second InnerLifeWriter."""
@@ -522,9 +530,12 @@ class TestSectionJ_FrozenContracts:
         from dataclasses import fields
         from src.inner_life import InnerLifeEvent
         field_names = {f.name for f in fields(InnerLifeEvent)}
+        # M5.15-5 (Bry 派工 2026-08-12 19:14): +1 field `source_world_event_novelty_id`
+        # additive frozen-contract amendment (M5.4-5.1 + 1 Optional field, Layer 1)
         assert field_names == {
             "event_id", "session_id", "correlation_id", "parent_event_id",
             "ts", "provenance", "lineage_depth", "lineage_path",
+            "source_world_event_novelty_id",
         }
 
     def test_j3_provenance_schema_unchanged(self):

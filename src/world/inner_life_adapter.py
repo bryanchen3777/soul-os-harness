@@ -370,6 +370,14 @@ class WorldInnerLifeAdapter:
           - source_system = "narrative"
           - extras = {world_source, world_type, world_novelty_id}
           - session_id / correlation_id / parent_event_id = None
+
+        M5.15-5 (Bry 派工 2026-08-12 19:14): Cross-system identity bridge.
+        Sets source_world_event_novelty_id = WorldEvent.novelty_id to establish
+        explicit Layer 1 external causality (WorldEvent → InnerLifeEvent).
+        Independent from parent_event_id (which remains None for root events;
+        M5.4-5.1 frozen).
+        0 change to existing 4 fields (provenance / session_id / correlation_id /
+        parent_event_id). 0 change to lineage_depth / lineage_path semantics.
         """
         return self._writer.create_event(
             provenance=Provenance(
@@ -386,6 +394,9 @@ class WorldInnerLifeAdapter:
             session_id=None,
             correlation_id=None,
             parent_event_id=None,
+            # M5.15-5: explicit external causality (Layer 1)
+            # WorldEvent.novelty_id free string, no 32-hex format, no existence check
+            source_world_event_novelty_id=world_event.novelty_id,
         )
 
     # ── Dedup helpers (FIFO bounded) ──
