@@ -216,8 +216,8 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 
 ## 🗺️ 當前工程狀態
 
-**Current HEAD**: `e6effd8861dc96f120105aa1bc0d84fadf62140f` (M5.13-4.2)
-**Current authorized ticket**: **NONE** (awaiting Owner decision; see `logs/ENGINEERING_STATE.md` §3)
+**Current HEAD**: `59838d9aa9f98c15277c36d0e466e17e079f118a` (GOV-2-R1 — canonical state alignment per Owner Decision A)
+**Current authorized ticket**: **NONE** (per Owner Decision A: M5.14 / M6.0 / GOV-1 / GOV-2 all CLOSED; no next ticket authorized; M5.15-1 remains CANDIDATE only — MUST NOT be dispatched)
 
 | Milestone | 內容 | 狀態 | Commit |
 |-----------|------|------|--------|
@@ -238,7 +238,8 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 | **M6.0** | Lived context validation + subjective LLM evaluation | ✅ | `540eac2` (5.6) |
 | **M6.0-5.5-R1** | Real three-judge E2E validation gate | ⛔ BLOCKED | `9d21740` (credentials unavailable, correct by design) |
 | **GOV-1** | Engineering state normalization audit | ✅ | (out-of-repo) |
-| **GOV-2** | Canonical engineering state registry | ⏳ IN PROGRESS | (this section) |
+| **GOV-2** | Canonical engineering state registry | ✅ | `eb57151` |
+| **GOV-2-R1** | Canonical state alignment (Owner Decision A) | ✅ | `59838d9` |
 | **P0** | Test isolation repair (LLMProxy DI) | ✅ | `df83fb1` |
 | **P0.5** | WebSocket E2E persistence isolation audit | ✅ | `fac29ea` |
 
@@ -362,4 +363,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-08-12 (GOV-2 — canonical engineering state governance + 🗺️ 當前工程狀態 updated to M5.13/M5.14/M6.0)
+**最後更新**: 2026-08-12 (GOV-2-R1 — canonical state alignment per Owner Decision A: M5.14 / M6.0 / GOV-1 / GOV-2 all CLOSED; no ticket authorized; M5.15-1 remains CANDIDATE only)

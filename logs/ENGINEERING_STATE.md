@@ -3,7 +3,8 @@
 **Source of truth** for Soul OS engineering governance.
 **Mode**: Documentation only.
 **Owner**: Bryan (Mavis / Lin executes per Owner decisions).
-**Established**: GOV-2 (2026-08-12 00:03 EDT, commit pending).
+**Established**: GOV-2 (2026-08-12 00:03 EDT, commit `eb5715179647b963a4247272d9fcd4c639c7e6a3`).
+**Aligned**: GOV-2-R1 (2026-08-12, Owner Decision A: M5.14 / M6.0 / GOV-1 / GOV-2 all CLOSED; no ticket authorized).
 **Predecessor audit**: GOV-1 — `C:\Users\bbfcc\gov_1_temp\gov_1_state_normalization_audit.md` (CLOSED, out-of-repo per GOV-1 spec).
 **Canonical homepage**: [`README.md`](../README.md) §Engineering Governance.
 
@@ -27,17 +28,24 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 
 ### Active milestone
 
-**NONE.** M5.13-4.2 is the current HEAD. The M5.13 chain is FUNCTIONALLY CLOSED. The M5.14 chain is OFFICIALLY CLOSED. The M6.0 chain is CLOSED.
+**NONE — engineering state STABLE / CLOSED.** All milestones CLOSED. No milestone in IN PROGRESS. No ticket in IN PROGRESS or NOT STARTED.
 
-No milestone is in IN PROGRESS status. No ticket is in IN PROGRESS status.
+Per Owner Decision A (2026-08-12, GOV-2-R1):
+- M5.13 chain = FUNCTIONALLY CLOSED
+- M5.14 chain = OFFICIALLY CLOSED (D1 resolved as Option A)
+- M6.0 chain = CLOSED
+- GOV-1 = CLOSED
+- GOV-2 = CLOSED
+- GOV-2-R1 = CLOSED (this alignment)
 
 ### Current authorized ticket
 
-**NONE.** No ticket has been AUTHORIZED per the §5 transition rule. All candidate next-ticket work is recorded in §3 ACTIVE DECISIONS or §4 DEFERRED WORK.
+**NONE.** No ticket has been AUTHORIZED per the §5 transition rule. All candidate next-ticket work is recorded in §3 ACTIVE DECISIONS or §4 DEFERRED WORK. **M5.15-1 remains CANDIDATE only — MUST NOT be dispatched** without explicit Owner authorization (per GOV-2-R1 spec).
 
 ### Current HEAD
 
-- `e6effd8861dc96f120105aa1bc0d84fadf62140f` (M5.13-4.2)
+- Most recent canonical commit: `eb5715179647b963a4247272d9fcd4c639c7e6a3` (GOV-2 — canonical state registry established)
+- Subsequent governance commits: GOV-2-R1 alignment (commit SHA recorded in §9 CHANGE LOG)
 - `origin/main` synced at HEAD
 - Working tree: 0 modified, 20 baseline untracked artifacts (M5.8-1 list + M5.4-5.x + M5.2-L)
 
@@ -46,10 +54,11 @@ No milestone is in IN PROGRESS status. No ticket is in IN PROGRESS status.
 | Milestone | Status | Latest commit | Last closeout | Notes |
 |-----------|--------|---------------|---------------|-------|
 | **M5.13** | **FUNCTIONALLY CLOSED** | `e6effd8` | `m5_13_4_2_strict_boundary_closeout.md` | M5.13-5 is OPTIONAL / DEFERRED per GOV-1 + GOV-2 |
-| **M5.14** | **OFFICIALLY CLOSED** | `29deab7` | `m5_14_3_m6_0_3_f_correction_closeout.md` | Per M5.14-3 closeout §9: "no immediate M5.14-4 needed" |
+| **M5.14** | **OFFICIALLY CLOSED** | `29deab7` | `m5_14_3_m6_0_3_f_correction_closeout.md` | Per D1 RESOLVED (Option A): chain officially closed, no M5.14-4 |
 | **M6.0** | **CLOSED** | `540eac2` | `m6_0_5_6_configurable_evaluation_cost_ceiling_closeout.md` | M6.0-5.5-R1 is BLOCKED (credentials unavailable, correct by design) |
 | **GOV-1** | **CLOSED** | (docs only) | `gov_1_state_normalization_audit.md` (out-of-repo) | State normalization audit complete |
-| **GOV-2** | **IN PROGRESS** | (this document) | (this document) | Establishing canonical engineering state registry |
+| **GOV-2** | **CLOSED** | `eb57151` | `logs/ENGINEERING_STATE.md` (this registry) | Canonical engineering state registry established |
+| **GOV-2-R1** | **CLOSED** | (this commit) | (this document, alignment) | Owner Decision A alignment — canonical state now matches Notion |
 
 ---
 
@@ -180,17 +189,19 @@ A ticket reaches CLOSED status only when ALL of the following are true:
 
 ## 3. ACTIVE DECISIONS (Owner decision required)
 
-All decisions below are preserved as **UNRESOLVED** per GOV-1 + GOV-2 spec. None may be silently closed.
+All decisions below are preserved as **UNRESOLVED** per GOV-1 + GOV-2 spec, except where explicitly marked RESOLVED by Owner decision. None may be silently closed.
 
-### D1. M5.14-1 next work direction (Option A / B / C)
+**Per Owner Decision A (2026-08-12, GOV-2-R1)**: D1 is RESOLVED (Option A chosen). 13 decisions remain UNRESOLVED (D2-D14).
+
+### D1. M5.14-1 next work direction (Option A / B / C) — RESOLVED
 
 - **Source**: M5.14-1 closeout §15 (`logs/m5_14_1_cross_layer_runtime_convergence_audit.md`)
-- **Status**: PENDING (inherited from M5.14-1, 2026-08-11)
-- **Options**:
-  - **A. CLOSE M5.14** — Architecture converged, no further work needed (recommended by M5.14-1)
-  - **B. M5.15-1 = Real-world source integration design audit** (READ-ONLY) — addresses B1 gap (WorldEventDispatcher not wired)
-  - **C. M5.15-1 = End-to-end integration smoke test** (READ-ONLY) — addresses B6 (test-vs-production divergence)
-- **Authorization required**: Bry to pick A, B, or C
+- **Status**: **RESOLVED — Option A chosen** (Owner Decision A, 2026-08-12, GOV-2-R1)
+- **Resolution**: **A. CLOSE M5.14** — Architecture converged, no further work needed
+- **Effect**:
+  - M5.14 chain remains OFFICIALLY CLOSED (already per M5.14-3 §9)
+  - M5.15-1 remains CANDIDATE only — NOT dispatched, NOT authorized
+  - No new milestone, no new ticket
 
 ### D2. M5.13-5 Untouched-Entry Decay proceed?
 
@@ -356,7 +367,7 @@ M5.13-4 (audit) → M5.13-4.1 (fix) → M5.13-4.1-R1 (audit, found issue)
 
 **Closeout log**: `logs/m5_14_3_m6_0_3_f_correction_closeout.md` (canonical)
 
-**Next work**: Per D1, Bry to pick Option A (CLOSE) / B (M5.15-1 real-world source) / C (M5.15-1 E2E smoke)
+**Next work**: D1 RESOLVED (Option A chosen) — M5.14 remains CLOSED; no M5.14-4. M5.15-1 remains CANDIDATE only and MUST NOT be dispatched without explicit Owner authorization.
 
 ### 5.3 M6.0 — Lived Context Validation + Subjective LLM Evaluation
 
@@ -511,7 +522,8 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 
 | Date | Change | Author | Source ticket |
 |------|--------|--------|---------------|
-| 2026-08-12 00:03 EDT | Initial canonical state registry established | Mavis / Lin | GOV-2 |
+| 2026-08-12 00:03 EDT | Initial canonical state registry established (commit `eb57151`) | Mavis / Lin | GOV-2 |
+| 2026-08-12 (GOV-2-R1) | Owner Decision A alignment: GOV-2 / M5.14 / M6.0 / GOV-1 all CLOSED. D1 RESOLVED (Option A). 13 decisions remain UNRESOLVED. M5.15-1 remains CANDIDATE only. (commit `59838d9aa9f98c15277c36d0e466e17e079f118a`) | Mavis / Lin | GOV-2-R1 |
 
 ---
 
