@@ -110,6 +110,60 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 
 **原則**: World Perception 是 ephemeral 的 — 不進 SAGE/長期 memory，不影響 production data。Invalid event → reject → trace → no context。
 
+#### 7.1 Lived Context Boundary (M6.1)
+
+M6.1 將 "World Perception" 重新定位為 **Signal + Perception** 兩層的一部分(非整個 Awareness),並定義 **Lived Context** 為獨立的 aggregation layer:
+
+```
+[Layer 1: Signal]            raw input from source
+                             Telegram / Calendar iCal / System clock /
+                             (future: Weather API / News API / Web Search)
+                                       ↓
+[Layer 2: Perception]        validation + scoring + dedup + fact extraction
+                             WorldPerceptionMiddleware (M3) +
+                             MemoryMiddleware (M5.10) +
+                             Chrono-Social Engine (Phase 3.5) +
+                             MultiAgentRelationshipsManager (M5.13)
+                                       ↓
+[Layer 3: Lived Context]     aggregated per-context blocks, formatted for LLM
+                             (de-facto implementation: src/llm/proxy.py:_build_messages_*)
+                             block order: identity → memory → mood →
+                             relationship → inner_life → world → temporal
+                                       ↓
+[Layer 4: Interpretation]    LLM call + response
+                             LLMProxy (M6.0-5.6) + AGENT_SPEAK emit
+```
+
+**Canonical 5 contexts** (M6.1 taxonomy):
+
+| Context | What it covers | Current sources | Current status |
+|---------|----------------|------------------|-----------------|
+| **Physical** | Bry's body / environment (weather, location, sunlight) | NONE in production | M3.1 Invariant E forbids; only Synthetic test driver |
+| **Information** | News / web / search results / external data | NONE in production | Deferred — no real source |
+| **Social** | Telegram messages, calendar events, cross-agent interactions | Telegram + Calendar (M5.15-6) | ✓ LIVE (partial) |
+| **Personal** | Bry's habits (meal/sleep/activity), preferences, identity | NONE for Bry-as-person | Deferred — requires data source decision |
+| **Temporal** (cross-cutting) | When; touches ALL other contexts | System clock + Bry's last_msg_ts | ✓ LIVE (Chrono-Social Engine) |
+
+**Capability positioning** (M6.1):
+- Calendar / Telegram / Weather / Web / Search / News / Messaging = **signal producers / evidence sources**
+- 這些 **不是 Lived Context 本身**;它們是 Layer 1 的 input,經過 Layer 2 處理後,才能在 Layer 3 聚合
+- Lived Context = 經過 Perception 處理後的、aggregate 為 LLM input 的狀態
+
+**Boundary invariant**:
+> External integration / tool output / raw WorldEvent ≠ Lived Context.
+
+**Existing aggregation**: 已在 `src/llm/proxy.py:_build_messages_group()` 與 `_build_messages_private()` 實作(7 個 block 順序組裝)。**無需新增 `LivedContextAggregator` wrapper**;現有 logic 已經是 de-facto Lived Context aggregator。
+
+**Frozen-contract impact** (per M6.1-1 audit): **0 changes**. 15 contracts preserved.
+
+**Missing capabilities** (P2, requires Bry decision):
+- Real Weather source (Physical)
+- Real News source (Information)
+- Personal life-rhythm tracking (Personal)
+- Environment→emotion reasoning (Personal)
+
+詳見 `logs/ENGINEERING_STATE.md` §5.5 M6.1 與 `C:\Users\bbfcc\gov_1_temp\m6_1_1_lived_context_taxonomy_audit.md` (out-of-repo)。
+
 ### 8️⃣ AGENCY LAYER
 
 最小化意圖-行動決策系統 (M5.2)，在 `AGENT_INTENT_PERCEIVED` 與 `AGENT_SPEAK` 中間。

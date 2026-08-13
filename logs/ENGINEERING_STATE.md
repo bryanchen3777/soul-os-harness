@@ -65,6 +65,7 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 | **M5.14** | **OFFICIALLY CLOSED** | `29deab7` | `m5_14_3_m6_0_3_f_correction_closeout.md` | Per D1 RESOLVED (Option A): chain officially closed, no M5.14-4 |
 | **M5.15** | **F1 + F2 + F3 + F4 RESOLVED (M5.15-3 + M5.15-5 + M5.15-6 CLOSED)** | `c2de02c` | `m5_15_6_closeout.md` (out-of-repo) | M5.15-1 / M5.15-2 / M5.15-3 / M5.15-5 / M5.15-6-PREFLIGHT / M5.15-6 all CLOSED. M5.15-4 SUPERSEDED by M5.15-5. F5-F7 P3 no action. |
 | **M6.0** | **CLOSED** | `540eac2` | `m6_0_5_6_configurable_evaluation_cost_ceiling_closeout.md` | M6.0-5.5-R1 is BLOCKED (credentials unavailable, correct by design) |
+| **M6.1** | **Lived Context Awareness — documentation CLOSED, capability layer DEFERRED** | (this commit) | `m6_1_1_lived_context_taxonomy_audit.md` (out-of-repo) | M6.1-0 / M6.1-1 READ-ONLY audits CLOSED; M6.1-2 canonical-boundary documentation CLOSED. Frozen contracts 0 change. Missing capabilities (Weather/News/Personal rhythm) explicitly DEFERRED per Owner decision boundary. |
 | **GOV-1** | **CLOSED** | (docs only) | `gov_1_state_normalization_audit.md` (out-of-repo) | State normalization audit complete |
 | **GOV-2** | **CLOSED** | `eb57151` | `logs/ENGINEERING_STATE.md` (this registry) | Canonical engineering state registry established |
 | **GOV-2-R1** | **CLOSED** | (this commit) | (this document, alignment) | Owner Decision A alignment — canonical state now matches Notion |
@@ -495,6 +496,92 @@ pattern when Bry authorizes them.
 
 ---
 
+### 5.6 M6.1 — Lived Context Awareness (Canonical Boundary & Documentation)
+
+**Status**: documentation CLOSED. capability layer DEFERRED. Frozen contracts 0 change. 0 production mutation.
+
+| Ticket | Title | Commit | Status | Notes |
+|--------|-------|--------|--------|-------|
+| M6.1-0 | Lived Context Awareness architecture audit (READ-ONLY) | (docs only) | **CLOSED** | 18 modules / 11 subsystems inventoried. Bry's 5 questions answered. Out-of-repo report. |
+| M6.1-1 | Lived Context taxonomy & minimal architecture (READ-ONLY) | (docs only) | **CLOSED** | READY FOR M6.1-2 verdict. Canonical 5 contexts + 4-layer boundary + minimum provenance. 0 frozen contract change. Out-of-repo report. |
+| M6.1-2 | Lived Context canonical boundary & documentation (IMPLEMENTATION) | (this commit) | **CLOSED** | Documentation-first implementation. README.md §7.1 added + this section + §9 change log. 0 source-code change, 0 frozen contract change, 0 production mutation, 0 new runtime abstraction. |
+
+**Canonical taxonomy** (M6.1-1):
+
+| Context | What it covers | Current sources | Current status |
+|---------|----------------|------------------|-----------------|
+| **Physical** | Bry's body / environment (weather, location, sunlight) | NONE in production | M3.1 Invariant E forbids; only Synthetic test driver |
+| **Information** | News / web / search results / external data | NONE in production | Deferred — no real source |
+| **Social** | Telegram messages, calendar events, cross-agent interactions | Telegram + Calendar (M5.15-6) | ✓ LIVE (partial) |
+| **Personal** | Bry's habits (meal/sleep/activity), preferences, identity | NONE for Bry-as-person | Deferred — requires data source decision |
+| **Temporal** (cross-cutting) | When; touches ALL other contexts | System clock + Bry's last_msg_ts | ✓ LIVE (Chrono-Social Engine) |
+
+**Canonical 4-layer boundary** (M6.1-1):
+
+```
+[Layer 1: Signal]            raw input from source
+                             Telegram / Calendar iCal / System clock /
+                             (future: Weather API / News API / Web Search)
+                                       ↓
+[Layer 2: Perception]        validation + scoring + dedup + fact extraction
+                             WorldPerceptionMiddleware (M3) +
+                             MemoryMiddleware (M5.10) +
+                             Chrono-Social Engine (Phase 3.5) +
+                             MultiAgentRelationshipsManager (M5.13)
+                                       ↓
+[Layer 3: Lived Context]     aggregated per-context blocks, formatted for LLM
+                             (de-facto implementation: src/llm/proxy.py:_build_messages_*)
+                             block order: identity → memory → mood →
+                             relationship → inner_life → world → temporal
+                                       ↓
+[Layer 4: Interpretation]    LLM call + response
+                             LLMProxy (M6.0-5.6) + AGENT_SPEAK emit
+```
+
+**Boundary invariant** (M6.1-1, canonical):
+> External integration / tool output / raw WorldEvent ≠ Lived Context.
+
+Calendar / Telegram / Weather / Web / Search / News / Messaging = **signal producers** (Layer 1).
+Lived Context = aggregated personal-context state from Perception output (Layer 3).
+
+**Existing aggregation** (M6.1-2 decision): `src/llm/proxy.py:_build_messages_group()` and
+`_build_messages_private()` is the **de-facto Lived Context aggregator**. Block order:
+identity → memory → mood → relationship → inner_life → world → temporal.
+**No new `LivedContextAggregator` runtime wrapper created** — documentation-only labeling.
+
+**Minimum provenance** (M6.1-1, all already in place):
+- `source` (per signal)
+- `observed_at` / timestamp (per signal)
+- `freshness` (implicit via `last_msg_ts`, chrono-social `deviation_interpretation`)
+- `confidence` (per relationship, M5.13-2)
+- `signal_vs_derived` (implicit via LLM context block separation)
+
+No new scoring dimensions added. No new metadata fields required.
+
+**Frozen-contract impact** (per M6.1-1 audit): **0 changes**. 15 contracts preserved
+(M3 WorldEvent, M3.1 ABC, M3.1 Bus, M5.4-5.1 InnerLifeEvent, M5.4-5.1 parent_event_id,
+M5.4-5.1 lineage, M5.4-5.5 SoulEvent.inner_life_event_id, M5.9-2 WORLD_QUALIFYING_TYPES,
+M5.9-3 WorldInnerLifeAdapter, M5.10 Memory, M5.13-2 strict 0.3, M5.15-3 canonical bus path,
+M5.15-5 source_world_event_novelty_id, M5.15-6 identity model, VALID_SOURCES).
+
+**Missing capabilities** (DEFERRED, requires Owner authorization to start):
+- Real Weather source (Physical, M3.1 Invariant E exception like Calendar M5.15-6)
+- Real News source (Information)
+- Personal life-rhythm tracking (Personal, requires data source decision)
+- Environment→emotion reasoning (Personal, requires explicit pipeline)
+- LivedContextAggregator (CAPABILITY — currently de-facto, no concrete behavioral need)
+
+**Closeout logs** (out-of-repo per M5.13-3.1 lesson):
+- M6.1-0: `C:\Users\bbfcc\gov_1_temp\m6_1_0_lived_context_awareness_audit.md`
+- M6.1-1: `C:\Users\bbfcc\gov_1_temp\m6_1_1_lived_context_taxonomy_audit.md` (canonical)
+
+**Next work**: None authorized. M6.1-2 documentation is canonical. Future M6.1-* capability
+tickets (weather / news / personal-rhythm) require Owner authorization per §2.8 decision boundary
+and must follow the M5.15-6 integration pattern (architecture decision → implementation →
+closeout).
+
+---
+
 ## 6. STALE REFERENCES (historical closeouts vs canonical state)
 
 Per §2.6 Historical Document Rule, historical closeouts are preserved unchanged. Stale references are documented here for reconciliation.
@@ -630,6 +717,7 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-08-12 (M5.13-5) | Untouched-Entry Decay (commit `9501603796ac250de95e19dc0fa2b543f81d95da`). 14/14 new tests + 56/56 M5.13 full suite + 105/105 adjacent regression PASS. 0 frozen contract change. 0 production mutation. **M5.13 series now FULLY CLOSED** (no remaining OPTIONAL/DEFERRED tickets). Implementation: 1 constant `UNTOUCHED_DECAY_GRACE_DAYS = 1.0` + 1 function `_decay_locked` extended with `created_at` fallback. Decay anchor priority: (1) `last_interaction_at` (M5.13-4.2 existing), (2) `created_at` (M5.13-5 new, only when `last_interaction_at` is None AND `created_at` is > 1.0 day old), (3) None (legacy/malformed → skip, no crash). Touched entries: continue using `last_interaction_at` (M5.13-4.2 unchanged). Preserves M5.13-2 strict 0.3 contract (grace period ensures `ensure_relationship(0.3) → get()` returns 0.3). 2 files changed: `src/soul/relationships.py` (+36 -6), `tests/test_m5_13_5_untouched_decay.py` (NEW +471, 14 tests in 7 sections A-G). Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m5_13_5_closeout.md`. D2 RESOLVED. | Mavis / Lin | M5.13-5 |
 | 2026-08-12 (M6.0-5.6.1) | Budget Profile Registry (commit `3d1fae4a86b5b62ab1edd5688203f27fe3c36a36`). 29/29 new tests + 12/12 M6.0-5.6 + M6.0-5.6.1 manual regression PASS. 0 frozen contract change. 0 production mutation. **M6.0 series now FULLY CLOSED** (no remaining OPTIONAL/DEFERRED tickets; M6.0-5.5-R1 remains BLOCKED per spec). Implementation: 1 `BudgetProfile` str-Enum (CHAT/DIARY/DREAM) + 1 `_BUDGET_PROFILE_VALUES` dict (frozen profile → tuple) + 1 `EvaluationBudgetConfig.from_profile()` @classmethod factory. Profile values: CHAT (3/2/5000/0.05, == default for no-op migration), DIARY (2/1/3000/0.03, smaller budget for high volume), DREAM (1/1/2000/0.02, smallest budget for low observable). Defaults preserved 100% (CHAT == `EvaluationBudgetConfig()`). `from_profile()` rejects non-`BudgetProfile` inputs (raw string, None, int, other enum) with `TypeError`. Profile-derived configs are frozen + hashable. 3 files changed: `tests/_helpers/subjective_eval/multi_model_runner.py` (+100), `tests/_helpers/subjective_eval/__init__.py` (+3 -1), `tests/test_m6_0_5_6_1_budget_profile.py` (NEW +386, 29 tests in 7 sections A-G). Pre-existing test collection issue (`tests/` lacks `__init__.py`, 5 M6.0.x tests fail to collect via pytest — per M5.15-6 closeout §6.1 known finding) verified via direct script, not introduced by D3. Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m6_0_5_6_1_closeout.md`. D3 RESOLVED. | Mavis / Lin | M6.0-5.6.1 |
 | 2026-08-12 (M5.15-6) | Real-World Calendar Source Integration (commit `c2de02c`). 55/55 new tests + 211/211 regression PASS. 0 frozen contract change across 15 contracts (M3 WorldEvent, M3.1 ABC, M3.1 Bus, M5.4-5.1 InnerLifeEvent 9 fields, M5.4-5.1 parent_event_id, M5.4-5.1 lineage, M5.9-2 QUALIFYING_TYPES, M5.9-3 Adapter, M5.15-3 canonical bus path, M5.15-5 source_world_event_novelty_id, VALID_SOURCES, _NOVELTY_ID_RE all unchanged). RESUME Option 1 (Bry authorization 2026-08-12 19:37): `novelty_id = SHA256(VEVENT.UID)[:32]`, `data["ical_uid"] = exact UID`, `data["ical_sequence"] = VEVENT.SEQUENCE` (observability only). SEQUENCE excluded from hash (Q6: same UID + different SEQUENCE → same hash → adapter dedupes). 0 production mutation (yua/relationships.json 10095B81... unchanged). IcalCalendarSource (src/world/source/calendar_ical.py): polling-driven (300s default), env-gated via SOULOS_CALENDAR_ICAL_URL, 24h lookahead default, parent-only RRULE (Q5), CANCELLED skipped (Q7), 1 URL = 1 source (Q9), library icalendar (PyPI MIT), HTTP via urllib stdlib + asyncio.run_in_executor (non-blocking), 30s timeout, MAX_EVENTS_PER_POLL=500 cap, failure observable (log+skip+retry, never crash, never silent). 4 files changed: src/world/source/calendar_ical.py (NEW, +476), src/world/source/__init__.py (+14), scripts/run_server.py (+65), tests/test_m5_15_6_calendar_ical_source.py (NEW, +1105). All 12 critical regression tests A-L PASS. 7 pre-existing baseline failures unchanged (M3.1 Phase B/C/D + M2.0); 1 pre-existing test ordering issue (test_m5_4_5_3::test_g2 env var setup). F1 + F2 + F3 + F4 all RESOLVED. M5.15 series all CLOSED. Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m5_15_6_closeout.md`. | Mavis / Lin | M5.15-6 |
+| 2026-08-13 (M6.1-2) | Lived Context Canonical Boundary & Documentation (commit `7f3f384` → M6.1-2 commit). Documentation-first implementation. 2 files changed: `README.md` (+54 §7.1 "Lived Context Boundary (M6.1)" sub-section, 4-layer architecture + 5 contexts + boundary invariant + capability positioning), `logs/ENGINEERING_STATE.md` (+74 §5.6 M6.1 milestone table + canonical taxonomy + 4-layer boundary + boundary invariant + missing capabilities + this §9 change log entry + §1 status snapshot row). 0 source-code change, 0 frozen contract change (15 contracts preserved: M3/M3.1/M5.4-5.1/M5.4-5.5/M5.9-2/M5.9-3/M5.10/M5.13-2/M5.15-3/M5.15-5/M5.15-6/VALID_SOURCES), 0 production mutation, 0 new runtime abstraction. **No `LivedContextAggregator` wrapper created** — `src/llm/proxy.py:_build_messages_group()` and `_build_messages_private()` is the de-facto Lived Context aggregator (block order: identity → memory → mood → relationship → inner_life → world → temporal). M6.1-0 / M6.1-1 READ-ONLY audits out-of-repo. Frozen contracts 0 change verified via diff. Production data byte-for-byte unchanged (memory.db / perception_trace / shadow_log / relationships / diary / dream / emotion persistence all not touched). 20 baseline untracked artifacts preserved. | Mavis / Lin | M6.1-2 |
 
 ---
 
