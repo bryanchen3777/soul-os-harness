@@ -11,6 +11,9 @@ Bry 拍板 2026-08-08 02:21 A' cleanup:
                      M3.1 Phase A 改 conform WorldEventSource)
     - calendar_ical.py: IcalCalendarSource (M5.15-6 IMPLEMENTATION)
                      Real-world WorldEventSource for iCal/ICS public feeds.
+    - open_meteo.py:    OpenMeteoWeatherSource (M6.1-3.1 IMPLEMENTATION)
+                     Real-world WorldEventSource for Open-Meteo public API.
+                     First Physical-context signal producer.
 
   既有 M3 行為 100% 不變:
     - SyntheticWorldEventSource 的 build_*() factory methods 完全保留
@@ -37,12 +40,27 @@ M5.15-6 (Bry 派工 2026-08-12 19:29) — Real-World Calendar Source Integration
   - Parent-only for RRULE (no recurrence engine)
   - CANCELLED skipped
   - Library: icalendar (PyPI, MIT, mature)
+
+M6.1-3.1 (Bry 派工 2026-08-13 19:27, OWNER AUTHORIZATION APPROVED) — Weather Signal Source:
+  Added OpenMeteoWeatherSource (src/world/source/open_meteo.py).
+  - 0 frozen contract change (M3 WorldEvent / M3.1 ABC / M3.1 Bus / M5.4-5.1 InnerLifeEvent / M5.9-2 / M5.15-3 / M5.15-5 all preserved)
+  - source_id = "weather" (per M3.1 VALID_SOURCES; provider "open_meteo" preserved in data["weather_provider"])
+  - Public API (no API key, no credentials, no token store)
+  - Env-gated via SOULOS_WEATHER_LOCATION (e.g., "25.03,121.57")
+  - Polling-driven (1800s = 30min default, conservative)
+  - Library: stdlib only (urllib + json, no new dependencies)
+  - M3.1 Invariant E exception (same justification as Calendar M5.15-6)
+  - Deterministic novelty_id = SHA256("weather.{lat}_{lon}.{hour}.{state}")[:32]
+  - M5.9-3 dedup: types "rain_started" and "weather_temp_change" NOT in WORLD_QUALIFYING_TYPES,
+    so adapter will reject (no InnerLifeEvent created); correct minimal scope
 """
 from .synthetic import SyntheticWorldEventSource, SYNTHETIC_TEST_EVENTS
 from .calendar_ical import IcalCalendarSource
+from .open_meteo import OpenMeteoWeatherSource
 
 __all__ = [
     "SyntheticWorldEventSource",
     "SYNTHETIC_TEST_EVENTS",
     "IcalCalendarSource",  # M5.15-6
+    "OpenMeteoWeatherSource",  # M6.1-3.1
 ]

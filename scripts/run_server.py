@@ -520,6 +520,71 @@ async def lifespan(app: FastAPI):
             "(SOULOS_CALENDAR_ICAL_URL not set, no calendar activity)"
         )
 
+    # ── M6.1-3.1 (Bry 派工 2026-08-13 19:27, OWNER AUTHORIZATION APPROVED):
+    #       Open-Meteo Weather Source (env-gated) ──
+    # First Physical-context signal producer (answers「今天真的下雨嗎?」).
+    # Same canonical pattern as M5.15-6 Calendar:
+    #   - Env-gated via SOULOS_WEATHER_LOCATION: if absent, NO polling
+    #   - Polling-driven (1800s default, conservative for weather)
+    #   - 1 location = 1 source (no multi-location orchestration in v1)
+    #   - M3.1 Invariant E exception (public API, no credentials, same as Calendar)
+    #   - Failure observable, never silent, never crash server
+    #   - Library: stdlib only (urllib + json, no new dependencies)
+    #
+    # Canonical flow:
+    #   Open-Meteo HTTP GET → OpenMeteoWeatherSource.poll()
+    #     → bus.publish(SoulEvent(WORLD_EVENT, target="broadcast",
+    #                              priority=NORMAL, payload=event.to_payload()))
+    #     → WorldPerceptionMiddleware (validate + state + trace)
+    #     → WorldInnerLifeAdapter (qualify: rain_started/weather_temp_change NOT
+    #                              in WORLD_QUALIFYING_TYPES, so no InnerLifeEvent
+    #                              in v1; correct minimal scope)
+    #
+    # 0 contract change (M3.1 ABC / M3.1 Bus / M3 WorldEvent / M5.4-5.1
+    # InnerLifeEvent / M5.9-2 / M5.9-3 / M5.15-3 / M5.15-5 all preserved).
+    weather_location = os.getenv("SOULOS_WEATHER_LOCATION", "").strip()
+    if weather_location:
+        from src.world.source.open_meteo import OpenMeteoWeatherSource
+        try:
+            weather_source = OpenMeteoWeatherSource(
+                location=weather_location,
+                bus=bus,  # canonical Event Bus path
+            )
+        except ValueError as e:
+            logger.warning(
+                f"[M6.1-3.1] OpenMeteoWeatherSource NOT wired "
+                f"(SOULOS_WEATHER_LOCATION invalid: {e})"
+            )
+        else:
+            # Polling task in lifespan (uses existing asyncio loop, no new scheduler)
+            async def _weather_poll_loop():
+                await asyncio.sleep(2)  # wait for server + bus to be fully ready
+                while True:
+                    try:
+                        await weather_source.poll()
+                    except Exception as e:
+                        # poll() catches its own errors, but defensive catch
+                        logger.warning(
+                            f"[M6.1-3.1] weather poll unexpected error: "
+                            f"{type(e).__name__}: {e}"
+                        )
+                    await asyncio.sleep(weather_source.polling_interval_secs)
+            asyncio.create_task(_weather_poll_loop())
+            # Expose to app.state for observability
+            app.state._world_weather_source = weather_source
+            logger.info(
+                f"[M6.1-3.1] OpenMeteoWeatherSource 已 wired ✓ "
+                f"(env_gated=SOULOS_WEATHER_LOCATION, "
+                f"polling_interval={weather_source.polling_interval_secs}s, "
+                f"source_id={weather_source.source_id}, "
+                f"location={weather_source.location})"
+            )
+    else:
+        logger.info(
+            "[M6.1-3.1] OpenMeteoWeatherSource NOT wired "
+            "(SOULOS_WEATHER_LOCATION not set, no weather activity)"
+        )
+
     # Phase 12 LLM-as-judge: 設定 process-global LLMProxy reference,
     # 讓 MemoryWriter._get_llm_judge() 跨模組邊界可以拿到
     from src.memory.sage.writer import set_llm_proxy
