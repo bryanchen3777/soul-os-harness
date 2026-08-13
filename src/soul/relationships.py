@@ -68,6 +68,13 @@ CONFIDENCE_DECAY_PER_DAY = 0.02        # 自然衰減 (沒互動就疏遠)
 CONFIDENCE_MIN = 0.0
 CONFIDENCE_MAX = 1.0
 
+# M5.13-5 (Bry 派工 2026-08-12 20:42): Untouched-entry decay grace period.
+# 從未互動過的 entry (last_interaction_at is None) 在 grace period 內不 decay,
+# 過了 grace period 才從 created_at 起算 decay。
+# 預設 1 天 — 守 M5.13-2 strict 0.3 contract (ensure_relationship(0.3) 第一次 read
+# 必須還是 0.3), 1 天 grace 確保新 entry 不會被立刻 decay。
+UNTOUCHED_DECAY_GRACE_DAYS = 1.0
+
 
 # ───────────────────────────────────────────────────────────
 # Pydantic-style schema (用 dict 結構, 不引 pydantic 依賴)
@@ -188,9 +195,15 @@ class RelationshipsStore:
         確保 `ensure_relationship(0.3)` 第一次 read 不會被 FP 噪訊推過 0.3 邊界
         (守 M5.13-2 strict contract: `confidence < 0.3 → 陌生人`, 沒 tolerance)。
 
+        M5.13-5 (Bry 派工 2026-08-12 20:42):
+        Untouched-entry decay — 從未互動過的 entry 若 `created_at` 超過
+        `UNTOUCHED_DECAY_GRACE_DAYS` (預設 1.0 天) 則從 `created_at` 起算 decay。
+        守 M5.13-2 strict 0.3 contract (grace 期間新 entry 不會被 decay)。
         - Touched entry: anchor = last_interaction_at, decay = days * 0.02
-        - Untouched entry (last_interaction_at is None): 跳過 (不 decay)
-        - 壞 timestamp / 無 tzinfo: 跳過該 entry (不 crash 整個 store)
+        - Untouched entry (last_interaction_at is None):
+            - within grace (created_at 在 grace 內) → 跳過 (不 decay)
+            - beyond grace (created_at 超過 grace) → anchor = created_at, decay
+        - 缺 created_at / 壞 timestamp: 跳過 (legacy, no crash, deterministic)
         - days <= 0: 跳過 (anchor 比 now 還新, 不可能但 defensive)
         - last_decay_at 仍寫回當 backward-compat metadata (其他 code 不再讀來算 decay)
         """
@@ -201,10 +214,27 @@ class RelationshipsStore:
             # M5.13-4.2: per-entry anchor, 從 last_interaction_at 起算
             anchor_iso = entry.get("last_interaction_at")
             if not anchor_iso:
-                # 從未互動過的 entry (新建立 + 還沒 touch), 跳過 decay
-                # 這是 M5.13-2 strict 0.3 contract 要求的:
-                # ensure_relationship(0.3) → 第一次 read 必須還是 0.3
-                continue
+                # M5.13-5: 從未互動過的 entry 嘗試從 created_at decay (with grace)
+                # 這維持 M5.13-2 strict 0.3 contract: grace 期間新 entry 不會被 decay,
+                # 過了 grace 才進入 decay path。
+                created_iso = entry.get("created_at")
+                if not created_iso:
+                    # Legacy entry: 沒有 last_interaction_at 也沒有 created_at,
+                    # 跳過 (deterministic, no crash, 不 silent-delete)。
+                    continue
+                try:
+                    created_dt = datetime.fromisoformat(created_iso)
+                except (ValueError, TypeError):
+                    # 壞 created_at 跳過, 不 crash 整個 store
+                    continue
+                if created_dt.tzinfo is None:
+                    created_dt = created_dt.replace(tzinfo=timezone.utc)
+                age_days = (now - created_dt).total_seconds() / 86400.0
+                if age_days < UNTOUCHED_DECAY_GRACE_DAYS:
+                    # Grace period 內, 跳過 decay (M5.13-2 strict 0.3 contract)
+                    continue
+                # Grace 已過, 從 created_at 起算 decay
+                anchor_iso = created_iso
             try:
                 anchor_dt = datetime.fromisoformat(anchor_iso)
             except (ValueError, TypeError):
