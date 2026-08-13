@@ -5,6 +5,7 @@
 **Owner**: Bryan (Mavis / Lin executes per Owner decisions).
 **Established**: GOV-2 (2026-08-12 00:03 EDT, commit `eb5715179647b963a4247272d9fcd4c639c7e6a3`).
 **Aligned**: GOV-2-R1 (2026-08-12, Owner Decision A: M5.14 / M6.0 / GOV-1 / GOV-2 all CLOSED; no ticket authorized).
+**M5.13-5 progressed** (2026-08-12, M5.13-5 Untouched-Entry Decay CLOSED; M5.13 series now FULLY CLOSED).
 **M5.15 series progressed** (2026-08-12, M5.15-1 / M5.15-2 / M5.15-3 / M5.15-4 / M5.15-5 / M5.15-6 all CLOSED; M5.15-4 SUPERSEDED by M5.15-5; M5.15-6-PREFLIGHT + M5.15-6 RESUME Option 1 CLOSED; F1 + F2 + F3 + F4 all RESOLVED).
 **Predecessor audit**: GOV-1 — `C:\Users\bbfcc\gov_1_temp\gov_1_state_normalization_audit.md` (CLOSED, out-of-repo per GOV-1 spec).
 **Canonical homepage**: [`README.md`](../README.md) §Engineering Governance.
@@ -45,7 +46,7 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 
 ### Current HEAD
 
-- Current HEAD: `c2de02c` (M5.15-6 — Real-World Calendar Source Integration, iCal/ICS via SHA256 UID)
+- Current HEAD: `9501603` (M5.13-5 — Untouched-Entry Decay, created_at fallback with grace)
 - M5.15-5 docs commit: `b36769681bb4a80482999aa2eb5830e4aad34892` (this commit's predecessor; updates canonical engineering state registry; **distinct from Current HEAD**)
 - M5.15-5 impl commit: `0aedbef25cf0cb8ba793a7620833ec6cfdb70db8` (Two-Layer Lineage Model + InnerLifeEvent.source_world_event_novelty_id)
 - M5.15-3 state docs commit: `4cd8b0d7fe0d8ae1a3554ea05b207e5c9fa407ae` (this commit's predecessor; updates §1 / §4.1 / §5.5 / §7 / §9 to reflect M5.15-3 closure; **distinct from Current HEAD**)
@@ -58,7 +59,7 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 
 | Milestone | Status | Latest commit | Last closeout | Notes |
 |-----------|--------|---------------|---------------|-------|
-| **M5.13** | **FUNCTIONALLY CLOSED** | `e6effd8` | `m5_13_4_2_strict_boundary_closeout.md` | M5.13-5 is OPTIONAL / DEFERRED per GOV-1 + GOV-2 |
+| **M5.13** | **FULLY CLOSED** | `9501603` | `m5_13_5_untouched_decay_closeout.md` (out-of-repo) | M5.13-5 CLOSED 2026-08-12; M5.13 series fully closed (no remaining OPTIONAL/DEFERRED tickets) |
 | **M5.14** | **OFFICIALLY CLOSED** | `29deab7` | `m5_14_3_m6_0_3_f_correction_closeout.md` | Per D1 RESOLVED (Option A): chain officially closed, no M5.14-4 |
 | **M5.15** | **F1 + F2 + F3 + F4 RESOLVED (M5.15-3 + M5.15-5 + M5.15-6 CLOSED)** | `c2de02c` | `m5_15_6_closeout.md` (out-of-repo) | M5.15-1 / M5.15-2 / M5.15-3 / M5.15-5 / M5.15-6-PREFLIGHT / M5.15-6 all CLOSED. M5.15-4 SUPERSEDED by M5.15-5. F5-F7 P3 no action. |
 | **M6.0** | **CLOSED** | `540eac2` | `m6_0_5_6_configurable_evaluation_cost_ceiling_closeout.md` | M6.0-5.5-R1 is BLOCKED (credentials unavailable, correct by design) |
@@ -212,10 +213,14 @@ All decisions below are preserved as **UNRESOLVED** per GOV-1 + GOV-2 spec, exce
 ### D2. M5.13-5 Untouched-Entry Decay proceed?
 
 - **Source**: M5.13-4.2 closeout §12 (`logs/m5_13_4_2_strict_boundary_closeout.md`)
-- **Status**: **OPTIONAL / DEFERRED** (per GOV-1 + GOV-2 work order: "DO NOT start M5.13-5 yet")
-- **Description**: Add `created_at` fallback in `_decay_locked` so that never-touched entries (old, no `last_interaction_at`) decay from `created_at` with a threshold (e.g., 1 day)
-- **Scope**: ~1 function change in `src/soul/relationships.py:_decay_locked` + ~5 new tests
-- **Authorization required**: Bry to unblock the OPTIONAL / DEFERRED status
+- **Status**: **RESOLVED** (M5.13-5 CLOSED 2026-08-12, commit `9501603`)
+- **Resolution**: M5.13-5 implemented per Bry authorization (POST-M5.15 decision queue audit, D2 = first STILL VALID + WORTH DOING)
+- **Description**: Add `created_at` fallback in `_decay_locked` so that never-touched entries (old, no `last_interaction_at`) decay from `created_at` with a 1.0-day grace threshold
+- **Effect**:
+  - M5.13 series now FULLY CLOSED (no remaining OPTIONAL/DEFERRED tickets)
+  - Untouched entries decay from `created_at` after 1.0 day grace (preserves M5.13-2 strict 0.3 contract)
+  - Legacy/malformed `created_at` entries: skip, no crash, deterministic
+  - Touched entries: continue using `last_interaction_at` (M5.13-4.2 anchor unchanged)
 
 ### D3. M6.0-5.6.1 Budget profile registry proceed?
 
@@ -302,12 +307,12 @@ All decisions below are preserved as **UNRESOLVED** per GOV-1 + GOV-2 spec, exce
 
 | ID | Work | Source | Scope |
 |----|------|--------|-------|
-| D2 | M5.13-5 Untouched-Entry Decay | M5.13-4.2 §12 | 1 function + ~5 tests |
 | D3 | M6.0-5.6.1 Budget profile registry | M6.0-5.6 §K | New enum + factory + tests |
 | D14 | M5.13-3 multi-line format | M5.13-2 design | Cosmetic |
 
-**Note**: M5.15-4 (cross-handler lineage) and M5.15-5 (identity bridge) and M5.15-6 (real-world source)
-have all been RESOLVED. M5.15-4 is SUPERSEDED by M5.15-5. M5.15-6 resolved F2 P2.
+**Note**: M5.15-4 (cross-handler lineage), M5.15-5 (identity bridge), M5.15-6 (real-world source),
+and M5.13-5 (untouched-entry decay) have all been RESOLVED. M5.15-4 is SUPERSEDED by M5.15-5.
+M5.15-6 resolved F2 P2. M5.13-5 resolved M5.13's last remaining OPTIONAL ticket.
 
 ### 4.2 DEFERRED (explicitly postponed, requires authorization to start)
 
@@ -353,8 +358,8 @@ weather/news/social when those candidates are authorized.
 | M5.13-4 | Float precision issue audit (READ-ONLY) | `97c1063` | **CLOSED** | Discovered 0.3 boundary decay bug (P3 dormant) |
 | M5.13-4.1 | Relationship confidence boundary regression (FIX) | `c816142` | **SUPERSEDED** | Consumer `round(_, 6)` fix; 5e-7 false-promotion range |
 | M5.13-4.1-R1 | Relationship threshold rounding boundary audit (READ-ONLY) | `4815331` | **CLOSED** | Documented 5e-7 false-promotion; recommended C (BRY DECISION) |
-| M5.13-4.2 | Strict relationship confidence boundary fix (FIX) | `e6effd8` | **CLOSED** | Producer-side per-entry decay anchor; **CANONICAL LATEST** |
-| M5.13-5 | Untouched-Entry Decay Semantics | (none) | **OPTIONAL / DEFERRED** | See §3 D2 |
+| M5.13-4.2 | Strict relationship confidence boundary fix (FIX) | `e6effd8` | **CLOSED** | Producer-side per-entry decay anchor |
+| M5.13-5 | Untouched-Entry Decay (FIX) | `9501603` | **CLOSED** | created_at fallback with 1.0-day grace; preserves M5.13-2 strict 0.3 contract; 14/14 new tests + 56/56 M5.13 suite + 105/105 adjacent regression; 0 frozen contract change; 0 production mutation. **CANONICAL LATEST.** |
 
 **Supersession chain**:
 ```
@@ -364,7 +369,9 @@ M5.13-4 (audit) → M5.13-4.1 (fix) → M5.13-4.1-R1 (audit, found issue)
 
 **M5.13-2 contract (STRICT, FROZEN)**: `confidence >= 0.3` → 「認識」, `confidence < 0.3` → 「陌生人」 (no tolerance).
 
-**Closeout log**: `logs/m5_13_4_2_strict_boundary_closeout.md` (canonical)
+**Closeout logs** (latest canonical for M5.13 series):
+- `logs/m5_13_4_2_strict_boundary_closeout.md` (M5.13-4.2 — producer-side per-entry anchor)
+- `C:\Users\bbfcc\gov_1_temp\m5_13_5_closeout.md` (M5.13-5 — untouched-entry decay, out-of-repo)
 
 ### 5.2 M5.14 — Cross-Layer Runtime Convergence
 
@@ -532,7 +539,8 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 - `logs/m5_13_4_float_precision_audit.md`
 - `logs/m5_13_4_1_relationship_confidence_boundary_closeout.md` (SUPERSEDED — kept for history)
 - `logs/m5_13_4_1_r1_relationship_threshold_rounding_boundary_audit.md`
-- `logs/m5_13_4_2_strict_boundary_closeout.md` (CANONICAL LATEST)
+- `logs/m5_13_4_2_strict_boundary_closeout.md` (M5.13-4.2)
+- `C:\Users\bbfcc\gov_1_temp\m5_13_5_closeout.md` (M5.13-5, out-of-repo, CANONICAL LATEST)
 
 **M5.14**:
 - `logs/m5_14_1_cross_layer_runtime_convergence_audit.md`
@@ -610,6 +618,8 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-08-12 (M5.15-3) | WorldEventSource → Event Bus canonical integration (commit `b4b981a7b24678779551bccca2f4b6eb4dd20b3e`). 31/31 new tests + 159/159 regression PASS. 0 frozen contract change. 0 production mutation. M5.15 chain F1 RESOLVED; F2/F3/F4 remain CANDIDATEs (per M5.15-1 audit + M5.15-2 decision). 3 files changed: `src/world/source/synthetic.py` (+114 -6), `scripts/run_server.py` (+51), `tests/test_m5_15_3_canonical_bus_integration.py` (new +1089). Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m5_15_3_closeout.md`. | Mavis / Lin | M5.15-3 |
 | 2026-08-12 (M5.15-4) | Cross-Handler Lineage Propagation STOPPED. M5.15-4 inspection discovered parent_event_id contract (M5.4-5.1 frozen) requires parent to be a known InnerLifeEvent.event_id (writer.py:172 + 32-hex format check identity.py:195). Cannot reference SoulEvent.event_id (UUID with dashes) or WorldEvent.novelty_id (free string) without modifying frozen contract. 3 of 7 Stop conditions triggered. STOP report out-of-repo at `C:\Users\bbfcc\gov_1_temp\m5_15_4_stop_report.md`. Bry Decision: 0 implementation, await M5.15-5 architecture decision. | Mavis / Lin | M5.15-4 |
 | 2026-08-12 (M5.15-5) | WorldEvent ↔ InnerLifeEvent Identity Bridge (commit `0aedbef25cf0cb8ba793a7620833ec6cfdb70db8`). 52/52 new tests + 285/285 regression PASS. 1 additive frozen-contract amendment (M5.4-5.1 InnerLifeEvent +1 Optional field `source_world_event_novelty_id: Optional[str] = None`). 13 frozen contracts preserved (parent_event_id / lineage_depth / lineage_path / correlation_id / provenance all 0 change). 0 production mutation. Two-Layer Lineage Model established: Layer 1 External Causality (WorldEvent → InnerLifeEvent, free string) + Layer 2 Internal Lineage (InnerLifeEvent → InnerLifeEvent, M5.4-5.1 frozen preserved). M5.15-4 SUPERSEDED by M5.15-5 (per GOV-2 §2.5). F1 + F3 + F4 RESOLVED. F2 CANDIDATE (M5.15-6). 10 files changed: 6 source + 4 test. Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m5_15_5_closeout.md`. | Mavis / Lin | M5.15-5 |
+| 2026-08-12 (M5.15-6) | Real-World Calendar Source Integration (commit `c2de02c`). 55/55 new tests + 211/211 regression PASS. 0 frozen contract change across 15 contracts. RESUME Option 1 (Bry authorization 2026-08-12 19:37): `novelty_id = SHA256(VEVENT.UID)[:32]`, `data["ical_uid"] = exact UID`, `data["ical_sequence"] = VEVENT.SEQUENCE` (observability only). IcalCalendarSource (src/world/source/calendar_ical.py): polling-driven (300s default), env-gated via SOULOS_CALENDAR_ICAL_URL, 24h lookahead default, parent-only RRULE (Q5), CANCELLED skipped (Q7), 1 URL = 1 source (Q9), library icalendar (PyPI MIT), HTTP via urllib stdlib + asyncio.run_in_executor (non-blocking), 30s timeout, MAX_EVENTS_PER_POLL=500 cap, failure observable (log+skip+retry, never crash, never silent). 4 files changed. F1 + F2 + F3 + F4 all RESOLVED. M5.15 series all CLOSED. | Mavis / Lin | M5.15-6 |
+| 2026-08-12 (M5.13-5) | Untouched-Entry Decay (commit `9501603796ac250de95e19dc0fa2b543f81d95da`). 14/14 new tests + 56/56 M5.13 full suite + 105/105 adjacent regression PASS. 0 frozen contract change. 0 production mutation. **M5.13 series now FULLY CLOSED** (no remaining OPTIONAL/DEFERRED tickets). Implementation: 1 constant `UNTOUCHED_DECAY_GRACE_DAYS = 1.0` + 1 function `_decay_locked` extended with `created_at` fallback. Decay anchor priority: (1) `last_interaction_at` (M5.13-4.2 existing), (2) `created_at` (M5.13-5 new, only when `last_interaction_at` is None AND `created_at` is > 1.0 day old), (3) None (legacy/malformed → skip, no crash). Touched entries: continue using `last_interaction_at` (M5.13-4.2 unchanged). Preserves M5.13-2 strict 0.3 contract (grace period ensures `ensure_relationship(0.3) → get()` returns 0.3). 2 files changed: `src/soul/relationships.py` (+36 -6), `tests/test_m5_13_5_untouched_decay.py` (NEW +471, 14 tests in 7 sections A-G). Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m5_13_5_closeout.md`. D2 RESOLVED. | Mavis / Lin | M5.13-5 |
 | 2026-08-12 (M5.15-6) | Real-World Calendar Source Integration (commit `c2de02c`). 55/55 new tests + 211/211 regression PASS. 0 frozen contract change across 15 contracts (M3 WorldEvent, M3.1 ABC, M3.1 Bus, M5.4-5.1 InnerLifeEvent 9 fields, M5.4-5.1 parent_event_id, M5.4-5.1 lineage, M5.9-2 QUALIFYING_TYPES, M5.9-3 Adapter, M5.15-3 canonical bus path, M5.15-5 source_world_event_novelty_id, VALID_SOURCES, _NOVELTY_ID_RE all unchanged). RESUME Option 1 (Bry authorization 2026-08-12 19:37): `novelty_id = SHA256(VEVENT.UID)[:32]`, `data["ical_uid"] = exact UID`, `data["ical_sequence"] = VEVENT.SEQUENCE` (observability only). SEQUENCE excluded from hash (Q6: same UID + different SEQUENCE → same hash → adapter dedupes). 0 production mutation (yua/relationships.json 10095B81... unchanged). IcalCalendarSource (src/world/source/calendar_ical.py): polling-driven (300s default), env-gated via SOULOS_CALENDAR_ICAL_URL, 24h lookahead default, parent-only RRULE (Q5), CANCELLED skipped (Q7), 1 URL = 1 source (Q9), library icalendar (PyPI MIT), HTTP via urllib stdlib + asyncio.run_in_executor (non-blocking), 30s timeout, MAX_EVENTS_PER_POLL=500 cap, failure observable (log+skip+retry, never crash, never silent). 4 files changed: src/world/source/calendar_ical.py (NEW, +476), src/world/source/__init__.py (+14), scripts/run_server.py (+65), tests/test_m5_15_6_calendar_ical_source.py (NEW, +1105). All 12 critical regression tests A-L PASS. 7 pre-existing baseline failures unchanged (M3.1 Phase B/C/D + M2.0); 1 pre-existing test ordering issue (test_m5_4_5_3::test_g2 env var setup). F1 + F2 + F3 + F4 all RESOLVED. M5.15 series all CLOSED. Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m5_15_6_closeout.md`. | Mavis / Lin | M5.15-6 |
 
 ---

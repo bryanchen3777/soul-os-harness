@@ -216,8 +216,8 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 
 ## 🗺️ 當前工程狀態
 
-**Current HEAD**: `c2de02c` (M5.15-6 — Real-World Calendar Source Integration, iCal/ICS via SHA256 UID)
-**Current authorized ticket**: **NONE** (per Owner Decision A + M5.15-6 closeout: M5.14 / M5.15 / M6.0 / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED; M5.15 series fully closed; F1 + F2 + F3 + F4 all RESOLVED; no next ticket authorized)
+**Current HEAD**: `9501603` (M5.13-5 — Untouched-Entry Decay, created_at fallback with grace)
+**Current authorized ticket**: **NONE** (per Owner Decision A + M5.13-5 + M5.15-6 closeouts: M5.13 (fully closed) / M5.14 / M5.15 / M6.0 / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED; no next ticket authorized)
 
 | Milestone | 內容 | 狀態 | Commit |
 |-----------|------|------|--------|
@@ -233,7 +233,7 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 | **M5.10** | Memory LLM judge v1 context visibility | ✅ | `21258fe` |
 | **M5.11** | P2 capability formal closures | ✅ | `f69f36f` |
 | **M5.12** | Remaining agency P2 convergence audit | ✅ | `48c3063` |
-| **M5.13** | Relationship context + boundary precision (functionally closed) | ✅ | `e6effd8` (4.2) |
+| **M5.13** | Relationship context + boundary precision + untouched-entry decay (fully closed) | ✅ | `9501603` (5) |
 | **M5.14** | Cross-layer runtime convergence (officially closed) | ✅ | `29deab7` (3) |
 | **M5.15** | WorldEventSource → Event Bus canonical integration + identity bridge + real-world calendar source (F1 + F2 + F3 + F4 all RESOLVED) | ✅ | `c2de02c` (6) |
 | **M6.0** | Lived context validation + subjective LLM evaluation | ✅ | `540eac2` (5.6) |
@@ -364,4 +364,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-08-12 (M5.15-6 — Real-World Calendar Source Integration, iCal/ICS via SHA256 UID hash, RESUME Option 1; M5.15 series fully closed: F1 + F2 + F3 + F4 all RESOLVED; M5.14 / M5.15 / M6.0 / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED)
+**最後更新**: 2026-08-12 (M5.13-5 — Untouched-Entry Decay, created_at fallback with 1.0-day grace, preserves M5.13-2 strict 0.3 contract; M5.13 series now FULLY CLOSED; M5.14 / M5.15 / M6.0 / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED)
