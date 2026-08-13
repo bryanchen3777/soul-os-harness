@@ -384,6 +384,55 @@ class EvaluationBudgetConfig:
             max_cost_usd=float(self.max_cost_usd),
         )
 
+    @classmethod
+    def from_profile(cls, profile: "BudgetProfile") -> "EvaluationBudgetConfig":
+        """
+        M6.0-5.6.1 (Bry 派工 2026-08-12 20:52): Construct an
+        EvaluationBudgetConfig from a named BudgetProfile.
+
+        Deterministic mapping (see _BUDGET_PROFILE_VALUES):
+          - BudgetProfile.CHAT  -> 3/2/5000/0.05 (matches defaults)
+          - BudgetProfile.DIARY -> 2/1/3000/0.03 (smaller budget)
+          - BudgetProfile.DREAM -> 1/1/2000/0.02 (smallest budget)
+
+        Why a classmethod factory:
+          - Eliminates call-site duplication for common profiles.
+          - Caller does not need to remember the 4 numeric values.
+          - Profile values are frozen in code (deterministic).
+          - Validation runs through __post_init__ as usual.
+
+        Args:
+            profile: BudgetProfile enum value (CHAT / DIARY / DREAM).
+
+        Returns:
+            EvaluationBudgetConfig with the profile's budget values.
+
+        Raises:
+            TypeError: if profile is not a BudgetProfile enum value.
+            ValueError: if the profile is not one of the registered
+                profiles (defensive; enum membership should prevent this).
+        """
+        # Defensive: enum membership check (rejects raw strings or
+        # unknown enum members from external sources).
+        if not isinstance(profile, BudgetProfile):
+            raise TypeError(
+                f"profile must be a BudgetProfile enum value, got: "
+                f"{type(profile).__name__} ({profile!r})"
+            )
+        if profile not in _BUDGET_PROFILE_VALUES:
+            # Should be unreachable (enum membership), kept as a
+            # defensive guard for forward-compat changes.
+            raise ValueError(
+                f"unknown BudgetProfile: {profile!r} (not in registry)"
+            )
+        calls, retries, tokens, cost = _BUDGET_PROFILE_VALUES[profile]
+        return cls(
+            max_judge_calls=calls,
+            max_retries_per_judge=retries,
+            max_token_budget=tokens,
+            max_cost_usd=cost,
+        )
+
     def to_judge_max_retries(self) -> int:
         """
         Return the per-judge max_retries value to apply to RealLLMJudge.
@@ -395,6 +444,57 @@ class EvaluationBudgetConfig:
         via the on_retry callback (M6.0-5.4-R2).
         """
         return self.max_retries_per_judge
+
+
+# ── BudgetProfile registry (M6.0-5.6.1) ──
+
+
+class BudgetProfile(str, Enum):
+    """
+    M6.0-5.6.1 (Bry 派工 2026-08-12 20:52): Named budget profiles for
+    common evaluation contexts.
+
+    Each profile maps to a deterministic set of EvaluationBudgetConfig
+    values. Profiles exist to eliminate duplicate call-site configuration
+    and provide a stable, testable surface for callers that want a
+    pre-defined budget without constructing one explicitly.
+
+    Why a string Enum (not just Enum):
+      - str inheritance makes profiles JSON-serializable and
+        human-readable (str(BudgetProfile.CHAT) == "BudgetProfile.CHAT"
+        but the value is "chat").
+      - Stable, version-friendly: profile values are part of the public
+        contract (chat / diary / dream); renaming requires deprecation.
+
+    Out of scope (per work order):
+      - Adding new profiles without Bry authorization
+      - Making profile values configurable (they are intentionally
+        fixed for determinism)
+      - Profile inheritance / nesting (each profile is independent)
+    """
+    CHAT = "chat"
+    DIARY = "diary"
+    DREAM = "dream"
+
+
+# Profile -> (max_judge_calls, max_retries_per_judge, max_token_budget, max_cost_usd)
+#
+# M6.0-5.6.1 design rationale (per D3 audit):
+#   - CHAT: full default budget (matches `EvaluationBudgetConfig()` so
+#     call sites that switch from default to CHAT are no-op semantically).
+#     Most observable path (M6.0-4 §4.4 "Chat first (most observable)").
+#   - DIARY: smaller budget (high volume of diary LLM calls; each
+#     individual eval is lower-stakes). 2/1/3000/0.03.
+#   - DREAM: smallest budget (lower volume; least observable path).
+#     1/1/2000/0.02.
+#
+# Determinism: each profile produces a frozen dataclass with fixed
+# numeric values. No time-of-day / no external state / no random.
+_BUDGET_PROFILE_VALUES: Dict[BudgetProfile, tuple] = {
+    BudgetProfile.CHAT:  (3, 2, 5000, 0.05),  # matches EvaluationBudgetConfig() defaults
+    BudgetProfile.DIARY: (2, 1, 3000, 0.03),  # smaller budget (high volume)
+    BudgetProfile.DREAM: (1, 1, 2000, 0.02),  # smallest budget (lowest observable)
+}
 
 
 # ── MultiModelJudgeRunner ──

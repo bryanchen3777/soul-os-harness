@@ -66,7 +66,8 @@ from .multi_model_runner import (
     PricingModel,
     DEFAULT_PRICING,
     default_pricing_lookup,
-    EvaluationBudgetConfig,
+    EvaluationBudgetConfig,  # M6.0-5.6
+    BudgetProfile,  # M6.0-5.6.1
 )
 from .consensus import (
     EvaluationResult,
@@ -127,6 +128,7 @@ __all__ = [
     "DEFAULT_PRICING",
     "default_pricing_lookup",
     "EvaluationBudgetConfig",  # M6.0-5.6
+    "BudgetProfile",  # M6.0-5.6.1
     # consensus
     "EvaluationResult",
     "aggregate",
