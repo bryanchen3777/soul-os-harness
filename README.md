@@ -216,8 +216,8 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 
 ## 🗺️ 當前工程狀態
 
-**Current HEAD**: `9501603` (M5.13-5 — Untouched-Entry Decay, created_at fallback with grace)
-**Current authorized ticket**: **NONE** (per Owner Decision A + M5.13-5 + M5.15-6 closeouts: M5.13 (fully closed) / M5.14 / M5.15 / M6.0 / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED; no next ticket authorized)
+**Current HEAD**: `3d1fae4` (M6.0-5.6.1 — Budget Profile Registry, BudgetProfile + from_profile factory)
+**Current authorized ticket**: **NONE** (per Owner Decision A + M5.13-5 + M5.15-6 + M6.0-5.6.1 closeouts: M5.13 (fully closed) / M5.14 / M5.15 / M6.0 (fully closed) / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED; no next ticket authorized)
 
 | Milestone | 內容 | 狀態 | Commit |
 |-----------|------|------|--------|
@@ -236,7 +236,7 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 | **M5.13** | Relationship context + boundary precision + untouched-entry decay (fully closed) | ✅ | `9501603` (5) |
 | **M5.14** | Cross-layer runtime convergence (officially closed) | ✅ | `29deab7` (3) |
 | **M5.15** | WorldEventSource → Event Bus canonical integration + identity bridge + real-world calendar source (F1 + F2 + F3 + F4 all RESOLVED) | ✅ | `c2de02c` (6) |
-| **M6.0** | Lived context validation + subjective LLM evaluation | ✅ | `540eac2` (5.6) |
+| **M6.0** | Lived context validation + subjective LLM evaluation (fully closed) | ✅ | `3d1fae4` (5.6.1) |
 | **M6.0-5.5-R1** | Real three-judge E2E validation gate | ⛔ BLOCKED | `9d21740` (credentials unavailable, correct by design) |
 | **GOV-1** | Engineering state normalization audit | ✅ | (out-of-repo) |
 | **GOV-2** | Canonical engineering state registry | ✅ | `eb57151` |
@@ -364,4 +364,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-08-12 (M5.13-5 — Untouched-Entry Decay, created_at fallback with 1.0-day grace, preserves M5.13-2 strict 0.3 contract; M5.13 series now FULLY CLOSED; M5.14 / M5.15 / M6.0 / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED)
+**最後更新**: 2026-08-12 (M6.0-5.6.1 — Budget Profile Registry, BudgetProfile enum (CHAT/DIARY/DREAM) + from_profile factory, defaults preserved; M6.0 series now FULLY CLOSED; M5.13 (fully closed) / M5.14 / M5.15 / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED)

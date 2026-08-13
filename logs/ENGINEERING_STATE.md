@@ -5,6 +5,7 @@
 **Owner**: Bryan (Mavis / Lin executes per Owner decisions).
 **Established**: GOV-2 (2026-08-12 00:03 EDT, commit `eb5715179647b963a4247272d9fcd4c639c7e6a3`).
 **Aligned**: GOV-2-R1 (2026-08-12, Owner Decision A: M5.14 / M6.0 / GOV-1 / GOV-2 all CLOSED; no ticket authorized).
+**M6.0-5.6.1 progressed** (2026-08-12, M6.0-5.6.1 Budget Profile Registry CLOSED; D3 RESOLVED).
 **M5.13-5 progressed** (2026-08-12, M5.13-5 Untouched-Entry Decay CLOSED; M5.13 series now FULLY CLOSED).
 **M5.15 series progressed** (2026-08-12, M5.15-1 / M5.15-2 / M5.15-3 / M5.15-4 / M5.15-5 / M5.15-6 all CLOSED; M5.15-4 SUPERSEDED by M5.15-5; M5.15-6-PREFLIGHT + M5.15-6 RESUME Option 1 CLOSED; F1 + F2 + F3 + F4 all RESOLVED).
 **Predecessor audit**: GOV-1 — `C:\Users\bbfcc\gov_1_temp\gov_1_state_normalization_audit.md` (CLOSED, out-of-repo per GOV-1 spec).
@@ -46,7 +47,7 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 
 ### Current HEAD
 
-- Current HEAD: `9501603` (M5.13-5 — Untouched-Entry Decay, created_at fallback with grace)
+- Current HEAD: `3d1fae4` (M6.0-5.6.1 — Budget Profile Registry, BudgetProfile + from_profile factory)
 - M5.15-5 docs commit: `b36769681bb4a80482999aa2eb5830e4aad34892` (this commit's predecessor; updates canonical engineering state registry; **distinct from Current HEAD**)
 - M5.15-5 impl commit: `0aedbef25cf0cb8ba793a7620833ec6cfdb70db8` (Two-Layer Lineage Model + InnerLifeEvent.source_world_event_novelty_id)
 - M5.15-3 state docs commit: `4cd8b0d7fe0d8ae1a3554ea05b207e5c9fa407ae` (this commit's predecessor; updates §1 / §4.1 / §5.5 / §7 / §9 to reflect M5.15-3 closure; **distinct from Current HEAD**)
@@ -60,6 +61,7 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 | Milestone | Status | Latest commit | Last closeout | Notes |
 |-----------|--------|---------------|---------------|-------|
 | **M5.13** | **FULLY CLOSED** | `9501603` | `m5_13_5_untouched_decay_closeout.md` (out-of-repo) | M5.13-5 CLOSED 2026-08-12; M5.13 series fully closed (no remaining OPTIONAL/DEFERRED tickets) |
+| **M6.0** | **FULLY CLOSED** | `3d1fae4` | `m6_0_5_6_1_budget_profile_closeout.md` (out-of-repo) | M6.0-5.6.1 CLOSED 2026-08-12; M6.0 series fully closed (D3 RESOLVED) |
 | **M5.14** | **OFFICIALLY CLOSED** | `29deab7` | `m5_14_3_m6_0_3_f_correction_closeout.md` | Per D1 RESOLVED (Option A): chain officially closed, no M5.14-4 |
 | **M5.15** | **F1 + F2 + F3 + F4 RESOLVED (M5.15-3 + M5.15-5 + M5.15-6 CLOSED)** | `c2de02c` | `m5_15_6_closeout.md` (out-of-repo) | M5.15-1 / M5.15-2 / M5.15-3 / M5.15-5 / M5.15-6-PREFLIGHT / M5.15-6 all CLOSED. M5.15-4 SUPERSEDED by M5.15-5. F5-F7 P3 no action. |
 | **M6.0** | **CLOSED** | `540eac2` | `m6_0_5_6_configurable_evaluation_cost_ceiling_closeout.md` | M6.0-5.5-R1 is BLOCKED (credentials unavailable, correct by design) |
@@ -225,10 +227,14 @@ All decisions below are preserved as **UNRESOLVED** per GOV-1 + GOV-2 spec, exce
 ### D3. M6.0-5.6.1 Budget profile registry proceed?
 
 - **Source**: M6.0-5.6 closeout §K (`logs/m6_0_5_6_configurable_evaluation_cost_ceiling_closeout.md`)
-- **Status**: **OPTIONAL**
+- **Status**: **RESOLVED** (M6.0-5.6.1 CLOSED 2026-08-12, commit `3d1fae4`)
+- **Resolution**: M6.0-5.6.1 implemented per Bry authorization (POST-M5.15 decision queue audit, D3 = second STILL VALID + WORTH DOING)
 - **Description**: Add `BudgetProfile` enum + `EvaluationBudgetConfig.from_profile()` factory for common cases (`chat` / `diary` / `dream`)
-- **Scope**: New enum + factory method + tests
-- **Authorization required**: Bry to authorize M6.0-5.6.1
+- **Effect**:
+  - M6.0 series now FULLY CLOSED (no remaining OPTIONAL/DEFERRED tickets)
+  - 3 named profiles: CHAT (3/2/5000/0.05, matches default), DIARY (2/1/3000/0.03), DREAM (1/1/2000/0.02)
+  - Defaults unchanged (no silent override)
+  - Existing callers continue to work (`EvaluationBudgetConfig()` still works)
 
 ### D4. M5.12-1 inherited P2.2 / P2.6 decisions
 
@@ -307,12 +313,12 @@ All decisions below are preserved as **UNRESOLVED** per GOV-1 + GOV-2 spec, exce
 
 | ID | Work | Source | Scope |
 |----|------|--------|-------|
-| D3 | M6.0-5.6.1 Budget profile registry | M6.0-5.6 §K | New enum + factory + tests |
 | D14 | M5.13-3 multi-line format | M5.13-2 design | Cosmetic |
 
 **Note**: M5.15-4 (cross-handler lineage), M5.15-5 (identity bridge), M5.15-6 (real-world source),
-and M5.13-5 (untouched-entry decay) have all been RESOLVED. M5.15-4 is SUPERSEDED by M5.15-5.
-M5.15-6 resolved F2 P2. M5.13-5 resolved M5.13's last remaining OPTIONAL ticket.
+M5.13-5 (untouched-entry decay), and M6.0-5.6.1 (budget profile registry) have all been RESOLVED.
+M5.15-4 is SUPERSEDED by M5.15-5. M5.15-6 resolved F2 P2. M5.13-5 resolved M5.13's last
+remaining OPTIONAL ticket. M6.0-5.6.1 resolved M6.0's last remaining OPTIONAL ticket.
 
 ### 4.2 DEFERRED (explicitly postponed, requires authorization to start)
 
@@ -408,6 +414,7 @@ M5.13-4 (audit) → M5.13-4.1 (fix) → M5.13-4.1-R1 (audit, found issue)
 | M6.0-5.5 | Real three-judge subjective evaluation E2E (opt-in) | `3f599a4` | **CLOSED** | |
 | M6.0-5.5-R1 | Real three-judge E2E validation gate (BLOCKED) | `9d21740` | **BLOCKED** | Credentials unavailable, correct per spec |
 | M6.0-5.6 | Configurable subjective evaluation cost ceiling | `540eac2` | **CLOSED** | 30 new tests, 334 + 5 skipped PASS |
+| M6.0-5.6.1 | Budget Profile Registry | `3d1fae4` | **CLOSED** | `BudgetProfile` enum (CHAT/DIARY/DREAM) + `EvaluationBudgetConfig.from_profile()` factory. 29/29 new tests + 12/12 M6.0-5.6 + M6.0-5.6.1 manual regression. 0 frozen contract change (defaults 3/2/5000/0.05 preserved; CHAT profile == default; existing `EvaluationBudgetConfig()` still works). 0 production mutation. **CANONICAL LATEST.** |
 
 **Supersession chain** (M6.0-5.4 family):
 ```
@@ -572,6 +579,7 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
   - M5.15-5 decision analysis: `C:\Users\bbfcc\gov_1_temp\m5_15_5_decision_analysis.md`
   - M5.15-5 closeout: `C:\Users\bbfcc\gov_1_temp\m5_15_5_closeout.md`
   - M5.15-5 implementation report: `C:\Users\bbfcc\gov_1_temp\m5_15_5_implementation_report.md`
+  - M6.0-5.6.1 closeout: `C:\Users\bbfcc\gov_1_temp\m6_0_5_6_1_closeout.md` (canonical, Budget Profile Registry)
   - M5.15-6-PREFLIGHT decision: `C:\Users\bbfcc\gov_1_temp\m5_15_6_preflight_architecture_decision.md`
   - M5.15-6 RESUME STOP report: `C:\Users\bbfcc\gov_1_temp\m5_15_6_stop_report.md` (historical, M3.1 conflict)
   - M5.15-6 closeout: `C:\Users\bbfcc\gov_1_temp\m5_15_6_closeout.md` (canonical, RESUME Option 1)
@@ -620,6 +628,7 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-08-12 (M5.15-5) | WorldEvent ↔ InnerLifeEvent Identity Bridge (commit `0aedbef25cf0cb8ba793a7620833ec6cfdb70db8`). 52/52 new tests + 285/285 regression PASS. 1 additive frozen-contract amendment (M5.4-5.1 InnerLifeEvent +1 Optional field `source_world_event_novelty_id: Optional[str] = None`). 13 frozen contracts preserved (parent_event_id / lineage_depth / lineage_path / correlation_id / provenance all 0 change). 0 production mutation. Two-Layer Lineage Model established: Layer 1 External Causality (WorldEvent → InnerLifeEvent, free string) + Layer 2 Internal Lineage (InnerLifeEvent → InnerLifeEvent, M5.4-5.1 frozen preserved). M5.15-4 SUPERSEDED by M5.15-5 (per GOV-2 §2.5). F1 + F3 + F4 RESOLVED. F2 CANDIDATE (M5.15-6). 10 files changed: 6 source + 4 test. Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m5_15_5_closeout.md`. | Mavis / Lin | M5.15-5 |
 | 2026-08-12 (M5.15-6) | Real-World Calendar Source Integration (commit `c2de02c`). 55/55 new tests + 211/211 regression PASS. 0 frozen contract change across 15 contracts. RESUME Option 1 (Bry authorization 2026-08-12 19:37): `novelty_id = SHA256(VEVENT.UID)[:32]`, `data["ical_uid"] = exact UID`, `data["ical_sequence"] = VEVENT.SEQUENCE` (observability only). IcalCalendarSource (src/world/source/calendar_ical.py): polling-driven (300s default), env-gated via SOULOS_CALENDAR_ICAL_URL, 24h lookahead default, parent-only RRULE (Q5), CANCELLED skipped (Q7), 1 URL = 1 source (Q9), library icalendar (PyPI MIT), HTTP via urllib stdlib + asyncio.run_in_executor (non-blocking), 30s timeout, MAX_EVENTS_PER_POLL=500 cap, failure observable (log+skip+retry, never crash, never silent). 4 files changed. F1 + F2 + F3 + F4 all RESOLVED. M5.15 series all CLOSED. | Mavis / Lin | M5.15-6 |
 | 2026-08-12 (M5.13-5) | Untouched-Entry Decay (commit `9501603796ac250de95e19dc0fa2b543f81d95da`). 14/14 new tests + 56/56 M5.13 full suite + 105/105 adjacent regression PASS. 0 frozen contract change. 0 production mutation. **M5.13 series now FULLY CLOSED** (no remaining OPTIONAL/DEFERRED tickets). Implementation: 1 constant `UNTOUCHED_DECAY_GRACE_DAYS = 1.0` + 1 function `_decay_locked` extended with `created_at` fallback. Decay anchor priority: (1) `last_interaction_at` (M5.13-4.2 existing), (2) `created_at` (M5.13-5 new, only when `last_interaction_at` is None AND `created_at` is > 1.0 day old), (3) None (legacy/malformed → skip, no crash). Touched entries: continue using `last_interaction_at` (M5.13-4.2 unchanged). Preserves M5.13-2 strict 0.3 contract (grace period ensures `ensure_relationship(0.3) → get()` returns 0.3). 2 files changed: `src/soul/relationships.py` (+36 -6), `tests/test_m5_13_5_untouched_decay.py` (NEW +471, 14 tests in 7 sections A-G). Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m5_13_5_closeout.md`. D2 RESOLVED. | Mavis / Lin | M5.13-5 |
+| 2026-08-12 (M6.0-5.6.1) | Budget Profile Registry (commit `3d1fae4a86b5b62ab1edd5688203f27fe3c36a36`). 29/29 new tests + 12/12 M6.0-5.6 + M6.0-5.6.1 manual regression PASS. 0 frozen contract change. 0 production mutation. **M6.0 series now FULLY CLOSED** (no remaining OPTIONAL/DEFERRED tickets; M6.0-5.5-R1 remains BLOCKED per spec). Implementation: 1 `BudgetProfile` str-Enum (CHAT/DIARY/DREAM) + 1 `_BUDGET_PROFILE_VALUES` dict (frozen profile → tuple) + 1 `EvaluationBudgetConfig.from_profile()` @classmethod factory. Profile values: CHAT (3/2/5000/0.05, == default for no-op migration), DIARY (2/1/3000/0.03, smaller budget for high volume), DREAM (1/1/2000/0.02, smallest budget for low observable). Defaults preserved 100% (CHAT == `EvaluationBudgetConfig()`). `from_profile()` rejects non-`BudgetProfile` inputs (raw string, None, int, other enum) with `TypeError`. Profile-derived configs are frozen + hashable. 3 files changed: `tests/_helpers/subjective_eval/multi_model_runner.py` (+100), `tests/_helpers/subjective_eval/__init__.py` (+3 -1), `tests/test_m6_0_5_6_1_budget_profile.py` (NEW +386, 29 tests in 7 sections A-G). Pre-existing test collection issue (`tests/` lacks `__init__.py`, 5 M6.0.x tests fail to collect via pytest — per M5.15-6 closeout §6.1 known finding) verified via direct script, not introduced by D3. Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m6_0_5_6_1_closeout.md`. D3 RESOLVED. | Mavis / Lin | M6.0-5.6.1 |
 | 2026-08-12 (M5.15-6) | Real-World Calendar Source Integration (commit `c2de02c`). 55/55 new tests + 211/211 regression PASS. 0 frozen contract change across 15 contracts (M3 WorldEvent, M3.1 ABC, M3.1 Bus, M5.4-5.1 InnerLifeEvent 9 fields, M5.4-5.1 parent_event_id, M5.4-5.1 lineage, M5.9-2 QUALIFYING_TYPES, M5.9-3 Adapter, M5.15-3 canonical bus path, M5.15-5 source_world_event_novelty_id, VALID_SOURCES, _NOVELTY_ID_RE all unchanged). RESUME Option 1 (Bry authorization 2026-08-12 19:37): `novelty_id = SHA256(VEVENT.UID)[:32]`, `data["ical_uid"] = exact UID`, `data["ical_sequence"] = VEVENT.SEQUENCE` (observability only). SEQUENCE excluded from hash (Q6: same UID + different SEQUENCE → same hash → adapter dedupes). 0 production mutation (yua/relationships.json 10095B81... unchanged). IcalCalendarSource (src/world/source/calendar_ical.py): polling-driven (300s default), env-gated via SOULOS_CALENDAR_ICAL_URL, 24h lookahead default, parent-only RRULE (Q5), CANCELLED skipped (Q7), 1 URL = 1 source (Q9), library icalendar (PyPI MIT), HTTP via urllib stdlib + asyncio.run_in_executor (non-blocking), 30s timeout, MAX_EVENTS_PER_POLL=500 cap, failure observable (log+skip+retry, never crash, never silent). 4 files changed: src/world/source/calendar_ical.py (NEW, +476), src/world/source/__init__.py (+14), scripts/run_server.py (+65), tests/test_m5_15_6_calendar_ical_source.py (NEW, +1105). All 12 critical regression tests A-L PASS. 7 pre-existing baseline failures unchanged (M3.1 Phase B/C/D + M2.0); 1 pre-existing test ordering issue (test_m5_4_5_3::test_g2 env var setup). F1 + F2 + F3 + F4 all RESOLVED. M5.15 series all CLOSED. Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m5_15_6_closeout.md`. | Mavis / Lin | M5.15-6 |
 
 ---
