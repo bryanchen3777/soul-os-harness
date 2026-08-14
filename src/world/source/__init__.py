@@ -53,14 +53,41 @@ M6.1-3.1 (Bry 派工 2026-08-13 19:27, OWNER AUTHORIZATION APPROVED) — Weather
   - Deterministic novelty_id = SHA256("weather.{lat}_{lon}.{hour}.{state}")[:32]
   - M5.9-3 dedup: types "rain_started" and "weather_temp_change" NOT in WORLD_QUALIFYING_TYPES,
     so adapter will reject (no InnerLifeEvent created); correct minimal scope
+
+M6.1-5.1 (Bry 派工 2026-08-13 20:28, OWNER AUTHORIZATION APPROVED) — News Signal Source:
+  Added RssNewsSource (src/world/source/news_rss.py).
+  - 0 frozen contract change (M3 WorldEvent / M3.1 ABC / M3.1 Bus / M5.4-5.1 InnerLifeEvent
+    / M5.9-2 / M5.9-3 / M5.15-3 / M5.15-5 all preserved)
+  - source_id = "news" (per M3.1 VALID_SOURCES; provider identity preserved in
+    data["news_provider"])
+  - Public RSS feeds (no API key, no credentials, no token store)
+  - Env-gated via SOULOS_NEWS_FEEDS (format: "provider1|url1,provider2|url2,...")
+  - Polling-driven (1800s = 30min default, conservative)
+  - Lookback window: 2h default (freshness boundary)
+  - Article cap: 10 / poll default
+  - Library: stdlib only (urllib + xml.etree.ElementTree + email.utils), no new deps
+  - M3.1 Invariant E exception (same justification as Calendar + Weather)
+  - Deterministic novelty_id = SHA256(f"{provider}.{url}.{published_at}")[:32]
+  - Source-level dedup via in-memory OrderedDict (FIFO, 10000 entries, 0 persistent state)
+  - M5.9-3 dedup: type "news_event" NOT in WORLD_QUALIFYING_TYPES,
+    so adapter will reject (no InnerLifeEvent created); correct minimal scope
+  - type = "news_event" (new type, uses DEFAULT_TYPE_BASELINE_RELEVANCE 0.10)
+  - Supports RSS 2.0 (primary) + Atom (secondary) for free
+  - Preferred feeds per work order (Reuters + AP) UNAVAILABLE from this machine
+    (Reuters discontinued public RSS in 2020; AP blocks bot/scraper access).
+    8 well-known public feeds verified working: BBC, NASA, HN, Guardian, Ars, NPR, Al Jazeera
 """
 from .synthetic import SyntheticWorldEventSource, SYNTHETIC_TEST_EVENTS
 from .calendar_ical import IcalCalendarSource
 from .open_meteo import OpenMeteoWeatherSource
+from .news_rss import NewsFeedConfig, RssNewsSource, parse_news_feeds_env
 
 __all__ = [
     "SyntheticWorldEventSource",
     "SYNTHETIC_TEST_EVENTS",
     "IcalCalendarSource",  # M5.15-6
     "OpenMeteoWeatherSource",  # M6.1-3.1
+    "RssNewsSource",  # M6.1-5.1
+    "NewsFeedConfig",  # M6.1-5.1
+    "parse_news_feeds_env",  # M6.1-5.1
 ]

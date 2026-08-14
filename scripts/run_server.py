@@ -585,6 +585,93 @@ async def lifespan(app: FastAPI):
             "(SOULOS_WEATHER_LOCATION not set, no weather activity)"
         )
 
+    # ── M6.1-5.1 (Bry 派工 2026-08-13 20:28, OWNER AUTHORIZATION APPROVED):
+    #       RssNewsSource News Signal Source (env-gated) ──
+    # First Information-context signal producer (per M6.1-1 canonical taxonomy).
+    # Answers M6.1-5 audit Q1-Q5 (News, not Web/Search).
+    # Same canonical pattern as M5.15-6 Calendar + M6.1-3.1 Weather:
+    #   - Env-gated via SOULOS_NEWS_FEEDS: if absent, NO polling
+    #   - Format: "provider1|url1,provider2|url2,..."
+    #   - Polling-driven (1800s default, conservative)
+    #   - N feeds = 1 source (multi-feed source)
+    #   - 1h lookahead for live news, 2h default lookback, 10 articles / poll cap
+    #   - M3.1 Invariant E exception (public RSS, no credentials, same as Cal/Weather)
+    #   - Failure observable, never silent, never crash server
+    #   - Library: stdlib only (urllib + xml.etree.ElementTree + email.utils, no new deps)
+    #
+    # Canonical flow:
+    #   RSS feed HTTP GET → RssNewsSource.poll()
+    #     → bus.publish(SoulEvent(WORLD_EVENT, target="broadcast",
+    #                              priority=NORMAL, payload=event.to_payload()))
+    #     → WorldPerceptionMiddleware (validate + state + trace)
+    #     → WorldInnerLifeAdapter (qualify: "news_event" NOT in WORLD_QUALIFYING_TYPES,
+    #                              so no InnerLifeEvent in v1; correct minimal scope)
+    #     → world_context block on AGENT_INTENT evaluation (LLM sees news)
+    #
+    # 0 contract change (M3.1 ABC / M3.1 Bus / M3 WorldEvent / M5.4-5.1
+    # InnerLifeEvent / M5.9-2 / M5.9-3 / M5.15-3 / M5.15-5 all preserved).
+    #
+    # Preferred feeds per work order (Reuters + AP) UNAVAILABLE from this machine
+    # (Reuters discontinued public RSS in 2020; AP blocks bot/scraper access).
+    # 8 well-known public feeds verified: BBC, NASA, HN, Guardian, Ars, NPR, Al Jazeera.
+    # Owner can set SOULOS_NEWS_FEEDS to any RSS 2.0 feed (e.g. NASA + BBC).
+    news_feeds_env = os.getenv("SOULOS_NEWS_FEEDS", "").strip()
+    if news_feeds_env:
+        from src.world.source.news_rss import (
+            RssNewsSource,
+            parse_news_feeds_env,
+        )
+        try:
+            news_feeds = parse_news_feeds_env(news_feeds_env)
+            if not news_feeds:
+                raise ValueError("parsed list is empty (malformed env value)")
+            news_source = RssNewsSource(
+                feeds=news_feeds,
+                bus=bus,  # canonical Event Bus path
+            )
+        except ValueError as e:
+            logger.warning(
+                f"[M6.1-5.1] RssNewsSource NOT wired "
+                f"(SOULOS_NEWS_FEEDS invalid: {e})"
+            )
+        except Exception as e:
+            logger.warning(
+                f"[M6.1-5.1] RssNewsSource NOT wired "
+                f"(unexpected error: {type(e).__name__}: {e})"
+            )
+        else:
+            # Polling task in lifespan (uses existing asyncio loop, no new scheduler)
+            async def _news_poll_loop():
+                await asyncio.sleep(2)  # wait for server + bus to be fully ready
+                while True:
+                    try:
+                        await news_source.poll()
+                    except Exception as e:
+                        # poll() catches its own errors, but defensive catch
+                        logger.warning(
+                            f"[M6.1-5.1] news poll unexpected error: "
+                            f"{type(e).__name__}: {e}"
+                        )
+                    await asyncio.sleep(news_source.polling_interval_secs)
+            asyncio.create_task(_news_poll_loop())
+            # Expose to app.state for observability
+            app.state._world_news_source = news_source
+            feed_summary = ", ".join(f.provider for f in news_source.feeds)
+            logger.info(
+                f"[M6.1-5.1] RssNewsSource 已 wired ✓ "
+                f"(env_gated=SOULOS_NEWS_FEEDS, "
+                f"polling_interval={news_source.polling_interval_secs}s, "
+                f"lookback={news_source.lookback_hours}h, "
+                f"article_cap={news_source.article_cap}, "
+                f"source_id={news_source.source_id}, "
+                f"feeds=[{feed_summary}])"
+            )
+    else:
+        logger.info(
+            "[M6.1-5.1] RssNewsSource NOT wired "
+            "(SOULOS_NEWS_FEEDS not set, no news activity)"
+        )
+
     # Phase 12 LLM-as-judge: 設定 process-global LLMProxy reference,
     # 讓 MemoryWriter._get_llm_judge() 跨模組邊界可以拿到
     from src.memory.sage.writer import set_llm_proxy
