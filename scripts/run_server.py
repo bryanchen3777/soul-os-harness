@@ -775,6 +775,47 @@ async def lifespan(app: FastAPI):
             cb_real = await diary_callback_factory(aid)
             diary_callbacks_real[aid] = cb_real
 
+        # ── M6.1-8.2 (Bry 拍板 2026-08-14 19:12 EDT, Option B / Gradual rollout) ──
+        # 補回 M5.2-I Phase 7 漏掉的 agent 註冊. M6.1-8 isolated 找到根因:
+        # commit 481ea41 (2026-08-08 21:11) 移除了 scheduler.register(aid, cb) callsite,
+        # M5.2-I Phase 8 改用 _all_agents 當 iteration source 但沒補回 register(aid),
+        # 結果 _all_agents 永久 empty, 5 條 trigger path (morning/night/dream/event/
+        # proactive_dm) 全部 silent-skip. 0 diary/dream/event/proactive_dm writes
+        # for 6+ days (8/8 21:13 → 8/14 22:38).
+        # M6.1-8.1 isolated 驗證 3-line minimal fix (`for aid in agent_ids:
+        # scheduler.register(aid)`) 正確恢復 Agency. 71/71 M5.2 series tests PASS.
+        #
+        # Gradual rollout 控制 (Bry 拍板 Option B):
+        # - env SOULOS_AGENCY_GRADUAL_AGENTS 不設或空: 全部 10 agents (M6.1-8.1 預設,
+        #   跟 isolated 測試一致). .env.example 需同步.
+        # - env 設為 "agent_ruka" → 只註冊 ruka (Phase 1)
+        # - env 設為 "agent_ruka,agent_yua" → 註冊 2 隻 (Phase 2)
+        # - 依此類推到 10 隻.
+        #
+        # Emergency rollback: 設 DISABLE_PROACTIVE=true 整個 skip scheduler.start()
+        # (run_server.py:1126), 跟既有 8/5 21:08 emergency mechanism 同一條.
+        _GRADUAL_AGENTS_ENV = os.environ.get("SOULOS_AGENCY_GRADUAL_AGENTS", "")
+        if _GRADUAL_AGENTS_ENV and _GRADUAL_AGENTS_ENV.strip():
+            _GRADUAL_AGENTS_SET = {
+                a.strip() for a in _GRADUAL_AGENTS_ENV.split(",") if a.strip()
+            }
+            _registered_count = 0
+            for _aid in agent_ids:
+                if _aid in _GRADUAL_AGENTS_SET:
+                    scheduler.register(_aid)
+                    _registered_count += 1
+            logger.info(
+                f"[M6.1-8.2 Gradual] registered {_registered_count}/{len(agent_ids)} agents: "
+                f"{sorted(_GRADUAL_AGENTS_SET)}"
+            )
+        else:
+            # M6.1-8.1 預設: 全部 10 agents
+            for _aid in agent_ids:
+                scheduler.register(_aid)
+            logger.info(
+                f"[M6.1-8.2 Full] registered all {len(agent_ids)} agents (M6.1-8.1 default)"
+            )
+
         # 4.2+缺口 1: dream + event 觸發時機 (Bry 2026-07-20 19:03 拍板)
         # 夢境 22:05, 事件隨機 4-8 小時, 100% 觸發, 不做觀察期
         # M5.2-H Phase 1/2 (Bry 拍板 2026-08-08): dream + event 真實執行路徑
