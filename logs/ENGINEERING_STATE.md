@@ -8,6 +8,7 @@
 **M6.0-5.6.1 progressed** (2026-08-12, M6.0-5.6.1 Budget Profile Registry CLOSED; D3 RESOLVED).
 **M5.13-5 progressed** (2026-08-12, M5.13-5 Untouched-Entry Decay CLOSED; M5.13 series now FULLY CLOSED).
 **M5.15 series progressed** (2026-08-12, M5.15-1 / M5.15-2 / M5.15-3 / M5.15-4 / M5.15-5 / M5.15-6 all CLOSED; M5.15-4 SUPERSEDED by M5.15-5; M5.15-6-PREFLIGHT + M5.15-6 RESUME Option 1 CLOSED; F1 + F2 + F3 + F4 all RESOLVED).
+**M6.1 series progressed** (2026-08-13 → 2026-08-14, M6.1-0 / M6.1-1 / M6.1-2 / M6.1-3 / M6.1-3.1 / M6.1-3.2 / M6.1-3.3 / M6.1-4 / M6.1-5 / M6.1-5.1 / M6.1-5.2 / M6.1-5.3 / M6.1-6.0 / M6.1-6.0-C / M6.1-7 / M6.1-8 all CLOSED; M6.1-8.1 PENDING Bry decision; M6.1-9 DEFERRED). Signal half (Physical/Information/Social/Temporal) operational. Life half (Personal/Agency/Expression) BLOCKED at Agency layer (M5.2 regression — `_all_agents` permanently empty since commit `481ea41` 2026-08-08 21:11; M6.1-8 identified root cause + 3-line fix awaiting Bry decision).
 **Predecessor audit**: GOV-1 — `C:\Users\bbfcc\gov_1_temp\gov_1_state_normalization_audit.md` (CLOSED, out-of-repo per GOV-1 spec).
 **Canonical homepage**: [`README.md`](../README.md) §Engineering Governance.
 
@@ -47,14 +48,19 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 
 ### Current HEAD
 
-- Current HEAD: `3d1fae4` (M6.0-5.6.1 — Budget Profile Registry, BudgetProfile + from_profile factory)
-- M5.15-5 docs commit: `b36769681bb4a80482999aa2eb5830e4aad34892` (this commit's predecessor; updates canonical engineering state registry; **distinct from Current HEAD**)
-- M5.15-5 impl commit: `0aedbef25cf0cb8ba793a7620833ec6cfdb70db8` (Two-Layer Lineage Model + InnerLifeEvent.source_world_event_novelty_id)
-- M5.15-3 state docs commit: `4cd8b0d7fe0d8ae1a3554ea05b207e5c9fa407ae` (this commit's predecessor; updates §1 / §4.1 / §5.5 / §7 / §9 to reflect M5.15-3 closure; **distinct from Current HEAD**)
-- GOV-2-R1 alignment commit: `3539de2f8795ad3e516a619dc556563e8c357c68` (Owner Decision A alignment; recorded in §9 CHANGE LOG; **distinct from Current HEAD**)
-- GOV-2 establishment commit: `eb5715179647b963a4247272d9fcd4c639c7e6a3` (initial canonical state registry; superseded by GOV-2-R1)
+- Current HEAD: `f699d93` (M6.1-8 — Agency Re-enable Investigation, READ-ONLY)
+- M6.1-7 closeout commit: `bdf76ad` (Production Lived Context Evidence Reassessment; **distinct from Current HEAD**)
+- M6.1-6.0-C closeout commit: `49adf46` (Personal Lived Context Architecture Decision Audit; **distinct from Current HEAD**)
+- M6.1-5.1 impl commit: `9f8ece8` (RSS News Source; FEATURE, IMPLEMENTATION)
+- M6.1-3.1 impl commit: `ac50256` (Open-Meteo Weather Source; FEATURE, IMPLEMENTATION)
+- M6.1-2 docs commit: `9e050f6` (Lived Context Canonical Boundary & Documentation)
+- M5.15-6 impl commit: `c2de02c` (Real-World Calendar Source Integration)
+- M5.15-5 impl commit: `0aedbef` (Two-Layer Lineage Model + InnerLifeEvent.source_world_event_novelty_id)
+- M5.15-3 impl commit: `b4b981a` (WorldEventSource → Event Bus canonical integration)
+- GOV-2-R1 alignment commit: `3539de2` (Owner Decision A alignment; recorded in §9 CHANGE LOG; **distinct from Current HEAD**)
+- GOV-2 establishment commit: `eb57151` (initial canonical state registry; superseded by GOV-2-R1)
 - `origin/main` synced at HEAD
-- Working tree: 0 modified, 20 baseline untracked artifacts (M5.8-1 list + M5.4-5.x + M5.2-L)
+- Working tree: 0 modified, 20 baseline untracked artifacts preserved (M5.2-L + M5.4-5.x audit docs)
 
 ### Current status snapshot
 
@@ -65,7 +71,7 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 | **M5.14** | **OFFICIALLY CLOSED** | `29deab7` | `m5_14_3_m6_0_3_f_correction_closeout.md` | Per D1 RESOLVED (Option A): chain officially closed, no M5.14-4 |
 | **M5.15** | **F1 + F2 + F3 + F4 RESOLVED (M5.15-3 + M5.15-5 + M5.15-6 CLOSED)** | `c2de02c` | `m5_15_6_closeout.md` (out-of-repo) | M5.15-1 / M5.15-2 / M5.15-3 / M5.15-5 / M5.15-6-PREFLIGHT / M5.15-6 all CLOSED. M5.15-4 SUPERSEDED by M5.15-5. F5-F7 P3 no action. |
 | **M6.0** | **CLOSED** | `540eac2` | `m6_0_5_6_configurable_evaluation_cost_ceiling_closeout.md` | M6.0-5.5-R1 is BLOCKED (credentials unavailable, correct by design) |
-| **M6.1** | **Lived Context Awareness — documentation CLOSED, capability layer DEFERRED** | `9e050f6` | `m6_1_1_lived_context_taxonomy_audit.md` (out-of-repo) | M6.1-0 / M6.1-1 READ-ONLY audits CLOSED; M6.1-2 canonical-boundary documentation CLOSED. Frozen contracts 0 change. Missing capabilities (Weather/News/Personal rhythm) explicitly DEFERRED per Owner decision boundary. |
+| **M6.1** | **Lived Context Awareness — Signal half LIVE, Life half BLOCKED at Agency layer (M5.2 regression)** | `f699d93` | `m6_1_8_agency_reenable_investigation.md` | M6.1-0 / M6.1-1 / M6.1-2 / M6.1-3 / M6.1-3.1 / M6.1-3.2 / M6.1-3.3 / M6.1-4 / M6.1-5 / M6.1-5.1 / M6.1-5.2 / M6.1-5.3 / M6.1-6.0 / M6.1-6.0-C / M6.1-7 / M6.1-8 all CLOSED. Signal half (Calendar M5.15-6 + Weather M6.1-3.1 + News M6.1-5.1) operational. Life half BLOCKED at Agency layer: M5.2 migration (commit `481ea41` 2026-08-08 21:11) removed `scheduler.register(aid, cb)` callsite without replacement; `_all_agents` permanently empty; 5 trigger paths (morning/night/dream/event/proactive_dm) silent-skip. 0 diary/dream/event/proactive_dm writes for 6+ days (8/8 21:13 → 8/14 22:38). M6.1-8.1 = 3-line fix awaiting Bry decision (A direct / B gradual / C shadow / D test-isolated). M6.1-9 = Lived Context Formation Audit (deferred, after M6.1-8.1). |
 | **GOV-1** | **CLOSED** | (docs only) | `gov_1_state_normalization_audit.md` (out-of-repo) | State normalization audit complete |
 | **GOV-2** | **CLOSED** | `eb57151` | `logs/ENGINEERING_STATE.md` (this registry) | Canonical engineering state registry established |
 | **GOV-2-R1** | **CLOSED** | (this commit) | (this document, alignment) | Owner Decision A alignment — canonical state now matches Notion |
@@ -237,6 +243,32 @@ All decisions below are preserved as **UNRESOLVED** per GOV-1 + GOV-2 spec, exce
   - Defaults unchanged (no silent override)
   - Existing callers continue to work (`EvaluationBudgetConfig()` still works)
 
+### D3.5. M6.1-8.1 Minimal Agency Re-enable (P0 — M5.2 regression)
+
+- **Source**: M6.1-8 closeout (`logs/m6_1_8_agency_reenable_investigation.md`)
+- **Status**: **PENDING (Bry decision required)**
+- **Description**: Add 3 lines to `scripts/run_server.py` after `diary_callbacks_real[aid] = cb_real`:
+
+  ```python
+  for aid in agent_ids:
+      scheduler.register(aid)
+  ```
+
+  M5.2 migration (commit `481ea41` 2026-08-08 21:11) removed `scheduler.register(aid, cb)` callsite (M5.2-I Phase 7) but M5.2-I Phase 8 changed iteration source to `_all_agents` without adding replacement. `_all_agents` permanently empty. 5 trigger paths silent-skip. 0 diary/dream/event/proactive_dm writes for 6+ days.
+- **4 safety options** (Bry chooses):
+  - A. Direct re-enable + 24h monitor (10-agent burst at 08:00)
+  - B. Gradual: register 1 agent at a time, 1h apart (10h to fully populate)
+  - C. Shadow mode: register all, gate scheduler output to log-only
+  - D. Isolated test first: spin up test instance, run 24h, then production
+- **Authorization required**: Bry 拍板 A / B / C / D before M6.1-8.1 implementation
+- **Effect**:
+  - M6.1 series unblocks Life half (Personal/Agency/Expression)
+  - 0 frozen contract change (15 contracts preserved)
+  - 0 production data change
+  - 0 M3 / M5.4-5.x modification
+  - 0 new dependencies
+- **Status as of 2026-08-14 22:38 EDT**: AWAITING Bry decision
+
 ### D4. M5.12-1 inherited P2.2 / P2.6 decisions
 
 - **Source**: M5.12-1 closeout (`logs/m5_12_1_remaining_agency_p2_convergence_audit.md`)
@@ -334,6 +366,7 @@ remaining OPTIONAL ticket. M6.0-5.6.1 resolved M6.0's last remaining OPTIONAL ti
 | D11 | M6.0-5.3+ Multi-provider circuit breaker | M6.0 | Per memory |
 | D12 | Cross-agent relationship projection | M5.13-2 | Different scope (new milestone) |
 | D13 | chrono-social duplication | M5.13-2 | Cross-section concern |
+| M6.1-9 | Lived Context Formation Audit | M6.1-7 / M6.1-8 | Per Quality > Quantity: only after M6.1-8.1 (Agency re-enable) + 24h+ RUN-AND-COLLECT, then verify multi-signal world_context |
 
 **Note on D5 (Real-world API integration)**: RESOLVED by M5.15-6 (Calendar via iCal/ICS public feed).
 D5 retired — first real-world source is the calendar, the integration pattern (M5.15-3 canonical
@@ -498,22 +531,37 @@ pattern when Bry authorizes them.
 
 ### 5.6 M6.1 — Lived Context Awareness (Canonical Boundary & Documentation)
 
-**Status**: documentation CLOSED. capability layer DEFERRED. Frozen contracts 0 change. 0 production mutation.
+**Status**: Signal half LIVE (Physical via M6.1-3.1 Weather + Information via M6.1-5.1 News + Social via M5.15-6 Calendar + Temporal). Life half BLOCKED at Agency layer (M5.2 regression identified in M6.1-8). Frozen contracts 0 change. 0 production mutation. M6.1-8.1 PENDING Bry decision (3-line re-enable).
 
 | Ticket | Title | Commit | Status | Notes |
 |--------|-------|--------|--------|-------|
 | M6.1-0 | Lived Context Awareness architecture audit (READ-ONLY) | (docs only) | **CLOSED** | 18 modules / 11 subsystems inventoried. Bry's 5 questions answered. Out-of-repo report. |
 | M6.1-1 | Lived Context taxonomy & minimal architecture (READ-ONLY) | (docs only) | **CLOSED** | READY FOR M6.1-2 verdict. Canonical 5 contexts + 4-layer boundary + minimum provenance. 0 frozen contract change. Out-of-repo report. |
 | M6.1-2 | Lived Context canonical boundary & documentation (IMPLEMENTATION) | `9e050f6` | **CLOSED** | Documentation-first implementation. README.md §7.1 added + this section + §9 change log. 0 source-code change, 0 frozen contract change, 0 production mutation, 0 new runtime abstraction. |
+| M6.1-3 | Lived Context Evidence & Calendar Run-and-Collect Audit (READ-ONLY) | (docs only) | **CLOSED** | 1 Calendar event in perception_trace. 5 P2 gaps. Per Quality > Quantity: NO new milestone justified. |
+| M6.1-3.1 | Open-Meteo Weather Source (IMPLEMENTATION) | `ac50256` | **CLOSED** | Physical Lived Context signal. `source_id="weather"`, `novelty_id=SHA256(...)[:32]`, types=`rain_started` / `weather_temp_change`, 1800s polling, 0 new dependencies. 406/406 broad regression PASS. 0 frozen contract change. |
+| M6.1-3.2 | Live Weather Activation & Lived Context E2E Validation (READ-ONLY) | (docs only) | **CLOSED** | SOULOS_WEATHER_LOCATION=25.03,121.57 in .env. PHYSICAL LIVED CONTEXT OPERATIONAL. |
+| M6.1-3.3 | Organic Weather Context Evaluation (READ-ONLY) | (docs only) | **CLOSED** | LLM E2E test (isolated tmp_path + real MINIMAX API) confirms physical context actually informs Soul interpretation. 4/4 tests PASS. |
+| M6.1-4 | Personal Lived Context Capability Audit (READ-ONLY) | (docs only) | **CLOSED** | 0/5 FULLY ANSWERABLE. Q1 Q2 PARTIALLY, Q3 Q4 Q5 NOT. 8 signals inventoried. No first-person Personal data source. |
+| M6.1-5 | Information Lived Context Capability Audit (READ-ONLY) | (docs only) | **CLOSED** | 0/5 ANSWERABLE. LLM training data cutoff (M2.7). No real News source. No Web/Search tool. |
+| M6.1-5.1 | RSS News Source (IMPLEMENTATION) | `9f8ece8` | **CLOSED** | Information Lived Context signal. `source_id="news"`, `type="news_event"` (NOT in WORLD_QUALIFYING_TYPES), `novelty_id=SHA256(provider.url.published_at)[:32]`, 1800s polling, 2h lookback, 10 articles/poll cap, 30s timeout, 10000-entry FIFO dedup. Stdlib only (urllib + xml.etree.ElementTree + email.utils.parsedate_to_datetime). 92/92 tests + 469/469 regression. 0 frozen contract change. 8 working public feeds (Reuters/AP UNAVAILABLE, documented). |
+| M6.1-5.2 | Live News Activation & E2E Validation (READ-ONLY) | (docs only) | **CLOSED** | SOULOS_NEWS_FEEDS=bbc_world|...,npr_top|... in .env. 4/4 LLM E2E tests PASS. INFORMATION LIVED CONTEXT: OPERATIONAL (with caveat: isolated E2E bypassed M3 accept gate). |
+| M6.1-5.3 | News Lookback & Context Density Audit (READ-ONLY) | (docs only) | **CLOSED** | Critical finding: News default score 0.345 < 0.35 accept threshold → REJECTED. **KEEP 2h lookback**. M3 accept gate is binding constraint, not lookback. 15 polls over 7.5h, 19 events emitted (66.7% emit, 1.27/poll mean). |
+| M6.1-6.0 | Personal Lived Context Architecture Decision (READ-ONLY) | (docs only) | **CLOSED** | 8 signals inventoried. 0/5 ANSWERABLE, 2 PARTIALLY, 3 NOT. Verdict: **DEFER (D)**. Options compared: A Manual / B Inference (= surveillance-by-proxy, violates M3 design rule) / C Dedicated (reduces to A under work order constraints) / D Defer. |
+| M6.1-6.0-C | Personal Audit Closeout (DOCS) | `49adf46` | **CLOSED** | Personal = DEFER (D) verified. |
+| M6.1-7 | Production Lived Context Evidence Reassessment (READ-ONLY) | `bdf76ad` | **CLOSED** | Verdict: **LIVED CONTEXT NOT YET FORMED**. World → Perception OPERATIONAL (3 sources, 2385 trace events). Perception → Lived Context SINGLE-SOURCE only (world_context = Weather only, 602/602 injects). Lived Context → Soul Interpretation INFLUENCING (1081 LLM responses had world_context). Soul Interpretation → Agency **BROKEN** (Scheduler `agents=0` since 8/8). Agency → Expression INACTIVE. M6.1 series 50% complete. |
+| M6.1-8 | Agency Re-enable Investigation (READ-ONLY) | `f699d93` | **CLOSED** | **Root cause identified**: M5.2 migration (commit `481ea41`, 2026-08-08 21:11) removed `scheduler.register(aid, cb)` callsite (M5.2-I Phase 7) without replacement; M5.2-I Phase 8 changed iteration source to `_all_agents`; `_all_agents` permanently empty. 5 trigger paths (morning/night/dream/event/proactive_dm) silent-skip. 0 diary/dream/event/proactive_dm writes for 6+ days. **Documented regression** (M5.2-I I-9 sweep §2.2 marked "production 完全沒註冊" but treated as "API COMPAT"). **Fix proposed**: 3 lines in `run_server.py` (`for aid in agent_ids: scheduler.register(aid)`). 4 safety options for Bry (A direct / B gradual / C shadow / D test-isolated). |
+| M6.1-8.1 | Minimal Agency Re-enable (IMPLEMENTATION) | (pending) | **PENDING (Bry decision required)** | 3-line fix to `run_server.py` to repopulate `_all_agents`. 0 frozen contract change. Awaiting Bry 拍板 on A / B / C / D safety option. |
+| M6.1-9 | Lived Context Formation Audit (READ-ONLY) | (pending) | **DEFERRED (after M6.1-8.1)** | Diagnostic for multi-signal world_context. Per Quality > Quantity: only after Agency re-enabled + 24h+ RUN-AND-COLLECT. |
 
-**Canonical taxonomy** (M6.1-1):
+**Canonical taxonomy** (M6.1-1, updated M6.1-3.1 / M6.1-5.1):
 
 | Context | What it covers | Current sources | Current status |
 |---------|----------------|------------------|-----------------|
-| **Physical** | Bry's body / environment (weather, location, sunlight) | NONE in production | M3.1 Invariant E forbids; only Synthetic test driver |
-| **Information** | News / web / search results / external data | NONE in production | Deferred — no real source |
-| **Social** | Telegram messages, calendar events, cross-agent interactions | Telegram + Calendar (M5.15-6) | ✓ LIVE (partial) |
-| **Personal** | Bry's habits (meal/sleep/activity), preferences, identity | NONE for Bry-as-person | Deferred — requires data source decision |
+| **Physical** | Bry's body / environment (weather, location, sunlight) | Open-Meteo Weather (M6.1-3.1) | ✓ LIVE |
+| **Information** | News / web / search results / external data | RSS News (M6.1-5.1) | ✓ LIVE (with M3 accept gate caveat, 0 emits to world_context) |
+| **Social** | Telegram messages, calendar events, cross-agent interactions | Telegram + Calendar (M5.15-6) | ✓ LIVE |
+| **Personal** | Bry's habits (meal/sleep/activity), preferences, identity | NONE for Bry-as-person | **DEFERRED** (M6.1-6.0) |
 | **Temporal** (cross-cutting) | When; touches ALL other contexts | System clock + Bry's last_msg_ts | ✓ LIVE (Chrono-Social Engine) |
 
 **Canonical 4-layer boundary** (M6.1-1):
@@ -565,11 +613,12 @@ M5.9-3 WorldInnerLifeAdapter, M5.10 Memory, M5.13-2 strict 0.3, M5.15-3 canonica
 M5.15-5 source_world_event_novelty_id, M5.15-6 identity model, VALID_SOURCES).
 
 **Missing capabilities** (DEFERRED, requires Owner authorization to start):
-- Real Weather source (Physical, M3.1 Invariant E exception like Calendar M5.15-6)
-- Real News source (Information)
-- Personal life-rhythm tracking (Personal, requires data source decision)
-- Environment→emotion reasoning (Personal, requires explicit pipeline)
+- ~~Real Weather source~~ — **RESOLVED by M6.1-3.1** ✓
+- ~~Real News source~~ — **RESOLVED by M6.1-5.1** ✓ (with M3 accept gate caveat per M6.1-5.3)
+- Personal life-rhythm tracking (Personal, requires data source decision) — **DEFERRED per M6.1-6.0**
+- Environment→emotion reasoning (Personal, requires explicit pipeline) — **DEFERRED per M6.1-6.0**
 - LivedContextAggregator (CAPABILITY — currently de-facto, no concrete behavioral need)
+- **Agency re-enable** — **M6.1-8.1 PENDING** (3-line fix, awaiting Bry decision)
 
 **Closeout logs** (out-of-repo per M5.13-3.1 lesson):
 - M6.1-0: `C:\Users\bbfcc\gov_1_temp\m6_1_0_lived_context_awareness_audit.md`
@@ -671,6 +720,21 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
   - M5.15-6 RESUME STOP report: `C:\Users\bbfcc\gov_1_temp\m5_15_6_stop_report.md` (historical, M3.1 conflict)
   - M5.15-6 closeout: `C:\Users\bbfcc\gov_1_temp\m5_15_6_closeout.md` (canonical, RESUME Option 1)
 
+**M6.1** (per M5.13-3.1 lesson, all closeout reports out-of-repo unless otherwise noted):
+- M6.1-0 audit: `C:\Users\bbfcc\gov_1_temp\m6_1_0_lived_context_awareness_audit.md`
+- M6.1-1 taxonomy audit: `C:\Users\bbfcc\gov_1_temp\m6_1_1_lived_context_taxonomy_audit.md` (canonical)
+- M6.1-3 evidence audit: `C:\Users\bbfcc\gov_1_temp\m6_1_3_evidence_audit.md`
+- M6.1-3.2 weather activation: `C:\Users\bbfcc\gov_1_temp\m6_1_3_2_closeout.md`
+- M6.1-3.3 weather evaluation: `C:\Users\bbfcc\gov_1_temp\m6_1_3_3_weather_evaluation.md`
+- M6.1-4 personal audit: `C:\Users\bbfcc\gov_1_temp\m6_1_4_personal_audit.md`
+- M6.1-5 information audit: `C:\Users\bbfcc\gov_1_temp\m6_1_5_information_audit.md`
+- M6.1-5.1 news impl closeout: `C:\Users\bbfcc\gov_1_temp\m6_1_5_1_closeout.md`
+- M6.1-5.2 news activation: `C:\Users\bbfcc\gov_1_temp\m6_1_5_2_closeout.md`
+- M6.1-5.3 news lookback: `C:\Users\bbfcc\gov_1_temp\m6_1_5_3_closeout.md` + `C:\Users\bbfcc\gov_1_temp\m6_1_5_3_final_closeout.md`
+- M6.1-6.0 personal decision: `C:\Users\bbfcc\gov_1_temp\m6_1_6_0_closeout.md`
+- M6.1-7 production evidence: `logs\m6_1_7_production_lived_context_evidence.md` (in-repo, M6.1-7 audit closeout)
+- M6.1-8 agency re-enable: `logs\m6_1_8_agency_reenable_investigation.md` (in-repo, M6.1-8 audit closeout)
+
 ### Out-of-repo references
 
 - GOV-1 audit: `C:\Users\bbfcc\gov_1_temp\gov_1_state_normalization_audit.md`
@@ -718,6 +782,12 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-08-12 (M6.0-5.6.1) | Budget Profile Registry (commit `3d1fae4a86b5b62ab1edd5688203f27fe3c36a36`). 29/29 new tests + 12/12 M6.0-5.6 + M6.0-5.6.1 manual regression PASS. 0 frozen contract change. 0 production mutation. **M6.0 series now FULLY CLOSED** (no remaining OPTIONAL/DEFERRED tickets; M6.0-5.5-R1 remains BLOCKED per spec). Implementation: 1 `BudgetProfile` str-Enum (CHAT/DIARY/DREAM) + 1 `_BUDGET_PROFILE_VALUES` dict (frozen profile → tuple) + 1 `EvaluationBudgetConfig.from_profile()` @classmethod factory. Profile values: CHAT (3/2/5000/0.05, == default for no-op migration), DIARY (2/1/3000/0.03, smaller budget for high volume), DREAM (1/1/2000/0.02, smallest budget for low observable). Defaults preserved 100% (CHAT == `EvaluationBudgetConfig()`). `from_profile()` rejects non-`BudgetProfile` inputs (raw string, None, int, other enum) with `TypeError`. Profile-derived configs are frozen + hashable. 3 files changed: `tests/_helpers/subjective_eval/multi_model_runner.py` (+100), `tests/_helpers/subjective_eval/__init__.py` (+3 -1), `tests/test_m6_0_5_6_1_budget_profile.py` (NEW +386, 29 tests in 7 sections A-G). Pre-existing test collection issue (`tests/` lacks `__init__.py`, 5 M6.0.x tests fail to collect via pytest — per M5.15-6 closeout §6.1 known finding) verified via direct script, not introduced by D3. Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m6_0_5_6_1_closeout.md`. D3 RESOLVED. | Mavis / Lin | M6.0-5.6.1 |
 | 2026-08-12 (M5.15-6) | Real-World Calendar Source Integration (commit `c2de02c`). 55/55 new tests + 211/211 regression PASS. 0 frozen contract change across 15 contracts (M3 WorldEvent, M3.1 ABC, M3.1 Bus, M5.4-5.1 InnerLifeEvent 9 fields, M5.4-5.1 parent_event_id, M5.4-5.1 lineage, M5.9-2 QUALIFYING_TYPES, M5.9-3 Adapter, M5.15-3 canonical bus path, M5.15-5 source_world_event_novelty_id, VALID_SOURCES, _NOVELTY_ID_RE all unchanged). RESUME Option 1 (Bry authorization 2026-08-12 19:37): `novelty_id = SHA256(VEVENT.UID)[:32]`, `data["ical_uid"] = exact UID`, `data["ical_sequence"] = VEVENT.SEQUENCE` (observability only). SEQUENCE excluded from hash (Q6: same UID + different SEQUENCE → same hash → adapter dedupes). 0 production mutation (yua/relationships.json 10095B81... unchanged). IcalCalendarSource (src/world/source/calendar_ical.py): polling-driven (300s default), env-gated via SOULOS_CALENDAR_ICAL_URL, 24h lookahead default, parent-only RRULE (Q5), CANCELLED skipped (Q7), 1 URL = 1 source (Q9), library icalendar (PyPI MIT), HTTP via urllib stdlib + asyncio.run_in_executor (non-blocking), 30s timeout, MAX_EVENTS_PER_POLL=500 cap, failure observable (log+skip+retry, never crash, never silent). 4 files changed: src/world/source/calendar_ical.py (NEW, +476), src/world/source/__init__.py (+14), scripts/run_server.py (+65), tests/test_m5_15_6_calendar_ical_source.py (NEW, +1105). All 12 critical regression tests A-L PASS. 7 pre-existing baseline failures unchanged (M3.1 Phase B/C/D + M2.0); 1 pre-existing test ordering issue (test_m5_4_5_3::test_g2 env var setup). F1 + F2 + F3 + F4 all RESOLVED. M5.15 series all CLOSED. Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m5_15_6_closeout.md`. | Mavis / Lin | M5.15-6 |
 | 2026-08-13 (M6.1-2) | Lived Context Canonical Boundary & Documentation (commit `9e050f6`). Documentation-first implementation. 2 files changed: `README.md` (+54 §7.1 "Lived Context Boundary (M6.1)" sub-section, 4-layer architecture + 5 contexts + boundary invariant + capability positioning), `logs/ENGINEERING_STATE.md` (+74 §5.6 M6.1 milestone table + canonical taxonomy + 4-layer boundary + boundary invariant + missing capabilities + this §9 change log entry + §1 status snapshot row). 0 source-code change, 0 frozen contract change (15 contracts preserved: M3/M3.1/M5.4-5.1/M5.4-5.5/M5.9-2/M5.9-3/M5.10/M5.13-2/M5.15-3/M5.15-5/M5.15-6/VALID_SOURCES), 0 production mutation, 0 new runtime abstraction. **No `LivedContextAggregator` wrapper created** — `src/llm/proxy.py:_build_messages_group()` and `_build_messages_private()` is the de-facto Lived Context aggregator (block order: identity → memory → mood → relationship → inner_life → world → temporal). M6.1-0 / M6.1-1 READ-ONLY audits out-of-repo. Frozen contracts 0 change verified via diff. Production data byte-for-byte unchanged (memory.db / perception_trace / shadow_log / relationships / diary / dream / emotion persistence all not touched). 20 baseline untracked artifacts preserved. | Mavis / Lin | M6.1-2 |
+| 2026-08-13 (M6.1-3.1) | Open-Meteo Weather Source (commit `ac50256`). Physical Lived Context signal source. 4 files changed: `src/world/source/open_meteo.py` (NEW, +417), `src/world/source/__init__.py` (+7), `scripts/run_server.py` (+34), `tests/test_m6_1_3_1_open_meteo_weather.py` (NEW, +805, 50+ tests). 0 frozen contract change (VALID_SOURCES already includes `"weather"`, types `rain_started` / `weather_temp_change` fit existing M3 WorldEvent schema, `source_id = "weather"` per M3.1 contract). Stdlib only (urllib + json, no new dependencies). 1800s polling default (min 60s), 30s HTTP timeout, deterministic `novelty_id = SHA256(f"weather.{lat:.2f}_{lon:.2f}.{hour}.{state}")[:32]`. State bucket: binary `rain` (precipitation >= 0.1mm OR WMO code in {51-67, 80-82, 95-99}) / `no_rain`. Provider identity preserved in `data["weather_provider"] = "open_meteo"`. 406/406 broad regression PASS. 5 pre-existing baseline failures (M3.1 Phase B/C/D + M2.0) + 5 M6.0.x test collection issues unchanged (not introduced). | Mavis / Lin | M6.1-3.1 |
+| 2026-08-13 (M6.1-5.1) | RSS News Source (commit `9f8ece8`). Information Lived Context signal source. 5 files changed: `src/world/source/news_rss.py` (NEW, +663), `src/world/source/__init__.py` (+7), `scripts/run_server.py` (+34), `tests/test_m6_1_5_1_news_rss.py` (NEW, +1591, 92 tests in 17 sections A-Q), `requirements.txt` (no new deps). 0 frozen contract change (VALID_SOURCES already includes `"news"`, `celebrity_news` baseline 0.05; new `news_event` type does NOT extend WORLD_QUALIFYING_TYPES → no InnerLifeEvent impact per M5.9-2 minimal scope). Stdlib only (urllib + xml.etree.ElementTree + email.utils.parsedate_to_datetime). 1800s polling, 2h lookback default, 10 articles/poll cap, 30s HTTP timeout, 10000-entry in-memory FIFO dedup. Deterministic `novelty_id = SHA256(f"{provider}.{canonical_url}.{published_at_iso}")[:32]`. 8 working public feeds (BBC World/Top, NASA Breaking, Hacker News, Guardian, Ars Technica, NPR Top, Al Jazeera); Reuters + AP UNAVAILABLE (documented, 0 implementation impact). 92/92 focused tests + 469/469 broad regression PASS. 5 pre-existing baseline failures + 5 M6.0.x collection issues + 11 M6.0.x errors unchanged. | Mavis / Lin | M6.1-5.1 |
+| 2026-08-13 (M6.1-6.0-C) | Personal Lived Context Architecture Decision Audit Closeout (commit `49adf46`). 1 file changed: `logs/m6_1_6_0_personal_lived_context_audit.md` (in-repo, +596 insertions, canonical closeout). Verdict: **DEFER (D)**. 0/5 FULLY ANSWERABLE, 2 PARTIALLY, 3 NOT. 8 signals inventoried (Calendar / Telegram / Temporal / Memory / Inner Life / WorldPerception / Weather / News). 3 options compared: A Manual (~50 LOC, requires Bry active commitment, HIGH privacy) / B Inference (LOW cost, but surveillance-by-proxy, violates M3 design rule "Personal inference ≠ raw signal") / C Dedicated (~150 LOC, requires wearable/phone/browser/GPS/surveillance/large infra, out of work order scope, reduces to A). Verdict: D wins on aggregate (no cost, no risk, no production use case yet). Bry 拍板 2026-08-13 21:16: "Personal = DEFER" (Information Lived Context priority 1st round). | Mavis / Lin | M6.1-6.0-C |
+| 2026-08-14 (M6.1-7) | Production Lived Context Evidence Reassessment (commit `bdf76ad`). 1 file changed: `logs/m6_1_7_production_lived_context_evidence.md` (in-repo, +620 insertions). READ-ONLY audit, 0 source/test/prod modification, 0 commit/push during audit, production data byte-for-byte unchanged. Verdict: **LIVED CONTEXT NOT YET FORMED**. Q1-Q6 reassessment: Q1 PARTIAL (Weather only), Q2 PARTIAL (no Personal signal), Q3 NO EVIDENCE (multi-signal never observed), Q4 YES (1081 LLM responses had world_context = 31.4%), Q5 PARTIAL (InnerLife ✓, Diary ✗), Q6 NO EVIDENCE. Architecture findings: 0 P0, 0 P1, 2 P2 (Agency triggers disabled, world_context single-source), 2 P3 (News gate filter not in ops docs, Scheduler `agents=0` decision not documented). Production trace: 2385 perception_trace entries (15 calendar + 1752 weather + 122 news), 602 weather context_injected, 1081 LLM responses with world_context. Per-agent shadow distribution: mahiru 167, mai 94, akane 92, yua 74, anna 67, ruka 67, rem 64, ram 45, aoi 42, miku 39. Last diary file: 2026-08-08 08:00:28 (6+ days ago). Scheduler log: `morning=08:00:00 night=22:00:00 prob=1.0 agents=0` (since 8/8). 20 baseline untracked artifacts preserved. | Mavis / Lin | M6.1-7 |
+| 2026-08-14 (M6.1-8) | Agency Re-enable Investigation (commit `f699d93`). 1 file changed: `logs/m6_1_8_agency_reenable_investigation.md` (in-repo, +581 insertions, 18 sections, 581 lines). READ-ONLY architecture investigation, 0 source/test/prod/config mutation, 0 commit/push during audit, 20 baseline untracked artifacts preserved. **Root cause identified**: M5.2 migration (commit `481ea41`, 2026-08-08 21:11 EDT, "refactor(m5.2): migrate scheduler triggers to agency event bridge") removed `scheduler.register(aid, cb)` callsite in `run_server.py` (M5.2-I Phase 7) but M5.2-I Phase 8 changed iteration source to `_all_agents` in `scheduler.py:_fire_all` without adding a replacement `register(aid)` call. Result: `SoulScheduler._all_agents` permanently empty (default `[]`). 5 of 6 trigger paths (morning / night / dream / event / proactive_dm) silent-skip at `if not self._all_agents: return` (scheduler.py:560/620/921) or via `_get_proactive_agents() returns []` (L696-697). Heartbeat separately disabled by 修法 12 (Bry 8/6 17:12, INTENTIONAL). 0 diary/dream/event/proactive_dm writes for 6+ days (8/8 21:13 → 8/14 22:38 EDT). 4 handlers (AgencyTriggerHandler / EventHandler / DreamHandler / DiaryHandler) all correctly wired to bus, all correctly filter trigger_type, all waiting for AGENCY_TRIGGER that never comes (operational but starved). **Documented regression** (M5.2-I Phase I-9 sweep `logs/m5_2_i_i9_callback_dependency_sweep.md` 2026-08-08 17:50 EDT §2.2 explicitly noted "production 完全沒註冊" but treated as "API COMPAT" PASS — false equivalence of "interface preserved" vs "behavior preserved"). **Fix proposed**: 3 lines in `run_server.py` after `diary_callbacks_real[aid] = cb_real` — `for aid in agent_ids: scheduler.register(aid)`. 0 frozen contract change, 0 production data change, 0 M3/M5.4-5.x modification. 4 safety options for Bry decision (A direct / B gradual / C shadow / D test-isolated). M6.1-8.1 PENDING Bry 拍板. M6.1-9 DEFERRED (after M6.1-8.1). | Mavis / Lin | M6.1-8 |
+| 2026-08-14 (M6.1-8 registry sync) | Canonical engineering state registry updated for M6.1 series progress. 1 file changed: `logs/ENGINEERING_STATE.md` (+§1 M6.1 progress row, +§1.1 M6.1 milestone row updated, +§1.1 Current HEAD section updated to `f699d93`, +§5.6 M6.1 milestone table extended with 13 new ticket rows M6.1-3 through M6.1-8 + 2 pending rows M6.1-8.1 / M6.1-9, +§5.6 canonical taxonomy updated (Physical/Information now LIVE, Personal DEFERRED, Temporal LIVE), +§5.6 missing capabilities updated (Weather + News RESOLVED, Personal DEFERRED, Agency re-enable M6.1-8.1 PENDING), +§7 closeout log list extended with 13 M6.1 closeout references, +§9 change log extended with 5 new entries M6.1-3.1 / M6.1-5.1 / M6.1-6.0-C / M6.1-7 / M6.1-8). | Mavis / Lin | M6.1-8 registry sync |
 
 ---
 
