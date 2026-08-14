@@ -49,6 +49,8 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 ### Current HEAD
 
 - Current HEAD: `2a42521` (M6.1-8.2 — Controlled Production Agency Re-enable, IMPLEMENTATION / Option B / Gradual)
+
+(M6.2-0 closed via out-of-repo closeout report `C:\Users\bbfcc\gov_1_temp\m6_2_0_audit.md`, no in-repo file changes for READ-ONLY audit)
 - M6.1-7 closeout commit: `bdf76ad` (Production Lived Context Evidence Reassessment; **distinct from Current HEAD**)
 - M6.1-6.0-C closeout commit: `49adf46` (Personal Lived Context Architecture Decision Audit; **distinct from Current HEAD**)
 - M6.1-5.1 impl commit: `9f8ece8` (RSS News Source; FEATURE, IMPLEMENTATION)
@@ -75,6 +77,7 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 | **GOV-1** | **CLOSED** | (docs only) | `gov_1_state_normalization_audit.md` (out-of-repo) | State normalization audit complete |
 | **GOV-2** | **CLOSED** | `eb57151` | `logs/ENGINEERING_STATE.md` (this registry) | Canonical engineering state registry established |
 | **GOV-2-R1** | **CLOSED** | (this commit) | (this document, alignment) | Owner Decision A alignment — canonical state now matches Notion |
+| **M6.2** | **Text / TTS Response Path Separation — Architecture audit CLOSED, M6.2-1 PENDING Bry decision** | `6acbe62` | `m6_2_0_text_tts_path_separation_audit.md` (out-of-repo) | M6.2-0 CLOSED. **Key finding: async text/TTS separation ALREADY implemented in production.** TTS is fire-and-forget via `asyncio.create_task(_synthesize_async)` in FishTTSHandler. TTS latency 0.5-6.4s (mean 3.3s, evidence from `data/tts/` filesystem + `trace.log`). Transport: WebSocket + Telegram already separate text/audio via 2 distinct message types (`agent_speak` + `agent_audio_ready`). **Identified gap**: `AGENT_AUDIO_READY` payload missing `message_id`/`correlation_id` (current correlation is agent_id-based "latest", which is weak under concurrent messages). **M6.2-1 RECOMMENDED**: add message_id to AGENT_AUDIO_READY payload, use it for text↔audio correlation. 5 files, +14/-6 lines, 0 frozen contract change. 0 P0/P1, 1 P2 (correlation gap), 6 P3 (informational). |
 
 ---
 
