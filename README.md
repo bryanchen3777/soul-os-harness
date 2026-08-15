@@ -255,7 +255,7 @@ M5.9-2 WORLD_QUALIFYING_TYPES, M5.9-3 WorldInnerLifeAdapter, VALID_SOURCES.
 | `DreamHandler` | `dream` | 寫入 dream 記錄 |
 | `DiaryHandler` | `morning` / `night` | 寫入日記 slot |
 
-**Eligible / Decision / Selection / Execution** 四階段都是 deterministic — 無 LLM，無 persona。
+**Trigger → Decision → Selection → Execution** 四階段都是 deterministic — 無 LLM，無 persona。Scheduler 是 runtime producer;Heartbeat 是 observation/lifecycle 引擎。**兩者皆不屬於 Agency 階段**。
 
 ### 9️⃣ INNER LIFE
 

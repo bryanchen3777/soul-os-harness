@@ -49,7 +49,8 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 
 ### Current HEAD
 
-- Current HEAD: `fa46433` (docs(arch-v2) — replace architecture.png with M6.1-aligned v2 diagram)
+- Current HEAD: `8466bc1` (docs(doc-1.3-r1) — Canonical Documentation State Reconciliation, 3 files: README.md + docs/architecture.png + logs/ENGINEERING_STATE.md)
+- arch-v2 commit: `fa46433` (M6.1-aligned v2 diagram replacement; **distinct from Current HEAD**)
 - M6.1-9.1 closeout commit: `eafbf24` (Restore True Phase-10 Agency Registration; **distinct from Current HEAD**)
 - M6.1-9 partial commit: `362cf28` (Lived Context Formation Audit T+50min snapshot; **distinct from Current HEAD**)
 - M6.2-1 registry sync commit: `9a64f14` (Per-Message TTS Correlation registry sync; **distinct from Current HEAD**)
