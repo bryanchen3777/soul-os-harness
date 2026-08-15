@@ -110,13 +110,20 @@ class ChannelRouter:
         # M2: 離線 buffer, Bry 不在線時主動觸發 append 進這裡
         self._outbox: list[dict] = self._load_outbox()
         # Phase 5+ (2026-07-15 Bry 拍板): 配對 AGENT_SPEAK → AGENT_AUDIO_READY
-        # AGENT_SPEAK 送 text 到 telegram user X 後,把 (X, ts) 暫存到這;
-        # AGENT_AUDIO_READY 來時用 agent_id 找到 X,把 mp3 用 send_voice 推給他
+        # AGENT_SPEAK 送 text 到 telegram user X 後,把 (X, ts, message_id) 暫存到這;
+        # AGENT_AUDIO_READY 來時用 message_id 找到 X,把 mp3 用 send_voice 推給他
         # 過期 60s(正常 TTS 1-3s 完成,Lesson 36E Bry 拍板 2026-07-26 12:33: 60s 給 LLMJudge + provider 延遲緩衝, 30s 對 LLMJudge retry 撞 length 太短)
         # v32 7/26 23:48 觀察: TTS 寫完 mp3 後 AGENT_AUDIO_READY event 在 bus queue 卡 4 分鐘才 fire (publish → consumer 延遲),
         # 60s 過期太短 → voice 丟掉。Bry 拍板 v32.1 (7/26 23:54): 拉長到 300s 涵蓋 bus 排隊延遲。
-        # key = full agent_id (e.g. "agent_mahiru")
-        self._pending_voice_target: dict[str, tuple[int, float]] = {}
+        # M6.2-1 (Bry 派工 2026-08-14 19:47 EDT): per-message correlation
+        # 改用 message_id 當 key (last-write-wins → 一對一配對),
+        # 修掉快速連續對話下舊音檔配錯訊息的 race condition。
+        # 向後相容: 沒 message_id 的 event (legacy) 走 _pending_voice_target_legacy。
+        # key = message_id (UUID, 來自 AGENT_SPEAK.event_id)
+        self._pending_voice_target: dict[str, tuple[int, float]] = {}  # key=message_id
+        # Legacy fallback: 沒 message_id 的 event 走 agent_id-based lookup
+        # M6.2-1: 保留這個 dict 給 backward compat, 預期 0 entry (新 code 都帶 message_id)
+        self._pending_voice_target_legacy: dict[str, tuple[int, float]] = {}  # key=agent_id
         self._VOICE_PAIR_EXPIRY_SEC = 300.0
         # Bry 2026-07-27 00:37 拍板: voice pair 開起來
         # 00:00 disable (累了, 接受半吊子), 00:37 Bry 醒來不累, 把 TTS 開
@@ -312,16 +319,34 @@ class ChannelRouter:
                     f"{target_user_id} from {adapter_agent_id}: {text[:50]!r}"
                 )
                 # Phase 5+ (2026-07-15 Bry 拍板): text 成功送到 telegram 後,
-                # 暫存 (user_id, ts),等 AGENT_AUDIO_READY 把 mp3 也推過去
+                # 暫存 (user_id, ts, message_id),等 AGENT_AUDIO_READY 把 mp3 也推過去
+                # M6.2-1 (Bry 派工 2026-08-14 19:47 EDT): 用 message_id 當 key
+                # 取代 agent_id-based last-write-wins,避免快速連續對話下
+                # 舊音檔配錯訊息的 race condition
                 if target_channel == "telegram":
-                    self._pending_voice_target[agent_id] = (
-                        int(target_user_id),
-                        time.time(),
-                    )
-                    logger.debug(
-                        f"[ChannelRouter] pending voice target set: "
-                        f"{agent_id} → user {target_user_id}"
-                    )
+                    # event 是 AGENT_SPEAK SoulEvent,event_id 自動生成 UUID
+                    _msg_id = getattr(event, "event_id", None)
+                    if _msg_id:
+                        self._pending_voice_target[_msg_id] = (
+                            int(target_user_id),
+                            time.time(),
+                        )
+                        logger.debug(
+                            f"[ChannelRouter] pending voice target set: "
+                            f"message_id={_msg_id[:8]} agent={agent_id} "
+                            f"→ user {target_user_id}"
+                        )
+                    else:
+                        # Backward compat: 沒 message_id 時降級到 agent_id-based
+                        # (理論上 SoulEvent 一定有 event_id,這條路徑只是保險)
+                        self._pending_voice_target_legacy[agent_id] = (
+                            int(target_user_id),
+                            time.time(),
+                        )
+                        logger.warning(
+                            f"[ChannelRouter] no message_id in AGENT_SPEAK, "
+                            f"fall back to legacy agent_id-based pairing"
+                        )
             else:
                 logger.warning(
                     f"[ChannelRouter:{target_channel}] send failed "
@@ -405,13 +430,26 @@ class ChannelRouter:
             )
             return
 
-        # 找配對
-        target = self._pending_voice_target.get(agent_id)
+        # M6.2-1 (Bry 派工 2026-08-14 19:47 EDT): per-message correlation
+        # 從 AGENT_AUDIO_READY payload 拿 message_id,當 lookup key
+        # 取代 agent_id-based last-write-wins,避免 race condition
+        message_id = event.payload.get("message_id")
+        if message_id:
+            target = self._pending_voice_target.get(message_id)
+            lookup_key = message_id
+            lookup_mode = "per_message"
+        else:
+            # Backward compat: 沒 message_id 走 legacy agent_id lookup
+            target = self._pending_voice_target_legacy.get(agent_id)
+            lookup_key = agent_id
+            lookup_mode = "legacy_agent_id"
         if not target:
             # 沒有 pending = 這個 audio 不是要送 TG 的（可能是 web 觸發）
             # 也有可能過期了被清掉 → 屬於正常情況,不當 error
             logger.debug(
-                f"[ChannelRouter:audio] no pending TG target for {agent_id}, "
+                f"[ChannelRouter:audio] no pending TG target for "
+                f"key={lookup_key[:8] if isinstance(lookup_key, str) else lookup_key} "
+                f"agent={agent_id} (mode={lookup_mode}), "
                 f"skip voice push (可能是 web-only 觸發)"
             )
             return
@@ -421,14 +459,21 @@ class ChannelRouter:
             logger.warning(
                 f"[ChannelRouter:audio] pending voice target expired "
                 f"({time.time() - ts:.1f}s > {self._VOICE_PAIR_EXPIRY_SEC}s) "
-                f"for {agent_id} → user {user_id}, drop"
+                f"for key={lookup_key[:8] if isinstance(lookup_key, str) else lookup_key} "
+                f"agent={agent_id} → user {user_id}, drop"
             )
             # 清掉,避免重複檢查
-            self._pending_voice_target.pop(agent_id, None)
+            if message_id:
+                self._pending_voice_target.pop(message_id, None)
+            else:
+                self._pending_voice_target_legacy.pop(agent_id, None)
             return
 
         # 拿到就 pop,避免同一個 audio 推兩次
-        self._pending_voice_target.pop(agent_id, None)
+        if message_id:
+            self._pending_voice_target.pop(message_id, None)
+        else:
+            self._pending_voice_target_legacy.pop(agent_id, None)
 
         # 找 telegram adapter
         adapter = self._adapters.get("telegram")

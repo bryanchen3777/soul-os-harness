@@ -229,7 +229,7 @@ class FishTTSHandler:
         收到 AGENT_SPEAK 後的入口
 
         - 檢查 tts_enabled（False 跳過）
-        - 取 agent_id / audio_text / emotion
+        - 取 agent_id / audio_text / emotion / message_id (M6.2-1)
         - 立刻 asyncio.create_task 丟背景，return 不等 TTS 完成
         """
         try:
@@ -255,10 +255,17 @@ class FishTTSHandler:
             emotion = payload.get("emotion", "")
             text = payload.get("text", "")
 
+            # M6.2-1 (Bry 派工 2026-08-14 19:47 EDT): per-message correlation
+            # 從 AGENT_SPEAK event_id 抽出 message_id,透傳給 TTSService
+            # → AGENT_AUDIO_READY payload → ChannelRouter / web client
+            # 讓 audio 對應到「同一則 text」而不是「同一個 agent 的最新一筆」
+            message_id = getattr(event, "event_id", None) or payload.get("message_id")
+
             # 3. log 觀察（Phase 5：emotion 會查 marker 注入 text）
             logger.info(
                 f"[FishTTS] trigger | agent={agent_id} "
                 f"audio_len={len(audio_text)} emotion={emotion!r} "
+                f"message_id={message_id[:8] if message_id else 'None'} "
                 f"(Phase 5: marker 會在 _synthesize_async 內 prefix 進 text)"
             )
 
@@ -269,6 +276,7 @@ class FishTTSHandler:
                     audio_text=audio_text,
                     emotion=emotion,
                     text_preview=text,
+                    message_id=message_id,
                 )
             )
         except Exception as e:
@@ -284,6 +292,9 @@ class FishTTSHandler:
         audio_text: str,
         emotion: str,
         text_preview: str,
+        # M6.2-1 (Bry 派工 2026-08-14 19:47 EDT): per-message correlation
+        # 從 _on_agent_speak 透傳進來,再傳給 TTSService.synthesize_and_store
+        message_id: Optional[str] = None,
     ) -> None:
         """
         真正呼叫 Fish Audio API 的 async 函式
@@ -294,7 +305,7 @@ class FishTTSHandler:
           1. 查 voice_id（agent_id → alias → 32-char ref）
           2. load_api_key
           3. asyncio.to_thread() 跑阻塞 requests.post
-          4. 寫 mp3 到 output_dir
+          4. 寫 mp3 到 output_dir (含 message_id 透傳)
           5. 任何錯誤 log warning 不 raise
         """
         try:
@@ -362,6 +373,8 @@ class FishTTSHandler:
                     mp3_bytes=mp3_bytes,
                     emotion=emotion,
                     text_preview=text_preview,
+                    # M6.2-1: 透傳 message_id 到 AGENT_AUDIO_READY
+                    message_id=message_id,
                 )
             else:
                 # fallback: 舊的直接寫檔邏輯（TTSService 載入失敗時的退路）

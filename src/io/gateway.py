@@ -285,6 +285,11 @@ class IOGateway:
             "size": payload.get("size"),
             "timestamp": event.timestamp.isoformat() if event.timestamp else None,
             "session_id": getattr(event, "session_id", ""),
+            # M6.2-1 (Bry 派工 2026-08-14 19:47 EDT): per-message correlation
+            # 透傳 message_id 到前端,讓 attachReplayButton 用 message_id
+            # 而非 "latest" 對應到正確的 text message
+            # backward compat: 沒 message_id 時 (理論上不會發生) 用 None
+            "message_id": payload.get("message_id"),
         })
         logger.info(
             f"[Gateway] audio ready broadcast | agent={payload.get('agent_id')} "
@@ -695,6 +700,11 @@ class IOGateway:
             # WS / TG client 收到的 broadcasting 沒 translation, 整條日文+中文並列設計失效
             # 修法: event.payload.get("translation"), 預設 None (中文版角色 / 翻譯失敗)
             "translation": event.payload.get("translation"),
+            # M6.2-1 (Bry 派工 2026-08-14 19:47 EDT): per-message correlation
+            # 把 AGENT_SPEAK 的 event_id 帶到 WS client,讓前端用 message_id
+            # 把 audio 對應到「同一則 text」而不是「同一個 agent 的最新一筆」
+            # backward compat: 沒 event_id 時 (理論上不會發生) 用 None
+            "message_id": getattr(event, "event_id", None),
         }
         # Write to trace.log directly for debugging
         try:

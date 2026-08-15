@@ -82,6 +82,10 @@ class TTSService:
         mp3_bytes: bytes,
         emotion: str = "",
         text_preview: str = "",
+        # M6.2-1 (Bry 派工 2026-08-14 19:47 EDT): per-message correlation
+        # 從上游 AGENT_SPEAK 的 event_id 透傳,讓 AGENT_AUDIO_READY 跟
+        # 原始 text message 配對。None = backward compat (不傳 message_id)。
+        message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         寫 mp3 到磁碟 + emit AGENT_AUDIO_READY 事件
@@ -94,6 +98,7 @@ class TTSService:
             "audio_url": str,            # 公開 URL
             "emotion": str,
             "size": int,
+            "message_id": str | None,    # M6.2-1: correlation to text message
           }
         """
         ts = self._make_filename()
@@ -112,6 +117,7 @@ class TTSService:
                 "audio_url": "",
                 "emotion": emotion,
                 "size": 0,
+                "message_id": message_id,
                 "error": str(e),
             }
 
@@ -119,7 +125,7 @@ class TTSService:
         size = len(mp3_bytes)
         logger.info(
             f"[TTSService] wrote {out_path} | agent={agent_id} "
-            f"emotion={emotion!r} size={size} url={audio_url}"
+            f"emotion={emotion!r} size={size} url={audio_url} message_id={message_id}"
         )
 
         # ── emit AGENT_AUDIO_READY ──
@@ -141,12 +147,16 @@ class TTSService:
                         "emotion": emotion,
                         "size": size,
                         "text_preview": text_preview[:120],
+                        # M6.2-1: 透傳上游 AGENT_SPEAK 的 event_id,給
+                        # ChannelRouter (per-message pair) 跟 web client
+                        # (attach replay button to specific text) 用
+                        "message_id": message_id,
                     },
                 )
                 await self.bus.publish(event)
                 logger.debug(
                     f"[TTSService] AGENT_AUDIO_READY published | "
-                    f"agent={agent_id} url={audio_url}"
+                    f"agent={agent_id} url={audio_url} message_id={message_id}"
                 )
         except Exception as e:
             # 事件廣播失敗不影響主流程
@@ -162,6 +172,7 @@ class TTSService:
             "audio_url": audio_url,
             "emotion": emotion,
             "size": size,
+            "message_id": message_id,
         }
 
     # ───────────────────────────────────────
