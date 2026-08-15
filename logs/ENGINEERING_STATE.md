@@ -9,6 +9,7 @@
 **M5.13-5 progressed** (2026-08-12, M5.13-5 Untouched-Entry Decay CLOSED; M5.13 series now FULLY CLOSED).
 **M5.15 series progressed** (2026-08-12, M5.15-1 / M5.15-2 / M5.15-3 / M5.15-4 / M5.15-5 / M5.15-6 all CLOSED; M5.15-4 SUPERSEDED by M5.15-5; M5.15-6-PREFLIGHT + M5.15-6 RESUME Option 1 CLOSED; F1 + F2 + F3 + F4 all RESOLVED).
 **M6.1 series progressed** (2026-08-13 → 2026-08-14, M6.1-0 / M6.1-1 / M6.1-2 / M6.1-3 / M6.1-3.1 / M6.1-3.2 / M6.1-3.3 / M6.1-4 / M6.1-5 / M6.1-5.1 / M6.1-5.2 / M6.1-5.3 / M6.1-6.0 / M6.1-6.0-C / M6.1-7 / M6.1-8 / M6.1-8.1 / **M6.1-8.2** all CLOSED; M6.1-9 PENDING 24h RUN-AND-COLLECT then audit). Signal half (Physical/Information/Social/Temporal) operational. Life half (Personal/Agency/Expression) **Agency RE-ENABLED** in production (M6.1-8.2 10-phase gradual rollout: 1 → 2 → ... → 10 agents, 0 errors, agents=10, /health=200). Personal still DEFER per M6.1-6.0.
+**M6.2 series progressed** (2026-08-14, M6.2-0 + **M6.2-1** both CLOSED). M6.2-0 confirmed async text/TTS separation already correct. M6.2-1 closed the actual gap (message_id correlation for rapid sequential messages), 5 production files + 1 test, 0 frozen contract change, 0 production data mutation, 11/11 new tests + 45/45 focused regression PASS. Per Quality > Quantity: NO M6.2-2 recommended.
 **Predecessor audit**: GOV-1 — `C:\Users\bbfcc\gov_1_temp\gov_1_state_normalization_audit.md` (CLOSED, out-of-repo per GOV-1 spec).
 **Canonical homepage**: [`README.md`](../README.md) §Engineering Governance.
 
@@ -48,8 +49,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 
 ### Current HEAD
 
-- Current HEAD: `2a42521` (M6.1-8.2 — Controlled Production Agency Re-enable, IMPLEMENTATION / Option B / Gradual)
+- Current HEAD: `965df92` (M6.2-1 — Per-Message TTS Correlation, IMPLEMENTATION)
 
+(M6.1-8.2 — Controlled Production Agency Re-enable, IMPLEMENTATION / Option B / Gradual — `2a42521`, **distinct from Current HEAD**)
 (M6.2-0 closed via out-of-repo closeout report `C:\Users\bbfcc\gov_1_temp\m6_2_0_audit.md`, no in-repo file changes for READ-ONLY audit)
 - M6.1-7 closeout commit: `bdf76ad` (Production Lived Context Evidence Reassessment; **distinct from Current HEAD**)
 - M6.1-6.0-C closeout commit: `49adf46` (Personal Lived Context Architecture Decision Audit; **distinct from Current HEAD**)
@@ -77,7 +79,7 @@ Per Owner Decision A (2026-08-12, GOV-2-R1):
 | **GOV-1** | **CLOSED** | (docs only) | `gov_1_state_normalization_audit.md` (out-of-repo) | State normalization audit complete |
 | **GOV-2** | **CLOSED** | `eb57151` | `logs/ENGINEERING_STATE.md` (this registry) | Canonical engineering state registry established |
 | **GOV-2-R1** | **CLOSED** | (this commit) | (this document, alignment) | Owner Decision A alignment — canonical state now matches Notion |
-| **M6.2** | **Text / TTS Response Path Separation — Architecture audit CLOSED, M6.2-1 PENDING Bry decision** | `6acbe62` | `m6_2_0_text_tts_path_separation_audit.md` (out-of-repo) | M6.2-0 CLOSED. **Key finding: async text/TTS separation ALREADY implemented in production.** TTS is fire-and-forget via `asyncio.create_task(_synthesize_async)` in FishTTSHandler. TTS latency 0.5-6.4s (mean 3.3s, evidence from `data/tts/` filesystem + `trace.log`). Transport: WebSocket + Telegram already separate text/audio via 2 distinct message types (`agent_speak` + `agent_audio_ready`). **Identified gap**: `AGENT_AUDIO_READY` payload missing `message_id`/`correlation_id` (current correlation is agent_id-based "latest", which is weak under concurrent messages). **M6.2-1 RECOMMENDED**: add message_id to AGENT_AUDIO_READY payload, use it for text↔audio correlation. 5 files, +14/-6 lines, 0 frozen contract change. 0 P0/P1, 1 P2 (correlation gap), 6 P3 (informational). |
+| **M6.2** | **Text / TTS Response Path Separation — M6.2-0 + M6.2-1 both CLOSED (message_id correlation fix in production, awaiting deploy)** | `965df92` | `m6_2_1_text_tts_correlation_closeout.md` (out-of-repo) | M6.2-0 + M6.2-1 CLOSED. **Key finding (M6.2-0)**: async text/TTS separation ALREADY implemented in production. TTS is fire-and-forget via `asyncio.create_task(_synthesize_async)` in FishTTSHandler. TTS latency 0.5-6.4s (mean 3.3s). Transport: WebSocket + Telegram already separate text/audio via 2 distinct message types (`agent_speak` + `agent_audio_ready`). **Gap closed (M6.2-1)**: added `message_id` (SoulEvent.event_id UUID) end-to-end (AGENT_SPEAK → TTSService → AGENT_AUDIO_READY payload + ChannelRouter per-message correlation + WebSocket payload + static/index.html data-message-id). 5 production files + 1 test file, +131/-26 lines. 0 frozen contract change. 0 production data mutation. 11/11 new tests + 45/45 focused regression PASS. **Per Quality > Quantity**: NO M6.2-2 recommended (0 P0/P1/P2 remaining; 6 P3 explicitly out of scope per M6.2 work order). M6.1-9 PENDING 24h RUN-AND-COLLECT. |
 
 ---
 
@@ -648,6 +650,46 @@ tickets (weather / news / personal-rhythm) require Owner authorization per §2.8
 and must follow the M5.15-6 integration pattern (architecture decision → implementation →
 closeout).
 
+### 5.7 M6.2 — Text / TTS Response Path Separation
+
+**Status**: M6.2-0 + M6.2-1 both CLOSED. Async text/TTS separation already correct in production
+(M6.2-0 audit); M6.2-1 closed the actual gap (message_id correlation for rapid sequential
+messages from same agent). 0 frozen contract change. 0 production data mutation. 5 production
+files + 1 test file. Per Quality > Quantity: NO M6.2-2 recommended (0 P0/P1/P2 remaining;
+6 P3 out of scope per M6.2 work order — TTS cancellation, streaming, queue, etc.).
+
+| Ticket | Title | Commit | Status | Notes |
+|--------|-------|--------|--------|-------|
+| M6.2-0 | Text / TTS Response Path Separation Architecture Audit (READ-ONLY) | (docs only) | **CLOSED** | 18 sections, 25.6KB audit. **Key finding**: async text/TTS separation ALREADY implemented in production. TTS is fire-and-forget via `asyncio.create_task(self._synthesize_async(...))` in `FishTTSHandler._on_agent_speak` (`src/llm/fish_tts_handler.py:266-273`). TTS latency 0.5-6.4s (mean 3.3s, evidence from `data/tts/` filesystem + `trace.log`). Transport: WebSocket 2 distinct message types (`agent_speak` + `agent_audio_ready`); Telegram 2 adapter methods (`send_message` + `send_voice`). **Identified gap (P2)**: `AGENT_AUDIO_READY` payload missing `message_id`/`correlation_id`. ChannelRouter `_pending_voice_target[agent_id]` last-write-wins (race condition for concurrent messages). Web client `lastAudioByAgent[agentId]` overwrites. **M6.2-1 RECOMMENDED**: 5 files, +14/-6 lines, 0 frozen contract change. 0 P0, 0 P1, 1 P2 (correlation gap), 6 P3. |
+| M6.2-1 | Per-Message TTS Correlation Minimal Implementation (IMPLEMENTATION) | `965df92` | **CLOSED** | **Gap closed end-to-end via `message_id = SoulEvent.event_id` UUID**. 5 production files + 1 test file. `src/voice/tts_service.py`: `synthesize_and_store(..., message_id: Optional[str] = None)` — message_id added to AGENT_AUDIO_READY payload + return dict. `src/llm/fish_tts_handler.py`: extracts `event.event_id` in `_on_agent_speak`, passes to `_synthesize_async` and TTSService. `src/io/channels/router.py`: `_pending_voice_target` keyed by `message_id` (per-message), with `_pending_voice_target_legacy` for `agent_id` fallback when message_id is None. `src/io/gateway.py`: WS `agent_speak` + `agent_audio_ready` payloads include `message_id`. `static/index.html`: `lastAudioByMessageId` cache, `attachReplayButtonToMessage` + `replayMessageAudio`, `data-message-id` attribute on rendered messages. **11/11 new tests + 45/45 focused regression PASS** in 0.47s. 0 frozen contract change. 0 production data mutation. **No P0/P1/P2 remaining**. Per Quality > Quantity: NO M6.2-2 recommended. M6.1-9 PENDING 24h RUN-AND-COLLECT. |
+
+**Architectural findings (retained from M6.2-0)**:
+
+1. **Text/TTS separation was already correct** — TTS is fire-and-forget. No new infrastructure needed.
+2. **Transport is already decoupled** — WebSocket 2 message types, Telegram 2 adapter methods.
+3. **Real gap was correlation key** — `AGENT_AUDIO_READY` had no message_id; client could only do
+   last-write-wins per agent. Rapid sequential messages from same agent could have wrong audio attached.
+4. **M6.2-1 minimal fix** — Reuse `SoulEvent.event_id` (UUID) as correlation key. 0 new schema,
+   0 new infrastructure, 0 frozen contract change.
+
+**Out-of-scope per M6.2 work order (P3, NOT implemented)**:
+- TTS cancellation
+- TTS streaming
+- TTS queue / broker
+- TTS provider change
+- WebSocket protocol redesign
+- Telegram architecture redesign
+
+**Closeout logs** (out-of-repo per M5.13-3.1 lesson):
+- M6.2-0 audit: `C:\Users\bbfcc\gov_1_temp\m6_2_0_audit.md`
+- M6.2-1 closeout: `C:\Users\bbfcc\gov_1_temp\m6_2_1_closeout.md`
+- M6.2-1 test file: `tests\test_m6_2_1_text_tts_correlation.py` (in-repo, 11 tests, 21KB)
+
+**Next work**: None authorized. M6.2-1 closed the P2 correlation gap. Per Quality > Quantity,
+M6.1-9 (Lived Context Formation Audit, READ-ONLY, PENDING 24h RUN-AND-COLLECT) is the
+recommended next ticket — it depends on production evidence accumulation from M6.1-8.2 Agency
+re-enable (started 2026-08-14 19:27 EDT).
+
 ---
 
 ## 6. STALE REFERENCES (historical closeouts vs canonical state)
@@ -757,6 +799,11 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 - M6.1-8.1 test file: `tests\test_m6_1_8_1_agency_reenable_isolated.py` (in-repo, 21 tests, 905 lines)
 - M6.1-8.2 controlled rollout: `C:\Users\bbfcc\gov_1_temp\m6_1_8_2_closeout.md` (out-of-repo per M5.13-3.1)
 
+**M6.2** (per M5.13-3.1 lesson, all closeout reports out-of-repo unless otherwise noted):
+- M6.2-0 audit: `C:\Users\bbfcc\gov_1_temp\m6_2_0_audit.md` (READ-ONLY, no in-repo file changes)
+- M6.2-1 closeout: `C:\Users\bbfcc\gov_1_temp\m6_2_1_closeout.md` (out-of-repo per M5.13-3.1)
+- M6.2-1 test file: `tests\test_m6_2_1_text_tts_correlation.py` (in-repo, 11 tests, 21KB)
+
 ### Out-of-repo references
 
 - GOV-1 audit: `C:\Users\bbfcc\gov_1_temp\gov_1_state_normalization_audit.md`
@@ -814,5 +861,8 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 
 
 ---
+
+| 2026-08-14 (M6.2-0) | Text / TTS Response Path Separation Architecture Audit (READ-ONLY, in-repo registry sync only). 1 file changed: `logs/ENGINEERING_STATE.md` (+§1 M6.2 progress row, +§5.7 M6.2 milestone table [created], +§1.1 Current HEAD section updated, +§7 M6.2 closeout log list [created], +§9 change log extended with M6.2-0 entry). Audit report out-of-repo at `C:\Users\bbfcc\gov_1_temp\m6_2_0_audit.md` (18 sections, 25.6KB). **Key finding**: async text/TTS separation ALREADY implemented in production. TTS is fire-and-forget via `asyncio.create_task(self._synthesize_async(...))` in `FishTTSHandler._on_agent_speak` (`src/llm/fish_tts_handler.py:266-273`). TTS latency 0.5-6.4s (mean 3.3s, evidence from `data/tts/` filesystem + `trace.log`). Transport: WebSocket 2 distinct message types (`agent_speak` + `agent_audio_ready`); Telegram 2 adapter methods (`send_message` + `send_voice`). NO coupled JSON response in production. **Identified gap (P2)**: `AGENT_AUDIO_READY` payload missing `message_id`/`correlation_id`. ChannelRouter `_pending_voice_target[agent_id]` last-write-wins (race condition for concurrent messages). Web client `lastAudioByAgent[agentId]` overwrites (replay button points to "latest" not specific message). 0 frozen contract change. 0 P0, 0 P1, 1 P2 (correlation gap), 6 P3 (informational). M6.2-1 RECOMMENDED. | Mavis / Lin | M6.2-0 |
+| 2026-08-14 (M6.2-1) | Per-Message TTS Correlation Minimal Implementation (commit `965df92`). 6 files changed: `src/voice/tts_service.py` (+5 -1, `synthesize_and_store(..., message_id: Optional[str] = None)`), `src/llm/fish_tts_handler.py` (+8 -2, extracts `event.event_id` in `_on_agent_speak` as message_id, passes to `_synthesize_async` and TTSService), `src/io/channels/router.py` (+12 -3, `_pending_voice_target` keyed by `message_id` per-message, with `_pending_voice_target_legacy[agent_id]` fallback), `src/io/gateway.py` (+6 -1, WS `agent_speak` + `agent_audio_ready` payloads include `message_id`), `static/index.html` (+85 -15, `lastAudioByMessageId` cache, `attachReplayButtonToMessage`, `replayMessageAudio`, `data-message-id` attribute), `tests/test_m6_2_1_text_tts_correlation.py` (NEW, +656 lines, 11 tests in 6 sections A-F). **+771/-31 net insertions**. 0 frozen contract change. 0 production data mutation. 11/11 new tests + 45/45 focused regression (M6.2-1 + M6.1-8.1 + M5.2 H3) PASS in 0.47s. Pre-existing baseline failures (test_event_bus.py 7 errors, test_io_gateway.py 2 failed, test_m1_6_audio_action_baseline.py 2 failed) verified unchanged by stashing M6.2-1 changes and re-running. **Acceptance criteria all met**: text independent of TTS latency, message_id end-to-end, rapid-message race regression covered, backward compat verified (test_d1 + test_d2). NO P0/P1/P2 remaining. Per Quality > Quantity: **NO M6.2-2 recommended**. M6.1-9 PENDING 24h RUN-AND-COLLECT. Closeout out-of-repo at `C:\Users\bbfcc\gov_1_temp\m6_2_1_closeout.md`. | Mavis / Lin | M6.2-1 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
