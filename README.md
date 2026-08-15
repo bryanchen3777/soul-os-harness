@@ -102,9 +102,13 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 
 ### 7️⃣ WORLD PERCEPTION
 
-外部世界事件感知 pipeline (M3 Phase 1)。
+Soul OS 的外部世界事件感知 pipeline — Signal 層 + Perception 層 (M3 + M6.1 Lived Context Awareness)。
 
-**Source**: `src/world/source/` — 當前為 synthetic source (天氣/時間/模擬事件)；可擴展至真實 API。
+**Source**: `src/world/source/` — 多個真實 + 測試來源:
+- **Calendar** (M5.15-6): iCal polling, `SOULOS_CALENDAR_ICAL_URL` env-gated
+- **Weather** (M6.1-3.1): Open-Meteo, `SOULOS_WEATHER_LOCATION` env-gated
+- **News** (M6.1-5.1): RSS 2.0 / Atom, `SOULOS_NEWS_FEEDS` env-gated
+- **Synthetic** (M3): 測試 driver,測試隔離 (`isolated_root` fixture)
 
 **Pipeline**: `WorldEventSource` → `WorldEvent` (含 `priority` 欄位, M3.2) → `WorldPerceptionMiddleware` (ephemeral in-memory state) → `WorldEventDispatcher` (priority routing) → 注入 `world_context` 到 `AGENT_INTENT_PERCEIVED`。
 
@@ -117,7 +121,7 @@ M6.1 將 "World Perception" 重新定位為 **Signal + Perception** 兩層的一
 ```
 [Layer 1: Signal]            raw input from source
                              Telegram / Calendar iCal / System clock /
-                             (future: Weather API / News API / Web Search)
+                             Open-Meteo Weather / RSS News
                                        ↓
 [Layer 2: Perception]        validation + scoring + dedup + fact extraction
                              WorldPerceptionMiddleware (M3) +
@@ -138,15 +142,15 @@ M6.1 將 "World Perception" 重新定位為 **Signal + Perception** 兩層的一
 
 | Context | What it covers | Current sources | Current status |
 |---------|----------------|------------------|-----------------|
-| **Physical** | Bry's body / environment (weather, location, sunlight) | NONE in production | M3.1 Invariant E forbids; only Synthetic test driver |
-| **Information** | News / web / search results / external data | NONE in production | Deferred — no real source |
-| **Social** | Telegram messages, calendar events, cross-agent interactions | Telegram + Calendar (M5.15-6) | ✓ LIVE (partial) |
-| **Personal** | Bry's habits (meal/sleep/activity), preferences, identity | NONE for Bry-as-person | Deferred — requires data source decision |
+| **Physical** | Bry's body / environment (weather, location, sunlight) | Open-Meteo Weather (M6.1-3.1) | ✓ LIVE |
+| **Information** | News / web / search results / external data | RSS News (M6.1-5.1) | ✓ LIVE (with M3 accept gate caveat, 0 emits to world_context) |
+| **Social** | Telegram messages, calendar events, cross-agent interactions | Telegram + Calendar (M5.15-6) | ✓ LIVE |
+| **Personal** | Bry's habits (meal/sleep/activity), preferences, identity | NONE for Bry-as-person | DEFERRED (M6.1-6.0) |
 | **Temporal** (cross-cutting) | When; touches ALL other contexts | System clock + Bry's last_msg_ts | ✓ LIVE (Chrono-Social Engine) |
 
-**Capability positioning** (M6.1):
-- Calendar / Telegram / Weather / Web / Search / News / Messaging = **signal producers / evidence sources**
-- 這些 **不是 Lived Context 本身**;它們是 Layer 1 的 input,經過 Layer 2 處理後,才能在 Layer 3 聚合
+**Capability positioning** (M6.1) — **critical boundary**:
+- Calendar / Telegram / Weather / Web / Search / News / Messaging = **world interfaces / evidence sources**
+- 這些 **不是 Awareness 本身**;它們是 Layer 1 的 input,經過 Layer 2 處理後,才能在 Layer 3 聚合
 - Lived Context = 經過 Perception 處理後的、aggregate 為 LLM input 的狀態
 
 **Boundary invariant**:
@@ -157,12 +161,86 @@ M6.1 將 "World Perception" 重新定位為 **Signal + Perception** 兩層的一
 **Frozen-contract impact** (per M6.1-1 audit): **0 changes**. 15 contracts preserved.
 
 **Missing capabilities** (P2, requires Bry decision):
-- Real Weather source (Physical)
-- Real News source (Information)
-- Personal life-rhythm tracking (Personal)
-- Environment→emotion reasoning (Personal)
+- ~~Real Weather source~~ — **RESOLVED by M6.1-3.1** ✓
+- ~~Real News source~~ — **RESOLVED by M6.1-5.1** ✓ (with M3 accept gate caveat per M6.1-5.3)
+- Personal life-rhythm tracking (Personal) — **DEFERRED per M6.1-6.0**
+- Environment→emotion reasoning (Personal) — **DEFERRED per M6.1-6.0**
+- Agency re-enable — **RESOLVED by M6.1-8.2** ✓ (10/10 agents, true Phase-10)
+- LivedContextAggregator (CAPABILITY) — currently de-facto, no concrete behavioral need
 
-詳見 `logs/ENGINEERING_STATE.md` §5.5 M6.1 與 `C:\Users\bbfcc\gov_1_temp\m6_1_1_lived_context_taxonomy_audit.md` (out-of-repo)。
+詳見 `logs/ENGINEERING_STATE.md` §5.6 M6.1 與 `C:\Users\bbfcc\gov_1_temp\m6_1_1_lived_context_taxonomy_audit.md` (out-of-repo)。
+
+### 🌐 M6.1 LIVED CONTEXT AWARENESS
+
+Soul OS 透過 M6.1 建立了**完整的 Lived Context Awareness 架構** — 將世界信號 (Layer 1) 經由 Perception 處理 (Layer 2) 聚合為 Lived Context (Layer 3) 供 Soul 解讀 (Layer 4),最終由 Agency 採取行動 (Layer 5)。
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  LAYER 0: SIGNAL SOURCES (4 Worlds)                          │
+│  ┌──────────┐ ┌────────────┐ ┌──────────┐ ┌──────────┐     │
+│  │ PHYSICAL │ │INFORMATION │ │  SOCIAL  │ │ PERSONAL │     │
+│  │ Weather  │ │   News     │ │  TG+Cal  │ │  (none)  │     │
+│  │  ✓ LIVE  │ │  ✓ LIVE    │ │ ✓ LIVE   │ │ DEFERRED │     │
+│  └────┬─────┘ └─────┬──────┘ └────┬─────┘ └────┬─────┘     │
+└───────┼──────────────┼─────────────┼───────────┼────────────┘
+        └──────────────┼─────────────┘           │
+                       ▼                          │
+┌──────────────────────────────────────────────────────────────┐
+│  LAYER 1: WORLD / SIGNAL PERCEPTION                          │
+│  • WorldEventSource (4 types: calendar/weather/news/synth)  │
+│  • WorldEvent (M3 schema + priority + novelty_id)           │
+│  • WorldPerceptionMiddleware (validate / score / dedup)     │
+│  • WorldEventDispatcher (priority routing)                  │
+└───────────────────────────┬──────────────────────────────────┘
+                            ▼
+┌──────────────────────────────────────────────────────────────┐
+│  LAYER 2: LIVED CONTEXT  (Soul's aggregated present state)   │
+│  5 context blocks: Physical / Information / Social /         │
+│                    Personal / Temporal                       │
+│  de-facto aggregator: src/llm/proxy.py:_build_messages_*     │
+│  block order: identity → memory → mood → relationship →      │
+│               inner_life → world → temporal                  │
+└───────────────────────────┬──────────────────────────────────┘
+                            ▼
+┌──────────────────────────────────────────────────────────────┐
+│  LAYER 3: SOUL INTERPRETATION (LLM call)                     │
+│  LLMProxy (M6.0-5.6 BudgetProfile) → MINIMAX → response      │
+│  emit AGENT_SPEAK (with event_id = message_id for TTS)       │
+└───────────────────────────┬──────────────────────────────────┘
+                            ▼
+┌──────────────────────────────────────────────────────────────┐
+│  LAYER 4: AGENCY  (intentional action, 4 handlers parallel)  │
+│  • AgencyTriggerHandler  → proactive_dm (ruka only, 8/6)    │
+│  • DiaryHandler          → morning + night LLM diary        │
+│  • DreamHandler          → 22:05 dream                      │
+│  • EventHandler          → 4-8h event                      │
+│  Scheduler: morning=08:00 / night=22:00 / heartbeat SUSPENDED│
+└───────────────────────────┬──────────────────────────────────┘
+                            ▼
+┌──────────────────────────────────────────────────────────────┐
+│  EXPRESSION  → User experience (WebSocket + Telegram + TTS) │
+│  ↺ MEMORY / INNER LIFE  (loops back)                          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Canonical signal → perception → lived context → interpretation → agency** is the complete
+flow. World interfaces (Calendar / Weather / News / Web / Messaging) are signal producers
+and **NOT** Awareness itself — they are Layer 0 inputs, processed by Layer 1 perception
+before being aggregated into Layer 2 Lived Context.
+
+**M6.1 architecture status (post-M6.1-8.2 / M6.1-9.1)**:
+- Layer 0 (Signal): **4/5 worlds LIVE** (Personal DEFERRED per M6.1-6.0)
+- Layer 1 (Perception): **OPERATIONAL** (2543+ trace events, 3 real sources)
+- Layer 2 (Lived Context): **de-facto via proxy.py, no new wrapper**
+- Layer 3 (Soul Interpretation): **OPERATIONAL** (1081+ shadow_log entries with world_context)
+- Layer 4 (Agency): **RE-ENABLED** (10/10 agents, true Phase-10 per M6.1-9.1)
+- Expression: **OPERATIONAL** (text + TTS, async per M6.2-1 message_id correlation)
+
+**Frozen contracts (M6.1 preserved 0 changes)**: M3 WorldEvent, M3.1 ABC, M3.1 Bus,
+M5.4-5.1 InnerLifeEvent (9 fields), M5.4-5.1 Provenance, M5.4-5.5 SoulEvent.inner_life_event_id,
+M5.9-2 WORLD_QUALIFYING_TYPES, M5.9-3 WorldInnerLifeAdapter, VALID_SOURCES.
+
+詳見 `logs/ENGINEERING_STATE.md` §5.6 與 §5.7 (M6.2) 完整 M6.1 / M6.2 milestone tables。
 
 ### 8️⃣ AGENCY LAYER
 
@@ -270,8 +348,8 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 
 ## 🗺️ 當前工程狀態
 
-**Current HEAD**: `3d1fae4` (M6.0-5.6.1 — Budget Profile Registry, BudgetProfile + from_profile factory)
-**Current authorized ticket**: **NONE** (per Owner Decision A + M5.13-5 + M5.15-6 + M6.0-5.6.1 closeouts: M5.13 (fully closed) / M5.14 / M5.15 / M6.0 (fully closed) / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED; no next ticket authorized)
+**Current HEAD**: `eafbf24` (M6.1-9.1 — Restore True Phase-10 Agency Registration, configuration-only fix)
+**Current authorized ticket**: **NONE** (per Owner Decision A: M5.13 / M5.14 / M5.15 / M6.0 / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED; M6.1 / M6.2 series progressed with M6.1-9.1 True Phase-10 fix; M6.1-9 24h RUN-AND-COLLECT pending; no next ticket authorized)
 
 | Milestone | 內容 | 狀態 | Commit |
 |-----------|------|------|--------|
@@ -292,6 +370,8 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 | **M5.15** | WorldEventSource → Event Bus canonical integration + identity bridge + real-world calendar source (F1 + F2 + F3 + F4 all RESOLVED) | ✅ | `c2de02c` (6) |
 | **M6.0** | Lived context validation + subjective LLM evaluation (fully closed) | ✅ | `3d1fae4` (5.6.1) |
 | **M6.0-5.5-R1** | Real three-judge E2E validation gate | ⛔ BLOCKED | `9d21740` (credentials unavailable, correct by design) |
+| **M6.1** | Lived Context Awareness (5 contexts × 4 layers) — Signal half LIVE (Calendar/Weather/News), Agency RE-ENABLED (10/10 agents true Phase-10), Personal DEFERRED. M6.1-9 24h RUN-AND-COLLECT pending. | ✅ LIVE | `eafbf24` (M6.1-9.1) |
+| **M6.2** | Response / TTS Path Reliability — async text/TTS separation already correct, M6.2-1 closed message_id correlation gap (5 files, 0 frozen contract change) | ✅ LIVE | `9a64f14` (M6.2-1 registry) |
 | **GOV-1** | Engineering state normalization audit | ✅ | (out-of-repo) |
 | **GOV-2** | Canonical engineering state registry | ✅ | `eb57151` |
 | **GOV-2-R1** | Canonical state alignment (Owner Decision A) | ✅ | `3539de2` |
@@ -418,4 +498,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-08-12 (M6.0-5.6.1 — Budget Profile Registry, BudgetProfile enum (CHAT/DIARY/DREAM) + from_profile factory, defaults preserved; M6.0 series now FULLY CLOSED; M5.13 (fully closed) / M5.14 / M5.15 / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED)
+**最後更新**: 2026-08-14 (DOC-1.3 — README M6.1 Lived Context Alignment; World Perception section updated, M6.1 Lived Context Awareness section added, M6.1 / M6.2 milestones added to roadmap. Architecture diagram verified still accurate. Previous: M6.1-9.1 True Phase-10 = 10/10 agents restored; M6.2-1 message_id correlation closed; M5.13 / M5.14 / M5.15 / M6.0 / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED.)
