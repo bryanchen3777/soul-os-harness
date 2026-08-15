@@ -130,7 +130,7 @@ M6.1 將 "World Perception" 重新定位為 **Signal + Perception** 兩層的一
                              MultiAgentRelationshipsManager (M5.13)
                                        ↓
 [Layer 3: Lived Context]     aggregated per-context blocks, formatted for LLM
-                             (de-facto implementation: src/llm/proxy.py:_build_messages_*)
+                             (existing composition: src/llm/proxy.py:_build_messages_*)
                              block order: identity → memory → mood →
                              relationship → inner_life → world → temporal
                                        ↓
@@ -156,7 +156,7 @@ M6.1 將 "World Perception" 重新定位為 **Signal + Perception** 兩層的一
 **Boundary invariant**:
 > External integration / tool output / raw WorldEvent ≠ Lived Context.
 
-**Existing aggregation**: 已在 `src/llm/proxy.py:_build_messages_group()` 與 `_build_messages_private()` 實作(7 個 block 順序組裝)。**無需新增 `LivedContextAggregator` wrapper**;現有 logic 已經是 de-facto Lived Context aggregator。
+**Existing aggregation (canonical)**: 已在 `src/llm/proxy.py:_build_messages_group()` 與 `_build_messages_private()` 實作(7 個 block 順序組裝)。**Lived Context is currently formed by the existing context/message composition logic in `src/llm/proxy.py:_build_messages_*`**;**no dedicated `LivedContextAggregator` runtime component exists**. Lived Context is a conceptual / existing composition boundary, not a separately-instantiated runtime.
 
 **Frozen-contract impact** (per M6.1-1 audit): **0 changes**. 15 contracts preserved.
 
@@ -166,7 +166,7 @@ M6.1 將 "World Perception" 重新定位為 **Signal + Perception** 兩層的一
 - Personal life-rhythm tracking (Personal) — **DEFERRED per M6.1-6.0**
 - Environment→emotion reasoning (Personal) — **DEFERRED per M6.1-6.0**
 - Agency re-enable — **RESOLVED by M6.1-8.2** ✓ (10/10 agents, true Phase-10)
-- LivedContextAggregator (CAPABILITY) — currently de-facto, no concrete behavioral need
+- LivedContextAggregator (CAPABILITY) — explicitly NOT instantiated; existing composition in `src/llm/proxy.py:_build_messages_*` is the canonical implementation, no separate runtime needed
 
 詳見 `logs/ENGINEERING_STATE.md` §5.6 M6.1 與 `C:\Users\bbfcc\gov_1_temp\m6_1_1_lived_context_taxonomy_audit.md` (out-of-repo)。
 
@@ -197,7 +197,7 @@ Soul OS 透過 M6.1 建立了**完整的 Lived Context Awareness 架構** — �
 │  LAYER 2: LIVED CONTEXT  (Soul's aggregated present state)   │
 │  5 context blocks: Physical / Information / Social /         │
 │                    Personal / Temporal                       │
-│  de-facto aggregator: src/llm/proxy.py:_build_messages_*     │
+│  existing composition: src/llm/proxy.py:_build_messages_*   │
 │  block order: identity → memory → mood → relationship →      │
 │               inner_life → world → temporal                  │
 └───────────────────────────┬──────────────────────────────────┘
@@ -214,7 +214,8 @@ Soul OS 透過 M6.1 建立了**完整的 Lived Context Awareness 架構** — �
 │  • DiaryHandler          → morning + night LLM diary        │
 │  • DreamHandler          → 22:05 dream                      │
 │  • EventHandler          → 4-8h event                      │
-│  Scheduler: morning=08:00 / night=22:00 / heartbeat SUSPENDED│
+│  Scheduler: morning=08:00 / night=22:00 (runtime producer)  │
+│  Heartbeat: 60s observation/lifecycle (NOT an Agency trigger) │
 └───────────────────────────┬──────────────────────────────────┘
                             ▼
 ┌──────────────────────────────────────────────────────────────┐
@@ -231,7 +232,7 @@ before being aggregated into Layer 2 Lived Context.
 **M6.1 architecture status (post-M6.1-8.2 / M6.1-9.1)**:
 - Layer 0 (Signal): **4/5 worlds LIVE** (Personal DEFERRED per M6.1-6.0)
 - Layer 1 (Perception): **OPERATIONAL** (2543+ trace events, 3 real sources)
-- Layer 2 (Lived Context): **de-facto via proxy.py, no new wrapper**
+- Layer 2 (Lived Context): **existing composition in `src/llm/proxy.py:_build_messages_*`, no dedicated LivedContextAggregator runtime**
 - Layer 3 (Soul Interpretation): **OPERATIONAL** (1081+ shadow_log entries with world_context)
 - Layer 4 (Agency): **RE-ENABLED** (10/10 agents, true Phase-10 per M6.1-9.1)
 - Expression: **OPERATIONAL** (text + TTS, async per M6.2-1 message_id correlation)
