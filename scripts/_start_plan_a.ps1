@@ -1,11 +1,11 @@
 # _start_plan_a.ps1 - Soul OS Plan A Launcher
 # 用途: watchdog 偵測 server 死掉後呼叫此腳本拉新 server
-# Bry 拍板 2026-08-03 23:33 修法: 跟 server_ops.ps1 一樣明確指定
-# hermes-agent venv python, 不依賴系統 PATH (避免 uvicorn ModuleNotFoundError)
+# Bry 拍板 2026-08-15 23:33 修法: 跟 server_ops.ps1 一樣明確指定
+# soul-os .venv python (有 networkx/telegram/icalendar 全部依賴), 不依賴系統 PATH
 #
 # 設計:
 # - Detach python from PowerShell session via Start-Process
-# - python 必須是 hermes-agent venv (有 uvicorn / fastapi / pydantic 等依賴)
+# - python 必須是 soul-os .venv (有 uvicorn / fastapi / networkx / telegram / icalendar 等依賴)
 # - 啟動失敗立刻 exit 1, 讓 watchdog Plan A 失敗計數 (N 累積) 不會誤判成功
 # - 不檢查既有 process (Plan A 已經從 watchdog 確認 process 死了)
 # - 寫 PID 到 data\server.pid 給 watchdog / server_ops 共用
@@ -24,9 +24,9 @@ $outLog = Join-Path $root 'data\server_nohup.log'
 $errLog = Join-Path $root 'data\server_nohup.err'
 $launcherLog = Join-Path $root 'data\logs\plan_a_launcher.log'
 
-# 跟 server_ops.ps1 L30-54 一致: 用 hermes-agent venv python (有 uvicorn)
-# 不依賴系統 PATH, 避免 8/2 15:20 miku 教訓 + 8/3 23:25:05 Plan A 失敗同類問題
-$python = 'C:\Users\bbfcc\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe'
+# 跟 server_ops.ps1 一致: 用 soul-os .venv python (有 networkx/telegram/icalendar)
+# 不依賴系統 PATH, 避免 8/15 22:00 night slot 時 hermes venv 缺 networkx 導致 server 掛掉
+$python = 'C:\Users\bbfcc\.local\bin\soul-os-harness\.venv\Scripts\python.exe'
 
 # === Logging ===
 function Log-PlanA([string]$msg) {

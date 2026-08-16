@@ -21,10 +21,11 @@ $root = 'C:\Users\bbfcc\.local\bin\soul-os-harness'
 $pidFile = Join-Path $root 'data\server.pid'
 $outLog = Join-Path $root 'data\server_nohup.log'
 $errLog = Join-Path $root 'data\server_nohup.err'
-# 跟 _start_plan_a.ps1 一致 (Bry 拍板 2026-08-03 23:33 修法):
-# 明確指定 hermes-agent venv python, 不依賴系統 PATH (避免 uvicorn ModuleNotFoundError)
-# 跟 8/2 15:20 miku 教訓 + 8/3 23:25:05 server_ops 重啟失敗同類問題
-$python = 'C:\Users\bbfcc\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe'
+# 跟 _start_plan_a.ps1 一致 (Bry 拍板 2026-08-15 23:33 修法):
+# 改用 soul-os .venv python (有 networkx/telegram/icalendar 全部依賴)
+# 根因: hermes venv 缺 networkx/telegram/pip → 8/15 22:00 night slot 時 server 掛了
+# (ModuleNotFoundError: No module named 'networkx' → Application startup failed)
+$python = 'C:\Users\bbfcc\.local\bin\soul-os-harness\.venv\Scripts\python.exe'
 $opsLog = Join-Path $root 'data\logs\server_ops.log'
 
 function Get-ServerProcess {
