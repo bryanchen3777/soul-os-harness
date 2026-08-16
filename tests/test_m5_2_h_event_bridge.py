@@ -535,3 +535,46 @@ def test_event_handler_logs_decision_outcome():
         )
     finally:
         logger.removeHandler(cap_handler)
+
+
+# ─── Test 12: M6.1-9 per-agent cooldown isolation ─────────
+
+def test_m6_1_9_per_agent_cooldown_isolation():
+    """M6.1-9 修法: 10 個 agent 同時觸發 event, 每個 agent 都應產出 writer call.
+
+    根因 (2026-08-16): 單一共享 AgencyState 導致第一個 agent 執行後設置
+    last_action_at, 後續 agent 被 60s action cooldown 擋住 (只有 1/10 產出)。
+    修法: per-agent AgencyState, cooldown 按 agent 隔離 → 10/10 產出。
+    """
+    agents = [
+        "agent_yua", "agent_ruka", "agent_akane", "agent_rem", "agent_ram",
+        "agent_mahiru", "agent_anna", "agent_mai", "agent_miku", "agent_aoi",
+    ]
+    writer_calls: List[Dict[str, Any]] = []
+
+    async def mock_writer(agent_id: str) -> None:
+        writer_calls.append({"agent_id": agent_id})
+
+    handler = EventHandler(state=None, writer_executor=mock_writer)
+
+    async def _run():
+        for aid in agents:
+            event = SoulEvent(
+                event_type=EventType.AGENCY_TRIGGER,
+                source="test",
+                target=aid,
+                priority=EventPriority.NORMAL,
+                payload=make_event_payload(agent_id=aid),
+            )
+            await handler.handle_event(event)
+
+    asyncio.run(_run())
+
+    assert len(writer_calls) == 10, (
+        f"M6.1-9 violation: 10 個 agent 應各自產出 writer call, 實際 {len(writer_calls)} 次 "
+        f"(per-agent cooldown 隔離失敗)"
+    )
+    produced = {c["agent_id"] for c in writer_calls}
+    assert produced == set(agents), (
+        f"M6.1-9 violation: 缺失角色 {set(agents) - produced}"
+    )

@@ -424,3 +424,46 @@ def test_no_duplicate_proactive_execution():
 
     # exactly 1 LLM call
     assert len(llm_calls) == 1
+
+
+# ─── Test 12: M6.1-9 per-agent cooldown isolation ─────────
+
+def test_m6_1_9_per_agent_cooldown_isolation():
+    """M6.1-9 修法: 10 個 agent 同時觸發 proactive_dm, 每個 agent 都應產出 LLM call.
+
+    根因 (2026-08-16): 單一共享 AgencyState 導致第一個 agent 執行後設置
+    last_action_at, 後續 agent 被 60s action cooldown 擋住 (只有 1/10 產出)。
+    修法: per-agent AgencyState, cooldown 按 agent 隔離 → 10/10 產出。
+    """
+    agents = [
+        "agent_yua", "agent_ruka", "agent_akane", "agent_rem", "agent_ram",
+        "agent_mahiru", "agent_anna", "agent_mai", "agent_miku", "agent_aoi",
+    ]
+    llm_calls: List[Dict[str, Any]] = []
+
+    async def mock_executor(agent_id: str, trigger: TriggerEnvelope) -> None:
+        llm_calls.append({"agent_id": agent_id})
+
+    handler = AgencyTriggerHandler(state=None, llm_executor=mock_executor)
+
+    async def _run():
+        for aid in agents:
+            event = SoulEvent(
+                event_type=EventType.AGENCY_TRIGGER,
+                source="test",
+                target=aid,
+                priority=EventPriority.NORMAL,
+                payload=make_proactive_dm_payload(agent_id=aid),
+            )
+            await handler.handle_event(event)
+
+    asyncio.run(_run())
+
+    assert len(llm_calls) == 10, (
+        f"M6.1-9 violation: 10 個 agent 應各自產出 LLM call, 實際 {len(llm_calls)} 次 "
+        f"(per-agent cooldown 隔離失敗)"
+    )
+    produced = {c["agent_id"] for c in llm_calls}
+    assert produced == set(agents), (
+        f"M6.1-9 violation: 缺失角色 {set(agents) - produced}"
+    )

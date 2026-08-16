@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Dict, Optional
 
 from src.eventbus.schema import EventType, SoulEvent
 
@@ -86,6 +86,23 @@ class EventHandler:
         else:
             self.agency = Agency(state or AgencyState())
         self.writer_executor = writer_executor or _default_noop_writer
+        # M6.1-9 cooldown 衝突修法 (Bry 拍板 2026-08-16, 跟 DiaryHandler/DreamHandler 同根因同修法):
+        # 根因: 單一共享 AgencyState 導致多個 agent 同時觸發時, 第一個 agent 執行後設置
+        # last_action_at, 後續 agent 被 60s action cooldown 擋住。
+        # 修法: 每個 agent_id 一個獨立 AgencyState, cooldown 按 agent 隔離。
+        # 向後相容: 若 caller 傳入 state (非 None), 作為第一個 agent 的種子 state。
+        self._states: Dict[str, AgencyState] = {}
+        self._seed_state = state
+
+    def _get_state(self, agent_id: str) -> AgencyState:
+        """Per-agent AgencyState: cooldown 按 agent 隔離 (M6.1-9 修法)。"""
+        if agent_id not in self._states:
+            if self._seed_state is not None:
+                self._states[agent_id] = self._seed_state
+                self._seed_state = None
+            else:
+                self._states[agent_id] = AgencyState()
+        return self._states[agent_id]
 
     async def handle_event(self, event: SoulEvent) -> None:
         """
@@ -116,7 +133,7 @@ class EventHandler:
         now = datetime.now(timezone.utc)
         try:
             result = run_agency(
-                state=self.agency.state,
+                state=self._get_state(envelope.agent_id),
                 perception=None,
                 now=now,
                 trigger=envelope,
