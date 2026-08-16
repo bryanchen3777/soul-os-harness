@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Dict, Optional
 
 from src.eventbus.schema import EventType, SoulEvent
 
@@ -115,6 +115,26 @@ class DiaryHandler:
         else:
             self.agency = Agency(state or AgencyState())
         self.diary_writer_executor = diary_writer_executor or _default_noop_diary_writer
+        # M6.1-9 cooldown 衝突修法 (Bry 拍板 2026-08-16):
+        # 根因: 單一共享 AgencyState 導致 morning/night slot 同時觸發 10 個 agent 時,
+        # 第一個 agent 執行後設置 last_action_at, 後續 9 個 agent 被 60s action cooldown 擋住
+        # (log 證據: 08:00:14 yua decision=YES → 08:00:16 ruka decision=NO
+        #  "action cooldown active (2.7s < 60s)", 其餘 8 個角色同樣被擋)。
+        # 修法: 每個 agent_id 一個獨立 AgencyState, cooldown 按 agent 隔離。
+        # 向後相容: 若 caller 傳入 state (非 None), 作為第一個 agent 的種子 state
+        # (H3-I4/I5 測試用 decision_cooldown 驗證 decision=NO 的行為不變)。
+        self._states: Dict[str, AgencyState] = {}
+        self._seed_state = state
+
+    def _get_state(self, agent_id: str) -> AgencyState:
+        """Per-agent AgencyState: cooldown 按 agent 隔離 (M6.1-9 修法)。"""
+        if agent_id not in self._states:
+            if self._seed_state is not None:
+                self._states[agent_id] = self._seed_state
+                self._seed_state = None
+            else:
+                self._states[agent_id] = AgencyState()
+        return self._states[agent_id]
 
     async def handle_event(self, event: SoulEvent) -> None:
         """
@@ -147,7 +167,7 @@ class DiaryHandler:
         now = datetime.now(timezone.utc)
         try:
             result = run_agency(
-                state=self.agency.state,
+                state=self._get_state(envelope.agent_id),
                 perception=None,
                 now=now,
                 trigger=envelope,
