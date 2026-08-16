@@ -27,12 +27,15 @@ from telegram import Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
 )
 
 from .base import ChannelAdapter, OnMessageCallback
+# TTS 全域開關 (Bry 派工 2026-08-15): /tts on|off 切換是否使用 TTS
+from src.llm.tts_toggle import is_tts_enabled, set_tts_enabled
 
 logger = logging.getLogger("soul_os.channels.telegram")
 
@@ -141,11 +144,50 @@ class TelegramAdapter(ChannelAdapter):
                         pass
         return handler
 
+    def _make_tts_command_handler(self, agent_id: str):
+        """/tts on | /tts off | /tts — 全域 TTS 開關（Bry 派工 2026-08-15）。
+
+        全域開關：任何角色 bot 收到 /tts 都會切換全域 TTS 狀態，
+        影響全部 10 個角色（FishTTSHandler 是單一 handler 訂閱所有 AGENT_SPEAK）。
+        """
+        async def handler(
+            update: Update,
+            ctx: ContextTypes.DEFAULT_TYPE,
+        ):
+            if not update.message:
+                return
+            user = update.message.from_user
+            if not user:
+                return
+            args = ctx.args or []
+            cmd = args[0].lower() if args else ""
+            if cmd in ("on", "enable", "1"):
+                ok = set_tts_enabled(True)
+                reply = "✅ TTS 已開啟" if ok else "⚠️ TTS 開關寫入失敗，請看 server log"
+            elif cmd in ("off", "disable", "0"):
+                ok = set_tts_enabled(False)
+                reply = "🔇 TTS 已關閉" if ok else "⚠️ TTS 開關寫入失敗，請看 server log"
+            else:
+                state = "開啟" if is_tts_enabled() else "關閉"
+                reply = f"TTS 目前狀態：{state}\n用法：/tts on 或 /tts off"
+            logger.info(
+                f"[TG:{agent_id}] /tts cmd={cmd!r} from {user.id} → {reply}"
+            )
+            try:
+                await update.message.reply_text(reply)
+            except Exception as e:
+                logger.error(f"[TG:{agent_id}] /tts reply error: {e}")
+        return handler
+
     async def start(self, on_message: OnMessageCallback) -> None:
         """啟動十個 bot 開始 polling（AGENT_ENV_MAP 列出多少就多少）。"""
         self._on_message = on_message
         for agent_id, token in self._tokens.items():
             app = ApplicationBuilder().token(token).build()
+            # TTS 開關指令（Bry 派工 2026-08-15）：/tts on|off
+            app.add_handler(
+                CommandHandler("tts", self._make_tts_command_handler(agent_id))
+            )
             app.add_handler(
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,

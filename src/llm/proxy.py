@@ -50,6 +50,8 @@ from src.agent.emotion import emotion_engine
 # - _JP_AGENT_IDS 從 _agent_constants import 保留 (空 frozenset, is_jp_agent 永遠 False)
 #   給 build_system_prompt.py 通用判斷用
 from src.llm._agent_constants import _JP_AGENT_IDS, is_jp_agent  # noqa: E402
+# TTS 全域開關 (Bry 派工 2026-08-15): /tts on|off 切換是否使用 TTS
+from src.llm.tts_toggle import is_tts_enabled
 
 logger = logging.getLogger("soul_os.llm_proxy")
 
@@ -3072,7 +3074,9 @@ class LLMProxy:
                     "agent_id": agent_id,
                     "reason": reason,
                     "mode": mode,
-                    "tts_enabled": True,
+                    # TTS 全域開關 (Bry 派工 2026-08-15): 讀 data/state/tts_toggle.json
+                    # 取代原本硬寫 True，讓 Bry 在 TG 用 /tts on|off 即時切換
+                    "tts_enabled": is_tts_enabled(),
                     "action_tags": [],
                     # Phase 5b:channel routing
                     "target_channel": event.payload.get("target_channel", "web"),
