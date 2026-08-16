@@ -88,17 +88,16 @@ heartbeat:
   tick_interval_seconds: 60
 
 llm:
-  # 主要 LLM provider（"minimax" | "claude" | "openai" | "mock"）
-  # Phase 2.4+ 預設：minimax（OpenAI-compatible endpoint）
-  # JP rollback (Bry 拍板 2026-07-22 20:59): 改回 minimax OpenAI endpoint + M2.7
-  # 之前 7/21 換 M3 anthropic 是為了 disable thinking, 整套 JP 砍掉後不需要
-  # 其他可選：claude（直連 Anthropic）、openai、mock（不接真實 API）
-  provider: minimax
+  # 主要 LLM provider（"minimax" | "ollama" | "claude" | "openai" | "mock"）
+  # Provider 切換 minimax → ollama (Bry 拍板 2026-08-15): 走 Ollama Cloud OpenAI-compat endpoint
+  # model 保持 minimax-m2.7 (Ollama Cloud 有同名 model); OLLAMA_API_KEY 由 .env 注入
+  # 其他可選：minimax（直連 MiniMax）、claude（直連 Anthropic）、openai、mock（不接真實 API）
+  provider: ollama
 
   # 統一 model 欄位（env LLM_MODEL 會覆蓋）
-  # JP rollback 後預設 minimax-M2.7 (7/14-7/15 跑得很穩的版本)
-  # .env 通常會設 LLM_MODEL=minimax-M2.7
-  model: minimax-M2.7
+  # Ollama Cloud model 名大小寫敏感：必須用 minimax-m2.7 (小寫)，minimax-M2.7 會 404
+  # .env 通常會設 LLM_MODEL=minimax-m2.7
+  model: minimax-m2.7
 
   # provider 對應的備援 model（未指定 LLM_MODEL 時 fallback 用）
   openai_model: gpt-4o-mini

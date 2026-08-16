@@ -139,6 +139,24 @@ def create_llm_backend(cfg: dict):
             base_url=openai_cfg.get("base_url"),
         )
 
+    if provider == "ollama":
+        # Provider 切換 minimax → ollama (Bry 拍板 2026-08-15 18:2x): 走 Ollama Cloud OpenAI-compat endpoint
+        # model 保持 minimax-m2.7 (default.yaml llm.model / env LLM_MODEL 決定, 與 provider 無關)
+        # Ollama Cloud 提供 OpenAI-compatible /v1/chat/completions, 原生支援 response_format (JSON mode)
+        # 端點已實測驗證 (2026-08-15): GET /api/tags 200 + POST /v1/chat/completions 200
+        ollama_cfg = llm_cfg.get("ollama", {})
+        api_key = ollama_cfg.get("api_key") or os.getenv("OLLAMA_API_KEY", "")
+        if not api_key:
+            # 與 minimax/openai 分支一致: 缺 key 就 raise, 不靜默 fallback Mock (避免 run_server.py 靜默降級)
+            raise ValueError(
+                "OLLAMA_API_KEY is required when LLM_PROVIDER=ollama. "
+                "Set it in .env or env."
+            )
+        return OpenAIBackend(
+            api_key=api_key,
+            base_url=ollama_cfg.get("base_url", "https://ollama.com/v1/chat/completions"),
+        )
+
     if provider == "mock":
         # Mock 模式：回傳 None，呼叫端應用 MockLLMBackend 替代
         return None
