@@ -612,3 +612,53 @@ def test_h2_bonus_missing_all_agents_falls_back_to_singleton():
     assert writer_calls[0]["dreamer"] == "agent_yua"
     assert writer_calls[0]["target"] == "agent_ruka"
     assert writer_calls[0]["all_agents"] == ["agent_yua"]
+
+
+# ─── Test M6.1-9: per-agent cooldown isolation (dream) ──
+
+
+def test_m6_1_9_per_agent_cooldown_isolation_dream():
+    """M6.1-9 修法: 多個 dreamer 同時觸發 dream, 每個 dreamer 都應產出 dream.
+
+    根因 (跟 DiaryHandler 同根因): 單一共享 AgencyState 導致第一個 dreamer 執行後
+    設置 last_action_at, 後續 dreamer 被 60s action cooldown 擋住。
+    修法: per-agent AgencyState, cooldown 按 dreamer 隔離。
+    """
+    dreamers = [
+        "agent_yua", "agent_ruka", "agent_akane", "agent_rem", "agent_ram",
+        "agent_mahiru", "agent_anna", "agent_mai", "agent_miku", "agent_aoi",
+    ]
+    writer_calls: List[Dict[str, Any]] = []
+
+    async def mock_writer(dreamer: str, target: str, all_agents: List[str]) -> None:
+        writer_calls.append({"dreamer": dreamer, "target": target})
+
+    handler = DreamHandler(state=None, dream_writer_executor=mock_writer)
+
+    async def _run():
+        for i, dreamer in enumerate(dreamers):
+            target = dreamers[(i + 1) % len(dreamers)]
+            event = SoulEvent(
+                event_type=EventType.AGENCY_TRIGGER,
+                source="test",
+                target=dreamer,
+                priority=EventPriority.NORMAL,
+                payload=make_dream_payload(
+                    agent_id=dreamer,
+                    target_agent_id=target,
+                    all_agents=dreamers,
+                ),
+            )
+            await handler.handle_event(event)
+
+    asyncio.run(_run())
+
+    # 10 個 dreamer 各自產出 1 條 dream (不是只有第一個)
+    assert len(writer_calls) == 10, (
+        f"M6.1-9 violation: 10 個 dreamer 應各自產出 dream, 實際 {len(writer_calls)} 條 "
+        f"(per-agent cooldown 隔離失敗)"
+    )
+    produced = {c["dreamer"] for c in writer_calls}
+    assert produced == set(dreamers), (
+        f"M6.1-9 violation: 缺失 dreamer {set(dreamers) - produced}"
+    )

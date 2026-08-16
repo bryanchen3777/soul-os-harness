@@ -97,6 +97,24 @@ class DreamHandler:
         else:
             self.agency = Agency(state or AgencyState())
         self.dream_writer_executor = dream_writer_executor or _default_noop_dream_writer
+        # M6.1-9 cooldown 衝突修法 (Bry 拍板 2026-08-16, 跟 DiaryHandler 同根因同修法):
+        # 根因: 單一共享 AgencyState 導致 dream slot 同時觸發多個 dreamer 時,
+        # 第一個 dreamer 執行後設置 last_action_at, 後續 dreamer 被 60s action cooldown 擋住。
+        # 修法: 每個 agent_id (dreamer) 一個獨立 AgencyState, cooldown 按 dreamer 隔離。
+        # 向後相容: 若 caller 傳入 state (非 None), 作為第一個 dreamer 的種子 state
+        # (H2-I6/I7 測試用 decision_cooldown 驗證 decision=NO 的行為不變)。
+        self._states: Dict[str, AgencyState] = {}
+        self._seed_state = state
+
+    def _get_state(self, agent_id: str) -> AgencyState:
+        """Per-agent AgencyState: cooldown 按 dreamer 隔離 (M6.1-9 修法)。"""
+        if agent_id not in self._states:
+            if self._seed_state is not None:
+                self._states[agent_id] = self._seed_state
+                self._seed_state = None
+            else:
+                self._states[agent_id] = AgencyState()
+        return self._states[agent_id]
 
     async def handle_event(self, event: SoulEvent) -> None:
         """
@@ -145,7 +163,7 @@ class DreamHandler:
         now = datetime.now(timezone.utc)
         try:
             result = run_agency(
-                state=self.agency.state,
+                state=self._get_state(envelope.agent_id),
                 perception=None,
                 now=now,
                 trigger=envelope,
