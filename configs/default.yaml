@@ -95,9 +95,11 @@ llm:
   provider: ollama
 
   # 統一 model 欄位（env LLM_MODEL 會覆蓋）
-  # Ollama Cloud model 名大小寫敏感：必須用 minimax-m2.7 (小寫)，minimax-M2.7 會 404
-  # .env 通常會設 LLM_MODEL=minimax-m2.7
-  model: minimax-m2.7
+  # Ollama Cloud model 名大小寫敏感：必須用 deepseek-v4-flash:0731 (小寫+版本後綴)
+  # 2026-08-17 Bry 拍板: minimax-m2.7 → deepseek-v4-flash:0731
+  #   動機: 時間感知測試 (3 場景 x 4 寫法) 證實 v4 flash 推理能力更強 (沉默時長能轉成情緒, m2.7 做不到)
+  # .env 通常會設 LLM_MODEL=deepseek-v4-flash:0731
+  model: deepseek-v4-flash:0731
 
   # provider 對應的備援 model（未指定 LLM_MODEL 時 fallback 用）
   openai_model: gpt-4o-mini
