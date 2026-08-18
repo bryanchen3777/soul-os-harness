@@ -460,30 +460,47 @@ class MemoryMiddleware:
         #   → MemoryWriter fallback 到 backward-compat synthetic UUID
         # 絕不 fabricate InnerLifeEvent (per ticket architectural rule)
         canonical_event_id = event.inner_life_event_id
-        await provider.post_reply_commit(
-            session_id, user_text, agent_text,
-            source_pair=source_pair,
-            inner_life_event_id=canonical_event_id,
-        )
-        logger.info(
-            f"[MemoryMiddleware] 寫入 graph | agent={agent_id} | "
-            f"user_len={len(user_text)} | agent_len={len(agent_text)}"
-        )
+        # M7-latency-fix (Bry 拍板 2026-08-18): 記憶寫入改 fire-and-forget, 不再阻塞 event bus。
+        # 根因: post_reply_commit 內部 LLM judge 做 12+ 次串行 LLM call (~20-70s),
+        #       _on_agent_speak 直接 await 它 → 單 worker event bus 被卡住,
+        #       後續 user_message 延遲 ~73s (Bry 8/18 麻衣對話延時事件)。
+        # 修法: 把慢的 post_reply_commit + shadow observe 包成背景 task,
+        #       handler 立刻回傳, bus worker 能馬上處理下一事件。
+        #       記憶仍會在背景完成寫入 (write_turn 內部 run_in_executor + 自行開 loop),
+        #       只是不再擋住主路徑。例外隔離: task 內 try/except, 失敗只 log。
+        async def _commit_async() -> None:
+            try:
+                await provider.post_reply_commit(
+                    session_id, user_text, agent_text,
+                    source_pair=source_pair,
+                    inner_life_event_id=canonical_event_id,
+                )
+                logger.info(
+                    f"[MemoryMiddleware] 寫入 graph | agent={agent_id} | "
+                    f"user_len={len(user_text)} | agent_len={len(agent_text)}"
+                )
+            except Exception as _commit_err:
+                logger.warning(
+                    f"[MemoryMiddleware] post_reply_commit 失敗: {_commit_err}"
+                )
 
-        # Bry §11 shadow mode hook (2026-07-02):
-        # 並行掛一條 v6 observation 路徑, 完全不改 prod 行為。
-        # 包 try/except 確保 shadow 自己異常不影響 prod 路徑。
-        try:
-            from src.memory.shadow import maybe_observe
-            await maybe_observe(
-                text=agent_text,
-                agent_id=agent_id,
-                speaker=event.source or "",
-                context=user_text,
-                heuristic_facts=None,  # 現有 heuristic 由 provider 自己跑, 不傳入避免雙重計算
-            )
-        except Exception as _shadow_err:
-            logger.warning(f"[MemoryMiddleware] shadow hook 異常,不影響 prod: {_shadow_err}")
+            # Bry §11 shadow mode hook (2026-07-02):
+            # 並行掛一條 v6 observation 路徑, 完全不改 prod 行為。
+            try:
+                from src.memory.shadow import maybe_observe
+                await maybe_observe(
+                    text=agent_text,
+                    agent_id=agent_id,
+                    speaker=event.source or "",
+                    context=user_text,
+                    heuristic_facts=None,  # 現有 heuristic 由 provider 自己跑, 不傳入避免雙重計算
+                )
+            except Exception as _shadow_err:
+                logger.warning(
+                    f"[MemoryMiddleware] shadow hook 異常,不影響 prod: {_shadow_err}"
+                )
+
+        asyncio.create_task(_commit_async())
 
     # ───────────────────────────────────────────────────────────
     # β2.1 (Bry 拍板 2026-08-02 21:48): 事件背景生成
