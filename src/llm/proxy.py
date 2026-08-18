@@ -2871,7 +2871,10 @@ class LLMProxy:
                             f"\n[主動觸發標記] {reason_label}。"
                             f"草稿供參考: 「{user_message}」"
                             f"\n請把草稿當作「內心想說的話」, 不要當作 Bry 對你說的話。"
-                            f"生成主動搭話訊息時, 參考草稿但用你自己的話表達。\n"
+                            f"生成主動搭話訊息時, 參考草稿但用你自己的話表達。"
+                            f"\n[M7-context 脈絡提醒] 下方對話歷史裡有 Bry 最近的發言。"
+                            f"主動開話題時要接續他剛講過的事, 避免問他剛剛才講過、"
+                            f"已經回答過的問題 (例如他剛說吃飽了, 就別再問晚餐吃了沒)。\n"
                         )
                         messages.append({"role": "system", "content": system_msg})
                         logger.info(

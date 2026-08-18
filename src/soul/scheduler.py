@@ -67,6 +67,11 @@ TRIGGER_PROBABILITY_DEFAULT = 1.0     # 4.2 第一刀: 100% 觸發
 # 任務健康檢查 (Bry 拍板觀察期 log 頻率)
 HEALTH_CHECK_INTERVAL_SECS = 300     # 5 分鐘 log 一次下次觸發時間
 
+# M7-context (Bry 拍板 2026-08-18): Bry 在線閾值 —
+# 正在跟該 agent 聊天 (此分鐘數內 Bry 有講話) 時不主動打擾, 避免突兀。
+# 跟 proxy.py 修法 7 的 STALE_THRESHOLD_SEC (30 min) 對齊。
+PROACTIVE_BRY_ONLINE_THRESHOLD_MINUTES = 30
+
 
 # ───────────────────────────────────────────────────────────
 # 排程器本體
@@ -468,6 +473,21 @@ class SoulScheduler:
             logger.warning("[Scheduler] 已經在跑, 不重複 start")
             return
         self._running = True
+        # M7-context (Bry 拍板 2026-08-18): 計時器復活。
+        # 根因: register_proactive_dm 在 M5.2-O-3 (8/8) 被移除後, _next_proactive_dm_time
+        #       永遠停在 None → _is_proactive_dm_time 永遠 False → proactive_dm 完全不會觸發。
+        # 修法: start() 時若計時器是 None, 初始化成 3-5h 後 (重啟後也能正常發第一條)。
+        if self._next_proactive_dm_time is None:
+            mins = random.randint(
+                self.proactive_dm_min_interval_minutes,
+                self.proactive_dm_max_interval_minutes,
+            )
+            self._next_proactive_dm_time = now_local() + timedelta(minutes=mins)
+            logger.info(
+                f"[M7-context] proactive_dm 計時器復活: "
+                f"next={self._next_proactive_dm_time.strftime('%H:%M:%S')} "
+                f"interval={mins}min"
+            )
         self._task = asyncio.create_task(self._run_loop(), name="SoulScheduler")
         logger.info(
             f"[Scheduler] 啟動 ✓ morning={self.morning_time} "
@@ -813,6 +833,39 @@ class SoulScheduler:
             "ts": latest.get("ts", ""),
         }
 
+    def _get_bry_silence_minutes(self, agent_id: str) -> Optional[float]:
+        """
+        M7-context (Bry 拍板 2026-08-18): 讀 Bry 最後跟該 agent 互動的時間, 算沉默分鐘數。
+
+        純讀 relationships.json (跟 _get_recent_shareable_activity 同 pattern, 無 side effect)。
+        MemoryMiddleware._on_user_message 會在每次 Bry 對該 agent 發話時 touch
+        user_bryan.last_interaction_at (UTC ISO), 所以這是可靠的 per-agent 訊號。
+
+        Returns:
+            沉默分鐘數 (float), 或 None (沒 relationships 檔 / 沒 user_bryan / 沒互動 / 解析失敗)。
+        """
+        from src.paths import data_root
+        import json as _json
+        from datetime import timezone as _tz
+        path = data_root() / "soul" / agent_id / "relationships.json"
+        if not path.is_file():
+            return None
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8"))
+            last_at = data.get("others", {}).get("user_bryan", {}).get("last_interaction_at")
+        except Exception:
+            return None
+        if not last_at:
+            return None
+        try:
+            last_dt = datetime.fromisoformat(str(last_at).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=_tz.utc)
+        now_utc = datetime.now(_tz.utc)
+        return (now_utc - last_dt).total_seconds() / 60.0
+
     async def _fire_proactive_dm(self) -> None:
         """
         Lesson 39: 觸發 1 隻角色的 proactive DM (透過 TG DM 找 Bryan).
@@ -884,6 +937,24 @@ class SoulScheduler:
             f"[Scheduler] 💬 proactive_dm 觸發: {agent_id} "
             f"(whitelist={self._proactive_agents_whitelist})"
         )
+        # M7-context (Bry 拍板 2026-08-18): Bry 在線 gate —
+        # 正在跟該 agent 聊天 (30 min 內 Bry 有講話) 時不主動打擾, 避免突兀。
+        # 排下次 3-5h, 不立刻再試 (等 Bry 結束對話再自然觸發)。
+        bry_silence_mins = self._get_bry_silence_minutes(agent_id)
+        if (
+            bry_silence_mins is not None
+            and bry_silence_mins < PROACTIVE_BRY_ONLINE_THRESHOLD_MINUTES
+        ):
+            logger.info(
+                f"[M7-context] Bry 最近 {bry_silence_mins:.0f} 分鐘內有跟 "
+                f"{agent_id} 講話, skip proactive_dm (避免突兀)"
+            )
+            mins = random.randint(
+                self.proactive_dm_min_interval_minutes,
+                self.proactive_dm_max_interval_minutes,
+            )
+            self._next_proactive_dm_time = now_local() + timedelta(minutes=mins)
+            return
         # M5.2-G (Bry 拍板 2026-08-08): publish AGENCY_TRIGGER
         # M5.2-I Phase 6: 移除 callback invocation. 真實 LLM
         # 由 AgencyTriggerHandler 訂閱 AGENCY_TRIGGER 觸發.
