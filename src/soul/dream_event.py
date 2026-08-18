@@ -80,6 +80,24 @@ SCENE_POOL = [
     "閣樓的舊箱子旁",
 ]
 
+# M7-1 (Bry 拍板 2026-08-18): 活動模型化
+# 把 event 從「trivial 小片段」升級成「具體、可分類、可延續的活動」。
+# - name:      活動名稱 (進 prompt + entry["activity"])
+# - category:  活動分類 (供統計 / 觀察用)
+# - shareable: 是否值得跟 Bry 分享 (供 M7-2 活動驅動主動傳訊判斷用)
+ACTIVITY_POOL = [
+    {"name": "工作", "category": "work", "shareable": True},
+    {"name": "做飯", "category": "food", "shareable": True},
+    {"name": "吃東西", "category": "food", "shareable": True},
+    {"name": "運動", "category": "sport", "shareable": True},
+    {"name": "看書", "category": "leisure", "shareable": False},
+    {"name": "創作", "category": "creative", "shareable": True},
+    {"name": "散步", "category": "leisure", "shareable": True},
+    {"name": "整理房間", "category": "chore", "shareable": False},
+    {"name": "聽音樂", "category": "leisure", "shareable": False},
+    {"name": "發呆", "category": "rest", "shareable": False},
+]
+
 # 夢境模板 (LLM 失敗 fallback)
 DREAM_FALLBACK_TEMPLATE = "（{date} 夜裡）做了個模糊的夢, 內容記不清。只記得一些光影。"
 
@@ -253,6 +271,9 @@ class DreamEventWriter:
         # Backward-compat: None/empty means the field is omitted, so legacy
         # readers that ignore unknown keys continue to work.
         inner_life_event_id: Optional[str] = None,
+        # M7-1 (Bry 拍板 2026-08-18): activity metadata (optional, backward compat).
+        # write_event 傳入活動 dict {"name", "category", "shareable"}；write_dream 不傳 (None)。
+        activity: Optional[dict] = None,
     ) -> Optional[Path]:
         """
         M0.4 (Bry 拍板 2026-08-06 21:30):
@@ -286,6 +307,12 @@ class DreamEventWriter:
         # Empty string treated as None for safety.
         if inner_life_event_id:
             entry["inner_life_event_id"] = inner_life_event_id
+        # M7-1 (Bry 拍板 2026-08-18): 活動模型化 — 把 activity metadata 寫進 entry。
+        # Optional: 只有 write_event 會帶 activity, write_dream 帶 None → 不寫 (backward compat)。
+        if activity:
+            entry["activity"] = activity.get("name", "")
+            entry["category"] = activity.get("category", "")
+            entry["shareable"] = activity.get("shareable", False)
         with self._lock:
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -409,7 +436,10 @@ class DreamEventWriter:
         # for this event entry. Optional passthrough to _write_entry.
         inner_life_event_id: Optional[str] = None,
     ) -> Optional[Path]:
-        """生成隨機事件並寫入 diary (場景 + 小描述).
+        """生成隨機活動並寫入 diary (M7-1: 活動模型化).
+
+        M7-1 (Bry 拍板 2026-08-18): 從「trivial 小片段」升級成「具體活動」,
+        entry 會帶 activity / category / shareable metadata (source=llm 時)。
 
         Stage 4.3 額外: 雙向 touch (agent 對 Bry +0.01).
 
@@ -419,29 +449,22 @@ class DreamEventWriter:
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H:%M")
-        scene = random.choice(SCENE_POOL)
         persona = self._load_persona_excerpt(agent_id)
 
-        # 隨機事件類型 (跟 LLM 描述用)
-        event_type = random.choice([
-            "聽到聲響",
-            "在走廊遇到人",
-            "突然想起什麼",
-            "窗外的光線變了",
-            "聞到食物的味道",
-            "摸到舊東西",
-        ])
+        # M7-1 (Bry 拍板 2026-08-18): 活動模型化 — 從「trivial 小片段」升級成「具體活動」。
+        # 決策 #1 落地 (輕觸): 移除「Bry 不在」排除語, 改「這是你自己生活的一部分」。
+        # (「想到 Bry」的想念語留給 M7-3 的 diary prompt + longing 門檻。)
+        activity = random.choice(ACTIVITY_POOL)
 
         system = (
-            f"你是 {agent_id}, 正在經歷一個日常小事件。\n"
+            f"你是 {agent_id}, 正在過自己的生活, 現在在做: {activity['name']}。\n"
             f"你的性格: {persona[:200] or '(generic)'}\n"
-            f"寫 1 句, 30 字以內, 日文為主。Bry 不在, 這是你自己生活的小片段。"
+            f"寫 1 句, 30 字以內, 日文為主。這是你自己生活的一部分。"
         )
         user = (
             f"日期: {today} {time_str}\n"
-            f"場景: {scene}\n"
-            f"事件類型: {event_type}\n"
-            f"事件內容:"
+            f"活動: {activity['name']}\n"
+            f"活動內容:"
         )
         content = await _call_minimax_for_dream_event(system, user, self.api_key)
         # M0.5 (Bry 派工 2026-08-06 21:44): A1 截斷 + A2 retry (跟 write_dream 同 pattern)
@@ -478,11 +501,13 @@ class DreamEventWriter:
                 result = self._write_entry(
                     agent_id, "event", truncated, source="llm",
                     inner_life_event_id=inner_life_event_id,
+                    activity=activity,
                 )
             else:
                 result = self._write_entry(
                     agent_id, "event", content, source="llm",
                     inner_life_event_id=inner_life_event_id,
+                    activity=activity,
                 )
 
         # Stage 4.3: agent 對 Bry 微量 touch (Bry 不在場, 事件觸發「想到 Bry」)

@@ -326,7 +326,9 @@ async def generate_diary_entry(
         f"你是 {agent_id}, 正在寫自己的 {slot_zh}。\n"
         f"{persona_section}\n"
         f"寫 1-2 句, 50 字以內, 日文為主。\n"
-        f"Bry 是偶爾出現的人, 不是主題, 你有自己的生活。"
+        f"你有自己的生活。Bry 是你生活裡一個重要的人——"
+        f"日記主體仍是你自己的生活，但當你做了想跟他分享、或讓你想到他的事時，"
+        f"可以自然流露想念。"
     )
     user = (
         f"日期: {today} ({slot})\n"

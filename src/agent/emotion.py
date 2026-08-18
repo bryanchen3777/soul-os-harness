@@ -132,5 +132,22 @@ class EmotionEngine:
         return "你心情很差，話變得更短、更冷"
 
 
+def compute_longing(intimacy: float, silence_minutes: float) -> float:
+    """
+    M7-3 (Bry 拍板 2026-08-18): 想念 = 依戀(intimacy) × 沉默時長 (現算, 不持久化).
+
+    決策 #3 落地: 想念不存成欄位, 觸發時用兩個既有事實現算:
+      - attachment = intimacy / 100 (依戀強度, clamp 0-1)
+      - silence_factor = silence_minutes / 1440 (24h 飽和, clamp 0-1)
+      - longing = attachment × silence_factor
+
+    Returns:
+        float in [0.0, 1.0] — 0 = 完全不想念, 1 = 非常想念。
+    """
+    attachment = max(0.0, min(1.0, intimacy / 100.0))
+    silence_factor = max(0.0, min(1.0, silence_minutes / 1440.0))
+    return attachment * silence_factor
+
+
 # 模組層級 singleton — 各處 `from src.agent.emotion import emotion_engine`
 emotion_engine = EmotionEngine()

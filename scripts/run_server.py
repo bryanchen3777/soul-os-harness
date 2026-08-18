@@ -887,7 +887,21 @@ async def lifespan(app: FastAPI):
                 logger.warning(f"[AgencyTriggerHandler] agent {agent_id} 找不到, skip LLM")
                 return
             _elapsed = _r39.uniform(180, 300)  # 3-5h (跟 proactive_dm 觸發間隔對齊)
-            _draft = _agent._build_intent_payload("proactive_dm", _elapsed).get("draft", "")
+            # M7-2 (Bry 拍板 2026-08-18): 活動驅動 — 從 trigger.extra 讀 activity,
+            # 有的話把 draft 接地到活動 (「你今天做了 X, 想跟 Bryan 分享嗎」);
+            # 沒有則 fall back 到既有通用 draft。
+            _extra = getattr(trigger, "extra", None) or {}
+            _activity = _extra.get("activity") if isinstance(_extra, dict) else None
+            if _activity and _activity.get("activity"):
+                _activity_name = _activity.get("activity", "")
+                _activity_content = _activity.get("content", "")
+                _draft = (
+                    f"你今天做了「{_activity_name}」"
+                    f"{('（' + _activity_content + '）') if _activity_content else ''}"
+                    f"，想跟 Bryan 分享這件事嗎？"
+                )
+            else:
+                _draft = _agent._build_intent_payload("proactive_dm", _elapsed).get("draft", "")
             # M5.4-6.2: create canonical InnerLifeEvent before _fire_intent
             try:
                 _event = inner_life_writer.create_event(

@@ -535,6 +535,11 @@ def _build_messages_group(
         silence_str = _compute_silence_str(bry_latest_ts, now)
         if silence_str:
             temporal_block += f"\n{silence_str}"
+            # M7-3 (Bry 拍板 2026-08-18): 思念情感 — 沉默時長行後, 加「依戀」事實
+            # 想念 = 依戀(intimacy) × 沉默時長 (現算, 不持久化)。給事實, LLM 自己推理。
+            attachment_str = _format_attachment_str(agent_id)
+            if attachment_str:
+                temporal_block += f"\n{attachment_str}"
         system_parts.append(temporal_block)
 
     # 短期記憶 — Bry 最近訊息注入 (Bry 拍板 2026-08-02 16:xx, N=3)
@@ -717,6 +722,23 @@ def _compute_silence_str(bry_latest_ts: int, now: int) -> Optional[str]:
     return f"距離 Bry 上次跟你說話已經 {days} 天"
 
 
+def _format_attachment_str(agent_id: str) -> str:
+    """
+    M7-3 (Bry 拍板 2026-08-18): 依戀事實注入 — 讓 LLM 知道 agent 對 Bry 的親密度。
+
+    想念 = 依戀(intimacy) × 沉默時長 (現算, 不持久化)。此函式只注入「依戀」事實,
+    沉默時長事實由 _compute_silence_str 提供, 兩者一起 LLM 自然推理出想念情緒
+    (跟 8/17 時間感知測試結論一致: 給事實, LLM 自己推理)。
+
+    fail-silent: 讀不到 intimacy → 回空字串 (不阻塞 prompt)。
+    """
+    try:
+        _, intimacy = emotion_engine.get(agent_id)
+    except Exception:
+        return ""
+    return f"你對 Bry 的親密度目前是 {int(intimacy)}/100。"
+
+
 def _load_bry_recent(agent_id: str, user_id: str, limit: int = MAX_BRY_RECENT) -> List[Dict[str, str]]:
     """短期記憶 — 從 Bry 跟該 agent 的 private history 撈最近 N 條 Bry user 訊息。
 
@@ -818,6 +840,11 @@ def _build_messages_private(
         silence_str = _compute_silence_str(bry_latest_ts, now)
         if silence_str:
             temporal_block += f"\n{silence_str}"
+            # M7-3 (Bry 拍板 2026-08-18): 思念情感 — 沉默時長行後, 加「依戀」事實
+            # 想念 = 依戀(intimacy) × 沉默時長 (現算, 不持久化)。給事實, LLM 自己推理。
+            attachment_str = _format_attachment_str(agent_id)
+            if attachment_str:
+                temporal_block += f"\n{attachment_str}"
         system_parts.append(temporal_block)
 
     messages.append({"role": "system", "content": "\n".join(system_parts)})

@@ -1,4 +1,4 @@
-﻿"""
+"""
 src/soul/scheduler.py — Soul OS Stage 4.2 (Part 1)
 
 排程器 (SoulScheduler)
@@ -166,6 +166,8 @@ class SoulScheduler:
         self._next_heartbeat_time: Optional[datetime] = None
         self._next_proactive_dm_time: Optional[datetime] = None
         self._last_proactive_dm_time: Optional[datetime] = None
+        # M7-2 (Bry 拍板 2026-08-18): 活動驅動主動傳訊 — 記錄每 agent 已分享活動的 ts (去重)
+        self._last_shared_activity_ts: Dict[str, str] = {}
 
     # ───────────────────────────────────────────────────────────
     # M1.1: Event Bus 發布層
@@ -754,6 +756,63 @@ class SoulScheduler:
             f"[Scheduler] 💓 下次 heartbeat: {self._next_heartbeat_time.strftime('%H:%M:%S')}"
         )
 
+    def _get_recent_shareable_activity(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """
+        M7-2 (Bry 拍板 2026-08-18): 找 agent 最近一件「值得分享」的活動。
+
+        讀 data_root()/soul/{agent_id}/diary/{today}.jsonl, 找最新
+        slot=="event" 且 shareable==True 且 source=="llm" 的 entry。
+
+        Returns:
+            {"activity": str, "category": str, "content": str, "ts": str}
+            或 None (沒 diary / 沒 shareable 活動 / 解析失敗)。
+
+        設計註記 (M7-2 拍板):
+          主動傳訊與活動「密不可分」採「enrichment」而非「新觸發源」—
+          因為 event (活動) 對單一 agent 頻率太低 (約 20-40h 一次),
+          不足以單獨驅動 5-8 條/天; 改在既有 3-5h random 節奏上,
+          把 agent 最近 shareable 活動帶進 draft。這樣也自然避開
+          M5.8-4 inner-life gate (30min) 的衝突 (random timer 觸發時
+          活動早已超過 30min)。
+        """
+        from src.paths import data_root
+        import json as _json
+        today = datetime.now().strftime("%Y-%m-%d")
+        path = data_root() / "soul" / agent_id / "diary" / f"{today}.jsonl"
+        if not path.is_file():
+            return None
+        latest: Optional[Dict[str, Any]] = None
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+                if entry.get("slot") != "event":
+                    continue
+                if entry.get("shareable") is not True:
+                    continue
+                if entry.get("source") != "llm":
+                    continue
+                if not entry.get("activity"):
+                    continue
+                if latest is None or entry.get("ts", "") > latest.get("ts", ""):
+                    latest = entry
+        except Exception as e:
+            logger.warning(f"[M7-2] 讀 diary 失敗 ({agent_id}): {e}")
+            return None
+        if latest is None:
+            return None
+        return {
+            "activity": latest.get("activity", ""),
+            "category": latest.get("category", ""),
+            "content": latest.get("content", ""),
+            "ts": latest.get("ts", ""),
+        }
+
     async def _fire_proactive_dm(self) -> None:
         """
         Lesson 39: 觸發 1 隻角色的 proactive DM (透過 TG DM 找 Bryan).
@@ -828,7 +887,18 @@ class SoulScheduler:
         # M5.2-G (Bry 拍板 2026-08-08): publish AGENCY_TRIGGER
         # M5.2-I Phase 6: 移除 callback invocation. 真實 LLM
         # 由 AgencyTriggerHandler 訂閱 AGENCY_TRIGGER 觸發.
-        await self._publish_agency_trigger(agent_id, trigger_type="proactive_dm")
+        # M7-2 (Bry 拍板 2026-08-18): 活動驅動 — 把 agent 最近 shareable 活動帶進 extra
+        # (去重: 同一活動 ts 只帶一次, 之後 fall back 到通用草稿)
+        extra: Dict[str, Any] = {}
+        activity = self._get_recent_shareable_activity(agent_id)
+        if activity and activity.get("ts") != self._last_shared_activity_ts.get(agent_id):
+            extra = {"trigger_source": "activity", "activity": activity}
+            self._last_shared_activity_ts[agent_id] = activity.get("ts", "")
+            logger.info(
+                f"[M7-2] proactive_dm 帶活動: {agent_id} "
+                f"activity={activity.get('activity')} ts={activity.get('ts')}"
+            )
+        await self._publish_agency_trigger(agent_id, trigger_type="proactive_dm", extra=extra)
         # 記錄 last_proactive_dm_time (scheduler-level rate limit 不變)
         self._last_proactive_dm_time = now_local()
         # 排下次 (隨機 2-4 小時)
