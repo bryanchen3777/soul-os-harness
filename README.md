@@ -210,7 +210,7 @@ Soul OS 透過 M6.1 建立了**完整的 Lived Context Awareness 架構** — �
                             ▼
 ┌──────────────────────────────────────────────────────────────┐
 │  LAYER 4: AGENCY  (intentional action, 4 handlers parallel)  │
-│  • AgencyTriggerHandler  → proactive_dm (ruka only, 8/6)    │
+│  • AgencyTriggerHandler  → proactive_dm (ruka only, longing-driven) │
 │  • DiaryHandler          → morning + night LLM diary        │
 │  • DreamHandler          → 22:05 dream                      │
 │  • EventHandler          → 4-8h event                      │
@@ -250,12 +250,14 @@ M5.9-2 WORLD_QUALIFYING_TYPES, M5.9-3 WorldInnerLifeAdapter, VALID_SOURCES.
 **4 個 Handler 平行訂閱 `AGENCY_TRIGGER`**:
 | Handler | trigger_type | 行為 |
 |---------|-------------|------|
-| `AgencyTriggerHandler` | `proactive_dm` | 主動發訊至 Bryan |
+| `AgencyTriggerHandler` | `proactive_dm` | 主動發訊至 Bryan（**想念驅動**，非定時器） |
 | `EventHandler` | `event` | 寫入 diary/event 記錄 |
 | `DreamHandler` | `dream` | 寫入 dream 記錄 |
 | `DiaryHandler` | `morning` / `night` | 寫入日記 slot |
 
 **Trigger → Decision → Selection → Execution** 四階段都是 deterministic — 無 LLM，無 persona。Scheduler 是 runtime producer;Heartbeat 是 observation/lifecycle 引擎。**兩者皆不屬於 Agency 階段**。
+
+**主動傳訊 (proactive_dm) 觸發模型 — M7**：由「定時器」改成「**想念驅動**」。想念 = 依戀(config `intimacy_level`) × 有效沉默時長（`compute_longing` 現算，不持久化），跨過 `LONGING_THRESHOLD` 才觸發，未達門檻每 30 分鐘再評估。有效沉默 = min(Bry 上次講話, 上次主動傳訊)，所以「正在聊天」或「剛表達過想念」都不會打擾；角色親密度不同 → 想念節奏不同（Yua 80 沉默 9h / Ruka 60 12h / Ram 40 18h）。此舉讓主動訊息是「她想到你」而非「系統排了通知」，也避免多人同時在固定時刻轟炸。白名單目前僅 `agent_ruka`（8/6 拍板，漸進式）。
 
 ### 9️⃣ INNER LIFE
 
@@ -499,4 +501,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-08-14 (DOC-1.3 — README M6.1 Lived Context Alignment; World Perception section updated, M6.1 Lived Context Awareness section added, M6.1 / M6.2 milestones added to roadmap. Architecture diagram verified still accurate. Previous: M6.1-9.1 True Phase-10 = 10/10 agents restored; M6.2-1 message_id correlation closed; M5.13 / M5.14 / M5.15 / M6.0 / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED.)
+**最後更新**: 2026-08-18 (DOC-1.4 — M7 Living Life & Proactive Sharing: 主動傳訊由「定時器」改為「想念驅動」(M7-longing)，活動模型化 (M7-1) + 活動驅動傳訊 (M7-2) + 思念情感 (M7-3)；記憶 LLM judge 改 fire-and-forget 修掉 ~73s 延時；§8 AGENCY LAYER 更新。Previous: DOC-1.3 M6.1 Lived Context Alignment.)
