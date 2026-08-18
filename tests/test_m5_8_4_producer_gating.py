@@ -665,6 +665,26 @@ class TestSectionG_SchedulerBackwardCompat:
                 from src.timezone_utils import now_local
                 scheduler._next_proactive_dm_time = now_local()
 
+                # M7-longing (Bry 拍板 2026-08-18): 寫一份 24h 前互動的 relationships.json,
+                # 讓想念門檻 (LONGING_THRESHOLD=0.3) 通過, 這樣 test 才能測到它真正要測的
+                # M5.8-4 inner-life gate (不是被想念 gate 擋在前面)。
+                soul_dir = isolated_root / "soul" / "agent_yua"
+                soul_dir.mkdir(parents=True, exist_ok=True)
+                rel = {
+                    "agent_id": "agent_yua",
+                    "schema_version": "4.1",
+                    "others": {
+                        "user_bryan": {
+                            "last_interaction_at": (
+                                datetime.now(timezone.utc) - timedelta(hours=24)
+                            ).isoformat(),
+                        }
+                    },
+                }
+                (soul_dir / "relationships.json").write_text(
+                    json.dumps(rel, ensure_ascii=False), encoding="utf-8"
+                )
+
                 with patch("src.soul.scheduler.random.choice", return_value="agent_yua"):
                     await scheduler._fire_proactive_dm()
                 return captured

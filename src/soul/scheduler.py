@@ -67,10 +67,13 @@ TRIGGER_PROBABILITY_DEFAULT = 1.0     # 4.2 第一刀: 100% 觸發
 # 任務健康檢查 (Bry 拍板觀察期 log 頻率)
 HEALTH_CHECK_INTERVAL_SECS = 300     # 5 分鐘 log 一次下次觸發時間
 
-# M7-context (Bry 拍板 2026-08-18): Bry 在線閾值 —
-# 正在跟該 agent 聊天 (此分鐘數內 Bry 有講話) 時不主動打擾, 避免突兀。
-# 跟 proxy.py 修法 7 的 STALE_THRESHOLD_SEC (30 min) 對齊。
-PROACTIVE_BRY_ONLINE_THRESHOLD_MINUTES = 30
+# M7-longing (Bry 拍板 2026-08-18): 想念驅動主動傳訊 (取代定時器)。
+# 想念 = 依戀(intimacy) × 有效沉默時長 (compute_longing, 見 src/agent/emotion.py)。
+# - LONGING_THRESHOLD: 想念跨過此門檻才觸發。0.3 ≈ Ruka(60) 沉默 12h /
+#   Yua(80) 沉默 9h / Ram(40) 沉默 18h → 角色差異化、時間不可預測, 不是鬧鐘。
+# - LONGING_CHECK_INTERVAL_MINUTES: 想念未達門檻時, 多久後再查一次。
+LONGING_THRESHOLD = 0.3
+LONGING_CHECK_INTERVAL_MINUTES = 30
 
 
 # ───────────────────────────────────────────────────────────
@@ -473,20 +476,19 @@ class SoulScheduler:
             logger.warning("[Scheduler] 已經在跑, 不重複 start")
             return
         self._running = True
-        # M7-context (Bry 拍板 2026-08-18): 計時器復活。
+        # M7-longing (Bry 拍板 2026-08-18): 首次檢查排定。
         # 根因: register_proactive_dm 在 M5.2-O-3 (8/8) 被移除後, _next_proactive_dm_time
         #       永遠停在 None → _is_proactive_dm_time 永遠 False → proactive_dm 完全不會觸發。
-        # 修法: start() 時若計時器是 None, 初始化成 3-5h 後 (重啟後也能正常發第一條)。
+        # 修法: start() 時若 None, 排短一點 (30 min) 讓想念驅動能盡快開始評估,
+        #       不是等 3-5h 才第一次檢查 (那是 cooldown, 不是首次檢查的意義)。
         if self._next_proactive_dm_time is None:
-            mins = random.randint(
-                self.proactive_dm_min_interval_minutes,
-                self.proactive_dm_max_interval_minutes,
+            self._next_proactive_dm_time = now_local() + timedelta(
+                minutes=LONGING_CHECK_INTERVAL_MINUTES
             )
-            self._next_proactive_dm_time = now_local() + timedelta(minutes=mins)
             logger.info(
-                f"[M7-context] proactive_dm 計時器復活: "
+                f"[M7-longing] proactive_dm 首次檢查排定: "
                 f"next={self._next_proactive_dm_time.strftime('%H:%M:%S')} "
-                f"interval={mins}min"
+                f"interval={LONGING_CHECK_INTERVAL_MINUTES}min"
             )
         self._task = asyncio.create_task(self._run_loop(), name="SoulScheduler")
         logger.info(
@@ -866,6 +868,52 @@ class SoulScheduler:
         now_utc = datetime.now(_tz.utc)
         return (now_utc - last_dt).total_seconds() / 60.0
 
+    def _get_base_intimacy(self, agent_id: str) -> float:
+        """
+        M7-longing: 讀 config 的 intimacy_level (靜態基礎親密度) 當「依戀」來源。
+
+        不用 emotion_engine.get() 的原因: 它會隨互動累積、全都漂到 100,
+        失去 Yua(80)/Ruka(60)/Ram(40) 的角色差異化。config 的 intimacy_level 才是
+        「這隻角色天生多黏 Bry」的穩定訊號 (per 決策 #3)。
+        fail-silent: 讀不到 config → 50.0 預設。
+        """
+        if not hasattr(self, "_base_intimacy_cache"):
+            self._base_intimacy_cache: Dict[str, float] = {}
+            try:
+                from configs.loader import load_config
+                cfg = load_config()
+                for agent_cfg in cfg.get("agents", []):
+                    aid = agent_cfg.get("id")
+                    if aid:
+                        self._base_intimacy_cache[aid] = float(
+                            agent_cfg.get("intimacy_level", 50)
+                        )
+            except Exception as e:
+                logger.warning(f"[M7-longing] 讀 config intimacy 失敗: {e}")
+        return self._base_intimacy_cache.get(agent_id, 50.0)
+
+    def _get_agent_longing(self, agent_id: str) -> float:
+        """
+        M7-longing: 想念 = 依戀(intimacy) × 有效沉默時長 (compute_longing 現算, 不持久化)。
+
+        有效沉默 = min(Bry 上次講話的沉默, 上次主動傳訊的沉默):
+          - Bry 剛講話 → 沉默小 → 不想念 (正在聊天不突兀)。
+          - 剛主動傳過 → 沉默小 → 不想念 (表達後緩解, 避免 Bry 一直不回就每 3-5h 轟炸)。
+        從未互動 (Bry 從沒跟該 agent 講過話) → 0.0 (不想念)。
+        """
+        bry_silence = self._get_bry_silence_minutes(agent_id)
+        if bry_silence is None:
+            return 0.0
+        effective = bry_silence
+        if self._last_proactive_dm_time is not None:
+            proactive_silence = (
+                now_local() - self._last_proactive_dm_time
+            ).total_seconds() / 60.0
+            effective = min(effective, max(0.0, proactive_silence))
+        intimacy = self._get_base_intimacy(agent_id)
+        from src.agent.emotion import compute_longing
+        return compute_longing(intimacy, effective)
+
     async def _fire_proactive_dm(self) -> None:
         """
         Lesson 39: 觸發 1 隻角色的 proactive DM (透過 TG DM 找 Bryan).
@@ -937,24 +985,25 @@ class SoulScheduler:
             f"[Scheduler] 💬 proactive_dm 觸發: {agent_id} "
             f"(whitelist={self._proactive_agents_whitelist})"
         )
-        # M7-context (Bry 拍板 2026-08-18): Bry 在線 gate —
-        # 正在跟該 agent 聊天 (30 min 內 Bry 有講話) 時不主動打擾, 避免突兀。
-        # 排下次 3-5h, 不立刻再試 (等 Bry 結束對話再自然觸發)。
-        bry_silence_mins = self._get_bry_silence_minutes(agent_id)
-        if (
-            bry_silence_mins is not None
-            and bry_silence_mins < PROACTIVE_BRY_ONLINE_THRESHOLD_MINUTES
-        ):
+        # M7-longing (Bry 拍板 2026-08-18): 想念驅動 — 取代定時器 + 在線 gate。
+        # 想念 = 依戀(intimacy) × 有效沉默時長。想念跨過門檻才觸發,
+        # 否則排 30 min 後再查 (不是等 3-5h)。這同時涵蓋:
+        #   - 「正在聊天突兀」: 沉默=0 → 想念=0 → 不觸發。
+        #   - 「角色差異化節奏」: Yua(80) 比 Ram(40) 更早、更常想 Bry。
+        #   - 「表達後緩解」: 剛主動傳過 → 有效沉默歸零 → 不會連續轟炸。
+        longing = self._get_agent_longing(agent_id)
+        if longing < LONGING_THRESHOLD:
             logger.info(
-                f"[M7-context] Bry 最近 {bry_silence_mins:.0f} 分鐘內有跟 "
-                f"{agent_id} 講話, skip proactive_dm (避免突兀)"
+                f"[M7-longing] {agent_id} 想念 {longing:.2f} < {LONGING_THRESHOLD}, "
+                f"排 {LONGING_CHECK_INTERVAL_MINUTES} min 後再查"
             )
-            mins = random.randint(
-                self.proactive_dm_min_interval_minutes,
-                self.proactive_dm_max_interval_minutes,
+            self._next_proactive_dm_time = now_local() + timedelta(
+                minutes=LONGING_CHECK_INTERVAL_MINUTES
             )
-            self._next_proactive_dm_time = now_local() + timedelta(minutes=mins)
             return
+        logger.info(
+            f"[M7-longing] {agent_id} 想念 {longing:.2f} >= {LONGING_THRESHOLD}, 觸發主動傳訊"
+        )
         # M5.2-G (Bry 拍板 2026-08-08): publish AGENCY_TRIGGER
         # M5.2-I Phase 6: 移除 callback invocation. 真實 LLM
         # 由 AgencyTriggerHandler 訂閱 AGENCY_TRIGGER 觸發.
