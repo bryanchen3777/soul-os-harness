@@ -115,6 +115,80 @@ def _parse_category_judge_output(text: str, expected_category: Category) -> tupl
     return judgment, reason
 
 
+# ─────────────────────────────────────────────────────────────
+# M7-judge-batch (Bry 拍板 2026-08-18): 批次解析
+# 批次版 judge 一次判斷 N 個三元組, 回 JSON results 陣列 (用 index 對齊)。
+# 這些 parser 把 JSON 陣列還原成「長度 N 的 list」, 缺項/格式壞補預設。
+# ─────────────────────────────────────────────────────────────
+
+def _parse_stance_batch_output(text: str, n: int) -> List[Dict[str, str]]:
+    """解析批次 stance 的 JSON results 陣列, 回傳長度 n (缺項補 other_directed/UNSUPPORTED)。"""
+    default = {"stance": "other_directed", "judgment": "UNSUPPORTED", "reason": ""}
+    result = [dict(default) for _ in range(n)]
+    m = re.search(r"\{.*\}", text or "", re.DOTALL)
+    if not m:
+        return result
+    try:
+        data = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return result
+    items = data.get("results", [])
+    if not isinstance(items, list):
+        return result
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item.get("index", -1))
+        except (ValueError, TypeError):
+            continue
+        if not (0 <= idx < n):
+            continue
+        raw_stance = str(item.get("stance", "")).lower()
+        stance = "self_directed" if raw_stance in ("self_directed", "self", "inner") else "other_directed"
+        judgment = str(item.get("judgment", "UNSUPPORTED")).upper()
+        if judgment not in ("SUPPORTED", "WEAK", "UNSUPPORTED"):
+            judgment = "UNSUPPORTED"
+        result[idx] = {
+            "stance": stance,
+            "judgment": judgment,
+            "reason": str(item.get("reason", "")),
+        }
+    return result
+
+
+def _parse_content_batch_output(text: str, n: int) -> List[Dict[str, str]]:
+    """解析批次 content 的 JSON results 陣列, 回傳長度 n (缺項補 UNSUPPORTED)。"""
+    result = [{"judgment": "UNSUPPORTED", "reason": ""} for _ in range(n)]
+    m = re.search(r"\{.*\}", text or "", re.DOTALL)
+    if not m:
+        return result
+    try:
+        data = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return result
+    items = data.get("results", [])
+    if not isinstance(items, list):
+        return result
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item.get("index", -1))
+        except (ValueError, TypeError):
+            continue
+        if not (0 <= idx < n):
+            continue
+        judgment = str(item.get("judgment", "UNSUPPORTED")).upper()
+        if judgment not in ("SUPPORTED", "WEAK", "UNSUPPORTED"):
+            judgment = "UNSUPPORTED"
+        result[idx] = {
+            "judgment": judgment,
+            "reason": str(item.get("reason", "")),
+        }
+    return result
+
+
 class LLMJudge:
     """LLM-as-Judge 評審器:三元組萃取 + 離散分類判準 + 連續 confidence 映射。"""
 
@@ -275,6 +349,93 @@ class LLMJudge:
         """離散分類 → 連續 confidence 數值(供既有門檻邏輯沿用)。"""
         return JUDGMENT_TO_CONFIDENCE[category][judgment]
 
+    async def _judge_stance_batch(
+        self,
+        triples: List[Dict[str, str]],
+        context: str,
+    ) -> List[Dict[str, str]]:
+        """
+        M7-judge-batch (Bry 拍板 2026-08-18): 批次判斷所有三元組的 stance。
+        1 次 LLM call 取代 N 次 (原 judge_stance 逐條)。
+        回傳長度 == len(triples) 的 list, 每個元素 {stance, judgment, reason}。
+        """
+        if not triples:
+            return []
+        prompt = self._prompts["stance"]
+        triple_lines = "\n".join(
+            f"[{i}] {t['subject']} {t['predicate']} {t['object']}"
+            for i, t in enumerate(triples)
+        )
+        user_msg = (
+            f"以下是 {len(triples)} 個三元組, 請對每一個逐一判斷 STANCE / JUDGMENT / REASON。\n\n"
+            f"{triple_lines}\n\n"
+            f"原文: {context or '(無)'}\n\n"
+            f"請輸出 JSON, 格式: "
+            f'{{"results": [{{"index": 0, "stance": "self_directed", '
+            f'"judgment": "SUPPORTED", "reason": "..."}}, ...]}}'
+        )
+        try:
+            r = await self.llm_proxy.backend.complete(
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_msg},
+                ],
+                model=self.llm_proxy.model,
+                max_tokens=2000,  # 批次多個三元組, 比單條 1000 放寬
+                temperature=0.0,
+            )
+            return _parse_stance_batch_output(r, len(triples))
+        except Exception as e:
+            logger.warning(f"[LLMJudge._judge_stance_batch] 失敗: {e}")
+            return [
+                {"stance": "other_directed", "judgment": "UNSUPPORTED", "reason": "batch failed"}
+                for _ in triples
+            ]
+
+    async def _judge_content_batch(
+        self,
+        triples: List[Dict[str, str]],
+        text: str,
+        category: Category,
+    ) -> List[Dict[str, str]]:
+        """
+        M7-judge-batch (Bry 拍板 2026-08-18): 批次判斷所有三元組的 content 類別。
+        每個 category 1 次 LLM call (取代逐條×逐類別)。回傳長度 == len(triples) 的
+        list, 每個元素 {judgment, reason}。原文用 text (Bry §4 bug 修, 不用 context)。
+        """
+        if not triples:
+            return []
+        prompt = self._prompts[category]
+        triple_lines = "\n".join(
+            f"[{i}] {t['subject']} {t['predicate']} {t['object']}"
+            for i, t in enumerate(triples)
+        )
+        user_msg = (
+            f"以下是 {len(triples)} 個三元組, 請依 {category} prompt 判準, "
+            f"對每一個輸出 JUDGMENT / REASON。\n\n"
+            f"{triple_lines}\n\n"
+            f"原文: {text or '(無)'}\n\n"  # Bry §4 bug 修: 用 text 不用 context
+            f"請輸出 JSON, 格式: "
+            f'{{"results": [{{"index": 0, "judgment": "SUPPORTED", "reason": "..."}}, ...]}}'
+        )
+        try:
+            r = await self.llm_proxy.backend.complete(
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_msg},
+                ],
+                model=self.llm_proxy.model,
+                max_tokens=2000,  # 批次多個三元組
+                temperature=0.0,
+            )
+            return _parse_content_batch_output(r, len(triples))
+        except Exception as e:
+            logger.warning(f"[LLMJudge._judge_content_batch] 失敗 ({category}): {e}")
+            return [
+                {"judgment": "UNSUPPORTED", "reason": "batch failed"}
+                for _ in triples
+            ]
+
     async def extract_and_judge(
         self,
         text: str,
@@ -282,21 +443,19 @@ class LLMJudge:
         agent_id: str,
     ) -> List[Dict[str, Any]]:
         """
-        Bry 施工書 (2026-07-02) 完整兩步流程:
-        - Step A: extract_triples(不變)
-        - Step B-1: judge_stance(self_directed / other_directed)
-        - Step B-2 (only if other_directed): judge_content(preference_plan_event_fact / milestone)
+        Bry 施工書 (2026-07-02) 完整兩步流程 (M7-judge-batch 批次化 2026-08-18):
+        - Step A: extract_triples (1 call, 不變)
+        - Step B-1: _judge_stance_batch (1 call, 取代 N 次逐條)
+        - Step B-2: _judge_content_batch (每個 category 1 call, 取代逐條×逐類別)
 
         最終 category:
           if stance == self_directed → category = "diary"
           else → category = content 結果
 
         回傳介面保持向下相容:{subject, predicate, object, category, judgment, reason, confidence}
+        LLM 呼叫數: 1 + 1 + 2 = 4 (原 1 + N + 2M = 13)。
         """
         triples = await self.extract_triples(text, context, agent_id)
-        # Bry 暫緩收工 (2026-07-02): 加 trace log 只記錄每步成功/失敗路徑,
-        # 不影響判斷邏輯、不引入新 schema。
-        # 即使 triples 為空(extract 失敗或無可萃取),也要記錄這次呼叫斷在哪一步
         trace = {
             "extract": {"n_triples": len(triples) if triples else 0},
             "stance_calls": 0,
@@ -305,111 +464,91 @@ class LLMJudge:
             "stance_other_directed": 0,
             "content_calls": 0,
             "content_fail": 0,
-            # Bry §3 (2026-07-02) 加 content 原始數值觀察點:
-            # 每個 content judgment call 記錄 (category, judgment, confidence)
-            # 不改判斷邏輯,純觀察用
             "content_calls_detail": [],
+            "batched": True,  # M7-judge-batch marker
         }
+
+        if not triples:
+            logger.info(f"[LLMJudge.trace] text={text[:30]!r}: {trace}")
+            return []
+
+        # Step B-1: 批次 stance (1 call)
+        trace["stance_calls"] = 1
+        stance_results = await self._judge_stance_batch(triples, context)
+        if len(stance_results) != len(triples):
+            trace["stance_fail"] = 1
+            stance_results = [
+                {"stance": "other_directed", "judgment": "UNSUPPORTED", "reason": "batch failed"}
+                for _ in triples
+            ]
+        for s in stance_results:
+            if s.get("stance") == "self_directed":
+                trace["stance_self_directed"] += 1
+            else:
+                trace["stance_other_directed"] += 1
+
         results = []
-        for t in triples:
-            # Step B-1: stance 判斷
-            trace["stance_calls"] += 1
-            try:
-                stance, stance_judgment, stance_reason = await self.judge_stance(t, context)
-                if stance == "self_directed":
-                    trace["stance_self_directed"] += 1
-                else:
-                    trace["stance_other_directed"] += 1
-            except Exception as e:
-                trace["stance_fail"] += 1
-                logger.warning(f"[LLMJudge.trace] stance 失敗: {e}")
-                # 失敗不丟 triple,讓它落回 content 路徑
-                stance = "other_directed"
-                stance_judgment = "UNSUPPORTED"
-                stance_reason = f"stance failed: {e}"
+        content_candidates: List[tuple] = []  # (index, triple)
+
+        for i, t in enumerate(triples):
+            sr = stance_results[i]
+            stance = sr.get("stance", "other_directed")
+            stance_judgment = sr.get("judgment", "UNSUPPORTED")
+            stance_reason = sr.get("reason", "")
+
             diary_captured = False
+            if stance == "self_directed" and stance_judgment in ("SUPPORTED", "WEAK"):
+                results.append({
+                    **t,
+                    "category": "diary",
+                    "judgment": stance_judgment,
+                    "reason": stance_reason,
+                    "confidence": JUDGMENT_TO_CONFIDENCE["diary"][stance_judgment],
+                    "stance": stance,
+                })
+                diary_captured = True
 
-            if stance == "self_directed":
-                if stance_judgment == "SUPPORTED":
-                    results.append({
-                        **t,
-                        "category": "diary",
-                        "judgment": stance_judgment,
-                        "reason": stance_reason,
-                        "confidence": JUDGMENT_TO_CONFIDENCE["diary"][stance_judgment],
-                        "stance": stance,
-                    })
-                    diary_captured = True
-                elif stance_judgment == "WEAK":
-                    results.append({
-                        **t,
-                        "category": "diary",
-                        "judgment": stance_judgment,
-                        "reason": stance_reason,
-                        "confidence": JUDGMENT_TO_CONFIDENCE["diary"][stance_judgment],
-                        "stance": stance,
-                    })
-                    diary_captured = True
+            if not diary_captured:
+                content_candidates.append((i, t))
 
-            if diary_captured:
-                continue
-
-            # Step B-2: content 判斷
-            best = None
+        # Step B-2: 批次 content (每個 category 1 call)
+        if content_candidates:
+            candidate_triples = [t for (_i, t) in content_candidates]
+            content_best: Dict[int, tuple] = {}
             for cat in ("preference_plan_event_fact", "milestone"):
                 trace["content_calls"] += 1
-                prompt = self._prompts[cat]
-                user_msg = (
-                    f"三元組: {t['subject']} {t['predicate']} {t['object']}\n"
-                    f"原文: {text}\n"  # Bry §4 (2026-07-02) bug 修:用 text 不用 context
-                    f"請依 {cat} prompt 判準回答 CATEGORY / JUDGMENT / REASON。"
-                )
-                try:
-                    r = await self.llm_proxy.backend.complete(
-                        messages=[
-                            {"role": "system", "content": prompt},
-                            {"role": "user", "content": user_msg},
-                        ],
-                        model=self.llm_proxy.model,
-                        max_tokens=1000,  # Lesson 36D Bry 拍板 2026-07-26 12:18: 升 1000+ 解 length 截斷 (v31 ship)
-                        temperature=0.0,
-                    )
-                    judgment, reason = _parse_category_judge_output(r, cat)
-                except Exception as e:
+                content_results = await self._judge_content_batch(candidate_triples, text, cat)
+                if len(content_results) != len(candidate_triples):
                     trace["content_fail"] += 1
-                    logger.warning(f"[LLMJudge.trace] content 失敗 ({cat}): {e}")
-                    # Bry §3 (2026-07-02): 失敗的 call 也記錄原始數值,供診斷
+                    continue
+                for k, cr in enumerate(content_results):
+                    i, t = content_candidates[k]
+                    judgment = cr.get("judgment", "UNSUPPORTED")
+                    reason = cr.get("reason", "")
+                    conf = JUDGMENT_TO_CONFIDENCE[cat].get(judgment, 0.0)
                     trace["content_calls_detail"].append({
                         "category": cat,
                         "triple": f"{t['subject']} {t['predicate']} {t['object']!r}",
-                        "judgment": "EXCEPTION",
-                        "confidence": None,
-                        "reason_snippet": str(e)[:80],
+                        "judgment": judgment,
+                        "confidence": conf,
+                        "reason_snippet": reason[:80],
                     })
-                    continue
-                # Bry §3: 成功的 call 記錄原始 judgment + confidence
-                conf = JUDGMENT_TO_CONFIDENCE[cat][judgment]
-                trace["content_calls_detail"].append({
-                    "category": cat,
-                    "triple": f"{t['subject']} {t['predicate']} {t['object']!r}",
-                    "judgment": judgment,
-                    "confidence": conf,
-                    "reason_snippet": reason[:80],
-                })
-                if conf > 0 and (best is None or conf > best[1]):
-                    best = (judgment, conf, cat, reason)
+                    if conf > 0:
+                        prev = content_best.get(i)
+                        if prev is None or conf > prev[1]:
+                            content_best[i] = (judgment, conf, cat, reason)
 
-            if best:
-                judgment, conf, cat, reason = best
-                results.append({
-                    **t,
-                    "category": cat,
-                    "judgment": judgment,
-                    "reason": reason,
-                    "confidence": conf,
-                    "stance": stance,
-                })
+            for i, t in content_candidates:
+                if i in content_best:
+                    judgment, conf, cat, reason = content_best[i]
+                    results.append({
+                        **t,
+                        "category": cat,
+                        "judgment": judgment,
+                        "reason": reason,
+                        "confidence": conf,
+                        "stance": stance_results[i].get("stance", "other_directed"),
+                    })
 
-        # 回傳不變,trace 掛在 logger (Bry 暫緩收工 2026-07-02: 即使 triples 空也要 log)
         logger.info(f"[LLMJudge.trace] text={text[:30]!r}: {trace}")
         return results
