@@ -124,7 +124,7 @@ class TestM04Fix(unittest.TestCase):
             clean_85 = "あ" * 84 + "。"  # 85 chars, 句號在最後
             with tempfile.TemporaryDirectory() as tmp:
                 writer = diary_mod.DiaryWriter(data_dir=tmp)
-                with patch.object(diary_mod, "_call_minimax_for_diary",
+                with patch.object(diary_mod, "_call_llm_for_diary",
                                   new=AsyncMock(return_value=clean_85)):
                     path = await diary_mod.generate_diary_entry(
                         agent_id="a1", slot="morning",
@@ -146,7 +146,7 @@ class TestM04Fix(unittest.TestCase):
             clean_70 = "あ" * 70
             with tempfile.TemporaryDirectory() as tmp:
                 writer = diary_mod.DiaryWriter(data_dir=tmp)
-                with patch.object(diary_mod, "_call_minimax_for_diary",
+                with patch.object(diary_mod, "_call_llm_for_diary",
                                   new=AsyncMock(return_value=clean_70)):
                     path = await diary_mod.generate_diary_entry(
                         agent_id="a1", slot="morning",
@@ -164,7 +164,7 @@ class TestM04Fix(unittest.TestCase):
             think_only = "<think>\nreasoning only, no actual diary\n</think>"
             with tempfile.TemporaryDirectory() as tmp:
                 writer = diary_mod.DiaryWriter(data_dir=tmp)
-                with patch.object(diary_mod, "_call_minimax_for_diary",
+                with patch.object(diary_mod, "_call_llm_for_diary",
                                   new=AsyncMock(return_value=think_only)):
                     path = await diary_mod.generate_diary_entry(
                         agent_id="a1", slot="morning",
@@ -185,7 +185,7 @@ class TestM04Fix(unittest.TestCase):
             think_only = "<think>\nI should describe a dream about Mai\nBut I forgot to write the dream\n</think>"
             with tempfile.TemporaryDirectory() as tmp:
                 writer = de_mod.DreamEventWriter(data_dir=tmp)
-                with patch.object(de_mod, "_call_minimax_for_dream_event",
+                with patch.object(de_mod, "_call_llm_for_dream_event",
                                   new=AsyncMock(return_value=think_only)):
                     # mock on_dream / impression 跳過
                     with patch("src.soul.relationships.get_relationships_manager"):
@@ -206,7 +206,7 @@ class TestM04Fix(unittest.TestCase):
             think_only = "<think>\nI'll describe a kitchen event\nBut I forgot\n</think>"
             with tempfile.TemporaryDirectory() as tmp:
                 writer = de_mod.DreamEventWriter(data_dir=tmp)
-                with patch.object(de_mod, "_call_minimax_for_dream_event",
+                with patch.object(de_mod, "_call_llm_for_dream_event",
                                   new=AsyncMock(return_value=think_only)):
                     with patch("src.soul.relationships.get_relationships_manager"):
                         path = await writer.write_event(agent_id="a1")
@@ -224,7 +224,7 @@ class TestM04Fix(unittest.TestCase):
             normal = "麻衣さんの声だけが聞こえた。何を言ったかは…思い出せない。"
             with tempfile.TemporaryDirectory() as tmp:
                 writer = de_mod.DreamEventWriter(data_dir=tmp)
-                with patch.object(de_mod, "_call_minimax_for_dream_event",
+                with patch.object(de_mod, "_call_llm_for_dream_event",
                                   new=AsyncMock(return_value=normal)):
                     with patch("src.soul.relationships.get_relationships_manager"):
                         path = await writer.write_dream(
@@ -243,7 +243,7 @@ class TestM04Fix(unittest.TestCase):
             normal = "玄関で夕飯の匂いにふと足を止めた。"
             with tempfile.TemporaryDirectory() as tmp:
                 writer = de_mod.DreamEventWriter(data_dir=tmp)
-                with patch.object(de_mod, "_call_minimax_for_dream_event",
+                with patch.object(de_mod, "_call_llm_for_dream_event",
                                   new=AsyncMock(return_value=normal)):
                     with patch("src.soul.relationships.get_relationships_manager"):
                         path = await writer.write_event(agent_id="a1")

@@ -48,7 +48,7 @@ class TestM05Fix(unittest.TestCase):
             clean_100 = "あ" * 99 + "。"  # 100 chars
             with tempfile.TemporaryDirectory() as tmp:
                 writer = diary_mod.DiaryWriter(data_dir=tmp)
-                with patch.object(diary_mod, "_call_minimax_for_diary",
+                with patch.object(diary_mod, "_call_llm_for_diary",
                                   new=AsyncMock(return_value=clean_100)):
                     path = await diary_mod.generate_diary_entry(
                         agent_id="a1", slot="morning",
@@ -74,7 +74,7 @@ class TestM05Fix(unittest.TestCase):
             content = "あ" * 60 + "。" + "い" * 9 + "、" + "う" * 29  # 100 chars
             with tempfile.TemporaryDirectory() as tmp:
                 writer = diary_mod.DiaryWriter(data_dir=tmp)
-                with patch.object(diary_mod, "_call_minimax_for_diary",
+                with patch.object(diary_mod, "_call_llm_for_diary",
                                   new=AsyncMock(return_value=content)):
                     path = await diary_mod.generate_diary_entry(
                         agent_id="a1", slot="morning",
@@ -103,7 +103,7 @@ class TestM05Fix(unittest.TestCase):
             clean_120 = "あ" * 119 + "。"  # 120 chars
             with tempfile.TemporaryDirectory() as tmp:
                 writer = de_mod.DreamEventWriter(data_dir=tmp)
-                with patch.object(de_mod, "_call_minimax_for_dream_event",
+                with patch.object(de_mod, "_call_llm_for_dream_event",
                                   new=AsyncMock(return_value=clean_120)):
                     with patch("src.soul.relationships.get_relationships_manager"):
                         path = await writer.write_dream(
@@ -122,7 +122,7 @@ class TestM05Fix(unittest.TestCase):
             clean_120 = "あ" * 119 + "。"
             with tempfile.TemporaryDirectory() as tmp:
                 writer = de_mod.DreamEventWriter(data_dir=tmp)
-                with patch.object(de_mod, "_call_minimax_for_dream_event",
+                with patch.object(de_mod, "_call_llm_for_dream_event",
                                   new=AsyncMock(return_value=clean_120)):
                     with patch("src.soul.relationships.get_relationships_manager"):
                         path = await writer.write_event(agent_id="a1")
@@ -151,7 +151,7 @@ class TestM05Fix(unittest.TestCase):
                     else:
                         # retry 成功
                         return "今朝は静かだった。台所へ向かう。"
-                with patch.object(diary_mod, "_call_minimax_for_diary",
+                with patch.object(diary_mod, "_call_llm_for_diary",
                                   new=AsyncMock(side_effect=fake_call)):
                     path = await diary_mod.generate_diary_entry(
                         agent_id="a1", slot="morning",
@@ -180,7 +180,7 @@ class TestM05Fix(unittest.TestCase):
                 async def fake_call(*args, **kwargs):
                     call_count["n"] += 1
                     return think_only
-                with patch.object(diary_mod, "_call_minimax_for_diary",
+                with patch.object(diary_mod, "_call_llm_for_diary",
                                   new=AsyncMock(side_effect=fake_call)):
                     path = await diary_mod.generate_diary_entry(
                         agent_id="a1", slot="morning",
@@ -207,7 +207,7 @@ class TestM05Fix(unittest.TestCase):
                         return think_only
                     else:
                         return "廚房で麻衣さんと並んで立っていた。"
-                with patch.object(de_mod, "_call_minimax_for_dream_event",
+                with patch.object(de_mod, "_call_llm_for_dream_event",
                                   new=AsyncMock(side_effect=fake_call)):
                     with patch("src.soul.relationships.get_relationships_manager"):
                         path = await writer.write_dream(
@@ -234,7 +234,7 @@ class TestM05Fix(unittest.TestCase):
                         return think_only
                     else:
                         return "玄関で夕飯の匂いがした。"
-                with patch.object(de_mod, "_call_minimax_for_dream_event",
+                with patch.object(de_mod, "_call_llm_for_dream_event",
                                   new=AsyncMock(side_effect=fake_call)):
                     with patch("src.soul.relationships.get_relationships_manager"):
                         path = await writer.write_event(agent_id="a1")
@@ -258,7 +258,7 @@ class TestM05Fix(unittest.TestCase):
                 async def fake_call(*args, **kwargs):
                     call_count["n"] += 1
                     return normal
-                with patch.object(diary_mod, "_call_minimax_for_diary",
+                with patch.object(diary_mod, "_call_llm_for_diary",
                                   new=AsyncMock(side_effect=fake_call)):
                     path = await diary_mod.generate_diary_entry(
                         agent_id="a1", slot="morning",
@@ -277,7 +277,7 @@ class TestM05Fix(unittest.TestCase):
         async def run_test():
             with tempfile.TemporaryDirectory() as tmp:
                 writer = diary_mod.DiaryWriter(data_dir=tmp)
-                with patch.object(diary_mod, "_call_minimax_for_diary",
+                with patch.object(diary_mod, "_call_llm_for_diary",
                                   new=AsyncMock(return_value=None)):
                     path = await diary_mod.generate_diary_entry(
                         agent_id="a1", slot="morning",
@@ -321,7 +321,7 @@ class TestM05Fix(unittest.TestCase):
                     return think_only
                 else:
                     return "今朝は静かだった。"
-            with patch.object(diary_mod, "_call_minimax_for_diary",
+            with patch.object(diary_mod, "_call_llm_for_diary",
                               new=AsyncMock(side_effect=fake_call)):
                 await diary_mod.generate_diary_entry(
                     agent_id="a1", slot="morning",

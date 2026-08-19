@@ -13,7 +13,7 @@ v1 證明現狀 (before M0.5):
 - generate_diary_entry 對 len(clean) > 80 走 placeholder (整段丟棄)
 - generate_diary_entry 對 think_only 走 placeholder (不 retry)
 - write_dream / write_event 同樣邏輯
-- _call_minimax_for_diary / _call_minimax_for_dream_event 沒 retry 邏輯
+- _call_llm_for_diary / _call_llm_for_dream_event 沒 retry 邏輯
 
 Bry 派工精神 (跟修法 10 對齊):
 - 修法 10 在 proxy.py:1610 _safe_truncate_on_length(raw, max_chars=200)
@@ -49,7 +49,7 @@ class TestM05Baseline(unittest.TestCase):
             clean_100 = "あ" * 100  # 100 chars
             with tempfile.TemporaryDirectory() as tmp:
                 writer = diary_mod.DiaryWriter(data_dir=tmp)
-                with patch.object(diary_mod, "_call_minimax_for_diary",
+                with patch.object(diary_mod, "_call_llm_for_diary",
                                   new=AsyncMock(return_value=clean_100)):
                     path = await diary_mod.generate_diary_entry(
                         agent_id="a1", slot="morning",
@@ -75,7 +75,7 @@ class TestM05Baseline(unittest.TestCase):
                 async def fake_call(*args, **kwargs):
                     call_count["n"] += 1
                     return think_only
-                with patch.object(diary_mod, "_call_minimax_for_diary",
+                with patch.object(diary_mod, "_call_llm_for_diary",
                                   new=AsyncMock(side_effect=fake_call)):
                     path = await diary_mod.generate_diary_entry(
                         agent_id="a1", slot="morning",
@@ -101,7 +101,7 @@ class TestM05Baseline(unittest.TestCase):
                 async def fake_call(*args, **kwargs):
                     call_count["n"] += 1
                     return think_only
-                with patch.object(de_mod, "_call_minimax_for_dream_event",
+                with patch.object(de_mod, "_call_llm_for_dream_event",
                                   new=AsyncMock(side_effect=fake_call)):
                     with patch("src.soul.relationships.get_relationships_manager"):
                         await writer.write_dream(
@@ -120,7 +120,7 @@ class TestM05Baseline(unittest.TestCase):
             clean_120 = "あ" * 120  # 120 chars
             with tempfile.TemporaryDirectory() as tmp:
                 writer = de_mod.DreamEventWriter(data_dir=tmp)
-                with patch.object(de_mod, "_call_minimax_for_dream_event",
+                with patch.object(de_mod, "_call_llm_for_dream_event",
                                   new=AsyncMock(return_value=clean_120)):
                     with patch("src.soul.relationships.get_relationships_manager"):
                         path = await writer.write_dream(

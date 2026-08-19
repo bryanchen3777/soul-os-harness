@@ -309,7 +309,7 @@ class TestSectionD_WriteDreamIntegration:
             async def fake_llm_call(*args, **kwargs):
                 return "M5.4-5.4 dream content"
 
-            monkeypatch.setattr(dream_mod, "_call_minimax_for_dream_event", fake_llm_call)
+            monkeypatch.setattr(dream_mod, "_call_llm_for_dream_event", fake_llm_call)
 
             eid = _hex_32()
             from src.soul.dream_event import DreamEventWriter
@@ -340,7 +340,7 @@ class TestSectionD_WriteDreamIntegration:
             async def fake_llm_call(*args, **kwargs):
                 return "test dream content"
 
-            monkeypatch.setattr(dream_mod, "_call_minimax_for_dream_event", fake_llm_call)
+            monkeypatch.setattr(dream_mod, "_call_llm_for_dream_event", fake_llm_call)
 
             from src.soul.dream_event import DreamEventWriter
             writer = DreamEventWriter(data_dir=str(soul_dir))
@@ -368,7 +368,7 @@ class TestSectionD_WriteDreamIntegration:
             async def fake_llm_call_fail(*args, **kwargs):
                 return None  # LLM fails → placeholder
 
-            monkeypatch.setattr(dream_mod, "_call_minimax_for_dream_event", fake_llm_call_fail)
+            monkeypatch.setattr(dream_mod, "_call_llm_for_dream_event", fake_llm_call_fail)
 
             eid = _hex_32()
             from src.soul.dream_event import DreamEventWriter
@@ -407,7 +407,7 @@ class TestSectionE_WriteEventIntegration:
             async def fake_llm_call(*args, **kwargs):
                 return "M5.4-5.4 event content"
 
-            monkeypatch.setattr(dream_mod, "_call_minimax_for_dream_event", fake_llm_call)
+            monkeypatch.setattr(dream_mod, "_call_llm_for_dream_event", fake_llm_call)
 
             eid = _hex_32()
             from src.soul.dream_event import DreamEventWriter
@@ -438,7 +438,7 @@ class TestSectionE_WriteEventIntegration:
             async def fake_llm_call(*args, **kwargs):
                 return "test event content"
 
-            monkeypatch.setattr(dream_mod, "_call_minimax_for_dream_event", fake_llm_call)
+            monkeypatch.setattr(dream_mod, "_call_llm_for_dream_event", fake_llm_call)
 
             from src.soul.dream_event import DreamEventWriter
             writer = DreamEventWriter(data_dir=str(soul_dir))
@@ -464,7 +464,7 @@ class TestSectionE_WriteEventIntegration:
             async def fake_llm_call_fail(*args, **kwargs):
                 return None  # LLM fails → placeholder
 
-            monkeypatch.setattr(dream_mod, "_call_minimax_for_dream_event", fake_llm_call_fail)
+            monkeypatch.setattr(dream_mod, "_call_llm_for_dream_event", fake_llm_call_fail)
 
             eid = _hex_32()
             from src.soul.dream_event import DreamEventWriter

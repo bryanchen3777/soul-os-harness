@@ -127,7 +127,7 @@ class TestM15Baseline(unittest.TestCase):
     def test_04_diary_does_not_depend_on_proxy_messages(self):
         """確認 M0.5 diary 寫入不依賴 proxy 的 messages 結構 (互不影響).
 
-        diary 走 src/soul/diary.py 自己的 LLM call (diary.py:_call_minimax_for_diary)
+        diary 走 src/soul/diary.py 自己的 LLM call (diary.py:_call_llm_for_diary)
         proxy 400 是 main chat path 觸發
         兩者獨立, M0.5 修法沒被 400 影響
         """

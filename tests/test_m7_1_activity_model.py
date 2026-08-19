@@ -88,7 +88,7 @@ class TestWriteEventActivity:
             async def fake_llm_call(*args, **kwargs):
                 return "今日は穏やかに仕事を進めた。"
 
-            monkeypatch.setattr(dream_mod, "_call_minimax_for_dream_event", fake_llm_call)
+            monkeypatch.setattr(dream_mod, "_call_llm_for_dream_event", fake_llm_call)
 
             writer = DreamEventWriter(data_dir=str(soul_dir))
             asyncio.run(writer.write_event("agent_yua"))
@@ -119,7 +119,7 @@ class TestWriteEventActivity:
             async def fake_llm_fail(*args, **kwargs):
                 return None
 
-            monkeypatch.setattr(dream_mod, "_call_minimax_for_dream_event", fake_llm_fail)
+            monkeypatch.setattr(dream_mod, "_call_llm_for_dream_event", fake_llm_fail)
 
             writer = DreamEventWriter(data_dir=str(soul_dir))
             asyncio.run(writer.write_event("agent_yua"))
@@ -149,7 +149,7 @@ class TestWriteEventActivity:
                 captured["user"] = user
                 return "test content"
 
-            monkeypatch.setattr(dream_mod, "_call_minimax_for_dream_event", fake_llm_capture)
+            monkeypatch.setattr(dream_mod, "_call_llm_for_dream_event", fake_llm_capture)
 
             writer = DreamEventWriter(data_dir=str(soul_dir))
             asyncio.run(writer.write_event("agent_yua"))

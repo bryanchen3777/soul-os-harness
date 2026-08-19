@@ -82,24 +82,60 @@ PLACEHOLDER_TEMPLATES = {
 # 整套 JP 砍掉後, LLM 跑中文 persona 不需要 M3 強推理, 退回 M2.7 OpenAI 即可
 # 備份: src/soul/_backup_m3_switch_20260720_201746/diary.py
 
-async def _call_minimax_for_diary(
+# ── 2026-08-18 Bry 拍板: 全部轉 deepseek-v4-flash（Ollama 包月, 成本可控）──
+# diary.py / dream_event.py 原本硬編寫 minimax-M2.7 + MiniMax endpoint, 跟主對話
+# 的 v4-flash 雙軌不一致。收口到 process-global LLMProxy（跟 sage/writer.py 同 pattern）:
+#   1. run_server.py 透過 set_llm_proxy() 注入 LLMProxy（model=deepseek-v4-flash）
+#   2. diary 生成統一走 LLMProxy.generate_text() (同 backend+model)
+#   3. 無 proxy（測試 / standalone）時 fallback 回既有 minimax direct call, 向後相容
+_global_llm_proxy = None
+
+
+def set_llm_proxy(llm_proxy):
+    """設定 process-global LLMProxy reference（v4-flash）。run_server 注入。"""
+    global _global_llm_proxy
+    _global_llm_proxy = llm_proxy
+
+
+def _find_llm_proxy():
+    """回傳 process-global LLMProxy（無則 None）。"""
+    return _global_llm_proxy
+
+
+async def _call_llm_for_diary(
     system_prompt: str,
     user_prompt: str,
     api_key: str,
-    model: str = "minimax-M2.7",
-    base_url: str = "https://api.minimax.io/v1/chat/completions",
     timeout: float = 20.0,
+    agent_id: str = "diary",  # 僅 log 用, 讓 generate_text 知道是哪個角色的日記
 ) -> Optional[str]:
     """
-    直接呼叫 minimax Chat Completions API 拿 diary 文字。
-    失敗 (timeout / HTTP error / 解析失敗) 回傳 None, 由 caller 走 placeholder。
+    拿 diary 文字。優先走 process-global LLMProxy（v4-flash）,
+    無 proxy（測試 / standalone）時 fallback 到 minimax direct call（向後相容）。
 
-    Lesson 38 (2026-07-30 Bry 拍板):
-    改用 httpx.AsyncClient,避免阻塞 asyncio event loop。
-    舊版用 requests.post 是同步 I/O,在 scheduler 22:00 觸發 night diary
-    時 10 個 agent 連續凍結 event loop 5-30s,連帶 TG polling + WebSocket
-    全部卡住 — 7/27 22:07 沉默死亡時間線吻合。
+    失敗 (timeout / HTTP error / 解析失敗) 回傳 None, 由 caller 走 placeholder。
     """
+    # v4-flash 主路徑（Ollama 包月）: 統一用 LLMProxy.generate_text
+    proxy = _find_llm_proxy()
+    if proxy is not None:
+        try:
+            async with LLM_CONCURRENCY_LIMIT:
+                return await proxy.generate_text(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    agent_id=agent_id,
+                    max_tokens=DIARY_MAX_TOKENS,
+                    temperature=DIARY_TEMPERATURE,
+                )
+        except Exception as e:
+            logger.warning(
+                f"[Diary] LLMProxy generate_text 失敗 (fallback placeholder): {e}"
+            )
+            return None
+
+    # Legacy minimax direct call（backward compat: 無 proxy 時才走）
     try:
         import httpx  # lazy import
     except ImportError:
@@ -112,13 +148,13 @@ async def _call_minimax_for_diary(
         async with LLM_CONCURRENCY_LIMIT:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 r = await client.post(
-                    base_url,
+                    "https://api.minimax.io/v1/chat/completions",
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": model,
+                        "model": "minimax-M2.7",
                         "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt},
@@ -342,7 +378,7 @@ async def generate_diary_entry(
     #   - 不要做 D 那種嚴格收斂 prompt, 過度收斂會把好例子的空間壓沒
     from src.llm.proxy import _safe_truncate_on_length  # 沿用修法 10 的截斷 helper
     RETRY_HINT = "\n\n（請直接輸出最終內容，不要輸出思考過程。）"
-    content = await _call_minimax_for_diary(system, user, writer.api_key)
+    content = await _call_llm_for_diary(system, user, writer.api_key, agent_id=agent_id)
 
     # M0.2 (2026-08-01 00:35 Perplexity 派工): 抽掉 think block 後檢查 clean
     # 修法動機: LLM 偶爾只回 <think>...</think> 沒實際 diary, raw content non-empty 但 clean empty.
@@ -358,7 +394,7 @@ async def generate_diary_entry(
                 f"[Diary] {agent_id} {slot} LLM 只回 think 沒 diary "
                 f"(raw {len(content)} chars, clean 0), retry 一次"
             )
-            content = await _call_minimax_for_diary(system, user + RETRY_HINT, writer.api_key)
+            content = await _call_llm_for_diary(system, user + RETRY_HINT, writer.api_key, agent_id=agent_id)
             if content:
                 clean = re.sub(r"^<think>.*?</think>\s*", "", content, flags=re.DOTALL).strip()
         if not clean:

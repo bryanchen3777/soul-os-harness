@@ -70,7 +70,7 @@ class TestDiaryPromptDecision1:
             captured["system"] = system
             return "今日は穏やかだった。"
 
-        monkeypatch.setattr(diary_mod, "_call_minimax_for_diary", fake_llm)
+        monkeypatch.setattr(diary_mod, "_call_llm_for_diary", fake_llm)
 
         soul_dir = tmp_path / "data" / "soul"
         os.environ["SOUL_OS_DATA_DIR"] = str(tmp_path / "data")

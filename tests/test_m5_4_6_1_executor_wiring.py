@@ -149,7 +149,7 @@ class TestSectionA_DiaryExecutorWiring:
         async def fake_llm_call(*args, **kwargs):
             return "M5.4-6.1 wiring test content"
 
-        monkeypatch.setattr(diary_mod, "_call_minimax_for_diary", fake_llm_call)
+        monkeypatch.setattr(diary_mod, "_call_llm_for_diary", fake_llm_call)
 
         # Reset module-level singleton so cb captures our isolated writer
         diary_mod._diary_writer = None
@@ -181,7 +181,7 @@ class TestSectionA_DiaryExecutorWiring:
         async def fake_llm_call(*args, **kwargs):
             return "M5.4-6.1 backward compat content"
 
-        monkeypatch.setattr(diary_mod, "_call_minimax_for_diary", fake_llm_call)
+        monkeypatch.setattr(diary_mod, "_call_llm_for_diary", fake_llm_call)
 
         # Reset module-level singleton so cb captures our isolated writer
         diary_mod._diary_writer = None

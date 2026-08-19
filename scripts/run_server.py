@@ -678,6 +678,15 @@ async def lifespan(app: FastAPI):
     set_llm_proxy(llm)
     logger.info("[Server] LLMProxy wired into MemoryWriter (LLM judge ready)")
 
+    # Bry 拍板 2026-08-18: 全部轉 deepseek-v4-flash（Ollama 包月, 成本可控）
+    # diary.py / dream_event.py 的 _call_*_for_* 硬編寫 minimax-M2.7, 跟主對話 v4-flash
+    # 雙軌不一致。這裡把同一 LLMProxy (v4-flash) 注入兩處, 讓對話+日記+夢境+事件全統一。
+    from src.soul.diary import set_llm_proxy as set_diary_llm_proxy
+    from src.soul.dream_event import set_llm_proxy as set_dream_event_llm_proxy
+    set_diary_llm_proxy(llm)
+    set_dream_event_llm_proxy(llm)
+    logger.info("[Server] LLMProxy wired into diary + dream_event (v4-flash unified)")
+
     # Bry §11 shadow mode (2026-07-02): 對每一筆真實訊息 v6 並行 observation
     # 7 天自動到期, 不影響 prod 路徑結果
     from src.memory.shadow import init_shadow_observer

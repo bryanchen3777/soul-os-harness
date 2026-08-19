@@ -162,21 +162,57 @@ def _pick_dream_agents(all_agents: List[str], n: int) -> List[str]:
 # 整套 JP 砍掉後, LLM 跑中文 persona 不需要 M3 強推理, 退回 M2.7 OpenAI 即可
 # 備份: src/soul/_backup_m3_switch_20260720_201746/dream_event.py
 
-async def _call_minimax_for_dream_event(
+# ── 2026-08-18 Bry 拍板: 全部轉 deepseek-v4-flash（Ollama 包月, 成本可控）──
+# 跟 diary.py 同 pattern: 收口到 process-global LLMProxy (v4-flash)。
+# run_server.py 透過 set_llm_proxy() 注入; 無 proxy（測試 / standalone）fallback minimax。
+_global_llm_proxy = None
+
+
+def set_llm_proxy(llm_proxy):
+    """設定 process-global LLMProxy reference（v4-flash）。run_server 注入。"""
+    global _global_llm_proxy
+    _global_llm_proxy = llm_proxy
+
+
+def _find_llm_proxy():
+    """回傳 process-global LLMProxy（無則 None）。"""
+    return _global_llm_proxy
+
+
+async def _call_llm_for_dream_event(
     system_prompt: str,
     user_prompt: str,
     api_key: str,
-    model: str = "minimax-M2.7",
-    base_url: str = "https://api.minimax.io/v1/chat/completions",
     timeout: float = 15.0,
+    max_tokens: int = 120,
+    temperature: float = 0.8,
+    agent_id: str = "dream_event",  # 僅 log 用, 讓 generate_text 知道是哪個角色
 ) -> Optional[str]:
-    """跟 diary.py 同 pattern, 失敗回 None, 走 fallback 模板.
+    """拿 dream / event / impression 文字。優先走 LLMProxy (v4-flash), 無則 fallback minimax.
 
-    Lesson 38 (2026-07-30 Bry 拍板):
-    改用 httpx.AsyncClient,避免阻塞 asyncio event loop。
-    22:05 dream event 觸發時 5 個 agent 連續凍結 event loop,
-    跟 diary.py 一起是 7/27 22:00-22:07 沉默死亡的主要嫌疑。
+    失敗回 None, 走 fallback 模板（「拒絕問, 強制讀」）。
     """
+    # v4-flash 主路徑（Ollama 包月）: 統一用 LLMProxy.generate_text
+    proxy = _find_llm_proxy()
+    if proxy is not None:
+        try:
+            async with LLM_CONCURRENCY_LIMIT:
+                return await proxy.generate_text(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    agent_id=agent_id,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+        except Exception as e:
+            logger.warning(
+                f"[DreamEvent] LLMProxy generate_text 失敗 (fallback placeholder): {e}"
+            )
+            return None
+
+    # Legacy minimax direct call（backward compat: 無 proxy 時才走）
     if not api_key:
         return None
     try:
@@ -187,19 +223,19 @@ async def _call_minimax_for_dream_event(
         async with LLM_CONCURRENCY_LIMIT:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 r = await client.post(
-                    base_url,
+                    "https://api.minimax.io/v1/chat/completions",
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": model,
+                        "model": "minimax-M2.7",
                         "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt},
                         ],
-                        "temperature": 0.8,
-                        "max_tokens": 120,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
                     },
                 )
         if r.status_code != 200:
@@ -364,7 +400,7 @@ class DreamEventWriter:
             f"場景: {scene}\n"
             f"夢境內容:"
         )
-        content = await _call_minimax_for_dream_event(system, user, self.api_key)
+        content = await _call_llm_for_dream_event(system, user, self.api_key, agent_id=agent_id)
         # M0.5 (Bry 派工 2026-08-06 21:44): A1 截斷 + A2 retry (沿用修法 10 _safe_truncate_on_length)
         from src.llm.proxy import _safe_truncate_on_length
         RETRY_HINT = "\n\n（請直接輸出最終內容，不要輸出思考過程。）"
@@ -376,7 +412,7 @@ class DreamEventWriter:
                     f"[DreamEvent] {agent_id} dream LLM 只回 think 沒 diary "
                     f"(raw {len(content)} chars, clean 0), retry 一次"
                 )
-                content = await _call_minimax_for_dream_event(system, user + RETRY_HINT, self.api_key)
+                content = await _call_llm_for_dream_event(system, user + RETRY_HINT, self.api_key, agent_id=agent_id)
         # M0.4: 沒拿到 content (或 retry 也失敗) → placeholder; 有 content 但超長 → 截斷
         if not content:
             result = self._write_entry(
@@ -466,7 +502,7 @@ class DreamEventWriter:
             f"活動: {activity['name']}\n"
             f"活動內容:"
         )
-        content = await _call_minimax_for_dream_event(system, user, self.api_key)
+        content = await _call_llm_for_dream_event(system, user, self.api_key, agent_id=agent_id)
         # M0.5 (Bry 派工 2026-08-06 21:44): A1 截斷 + A2 retry (跟 write_dream 同 pattern)
         from src.llm.proxy import _safe_truncate_on_length
         RETRY_HINT = "\n\n（請直接輸出最終內容，不要輸出思考過程。）"
@@ -478,7 +514,7 @@ class DreamEventWriter:
                     f"[DreamEvent] {agent_id} event LLM 只回 think 沒 diary "
                     f"(raw {len(content)} chars, clean 0), retry 一次"
                 )
-                content = await _call_minimax_for_dream_event(system, user + RETRY_HINT, self.api_key)
+                content = await _call_llm_for_dream_event(system, user + RETRY_HINT, self.api_key, agent_id=agent_id)
         if not content:
             result = self._write_entry(
                 agent_id, "event", EVENT_FALLBACK_TEMPLATE.format(date=today, time_str=time_str), source="placeholder",
@@ -529,7 +565,7 @@ class DreamEventWriter:
         """
         Stage 4.3 (Mavis 拍板 2026-07-21 16:35): LLM 抽 observer 對 target 的印象.
 
-        - 用 M3 anthropic endpoint (跟 dream/event 同一個 _call_minimax_for_dream_event)
+        - 走 _call_llm_for_dream_event (v4-flash, 跟 dream/event 同一路徑)
         - prompt 短, max_tokens 50 (impression 短日文片語)
         - 失敗留空 (「拒絕問, 強制讀」)
         - 不 call get_relationships_manager, 只回傳 impression 文字
@@ -544,10 +580,13 @@ class DreamEventWriter:
             f"{kind_jp}內容: {diary_content[:200]}\n"
             f"對 {target_id} 的印象:"
         )
-        # 短 impression 用同個 _call_minimax_for_dream_event (它有 max_tokens=120 夠用)
-        raw = await _call_minimax_for_dream_event(
+        # 短 impression 用同個 _call_llm_for_dream_event (max_tokens 短, 給短印象)
+        raw = await _call_llm_for_dream_event(
             system, user, self.api_key,
             timeout=10.0,  # 短 task 縮短 timeout
+            max_tokens=50,  # impression 只需 5-15 字日文片語
+            temperature=0.5,  # 推理型 model, 低溫穩定輸出單一片語
+            agent_id=observer_id,
         )
         if not raw:
             return None

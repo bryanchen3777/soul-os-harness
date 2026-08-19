@@ -1,4 +1,4 @@
-﻿"""
+"""
 tests/test_m5_4_5_3_diary_inner_life_integration.py
 
 M5.4-5.3 (Bry 派工 2026-08-09 21:06): Diary Integration with Inner Life.
@@ -381,7 +381,7 @@ class TestSectionE_EventIdPassthrough:
             async def fake_llm_call(*args, **kwargs):
                 return "M5.4-5.3 test content"
 
-            monkeypatch.setattr(diary_mod, "_call_minimax_for_diary", fake_llm_call)
+            monkeypatch.setattr(diary_mod, "_call_llm_for_diary", fake_llm_call)
 
             eid = _hex_32()
             writer = DiaryWriter(data_dir=str(soul_dir))
@@ -412,7 +412,7 @@ class TestSectionE_EventIdPassthrough:
             async def fake_llm_call(*args, **kwargs):
                 return "test content"
 
-            monkeypatch.setattr(diary_mod, "_call_minimax_for_diary", fake_llm_call)
+            monkeypatch.setattr(diary_mod, "_call_llm_for_diary", fake_llm_call)
 
             writer = DiaryWriter(data_dir=str(soul_dir))
             asyncio.run(
