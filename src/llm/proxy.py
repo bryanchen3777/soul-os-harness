@@ -81,6 +81,13 @@ MAX_GROUP_SUMMARY = 10  # 私聊注入時的群聊摘要條數
 # _build_messages_group, 不影響 MemoryMiddleware / scheduler / consciousness。
 MAX_BRY_RECENT = 3
 
+# M7-continuity (Bry 拍板 2026-08-18): 角色自己近期發言的注入條數。
+# 對稱 MAX_BRY_RECENT (Bry 最近訊息), 這裡是「角色自己最近講過的話」。
+# 病根: mai 8/4 案例 — 9:54 聲稱記得中午對話, 10:31 卻否認自己 40 分鐘前
+# 講過的話 (自我矛盾)。角色自己的近期 assistant 發言沒有被穩定 retrieve 回
+# 下一次 context, 只靠 raw conversation history (MAX_PRIVATE=20) 會被截斷或忽略。
+MAX_SELF_RECENT = 3
+
 # 修法 7 (Bry 拍板 2026-08-04 13:24): stale Bry user 訊息過濾閾值
 # 跟 proactive_dm silence_timeout 對齊, 30 分鐘內 Bry 沒訊息 = Bry 不在線
 # 角色不該把幾小時/幾天前的 Bry 訊息當成 Bry 剛講的話回覆
@@ -756,6 +763,22 @@ def _load_bry_recent(agent_id: str, user_id: str, limit: int = MAX_BRY_RECENT) -
     return bry_user_msgs[-limit:]
 
 
+def _load_self_recent(agent_id: str, user_id: str, limit: int = MAX_SELF_RECENT) -> List[Dict[str, str]]:
+    """
+    M7-continuity (Bry 拍板 2026-08-18): 撈角色自己最近 N 條 assistant 發言。
+
+    對稱 _load_bry_recent (Bry 最近訊息), 過濾 role='assistant' (角色自己講過的話)。
+    目的: 角色生成回應時記得自己剛講過什麼, 避免自我矛盾 / 矢口否認
+    (mai 8/4 案例)。失敗防護: private history 不存在 / 空 → 回空 list。
+    """
+    try:
+        history = _load_private(agent_id, user_id)
+    except Exception:
+        return []
+    self_msgs = [m for m in history if m.get("role") == "assistant"]
+    return self_msgs[-limit:]
+
+
 def _build_messages_private(
     agent_id: str,
     soul: str,
@@ -810,6 +833,20 @@ def _build_messages_private(
             f"不要逐條複述或解釋, 也不要重複 tag。\n"
             f"## 你的最近內在生活\n{inner_life}\n"
         )
+
+    # M7-continuity (Bry 拍板 2026-08-18): 角色近期發言注入。
+    # 對稱 _load_bry_recent 的「Bry 最近訊息」, 這裡注入「角色自己最近講過的話」,
+    # 讓角色生成回應時記得自己剛講過什麼, 避免自我矛盾/矢口否認 (mai 8/4 案例)。
+    self_recent = _load_self_recent(agent_id, user_id, limit=MAX_SELF_RECENT)
+    if self_recent:
+        self_lines = [
+            "\n[使用說明] 以下是你自己最近講過的話。生成回應時要保持一致,"
+            "不要否認、不要自相矛盾、不要重複說一樣的話。",
+            "## 你最近的發言",
+        ]
+        for m in self_recent:
+            self_lines.append(f"- 你: {m['content']}")
+        system_parts.append("\n".join(self_lines) + "\n")
 
     # M3 Phase 1 (Bry 拍板 2026-08-07 19:40): 世界感知注入 (跟 _build_messages_group 對齊)
     # 注入位置: inner_life 之後, 當下時間 (含 chrono-social) 之前
@@ -3412,6 +3449,88 @@ class LLMProxy:
             except Exception as e:
                 logger.error(
                     f"[LLMProxy] β2.1 事件生成未預期錯誤: {e}",
+                    exc_info=True,
+                )
+                return None
+        return None
+
+    async def generate_text(
+        self,
+        messages: List[Dict[str, str]],
+        agent_id: str = "system",
+        max_tokens: int = 200,
+        temperature: float = 0.7,
+    ) -> Optional[str]:
+        """
+        通用短文本 LLM call（diary / dream / event / impression 共用）。
+
+        Bry 拍板 2026-08-18: 全部轉 deepseek-v4-flash（Ollama 包月, 成本可控）。
+        diary.py / dream_event.py 原本硬編寫 `_call_minimax_for_*`（minimax-M2.7 + MiniMax
+        endpoint），導致「對話用 v4-flash、日記/夢用 M2.7」的雙軌不一致。
+        收口到這裡：走同一個 backend + model（v4-flash），與主對話一致。
+
+        與 generate_event_text 差異：
+        - max_tokens / temperature 可調（diary 200/0.7, dream 120/0.8）
+        - 純文字輸出（無 JSON mode / response_format）
+        - 1 retry on 5xx/429/timeout（attempt 0 + attempt 1 = 最多 2 次）
+        - 失敗回 None, 不 raise（沿用「拒絕問, 強制讀」）
+
+        Args:
+            messages: system + user prompt
+            agent_id: 觸發角色（僅 log 用）
+            max_tokens: 輸出 token 上限
+            temperature: 採樣溫度（推理型模型建議 0.3-0.5, 純生活片段 0.7-0.8 可）
+
+        Returns:
+            純文字內容（已 strip）, 失敗回 None
+        """
+        for attempt in range(2):
+            try:
+                result = await self.backend.complete(
+                    messages=messages,
+                    model=self.model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    thinking=None,  # 短文字生成不需要 thinking
+                )
+                if result and result.strip():
+                    logger.info(
+                        f"[LLMProxy] generate_text 成功 | agent={agent_id} "
+                        f"len={len(result)} model={self.model}"
+                    )
+                    return result.strip()
+                logger.warning(
+                    f"[LLMProxy] generate_text 回傳空字串 | agent={agent_id}"
+                )
+                return None
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (429, 500, 502, 503, 504) and attempt == 0:
+                    logger.warning(
+                        f"[LLMProxy] generate_text HTTP {e.response.status_code}, "
+                        f"1s 後重試 (1/1) | agent={agent_id}"
+                    )
+                    await asyncio.sleep(1)
+                else:
+                    logger.error(
+                        f"[LLMProxy] generate_text HTTP {e.response.status_code} "
+                        f"放棄 | agent={agent_id}"
+                    )
+                    return None
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                if attempt == 0:
+                    logger.warning(
+                        f"[LLMProxy] generate_text 網路錯誤 {type(e).__name__}, "
+                        f"1s 後重試 (1/1) | agent={agent_id}"
+                    )
+                    await asyncio.sleep(1)
+                else:
+                    logger.error(
+                        f"[LLMProxy] generate_text 網路錯誤放棄: {e} | agent={agent_id}"
+                    )
+                    return None
+            except Exception as e:
+                logger.error(
+                    f"[LLMProxy] generate_text 未預期錯誤: {e} | agent={agent_id}",
                     exc_info=True,
                 )
                 return None
