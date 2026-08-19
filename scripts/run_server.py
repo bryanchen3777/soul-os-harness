@@ -683,8 +683,13 @@ async def lifespan(app: FastAPI):
     from src.memory.shadow import init_shadow_observer
     # P0.5 (Bry 派工 2026-08-09 19:48): use data_root() for test isolation
     shadow_dir = data_root() / "shadow"
-    shadow_obs = init_shadow_observer(shadow_dir, enabled=True, llm_proxy=llm)
-    logger.info(f"[Server] Shadow mode 啟動 (7天): {shadow_dir}/shadow_log.jsonl")
+    # M7-judge-fix (Bry 拍板 2026-08-18): 關掉 shadow observer。
+    # 根因: shadow 是 7/2 的「7 天 A/B 實驗」(對照 v6 judge vs heuristic),
+    #       但 init 每次重啟都 reset started_at → 7 天永遠到不了, 實驗跑不完,
+    #       每則回覆多跑一次完整 judge (13 次串行 LLM call), 輸出 shadow_log.jsonl
+    #       又完全沒人讀 (0 consumer)。關掉省一半 judge 成本, 零功能影響。
+    shadow_obs = init_shadow_observer(shadow_dir, enabled=False, llm_proxy=llm)
+    logger.info(f"[Server] Shadow mode 已停用 (實驗完成): {shadow_dir}/shadow_log.jsonl")
 
     # 動態載入所有 enabled Agent（帶 SpeakerTokenBus）
     agents = create_agents(cfg, bus, speaker_token_bus=speaker_token_bus)
