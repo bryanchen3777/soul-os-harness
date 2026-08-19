@@ -77,6 +77,12 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 | 💗 **Emotional** | 情緒狀態持久化 | EmotionalState → `data/agents/<agent>/emotional-state.json` |
 | 🗄️ **v1 Sidecar** | 信心門檻的事實片段 | JSONL (`data/memory/<agent>/memories.jsonl`) — 向後相容/實驗性 |
 
+**遺忘模型 (M7-memory)**: 不是「技術性過期」，而是「人的記憶」——**召回強化 + 真正遺忘**。被 recall 的高分事實每次 `+0.05` weight（越常想起越記得牢）；老 (30 天) 且 weight 低於 0.15 的事實（從未被想起）會被真正 prune（不再提起就淡忘）。anchor 永久保留。
+
+**記憶 judge (M7-judge)**: LLM judge 從「逐條串行 13 次」批次化成「1 extract + 1 stance + 2 content = 4 次」，且關閉 shadow observer（原本每則回覆跑兩遍 judge = 26 次）。每則回覆 judge 從 26 → 4 次（-85%）。
+
+**檢索閉環 (M7-continuity)**: v1 Loader 全 10 隻開啟（`LOADER_ENABLED_FOR_AGENTS`），confidence 門檻 fail-safe（No Memory > Wrong Memory）；角色自己的近期發言（`_load_self_recent`）注入 context，避免自我矛盾/矢口否認。
+
 **Memory 隔離 (KI-001)**: 私聊 history 檔案命名:`{user_id}_{agent_id}_private.json`；MemoryStore session_id:`session_{user_id}_{agent_id}`；向後相容:既有 `bryan_xxx_private.json` 自動 fallback；多 user 隔離完成，第二 owner 上線即可用。
 
 **生產/測試隔離 (P0/P0.5)**: 所有 runtime persistence 走 `src/paths.py` 的 `data_root()` — 生產 `data/`，測試 subprocess 由 `SOUL_OS_DATA_DIR` 環境變數隔離到 tmp 目錄。`LLMProxy` 支援 `memory_store` + `conversation_dir` 參數注入 (P0 repair)。
@@ -501,4 +507,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-08-18 (DOC-1.4 — M7 Living Life & Proactive Sharing: 主動傳訊由「定時器」改為「想念驅動」(M7-longing)，活動模型化 (M7-1) + 活動驅動傳訊 (M7-2) + 思念情感 (M7-3)；記憶 LLM judge 改 fire-and-forget 修掉 ~73s 延時；§8 AGENCY LAYER 更新。Previous: DOC-1.3 M6.1 Lived Context Alignment.)
+**最後更新**: 2026-08-19 (DOC-1.5 — M7-memory 記憶策略: 真正遺忘(召回強化+prune)、記憶 judge 批次化(26→4 calls)、角色近期發言注入(連續性)、v1 Loader 全 10 隻；§4 MEMORY SYSTEM 更新。Previous: DOC-1.4 M7 Living Life & Proactive Sharing.)
