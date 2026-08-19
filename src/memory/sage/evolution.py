@@ -8,10 +8,20 @@ from typing import Literal, Optional
 from .graph_store import GraphStore
 from .models import Fact
 
-DecayAction = Literal["decay", "prune", "merge", "conflict_flag"]
+DecayAction = Literal["decay", "prune", "merge", "conflict_flag", "reinforce"]
 
 DECAY_FLOOR = 0.08   # 記憶最低保留值，防止集體失憶
 ANCHOR_DECAY_FLOOR = 0.5  # anchor 有更高的 floor
+
+# M7-forgetting (Bry 拍板 2026-08-19): 真正遺忘的三個參數
+# 動機: 原本 DECAY_FLOOR(0.08) > PRUNE_THRESHOLD(0.03), 導致 scheduled decay
+#       永不 prune — 記憶只衰減到 0.08 就永久停住, 等於「不會忘」。
+# 修法: 老 (PRUNE_AGE_DAYS) 且衰減到很低 (PRUNE_WEIGHT_THRESHOLD) 的事實,
+#       代表從未被 recall 強化過, 才真的 prune。有被想起來過的事實 weight 較高,
+#       不會被誤刪 → 呼應「越常想起越記得牢, 不再提起就淡忘」。
+REINFORCEMENT_DELTA = 0.05     # recall 高分事實的 weight 增量 (強化)
+PRUNE_AGE_DAYS = 30.0          # 超過此天數才可能被 prune
+PRUNE_WEIGHT_THRESHOLD = 0.15  # 老 + weight 低於此 → prune
 
 @dataclass
 class EvolutionEvent:
@@ -77,6 +87,8 @@ class MemoryEvolution:
             return self._merge(fact_id, target_id, reason) if target_id else False
         elif action == "conflict_flag":
             return self._conflict_flag(fact_id, reason)
+        elif action == "reinforce":
+            return self._reinforce(fact_id, delta, reason)
         return False
 
     def run_scheduled_decay(
@@ -114,8 +126,15 @@ class MemoryEvolution:
                 stats["decayed"] += 1
                 continue
 
-            if new_weight < self.PRUNE_THRESHOLD:
-                self._prune(fact.fact_id, reason="scheduled_decay_threshold")
+            # M7-forgetting (Bry 拍板 2026-08-19): 真正遺忘。
+            # 老 (PRUNE_AGE_DAYS) 且衰減到很低 (PRUNE_WEIGHT_THRESHOLD) 的事實,
+            # 代表從未被 recall 強化過 → 真的 prune。有被想起來過的事實 weight 較高,
+            # 不會進這個分支。這修掉原本「DECAY_FLOOR > PRUNE_THRESHOLD 永不 prune」的 bug。
+            if (
+                age_days > PRUNE_AGE_DAYS
+                and new_weight < PRUNE_WEIGHT_THRESHOLD
+            ):
+                self._prune(fact.fact_id, reason="scheduled_decay_prune")
                 stats["pruned"] += 1
             else:
                 self.store.update_weight(fact.fact_id, new_weight)
@@ -195,6 +214,32 @@ class MemoryEvolution:
         if ok:
             self._record(EvolutionEvent("decay", fact_id, None,
                                         fact.weight, new_weight, reason=reason))
+        return ok
+
+    def _reinforce(
+        self,
+        fact_id: str,
+        delta: Optional[float],
+        reason: str,
+    ) -> bool:
+        """
+        M7-forgetting (Bry 拍板 2026-08-19): 正向強化 — 被 recall 的事實 weight 上升。
+
+        呼應「越常想起越記得牢」: 高分召回的事實每次 +delta (上限 2.0),
+        讓它在後續 decay 中更耐衰減, 不會被 scheduled prune 誤刪。
+        anchor 不額外限制 (但 weight 上限 2.0 由 store.update_weight 的 validate 把關)。
+        """
+        fact = self.store.get_fact(fact_id)
+        if not fact:
+            return False
+        rate = delta if delta is not None else REINFORCEMENT_DELTA
+        new_weight = min(2.0, fact.weight + rate)
+        ok = self.store.update_weight(fact_id, new_weight)
+        if ok:
+            self._record(EvolutionEvent(
+                "reinforce", fact_id, None,
+                fact.weight, new_weight, reason=reason,
+            ))
         return ok
 
     def _prune(self, fact_id: str, reason: str = "manual") -> bool:

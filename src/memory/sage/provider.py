@@ -29,7 +29,7 @@ from typing import Any, Optional
 from .graph_store import GraphStore
 from .writer import MemoryWriter
 from .reader import MemoryReader
-from .evolution import MemoryEvolution
+from .evolution import MemoryEvolution, REINFORCEMENT_DELTA
 from .models import Fact, ContextResult
 from .token_utils import TokenBudget, SummaryCompressor, PrefetchCache
 
@@ -304,10 +304,26 @@ class SAGELiteProvider:
     # ── 內部 hook ─────────────────────────────────────────────
 
     def _on_memory_retrieved(self, result: ContextResult) -> None:
-        """Post-retrieval hook: 低分 facts 自動輕微 decay。"""
+        """
+        Post-retrieval hook (M7-forgetting 擴充, Bry 拍板 2026-08-19):
+        高分 facts 強化、低分 facts 輕微 decay。
+
+        呼應「越常想起越記得牢, 不再提起就淡忘」:
+          - score >= 0.5 → reinforce (+REINFORCEMENT_DELTA)
+          - score <  0.2 → decay (-0.02)
+        anchor 不動 (固定保留)。
+        """
         for fact in result.facts:
+            if fact.is_anchor:
+                continue
             score = result.retrieval_scores.get(fact.fact_id, 0.0)
-            if score < 0.2 and not fact.is_anchor:
+            if score >= 0.5:
+                self._evolution.apply_correction(
+                    fact.fact_id, "reinforce",
+                    delta=REINFORCEMENT_DELTA,
+                    reason="high_retrieval_score",
+                )
+            elif score < 0.2:
                 self._evolution.apply_correction(
                     fact.fact_id, "decay",
                     delta=0.02,

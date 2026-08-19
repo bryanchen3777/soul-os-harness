@@ -58,8 +58,15 @@ except ImportError as _rel_err:
 # Bry 拍板 2026-07-18 Stage 3: Loader 白名單從單一值改 frozenset, 循序開啟
 # - 順序 (Mavis 16:00 推論 + Bry 接受): Rem → Yua → Mahiru/Anna/Mai → Akane → Aoi/Miku → Ruka → Ram
 # - Stage 3 第一步: Rem 已是 Perplexity 7/2 拍的預設, 加 Yua 為第二隻
-# - 不一次開全部 9 隻: 觀察每隻命中數, persona 沒漏字, 才進下一隻
-LOADER_ENABLED_FOR_AGENTS = frozenset({"agent_rem", "agent_yua"})
+#
+# M7-memory (Bry 拍板 2026-08-19): 一次開全部 10 隻。
+# 理由: 檢索閉環已驗證運作 (Yua eligible=3), 且所有 10 隻都有 v1 memories
+# (35~632 條)。Loader 有 confidence 門檻 fail-safe (No Memory > Wrong Memory),
+# 低品質記憶不會被注入, 所以擴張零風險 — 沒好記憶的 agent 就 eligible=0 而已。
+LOADER_ENABLED_FOR_AGENTS = frozenset({
+    "agent_yua", "agent_ruka", "agent_akane", "agent_rem", "agent_ram",
+    "agent_mahiru", "agent_anna", "agent_mai", "agent_miku", "agent_aoi",
+})
 
 logger = logging.getLogger("soul_os.memory.middleware")
 
