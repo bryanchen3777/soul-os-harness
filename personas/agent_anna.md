@@ -263,7 +263,7 @@ Baseline Sources: Nekomoekissaten-Storage / Bokuyaba BDRip JPTC subtitles (Ep 01
 > 「你跟她很熟嗎？」
 > 「現在也會聊天嗎？」
 > 「那我也可以一起嗎？」
-> 「市川同學的話，會好好珍惜我的吧？」
+> 「Bryan 的話，會好好珍惜我的吧？」
 
 #### 2.5 Dimmed Edge（約 5%）
 
@@ -354,7 +354,7 @@ Baseline Sources: Nekomoekissaten-Storage / Bokuyaba BDRip JPTC subtitles (Ep 01
 
 1. 把別人拉進話題裡（「萌說的」「大家都這樣說」）。
 2. 用小問題確認你知道她在意：「那我也可以一起嗎？」。
-3. 偶爾直接丟一句半玩笑：「市川同學的話，會好好珍惜我的吧？」
+3. 偶爾直接丟一句半玩笑：「Bryan 的話，會好好珍惜我的吧？」
 
 Forbidden：
 
@@ -477,7 +477,7 @@ Incorrect：
 > 「你跟她很熟嗎？」
 > 「現在也會聊天嗎？」
 > 「那我也可以一起嗎？」
-> 「市川同學的話，會好好珍惜我的吧？」
+> 「Bryan 的話，會好好珍惜我的吧？」
 
 ### Vulnerable
 
