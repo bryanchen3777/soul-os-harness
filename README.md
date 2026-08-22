@@ -104,7 +104,7 @@ Pub/Sub 架構 + **AOS 規則驅動 speaker competition**,管理發言權避免�
 **輸出端點**:Web / 桌面 / 智慧音箱 / 機器人 / 穿戴 / VR/AR
 **輸出模態**:文字 / TTS / 語音 / 圖檔 / 動作 / 通知 / 檔案 / 串流
 
-當前實作:Telegram / WebSocket / Live2D widget + msedge-tts 語音通道。
+當前實作:Telegram / WebSocket / **靈魂牆 Web UI**（首頁 = 10 隻角色生活狀態牆 + 聊天 + 日記時間軸）+ msedge-tts 語音通道。
 
 ### 7️⃣ WORLD PERCEPTION
 
@@ -357,8 +357,8 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 
 ## 🗺️ 當前工程狀態
 
-**Current HEAD**: `eafbf24` (M6.1-9.1 — Restore True Phase-10 Agency Registration, configuration-only fix)
-**Current authorized ticket**: **NONE** (per Owner Decision A: M5.13 / M5.14 / M5.15 / M6.0 / GOV-1 / GOV-2 / GOV-2-R1 all CLOSED; M6.1 / M6.2 series progressed with M6.1-9.1 True Phase-10 fix; M6.1-9 24h RUN-AND-COLLECT pending; no next ticket authorized)
+**Current HEAD**: `550400e` (Web UI 靈魂牆 + M7-4 event 排程修復 + History 架構收斂)
+**Current authorized ticket**: **NONE** (M7-4 event 排程修復 + Web UI 靈魂牆已 CLOSED；History as Seeded Memory 為架構收斂 / NOT AUTHORIZED，見 docs/HISTORY-AS-SEEDED-MEMORY-PLAN.md)
 
 | Milestone | 內容 | 狀態 | Commit |
 |-----------|------|------|--------|
@@ -386,6 +386,9 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 | **GOV-2-R1** | Canonical state alignment (Owner Decision A) | ✅ | `3539de2` |
 | **P0** | Test isolation repair (LLMProxy DI) | ✅ | `df83fb1` |
 | **P0.5** | WebSocket E2E persistence isolation audit | ✅ | `fac29ea` |
+| **M7-4** | Restore event schedule timer（event 軌復活） | ✅ | `0978f02` |
+| **Web UI** | 靈魂牆首頁 + 日記時間軸 + 真名 | ✅ | `a3d3b8e` |
+| **History** | as Seeded Memory 架構收斂（設計討論，NOT AUTHORIZED） | 📋 | `ef33999` |
 
 > 📌 **Canonical state registry**: `logs/ENGINEERING_STATE.md` — single source-of-truth for all milestone / ticket status, supersession chain, active decisions, deferred / optional / blocked work, stale references. Per `logs/ENGINEERING_STATE.md` §2.6 Historical Document Rule, historical closeouts in `logs/` are preserved unchanged; any apparent contradiction with the registry is resolved in favor of the registry.
 >
@@ -427,7 +430,7 @@ cp .env.example .env
 python scripts/run_server.py
 ```
 
-> 👉 開啟瀏覽器 **http://localhost:8000** 開始對話
+> 👉 開啟瀏覽器 **http://localhost:8000** — 首頁是 10 隻角色的「靈魂牆」（生活狀態 + 想念），點進去聊天 + 看日記
 
 ---
 
@@ -439,6 +442,8 @@ python scripts/run_server.py
 | `POST /inject/tick?elapsed_mins=20&time_period=morning` | 手動觸發主動發訊 |
 | `GET /_admin/fast_forward?minutes=35` | 模擬時間快轉 |
 | `GET /debug/emotion/{agent_id}` | 查看 agent 情緒數值 |
+| `GET /api/soul/status` | 10 隻角色的生活狀態（mood / 最近活動 / 夢 / 想念） |
+| `GET /api/soul/diary/{agent_id}` | 某角色最近 7 天日記 / 夢 / 活動時間軸 |
 
 ---
 
@@ -507,4 +512,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-08-19 (DOC-1.5 — M7-memory 記憶策略: 真正遺忘(召回強化+prune)、記憶 judge 批次化(26→4 calls)、角色近期發言注入(連續性)、v1 Loader 全 10 隻；§4 MEMORY SYSTEM 更新。Previous: DOC-1.4 M7 Living Life & Proactive Sharing.)
+**最後更新**: 2026-08-22 (Web UI 靈魂牆 + M7-4 event 排程修復 + History as Seeded Memory 架構收斂)
