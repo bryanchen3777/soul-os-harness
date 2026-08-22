@@ -14,7 +14,7 @@ from typing import Set
 # "data/conversations/..." unchanged.
 from src.paths import data_root
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
