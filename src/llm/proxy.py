@@ -337,30 +337,37 @@ _RELATIONSHIP_BAND_DEEP_TRUST = 0.9      # 深度信任
 def _format_relationship_block(agent_id: str) -> str:
     """
     M5.13-3 (Bry 派工 2026-08-11): 將 RelationshipsStore 投影成
-    deterministic, bounded, agent-scoped SOCIAL_CONTEXT block。
+    deterministic, bounded, agent-scoped SOCIAL_CONTEXT block.
 
-    Per-agent 過濾: 只查 THIS agent 對 BRYAN_ENTITY_ID 的 relationship。
-    其他 relationships (agent↔agent, agent↔其他 user) 留給 Stage 4.2/4.3。
+    Cross-Agent (2026-08-22): 除了 Bry, 也注入 top 3 其他角色的
+    confidence band（認識 / 陌生人, 沿用 M5.13-2 的 0.3 門檻）,
+    讓角色知道「我跟其他角色熟不熟」（Layer 1 互相知道）。
+
+    Per-agent 過濾: 只查 THIS agent 的 relationships (own store)。
+    Bry 部分: 只查 BRYAN_ENTITY_ID; 其他角色部分: 排除 BRYAN_ENTITY_ID,
+    取 confidence 最高的 3 個。
 
     閾值 (per M5.13-2 派工):
-      - confidence < 0.3  → 陌生人, 沒 behavioral signal, 不輸出
+      - confidence < 0.3  → 陌生人 (沒 behavioral signal)
       - 0.3 <= c < 0.5    → 認識
       - 0.5 <= c < 0.7    → 熟悉
       - 0.7 <= c < 0.9    → 親密
       - c >= 0.9          → 深度信任
+    (M5.13-2 strict 0.3 contract: `confidence >= 0.3` → 認識.)
 
     Output format (deterministic):
         [你跟 Bry 的關係]
           熟悉度: {band_label}
+        [你跟其他角色的關係]
+          你跟 {other_id} 的關係: {認識|陌生人}
 
     Returns "" if:
       - agent_id 缺失或不是 str
       - relationship 不存在 (store.get returns None)
-      - confidence 缺失 / 不是 number / < 0.3
+      - confidence 缺失 / 不是 number / < 0.3 (Bry 部分)
       - store read exception (fail-silent)
 
     Does NOT:
-      - 暴露 raw confidence float
       - 暴露 feeling / impression / interaction_count / timestamps
       - 寫入任何資料 (read-only)
       - 引入 LLM / semantic / vector
@@ -381,7 +388,7 @@ def _format_relationship_block(agent_id: str) -> str:
         store = manager.get_store(agent_id)
         if store is None:
             return ""
-        # store.get() 內部會跑 decay + flush, 但 Bry 派工: 「拒絕問, 強制讀」,
+        # store.get() 內部會走 decay + flush, 但 readers 派工: 「拒絕問, 強制讀」,
         # 失敗由 RelationshipsStore 自己處理 (備份壞檔), 這裡 try/except 兜底
         rel = store.get(BRYAN_ENTITY_ID)
         if not rel or not isinstance(rel, dict):
@@ -414,7 +421,41 @@ def _format_relationship_block(agent_id: str) -> str:
         else:
             # 0.0 - < 0.3: 陌生人, 不輸出
             return ""
-        return f"[你跟 Bry 的關係]\n  熟悉度: {band}"
+        blocks: List[str] = [f"[你跟 Bry 的關係]\n  熟悉度: {band}"]
+
+        # ── Cross-Agent (2026-08-22): top 3 其他角色的 confidence band ──
+        # 資料源: 同一個 RelationshipsStore (store.get_all() 就是讀
+        # data_root()/soul/{agent_id}/relationships.json 的 `others` dict)。
+        # 排除 BRYAN_ENTITY_ID, 取 confidence 最高的 3 個, 只出 2 級 band
+        # (認識 >= 0.3 / 陌生人 < 0.3, 沿用 M5.13-2 門檻), 只出 band 不帶數字。
+        others = store.get_all()
+        if isinstance(others, dict):
+            scored: List[tuple[str, float]] = []
+            for other_id, entry in others.items():
+                if other_id == BRYAN_ENTITY_ID:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                other_conf = entry.get("confidence")
+                if not isinstance(other_conf, (int, float)):
+                    continue
+                if other_conf < 0.0:
+                    other_conf = 0.0
+                elif other_conf > 1.0:
+                    other_conf = 1.0
+                scored.append((other_id, other_conf))
+            scored.sort(key=lambda x: x[1], reverse=True)
+            top3 = scored[:3]
+            if top3:
+                blocks.append("[你跟其他角色的關係]")
+                for other_id, other_conf in top3:
+                    other_band = (
+                        "認識" if other_conf >= _RELATIONSHIP_BAND_MIN_THRESHOLD else "陌生人"
+                    )
+                    blocks.append(
+                        f"  你跟 {other_id} 的關係：{other_band}"
+                    )
+        return "\n".join(blocks)
     except Exception as e:
         # Fail-silent: M5.13-2 派工 spec 任何錯誤不阻塞 LLM
         logger.debug(

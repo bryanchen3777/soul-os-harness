@@ -85,6 +85,27 @@ LONGING_CHECK_INTERVAL_MINUTES = 30
 DiaryCallback = Callable[[str, str], Awaitable[None]]
 
 
+def _append_interaction(record: dict) -> None:
+    """Cross-Agent (2026-08-22): append-only 記錄到 data_root()/soul/interactions.jsonl。
+
+    Layer 2 (shared_event) / Layer 3 (cross_chat) 共用。
+    失敗只 log warning, 不中斷觸發 (「拒絕問, 強制讀」)。
+    """
+    import json as _json
+    from src.paths import data_root
+    try:
+        path = data_root() / "soul" / "interactions.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(_json.dumps(record, ensure_ascii=False) + "\n")
+        logger.info(
+            f"[Cross-Agent] interactions.jsonl 記錄: type={record.get('type')} "
+            f"agents={record.get('agents')}"
+        )
+    except Exception as e:
+        logger.warning(f"[Scheduler] interactions.jsonl 寫入失敗: {e}")
+
+
 class SoulScheduler:
     """
     每天定時觸發 morning / night 兩次 callback 的 asyncio 排程器。
@@ -132,6 +153,14 @@ class SoulScheduler:
         #       diary / dream / event 仍對 _all_agents 全部觸發, 不受影響
         # 動機: 8/5 21:08 Bry 被連環訊息轟炸, DISABLE_PROACTIVE 緊急關閉後的下一刀
         proactive_agents: Optional[List[str]] = None,
+        # Cross-Agent (2026-08-22): shared_event / cross_chat 排程
+        # 每 6-12h 隨機一次, 全體共用冷卻 (各一個 timer, 跟 event 的 4-8h 分開)
+        # Layer 2 (shared_event): 抽 2 隻一起做一件事, 兩隻寫 diary
+        # Layer 3 (cross_chat): 抽 2 隻做 3 輪封閉對話, scheduler 明確驅動
+        shared_activity_min_interval_minutes: int = 360,   # 6h
+        shared_activity_max_interval_minutes: int = 720,   # 12h
+        cross_chat_min_interval_minutes: int = 360,     # 6h
+        cross_chat_max_interval_minutes: int = 720,     # 12h
     ):
         self.morning_time = morning_time
         self.night_time = night_time
@@ -154,6 +183,11 @@ class SoulScheduler:
         # 實際可觸發清單在 _get_proactive_agents() lazy 算
         # (跟 _all_agents 動態 register() 對齊, 避免初始化時 whitelist 還沒對應到 agent)
         self._proactive_agents_whitelist: Optional[List[str]] = proactive_agents
+        # Cross-Agent (2026-08-22): shared_event / cross_chat 間隔設定
+        self.shared_activity_min_interval_minutes = shared_activity_min_interval_minutes
+        self.shared_activity_max_interval_minutes = shared_activity_max_interval_minutes
+        self.cross_chat_min_interval_minutes = cross_chat_min_interval_minutes
+        self.cross_chat_max_interval_minutes = cross_chat_max_interval_minutes
 
         # M5.2-P-3 (Bry 拍板 2026-08-08): _callbacks field 移除
         # (production 0 invocation 從 M5.2-I-8 後, _callbacks 純 DEAD storage)
@@ -176,6 +210,10 @@ class SoulScheduler:
         self._last_proactive_dm_time: Optional[datetime] = None
         # M7-2 (Bry 拍板 2026-08-18): 活動驅動主動傳訊 — 記錄每 agent 已分享活動的 ts (去重)
         self._last_shared_activity_ts: Dict[str, str] = {}
+        # Cross-Agent (2026-08-22): shared_event / cross_chat 計時器
+        # (各一個全體共用 timer = 全體共用冷卻, 不會 10 隻同時開聊)
+        self._next_shared_event_time: Optional[datetime] = None
+        self._next_cross_chat_time: Optional[datetime] = None
 
     # ───────────────────────────────────────────────────────────
     # M1.1: Event Bus 發布層
@@ -505,6 +543,31 @@ class SoulScheduler:
                 f"next={self._next_event_time.strftime('%Y-%m-%d %H:%M')} "
                 f"interval={mins}min"
             )
+        # Cross-Agent (2026-08-22): shared_event / cross_chat 首次時間排定。
+        # 沿用 M7-4 同 pattern (None → 照 register 間隔排首次, 避免永不觸發):
+        # 每 6-12h 隨機一次, 全體共用冷卻。
+        if self._next_shared_event_time is None:
+            mins = random.randint(
+                self.shared_activity_min_interval_minutes,
+                self.shared_activity_max_interval_minutes,
+            )
+            self._next_shared_event_time = now_local() + timedelta(minutes=mins)
+            logger.info(
+                f"[Cross-Agent] shared_event 首次時間排定: "
+                f"next={self._next_shared_event_time.strftime('%Y-%m-%d %H:%M')} "
+                f"interval={mins}min"
+            )
+        if self._next_cross_chat_time is None:
+            mins = random.randint(
+                self.cross_chat_min_interval_minutes,
+                self.cross_chat_max_interval_minutes,
+            )
+            self._next_cross_chat_time = now_local() + timedelta(minutes=mins)
+            logger.info(
+                f"[Cross-Agent] cross_chat 首次時間排定: "
+                f"next={self._next_cross_chat_time.strftime('%Y-%m-%d %H:%M')} "
+                f"interval={mins}min"
+            )
         self._task = asyncio.create_task(self._run_loop(), name="SoulScheduler")
         logger.info(
             f"[Scheduler] 啟動 ✓ morning={self.morning_time} "
@@ -700,6 +763,162 @@ class SoulScheduler:
         logger.info(
             f"[Scheduler] ✨ 下次事件: {self._next_event_time.strftime('%Y-%m-%d %H:%M')}"
         )
+
+    # ───────────────────────────────────────────────────────────
+    # Cross-Agent (2026-08-22): Layer 2 shared_event + Layer 3 cross_chat
+    # ───────────────────────────────────────────────────────────
+    # 迴圈防護 (核心, 不可違反):
+    #   - scheduler 驅動, 不是事件驅動: 對話/活動由 timer 主動開, 訊息不會觸發對方
+    #   - 有界: shared_event 單一事件; cross_chat 最多 3 輪
+    #   - 限頻 + 全體共用冷卻: 各一個 timer (6-12h 隨機), 不會連續觸發
+    #   - 不自我觸發: 兩者都只 call LLM (dream_event writer), 不 publish
+    #     AGENT_INTENT / AGENCY_TRIGGER / AGENT_SPEAK, 不進 Bryan 群聊路徑
+    #   - 與 Bryan 隔離: cross_chat 是封閉事件, 不走 event bus
+
+    def _is_shared_event_time(self, now: datetime) -> bool:
+        """Layer 2: shared_event 是否到點 (全體共用冷卻 timer)。"""
+        if self._next_shared_event_time is None:
+            return False
+        return now >= self._next_shared_event_time
+
+    def _is_cross_chat_time(self, now: datetime) -> bool:
+        """Layer 3: cross_chat 是否到點 (全體共用冷卻 timer, 跟 shared_event 分開)。"""
+        if self._next_cross_chat_time is None:
+            return False
+        return now >= self._next_cross_chat_time
+
+    def _reschedule_shared_event(self) -> None:
+        """排下次 shared_event (6-12h 隨機, 全體共用冷卻)。"""
+        mins = random.randint(
+            self.shared_activity_min_interval_minutes,
+            self.shared_activity_max_interval_minutes,
+        )
+        self._next_shared_event_time = now_local() + timedelta(minutes=mins)
+        logger.info(
+            f"[Scheduler] 🤝 下次 shared_event: "
+            f"{self._next_shared_event_time.strftime('%Y-%m-%d %H:%M')} "
+            f"interval={mins}min"
+        )
+
+    def _reschedule_cross_chat(self) -> None:
+        """排下次 cross_chat 6-12h 隨機 (全體共用冷卻, 跟 shared_event 分開)。"""
+        mins = random.randint(
+            self.cross_chat_min_interval_minutes,
+            self.cross_chat_max_interval_minutes,
+        )
+        self._next_cross_chat_time = now_local() + timedelta(minutes=mins)
+        logger.info(
+            f"[Scheduler] 💬 下次 cross_chat: "
+            f"{self._next_cross_chat_time.strftime('%Y-%m-%d %H:%M')} "
+            f"interval={mins}min"
+        )
+
+    async def _fire_shared_event(self) -> None:
+        """
+        Layer 2 (2026-08-22): 抽 2 隻角色 + 1 個活動, 兩隻各自寫 diary (slot=event),
+        記錄到 interactions.jsonl。單一事件、無對話、零迴圈風險。
+
+        迴圈防護: 只 call writer.write_shared_event (內部只 call LLM), 不 publish
+        AGENT_INTENT / AGENCY_TRIGGER / AGENT_SPEAK, 不觸發其他角色。
+        """
+        if len(self._all_agents) < 2:
+            logger.debug(
+                f"[Scheduler] 🤝 shared_event 跳過: 少於 2 隻角色 "
+                f"({len(self._all_agents)})"
+            )
+            self._reschedule_shared_event()
+            return
+        try:
+            from src.soul.dream_event import ACTIVITY_POOL, get_dream_event_writer
+            a, b = random.sample(self._all_agents, 2)
+            activity = random.choice(ACTIVITY_POOL)
+        except Exception as e:
+            logger.warning(f"[Scheduler] shared_event 抽樣/載入失敗: {e}")
+            self._reschedule_shared_event()
+            return
+        logger.info(
+            f"[Scheduler] 🤝 shared_event 觸發: {a} + {b} 一起 {activity['name']} "
+            f"(category={activity['category']})"
+        )
+        content = ""
+        try:
+            writer = get_dream_event_writer()
+            _, content = await writer.write_shared_event(a, b, activity)
+            await writer.write_shared_event(b, a, activity)
+        except Exception as e:
+            logger.warning(f"[Scheduler] shared_event diary 寫入失敗: {e}")
+        # 記錄 interactions.jsonl (append-only)
+        try:
+            from datetime import timezone as _tz
+            record = {
+                "ts": datetime.now(_tz.utc).isoformat(),
+                "type": "shared_event",
+                "agents": [a, b],
+                "activity": activity["name"],
+                "content": content or f"今天和 {b} 一起做了 {activity['name']}",
+            }
+            _append_interaction(record)
+        except Exception as e:
+            logger.warning(f"[Scheduler] shared_event 記錄失敗: {e}")
+        self._reschedule_shared_event()
+
+    async def _fire_cross_chat(self) -> None:
+        """
+        Layer 3 (2026-08-22): 3 輪封閉對話 (A 開場 → B 回應 → A 收尾)。
+
+        迴圈防護 (硬性):
+          - 3 輪封頂: 只 call LLM 3 次, 到點就結束
+          - scheduler 明確驅動: 每輪由這裡逐輪 call writer.generate_chat_turn,
+            A 的訊息不會觸發 B — 是 scheduler 叫 B 回
+          - 不 publish AGENT_INTENT / AGENCY_TRIGGER / AGENT_SPEAK: 對話是
+            「封閉事件」, 直接 call LLM, 不走 event bus, 不觸發其他角色,
+            不進 Bryan 群聊路徑
+          - 結束後 touch 兩隻的 relationship (可選, 失敗不中斷)
+        """
+        if len(self._all_agents) < 2:
+            logger.debug(
+                f"[Scheduler] 💬 cross_chat 跳過: 少於 2 隻角色 ({len(self._all_agents)})"
+            )
+            self._reschedule_cross_chat()
+            return
+        a, b = random.sample(self._all_agents, 2)
+        logger.info(f"[Scheduler] 💬 cross_chat 觸發: {a} ↔ {b} (3 輪封頂)")
+        messages = []
+        try:
+            from src.soul.dream_event import get_dream_event_writer
+            writer = get_dream_event_writer()
+            # Turn 1: A 開場
+            m1 = await writer.generate_chat_turn(a, b, turn=1)
+            messages.append({"agent": a, "content": m1})
+            # Turn 2: B 回應
+            m2 = await writer.generate_chat_turn(b, a, turn=2, partner_message=m1)
+            messages.append({"agent": b, "content": m2})
+            # Turn 3: A 收尾
+            m3 = await writer.generate_chat_turn(a, b, turn=3, partner_message=m2)
+            messages.append({"agent": a, "content": m3})
+        except Exception as e:
+            logger.warning(f"[Scheduler] cross_chat LLM 失敗: {e}")
+        # 記錄 interactions.jsonl (append-only)
+        try:
+            from datetime import timezone as _tz
+            record = {
+                "ts": datetime.now(_tz.utc).isoformat(),
+                "type": "cross_chat",
+                "agents": [a, b],
+                "messages": messages,
+            }
+            _append_interaction(record)
+        except Exception as e:
+            logger.warning(f"[Scheduler] cross_chat 記錄失敗: {e}")
+        # 結束後 touch 兩隻的 relationship (可選, 失敗不中斷)
+        try:
+            from src.soul.relationships import get_relationships_manager
+            mgr = get_relationships_manager()
+            mgr.on_agent_speak(a, [a, b])
+            mgr.on_agent_speak(b, [a, b])
+        except Exception as e:
+            logger.warning(f"[Scheduler] cross_chat relationship touch 失敗: {e}")
+        self._reschedule_cross_chat()
 
     # ───────────────────────────────────────────────────────────
     # Lesson 39: Heartbeat + Proactive DM (Bry 拍板 2026-07-30)
@@ -1063,6 +1282,12 @@ class SoulScheduler:
                 # 3. 4.2+缺口 1: 事件 (隨機 4-8 小時)
                 if self._is_event_time(now):
                     await self._fire_event()
+                # 3.5 Cross-Agent (2026-08-22): shared_event (每 6-12h 一次, 全體共用冷卻)
+                if self._is_shared_event_time(now):
+                    await self._fire_shared_event()
+                # 3.6 Cross-Agent (2026-08-22): cross_chat (每 6-12h 一次, 獨立冷卻)
+                if self._is_cross_chat_time(now):
+                    await self._fire_cross_chat()
                 # 4. Lesson 39: heartbeat (30-60 分鐘, 1-2 隻角色 check-in)
                 if self._is_heartbeat_time(now):
                     await self._fire_heartbeat()

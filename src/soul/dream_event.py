@@ -44,7 +44,7 @@ from src.llm.rate_limiter import LLM_CONCURRENCY_LIMIT
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Tuple
 
 logger = logging.getLogger("soul_os.soul.dream_event")
 
@@ -103,6 +103,16 @@ DREAM_FALLBACK_TEMPLATE = "（{date} 夜裡）做了個模糊的夢, 內容記�
 
 # 事件模板 (LLM 失敗 fallback)
 EVENT_FALLBACK_TEMPLATE = "（{date} {time_str}）今天過得很平靜, 沒什麼特別的。"
+
+# Cross-Agent (2026-08-22): 共用活動 (shared_event) fallback 模板。
+# 兩隻角色各自寫 diary (slot=event), 內容主題「今天和 X 一起做了 Y」。
+SHARED_EVENT_FALLBACK_TEMPLATE = "（{date} {time_str}）今天和 {partner} 一起做了 {activity}。"
+
+# Cross-Agent (2026-08-22): cross_chat 3 輪的 fallback placeholder (LLM 失敗時)。
+# 保證「有界 3 輪」即使 LLM 掛掉也仍可記錄, 不讓 scheduler 卡住。
+CHAT_FALLBACK_TURN1 = "（沉默了一會）最近過得還行。"
+CHAT_FALLBACK_TURN2 = "嗯，我也是。"
+CHAT_FALLBACK_TURN3 = "好，那下次再聊。"
 
 
 # ───────────────────────────────────────────────────────────
@@ -554,6 +564,142 @@ class DreamEventWriter:
             logger.warning(f"[DreamEvent] on_event touch 失敗 ({agent_id}): {e}")
 
         return result
+
+    async def write_shared_event(
+        self,
+        agent_id: str,
+        partner_id: str,
+        activity: dict,
+    ) -> Tuple[Optional[Path], str]:
+        """
+        Layer 2 (2026-08-22): 共用活動 — 「今天和 partner 一起做了 activity」寫 diary。
+
+        跟 write_event 同 pattern (LLM → strip think → 截斷 → placeholder fallback),
+        但內容主題是「今天和 X 一起做了 Y」, slot 仍用 "event", 帶 activity metadata。
+
+        Returns:
+            (path, content_written): content 是實際寫入 diary 的文字 (LLM 或 fallback),
+            給 scheduler 記錄 interactions.jsonl 用。path=None 代表寫入失敗。
+        """
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H:%M")
+        persona = self._load_persona_excerpt(agent_id)
+        partner_persona = self._load_persona_excerpt(partner_id)
+
+        system = (
+            f"你是 {agent_id}, 今天和 {partner_id} 一起做了: {activity['name']}。\n"
+            f"你的性格: {persona[:200] or '(generic)'}\n"
+            f"對方: {partner_persona[:200] or '(generic)'}\n"
+            f"寫 1 句, 30 字以內, 以「今天和 {partner_id} 一起 {activity['name']}」為主題。"
+        )
+        user = (
+            f"日期: {today} {time_str}\n"
+            f"活動: {activity['name']}\n"
+            f"日記內容:"
+        )
+        content = await _call_llm_for_dream_event(system, user, self.api_key, agent_id=agent_id)
+        # M0.5 (Bry 派工 2026-08-06 21:44): A1 截斷 + A2 retry (跟 write_event 同 pattern)
+        from src.llm.proxy import _safe_truncate_on_length
+        RETRY_HINT = "\n\n（請直接輸出最終內容，不要輸出思考過程。）"
+        # A2: think_only → retry
+        if content:
+            clean_check = self._strip_think(content)
+            if not clean_check:
+                logger.warning(
+                    f"[DreamEvent] {agent_id} shared_event LLM 只回 think, retry 一次"
+                )
+                content = await _call_llm_for_dream_event(
+                    system, user + RETRY_HINT, self.api_key, agent_id=agent_id
+                )
+        fallback = SHARED_EVENT_FALLBACK_TEMPLATE.format(
+            date=today, time_str=time_str, partner=partner_id, activity=activity["name"]
+        )
+        if not content:
+            result = self._write_entry(
+                agent_id, "event", fallback, source="placeholder", activity=activity,
+            )
+            return result, fallback
+        clean = self._strip_think(content)
+        if not clean:
+            logger.warning(
+                f"[DreamEvent] {agent_id} shared_event retry 後仍 think_only, fallback placeholder"
+            )
+            result = self._write_entry(
+                agent_id, "event", fallback, source="placeholder", activity=activity,
+            )
+            return result, fallback
+        if len(clean) > DREAM_EVENT_MAX_CLEAN_CHARS:
+            clean = _safe_truncate_on_length(clean, max_chars=DREAM_EVENT_MAX_CLEAN_CHARS)
+            logger.info(
+                f"[DreamEvent] {agent_id} shared_event LLM 輸出超長, 截斷到 {len(clean)} chars"
+            )
+        result = self._write_entry(
+            agent_id, "event", clean, source="llm", activity=activity,
+        )
+        return result, clean
+
+    async def generate_chat_turn(
+        self,
+        speaker_id: str,
+        partner_id: str,
+        turn: int,
+        partner_message: str = "",
+    ) -> str:
+        """
+        Layer 3 (2026-08-22): cross_chat 單輪 LLM 生成 (scheduler 明確驅動)。
+
+        turn:
+          1 = speaker 開場 (「你正在跟 partner 聊天」)
+          2 = speaker 回應 partner 說的話
+          3 = speaker 回應 partner 並收尾
+
+        迴圈防護: 這條路徑只 call LLM (via _call_llm_for_dream_event →
+        LLMProxy.generate_text), 不 publish 任何 bus 事件, 不寫 conversation
+        history, 不進 Bryan 群聊路徑。失敗回 fallback placeholder (不 raise)。
+
+        Returns:
+            該輪的文字 (LLM 成功) 或 fallback placeholder (LLM 失敗 / 空 / think-only)。
+        """
+        persona = self._load_persona_excerpt(speaker_id)
+        partner_persona = self._load_persona_excerpt(partner_id)
+
+        if turn == 1:
+            system = (
+                f"你是 {speaker_id}, 正在跟 {partner_id} 聊天。\n"
+                f"你的性格: {persona[:200] or '(generic)'}\n"
+                f"對方: {partner_persona[:200] or '(generic)'}\n"
+                f"說一句話開場, 聊聊最近的生活, 30 字以內。"
+            )
+            user = "開場白:"
+        elif turn == 2:
+            system = (
+                f"你是 {speaker_id}, 正在跟 {partner_id} 聊天。\n"
+                f"你的性格: {persona[:200] or '(generic)'}\n"
+                f"回應 {partner_id} 說的話, 30 字以內。"
+            )
+            user = f"{partner_id} 說: 「{partner_message}」\n你的回應:"
+        else:  # turn 3 = 收尾
+            system = (
+                f"你是 {speaker_id}, 正在跟 {partner_id} 聊天收尾。\n"
+                f"你的性格: {persona[:200] or '(generic)'}\n"
+                f"回應 {partner_id} 並收尾, 30 字以內。"
+            )
+            user = f"{partner_id} 說: 「{partner_message}」\n你的回應(收尾):"
+
+        content = await _call_llm_for_dream_event(system, user, self.api_key, agent_id=speaker_id)
+        if not content:
+            logger.warning(
+                f"[DreamEvent] cross_chat turn={turn} LLM 失敗, fallback placeholder ({speaker_id})"
+            )
+            return {1: CHAT_FALLBACK_TURN1, 2: CHAT_FALLBACK_TURN2, 3: CHAT_FALLBACK_TURN3}[turn]
+        clean = self._strip_think(content)
+        if not clean:
+            logger.warning(
+                f"[DreamEvent] cross_chat turn={turn} 只回 think, fallback placeholder ({speaker_id})"
+            )
+            return {1: CHAT_FALLBACK_TURN1, 2: CHAT_FALLBACK_TURN2, 3: CHAT_FALLBACK_TURN3}[turn]
+        return clean[:200]  # chat 短文本 cap, 避免單輪爆長
 
     async def _extract_impression(
         self,

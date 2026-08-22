@@ -365,6 +365,56 @@
     .life-content { margin-top: 8px; font-size: 13.5px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
     .life-source { margin-top: 6px; font-size: 10.5px; color: var(--muted); }
 
+    /* 交流（角色之間的互動與對話） */
+    #interactions-panel {
+      flex: 1;
+      overflow-y: auto;
+      padding: 22px 18px;
+    }
+    .int-loading, .int-empty { color: var(--text2); text-align: center; padding: 60px 0; font-size: 13.5px; line-height: 2; }
+    .int-heading {
+      font-size: 13px;
+      color: var(--gold);
+      letter-spacing: 1px;
+      margin-bottom: 16px;
+      text-align: center;
+    }
+    .int-entry {
+      position: relative;
+      background: linear-gradient(160deg, var(--card-hi), var(--card));
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 12px 16px;
+      margin-bottom: 12px;
+    }
+    .int-entry::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; bottom: 0;
+      width: 3px;
+      border-radius: 3px 0 0 3px;
+    }
+    .int-entry.type-shared_event::before { background: var(--peach); }
+    .int-entry.type-cross_chat::before { background: var(--lilac); }
+    .int-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .int-type { font-size: 12px; font-weight: 700; }
+    .type-shared_event .int-type { color: var(--peach); }
+    .type-cross_chat .int-type { color: var(--lilac); }
+    .int-agent { font-size: 11px; color: var(--text2); background: rgba(255,255,255,.06); padding: 2px 8px; border-radius: 999px; }
+    .int-time { margin-left: auto; font-size: 10.5px; color: var(--muted); }
+    .int-content { margin-top: 8px; font-size: 13.5px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+    .int-msg {
+      margin-top: 8px;
+      padding: 8px 12px;
+      background: rgba(0, 0, 0, .18);
+      border: 1px solid rgba(255, 255, 255, .04);
+      border-radius: 12px;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .int-msg-name { font-size: 11px; color: var(--text2); margin-right: 8px; white-space: nowrap; }
+    .int-msg-text { color: var(--text); word-break: break-word; }
+
     /* 狀態 + 輸入列 */
     #status { font-size: 11px; color: var(--muted); padding: 6px 18px; }
     #input-bar {
@@ -475,12 +525,14 @@
       <div class="hdr-tabs">
         <button id="tab-chat" class="tab active" onclick="switchTab('chat')">💬 聊天</button>
         <button id="tab-life" class="tab" onclick="switchTab('life')">📖 生活</button>
+        <button id="tab-interact" class="tab" onclick="switchTab('interact')">🤝 交流</button>
       </div>
       <button id="clear-memory-btn" class="hdr-btn" title="清除記憶" onclick="clearCurrentMemory()">🗑</button>
     </header>
     <nav id="group-members" class="member-row"></nav>
     <div id="chat-container"></div>
     <div id="life-panel" class="hidden"></div>
+    <div id="interactions-panel" class="hidden"></div>
     <div id="status">連線中…</div>
     <div id="input-bar">
       <input id="input" placeholder="輸入訊息…" autofocus>
@@ -686,14 +738,19 @@
     // 聊天 / 生活 分頁
     // ════════════════════════════════════════════
     function switchTab(tab) {
+      var isChat = (tab === "chat");
       var isLife = (tab === "life");
-      document.getElementById("tab-chat").classList.toggle("active", !isLife);
+      var isInteract = (tab === "interact");
+      document.getElementById("tab-chat").classList.toggle("active", isChat);
       document.getElementById("tab-life").classList.toggle("active", isLife);
-      document.getElementById("chat-container").classList.toggle("hidden", isLife);
+      document.getElementById("tab-interact").classList.toggle("active", isInteract);
+      document.getElementById("chat-container").classList.toggle("hidden", !isChat);
       document.getElementById("life-panel").classList.toggle("hidden", !isLife);
-      document.getElementById("input-bar").classList.toggle("hidden", isLife);
-      document.getElementById("status").classList.toggle("hidden", isLife);
+      document.getElementById("interactions-panel").classList.toggle("hidden", !isInteract);
+      document.getElementById("input-bar").classList.toggle("hidden", !isChat);
+      document.getElementById("status").classList.toggle("hidden", !isChat);
       if (isLife) loadLifeTimeline();
+      if (isInteract) loadInteractions();
     }
 
     // 生活時間軸：私聊 = 該角色；群聊 = 全員合併
@@ -736,6 +793,53 @@
           '<span class="life-time">' + esc(fmtDiaryTime(e.ts)) + '</span></div>' +
           '<div class="life-content">' + esc(e.content || "") + '</div>' +
           '<div class="life-source">' + src + '</div></div>';
+      });
+      panel.innerHTML = html;
+    }
+
+    // ════════════════════════════════════════════
+    // 交流（角色之間的互動與對話，2026-08-22）
+    // ════════════════════════════════════════════
+    async function loadInteractions() {
+      var panel = document.getElementById("interactions-panel");
+      if (!panel) return;
+      panel.innerHTML = '<div class="int-loading">翻翻大家的交流…</div>';
+      try {
+        var res = await fetch("/api/soul/interactions?_=" + Date.now(), { cache: "no-store" });
+        var data = await res.json();
+        renderInteractions(panel, Array.isArray(data && data.interactions) ? data.interactions : []);
+      } catch (e) {
+        console.warn("[Soul] loadInteractions 失敗:", e);
+        panel.innerHTML = '<div class="int-empty">交流記錄讀取失敗。</div>';
+      }
+    }
+
+    function renderInteractions(panel, list) {
+      if (!list.length) {
+        panel.innerHTML = '<div class="int-empty">還沒有交流記錄。<br>角色們正在各自過日子，也許待會就會碰在一起。</div>';
+        return;
+      }
+      var html = '<div class="int-heading">角色們的交流 · 最近 ' + list.length + ' 筆</div>';
+      list.forEach(function (r) {
+        if (r.type === "shared_event") {
+          var names = (r.agents || []).map(displayName).join(" 與 ");
+          var content = r.content || (r.activity ? "今天一起做了 " + r.activity : "");
+          html += '<div class="int-entry type-shared_event">' +
+            '<div class="int-head"><span class="int-type">🤝 一起</span>' +
+            '<span class="int-agent">' + esc(names) + '</span>' +
+            '<span class="int-time">' + esc(fmtDiaryTime(r.ts)) + '</span></div>' +
+            '<div class="int-content">' + esc(content) + '</div></div>';
+        } else if (r.type === "cross_chat") {
+          var names2 = (r.agents || []).map(displayName).join(" 與 ");
+          var msgsHtml = (r.messages || []).map(function (m) {
+            return '<div class="int-msg"><span class="int-msg-name">' + esc(displayName(m.agent)) + '</span>' +
+              '<span class="int-msg-text">' + esc(m.content) + '</span></div>';
+          }).join("");
+          html += '<div class="int-entry type-cross_chat">' +
+            '<div class="int-head"><span class="int-type">💬 聊天</span>' +
+            '<span class="int-agent">' + esc(names2) + '</span>' +
+            '<span class="int-time">' + esc(fmtDiaryTime(r.ts)) + '</span></div>' + msgsHtml + '</div>';
+        }
       });
       panel.innerHTML = html;
     }

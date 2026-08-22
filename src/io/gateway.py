@@ -463,6 +463,39 @@ class IOGateway:
                 ],
             }
 
+        @self.app.get("/api/soul/interactions")
+        async def soul_interactions(limit: int = 20):
+            """
+            內部交流板塊 (2026-08-22): 讀 data_root()/soul/interactions.jsonl,
+            回傳最近 N 筆 (新到舊)。
+
+            Response: {"interactions": [shared_event | cross_chat 記錄, ...], "count": N}
+              shared_event: {ts, type, agents: [A, B], activity, content}
+              cross_chat  : {ts, type, agents: [A, B], messages: [{agent, content} x3]}
+
+            檔案不存在 / 壞行 → fail-silent (跳過或回空), 不 404。
+            """
+            path = data_root() / "soul" / "interactions.jsonl"
+            records = []
+            if path.is_file():
+                try:
+                    lines = path.read_text(encoding="utf-8").splitlines()
+                except Exception as e:
+                    logger.warning(f"[Gateway] interactions.jsonl 讀取失敗: {e}")
+                    lines = []
+                for line in reversed(lines):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    records.append(rec)
+                    if len(records) >= limit:
+                        break
+            return {"interactions": records, "count": len(records)}
+
         @self.app.post("/inject/tick")
         async def inject_tick(elapsed_mins: float = 35.0, time_period: str = "morning"):
             """手動觸發直接注入 SYSTEM_TICK 到 bus，測試 Heartbeat timing"""
