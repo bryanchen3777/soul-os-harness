@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventType, SoulEvent
-from src.agent.emotion import emotion_engine
+from src.agent.emotion import compute_longing, emotion_engine
 
 logger = logging.getLogger("soul_os.gateway")
 
@@ -136,6 +136,52 @@ AGENT_DISPLAY_NAMES: dict[str, str] = {
     "agent_miku":   "三玖",        # 中野三玖
     "agent_aoi":    "葵",          # 日南葵
 }
+
+
+# ── Soul Wall 輔助函式（Web UI 重設計，只讀不寫）──────────────────────
+
+def _clip(text: str, n: int = 40) -> str:
+    """截斷文字到 n 字（超過加 …），給卡片 snippet 用。"""
+    t = (text or "").strip()
+    return t if len(t) <= n else t[:n] + "…"
+
+
+def _latest_diary_entry(entries: list, slot: str) -> dict | None:
+    """從 diary entries 找最新一筆指定 slot（ts 最大者）。"""
+    best = None
+    for e in entries:
+        if e.get("slot") != slot:
+            continue
+        if best is None or (e.get("ts") or "") > (best.get("ts") or ""):
+            best = e
+    return best
+
+
+def _read_last_interaction_at(agent_id: str) -> str | None:
+    """讀 relationships.json 的 others.user_bryan.last_interaction_at（UTC ISO）。"""
+    try:
+        rel_path = data_root() / "soul" / agent_id / "relationships.json"
+        if not rel_path.is_file():
+            return None
+        data = json.loads(rel_path.read_text(encoding="utf-8"))
+        return data.get("others", {}).get("user_bryan", {}).get("last_interaction_at")
+    except Exception as e:
+        logger.warning(f"[Gateway] 讀 last_interaction_at 失敗 {agent_id}: {e}")
+        return None
+
+
+def _silence_minutes(agent_id: str) -> float:
+    """從 last_interaction_at（UTC ISO）算到現在的分鐘數；沒有就 0。"""
+    last = _read_last_interaction_at(agent_id)
+    if not last:
+        return 0.0
+    try:
+        last_dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+        delta = datetime.now(timezone.utc) - last_dt
+        return max(0.0, delta.total_seconds() / 60.0)
+    except Exception as e:
+        logger.warning(f"[Soul] parse last_interaction_at 失敗 {agent_id} ({last!r}): {e}")
+        return 0.0
 
 
 def _list_agents() -> list[dict]:
@@ -333,6 +379,89 @@ class IOGateway:
             Response: JSON array of {id, name, class, intimacy_level, enabled, persona_path}
             """
             return {"agents": _list_agents()}
+
+        # ── Soul Wall（Web UI 重設計 2026-08-22 派工）──────────────────
+        @self.app.get("/api/soul/status")
+        async def soul_status():
+            """
+            靈魂牆：10 隻角色的生活狀態一覽（只讀）。
+
+            Response: {"agents": [{id, name, mood, mood_emoji, mood_text,
+                                    recent_activity, recent_dream, longing}]}
+            """
+            from src.soul.diary import DiaryWriter
+            writer = DiaryWriter(data_dir=str(data_root() / "soul"))
+            agents_meta = _list_agents()
+            result = []
+            for meta in agents_meta:
+                aid = meta["id"]
+                mood, _ = emotion_engine.get(aid)
+                mood = round(mood, 3)
+                if mood > 0.5:
+                    mood_emoji = "😊"
+                elif mood >= 0:
+                    mood_emoji = "😐"
+                elif mood >= -0.5:
+                    mood_emoji = "😔"
+                else:
+                    mood_emoji = "😞"
+                mood_text = emotion_engine.mood_description(mood) or "平靜"
+
+                entries = []
+                try:
+                    entries = writer.recent_entries(aid, days=7)
+                except Exception as e:
+                    logger.warning(f"[Soul] 讀 diary 失敗 {aid}: {e}")
+
+                activity = _latest_diary_entry(entries, "event")
+                dream = _latest_diary_entry(entries, "dream")
+                intimacy_level = meta.get("intimacy_level", 0)
+                silence = _silence_minutes(aid)
+                try:
+                    longing = round(compute_longing(intimacy_level, silence), 3)
+                except Exception as e:
+                    logger.warning(f"[Soul] compute_longing 失敗 {aid}: {e}")
+                    longing = 0.0
+
+                result.append({
+                    "id": aid,
+                    "name": meta.get("name", aid),
+                    "mood": mood,
+                    "mood_emoji": mood_emoji,
+                    "mood_text": mood_text,
+                    "recent_activity": _clip(activity["content"]) if activity else None,
+                    "recent_dream": _clip(dream["content"]) if dream else None,
+                    "longing": longing,
+                })
+            return {"agents": result}
+
+        @self.app.get("/api/soul/diary/{agent_id}")
+        async def soul_diary(agent_id: str):
+            """
+            某 agent 最近 7 天的 diary 時間軸（morning/night/dream/event 全含），
+            每筆 {ts, slot, content, source}，按 ts 升序。
+            agent_id 不存在 → 空 entries（不 404）。
+            """
+            from src.soul.diary import DiaryWriter
+            writer = DiaryWriter(data_dir=str(data_root() / "soul"))
+            entries = []
+            try:
+                entries = writer.recent_entries(agent_id, days=7)
+            except Exception as e:
+                logger.warning(f"[Soul] soul_diary 讀取失敗 {agent_id}: {e}")
+            entries.sort(key=lambda e: e.get("ts") or "")
+            return {
+                "agent_id": agent_id,
+                "entries": [
+                    {
+                        "ts": e.get("ts"),
+                        "slot": e.get("slot"),
+                        "content": e.get("content"),
+                        "source": e.get("source"),
+                    }
+                    for e in entries
+                ],
+            }
 
         @self.app.post("/inject/tick")
         async def inject_tick(elapsed_mins: float = 35.0, time_period: str = "morning"):
