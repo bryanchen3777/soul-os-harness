@@ -490,6 +490,21 @@ class SoulScheduler:
                 f"next={self._next_proactive_dm_time.strftime('%H:%M:%S')} "
                 f"interval={LONGING_CHECK_INTERVAL_MINUTES}min"
             )
+        # M7-4 (Bry 拍板 2026-08-21): 復活 event schedule timer.
+        # 根因: register_dream_event 只在 run_server.py 呼叫一次, 若沒呼叫,
+        #       _next_event_time 停在 None → _is_event_time 永遠 False → event 永不觸發.
+        # 修法: start() 時若 None, 照 register_dream_event 間隔 pattern (4-8h) 排首次檢查.
+        if self._next_event_time is None:
+            mins = random.randint(
+                self.event_min_interval_minutes,
+                self.event_max_interval_minutes,
+            )
+            self._next_event_time = now_local() + timedelta(minutes=mins)
+            logger.info(
+                f"[M7-4] event 首次時間排定: "
+                f"next={self._next_event_time.strftime('%Y-%m-%d %H:%M')} "
+                f"interval={mins}min"
+            )
         self._task = asyncio.create_task(self._run_loop(), name="SoulScheduler")
         logger.info(
             f"[Scheduler] 啟動 ✓ morning={self.morning_time} "
