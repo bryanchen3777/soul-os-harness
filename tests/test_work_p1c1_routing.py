@@ -38,7 +38,7 @@ from src.work.execution_evidence import (
     read_execution_evidence,
 )
 from src.work.kernel import WorkKernel
-from src.work.roles import CapabilityNotAuthorizedError, Role
+from src.work.roles import Role
 from src.work.schema import (
     HandoffStatus,
     ResultType,
@@ -243,11 +243,15 @@ class TestMatrixFakeLog:
         assert store.verify_artifact_ref(canonical)  # 真的落盤（content 定址）
         assert orch.synthesize(work_id).artifacts == [{"refs": [canonical]}]
 
-    def test_t2_developer_artifact_denied_capability(self, tmp_path):
-        """T2：Developer → Developer cwd → artifact → DENY（P1-C0 capability）。
+    def test_t2_developer_artifact_passes(self, tmp_path):
+        """T2：Developer → Developer cwd → artifact → PASS（contract change 後合法）。
+
+        DSH-DEV-ENV-0 §0.5（Owner 拍板）給 developer artifact.create，由 DENY
+        遷移為 PASS。三層全過：identity（dev cwd）✓ capability（kernel gate，
+        developer 現在有 artifact.create）✓ content（Domain Core 寫入 + 回填）✓。
 
         P1-C2 遷移：claim 不聲稱 ref（否則 D2 防偽先於 capability gate 觸發），
-        capability gate 在 consume_handoff（kernel enforcement）拒絕。
+        canonical ref 由 Domain Core 從 final_message 計算回填。
         """
         orch = _orchestrator(tmp_path)
         work_id = _create_work(orch)
@@ -265,13 +269,18 @@ class TestMatrixFakeLog:
         bridge = _FakeBridge(log_path)
         rows_before = len(_log_rows(tmp_path))
 
-        with pytest.raises(CapabilityNotAuthorizedError, match="artifact.create"):
-            execute_work_dsh(
-                orch, work_id, Role.DEVELOPER.value, "artifact.create",
-                bridge, registry, store,
-            )
-        # DENY 不寫 durable（無半寫入）
-        assert len(_log_rows(tmp_path)) == rows_before
+        _, claim, event, _ = execute_work_dsh(
+            orch, work_id, Role.DEVELOPER.value, "artifact.create",
+            bridge, registry, store,
+        )
+        canonical = "sha256:" + hashlib.sha256(
+            claim_text.encode("utf-8")
+        ).hexdigest()
+        assert event.event_type == WorkEventType.ARTIFACT_PRODUCED
+        assert len(_log_rows(tmp_path)) == rows_before + 1
+        assert claim.artifact_refs == [canonical]  # Domain Core 回填
+        assert store.verify_artifact_ref(canonical)  # 真的落盤（content 定址）
+        assert orch.synthesize(work_id).artifacts == [{"refs": [canonical]}]
 
     def test_t3_researcher_task_in_developer_cwd_denied(self, tmp_path):
         """T3：Researcher task 在 Developer cwd → DENY（identity binding）。"""

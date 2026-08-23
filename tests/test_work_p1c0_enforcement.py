@@ -5,9 +5,10 @@ Soul OS — DSH P1-C0：Domain Core Capability Enforcement（kernel.record_hando
 對照 logs/DSH-P1-C0-WORK-ORDER.md（2A §5.1 frozen role→capability matrix 的
 Domain Core enforcement）：
 - record_handoff 在記錄產出前驗證 handoff.role 具備 result_type 對應 capability；
-  Developer + artifact.create → CapabilityNotAuthorizedError，且不寫 durable
-  （半寫入防護）
-- Researcher + artifact.create → 通過（正控制；Owner 拍板 artifact.create 歸 Researcher）
+  Developer + artifact.create → **PASS**（contract change，DSH-DEV-ENV-0 §0.5：
+  Owner 拍板給 developer artifact.create，修復 2A §5.1 / 2B §5 / 實務三處不一致）；
+  借殼/越權 deny path 不變（無 capability 的 role 仍 DENY）
+- Researcher + artifact.create → 通過（正控制；artifact.create 歸 Researcher）
 - Tester / Auditor + evidence.create → 通過；Developer + evidence.create → deny
 - decision 不 gate（2A §3.1：任何 agent 可記錄 decision，只記錄供 audit）
 - blocked / needs_input 不 gate（M1 語義不變：blocked 無產出）
@@ -72,24 +73,28 @@ def _log_rows(data_dir) -> list[dict]:
 # ─────────────────────────────────────────────
 
 class TestCapabilityEnforcement:
-    def test_developer_artifact_create_denied_no_durable_write(self, tmp_path):
-        """Developer + artifact.create → CapabilityNotAuthorizedError，不寫 durable（半寫入防護）。"""
+    def test_developer_artifact_create_passes(self, tmp_path):
+        """Developer + artifact.create → 通過（contract change：developer 合法產 artifact）。
+
+        DSH-DEV-ENV-0 §0.5（Owner 拍板）給 developer artifact.create——
+        由 DENY 遷移為 PASS 正控制（修復 2A §5.1 / 2B §5 / 實務三處不一致）。
+        """
         orch, _ = _orchestrator_with_kernel(tmp_path)
         work_id = _create_assigned_work(orch)
         rows_before = len(_log_rows(tmp_path))
 
-        with pytest.raises(CapabilityNotAuthorizedError, match="artifact.create"):
-            orch.consume_handoff(HandoffResult(
-                work_id=work_id,
-                role=Role.DEVELOPER.value,
-                result_type=ResultType.ARTIFACT,
-                artifact_refs=["mock:denied"],
-                status=HandoffStatus.DONE,
-            ))
+        event = orch.consume_handoff(HandoffResult(
+            work_id=work_id,
+            role=Role.DEVELOPER.value,
+            result_type=ResultType.ARTIFACT,
+            artifact_refs=["mock:allowed"],
+            status=HandoffStatus.DONE,
+        ))
 
-        # deny 不寫 durable：rows 完全不變（無半寫入）
-        assert len(_log_rows(tmp_path)) == rows_before
-        assert orch.synthesize(work_id).artifacts == []
+        assert event.event_type == WorkEventType.ARTIFACT_PRODUCED
+        assert len(_log_rows(tmp_path)) == rows_before + 1
+        work = orch.synthesize(work_id)
+        assert work.artifacts == [{"refs": ["mock:allowed"]}]
 
     def test_researcher_artifact_create_passes(self, tmp_path):
         """Researcher + artifact.create → 通過（正控制；artifact.create 歸 Researcher）。"""

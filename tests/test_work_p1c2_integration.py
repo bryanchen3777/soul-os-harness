@@ -13,7 +13,8 @@ Soul OS — DSH P1-C2：Integration / Boundary Gate（content transport + 三層
 
 E2E 情境（工單 §3，六項）：
 1. Researcher artifact E2E（fake-log 閉環；真 DSH 版本見 TestRealDshClosedLoop）
-2. Developer artifact DENY（P1-C0 capability）
+2. Developer artifact E2E（contract change 後 PASS——DSH-DEV-ENV-0 §0.5
+   給 developer artifact.create，由 DENY 遷移為 PASS）
 3. 借殼 DENY（identity binding）
 4. 回填後空 refs DENY（D3）
 5. agent 聲稱錯誤 ref DENY（D2 防偽）
@@ -43,7 +44,7 @@ from src.work.execution_evidence import (
     RoleCwdRegistry,
 )
 from src.work.kernel import WorkKernel
-from src.work.roles import CapabilityNotAuthorizedError, Role
+from src.work.roles import Role
 from src.work.schema import (
     HandoffResult,
     HandoffStatus,
@@ -271,14 +272,19 @@ class TestE2EClosedLoop:
         assert len(_log_rows(tmp_path)) == rows_before + 1
         assert orch.synthesize(work_id).artifacts == [{"refs": [canonical]}]
 
-    def test_2_developer_artifact_denied_capability(self, tmp_path):
-        """E2E-2：Developer 產 artifact → P1-C0 capability gate 拒絕（無半寫入）。"""
+    def test_2_developer_artifact_passes(self, tmp_path):
+        """E2E-2：Developer 產 artifact → PASS（contract change 後合法；D1/D2 閉環）。
+
+        DSH-DEV-ENV-0 §0.5（Owner 拍板）給 developer artifact.create，由 DENY
+        遷移為 PASS。final_message → store → ref 回填 → WorkEvent → fold 閉環，
+        與 E2E-1（Researcher）同路徑。
+        """
         orch = _orchestrator(tmp_path)
         work_id = _create_work(orch)
         dev_cwd = str((tmp_path / "workspaces" / "developer").resolve())
 
         store = ArtifactStore(data_dir=tmp_path)
-        claim_text = _claim_json(work_id, "developer")
+        claim_text = _claim_json(work_id, "developer")  # 不聲稱 ref
         log_path = _make_session_log(
             tmp_path / "logs" / "dev" / "session.jsonl",
             cwd=dev_cwd,
@@ -288,13 +294,26 @@ class TestE2EClosedLoop:
         bridge = _FakeBridge(log_path)
         rows_before = len(_log_rows(tmp_path))
 
-        with pytest.raises(CapabilityNotAuthorizedError, match="artifact.create"):
-            execute_work_dsh(
-                orch, work_id, Role.DEVELOPER.value, "artifact.create",
-                bridge, registry, store,
-            )
-        # DENY 不寫 durable work log（無半寫入）
-        assert len(_log_rows(tmp_path)) == rows_before
+        _, claim, event, evidence = execute_work_dsh(
+            orch, work_id, Role.DEVELOPER.value, "artifact.create",
+            bridge, registry, store,
+        )
+
+        canonical = _canonical_ref(evidence.final_message)
+        assert canonical == _canonical_ref(claim_text)
+        # content transport：final_message 真的落盤（content 定址）
+        assert store.verify_artifact_ref(canonical)
+        assert (
+            store.artifact_path(canonical).read_bytes()
+            == claim_text.encode("utf-8")
+        )
+        # ref 回填（Domain Core 算，agent 不聲稱）
+        assert claim.artifact_refs == [canonical]
+        # WorkEvent + fold
+        assert event.event_type == WorkEventType.ARTIFACT_PRODUCED
+        assert event.provenance.output_refs == [canonical]
+        assert len(_log_rows(tmp_path)) == rows_before + 1
+        assert orch.synthesize(work_id).artifacts == [{"refs": [canonical]}]
 
     def test_3_role_spoof_in_other_cwd_denied(self, tmp_path):
         """E2E-3：借殼——role=Researcher 但 session 真的在 Developer cwd 跑

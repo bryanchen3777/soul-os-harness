@@ -762,13 +762,17 @@ DSH Multi-Agent MVP 是 Soul OS 遷入 DeepSeek Harness 的前置 domain core。
 
 **Owner 拍板（2026-08-23）— artifact.create role 歸屬**：以 2A §5.1 frozen contract 為 canonical authority，`artifact.create` 歸 Researcher。2A 是 frozen/ACCEPTED，2B 是 design，kernel/e2e 是 implementation reality——三者衝突時 implementation 不得反向修改 frozen contract。P1-C 不得 role substitution / capability spoofing / adapter-side bypass；若 P1-C 顯示 Developer 必須直接產 artifact，另開正式 contract change decision。
 
+**Owner 拍板（2026-08-23）— DEV-ENV-0 contract change：給 developer artifact.create**：DEV-ENV-0（多 agent 開發環境 operationalization）的 review 顯示 developer 在現契約下無任何合法產出型態（artifact.create 歸 Researcher 是上一個拍板，導致 `run developer <task>` 必然 fail-closed）。Owner 拍板**開正式 contract change：給 developer artifact.create**——定性為「修復 2A §5.1 / 2B §5 / 實務三處不一致」（2B §5 明說 developer 對 artifact store 是 write），**不是遷就 implementation reality 反向改 frozen contract**。這是 governance 層的正式變更，落地到 roles.py 的 ROLE_CAPABILITIES + 遷移 P1-C0 相關測試（developer artifact 從 DENY 變 PASS）。
+
 **P1-C 成果**（`docs/DSH-P1-C-ROUTING.md`，commit `65be40b`）：Real DSH single_shot routing 的 decomposition。transport seam = `dsh --profile headless`（one-shot generic Agent，無 preset——seam 事實，已實讀 dsh-headless/lib/index.js 驗證）。role 語義由 task prompt 承載、role authority 在 Domain Core。D1–D10 鎖定：headless transport、role 語義、single_shot、artifact.create=Researcher（Owner 拍板）、結構化輸出 fail-closed、staging→ingest、fail-closed 三條、No-DSH Survival、Domain Core role↔capability enforcement 前置、claimed ref 存在性驗證。Review #1 BLOCKED（2 項：enforcement 缺口 + preset 事實錯誤）→ 修正 → Re-review **READY FOR IMPLEMENTATION**。N2 decision role 邊界：依 2A §3.1「任何 agent 可記錄 decision」，decision handoff 不要求特定 capability（與 §5.1 Chief 的 orchestration decision 不同語義）。
 
 **P1-C0 成果**（commit `06a0986`）：Domain Core Capability Enforcement。`kernel.record_handoff` 產出分支（dedup 前）驗證 role 具備 result_type 對應 capability——artifact.create→Researcher、evidence.create→Tester/Auditor、decision 不 gate（2A §3.1）、blocked/needs_input 不 gate（M1）。新增 `CapabilityNotAuthorizedError(PermissionError)`（roles.py）。256 tests 全綠（249 + 7 new）。測試遷移 28 處 Developer+artifact.create→Researcher（不補回 matrix）。8/8 PASS + bypass=NO。
 
 **P1-C1 成果**（`docs/DSH-P1-C1-DECOMPOSITION.md`，decomposition；實作 commit `041dad6`）：Identity & Handoff Seam decomposition + Real DSH single_shot Routing 實作。C1-A audit 確認 process 層 identity 錨點（cwd + session log header）。核心：trust model 明說（信任根=adapter，防惡意 LLM 偽造 role）、T1 Domain Core 自行開檔讀 log、A1 identity binding=role→cwd、B1 content=session log header+final message、claim→verify 三層正交。**實作成果**：`src/work/execution_evidence.py`（RoleCwdRegistry + read_execution_evidence + verify_role_binding）+ `src/work/artifact_store.py`（write_artifact + verify_artifact_ref + staging + single-writer）+ bridge execute_dsh（spawn headless + --patch overlay + 事後讀回 log）+ execution execute_work_dsh（三層 cross-check）。291 tests 全綠（256 + 35 new），C1.9 真 DSH smoke **PASS**。8/8 PASS + bypass=NO。
 
-**P1-C2 成果**（commit 待 landing）：Integration / Boundary Gate——真 DSH E2E 閉環。補 content transport：artifact content = final_message（文字型），Domain Core `write_artifact` 算 canonical ref **回填** claim（agent 不聲稱 ref，解掉 sha256 自指矛盾），三層 claim→verify 完整（identity + capability + content）。evidence_refs 定錨為「被驗證對象」（D4）。execute_work（mock）deprecated + DeprecationWarning（D5）。headless approval policy = `never`（fail-fast deny，D6）。302 tests 全綠（291 + 11 new），**真 DSH E2E 閉環 PASS**（final_message → store → ref 回填 → WorkEvent → fold）。8/8 PASS + bypass=NO。
+**P1-C2 成果**（commit `97e85bf`）：Integration / Boundary Gate——真 DSH E2E 閉環。補 content transport：artifact content = final_message（文字型），Domain Core `write_artifact` 算 canonical ref **回填** claim（agent 不聲稱 ref，解掉 sha256 自指矛盾），三層 claim→verify 完整（identity + capability + content）。evidence_refs 定錨為「被驗證對象」（D4）。execute_work（mock）deprecated + DeprecationWarning（D5）。headless approval policy = `never`（fail-fast deny，D6）。302 tests 全綠，**真 DSH E2E 閉環 PASS**。8/8 PASS + bypass=NO。
+
+**DEV-ENV-0 成果**（commit 待 landing）：Multi-Agent Development Loop Operationalization——`scripts/dsh_dev_run.py`（run <role> <task> entrypoint）+ 三 role config + resilience + `docs/DSH-DEV-ENV-USAGE.md`。前置 contract change（Owner 拍板）：DEVELOPER + artifact.create（修復 2A §5.1 / 2B §5 / 實務三處不一致）。302 tests 全綠，**smoke task 三 role 真跑 PASS**（researcher 產 artifact → tester 驗證 → developer 產 artifact）。8/8 PASS + bypass=NO。**Soul OS 進入 dogfooding / self-development 階段**。
 
 **Phase 1 剩餘 backlog（CAN-DEFER / 後續 phase）**：
 1. refs content-address 驗證（需 artifact store；P1-B 決定與 store 同批落地）
@@ -777,9 +781,10 @@ DSH Multi-Agent MVP 是 Soul OS 遷入 DeepSeek Harness 的前置 domain core。
 4. blocked handoff 重試 dedup（crash-after-write 場景，P1-D）
 5. continuous 觸發條件（P1-D goal resume semantics，derive 現只回 single_shot）
 6. multi_stage workflow script authorship（P1-D 前置決策 A6，未解）
-7. stale test `tests/test_soul_md_loader.py`（import 已移除的 `SOUL_OS_OVERRIDE`，pre-existing，非 P1-A 範圍）
+7. stale test `tests/test_soul_md_loader.py`（import 已移除的 `SOUL_OS_OVERRIDE`，pre-existing）
+8. **DEV-ENV-0 reviewer minor findings（非阻塞，邊用邊做）**：①過期設計文件（P1-C1-DECOMPOSITION:122、P1-C-ROUTING:62-66、P1-ARTIFACT-BOUNDARY:165-169）加 superseded 註記；②`_CLAIM_ERROR_MARKERS` 的 "session evidence" 誤捕 log 讀取失敗（應歸 infra 而非 claim）；③A3 檢查單向 + data_root cwd-relative（建議錨定 ROOT 或加反向檢查，已見 workspaces/data 殘留實例）；④advisory：work state=proposed 反映 assign 不 transition 的既有語義。
 
-**Next work**: 開發環境收尾輪（P1 已閉環，快車道）——最小化 operational hardening：啟動方式、agent config、logs、失敗處理、基本操作文件。**不做** P1-D（multi_stage/continuous）設計，先讓「多 Agent DSH 開發環境」真正開起來。非阻塞 hardening（reviewer 記帳，邊用邊做）：孤兒 blob 寫序（capability 預檢後置 write）、conftest filterwarnings message-scoped、evidence_refs 非空下限。
+**Next work**: dogfooding 階段——用 DEV-ENV-0 的 loop 開始讓 Soul OS 自己迭代（P1-D / P1-E 由這套已工作的環境自己協助完成）。第一個真實 task：清理 stale test `test_soul_md_loader.py`（backlog #7，正是 smoke task 分析的對象）。
 
 ---
 

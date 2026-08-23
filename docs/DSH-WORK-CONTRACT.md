@@ -176,11 +176,16 @@ done
 | Role | Capabilities |
 |---|---|
 | Researcher | workspace.read, research, artifact.create |
-| Developer | workspace.read, isolated.write, test.execute, git.branch |
+| Developer | workspace.read, isolated.write, test.execute, git.branch, artifact.create |
 | Tester | workspace.read, test.execute, evidence.create |
 | Auditor | workspace.read, review, evidence.create |
 | Chief | orchestration, decision, work.assign |
 | Human | approval, privileged actions |
+
+> **Contract change（2026-08-23，DSH-DEV-ENV-0 §0.5，Owner 拍板）**：Developer 列
+> 加入 `artifact.create`（修復 2A §5.1 / 2B §5 / 實務三處不一致——2B §5 明說
+> developer 對 artifact store 是 write）。Developer 產 text artifact 自此合法；
+> 與 `src/work/roles.py` 的 `ROLE_CAPABILITIES` 同步（code↔doc 不許產生新不一致）。
 
 ### 5.2 高風險 capability（需 approval / policy gate）
 

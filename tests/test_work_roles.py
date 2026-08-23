@@ -82,10 +82,14 @@ def test_role_enum_values():
 
 
 def test_role_capabilities_align_with_2a_s5():
-    """ROLE_CAPABILITIES 對齊 2A §5.1 矩陣（唯一 authoritative source）。"""
+    """ROLE_CAPABILITIES 對齊 2A §5.1 矩陣（唯一 authoritative source）。
+
+    Contract change（DSH-DEV-ENV-0 §0.5）：Developer 加 artifact.create
+    （修復 2A §5.1 / 2B §5 / 實務三處不一致）。
+    """
     expected = {
         Role.RESEARCHER: frozenset({"workspace.read", "research", "artifact.create"}),
-        Role.DEVELOPER: frozenset({"workspace.read", "isolated.write", "test.execute", "git.branch"}),
+        Role.DEVELOPER: frozenset({"workspace.read", "isolated.write", "test.execute", "git.branch", "artifact.create"}),
         Role.TESTER: frozenset({"workspace.read", "test.execute", "evidence.create"}),
         Role.AUDITOR: frozenset({"workspace.read", "review", "evidence.create"}),
         Role.CHIEF: frozenset({"orchestration", "decision", "work.assign"}),
@@ -106,10 +110,11 @@ def test_capabilities_for_and_has_capability():
     """capabilities_for / has_capability 依 2A §5.1 回傳。"""
     assert capabilities_for(Role.CHIEF) == frozenset({"orchestration", "decision", "work.assign"})
     assert capabilities_for("developer") == frozenset(
-        {"workspace.read", "isolated.write", "test.execute", "git.branch"}
+        {"workspace.read", "isolated.write", "test.execute", "git.branch", "artifact.create"}
     )
 
     assert has_capability(Role.DEVELOPER, "isolated.write")
+    assert has_capability(Role.DEVELOPER, "artifact.create")  # contract change：developer 合法產 artifact
     assert has_capability(Role.TESTER, "evidence.create")
     assert has_capability(Role.HUMAN, "approval")
     assert not has_capability(Role.DEVELOPER, "approval")

@@ -35,9 +35,14 @@ class CapabilityNotAuthorizedError(PermissionError):
 
 # Role → Capability 矩陣（2A §5.1 唯一 authoritative source）。
 # capability 名稱是 capability-neutral（非 DSH tool 名）。
+#
+# Contract change（DSH-DEV-ENV-0 §0.5，Owner 拍板 2026-08-23）：Developer 加
+# `artifact.create`——定性「修復 2A §5.1 / 2B §5 / 實務三處不一致」（2B §5 明說
+# developer 對 artifact store 是 write）。developer 產 text artifact 自此合法
+# （P1-C0 enforcement 相應由 DENY 遷移為 PASS）。
 ROLE_CAPABILITIES: dict[Role, frozenset[str]] = {
     Role.RESEARCHER: frozenset({"workspace.read", "research", "artifact.create"}),
-    Role.DEVELOPER: frozenset({"workspace.read", "isolated.write", "test.execute", "git.branch"}),
+    Role.DEVELOPER: frozenset({"workspace.read", "isolated.write", "test.execute", "git.branch", "artifact.create"}),
     Role.TESTER: frozenset({"workspace.read", "test.execute", "evidence.create"}),
     Role.AUDITOR: frozenset({"workspace.read", "review", "evidence.create"}),
     Role.CHIEF: frozenset({"orchestration", "decision", "work.assign"}),

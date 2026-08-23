@@ -401,7 +401,8 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 | **DSH P1-C0** | Domain Core Capability Enforcement（role↔capability in record_handoff + decision 不 gate），Independent Review PASS → READY TO LAND | ✅ | `06a0986` |
 | **DSH P1-C1** | Identity & Handoff Seam decomposition（cwd+session-log identity binding + Domain Core 開檔讀 + claim→verify 三層），Review #1 BLOCKED → 重寫 → Re-review READY FOR IMPLEMENTATION | ✅ | `9f01c5e` |
 | **DSH P1-C1-R** | Real DSH single_shot Routing（真 headless execution + 三層驗證進 Domain Core），Independent Review PASS → READY TO LAND | ✅ | `041dad6` |
-| **DSH P1-C2** | Integration / Boundary Gate（真 DSH E2E 閉環 + ref 回填 + claim→verify 完整），Independent Review PASS → READY TO LAND | ✅ | (pending commit) |
+| **DSH P1-C2** | Integration / Boundary Gate（真 DSH E2E 閉環 + ref 回填 + claim→verify 完整），Independent Review PASS → READY TO LAND | ✅ | `97e85bf` |
+| **DSH DEV-ENV-0** | Multi-Agent Development Loop Operationalization（run <role> <task> + contract change 給 developer artifact.create），Independent Review PASS → READY TO LAND | ✅ | (pending commit) |
 
 > 📌 **Canonical state registry**: `logs/ENGINEERING_STATE.md` — single source-of-truth for all milestone / ticket status, supersession chain, active decisions, deferred / optional / blocked work, stale references. Per `logs/ENGINEERING_STATE.md` §2.6 Historical Document Rule, historical closeouts in `logs/` are preserved unchanged; any apparent contradiction with the registry is resolved in favor of the registry.
 >
@@ -531,4 +532,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-08-23 (DSH P1-C2 Integration Gate — P1 閉環)
+**最後更新**: 2026-08-23 (DSH DEV-ENV-0 — Soul OS 進入 dogfooding 階段)
