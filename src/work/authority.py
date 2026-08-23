@@ -35,6 +35,7 @@ Canonical 來源（權威，不得修改）：
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
@@ -42,7 +43,16 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .bridge import DURABLE_WRITER
+from .persistence import (
+    AuthorityEvent,
+    AuthorityEventType,
+    AuthorityStore,
+    NoAuthorityStoreError,
+)
 from .roles import Role, has_capability
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
@@ -249,6 +259,87 @@ def _satisfies_scope_constraints(
     return True
 
 
+def _coerce_approval(payload: dict[str, Any]) -> Approval | None:
+    """從 event payload 防禦式解析 Approval；malformed → None（skip，不 crash）。
+
+    payload 用 .get() 取 "approval"；缺 key / 非 dict / 欄位無效都視為 malformed，
+    留 log 並回傳 None，由 fold 跳過該 event（不產生半套 state）。
+    """
+    data = payload.get("approval")
+    if not isinstance(data, dict):
+        logger.warning(
+            "[AuthorityManager] malformed approval payload skipped: %r", data
+        )
+        return None
+    try:
+        return Approval(**data)
+    except (ValueError, TypeError) as e:
+        logger.warning(
+            "[AuthorityManager] malformed approval payload skipped: %s", e
+        )
+        return None
+
+
+def _coerce_grant(payload: dict[str, Any]) -> CapabilityGrant | None:
+    """從 event payload 防禦式解析 CapabilityGrant；malformed → None（skip，不 crash）。
+
+    payload 用 .get() 取 "grant"；缺 key / 非 dict / 欄位無效都視為 malformed，
+    留 log 並回傳 None，由 fold 跳過該 event（不產生半套 state）。
+    """
+    data = payload.get("grant")
+    if not isinstance(data, dict):
+        logger.warning(
+            "[AuthorityManager] malformed grant payload skipped: %r", data
+        )
+        return None
+    try:
+        return CapabilityGrant(**data)
+    except (ValueError, TypeError) as e:
+        logger.warning(
+            "[AuthorityManager] malformed grant payload skipped: %s", e
+        )
+        return None
+
+
+def _fold_authority_events(
+    events: list[AuthorityEvent],
+) -> tuple[dict[str, Approval], dict[str, CapabilityGrant]]:
+    """把 authority durable events fold 成 canonical registry（last-write-wins）。
+
+    重建規則（2D §3：current state = fold(events)）：
+    - approval_granted：approvals[approval_id] = Approval(payload["approval"])
+    - grant_issued：grants[grant_id] = CapabilityGrant(payload["grant"])
+    - approval_revoked：approvals[approval_id] = 帶 revoked_at 的 Approval（覆寫）
+    - grant_consumed：grants[grant_id] = 帶 consumed=True 的 CapabilityGrant（覆寫）
+
+    payload 承載完整序列化物件（model_dump(mode="json")），fold 時以最後一筆
+    同 id 的 event 為準（revoke / consume 覆寫 grant / approval 的 authority state）。
+
+    防禦式解析（P1）：payload 用 .get() 取 approval / grant；malformed event
+    （缺 key / 非 dict / 欄位無效）跳過並留 log，不 crash、不產生半套 state。
+    """
+    approvals: dict[str, Approval] = {}
+    grants: dict[str, CapabilityGrant] = {}
+    for event in events:
+        if event.event_type == AuthorityEventType.APPROVAL_GRANTED:
+            approval = _coerce_approval(event.payload)
+            if approval is not None:
+                approvals[approval.approval_id] = approval
+        elif event.event_type == AuthorityEventType.GRANT_ISSUED:
+            grant = _coerce_grant(event.payload)
+            if grant is not None:
+                grants[grant.grant_id] = grant
+        elif event.event_type == AuthorityEventType.APPROVAL_REVOKED:
+            approval = _coerce_approval(event.payload)
+            if approval is not None:
+                approvals[approval.approval_id] = approval
+        elif event.event_type == AuthorityEventType.GRANT_CONSUMED:
+            grant = _coerce_grant(event.payload)
+            if grant is not None:
+                grants[grant.grant_id] = grant
+    return approvals, grants
+
+
 # ─────────────────────────────────────────────
 # 4. AuthorityManager — executable enforcement
 # ─────────────────────────────────────────────
@@ -282,12 +373,13 @@ class AuthorityManager:
     純 Python domain，零 DSH coupling，不 import 任何 DSH type。
     """
 
-    __slots__ = ("_policy", "_human_authority", "__approvals", "__grants")
+    __slots__ = ("_policy", "_human_authority", "__approvals", "__grants", "_store")
 
     def __init__(
         self,
         policy: CapabilityPolicy | None = None,
         human_authority: HumanAuthorityPort | None = None,
+        store: AuthorityStore | None = None,
     ):
         self._policy = policy if policy is not None else CapabilityPolicy()
         self._human_authority = human_authority
@@ -295,6 +387,9 @@ class AuthorityManager:
         # name-mangled slot（無 __dict__），caller 無法經 public attribute 注入/替換。
         self.__approvals: dict[str, Approval] = {}
         self.__grants: dict[str, CapabilityGrant] = {}
+        # durable log（2D §3 / §6）：approval/grant 的建立、撤銷、消費都記成
+        # durable event。store=None 時維持純 in-memory（backward compatible）。
+        self._store = store
 
     # ── grant ──
 
@@ -340,7 +435,6 @@ class AuthorityManager:
                 f"(one-to-one provenance, 2C §6)"
             )
 
-        self.__approvals[approval.approval_id] = approval
         grant = CapabilityGrant(
             approval_id=approval.approval_id,
             work_id=approval.work_id,
@@ -349,6 +443,18 @@ class AuthorityManager:
             action_scope=approval.action_scope,
             expires_at=approval.expires_at,
         )
+        # durable log（2D §3 / §6）：approval 建立 + grant 發行都記成 durable event。
+        # write-ahead：先 append durable truth，再 mutate in-memory registry。
+        if self._store is not None:
+            self._store.append(AuthorityEvent(
+                event_type=AuthorityEventType.APPROVAL_GRANTED,
+                payload={"approval": approval.model_dump(mode="json")},
+            ), DURABLE_WRITER)
+            self._store.append(AuthorityEvent(
+                event_type=AuthorityEventType.GRANT_ISSUED,
+                payload={"grant": grant.model_dump(mode="json")},
+            ), DURABLE_WRITER)
+        self.__approvals[approval.approval_id] = approval
         self.__grants[grant.grant_id] = grant
         return grant
 
@@ -366,9 +472,14 @@ class AuthorityManager:
         approval = self.__approvals.get(approval_id)
         if approval is None:
             raise ApprovalNotFoundError(f"no approval with approval_id={approval_id}")
-        self.__approvals[approval_id] = approval.model_copy(
-            update={"revoked_at": _utcnow()}
-        )
+        revoked = approval.model_copy(update={"revoked_at": _utcnow()})
+        # durable log（2D §3 / §6）：撤銷記成 durable event（覆寫 approval state）。
+        if self._store is not None:
+            self._store.append(AuthorityEvent(
+                event_type=AuthorityEventType.APPROVAL_REVOKED,
+                payload={"approval": revoked.model_dump(mode="json")},
+            ), DURABLE_WRITER)
+        self.__approvals[approval_id] = revoked
 
     # ── consume ──
 
@@ -390,7 +501,33 @@ class AuthorityManager:
             raise GrantAlreadyConsumedError(
                 f"grant {grant_id} already consumed (single_action is exactly-once, I8)"
             )
-        self.__grants[grant_id] = grant.model_copy(update={"consumed": True})
+        consumed = grant.model_copy(update={"consumed": True})
+        # durable log（2D §3 / §6）：消費記成 durable event（覆寫 grant state）。
+        if self._store is not None:
+            self._store.append(AuthorityEvent(
+                event_type=AuthorityEventType.GRANT_CONSUMED,
+                payload={"grant": consumed.model_dump(mode="json")},
+            ), DURABLE_WRITER)
+        self.__grants[grant_id] = consumed
+
+    # ── resume ──
+
+    def resume(self) -> None:
+        """從 durable log fold 出 canonical registry（recovery flow，2D §5）。
+
+        restart → load durable log → fold registry → 後續 authorization 用恢復的
+        canonical state。resume() 以 durable truth 覆寫 in-memory registry
+        （last-write-wins），不假設 in-process 狀態存活（2D §5）。
+
+        未注入 AuthorityStore 時拋 NoAuthorityStoreError（無 durable truth 可恢復）。
+        """
+        if self._store is None:
+            raise NoAuthorityStoreError(
+                "no AuthorityStore injected; cannot resume from durable log"
+            )
+        self.__approvals, self.__grants = _fold_authority_events(
+            self._store.read_events()
+        )
 
     # ── is_authorized ──
 
