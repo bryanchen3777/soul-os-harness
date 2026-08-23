@@ -688,6 +688,12 @@ class TestScopeContainment:
         role↔capability enforcement），並依 frozen matrix 修正 src/work/e2e.py 的
         Developer + artifact.create divergence（2A §5.1：artifact.create 歸
         Researcher，不反向修改 matrix）。
+        DSH P1-C1（Real DSH single_shot Routing）授權**新增**
+        src/work/execution_evidence.py（C1.1-C1.3：ExecutionEvidence /
+        RoleCwdRegistry / read_execution_evidence）+ src/work/artifact_store.py
+        （C1.7：write_artifact / verify_artifact_ref / staging），不修改既有
+        src/work/ 模組（state_machine / store / authority / persistence /
+        roles / schema 等仍不得動）。
         其餘 src/work/ 模組仍不得有任何改動。
         """
         proc = subprocess.run(
@@ -708,8 +714,10 @@ class TestScopeContainment:
             "src/work/kernel.py",
             "src/work/roles.py",
             "src/work/e2e.py",
+            "src/work/execution_evidence.py",
+            "src/work/artifact_store.py",
         }, (
-            "src/work/ 僅授權檔可被 P1-C0 改動：\n" + proc.stdout
+            "src/work/ 僅授權檔可被 P1-C1 改動：\n" + proc.stdout
         )
 
     def test_adapter_python_modules_do_not_import_dsh(self):

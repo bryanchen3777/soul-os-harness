@@ -399,7 +399,8 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 | **DSH P1-B** | Artifact / Reference Boundary（refs content-addressed + Domain Core canonical writer + claim→verify），Review #1 BLOCKED → 修正 → Re-review READY FOR IMPLEMENTATION | ✅ | `d4a57a2` |
 | **DSH P1-C** | Real DSH single_shot Routing（headless generic Agent + role authority in Domain Core + artifact.create=Researcher），Review #1 BLOCKED → 修正 → Re-review READY FOR IMPLEMENTATION | ✅ | `65be40b` |
 | **DSH P1-C0** | Domain Core Capability Enforcement（role↔capability in record_handoff + decision 不 gate），Independent Review PASS → READY TO LAND | ✅ | `06a0986` |
-| **DSH P1-C1** | Identity & Handoff Seam（cwd+session-log identity binding + Domain Core 開檔讀 + claim→verify 三層），Review #1 BLOCKED → 重寫 → Re-review READY FOR IMPLEMENTATION | ✅ | (docs only) |
+| **DSH P1-C1** | Identity & Handoff Seam decomposition（cwd+session-log identity binding + Domain Core 開檔讀 + claim→verify 三層），Review #1 BLOCKED → 重寫 → Re-review READY FOR IMPLEMENTATION | ✅ | `9f01c5e` |
+| **DSH P1-C1-R** | Real DSH single_shot Routing（真 headless execution + 三層驗證進 Domain Core），Independent Review PASS → READY TO LAND | ✅ | (pending commit) |
 
 > 📌 **Canonical state registry**: `logs/ENGINEERING_STATE.md` — single source-of-truth for all milestone / ticket status, supersession chain, active decisions, deferred / optional / blocked work, stale references. Per `logs/ENGINEERING_STATE.md` §2.6 Historical Document Rule, historical closeouts in `logs/` are preserved unchanged; any apparent contradiction with the registry is resolved in favor of the registry.
 >
@@ -529,4 +530,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-08-23 (DSH P1-C1 Identity & Handoff Seam READY)
+**最後更新**: 2026-08-23 (DSH P1-C1-R Real DSH single_shot Routing)
