@@ -743,8 +743,20 @@ DSH Multi-Agent MVP 是 Soul OS 遷入 DeepSeek Harness 的前置 domain core。
 - MA-2 Migration Architecture ✅ READY FOR MIGRATION PLAN
 - MA-3 Migration Decomposition ✅ READY FOR IMPLEMENTATION
 - MA-4 Build Plan ❌ BLOCKED → MA-4-R1 修復（authority trust establishment + resume idempotency）→ Independent Review PASS → **IMPLEMENTATION AUTHORIZED**
+- P0-1 Minimal Work Execution Adapter → Independent Adversarial Review（READ-ONLY）→ **READY FOR PHASE 0 GATE**
 
-**Next work**: Phase 0 Adapter implementation（soul-dsh-adapter + Python↔TS Bridge + src/work/ execution path，不接 Soul runtime / World / Inner Life / Agency / Relationship / Time-Context）。
+**P0-1 成果**（commit 待 landing）：`src/work_adapter/`（bridge.py + execution.py）、`dsh_adapter/soul-dsh-adapter.mjs`（mock TS adapter）、`tests/test_work_adapter.py`（27 tests）。230 tests 全綠（27 new + 203 regression）。8/8 Hard Checks PASS + 10 acceptance gates PASS。`git diff 26e1e49 -- src/work` 為空（Domain Core 十一模組零改動）；`src/` 全樹零 DSH import；無 durable write bypass（store-level single-writer 強制、adapter 無檔案能力）；No-DSH Survival 實測成立（fold / authorize / resume / persist 不經 adapter 全可用）。
+
+**Phase 0 Gate（Contract / E2E / No-DSH）**：Contract（Boundary contract 10 條 全 PASS）+ E2E（230 tests 全綠，含 test_work_e2e.py）+ No-DSH Survival（實測 path，非僅 import 檢查）→ **Phase 0 CLOSED**。
+
+**Phase 0 backlog（hardening，非 blocking，Phase 1 / production adapter 前必須處理）**：
+1. anchor 擴充：驗證 `handoff.result_type` ↔ request capability 一致 + `refs` 內容定址驗證（堵 ref 注入 + event 類型錯記）
+2. `HandoffStatus` 語義：blocked / needs_input 是否映射 WorkState.blocked 而非照記產出
+3. bridge error contract 統一：捕獲 `UnicodeDecodeError` → `BridgeExecutionError`
+4. production adapter 依 MA-4 §1.1 移出 repo 為獨立 package + mirror Python 側 schema 驗證
+5. 承接 MA-4-R1 backlog：grant() reject `expires_at=None` / e2e 改用 `issue_hmac_context` / durable nonce registry
+
+**Next work**: Phase 1（DSH adapter 接真 subagent / workflow / goal 的 execution 路由，不接 Soul runtime）。
 
 ---
 
@@ -933,5 +945,6 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 
 | 2026-08-23 (DSH MVP) | DSH Multi-Agent MVP COMPLETE / ACCEPTED（MVP Contract Gate 8/8 PASS，bypass discovered = NO）。2A–2D contracts（`f5fb0cd`）+ MVP-1~7（`9a8b7a2` → `d7877e0`）全 commit。4 條 non-blocking discrepancy 記為 accepted limitations / future hardening（§5.8）。Next: DSH-MA-0 — Multi-Agent Environment Architecture & Adapter Boundary Audit。 | Mavis / Lin | DSH MVP |
 | 2026-08-23 (DSH MA) | DSH MA-0~MA-4-R1 治理鏈閉合：MA-0 Audit → MA-1 Adapter Boundary → MA-2 Migration Architecture → MA-3 Migration Decomposition → MA-4 Build Plan（BLOCKED）→ MA-4-R1 修復（HMAC authority trust establishment + durable-log idempotency dedup）→ Independent Review PASS → IMPLEMENTATION AUTHORIZED。R1 新增 41 tests（203 passed）。3 條 non-blocking hardening 列入 Phase 0 backlog（expires_at=None 拒絕 / e2e 改用 issue_hmac_context / durable nonce registry）。 | Mavis / Lin | DSH MA-4-R1 |
+| 2026-08-23 (DSH P0-1) | Phase 0 Minimal Work Execution Adapter 實作完成 + Independent Adversarial Review（READ-ONLY）→ **READY FOR PHASE 0 GATE**。新檔 `src/work_adapter/`（bridge.py + execution.py）+ `dsh_adapter/soul-dsh-adapter.mjs`（mock TS）+ `tests/test_work_adapter.py`（27 tests）。230 tests 全綠。8/8 Hard Checks PASS。`git diff 26e1e49 -- src/work` 為空（Domain Core 零改動）、src/ 全樹零 DSH import、無 durable write bypass、No-DSH Survival 實測成立。1 條 non-blocking payload-semantics hardening（refs / result_type / status 未 anchor 驗證）+ 7 條 non-blocking discrepancy，全部列入 Phase 0 backlog（5 項）。**Phase 0 Gate（Contract / E2E / No-DSH）→ Phase 0 CLOSED**。Next: Phase 1。 | Mavis / Lin | DSH P0-1 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
