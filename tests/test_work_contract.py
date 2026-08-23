@@ -59,6 +59,11 @@ def _transition(work_id: str, from_state: str | None, to_state: str,
     )
 
 
+def _append(store, event):
+    """append 一筆 event（actor=kernel，single-writer enforcement）。"""
+    store.append(event, "kernel")
+
+
 def _make_work() -> WorkObject:
     return WorkObject(
         objective="build feature X",
@@ -229,15 +234,15 @@ def test_store_append_and_fold(tmp_path):
     store = WorkStore(data_dir=tmp_path)
     work_id = "work-1"
 
-    store.append(_transition(
+    _append(store, _transition(
         work_id, None, "proposed",
         objective="build X", owner="chief",
         assigned_agents=["developer"], dependencies=["work-0"],
     ))
-    store.append(_transition(work_id, "proposed", "approved", provenance=_prov(role="human", capability="approval")))
-    store.append(_transition(work_id, "approved", "assigned"))
-    store.append(_transition(work_id, "assigned", "in_progress"))
-    store.append(WorkEvent(
+    _append(store, _transition(work_id, "proposed", "approved", provenance=_prov(role="human", capability="approval")))
+    _append(store, _transition(work_id, "approved", "assigned"))
+    _append(store, _transition(work_id, "assigned", "in_progress"))
+    _append(store, WorkEvent(
         work_id=work_id,
         event_type=WorkEventType.ARTIFACT_PRODUCED,
         payload={"artifact": {"ref": "sha256:abc", "path": "src/x.py"}},
@@ -267,7 +272,7 @@ def test_store_corrupt_row_skipped(tmp_path):
     store = WorkStore(data_dir=tmp_path)
     work_id = "work-c"
 
-    store.append(_transition(work_id, None, "proposed", objective="obj", owner="chief"))
+    _append(store, _transition(work_id, None, "proposed", objective="obj", owner="chief"))
     # 手動塞 corrupt rows
     with open(store.store_file, "a", encoding="utf-8") as f:
         f.write("this is not json\n")
@@ -275,7 +280,7 @@ def test_store_corrupt_row_skipped(tmp_path):
             "work_id": work_id, "event_type": "not_a_type",
             "payload": {}, "provenance": {"role": "x", "capability": "y"},
         }) + "\n")
-    store.append(_transition(work_id, "proposed", "approved"))
+    _append(store, _transition(work_id, "proposed", "approved"))
 
     work = store.fold(work_id)
     assert work.state == WorkState.APPROVED
@@ -294,17 +299,17 @@ def test_resume_state_minimal_rebuild(tmp_path):
     store = WorkStore(data_dir=tmp_path)
     work_id = "work-r"
 
-    store.append(_transition(work_id, None, "proposed", objective="obj", owner="chief"))
-    store.append(_transition(work_id, "proposed", "approved"))
-    store.append(_transition(work_id, "approved", "assigned"))
-    store.append(_transition(work_id, "assigned", "in_progress"))
-    store.append(WorkEvent(
+    _append(store, _transition(work_id, None, "proposed", objective="obj", owner="chief"))
+    _append(store, _transition(work_id, "proposed", "approved"))
+    _append(store, _transition(work_id, "approved", "assigned"))
+    _append(store, _transition(work_id, "assigned", "in_progress"))
+    _append(store, WorkEvent(
         work_id=work_id,
         event_type=WorkEventType.ARTIFACT_PRODUCED,
         payload={"artifact": {"ref": "sha256:abc"}},
         provenance=_prov(role="developer", capability="artifact.create", output_refs=["sha256:abc"]),
     ))
-    store.append(_transition(work_id, "in_progress", "blocked"))
+    _append(store, _transition(work_id, "in_progress", "blocked"))
 
     work = store.fold(work_id)
     assert work.state == WorkState.BLOCKED

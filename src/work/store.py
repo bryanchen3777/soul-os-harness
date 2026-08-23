@@ -22,6 +22,7 @@ from typing import Any
 
 from src.paths import data_root
 
+from .bridge import DURABLE_WRITER, is_durable_writer
 from .schema import (
     Provenance,
     ResumeState,
@@ -36,6 +37,10 @@ logger = logging.getLogger(__name__)
 
 class WorkNotFoundError(KeyError):
     """fold 找不到指定 work_id 的任何 event。"""
+
+
+class NotDurableWriterError(PermissionError):
+    """非 kernel 的 actor 嘗試寫 durable state（single-writer rule 違反）。"""
 
 
 def fold_events(events: list[WorkEvent]) -> WorkObject:
@@ -144,8 +149,19 @@ class WorkStore:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.store_file = self.data_dir / "work_events.jsonl"
 
-    def append(self, event: WorkEvent) -> None:
-        """append 一筆 WorkEvent（append-only，不可改不可刪）。"""
+    def append(self, event: WorkEvent, actor: str) -> None:
+        """append 一筆 WorkEvent（append-only，不可改不可刪）。
+
+        single-writer enforcement（2D §1）：actor 必須明確提供（無 default），
+        且必須是 durable writer（kernel）。非 kernel 的 actor 呼叫寫入 →
+        拋 NotDurableWriterError。這是 durable write boundary 的強制檢查，
+        即使直接 import WorkStore 也不能 bypass。
+        """
+        if not is_durable_writer(actor):
+            raise NotDurableWriterError(
+                f"actor={actor!r} is not the durable writer; "
+                f"only {DURABLE_WRITER!r} may write durable work state"
+            )
         with open(self.store_file, "a", encoding="utf-8") as f:
             f.write(event.model_dump_json() + "\n")
 
