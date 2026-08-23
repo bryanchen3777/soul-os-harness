@@ -758,7 +758,11 @@ DSH Multi-Agent MVP 是 Soul OS 遷入 DeepSeek Harness 的前置 domain core。
 
 **P1-A 成果**（commit `83aa389`）：`src/work/schema.py` 新增 `ExecutionShape` enum（single_shot / multi_stage / continuous，capability-neutral）+ `src/work/workflow.py` 新增 `derive_execution_shape`（dependencies 非空→multi_stage，其餘→single_shot；continuous 不實作，待 P1-D）+ `src/work_adapter/execution.py` payload 新增 `execution_shape`。249 tests 全綠（239 + 10 new）。8/8 PASS + bypass=NO。`src/work/` 授權集 {kernel.py, schema.py, workflow.py}；零 DSH import 不變。
 
-**P1-B 成果**（`docs/DSH-P1-ARTIFACT-BOUNDARY.md`，commit 待 landing）：鎖定 artifact ownership boundary——refs 是 content-addressed identity（Domain Core 計算）、artifact content 的 canonical writer 是 Domain Core、adapter 只 transport、claim→verify、write-ahead + 原子 rename、evidence 走同一邊界（D1–D8）。Review #1 BLOCKED（5 項）→ 修正 → Re-review **READY FOR IMPLEMENTATION**。明記上游不一致：2A §5.1 vs 2B §5 vs 實務的 `artifact.create` 歸屬（P1-C 前需 Owner/主大腦拍板）。
+**P1-B 成果**（`docs/DSH-P1-ARTIFACT-BOUNDARY.md`，commit `d4a57a2`）：鎖定 artifact ownership boundary——refs 是 content-addressed identity（Domain Core 計算）、artifact content 的 canonical writer 是 Domain Core、adapter 只 transport、claim→verify、write-ahead + 原子 rename、evidence 走同一邊界（D1–D8）。Review #1 BLOCKED（5 項）→ 修正 → Re-review **READY FOR IMPLEMENTATION**。
+
+**Owner 拍板（2026-08-23）— artifact.create role 歸屬**：以 2A §5.1 frozen contract 為 canonical authority，`artifact.create` 歸 Researcher。2A 是 frozen/ACCEPTED，2B 是 design，kernel/e2e 是 implementation reality——三者衝突時 implementation 不得反向修改 frozen contract。P1-C 不得 role substitution / capability spoofing / adapter-side bypass；若 P1-C 顯示 Developer 必須直接產 artifact，另開正式 contract change decision。
+
+**P1-C 成果**（`docs/DSH-P1-C-ROUTING.md`，commit 待 landing）：Real DSH single_shot routing 的 decomposition。transport seam = `dsh --profile headless`（one-shot generic Agent，無 preset——seam 事實，已實讀 dsh-headless/lib/index.js 驗證）。role 語義由 task prompt 承載、role authority 在 Domain Core。D1–D10 鎖定：headless transport、role 語義、single_shot、artifact.create=Researcher（Owner 拍板）、結構化輸出 fail-closed、staging→ingest、fail-closed 三條、No-DSH Survival、Domain Core role↔capability enforcement 前置、claimed ref 存在性驗證。Review #1 BLOCKED（2 項：enforcement 缺口 + preset 事實錯誤）→ 修正 → Re-review **READY FOR IMPLEMENTATION**。N2 decision role 邊界：依 2A §3.1「任何 agent 可記錄 decision」，decision handoff 不要求特定 capability（與 §5.1 Chief 的 orchestration decision 不同語義）。
 
 **Phase 1 剩餘 backlog（CAN-DEFER / 後續 phase）**：
 1. refs content-address 驗證（需 artifact store；P1-B 決定與 store 同批落地）
@@ -769,7 +773,7 @@ DSH Multi-Agent MVP 是 Soul OS 遷入 DeepSeek Harness 的前置 domain core。
 6. multi_stage workflow script authorship（P1-D 前置決策 A6，未解）
 7. stale test `tests/test_soul_md_loader.py`（import 已移除的 `SOUL_OS_OVERRIDE`，pre-existing，非 P1-A 範圍）
 
-**Next work**: P1-B（Artifact / Reference Boundary，ref 定址與 store 同批落地決策）→ P1-C（DSH Execution Routing 第一期，single_shot subagent）。
+**Next work**: P1-C work order（Real DSH single_shot routing，消費 P1-A ExecutionShape + P1-B D1–D8 + artifact.create=Researcher）。P1-C 前置：Domain Core role↔capability enforcement（D9，授權改 kernel.py/workflow.py）+ 結構化輸出通道選定（stdout JSON vs handoff.json 檔案）。
 
 ---
 
@@ -962,6 +966,7 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-08-23 (DSH P1-Preflight) | Phase 1 前置 hardening 實作完成 + Independent Adversarial Review（READ-ONLY）→ **READY TO LAND**。M1 `HandoffStatus`→WorkState 語義（blocked/needs_input → state_transition，不照記產出）、M2 `result_type`↔capability anchor 驗證、M3 bridge error contract 統一（binary I/O + 主執行緒 decode）。239 tests 全綠（230 + 9 new）。8/8 Hard Checks PASS + bypass=NO。`src/work/` 僅 kernel.py 可動，其餘十模組零改動；零 DSH import 不變。commit `34e91d4`。 | Mavis / Lin | DSH P1-Preflight |
 | 2026-08-23 (DSH P1 Decomposition) | P1 Execution Routing Decomposition（`docs/DSH-P1-EXECUTION-ROUTING.md`）→ Review #1 BLOCKED（2 項：A2 resume discriminator 未鎖 + A5 防火牆無 mechanism）→ 修正（7 處）→ Re-review → **READY FOR IMPLEMENTATION**。P1-A~P1-E 分解，鎖定 ExecutionShape capability-neutral + shape 由 Soul 推導 + adapter 只 translate。 | Mavis / Lin | DSH P1 Decomposition |
 | 2026-08-23 (DSH P1-A) | Execution Target Contract（Domain Core 側）實作完成 + Independent Adversarial Review（READ-ONLY）→ **READY TO LAND**。`src/work/schema.py` 新增 `ExecutionShape` enum + `src/work/workflow.py` 新增 `derive_execution_shape`（continuous 不實作，待 P1-D）+ `execution.py` payload 新增 `execution_shape`。249 tests 全綠（239 + 10 new）。8/8 PASS + bypass=NO。零 DSH import 不變。commit `83aa389`。 | Mavis / Lin | DSH P1-A |
-| 2026-08-23 (DSH P1-B) | Artifact / Reference Boundary Decomposition（`docs/DSH-P1-ARTIFACT-BOUNDARY.md`）→ Review #1 BLOCKED（5 項：D6 原子性、§3.1 選項清單、evidence、D7 enforcement、content 回傳通道）→ 修正（含 D8 evidence + 原子 rename + staging 治理）→ Re-review → **READY FOR IMPLEMENTATION**。D1–D8 鎖定：refs content-addressed identity（Domain Core 計算）、artifact/evidence canonical writer = Domain Core、adapter claim→verify、write-ahead + 原子 rename。明記 2A §5.1 vs 2B §5 vs 實務的 artifact.create 三處不一致（P1-C 前需 Owner/主大腦拍板）。 | Mavis / Lin | DSH P1-B |
+| 2026-08-23 (DSH P1-B) | Artifact / Reference Boundary Decomposition（`docs/DSH-P1-ARTIFACT-BOUNDARY.md`）→ Review #1 BLOCKED（5 項：D6 原子性、§3.1 選項清單、evidence、D7 enforcement、content 回傳通道）→ 修正（含 D8 evidence + 原子 rename + staging 治理）→ Re-review → **READY FOR IMPLEMENTATION**。D1–D8 鎖定：refs content-addressed identity（Domain Core 計算）、artifact/evidence canonical writer = Domain Core、adapter claim→verify、write-ahead + 原子 rename。明記 2A §5.1 vs 2B §5 vs 實務的 artifact.create 三處不一致。commit `d4a57a2`。 | Mavis / Lin | DSH P1-B |
+| 2026-08-23 (DSH P1-C) | Real DSH single_shot Routing Decomposition（`docs/DSH-P1-C-ROUTING.md`）→ Review #1 BLOCKED（2 項：artifact.create enforcement 缺口 + headless preset 事實錯誤）→ 修正（D9 Domain Core enforcement + D10 claimed-ref 驗證 + seam 事實更正）→ Re-review → **READY FOR IMPLEMENTATION**。transport = `dsh --profile headless`（generic Agent 無 preset，role 語義由 prompt 承載、authority 在 Domain Core）。Owner 拍板 artifact.create 歸 Researcher（2A §5.1 frozen）。 | Mavis / Lin | DSH P1-C |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
