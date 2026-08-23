@@ -76,7 +76,7 @@ versioned、JSON-serializable、**不得引用任何 DSH type / id**。
   "schema_version": "1.0",
   "work_id": "uuid",
   "objective": "string",
-  "state": "proposed | approved | assigned | in_progress | awaiting_review | awaiting_approval | done | rejected | blocked | cancelled",
+  "state": "WorkState",  // enum；合法值與 transition 以 §4 為唯一 authoritative
   "owner": "role",              // chief | developer | ... | soul_identity（未來）
   "assigned_agents": ["role"],  // 角色，不是 DSH agent/session id
   "artifacts": [],
@@ -133,6 +133,8 @@ DSH Adapter 重啟後用 `resume_state` 重新把 Work 掛回 DSH，不假設 in
 
 ## 4. Layer 1 — Work State Machine
 
+`WorkState` 是 enum，本節是合法值與 transition 的**唯一 authoritative source**。任何未列於此的 state（如 `reviewing` / `failed` / `waiting`）都是非法。
+
 ```text
 proposed
    │  Human approval #1
@@ -155,13 +157,15 @@ awaiting_approval
 done
 ```
 
-終態：`rejected` / `blocked` / `cancelled`。
+終態：`rejected` / `cancelled` / `done`。
+
+`blocked` 是 **non-terminal**（可恢復）：任何 active state 都可能進入 `blocked`，解除阻塞後 resume 回 `resume_state.current_phase` 指定的 target state（通常是 `in_progress` 或 `awaiting_review`）。
 
 **只有兩個 transition 需要 Human approval**：
 - `proposed → approved`（開工前）
 - `awaiting_approval → done`（commit/push/deploy 前）
 
-其餘（assigned、in_progress、awaiting_review）都是 autonomous。
+其餘（assigned、in_progress、awaiting_review、blocked → resume）都是 autonomous。
 
 ---
 
@@ -220,6 +224,8 @@ Specialist 回傳結構化 result，**不是 chat transcript**。
 }
 ```
 
+`result_type` 只能是 `artifact` / `evidence` / `decision`。**不得有 `approval`**——Human Approval 透過獨立的 Human authority path 寫入 `approvals[]`，不是 Specialist 的 result。
+
 Chief 不需要知道 Specialist 的內部實作，只需要：assign Work → Specialist produce Artifact/Evidence → update Work → Chief consume result。
 
 ---
@@ -248,6 +254,7 @@ DSH Adapter 是唯一 import DSH types 的地方。mapping：
 4. 四種 result authority 不得混。
 5. `resume_state` 是最小重建狀態，不是 DSH session snapshot。
 6. capability 名稱是 capability-neutral，不是 DSH tool 名。
+7. Handoff Protocol MUST NOT permit an agent-generated approval result。
 
 ---
 
