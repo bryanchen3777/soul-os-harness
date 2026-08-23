@@ -86,15 +86,17 @@ class WorkExecutionBridge:
                 f"adapter script not found: {self._adapter_script}"
             )
 
-        request_json = message.model_dump_json() + "\n"
+        request_json = message.model_dump_json()
         try:
             proc = subprocess.Popen(
                 [self._node_bin, str(self._adapter_script)],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
+                # binary I/O：decode 一律在主執行緒做。text=True 時 decode 發生在
+                # communicate 的 reader thread，UnicodeDecodeError 會被 thread 吞掉
+                # （只留 unraisable warning），呼叫端捕不到；binary + 主執行緒
+                # strict decode 才能讓 UnicodeDecodeError 落在下面同層級的 except。
             )
         except (OSError, ValueError) as exc:
             # OSError：node 不在 PATH / 無法執行
@@ -103,7 +105,11 @@ class WorkExecutionBridge:
             ) from exc
 
         try:
-            stdout, stderr = proc.communicate(input=request_json, timeout=self._timeout)
+            stdout_bytes, stderr_bytes = proc.communicate(
+                input=request_json.encode("utf-8"), timeout=self._timeout
+            )
+            stdout = stdout_bytes.decode("utf-8")
+            stderr = stderr_bytes.decode("utf-8", errors="replace")  # 診斷用，不 fail
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
@@ -111,6 +117,17 @@ class WorkExecutionBridge:
                 f"adapter timed out after {self._timeout}s "
                 f"(script={self._adapter_script.name})"
             )
+        except UnicodeDecodeError as exc:
+            # M3（P1-Preflight）：非 UTF-8 stdout 的 decode 失敗 → fail closed，
+            # 統一收斂成 BridgeExecutionError（不冒 UnicodeDecodeError），
+            # 不寫任何 durable state。
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            raise BridgeExecutionError(
+                f"adapter output is not valid UTF-8 "
+                f"(script={self._adapter_script.name}): {exc}"
+            ) from exc
 
         if proc.returncode != 0:
             raise BridgeExecutionError(

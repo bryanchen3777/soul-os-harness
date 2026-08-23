@@ -392,7 +392,8 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 | **DSH Migration** | Soul OS → DeepSeek Harness runtime substrate 架構計畫（4 invariants + No-DSH survival + phased roadmap，NOT AUTHORIZED） | 📋 | (docs only) |
 | **DSH Multi-Agent Architecture** | 2A Work Contract + 2B Workspace + 2C Human Authority + 2D Persistence（4 contracts ACCEPTED，Contract Gate 10/10 PASS） | ✅ | (docs only) |
 | **DSH MA Chain** | MA-0 Audit → MA-1 Adapter Boundary → MA-2 Migration Architecture → MA-3 Decomposition → MA-4 Build Plan（BLOCKED→R1 修復）→ IMPLEMENTATION AUTHORIZED | ✅ | (docs only) |
-| **DSH Phase 0** | Minimal Work Execution Adapter（src/work_adapter + dsh_adapter + Python↔TS Bridge），Independent Review PASS → Phase 0 CLOSED | ✅ | (pending commit) |
+| **DSH Phase 0** | Minimal Work Execution Adapter（src/work_adapter + dsh_adapter + Python↔TS Bridge），Independent Review PASS → Phase 0 CLOSED | ✅ | `ece757b` |
+| **DSH P1-Preflight** | M1 HandoffStatus→WorkState + M2 result_type↔capability anchor + M3 bridge error contract 統一，Independent Review PASS → READY TO LAND | ✅ | (pending commit) |
 
 > 📌 **Canonical state registry**: `logs/ENGINEERING_STATE.md` — single source-of-truth for all milestone / ticket status, supersession chain, active decisions, deferred / optional / blocked work, stale references. Per `logs/ENGINEERING_STATE.md` §2.6 Historical Document Rule, historical closeouts in `logs/` are preserved unchanged; any apparent contradiction with the registry is resolved in favor of the registry.
 >
@@ -522,4 +523,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-08-23 (DSH Multi-Agent Architecture 2A–2D + Contract Gate 10/10 PASS)
+**最後更新**: 2026-08-23 (DSH P1-Preflight M1/M2/M3 hardening + Phase 0 CLOSED)

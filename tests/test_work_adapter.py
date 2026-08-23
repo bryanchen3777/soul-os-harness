@@ -13,7 +13,8 @@ Soul OS — DSH-P0-1：Minimal Work Execution Adapter（Phase 0 implementation�
    不污染 durable truth）
 8. No-DSH Survival PASS（拔掉 TS 後 Domain Core 仍可 fold / authorize / resume）
 9. regression 全綠（tests/test_work_*.py，另跑）
-10. Phase 0 scope containment PASS（src/work/ 十一模組零改動）
+10. Phase 0 scope containment PASS（src/work/ 僅 P1-Preflight 授權的 kernel.py 可動，
+    其餘模組零改動）
 
 執行：pytest tests/test_work_adapter.py
 """
@@ -676,7 +677,12 @@ class TestNoDSHSurvival:
 
 class TestScopeContainment:
     def test_src_work_untouched_by_git(self):
-        """git 確認 src/work/ 十一模組零改動（Phase 0 scope containment）。"""
+        """git 確認 src/work/ 改動僅限 P1-Preflight 授權的 kernel.py（scope containment）。
+
+        Phase 0 鎖死 src/work/ 零改動；DSH P1-Preflight（M1/M2a）明確授權改
+        src/work/kernel.py（record_handoff status 語義 + result_type_for_capability）。
+        其餘 src/work/ 模組仍不得有任何改動。
+        """
         proc = subprocess.run(
             ["git", "status", "--porcelain", "--", "src/work"],
             cwd=REPO_ROOT,
@@ -686,8 +692,13 @@ class TestScopeContainment:
             timeout=15,
         )
         assert proc.returncode == 0
-        assert proc.stdout.strip() == "", (
-            "src/work/ 不得有任何改動：\n" + proc.stdout
+        changed = {
+            line.split()[1]
+            for line in proc.stdout.splitlines()
+            if line.strip()
+        }
+        assert changed <= {"src/work/kernel.py"}, (
+            "src/work/ 僅 kernel.py 可被 P1-Preflight 改動：\n" + proc.stdout
         )
 
     def test_adapter_python_modules_do_not_import_dsh(self):

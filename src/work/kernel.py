@@ -21,12 +21,15 @@ from .bridge import DURABLE_WRITER
 from .roles import Role
 from .schema import (
     HandoffResult,
+    HandoffStatus,
     Provenance,
     ResultType,
     WorkEvent,
     WorkEventType,
     WorkObject,
+    WorkState,
 )
+from .state_machine import validate_transition
 from .store import (
     NotDurableWriterError,
     WorkStore,
@@ -50,6 +53,24 @@ _HANDOFF_CAPABILITY: dict[ResultType, str] = {
     ResultType.EVIDENCE: "evidence.create",
     ResultType.DECISION: "decision",
 }
+
+
+def result_type_for_capability(capability: str) -> ResultType:
+    """request capability → 預期 result_type（canonical，adapter mirror 同一語義）。
+
+    - capability 含 "evidence" → EVIDENCE
+    - capability 含 "decision" → DECISION
+    - 其餘 → ARTIFACT
+
+    與 mock adapter `dsh_adapter/soul-dsh-adapter.mjs` 的 `mockResultType` 一致，
+    但此為 Domain Core canonical：execution.py anchor 以它驗證 handoff.result_type，
+    確保 event 類型 + provenance capability 不因 adapter 竄改而錯記。
+    """
+    if "evidence" in capability:
+        return ResultType.EVIDENCE
+    if "decision" in capability:
+        return ResultType.DECISION
+    return ResultType.ARTIFACT
 
 
 class WorkKernel:
@@ -115,7 +136,38 @@ class WorkKernel:
         skip（回傳既有 event），不重複 append——effectively-once 由 durable log
         保證（Soul OS owns the durable work truth, 2D §1 / §4），不依賴
         in-process 狀態、不依賴 DSH Adapter。
+
+        M1（P1-Preflight）：status 語義（2A §6）——
+        - status == DONE：記錄產出（上述 event_type 邏輯，現狀不變）。
+        - status == BLOCKED / NEEDS_INPUT：**不記錄產出**，改記錄
+          state_transition(current → blocked)（2A §4：blocked 是 non-terminal，
+          任何 active state 可進 blocked）；非法 transition（含 terminal state
+          再進 blocked）→ InvalidTransitionError 自然拋出。此分支**不做 dedup**：
+          寫的是 state_transition（重複 append 不會污染產出 log；且 blocked →
+          blocked 由 state machine 判為非法）。
         """
+        # M1：blocked / needs_input → state_transition(current → blocked)，無產出
+        if handoff.status in (HandoffStatus.BLOCKED, HandoffStatus.NEEDS_INPUT):
+            current = self.fold(handoff.work_id)
+            from_state = current.state
+            validate_transition(from_state, WorkState.BLOCKED)
+            event = WorkEvent(
+                work_id=handoff.work_id,
+                event_type=WorkEventType.STATE_TRANSITION,
+                payload={
+                    "from": from_state.value,
+                    "to": WorkState.BLOCKED.value,
+                    "status": handoff.status.value,
+                    "resume_hint": handoff.resume_hint,
+                },
+                provenance=Provenance(
+                    role=handoff.role,
+                    capability=_HANDOFF_CAPABILITY[handoff.result_type],
+                ),
+            )
+            self.append(event)
+            return event
+
         event_type = _HANDOFF_EVENT_TYPE[handoff.result_type]
         capability = _HANDOFF_CAPABILITY[handoff.result_type]
 

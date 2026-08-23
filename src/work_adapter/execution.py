@@ -22,6 +22,7 @@ handoff 不得寫進另一 work 的 durable log（不污染 durable truth）。
 from __future__ import annotations
 
 from src.work.bridge import BridgeMessage, BridgeMessageType
+from src.work.kernel import result_type_for_capability
 from src.work.schema import HandoffResult, WorkEvent, WorkObject
 from src.work.workflow import WorkflowOrchestrator
 
@@ -96,6 +97,17 @@ def execute_work(
     if handoff.role != role:
         raise BridgeExecutionError(
             f"mis-routed handoff: role={handoff.role!r} does not match request role={role!r}"
+        )
+
+    # Anchor 驗證（M2，P1-Preflight）：result_type 必須與 request capability 對齊
+    # （canonical 映射在 Domain Core result_type_for_capability）。adapter 回傳與
+    # capability 不符的 result_type → event 類型 + provenance capability 會錯記
+    # （artifact.create 卻寫 decision_made），fail closed，不寫 durable state。
+    expected = result_type_for_capability(capability)
+    if handoff.result_type != expected:
+        raise BridgeExecutionError(
+            f"result_type mismatch: handoff={handoff.result_type.value!r} does not "
+            f"match request capability={capability!r} (expected {expected.value!r})"
         )
 
     event = orchestrator.consume_handoff(handoff)
