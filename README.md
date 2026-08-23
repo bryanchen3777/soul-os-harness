@@ -395,7 +395,8 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 | **DSH Phase 0** | Minimal Work Execution Adapter（src/work_adapter + dsh_adapter + Python↔TS Bridge），Independent Review PASS → Phase 0 CLOSED | ✅ | `ece757b` |
 | **DSH P1-Preflight** | M1 HandoffStatus→WorkState + M2 result_type↔capability anchor + M3 bridge error contract 統一，Independent Review PASS → READY TO LAND | ✅ | `34e91d4` |
 | **DSH P1 Decomposition** | Execution Routing（P1-A~P1-E），Review #1 BLOCKED → 修正 → Re-review READY FOR IMPLEMENTATION | ✅ | (docs only) |
-| **DSH P1-A** | Execution Target Contract（ExecutionShape + derive_execution_shape + payload execution_shape），Independent Review PASS → READY TO LAND | ✅ | (pending commit) |
+| **DSH P1-A** | Execution Target Contract（ExecutionShape + derive_execution_shape + payload execution_shape），Independent Review PASS → READY TO LAND | ✅ | `83aa389` |
+| **DSH P1-B** | Artifact / Reference Boundary（refs content-addressed + Domain Core canonical writer + claim→verify），Review #1 BLOCKED → 修正 → Re-review READY FOR IMPLEMENTATION | ✅ | (docs only) |
 
 > 📌 **Canonical state registry**: `logs/ENGINEERING_STATE.md` — single source-of-truth for all milestone / ticket status, supersession chain, active decisions, deferred / optional / blocked work, stale references. Per `logs/ENGINEERING_STATE.md` §2.6 Historical Document Rule, historical closeouts in `logs/` are preserved unchanged; any apparent contradiction with the registry is resolved in favor of the registry.
 >
@@ -525,4 +526,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-08-23 (DSH P1-A Execution Target Contract + P1 Decomposition READY)
+**最後更新**: 2026-08-23 (DSH P1-B Artifact / Reference Boundary READY)
