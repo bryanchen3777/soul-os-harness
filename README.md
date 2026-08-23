@@ -390,6 +390,7 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 | **Web UI** | 靈魂牆首頁 + 日記時間軸 + 真名 | ✅ | `a3d3b8e` |
 | **History** | as Seeded Memory 架構收斂（設計討論，NOT AUTHORIZED） | 📋 | `ef33999` |
 | **DSH Migration** | Soul OS → DeepSeek Harness runtime substrate 架構計畫（4 invariants + No-DSH survival + phased roadmap，NOT AUTHORIZED） | 📋 | (docs only) |
+| **DSH Work Contract** | Phase 2A — Work / Artifact / Evidence / Approval / Resume contract（GO，前置設計） | 📋 | (docs only) |
 
 > 📌 **Canonical state registry**: `logs/ENGINEERING_STATE.md` — single source-of-truth for all milestone / ticket status, supersession chain, active decisions, deferred / optional / blocked work, stale references. Per `logs/ENGINEERING_STATE.md` §2.6 Historical Document Rule, historical closeouts in `logs/` are preserved unchanged; any apparent contradiction with the registry is resolved in favor of the registry.
 >
@@ -490,6 +491,7 @@ soul-os-harness/
 │   ├── ORCHESTRATION-v1.0.md # Agent Orchestration System framework
 │   ├── MEMORY-STATUS-AND-PLAN.md  # 記憶系統現況總結
 │   ├── DSH-SOUL-OS-MIGRATION-PLAN.md  # Soul OS → DSH runtime substrate 架構計畫
+│   ├── DSH-WORK-CONTRACT.md  # DSH Work Contract & Execution Boundary (Phase 2A)
 │   └── KNOWN_ISSUES.md       # 技術債追蹤
 ├── configs/
 │   ├── default.yaml           # 10 個 agent 動態載入配置
@@ -514,4 +516,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-08-23 (DSH runtime substrate 架構計畫)
+**最後更新**: 2026-08-23 (DSH Work Contract Phase 2A GO)
