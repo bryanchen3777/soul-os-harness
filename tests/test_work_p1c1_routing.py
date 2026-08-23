@@ -17,6 +17,7 @@ Soul OS — DSH P1-C1：Real DSH single_shot Routing（12 情境矩陣 + C1.9 sm
 
 執行：pytest tests/test_work_p1c1_routing.py -v
 """
+import hashlib
 import json
 import shutil
 import sys
@@ -208,18 +209,21 @@ def _log_rows(data_dir) -> list[dict]:
 
 class TestMatrixFakeLog:
     def test_t1_researcher_cwd_artifact_passes(self, tmp_path):
-        """T1：Researcher → Researcher cwd → artifact → PASS。"""
+        """T1：Researcher → Researcher cwd → artifact → PASS。
+
+        P1-C2（D2 遷移）：claim **不聲稱 ref**（artifact_refs=[]）——final_message
+        就是 artifact content，canonical ref 由 Domain Core 寫入 store 後回填。
+        """
         orch = _orchestrator(tmp_path)
         work_id = _create_work(orch)
         res_cwd = str((tmp_path / "workspaces" / "researcher").resolve())
 
         store = ArtifactStore(data_dir=tmp_path)
-        ref = store.write_artifact(b"soul artifact content", DURABLE_WRITER)
-
+        claim_text = _claim_json(work_id, "researcher")
         log_path = _make_session_log(
             tmp_path / "logs" / "res" / "session.jsonl",
             cwd=res_cwd,
-            messages=[_claim_json(work_id, "researcher", refs=[ref])],
+            messages=[claim_text],
         )
         registry = _registry_with(tmp_path, ("researcher", res_cwd))
         bridge = _FakeBridge(log_path)
@@ -228,25 +232,34 @@ class TestMatrixFakeLog:
             orch, work_id, Role.RESEARCHER.value, "artifact.create",
             bridge, registry, store,
         )
+        canonical = "sha256:" + hashlib.sha256(
+            claim_text.encode("utf-8")
+        ).hexdigest()
         assert event.event_type == WorkEventType.ARTIFACT_PRODUCED
-        assert event.provenance.output_refs == [ref]
+        assert event.provenance.output_refs == [canonical]
         assert evidence.cwd == res_cwd
         assert claim.role == "researcher"
-        assert orch.synthesize(work_id).artifacts == [{"refs": [ref]}]
+        assert claim.artifact_refs == [canonical]  # Domain Core 回填
+        assert store.verify_artifact_ref(canonical)  # 真的落盤（content 定址）
+        assert orch.synthesize(work_id).artifacts == [{"refs": [canonical]}]
 
     def test_t2_developer_artifact_denied_capability(self, tmp_path):
-        """T2：Developer → Developer cwd → artifact → DENY（P1-C0 capability）。"""
+        """T2：Developer → Developer cwd → artifact → DENY（P1-C0 capability）。
+
+        P1-C2 遷移：claim 不聲稱 ref（否則 D2 防偽先於 capability gate 觸發），
+        capability gate 在 consume_handoff（kernel enforcement）拒絕。
+        """
         orch = _orchestrator(tmp_path)
         work_id = _create_work(orch)
         dev_cwd = str((tmp_path / "workspaces" / "developer").resolve())
 
         store = ArtifactStore(data_dir=tmp_path)
-        ref = store.write_artifact(b"dev artifact", DURABLE_WRITER)
+        claim_text = _claim_json(work_id, "developer")  # 不聲稱 ref（D2）
 
         log_path = _make_session_log(
             tmp_path / "logs" / "dev" / "session.jsonl",
             cwd=dev_cwd,
-            messages=[_claim_json(work_id, "developer", refs=[ref])],
+            messages=[claim_text],
         )
         registry = _registry_with(tmp_path, ("developer", dev_cwd))
         bridge = _FakeBridge(log_path)
@@ -309,43 +322,47 @@ class TestMatrixFakeLog:
             )
         assert len(_log_rows(tmp_path)) == rows_before
 
-    def test_t5_valid_identity_invalid_ref_denied(self, tmp_path):
-        """T5：valid identity + invalid artifact ref → DENY（content D10）。"""
+    def test_t5_valid_identity_agent_claimed_wrong_ref_denied(self, tmp_path):
+        """T5：valid identity + agent 聲稱錯誤 ref → DENY（P1-C2 D2 防偽）。
+
+        P1-C2 遷移：ref 由 Domain Core 從 final_message 計算（agent 不聲稱）。
+        agent 聲稱了 ref 且 ≠ canonical → fail-closed（防偽語義保留，P1-B D4）。
+        """
         orch = _orchestrator(tmp_path)
         work_id = _create_work(orch)
         res_cwd = str((tmp_path / "workspaces" / "researcher").resolve())
 
-        store = ArtifactStore(data_dir=tmp_path)  # store 是空的
-        bogus_ref = "sha256:" + "0" * 64  # 從未寫入的 ref
+        store = ArtifactStore(data_dir=tmp_path)
+        bogus_ref = "sha256:" + "0" * 64  # ≠ sha256(final_message) 的亂 claim
+        claim_text = _claim_json(work_id, "researcher", refs=[bogus_ref])
         log_path = _make_session_log(
             tmp_path / "logs" / "res" / "session.jsonl",
             cwd=res_cwd,
-            messages=[_claim_json(work_id, "researcher", refs=[bogus_ref])],
+            messages=[claim_text],
         )
         registry = _registry_with(tmp_path, ("researcher", res_cwd))
         bridge = _FakeBridge(log_path)
         rows_before = len(_log_rows(tmp_path))
 
-        with pytest.raises(BridgeExecutionError, match="content verification"):
+        with pytest.raises(BridgeExecutionError, match="do not match the canonical ref"):
             execute_work_dsh(
                 orch, work_id, Role.RESEARCHER.value, "artifact.create",
                 bridge, registry, store,
             )
         assert len(_log_rows(tmp_path)) == rows_before
 
-    def test_t6_valid_identity_capability_ref_passes(self, tmp_path):
-        """T6：valid identity + valid capability + valid ref → PASS。"""
+    def test_t6_valid_identity_capability_artifact_passes(self, tmp_path):
+        """T6：valid identity + valid capability + artifact → PASS（C2：ref 回填）。"""
         orch = _orchestrator(tmp_path)
         work_id = _create_work(orch)
         res_cwd = str((tmp_path / "workspaces" / "researcher").resolve())
 
         store = ArtifactStore(data_dir=tmp_path)
-        ref = store.write_artifact(b"valid artifact", DURABLE_WRITER)
-
+        claim_text = _claim_json(work_id, "researcher")  # 不聲稱 ref（D2）
         log_path = _make_session_log(
             tmp_path / "logs" / "res" / "session.jsonl",
             cwd=res_cwd,
-            messages=[_claim_json(work_id, "researcher", refs=[ref])],
+            messages=[claim_text],
         )
         registry = _registry_with(tmp_path, ("researcher", res_cwd))
         bridge = _FakeBridge(log_path)
@@ -355,9 +372,12 @@ class TestMatrixFakeLog:
             orch, work_id, Role.RESEARCHER.value, "artifact.create",
             bridge, registry, store,
         )
+        canonical = "sha256:" + hashlib.sha256(
+            claim_text.encode("utf-8")
+        ).hexdigest()
         assert event.event_type == WorkEventType.ARTIFACT_PRODUCED
         assert len(_log_rows(tmp_path)) == rows_before + 1
-        assert claim.artifact_refs == [ref]
+        assert claim.artifact_refs == [canonical]  # Domain Core 回填
 
     def test_t7_blocked_needs_input_no_artifact_gate(self, tmp_path):
         """T7：blocked / needs_input → 不觸發 artifact capability gate（M1）。"""
@@ -699,16 +719,22 @@ class TestClaimRebuild:
 @needs_real_dsh
 class TestRealDshSmoke:
     def test_real_dsh_execution_three_layer_pass(self, tmp_path):
-        """真 DSH headless execution 經三層驗證進 Domain Core（P1-C1 核心驗收）。
+        """真 DSH headless execution 經三層驗證進 Domain Core（P1-C1 核心驗收，C2 語義）。
 
         真 DSH 環境可用時 PASS；不可用時 skip（見 needs_real_dsh 的風險註記）。
+
+        P1-C2（D1/D2）語義：artifact content = final_message；agent **不聲稱
+        ref**（task prompt 指示 artifact_refs=[]），canonical ref 由 Domain
+        Core 從 final_message 計算、寫入 store、回填 claim——三層仍是真驗證：
+        identity（真 cwd→role）/ capability（kernel gate）/ content（Domain
+        Core 寫入 + 回填，claim→verify 語義自洽，無自指矛盾）。
 
         設計（2026-08-23 實測）：
         - 要求 agent 用工具算 sha256 的 task 會讓 headless agent 進入工具迴圈
           （曾 240s 不結束，已觀察到 agent 在 workspace 內反覆寫 probe 檔）。
           因此自動化 smoke 用**不呼叫工具**的 deterministic task：agent 直接
-          echo 已落盤 ref 的 claim——identity（真 cwd→role）/ capability
-          （kernel gate）/ content（claimed ref 在 store）三層仍是真驗證。
+          產出文字內容 + 空 refs claim——identity（真 cwd→role）/ capability
+          （kernel gate）/ content（Domain Core 回填）三層仍是真驗證。
         - **session_root 與 role_cwd 必須用短路徑**：dsh 的 Win32 durable
           publish（MoveFileExW via koffi）在合併路徑超過 ~260 chars 時會產生
           phantom session 目錄（可列舉但 stat 失敗、log 讀不到——實測復現）。
@@ -716,14 +742,12 @@ class TestRealDshSmoke:
           用 TEMP 下的短目錄（不能放深層 tmp_path）。
         """
         orch = _orchestrator(tmp_path)
-        content = b"soul-os-p1c1-smoke"
-        ref = "sha256:" + __import__("hashlib").sha256(content).hexdigest()
-
         work_id = _create_work(
             orch,
             objective=(
-                f"do not use any tools. The artifact with ref {ref} is present "
-                "and verified. Report that exact ref in your final message."
+                "do not use any tools. Produce a short text report describing "
+                "the Soul OS work status. Your final message must be the claim "
+                "JSON with artifact_refs left empty."
             ),
         )
 
@@ -736,13 +760,7 @@ class TestRealDshSmoke:
         session_root = Path(tempfile.gettempdir()) / f"soul-p1c1-sessions-{tag}"
 
         try:
-            # content 層前置：Domain Core 先落盤 artifact（P1-B D5：
-            # WorkEvent.refs 只引用已落盤 ref）；claim 的 ref 必須命中 store
             store = ArtifactStore(data_dir=tmp_path)
-            planted = store.write_artifact(content, DURABLE_WRITER)
-            assert planted == ref
-            (role_cwd / "artifact.txt").write_bytes(content)
-
             registry = RoleCwdRegistry()
             registry.register("researcher", res_cwd)
 
@@ -755,17 +773,19 @@ class TestRealDshSmoke:
                 bridge, registry, store,
             )
 
+            # C2：canonical ref = sha256(final_message)，Domain Core 回填
+            canonical = "sha256:" + hashlib.sha256(
+                evidence.final_message.encode("utf-8")
+            ).hexdigest()
             # 三層全過：identity（header.cwd→role）✓ capability（kernel）✓
-            # content（D10）✓
+            # content（Domain Core 寫入 + 回填）✓
             assert evidence.cwd == res_cwd
             assert claim.role == "researcher"
+            assert claim.artifact_refs == [canonical]
             assert event.event_type == WorkEventType.ARTIFACT_PRODUCED
-            # ref 大小寫正規化比較（LLM 可能用大寫 hex）
-            assert any(r.lower() == ref for r in event.provenance.output_refs)
-            assert any(
-                r.lower() == ref
-                for r in orch.synthesize(work_id).artifacts[0]["refs"]
-            )
+            assert event.provenance.output_refs == [canonical]
+            assert orch.synthesize(work_id).artifacts[0]["refs"] == [canonical]
+            assert store.verify_artifact_ref(canonical)
             # task 確實經 bridge 送出（single_shot）
             assert message.message_type == BridgeMessageType.REQUEST
         finally:

@@ -25,7 +25,9 @@ cross-check → consume_handoff：
 1. **identity**（誰跑的）：header.cwd → role（A1，Domain Core 開檔）。
 2. **capability**（能不能產）：result_type → capability（P1-C0，kernel
    enforcement）。
-3. **content**（產了什麼）：claimed ref → 存在性 + hash（P1-B D10）。
+3. **content**（產了什麼，P1-C2 D1-D4）：artifact content = final_message
+   （text artifact），Domain Core 寫入 artifact store 並計算 canonical ref
+   回填 claim（D1/D2）；evidence_refs 指向被驗證對象逐一 verify（D4）。
 
 HandoffResult.role 的 canonical 值 = `role_for(evidence.cwd)`（binding 決定，
 process 事實）；final_message 解析出的 role 是 **claim**——claim.role 必須 ==
@@ -40,9 +42,10 @@ from __future__ import annotations
 
 import json
 import re
+import warnings
 
 from src.work.artifact_store import ArtifactStore
-from src.work.bridge import BridgeMessage, BridgeMessageType
+from src.work.bridge import DURABLE_WRITER, BridgeMessage, BridgeMessageType
 from src.work.execution_evidence import (
     ExecutionEvidence,
     ExecutionEvidenceError,
@@ -106,6 +109,11 @@ def execute_work(
 ) -> tuple[BridgeMessage, HandoffResult, WorkEvent]:
     """完整 execution path（mock/scripted 面）：synthesize → request → bridge → handoff → WorkEvent。
 
+    **Deprecated（P1-C2 D5）**：mock/scripted 面只保留供測試/離線（291 tests
+    沿用）。production 一律走 `execute_work_dsh`（真 DSH execution path，
+    唯一 production 路由）。每次呼叫發出 `DeprecationWarning`——測試以
+    filterwarnings 抑制（tests/conftest.py），不 assert 級強制。
+
     Returns:
         (message, handoff, event)：request message、adapter 回傳的 HandoffResult、
         consume_handoff 產生的 WorkEvent（durable log；duplicate handoff →
@@ -115,6 +123,12 @@ def execute_work(
         BridgeExecutionError: DSH 失敗（crash / timeout / malformed /
             mis-routed handoff）。此時**不寫任何 durable state**。
     """
+    warnings.warn(
+        "execute_work (mock/scripted adapter face) is deprecated; "
+        "use execute_work_dsh (real DSH execution path) instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     work = orchestrator.synthesize(work_id)
     message = build_execution_request(
         work, role, capability, causation=causation, reference=reference
@@ -179,9 +193,13 @@ def execute_work_dsh(
        == request role（B2：identity 權威 = header.cwd→role）。
     6. capability 層：result_type ↔ capability（M2）+ kernel.record_handoff
        role↔capability enforcement（P1-C0）。
-    7. content 層（P1-B D10）：ARTIFACT 的 claimed refs 逐一
-       `artifact_store.verify_artifact_ref`（存在性 + hash）；任一不符
-       → fail-closed，不寫 durable。
+    7. content 層（P1-C2 D1-D4）：ARTIFACT 且 DONE 時，Domain Core 把
+       final_message（text artifact）寫入 artifact store（single-writer），
+       算 canonical ref 回填 claim（D1/D2；agent 不聲稱 ref——sha256 含 claim
+       本身是自指矛盾）；聲稱了且 ≠ canonical → fail-closed（防偽，P1-B D4）；
+       回填後空 refs → fail-closed（D3）。EVIDENCE 時，evidence_refs 指向
+       **被驗證對象**，逐一 `verify_artifact_ref`（存在性 + hash，D4）。
+       任一不符 → fail-closed，不寫 durable。
     8. blocked / needs_input（M1）：不觸發 artifact capability / content gate，
        記錄 state_transition(current → blocked)，無產出。
 
@@ -256,15 +274,49 @@ def execute_work_dsh(
         event = orchestrator.consume_handoff(claim)
         return message, claim, event, evidence
 
-    # C1.7 content 層（P1-B D10）：claimed artifact refs → 存在性 + hash
-    # （P1-C1 第一期只做 artifact；evidence 的 claim→verify 列為 P1-C
-    # requirement，不在第一期——P1-B D8 註記）。
+    # C1.7 content 層（P1-C2，D1-D4）：content transport + claim→verify 三層
+    # 的 content 層（artifact authority = Domain Core，P1-B D1/D2/D3）。
     if claim.result_type.value == "artifact":
-        for ref in claim.artifact_refs:
+        # D1/D2：artifact content = final_message（text artifact）。ref 由
+        # Domain Core 計算（canonical writer），不是 agent 聲稱——sha256 的
+        # input 包含 claim 自己（artifact_refs 欄位），LLM 無法預知 hash
+        # 結果（sha256 fixpoint 概率≈0），聲稱 ref 是自指矛盾。所以正常
+        # case 是「agent 不聲稱 → Domain Core 回填」。
+        ref = artifact_store.write_artifact(
+            evidence.final_message.encode("utf-8"), DURABLE_WRITER
+        )
+        # D2 判斷順序：空/省略 = 未聲稱 → 回填 [ref]；非空且 ≠ [ref]
+        # → fail-closed（防偽語義保留，P1-B D4：亂 claim 可拒）。
+        if not claim.artifact_refs:
+            claim = claim.model_copy(update={"artifact_refs": [ref]})
+        elif claim.artifact_refs != [ref]:
+            raise BridgeExecutionError(
+                f"agent-claimed artifact refs {claim.artifact_refs!r} do not "
+                f"match the canonical ref {[ref]!r} computed by Domain Core "
+                f"from the final message (refs are computed by the system, "
+                f"not claimed by the agent — P1-C2 D2 anti-forgery)"
+            )
+        # D3：回填後空 refs 下限——artifact 產出必須有至少一個非空 content ref
+        # （正常 case 回填後必有 [ref]，不會空；空產出/空 ref = 無效 artifact）。
+        if not claim.artifact_refs or any(not r for r in claim.artifact_refs):
+            raise BridgeExecutionError(
+                "artifact handoff has empty content refs after Domain Core "
+                "backfill (P1-C2 D3): artifact output must carry at least one "
+                "non-empty content-addressed ref"
+            )
+    elif claim.result_type.value == "evidence":
+        # D4（P1-B D8 承接，語義定錨）：evidence_refs 指向**被驗證的對象**
+        # （Tester 聲稱「我驗證了 artifact X」），逐一 verify（存在性 + hash）
+        # ——驗證被驗證對象真的存在。evidence 自己的文字**不** write_artifact
+        # （那會混淆 evidence_refs / artifact_refs 語義）。verdict 不可
+        # machine-check（HandoffResult 無 verdict 欄位，已知限制），PASS/FAIL
+        # 結論留在 final_message 文字裡，由 Human/Auditor 判定。
+        for ref in claim.evidence_refs:
             if not artifact_store.verify_artifact_ref(ref):
                 raise BridgeExecutionError(
-                    f"claimed artifact ref {ref!r} failed content verification "
-                    f"(P1-B D10): ref missing from artifact store or hash mismatch"
+                    f"claimed evidence ref {ref!r} failed content verification "
+                    f"(P1-C2 D4): verified artifact missing from artifact store "
+                    f"or hash mismatch"
                 )
 
     # capability 層（P1-C0）：kernel.record_handoff 的 role↔capability

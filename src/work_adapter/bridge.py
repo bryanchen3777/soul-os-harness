@@ -34,6 +34,14 @@ DSH P1-C1 — 升級：真 DSH headless execution（C1.4）。
        danger-full-access` event（dsh-permission-presets.pinInitialPermission），
        override 掉 workspace-write——disable 後 session 無 override，
        resolve() 落回 deployment default（= overlay 的 workspace-write）。
+    4. `approval`（dsh-user-approval，P1-C2 D6）：`config.policy: never`。
+       DSH 枚舉值 `ApprovalPolicy = 'ask' | 'never'`（實讀 dsh-user-approval
+       types），`never` = 確定性 rejected（approval.request() 在 dispatch
+       waterfall 前直接回 "rejected"）——headless/CI 的 fail-fast deny 姿態，
+       避免 base approval policy "ask" 在無 answerer 的 headless session 上
+       escalation hang（C1.9 觀察到）。`permission` disabled 後不會 pin
+       `approval/policy` event，effective policy 落回 plugin config =
+       never。
   - **log 路徑定位（事後讀回，sessionId 不可控）**：
     1. spawn 前記錄 `<session_root>/<projectKey(cwd)>/` 下既有的 session
        目錄清單（projectKey = dsh-session-persistence-jsonl 的 on-disk
@@ -286,8 +294,8 @@ class WorkExecutionBridge:
         session_root_posix = self._session_root.as_posix()
         role_cwd_posix = Path(role_cwd).as_posix()
         overlay = (
-            "# DSH P1-C1 headless execution overlay (identity-safe session "
-            "log + confined tool scope)\n"
+            "# DSH P1-C2 headless execution overlay (identity-safe session "
+            "log + confined tool scope + fail-fast approval deny)\n"
             f"- id: session-persistence-jsonl\n"
             f"  config:\n"
             f"    root: \"{session_root_posix}\"\n"
@@ -296,6 +304,9 @@ class WorkExecutionBridge:
             f"  config:\n"
             f"    mode: workspace-write\n"
             f"    workspaceRoot: \"{role_cwd_posix}\"\n"
+            f"- id: approval\n"
+            f"  config:\n"
+            f"    policy: never\n"
             f"- id: permission\n"
             f"  disabled: true\n"
         )
@@ -422,6 +433,10 @@ def _build_task_text(message: BridgeMessage) -> str:
     Domain Core 從 session log 讀回後重建 claim（C1.6）。claim 模板的
     result_type 由 request capability 推導（Domain Core canonical：
     result_type_for_capability），與 M2 anchor 一致。
+
+    P1-C2（D1/D2）：artifact 分支的 artifact_refs 模板改為 []——ref 由
+    Domain Core 從 final_message 計算回填（agent 不聲稱，自指矛盾）；
+    evidence 分支保留 evidence_refs 指向**被驗證對象**的語義。
     """
     payload = message.payload
     work_id = payload.get("work_id", "")
@@ -431,19 +446,31 @@ def _build_task_text(message: BridgeMessage) -> str:
     result_type = result_type_for_capability(capability).value
     if result_type == "artifact":
         claim_form = (
-            f'"artifact_refs": ["sha256:<hex>"], "evidence_refs": [], '
+            f'"artifact_refs": [], "evidence_refs": [], '
             f'"decision": {{}}'
+        )
+        guidance = (
+            "Your final message text IS the artifact content; the system "
+            "computes its content-addressed ref from that text and records "
+            "it for you — do NOT compute or list any sha256 refs, leave "
+            "artifact_refs empty."
         )
     elif result_type == "evidence":
         claim_form = (
             f'"artifact_refs": [], "evidence_refs": ["sha256:<hex>"], '
             f'"decision": {{}}'
         )
+        guidance = (
+            "evidence_refs lists the content-addressed ref of the artifact "
+            "you verified (the object under test), not a ref of your own "
+            "message — leave artifact_refs empty."
+        )
     else:  # decision
         claim_form = (
             f'"artifact_refs": [], "evidence_refs": [], '
             f'"decision": {{"choice": "..."}}'
         )
+        guidance = "Leave artifact_refs and evidence_refs empty."
     return (
         f"You are the {role} agent for Soul OS work {work_id}. "
         f"Objective: {objective}. Capability: {capability}. "
@@ -453,7 +480,7 @@ def _build_task_text(message: BridgeMessage) -> str:
         f'{{"work_id": "<work_id>", "role": "<your role>", '
         f'"result_type": "{result_type}", {claim_form}, '
         f'"status": "done", "resume_hint": {{}}}}. '
-        f'The refs you list must be the sha256 content-addressed refs of the '
-        f'artifacts/evidence you produced. If you cannot complete the work, '
-        f'use "status": "blocked" with a resume_hint explaining why.'
+        f"{guidance} "
+        f'If you cannot complete the work, use "status": "blocked" with a '
+        f"resume_hint explaining why."
     )
