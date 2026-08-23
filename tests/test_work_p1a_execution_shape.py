@@ -132,14 +132,14 @@ class TestBuildExecutionRequestPayload:
     def test_payload_has_execution_shape(self):
         """payload["execution_shape"] 存在且等於 derive_execution_shape(work).value。"""
         work = _work()
-        msg = build_execution_request(work, "developer", "artifact.create")
+        msg = build_execution_request(work, "researcher", "artifact.create")
         assert "execution_shape" in msg.payload
         assert msg.payload["execution_shape"] == derive_execution_shape(work).value
 
     def test_execution_shape_present_in_multi_stage_work(self):
         """有 dependencies 的 Work → payload["execution_shape"] == "multi_stage"。"""
         work = _work(dependencies=["work-2"])
-        msg = build_execution_request(work, "developer", "artifact.create")
+        msg = build_execution_request(work, "researcher", "artifact.create")
         assert msg.payload["execution_shape"] == ExecutionShape.MULTI_STAGE.value
 
     def test_capability_neutral_values(self):

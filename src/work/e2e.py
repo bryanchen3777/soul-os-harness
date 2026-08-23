@@ -168,7 +168,7 @@ def run_vertical_slice(
     # ── 6. Specialist handoff：artifact（2A §6） ──
     orchestrator.consume_handoff(HandoffResult(
         work_id=work_id,
-        role=Role.DEVELOPER.value,
+        role=Role.RESEARCHER.value,
         result_type=ResultType.ARTIFACT,
         artifact_refs=["sha256:artifact-1"],
         status=HandoffStatus.DONE,
@@ -177,7 +177,7 @@ def run_vertical_slice(
     # ── 7. 自主 transition：in_progress → awaiting_review → awaiting_approval ──
     _record_transition(
         kernel, work_id, WorkState.IN_PROGRESS, WorkState.AWAITING_REVIEW,
-        role=Role.DEVELOPER.value, capability="artifact.create",
+        role=Role.RESEARCHER.value, capability="artifact.create",
     )
     _record_transition(
         kernel, work_id, WorkState.AWAITING_REVIEW, WorkState.AWAITING_APPROVAL,

@@ -18,7 +18,7 @@ import logging
 from pathlib import Path
 
 from .bridge import DURABLE_WRITER
-from .roles import Role
+from .roles import Role, has_capability, CapabilityNotAuthorizedError
 from .schema import (
     HandoffResult,
     HandoffStatus,
@@ -53,6 +53,10 @@ _HANDOFF_CAPABILITY: dict[ResultType, str] = {
     ResultType.EVIDENCE: "evidence.create",
     ResultType.DECISION: "decision",
 }
+
+# decision 不 gate（2A §3.1：decisions 是任何 agent 的自主選擇，只記錄供 audit，
+# 不 gate）。artifact / evidence 才要求 role 具備對應 capability（2A §5.1）。
+_NON_GATED_RESULT_TYPES = frozenset({ResultType.DECISION})
 
 
 def result_type_for_capability(capability: str) -> ResultType:
@@ -167,6 +171,17 @@ class WorkKernel:
             )
             self.append(event)
             return event
+
+        # role↔capability enforcement（2A §5.1，P1-C0）：
+        # 記錄產出前驗證 handoff.role 具備 result_type 對應 capability。
+        # decision 不 gate（2A §3.1）；blocked/needs_input 不在此（M1 已分流）。
+        if handoff.result_type not in _NON_GATED_RESULT_TYPES:
+            required_capability = _HANDOFF_CAPABILITY[handoff.result_type]
+            if not has_capability(handoff.role, required_capability):
+                raise CapabilityNotAuthorizedError(
+                    f"role={handoff.role!r} lacks capability {required_capability!r} "
+                    f"for result_type={handoff.result_type.value!r}"
+                )
 
         event_type = _HANDOFF_EVENT_TYPE[handoff.result_type]
         capability = _HANDOFF_CAPABILITY[handoff.result_type]

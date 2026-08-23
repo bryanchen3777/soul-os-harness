@@ -270,7 +270,7 @@ class TestM2ResultTypeCapabilityAnchor:
 
         rows_before = len(_log_rows(tmp_path))
         with pytest.raises(BridgeExecutionError, match="result_type mismatch"):
-            execute_work(orch, work_id, Role.DEVELOPER.value, "artifact.create", bridge)
+            execute_work(orch, work_id, Role.RESEARCHER.value, "artifact.create", bridge)
         assert len(_log_rows(tmp_path)) == rows_before  # 不寫 durable state
         assert _artifact_rows(tmp_path) == []
 
@@ -296,7 +296,7 @@ class TestM2ResultTypeCapabilityAnchor:
         bridge = WorkExecutionBridge(adapter_script=script)
 
         _, handoff, event = execute_work(
-            orch, work_id, Role.DEVELOPER.value, "artifact.create", bridge
+            orch, work_id, Role.RESEARCHER.value, "artifact.create", bridge
         )
         assert handoff.result_type == ResultType.ARTIFACT
         assert event.event_type == WorkEventType.ARTIFACT_PRODUCED
@@ -324,6 +324,6 @@ class TestM3BridgeErrorContract:
 
         rows_before = len(_log_rows(tmp_path))
         with pytest.raises(BridgeExecutionError):
-            execute_work(orch, work_id, Role.DEVELOPER.value, "artifact.create", bridge)
+            execute_work(orch, work_id, Role.RESEARCHER.value, "artifact.create", bridge)
         assert len(_log_rows(tmp_path)) == rows_before  # fail closed，無半寫入
         assert _artifact_rows(tmp_path) == []

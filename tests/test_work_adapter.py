@@ -258,24 +258,24 @@ class TestExecutionE2E:
         work_id = _create_assigned_work(orch)
 
         message, handoff, event = execute_work(
-            orch, work_id, Role.DEVELOPER.value, "artifact.create", bridge
+            orch, work_id, Role.RESEARCHER.value, "artifact.create", bridge
         )
 
         # request message 是 BridgeMessage(request)，actor/source 正確
         assert message.message_type == BridgeMessageType.REQUEST
-        assert message.actor == Role.DEVELOPER.value
+        assert message.actor == Role.RESEARCHER.value
         assert message.source == "soul_kernel"
         assert message.payload["work_id"] == work_id
         assert message.payload["capability"] == "artifact.create"
 
         # handoff 錨定到同一 work
         assert handoff.work_id == work_id
-        assert handoff.role == Role.DEVELOPER.value
+        assert handoff.role == Role.RESEARCHER.value
 
         # WorkEvent：artifact_produced，錨定到同一 work
         assert event.event_type == WorkEventType.ARTIFACT_PRODUCED
         assert event.work_id == work_id
-        assert event.provenance.role == Role.DEVELOPER.value
+        assert event.provenance.role == Role.RESEARCHER.value
         assert event.provenance.output_refs == handoff.artifact_refs
 
     def test_execution_path_evidence(self, tmp_path):
@@ -319,7 +319,7 @@ class TestDurableHandoff:
         work_id = _create_assigned_work(orch)
 
         _, handoff, event = execute_work(
-            orch, work_id, Role.DEVELOPER.value, "artifact.create", bridge
+            orch, work_id, Role.RESEARCHER.value, "artifact.create", bridge
         )
 
         # raw durable log：恰一筆 artifact_produced
@@ -340,7 +340,7 @@ class TestDurableHandoff:
         work_id = _create_assigned_work(orch)
 
         _, _, event = execute_work(
-            orch, work_id, Role.DEVELOPER.value, "artifact.create", bridge
+            orch, work_id, Role.RESEARCHER.value, "artifact.create", bridge
         )
 
         rows = _artifact_rows(tmp_path)
@@ -432,7 +432,7 @@ class TestRestartResume:
         bridge1 = _bridge(tmp_path)
         work_id = _create_assigned_work(orch1)
         _, _, event1 = execute_work(
-            orch1, work_id, Role.DEVELOPER.value, "artifact.create", bridge1
+            orch1, work_id, Role.RESEARCHER.value, "artifact.create", bridge1
         )
 
         # restart：全新組件，同一 durable data_dir
@@ -445,7 +445,7 @@ class TestRestartResume:
 
         # resume 後重跑同 request → Domain Core dedup 命中，不重複 append
         _, _, event2 = execute_work(
-            orch2, work_id, Role.DEVELOPER.value, "artifact.create", bridge2
+            orch2, work_id, Role.RESEARCHER.value, "artifact.create", bridge2
         )
         # 回傳的是同一筆 event（逐位元相同），durable log 仍只有一筆
         assert event2.model_dump_json() == event1.model_dump_json()
@@ -465,10 +465,10 @@ class TestDedup:
         work_id = _create_assigned_work(orch)
 
         _, _, event1 = execute_work(
-            orch, work_id, Role.DEVELOPER.value, "artifact.create", bridge
+            orch, work_id, Role.RESEARCHER.value, "artifact.create", bridge
         )
         _, _, event2 = execute_work(
-            orch, work_id, Role.DEVELOPER.value, "artifact.create", bridge
+            orch, work_id, Role.RESEARCHER.value, "artifact.create", bridge
         )
 
         # dedup 回傳同一筆 event（逐位元相同），durable log 只有一筆
@@ -498,7 +498,7 @@ class TestFailureIsolation:
         orch, work_id, bridge = self._work_with_bridge(tmp_path, script)
 
         with pytest.raises(BridgeExecutionError):
-            execute_work(orch, work_id, Role.DEVELOPER.value, "artifact.create", bridge)
+            execute_work(orch, work_id, Role.RESEARCHER.value, "artifact.create", bridge)
 
         assert _artifact_rows(tmp_path) == []           # 無半寫入
         assert orch.synthesize(work_id).state.value == "proposed"  # durable truth 完好
@@ -516,7 +516,7 @@ class TestFailureIsolation:
         )
 
         with pytest.raises(BridgeExecutionError):
-            execute_work(orch, work_id, Role.DEVELOPER.value, "artifact.create", bridge)
+            execute_work(orch, work_id, Role.RESEARCHER.value, "artifact.create", bridge)
 
         assert _artifact_rows(tmp_path) == []
 
@@ -532,7 +532,7 @@ class TestFailureIsolation:
         orch, work_id, bridge = self._work_with_bridge(tmp_path, script)
 
         with pytest.raises(BridgeExecutionError):
-            execute_work(orch, work_id, Role.DEVELOPER.value, "artifact.create", bridge)
+            execute_work(orch, work_id, Role.RESEARCHER.value, "artifact.create", bridge)
 
         assert _artifact_rows(tmp_path) == []
 
@@ -546,7 +546,7 @@ class TestFailureIsolation:
         orch, work_id, bridge = self._work_with_bridge(tmp_path, script)
 
         with pytest.raises(BridgeExecutionError):
-            execute_work(orch, work_id, Role.DEVELOPER.value, "artifact.create", bridge)
+            execute_work(orch, work_id, Role.RESEARCHER.value, "artifact.create", bridge)
 
         assert _artifact_rows(tmp_path) == []
 
@@ -562,7 +562,7 @@ class TestFailureIsolation:
         orch, work_id, bridge = self._work_with_bridge(tmp_path, script)
 
         with pytest.raises(BridgeExecutionError):
-            execute_work(orch, work_id, Role.DEVELOPER.value, "artifact.create", bridge)
+            execute_work(orch, work_id, Role.RESEARCHER.value, "artifact.create", bridge)
 
         assert _artifact_rows(tmp_path) == []
 
@@ -582,7 +582,7 @@ class TestFailureIsolation:
         orch, work_id, bridge = self._work_with_bridge(tmp_path, script)
 
         with pytest.raises(BridgeExecutionError):
-            execute_work(orch, work_id, Role.DEVELOPER.value, "artifact.create", bridge)
+            execute_work(orch, work_id, Role.RESEARCHER.value, "artifact.create", bridge)
 
         assert _artifact_rows(tmp_path) == []   # 沒有污染任何 work 的 log
 
@@ -601,7 +601,7 @@ class TestNoDSHSurvival:
         orch.assign(work_id, Role.DEVELOPER)
         event = orch.consume_handoff(HandoffResult(
             work_id=work_id,
-            role=Role.DEVELOPER.value,
+            role=Role.RESEARCHER.value,
             result_type=ResultType.ARTIFACT,
             artifact_refs=["local:artifact-1"],
             status=HandoffStatus.DONE,
@@ -652,7 +652,7 @@ class TestNoDSHSurvival:
         bridge = WorkExecutionBridge(node_bin="definitely-missing-node-xyz")
 
         with pytest.raises(BridgeExecutionError):
-            execute_work(orch, work_id, Role.DEVELOPER.value, "artifact.create", bridge)
+            execute_work(orch, work_id, Role.RESEARCHER.value, "artifact.create", bridge)
 
         # durable truth 完好，fold 仍可用（DSH 拔掉不影響 Domain Core）
         work = orch.synthesize(work_id)
@@ -666,7 +666,7 @@ class TestNoDSHSurvival:
         bridge = WorkExecutionBridge(adapter_script=tmp_path / "nonexistent.mjs")
 
         with pytest.raises(BridgeExecutionError):
-            execute_work(orch, work_id, Role.DEVELOPER.value, "artifact.create", bridge)
+            execute_work(orch, work_id, Role.RESEARCHER.value, "artifact.create", bridge)
 
         assert _artifact_rows(tmp_path) == []
 
@@ -682,7 +682,12 @@ class TestScopeContainment:
         Phase 0 鎖死 src/work/ 零改動；DSH P1-Preflight（M1/M2a）明確授權改
         src/work/kernel.py（record_handoff status 語義 + result_type_for_capability）；
         DSH P1-A（Execution Target Contract）授權改 src/work/schema.py（新增
-        ExecutionShape enum）+ src/work/workflow.py（新增 derive_execution_shape）。
+        ExecutionShape enum）+ src/work/workflow.py（新增 derive_execution_shape）；
+        DSH P1-C0（Domain Core Capability Enforcement）授權改 src/work/roles.py
+        （新增 CapabilityNotAuthorizedError）+ src/work/kernel.py（record_handoff
+        role↔capability enforcement），並依 frozen matrix 修正 src/work/e2e.py 的
+        Developer + artifact.create divergence（2A §5.1：artifact.create 歸
+        Researcher，不反向修改 matrix）。
         其餘 src/work/ 模組仍不得有任何改動。
         """
         proc = subprocess.run(
@@ -701,10 +706,10 @@ class TestScopeContainment:
         }
         assert changed <= {
             "src/work/kernel.py",
-            "src/work/schema.py",
-            "src/work/workflow.py",
+            "src/work/roles.py",
+            "src/work/e2e.py",
         }, (
-            "src/work/ 僅授權檔可被 P1-Preflight / P1-A 改動：\n" + proc.stdout
+            "src/work/ 僅授權檔可被 P1-C0 改動：\n" + proc.stdout
         )
 
     def test_adapter_python_modules_do_not_import_dsh(self):

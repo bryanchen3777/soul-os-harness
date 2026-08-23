@@ -193,7 +193,7 @@ def test_kernel_record_handoff_artifact(tmp_path):
 
     kernel.append(_transition(work_id, None, "proposed", objective="obj", owner="chief"))
     handoff = HandoffResult(
-        work_id=work_id, role="developer", result_type=ResultType.ARTIFACT,
+        work_id=work_id, role="researcher", result_type=ResultType.ARTIFACT,
         artifact_refs=["sha256:abc"], status=HandoffStatus.DONE,
     )
     kernel.record_handoff(handoff)

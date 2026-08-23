@@ -120,7 +120,7 @@ def test_consume_handoff_artifact(tmp_path):
     work_id = orch.create_work("build X", "chief")
 
     handoff = HandoffResult(
-        work_id=work_id, role="developer", result_type=ResultType.ARTIFACT,
+        work_id=work_id, role="researcher", result_type=ResultType.ARTIFACT,
         artifact_refs=["sha256:abc"], status=HandoffStatus.DONE,
     )
     event = orch.consume_handoff(handoff)
@@ -172,7 +172,7 @@ def test_full_loop(tmp_path):
     work_id = orch.create_work("build feature X", "chief")
     orch.assign(work_id, "developer")
     orch.consume_handoff(HandoffResult(
-        work_id=work_id, role="developer", result_type=ResultType.ARTIFACT,
+        work_id=work_id, role="researcher", result_type=ResultType.ARTIFACT,
         artifact_refs=["sha256:abc"], status=HandoffStatus.DONE,
     ))
 

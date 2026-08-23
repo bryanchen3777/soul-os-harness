@@ -29,6 +29,10 @@ class Role(str, Enum):
     HUMAN = "human"
 
 
+class CapabilityNotAuthorizedError(PermissionError):
+    """role 不具備 result_type 對應的 capability（2A §5.1）。"""
+
+
 # Role → Capability 矩陣（2A §5.1 唯一 authoritative source）。
 # capability 名稱是 capability-neutral（非 DSH tool 名）。
 ROLE_CAPABILITIES: dict[Role, frozenset[str]] = {

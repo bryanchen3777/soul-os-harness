@@ -50,7 +50,7 @@ def _source_of(module) -> str:
 # Helpers
 # ─────────────────────────────────────────────
 
-def _artifact_handoff(work_id, refs=("sha256:abc",), role="developer", **kw) -> HandoffResult:
+def _artifact_handoff(work_id, refs=("sha256:abc",), role="researcher", **kw) -> HandoffResult:
     return HandoffResult(
         work_id=work_id, role=role, result_type=ResultType.ARTIFACT,
         artifact_refs=list(refs), status=HandoffStatus.DONE, **kw,
@@ -149,7 +149,7 @@ def test_idempotency_key_from_event_matches_handoff(tmp_path):
     event = orch.consume_handoff(handoff)
     assert derive_idempotency_key_from_event(event) == derive_idempotency_key_from_handoff(handoff)
     assert derive_idempotency_key_from_event(event) == derive_idempotency_key(
-        work_id=work_id, role="developer", result_type="artifact",
+        work_id=work_id, role="researcher", result_type="artifact",
         refs=["sha256:abc"],
     )
 
