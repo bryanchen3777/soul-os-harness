@@ -24,7 +24,7 @@ from __future__ import annotations
 from src.work.bridge import BridgeMessage, BridgeMessageType
 from src.work.kernel import result_type_for_capability
 from src.work.schema import HandoffResult, WorkEvent, WorkObject
-from src.work.workflow import WorkflowOrchestrator
+from src.work.workflow import WorkflowOrchestrator, derive_execution_shape
 
 from .bridge import BridgeExecutionError, WorkExecutionBridge
 
@@ -40,9 +40,10 @@ def build_execution_request(
     """把 current WorkObject 轉成 BridgeMessage(request)（migration plan §3.2）。
 
     payload 帶 minimal execution request：work_id / objective / role /
-    capability / resume_state（最小重建狀態）。causation 是 Soul causal
-    truth（event_id），reference 是外部 reference（如 DSH sessionId），
-    兩者都不是 Soul identity（migration plan §3.2）。
+    capability / execution_shape / resume_state（最小重建狀態）。execution_shape
+    由 Domain Core 推導（Soul 決定），adapter 只 translate，不自決（P1-A §3.4）。
+    causation 是 Soul causal truth（event_id），reference 是外部 reference
+    （如 DSH sessionId），兩者都不是 Soul identity（migration plan §3.2）。
     """
     return BridgeMessage(
         message_type=BridgeMessageType.REQUEST,
@@ -55,6 +56,7 @@ def build_execution_request(
             "objective": work.objective,
             "role": role,
             "capability": capability,
+            "execution_shape": derive_execution_shape(work).value,  # ← P1-A 新增
             "resume_state": work.resume_state.model_dump(mode="json"),
         },
     )

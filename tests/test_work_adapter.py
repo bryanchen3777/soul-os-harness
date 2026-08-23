@@ -677,10 +677,12 @@ class TestNoDSHSurvival:
 
 class TestScopeContainment:
     def test_src_work_untouched_by_git(self):
-        """git 確認 src/work/ 改動僅限 P1-Preflight 授權的 kernel.py（scope containment）。
+        """git 確認 src/work/ 改動僅限授權檔（scope containment）。
 
         Phase 0 鎖死 src/work/ 零改動；DSH P1-Preflight（M1/M2a）明確授權改
-        src/work/kernel.py（record_handoff status 語義 + result_type_for_capability）。
+        src/work/kernel.py（record_handoff status 語義 + result_type_for_capability）；
+        DSH P1-A（Execution Target Contract）授權改 src/work/schema.py（新增
+        ExecutionShape enum）+ src/work/workflow.py（新增 derive_execution_shape）。
         其餘 src/work/ 模組仍不得有任何改動。
         """
         proc = subprocess.run(
@@ -697,8 +699,12 @@ class TestScopeContainment:
             for line in proc.stdout.splitlines()
             if line.strip()
         }
-        assert changed <= {"src/work/kernel.py"}, (
-            "src/work/ 僅 kernel.py 可被 P1-Preflight 改動：\n" + proc.stdout
+        assert changed <= {
+            "src/work/kernel.py",
+            "src/work/schema.py",
+            "src/work/workflow.py",
+        }, (
+            "src/work/ 僅授權檔可被 P1-Preflight / P1-A 改動：\n" + proc.stdout
         )
 
     def test_adapter_python_modules_do_not_import_dsh(self):

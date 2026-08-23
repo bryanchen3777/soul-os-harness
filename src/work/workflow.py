@@ -25,6 +25,7 @@ from uuid import uuid4
 from .kernel import WorkKernel
 from .roles import Role
 from .schema import (
+    ExecutionShape,
     HandoffResult,
     Provenance,
     WorkEvent,
@@ -32,6 +33,28 @@ from .schema import (
     WorkObject,
     WorkState,
 )
+
+
+def derive_execution_shape(work: WorkObject) -> ExecutionShape:
+    """從 Work Object 語義推導 execution shape（Soul 決定，adapter 只 translate）。
+
+    規則（P1 decomposition §3.3）：
+    - work.dependencies 非空 → multi_stage
+    - 需「無 human/chief 介入的多輪自動續輪」→ continuous
+    - 其餘（含 blocked 後單輪 specialist resume）→ single_shot
+
+    resume discriminator（關鍵）：blocked 後由單一 specialist 再 handoff 一輪
+    完成（blocked → resume 回 in_progress → consume_handoff）是 single_shot，
+    不是 continuous。continuous 只保留給 goal 驅動多輪自動續輪。
+    """
+    if work.dependencies:
+        return ExecutionShape.MULTI_STAGE
+    # continuous 的判別：目前 Work Object 無「goal 驅動」欄位。
+    # 第一期：dependencies 永為 []（create_work 硬編 []），且無 goal 語義載體，
+    # 故本函數在第一期實質只回 single_shot。continuous 的觸發條件待 P1-D
+    # 定義（goal resume semantics），此處先以「resume_state 帶 continuous 標記」為
+    # 預留判別點，但不實作（避免假驗證）。
+    return ExecutionShape.SINGLE_SHOT
 
 
 class WorkflowOrchestrator:

@@ -745,20 +745,29 @@ DSH Multi-Agent MVP 是 Soul OS 遷入 DeepSeek Harness 的前置 domain core。
 - MA-4 Build Plan ❌ BLOCKED → MA-4-R1 修復（authority trust establishment + resume idempotency）→ Independent Review PASS → **IMPLEMENTATION AUTHORIZED**
 - P0-1 Minimal Work Execution Adapter → Independent Adversarial Review（READ-ONLY）→ **READY FOR PHASE 0 GATE**
 - P1-Preflight Hardening（M1/M2/M3）→ Independent Adversarial Review（READ-ONLY）→ **READY TO LAND**
+- P1 Decomposition（Execution Routing）→ Review #1 BLOCKED（2 項）→ 修正 → Re-review → **READY FOR IMPLEMENTATION**
+- P1-A Execution Target Contract（Domain Core 側）→ Independent Adversarial Review（READ-ONLY）→ **READY TO LAND**
 
 **P0-1 成果**（commit `ece757b`）：`src/work_adapter/`（bridge.py + execution.py）、`dsh_adapter/soul-dsh-adapter.mjs`（mock TS adapter）、`tests/test_work_adapter.py`（27 tests）。230 tests 全綠。8/8 Hard Checks PASS + 10 acceptance gates PASS。`git diff 26e1e49 -- src/work` 為空（Domain Core 十一模組零改動）；`src/` 全樹零 DSH import；無 durable write bypass；No-DSH Survival 實測成立。
 
 **Phase 0 Gate（Contract / E2E / No-DSH）**：→ **Phase 0 CLOSED**（commit `ece757b`）。
 
-**P1-Preflight 成果**（commit 待 landing）：M1 `HandoffStatus`→WorkState 語義（blocked/needs_input → state_transition(current→blocked)，不照記產出）、M2 `result_type`↔capability anchor 驗證（堵 event 類型/provenance 錯記）、M3 bridge error contract 統一（binary I/O + 主執行緒 decode，`UnicodeDecodeError`→`BridgeExecutionError`）。239 tests 全綠（230 + 9 new）。8/8 Hard Checks PASS + bypass=NO。`src/work/` 僅 kernel.py 可動（P1-Preflight 授權），其餘十模組零改動；零 DSH import 不變。
+**P1-Preflight 成果**（commit `34e91d4`）：M1 `HandoffStatus`→WorkState 語義（blocked/needs_input → state_transition(current→blocked)，不照記產出）、M2 `result_type`↔capability anchor 驗證（堵 event 類型/provenance 錯記）、M3 bridge error contract 統一（binary I/O + 主執行緒 decode，`UnicodeDecodeError`→`BridgeExecutionError`）。239 tests 全綠。8/8 Hard Checks PASS + bypass=NO。
 
-**Phase 1 剩餘 backlog（CAN-DEFER，非 execution correctness 前置）**：
-1. refs content-address 驗證（需 artifact store，2B 才設計；Phase 1 有 store 後連同 TS mirror schema 驗證一起做）
-2. production adapter 依 MA-4 §1.1 移出 repo 為獨立 package
+**P1 Decomposition 成果**（`docs/DSH-P1-EXECUTION-ROUTING.md`，commit 待 landing）：P1-A~P1-E 分解，鎖定 P1-A Execution Target Contract（`ExecutionShape` capability-neutral + shape 由 Soul 推導 + adapter 只 translate）。Review #1 BLOCKED（A2 resume discriminator 未鎖 + A5 防火牆無 mechanism）→ 修正 → Re-review READY。
+
+**P1-A 成果**（commit 待 landing）：`src/work/schema.py` 新增 `ExecutionShape` enum（single_shot / multi_stage / continuous，capability-neutral）+ `src/work/workflow.py` 新增 `derive_execution_shape`（dependencies 非空→multi_stage，其餘→single_shot；continuous 不實作，待 P1-D）+ `src/work_adapter/execution.py` payload 新增 `execution_shape`。249 tests 全綠（239 + 10 new）。8/8 PASS + bypass=NO。`src/work/` 授權集 {kernel.py, schema.py, workflow.py}；零 DSH import 不變。
+
+**Phase 1 剩餘 backlog（CAN-DEFER / 後續 phase）**：
+1. refs content-address 驗證（需 artifact store；P1-B 決定與 store 同批落地）
+2. production adapter 依 MA-4 §1.1 移出 repo 為獨立 package（P1-E）
 3. grant() reject `expires_at=None` / e2e 改用 `issue_hmac_context` / durable nonce registry（MA-4-R1 承接）
-4. blocked handoff 重試 dedup（crash-after-write 場景，Phase 1 若需要再議）
+4. blocked handoff 重試 dedup（crash-after-write 場景，P1-D）
+5. continuous 觸發條件（P1-D goal resume semantics，derive 現只回 single_shot）
+6. multi_stage workflow script authorship（P1-D 前置決策 A6，未解）
+7. stale test `tests/test_soul_md_loader.py`（import 已移除的 `SOUL_OS_OVERRIDE`，pre-existing，非 P1-A 範圍）
 
-**Next work**: Phase 1（DSH adapter 接真 subagent / workflow / goal 的 execution 路由，不接 Soul runtime）。
+**Next work**: P1-B（Artifact / Reference Boundary，ref 定址與 store 同批落地決策）→ P1-C（DSH Execution Routing 第一期，single_shot subagent）。
 
 ---
 
@@ -948,6 +957,8 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-08-23 (DSH MVP) | DSH Multi-Agent MVP COMPLETE / ACCEPTED（MVP Contract Gate 8/8 PASS，bypass discovered = NO）。2A–2D contracts（`f5fb0cd`）+ MVP-1~7（`9a8b7a2` → `d7877e0`）全 commit。4 條 non-blocking discrepancy 記為 accepted limitations / future hardening（§5.8）。Next: DSH-MA-0 — Multi-Agent Environment Architecture & Adapter Boundary Audit。 | Mavis / Lin | DSH MVP |
 | 2026-08-23 (DSH MA) | DSH MA-0~MA-4-R1 治理鏈閉合：MA-0 Audit → MA-1 Adapter Boundary → MA-2 Migration Architecture → MA-3 Migration Decomposition → MA-4 Build Plan（BLOCKED）→ MA-4-R1 修復（HMAC authority trust establishment + durable-log idempotency dedup）→ Independent Review PASS → IMPLEMENTATION AUTHORIZED。R1 新增 41 tests（203 passed）。3 條 non-blocking hardening 列入 Phase 0 backlog（expires_at=None 拒絕 / e2e 改用 issue_hmac_context / durable nonce registry）。 | Mavis / Lin | DSH MA-4-R1 |
 | 2026-08-23 (DSH P0-1) | Phase 0 Minimal Work Execution Adapter 實作完成 + Independent Adversarial Review（READ-ONLY）→ **READY FOR PHASE 0 GATE**。新檔 `src/work_adapter/`（bridge.py + execution.py）+ `dsh_adapter/soul-dsh-adapter.mjs`（mock TS）+ `tests/test_work_adapter.py`（27 tests）。230 tests 全綠。8/8 Hard Checks PASS。`git diff 26e1e49 -- src/work` 為空（Domain Core 零改動）、src/ 全樹零 DSH import、無 durable write bypass、No-DSH Survival 實測成立。**Phase 0 Gate → Phase 0 CLOSED**（commit `ece757b`）。 | Mavis / Lin | DSH P0-1 |
-| 2026-08-23 (DSH P1-Preflight) | Phase 1 前置 hardening 實作完成 + Independent Adversarial Review（READ-ONLY）→ **READY TO LAND**。M1 `HandoffStatus`→WorkState 語義（blocked/needs_input → state_transition，不照記產出）、M2 `result_type`↔capability anchor 驗證、M3 bridge error contract 統一（binary I/O + 主執行緒 decode）。239 tests 全綠（230 + 9 new）。8/8 Hard Checks PASS + bypass=NO。`src/work/` 僅 kernel.py 可動，其餘十模組零改動；零 DSH import 不變。D1–D5 CAN-DEFER 收斂為 4 項 Phase 1 剩餘 backlog。 | Mavis / Lin | DSH P1-Preflight |
+| 2026-08-23 (DSH P1-Preflight) | Phase 1 前置 hardening 實作完成 + Independent Adversarial Review（READ-ONLY）→ **READY TO LAND**。M1 `HandoffStatus`→WorkState 語義（blocked/needs_input → state_transition，不照記產出）、M2 `result_type`↔capability anchor 驗證、M3 bridge error contract 統一（binary I/O + 主執行緒 decode）。239 tests 全綠（230 + 9 new）。8/8 Hard Checks PASS + bypass=NO。`src/work/` 僅 kernel.py 可動，其餘十模組零改動；零 DSH import 不變。commit `34e91d4`。 | Mavis / Lin | DSH P1-Preflight |
+| 2026-08-23 (DSH P1 Decomposition) | P1 Execution Routing Decomposition（`docs/DSH-P1-EXECUTION-ROUTING.md`）→ Review #1 BLOCKED（2 項：A2 resume discriminator 未鎖 + A5 防火牆無 mechanism）→ 修正（7 處）→ Re-review → **READY FOR IMPLEMENTATION**。P1-A~P1-E 分解，鎖定 ExecutionShape capability-neutral + shape 由 Soul 推導 + adapter 只 translate。 | Mavis / Lin | DSH P1 Decomposition |
+| 2026-08-23 (DSH P1-A) | Execution Target Contract（Domain Core 側）實作完成 + Independent Adversarial Review（READ-ONLY）→ **READY TO LAND**。`src/work/schema.py` 新增 `ExecutionShape` enum + `src/work/workflow.py` 新增 `derive_execution_shape`（continuous 不實作，待 P1-D）+ `execution.py` payload 新增 `execution_shape`。249 tests 全綠（239 + 10 new）。8/8 PASS + bypass=NO。零 DSH import 不變。 | Mavis / Lin | DSH P1-A |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**

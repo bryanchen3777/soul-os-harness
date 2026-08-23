@@ -80,6 +80,17 @@ class HandoffStatus(str, Enum):
     NEEDS_INPUT = "needs_input"
 
 
+class ExecutionShape(str, Enum):
+    """執行型態（capability-neutral，Domain Core contract，2A §7 / P1 decomposition §3）。
+
+    不是 DSH primitive 名。Soul 從 Work Object 語義推導，adapter 才映射到
+    DSH primitive（subagent / workflow / goal）。
+    """
+    SINGLE_SHOT = "single_shot"
+    MULTI_STAGE = "multi_stage"
+    CONTINUOUS = "continuous"
+
+
 # ─────────────────────────────────────────────
 # 2. 子結構
 # ─────────────────────────────────────────────
