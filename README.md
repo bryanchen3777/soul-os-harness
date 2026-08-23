@@ -389,6 +389,7 @@ Mem Diary Dream EventBus (via SoulEvent.inner_life_event_id)
 | **M7-4** | Restore event schedule timer（event 軌復活） | ✅ | `0978f02` |
 | **Web UI** | 靈魂牆首頁 + 日記時間軸 + 真名 | ✅ | `a3d3b8e` |
 | **History** | as Seeded Memory 架構收斂（設計討論，NOT AUTHORIZED） | 📋 | `ef33999` |
+| **DSH Migration** | Soul OS → DeepSeek Harness runtime substrate 架構計畫（4 invariants + No-DSH survival + phased roadmap，NOT AUTHORIZED） | 📋 | (docs only) |
 
 > 📌 **Canonical state registry**: `logs/ENGINEERING_STATE.md` — single source-of-truth for all milestone / ticket status, supersession chain, active decisions, deferred / optional / blocked work, stale references. Per `logs/ENGINEERING_STATE.md` §2.6 Historical Document Rule, historical closeouts in `logs/` are preserved unchanged; any apparent contradiction with the registry is resolved in favor of the registry.
 >
@@ -488,6 +489,7 @@ soul-os-harness/
 │   ├── COS-v1.0.md           # Character Operating System framework
 │   ├── ORCHESTRATION-v1.0.md # Agent Orchestration System framework
 │   ├── MEMORY-STATUS-AND-PLAN.md  # 記憶系統現況總結
+│   ├── DSH-SOUL-OS-MIGRATION-PLAN.md  # Soul OS → DSH runtime substrate 架構計畫
 │   └── KNOWN_ISSUES.md       # 技術債追蹤
 ├── configs/
 │   ├── default.yaml           # 10 個 agent 動態載入配置
@@ -512,4 +514,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-08-22 (Web UI 靈魂牆 + M7-4 event 排程修復 + History as Seeded Memory 架構收斂)
+**最後更新**: 2026-08-23 (DSH runtime substrate 架構計畫)
