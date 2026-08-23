@@ -22,10 +22,12 @@ from typing import Any
 
 from src.paths import data_root
 
-from .bridge import DURABLE_WRITER, is_durable_writer
+from .bridge import DURABLE_WRITER, derive_idempotency_key, is_durable_writer
 from .schema import (
+    HandoffResult,
     Provenance,
     ResumeState,
+    ResultType,
     WorkEvent,
     WorkEventType,
     WorkObject,
@@ -56,7 +58,9 @@ def fold_events(events: list[WorkEvent]) -> WorkObject:
     - resume_state：最小重建
         - current_phase：blocked 時 = 進入 blocked 前的 phase，否則 = state
         - last_artifact_refs：最後一筆 artifact_produced 的 provenance.output_refs
-        - pending_handoffs / idempotency_keys：MVP-1 不從 WorkEvent 推導，預設 []
+        - pending_handoffs：MVP-1 不從 WorkEvent 推導，預設 []
+        - idempotency_keys：從 handoff events 推導（R1：resume idempotency，
+          不再是 dead field；durable log 是 dedup 的單一事實來源）
     """
     if not events:
         raise WorkNotFoundError("no events to fold")
@@ -70,6 +74,7 @@ def fold_events(events: list[WorkEvent]) -> WorkObject:
     decisions: list[dict[str, Any]] = []
     approvals: list[dict[str, Any]] = []
     last_artifact_refs: list[str] = []
+    idempotency_keys: list[str] = []
     provenance: Provenance | None = None
     first_transition_seen = False
 
@@ -111,12 +116,20 @@ def fold_events(events: list[WorkEvent]) -> WorkObject:
     if state is None:
         raise ValueError(f"no state_transition event for work_id={work_id}")
 
+    # idempotency_keys：從 durable log 的 handoff events 推導（2D §4），
+    # 按 append 順序、去重。resume_state 因此是真正的「避免重啟後重複執行」
+    # 的最小重建狀態（consume_handoff dedup 與 fold 共用同一推導公式）。
+    for event in events:
+        key = derive_idempotency_key_from_event(event)
+        if key is not None and key not in idempotency_keys:
+            idempotency_keys.append(key)
+
     current_phase = blocked_from if blocked_from is not None else state
     resume_state = ResumeState(
         current_phase=current_phase,
         pending_handoffs=[],
         last_artifact_refs=last_artifact_refs,
-        idempotency_keys=[],
+        idempotency_keys=idempotency_keys,
     )
 
     return WorkObject(
@@ -132,6 +145,65 @@ def fold_events(events: list[WorkEvent]) -> WorkObject:
         approvals=approvals,
         provenance=provenance or Provenance(role="unknown", capability="unknown"),
         resume_state=resume_state,
+    )
+
+
+def derive_idempotency_key_from_handoff(handoff: HandoffResult) -> str:
+    """從 HandoffResult 推導 canonical idempotency key（consume_handoff dedup 用）。
+
+    idempotency_key = hash(work_id + role + result_type + refs/decision)：
+    - artifact → artifact_refs
+    - evidence → evidence_refs
+    - decision → decision dict
+
+    與 `derive_idempotency_key_from_event` 共用同一 canonical 公式（bridge 的
+    `derive_idempotency_key`），兩側推導一致 dedup 才能命中。
+    """
+    if handoff.result_type == ResultType.ARTIFACT:
+        refs = list(handoff.artifact_refs)
+        decision: dict[str, Any] = {}
+    elif handoff.result_type == ResultType.EVIDENCE:
+        refs = list(handoff.evidence_refs)
+        decision = {}
+    else:  # DECISION
+        refs = []
+        decision = handoff.decision
+    return derive_idempotency_key(
+        work_id=handoff.work_id,
+        role=handoff.role,
+        result_type=handoff.result_type.value,
+        refs=refs,
+        decision=decision,
+    )
+
+
+def derive_idempotency_key_from_event(event: WorkEvent) -> str | None:
+    """從既有 WorkEvent 推導 idempotency key；非 handoff event → None。
+
+    kernel.record_handoff 把 handoff 的 role / refs / decision 寫進 event 的
+    provenance / payload，因此 durable log 本身即可重現 key（不需額外欄位）。
+    與 `derive_idempotency_key_from_handoff` 共用同一公式，dedup 才能命中。
+    """
+    if event.event_type == WorkEventType.ARTIFACT_PRODUCED:
+        refs = list(event.provenance.output_refs) if event.provenance else []
+        decision: dict[str, Any] = {}
+        result_type = ResultType.ARTIFACT.value
+    elif event.event_type == WorkEventType.EVIDENCE_PRODUCED:
+        refs = list(event.provenance.output_refs) if event.provenance else []
+        decision = {}
+        result_type = ResultType.EVIDENCE.value
+    elif event.event_type == WorkEventType.DECISION_MADE:
+        refs = []
+        decision = event.payload.get("decision", {})
+        result_type = ResultType.DECISION.value
+    else:
+        return None
+    return derive_idempotency_key(
+        work_id=event.work_id,
+        role=event.provenance.role if event.provenance else "",
+        result_type=result_type,
+        refs=refs,
+        decision=decision,
     )
 
 
@@ -171,6 +243,19 @@ class WorkStore:
         if not events:
             raise WorkNotFoundError(f"no events for work_id={work_id}")
         return fold_events(events)
+
+    def handoff_event_by_key(self, work_id: str, key: str) -> WorkEvent | None:
+        """回傳該 work 已記錄的、idempotency key 相符的 handoff event（dedup 查詢）。
+
+        consume_handoff 的 Domain Core dedup（R1）：若 idempotency_key 已存在於
+        durable log（duplicate / crash-after-write / retry）→ 回傳既有 event，
+        caller skip 不重複 append；找不到 → None。durable log 是 dedup 的
+        單一事實來源（Soul OS owns the durable work truth, 2D §1）。
+        """
+        for event in self._read_events(work_id):
+            if derive_idempotency_key_from_event(event) == key:
+                return event
+        return None
 
     def _read_events(self, work_id: str) -> list[WorkEvent]:
         """全檔掃描，回傳指定 work_id 的 event（按 append 順序）。corrupt row 跳過留 log。"""

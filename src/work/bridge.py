@@ -14,6 +14,8 @@ single-writer rule：kernel 是唯一 writer（DSH 側只讀不寫 durable state
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -53,6 +55,33 @@ def is_durable_writer(actor: str) -> bool:
     只讀不寫。
     """
     return actor == DURABLE_WRITER
+
+
+def derive_idempotency_key(
+    *,
+    work_id: str,
+    role: str,
+    result_type: str,
+    refs: list[str] | None = None,
+    decision: dict[str, Any] | None = None,
+) -> str:
+    """Canonical handoff idempotency key（2D §4：idempotency_keys 避免重啟後重複執行）。
+
+    idempotency_key = SHA-256(work_id | role | result_type | refs | decision)
+    - refs = artifact_refs（artifact）或 evidence_refs（evidence），排序後正規化
+      （ref 順序不影響語意，同內容必須同 key）
+    - decision = 決策 dict，sort_keys + 固定 separator 正規化（dict 順序無關）
+
+    純函式、language-neutral（Python ↔ TypeScript 共用同一公式），future DSH
+    Adapter 可在另一側重現同一 key。同內容 → 同 key；不同內容 → 不同 key
+    （dedup 只吞 identical retry，不吞不同結果）。
+    """
+    refs_part = ",".join(sorted(set(refs or [])))
+    decision_part = json.dumps(
+        decision or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    payload = f"{work_id}|{role}|{result_type}|{refs_part}|{decision_part}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class BridgeMessage(BaseModel):

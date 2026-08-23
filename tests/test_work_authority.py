@@ -45,10 +45,14 @@ from src.work.authority import (
     CapabilityPolicy,
     GrantAlreadyConsumedError,
     GrantNotFoundError,
+    HmacHumanAuthorityPort,
     HumanAuthorityContext,
+    HumanAuthorityExpiredError,
     InvalidApprovalError,
     InvalidGrantError,
     NotHumanGrantorError,
+    issue_hmac_context,
+    sign_authority_token,
 )
 from src.work.roles import ROLE_CAPABILITIES, Role
 
@@ -800,3 +804,171 @@ def test_attack_13_cross_work_grant_reuse_denied():
     grant = mgr.grant(_approval(work_id="work-1"), _context())
     action = _action(grant, work_id="work-2")
     assert mgr.is_authorized(action) is False
+
+
+# ─────────────────────────────────────────────
+# 14. HMAC trust establishment（R1：authority_token 是 HMAC-signed proof）
+# ─────────────────────────────────────────────
+
+def test_hmac_token_is_not_plain_string():
+    """authority_token 是 HMAC-SHA256 hexdigest，不是普通字串（trust establishment）。"""
+    ctx = issue_hmac_context("test-secret", identity="bryan", expires_at=_future(hours=1))
+    assert len(ctx.authority_token) == 64
+    assert re.fullmatch(r"[0-9a-f]{64}", ctx.authority_token)
+    assert ctx.authority_token != "trusted-token"
+    assert ctx.nonce  # nonce 是簽署 claims 的一部分（replay 防護）
+
+
+def test_hmac_token_is_deterministic_for_same_claims():
+    """同 secret + 同 claims → 同 token（簽署演算法 deterministic）。"""
+    issued = datetime.now(timezone.utc)
+    expires = _future(hours=1)  # 只呼叫一次，t1/t2/t3 共用同一個 expires_at
+    t1 = sign_authority_token(
+        "s", identity="bryan", issued_at=issued,
+        expires_at=expires, nonce="n1",
+    )
+    t2 = sign_authority_token(
+        "s", identity="bryan", issued_at=issued,
+        expires_at=expires, nonce="n1",
+    )
+    assert t1 == t2
+    # 不同 secret → 不同 token
+    t3 = sign_authority_token(
+        "other", identity="bryan", issued_at=issued,
+        expires_at=expires, nonce="n1",
+    )
+    assert t1 != t3
+
+
+def test_hmac_port_accepts_valid_token():
+    """HmacHumanAuthorityPort 驗證通過 valid HMAC context。"""
+    port = HmacHumanAuthorityPort("test-secret")
+    ctx = issue_hmac_context("test-secret", identity="bryan", expires_at=_future(hours=1))
+    assert port.authenticate(ctx) is True
+
+
+def test_hmac_port_denies_forged_token():
+    """forgery：竄改 token → signature 不符 → deny。"""
+    port = HmacHumanAuthorityPort("test-secret")
+    ctx = issue_hmac_context("test-secret", identity="bryan", expires_at=_future(hours=1))
+    forged = ctx.model_copy(update={"authority_token": "0" * 64})
+    assert port.authenticate(forged) is False
+
+
+def test_hmac_port_denies_wrong_secret():
+    """forgery：token 用別的 secret 簽 → deny。"""
+    port = HmacHumanAuthorityPort("test-secret")
+    ctx = issue_hmac_context("other-secret", identity="bryan", expires_at=_future(hours=1))
+    assert port.authenticate(ctx) is False
+
+
+def test_hmac_port_denies_tampered_identity():
+    """forgery：竄改 identity（claims 與 signature 不符）→ deny。"""
+    port = HmacHumanAuthorityPort("test-secret")
+    ctx = issue_hmac_context("test-secret", identity="bryan", expires_at=_future(hours=1))
+    tampered = ctx.model_copy(update={"identity": "mallory"})
+    assert port.authenticate(tampered) is False
+
+
+def test_hmac_port_denies_tampered_expiry():
+    """forgery：竄改 expires_at（延長效期）→ claims 與 signature 不符 → deny。"""
+    port = HmacHumanAuthorityPort("test-secret")
+    ctx = issue_hmac_context("test-secret", identity="bryan", expires_at=_future(hours=1))
+    tampered = ctx.model_copy(update={"expires_at": _future(hours=24)})
+    assert port.authenticate(tampered) is False
+
+
+def test_hmac_port_denies_expired_context(monkeypatch):
+    """expiry：context 過期 → deny（issued_at 在過去、expires_at 已過）。"""
+    port = HmacHumanAuthorityPort("test-secret")
+    ctx = issue_hmac_context("test-secret", identity="bryan", expires_at=_future(hours=1))
+    assert port.authenticate(ctx) is True
+    monkeypatch.setattr(authority_mod, "_utcnow", lambda: _future(hours=2))
+    assert port.authenticate(ctx) is False  # 時間流逝後過期（但 nonce 已用，先驗 expiry 路徑）
+
+
+def test_hmac_port_denies_future_issued_at():
+    """issued_at 在未來：token 尚未生效 → deny。"""
+    port = HmacHumanAuthorityPort("test-secret")
+    ctx = issue_hmac_context(
+        "test-secret", identity="bryan", expires_at=_future(hours=2),
+        issued_at=_future(hours=1),
+    )
+    assert port.authenticate(ctx) is False
+
+
+def test_hmac_port_rejects_replay():
+    """replay：同一 context（同 nonce）第二次 → deny（nonce registry）。"""
+    port = HmacHumanAuthorityPort("test-secret")
+    ctx = issue_hmac_context("test-secret", identity="bryan", expires_at=_future(hours=1))
+    assert port.authenticate(ctx) is True
+    assert port.authenticate(ctx) is False  # 同 token / 同 nonce 重放
+
+
+def test_hmac_port_accepts_fresh_nonce_same_content():
+    """不同 nonce（新 token）同內容 → 接受（nonce 是 replay 防護的錨點）。"""
+    port = HmacHumanAuthorityPort("test-secret")
+    c1 = issue_hmac_context("test-secret", identity="bryan", expires_at=_future(hours=1))
+    c2 = issue_hmac_context("test-secret", identity="bryan", expires_at=_future(hours=1))
+    assert c1.nonce != c2.nonce
+    assert port.authenticate(c1) is True
+    assert port.authenticate(c2) is True
+
+
+def test_grant_with_hmac_port_happy_path():
+    """HmacHumanAuthorityPort + HMAC context → grant 成功（真實 trust establishment）。"""
+    mgr = AuthorityManager(human_authority=HmacHumanAuthorityPort("test-secret"))
+    ctx = issue_hmac_context("test-secret", identity="bryan", expires_at=_future(hours=1))
+    grant = mgr.grant(_approval(), ctx)
+    assert isinstance(grant, CapabilityGrant)
+
+
+def test_grant_rejects_replayed_hmac_context():
+    """同一 HMAC context 重放 → 第二次 deny（nonce replay 防護貫穿 grant）。"""
+    mgr = AuthorityManager(human_authority=HmacHumanAuthorityPort("test-secret"))
+    ctx = issue_hmac_context("test-secret", identity="bryan", expires_at=_future(hours=1))
+    assert isinstance(mgr.grant(_approval(work_id="work-1"), ctx), CapabilityGrant)
+    with pytest.raises(NotHumanGrantorError):
+        mgr.grant(_approval(work_id="work-2"), ctx)  # 同 nonce 重放
+
+
+def test_grant_rejects_forged_hmac_token():
+    """forged HMAC token 進 grant → NotHumanGrantorError。"""
+    mgr = AuthorityManager(human_authority=HmacHumanAuthorityPort("test-secret"))
+    ctx = issue_hmac_context("test-secret", identity="bryan", expires_at=_future(hours=1))
+    forged = ctx.model_copy(update={"authority_token": "0" * 64})
+    with pytest.raises(NotHumanGrantorError):
+        mgr.grant(_approval(), forged)
+
+
+# ─────────────────────────────────────────────
+# 15. grant() 強制檢查 context.expires_at（R1：manager-level expiry enforcement）
+# ─────────────────────────────────────────────
+
+def test_grant_rejects_expired_context_deny_by_default():
+    """grant() 強制檢查 context.expires_at：過期 context → deny。
+
+    即使注入的 port 不檢查 expiry（fake trusted port 只比 token），
+    grant boundary 仍拒絕過期 context（Domain Core 強制，非 Adapter）。
+    """
+    mgr = _manager()  # fake trusted port（不檢查 expiry）
+    ctx = _context(expires_at=datetime.now(timezone.utc) - timedelta(minutes=1))
+    with pytest.raises(HumanAuthorityExpiredError):
+        mgr.grant(_approval(), ctx)
+
+
+def test_grant_accepts_unexpired_context():
+    """context 未過期（port 驗證通過）→ grant 成功。"""
+    mgr = _manager()
+    grant = mgr.grant(_approval(), _context())
+    assert isinstance(grant, CapabilityGrant)
+
+
+def test_grant_rejects_expired_context_even_with_hmac_port():
+    """HMAC port 下過期 context：authenticate 先 deny（HMAC expiry 檢查）。"""
+    mgr = AuthorityManager(human_authority=HmacHumanAuthorityPort("test-secret"))
+    ctx = issue_hmac_context(
+        "test-secret", identity="bryan", expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+    )
+    with pytest.raises(NotHumanGrantorError):
+        mgr.grant(_approval(), ctx)

@@ -20,6 +20,12 @@ AuthorityManager 不自己「認證 Human」。它接受外部提供、不可由
 `HumanAuthorityPort.authenticate(context)` 驗證。無注入 port → deny-by-default。
 `human_identity` 是資料，不是 proof；`granted_by="human"` 不是 authentication。
 
+Trust establishment（R1）：`authority_token` 是 HMAC-signed
+（HMAC-SHA256(secret, f"{identity}:{issued_at}:{expires_at}:{nonce}")），
+由 Domain Core 的 `HmacHumanAuthorityPort` 驗證（signature + 時效 + nonce replay）；
+IPC transport（token 傳遞）由未來 DSH Adapter 負責，Adapter 只 transport / invoke，
+不成為新的 authority。
+
 No agent may manufacture, infer, or substitute a Human Approval（2A invariant #2）。
 Every privileged Agent Action MUST have exactly one valid governing Capability Grant
 traceable to one Human Approval（2C §8 #5）。斷鏈 = authorization failure。
@@ -35,6 +41,8 @@ Canonical 來源（權威，不得修改）：
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 from datetime import datetime, timezone
 from enum import Enum
@@ -189,14 +197,19 @@ class HumanAuthorityContext(BaseModel):
 
     由 trusted Human Authority boundary（未來 DSH Adapter / runtime integration）
     簽發，Agent 自己無法製造。`identity` 是資料，`authority_token` 是 proof。
+
+    R1（trust establishment）：`authority_token` 是 HMAC-signed
+    （HMAC-SHA256(secret, f"{identity}:{issued_at}:{expires_at}:{nonce}")），
+    不是普通字串。`nonce` 是簽署 claims 的一部分，供 replay 防護。
     AuthorityManager 不產生 context、不實作認證，只接受注入的 port 委派驗證。
     """
     model_config = ConfigDict(frozen=True)
 
     identity: str            # human identity（資料，非 proof）
-    authority_token: str     # authenticated handle（proof，由 trusted boundary 簽發）
+    authority_token: str     # HMAC-signed proof（trust establishment，由 trusted boundary 簽發）
     issued_at: datetime
     expires_at: datetime | None
+    nonce: str = Field(default_factory=lambda: str(uuid4()))  # 簽署 claims 的一部分（replay 防護）
 
 
 @runtime_checkable
@@ -204,8 +217,144 @@ class HumanAuthorityPort(Protocol):
     """Human authority 驗證 seam（由未來 Adapter / runtime integration 實作）。
 
     AuthorityManager 不自己認證 Human，只委派 `authenticate(context)`。
+    Domain Core 提供 concrete `HmacHumanAuthorityPort`（HMAC trust establishment）；
+    Adapter 只負責 transport（token 傳遞），不實作新的 authority。
     """
     def authenticate(self, context: HumanAuthorityContext) -> bool: ...
+
+
+# ─────────────────────────────────────────────
+# 2.5 HMAC trust establishment（R1：authority_token 是 HMAC-signed proof）
+# ─────────────────────────────────────────────
+
+def _canonical_secret(secret: bytes | str) -> bytes:
+    """正規化 HMAC secret 為 bytes（str → utf-8）。"""
+    if isinstance(secret, str):
+        return secret.encode("utf-8")
+    return secret
+
+
+def _canonical_dt(value: datetime) -> str:
+    """正規化 datetime 為 UTC ISO 字串（簽署 / 驗證兩側共用；naive 視為 UTC）。"""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _authority_claims(
+    *,
+    identity: str,
+    issued_at: datetime,
+    expires_at: datetime | None,
+    nonce: str,
+) -> str:
+    """HMAC 簽署的 canonical claims 字串：f"{identity}:{issued_at}:{expires_at}:{nonce}"。
+
+    expires_at=None → 空字串（與驗證側共用同一正規化，跨語言可重現）。
+    """
+    exp = _canonical_dt(expires_at) if expires_at is not None else ""
+    return f"{identity}:{_canonical_dt(issued_at)}:{exp}:{nonce}"
+
+
+def sign_authority_token(
+    secret: bytes | str,
+    *,
+    identity: str,
+    issued_at: datetime,
+    expires_at: datetime | None,
+    nonce: str,
+) -> str:
+    """HMAC-SHA256 簽發 authority token（trust establishment 的 canonical 演算法）。
+
+    token = HMAC-SHA256(secret, f"{identity}:{issued_at}:{expires_at}:{nonce}")
+
+    簽發方是 trusted Human Authority boundary（未來 DSH Adapter / runtime
+    integration），持有 secret；本函式讓 Domain Core 定義唯一 canonical 演算法，
+    簽發（本函式）與驗證（`HmacHumanAuthorityPort`）共用，兩側不會 drift。
+    """
+    payload = _authority_claims(
+        identity=identity, issued_at=issued_at, expires_at=expires_at, nonce=nonce
+    )
+    return hmac.new(
+        _canonical_secret(secret), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+
+def issue_hmac_context(
+    secret: bytes | str,
+    *,
+    identity: str,
+    expires_at: datetime | None,
+    issued_at: datetime | None = None,
+    nonce: str | None = None,
+) -> HumanAuthorityContext:
+    """簽發一個 HMAC-signed HumanAuthorityContext（trusted boundary 的 convenience）。
+
+    只負責 trust establishment 的簽發側（Domain Core）；token 如何跨 process
+    傳遞（IPC transport）是未來 DSH Adapter 的責任，與本函式無關。
+    """
+    issued_at = issued_at if issued_at is not None else _utcnow()
+    nonce = nonce if nonce is not None else str(uuid4())
+    token = sign_authority_token(
+        secret,
+        identity=identity,
+        issued_at=issued_at,
+        expires_at=expires_at,
+        nonce=nonce,
+    )
+    return HumanAuthorityContext(
+        identity=identity,
+        authority_token=token,
+        issued_at=issued_at,
+        expires_at=expires_at,
+        nonce=nonce,
+    )
+
+
+class HmacHumanAuthorityPort:
+    """`HumanAuthorityPort` 的 concrete HMAC 實作（Domain Core 的 trust establishment）。
+
+    驗證 `HumanAuthorityContext.authority_token` 是
+    `HMAC-SHA256(secret, f"{identity}:{issued_at}:{expires_at}:{nonce}")`：
+
+    1. signature 有效（constant-time compare，防 timing side-channel）。
+    2. issued_at 在過去（token 未在未來提前生效）。
+    3. expires_at 在未來（未過期）。
+    4. nonce 未重放（in-memory nonce registry：已用 nonce 拒絕 replay）。
+
+    trust establishment（本 port）在 Domain Core；IPC transport（token 傳遞）
+    由未來 DSH Adapter 負責——Adapter 只 transport / invoke，不成為新的 authority。
+
+    known limitation（architectural note）：nonce registry 是 per-process
+    in-memory，restart 後重放防護重新開始；durable nonce registry 屬未來工作。
+    """
+
+    def __init__(self, secret: bytes | str):
+        self._secret = _canonical_secret(secret)
+        self._used_nonces: set[str] = set()
+
+    def authenticate(self, context: HumanAuthorityContext) -> bool:
+        """回傳 context 是否通過 HMAC trust establishment（false → deny）。"""
+        if not isinstance(context, HumanAuthorityContext):
+            return False
+        now = _utcnow()
+        if context.issued_at > now:
+            return False  # issued_at 在未來：token 尚未生效
+        if context.expires_at is not None and now >= context.expires_at:
+            return False  # 已過期
+        expected = sign_authority_token(
+            self._secret,
+            identity=context.identity,
+            issued_at=context.issued_at,
+            expires_at=context.expires_at,
+            nonce=context.nonce,
+        )
+        if not hmac.compare_digest(context.authority_token, expected):
+            return False  # signature 不符（forgery / claims 竄改）
+        if context.nonce in self._used_nonces:
+            return False  # replay：nonce 已用過
+        self._used_nonces.add(context.nonce)
+        return True
 
 
 # ─────────────────────────────────────────────
@@ -214,6 +363,10 @@ class HumanAuthorityPort(Protocol):
 
 class NotHumanGrantorError(PermissionError):
     """Human authority 驗證失敗：port 未注入（deny-by-default）或 authenticate 回傳 False。"""
+
+
+class HumanAuthorityExpiredError(NotHumanGrantorError):
+    """Human authority context 已過期（grant boundary 強制檢查 expires_at，R1）。"""
 
 
 class ApprovalRevokedError(ValueError):
@@ -415,6 +568,14 @@ class AuthorityManager:
         if not self._human_authority.authenticate(context):
             raise NotHumanGrantorError(
                 "human authority context failed authentication"
+            )
+        # R1：grant() 強制檢查 context.expires_at（過期 → deny）。
+        # manager-level enforcement，獨立於 port 實作——即使注入的 port 不檢查
+        # expiry，grant boundary 仍拒絕過期 context（Domain Core 強制，非 Adapter）。
+        if context.expires_at is not None and _utcnow() >= context.expires_at:
+            raise HumanAuthorityExpiredError(
+                "human authority context expired at "
+                f"{context.expires_at.isoformat()}"
             )
         if approval.is_revoked():
             raise ApprovalRevokedError(

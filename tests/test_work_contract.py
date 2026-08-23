@@ -36,6 +36,7 @@ from src.work import (
     requires_human_approval,
     validate_transition,
 )
+from src.work.bridge import derive_idempotency_key
 
 
 # ─────────────────────────────────────────────
@@ -317,7 +318,12 @@ def test_resume_state_minimal_rebuild(tmp_path):
     assert work.resume_state.current_phase == WorkState.IN_PROGRESS
     assert work.resume_state.last_artifact_refs == ["sha256:abc"]
     assert work.resume_state.pending_handoffs == []
-    assert work.resume_state.idempotency_keys == []
+    # R1：idempotency_keys 從 handoff events 推導（不再是 dead field）
+    expected_key = derive_idempotency_key(
+        work_id=work_id, role="developer", result_type="artifact",
+        refs=["sha256:abc"],
+    )
+    assert work.resume_state.idempotency_keys == [expected_key]
 
     # 解除阻塞後 resume 回 current_phase 是合法 transition
     validate_transition(WorkState.BLOCKED, work.resume_state.current_phase)

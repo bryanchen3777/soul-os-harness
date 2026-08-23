@@ -705,6 +705,49 @@ re-enable (started 2026-08-14 19:27 EDT).
 
 ---
 
+### 5.8 DSH Multi-Agent MVP — Domain Core（前置設計 + MVP implementation）
+
+**Status**: **MVP COMPLETE / ACCEPTED**（MVP Contract Gate 8/8 PASS，bypass discovered = NO）。
+
+DSH Multi-Agent MVP 是 Soul OS 遷入 DeepSeek Harness 的前置 domain core。四份 canonical contract（2A–2D）+ MVP-1~7 全部 commit，經 authority / durability / recovery / single-writer / E2E / cross-MVP gate 驗收。
+
+| Phase | 內容 | Commit |
+|-------|------|--------|
+| 2A–2D | Architecture Contracts（Work / Workspace / Authority / Persistence） | `f5fb0cd` |
+| MVP-1 | Work Contract + Durable Store | `9a8b7a2` |
+| MVP-2 | DSH Adapter Boundary（ports + bridge） | `99b95db` |
+| MVP-3 | Chief + Specialist Roles + single-writer | `a1a150f` |
+| MVP-4 | Workflow / Handoff | `61b26c3` |
+| MVP-5 | Authority Boundary（capability + approval + identity seam） | `015139e` |
+| MVP-6 | Recovery / Resume（durable authority + single-writer） | `8bb8d91` |
+| MVP-7 | E2E Vertical Slice（2A–2D 完整閉環） | `d7877e0` |
+
+**Canonical contracts**（`docs/`）：
+- `DSH-WORK-CONTRACT.md`（2A Work / Execution Boundary）
+- `DSH-WORKSPACE-DESIGN.md`（2B Workspace / Git / Worktree）
+- `DSH-HUMAN-AUTHORITY.md`（2C Human Authority）
+- `DSH-PERSISTENCE.md`（2D Persistence / Recovery / Resume）
+- `DSH-ARCHITECTURE-CONTRACT-GATE.md`（2A–2D Gate 10/10 PASS）
+
+**核心原則**：Soul OS owns the durable work truth. DSH owns ephemeral execution. DSH orchestration ≠ Soul orchestration.
+
+**Accepted limitations / future hardening**（NOT resolved，下一階段不得誤認成已解決）：
+1. `WorkObject.approvals[]` 目前不是 approval durable truth（approval 的 durable truth 在 AuthorityStore）
+2. `requires_human_approval` 尚未 enforcement（state machine 只宣告不 gate，authority 由 capability policy 層執行）
+3. `DURABLE_WRITER="kernel"` 目前仍是 convention-level identity（self-attested 字串，非 security-level）
+4. Python object graph 的 public/mangled escape hatch 是已知 limitation（no-true-private）
+
+**MA 治理鏈（MA-0 → MA-4-R1）**：
+- MA-0 Architecture Audit ✅
+- MA-1 Adapter Boundary ✅ READY FOR IMPLEMENTATION
+- MA-2 Migration Architecture ✅ READY FOR MIGRATION PLAN
+- MA-3 Migration Decomposition ✅ READY FOR IMPLEMENTATION
+- MA-4 Build Plan ❌ BLOCKED → MA-4-R1 修復（authority trust establishment + resume idempotency）→ Independent Review PASS → **IMPLEMENTATION AUTHORIZED**
+
+**Next work**: Phase 0 Adapter implementation（soul-dsh-adapter + Python↔TS Bridge + src/work/ execution path，不接 Soul runtime / World / Inner Life / Agency / Relationship / Time-Context）。
+
+---
+
 ## 6. STALE REFERENCES (historical closeouts vs canonical state)
 
 Per §2.6 Historical Document Rule, historical closeouts are preserved unchanged. Stale references are documented here for reconciliation.
@@ -887,5 +930,8 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 
 | 2026-08-15 (M6.1-9 T+4h33m partial) | Lived Context Formation Audit partial T+4h33m snapshot (in-repo registry sync only, audit report out-of-repo at `C:\Users\bbfcc\gov_1_temp\m6_1_9_closeout.md` 13.6KB, 0 source code changes, 0 production data mutation other than intended Agency trigger outputs, 0 frozen contract change, READ-ONLY). 1 file changed: `logs/ENGINEERING_STATE.md` (+§1 M6.1 row updated with T+4h33m partial findings, +§7 closeout log list extended, +§9 change log this entry). **M6.1-9 T+4h33m findings**: **2 NEW InnerLifeEvents from Agency triggers** (entry 2: `916cbddf05334881b64cf8f3d8e09fd4` diary:night for agent_yua at 8/14 22:00:11 EDT, entry 3: `2c7627b62a7b49a7a0fd8dbce0562d4b` dream:dream for agent_miku at 8/14 22:05:11 EDT, target yua, all_agents_count 10). Inner life trace grew 553B (1 entry) → 1431B (3 entries) = +878B / +2 events. **M5.2 regression RESOLVED** (was broken 6+ days from 8/8 21:13 to 8/14 22:00). 2 diary files UPDATED: `data/soul/agent_yua/diary` mtime 8/14 22:00:11 EDT (8KB), `data/soul/agent_miku/diary` mtime 8/14 22:05:11 EDT (8KB). Diary file content LOCKED by running server (cannot read directly). 9 of 10 agents' diary/dream LLM calls INTERRUPTED by 22:38 server restart (cause unknown, not via server_ops.ps1, TELEGRAM_BOT_YUA not set in restart shell). Q1/Q2/Q4/Q6 PENDING full 24h evidence. **Cron `m6_1_9_t24h_v2`** (cronId `e2f3168c-6dfb-4e54-98ae-e3822c0393f6`, every 30 min) set for TRUE T+24h follow-up at 8/15 19:27 EDT. | Mavis / Lin | M6.1-9 T+4h33m partial |
 | 2026-08-15 (M6.1-9.2) | Server Crash Investigation READ-ONLY forensic audit (in-repo registry sync only, audit report out-of-repo at `C:\Users\bbfcc\gov_1_temp\m6_1_9_2_closeout.md` 18.2KB, 0 source code changes, 0 production data mutation, 0 frozen contract change, READ-ONLY). 1 file changed: `logs/ENGINEERING_STATE.md` (+§7 closeout log list extended with M6.1-9.2 reference, +§9 change log this entry). **M6.1-9.2 root cause finding (REPLACES prior TTS-stuck hypothesis)**: `python.exe` (uv-managed CPython 3.11) is segfaulting with `0xc0000005` ACCESS VIOLATION in `python311.dll`. 6 WER crashes in 8/14 21:32 - 8/15 00:59 (Event 1000 + 1001, Application log). Two distinct fault offsets: `0x1c51db` (3 pre-M6.2-1-era crashes) and `0x26656c`/`0x266588` (3 post-M6.2-1-era crashes) — offset changes correlate with code changes (memory layout shift). 5 evidence pieces (per Bry P0 requirements): (1) Windows Event Viewer: 6 ACCESS_VIOLATION in python311.dll ✓; (2) Process exit code: `0xc0000005` (segfault, NOT clean exit) ✓; (3) Memory before restart: 19.2 MB (no leak) ✓; (4) Thread count before restart: 4 threads (no leak) ✓; (5) Process exists at restart: NO (process dead) ✓. **Bry's TTS hypothesis REJECTED**: M6.2-1 (commit `965df92` 8/14 19:08) is functionally correct; TTS has 180s `requests.post` timeout (`src/llm/fish_tts_handler.py:420`); 22:00/22:05 TTS calls were killed by 22:38 restart, not the cause of crashes. **M6.2-1 is NOT causal** — crashes pre-date M6.2-1 (plan_a_launcher.log shows hundreds of launches since 8/4). **Anomaly detected**: 2 Python interpreters running simultaneously (PID 3832 hermes-agent venv as parent of PID 2104 uv Python, the actual run_server.py owning port 8000). **Root cause classification**: C extension memory corruption (likely uvicorn + anyio + asyncio.create_task fire-and-forget pattern). 7 hypotheses evaluated: TTS blocking (REJECTED), uvicorn hang (REJECTED), external termination (REJECTED), memory exhaustion (REJECTED), resource exhaustion (REJECTED), launcher failure (REJECTED), C extension memory corruption (CONFIRMED). **Watchdog N=4/10**: 4 restarts already happened (PIDs 15756, 16836, 4052, 6724 via Plan A launcher). Will stop auto-restart at N=10. Bry needs to investigate before N=10. | Mavis / Lin | M6.1-9.2 |
+
+| 2026-08-23 (DSH MVP) | DSH Multi-Agent MVP COMPLETE / ACCEPTED（MVP Contract Gate 8/8 PASS，bypass discovered = NO）。2A–2D contracts（`f5fb0cd`）+ MVP-1~7（`9a8b7a2` → `d7877e0`）全 commit。4 條 non-blocking discrepancy 記為 accepted limitations / future hardening（§5.8）。Next: DSH-MA-0 — Multi-Agent Environment Architecture & Adapter Boundary Audit。 | Mavis / Lin | DSH MVP |
+| 2026-08-23 (DSH MA) | DSH MA-0~MA-4-R1 治理鏈閉合：MA-0 Audit → MA-1 Adapter Boundary → MA-2 Migration Architecture → MA-3 Migration Decomposition → MA-4 Build Plan（BLOCKED）→ MA-4-R1 修復（HMAC authority trust establishment + durable-log idempotency dedup）→ Independent Review PASS → IMPLEMENTATION AUTHORIZED。R1 新增 41 tests（203 passed）。3 條 non-blocking hardening 列入 Phase 0 backlog（expires_at=None 拒絕 / e2e 改用 issue_hmac_context / durable nonce registry）。 | Mavis / Lin | DSH MA-4-R1 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**

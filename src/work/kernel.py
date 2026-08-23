@@ -14,6 +14,7 @@ Canonical 來源（權威，不得修改）：
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from .bridge import DURABLE_WRITER
@@ -26,7 +27,13 @@ from .schema import (
     WorkEventType,
     WorkObject,
 )
-from .store import NotDurableWriterError, WorkStore
+from .store import (
+    NotDurableWriterError,
+    WorkStore,
+    derive_idempotency_key_from_handoff,
+)
+
+logger = logging.getLogger(__name__)
 
 
 # HandoffResult.result_type → WorkEventType（2A §6：result_type 只能是
@@ -101,6 +108,13 @@ class WorkKernel:
         - artifact → artifact_produced（output_refs = artifact_refs）
         - evidence → evidence_produced（output_refs = evidence_refs）
         - decision → decision_made
+
+        Resume idempotency（R1）：consume_handoff 在 Domain Core 做 dedup。
+        idempotency_key = hash(work_id + role + result_type + refs/decision)；
+        若 key 已存在於 durable log（duplicate / crash-after-write / retry）→
+        skip（回傳既有 event），不重複 append——effectively-once 由 durable log
+        保證（Soul OS owns the durable work truth, 2D §1 / §4），不依賴
+        in-process 狀態、不依賴 DSH Adapter。
         """
         event_type = _HANDOFF_EVENT_TYPE[handoff.result_type]
         capability = _HANDOFF_CAPABILITY[handoff.result_type]
@@ -114,6 +128,17 @@ class WorkKernel:
         else:  # DECISION
             payload = {"decision": handoff.decision}
             output_refs = []
+
+        # dedup by idempotency_key：先查 durable log，命中 → skip，不重複 append。
+        idem_key = derive_idempotency_key_from_handoff(handoff)
+        existing = self._store.handoff_event_by_key(handoff.work_id, idem_key)
+        if existing is not None:
+            logger.info(
+                "[WorkKernel] dedup: handoff idempotency_key=%s already recorded; "
+                "skip append (effectively-once)",
+                idem_key,
+            )
+            return existing
 
         event = WorkEvent(
             work_id=handoff.work_id,
