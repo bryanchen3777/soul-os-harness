@@ -312,14 +312,18 @@ class TestSectionB_CanonicalEndToEnd:
     def test_b3_end_to_end_mixed_5_events(
         self, isolated_root, tmp_path
     ):
-        """B.3: end-to-end 5 mixed source events → 2 created + 3 fail-closed."""
+        """B.3: end-to-end 5 mixed source events → 4 created + 1 fail-closed.
+
+        SG-1 解冻 (2026-08-29, Owner 授权 whitelist 扩展): rain_started /
+        weather_temp_change 现在 qualify；celebrity_news 仍 fail-closed。
+        """
         bus, wp, writer, adapter = _production_style_wire(tmp_path)
         source = SyntheticWorldEventSource(bus=bus)
 
         async def _run():
             await bus.start()
             try:
-                # 5 events: 2 qualifying, 3 non-qualifying
+                # 5 events: 4 qualifying (SG-1 解冻), 1 non-qualifying
                 await source.emit_event(
                     type="calendar_event", summary="A", novelty_id="b3_cal"
                 )
@@ -342,19 +346,21 @@ class TestSectionB_CanonicalEndToEnd:
         # Middleware: 5 events received, 5 added to state
         assert wp._events_received == 5
         assert wp._events_state_added == 5
-        # Adapter: 5 received, 2 qualifying, 2 created, 3 non-qualifying
+        # Adapter: 5 received, 4 qualifying, 4 created, 1 non-qualifying (SG-1 解冻)
         assert adapter.get_stats()["events_received"] == 5
-        assert adapter.get_stats()["qualifying_yes"] == 2
-        assert adapter.get_stats()["non_qualifying"] == 3
-        assert adapter.get_stats()["events_created"] == 2
-        # Dedup size 2
-        assert adapter.get_dedup_size() == 2
-        # Writer has 2 InnerLifeEvents
-        assert len(writer._events) == 2
+        assert adapter.get_stats()["qualifying_yes"] == 4
+        assert adapter.get_stats()["non_qualifying"] == 1
+        assert adapter.get_stats()["events_created"] == 4
+        # Dedup size 4
+        assert adapter.get_dedup_size() == 4
+        # Writer has 4 InnerLifeEvents
+        assert len(writer._events) == 4
         # Triggers
         trigger_types = {ev.provenance.trigger_type for ev in writer._events.values()}
         assert "world:calendar_event" in trigger_types
         assert "world:user_going_outside" in trigger_types
+        assert "world:rain_started" in trigger_types
+        assert "world:weather_temp_change" in trigger_types
 
     def test_b4_adapter_dedup_works_for_source_emits(
         self, isolated_root, tmp_path

@@ -103,6 +103,11 @@ from .serialization import (
     provenance_from_dict,
     provenance_to_dict,
 )
+from .submission_gate import (
+    VALID_PRODUCER_TRIGGER_TYPES,
+    SubmissionGate,
+    SubmissionVerdict,
+)
 from .trace import NarrativeTraceWriter
 from .trace_reader import NarrativeTraceReader
 from .writer import InnerLifeWriter, InnerLifeWriterStats
@@ -115,6 +120,10 @@ __all__ = [
     "InnerLifeWriterStats",
     "NarrativeTraceWriter",
     "NarrativeTraceReader",
+    # SG-1: Elevation Submission Gate
+    "SubmissionGate",
+    "SubmissionVerdict",
+    "VALID_PRODUCER_TRIGGER_TYPES",
     # Validation
     "IdentityValidationError",
     "EVENT_ID_LENGTH",

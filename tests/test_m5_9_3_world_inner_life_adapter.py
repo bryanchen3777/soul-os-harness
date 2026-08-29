@@ -7,9 +7,9 @@ Mode: MINIMAL ADDITIVE / Implementation
 Test sections (Bry spec §11):
   A. calendar_event qualifies
   B. user_going_outside qualifies
-  C. rain_started rejected
+  C. rain_started qualifies (SG-1 解冻 2026-08-29, Owner 授权 whitelist 扩展)
   D. celebrity_news rejected
-  E. weather_temp_change rejected
+  E. weather_temp_change qualifies (SG-1 解冻 2026-08-29)
   F. unknown type rejected
   G. duplicate novelty_id rejected
   H. FIFO eviction at 1000
@@ -224,20 +224,20 @@ class TestSectionB_UserGoingOutsideQualifies:
 
 
 # ────────────────────────────────────────────────────────────────────
-# C. rain_started rejected
+# C. rain_started qualifies (SG-1 解冻 2026-08-29)
 # ────────────────────────────────────────────────────────────────────
 
-class TestSectionC_RainStartedRejected:
-    """C. rain_started → NO (conservative, was MAYBE in M5.9-1)."""
+class TestSectionC_RainStartedQualifies:
+    """C. rain_started → YES (SG-1 解冻, Owner 授权 whitelist 扩展加 news/weather)."""
 
-    def test_c1_rain_started_rejected(self):
+    def test_c1_rain_started_qualifies(self):
         we = _make_world_event(type_="rain_started", source="weather")
         result = qualify_world_event(we)
-        assert result.decision == WorldQualificationDecision.NO_TYPE_NOT_QUALIFYING
+        assert result.decision == WorldQualificationDecision.YES
         assert "rain_started" in result.reason
 
-    def test_c2_rain_started_via_bus_no_create(self, isolated_root):
-        """C.2: end-to-end via bus → 0 InnerLifeEvent created."""
+    def test_c2_rain_started_via_bus_creates(self, isolated_root):
+        """C.2: end-to-end via bus → 1 InnerLifeEvent created."""
         writer = InnerLifeWriter(trace_writer=None)
         adapter = WorldInnerLifeAdapter(inner_life_writer=writer)
 
@@ -257,9 +257,9 @@ class TestSectionC_RainStartedRejected:
                 await await_bus.stop()
 
         asyncio.run(_run())
-        assert adapter.get_stats()["events_created"] == 0
-        assert adapter.get_stats()["non_qualifying"] == 1
-        assert "weather_rain_test" not in adapter._dedup
+        assert adapter.get_stats()["events_created"] == 1
+        assert adapter.get_stats()["non_qualifying"] == 0
+        assert "weather_rain_test" in adapter._dedup
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -293,18 +293,18 @@ class TestSectionD_CelebrityNewsRejected:
 
 
 # ────────────────────────────────────────────────────────────────────
-# E. weather_temp_change rejected
+# E. weather_temp_change qualifies (SG-1 解冻 2026-08-29)
 # ────────────────────────────────────────────────────────────────────
 
-class TestSectionE_WeatherTempChangeRejected:
-    """E. weather_temp_change → NO."""
+class TestSectionE_WeatherTempChangeQualifies:
+    """E. weather_temp_change → YES (SG-1 解冻, Owner 授权 whitelist 扩展)."""
 
-    def test_e1_weather_temp_change_rejected(self):
+    def test_e1_weather_temp_change_qualifies(self):
         we = _make_world_event(type_="weather_temp_change", source="weather")
         result = qualify_world_event(we)
-        assert result.decision == WorldQualificationDecision.NO_TYPE_NOT_QUALIFYING
+        assert result.decision == WorldQualificationDecision.YES
 
-    def test_e2_weather_temp_change_via_bus_no_create(self, isolated_root):
+    def test_e2_weather_temp_change_via_bus_creates(self, isolated_root):
         writer = InnerLifeWriter(trace_writer=None)
         adapter = WorldInnerLifeAdapter(inner_life_writer=writer)
 
@@ -319,7 +319,8 @@ class TestSectionE_WeatherTempChangeRejected:
                 await await_bus.stop()
 
         asyncio.run(_run())
-        assert adapter.get_stats()["events_created"] == 0
+        assert adapter.get_stats()["events_created"] == 1
+        assert adapter.get_stats()["non_qualifying"] == 0
 
 
 # ────────────────────────────────────────────────────────────────────

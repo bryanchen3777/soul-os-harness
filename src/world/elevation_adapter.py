@@ -1,32 +1,33 @@
 """
-src/world/elevation_adapter.py — Soul OS world → elevation 直通 adapter（Option C）
+src/world/elevation_adapter.py — Soul OS world → elevation 直通 adapter（已降级）
 
-工单：新建非 frozen 的 world→elevation 直通 adapter，把 WorldEvent
-（news / weather / calendar）直接映射成 ``ElevationInput(source_type="world_event")``，
-喂给 ``InternalizingEngine``，实现「看新闻 → 信念」路径。**0 frozen 变更，纯 additive。**
+**SG-1 降级（2026-08-29）**：本直通 adapter **不再直通 consume raw WorldEvent**。
+SG-1 审计确认 P1：直通 adapter 对每个 WorldEvent（无 whitelist）直接 consume()，
+bypass InnerLifeEvent。定稿修复：world 事件改走正确路径
+``WorldInnerLifeAdapter → InnerLifeEvent → Submission Gate → consume()``
+（M5.9-3 whitelist 已解冻加 news/weather，见 ``src/world/inner_life_adapter.py``）。
 
-背景（已确认，直接采信）：
-  - ``src/world/inner_life_adapter.py``（M5.9-3 WorldInnerLifeAdapter）是 frozen，
+降级后本模块定位：
+  - **观察 only / 已废弃**：``run_world_elevation()`` 不再构造引擎、不再 consume，
+    只记录观察日志并返回 []。``WorldElevationAdapter`` 保留 bus 订阅接口但
+    ``on_world_event`` 不再产节点（nodes_produced 恒 0）。
+  - **保留映射函数**（``world_event_to_input`` / ``_world_event_content``）供
+    观察 / 审计 / 测试回查（只读，无副作用）。
+  - **wiring 已移除**：``scripts/run_server.py`` 不再注册 WorldElevationAdapter
+    （直通 adapter 失去生产作用）。
+
+历史背景（降级前，保留供审计）：
+  - 工单：新建非 frozen 的 world→elevation 直通 adapter，把 WorldEvent
+    （news / weather / calendar）直接映射成 ``ElevationInput(source_type="world_event")``，
+    喂给 ``InternalizingEngine``，实现「看新闻 → 信念」路径。**0 frozen 变更，纯 additive。**
+  - 背景：``src/world/inner_life_adapter.py``（M5.9-3 WorldInnerLifeAdapter）是 frozen，
     且只 qualify ``{calendar_event, user_going_outside}``，news/weather 不在 whitelist
     （fail-closed）。所以「看新闻 → 信念」不能走它。
-  - 已有 ``src/inner_life/elevation_adapter.py``：``run_elevation()`` +
-    ``ElevationObserver`` + 三个映射函数（inner_life_event / v1_memory / sage_fact →
-    ElevationInput）。本模块是**平行的 world 侧直通**，不经 InnerLifeEvent。
   - WorldEvent 经 M5.15-3 已 publish 到 SoulEventBus（``bus.publish(SoulEvent(WORLD_EVENT, ...))``）。
   - 设计文档 ``docs/MEMORY-ELEVATION-DESIGN.md`` §5「活动→灵魂维度内化映射」：
     在 world source 上层加「事件类型 → 升华维度」映射，不经过 InnerLifeEvent。
 
-定位（照工单关键决策）：
-  - **只读消费者 / 旁路观察者**：只读 WorldEvent，**不调用** ``InnerLifeWriter.create_event()``
-    （不是第 6 个 producer），**不产 InnerLifeEvent**。
-  - **不改任何 frozen contract**：不改 M5.9-3 WorldInnerLifeAdapter / InnerLifeEvent /
-    TriggerEnvelope / Agency 4 stages / 4 handlers / SAGE 写入逻辑 / InnerLifeWriter /
-    NarrativeTrace。
-  - **只写自有 store**：写 ``data/elevation/``（elevation_trace.jsonl +
-    elevation_nodes.jsonl + elevation_edges.jsonl），与 inner_life 侧 elevation_adapter
-    共用同一目录与文件名（复用，不另起 store）。
-
-映射（照工单关键决策 #2）：
+映射（保留，供观察/审计）：
   - ``event_type``  = ``"world:{world_event.type}"``（带 ``world:`` 前缀，命中
     soul-elevation prior.py 的 ``PRIOR_TABLE``：``world:news_event``→belief、
     ``world:calendar_event``→essence+trait；其余类型走 DEFAULT_PRIOR=belief）。
@@ -37,32 +38,21 @@ src/world/elevation_adapter.py — Soul OS world → elevation 直通 adapter（
   - ``timestamp``   = ``world_event.ts``（已是 ISO 8601 UTC）。
   - ``provenance``  = dict（source_id / source_system / world_source / world_type /
     world_novelty_id + 原始 data 关键字段）。
-
-接线（照工单关键决策 #4）：订阅 SoulEventBus 的 WORLD_EVENT（像 WorldInnerLifeAdapter
-订阅 WORLD_EVENT 那样），收到 WORLD_EVENT 就映射 + 喂引擎。接线点在
-``scripts/run_server.py``（非 frozen）。
 """
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import asdict
-from pathlib import Path
-from typing import Any, List, Optional, Sequence
+from typing import Any, List, Optional
 
 from soul_elevation import (
     ElevationInput,
     ElevationNode,
-    ElevationTraceWriter,
-    InternalizingEngine,
-    StubElevationLLM,
 )
 
 from src.eventbus.bus import SoulEventBus
 from src.eventbus.schema import EventType, SoulEvent
 from src.inner_life.elevation_adapter import (
     EDGES_FILENAME,
-    ELEVATION_DIR_NAME,
     NODES_FILENAME,
     TRACE_FILENAME,
 )
@@ -166,47 +156,6 @@ def world_event_to_input(
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 自有 store 写入（data/elevation/，append-only，失败隔离）
-# ─────────────────────────────────────────────────────────────────────
-
-
-def _append_jsonl(path: Path, records: Sequence[dict]) -> bool:
-    """append-only 追加 JSONL 行；写失败只告警 + 返回 False，绝不 raise。"""
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as fh:
-            for record in records:
-                fh.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
-        return True
-    except OSError as exc:  # 失败隔离：不阻断升华主路径
-        logger.warning("elevation store write failed (%s): %s", path, exc)
-        return False
-
-
-def _persist_result(
-    store_dir: Path,
-    nodes: Sequence[ElevationNode],
-    edges: Sequence[Any],
-) -> None:
-    """把升华节点 + 证据边持久化到 data/elevation/（自有 store，与 inner_life 侧共用）。"""
-    node_records = [asdict(n) for n in nodes]
-    edge_records = [asdict(e) for e in edges]
-    if node_records:
-        _append_jsonl(store_dir / NODES_FILENAME, node_records)
-    if edge_records:
-        _append_jsonl(store_dir / EDGES_FILENAME, edge_records)
-
-
-def _resolve_store_dir(store_dir: Optional[Any]) -> Path:
-    """解析 store 目录：显式传入 > data_root()/elevation。"""
-    if store_dir is not None:
-        return Path(store_dir)
-    from src.paths import data_root
-
-    return data_root() / ELEVATION_DIR_NAME
-
-
-# ─────────────────────────────────────────────────────────────────────
 # 触发函数（收到 WORLD_EVENT 后调用）
 # ─────────────────────────────────────────────────────────────────────
 
@@ -218,35 +167,35 @@ def run_world_elevation(
     store_dir: Optional[Any] = None,
     agent_id: Optional[str] = None,
 ) -> List[ElevationNode]:
-    """把 WorldEvent 喂给 InternalizingEngine，产出升华节点。
+    """**SG-1 降级**：观察 only，不再直通 consume raw WorldEvent。
+
+    降级前：把 WorldEvent 喂给 InternalizingEngine 产出升华节点（P1：无 whitelist
+    直接 consume，bypass InnerLifeEvent）。
+    降级后：**不再构造引擎、不再 consume**。只记录观察日志（world 事件类型 /
+    novelty_id / 映射后的 event_type），返回 []。world 事件的升华改走正确路径
+    ``WorldInnerLifeAdapter → InnerLifeEvent → Submission Gate → consume()``
+    （M5.9-3 whitelist 已解冻加 news/weather）。
 
     Args:
         world_event: 已 publish 到 bus 的 WorldEvent（news/weather/calendar）。
-        llm: 可选 ElevationLLM 实现；缺省用 StubElevationLLM（确定性桩）。
-        store_dir: 可选 store 目录（缺省 ``data_root()/elevation``）。
-        agent_id: 可选归属 agent（灵魂本体）覆盖。
+        llm / store_dir / agent_id: 保留签名（向后兼容），降级后不使用。
 
     Returns:
-        产出的 ``ElevationNode`` 列表。失败隔离：异常时记录 warning 并返回 []
-        （不 raise，不阻断 bus 主路径）。
+        恒 []（观察 only，不产节点）。失败隔离：异常时记录 warning 并返回 []。
     """
     try:
-        resolved_dir = _resolve_store_dir(store_dir)
         inp = world_event_to_input(world_event, agent_id=agent_id)
-
-        engine = InternalizingEngine(
-            llm=llm if llm is not None else StubElevationLLM(),
-            trace_writer=ElevationTraceWriter(str(resolved_dir / TRACE_FILENAME)),
+        logger.info(
+            f"[world→elevation][OBSERVE-ONLY] WorldEvent 不再直通 consume "
+            f"(SG-1 降级, 改走 InnerLifeEvent → Submission Gate): "
+            f"world_type={world_event.type} novelty_id={world_event.novelty_id} "
+            f"mapped_event_type={inp.event_type}"
         )
-
-        nodes: List[ElevationNode] = list(engine.consume(inp))
-
-        _persist_result(resolved_dir, nodes, engine.evidence_edges)
-
-        return nodes
-    except Exception as exc:  # noqa: BLE001 — 失败隔离：升华失败不阻断 bus 主路径
+        return []
+    except Exception as exc:  # noqa: BLE001 — 失败隔离：观察失败不阻断 bus 主路径
         logger.warning(
-            "run_world_elevation failed (不影響 WORLD_EVENT 主路径): %s: %s",
+            "run_world_elevation observe failed (不影響 WORLD_EVENT 主路径): "
+            "%s: %s",
             type(exc).__name__,
             exc,
         )
@@ -259,21 +208,25 @@ def run_world_elevation(
 
 
 class WorldElevationAdapter:
-    """world → elevation 直通 adapter（Option C）。
+    """world → elevation 直通 adapter（**SG-1 降级：观察 only**）。
 
-    订阅 EventType.WORLD_EVENT on existing bus。对每个 WorldEvent 映射成
+    降级前：订阅 EventType.WORLD_EVENT，对每个 WorldEvent 映射成
     ElevationInput(source_type="world_event") 后喂给 InternalizingEngine，
-    产出 ElevationNode 并写入 data/elevation/（自有 store）。
+    产出 ElevationNode 并写入 data/elevation/（P1：无 whitelist 直接 consume，
+    bypass InnerLifeEvent）。
 
-    Pattern: 对齐 WorldInnerLifeAdapter 的 bus 订阅（subscriber_id 独立），
-    但**不产 InnerLifeEvent**（直通，不经 M5.9-3 whitelist）。
+    降级后：**不再直通 consume raw WorldEvent**。保留 bus 订阅接口（register /
+    unregister / handle_event）与 observability 计数，但 ``on_world_event`` 只做
+    观察（记录日志），**不产节点**（nodes_produced 恒 0）。world 事件的升华改走
+    正确路径 ``WorldInnerLifeAdapter → InnerLifeEvent → Submission Gate → consume()``
+    （M5.9-3 whitelist 已解冻加 news/weather）。
 
     Lifecycle:
-      1. __init__: 注入可选 llm / store_dir / agent_id / enabled
+      1. __init__: 注入可选 llm / store_dir / agent_id / enabled（保留签名，降级后不使用）
       2. register(bus): 订阅 WORLD_EVENT on bus
       3. unregister(bus): 取消订阅
       4. handle_event(event): per-WORLD_EVENT 入口 → parse → on_world_event
-      5. on_world_event(world_event): 映射 + 喂引擎（失败隔离，永不 raise）
+      5. on_world_event(world_event): 观察 only（不再 consume，永不 raise）
     """
 
     def __init__(
@@ -304,7 +257,8 @@ class WorldElevationAdapter:
             event_filter={EventType.WORLD_EVENT},
         )
         logger.info(
-            "[world→elevation] WorldElevationAdapter subscribed to WORLD_EVENT ✓"
+            "[world→elevation] WorldElevationAdapter subscribed to WORLD_EVENT "
+            "(OBSERVE-ONLY, SG-1 降级)"
         )
 
     def unregister(self, bus: SoulEventBus) -> None:
@@ -330,7 +284,12 @@ class WorldElevationAdapter:
         self.on_world_event(world_event)
 
     def on_world_event(self, world_event: WorldEvent) -> List[ElevationNode]:
-        """映射 + 喂引擎（fire-and-forget，失败隔离，永不 raise）。"""
+        """**SG-1 降级**：观察 only，不再 consume（永不 raise）。
+
+        降级前：映射 + 喂引擎产节点。降级后：只记录观察日志，返回 []。
+        world 事件的升华改走 WorldInnerLifeAdapter → InnerLifeEvent →
+        Submission Gate → consume()。
+        """
         if not self.enabled:
             return []
         try:
@@ -340,14 +299,8 @@ class WorldElevationAdapter:
                 store_dir=self._store_dir,
                 agent_id=self._agent_id,
             )
+            # 降级后 run_world_elevation 恒返回 []（观察 only）
             self._stats["nodes_produced"] += len(nodes)
-            if nodes:
-                logger.info(
-                    f"[world→elevation] ElevationNode produced ✓ "
-                    f"world_novelty_id={world_event.novelty_id} "
-                    f"world_type={world_event.type} "
-                    f"nodes={len(nodes)}"
-                )
             return nodes
         except Exception as exc:  # noqa: BLE001 — 双保险，绝不阻断调用方
             self._stats["elevation_failures"] += 1

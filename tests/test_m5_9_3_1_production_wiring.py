@@ -262,9 +262,14 @@ class TestSectionC_UserGoingOutsideReachesWriter:
 # ────────────────────────────────────────────────────────────────────
 
 class TestSectionD_NonQualifyingFailClosed:
-    """D. Production wiring: non-qualifying types fail-closed."""
+    """D. Production wiring: non-qualifying types fail-closed.
 
-    def test_d1_rain_started_fail_closed(self, isolated_root):
+    SG-1 解冻 (2026-08-29, Owner 授权 whitelist 扩展): rain_started /
+    weather_temp_change / news_event 现在 qualify；celebrity_news 仍 fail-closed。
+    """
+
+    def test_d1_rain_started_now_qualifies(self, isolated_root):
+        """D.1: rain_started 现在 qualify（SG-1 解冻 whitelist 扩展）。"""
         bus, writer, adapter, app_state = _production_style_wire()
 
         async def _run():
@@ -280,9 +285,9 @@ class TestSectionD_NonQualifyingFailClosed:
                 await bus.stop()
 
         asyncio.run(_run())
-        assert adapter.get_stats()["events_created"] == 0
-        assert adapter.get_stats()["non_qualifying"] == 1
-        assert "prod_rain_001" not in adapter._dedup
+        assert adapter.get_stats()["events_created"] == 1
+        assert adapter.get_stats()["non_qualifying"] == 0
+        assert "prod_rain_001" in adapter._dedup
 
     def test_d2_celebrity_news_fail_closed(self, isolated_root):
         bus, writer, adapter, app_state = _production_style_wire()
@@ -581,12 +586,14 @@ class TestSectionK_RunServerWiring:
         assert "WORLD_QUALIFYING_TYPES" in source or "world_inner_life_adapter" in source.lower()
 
     def test_k2_run_server_constructs_adapter(self):
-        """K.2: run_server.py constructs WorldInnerLifeAdapter."""
+        """K.2: run_server.py constructs WorldInnerLifeAdapter (SG-1 wrapper 子类接 Gate)."""
         run_server_path = Path(__file__).resolve().parent.parent / "scripts" / "run_server.py"
         source = run_server_path.read_text(encoding="utf-8")
         # Must construct with inner_life_writer injection
-        assert "WorldInnerLifeAdapter(" in source
+        # SG-1: 用 additive wrapper 子类 _WorldInnerLifeAdapterWithGate（不改 frozen 类）
+        assert "WorldInnerLifeAdapter" in source
         assert "inner_life_writer=inner_life_writer" in source
+        assert "_WorldInnerLifeAdapterWithGate(" in source
 
     def test_k3_run_server_registers_adapter(self):
         """K.3: run_server.py calls adapter.register(bus=bus)."""
@@ -614,9 +621,9 @@ class TestSectionL_LifespanOrdering:
         """L.1: adapter construction is AFTER inner_life_writer = InnerLifeWriter(...)."""
         run_server_path = Path(__file__).resolve().parent.parent / "scripts" / "run_server.py"
         source = run_server_path.read_text(encoding="utf-8")
-        # Find positions
+        # Find positions (SG-1: wrapper 子类 _WorldInnerLifeAdapterWithGate)
         writer_pos = source.find("inner_life_writer = InnerLifeWriter(")
-        adapter_pos = source.find("WorldInnerLifeAdapter(")
+        adapter_pos = source.find("_WorldInnerLifeAdapterWithGate(")
         # Adapter must be AFTER writer
         assert writer_pos > 0, "inner_life_writer not constructed in run_server.py"
         assert adapter_pos > 0, "WorldInnerLifeAdapter not constructed in run_server.py"
@@ -629,9 +636,9 @@ class TestSectionL_LifespanOrdering:
         """L.2: adapter construction is AFTER bus = SoulEventBus() + bus.start()."""
         run_server_path = Path(__file__).resolve().parent.parent / "scripts" / "run_server.py"
         source = run_server_path.read_text(encoding="utf-8")
-        # bus.start() must precede adapter
+        # bus.start() must precede adapter (SG-1: wrapper 子类)
         bus_start_pos = source.find("await bus.start()")
-        adapter_pos = source.find("WorldInnerLifeAdapter(")
+        adapter_pos = source.find("_WorldInnerLifeAdapterWithGate(")
         assert bus_start_pos > 0
         assert adapter_pos > 0
         assert adapter_pos > bus_start_pos
@@ -745,7 +752,10 @@ class TestSectionO_EndToEndSimulation:
     """O. Full production-style end-to-end with multiple events."""
 
     def test_o1_full_lifecycle_simulation(self, isolated_root):
-        """O.1: 5 mixed events → 2 created (calendar + ugo), 3 skipped (rain + celeb + temp)."""
+        """O.1: 5 mixed events → 4 created (calendar + rain + ugo + temp), 1 skipped (celeb).
+
+        SG-1 解冻 (2026-08-29): rain_started / weather_temp_change 现在 qualify。
+        """
         bus, writer, adapter, app_state = _production_style_wire()
 
         async def _run():
@@ -766,18 +776,20 @@ class TestSectionO_EndToEndSimulation:
         asyncio.run(_run())
         # 5 events received
         assert adapter.get_stats()["events_received"] == 5
-        # 2 created
-        assert adapter.get_stats()["events_created"] == 2
-        # 3 non-qualifying
-        assert adapter.get_stats()["non_qualifying"] == 3
-        # Dedup size 2
-        assert adapter.get_dedup_size() == 2
-        # Verify writer has 2 InnerLifeEvents
-        assert len(writer._events) == 2
+        # 4 created (SG-1 解冻: rain + temp 现在 qualify)
+        assert adapter.get_stats()["events_created"] == 4
+        # 1 non-qualifying (celebrity_news)
+        assert adapter.get_stats()["non_qualifying"] == 1
+        # Dedup size 4
+        assert adapter.get_dedup_size() == 4
+        # Verify writer has 4 InnerLifeEvents
+        assert len(writer._events) == 4
         # Verify triggers
         trigger_types = {ev.provenance.trigger_type for ev in writer._events.values()}
         assert "world:calendar_event" in trigger_types
         assert "world:user_going_outside" in trigger_types
+        assert "world:rain_started" in trigger_types
+        assert "world:weather_temp_change" in trigger_types
 
 
 # ────────────────────────────────────────────────────────────────────

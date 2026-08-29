@@ -732,21 +732,21 @@ class TestSectionJ_WorldPerceptionIntegration:
 # ───────────────────────────────────────────────────────────
 
 class TestSectionK_InnerLifeAdapter:
-    """K. M5.9-3 dedup: weather types NOT in QUALIFYING_TYPES → no InnerLifeEvent."""
+    """K. M5.9-3 dedup: weather types IN QUALIFYING_TYPES (SG-1 解冻 2026-08-29) → InnerLifeEvent created."""
 
     @pytest.mark.asyncio
-    async def test_k1_rain_started_not_qualifying(self):
-        """K.1: 'rain_started' is NOT in M5.9-2 WORLD_QUALIFYING_TYPES."""
+    async def test_k1_rain_started_qualifying(self):
+        """K.1: 'rain_started' / 'weather_temp_change' ARE in WORLD_QUALIFYING_TYPES (SG-1 解冻)."""
         from src.world.inner_life_adapter import (
             WORLD_QUALIFYING_TYPES,
             WorldInnerLifeAdapter,
             qualify_world_event,
         )
-        assert "rain_started" not in WORLD_QUALIFYING_TYPES
-        assert "weather_temp_change" not in WORLD_QUALIFYING_TYPES
+        assert "rain_started" in WORLD_QUALIFYING_TYPES
+        assert "weather_temp_change" in WORLD_QUALIFYING_TYPES
 
-    def test_k1b_qualify_world_event_returns_no(self):
-        """K.1b: qualify_world_event(weather_event) → NO (fail-closed)."""
+    def test_k1b_qualify_world_event_returns_yes(self):
+        """K.1b: qualify_world_event(weather_event) → YES (SG-1 解冻)."""
         from src.world.inner_life_adapter import (
             WorldQualificationDecision,
             qualify_world_event,
@@ -759,11 +759,11 @@ class TestSectionK_InnerLifeAdapter:
             summary="Rain test",
         )
         qual = qualify_world_event(we)
-        assert qual.decision == WorldQualificationDecision.NO_TYPE_NOT_QUALIFYING
+        assert qual.decision == WorldQualificationDecision.YES
 
     @pytest.mark.asyncio
-    async def test_k2_adapter_no_inner_life_event(self, tmp_path, monkeypatch):
-        """K.2: WorldInnerLifeAdapter does NOT create InnerLifeEvent for weather."""
+    async def test_k2_adapter_creates_inner_life_event(self, tmp_path, monkeypatch):
+        """K.2: WorldInnerLifeAdapter creates InnerLifeEvent for weather (SG-1 解冻)."""
         monkeypatch.setenv("SOUL_OS_DATA_DIR", str(tmp_path))
         reset_data_root()
 
@@ -780,15 +780,16 @@ class TestSectionK_InnerLifeAdapter:
         finally:
             await bus.stop()
 
-        # No InnerLifeEvent created (rain_started not in QUALIFYING_TYPES)
-        assert len(writer._events) == 0
-        # Adapter stats: received 1, non_qualifying 1
+        # InnerLifeEvent created (rain_started now qualifying, SG-1 解冻)
+        assert len(writer._events) == 1
+        # Adapter stats: received 1, qualifying_yes 1, non_qualifying 0
         assert adapter.get_stats()["events_received"] == 1
-        assert adapter.get_stats()["non_qualifying"] == 1
+        assert adapter.get_stats()["qualifying_yes"] == 1
+        assert adapter.get_stats()["non_qualifying"] == 0
 
     @pytest.mark.asyncio
     async def test_k3_repeated_polls_no_duplicate_inner_life(self, tmp_path, monkeypatch):
-        """K.3: Repeated polls of same weather do not create duplicate InnerLifeEvents."""
+        """K.3: Repeated polls of same weather dedup → exactly 1 InnerLifeEvent."""
         monkeypatch.setenv("SOUL_OS_DATA_DIR", str(tmp_path))
         reset_data_root()
 
@@ -807,10 +808,11 @@ class TestSectionK_InnerLifeAdapter:
         finally:
             await bus.stop()
 
-        # No InnerLifeEvent created (rain_started not qualifying)
-        assert len(writer._events) == 0
-        # All 3 received, all 3 non_qualifying
-        assert adapter.get_stats()["non_qualifying"] == 3
+        # Dedup: 3 polls same novelty_id → exactly 1 InnerLifeEvent created
+        assert len(writer._events) == 1
+        assert adapter.get_stats()["qualifying_yes"] == 3
+        assert adapter.get_stats()["duplicates_skipped"] == 2
+        assert adapter.get_stats()["non_qualifying"] == 0
 
 
 # ───────────────────────────────────────────────────────────

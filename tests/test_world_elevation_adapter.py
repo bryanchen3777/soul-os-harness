@@ -1,16 +1,17 @@
 """
-world → elevation 直通 adapter（Option C）— 测试
+world → elevation 直通 adapter（**SG-1 降级：观察 only**）— 测试
 
-工单：新建非 frozen 的 world→elevation 直通 adapter，把 WorldEvent
-（news / weather / calendar）直接映射成 ElevationInput(source_type="world_event")，
-喂给 InternalizingEngine，实现「看新闻 → 信念」路径。0 frozen 变更，纯 additive。
+工单：SG-1 修复。降级 world→elevation 直通 adapter：**不再直通 consume raw
+WorldEvent**（P1 修复）。world 事件的升华改走正确路径
+``WorldInnerLifeAdapter → InnerLifeEvent → Submission Gate → consume()``
+（M5.9-3 whitelist 已解冻加 news/weather）。
 
-测试分节：
-  A. WorldEvent → ElevationInput 映射正确（news / weather / calendar 都覆盖）
-  B. run_world_elevation() 喂给 InternalizingEngine 产出节点（先验维度正确）
-  C. 升华结果存储到 data/elevation/（trace + nodes + edges）
-  D. Adapter bus 订阅 + on_world_event 接线
-  E. 失败隔离（升华失败不阻断 bus 主路径）
+降级后测试分节：
+  A. WorldEvent → ElevationInput 映射保留（观察/审计用，只读无副作用）
+  B. run_world_elevation() 观察 only（不再 consume，恒返回 []）
+  C. 不再写 data/elevation/（直通 store 写入已移除）
+  D. Adapter bus 订阅保留 + on_world_event 观察 only（nodes_produced 恒 0）
+  E. 失败隔离（观察失败不阻断 bus 主路径）
   F. frozen contract 只读红线（adapter 不引用 InnerLifeWriter / SAGE 写入路径 /
      M5.9-3 WorldInnerLifeAdapter）
 """
@@ -18,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import ast
-import json
 import os
 from pathlib import Path
 
@@ -169,64 +169,50 @@ def test_world_event_to_input_agent_override():
     assert inp.provenance["agent_id"] == "agent_rem"
 
 
-# ── B. run_world_elevation() 产出节点（先验维度正确）──────────────────
+# ── B. run_world_elevation() 观察 only（不再 consume，恒返回 []）──────
 
 
-def test_run_world_elevation_news_produces_belief(tmp_path):
+def test_run_world_elevation_news_observe_only_returns_empty(tmp_path):
+    """B.1: SG-1 降级 — news 事件不再直通 consume，返回 []。"""
     nodes = run_world_elevation(_make_news_event(), store_dir=tmp_path / "elevation")
-    assert len(nodes) == 1
-    assert nodes[0].node_type == "belief"  # world:news_event → belief
+    assert nodes == []  # 观察 only，不产节点
 
 
-def test_run_world_elevation_calendar_produces_essence(tmp_path):
+def test_run_world_elevation_calendar_observe_only_returns_empty(tmp_path):
+    """B.2: SG-1 降级 — calendar 事件不再直通 consume，返回 []。"""
     nodes = run_world_elevation(_make_calendar_event(), store_dir=tmp_path / "elevation")
-    assert len(nodes) == 1
-    assert nodes[0].node_type == "essence"  # world:calendar_event → essence+trait
+    assert nodes == []
 
 
-def test_run_world_elevation_weather_produces_belief(tmp_path):
+def test_run_world_elevation_weather_observe_only_returns_empty(tmp_path):
+    """B.3: SG-1 降级 — weather 事件不再直通 consume，返回 []。"""
     nodes = run_world_elevation(_make_weather_event(), store_dir=tmp_path / "elevation")
-    assert len(nodes) == 1
-    assert nodes[0].node_type == "belief"  # world:rain_started → DEFAULT_PRIOR
+    assert nodes == []
 
 
-# ── C. 存储到 data/elevation/ ────────────────────────────────────────
+# ── C. 不再写 data/elevation/（直通 store 写入已移除）────────────────
 
 
-def test_run_world_elevation_stores_to_elevation_dir(tmp_path):
+def test_run_world_elevation_no_longer_writes_store(tmp_path):
+    """C.1: SG-1 降级 — 直通 adapter 不再写 data/elevation/（无 consume 无 store）。"""
     store_dir = tmp_path / "elevation"
     nodes = run_world_elevation(_make_news_event(), store_dir=store_dir)
 
-    trace_file = store_dir / TRACE_FILENAME
-    nodes_file = store_dir / NODES_FILENAME
-    edges_file = store_dir / EDGES_FILENAME
-
-    assert trace_file.exists()
-    assert nodes_file.exists()
-    assert edges_file.exists()
-
-    trace_records = [json.loads(l) for l in trace_file.read_text(encoding="utf-8").splitlines() if l.strip()]
-    assert any(r.get("event_type") == "node_created" for r in trace_records)
-
-    node_records = [json.loads(l) for l in nodes_file.read_text(encoding="utf-8").splitlines() if l.strip()]
-    assert len(node_records) == len(nodes)
-    assert all("content" in r and "node_type" in r for r in node_records)
-
-    edge_records = [json.loads(l) for l in edges_file.read_text(encoding="utf-8").splitlines() if l.strip()]
-    assert edge_records
-    assert all("source_id" in r and "node_id" in r for r in edge_records)
-    # 证据边 source_type 应为 world_event（直通，不经 InnerLifeEvent）
-    assert all(r.get("source_type") == "world_event" for r in edge_records)
+    assert nodes == []
+    assert not (store_dir / TRACE_FILENAME).exists()
+    assert not (store_dir / NODES_FILENAME).exists()
+    assert not (store_dir / EDGES_FILENAME).exists()
 
 
-def test_default_store_dir_resolves_to_data_root_elevation(tmp_path, monkeypatch):
+def test_default_store_dir_no_longer_written(tmp_path, monkeypatch):
+    """C.2: SG-1 降级 — 缺省 store 目录也不再被直通 adapter 写入。"""
     monkeypatch.setenv("SOUL_OS_DATA_DIR", str(tmp_path / "data"))
     reset_data_root()
 
     nodes = run_world_elevation(_make_news_event(), store_dir=None)
 
-    assert (tmp_path / "data" / "elevation" / TRACE_FILENAME).exists()
-    assert len(nodes) == 1
+    assert nodes == []
+    assert not (tmp_path / "data" / "elevation" / TRACE_FILENAME).exists()
     reset_data_root()
 
 
@@ -242,14 +228,16 @@ def test_adapter_register_subscribes_to_world_event():
     assert "world_elevation_adapter" not in bus.get_subscribers()
 
 
-def test_adapter_on_world_event_produces_node(tmp_path):
+def test_adapter_on_world_event_observe_only(tmp_path):
+    """D.2: SG-1 降级 — on_world_event 观察 only，nodes_produced 恒 0。"""
     adapter = WorldElevationAdapter(store_dir=tmp_path / "elevation")
     nodes = adapter.on_world_event(_make_news_event())
-    assert len(nodes) == 1
-    assert adapter.get_stats()["nodes_produced"] == 1
+    assert nodes == []  # 不再产节点
+    assert adapter.get_stats()["nodes_produced"] == 0
 
 
 def test_adapter_via_bus_end_to_end(isolated_root):
+    """D.3: SG-1 降级 — bus 收到 WORLD_EVENT 但只观察，不产节点。"""
     adapter = WorldElevationAdapter()
 
     async def _run():
@@ -264,7 +252,7 @@ def test_adapter_via_bus_end_to_end(isolated_root):
     asyncio.run(_run())
 
     assert adapter.get_stats()["events_received"] == 1
-    assert adapter.get_stats()["nodes_produced"] == 1
+    assert adapter.get_stats()["nodes_produced"] == 0  # 观察 only
 
 
 def test_adapter_disabled_is_noop(tmp_path):

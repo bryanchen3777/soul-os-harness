@@ -274,23 +274,29 @@ async def lifespan(app: FastAPI):
         "NarrativeTraceWriter 已 injection → data/inner_life/trace.jsonl)"
     )
 
-    # ── 记忆升华 (soul-elevation) 生产接线 ──
-    # ElevationObserver 是旁路观察者：InnerLifeEvent 写入后触发升华（fire-and-forget，
-    # 失败隔离返回 []，不阻断写路径）。soul-elevation 是 path dependency
-    # （requirements.txt `-e ../soul-elevation`）；若未安装则 observer 停用（opt-in，
-    # 不阻断启动）。observer 接在 4 个 agency handler executor 的 create_event 之后，
-    # 不改 InnerLifeWriter / 4 handlers / 任何 frozen contract。
+    # ── SG-1: Elevation Submission Gate 生产接线 ──
+    # SubmissionGate 验证 event_id → canonical InnerLifeEvent（查 inner_life
+    # store/trace）→ producer 合法 → 由 InnerLifeWriter 创建，伪造 id fail-closed。
+    # 只准 consume()（destination=pattern），永不 elevate()。soul-elevation 是
+    # path dependency（requirements.txt `-e ../soul-elevation`）；若未安装则
+    # submit() fail-closed 返回 []（opt-in，不阻断启动）。
+    # Gate 接在 4 个 agency handler executor 的 create_event 之后（替代
+    # ElevationObserver 直调 run_elevation），不改 InnerLifeWriter / 4 handlers /
+    # 任何 frozen contract。
     try:
-        from src.inner_life import ElevationObserver
-        elevation_observer = ElevationObserver()
+        from src.inner_life import NarrativeTraceReader, SubmissionGate
+        submission_gate = SubmissionGate(
+            writer=inner_life_writer,
+            trace_reader=NarrativeTraceReader(),
+        )
         logger.info(
-            "[elevation] ElevationObserver 已启用 (soul-elevation, "
-            "store=data/elevation/)"
+            "[SG-1] SubmissionGate 已启用 (soul-elevation, "
+            "store=data/elevation/, 只 consume 不 elevate)"
         )
     except ImportError:
-        elevation_observer = None
+        submission_gate = None
         logger.warning(
-            "[elevation] soul-elevation 未安装, ElevationObserver 停用 (opt-in)"
+            "[SG-1] soul-elevation 未安装, SubmissionGate 停用 (opt-in)"
         )
 
     # ── M5.6-2 (Bry 派工 2026-08-10): ConversationQualification boundary ──
@@ -405,64 +411,55 @@ async def lifespan(app: FastAPI):
     #   - Event Bus contract unchanged
     #   - NarrativeTrace unchanged
     #   - writer identity authority unchanged
+
+    # ── SG-1: world 事件 → InnerLifeEvent → Submission Gate → consume() ──
+    # 降级 world→elevation 直通 adapter（src/world/elevation_adapter.py 已移除直接
+    # consume，观察 only）。world 事件的升华改走正确路径：
+    #   WorldEvent → WorldInnerLifeAdapter（M5.9-3 whitelist 已解冻加 news/weather）
+    #   → InnerLifeEvent → Submission Gate（验证）→ consume()（只产 pattern）。
+    # WorldInnerLifeAdapter 是 frozen（除 whitelist），不改其逻辑；这里用 additive
+    # wrapper 子类在「创建 InnerLifeEvent 之后」触发 Gate（dedup 对比找新 event_id，
+    # 不依赖 handle_event 返回值）。直通 adapter 的 wiring 已移除（失去生产作用）。
     from src.world.inner_life_adapter import (
-        WorldInnerLifeAdapter,
+        WorldInnerLifeAdapter as _WILA,
         WORLD_QUALIFYING_TYPES,
         WORLD_DEDUP_MAX_SIZE,
     )
-    world_inner_life_adapter = WorldInnerLifeAdapter(
+
+    class _WorldInnerLifeAdapterWithGate(_WILA):
+        """SG-1 additive wrapper：创建 InnerLifeEvent 后触发 Submission Gate。
+
+        不改 frozen 逻辑（qualify / dedup / create 全部继承），只在创建后加
+        Gate 触发（fire-and-forget，失败隔离在 Gate 内部，不阻断 bus 主路径）。
+        """
+
+        def __init__(self, *args, submission_gate=None, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._submission_gate = submission_gate
+
+        async def handle_event(self, event) -> None:
+            _before = set(self._dedup.values())
+            await super().handle_event(event)
+            for _eid in set(self._dedup.values()) - _before:
+                if self._submission_gate is not None:
+                    self._submission_gate.submit(_eid)
+
+    world_inner_life_adapter = _WorldInnerLifeAdapterWithGate(
         inner_life_writer=inner_life_writer,
+        submission_gate=submission_gate,
     )
     world_inner_life_adapter.register(bus=bus)
     # 暴露到 app.state 給 observability / test 驗證
     app.state._world_inner_life_adapter = world_inner_life_adapter
     logger.info(
-        f"[M5.9-3.1] WorldInnerLifeAdapter 已 wired ✓ "
+        f"[M5.9-3.1+SG-1] WorldInnerLifeAdapter 已 wired ✓ "
         f"(qualifying_types={sorted(WORLD_QUALIFYING_TYPES)}, "
         f"dedup_max_size={WORLD_DEDUP_MAX_SIZE}, "
         f"subscribed=WORLD_EVENT, "
         f"writer=canonical_inner_life_writer, "
+        f"submission_gate={'yes' if submission_gate is not None else 'no'}, "
         f"env_gated=False)"
     )
-
-    # ── world → elevation 直通 adapter (Option C) production wiring ──
-    # 新建非 frozen 的 world→elevation 直通 adapter：把 WorldEvent
-    # （news/weather/calendar）直接映射成 ElevationInput(source_type="world_event")，
-    # 喂给 InternalizingEngine，实现「看新闻 → 信念」路径。0 frozen 变更，纯 additive。
-    #
-    # 派工精神:
-    #   - 构造 exactly 1 个 WorldElevationAdapter (no second)
-    #   - 订阅 canonical bus 的 WORLD_EVENT（与 WorldInnerLifeAdapter 平行，
-    #     SoulEventBus 支持 multi-subscriber）
-    #   - 不产 InnerLifeEvent（直通，不经 M5.9-3 whitelist）
-    #   - 不修改 WorldEvent / InnerLifeEvent / Provenance / Event Bus / Agency /
-    #     TriggerEnvelope / M5.9-3 WorldInnerLifeAdapter
-    #   - 只写自有 store data/elevation/（与 inner_life 侧 elevation_adapter 共用）
-    #   - 不需要手动 unregister — bus.stop() 在 shutdown 自动清理所有 subscribers
-    #
-    # 冻结契约: 0 变动
-    #   - WorldEvent schema unchanged
-    #   - InnerLifeEvent schema unchanged
-    #   - M5.9-3 WorldInnerLifeAdapter unchanged
-    #   - TriggerEnvelope unchanged
-    #   - Agency Stage 1-4 unchanged
-    #   - Event Bus contract unchanged
-    #   - SAGE 写入逻辑 unchanged
-    try:
-        from src.world.elevation_adapter import WorldElevationAdapter
-        world_elevation_adapter = WorldElevationAdapter()
-        world_elevation_adapter.register(bus=bus)
-        # 暴露到 app.state 给 observability / test 验证
-        app.state._world_elevation_adapter = world_elevation_adapter
-        logger.info(
-            "[world→elevation] WorldElevationAdapter 已 wired ✓ "
-            "(subscribed=WORLD_EVENT, source_type=world_event, "
-            "store=data/elevation/)"
-        )
-    except ImportError:
-        logger.warning(
-            "[world→elevation] soul-elevation 未安装, WorldElevationAdapter 停用 (opt-in)"
-        )
 
     # ── M5.15-3 (Bry 派工 2026-08-12 18:45): Bus-aware SyntheticWorldEventSource ──
     # 構造一個 bus-aware SyntheticWorldEventSource, 證明 M5.15-3 canonical Event Bus
@@ -990,9 +987,14 @@ async def lifespan(app: FastAPI):
                     )
                 )
                 _event_id = _event.event_id
-                # 记忆升华：InnerLifeEvent 写入后触发（fire-and-forget，失败隔离）
-                if elevation_observer is not None:
-                    elevation_observer.on_event_written(_event)
+                # SG-1: Proactive DM → 观察 only（不自动 consume，不提交 elevation）。
+                # 定稿「不自動/暫不提交」：proactive_dm 的 InnerLifeEvent 仍创建
+                # （M5.4-6.2 inner_life_event_id wiring 不变），但不再触发升华。
+                logger.info(
+                    f"[SG-1][ProactiveDM OBSERVE-ONLY] InnerLifeEvent 已创建但"
+                    f"不提交 elevation: event_id={_event_id[:12]}... "
+                    f"agent_id={agent_id}"
+                )
             except Exception as _e:
                 logger.warning(
                     f"[AgencyTriggerHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
@@ -1072,9 +1074,9 @@ async def lifespan(app: FastAPI):
                     )
                 )
                 _event_id = _event.event_id
-                # 记忆升华：InnerLifeEvent 写入后触发（fire-and-forget，失败隔离）
-                if elevation_observer is not None:
-                    elevation_observer.on_event_written(_event)
+                # SG-1: 改走 Submission Gate（验证 event_id → consume，只产 pattern）
+                if submission_gate is not None:
+                    submission_gate.submit(_event.event_id)
             except Exception as _e:
                 logger.warning(
                     f"[EventHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
@@ -1140,9 +1142,9 @@ async def lifespan(app: FastAPI):
                     )
                 )
                 _event_id = _event.event_id
-                # 记忆升华：InnerLifeEvent 写入后触发（fire-and-forget，失败隔离）
-                if elevation_observer is not None:
-                    elevation_observer.on_event_written(_event)
+                # SG-1: 改走 Submission Gate（验证 event_id → consume，只产 pattern）
+                if submission_gate is not None:
+                    submission_gate.submit(_event.event_id)
             except Exception as _e:
                 logger.warning(
                     f"[DreamHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
@@ -1224,9 +1226,9 @@ async def lifespan(app: FastAPI):
                     )
                 )
                 _event_id = _event.event_id
-                # 记忆升华：InnerLifeEvent 写入后触发（fire-and-forget，失败隔离）
-                if elevation_observer is not None:
-                    elevation_observer.on_event_written(_event)
+                # SG-1: 改走 Submission Gate（验证 event_id → consume，只产 pattern）
+                if submission_gate is not None:
+                    submission_gate.submit(_event.event_id)
             except Exception as _e:
                 logger.warning(
                     f"[DiaryHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "

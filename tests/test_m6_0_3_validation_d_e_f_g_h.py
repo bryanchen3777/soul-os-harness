@@ -345,7 +345,7 @@ class TestScenarioE(unittest.TestCase):
             ),
         )
 
-        # Other types fail-closed
+        # SG-1 解冻 (2026-08-29, Owner 授权 whitelist 扩展): rain_started 现在 qualify
         rain = WorldEvent(
             source="weather",
             type="rain_started",
@@ -357,10 +357,10 @@ class TestScenarioE(unittest.TestCase):
         )
         result = qualify_world_event(rain)
         runner.run(
-            "E1: rain_started does NOT qualify (fail-closed)",
+            "E1: rain_started qualifies YES (SG-1 解冻 whitelist 扩展)",
             lambda: assert_text_contains(
-                str(result.decision), "NO",
-                label="rain_started → NO (fail-closed)"
+                str(result.decision), "YES",
+                label="rain_started → YES (SG-1 解冻)"
             ),
         )
 

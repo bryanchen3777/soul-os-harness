@@ -29,6 +29,13 @@ QUALIFICATION V1 RULE (M5.9-2 design):
   - Other 6 candidate dimensions (B/C/D/F/G/H) rejected per evidence
   - 0 LLM / 0 scoring / 0 semantic
 
+QUALIFICATION V1 RULE (SG-1 解冻 2026-08-29, Owner 授权, 仅 whitelist 扩展):
+  - Type whitelist 扩到 5 types (加 news/weather):
+    - news_event            (M6.1-5.1 RSS News, source=news)
+    - rain_started          (M6.1-3.1 Open-Meteo, source=weather)
+    - weather_temp_change   (M6.1-3.1 Open-Meteo, source=weather)
+  - 0 其他逻辑改动 (qualify/dedup/create 全部不变)
+
 DEDUP V1 RULE (M5.9-2 design):
   - In-memory Dict[str, str] mapping novelty_id → event_id
   - FIFO eviction at MAX 1000 entries
@@ -103,9 +110,21 @@ logger = logging.getLogger("soul_os.world.inner_life_adapter")
 #   - calendar_event: TEST_C YES (30-min meeting = Soul action implication)
 #   - user_going_outside: TEST_E YES (explicit actor involvement in data.actor)
 # All other types: NO (fail-closed, including unknown types)
+#
+# SG-1 (Owner 授权 2026-08-29, 范围仅限 whitelist 扩展): 解冻 M5.9-3 whitelist,
+# 加 news/weather 3 个类型, 让 world 事件走 World → InnerLife → InnerLifeEvent
+# → Submission Gate → consume() 的正确路径 (降级 world→elevation 直通 adapter):
+#   - news_event:          M6.1-5.1 RSS News Source (source=news)
+#   - rain_started:        M6.1-3.1 Open-Meteo Weather (source=weather)
+#   - weather_temp_change: M6.1-3.1 Open-Meteo Weather (source=weather)
+# 0 其他逻辑改动 (qualify/dedup/create 全部不变)。
 WORLD_QUALIFYING_TYPES: frozenset = frozenset({
     "calendar_event",
     "user_going_outside",
+    # SG-1 解冻 (2026-08-29 Owner 授权, 仅 whitelist 扩展):
+    "news_event",
+    "rain_started",
+    "weather_temp_change",
 })
 
 

@@ -1145,15 +1145,15 @@ class TestSectionM_WorldPerceptionIntegration:
 # ───────────────────────────────────────────────────────────
 
 class TestSectionN_AdapterBehavior:
-    """N. news_event NOT in WORLD_QUALIFYING_TYPES → no InnerLifeEvent."""
+    """N. news_event IN WORLD_QUALIFYING_TYPES (SG-1 解冻 2026-08-29) → InnerLifeEvent created."""
 
-    def test_n1_news_event_not_in_qualifying_types(self):
-        """N.1: 'news_event' is NOT in WORLD_QUALIFYING_TYPES (frozen whitelist)."""
+    def test_n1_news_event_in_qualifying_types(self):
+        """N.1: 'news_event' IS in WORLD_QUALIFYING_TYPES (SG-1 解冻, Owner 授权)."""
         from src.world.inner_life_adapter import WORLD_QUALIFYING_TYPES
-        assert "news_event" not in WORLD_QUALIFYING_TYPES
+        assert "news_event" in WORLD_QUALIFYING_TYPES
 
-    def test_n2_adapter_rejects_news_event(self, tmp_path, monkeypatch):
-        """N.2: WorldInnerLifeAdapter receives news_event but does NOT create InnerLifeEvent."""
+    def test_n2_adapter_creates_inner_life_event_for_news(self, tmp_path, monkeypatch):
+        """N.2: WorldInnerLifeAdapter receives news_event → creates InnerLifeEvent."""
         monkeypatch.setenv("SOUL_OS_DATA_DIR", str(tmp_path))
         reset_data_root()
 
@@ -1169,7 +1169,6 @@ class TestSectionN_AdapterBehavior:
                 adapter.register(bus=bus)
 
                 # Emit a news_event via the bus
-                item = _make_simple_item()
                 we = WorldEvent(
                     source="news",
                     type="news_event",
@@ -1188,11 +1187,12 @@ class TestSectionN_AdapterBehavior:
                 await bus.publish(soul_event)
                 await asyncio.sleep(0.2)
 
-                # No InnerLifeEvent created (news_event not qualifying)
-                assert len(writer._events) == 0
-                # Adapter stats: received 1, non_qualifying 1
+                # InnerLifeEvent created (news_event now qualifying, SG-1 解冻)
+                assert len(writer._events) == 1
+                # Adapter stats: received 1, qualifying_yes 1, non_qualifying 0
                 assert adapter.get_stats()["events_received"] == 1
-                assert adapter.get_stats()["non_qualifying"] == 1
+                assert adapter.get_stats()["qualifying_yes"] == 1
+                assert adapter.get_stats()["non_qualifying"] == 0
             finally:
                 await bus.stop()
 
