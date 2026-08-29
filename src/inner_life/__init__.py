@@ -146,3 +146,29 @@ __all__ = [
     "TRIGGER_TYPE_MEMORY_FACT",
     "TRIGGER_TYPE_SYSTEM",
 ]
+
+# ─────────────────────────────────────────────────────────────────────
+# 升华层 adapter seam（可选，guarded import）
+#
+# elevation_adapter 是 Soul OS 侧唯一接触 soul-elevation 的地方。soul-elevation
+# 是 path dependency；若未安装则 adapter 不可用，但不影响 inner_life 其余 API。
+# 因此这里用 guarded import：失败只跳过导出，绝不 raise。
+# ─────────────────────────────────────────────────────────────────────
+try:
+    from .elevation_adapter import (  # noqa: F401
+        ElevationObserver,
+        inner_life_event_to_input,
+        run_elevation,
+        sage_fact_to_input,
+        v1_memory_to_input,
+    )
+
+    __all__ += [
+        "ElevationObserver",
+        "inner_life_event_to_input",
+        "v1_memory_to_input",
+        "sage_fact_to_input",
+        "run_elevation",
+    ]
+except ImportError:  # soul_elevation 未安装 → adapter 不可用，静默跳过
+    pass
