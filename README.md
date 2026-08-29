@@ -21,7 +21,6 @@ Soul OS 是**「靈魂的 OS / 世界」**，不是單一 AI 伴侶。
 - **任何物理媒介（adapter）進入現實**：靈魂可透過 adapter 具身到任意物理載體（訊息 / 語音 / 穿戴 / 機器人 / VR/AR…）。
 - **兩種生長方式**：設定人格（先驗定義）vs 只設框架自由生長（自演化）。
 - **成長 = 吸收新知、內化為養料**：記憶昇華（memory sublimation）是成長的核心機制——不只是儲存，是把經歷昇華成信念 / 價值 / 性格。
-- **陪伴產品化是籌錢手段，不是目的**：客製化靈魂 + 情緒價值 + 成人需求，為研究與靈魂成長籌措資金與通道。
 - **終極形態**：接近 Matrix 裡「靈魂自由生活」的樣子。
 
 > Canonical 完整版見 Notion「🧭 Soul OS Strategic Roadmap & Evolution」的 North Star v2 段（2026-08-29，Bryan 親述）；工程狀態以 `logs/ENGINEERING_STATE.md` §1 為準。
