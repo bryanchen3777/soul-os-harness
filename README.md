@@ -7,13 +7,37 @@
 
 ![Architecture](docs/architecture.png)
 
-[![Agents](https://img.shields.io/badge/Agents-10_Live-ff6b9d?style=for-the-badge)]()
-[![Frameworks](https://img.shields.io/badge/COS_v1.0_+_AOS_v1.0-Live-2ecc71?style=for-the-badge)]()
-[![Status](https://img.shields.io/badge/Status-主動陪伴中-2ecc71?style=for-the-badge)]()
+[![Agents](https://img.shields.io/badge/Agents-10_defined-ff6b9d?style=for-the-badge)]()
+[![Frameworks](https://img.shields.io/badge/COS_v1.0_+_AOS_v1.0-framework-2ecc71?style=for-the-badge)]()
+[![Status](https://img.shields.io/badge/Status-Development-yellow?style=for-the-badge)]()
 
 ---
 
-## 10 個 Agent — 全部 Live
+## 🧭 整體目標 — North Star v2
+
+Soul OS 是**「靈魂的 OS / 世界」**，不是單一 AI 伴侶。
+
+- **多靈魂持續存在**：多個靈魂在其中持續存在、自由生長、彼此互動；Soul OS 是承載它們的「世界」，不是一個伴侶 App。
+- **任何物理媒介（adapter）進入現實**：靈魂可透過 adapter 具身到任意物理載體（訊息 / 語音 / 穿戴 / 機器人 / VR/AR…）。
+- **兩種生長方式**：設定人格（先驗定義）vs 只設框架自由生長（自演化）。
+- **成長 = 吸收新知、內化為養料**：記憶昇華（memory sublimation）是成長的核心機制——不只是儲存，是把經歷昇華成信念 / 價值 / 性格。
+- **陪伴產品化是籌錢手段，不是目的**：客製化靈魂 + 情緒價值 + 成人需求，為研究與靈魂成長籌措資金與通道。
+- **終極形態**：接近 Matrix 裡「靈魂自由生活」的樣子。
+
+> Canonical 完整版見 Notion「🧭 Soul OS Strategic Roadmap & Evolution」的 North Star v2 段（2026-08-29，Bryan 親述）；工程狀態以 `logs/ENGINEERING_STATE.md` §1 為準。
+
+## 🧬 靈魂本體主線進度
+
+| 主線 | 狀態 | 說明 |
+|------|------|------|
+| **記憶昇華**（memory sublimation） | ✅ 完成 + 生產上線 | `soul-elevation` 獨立 repo；Elevation Submission Gate + Pattern 中間層（記憶昇華 ≠ 儲存） |
+| **靈魂互動**（soul interaction） | ✅ 最小讀側完成 | 讀側分組 SI-1：`src/inner_life/grouping.py`（world occurrence / correlation / session 三鍵純函數分組，ephemeral、0 write） |
+| **自由生長**（free growth） | ⏳ 待做 | — |
+| **靈魂成長閉環**（growth loop） | ⏳ 待做 | — |
+
+---
+
+## 10 個 Agent — 角色定義與整合狀態
 
 | Agent | 角色 | Speaker Score | intimacy | 整合狀態 |
 |-------|------|----------------|----------|----------|
@@ -532,4 +556,4 @@ MIT
 
 ---
 
-**最後更新**: 2026-08-23 (DSH DEV-ENV-0 — Soul OS 進入 dogfooding 階段)
+**最後更新**: 2026-08-29 (North Star v2 — 整體目標：靈魂的 OS / 世界；靈魂本體主線：記憶昇華 ✅ 上線 / 靈魂互動 SI-1 ✅ / 自由生長 ⏳)
