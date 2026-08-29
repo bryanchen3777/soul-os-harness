@@ -38,7 +38,7 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 - **North Star v2 确立**：Soul OS 是「灵魂的 OS / 世界」，**不是单一 AI 伴侣**；灵魂本体（记忆升华 / 灵魂间互动 / 自由生长）是研究主线。详见下方「North Star v2」小节。
 - **DSH Work Bot = 研究基础设施 / 工具，不是 Soul OS 本体**（Chief → Researcher / Developer / Tester / Auditor，§5.9-5.11）。Soul OS 灵魂本体（记忆升华 / 灵魂间互动 / 自由生长）才是研究主线。
 - **生产服务器已止血恢复在线**（2026-08-29，修复 `python311.dll` 崩溃循环，KI-007 登记；`/health=200`）。
-- **当前活跃工作**：灵魂本体主线（记忆升华 / 灵魂互动 / 自由生长）已全线推进完毕；灵魂成长闭环方向锁定、实现未授权。详见下方「灵魂本体主线进度」。
+- **当前活跃工作**：灵魂本体主线四项（记忆升华 / 灵魂互动 / 自由生长 / 灵魂成长闭环）已全部完成。详见下方「灵魂本体主线进度」。
 
 ### 灵魂本体主线进度（North Star v2 研究主线）
 
@@ -47,9 +47,9 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 | **记忆升华** | ✅ 完成 + 生产上线 | soul-elevation 独立 repo（ElevationNode / InternalizingEngine / reconsolidation / 升华式遗忘）+ Submission Gate + Pattern 中间层（源类型先验 + LLM 后验） | `401e15c`（agent_id 注入） |
 | **灵魂互动** | ✅ 完成（SI-1 最小读侧） | shared life 读侧分组（SI-1）已落地 | `b623e17`（SI-1） |
 | **自由生长** | ✅ 完成（FG-2 germ 初始化边界） | germ 初始化边界（FG-2）：configs germ seed → persona 基线 fixture，0 frozen contract 改动 | `e8c84d4`（FG-2） |
-| **灵魂成长闭环** | 🔒 方向锁定（实现未授权） | Emergent read-side projection + anti-runaway invariant；方向已锁定，实现未授权 | — |
+| **灵魂成长闭环** | ✅ 完成（emergent read-side projection） | Emergent read-side projection：投影该灵魂自己的 belief/value/trait/essence 到 prompt；anti-runaway invariant；可观测 sidecar trace | `1a97a24`（feat: soul growth loop (emergent read-side projection)） |
 
-**相关 commit**：`e8c84d4`（feat: germ initialization boundary (FG-2)）；`401e15c`（feat: agent_id injection for diary/dream/event elevation ownership）；`d8c057d`（fix: watchdog procs check misjudgment (port_listen=True procs=0)）。
+**相关 commit**：`1a97a24`（feat: soul growth loop (emergent read-side projection)）；`e8c84d4`（feat: germ initialization boundary (FG-2)）；`401e15c`（feat: agent_id injection for diary/dream/event elevation ownership）；`d8c057d`（fix: watchdog procs check misjudgment (port_listen=True procs=0)）。
 
 ### North Star v2（canonical 引用）
 
