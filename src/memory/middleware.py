@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from src.async_utils import create_managed_task
 from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
 from src.memory.sage import SAGELiteProvider
@@ -507,7 +508,8 @@ class MemoryMiddleware:
                     f"[MemoryMiddleware] shadow hook 異常,不影響 prod: {_shadow_err}"
                 )
 
-        asyncio.create_task(_commit_async())
+        # KI-007: fire-and-forget → 受管任務（保存強引用 + done 回調捕獲異常）
+        create_managed_task(_commit_async())
 
     # ───────────────────────────────────────────────────────────
     # β2.1 (Bry 拍板 2026-08-02 21:48): 事件背景生成

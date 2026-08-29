@@ -324,6 +324,46 @@ Lesson 35 明確「跨重啟樣本不能合併」,P0-2 用 git HEAD hash 當觀�
 
 ---
 
+## KI-007: python311.dll 0xc0000005 ACCESS VIOLATION 崩潰循環（fire-and-forget create_task 記憶體損壞）
+
+**狀態**: 已修（待觀察）  **優先級**: P0  **發現**: 2026-08-15  **修復**: 2026-08-28
+
+**關聯**: M6.1-9.2 法醫審計（`logs/ENGINEERING_STATE.md` §5.6 變更日誌 2026-08-15）→ 本次止血工單
+
+**描述**: 生產伺服器 `python.exe`（uv-managed CPython 3.11）反覆以 `0xc0000005` ACCESS VIOLATION 崩潰於 `python311.dll`。6 次 WER 崩潰（8/14 21:32 - 8/15 00:59，Event 1000 + 1001），watchdog 自動重啟打到 `N=10/10 CAP REACHED` 後放棄，導致 8/25 00:33 起完全宕機 3 天多。
+
+**影響**:
+- 生產服務（`/health`、Telegram 10 bots、Agency trigger 5 條路徑）全部離線
+- `faulthandler.log` 每 60 秒 dump 一次，惡性膨脹至 134MB
+- 該 P0 此前未登記於本文件（本文件停在 KI-006，2026-06-30）
+
+**觸發條件 / 根因**（M6.1-9.2 定位，本次採信）:
+- 分類為「uvicorn + anyio + asyncio.create_task fire-and-forget 的 C 擴展記憶體損壞」
+- fire-and-forget 的 `asyncio.create_task(coro)` 不保存引用時，Task 可能在運行途中被 GC 回收，連帶提前釋放 anyio/httpcore 等 C 擴展仍在使用的同步原語 → 記憶體損壞 → ACCESS VIOLATION
+- `faulthandler.log` 崩潰棧顯示事發於 `httpcore._synchronization`（C 擴展）import 與 `httpcore._async.http11.handle_async_request` 進行中的 HTTP 請求
+
+**修法**:
+1. 新增 `src/async_utils.py`：`create_managed_task(coro)` — 保存強引用（模組級 `_MANAGED_TASKS` set）+ done 回調捕獲異常
+2. 把 8 個 fire-and-forget `asyncio.create_task(...)` 改為 `create_managed_task(...)`：
+   - `src/llm/fish_tts_handler.py`（TTS 合成）
+   - `src/memory/middleware.py`（post_reply_commit 非同步提交）
+   - `src/io/channels/router.py` ×2（outbox flush）
+   - `scripts/run_server.py` ×4（calendar / weather / news poll loop + smoke inject）
+3. 已保存引用的 `create_task`（scheduler / heartbeat / bus worker / typing indicator / heartbeat dumper / self-check）非 fire-and-forget，不動
+
+**驗證**（2026-08-28）:
+- `/health` 回 200、`registered all 10 agents`、10 bots polling
+- 0 frozen contract 改動（Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 寫入邏輯未動）
+- 回歸測試 PASS（見測試紀錄）
+
+**殘留風險 / 待觀察**:
+- 崩潰是「運行數小時後」才發生，需持續觀察 ≥24h 確認不再復現（watchdog 計數不再累計）
+- 若仍復現，下一步排查方向：uvicorn/anyio/httpcore 版本組合，或改用 ProactorEventLoop 以外的選項
+
+**估算**: 1-2 小時（已完成）
+
+---
+
 ## Backlog 維護約定
 
 - **編號嚴格單調遞增** — 不要複用 KI-NNN,刪除 KI 時保留 entry 加 `**狀態**: 已棄用` 而非整段刪
@@ -337,4 +377,4 @@ Lesson 35 明確「跨重啟樣本不能合併」,P0-2 用 git HEAD hash 當觀�
 
 ---
 
-**最後更新**: 2026-06-30 (KI-001 → 已修,KI-002 → 已修,KI-004 → 部分修復,KI-005 → 待修) · **維護者**: Bryan + MiniMax M3
+**最後更新**: 2026-08-28 (KI-001 → 已修,KI-002 → 已修,KI-004 → 部分修復,KI-005 → 待修,KI-006 → 已修,KI-007 → 已修待觀察) · **維護者**: Bryan + MiniMax M3

@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from src.async_utils import create_managed_task
 from src.eventbus.schema import EventType, SoulEvent
 
 if TYPE_CHECKING:
@@ -230,7 +231,7 @@ class ChannelRouter:
                     # 這裡不能 await (在 _on_agent_speak 流程內),
                     # 但 _on_agent_speak 是 async 所以可以直接 await
                     # 為了不阻塞主流程, 排成 task
-                    asyncio.create_task(self._maybe_flush_outbox())
+                    create_managed_task(self._maybe_flush_outbox())
         # ── Phase 5c fallback end ──────────────────────────
 
         # Web 由 IOGateway 處理，這裡跳過避免重複送出
@@ -859,7 +860,7 @@ class ChannelRouter:
                     f"size={len(self._outbox)}"
                 )
                 # 排程 flush (不阻塞 inbound 流程)
-                asyncio.create_task(self._flush_outbox_to_bry())
+                create_managed_task(self._flush_outbox_to_bry())
             # Step 1 fix: session 隔離每個 user，避免陌生人污染 Bryan 記憶
             # Bryan: session_1696287850_agent_yua, 陌生人: session_99999999_agent_yua
             tg_session = f"session_{user_id}_{full_agent_id}"

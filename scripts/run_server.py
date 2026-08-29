@@ -40,6 +40,8 @@ import faulthandler
 
 # P0.5 (Bry 派工 2026-08-09 19:48): use data_root() for test isolation
 from src.paths import data_root
+# KI-007: fire-and-forget create_task → 受管任務（保存強引用 + done 回調捕獲異常）
+from src.async_utils import create_managed_task
 
 _FAULTHANDLER_PATH = data_root() / "faulthandler.log"
 _FAULTHANDLER_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -351,7 +353,7 @@ async def lifespan(app: FastAPI):
                     SyntheticWorldEventSource.build_rain_started(),
                 ])
                 logger.info("[Server] M3 synthetic smoke test event injected ✓")
-            asyncio.create_task(_smoke_inject())
+            create_managed_task(_smoke_inject())
     else:
         # Fallback: 無 M3 時, SpeakerTokenManager 走 LEGACY (訂 ENRICHED + PERCEIVED)
         world_perception = None
@@ -503,7 +505,7 @@ async def lifespan(app: FastAPI):
                         f"{type(e).__name__}: {e}"
                     )
                 await asyncio.sleep(calendar_source.polling_interval_secs)
-        asyncio.create_task(_calendar_poll_loop())
+        create_managed_task(_calendar_poll_loop())
         # Expose to app.state for observability
         app.state._world_calendar_source = calendar_source
         logger.info(
@@ -569,7 +571,7 @@ async def lifespan(app: FastAPI):
                             f"{type(e).__name__}: {e}"
                         )
                     await asyncio.sleep(weather_source.polling_interval_secs)
-            asyncio.create_task(_weather_poll_loop())
+            create_managed_task(_weather_poll_loop())
             # Expose to app.state for observability
             app.state._world_weather_source = weather_source
             logger.info(
@@ -653,7 +655,7 @@ async def lifespan(app: FastAPI):
                             f"{type(e).__name__}: {e}"
                         )
                     await asyncio.sleep(news_source.polling_interval_secs)
-            asyncio.create_task(_news_poll_loop())
+            create_managed_task(_news_poll_loop())
             # Expose to app.state for observability
             app.state._world_news_source = news_source
             feed_summary = ", ".join(f.provider for f in news_source.feeds)

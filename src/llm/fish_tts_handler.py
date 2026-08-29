@@ -54,6 +54,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from src.async_utils import create_managed_task
 from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventType, SoulEvent
 from src.llm.emotion_marker_map import resolve_marker
@@ -270,7 +271,9 @@ class FishTTSHandler:
             )
 
             # 4. fire-and-forget — 不 await task，不卡主流程
-            asyncio.create_task(
+            # KI-007: 改受管任務（保存強引用 + done 回調捕獲異常），
+            # 避免 fire-and-forget Task 被 GC 提前回收導致 C 擴展記憶體損壞
+            create_managed_task(
                 self._synthesize_async(
                     agent_id=agent_id,
                     audio_text=audio_text,
