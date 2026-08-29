@@ -274,6 +274,25 @@ async def lifespan(app: FastAPI):
         "NarrativeTraceWriter 已 injection → data/inner_life/trace.jsonl)"
     )
 
+    # ── 记忆升华 (soul-elevation) 生产接线 ──
+    # ElevationObserver 是旁路观察者：InnerLifeEvent 写入后触发升华（fire-and-forget，
+    # 失败隔离返回 []，不阻断写路径）。soul-elevation 是 path dependency
+    # （requirements.txt `-e ../soul-elevation`）；若未安装则 observer 停用（opt-in，
+    # 不阻断启动）。observer 接在 4 个 agency handler executor 的 create_event 之后，
+    # 不改 InnerLifeWriter / 4 handlers / 任何 frozen contract。
+    try:
+        from src.inner_life import ElevationObserver
+        elevation_observer = ElevationObserver()
+        logger.info(
+            "[elevation] ElevationObserver 已启用 (soul-elevation, "
+            "store=data/elevation/)"
+        )
+    except ImportError:
+        elevation_observer = None
+        logger.warning(
+            "[elevation] soul-elevation 未安装, ElevationObserver 停用 (opt-in)"
+        )
+
     # ── M5.6-2 (Bry 派工 2026-08-10): ConversationQualification boundary ──
     # v1 決定: USER_MESSAGE conversation 在 SESSION_END 時,
     # 只有 duration >= 5min AND turn_depth >= 4 才 promote 成 InnerLifeEvent
@@ -932,6 +951,9 @@ async def lifespan(app: FastAPI):
                     )
                 )
                 _event_id = _event.event_id
+                # 记忆升华：InnerLifeEvent 写入后触发（fire-and-forget，失败隔离）
+                if elevation_observer is not None:
+                    elevation_observer.on_event_written(_event)
             except Exception as _e:
                 logger.warning(
                     f"[AgencyTriggerHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
@@ -1011,6 +1033,9 @@ async def lifespan(app: FastAPI):
                     )
                 )
                 _event_id = _event.event_id
+                # 记忆升华：InnerLifeEvent 写入后触发（fire-and-forget，失败隔离）
+                if elevation_observer is not None:
+                    elevation_observer.on_event_written(_event)
             except Exception as _e:
                 logger.warning(
                     f"[EventHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
@@ -1076,6 +1101,9 @@ async def lifespan(app: FastAPI):
                     )
                 )
                 _event_id = _event.event_id
+                # 记忆升华：InnerLifeEvent 写入后触发（fire-and-forget，失败隔离）
+                if elevation_observer is not None:
+                    elevation_observer.on_event_written(_event)
             except Exception as _e:
                 logger.warning(
                     f"[DreamHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
@@ -1157,6 +1185,9 @@ async def lifespan(app: FastAPI):
                     )
                 )
                 _event_id = _event.event_id
+                # 记忆升华：InnerLifeEvent 写入后触发（fire-and-forget，失败隔离）
+                if elevation_observer is not None:
+                    elevation_observer.on_event_written(_event)
             except Exception as _e:
                 logger.warning(
                     f"[DiaryHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
