@@ -38,7 +38,18 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 - **North Star v2 确立**：Soul OS 是「灵魂的 OS / 世界」，**不是单一 AI 伴侣**；灵魂本体（记忆升华 / 灵魂间互动 / 自由生长）是研究主线。详见下方「North Star v2」小节。
 - **DSH Work Bot = 研究基础设施 / 工具，不是 Soul OS 本体**（Chief → Researcher / Developer / Tester / Auditor，§5.9-5.11）。Soul OS 灵魂本体（记忆升华 / 灵魂间互动 / 自由生长）才是研究主线。
 - **生产服务器已止血恢复在线**（2026-08-29，修复 `python311.dll` 崩溃循环，KI-007 登记；`/health=200`）。
-- **当前活跃工作**：① 记忆升华调研（进行中）；② 收敛事实来源（本工单：对齐 §1 / §3 决策计数 / North Star v2 canonical 引用）。
+- **当前活跃工作**：灵魂本体主线（记忆升华 / 灵魂互动 / 自由生长）已全线推进完毕；灵魂成长闭环方向锁定、实现未授权。详见下方「灵魂本体主线进度」。
+
+### 灵魂本体主线进度（North Star v2 研究主线）
+
+| 主线 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **记忆升华** | ✅ 完成 + 生产上线 | soul-elevation 独立 repo（ElevationNode / InternalizingEngine / reconsolidation / 升华式遗忘）+ Submission Gate + Pattern 中间层（源类型先验 + LLM 后验） | `401e15c`（agent_id 注入） |
+| **灵魂互动** | ✅ 完成（SI-1 最小读侧） | shared life 读侧分组（SI-1）已落地 | `b623e17`（SI-1） |
+| **自由生长** | ✅ 完成（FG-2 germ 初始化边界） | germ 初始化边界（FG-2）：configs germ seed → persona 基线 fixture，0 frozen contract 改动 | `e8c84d4`（FG-2） |
+| **灵魂成长闭环** | 🔒 方向锁定（实现未授权） | Emergent read-side projection + anti-runaway invariant；方向已锁定，实现未授权 | — |
+
+**相关 commit**：`e8c84d4`（feat: germ initialization boundary (FG-2)）；`401e15c`（feat: agent_id injection for diary/dream/event elevation ownership）；`d8c057d`（fix: watchdog procs check misjudgment (port_listen=True procs=0)）。
 
 ### North Star v2（canonical 引用）
 
@@ -68,7 +79,10 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `8466bc1` (docs(doc-1.3-r1) — Canonical Documentation State Reconciliation, 3 files: README.md + docs/architecture.png + logs/ENGINEERING_STATE.md)
+- Current HEAD: `401e15c` (feat: agent_id injection for diary/dream/event elevation ownership)
+- FG-2 commit: `e8c84d4` (feat: germ initialization boundary (FG-2); **distinct from Current HEAD**)
+- watchdog fix commit: `d8c057d` (fix: watchdog procs check misjudgment (port_listen=True procs=0); **distinct from Current HEAD**)
+- SI-1 commit: `b623e17` (feat: shared life read-side grouping (SI-1); **distinct from Current HEAD**)
 - arch-v2 commit: `fa46433` (M6.1-aligned v2 diagram replacement; **distinct from Current HEAD**)
 - M6.1-9.1 closeout commit: `eafbf24` (Restore True Phase-10 Agency Registration; **distinct from Current HEAD**)
 - M6.1-9 partial commit: `362cf28` (Lived Context Formation Audit T+50min snapshot; **distinct from Current HEAD**)
@@ -89,7 +103,7 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 - GOV-2-R1 alignment commit: `3539de2` (Owner Decision A alignment; recorded in §9 CHANGE LOG; **distinct from Current HEAD**)
 - GOV-2 establishment commit: `eb57151` (initial canonical state registry; superseded by GOV-2-R1)
 - `origin/main` synced at HEAD
-- Working tree: 0 modified, 20 baseline untracked artifacts preserved (M5.2-L + M5.4-5.x audit docs)
+- Working tree: 1 pre-existing modified (`tests/test_soul_md_loader.py`, kept uncommitted by design) + baseline untracked artifacts preserved (M5.2-L + M5.4-5.x audit docs)
 
 ### Current status snapshot
 
