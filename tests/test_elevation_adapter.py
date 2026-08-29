@@ -312,3 +312,62 @@ def test_adapter_does_not_reference_sage_write_path():
     tree = _adapter_ast()
     _assert_no_import(tree, {"MemoryEvolution", "MemoryWriter"})
     _assert_no_method_call(tree, {"apply_correction", "add_fact", "update_weight", "remove_fact"})
+
+
+# ── H. agent_id 传递链（EL-OWN-0）────────────────────────────────────
+
+
+def _make_world_event() -> "InnerLifeWriter":
+    """world 语义事件：actor_id=None（无 agent actor）。"""
+    writer = InnerLifeWriter()
+    return writer.create_event(
+        provenance=Provenance(
+            trigger_type="world:news_event",
+            actor_id=None,
+            source_system="narrative",
+        ),
+    )
+
+
+def test_run_elevation_explicit_agent_id_attribution(tmp_path):
+    """H.1: run_elevation(agent_id=...) → 节点归属该灵魂（即使 actor_id=None）。"""
+    event = _make_world_event()
+    store_dir = tmp_path / "elevation"
+
+    nodes = run_elevation(event, [], agent_id="agent_rem", store_dir=store_dir)
+
+    assert len(nodes) == 1
+    assert nodes[0].agent_id == "agent_rem"  # 显式 agent_id 落到 provenance + engine
+    # 落盘节点同样归属（emergent 属性归属的验收面）
+    node_records = [
+        json.loads(l)
+        for l in (store_dir / NODES_FILENAME).read_text(encoding="utf-8").splitlines()
+        if l.strip()
+    ]
+    assert node_records[0]["agent_id"] == "agent_rem"
+
+
+def test_run_elevation_no_agent_id_keeps_default(tmp_path):
+    """H.2: 不传 agent_id + actor_id=None（world 路径）→ 节点保持 "default"。"""
+    event = _make_world_event()
+    nodes = run_elevation(event, [], store_dir=tmp_path / "elevation")
+    assert len(nodes) == 1
+    assert nodes[0].agent_id == "default"  # 引擎兜底 self._agent_id="default"
+
+
+def test_run_elevation_memory_facts_inherit_explicit_agent_id(tmp_path):
+    """H.3: memory_facts 也带显式 agent_id（同一灵魂，覆盖 memory 自身 agent）。"""
+    writer = InnerLifeWriter()
+    event = writer.create_event(
+        provenance=Provenance(
+            trigger_type="diary:night",
+            actor_id="agent_rem",
+            source_system="diary",
+        ),
+    )
+    mem = _make_memory(agent_id="agent_yua")  # memory 自己的 agent 不同
+
+    nodes = run_elevation(event, [mem], agent_id="agent_rem", store_dir=tmp_path / "elevation")
+
+    assert len(nodes) == 2  # 事件 1 + memory 1
+    assert all(n.agent_id == "agent_rem" for n in nodes)  # 显式 > memory.agent_id

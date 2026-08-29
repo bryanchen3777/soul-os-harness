@@ -442,6 +442,8 @@ async def lifespan(app: FastAPI):
             await super().handle_event(event)
             for _eid in set(self._dedup.values()) - _before:
                 if self._submission_gate is not None:
+                    # EL-OWN-0: world 事件**刻意不传 agent_id**（actor_id=None，
+                    # 无 agent 语义，elevation 节点保持 "default"=system-level）。
                     self._submission_gate.submit(_eid)
 
     world_inner_life_adapter = _WorldInnerLifeAdapterWithGate(
@@ -1074,9 +1076,13 @@ async def lifespan(app: FastAPI):
                     )
                 )
                 _event_id = _event.event_id
-                # SG-1: 改走 Submission Gate（验证 event_id → consume，只产 pattern）
+                # SG-1: 改走 Submission Gate（验证 event_id → consume，只产 pattern）。
+                # EL-OWN-0: 传 agent_id=_event.provenance.actor_id（该灵魂），让
+                # emergent 属性（belief/value/trait/essence）归属到具体灵魂。
                 if submission_gate is not None:
-                    submission_gate.submit(_event.event_id)
+                    submission_gate.submit(
+                        _event.event_id, agent_id=_event.provenance.actor_id
+                    )
             except Exception as _e:
                 logger.warning(
                     f"[EventHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
@@ -1142,9 +1148,13 @@ async def lifespan(app: FastAPI):
                     )
                 )
                 _event_id = _event.event_id
-                # SG-1: 改走 Submission Gate（验证 event_id → consume，只产 pattern）
+                # SG-1: 改走 Submission Gate（验证 event_id → consume，只产 pattern）。
+                # EL-OWN-0: 传 agent_id=dreamer（梦者灵魂），让 emergent 属性归属到
+                # 具体灵魂。
                 if submission_gate is not None:
-                    submission_gate.submit(_event.event_id)
+                    submission_gate.submit(
+                        _event.event_id, agent_id=_event.provenance.actor_id
+                    )
             except Exception as _e:
                 logger.warning(
                     f"[DreamHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
@@ -1226,9 +1236,13 @@ async def lifespan(app: FastAPI):
                     )
                 )
                 _event_id = _event.event_id
-                # SG-1: 改走 Submission Gate（验证 event_id → consume，只产 pattern）
+                # SG-1: 改走 Submission Gate（验证 event_id → consume，只产 pattern）。
+                # EL-OWN-0: 传 agent_id=agent_id（日记灵魂），让 emergent 属性归属到
+                # 具体灵魂。
                 if submission_gate is not None:
-                    submission_gate.submit(_event.event_id)
+                    submission_gate.submit(
+                        _event.event_id, agent_id=_event.provenance.actor_id
+                    )
             except Exception as _e:
                 logger.warning(
                     f"[DiaryHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "

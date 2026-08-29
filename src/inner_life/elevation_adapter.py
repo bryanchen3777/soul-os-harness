@@ -296,10 +296,17 @@ def run_elevation(
         inputs.extend(_to_input(m, agent_id=agent_id) for m in memory_facts)
 
         # 2) 构造引擎：注入 LLM + soul-elevation 自有 trace writer（写到 data/elevation/）。
-        engine = InternalizingEngine(
-            llm=llm if llm is not None else StubElevationLLM(),
-            trace_writer=ElevationTraceWriter(str(resolved_dir / TRACE_FILENAME)),
-        )
+        #    EL-OWN-0 传递链：run_elevation(agent_id) → InternalizingEngine(agent_id)，
+        #    使 engine.py 从 provenance 取不到 agent_id 时兜底 self._agent_id 也归属到
+        #    具体灵魂。仅当 agent_id 为真时才传（world 事件 actor_id=None、不显式归属
+        #    → 不传，保持引擎默认 "default"，system-level 语义不变）。
+        _engine_kwargs: dict[str, Any] = {
+            "llm": llm if llm is not None else StubElevationLLM(),
+            "trace_writer": ElevationTraceWriter(str(resolved_dir / TRACE_FILENAME)),
+        }
+        if agent_id:
+            _engine_kwargs["agent_id"] = agent_id
+        engine = InternalizingEngine(**_engine_kwargs)
 
         # 3) 逐条 consume，累积节点。
         nodes: List[ElevationNode] = []

@@ -347,3 +347,100 @@ class TestFailureIsolation:
         """G.3: writer 必填（InnerLifeWriter 是 sole canonical creator）。"""
         with pytest.raises(ValueError):
             SubmissionGate(writer=None)
+
+
+# ── H. agent_id 归属（EL-OWN-0：diary/dream/event → 具体灵魂，world → default）────
+
+
+class TestAgentIdAttribution:
+    def test_h1_submit_explicit_agent_id_wins(self, tmp_path):
+        """H.1: submit(agent_id=...) → 节点 agent_id 归属该灵魂（显式 > actor 兜底）。"""
+        writer = _make_writer(tmp_path)
+        event = _create_event(writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem")
+        gate = _make_gate(writer, tmp_path, store_dir=tmp_path / "elevation")
+
+        nodes = gate.submit(event.event_id, agent_id="agent_yua")
+
+        assert len(nodes) == 1
+        assert nodes[0].agent_id == "agent_yua"
+        assert nodes[0].agent_id != "default"
+
+    def test_h2_diary_dream_event_actors_attributed(self, tmp_path):
+        """H.2: diary/dream/event（actor_id=灵魂）→ 节点归属该灵魂（非 default）。"""
+        writer = _make_writer(tmp_path)
+        gate = _make_gate(writer, tmp_path, store_dir=tmp_path / "elevation")
+        events = [
+            _create_event(writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem"),
+            _create_event(writer, TRIGGER_TYPE_DREAM_DREAM, actor_id="agent_yua"),
+            _create_event(
+                writer,
+                TRIGGER_TYPE_AGENT_REPLY,
+                actor_id="agent_akai",
+                source_system="narrative",
+            ),
+        ]
+        for event in events:
+            nodes = gate.submit(event.event_id, agent_id=event.provenance.actor_id)
+            assert len(nodes) == 1
+            assert nodes[0].agent_id == event.provenance.actor_id
+            assert nodes[0].agent_id != "default"
+
+    def test_h3_world_keeps_default(self, tmp_path):
+        """H.3: world 事件（actor_id=None，不传 agent_id）→ 节点保持 "default"。"""
+        writer = _make_writer(tmp_path)
+        event = _create_event(
+            writer,
+            trigger_type="world:news_event",
+            actor_id=None,  # world 语义：无 agent actor
+            source_system="narrative",
+            extras={"world_source": "news", "world_type": "news_event"},
+        )
+        assert event.provenance.actor_id is None
+        gate = _make_gate(writer, tmp_path, store_dir=tmp_path / "elevation")
+
+        nodes = gate.submit(event.event_id)  # 不传 agent_id（EL-OWN-0 决策 #2）
+
+        assert len(nodes) == 1
+        assert nodes[0].agent_id == "default"  # system-level，无 agent 语义
+
+    def test_h4_gate_constructor_agent_id_default(self, tmp_path):
+        """H.4: Gate 构造 agent_id 作默认；submit 不传时用之，显式传则覆盖。"""
+        writer = _make_writer(tmp_path)
+        event = _create_event(writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem")
+        gate = _make_gate(
+            writer, tmp_path, agent_id="agent_sys", store_dir=tmp_path / "elevation"
+        )
+
+        nodes_default = gate.submit(event.event_id)  # 用构造默认
+        assert nodes_default[0].agent_id == "agent_sys"
+
+        nodes_override = gate.submit(event.event_id, agent_id="agent_yua")  # 显式覆盖
+        assert nodes_override[0].agent_id == "agent_yua"
+
+    def test_h5_run_server_submit_wiring(self):
+        """H.5: run_server.py 4 处 submit — diary/dream/event 传 agent_id，world 不传。"""
+        src = Path(__file__).resolve().parents[1] / "scripts" / "run_server.py"
+        tree = ast.parse(src.read_text(encoding="utf-8"))
+        submits = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not isinstance(func, ast.Attribute) or func.attr != "submit":
+                continue
+            value = func.value
+            is_gate = (
+                isinstance(value, ast.Name) and value.id == "submission_gate"
+            ) or (
+                isinstance(value, ast.Attribute) and value.attr == "_submission_gate"
+            )
+            if not is_gate:
+                continue
+            kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+            submits.append(kwargs)
+
+        assert len(submits) == 4, f"预期 4 处 gate submit，实际 {len(submits)}"
+        with_agent = [k for k in submits if "agent_id" in k]
+        without_agent = [k for k in submits if "agent_id" not in k]
+        assert len(with_agent) == 3, "diary/dream/event 3 处 submit 都应传 agent_id"
+        assert len(without_agent) == 1, "world 1 处 submit 应保持不传 agent_id"
