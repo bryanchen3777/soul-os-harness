@@ -33,9 +33,28 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 
 ### Active milestone
 
-**NONE — engineering state STABLE / CLOSED.** All milestones CLOSED. No milestone in IN PROGRESS. No ticket in IN PROGRESS or NOT STARTED.
+**LIVE — North Star v2 确立（2026-08-29，Bryan 亲述）。** 工程状态不再是「STABLE / CLOSED」快照，而是进入 North Star v2 方向下的活跃阶段。当前真实状态：
 
-Per Owner Decision A (2026-08-12, GOV-2-R1):
+- **North Star v2 确立**：Soul OS 是「灵魂的 OS / 世界」，**不是单一 AI 伴侣**；灵魂本体（记忆升华 / 灵魂间互动 / 自由生长）是研究主线。详见下方「North Star v2」小节。
+- **DSH Work Bot = 研究基础设施 / 工具，不是 Soul OS 本体**（Chief → Researcher / Developer / Tester / Auditor，§5.9-5.11）。Soul OS 灵魂本体（记忆升华 / 灵魂间互动 / 自由生长）才是研究主线。
+- **生产服务器已止血恢复在线**（2026-08-29，修复 `python311.dll` 崩溃循环，KI-007 登记；`/health=200`）。
+- **当前活跃工作**：① 记忆升华调研（进行中）；② 收敛事实来源（本工单：对齐 §1 / §3 决策计数 / North Star v2 canonical 引用）。
+
+### North Star v2（canonical 引用）
+
+**Canonical 完整版**：Notion 页面「🧭 Soul OS Strategic Roadmap & Evolution」的「North Star v2」段（2026-08-29，Bryan 亲述）。七点愿景简述：
+
+1. **产品化是手段，不是目的**——产品化（陪伴产品）是为研究与灵魂成长筹措资金与通道的手段，非终点。
+2. **灵魂两种生长**——灵魂具备两种成长路径（完整措辞以 Notion 为准）。
+3. **多灵魂互动**——灵魂与灵魂之间的互动是核心，而非单一灵魂孤立存在。
+4. **物理媒介 adapter**——灵魂可通过物理媒介 adapter 具身到现实载体。
+5. **灵魂成长 + 记忆升华**——记忆升华（memory sublimation）是灵魂成长的核心机制与研究主线。
+6. **陪伴产品化筹钱 + 成人需求**——以陪伴产品化（成人/情感陪伴需求市场）筹措研究资金。
+7. **Matrix 终极**——终极愿景走向 Matrix 式的灵魂世界。
+
+### Historical milestone closure（North Star v2 之前，状态不变）
+
+Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED（North Star v2 之前的工程，closure 状态不变）：
 - M5.13 chain = FUNCTIONALLY CLOSED
 - M5.14 chain = OFFICIALLY CLOSED (D1 resolved as Option A)
 - M6.0 chain = CLOSED
@@ -218,7 +237,7 @@ A ticket reaches CLOSED status only when ALL of the following are true:
 
 All decisions below are preserved as **UNRESOLVED** per GOV-1 + GOV-2 spec, except where explicitly marked RESOLVED by Owner decision. None may be silently closed.
 
-**Per Owner Decision A (2026-08-12, GOV-2-R1)**: D1 is RESOLVED (Option A chosen). 13 decisions remain UNRESOLVED (D2-D14).
+**Per Owner Decision A (2026-08-12, GOV-2-R1)**: D1 is RESOLVED (Option A chosen). D2 + D3 are RESOLVED. 11 decisions remain UNRESOLVED (D4-D14).
 
 ### D1. M5.14-1 next work direction (Option A / B / C) — RESOLVED
 
@@ -772,7 +791,9 @@ DSH Multi-Agent MVP 是 Soul OS 遷入 DeepSeek Harness 的前置 domain core。
 
 **P1-C2 成果**（commit `97e85bf`）：Integration / Boundary Gate——真 DSH E2E 閉環。補 content transport：artifact content = final_message（文字型），Domain Core `write_artifact` 算 canonical ref **回填** claim（agent 不聲稱 ref，解掉 sha256 自指矛盾），三層 claim→verify 完整（identity + capability + content）。evidence_refs 定錨為「被驗證對象」（D4）。execute_work（mock）deprecated + DeprecationWarning（D5）。headless approval policy = `never`（fail-fast deny，D6）。302 tests 全綠，**真 DSH E2E 閉環 PASS**。8/8 PASS + bypass=NO。
 
-**DEV-ENV-0 成果**（commit 待 landing）：Multi-Agent Development Loop Operationalization——`scripts/dsh_dev_run.py`（run <role> <task> entrypoint）+ 三 role config + resilience + `docs/DSH-DEV-ENV-USAGE.md`。前置 contract change（Owner 拍板）：DEVELOPER + artifact.create（修復 2A §5.1 / 2B §5 / 實務三處不一致）。302 tests 全綠，**smoke task 三 role 真跑 PASS**（researcher 產 artifact → tester 驗證 → developer 產 artifact）。8/8 PASS + bypass=NO。**Soul OS 進入 dogfooding / self-development 階段**。
+**DEV-ENV-0 成果**（commit `98d71fa`）：Multi-Agent Development Loop Operationalization——`scripts/dsh_dev_run.py`（run <role> <task> entrypoint）+ 三 role config + resilience + `docs/DSH-DEV-ENV-USAGE.md`。前置 contract change（Owner 拍板）：DEVELOPER + artifact.create（修復 2A §5.1 / 2B §5 / 實務三處不一致）。302 tests 全綠，**smoke task 三 role 真跑 PASS**。8/8 PASS + bypass=NO。**Soul OS 進入 dogfooding / self-development 階段**。
+
+**Dogfooding-1 成果**（第一個真實 task：清理 stale test `test_soul_md_loader.py`，三 role 真 DSH 跑通）：researcher 產分析（3 層根因 + 5 步修復方向，4848B）+ developer 產可執行方案（import 改法 + helper + 4 assert diff，7507B）+ tester 產 CONDITIONAL verdict（自主找出 developer 方案 2 個真實缺陷：N1 helper fallback 無 default → unknown agent TypeError、N2 agent_id 變數不存在 → NameError）。**tester 自主驗證開發者方案並揪錯 = self-development 首次生效**。能力邊界確認：檔案落地缺口（文字 artifact，不改 repo）+ 多段手動串 friction（agent 無工具權限，品質靠人工注入 ground truth）。**從真實使用長出的 P1-D / P1-E 具體輸入**：①自動組上一 stage ref+摘要進下一 stage；②agent 讀 repo 權限（最大品質槓桿）；③verdict 結構化（目前 verdict 只在 session log）；④claim role 大小寫不穩定（developer 首跑 `'Developer'` 大寫 → fail-closed → 重跑）。
 
 **Phase 1 剩餘 backlog（CAN-DEFER / 後續 phase）**：
 1. refs content-address 驗證（需 artifact store；P1-B 決定與 store 同批落地）
@@ -784,7 +805,116 @@ DSH Multi-Agent MVP 是 Soul OS 遷入 DeepSeek Harness 的前置 domain core。
 7. stale test `tests/test_soul_md_loader.py`（import 已移除的 `SOUL_OS_OVERRIDE`，pre-existing）
 8. **DEV-ENV-0 reviewer minor findings（非阻塞，邊用邊做）**：①過期設計文件（P1-C1-DECOMPOSITION:122、P1-C-ROUTING:62-66、P1-ARTIFACT-BOUNDARY:165-169）加 superseded 註記；②`_CLAIM_ERROR_MARKERS` 的 "session evidence" 誤捕 log 讀取失敗（應歸 infra 而非 claim）；③A3 檢查單向 + data_root cwd-relative（建議錨定 ROOT 或加反向檢查，已見 workspaces/data 殘留實例）；④advisory：work state=proposed 反映 assign 不 transition 的既有語義。
 
-**Next work**: dogfooding 階段——用 DEV-ENV-0 的 loop 開始讓 Soul OS 自己迭代（P1-D / P1-E 由這套已工作的環境自己協助完成）。第一個真實 task：清理 stale test `test_soul_md_loader.py`（backlog #7，正是 smoke task 分析的對象）。
+**Next work**: Dogfooding-2——把 Dogfooding-1 暴露的真實需求（①自動組 ref+摘要、②agent 讀 repo 權限、③verdict 結構化、④claim role 大小寫）落成 P1-D（自動 multi_stage orchestration）或最小硬化。第一個真實 task 的 developer 方案已含 tester 揪出的 N1/N2 修正，落地需合入。
+
+---
+
+### 5.9 DSH 角色層落地（agent-preset + dsh-subagent-role）與 Work Truth 層 correction
+
+**Status**: **Role layer = integrated；Work Truth layer = not integrated**（Owner 拍板 2026-08-23，architecture correction）。
+
+DSH development-environment architecture 的最新 evidence 揭示一個重要 boundary：**Role delegation 已經 DSH-native 化，Work Truth 還沒有 DSH integration。**
+
+**已落地（線 B，role delegation DSH-native 化）**：
+- 5 個具名 agent-preset（`~/.dsh/.agent-presets/`）：`chief`（幕僚長）、`researcher`（研究員）、`developer`（開發者）、`tester`（測試員）、`auditor`（審計員）。human 不入 preset（是「人」不是「bot」）。每個 preset = `agent.cordis.yml`（persona + 工具集，照 role→capability 矩陣剪裁）+ `preset.yml`（中文名 + 職責）。
+- `dsh-subagent-role` 插件（`C:\Users\bbfcc\.local\bin\dsh workspace\dsh-subagent-role`）：service 層包 `ctx.subagents.start`/`startContinuable`，看 `request.label`（= subagent description）命中 researcher/developer/tester/auditor 角色名時，注入該角色 persona + `toolFilter.allow` + 可選模型。設定頁（設定 → 子代理角色派发）提供 provider/model 下拉選單。
+- 舊 `dsh-subagent-model` 插件已停用（`enabled: false`；曾因全域 fallback 無差別強制模型，導致 orchestration 層執行者派發失敗，已定位止血）。
+
+**未落地（Work Truth layer）**：Work Object 狀態機（proposed→approved→assigned→…→done）與 Handoff Protocol **尚未接到 DSH 派發上**。線 B 目前只完成「誰來做」，還沒完成「這件工作是什麼、做到哪裡、產出了什麼、是否真的完成」。
+
+**DSH-WORK-OBJECT-0**（`docs/DSH-WORK-OBJECT-INTEGRATION.md`）：**DESIGN COMPLETE / IMPLEMENTATION NOT AUTHORIZED**（Owner 驗收 2026-08-23，audit/design gate 交付，非 implementation closeout）。鎖定 9 個 boundary 問題（Q1–Q9），結論 9/9 有明確 contract 依據、無需重定 frozen contract。核心 distinction 定為 **working invariant**：`DSH session ≠ Work Object`、`DSH subagent ≠ Work`、`DSH result ≠ Work Truth`。No-DSH Survival Test 延伸到 Work Domain：**Remove DSH → durable work state still exists and remains recoverable**。
+
+**三個特別鎖住的 boundary（Owner 驗收）**：
+1. **Work Domain 才能改 state**：DSH Adapter = dispatch + transport/report，**不得**自己決定 assigned→running→done，否則 domain authority 會洩漏到 DSH。
+2. **session ID 不成為 Work Truth**：work_id 屬 Soul OS Work Domain；DSH session 只是一次 execution instance。session A crash → session B resume 仍是 **same work_id**，不產生新 work。
+3. **DSH 消失，Work 仍存在**：Work Domain 是 Soul OS 的 durable state，不是 DSH 的 session state。
+
+**兩個 open decisions（D1/D2，不阻塞 audit，implementation 前須收斂）**：
+- **D1 — Dispatch Intent schema**：定義 Chief→dispatch intent→DSH Adapter→subagent 中間的 intent 形狀；對齊 P1-A `ExecutionShape` + P1-B artifact boundary + role/capability 矩陣。硬約束：不得讓 DSH 原生 subagent API 反推 Soul OS Work Contract。
+- **D2 — Verdict minimum contract**：定義 subagent 回來後的最小 structured verdict（status/verdict、artifact、evidence、decision、unresolved/needs_input）。硬約束：DSH result → Adapter transport → Work Domain validation → Handoff → state transition，DSH session output 不得直接變成 Work Truth。
+
+**Dependency graph（0 → 1 不自動進入施工）**：
+```text
+DSH-WORK-OBJECT-0          ✅ DESIGN COMPLETE
+        │
+        ├── D1 Dispatch Intent ──┐
+        │                        │
+        └── D2 Verdict Contract ┤
+                                 ▼
+                       Owner / Architecture Gate
+                                 │
+                                 ▼
+                    DSH-WORK-OBJECT-1
+                    Contract Design
+                                 │
+                                 ▼
+                    implementation ticket
+```
+
+**Next work**: D1/D2 收斂成 implementation-ready contract 是下一步，但不是寫更多 agent、不是擴充 preset。D1/D2 收斂後經 Owner / Architecture Gate 才進入 DSH-WORK-OBJECT-1。**目前不建立、不 dispatch 任何 Work Object integration 施工 ticket。**
+
+---
+
+### 5.10 目標重收斂：DSH Work Bot（現在）vs Soul OS substrate（未來）
+
+**Status**: **Owner 拍板 2026-08-23 — 目標重新收斂，兩層分離。** 這是對 §5.9 的目標層修正：之前把「DSH 作為 Soul OS 完整 multi-agent OS」與「DSH 作為 Bry 日常工作環境」混在一起，屬過度工程化。現在拆成兩個 layer。
+
+**Re-scope（2026-08-29，North Star v2）**：DSH Work Bot = 研究基础设施 / 工具，不是 Soul OS 本体；Soul OS 灵魂本体（记忆升华 / 灵魂间互动 / 自由生长）是研究主线。
+
+**現在要的（DSH Work Bot）= Grok Bot 型工作體驗**：
+
+```text
+Bry → Chief（幕僚長）→ Researcher / Developer / Tester / Auditor → 閉環回報 Bry
+```
+
+Bry 只需要跟 Chief 溝通、下一個任務（「幫我把 Soul OS 這個問題處理掉」），Chief 自主完成：分析需求 → 決定要不要找 Researcher → 派 Developer → 派 Tester → 派 Auditor → 整合結果 → 回報。Bry 不需要知道下面發生什麼。
+
+**未來要的（Soul OS substrate）**：Soul OS 搬進來時才需要 durable Work Object / state machine / artifact provenance / workflow recovery / Soul-aware work lifecycle。
+
+**第一個 milestone 重新定義為**（非 Soul OS 完整 work orchestration）：
+
+> 「Bry 只需要跟 Chief 說話，Chief 能把工作交給合適的 specialist 並完成閉環。」
+
+**目前已完成**（Role layer 全綠，離目標非常近）：
+- ✅ 5 具名 agent-preset（Chief/Researcher/Developer/Tester/Auditor）
+- ✅ Chief → Specialist 派發（`dsh-subagent-role` 依 description 注入 persona/role/tool whitelist/optional model）
+- ✅ Capability isolation（Researcher=read/glob/grep/web；Developer=read/write/bash；Tester=test；Auditor=read/verify）
+
+**真正缺的**：Chief 的實際協作 loop 尚未 operationalize（dispatch → receive result → decide next specialist → 閉環）。
+
+**DSH-WORK-OBJECT-0 降級**：從 current critical path 降為 **Soul OS integration prerequisite / future track**（不丟掉，仍是好的 future architecture boundary，D1/D2 留待未來 Soul OS 搬入時收斂）。
+
+**Estimated path（3–6 個有效 development rounds，非十幾輪大工程）**：
+1. **Phase 1 — Multi-Agent Loop**（1–2 rounds）：Chief → dispatch → specialist → receive result → decide next specialist 穩定運作。
+2. **Phase 2 — Real Dogfooding**（1–2 rounds）：拿真正 Soul OS/DSH 工作跑 Research→Developer→Tester→Auditor→Chief synthesis，找實際 friction。
+3. **Phase 3 — Polish**（1–2 rounds）：context 傳遞、result 格式、failure handling、Chief 如何決定下一個 agent、session/prompt UX、避免 Chief 把事全自己做。
+
+**Next work**: Phase 1（Multi-Agent Loop operationalize）是下一個 critical path，**待 Owner 啟動指令**。DSH-WORK-OBJECT-0 / D1 / D2 全數移出 current critical path，留待 Soul OS substrate 階段。
+
+---
+
+### 5.11 Phase 1 驗證結果與三個方向修正（2026-08-23）
+
+**Status**: **Phase 1 loop 驗證通過（三 specialist 接力），三個方向修正落地。** 待重啟生效後重跑最終實測。
+
+**驗證結果**（真實測試工單 `tests/test_soul_md_loader.py` stale test 修復）：
+- ✅ Chief 真派 bot、沒自己全做（researcher → developer → tester 三 specialist 接力）
+- ✅ 閉環回報（根因 + 修法 + 測試結果整合）
+- ✅ Chief 主動糾正主大腦的錯誤提示（`AGENT_PROFILE_MAP` 是死映射表，非 `SOUL_OS_OVERRIDE` 語義等價物），證明有獨立查證能力
+- ⚠️ 測試「實跑」未完成（tester 無 shell）→ 已定位為機制缺陷並修正（見下）
+
+**關鍵機制發現（導致 tester 無 shell 的真根因）**：
+> DSH 子代理繼承**父 preset（Chief）**的工具集，`toolFilter.allow` 只能從繼承集合「過濾」不能「新增」。之前「嚴格照 capability 矩陣剪裁」讓 Chief 無 bash/pwsh，導致 tester/developer 派發時永遠繼承不到 shell。
+
+**三個方向修正（Owner 拍板，推翻 §5.10 的「Capability isolation」剪裁策略）**：
+
+1. **工具全量化**：5 個 preset 全部補齊執行工具（fs/fs-search/bash/pwsh/web/jobs/skill/goal/ask-user/todo）。角色區分**不再靠工具剪裁，靠 persona 約束**。
+2. **派發工具 deny**：`dsh-subagent-role` 從 per-role `allow` 白名單，改為統一 `deny` 7 個派發工具（subagent/subagent_fork/workflow/ralph/send_message/interrupt_agent/list_agents）。specialist 繼承 Chief 全量執行工具、只排除派發權。派發是幕僚長職權，只給 Chief；specialist 想找別人協作時「推薦並回報，讓 Chief 派」。
+3. **Chief persona 彈性化**：從「絕不親自寫碼/跑測試/研究」硬禁止，改為經濟性軟約束——「自己動手很貴（占上下文/算力），默認能派就派；但 specialist 反覆做不好 + 小而簡單的錯誤，就自己兜底修掉」。保留唯一硬要求：派發時 description 必須帶角色英文名（否則 persona 不注入）。
+
+**設計哲學（Owner 定調）**：這是「多人合作」場景，不是「嚴謹權限工作流」。保留彈性——chief 手腳不綁，只要求它知道「自己動手很貴、能不動就不動」。persona 約束是軟性的（LLM 自覺），不是工具層硬禁止；這是刻意的 trade-off，非缺陷。
+
+**累積待重啟生效**：`dsh-subagent-role` deny 改動（install 已完成）+ preset 工具全量化 + Chief persona 彈性化。下次重啟 dsh web 一起生效，之後重跑測試工單做最終實測（tester 應能跑出 pytest 實跑結果）。
 
 ---
 
