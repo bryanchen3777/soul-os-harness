@@ -230,10 +230,20 @@ $counter.trial_count += 1
 $counter.last_update_ts = Get-Date -Format "yyyy-MM-ddTHH:mm:ss"
 
 # 4. 健康檢查
+# 修 procs 誤判 (2026-08-29, Bry 派工): port_listen=True 但 procs=0 的根因是
+# procs 用 Name='python.exe' + CommandLine like '*run_server.py*' 匹配, 而 server 實際
+# 是 .venv\Scripts\python.exe (uv redirector) 再 spawn uv-managed python 當真正 server,
+# WMI 的 Name/CommandLine 匹配可能拿不到 (procs=0), 但 port 8000 明明在 listen。
+# 誤判 → 拉 Plan A 第二實例 → bind 衝突 (Errno 10048) → 計 crash → CAP REACHED。
+# 修法: port_listen=True 時以 port 8000 的 owning process 作為「進程存在」判據
+# (owning process 存在 = 進程存在, 與 port 檢查一致), 不再依賴 procs 計數。
+# $procs 保留只作 log 參考 (procs=N), 不參與健康判定。
 $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+$listenerPid = $null
+if ($null -ne $listener) { $listenerPid = $listener.OwningProcess }
 $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -like '*run_server.py*' }
-$healthy = ($null -ne $listener) -and ($procs.Count -ge 2)
+$healthy = ($null -ne $listenerPid)
 
 # 4.5 Bry 拍板 2026-08-03 13:40: event loop self-check 偵測
 # 動機: 2026-08-03 02:15 hang (d190c96 觀察期) 之前沒早期信號, 4 小時才被 port 偵測
