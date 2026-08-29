@@ -116,6 +116,14 @@ from .submission_gate import (
 from .trace import NarrativeTraceWriter
 from .trace_reader import NarrativeTraceReader
 from .writer import InnerLifeWriter, InnerLifeWriterStats
+from .emergent_projection import (
+    DEFAULT_AGENT_ID,
+    PROJECTABLE_NODE_TYPES,
+    PROJECTION_TRACE_FILENAME,
+    format_emergent_block,
+    load_elevation_nodes,
+    project_emergent,
+)
 
 __all__ = [
     # Core types
@@ -125,6 +133,13 @@ __all__ = [
     "InnerLifeWriterStats",
     "NarrativeTraceWriter",
     "NarrativeTraceReader",
+    # Emergent read-side projection (靈魂成長閉環 read side)
+    "DEFAULT_AGENT_ID",
+    "PROJECTABLE_NODE_TYPES",
+    "PROJECTION_TRACE_FILENAME",
+    "format_emergent_block",
+    "load_elevation_nodes",
+    "project_emergent",
     # SI-1: Shared Life Read-Side Grouping (pure functions, ephemeral)
     "group_by_world_occurrence",
     "group_by_correlation",

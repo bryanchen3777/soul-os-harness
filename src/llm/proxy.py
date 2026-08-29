@@ -540,6 +540,15 @@ def _build_messages_group(
 
 
     system_parts = [identity_anchor + soul.strip()]
+
+    # Emergent read-side projection (工單「靈魂成長閉環」): identity 之後注入
+    # EMERGENT block —— 該靈魂自己長出來的 belief/value/trait/essence 投影
+    # （「你成為什麼」，疊加在 seeded 人格 / germ anchor 之上）。
+    # 語義邊界: IDENTITY(從哪開始) → EMERGENT(成為什麼) → 記憶/內在生活。
+    # fail-silent: 無投影 / 讀取失敗 → 空字串, prompt 與未實現時完全等價。
+    emergent_block = _format_emergent_block(agent_id)
+    if emergent_block:
+        system_parts.append(emergent_block)
     if memory_context.strip():
         system_parts.append(f"\n你記得以下這些事情:\n{memory_context.strip()}")
     # Phase 3 情緒:把 mood 描述注入 system prompt
@@ -793,6 +802,27 @@ def _format_attachment_str(agent_id: str) -> str:
     return f"你對 Bry 的親密度目前是 {int(intimacy)}/100。"
 
 
+def _format_emergent_block(agent_id: str) -> str:
+    """
+    Emergent read-side projection (工單「靈魂成長閉環」): 把該靈魂自己長出來的
+    belief/value/trait/essence 投影成 EMERGENT block, 在 identity 之後注入。
+
+    語義: IDENTITY = 從哪開始 (seeded 人格 / germ anchor); EMERGENT = 成為什麼
+    (自己長出來的人格投影)。seeded 靈魂的 emergent 屬性疊加在 seeded 人格上,
+    germ 靈魂的 emergent 投影就是人格。
+
+    fail-silent: 任何異常 / 無投影 → 空字串 (不阻塞 prompt 組裝主路徑, 與未
+    實現時完全等價)。Growth read 是 inference-time projection —— 只讀
+    elevation_nodes.jsonl, 不重跑 elevate、不寫 elevation 節點/證據數據。
+    """
+    try:
+        from src.inner_life.emergent_projection import format_emergent_block
+
+        return format_emergent_block(agent_id)
+    except Exception:  # noqa: BLE001 — 雙重失敗隔離: emergent 缺失不影響 prompt
+        return ""
+
+
 def _load_bry_recent(agent_id: str, user_id: str, limit: int = MAX_BRY_RECENT) -> List[Dict[str, str]]:
     """短期記憶 — 從 Bry 跟該 agent 的 private history 撈最近 N 條 Bry user 訊息。
 
@@ -859,6 +889,15 @@ def _build_messages_private(
 
 
     system_parts = [identity_anchor + soul.strip()]
+
+    # Emergent read-side projection (工單「靈魂成長閉環」): identity 之後注入
+    # EMERGENT block —— 該靈魂自己長出來的 belief/value/trait/essence 投影
+    # （「你成為什麼」，疊加在 seeded 人格 / germ anchor 之上）。
+    # 語義邊界: IDENTITY(從哪開始) → EMERGENT(成為什麼) → 記憶/內在生活。
+    # fail-silent: 無投影 / 讀取失敗 → 空字串, prompt 與未實現時完全等價。
+    emergent_block = _format_emergent_block(agent_id)
+    if emergent_block:
+        system_parts.append(emergent_block)
     if memory_context.strip():
         system_parts.append(f"\n你記得以下這些事情:\n{memory_context.strip()}")
     # Phase 3 情緒:把 mood 描述注入 system prompt
