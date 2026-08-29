@@ -103,6 +103,11 @@ from .serialization import (
     provenance_from_dict,
     provenance_to_dict,
 )
+from .grouping import (
+    group_by_correlation,
+    group_by_session,
+    group_by_world_occurrence,
+)
 from .submission_gate import (
     VALID_PRODUCER_TRIGGER_TYPES,
     SubmissionGate,
@@ -120,6 +125,10 @@ __all__ = [
     "InnerLifeWriterStats",
     "NarrativeTraceWriter",
     "NarrativeTraceReader",
+    # SI-1: Shared Life Read-Side Grouping (pure functions, ephemeral)
+    "group_by_world_occurrence",
+    "group_by_correlation",
+    "group_by_session",
     # SG-1: Elevation Submission Gate
     "SubmissionGate",
     "SubmissionVerdict",
