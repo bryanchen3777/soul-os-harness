@@ -425,6 +425,45 @@ async def lifespan(app: FastAPI):
         f"env_gated=False)"
     )
 
+    # ── world → elevation 直通 adapter (Option C) production wiring ──
+    # 新建非 frozen 的 world→elevation 直通 adapter：把 WorldEvent
+    # （news/weather/calendar）直接映射成 ElevationInput(source_type="world_event")，
+    # 喂给 InternalizingEngine，实现「看新闻 → 信念」路径。0 frozen 变更，纯 additive。
+    #
+    # 派工精神:
+    #   - 构造 exactly 1 个 WorldElevationAdapter (no second)
+    #   - 订阅 canonical bus 的 WORLD_EVENT（与 WorldInnerLifeAdapter 平行，
+    #     SoulEventBus 支持 multi-subscriber）
+    #   - 不产 InnerLifeEvent（直通，不经 M5.9-3 whitelist）
+    #   - 不修改 WorldEvent / InnerLifeEvent / Provenance / Event Bus / Agency /
+    #     TriggerEnvelope / M5.9-3 WorldInnerLifeAdapter
+    #   - 只写自有 store data/elevation/（与 inner_life 侧 elevation_adapter 共用）
+    #   - 不需要手动 unregister — bus.stop() 在 shutdown 自动清理所有 subscribers
+    #
+    # 冻结契约: 0 变动
+    #   - WorldEvent schema unchanged
+    #   - InnerLifeEvent schema unchanged
+    #   - M5.9-3 WorldInnerLifeAdapter unchanged
+    #   - TriggerEnvelope unchanged
+    #   - Agency Stage 1-4 unchanged
+    #   - Event Bus contract unchanged
+    #   - SAGE 写入逻辑 unchanged
+    try:
+        from src.world.elevation_adapter import WorldElevationAdapter
+        world_elevation_adapter = WorldElevationAdapter()
+        world_elevation_adapter.register(bus=bus)
+        # 暴露到 app.state 给 observability / test 验证
+        app.state._world_elevation_adapter = world_elevation_adapter
+        logger.info(
+            "[world→elevation] WorldElevationAdapter 已 wired ✓ "
+            "(subscribed=WORLD_EVENT, source_type=world_event, "
+            "store=data/elevation/)"
+        )
+    except ImportError:
+        logger.warning(
+            "[world→elevation] soul-elevation 未安装, WorldElevationAdapter 停用 (opt-in)"
+        )
+
     # ── M5.15-3 (Bry 派工 2026-08-12 18:45): Bus-aware SyntheticWorldEventSource ──
     # 構造一個 bus-aware SyntheticWorldEventSource, 證明 M5.15-3 canonical Event Bus
     # path 在 production wiring 裡就緒, 給未來 real source (weather API / calendar API /
