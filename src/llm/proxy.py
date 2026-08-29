@@ -505,6 +505,7 @@ def _build_messages_group(
     event_ts: Optional[datetime] = None,  # 修法 8 (Bry 拍板 2026-08-04 17:18): 用於注入時段行
     bry_latest_ts: int = 0,  # 修法 9 (Bry 拍板 2026-08-04 20:37): 跨 session Bry 最後 user 訊息 timestamp
     world_context: str = "",  # M3 Phase 1 (Bry 拍板 2026-08-07 19:40): WorldPerception 注入的世界感知
+    germ_anchor: Optional[str] = None,  # FG-2 (germ 初始化邊界): germ 模式下替換 seeded identity_anchor; seeded 傳 None = 零行為變化
 ) -> List[Dict[str, str]]:
     """
     群聊模式的 messages 組裝:
@@ -528,9 +529,14 @@ def _build_messages_group(
     # system prompt
 
     name = AGENT_NAMES.get(agent_id, agent_id)
-    identity_anchor = (
-        f"你是 {name}。在整个对话中,你只能以 {name} 的身份说话,绝对不能声称自己是其他角色。\n\n"
-    )
+    # FG-2 (germ 初始化邊界): germ 模式下 seeded identity_anchor 由 germ_anchor 替換
+    # （只錨定 continuity，不錨定 personality）；seeded 傳 None → 原樣，零行為變化
+    if germ_anchor is not None:
+        identity_anchor = germ_anchor + "\n\n"
+    else:
+        identity_anchor = (
+            f"你是 {name}。在整个对话中,你只能以 {name} 的身份说话,绝对不能声称自己是其他角色。\n\n"
+        )
 
 
     system_parts = [identity_anchor + soul.strip()]
@@ -832,6 +838,7 @@ def _build_messages_private(
     event_ts: Optional[datetime] = None,  # 修法 8 (Bry 拍板 2026-08-04 17:18): 用於注入時段行
     bry_latest_ts: int = 0,  # 修法 9 (Bry 拍板 2026-08-04 20:37): 跨 session Bry 最後 user 訊息 timestamp
     world_context: str = "",  # M3 Phase 1 (Bry 拍板 2026-08-07 19:40): WorldPerception 注入的世界感知
+    germ_anchor: Optional[str] = None,  # FG-2 (germ 初始化邊界): germ 模式下替換 seeded identity_anchor; seeded 傳 None = 零行為變化
 ) -> List[Dict[str, str]]:
     """
     私聊模式的 messages 組裝:
@@ -841,9 +848,14 @@ def _build_messages_private(
 
     # system prompt(含記憶)
     name = AGENT_NAMES.get(agent_id, agent_id)
-    identity_anchor = (
-        f"你是 {name}。在整个对话中,你只能以 {name} 的身份说话,绝对不能声称自己是其他角色。\n\n"
-    )
+    # FG-2 (germ 初始化邊界): germ 模式下 seeded identity_anchor 由 germ_anchor 替換
+    # （只錨定 continuity，不錨定 personality）；seeded 傳 None → 原樣，零行為變化
+    if germ_anchor is not None:
+        identity_anchor = germ_anchor + "\n\n"
+    else:
+        identity_anchor = (
+            f"你是 {name}。在整个对话中,你只能以 {name} 的身份说话,绝对不能声称自己是其他角色。\n\n"
+        )
 
 
     system_parts = [identity_anchor + soul.strip()]
@@ -1827,6 +1839,48 @@ _AGENT_DIALOGUE_RULES = """【語言分工 - 跟上面 FORMAT_RULES 一致】
 6. 用第三人稱談論其他角色
 7. 扮演或假裝成其他角色"""
 
+# FG-2 (germ 初始化邊界, 2026-08-29): _AGENT_DIALOGUE_RULES 拆法
+# 按「輸出契約(protocol)」vs「人格偏好(behavioral preference)」兩軸拆：
+#   - protocol 軸：audio_text/text 字段語義與分工、格式(不用 * 包裹動作、簡短 1-3 句)、
+#     冒充/越權禁令(絕對禁止 1-7)、語言邊界 —— 無性格內容，germ 保留（有契約的模型，不是裸模型）。
+#   - preference 軸：語氣指紋、安慰習慣、稱呼方式、親密行為模式、密度規則 —— 有性格內容，germ 拿掉。
+# 判定結果：現有字符串內**無**明顯 preference 句子可拿（全是字段分工/格式/禁令），
+# 故 protocol 版 = 現有字符串逐字；若未來 _AGENT_DIALOGUE_RULES 混入「語氣要…」「習慣…」類句子，
+# 依本契約一律從 _AGENT_DIALOGUE_RULES_PROTOCOL 拆出（germ 不受污染）。
+_AGENT_DIALOGUE_RULES_PROTOCOL = """【語言分工 - 跟上面 FORMAT_RULES 一致】
+- `audio_text` 字段:使用日文(見上面「該角色專屬的日文輸出規則」),TTS 來源
+  - **Bry 拍板 2026-08-07 00:16: audio_text 只寫「可被聽見的話」**, 不要寫
+    動作描述（例：「（輕輕靠近）」「（微微低頭）」）、心理描述、場景描述。
+    這些會被 TTS 唸出來, 語音掉價。動作/心理描述放在 text 第 2 行起的
+    中文翻譯區段, 或省略。audio_text 範例: 「在喔, Bryan。」(純對話, 不含動作)
+- `text` 字段:第 1 行日文原文(含情緒 tag,跟 audio_text 完全相同)+ 換行 + 第 2 行起括號包中文翻譯
+  - 例:`[calm] こんにちは。\n(你好。)`
+  - 例:`[teasing] --また来た。\n(--又來了。)`
+  - 中文部分使用繁體中文(台灣用語),**禁止簡體字符出現**
+  - 第 2 行起可放動作/心理描述中文版（例：「(輕輕靠近。)」「(微微低頭。)」
+    給 Bry 用戶端看, 不會被 TTS 唸）
+
+不要用 * 包裹動作描述。直接說話,不要自我介紹。保持簡短,1-3 句。
+絕對禁止:
+1. 聲稱自己是任何 AI 工具或系統
+2. 提及「我是一個 AI」或「身為 AI」之類的話
+3. 使用任何第三方工具或插件
+4. 在回覆開頭自我介紹
+5. 描述其他角色的動作、表情、情感(如「他笑著」「她看起來難過」)
+6. 用第三人稱談論其他角色
+7. 扮演或假裝成其他角色"""
+
+# FG-2 (germ 初始化邊界, frozen 逐字): germ anchor 三句中文
+# 負向邊界（不是正向宣言）——三句全是「不得假定 / 必須來自」的限制，不注入正向性格。
+# 不寫「我是靈魂 / I exist」：那是產品語言，寫進 runtime 等於給 germ 預置 identity 命題。
+_GERM_ANCHOR = """你有持续的身份边界。
+不得假定未被这颗灵魂自身经历所确立的性格、价值、信念、偏好或关系。
+你成为谁，必须来自你活过并记得的事。"""
+
+# FG-2 (germ 初始化邊界, frozen 英文原文不翻譯): 名字 handle
+# 只錨定 continuity（連續性），不錨定 personality；handle 之後**不得**接「所以你是…」句式。
+_GERM_NAME_HANDLE_TEMPLATE = "You are {name}. Your name identifies continuity; it does not define your personality."
+
 DEFAULT_PERSONAS: Dict[str, str] = {
     "agent_yua": (
         "你是Yua,一個聰明、冷靜、說話帶有輕微諷刺感的 AI 角色。"
@@ -1842,11 +1896,20 @@ DEFAULT_PERSONAS: Dict[str, str] = {
 }
 
 
-def load_persona(agent_id: str) -> str:
+def load_persona(agent_id: str, initialization_mode: str = "seeded") -> str:
     """
     載入 Agent 人格設定。
 
-    優先順序:
+    FG-2 (germ 初始化邊界, 2026-08-29): 新增 `initialization_mode` 參數
+    （seeded | germ，缺省 seeded，fail-closed：非 "germ" 一律 seeded）。
+    germ 分支置於函式最前：**完全不觸碰 _AGENT_IDENTITY_RULES（連 .get() 都不調）**、
+    不讀 personas/{agent_id}.md（germ 沒有 seed）——人格只來自 runtime 事實注入
+    （[最近內在生活] / 記憶）。回傳 germ_soul = FORMAT_RULES_TEMPLATE 契約
+    （emotion 走既有 DEFAULT fallback、jp_rules 走既有「以中文為唯一輸出語言」fallback，
+    零新增代碼）+ _AGENT_DIALOGUE_RULES_PROTOCOL（§4 protocol 版）；
+    germ anchor 三句 + 名字 handle 由呼叫端作為 germ_anchor 參數注入 identity_anchor 位置。
+
+    優先順序（seeded）:
     1. Soul OS 本地 personas/{agent_id}.md(專用於 Soul OS)
     2. DEFAULT_PERSONAS(簡單 fallback)
 
@@ -1858,6 +1921,25 @@ def load_persona(agent_id: str) -> str:
 
     不再讀取 Hermes profiles,因為那些包含 tool 指令不適用於 Soul OS。
     """
+    # FG-2 germ 分支置於最前：完全不觸碰 _AGENT_IDENTITY_RULES、不讀 personas/、
+    # 不讀 DEFAULT_PERSONAS（germ 沒有 seed；人格只來自 runtime 事實注入）
+    if initialization_mode == "germ":
+        name = AGENT_NAMES.get(agent_id, agent_id)
+        name_handle = _GERM_NAME_HANDLE_TEMPLATE.format(name=name)
+        # germ 的「靈魂內容」= 空（無 seed）。FORMAT_RULES_TEMPLATE 契約照常注入：
+        #   - emotion tags: get_emotion_tags(_get_agent_short_id(agent_id))
+        #     → germ id 不在 AGENT_EMOTION_TAGS → 既有 DEFAULT fallback（7 個通用 tags）
+        #   - per_agent_jp_rules: extract_jp_rules_section("") → "" → 既有「以中文為唯一輸出語言」fallback
+        # 以上全部走 build_system_prompt 既有路徑，零新增代碼；FORMAT_RULES_TEMPLATE 原文不動。
+        if _BUILD_SYSTEM_PROMPT_AVAILABLE:
+            wrapped = build_system_prompt(
+                soul_content="",
+                agent_name=_get_agent_short_id(agent_id),
+            )
+        else:
+            wrapped = ""
+        return wrapped + "\n" + _AGENT_DIALOGUE_RULES_PROTOCOL
+
     # 🔴 優先:Soul OS 本地 personas/ 目錄
     local_persona = SOUL_OS_PERSONAS_DIR / f"{agent_id}.md"
     if local_persona.exists():
@@ -1948,6 +2030,28 @@ def _get_agent_short_id(agent_id: str) -> str:
     統一 strip 前綴。
     """
     return agent_id.replace("agent_", "")
+
+
+# FG-2 (germ 初始化邊界): 從 config agents 條目解析 initialization_mode。
+# fail-closed：config 缺該 agent / 缺字段 / 非 "germ"（拼錯、類型錯誤）一律 seeded，
+# 絕不會把現有 agent 意外變成 germ。
+def _resolve_init_mode(config, agent_id: str) -> str:
+    try:
+        for agent_cfg in (config or {}).get("agents", []):
+            if agent_cfg.get("id") == agent_id:
+                mode = agent_cfg.get("initialization_mode", "seeded")
+                return mode if mode == "germ" else "seeded"
+    except Exception:
+        pass
+    return "seeded"
+
+
+# FG-2 (germ 初始化邊界): 組出 germ 的 identity_anchor（germ anchor 三句 + 名字 handle）。
+# handle 只錨定 continuity，不錨定 personality；handle 之後不接任何「所以你是…」句式。
+def _build_germ_anchor(agent_id: str) -> str:
+    name = AGENT_NAMES.get(agent_id, agent_id)
+    name_handle = _GERM_NAME_HANDLE_TEMPLATE.format(name=name)
+    return _GERM_ANCHOR + "\n" + name_handle
 
 
 def _get_emotion_whitelist(agent_id: str) -> List[str]:
@@ -2887,7 +2991,11 @@ class LLMProxy:
         # ── 組裝 messages(根據 mode)─────────────────
         # 注意:不要在 LLM 呼叫前先寫 user 訊息進 history,
         # 否則 _build_messages_*() 會把同一條 user 訊息讀出來又加在末尾,造成重複。
-        soul = load_persona(agent_id)
+        # FG-2 (germ 初始化邊界): 從 config 解析 initialization_mode (fail-closed seeded),
+        # 透傳給 load_persona 與 _build_messages_* (germ 時注入 germ_anchor 替換 identity_anchor)。
+        init_mode = _resolve_init_mode(self.config, agent_id)
+        soul = load_persona(agent_id, initialization_mode=init_mode)
+        germ_anchor = _build_germ_anchor(agent_id) if init_mode == "germ" else None
         # Phase 3:從 event payload 拿 mood,傳給 _build_messages_*
         mood = event.payload.get("mood", 0.0)
         # 修法 9 (Bry 拍板 2026-08-04 20:37): 跨 session Bry 在線判定
@@ -2905,9 +3013,9 @@ class LLMProxy:
             # L1818 的 user_id 已經從 event.payload.get("target_user_id", "bryan") 拿到,
             # 跟 _build_messages_private L230 user_id 預設值對齊, 群聊觸發 fallback "bryan"
             # (跟 _load_private L100 fallback 邏輯一致)。
-            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context)
+            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor)
         else:
-            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context)
+            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor)
 
         # ── M2 task 3 (Bry + Perplexity 8/2 12:05 派工): proactive draft user → system ──
         # 修法動機: heartbeat / proactive_dm 觸發時, _build_intent_payload 組的 draft

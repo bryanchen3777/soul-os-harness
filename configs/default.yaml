@@ -3,6 +3,11 @@
 
 # ── Agents（動態載入，不需要改程式碼）──
 # 新增角色：1. 在這裡加一條  2. 在 src/agent/registry.py 的 AGENT_CLASS_MAP 加一行
+# FG-2 (germ 初始化邊界): agents 條目可選 `initialization_mode` 欄位（seeded | germ）,
+#   缺省 = seeded（fail-closed：漏設 / 拼錯 / 類型錯誤一律 seeded, 不會把現有 agent 意外變成 germ）。
+#   seeded = 載入 _AGENT_IDENTITY_RULES 等 seeded identity projection（現有 10 隻的行為, 零改動）;
+#   germ   = 跳過 seeded identity projection, 只注入 germ anchor 三句 + 名字 handle + 輸出契約。
+#   現有 10 條不寫此欄位 = 全部 seeded。
 agents:
   - id: agent_yua
     class: AgentYua

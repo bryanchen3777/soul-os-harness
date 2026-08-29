@@ -218,14 +218,25 @@ def create_agents(cfg: dict, bus, speaker_token_bus=None) -> list:
         agent_id = agent_cfg["id"]
         class_name = agent_cfg["class"]
         intimacy = agent_cfg.get("intimacy_level", 50)
+        # FG-2 (germ 初始化邊界): 透傳 initialization_mode, 缺省 seeded (fail-closed)。
+        # 值域只有 seeded | germ, 漏設 / 拼錯 / 類型錯誤一律 seeds。
+        initialization_mode = "seeded"
+        raw_mode = agent_cfg.get("initialization_mode", "seeded")
+        if raw_mode == "germ":
+            initialization_mode = "germ"
 
         cls = get_agent_class(class_name)
         agent = cls(agent_id, bus, speaker_token_bus=speaker_token_bus)
         agent.state.intimacy_level = intimacy
+        # FG-2: 掛到 agent 實例, 供需要讀 initialization_mode 的呼叫端使用
+        agent.initialization_mode = initialization_mode
         agent.register()
         agents.append(agent)
 
-        logger.info(f"[Loader] Agent 載入：{agent_id} ({class_name}) intimacy={intimacy}")
+        logger.info(
+            f"[Loader] Agent 載入：{agent_id} ({class_name}) "
+            f"intimacy={intimacy} initialization_mode={initialization_mode}"
+        )
 
     return agents
 
