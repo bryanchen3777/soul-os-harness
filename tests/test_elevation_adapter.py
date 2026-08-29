@@ -158,7 +158,10 @@ def test_run_elevation_produces_nodes(tmp_path):
     assert isinstance(nodes, list)
     assert len(nodes) >= 2  # 事件 1 个 + memory 1 个
     for n in nodes:
-        assert n.node_type in {"belief", "value", "trait", "essence"}
+        # SE-2 语义：consume 产 pattern（consolidation 候选，非灵魂结构）；
+        # LLM 后验候选维度落在 candidate_node_type（灵魂维度）。
+        assert n.node_type == "pattern"
+        assert n.candidate_node_type in {"belief", "value", "trait", "essence"}
         assert 0.0 <= n.confidence <= 1.0
         assert n.node_id  # 32-hex 非空
 
