@@ -152,9 +152,27 @@ switch ($Action) {
     'status'  { Get-SoulOsStatus }
     'tail'    { Show-ServerTail }
     'restart' {
-        Stop-SoulOsServer
-        Start-Sleep -Seconds 2
-        Start-SoulOsServer
+        # 維護窗口: 寫 lock 檔暫停 watchdog tick (修 restart 競態, Bry 派工 2026-08-29)
+        # watchdog 看到 lock 就 SKIP, 避免在 stop→start 窗口誤判不健康而拉 Plan A
+        # 第二實例 (Telegram token Conflict)。finally 保證 lock 一定被清掉,
+        # 即使 Start-SoulOsServer 失敗 (exit/exception) 也會恢復 watchdog。
+        $maintenanceLock = Join-Path $root 'data\state\watchdog_maintenance.lock'
+        try {
+            $lockDir = Split-Path -Path $maintenanceLock -Parent
+            if (-not (Test-Path $lockDir)) {
+                New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
+            }
+            Set-Content -Path $maintenanceLock -Value (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') -Encoding UTF8
+            Write-OpsLog "[maintenance] watchdog paused (lock written: $maintenanceLock)"
+            Stop-SoulOsServer
+            Start-Sleep -Seconds 2
+            Start-SoulOsServer
+        } finally {
+            if (Test-Path $maintenanceLock) {
+                Remove-Item $maintenanceLock -Force -ErrorAction SilentlyContinue
+            }
+            Write-OpsLog "[maintenance] watchdog resumed (lock removed)"
+        }
     }
     'help' {
         Write-Host 'Usage: .\scripts\server_ops.ps1 {start|stop|status|tail|restart|help}'

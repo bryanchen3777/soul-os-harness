@@ -193,6 +193,27 @@ function Get-Or-Create-Counter {
 
 # === Main ===
 
+# 0. 維護窗口檢查 (修 server_ops restart 競態, Bry 派工 2026-08-29):
+#    server_ops.ps1 restart 期間寫 data\state\watchdog_maintenance.lock,
+#    watchdog 看到就 SKIP 本次 tick (不讀/不寫 counter, 不 N++, 不拉 Plan A),
+#    避免在重啟窗口誤判不健康而拉起第二實例 (Telegram token Conflict)。
+#    lock 超過 10 分鐘視為 stale (restart 中途崩潰殘留), 忽略並刪除,
+#    避免 watchdog 永久停擺。此分支不改 CAP/restart 核心邏輯。
+$maintenanceLock = Join-Path $stateDir 'watchdog_maintenance.lock'
+if (Test-Path $maintenanceLock) {
+    $lockAgeMin = $null
+    try {
+        $lockAgeMin = [int](((Get-Date) - (Get-Item $maintenanceLock).LastWriteTime).TotalMinutes)
+    } catch {}
+    if ($null -eq $lockAgeMin -or $lockAgeMin -le 10) {
+        Log-Watch "SKIP  maintenance window (server_ops restart in progress, lock age=${lockAgeMin}m) - watchdog tick skipped"
+        exit 0
+    } else {
+        Log-Watch "WARN  maintenance lock stale (${lockAgeMin}m > 10m) - removing and continuing"
+        Remove-Item $maintenanceLock -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # 1. 抓 git HEAD hash (P0-2 必要前置)
 $shortHash = Get-GitShortHash
 $fullHash = Get-GitFullHash

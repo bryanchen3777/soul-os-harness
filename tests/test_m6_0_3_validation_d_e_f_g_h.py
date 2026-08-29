@@ -95,6 +95,24 @@ def _cleanup_tmpdir(td: tempfile.TemporaryDirectory) -> None:
         pass
 
 
+def _refresh_trace_timestamps(trace_path: Path) -> None:
+    """Rewrite ts fields of a trace.jsonl to relative times (now - 3h/2h/1h ago).
+
+    Time-bomb fix (2026-08-29): fixture ts was hardcoded to 2026-08-11, which
+    falls outside the 24h query window once real time passes it, making
+    G1/G2 fail forever. Relative timestamps keep the fixture inside the
+    window regardless of when the tests run.
+    """
+    now = datetime.now(timezone.utc)
+    lines = trace_path.read_text(encoding="utf-8").strip().splitlines()
+    out = []
+    for i, line in enumerate(lines):
+        rec = json.loads(line)
+        rec["ts"] = (now - timedelta(hours=3 - i)).isoformat()
+        out.append(json.dumps(rec, ensure_ascii=False))
+    trace_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
 # ════════════════════════════════════════════════════════════════════════
 # Scenario D: Temporal Continuity
 # ════════════════════════════════════════════════════════════════════════
@@ -754,6 +772,10 @@ class TestScenarioG(unittest.TestCase):
             "scenario_G/trace.jsonl",
             "data/inner_life/trace.jsonl",
         )
+        # Time-bomb fix (2026-08-29): fixture ts hardcoded 2026-08-11 is now
+        # outside the 24h query window → G1/G2 fail forever. Refresh to
+        # relative times (now - 3h/2h/1h) so they always land in the window.
+        _refresh_trace_timestamps(self.tmp / "data" / "inner_life" / "trace.jsonl")
 
     def tearDown(self):
         _cleanup_tmpdir(self.tmpdir_obj)
