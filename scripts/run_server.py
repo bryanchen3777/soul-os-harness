@@ -285,16 +285,36 @@ async def lifespan(app: FastAPI):
     # 任何 frozen contract。
     try:
         from src.inner_life import NarrativeTraceReader, SubmissionGate
+        from src.inner_life.elevation_adapter import elevate_matured_patterns
+
         submission_gate = SubmissionGate(
             writer=inner_life_writer,
             trace_reader=NarrativeTraceReader(),
         )
+
+        def _elevate_check() -> None:
+            """consume 之后证据驱动 elevate（独立于 Submission Gate）。
+
+            EL-DD-2：Gate 只 consume（产 pattern 候选）；elevate 是独立机制——
+            consume 落盘后调用 ``elevate_matured_patterns()``：读 data/elevation/
+            已持久化的 pattern + 证据边，对「独立证据累积 ≥ min_evidence=2」的
+            候选维度组调 soul-elevation 的 ``engine.elevate()``，产出
+            belief/value/trait/essence。fire-and-forget，失败隔离在函数内
+            （异常 → warning + []，不阻断 submit / 主路径），不提前（证据不足
+            的组跳过）。
+            """
+            elevate_matured_patterns()
+
         logger.info(
             "[SG-1] SubmissionGate 已启用 (soul-elevation, "
             "store=data/elevation/, 只 consume 不 elevate)"
         )
     except ImportError:
         submission_gate = None
+
+        def _elevate_check() -> None:  # noqa: F811 — soul-elevation 未装 → no-op
+            pass
+
         logger.warning(
             "[SG-1] soul-elevation 未安装, SubmissionGate 停用 (opt-in)"
         )
@@ -433,9 +453,10 @@ async def lifespan(app: FastAPI):
         Gate 触发（fire-and-forget，失败隔离在 Gate 内部，不阻断 bus 主路径）。
         """
 
-        def __init__(self, *args, submission_gate=None, **kwargs):
+        def __init__(self, *args, submission_gate=None, elevate_check=None, **kwargs):
             super().__init__(*args, **kwargs)
             self._submission_gate = submission_gate
+            self._elevate_check = elevate_check
 
         async def handle_event(self, event) -> None:
             _before = set(self._dedup.values())
@@ -445,10 +466,14 @@ async def lifespan(app: FastAPI):
                     # EL-OWN-0: world 事件**刻意不传 agent_id**（actor_id=None，
                     # 无 agent 语义，elevation 节点保持 "default"=system-level）。
                     self._submission_gate.submit(_eid)
+                # EL-DD-2: consume 后证据驱动 elevate（独立于 Gate，失败隔离在函数内）
+                if self._elevate_check is not None:
+                    self._elevate_check()
 
     world_inner_life_adapter = _WorldInnerLifeAdapterWithGate(
         inner_life_writer=inner_life_writer,
         submission_gate=submission_gate,
+        elevate_check=_elevate_check,
     )
     world_inner_life_adapter.register(bus=bus)
     # 暴露到 app.state 給 observability / test 驗證
@@ -1083,6 +1108,8 @@ async def lifespan(app: FastAPI):
                     submission_gate.submit(
                         _event.event_id, agent_id=_event.provenance.actor_id
                     )
+                    # EL-DD-2: consume 后证据驱动 elevate（独立于 Gate，失败隔离在函数内）
+                    _elevate_check()
             except Exception as _e:
                 logger.warning(
                     f"[EventHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
@@ -1155,6 +1182,8 @@ async def lifespan(app: FastAPI):
                     submission_gate.submit(
                         _event.event_id, agent_id=_event.provenance.actor_id
                     )
+                    # EL-DD-2: consume 后证据驱动 elevate（独立于 Gate，失败隔离在函数内）
+                    _elevate_check()
             except Exception as _e:
                 logger.warning(
                     f"[DreamHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
@@ -1243,6 +1272,8 @@ async def lifespan(app: FastAPI):
                     submission_gate.submit(
                         _event.event_id, agent_id=_event.provenance.actor_id
                     )
+                    # EL-DD-2: consume 后证据驱动 elevate（独立于 Gate，失败隔离在函数内）
+                    _elevate_check()
             except Exception as _e:
                 logger.warning(
                     f"[DiaryHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "

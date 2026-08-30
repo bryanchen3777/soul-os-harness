@@ -30,10 +30,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional, Sequence
 
 from soul_elevation import (
+    DEFAULT_ELEVATE_MIN_EVIDENCE,
     ElevationInput,
     ElevationNode,
     ElevationTraceWriter,
+    EvidenceEdge,
     InternalizingEngine,
+    SOUL_NODE_TYPES,
     StubElevationLLM,
 )
 
@@ -380,11 +383,205 @@ class ElevationObserver:
             return []
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Elevate 调用机制（证据驱动，独立于 Submission Gate）
+#
+# 工单「打通 diary/dream → elevation」关键决策 #2：
+#   - **Submission Gate 只 consume**（产 pattern 候选），**永不 elevate()**
+#     （submission_gate.py 的 AST 红线保持不变）。elevate 是独立于 Gate 的
+#     机制：本函数在 consume 落盘**之后**被调用（fire-and-forget，失败隔离）。
+#   - **证据驱动**：读 ``data/elevation/`` 已持久化的 pattern + 证据边，按
+#     agent（灵魂本体）重建 ``InternalizingEngine`` 注册表，对「独立证据累积
+#     ≥ min_evidence」的候选维度组调 ``engine.elevate()``，pattern →
+#     belief/value/trait/essence（升华维度由 prior 表 / LLM 后验候选决定，
+#     即 soul-elevation 的 ``candidate_node_type``）。
+#   - **不提前**：独立证据 < min_evidence 的候选维度组跳过（elevate 内部
+#     ValueError insufficient 捕获，不硬触发）。
+#   - **不重复消化**（anti-runaway）：已被 soul node 证据边引用的
+#     (source_id, event_identity) 键不再计票——同一批证据不能支持第二颗
+#     灵魂结构。
+#   - **agent 隔离**：只聚合同一 agent（灵魂本体）的 pattern 计票；
+#     ``world`` 事件（agent_id="default"）自成一局，不影响具体灵魂计票。
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _load_edges(store_dir: Path) -> List[dict]:
+    """读 ``elevation_edges.jsonl``（append-only JSONL），返回原始 dict 列表。
+
+    失败隔离：文件不存在 / 读失败 / 单行解析失败 → 记录并跳过该行，
+    **绝不 raise**（不阻塞 elevate 主路径）。
+    """
+    path = store_dir / EDGES_FILENAME
+    edges: List[dict] = []
+    if not path.exists():
+        return edges
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.debug(
+                        "elevation edges line skipped (bad json): %r", line[:80]
+                    )
+                    continue
+                if isinstance(record, dict):
+                    edges.append(record)
+    except OSError as exc:
+        logger.warning("elevation edges read failed (%s): %s", path, exc)
+        return []
+    return edges
+
+
+def _rebuild_engine_for(
+    store_dir: Path,
+    nodes: Sequence[dict],
+    edges: Sequence[dict],
+    *,
+    agent_id: str,
+    llm: Any,
+) -> InternalizingEngine:
+    """为该 agent 重建 ``InternalizingEngine`` 注册表（只加载该 agent 的数据）。
+
+    - **节点**：该 agent 的全部节点都加载（含已被消化的 pattern），保证
+      lineage 完整性（``check_invariants`` 要求 ``parent_node_id`` 在注册表内）。
+    - **证据边**：只加载「未被 soul node 证据边覆盖的 (source_id, event_identity)
+      键」的 active pattern 边——已被 elevate 消化的证据不再计票（同一批证据
+      不能支持第二颗灵魂结构，anti-runaway）。soul node 自身的边不加载
+      （elevate 只聚合 pattern 证据，无需）。
+    """
+    engine = InternalizingEngine(
+        llm=llm,
+        agent_id=agent_id,
+        trace_writer=ElevationTraceWriter(str(store_dir / TRACE_FILENAME)),
+    )
+    soul_node_ids = {
+        n["node_id"] for n in nodes if n.get("node_type") in SOUL_NODE_TYPES
+    }
+    consumed_keys = {
+        (e["source_id"], e.get("inner_life_event_id"))
+        for e in edges
+        if e.get("node_id") in soul_node_ids and e.get("agent_id") == agent_id
+    }
+    for n in nodes:
+        if n.get("agent_id") != agent_id:
+            continue
+        engine._nodes[n["node_id"]] = ElevationNode(**n)
+    for e in edges:
+        if e.get("agent_id") != agent_id:
+            continue
+        if e.get("node_id") in soul_node_ids:
+            continue
+        if e.get("valid_until_ts") is not None:  # superseded 留痕不计票
+            continue
+        if (e.get("source_id"), e.get("inner_life_event_id")) in consumed_keys:
+            continue
+        engine._edges.append(EvidenceEdge(**e))
+    return engine
+
+
+def elevate_matured_patterns(
+    *,
+    store_dir: Optional[Any] = None,
+    llm: Any = None,
+    min_evidence: int = DEFAULT_ELEVATE_MIN_EVIDENCE,
+) -> List[ElevationNode]:
+    """证据驱动的 elevate（独立于 Submission Gate 的机制）。
+
+    读 ``data/elevation/`` 已持久化的 pattern + 证据边，按 agent（灵魂本体）
+    分组重建引擎注册表，对「独立证据累积 ≥ min_evidence」的候选维度组调
+    ``engine.elevate()``：pattern → belief/value/trait/essence（升华维度由
+    prior 表 / LLM 后验候选决定）。新灵魂节点 + 新证据边 append 回自有
+    store（``elevation_nodes.jsonl`` / ``elevation_edges.jsonl``）。
+
+    Args:
+        store_dir: 可选 store 目录（缺省 ``data_root()/elevation``）。
+        llm: 可选 ElevationLLM 实现（缺省用 StubElevationLLM，确定性桩；
+            elevate 本身不调 LLM，仅在重建注册表时透传给引擎构造）。
+        min_evidence: 独立证据阈值（对齐 soul-elevation 默认 2 独立证据）。
+
+    Returns:
+        本次新产出的灵魂节点（belief/value/trait/essence）列表。失败隔离：
+        异常时记录 warning 并返回 []（不 raise，不阻断 consume 主路径）。
+    """
+    if not isinstance(min_evidence, int) or min_evidence < 1:
+        raise ValueError(f"min_evidence must be a positive int, got {min_evidence!r}")
+
+    resolved_dir = _resolve_store_dir(store_dir)
+    try:
+        from .emergent_projection import load_elevation_nodes
+
+        nodes = load_elevation_nodes(resolved_dir)
+        edges = _load_edges(resolved_dir)
+        if not nodes:
+            return []
+        agent_ids = sorted({n.get("agent_id", "default") for n in nodes})
+
+        elevated: List[ElevationNode] = []
+        for agent_id in agent_ids:
+            engine = _rebuild_engine_for(
+                resolved_dir,
+                nodes,
+                edges,
+                agent_id=agent_id,
+                llm=llm if llm is not None else StubElevationLLM(),
+            )
+            # 候选维度分组（保持创建顺序），每组取第一个 pattern 为升华锚点
+            # （elevate 内部聚合同候选维度的全部 pattern 有效证据边）。
+            candidates: dict[str, list[str]] = {}
+            for nid, node in engine._nodes.items():
+                if node.node_type != "pattern":
+                    continue
+                candidates.setdefault(node.candidate_node_type, []).append(nid)
+
+            baseline_edges = len(engine._edges)
+            agent_elevated: List[ElevationNode] = []
+            for cand, pids in candidates.items():
+                if not pids:
+                    continue
+                try:
+                    soul = engine.elevate(pids[0], min_evidence=min_evidence)
+                    agent_elevated.append(soul)
+                    elevated.append(soul)
+                    logger.info(
+                        f"[elevate] ✓ agent={agent_id} candidate={cand} "
+                        f"patterns={len(pids)} → {soul.node_type} "
+                        f"(min_evidence={min_evidence})"
+                    )
+                except ValueError as exc:
+                    # 独立证据不足 → 不升（不提前）。这是常态（多数组未达阈值）。
+                    logger.info(
+                        f"[elevate] skip agent={agent_id} candidate={cand}: {exc}"
+                    )
+                except Exception as exc:  # noqa: BLE001 — 失败隔离
+                    logger.warning(
+                        f"[elevate] failed agent={agent_id} candidate={cand}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+            # 只 append 本次新增的边（加载的历史边不重复写，supersede 原地改不动文件）。
+            _persist_result(
+                resolved_dir, agent_elevated, engine.evidence_edges[baseline_edges:]
+            )
+        return elevated
+    except Exception as exc:  # noqa: BLE001 — 失败隔离：不影响 consume 主路径
+        logger.warning(
+            "elevate_matured_patterns failed (不影響主路徑): %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return []
+
+
 __all__ = [
+    "DEFAULT_ELEVATE_MIN_EVIDENCE",
     "ELEVATION_DIR_NAME",
     "ElevationInput",
     "ElevationNode",
     "ElevationObserver",
+    "elevate_matured_patterns",
     "inner_life_event_to_input",
     "v1_memory_to_input",
     "sage_fact_to_input",

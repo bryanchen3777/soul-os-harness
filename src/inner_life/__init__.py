@@ -189,7 +189,9 @@ __all__ = [
 # ─────────────────────────────────────────────────────────────────────
 try:
     from .elevation_adapter import (  # noqa: F401
+        DEFAULT_ELEVATE_MIN_EVIDENCE,
         ElevationObserver,
+        elevate_matured_patterns,
         inner_life_event_to_input,
         run_elevation,
         sage_fact_to_input,
@@ -197,7 +199,9 @@ try:
     )
 
     __all__ += [
+        "DEFAULT_ELEVATE_MIN_EVIDENCE",
         "ElevationObserver",
+        "elevate_matured_patterns",
         "inner_life_event_to_input",
         "v1_memory_to_input",
         "sage_fact_to_input",
