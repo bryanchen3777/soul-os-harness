@@ -264,6 +264,14 @@ class SoulScheduler:
             if not should_publish:
                 # Gate already logged observability. Skip publish.
                 return
+            # SM-3 (2026-08-30): Motive + Decision producer-side check (proactive_dm only)
+            # Fail-closed: 无 motive / Decision not_transmit / 异常 → skip publish。
+            # 与 M5.8-4 gate 的 fail-open 对比: Decision 是 volition 层,
+            # 坏掉的 Decision 绝不能自动放行 (auto-send 正是反自动化要消灭的)。
+            should_publish = await self._decision_check(agent_id)
+            if not should_publish:
+                # Decision already logged observability. Skip publish.
+                return
 
         try:
             # 計算 elapsed_mins
@@ -360,6 +368,58 @@ class SoulScheduler:
                 f"agent={agent_id} err={type(gate_err).__name__}: {gate_err}"
             )
             return True  # preserve existing behavior
+
+    async def _decision_check(self, agent_id: str) -> bool:
+        """
+        SM-3 (2026-08-30): Motive + Decision producer-side check.
+
+        Fail-closed (DECISION-PROMPT-CONTRACT §4):
+          - 无 pending motive → skip publish (F1 / 验收 A)
+          - Decision LLM 失败 / 坏输出 → not_transmit → skip publish (F2-F4)
+          - 只有明确 transmit 才继续 publish (验收 C)
+          - 任何异常 → skip publish (fail-closed, 不 auto-send)
+
+        与 M5.8-4 gate 的 fail-open 对比: Decision 是 volition 层,
+        坏掉的 Decision 绝不能自动放行 (auto-send 正是反自动化要消灭的)。
+
+        只作用于 proactive_dm (motive 的「传」= 主动传讯给 Bry)。
+        其他 4 个 trigger_type (morning / night / dream / event) 是 inner-life
+        activity, 不受 Decision 层影响 (与 M5.8-4 gate 同范围策略)。
+        """
+        try:
+            from src.soul.motive import MotiveEngine
+            engine = MotiveEngine()
+            # 1. interpretation: 检查新 InnerLifeEvent → 产出 motive (若有)
+            await engine.interpret_new_events(agent_id)
+            # 2. resolve pending motive
+            motive = engine.resolve_pending(agent_id)
+            if motive is None:
+                logger.info(
+                    f"[SM-3 Decision] {agent_id} 无 pending motive → skip publish (F1)"
+                )
+                return False
+            # 3. Decision LLM
+            result = await engine.decide(motive, agent_id)
+            if result.transmit:
+                engine.mark_transmitted(motive.motive_id)
+                logger.info(
+                    f"[SM-3 Decision] {agent_id} transmit motive={motive.motive_id} "
+                    f"reason={result.reason!r}"
+                )
+                return True
+            engine.mark_rejected(motive.motive_id)
+            logger.info(
+                f"[SM-3 Decision] {agent_id} not_transmit motive={motive.motive_id} "
+                f"reason={result.reason!r}"
+            )
+            return False
+        except Exception as e:
+            # fail-closed: 任何异常 → 不发 (不 auto-send)
+            logger.warning(
+                f"[SM-3 Decision] {agent_id} exception (fail-closed = skip): "
+                f"{type(e).__name__}: {e}"
+            )
+            return False
 
     async def _publish_agent_intent(
         self,

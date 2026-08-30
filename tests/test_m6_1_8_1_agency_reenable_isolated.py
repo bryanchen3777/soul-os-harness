@@ -403,6 +403,13 @@ def test_c5_fire_proactive_dm_publishes_one_per_call():
     try:
         async def _run() -> None:
             scheduler._bus = bus
+            # SM-3 (2026-08-30) 适配: proactive_dm publish 前新增 Decision 检查点
+            # (fail-closed, 无 motive → 不发)。本测试聚焦 whitelist + scheduler
+            # baseline publish, mock 掉 Decision 检查点 (Decision 行为由
+            # test_sm3_motive_decision.py 覆盖)。
+            async def _decision_ok(agent_id):
+                return True
+            scheduler._decision_check = _decision_ok
             # 設 _next_proactive_dm_time 到過去, cooldown OK
             scheduler._next_proactive_dm_time = datetime.now(timezone.utc) - timedelta(hours=1)
             scheduler._last_proactive_dm_time = None
@@ -475,6 +482,10 @@ def test_d1_agency_trigger_handler_receives_proactive_dm():
         scheduler, tmp = _isolated_scheduler(["agent_ruka"])
         try:
             scheduler._bus = bus
+            # SM-3 (2026-08-30) 适配: mock 掉 Decision 检查点 (同 test_c5)。
+            async def _decision_ok(agent_id):
+                return True
+            scheduler._decision_check = _decision_ok
             # 觸發 proactive_dm
             scheduler._next_proactive_dm_time = datetime.now(timezone.utc) - timedelta(hours=1)
             scheduler._last_proactive_dm_time = None
@@ -653,6 +664,13 @@ def test_d4_diary_handler_receives_morning_and_night():
         bus = _RecordingBus()
         state = AgencyState(action_cooldown_seconds=0, decision_cooldown_seconds=0)
         handler = DiaryHandler(state=state, diary_writer_executor=mock_diary_writer_executor)
+        # M6.1-9 per-agent state 隔离: seed state 只给第一个 agent,
+        # 后续 agent 用默认 AgencyState() (decision_cooldown_seconds=30)。
+        # 测试毫秒级跑完 morning+night, 第二个 agent 的第二次 decision 会被
+        # 30s cooldown 挡住 → 预置两个 agent 的 cooldown=0 state,
+        # 让测试聚焦本意: DiaryHandler 收到 morning/night 会 invoke writer。
+        handler._states["agent_yua"] = AgencyState(action_cooldown_seconds=0, decision_cooldown_seconds=0)
+        handler._states["agent_ruka"] = AgencyState(action_cooldown_seconds=0, decision_cooldown_seconds=0)
         bus.subscribe(
             subscriber_id="diary_handler",
             handler=handler.handle_event,
@@ -784,6 +802,10 @@ def test_e2_no_telegram_no_llm_call():
             )
             # 連到 scheduler
             scheduler._bus = rec_bus
+            # SM-3 (2026-08-30) 适配: mock 掉 Decision 检查点 (同 test_c5)。
+            async def _decision_ok(agent_id):
+                return True
+            scheduler._decision_check = _decision_ok
             # 觸發 proactive_dm
             scheduler._next_proactive_dm_time = datetime.now(timezone.utc) - timedelta(hours=1)
             scheduler._last_proactive_dm_time = None

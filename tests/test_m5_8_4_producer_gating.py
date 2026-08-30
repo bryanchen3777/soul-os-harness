@@ -266,8 +266,13 @@ class TestSectionB_SchedulerIntegration:
         # Gated → no AGENCY_TRIGGER published
         assert len(captured) == 0
 
-    def test_b2_emitted_proactive_dm_publishes_normally(self, isolated_root, tmp_path):
-        """B.2: proactive_dm not gated → AGENCY_TRIGGER published as usual."""
+    def test_b2_emitted_proactive_dm_publishes_normally(self, isolated_root, tmp_path, monkeypatch):
+        """B.2: proactive_dm not gated → AGENCY_TRIGGER published as usual.
+
+        SM-3 (2026-08-30) 适配: proactive_dm publish 前新增 Decision 检查点
+        (fail-closed, 无 motive → 不发)。本测试聚焦 M5.8-4 gate 的 fail-open
+        语义, mock 掉 Decision 检查点 (Decision 行为由 test_sm3_motive_decision.py 覆盖)。
+        """
         # Seed trace with old event for agent_yua (> 30 min ago)
         trace_path = isolated_root / "inner_life" / "trace.jsonl"
         old_ts = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
@@ -292,6 +297,10 @@ class TestSectionB_SchedulerIntegration:
                     event_filter={EventType.AGENCY_TRIGGER},
                 )
                 scheduler = SoulScheduler(bus=bus)
+                from unittest.mock import AsyncMock
+                monkeypatch.setattr(
+                    scheduler, "_decision_check", AsyncMock(return_value=True)
+                )
                 await scheduler._publish_agency_trigger(
                     agent_id="agent_yua",
                     trigger_type="proactive_dm",
@@ -306,8 +315,11 @@ class TestSectionB_SchedulerIntegration:
         assert captured[0].payload["trigger_type"] == "proactive_dm"
         assert captured[0].payload["agent_id"] == "agent_yua"
 
-    def test_b3_unavailable_proactive_dm_publishes_normally(self, isolated_root, tmp_path):
-        """B.3: no trace file → fail-open = publish normally."""
+    def test_b3_unavailable_proactive_dm_publishes_normally(self, isolated_root, tmp_path, monkeypatch):
+        """B.3: no trace file → fail-open = publish normally.
+
+        SM-3 (2026-08-30) 适配: 同 test_b2, mock 掉 Decision 检查点。
+        """
         # Don't seed any trace file
 
         async def _run():
@@ -327,6 +339,10 @@ class TestSectionB_SchedulerIntegration:
                     event_filter={EventType.AGENCY_TRIGGER},
                 )
                 scheduler = SoulScheduler(bus=bus)
+                from unittest.mock import AsyncMock
+                monkeypatch.setattr(
+                    scheduler, "_decision_check", AsyncMock(return_value=True)
+                )
                 await scheduler._publish_agency_trigger(
                     agent_id="agent_yua",
                     trigger_type="proactive_dm",
@@ -630,8 +646,13 @@ class TestSectionF_DataRootIsolation:
 class TestSectionG_SchedulerBackwardCompat:
     """G. M5.2-G baseline: scheduler still publishes AGENCY_TRIGGER."""
 
-    def test_g1_scheduler_fire_proactive_dm_path_unchanged_when_trace_empty(self, isolated_root, tmp_path):
-        """G.1: With empty trace, _fire_proactive_dm flow still publishes AGENCY_TRIGGER."""
+    def test_g1_scheduler_fire_proactive_dm_path_unchanged_when_trace_empty(self, isolated_root, tmp_path, monkeypatch):
+        """G.1: With empty trace, _fire_proactive_dm flow still publishes AGENCY_TRIGGER.
+
+        SM-3 (2026-08-30) 适配: proactive_dm publish 前新增 Decision 检查点
+        (fail-closed)。本测试聚焦 M5.2-G baseline publish 路径 + gate fail-open,
+        mock 掉 Decision 检查点 (Decision 行为由 test_sm3_motive_decision.py 覆盖)。
+        """
         async def _run():
             from src.eventbus.bus import SoulEventBus
             from src.eventbus.schema import EventType
@@ -656,6 +677,10 @@ class TestSectionG_SchedulerBackwardCompat:
                     proactive_dm_cooldown_seconds=0,
                     quiet_hours_start=0,
                     quiet_hours_end=0,
+                )
+                from unittest.mock import AsyncMock
+                monkeypatch.setattr(
+                    scheduler, "_decision_check", AsyncMock(return_value=True)
                 )
 
                 async def noop_cb(agent_id):

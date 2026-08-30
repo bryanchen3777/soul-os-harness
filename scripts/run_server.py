@@ -771,6 +771,12 @@ async def lifespan(app: FastAPI):
     set_dream_event_llm_proxy(llm)
     logger.info("[Server] LLMProxy wired into diary + dream_event (v4-flash unified)")
 
+    # SM-3 (Bry 授权 2026-08-29, M3.1 frozen scope 解冻仅限此一处):
+    # motive 独立注入 LLMProxy, 不再 fallback 到 diary 的 process-global proxy
+    from src.soul.motive import set_llm_proxy as set_motive_llm_proxy
+    set_motive_llm_proxy(llm)
+    logger.info("[Server] LLMProxy wired into motive (SM-3, v4-flash unified)")
+
     # Bry §11 shadow mode (2026-07-02): 對每一筆真實訊息 v6 並行 observation
     # 7 天自動到期, 不影響 prod 路徑結果
     from src.memory.shadow import init_shadow_observer
