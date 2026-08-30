@@ -72,6 +72,12 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 |------|------|------|-------------|
 | **TL-1（Time-lapse Harness 实现 + 第一个实验）** | ✅ 完成（**Level 2 Growth proven**） | `harness/` 8 文件（clock.py / fixture.py / probe.py / observer.py / records.py / runner.py / run_tl1.py / __init__.py）+ `tests/test_tl1_harness.py`（26 tests PASS）。**第一个实验**：同一 Ruka 同一 probe「Alex 两天没回讯息」在 T0/T15/T30 的 motive 从「担心」→「自我怀疑」→「接受变淡」，change_verdict = **INTERPRETATION_DECISION_CHANGED = Level 2 Growth proven**（行为改变可解释、可重现、可追溯回 fed events）。**D2 determinism PASS**（harness-local SimulationClock 重现，production scheduler / 时钟不动）。**0 production mutation**（隔离 data_root，0 frozen contract 改动，harness 只活在 harness/ + tests/，不改 src/） | `bcae186`（feat: time-lapse harness + TL-1 experiment (Level 2 growth proven)） |
 
+### TA-1（时间感知：conversation_elapsed + 表达规则放宽 + silence bug 修复）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **TA-1（时间感知：conversation_elapsed + 表达规则放宽 + silence bug 修复）** | ✅ 完成 | `src/llm/proxy.py`（时间区块内 3 项改动）+ `tests/test_ta1_temporal_orientation.py`（25 tests）+ `tests/test_ta1_simulation_day.py`（15 tests），**40 tests PASS**。**① conversation_elapsed 信号**：`_get_last_interaction_ts`（跨 session 不跨 agent，last_interaction_at = max(last_user_ts, last_assistant_ts)）+ `_format_continuity_str`（elapsed < 15 分钟 = 同一场对话不注入；<24h = "X 小时"；>=24h = "X 天"）+ `last_interaction_period`（上次互动本地时段标签，`_period_label_for_ts`）。**② TEMPORAL_EXPRESSION_RULE 放宽**：`TEMPORAL_EXPRESSION_PRECEDENCE` 常量注入时间区块，现象式时间表达允许（早上/快中午/都下午了/这么晚/周末），未询问不主动报精确钟点或日期，precedence 压过 persona 绝对禁令（不改 10 份人格档）。**③ silence bug 修复**：`_get_bry_latest_ts` suffix 从 `f"_agent_{agent_id}"` 改 `f"_{agent_id}"`（真实 session_id 以 `_{agent_id}` 结尾，旧 suffix 0 匹配 → bry_latest_ts 恒 0 → 沉默时长行从未注入）。**模拟测试验证**：早上不道晚安 / 下午不问早餐 / 夜间不道早安。**0 frozen contract 改动**（只改 proxy.py 时间区块 + 测试，不改 Agency/TriggerEnvelope/InnerLifeEvent/4 handlers/SAGE） | `4a63b1d`（feat: temporal orientation & continuity (TA-1) + silence bug fix） |
+
 ### North Star v2（canonical 引用）
 
 **Canonical 完整版**：Notion 页面「🧭 Soul OS Strategic Roadmap & Evolution」的「North Star v2」段（2026-08-29，Bryan 亲述）。七点愿景简述：
@@ -100,7 +106,10 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `7b9cfe7` (docs: soul motive & decision design (SM-1/SM-2))
+- Current HEAD: `4a63b1d` (feat: temporal orientation & continuity (TA-1) + silence bug fix)
+- TA-1 commit: `4a63b1d` (feat: temporal orientation & continuity (TA-1) + silence bug fix; **Current HEAD**)
+- TL-1 commit: `bcae186` (feat: time-lapse harness + TL-1 experiment (Level 2 growth proven); **distinct from Current HEAD**)
+- TL-0 commit: `77c1899` (docs: time-lapse harness experiment spec (TL-0); **distinct from Current HEAD**)
 - CA-2 commit: `a70621f` (feat: soul capability awareness (CA-2); **distinct from Current HEAD**)
 - Proactive DM fixes commit: `93672df` (fix: proactive DM deliverability + signal unification + double-instance; **distinct from Current HEAD**)
 - Current HEAD: `401e15c` (feat: agent_id injection for diary/dream/event elevation ownership)
@@ -1155,5 +1164,6 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-08-29 (Proactive DM fixes) | Proactive DM 三件修复（commit `93672df`）。8 files changed: `src/io/channels/bryan_state.py`（NEW, +100）、`src/soul/scheduler.py`（+41）、`src/io/channels/router.py`（+55 -31）、`src/io/gateway.py`（+8）、`scripts/server_ops.ps1`（+38）、`tests/test_proactive_dm_deliverability.py`（NEW, +183）、`tests/test_proactive_whitelist_v1.py`（+43）、`tests/test_m6_1_8_1_agency_reenable_isolated.py`（+207）。三件修复：① **deliverability 提前**（投递判定提前，避免消息不可达才后知后觉）；② **信号统一**（router + gateway 统一信号路径）；③ **双实例**（server_ops.ps1 防双实例）。0 frozen contract change。 | Mavis / Lin | Proactive DM fixes |
 | 2026-08-29 (SM-1/SM-2) | Soul Motive & Decision 设计文档定稿（commit `7b9cfe7`）。2 files changed: `docs/SOUL-MOTIVE-DECISION-DESIGN.md`（NEW, +297，motive 模块 + Decision 层）、`docs/DECISION-PROMPT-CONTRACT.md`（NEW, +249，prompt contract）。核心原则：**Decision LLM 不是 classifier，是「当下选择」** —— 决策是灵魂在当下情境中的选择行为，不是对选项的分类打分。0 frozen contract change。 | Mavis / Lin | SM-1/SM-2 |
 | 2026-08-30 (SM-3) | Soul Motive & Decision 实现落地 + motive proxy 独立注入（commit `6bcbda3`）。7 files changed: `src/soul/motive.py`（NEW, +671，Motive + MotiveTraceStore + MotiveEngine）、`src/soul/decision.py`（NEW, decision prompt 构建 + parse + decide_motive）、`src/soul/scheduler.py`（+58，_decision_check additive hook，proactive_dm producer-side fail-closed 检查）、`scripts/run_server.py`（+4，motive proxy 独立注入，Bry 授权 2026-08-29，M3.1 frozen scope 解冻仅限此一处 additive 改动）、`tests/test_sm3_motive_decision.py`（NEW, 25 tests）、`tests/test_m5_8_4_producer_gating.py`、`tests/test_m6_1_8_1_agency_reenable_isolated.py`（SM-3 适配：mock _decision_check + test_d4 per-agent cooldown=0 state 修复，pre-existing 失败）。**motive 模块 + Decision LLM + volition path 完整闭环**：motive 用自己的 process-global proxy，不再 fallback 到 diary 的 proxy。72 tests 全绿。0 frozen contract change（仅 run_server.py motive proxy 注入，Owner 授权）。 | Mavis / Lin | SM-3 |
+| 2026-08-30 (TA-1) | 时间感知：conversation_elapsed + 表达规则放宽 + silence bug 修复（commit `4a63b1d`）。3 files changed: `src/llm/proxy.py`（+129 -3，时间区块内 3 项改动）、`tests/test_ta1_temporal_orientation.py`（NEW, 25 tests）、`tests/test_ta1_simulation_day.py`（NEW, 15 tests），**40 tests PASS**。**① conversation_elapsed 信号**：`_get_last_interaction_ts`（跨 session 不跨 agent，last_interaction_at = max(last_user_ts, last_assistant_ts)）+ `_format_continuity_str`（elapsed < 15 分钟 = 同一场对话不注入；<24h = "X 小时"；>=24h = "X 天"）+ `last_interaction_period`（上次互动本地时段标签）。**② TEMPORAL_EXPRESSION_RULE 放宽**：`TEMPORAL_EXPRESSION_PRECEDENCE` 常量注入时间区块，现象式时间表达允许（早上/快中午/都下午了/这么晚/周末），未询问不主动报精确钟点或日期，precedence 压过 persona 绝对禁令（不改 10 份人格档）。**③ silence bug 修复**：`_get_bry_latest_ts` suffix 从 `f"_agent_{agent_id}"` 改 `f"_{agent_id}"`（真实 session_id 以 `_{agent_id}` 结尾，旧 suffix 0 匹配 → bry_latest_ts 恒 0 → 沉默时长行从未注入）。**模拟测试验证**：早上不道晚安 / 下午不问早餐 / 夜间不道早安。**0 frozen contract change**（只改 proxy.py 时间区块 + 测试，不改 Agency/TriggerEnvelope/InnerLifeEvent/4 handlers/SAGE）。 | Mavis / Lin | TA-1 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
