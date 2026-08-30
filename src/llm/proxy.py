@@ -541,6 +541,15 @@ def _build_messages_group(
 
     system_parts = [identity_anchor + soul.strip()]
 
+    # CA-2 (Soul Capability Awareness): identity 之後、emergent 之前注入
+    # CAPABILITY block —— 靈魂對「我能做什麼」的認知投影（read-side, inference-time）。
+    # 語義邊界: IDENTITY(從哪開始) → CAPABILITY(我能做什麼) → EMERGENT(成為什麼) → 記憶/內在生活。
+    # anti-runaway: CAPABILITY 是「我知道我能」, 不是「我應該」——只擴展 action space,
+    # 不選擇 action（選擇權在 Agency Decision）。fail-silent: 無投影/失敗 → 空字串。
+    capability_block = _format_capability_block(agent_id)
+    if capability_block:
+        system_parts.append(capability_block)
+
     # Emergent read-side projection (工單「靈魂成長閉環」): identity 之後注入
     # EMERGENT block —— 該靈魂自己長出來的 belief/value/trait/essence 投影
     # （「你成為什麼」，疊加在 seeded 人格 / germ anchor 之上）。
@@ -823,6 +832,27 @@ def _format_emergent_block(agent_id: str) -> str:
         return ""
 
 
+def _format_capability_block(agent_id: str) -> str:
+    """
+    CA-2 (Soul Capability Awareness): 把 CAPABILITY_DEFINITIONS 投影成 CAPABILITY block,
+    在 identity 之後、emergent 之前注入。
+
+    語義: IDENTITY = 從哪開始; CAPABILITY = 我能做什麼 (action space 的擴展);
+    EMERGENT = 成為什麼。capability 只擴展 action space, 不選擇 action
+    （「我知道我能」≠「我應該」, 選擇權在 Agency Decision）。
+
+    fail-silent: 任何異常 / 無定義 → 空字串 (不阻塞 prompt 組裝主路徑, 與未
+    實現時完全等價)。read-side: 只讀 CAPABILITY_DEFINITIONS 常數, 不寫任何狀態
+    （sidecar 是 append-only 審計記錄, 不是狀態）。
+    """
+    try:
+        from src.soul.capability import format_capability_block
+
+        return format_capability_block(agent_id)
+    except Exception:  # noqa: BLE001 — 雙重失敗隔離: capability 缺失不影響 prompt
+        return ""
+
+
 def _load_bry_recent(agent_id: str, user_id: str, limit: int = MAX_BRY_RECENT) -> List[Dict[str, str]]:
     """短期記憶 — 從 Bry 跟該 agent 的 private history 撈最近 N 條 Bry user 訊息。
 
@@ -889,6 +919,15 @@ def _build_messages_private(
 
 
     system_parts = [identity_anchor + soul.strip()]
+
+    # CA-2 (Soul Capability Awareness): identity 之後、emergent 之前注入
+    # CAPABILITY block —— 靈魂對「我能做什麼」的認知投影（read-side, inference-time）。
+    # 語義邊界: IDENTITY(從哪開始) → CAPABILITY(我能做什麼) → EMERGENT(成為什麼) → 記憶/內在生活。
+    # anti-runaway: CAPABILITY 是「我知道我能」, 不是「我應該」——只擴展 action space,
+    # 不選擇 action（選擇權在 Agency Decision）。fail-silent: 無投影/失敗 → 空字串。
+    capability_block = _format_capability_block(agent_id)
+    if capability_block:
+        system_parts.append(capability_block)
 
     # Emergent read-side projection (工單「靈魂成長閉環」): identity 之後注入
     # EMERGENT block —— 該靈魂自己長出來的 belief/value/trait/essence 投影
