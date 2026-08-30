@@ -51,6 +51,14 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 
 **相关 commit**：`1a97a24`（feat: soul growth loop (emergent read-side projection)）；`e8c84d4`（feat: germ initialization boundary (FG-2)）；`401e15c`（feat: agent_id injection for diary/dream/event elevation ownership）；`d8c057d`（fix: watchdog procs check misjudgment (port_listen=True procs=0)）。
 
+### 灵魂本体主线后续（CA-2 / SM-1 / SM-2 / Proactive DM 修复）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **CA-2（Soul Capability Awareness）** | ✅ 已落地 | `src/soul/capability.py`（capability 注册/查询）+ `src/llm/proxy.py`（capability 投影进 prompt）。核心原则：**Capability makes an action conceivable** —— 能力先于行动被灵魂「设想」，是行动可能性的前提，不是行动授权本身 | `a70621f`（feat: soul capability awareness (CA-2)） |
+| **SM-1/SM-2（Soul Motive & Decision 设计）** | ✅ 设计文档已定稿 | `docs/SOUL-MOTIVE-DECISION-DESIGN.md`（motive 模块 + Decision 层）+ `docs/DECISION-PROMPT-CONTRACT.md`（prompt contract）。核心原则：**Decision LLM 不是 classifier，是「当下选择」** —— 决策是灵魂在当下情境中的选择行为，不是对选项的分类打分 | `7b9cfe7`（docs: soul motive & decision design (SM-1/SM-2)） |
+| **Proactive DM 三件修复** | ✅ 已修复 | ① **deliverability 提前**：proactive DM 投递判定提前（`src/io/channels/bryan_state.py` + `src/soul/scheduler.py`），避免消息不可达才后知后觉；② **信号统一**：`src/io/channels/router.py` + `src/io/gateway.py` 统一信号路径；③ **双实例**：`scripts/server_ops.ps1` 防双实例（server_ops 侧防护） | `93672df`（fix: proactive DM deliverability + signal unification + double-instance） |
+
 ### North Star v2（canonical 引用）
 
 **Canonical 完整版**：Notion 页面「🧭 Soul OS Strategic Roadmap & Evolution」的「North Star v2」段（2026-08-29，Bryan 亲述）。七点愿景简述：
@@ -79,6 +87,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
+- Current HEAD: `7b9cfe7` (docs: soul motive & decision design (SM-1/SM-2))
+- CA-2 commit: `a70621f` (feat: soul capability awareness (CA-2); **distinct from Current HEAD**)
+- Proactive DM fixes commit: `93672df` (fix: proactive DM deliverability + signal unification + double-instance; **distinct from Current HEAD**)
 - Current HEAD: `401e15c` (feat: agent_id injection for diary/dream/event elevation ownership)
 - FG-2 commit: `e8c84d4` (feat: germ initialization boundary (FG-2); **distinct from Current HEAD**)
 - watchdog fix commit: `d8c057d` (fix: watchdog procs check misjudgment (port_listen=True procs=0); **distinct from Current HEAD**)
@@ -1127,5 +1138,8 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-08-23 (DSH P1-C1) | Identity & Handoff Seam Decomposition（`docs/DSH-P1-C1-DECOMPOSITION.md`）→ Review #1 BLOCKED（5 項）→ 重寫 → Re-review READY。C1-A audit 確認 cwd+session log header 為 process 層 identity 錨點。核心：trust model（信任根=adapter 防惡意 LLM）、T1 Domain Core 開檔讀 log、A1 role→cwd binding、B1 content=session log final message、claim→verify 三層正交。commit `9f01c5e`。 | Mavis / Lin | DSH P1-C1 |
 | 2026-08-23 (DSH P1-C1-R) | Real DSH single_shot Routing 實作完成 + Independent Adversarial Review（READ-ONLY）→ **READY TO LAND**。`src/work/execution_evidence.py`（RoleCwdRegistry + read_execution_evidence + verify_role_binding）+ `src/work/artifact_store.py`（write_artifact + verify_artifact_ref + staging + single-writer）+ bridge execute_dsh（spawn headless + --patch overlay + 事後讀回）+ execution execute_work_dsh（三層 cross-check）。291 tests 全綠（256 + 35 new），**C1.9 真 DSH smoke PASS**。8/8 PASS + bypass=NO。commit `041dad6`。 | Mavis / Lin | DSH P1-C1-R |
 | 2026-08-23 (DSH P1-C2) | Integration / Boundary Gate 實作完成 + Independent Adversarial Review（READ-ONLY）→ **READY TO LAND**。補 content transport：artifact content=final_message，Domain Core write_artifact 算 canonical ref **回填** claim（agent 不聲稱 ref，解 sha256 自指矛盾），三層 claim→verify 完整。evidence_refs 定錨「被驗證對象」（D4）、execute_work deprecated（D5）、headless approval policy=never（D6）。302 tests 全綠（291 + 11 new），**真 DSH E2E 閉環 PASS**。8/8 PASS + bypass=NO。**P1 閉環**。 | Mavis / Lin | DSH P1-C2 |
+| 2026-08-29 (CA-2) | Soul Capability Awareness 落地（commit `a70621f`）。4 files changed: `src/soul/capability.py`（NEW, +178，capability 注册/查询）、`src/llm/proxy.py`（+39，capability 投影进 prompt）、`tests/test_capability_awareness.py`（NEW, +321）、`docs/SOUL-CAPABILITY-AWARENESS-DESIGN.md`（NEW, +269）。核心原则：**Capability makes an action conceivable** —— 能力先于行动被灵魂「设想」，是行动可能性的前提，不是行动授权本身。0 frozen contract change。 | Mavis / Lin | CA-2 |
+| 2026-08-29 (Proactive DM fixes) | Proactive DM 三件修复（commit `93672df`）。8 files changed: `src/io/channels/bryan_state.py`（NEW, +100）、`src/soul/scheduler.py`（+41）、`src/io/channels/router.py`（+55 -31）、`src/io/gateway.py`（+8）、`scripts/server_ops.ps1`（+38）、`tests/test_proactive_dm_deliverability.py`（NEW, +183）、`tests/test_proactive_whitelist_v1.py`（+43）、`tests/test_m6_1_8_1_agency_reenable_isolated.py`（+207）。三件修复：① **deliverability 提前**（投递判定提前，避免消息不可达才后知后觉）；② **信号统一**（router + gateway 统一信号路径）；③ **双实例**（server_ops.ps1 防双实例）。0 frozen contract change。 | Mavis / Lin | Proactive DM fixes |
+| 2026-08-29 (SM-1/SM-2) | Soul Motive & Decision 设计文档定稿（commit `7b9cfe7`）。2 files changed: `docs/SOUL-MOTIVE-DECISION-DESIGN.md`（NEW, +297，motive 模块 + Decision 层）、`docs/DECISION-PROMPT-CONTRACT.md`（NEW, +249，prompt contract）。核心原则：**Decision LLM 不是 classifier，是「当下选择」** —— 决策是灵魂在当下情境中的选择行为，不是对选项的分类打分。0 frozen contract change。 | Mavis / Lin | SM-1/SM-2 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
