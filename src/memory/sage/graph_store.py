@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import functools
 import json
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,6 +16,21 @@ from .models import Fact
 # 每累積 N 次寫入才 commit（WAL 模式下安全）
 _BATCH_SIZE = 20
 _SCHEMA_VERSION = 6
+
+
+def _locked(method):
+    """Decorator: 以 self._lock 串行化方法執行（RLock 可重入）。
+
+    KI-008 (2026-08-29): sqlite 連接（check_same_thread=False）被多執行緒並發
+    存取（prefetch 走 asyncio.to_thread 讀 + write_turn 走 run_in_executor 寫，
+    同一個 GraphStore 連接無鎖）→ sqlite3 C 擴展記憶體損壞 → ACCESS VIOLATION。
+    所有 sqlite + networkx graph 操作以 RLock 串行化。
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
 
 
 class GraphStore:
@@ -29,6 +46,12 @@ class GraphStore:
         self.graph: nx.MultiDiGraph = nx.MultiDiGraph()
         self._conn: Optional[sqlite3.Connection] = None
         self._pending_writes: int = 0
+        # KI-008 (2026-08-29): sqlite 連接（check_same_thread=False）被多執行緒
+        # 並發存取（prefetch 走 asyncio.to_thread 讀 + write_turn 走 run_in_executor 寫，
+        # 同一個 GraphStore 連接無鎖）→ sqlite3 C 擴展記憶體損壞 → ACCESS VIOLATION。
+        # 所有 sqlite + networkx graph 操作以 RLock 串行化（RLock 可重入，內部
+        # _get_conn/_add_to_graph 呼叫不需額外鎖）。
+        self._lock = threading.RLock()
         self._init_db()
         self._load_from_db()
 
@@ -224,6 +247,7 @@ class GraphStore:
             is_anchor=fact.is_anchor,
         )
 
+    @_locked
     def add_fact(self, fact: Fact) -> str:
         self._add_to_graph(fact)
         conn = self._get_conn()
@@ -246,6 +270,7 @@ class GraphStore:
             self._pending_writes = 0
         return fact.fact_id
 
+    @_locked
     def get_fact(self, fact_id: str) -> Optional[Fact]:
         conn = self._get_conn()
         row = conn.execute(
@@ -255,6 +280,7 @@ class GraphStore:
             return None
         return self._row_to_fact(row)
 
+    @_locked
     def update_weight(self, fact_id: str, new_weight: float) -> bool:
         found = False
         for u, v, k, data in self.graph.edges(keys=True, data=True):
@@ -275,6 +301,7 @@ class GraphStore:
             self._pending_writes = 0
         return True
 
+    @_locked
     def remove_fact(self, fact_id: str) -> bool:
         for u, v, k, data in list(self.graph.edges(keys=True, data=True)):
             if data.get("fact_id") == fact_id:
@@ -288,6 +315,7 @@ class GraphStore:
                 return True
         return False
 
+    @_locked
     def get_ego_graph(self, node: str, radius: int = 2) -> nx.MultiDiGraph:
         if node not in self.graph:
             return nx.MultiDiGraph()
@@ -295,6 +323,7 @@ class GraphStore:
             self.graph, node, radius=radius, undirected=True
         )
 
+    @_locked
     def get_all_facts(self, min_weight: float = 0.05) -> list[Fact]:
         conn = self._get_conn()
         rows = conn.execute(
@@ -303,6 +332,7 @@ class GraphStore:
         ).fetchall()
         return [self._row_to_fact(r) for r in rows]
 
+    @_locked
     def search_by_entity(
         self, entity: str, min_weight: float = 0.1
     ) -> list[Fact]:
@@ -318,6 +348,7 @@ class GraphStore:
 
     # ── Entity Fuzzy Matching ─────────────────────────────────
 
+    @_locked
     def find_similar_entity(self, name: str, threshold: float = 0.75) -> Optional[str]:
         """
         在既存節點中尋找語意相近的實體名稱。
@@ -341,6 +372,7 @@ class GraphStore:
 
     # ── Anchor Management ────────────────────────────────────
 
+    @_locked
     def set_anchor(self, fact_id: str, is_anchor: bool = True) -> bool:
         """設定或解除基石記憶保護"""
         for u, v, k, data in self.graph.edges(keys=True, data=True):
@@ -355,6 +387,7 @@ class GraphStore:
                 return True
         return False
 
+    @_locked
     def get_anchor_facts(self) -> list[Fact]:
         """取得所有基石記憶"""
         conn = self._get_conn()
@@ -365,6 +398,7 @@ class GraphStore:
 
     # ── 統計 ──────────────────────────────────────────────────
 
+    @_locked
     def stats(self) -> dict:
         """回傳圖健康指標，供 adapter.system_prompt_block() 使用"""
         conn = self._get_conn()
@@ -396,6 +430,7 @@ class GraphStore:
 
     # ── Export / Import ───────────────────────────────────────
 
+    @_locked
     def export_json(self, path: Path) -> int:
         """匯出所有 facts 為 JSON Lines 格式，回傳匯出筆數"""
         facts = self.get_all_facts(min_weight=0.0)
@@ -405,6 +440,7 @@ class GraphStore:
                 f.write(json.dumps(fact.to_dict(), ensure_ascii=False) + "\n")
         return len(facts)
 
+    @_locked
     def import_json(
         self,
         path: Path,
@@ -441,18 +477,21 @@ class GraphStore:
 
     # ── Lifecycle ─────────────────────────────────────────────
 
+    @_locked
     def flush(self) -> None:
         """強制 commit 所有 pending writes"""
         if self._conn and self._pending_writes > 0:
             self._conn.commit()
             self._pending_writes = 0
 
+    @_locked
     def close(self) -> None:
         if self._conn:
             self.flush()
             self._conn.close()
             self._conn = None
 
+    @_locked
     def vacuum(self) -> None:
         """釋放 SQLite 碎片空間（建議在大量 prune 後呼叫）"""
         self.flush()
@@ -463,14 +502,17 @@ class GraphStore:
 
     @property
     def node_count(self) -> int:
-        return self.graph.number_of_nodes()
+        with self._lock:
+            return self.graph.number_of_nodes()
 
     @property
     def edge_count(self) -> int:
-        return self.graph.number_of_edges()
+        with self._lock:
+            return self.graph.number_of_edges()
 
     # ── Merge Lineage ─────────────────────────────────────────────
 
+    @_locked
     def update_merge_lineage(
         self,
         fact_id: str,
