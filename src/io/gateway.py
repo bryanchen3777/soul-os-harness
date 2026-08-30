@@ -215,6 +215,106 @@ def _list_agents() -> list[dict]:
         return []
 
 
+# ── 靈魂本質（elevation read-side，只讀不寫）────────────────────────────
+# 資料源：data/elevation/elevation_nodes.jsonl（belief/value/trait/essence 節點）
+#        + data/elevation/elevation_projection_trace.jsonl（投影 sidecar）。
+# 規則（對齊 emergent_projection 死規則）：只展示該靈魂自己的 belief/value/
+# trait/essence；agent_id="default" 的 world node 永不展示；pattern 不展示。
+# 失敗隔離：檔案不存在 / 壞行一律跳過，絕不 raise，回空結構。
+
+_SOUL_ESSENCE_TYPES = ("belief", "value", "trait", "essence")
+
+
+def _latest_projection_for(store_dir, agent_id):
+    """讀投影 sidecar，回該靈魂**最近一次**投影記錄（ts 最大者）。
+
+    sidecar 是 append-only（data/elevation/elevation_projection_trace.jsonl），
+    每筆 {ts, event_type, agent_id, projected_node_ids, ...}。反向掃描第一筆
+    符合該 agent 的記錄即為最近一次。檔案不存在 / 無該 agent 記錄 → None。
+    """
+    path = Path(store_dir) / "elevation_projection_trace.jsonl"
+    if not path.is_file():
+        return None
+    best = None
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception as e:
+        logger.warning(f"[Soul] 讀投影 sidecar 失敗 {path}: {e}")
+        return None
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if rec.get("agent_id") != agent_id:
+            continue
+        if rec.get("event_type") != "emergent_projected":
+            continue
+        best = rec
+        break  # append-only：反向第一筆 = 最近一次
+    if best is None:
+        return None
+    return {
+        "ts": best.get("ts"),
+        "projected_node_ids": best.get("projected_node_ids") or [],
+        "projected_node_types": best.get("projected_node_types") or [],
+        "node_count": best.get("node_count", 0),
+    }
+
+
+def _collect_soul_essence(agent_id: str, store_dir=None):
+    """收集該靈魂的 belief/value/trait/essence（按 node_type 分組）+ 最近投影。
+
+    只讀 elevation store（預設 data_root()/elevation，測試可傳 store_dir 隔離）。
+    過濾（對齊 emergent_projection）：
+      1. agent_id == 該靈魂（agent_id="default" 的 world node 永不展示）。
+      2. node_type in {belief, value, trait, essence}（pattern 不展示）。
+      3. 缺 node_id / content 的行跳過。
+    排序：created_ts asc + node_id asc（deterministic）。
+
+    Returns:
+        {"agent_id", "essence": {node_type: [node...]}, "projection": {...}|None}
+    """
+    if store_dir is None:
+        store_dir = data_root() / "elevation"
+    try:
+        from src.inner_life.emergent_projection import load_elevation_nodes
+        nodes = load_elevation_nodes(store_dir)
+    except Exception as e:
+        logger.warning(f"[Soul] 讀 elevation nodes 失敗: {e}")
+        nodes = []
+    grouped = {t: [] for t in _SOUL_ESSENCE_TYPES}
+    for n in nodes:
+        if n.get("agent_id") != agent_id:
+            continue
+        if n.get("agent_id") == "default":
+            continue  # world node 永不展示（防查詢者自身是 default 時放行）
+        ntype = n.get("node_type")
+        if ntype not in _SOUL_ESSENCE_TYPES:
+            continue  # pattern 及其他未知類型不展示
+        node_id = n.get("node_id")
+        content = n.get("content")
+        if not node_id or not isinstance(content, str) or not content.strip():
+            continue
+        grouped[ntype].append({
+            "node_id": node_id,
+            "node_type": ntype,
+            "content": content.strip(),
+            "confidence": n.get("confidence"),
+            "created_ts": n.get("created_ts"),
+        })
+    for t in _SOUL_ESSENCE_TYPES:
+        grouped[t].sort(key=lambda x: (str(x.get("created_ts") or ""), x.get("node_id") or ""))
+    return {
+        "agent_id": agent_id,
+        "essence": grouped,
+        "projection": _latest_projection_for(store_dir, agent_id),
+    }
+
+
 class ConnectionManager:
     """管理所有 WebSocket 連線"""
 
@@ -462,6 +562,21 @@ class IOGateway:
                     for e in entries
                 ],
             }
+
+        @self.app.get("/api/soul/essence/{agent_id}")
+        async def soul_essence(agent_id: str):
+            """
+            某靈魂的「本質」一覽（只讀，elevation read-side）。
+
+            讀 data_root()/elevation/elevation_nodes.jsonl + 投影 sidecar
+            (elevation_projection_trace.jsonl)，回該靈魂自己的
+            belief/value/trait/essence（按 node_type 分組）+ 最近一次投影。
+
+            Response: {"agent_id", "essence": {node_type: [node...]},
+                       "projection": {ts, projected_node_ids, ...}|None}
+            agent_id 不存在 / 無數據 → 空 essence + projection=None（不 404）。
+            """
+            return _collect_soul_essence(agent_id)
 
         @self.app.get("/api/soul/interactions")
         async def soul_interactions(limit: int = 20):
