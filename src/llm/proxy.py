@@ -97,6 +97,22 @@ MAX_SELF_RECENT = 3
 # 從源頭過濾比再疊一條反框架語句更治本
 STALE_THRESHOLD_SEC = 30 * 60  # 30 分鐘
 
+# TA-1 (Bry 拍板 2026-08-30): Restore Temporal Orientation & Continuity
+# conversation_elapsed 信號 — 同一場對話閾值: elapsed < 15 分鐘 = 同一場對話,
+# 不注入 continuity 行 (靈魂不需要被告知「你 5 分鐘前才互動過」)
+CONTINUITY_SAME_CONVERSATION_SEC = 15 * 60  # 15 分鐘
+
+# TA-1 (Bry 拍板 2026-08-30): TEMPORAL_EXPRESSION_RULE 放宽 precedence
+# 現象式時間允許 (早上/快中午/都下午了/這麼晚/週末), 未經詢問不得主動報精確鐘點或日期。
+# 不建模糊詞 whitelist; 由 proxy 一條 precedence 壓過 persona 的絕對禁令 (不改 10 份人格檔)。
+# 不加「請說快中午了」這類 meta-instruction (只給 permission, 不指示說特定詞)。
+TEMPORAL_EXPRESSION_PRECEDENCE = (
+    "[時間表達規則] 現象式時間表達是允許的（例如「早上」「快中午」「都下午了」"
+    "「這麼晚」「週末」），你可以自然使用來反映時間感知；"
+    "未經詢問，不要主動報出精確鐘點或日期。"
+    "此規則優先於人格設定中任何「不得提及時間」的禁令。"
+)
+
 # M2.0 (Bry 拍板 2026-08-07 15:44): 內在人生記憶注入
 # 根因: Bry 8/7 15:34 查證發現「內在人生記憶完全斷開」, diary/dream/event 寫進了
 # data/soul/{agent_id}/diary/{date}.jsonl, 但對話組裝時完全沒讀
@@ -506,6 +522,7 @@ def _build_messages_group(
     bry_latest_ts: int = 0,  # 修法 9 (Bry 拍板 2026-08-04 20:37): 跨 session Bry 最後 user 訊息 timestamp
     world_context: str = "",  # M3 Phase 1 (Bry 拍板 2026-08-07 19:40): WorldPerception 注入的世界感知
     germ_anchor: Optional[str] = None,  # FG-2 (germ 初始化邊界): germ 模式下替換 seeded identity_anchor; seeded 傳 None = 零行為變化
+    last_interaction_ts: int = 0,  # TA-1 (Bry 拍板 2026-08-30): 跨 session 最後互動 timestamp (conversation_elapsed 資料源)
 ) -> List[Dict[str, str]]:
     """
     群聊模式的 messages 組裝:
@@ -602,8 +619,18 @@ def _build_messages_group(
     # - 沉默時長行: 只在 Bry 不在線時注入, 跟修法 7 對齊
     # Bry 派工原話「同一個時間資訊區塊, 時間資訊集中」: 修法 8 兩行 append 到
     # f9105f1 同一個 system_parts string 內, 維持 LLM 看到時三行連在一起
+    # TA-1 (Bry 拍板 2026-08-30): 時間區塊內補 TEMPORAL_EXPRESSION_RULE precedence
+    # + conversation_elapsed 連續性行 (時間感知 = interpretation context)
     if current_time:
         temporal_block = f"\n## 當下時間\n{current_time}\n{_format_temporal_context(event_ts)}"
+        # TA-1 (Bry 拍板 2026-08-30): TEMPORAL_EXPRESSION_RULE 放宽 precedence
+        # 現象式時間允許, 壓過 persona 的絕對禁令 (不改 10 份人格檔)
+        temporal_block += f"\n{TEMPORAL_EXPRESSION_PRECEDENCE}"
+        # TA-1 (Bry 拍板 2026-08-30): conversation_elapsed + last_interaction_period
+        # 連續性行 (時間感知的 interpretation context, 不是 metadata)
+        continuity_str = _format_continuity_str(last_interaction_ts, now)
+        if continuity_str:
+            temporal_block += f"\n{continuity_str}"
         silence_str = _compute_silence_str(bry_latest_ts, now)
         if silence_str:
             temporal_block += f"\n{silence_str}"
@@ -734,7 +761,12 @@ def _get_bry_latest_ts(memory, agent_id: str) -> int:
     Returns:
         Bry 跨 session 最後 user 訊息 timestamp, 0 表示 Bry 從未跟這個 agent 講過話
     """
-    suffix = f"_agent_{agent_id}"
+    # TA-1 silence bug 修復 (2026-08-30): suffix 從 f"_agent_{agent_id}" 改成 f"_{agent_id}"
+    # 根因: 真實 session_id 格式是 session_bryan_agent_yua (以 _{agent_id} 結尾),
+    # 舊 suffix f"_agent_{agent_id}" = "_agent_agent_yua" 0 匹配 → bry_latest_ts 恆 0
+    # → _is_bry_online 恆 False + _compute_silence_str 恆 None, 沉默時長行從未注入。
+    # 對齊 _get_last_interaction_ts (TA-1) 的 suffix 邏輯 (f"_{agent_id}")。
+    suffix = f"_{agent_id}"
     try:
         cursor = memory.conn.execute(
             "SELECT session_id, timestamp FROM messages "
@@ -744,6 +776,41 @@ def _get_bry_latest_ts(memory, agent_id: str) -> int:
         return max(ts_list) if ts_list else 0
     except Exception as e:
         logger.warning(f"[修法 9] _get_bry_latest_ts 失敗: {e}")
+        return 0
+
+
+def _get_last_interaction_ts(memory, agent_id: str) -> int:
+    """TA-1 (Bry 拍板 2026-08-30): 跨 session 取最後互動 timestamp
+
+    conversation_elapsed 的資料源:
+      last_interaction_at = max(last_user_ts, last_assistant_ts)
+    - 跨 session: 同一個 agent 對 Bry 的所有 session (session_id 以 _{agent_id} 結尾,
+      例如 session_bryan_agent_yua / session_1696287850_agent_yua)
+    - 不跨 agent: 只算這個 agent 自己的 session, 不混入其他 agent 的互動
+    - last_user_ts:      role='user' AND speaker='bryan' (跟 _get_bry_latest_ts 同義)
+    - last_assistant_ts: role='assistant' AND speaker=agent_id (角色自己最近發言,
+      讓「距上次互動」包含角色自己剛講過話的情況, 不只是 Bry 沉默時長)
+
+    Returns:
+        最後互動 timestamp (unix seconds), 0 表示從未互動
+    """
+    suffix = f"_{agent_id}"
+    try:
+        cursor = memory.conn.execute(
+            "SELECT session_id, role, speaker, timestamp FROM messages"
+        )
+        last_user = 0
+        last_assistant = 0
+        for sid, role, speaker, ts in cursor.fetchall():
+            if not sid.endswith(suffix) or not ts:
+                continue
+            if role == "user" and speaker == "bryan":
+                last_user = max(last_user, ts)
+            elif role == "assistant" and speaker == agent_id:
+                last_assistant = max(last_assistant, ts)
+        return max(last_user, last_assistant)
+    except Exception as e:
+        logger.warning(f"[TA-1] _get_last_interaction_ts 失敗: {e}")
         return 0
 
 
@@ -769,6 +836,49 @@ def _format_temporal_context(event_ts: Optional[datetime]) -> str:
     tz_name = local.tzname() or "EDT"
     period = _period_label(local.hour)
     return f"現在是 {local.strftime('%Y-%m-%d %H:%M')} {tz_name}（{period}）"
+
+
+def _period_label_for_ts(ts: int) -> str:
+    """TA-1 (Bry 拍板 2026-08-30): 把 unix timestamp 轉成本地時段標籤
+
+    用於 last_interaction_period: 上次互動發生在本地時區的哪個時段
+    (早上/中午/下午/傍晚/晚上/凌晨, 沿用 _period_label 邏輯)。
+    """
+    dt = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(LOCAL_TZ)
+    return _period_label(dt.hour)
+
+
+def _format_continuity_str(
+    last_interaction_ts: int,
+    now: int,
+) -> Optional[str]:
+    """TA-1 (Bry 拍板 2026-08-30): conversation_elapsed + last_interaction_period 連續性行
+
+    定義:
+    - last_interaction_at = max(last_user_ts, last_assistant_ts) (跨 session, 不跨 agent)
+    - 同一場對話 (elapsed < 15 分鐘) → 不注入 (靈魂不需要被告知剛互動過)
+    - 從未互動 (last_interaction_ts <= 0) → 整行省略 (不寫推測性文字)
+    - 否則 → 「距離上次互動已經 X 小時/天（上次互動在{period}）」
+      conversation_elapsed: <24h = "X 小時" (四捨五入) / >=24h = "X 天" (取整天數)
+      last_interaction_period: 上次互動的本地時段標籤
+
+    跟修法 8 沉默時長行 (距離 Bry 上次跟你說話) 的差異:
+    - 沉默時長 = Bry 單向沉默 (user 視角, 只在 Bry 不在線時注入)
+    - conversation_elapsed = 雙向互動連續性 (含角色自己最近發言), 是時間感知的
+      interpretation context, 不是 metadata
+    """
+    if last_interaction_ts <= 0:
+        return None
+    elapsed = now - last_interaction_ts
+    if elapsed < CONTINUITY_SAME_CONVERSATION_SEC:
+        return None
+    delta_h = elapsed / 3600
+    if delta_h < 24:
+        elapsed_str = f"{round(delta_h)} 小時"
+    else:
+        elapsed_str = f"{int(delta_h // 24)} 天"
+    period = _period_label_for_ts(last_interaction_ts)
+    return f"距離上次互動已經 {elapsed_str}（上次互動在{period}）"
 
 
 def _compute_silence_str(bry_latest_ts: int, now: int) -> Optional[str]:
@@ -899,6 +1009,7 @@ def _build_messages_private(
     bry_latest_ts: int = 0,  # 修法 9 (Bry 拍板 2026-08-04 20:37): 跨 session Bry 最後 user 訊息 timestamp
     world_context: str = "",  # M3 Phase 1 (Bry 拍板 2026-08-07 19:40): WorldPerception 注入的世界感知
     germ_anchor: Optional[str] = None,  # FG-2 (germ 初始化邊界): germ 模式下替換 seeded identity_anchor; seeded 傳 None = 零行為變化
+    last_interaction_ts: int = 0,  # TA-1 (Bry 拍板 2026-08-30): 跨 session 最後互動 timestamp (conversation_elapsed 資料源)
 ) -> List[Dict[str, str]]:
     """
     私聊模式的 messages 組裝:
@@ -1003,8 +1114,18 @@ def _build_messages_private(
     # - 沉默時長行: 只在 Bry 不在線時注入, 跟修法 7 對齊
     # Bry 派工原話「同一個時間資訊集中」: 修法 8+9 兩行 append 到
     # f9105f1 同一個 system_parts string 內, 維持 LLM 看到時三行連在一起
+    # TA-1 (Bry 拍板 2026-08-30): 時間區塊內補 TEMPORAL_EXPRESSION_RULE precedence
+    # + conversation_elapsed 連續性行 (時間感知 = interpretation context)
     if current_time:
         temporal_block = f"\n## 當下時間\n{current_time}\n{_format_temporal_context(event_ts)}"
+        # TA-1 (Bry 拍板 2026-08-30): TEMPORAL_EXPRESSION_RULE 放宽 precedence
+        # 現象式時間允許, 壓過 persona 的絕對禁令 (不改 10 份人格檔)
+        temporal_block += f"\n{TEMPORAL_EXPRESSION_PRECEDENCE}"
+        # TA-1 (Bry 拍板 2026-08-30): conversation_elapsed + last_interaction_period
+        # 連續性行 (時間感知的 interpretation context, 不是 metadata)
+        continuity_str = _format_continuity_str(last_interaction_ts, now)
+        if continuity_str:
+            temporal_block += f"\n{continuity_str}"
         silence_str = _compute_silence_str(bry_latest_ts, now)
         if silence_str:
             temporal_block += f"\n{silence_str}"
@@ -3081,6 +3202,11 @@ class LLMProxy:
         # 跨 session 邏輯, 不用各自從 group/private 自己算 (修法 7 的 bug 根因)
         # 範圍: 限定同一個 agent 對 Bry 的所有 session, 不跨到別的 agent
         bry_latest_ts = _get_bry_latest_ts(self._memory, agent_id)
+        # TA-1 (Bry 拍板 2026-08-30): conversation_elapsed 信號
+        # last_interaction_at = max(last_user_ts, last_assistant_ts) (跨 session, 不跨 agent)
+        # 提前算 last_interaction_ts, 讓 _build_messages_group / _build_messages_private
+        # 在時間區塊注入「距離上次互動已經 X 小時/天（上次互動在{period}）」連續性行
+        last_interaction_ts = _get_last_interaction_ts(self._memory, agent_id)
         # M3 Phase 1 (Bry 拍板 2026-08-07 19:40): 從 event.payload 讀 world_context
         # WorldPerceptionMiddleware 在 AGENT_INTENT_ENRICHED → AGENT_INTENT_PERCEIVED 注入
         # 沒 world events 時 = "" (注入 skip, 跟 memory_context 一致)
@@ -3091,9 +3217,9 @@ class LLMProxy:
             # L1818 的 user_id 已經從 event.payload.get("target_user_id", "bryan") 拿到,
             # 跟 _build_messages_private L230 user_id 預設值對齊, 群聊觸發 fallback "bryan"
             # (跟 _load_private L100 fallback 邏輯一致)。
-            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor)
+            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts)
         else:
-            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor)
+            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts)
 
         # ── M2 task 3 (Bry + Perplexity 8/2 12:05 派工): proactive draft user → system ──
         # 修法動機: heartbeat / proactive_dm 觸發時, _build_intent_payload 組的 draft
