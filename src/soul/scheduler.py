@@ -1102,6 +1102,25 @@ class SoulScheduler:
         now_utc = datetime.now(_tz.utc)
         return (now_utc - last_dt).total_seconds() / 60.0
 
+    def _bryan_last_seen_minutes(self) -> Optional[float]:
+        """
+        Proactive DM 三件修復 #1 (Bry 拍板 2026-08-29): Bry 最後看見時間距現在的分鐘數。
+
+        統一信號源: bryan_state.read_bryan_last_seen() 讀 data/state/bryan_last_seen.json
+        (TG inbound + web inbound 都更新它, 見 bryan_state.py)。
+
+        Returns:
+            分鐘數 (float), 或 None (冷啟動: 沒檔案 / 解析失敗)。
+            None 代表「Bry 從沒被看見過」→ 不 throttle (跟 router M0.5 一致)。
+        """
+        from src.io.channels.bryan_state import read_bryan_last_seen
+        from datetime import timezone as _tz
+        last = read_bryan_last_seen()
+        if last is None:
+            return None
+        now_utc = datetime.now(_tz.utc)
+        return (now_utc - last).total_seconds() / 60.0
+
     def _get_base_intimacy(self, agent_id: str) -> float:
         """
         M7-longing: 讀 config 的 intimacy_level (靜態基礎親密度) 當「依戀」來源。
@@ -1197,6 +1216,28 @@ class SoulScheduler:
             )
             # 30 分鐘後再試 (會自然落到 8:00 之後)
             self._next_proactive_dm_time = now + timedelta(minutes=30)
+            return
+
+        # 2.5 可送達檢查 (Proactive DM 三件修復 #1, Bry 拍板 2026-08-29):
+        # Bry 最後看見時間 > PROACTIVE_DM_BRYAN_INACTIVE_HOURS (4h) → skip,
+        # 不 publish AGENCY_TRIGGER、不觸發 LLM (省 token)。
+        # 背景: 8/19-8/29 共 23 次 proactive_dm 觸發, 每次 = 真實 LLM 調用
+        # (~14k tokens) + 創建 InnerLifeEvent, 然後被 router M0.5 THROTTLED 丟棄。
+        # 修法: 把 router 的 throttle 邏輯提前到 scheduler 層 (router 的 throttle
+        # 保留作兜底)。統一信號源 = bryan_last_seen.json (TG + web inbound 都更新)。
+        # 冷啟動 (bryan_last_seen 不存在) → 不 skip (跟 router M0.5 一致)。
+        from src.io.channels.bryan_state import PROACTIVE_DM_BRYAN_INACTIVE_HOURS
+        bry_minutes = self._bryan_last_seen_minutes()
+        if bry_minutes is not None and bry_minutes > PROACTIVE_DM_BRYAN_INACTIVE_HOURS * 60:
+            logger.info(
+                f"[Scheduler] 💬 proactive_dm 不可送達: Bry 最後看見 "
+                f"{bry_minutes / 60.0:.1f}h 前 > {PROACTIVE_DM_BRYAN_INACTIVE_HOURS}h, "
+                f"skip (不 publish AGENCY_TRIGGER、不觸發 LLM)"
+            )
+            # 排 30 min 後再查 (Bry 可能隨時上線, 跟 longing gate 同節奏)
+            self._next_proactive_dm_time = now_local() + timedelta(
+                minutes=LONGING_CHECK_INTERVAL_MINUTES
+            )
             return
 
         # 3. 觸發 (whitelist 過濾後)

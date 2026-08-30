@@ -873,6 +873,14 @@ class IOGateway:
                                     "participants": participants,
                                 },
                             )
+                            # Proactive DM 三件修復 #2 (Bry 拍板 2026-08-29): 統一信號源 —
+                            # web inbound 也更新 bryan_last_seen (跟 TG inbound 共用
+                            # data/state/bryan_last_seen.json), 讓 web-only 用戶也能
+                            # 收到 proactive_dm (scheduler 可送達檢查 + router M0.5
+                            # throttle 都讀同一個檔案)。web UI 是 Bry 專屬介面,
+                            # 所以所有 web USER_MESSAGE 都算 Bry 活躍。
+                            from src.io.channels.bryan_state import touch_bryan_last_seen
+                            touch_bryan_last_seen(ws_full_agent, raw_content)
                             await self.bus.publish(user_event)
                             content_preview = str(msg.get("content", ""))[:30]
                             logger.info(f"[Gateway] USER_MESSAGE mode={mode} participants={participants}: {content_preview}")

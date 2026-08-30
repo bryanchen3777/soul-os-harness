@@ -70,7 +70,9 @@ _BRYAN_ENTITY_ID = "user_bryan"
 # M0.5 (2026-08-02 10:35 Bry 派工): 「Bry 沒回應 N 小時」proactive_dm throttle
 # 修法: 距離 Bry 最後一條 user 訊息超過這個小時數 → skip proactive_dm
 # 4h 是 Bry 派工時的初始值, 之後觀察期可調 (太小會誤殺, 太大會堆積)
-PROACTIVE_DM_BRYAN_INACTIVE_HOURS = 4.0
+# Proactive DM 三件修復 #2 (Bry 拍板 2026-08-29): 統一信號源 —
+# 常數改從 bryan_state import (單一事實來源), scheduler 可送達檢查共用同一值
+from src.io.channels.bryan_state import PROACTIVE_DM_BRYAN_INACTIVE_HOURS
 
 # M0.5: 兩個 state file 路徑 (跟 P0-2 watchdog counter 同目錄, 設計一致)
 # P0.5 (Bry 派工 2026-08-09 19:48): use data_root() for test isolation
@@ -588,48 +590,25 @@ class ChannelRouter:
             )
 
     def _load_bryan_last_seen(self) -> datetime | None:
-        if not _BRYAN_LAST_SEEN_FILE.is_file():
-            return None
-        try:
-            data = json.loads(
-                _BRYAN_LAST_SEEN_FILE.read_text(encoding="utf-8")
-            )
-            ts = data.get("last_recv_ts")
-            if ts:
-                # naive 字串補 UTC (跟現有 relationships.json 對齊)
-                dt = datetime.fromisoformat(ts)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                return dt
-        except Exception as e:
-            logger.warning(
-                f"[ChannelRouter] 讀 {_BRYAN_LAST_SEEN_FILE.name} 失敗: {e}"
-            )
-        return None
+        """讀 Bry 最後看見時間 (統一信號源: bryan_state.read_bryan_last_seen)。
+
+        Proactive DM 三件修復 #2 (Bry 拍板 2026-08-29): 委託 bryan_state 讀
+        data/state/bryan_last_seen.json (動態求值, 測試可隔離)。
+        """
+        from src.io.channels.bryan_state import read_bryan_last_seen
+        return read_bryan_last_seen()
 
     def _save_bryan_last_seen(self, full_agent_id: str, text: str) -> None:
         """任何角色 inbound 收到 Bry 訊息都會更新 Bry 最後看見時間。
 
-        給 _on_agent_speak proactive_dm throttle 用:
-        距離 Bry 最後一條訊息 > 4h → skip proactive_dm
+        統一信號源 (Proactive DM 三件修復 #2, Bry 拍板 2026-08-29):
+        委託 bryan_state.touch_bryan_last_seen 寫 data/state/bryan_last_seen.json
+        (跟 gateway web inbound 共用同一檔案), 給 scheduler 可送達檢查 +
+        router M0.5 throttle 用: 距離 Bry 最後一條訊息 > 4h → skip proactive_dm
         """
-        _STATE_DIR.mkdir(parents=True, exist_ok=True)
-        now_utc = datetime.now(timezone.utc)
-        payload = {
-            "last_recv_ts": now_utc.isoformat(),
-            "last_recv_agent": full_agent_id,
-            "last_recv_preview": text[:50],
-        }
-        try:
-            _BRYAN_LAST_SEEN_FILE.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            self._bryan_last_seen = now_utc
-        except Exception as e:
-            logger.warning(
-                f"[ChannelRouter] 寫 {_BRYAN_LAST_SEEN_FILE.name} 失敗: {e}"
-            )
+        from src.io.channels.bryan_state import touch_bryan_last_seen
+        if touch_bryan_last_seen(full_agent_id, text):
+            self._bryan_last_seen = datetime.now(timezone.utc)
 
     # ── M2 (2026-08-02 10:51 Perplexity 派工): 離線 outbox ──
     # 修法動機: Bry 8/1 報「角色突然全部消失」/「訊息雲裡霧裡」, 排查發現

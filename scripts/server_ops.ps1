@@ -73,6 +73,18 @@ function Start-SoulOsServer {
     }
     $env:PYTHONIOENCODING = 'utf-8'
 
+    # Proactive DM 三件修復 #3 (Bry 拍板 2026-08-29): 啟動前等 port 8000 釋放 —
+    # 避免舊實例 (含 uv-managed python 子進程) 未死透時新實例 bind 衝突
+    # (Errno 10048) 或雙實例並存 (Telegram getUpdates Conflict)。
+    $portWaitUntil = (Get-Date).AddSeconds(15)
+    while ((Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $portWaitUntil)) {
+        Start-Sleep -Milliseconds 500
+    }
+    if (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue) {
+        Write-OpsLog "ERROR port 8000 still listening after 15s wait - start ABORTED (old instance not dead)"
+        exit 1
+    }
+
     # Bry 拍板 2026-08-07 18:19: 啟動前備份舊 log 為帶時間戳檔名,沿用舊 server_ops 備份模式
     # (派工原話: 「沿用既有修法拼湊拒絕大改」)
     # 解決 8/7 17:31 cron 修法 12 一天回顧報告 ⚠️ (24h scheduler log 全丟, 因為 Start-Process
@@ -108,6 +120,24 @@ function Start-SoulOsServer {
 }
 
 function Stop-SoulOsServer {
+    # Proactive DM 三件修復 #3 (Bry 拍板 2026-08-29): 修 restart 競態 —
+    # 舊版只靠 WMI CommandLine 匹配殺進程, 但 server 是 .venv python (uv shim)
+    # spawn uv-managed python 的父子結構, WMI 匹配不可靠 (watchdog procs=0 已證明,
+    # d8c057d 修的就是這個), 殺不乾淨 → 新舊實例短暫並存 → Telegram getUpdates
+    # Conflict (10 bot × 2 實例 = 20 個 polling 衝突, 8/29 21:49-21:50 實證)。
+    # 修法: 1) 先殺 port 8000 listener 的 owning process 進程樹 (真 server)
+    #       2) 再殺所有匹配 run_server.py 的進程樹 (含 uv shim 父進程)
+    #       3) taskkill /T 確保 uv-managed python 子進程也死透
+    $listener = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
+    if ($listener) {
+        $listenerPid = $listener.OwningProcess
+        try {
+            & taskkill /PID $listenerPid /T /F 2>&1 | Out-Null
+            Write-Host "[stop] Killed port-8000 listener tree PID=$listenerPid"
+        } catch {
+            Write-Host "[stop] WARN taskkill listener PID=$listenerPid failed: $_"
+        }
+    }
     $procs = Get-ServerProcess
     if (-not $procs) {
         Write-Host '[skip] No server running'
@@ -115,8 +145,12 @@ function Stop-SoulOsServer {
         return
     }
     $procs | ForEach-Object {
-        Write-Host "[stop] Killing PID=$($_.ProcessId)"
-        Stop-Process -Id $_.ProcessId -Force
+        try {
+            & taskkill /PID $_.ProcessId /T /F 2>&1 | Out-Null
+            Write-Host "[stop] Killed tree PID=$($_.ProcessId)"
+        } catch {
+            Write-Host "[stop] WARN kill PID=$($_.ProcessId) failed: $_"
+        }
     }
     if (Test-Path $pidFile) { Remove-Item $pidFile }
     Write-Host '[ok] Server stopped'

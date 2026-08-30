@@ -23,13 +23,16 @@ Mock 範圍:
 - 修法後 v2 期望: 只有 ruka 被觸發, 其他 9 隻 callback 沒被呼叫
 """
 import asyncio
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.paths import reset_data_root
 from src.soul.scheduler import SoulScheduler
 
 
@@ -125,20 +128,40 @@ class TestProactiveWhitelistBaseline(unittest.TestCase):
         mock random.choice 永遠回傳 yua (第一隻, 代表 random 選中)
         修法前: yua callback 被呼叫 (沒有任何過濾)
         修法後: yua 是 non-whitelist, silent skip; ruka 才會被觸發
-        """
-        async def run():
-            # random.choice 抽 yua (代表「random 命中 yua」)
-            with patch("src.soul.scheduler.random.choice", return_value="agent_yua"):
-                await self.scheduler._fire_proactive_dm()
-            return self.proactive_record["called_with"]
 
-        called = asyncio.run(run())
+        M5.2-G (2026-08-08) 後: 觸發 = publish AGENCY_TRIGGER (callback 已移除),
+        所以驗證「publish 了 yua 的 AGENCY_TRIGGER」而非 callback 被呼叫。
+        Proactive DM 三件修復 #1 (2026-08-29): 可送達檢查提前到 scheduler —
+        用隔離 data 目錄 (冷啟動, 無 bryan_last_seen.json → 不 skip) +
+        monkeypatch longing 達標 (排除 M7 干擾)。
+        """
+        published = []
+
+        async def fake_publish(agent_id, trigger_type, extra=None):
+            published.append((agent_id, trigger_type))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["SOUL_OS_DATA_DIR"] = tmp
+            reset_data_root()
+            try:
+                async def run():
+                    # random.choice 抽 yua (代表「random 命中 yua」)
+                    with patch("src.soul.scheduler.random.choice", return_value="agent_yua"):
+                        with patch.object(self.scheduler, "_get_agent_longing", return_value=0.5):
+                            with patch.object(self.scheduler, "_publish_agency_trigger", fake_publish):
+                                await self.scheduler._fire_proactive_dm()
+                    return published
+
+                called = asyncio.run(run())
+            finally:
+                del os.environ["SOUL_OS_DATA_DIR"]
+                reset_data_root()
         # Baseline 期望: yua 被觸發 (沒有任何過濾)
         self.assertIn(
-            "agent_yua", called,
-            f"Baseline (v1) 期望 _fire_proactive_dm 觸發 yua, 實際: {called}"
+            ("agent_yua", "proactive_dm"), called,
+            f"Baseline (v1) 期望 _fire_proactive_dm publish yua, 實際: {called}"
         )
-        print(f"[v1 baseline] _fire_proactive_dm 觸發 yua (無 whitelist 過濾): {called}")
+        print(f"[v1 baseline] _fire_proactive_dm publish yua (無 whitelist 過濾): {called}")
 
 
 if __name__ == "__main__":

@@ -43,6 +43,7 @@ import sys
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from unittest.mock import patch
 
 # 確保 src/ 可 import
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -60,6 +61,7 @@ from src.agency import (
     SUPPORTED_DIARY_SLOTS,
 )
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
+from src.paths import reset_data_root
 from src.soul.scheduler import SoulScheduler
 
 
@@ -118,6 +120,29 @@ def make_scheduler_without_agents() -> SoulScheduler:
     建 scheduler 但不註冊 (重現 baseline regression).
     """
     return SoulScheduler()
+
+
+def _isolated_scheduler(agent_ids: List[str]):
+    """隔離 data 目錄的 scheduler (Proactive DM 三件修復 #1, 2026-08-29).
+
+    原本測試依賴真實 data/ 目錄的 relationships.json (M7-longing 想念達標)
+    與 bryan_last_seen.json (可送達檢查)。真實 data 的 bryan_last_seen 停在
+    8/22 (7 天前) → 可送達檢查 skip; 真實 relationships 顯示 Bry 最近活躍
+    → 想念 0 → skip。改為隔離目錄 (冷啟動: 無 bryan_last_seen.json → 不 skip)
+    + 呼叫方 monkeypatch _get_agent_longing 達標 (隔離目錄無 relationships.json)。
+
+    Returns:
+        (scheduler, tmp): tmp 是 TemporaryDirectory, 呼叫方 finally 清理。
+    """
+    import tempfile
+    from src.paths import reset_data_root
+    # ignore_cleanup_errors: Windows 上 sqlite (memory.db) 文件鎖可能讓
+    # cleanup 拋 PermissionError (WinError 32), 忽略避免測試誤報
+    tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    os.environ["SOUL_OS_DATA_DIR"] = tmp.name
+    reset_data_root()
+    scheduler = make_scheduler_with_agents(agent_ids)
+    return scheduler, tmp
 
 
 # ─── Section A: Baseline Regression Reproduction ──────────
@@ -368,19 +393,27 @@ def test_c5_fire_proactive_dm_publishes_one_per_call():
       1. _next_proactive_dm_time 設定 (到過去)
       2. _last_proactive_dm_time None (cooldown OK)
       3. 沒在 quiet hours (test 在 12:00 EDT)
+
+    Proactive DM 三件修復 #1 (2026-08-29): 用隔離 data 目錄 (冷啟動不 skip)
+    + monkeypatch longing 達標 (隔離目錄無 relationships.json)。
     """
     agent_ids = ["agent_yua", "agent_ruka", "agent_akane"]
     bus = _CapturingBus()
+    scheduler, tmp = _isolated_scheduler(agent_ids)
+    try:
+        async def _run() -> None:
+            scheduler._bus = bus
+            # 設 _next_proactive_dm_time 到過去, cooldown OK
+            scheduler._next_proactive_dm_time = datetime.now(timezone.utc) - timedelta(hours=1)
+            scheduler._last_proactive_dm_time = None
+            with patch.object(scheduler, "_get_agent_longing", return_value=0.5):
+                await scheduler._fire_proactive_dm()
 
-    async def _run() -> None:
-        scheduler = make_scheduler_with_agents(agent_ids)
-        scheduler._bus = bus
-        # 設 _next_proactive_dm_time 到過去, cooldown OK
-        scheduler._next_proactive_dm_time = datetime.now(timezone.utc) - timedelta(hours=1)
-        scheduler._last_proactive_dm_time = None
-        await scheduler._fire_proactive_dm()
-
-    asyncio.run(_run())
+        asyncio.run(_run())
+    finally:
+        del os.environ["SOUL_OS_DATA_DIR"]
+        reset_data_root()
+        tmp.cleanup()
     # 抽 1 隻 (whitelist=None = 全部), 過 candidates 過濾
     assert len(bus.captured_events) == 1, (
         f"C.5 FAIL: 預期 1 個 AGENCY_TRIGGER, "
@@ -439,12 +472,18 @@ def test_d1_agency_trigger_handler_receives_proactive_dm():
             handler=handler.handle_event,
             event_filter={EventType.AGENCY_TRIGGER},
         )
-        scheduler = make_scheduler_with_agents(["agent_ruka"])
-        scheduler._bus = bus
-        # 觸發 proactive_dm
-        scheduler._next_proactive_dm_time = datetime.now(timezone.utc) - timedelta(hours=1)
-        scheduler._last_proactive_dm_time = None
-        await scheduler._fire_proactive_dm()
+        scheduler, tmp = _isolated_scheduler(["agent_ruka"])
+        try:
+            scheduler._bus = bus
+            # 觸發 proactive_dm
+            scheduler._next_proactive_dm_time = datetime.now(timezone.utc) - timedelta(hours=1)
+            scheduler._last_proactive_dm_time = None
+            with patch.object(scheduler, "_get_agent_longing", return_value=0.5):
+                await scheduler._fire_proactive_dm()
+        finally:
+            del os.environ["SOUL_OS_DATA_DIR"]
+            reset_data_root()
+            tmp.cleanup()
 
     asyncio.run(_run())
     assert len(llm_calls) == 1, (
@@ -688,76 +727,82 @@ def test_e2_no_telegram_no_llm_call():
       4. 4 個 handler 都用 mock executor
     """
     # 1. SoulScheduler 預設沒有 callback (M5.2-O-3: _proactive_dm_callback field 移除)
-    scheduler = SoulScheduler()
-    assert scheduler._heartbeat_callback is None
-    # M5.2-O-3: _proactive_dm_callback field 從 scheduler 移除 (compat no-op)
-    assert not hasattr(scheduler, "_proactive_dm_callback"), (
-        "M5.2-O-3 frozen contract: _proactive_dm_callback field 已移除"
-    )
-    # 2. SoulScheduler 沒有 _proactive_dm_llm_executor 屬性 (那是 run_server.py 的 closure)
-    assert not hasattr(scheduler, "_proactive_dm_llm_executor")
-    # 3. SoulScheduler 沒有 channel_router
-    assert not hasattr(scheduler, "channel_router")
-    # 4. 即使 _fire_proactive_dm 真的觸發, 也只 publish AGENCY_TRIGGER,
-    #    不會 invoke LLM (LLM 在 AgencyTriggerHandler.handle_event 才 invoke)
-    #    且本 test 的 handler 全部用 mock, 不會有真實 LLM
-    for aid in ["agent_ruka"]:
-        scheduler.register(aid)
-    bus = _CapturingBus()
-
-    llm_calls: List[str] = []
-
-    async def mock_llm(agent_id: str, trigger) -> None:
-        llm_calls.append(agent_id)
-
-    class _RecordingBus:
-        def __init__(self) -> None:
-            self.subscribers: List[Any] = []
-
-        async def publish(self, event: SoulEvent) -> None:
-            for sub in self.subscribers:
-                if event.event_type in sub["event_filter"]:
-                    await sub["handler"](event)
-
-        async def start(self) -> None:
-            pass
-
-        async def stop(self) -> None:
-            pass
-
-        def subscribe(self, subscriber_id: str, handler: Any, event_filter: Any) -> None:
-            self.subscribers.append({
-                "subscriber_id": subscriber_id,
-                "handler": handler,
-                "event_filter": event_filter,
-            })
-
-    async def _run() -> None:
-        # 用 RecordingBus + AgencyTriggerHandler (with mock_llm)
-        rec_bus = _RecordingBus()
-        state = AgencyState(action_cooldown_seconds=0, decision_cooldown_seconds=0)
-        handler = AgencyTriggerHandler(state=state, llm_executor=mock_llm)
-        rec_bus.subscribe(
-            subscriber_id="agency_trigger_handler",
-            handler=handler.handle_event,
-            event_filter={EventType.AGENCY_TRIGGER},
+    # Proactive DM 三件修復 #1 (2026-08-29): 用隔離 data 目錄 (冷啟動不 skip)
+    # + monkeypatch longing 達標 (隔離目錄無 relationships.json)
+    scheduler, tmp = _isolated_scheduler(["agent_ruka"])
+    try:
+        assert scheduler._heartbeat_callback is None
+        # M5.2-O-3: _proactive_dm_callback field 從 scheduler 移除 (compat no-op)
+        assert not hasattr(scheduler, "_proactive_dm_callback"), (
+            "M5.2-O-3 frozen contract: _proactive_dm_callback field 已移除"
         )
-        # 連到 scheduler
-        scheduler._bus = rec_bus
-        # 觸發 proactive_dm
-        scheduler._next_proactive_dm_time = datetime.now(timezone.utc) - timedelta(hours=1)
-        scheduler._last_proactive_dm_time = None
-        await scheduler._fire_proactive_dm()
+        # 2. SoulScheduler 沒有 _proactive_dm_llm_executor 屬性 (那是 run_server.py 的 closure)
+        assert not hasattr(scheduler, "_proactive_dm_llm_executor")
+        # 3. SoulScheduler 沒有 channel_router
+        assert not hasattr(scheduler, "channel_router")
+        # 4. 即使 _fire_proactive_dm 真的觸發, 也只 publish AGENCY_TRIGGER,
+        #    不會 invoke LLM (LLM 在 AgencyTriggerHandler.handle_event 才 invoke)
+        #    且本 test 的 handler 全部用 mock, 不會有真實 LLM
+        bus = _CapturingBus()
 
-    asyncio.run(_run())
-    # 1 個 LLM call (mock), 0 真實 LLM, 0 Telegram
-    assert len(llm_calls) == 1
-    assert llm_calls[0] == "agent_ruka"  # mock 收到 agent_ruka
-    # 確認 mock_llm 是被 invoke, 不是真實 LLM
-    # (mock 函式會 append 到 llm_calls; 真實 LLM 會 call API, 這個 test 沒 API)
-    # 確認沒有 Telegram 屬性 / call
-    assert not hasattr(scheduler, "telegram_adapter")
-    assert not hasattr(scheduler, "io_gateway")
+        llm_calls: List[str] = []
+
+        async def mock_llm(agent_id: str, trigger) -> None:
+            llm_calls.append(agent_id)
+
+        class _RecordingBus:
+            def __init__(self) -> None:
+                self.subscribers: List[Any] = []
+
+            async def publish(self, event: SoulEvent) -> None:
+                for sub in self.subscribers:
+                    if event.event_type in sub["event_filter"]:
+                        await sub["handler"](event)
+
+            async def start(self) -> None:
+                pass
+
+            async def stop(self) -> None:
+                pass
+
+            def subscribe(self, subscriber_id: str, handler: Any, event_filter: Any) -> None:
+                self.subscribers.append({
+                    "subscriber_id": subscriber_id,
+                    "handler": handler,
+                    "event_filter": event_filter,
+                })
+
+        async def _run() -> None:
+            # 用 RecordingBus + AgencyTriggerHandler (with mock_llm)
+            rec_bus = _RecordingBus()
+            state = AgencyState(action_cooldown_seconds=0, decision_cooldown_seconds=0)
+            handler = AgencyTriggerHandler(state=state, llm_executor=mock_llm)
+            rec_bus.subscribe(
+                subscriber_id="agency_trigger_handler",
+                handler=handler.handle_event,
+                event_filter={EventType.AGENCY_TRIGGER},
+            )
+            # 連到 scheduler
+            scheduler._bus = rec_bus
+            # 觸發 proactive_dm
+            scheduler._next_proactive_dm_time = datetime.now(timezone.utc) - timedelta(hours=1)
+            scheduler._last_proactive_dm_time = None
+            with patch.object(scheduler, "_get_agent_longing", return_value=0.5):
+                await scheduler._fire_proactive_dm()
+
+        asyncio.run(_run())
+        # 1 個 LLM call (mock), 0 真實 LLM, 0 Telegram
+        assert len(llm_calls) == 1
+        assert llm_calls[0] == "agent_ruka"  # mock 收到 agent_ruka
+        # 確認 mock_llm 是被 invoke, 不是真實 LLM
+        # (mock 函式會 append 到 llm_calls; 真實 LLM 會 call API, 這個 test 沒 API)
+        # 確認沒有 Telegram 屬性 / call
+        assert not hasattr(scheduler, "telegram_adapter")
+        assert not hasattr(scheduler, "io_gateway")
+    finally:
+        del os.environ["SOUL_OS_DATA_DIR"]
+        reset_data_root()
+        tmp.cleanup()
 
 
 # ─── Section F: Regression Test ────────────────────────────
