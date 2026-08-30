@@ -66,6 +66,12 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 |------|------|------|-------------|
 | **TL-0（Time-lapse Harness 实验规格）** | ✅ 文档已定稿（docs only，0 code） | `docs/TIME-LAPSE-HARNESS.md`（13 节，306 行）：**counterfactual identity** 验证「灵魂会因经历而改变」——同一 seeded Soul（Ruka + SEED=42 fixture）同一 probe 在 T0/T15/T30 的 interpretation / motive / decision 因经历而变，且可追溯回 fed events（成功 = 可解释、可重现、可追溯的行为改变，**不是 count↑**）。**D1** GrowthProbeRecord schema（Simulated Event 为最小生命单位，day 仅做 checkpoint）；**D2** harness-local SimulationClock 重现（production scheduler / 时钟不动）；**TL-1 fixture**（SEED=42 + 30 天事件剧本 + 固定 seeded memory baseline + personas/agent_ruka.md）；**隔离 data_root**（D7，0 production mutation）。Out of Scope：不改 frozen contract / 不改 src/ / 不加速 production 时钟 | `77c1899`（docs: time-lapse harness experiment spec (TL-0)） |
 
+### TL-1（Time-lapse Harness 实现 + 第一个实验）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **TL-1（Time-lapse Harness 实现 + 第一个实验）** | ✅ 完成（**Level 2 Growth proven**） | `harness/` 8 文件（clock.py / fixture.py / probe.py / observer.py / records.py / runner.py / run_tl1.py / __init__.py）+ `tests/test_tl1_harness.py`（26 tests PASS）。**第一个实验**：同一 Ruka 同一 probe「Alex 两天没回讯息」在 T0/T15/T30 的 motive 从「担心」→「自我怀疑」→「接受变淡」，change_verdict = **INTERPRETATION_DECISION_CHANGED = Level 2 Growth proven**（行为改变可解释、可重现、可追溯回 fed events）。**D2 determinism PASS**（harness-local SimulationClock 重现，production scheduler / 时钟不动）。**0 production mutation**（隔离 data_root，0 frozen contract 改动，harness 只活在 harness/ + tests/，不改 src/） | `bcae186`（feat: time-lapse harness + TL-1 experiment (Level 2 growth proven)） |
+
 ### North Star v2（canonical 引用）
 
 **Canonical 完整版**：Notion 页面「🧭 Soul OS Strategic Roadmap & Evolution」的「North Star v2」段（2026-08-29，Bryan 亲述）。七点愿景简述：
