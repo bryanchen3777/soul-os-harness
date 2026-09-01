@@ -63,6 +63,7 @@ class TestM15E2E10Agents(unittest.TestCase):
         proxy._memory = MagicMock()
         proxy._history = {}
         proxy._in_flight = set()
+        proxy._conversation_dir = None  # sentinel: 走 module-level CONV_DIR (P0 隔離 persistence)
         return proxy
 
     def _make_event(self, agent_id, reason="night", mode="group", draft=""):
@@ -160,7 +161,7 @@ class TestM15E2E10Agents(unittest.TestCase):
         print(f"\n  [M1.5 e2e] messages user role 統計:")
         for r in results:
             user_count = sum(1 for m in r["messages"] if m["role"] == "user")
-            placeholder = any(m.get("content") == "（proactive trigger）" for m in r["messages"])
+            placeholder = any(m.get("content") == "（你主动发起讯息，不是回应任何人）" for m in r["messages"])
             print(f"    {r['agent_id']:20s}  user roles: {user_count}  placeholder: {placeholder}")
             # 每隻角色都應該有 placeholder user role
             self.assertGreaterEqual(user_count, 1, f"{r['agent_id']} 至少 1 條 user role")

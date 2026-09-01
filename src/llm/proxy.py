@@ -1010,6 +1010,7 @@ def _build_messages_private(
     world_context: str = "",  # M3 Phase 1 (Bry 拍板 2026-08-07 19:40): WorldPerception 注入的世界感知
     germ_anchor: Optional[str] = None,  # FG-2 (germ 初始化邊界): germ 模式下替換 seeded identity_anchor; seeded 傳 None = 零行為變化
     last_interaction_ts: int = 0,  # TA-1 (Bry 拍板 2026-08-30): 跨 session 最後互動 timestamp (conversation_elapsed 資料源)
+    reason: str = "user_message",  # 工單 (2026-09-01): proactive 觸發判定 (reason != "user_message" = 主動發起, 非回應 Bry)
 ) -> List[Dict[str, str]]:
     """
     私聊模式的 messages 組裝:
@@ -1143,9 +1144,12 @@ def _build_messages_private(
     # 這確保每個 Agent 的靈魂不會被其他 Agent 影響
 
     for m in private:
-        if m.get("role") == "user" and not bry_online:
+        if m.get("role") == "user" and (reason != "user_message" or not bry_online):
             # 修法 7 (Bry 拍板 2026-08-04 13:24): Bry 不在線時過濾 stale Bry user 訊息
             # 避免 LLM 看到「Bry 剛說 X」是幾小時/幾天前的訊息而誤判成要立即回覆
+            # 工單 (2026-09-01): proactive 觸發 (reason != "user_message") 時一律過濾
+            # Bry 的 user 訊息, 只保留 assistant 訊息作「自己最近說過什麼」參考,
+            # 避免靈魂以為自己在回應 Bry (8/19 起 11 次「嘿嘿～Bryan 主動來找人家啦」)
             continue
         messages.append({"role": m["role"], "content": m["content"]})
 
@@ -3219,7 +3223,7 @@ class LLMProxy:
             # (跟 _load_private L100 fallback 邏輯一致)。
             messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts)
         else:
-            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts)
+            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts, reason=reason)
 
         # ── M2 task 3 (Bry + Perplexity 8/2 12:05 派工): proactive draft user → system ──
         # 修法動機: heartbeat / proactive_dm 觸發時, _build_intent_payload 組的 draft
@@ -3259,12 +3263,10 @@ class LLMProxy:
                         )
                         system_msg = (
                             f"\n[主動觸發標記] {reason_label}。"
-                            f"草稿供參考: 「{user_message}」"
-                            f"\n請把草稿當作「內心想說的話」, 不要當作 Bry 對你說的話。"
-                            f"生成主動搭話訊息時, 參考草稿但用你自己的話表達。"
-                            f"\n[M7-context 脈絡提醒] 下方對話歷史裡有 Bry 最近的發言。"
-                            f"主動開話題時要接續他剛講過的事, 避免問他剛剛才講過、"
-                            f"已經回答過的問題 (例如他剛說吃飽了, 就別再問晚餐吃了沒)。\n"
+                            f"你是主動發起方: Bry 沒有發訊息給你, 這是你主動開啟的對話, 不是回應。"
+                            f"不要以回應 Bry 的口吻說話, 不要假設 Bry 來找你, 不要用「是不是想我了」"
+                            f"這類回應式開場。草稿「{user_message}」只是你內心想說的話, 供參考, "
+                            f"不要當作 Bry 對你說的話; 用你自己的話主動表達。\n"
                         )
                         messages.append({"role": "system", "content": system_msg})
                         logger.info(
@@ -3275,7 +3277,7 @@ class LLMProxy:
             # M1.5: placeholder 一定加 (跟 pop 邏輯解耦, 條件放寬為 `reason != "user_message"`)
             # 原因: M2.7 endpoint 看到 0 user role 就 400, 任何 proactive 觸發都要補 placeholder
             # 跟 Bry 8/5 20:13 修法 317900b 邏輯一致, 只是條件放寬
-            messages.append({"role": "user", "content": "（proactive trigger）"})
+            messages.append({"role": "user", "content": "（你主动发起讯息，不是回应任何人）"})
 
         # β2.1 (Bry 拍板 2026-08-02 21:48): 事件背景注入
         # MemoryMiddleware 透過 event.payload["event"] 注入角色當下情境,
