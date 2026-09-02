@@ -17,6 +17,13 @@ v1 投影规则（死规则，工单已锁）：
   - 只投影 ``node_type in {belief, value, trait, essence}``（对齐 soul-elevation
     的 SOUL_NODE_TYPES）；**pattern 不投影**（注意到 ≠ 成为谁，Pattern 是另一套）。
   - ``agent_id == "default"`` 的 world node 不投影（agent_id 过滤天然排除）。
+  - **SE-5 状态守门**：按 ``lifecycle_state`` 过滤——ACTIVE 正常投影；
+    WEAKENING 投影但带不确定性语气（「我隐约觉得…」）；DORMANT / SUPERSEDED
+    **不主动投影**（v1 不做「历史回忆检索」，留后续工单）；缺省视为 ACTIVE
+    （additive schema，旧数据兼容）。
+  - **Lineage 降维**：新节点 B 的直接父（``parent_node_id``）是 SUPERSEDED
+    旧节点 A 时，只投影 B 并合成「我以前觉得 A，但后来发现 B」陈述——不把
+    A、B 两个矛盾信念同时投影（人格撕裂防护）。
   - 不加 relevance score / decay / random / confidence 动力学（数量一多再开票）。
   - 不加排序/截断以外的任何选择逻辑（deterministic：created_ts asc + node_id asc）。
 
@@ -50,6 +57,17 @@ PROJECTABLE_NODE_TYPES: frozenset = frozenset(
 
 # world node 的保留归属标记（系统级），**永不投影**（工单死规则）。
 DEFAULT_AGENT_ID = "default"
+
+# ── SE-5 Lifecycle 状态守门（additive：旧数据无 lifecycle_state 字段 → 视为 ACTIVE）──
+# 对齐 soul-elevation 的 LifecycleState 四态，但实现独立（soul-elevation 是可选依赖，
+# read-side 投影不依赖它，缺装也照常工作）。
+VALID_LIFECYCLE_STATES: frozenset = frozenset(
+    {"active", "weakening", "dormant", "superseded"}
+)
+# 不主动投影的状态（v1 只做「不主动投影」；「历史回忆检索」留后续工单）。
+NON_PROJECTED_LIFECYCLE_STATES: frozenset = frozenset({"dormant", "superseded"})
+# WEAKENING 不确定性语气前缀（投影但带不确定性修饰，防把动摇中的信念当定论注入）。
+WEAKENING_TONE_PREFIX = "我隐约觉得"
 
 # 自有 store 文件名（挂在 data_root()/elevation/ 下，与 elevation 三件套并列）。
 NODES_FILENAME = "elevation_nodes.jsonl"
@@ -104,6 +122,47 @@ def load_elevation_nodes(store_dir: Optional[Any] = None) -> List[dict]:
     return nodes
 
 
+def _normalize_lifecycle_state(node: dict) -> str:
+    """归一化 ``lifecycle_state``：缺省 / 未知值 → ``"active"``。
+
+    SE-5 是 additive schema：旧数据（SE-5 之前写入的节点）没有
+    ``lifecycle_state`` 字段，语义上创建即 ACTIVE，故缺省视为 active，
+    保证旧节点照常投影（seeded 回归不破坏）。
+    """
+    state = node.get("lifecycle_state")
+    if state not in VALID_LIFECYCLE_STATES:
+        return "active"
+    return state
+
+
+def _find_superseded_parent_content(
+    node: dict, nodes: Sequence[dict]
+) -> Optional[str]:
+    """lineage 降维：找 ``node`` 的直接父（``parent_node_id``）是否为 SUPERSEDED 旧节点。
+
+    是 → 返回旧节点的 ``content``（供「以前…现在…」承先启后陈述）；否则 None。
+
+    规则（v1 死规则）：
+      - 只查**直接父**（``parent_node_id``），不递归 lineage_path（一层降维）。
+      - 父节点必须 ``lifecycle_state == "superseded"`` 才降维——revise 改写
+        （父仍 active）不触发，只有 SUPERSEDE 取代（旧节点冻结）才触发。
+      - 父节点缺 content / 父 id 不存在 → 不降维（fail-silent）。
+    """
+    parent_id = node.get("parent_node_id")
+    if not parent_id:
+        return None
+    for other in nodes:
+        if other.get("node_id") != parent_id:
+            continue
+        if _normalize_lifecycle_state(other) != "superseded":
+            return None
+        prev = other.get("content")
+        if isinstance(prev, str) and prev.strip():
+            return prev.strip()
+        return None
+    return None
+
+
 def _append_projection_trace(
     store_dir: Path,
     agent_id: str,
@@ -147,6 +206,16 @@ def project_emergent(
       3. ``record.get("node_type") in PROJECTABLE_NODE_TYPES``——只投影
          belief / value / trait / essence；**pattern 不投影**。
       4. 缺 node_id / node_type / content 的行跳过（数据不完整不投影）。
+      5. **SE-5 状态守门**（按 ``lifecycle_state``）：
+         - ACTIVE：正常投影。
+         - WEAKENING：投影但带不确定性语气修饰（「我隐约觉得…」）。
+         - DORMANT / SUPERSEDED：**不主动投影**（默认排除；v1 不做
+           「历史回忆检索」，留后续工单）。
+         - 缺省 / 未知状态：视为 ACTIVE（SE-5 additive，旧数据兼容）。
+      6. **Lineage 降维**：ACTIVE/WEAKENING 节点 B 的直接父
+         （``parent_node_id``）是 SUPERSEDED 旧节点 A 时，只投影 B，
+         并把 A 的 content 合成进 B 的投影文本（「我以前觉得 A，但后来
+         发现 B」）——不把 A、B 两个矛盾信念同时投影。
 
     排序：created_ts asc + node_id asc（deterministic，同数据每次结果一致）。
 
@@ -176,6 +245,19 @@ def project_emergent(
         content = node.get("content")
         if not node_id or not isinstance(content, str) or not content.strip():
             continue
+        # SE-5 状态守门：DORMANT / SUPERSEDED 不主动投影（v1 不做历史回忆检索）。
+        state = _normalize_lifecycle_state(node)
+        if state in NON_PROJECTED_LIFECYCLE_STATES:
+            continue
+        content = content.strip()
+        # WEAKENING：投影但带不确定性语气修饰（动摇中的信念不当定论注入）。
+        if state == "weakening":
+            content = f"{WEAKENING_TONE_PREFIX}「{content}」"
+        # Lineage 降维：直接父是 SUPERSEDED 旧节点 → 「以前 A 现在 B」承先启后，
+        # 不把 A、B 两个矛盾信念同时投影（A 已被状态守门排除，这里只合成陈述）。
+        prev_content = _find_superseded_parent_content(node, nodes)
+        if prev_content:
+            content = f"我以前觉得「{prev_content}」，但后来发现「{content}」。"
         projected.append(
             {
                 "node_id": node_id,
@@ -243,6 +325,9 @@ __all__ = [
     "PROJECTABLE_NODE_TYPES",
     "PROJECTION_TRACE_FILENAME",
     "DEFAULT_AGENT_ID",
+    "VALID_LIFECYCLE_STATES",
+    "NON_PROJECTED_LIFECYCLE_STATES",
+    "WEAKENING_TONE_PREFIX",
     "format_emergent_block",
     "load_elevation_nodes",
     "project_emergent",

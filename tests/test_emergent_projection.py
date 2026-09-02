@@ -33,9 +33,13 @@ DEFAULT = "default"
 SOUL_TYPES = ("belief", "value", "trait", "essence")
 
 
-def _make_node(node_id, node_type, content, agent_id=ALICE, created_ts="2026-08-29T00:00:00.000000+00:00"):
-    """构造一条 elevation node dict（字段对齐 elevation_nodes.jsonl 记录）。"""
-    return {
+def _make_node(node_id, node_type, content, agent_id=ALICE, created_ts="2026-08-29T00:00:00.000000+00:00", lifecycle_state=None, parent_node_id=None):
+    """构造一条 elevation node dict（字段对齐 elevation_nodes.jsonl 记录）。
+
+    lifecycle_state / parent_node_id 为 SE-5 additive 字段：不传则不写入
+    （模拟 SE-5 之前的旧数据，投影层应视为 ACTIVE / 无父）。
+    """
+    node = {
         "node_id": node_id,
         "node_type": node_type,
         "content": content,
@@ -43,12 +47,15 @@ def _make_node(node_id, node_type, content, agent_id=ALICE, created_ts="2026-08-
         "stability": 0.0,
         "valence": "neutral",
         "agent_id": agent_id,
-        "parent_node_id": None,
+        "parent_node_id": parent_node_id,
         "lineage_depth": 0,
         "lineage_path": node_id,
         "created_ts": created_ts,
         "provenance_ref": None,
     }
+    if lifecycle_state is not None:
+        node["lifecycle_state"] = lifecycle_state
+    return node
 
 
 def _write_nodes(store_dir: Path, nodes):
@@ -321,6 +328,123 @@ class TestEmergentBlockInPrompt(unittest.TestCase):
         self.assertIn("你是一颗刚萌芽的种子。", content)  # germ anchor 仍在
         self.assertIn("[EMERGENT]", content)             # emergent 叠加
         self.assertLess(content.index("你是一颗刚萌芽的种子。"), content.index("[EMERGENT]"))
+
+
+class TestLifecycleGatedProjection(unittest.TestCase):
+    """SE-5 状态守门投影 + lineage 降维（验收：ACTIVE 正常 / WEAKENING 带不确定性 /
+    DORMANT+SUPERSEDED 不主动投影 / SUPERSEDED 新节点陈述「以前 A 现在 B」）"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="emergent_proj_lifecycle_"))
+        self.addCleanup(lambda: _rmtree(self.tmp))
+
+    def test_01_active_projected_plain(self):
+        """ACTIVE 节点正常投影，content 无修饰"""
+        _write_nodes(self.tmp, [
+            _make_node("n-active", "belief", "我相信真诚对话会塑造人。", lifecycle_state="active"),
+        ])
+        result = project_emergent(ALICE, store_dir=self.tmp)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["content"], "我相信真诚对话会塑造人。")
+
+    def test_02_weakening_projected_with_uncertainty(self):
+        """WEAKENING 投影但带不确定性语气（「我隐约觉得…」）"""
+        _write_nodes(self.tmp, [
+            _make_node("n-weak", "belief", "世界是危险的。", lifecycle_state="weakening"),
+        ])
+        result = project_emergent(ALICE, store_dir=self.tmp)
+        self.assertEqual(len(result), 1)
+        self.assertIn("我隐约觉得", result[0]["content"])
+        self.assertIn("世界是危险的。", result[0]["content"])
+
+    def test_03_dormant_not_projected(self):
+        """DORMANT 不主动投影"""
+        _write_nodes(self.tmp, [
+            _make_node("n-dormant", "belief", "旧信念。", lifecycle_state="dormant"),
+        ])
+        self.assertEqual(project_emergent(ALICE, store_dir=self.tmp), [])
+
+    def test_04_superseded_not_projected(self):
+        """SUPERSEDED 不主动投影"""
+        _write_nodes(self.tmp, [
+            _make_node("n-sup", "belief", "被取代的信念。", lifecycle_state="superseded"),
+        ])
+        self.assertEqual(project_emergent(ALICE, store_dir=self.tmp), [])
+
+    def test_05_missing_lifecycle_state_treated_as_active(self):
+        """缺省 lifecycle_state（SE-5 之前旧数据）→ 视为 ACTIVE 照常投影"""
+        _write_nodes(self.tmp, [
+            _make_node("n-legacy", "belief", "旧数据信念。"),  # 无 lifecycle_state 字段
+        ])
+        result = project_emergent(ALICE, store_dir=self.tmp)
+        self.assertEqual([p["node_id"] for p in result], ["n-legacy"])
+        self.assertEqual(result[0]["content"], "旧数据信念。")
+
+    def test_06_lineage_dedup_superseded_parent(self):
+        """lineage 降维：B(active, parent=A superseded) → 只投影 B，陈述「以前 A 现在 B」"""
+        _write_nodes(self.tmp, [
+            _make_node("n-A", "belief", "世界是危险的。", lifecycle_state="superseded"),
+            _make_node("n-B", "belief", "世界没那么危险。", lifecycle_state="active", parent_node_id="n-A"),
+        ])
+        result = project_emergent(ALICE, store_dir=self.tmp)
+        self.assertEqual([p["node_id"] for p in result], ["n-B"], "A 不投影，只投影 B")
+        self.assertIn("我以前觉得「世界是危险的。」", result[0]["content"])
+        self.assertIn("但后来发现「世界没那么危险。」", result[0]["content"])
+
+    def test_07_lineage_no_dedup_when_parent_active(self):
+        """父节点是 ACTIVE（revise 改写场景）→ 不降维，B 原样投影"""
+        _write_nodes(self.tmp, [
+            _make_node("n-A", "belief", "旧版本。", lifecycle_state="active"),
+            _make_node("n-B", "belief", "新版本。", lifecycle_state="active", parent_node_id="n-A"),
+        ])
+        result = project_emergent(ALICE, store_dir=self.tmp)
+        self.assertEqual([p["node_id"] for p in result], ["n-A", "n-B"])
+        self.assertEqual(result[1]["content"], "新版本。")
+
+    def test_08_lineage_no_dedup_when_parent_missing(self):
+        """parent_node_id 指向不存在的节点 → 不降维（fail-silent）"""
+        _write_nodes(self.tmp, [
+            _make_node("n-B", "belief", "孤儿节点。", lifecycle_state="active", parent_node_id="n-ghost"),
+        ])
+        result = project_emergent(ALICE, store_dir=self.tmp)
+        self.assertEqual(result[0]["content"], "孤儿节点。")
+
+    def test_09_weakening_with_lineage(self):
+        """WEAKENING 的 B 且父是 SUPERSEDED → 降维 + 不确定性语气叠加"""
+        _write_nodes(self.tmp, [
+            _make_node("n-A", "belief", "世界是危险的。", lifecycle_state="superseded"),
+            _make_node("n-B", "belief", "世界没那么危险。", lifecycle_state="weakening", parent_node_id="n-A"),
+        ])
+        result = project_emergent(ALICE, store_dir=self.tmp)
+        self.assertEqual([p["node_id"] for p in result], ["n-B"])
+        self.assertIn("我以前觉得「世界是危险的。」", result[0]["content"])
+        self.assertIn("我隐约觉得", result[0]["content"])
+
+    def test_10_format_block_integration(self):
+        """format_emergent_block 集成：状态守门 + 降维渲染进 block"""
+        _write_nodes(self.tmp, [
+            _make_node("n-A", "belief", "世界是危险的。", lifecycle_state="superseded"),
+            _make_node("n-B", "belief", "世界没那么危险。", lifecycle_state="active", parent_node_id="n-A"),
+            _make_node("n-weak", "value", "我重视冒险。", lifecycle_state="weakening"),
+            _make_node("n-dormant", "trait", "旧性格。", lifecycle_state="dormant"),
+        ])
+        block = format_emergent_block(ALICE, store_dir=self.tmp)
+        self.assertIn("[EMERGENT]", block)
+        self.assertIn("我以前觉得「世界是危险的。」，但后来发现「世界没那么危险。」", block)
+        self.assertIn("我隐约觉得「我重视冒险。」", block)
+        self.assertNotIn("旧性格。", block, "DORMANT 不投影")
+        self.assertNotIn("- [belief] 世界是危险的。", block, "SUPERSEDED A 不单独投影")
+
+    def test_11_sidecar_only_records_projected(self):
+        """sidecar 只记录实际投影的节点（SUPERSEDED A 不记录）"""
+        _write_nodes(self.tmp, [
+            _make_node("n-A", "belief", "世界是危险的。", lifecycle_state="superseded"),
+            _make_node("n-B", "belief", "世界没那么危险。", lifecycle_state="active", parent_node_id="n-A"),
+        ])
+        project_emergent(ALICE, store_dir=self.tmp, record_trace=True)
+        sidecar = self.tmp / PROJECTION_TRACE_FILENAME
+        rec = json.loads(sidecar.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(rec["projected_node_ids"], ["n-B"])
 
 
 def _rmtree(path: Path):
