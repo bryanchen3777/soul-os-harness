@@ -2,7 +2,8 @@
 tests/test_capability_awareness.py — CA-2 Soul Capability Awareness Implementation
 
 照 docs/SOUL-CAPABILITY-AWARENESS-DESIGN.md（CA-1）驗收：
-  1. capability.py 落地（CAPABILITY_DEFINITIONS，id + expression，v1 只 communicate）。
+  1. capability.py 落地（CAPABILITY_DEFINITIONS，id + expression，v1 有 3 個：
+     communicate / observe_environment / reflect_memory）。
   2. proxy.py 兩處 CAPABILITY block 投影（identity 之後、emergent 之前）。
   3. sidecar 可觀測性（append-only trace，對齊 emergent projection 模式）。
   4. 回歸測試（Q5 斷言）：capability 存在與否 → Agency 4-stage 輸出逐字段相等
@@ -70,9 +71,12 @@ def _run_agency_4_stages() -> dict:
 class TestCapabilityDefinition(unittest.TestCase):
     """Q1/Q2: capability.py 落地 — CAPABILITY_DEFINITIONS schema"""
 
-    def test_01_definitions_exist_and_v1_only_communicate(self):
+    def test_01_definitions_exist_with_three_capabilities(self):
         self.assertIsInstance(CAPABILITY_DEFINITIONS, dict)
-        self.assertEqual(set(CAPABILITY_DEFINITIONS.keys()), {"communicate"})
+        self.assertEqual(
+            set(CAPABILITY_DEFINITIONS.keys()),
+            {"communicate", "observe_environment", "reflect_memory"},
+        )
 
     def test_02_each_entry_is_capability_definition_with_id_and_expression(self):
         for key, cap in CAPABILITY_DEFINITIONS.items():
@@ -202,8 +206,11 @@ class TestSidecarObservability(unittest.TestCase):
             record = json.loads(lines[0])
             self.assertEqual(record["event_type"], "capability_projected")
             self.assertEqual(record["agent_id"], "agent_yua")
-            self.assertEqual(record["projected_capability_ids"], ["communicate"])
-            self.assertEqual(record["capability_count"], 1)
+            self.assertEqual(
+                record["projected_capability_ids"],
+                ["communicate", "observe_environment", "reflect_memory"],
+            )
+            self.assertEqual(record["capability_count"], 3)
 
     def test_02_trace_is_append_only(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -235,7 +242,10 @@ class TestSidecarObservability(unittest.TestCase):
             trace_path = Path(tmp) / "soul" / CAPABILITY_TRACE_FILENAME
             self.assertTrue(trace_path.exists(), "proxy 投影應經 data_root()/soul 記錄 sidecar")
             record = json.loads(trace_path.read_text(encoding="utf-8").strip().splitlines()[0])
-            self.assertEqual(record["projected_capability_ids"], ["communicate"])
+            self.assertEqual(
+                record["projected_capability_ids"],
+                ["communicate", "observe_environment", "reflect_memory"],
+            )
 
 
 class TestQ5AgencyRegression(unittest.TestCase):
