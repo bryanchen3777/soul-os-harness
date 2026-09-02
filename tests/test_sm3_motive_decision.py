@@ -1,26 +1,33 @@
 """
-tests/test_sm3_motive_decision.py — SM-3 Soul Motive & Decision Implementation
+tests/test_sm3_motive_decision.py — SM-3/SM-4 Soul Motive & Decision Implementation
 
 SM-3 (2026-08-30, IMPLEMENTATION): volition path 的 Motive + Decision 环。
+SM-4 (2026-08-31, IMPLEMENTATION): Decision 四元行动 (transmit/observe/reflect/do_nothing)。
 
 验收锚点 (DECISION-PROMPT-CONTRACT §7, 冻结):
   A. 有 trigger、无 motive → 不发
-  B. 有 motive、not_transmit → 不发
+  B. 有 motive、非 transmit (observe/reflect/do_nothing) → 不发
   C. 有 motive、transmit → 才进既有 Agency/Expression (payload 逐字段不变)
   D. 同一 trigger、不同 Soul context → 结果可以不同 (Trigger ≠ Decision)
   E. Motive 不反向依赖 scheduler (prompt scheduler-agnostic)
 
-Fail-closed (DECISION-PROMPT-CONTRACT §4):
-  F2. LLM 调用失败 → not_transmit
-  F3. 输出非 JSON → not_transmit
-  F4. 缺 decision / 非法值 → not_transmit
-  F5. 禁止预设 YES (唯一默认是 not_transmit)
+SM-4 四元行动 (多元行动适配):
+  - Decision 四元: transmit / observe / reflect / do_nothing, 互斥单选
+  - do_nothing 是合法的主动选择 (不是失败兜底)
+  - observe / reflect 的执行逻辑是后续工单, 本测试只验证选择层
+
+Fail-closed (DECISION-PROMPT-CONTRACT §4, SM-4 扩展):
+  F2. LLM 调用失败 → do_nothing
+  F3. 输出非 JSON → do_nothing
+  F4. 缺 decision / 非法值 → do_nothing
+  F5. 禁止预设 YES (唯一默认是 do_nothing)
   F6. reason 缺失 → decision 照常生效 (不 gate), log warning
 
 Frozen contract 检查:
   - transmit 时 AGENCY_TRIGGER payload 与现状逐字段一致 (验收 C)
   - 非 proactive_dm trigger_type 不受 Decision 层影响
   - motive 内容不进 payload
+  - DecisionResult 保留 transmit: bool (scheduler 消费, 0 change)
 """
 from __future__ import annotations
 
@@ -284,13 +291,13 @@ class TestAcceptanceA_NoMotiveNoPublish:
 # ────────────────────────────────────────────────────────────
 
 class TestAcceptanceB_MotiveNotTransmitNoPublish:
-    """B. 有 motive、not_transmit → 不发 (验收 B)。"""
+    """B. 有 motive、非 transmit (observe/reflect/do_nothing) → 不发 (验收 B)。"""
 
-    def test_b1_motive_not_transmit_no_publish(self, isolated_root, tmp_path, monkeypatch):
-        """B.1: seed pending motive + Decision LLM 返回 not_transmit → 不发 + motive rejected。"""
+    def test_b1_motive_do_nothing_no_publish(self, isolated_root, tmp_path, monkeypatch):
+        """B.1: seed pending motive + Decision LLM 返回 do_nothing → 不发 + motive rejected。"""
         motive_trace_path = isolated_root / "soul" / "motive_trace.jsonl"
         mid = _seed_motive_trace(motive_trace_path, "agent_yua")
-        fake = FakeProxy(['{"decision": "not_transmit", "reason": "此刻不适合打扰"}'])
+        fake = FakeProxy(['{"decision": "do_nothing", "reason": "此刻想安静度日"}'])
         monkeypatch.setattr("src.soul.motive._find_llm_proxy", lambda: fake)
 
         async def _run_scenario():
@@ -507,15 +514,18 @@ class TestFailClosed:
         captured = _run(_run_scenario())
         assert len(captured) == 0
 
-    def test_f3_non_json_not_transmit(self):
-        """F3: 输出非 JSON → not_transmit。"""
+    def test_f3_non_json_do_nothing(self):
+        """F3: 输出非 JSON → do_nothing (fail-closed, 默认合法选项)。"""
         result = parse_decision_output("I think you should send it")
-        assert result is None
+        assert result is not None
+        assert result["decision"] == "do_nothing"
 
-    def test_f4_missing_decision_not_transmit(self):
-        """F4: JSON 缺 decision / 非法值 → not_transmit。"""
-        assert parse_decision_output('{"reason": "no decision field"}') is None
-        assert parse_decision_output('{"decision": "maybe", "reason": "x"}') is None
+    def test_f4_missing_decision_do_nothing(self):
+        """F4: JSON 缺 decision / 非法值 → do_nothing (fail-closed)。"""
+        r1 = parse_decision_output('{"reason": "no decision field"}')
+        assert r1["decision"] == "do_nothing"
+        r2 = parse_decision_output('{"decision": "maybe", "reason": "x"}')
+        assert r2["decision"] == "do_nothing"
 
     def test_f5_no_preset_yes_default_not_transmit(self, isolated_root, tmp_path, monkeypatch):
         """F5: 无 LLM proxy (production 未注入) → LLM 返回 None → not_transmit → 不发。"""
@@ -555,7 +565,7 @@ class TestFailClosed:
         """F6: reason 缺失 → decision 照常生效 (不 gate), 只 log warning。"""
         result = parse_decision_output('{"decision": "transmit"}')
         assert result is not None
-        assert result["transmit"] is True
+        assert result["decision"] == "transmit"
         assert result["reason"] == ""
 
 
@@ -793,6 +803,113 @@ class TestDecisionPromptForbiddenPhrases:
         assert "这个念头来自：diary:night @ 2026-08-30" in prompt
         # Context (relationship)
         assert "你与 bryan 的关系：信任度：0.60" in prompt
-        # Boundary (二元)
-        assert "现在只有两个选择：现在传，或现在不传" in prompt
-        assert '{"decision": "transmit" | "not_transmit", "reason": "..."}' in prompt
+        # Boundary (四元, SM-4: transmit/observe/reflect/do_nothing, 互斥单选)
+        assert "现在有四个选择，只能选一个" in prompt
+        assert "transmit — 现在把念头化为讯息，传给 Bry" in prompt
+        assert "observe — 现在不传，先观察环境" in prompt
+        assert "reflect — 现在不传，先回顾记忆" in prompt
+        assert "do_nothing — 现在不传，安静度日" in prompt
+        assert "这是合法的主动选择，不是失败兜底" in prompt
+        assert '{"decision": "transmit" | "observe" | "reflect" | "do_nothing", "reason": "..."}' in prompt
+
+
+# ────────────────────────────────────────────────────────────
+# SM-4 四元行动 (多元行动适配)
+# ────────────────────────────────────────────────────────────
+
+class TestSM4_QuadrupleDecision:
+    """SM-4: 四元选择 + 互斥单选 + do_nothing 主动选择 + fail-closed。"""
+
+    def test_k1_parse_all_four_actions(self):
+        """K.1: 四元各自解析正确 (transmit/observe/reflect/do_nothing)。"""
+        for action in ["transmit", "observe", "reflect", "do_nothing"]:
+            result = parse_decision_output(f'{{"decision": "{action}", "reason": "r"}}')
+            assert result["decision"] == action
+            assert result["reason"] == "r"
+
+    def test_k2_mutually_exclusive_single_choice(self):
+        """K.2: 互斥单选 — prompt 明确只选一个; 复合动作不是合法值。"""
+        motive = Motive(
+            motive_id="m1", content="我想告诉你今天的事",
+            target="bryan", provenance_ref="evt1", created_at=now_utc_iso(),
+        )
+        prompt = build_decision_prompt(motive, provenance_desc="diary:night @ 2026-08-30")
+        assert "只能选一个" in prompt
+        # 复合动作 (如 transmit+observe) 不是合法值 → fail-closed do_nothing
+        result = parse_decision_output('{"decision": "transmit+observe", "reason": "x"}')
+        assert result["decision"] == "do_nothing"
+
+    def test_k3_do_nothing_is_active_choice(self):
+        """K.3: do_nothing 是主动选择 — prompt 明确声明, 非失败兜底。"""
+        motive = Motive(
+            motive_id="m1", content="我想告诉你今天的事",
+            target="bryan", provenance_ref="evt1", created_at=now_utc_iso(),
+        )
+        prompt = build_decision_prompt(motive, provenance_desc="diary:night @ 2026-08-30")
+        assert "这是合法的主动选择，不是失败兜底" in prompt
+
+    def test_k4_fail_closed_do_nothing(self):
+        """K.4: fail-closed — 坏输出/非 JSON/缺 decision/旧值 not_transmit → do_nothing。"""
+        assert parse_decision_output(None)["decision"] == "do_nothing"
+        assert parse_decision_output("garbage")["decision"] == "do_nothing"
+        assert parse_decision_output('{"reason": "no decision"}')["decision"] == "do_nothing"
+        # 旧二元值 not_transmit 不再是合法值 → fail-closed do_nothing
+        assert parse_decision_output('{"decision": "not_transmit", "reason": "旧值"}')["decision"] == "do_nothing"
+
+    def test_k5_decision_result_carries_decision_and_transmit(self, isolated_root, tmp_path, monkeypatch):
+        """K.5: DecisionResult 带四元 decision + transmit 兼容字段 (scheduler 0 change)。"""
+        m = Motive(
+            motive_id="m1", content="我想告诉你今天的事",
+            target="bryan", provenance_ref="evt1", created_at=now_utc_iso(),
+        )
+        fake = FakeProxy(['{"decision": "observe", "reason": "先看看再说"}'])
+        monkeypatch.setattr("src.soul.motive._find_llm_proxy", lambda: fake)
+
+        async def _scenario():
+            return await decide_motive(m, "agent_yua")
+
+        r = _run(_scenario())
+        assert r.decision == "observe"
+        assert r.transmit is False  # 兼容字段: 只有 transmit 才 True
+        assert r.reason == "先看看再说"
+
+    def test_k6_only_transmit_publishes(self, isolated_root, tmp_path, monkeypatch):
+        """K.6: 只有 transmit 才 publish; observe/reflect/do_nothing 均不 publish (scheduler 行为不变)。"""
+        for action, reason in [
+            ("observe", "先观察"),
+            ("reflect", "先回顾"),
+            ("do_nothing", "安静度日"),
+        ]:
+            motive_trace_path = isolated_root / "soul" / "motive_trace.jsonl"
+            mid = _seed_motive_trace(motive_trace_path, "agent_yua")
+            fake = FakeProxy([f'{{"decision": "{action}", "reason": "{reason}"}}'])
+            monkeypatch.setattr("src.soul.motive._find_llm_proxy", lambda: fake)
+
+            async def _run_scenario():
+                from src.eventbus.bus import SoulEventBus
+                from src.eventbus.schema import EventType
+                bus = SoulEventBus()
+                await bus.start()
+                try:
+                    captured: List[Any] = []
+                    async def _capture(e):
+                        captured.append(e)
+                    bus.subscribe(
+                        subscriber_id="capture",
+                        handler=_capture,
+                        event_filter={EventType.AGENCY_TRIGGER},
+                    )
+                    scheduler = SoulScheduler(bus=bus)
+                    await scheduler._publish_agency_trigger(
+                        agent_id="agent_yua",
+                        trigger_type="proactive_dm",
+                    )
+                    return captured
+                finally:
+                    await bus.stop()
+
+            captured = _run(_run_scenario())
+            assert len(captured) == 0, f"{action} 不应 publish"
+            store = MotiveTraceStore(trace_path=motive_trace_path)
+            latest = store._latest_by_motive_id()[mid]
+            assert latest["status"] == MOTIVE_STATUS_REJECTED

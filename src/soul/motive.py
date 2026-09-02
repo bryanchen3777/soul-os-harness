@@ -21,8 +21,10 @@ Frozen contract 边界 (0 change):
   - 唯一写入 = motive trace (独立 append-only JSONL, data/soul/motive_trace.jsonl)
 
 motive 生命周期 (DECISION-PROMPT-CONTRACT §6, v1):
-  pending → transmitted (transmit 后) | rejected (not_transmit 后, 终态, 不重试)
+  pending → transmitted (transmit 后) | rejected (observe/reflect/do_nothing 后, 终态, 不重试)
   pending 超过 TTL (默认 24h, 可配置) → expired (惰性标记)
+  (SM-4: Decision 四元 transmit/observe/reflect/do_nothing; observe/reflect 的执行逻辑是后续工单,
+   scheduler 层面 observe/reflect/do_nothing 均不 publish → rejected)
 """
 from __future__ import annotations
 
@@ -661,7 +663,8 @@ class MotiveEngine:
         Decision LLM (SM-2 契约, 委托 src/soul/decision.py)。
 
         Returns:
-            DecisionResult (transmit / not_transmit)
+            DecisionResult (SM-4 四元: transmit / observe / reflect / do_nothing;
+            transmit 字段兼容 scheduler: decision == "transmit")
         """
         from src.soul.decision import decide_motive
         return await decide_motive(

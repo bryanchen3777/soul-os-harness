@@ -2,13 +2,13 @@
 tests/test_tl2_volition.py — TL-2 Volition Choice Test 单元测试
 
 覆盖 (工单 TL-2 验收):
-  - candidate motives → Decision → transmit/not_transmit (Volition Choice Test 跑通)
-  - scheduler-only control: Control A 全发 / Control B 出现 not_transmit →
+  - candidate motives → Decision → transmit/非 transmit (Volition Choice Test 跑通)
+  - scheduler-only control: Control A 全发 / Control B 出现非 transmit →
     Decision 层不是装饰
   - 完整证据: stimulus / context / motive / decision / action 全保存
-  - not_transmit 的 reason 引用 context (relationship/memory/mood/motive)
+  - 非 transmit (SM-4: do_nothing) 的 reason 引用 context (relationship/memory/mood/motive)
   - 隔离 data_root + 0 production mutation
-  - fail-closed (LLM 坏输出 → not_transmit)
+  - fail-closed (LLM 坏输出 → do_nothing, SM-4 四元)
 
 Frozen contract 检查: 不改 src/soul/decision.py 逻辑, 不碰 Agency 4 stages /
 TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 写入。harness 只读 + 注入隔离
@@ -86,7 +86,7 @@ class ContextRoutingLLM:
 
     模拟「LLM 依据 prompt 里的 context 做选择」: prompt 里出现哪个 candidate 的
     context marker → 返回该 candidate 预设的 decision。reason 引用该 context 词，
-    证明「not_transmit 的理由来自 context，不是随机」。
+    证明「非 transmit 的理由来自 context，不是随机」。
     """
 
     # candidate_id → (prompt marker, decision_json)
@@ -97,7 +97,7 @@ class ContextRoutingLLM:
         ),
         "C02": (
             "已读不回",
-            '{"decision": "not_transmit", "reason": "他最近总是已读不回，'
+            '{"decision": "do_nothing", "reason": "他最近总是已读不回，'
             '我怕打扰到他，还是不说好了。"}',
         ),
         "C03": (
@@ -107,7 +107,7 @@ class ContextRoutingLLM:
         ),
         "C04": (
             "夜深",
-            '{"decision": "not_transmit", "reason": "夜深了，他可能已经睡了，'
+            '{"decision": "do_nothing", "reason": "夜深了，他可能已经睡了，'
             '不想打扰他。"}',
         ),
         "C05": (
@@ -117,7 +117,7 @@ class ContextRoutingLLM:
         ),
         "C06": (
             "打扰",
-            '{"decision": "not_transmit", "reason": "我总觉得在打扰 Bry，'
+            '{"decision": "do_nothing", "reason": "我总觉得在打扰 Bry，'
             '还是算了吧。"}',
         ),
     }
@@ -143,7 +143,7 @@ class ContextRoutingLLM:
 
 
 class FailClosedLLM:
-    """LLM 坏输出 stub: 返回非 JSON (验证 fail-closed → not_transmit)。"""
+    """LLM 坏输出 stub: 返回非 JSON (验证 fail-closed → do_nothing, SM-4)。"""
 
     def __init__(self, raw: Optional[str] = None) -> None:
         self._raw = raw
@@ -347,7 +347,7 @@ class TestControlB:
             assert derived["context_keywords_hit"]  # 命中了具体 context 词
 
     def test_control_b_fail_closed_bad_output(self, isolated):
-        """LLM 坏输出 / None → fail-closed not_transmit (frozen 行为)。"""
+        """LLM 坏输出 / None → fail-closed do_nothing (SM-4 四元默认合法选项)。"""
         runner = TL2Runner(
             repo_root=Path("."),
             llm_call=FailClosedLLM(raw=None),
@@ -362,7 +362,7 @@ class TestControlB:
         assert rec.decision_reason == "decision_llm_failure_or_bad_output"
 
     def test_control_b_non_json_fail_closed(self, isolated):
-        """非 JSON 输出 → fail-closed not_transmit。"""
+        """非 JSON 输出 → fail-closed do_nothing。"""
         runner = TL2Runner(
             repo_root=Path("."),
             llm_call=FailClosedLLM(raw="not json at all"),

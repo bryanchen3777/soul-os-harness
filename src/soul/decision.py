@@ -1,7 +1,8 @@
 """
-src/soul/decision.py — Soul OS SM-3 Decision LLM
+src/soul/decision.py — Soul OS SM-3/SM-4 Decision LLM
 
 SM-3 (2026-08-30, IMPLEMENTATION): volition path 的 Decision 环。
+SM-4 (2026-08-31, IMPLEMENTATION): Decision 从二元升级为四元多元行动适配。
 
 设计来源:
   - docs/DECISION-PROMPT-CONTRACT.md (SM-2, 冻结契约)
@@ -10,17 +11,26 @@ SM-3 (2026-08-30, IMPLEMENTATION): volition path 的 Decision 环。
   Decision LLM 不是评估「系统该不该发讯」的 classifier, 而是 Soul 把
   已存在的 motive 诠释为此刻的选择。volition 由结构呈现, 不由 meta 宣告。
 
+SM-4 四元行动 (多元行动适配):
+  - transmit   — 现在把念头化为讯息, 传给 Bry
+  - observe    — 现在不传, 先观察环境
+  - reflect    — 现在不传, 先回顾记忆
+  - do_nothing — 现在不传, 安静度日 (合法的主动选择, 不是失败兜底)
+  - 互斥单选: Decision 只选一个动作, 不是复合。
+  - observe / reflect 的执行逻辑 (读天气/读日记) 是后续工单, 本模块只做选择。
+
 冻结契约 (本模块遵守):
   - Prompt 四块: Framing / Motive / Relevant context / Boundary (§2)
-  - Output schema: {"decision": "transmit"|"not_transmit", "reason": "..."} (§3)
-  - Fail-closed: 无 motive 不进 Decision; LLM 坏输出/非 JSON/缺 decision → not_transmit;
-    禁止预设 YES (§4)
+  - Output schema: {"decision": "transmit"|"observe"|"reflect"|"do_nothing", "reason": "..."} (§3)
+  - Fail-closed: 无 motive 不进 Decision; LLM 坏输出/非 JSON/缺 decision → do_nothing
+    (do_nothing 是默认合法选项, 不是 not_transmit); 禁止预设 YES (§4)
   - 禁止重用 _build_messages_* 聊天路径 (§5): 专用 builder, 零复用
   - Prompt 不含任何 trigger 字段 (验收 D/E)
 
 Frozen contract 边界 (0 change):
   - 不碰 Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE
-  - Decision 不产文: 只输出 transmit / not_transmit, 讯息文本永远走既有 Expression
+  - Decision 不产文: 只输出四元选择, 讯息文本永远走既有 Expression
+  - DecisionResult 保留 transmit: bool (scheduler 消费, 0 change)
 """
 from __future__ import annotations
 
@@ -42,6 +52,12 @@ DECISION_TEMPERATURE = 0.3
 # emergent 摘要: 最近几条 inner life 活动
 EMERGENT_RECENT_COUNT = 3
 
+# SM-4 四元行动 (多元行动适配, 互斥单选)
+DECISION_ACTIONS = ("transmit", "observe", "reflect", "do_nothing")
+
+# fail-closed 默认 reason (observability: 区分「LLM 坏掉」与「主动 do_nothing」)
+FAIL_CLOSED_REASON = "decision_llm_failure_or_bad_output"
+
 
 # ───────────────────────────────────────────────────────────
 # DecisionResult (SM-1 Q3 设计)
@@ -52,10 +68,12 @@ class DecisionResult:
     """
     Decision 结果 (Soul 的选择, 不是 score)。
 
-    - transmit: 传 / 不传
+    - decision: 四元行动 transmit | observe | reflect | do_nothing (SM-4)
+    - transmit: 兼容字段 (scheduler 消费, 0 change): decision == "transmit"
     - reason:   Soul 的选择理由 (observability, 不是第二套 decision engine)
     - motive_id / motive_content / provenance_ref: 观察用 metadata (不参与判定)
     """
+    decision: str
     transmit: bool
     reason: str
     motive_id: str
@@ -81,7 +99,8 @@ def build_decision_prompt(
       1. Framing — 固定文本, 结构呈现 volition, 不 meta 宣告
       2. Motive — 最高优先, 必填 (content + target + provenance 解析)
       3. Relevant context — 按需, 只放直接相关 (relationship / memory / emergent)
-      4. Boundary — 固定文本, 二元选择 (现在传 / 现在不传)
+      4. Boundary — 固定文本, 四元选择 (SM-4: transmit / observe / reflect / do_nothing),
+         互斥单选, do_nothing 是合法的主动选择 (不是失败兜底)
 
     禁止句 (SM-2 §2.5 全表) 已逐条对照, 本 builder 不含任何禁止措辞,
     不含任何 trigger 字段 (trigger_type / elapsed_mins / cooldown)。
@@ -120,10 +139,14 @@ def build_decision_prompt(
         context_lines.append(f"最近的自己：{emergent_summary}")
     context_block = "\n".join(context_lines) if context_lines else ""
 
-    # 4. Boundary (固定文本, 二元选择)
+    # 4. Boundary (固定文本, 四元选择, 互斥单选)
     boundary = (
-        "现在只有两个选择：现在传，或现在不传。\n\n"
-        '只输出 JSON：{"decision": "transmit" | "not_transmit", "reason": "..."}\n'
+        "现在有四个选择，只能选一个：\n"
+        "  transmit — 现在把念头化为讯息，传给 Bry\n"
+        "  observe — 现在不传，先观察环境\n"
+        "  reflect — 现在不传，先回顾记忆\n"
+        "  do_nothing — 现在不传，安静度日（这是合法的主动选择，不是失败兜底）\n\n"
+        '只输出 JSON：{"decision": "transmit" | "observe" | "reflect" | "do_nothing", "reason": "..."}\n'
         "reason 用你自己的话说明这个选择，可以提到念头、关系、出处。"
     )
 
@@ -168,37 +191,35 @@ def _extract_json(raw: str) -> Optional[dict]:
     return None
 
 
-def parse_decision_output(raw: Optional[str]) -> Optional[dict]:
+def parse_decision_output(raw: Optional[str]) -> dict:
     """
-    解析 Decision LLM 输出 (fail-closed)。
+    解析 Decision LLM 输出 (fail-closed → do_nothing)。
 
     Returns:
-        {"transmit": bool, "reason": str} 或 None (坏输出 → not_transmit)
+        {"decision": "transmit"|"observe"|"reflect"|"do_nothing", "reason": str}
+        坏输出 / 非 JSON / 缺 decision / 非法值 → {"decision": "do_nothing", ...}
+        (do_nothing 是默认合法选项, 不是 not_transmit)
 
-    Fail-closed 规则 (SM-2 §4):
-      F2: LLM 调用失败 (raw=None) → None
-      F3: 非 JSON / 解析失败 → None
-      F4: 缺 decision / 非法值 → None
-      F5: 禁止预设 YES (唯一默认是 not_transmit)
+    Fail-closed 规则 (SM-2 §4, SM-4 扩展):
+      F2: LLM 调用失败 (raw=None) → do_nothing
+      F3: 非 JSON / 解析失败 → do_nothing
+      F4: 缺 decision / 非法值 → do_nothing
+      F5: 禁止预设 YES (唯一默认是 do_nothing)
       F6: reason 缺失 → decision 照常生效, log warning (不 gate)
     """
     if raw is None:
-        logger.warning("[Decision] LLM 调用失败/无输出 (fail-closed = not_transmit)")
-        return None
+        logger.warning("[Decision] LLM 调用失败/无输出 (fail-closed = do_nothing)")
+        return {"decision": "do_nothing", "reason": FAIL_CLOSED_REASON}
     data = _extract_json(raw)
     if data is None:
-        logger.warning("[Decision] 输出非 JSON (fail-closed = not_transmit)")
-        return None
+        logger.warning("[Decision] 输出非 JSON (fail-closed = do_nothing)")
+        return {"decision": "do_nothing", "reason": FAIL_CLOSED_REASON}
     decision = data.get("decision")
-    if decision == "transmit":
-        transmit = True
-    elif decision == "not_transmit":
-        transmit = False
-    else:
+    if decision not in DECISION_ACTIONS:
         logger.warning(
-            f"[Decision] 缺 decision / 非法值 (fail-closed = not_transmit): {data!r}"
+            f"[Decision] 缺 decision / 非法值 (fail-closed = do_nothing): {data!r}"
         )
-        return None
+        return {"decision": "do_nothing", "reason": FAIL_CLOSED_REASON}
     reason = data.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         # F6: reason 缺失不 gate, 只 log warning (observability 缺口)
@@ -206,7 +227,7 @@ def parse_decision_output(raw: Optional[str]) -> Optional[dict]:
             f"[Decision] reason 缺失/非法 (observability 缺口, decision 照常生效): {data!r}"
         )
         reason = ""
-    return {"transmit": transmit, "reason": reason.strip()}
+    return {"decision": decision, "reason": reason.strip()}
 
 
 # ───────────────────────────────────────────────────────────
@@ -366,9 +387,9 @@ async def decide_motive(
       4. LLM 调用 (专用 builder, 零复用 _build_messages_*)
       5. fail-closed 解析 → DecisionResult
 
-    Fail-closed (SM-2 §4):
-      - LLM 失败 / 非 JSON / 缺 decision → not_transmit
-      - 禁止预设 YES (唯一默认是 not_transmit)
+    Fail-closed (SM-2 §4, SM-4 扩展):
+      - LLM 失败 / 非 JSON / 缺 decision → do_nothing (默认合法选项)
+      - 禁止预设 YES (唯一默认是 do_nothing)
     """
     if llm_call is None:
         from src.soul.motive import _default_llm_call
@@ -396,16 +417,11 @@ async def decide_motive(
 
     parsed = parse_decision_output(raw)
     if parsed is None:
-        # F2/F3/F4: fail-closed → not_transmit
-        return DecisionResult(
-            transmit=False,
-            reason="decision_llm_failure_or_bad_output",
-            motive_id=motive.motive_id,
-            motive_content=motive.content,
-            provenance_ref=motive.provenance_ref,
-        )
+        # 防御: parse 永远返回 dict (fail-closed → do_nothing), 此分支不应触发
+        parsed = {"decision": "do_nothing", "reason": FAIL_CLOSED_REASON}
     return DecisionResult(
-        transmit=parsed["transmit"],
+        decision=parsed["decision"],
+        transmit=(parsed["decision"] == "transmit"),
         reason=parsed["reason"],
         motive_id=motive.motive_id,
         motive_content=motive.content,
