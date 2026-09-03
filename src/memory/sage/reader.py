@@ -58,6 +58,11 @@ class MemoryReader:
         # None = 不過濾 (向後相容)
         # Bry 拍板防呆: 空 source_pair (既有 5040 facts 沒標記) 一律視為可見, 不被過濾
         source_pair_filter: Optional[set[str]] = None,
+        # MR-1/MR-2 (Temporal Memory & Mem0 Primitives): 時序回溯
+        # as_of=None（預設）: search_by_entity / get_all_facts 自動過濾 invalidated_at IS NULL
+        #   （既有呼叫端零改動自動享受軟刪紅利，永不讀到已作廢事實）。
+        # as_of 給定: 候選集來源改用 get_facts_as_of(as_of)，其餘評分/多樣性/鏈建構邏輯不變。
+        as_of: Optional[float] = None,
     ) -> ContextResult:
         if self.store.edge_count == 0:
             return ContextResult(facts=[], chains=[], summary="",
@@ -65,11 +70,17 @@ class MemoryReader:
 
         keywords = self._extract_keywords(query)
         if not keywords:
-            return self._fallback_recent(top_k, max_tokens, source_pair_filter=source_pair_filter)
+            return self._fallback_recent(
+                top_k, max_tokens, source_pair_filter=source_pair_filter,
+                as_of=as_of,
+            )
 
-        candidates = self._gather_candidates(keywords, min_weight)
+        candidates = self._gather_candidates(keywords, min_weight, as_of)
         if not candidates:
-            return self._fallback_recent(top_k, max_tokens, source_pair_filter=source_pair_filter)
+            return self._fallback_recent(
+                top_k, max_tokens, source_pair_filter=source_pair_filter,
+                as_of=as_of,
+            )
 
         # 修法 1: source_pair 過濾 (在 _score_and_normalize 之前, 避免無效打分)
         if source_pair_filter is not None:
@@ -205,10 +216,23 @@ class MemoryReader:
     # ── 候選集 ────────────────────────────────────────────────
 
     def _gather_candidates(
-        self, keywords: list[str], min_weight: float
+        self,
+        keywords: list[str],
+        min_weight: float,
+        as_of: Optional[float] = None,
     ) -> list[Fact]:
         seen_ids: set[str] = set()
         candidates: list[Fact] = []
+        if as_of is not None:
+            # MR-1 契約 §5.2: as_of 給定時候選集 = get_facts_as_of（替代 search_by_entity），
+            # 其餘評分/多樣性/鏈建構邏輯不變。min_weight 語義保留（既有參數）。
+            for fact in self.store.get_facts_as_of(as_of):
+                if fact.weight < min_weight:
+                    continue
+                if fact.fact_id not in seen_ids:
+                    candidates.append(fact)
+                    seen_ids.add(fact.fact_id)
+            return candidates
         for kw in keywords:
             for fact in self.store.search_by_entity(kw, min_weight=min_weight):
                 if fact.fact_id not in seen_ids:
@@ -305,8 +329,16 @@ class MemoryReader:
         # 修法 1 (Bry 拍板 2026-08-03 22:xx, 方案 B): fallback 路徑也要過濾
         # 避免新寫入的私域事實在 fallback 路徑 (query 沒 match) 漏過
         source_pair_filter: Optional[set[str]] = None,
+        # MR-1/MR-2: as_of 給定時 fallback 候選 = get_facts_as_of（時序回溯）
+        as_of: Optional[float] = None,
     ) -> ContextResult:
-        facts = self.store.get_all_facts(min_weight=0.5)[:top_k]
+        if as_of is not None:
+            facts = [
+                f for f in self.store.get_facts_as_of(as_of)
+                if f.weight >= 0.5
+            ][:top_k]
+        else:
+            facts = self.store.get_all_facts(min_weight=0.5)[:top_k]
         # 修法 1: 跟 _gather_candidates 一致, Bry 拍板防呆「空 source_pair 保留」
         if source_pair_filter is not None:
             facts = [

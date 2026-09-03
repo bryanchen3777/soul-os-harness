@@ -33,6 +33,15 @@ class Fact:
     # 不影響 M5.3 retrieval: 純 metadata, 不參與 scoring / dedup / threshold
     # 不影響 SAGE: 不改 extraction logic, 只是 attach 一個 canonical reference
     inner_life_event_id: Optional[str] = None
+    # MR-1/MR-2 (Temporal Memory & Mem0 Primitives): 時序維度
+    # valid_from: 事實開始有效的時間 (unix float)。None = 未知 (理論殘留, 遷移後不應存在)。
+    #   - 遷移回填 = timestamp (寫入時間, event_time 100% NULL 不可用)。
+    #   - primitives.add_fact 寫入前若未設置, 預設 = time.time()。
+    # invalidated_at: 事實失效的時間。None = 當前仍有效 (永不過期)。
+    #   - 軟刪 (invalidate_fact) 設置此欄位; 硬刪 (remove_fact) 不經此欄位。
+    #   - 半開區間 [valid_from, invalidated_at): valid_from <= t < invalidated_at 時可見。
+    valid_from: Optional[float] = None
+    invalidated_at: Optional[float] = None
 
     def to_dict(self) -> dict:
         return {
@@ -51,6 +60,8 @@ class Fact:
             "merge_reason": self.merge_reason,
             "source_pair":  self.source_pair,
             "inner_life_event_id": self.inner_life_event_id,
+            "valid_from":   self.valid_from,
+            "invalidated_at": self.invalidated_at,
         }
 
     @classmethod
@@ -63,6 +74,9 @@ class Fact:
         d.setdefault("source_pair",  None)
         # M5.4-5.2: backward compat for pre-integration Facts (M5.4-5.1 前的 facts 都沒有這個欄位)
         d.setdefault("inner_life_event_id", None)
+        # MR-1/MR-2: backward compat for pre-v7 Facts (v6 及以下的 facts 沒有時序欄位)
+        d.setdefault("valid_from", None)
+        d.setdefault("invalidated_at", None)
         return cls(**d)
 
     def validate(self) -> list[str]:

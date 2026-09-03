@@ -301,7 +301,7 @@ class TestPigFilterV2(unittest.TestCase):
     # ── (e) schema migration v5 正確升級 ──────────────────────
 
     def test_e_schema_migration_v5(self):
-        """(e) 既有的 v4 graph 跑一次後, schema_version 升到 5 且 source_pair 欄位存在"""
+        """(e) 既有的 v4 graph 跑一次後, schema_version 升到目前版本且 source_pair 欄位存在"""
         gs = self._make_graph_store("agent_test_e")
         conn = gs._get_conn()
 
@@ -313,10 +313,11 @@ class TestPigFilterV2(unittest.TestCase):
             f"(e) v5 migration 應該加 source_pair 欄位, 實際欄位: {col_names}"
         )
 
-        # 確認 schema_version 是 5
+        # 確認 schema_version 是目前版本 (MR-2: v7 加 valid_from/invalidated_at)
         row = conn.execute("SELECT value FROM schema_meta WHERE key='version'").fetchone()
-        self.assertEqual(int(row["value"]), 5, f"(e) schema_version 應為 5, 實際: {row['value']}")
-        self.assertEqual(_SCHEMA_VERSION, 5, f"(e) _SCHEMA_VERSION 應為 5, 實際: {_SCHEMA_VERSION}")
+        self.assertEqual(int(row["value"]), _SCHEMA_VERSION,
+                         f"(e) schema_version 應為 {_SCHEMA_VERSION}, 實際: {row['value']}")
+        self.assertEqual(_SCHEMA_VERSION, 7, f"(e) _SCHEMA_VERSION 應為 7, 實際: {_SCHEMA_VERSION}")
 
         gs.close()
         print(f"[v2 (e)] schema migration v5 OK: source_pair column exists, version=5")

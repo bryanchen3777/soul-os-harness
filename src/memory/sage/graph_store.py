@@ -15,7 +15,7 @@ from .models import Fact
 
 # 每累積 N 次寫入才 commit（WAL 模式下安全）
 _BATCH_SIZE = 20
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 
 
 def _locked(method):
@@ -204,6 +204,36 @@ class GraphStore:
             except sqlite3.OperationalError:
                 pass
 
+        if from_version < 7:
+            # MR-1/MR-2 (Temporal Memory & Mem0 Primitives): 時序維度
+            # - valid_from: 事實開始有效時間 (REAL, NULL 預設 = 向後相容)
+            # - invalidated_at: 事實失效時間 (REAL, NULL = 當前仍有效)
+            # - 回填: event_time 生產數據 100% NULL 不可用 (writer.py:558 LLM 路徑硬編碼 None),
+            #   用 timestamp (寫入時間, NOT NULL) 作為 valid_from 近似 (MR-1 契約 §2.2 鎖定)
+            # - invalidated_at 不回填: NULL = 當前有效, 與遷移前行為逐位一致
+            # - 仿 M5.4-5.2 先例 (graph_store.py:193-205): try/except OperationalError 冪等
+            try:
+                conn.execute(
+                    "ALTER TABLE facts ADD COLUMN valid_from REAL"
+                )
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute(
+                    "ALTER TABLE facts ADD COLUMN invalidated_at REAL"
+                )
+            except sqlite3.OperationalError:
+                pass
+            # 回填: timestamp NOT NULL, 故 UPDATE ... WHERE valid_from IS NULL 全覆蓋
+            conn.execute(
+                "UPDATE facts SET valid_from = timestamp WHERE valid_from IS NULL"
+            )
+            # 時序查詢索引 (additive)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_validity "
+                "ON facts(valid_from, invalidated_at)"
+            )
+
     def _row_to_fact(self, row: sqlite3.Row) -> Fact:
         d = dict(row)
         d.pop("tags", None)
@@ -218,6 +248,9 @@ class GraphStore:
         # M5.4-5.2: inner_life_event_id 從 SQL 讀出, 空字串轉 None (向後相容既有 records)
         raw_ilid = d.get("inner_life_event_id", "")
         d["inner_life_event_id"] = raw_ilid if raw_ilid else None
+        # MR-1/MR-2: 時序欄位向後相容 (v6 及以下的 DB 沒有這兩列)
+        d.setdefault("valid_from", None)
+        d.setdefault("invalidated_at", None)
         return Fact(**d)
 
     def _load_from_db(self) -> None:
@@ -245,6 +278,9 @@ class GraphStore:
             session_id=fact.session_id,
             fact_id=fact.fact_id,
             is_anchor=fact.is_anchor,
+            # MR-1/MR-2: 時序維度同步到記憶體圖 (invalidate_fact 雙寫用)
+            valid_from=fact.valid_from,
+            invalidated_at=fact.invalidated_at,
         )
 
     @_locked
@@ -256,13 +292,14 @@ class GraphStore:
                (fact_id, subject, predicate, object,
                 timestamp, event_time, weight, source,
                 session_id, tags, is_anchor, source_pair,
-                inner_life_event_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                inner_life_event_id, valid_from, invalidated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (fact.fact_id, fact.subject, fact.predicate, fact.object,
              fact.timestamp, fact.event_time, fact.weight, fact.source,
              fact.session_id, "", int(fact.is_anchor),
              fact.source_pair or "",
-             fact.inner_life_event_id or ""),
+             fact.inner_life_event_id or "",
+             fact.valid_from, fact.invalidated_at),
         )
         self._pending_writes += 1
         if self._pending_writes >= self.batch_size:
@@ -315,6 +352,82 @@ class GraphStore:
                 return True
         return False
 
+    # ── Temporal Validity（MR-1/MR-2）──────────────────────────
+
+    @_locked
+    def invalidate_fact(
+        self, fact_id: str, at_time: Optional[float] = None
+    ) -> bool:
+        """軟刪除：標記 invalidated_at，不動 remove_fact 硬刪語義。
+
+        Args:
+            fact_id: 要失效的 fact id。
+            at_time: 失效時刻（unix float）。None = time.time()（當前時刻）。
+
+        Returns:
+            True  = 已標記失效（或已處於失效狀態，冪等）。
+            False = fact_id 不存在。
+
+        語義（MR-1 契約 §3.1 鎖定）:
+            - 只 UPDATE facts SET invalidated_at = ?，絕不 DELETE。
+            - 冪等：已失效的 fact 再次呼叫返回 True，且**保留最早的 invalidated_at**
+              （不覆蓋、不把失效時間往後推——防止重複呼叫縮短有效區間）。
+            - 同步更新記憶體圖 edge 的 invalidated_at 屬性（graph 與 DB 一致，
+              仿 update_weight 雙寫模式）。
+            - 與 remove_fact（硬刪）互不呼叫：硬刪 = 既有 decay/prune 語義（frozen），
+              軟刪 = 新顯式原語語義。兩者並存。
+        """
+        if at_time is None:
+            at_time = time.time()
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT invalidated_at FROM facts WHERE fact_id = ?", (fact_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        if row["invalidated_at"] is not None:
+            # 冪等：已失效，保留最早的 invalidated_at（不往後推）
+            return True
+        conn.execute(
+            "UPDATE facts SET invalidated_at = ? WHERE fact_id = ?",
+            (at_time, fact_id),
+        )
+        # 雙寫：同步記憶體圖 edge（仿 update_weight 模式）
+        for u, v, k, data in self.graph.edges(keys=True, data=True):
+            if data.get("fact_id") == fact_id:
+                self.graph[u][v][k]["invalidated_at"] = at_time
+                break
+        self._pending_writes += 1
+        if self._pending_writes >= self.batch_size:
+            conn.commit()
+            self._pending_writes = 0
+        return True
+
+    @_locked
+    def get_facts_as_of(self, as_of_time: float) -> list[Fact]:
+        """時序回溯查詢：返回在 as_of_time 時刻有效的事實。
+
+        SQL（MR-1 契約 §3.2 鎖定）:
+            SELECT * FROM facts
+            WHERE (valid_from IS NULL OR valid_from <= ?)
+              AND (invalidated_at IS NULL OR invalidated_at > ?)
+            ORDER BY weight DESC, timestamp DESC
+
+        邊界語義（半開區間 [valid_from, invalidated_at)）:
+            - valid_from <= as_of_time：事實從 valid_from 時刻起有效（含邊界）。
+            - invalidated_at > as_of_time：事實失效從 invalidated_at 之後開始（含邊界）。
+            - NULL valid_from（理論殘留）視為無起點；NULL invalidated_at 視為永不過期。
+        """
+        conn = self._get_conn()
+        rows = conn.execute(
+            """SELECT * FROM facts
+               WHERE (valid_from IS NULL OR valid_from <= ?)
+                 AND (invalidated_at IS NULL OR invalidated_at > ?)
+               ORDER BY weight DESC, timestamp DESC""",
+            (as_of_time, as_of_time),
+        ).fetchall()
+        return [self._row_to_fact(r) for r in rows]
+
     @_locked
     def get_ego_graph(self, node: str, radius: int = 2) -> nx.MultiDiGraph:
         if node not in self.graph:
@@ -324,26 +437,65 @@ class GraphStore:
         )
 
     @_locked
-    def get_all_facts(self, min_weight: float = 0.05) -> list[Fact]:
+    def get_all_facts(
+        self, min_weight: float = 0.05, include_invalidated: bool = False
+    ) -> list[Fact]:
+        """取得全部 facts。
+
+        Args:
+            min_weight: 最低 weight 門檻。
+            include_invalidated: True = 含已作廢（invalidated_at 非 NULL）事實；
+                False（預設）= 自動過濾 `invalidated_at IS NULL`（MR-1 契約 §5.2，
+                既有呼叫端零改動自動享受軟刪紅利）。
+        """
         conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM facts WHERE weight >= ? ORDER BY timestamp DESC",
-            (min_weight,),
-        ).fetchall()
+        if include_invalidated:
+            rows = conn.execute(
+                "SELECT * FROM facts WHERE weight >= ? ORDER BY timestamp DESC",
+                (min_weight,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT * FROM facts
+                   WHERE weight >= ? AND invalidated_at IS NULL
+                   ORDER BY timestamp DESC""",
+                (min_weight,),
+            ).fetchall()
         return [self._row_to_fact(r) for r in rows]
 
     @_locked
     def search_by_entity(
-        self, entity: str, min_weight: float = 0.1
+        self,
+        entity: str,
+        min_weight: float = 0.1,
+        include_invalidated: bool = False,
     ) -> list[Fact]:
+        """依 entity 模糊搜尋 facts。
+
+        Args:
+            entity: 搜尋關鍵字（subject/predicate/object LIKE 匹配）。
+            min_weight: 最低 weight 門檻。
+            include_invalidated: True = 含已作廢事實；False（預設）= 自動過濾
+                `invalidated_at IS NULL`（MR-1 契約 §5.2）。
+        """
         conn = self._get_conn()
-        rows = conn.execute(
-            """SELECT * FROM facts
-               WHERE (subject LIKE ? OR predicate LIKE ? OR object LIKE ?)
-                 AND weight >= ?
-               ORDER BY weight DESC, timestamp DESC""",
-            (f"%{entity}%", f"%{entity}%", f"%{entity}%", min_weight),
-        ).fetchall()
+        if include_invalidated:
+            rows = conn.execute(
+                """SELECT * FROM facts
+                   WHERE (subject LIKE ? OR predicate LIKE ? OR object LIKE ?)
+                     AND weight >= ?
+                   ORDER BY weight DESC, timestamp DESC""",
+                (f"%{entity}%", f"%{entity}%", f"%{entity}%", min_weight),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT * FROM facts
+                   WHERE (subject LIKE ? OR predicate LIKE ? OR object LIKE ?)
+                     AND weight >= ?
+                     AND invalidated_at IS NULL
+                   ORDER BY weight DESC, timestamp DESC""",
+                (f"%{entity}%", f"%{entity}%", f"%{entity}%", min_weight),
+            ).fetchall()
         return [self._row_to_fact(r) for r in rows]
 
     # ── Entity Fuzzy Matching ─────────────────────────────────
@@ -432,8 +584,11 @@ class GraphStore:
 
     @_locked
     def export_json(self, path: Path) -> int:
-        """匯出所有 facts 為 JSON Lines 格式，回傳匯出筆數"""
-        facts = self.get_all_facts(min_weight=0.0)
+        """匯出所有 facts 為 JSON Lines 格式，回傳匯出筆數。
+
+        MR-1 契約 §5.3: 匯出**全部**（含已作廢）— 備份/遷移用途，歷史完整性優先。
+        """
+        facts = self.get_all_facts(min_weight=0.0, include_invalidated=True)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as f:
             for fact in facts:
