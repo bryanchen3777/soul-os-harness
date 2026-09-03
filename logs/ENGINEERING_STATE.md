@@ -63,6 +63,7 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 | **Proactive DM 三件修复** | ✅ 已修复 | ① **deliverability 提前**：proactive DM 投递判定提前（`src/io/channels/bryan_state.py` + `src/soul/scheduler.py`），避免消息不可达才后知后觉；② **信号统一**：`src/io/channels/router.py` + `src/io/gateway.py` 统一信号路径；③ **双实例**：`scripts/server_ops.ps1` 防双实例（server_ops 侧防护） | `93672df`（fix: proactive DM deliverability + signal unification + double-instance） |
 | **TA-2（Subjective Temporal Phenomenology）** | ✅ 已落地 | `src/soul/temporal_phenomenology.py`（NEW，三态张力模型 无感/牵挂/释然）+ `src/llm/proxy.py`（+36，TEMPORAL ANCHOR 三行注入）+ `src/soul/decision.py`（+51 -1，reflect-only 加权）+ `tests/test_ta2_temporal_phenomenology.py`（NEW，26/26 新测试）。**三态张力模型**（无感/牵挂/释然——现象学状态，不是计算输出）；**M5.13-3 亲密度 Band 复用**（不另创心理模型）；**reflect-only 加权边界**；**TEMPORAL ANCHOR 三行注入**（proxy.py + decision.py）；**26/26 新测试 + 125 回归全过**。0 frozen contract 改动 | `cc83daa`（feat: subjective temporal phenomenology (TA-2)） |
 | **阶段 A（灵魂深化）全满贯** | ✅ 全满贯 | **升华细化**：SE-4（durable soul structure contract）+ SE-5（durable soul structure lifecycle）+ TL-4（time-lapse lifecycle validation）；**工具打通**：CA-3（Capability 3 行动）+ SM-4（Decision 四元）+ SM-4.1~SM-4.6（六轮校准）+ TL-5（最终验收）；**时序化**：TA-2（Subjective Temporal Phenomenology 实作）。阶段 A 全部条目 ✅ 落地/闭环，0 frozen contract 改动 | `cc83daa`（feat: subjective temporal phenomenology (TA-2)） |
+| **MR-1（Temporal Memory & Mem0 Primitives Contract）** | ✅ 设计文档已定稿（docs only，0 code） | `docs/TEMPORAL-MEMORY-CONTRACT.md`（NEW, +289，8 节）。**Schema v7 迁移**（valid_from 回填 timestamp + invalidated_at NULL）；**GraphStore invalidate_fact 软删 + get_facts_as_of 回溯**；**Mem0 原语模块 primitives.py 显式 add/update/delete/resolve_conflict**；**SAGE Reader as_of 默认过滤 invalidated_at IS NULL**。docs-only 0 code；0 frozen contract 改动 | `6419166`（docs: temporal memory & mem0 primitives contract (MR-1)） |
 
 ### TL-0（Time-lapse Harness 实验规格）
 
@@ -152,8 +153,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `cc83daa` (feat: subjective temporal phenomenology (TA-2))
-- TA-2 commit: `cc83daa` (feat: subjective temporal phenomenology (TA-2); **Current HEAD**)
+- Current HEAD: `6419166` (docs: temporal memory & mem0 primitives contract (MR-1))
+- MR-1 commit: `6419166` (docs: temporal memory & mem0 primitives contract (MR-1); **Current HEAD**)
+- TA-2 commit: `cc83daa` (feat: subjective temporal phenomenology (TA-2); **distinct from Current HEAD**)
 - TA-2 docs commit: `4f0ec41` (docs: subjective temporal phenomenology contract (TA-2); **distinct from Current HEAD**)
 - SM-4 series commit: `79fe750` (feat: quadruple decision + calibration (SM-4 series); **distinct from Current HEAD**)
 - TL-5 commit: `89e9cdf` (feat: time-lapse behavior distribution validation (TL-5); **distinct from Current HEAD**)
@@ -1234,5 +1236,6 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09 (TA-2) | Subjective Temporal Phenomenology Contract 设计文档定稿（commit `4f0ec41`）。1 file changed: `docs/TEMPORAL-PHENOMENOLOGY.md`（NEW, +264，8 节）。**三态张力模型**（无感/牵挂/释然——现象学状态，不是计算输出）；**M5.13-3 亲密度 Band 复用**（不另创心理模型）；**reflect-only 加权边界**；**TA-2 与 SE-5 解耦**（正交，不进入既有模块）；**Prompt 三行格式**（TEMPORAL ANCHOR）；**四大禁止项**。docs-only 0 code；0 frozen contract 改动。 | Mavis / Lin | TA-2 |
 | 2026-09 (TA-2 impl) | Subjective Temporal Phenomenology 实作（commit `cc83daa`）。4 files changed: `src/soul/temporal_phenomenology.py`（NEW，三态张力模型 无感/牵挂/释然）、`src/llm/proxy.py`（+36，TEMPORAL ANCHOR 三行注入）、`src/soul/decision.py`（+51 -1，reflect-only 加权）、`tests/test_ta2_temporal_phenomenology.py`（NEW，26/26 新测试）。**M5.13-3 亲密度 Band 复用**（不另创心理模型）；**reflect-only 加权边界**；**26/26 新测试 + 125 回归全过**。0 frozen contract 改动（只改 temporal_phenomenology.py + proxy.py + decision.py + 测试）。 | Mavis / Lin | TA-2 impl |
 | 2026-09 (阶段 A 全满贯) | 阶段 A 灵魂深化全满贯：**升华细化** SE-4（contract）+ SE-5（lifecycle）+ TL-4（time-lapse lifecycle validation）；**工具打通** CA-3 + SM-4 + SM-4.1~SM-4.6 六轮校准 + TL-5 最终验收；**时序化** TA-2 实作（commit `cc83daa`）。阶段 A 全部条目 ✅ 落地/闭环，0 frozen contract 改动。 | Mavis / Lin | 阶段 A 全满贯 |
+| 2026-09 (MR-1) | Temporal Memory & Mem0 Primitives Contract 设计文档定稿（commit `6419166`）。1 file changed: `docs/TEMPORAL-MEMORY-CONTRACT.md`（NEW, +289，8 节）。**Schema v7 迁移**（valid_from 回填 timestamp + invalidated_at NULL）；**GraphStore invalidate_fact 软删 + get_facts_as_of 回溯**；**Mem0 原语模块 primitives.py 显式 add/update/delete/resolve_conflict**；**SAGE Reader as_of 默认过滤 invalidated_at IS NULL**。docs-only 0 code；0 frozen contract 改动。 | Mavis / Lin | MR-1 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
