@@ -46,6 +46,15 @@ from .producer_gate import (
     MODE_GROUP,
     MODE_PRIVATE,
 )
+from .opportunity import (
+    SocialOpportunity,
+    SocialOpportunityBuffer,
+)
+from .aggregator import (
+    CompactSocialState,
+    SocialPerceptionAggregator,
+    ANTI_FRAMING_HINT,
+)
 
 __all__ = [
     # schema
@@ -73,4 +82,11 @@ __all__ = [
     "PUBLIC_CHANNELS",
     "MODE_GROUP",
     "MODE_PRIVATE",
+    # SI-3 social opportunity (社交機會)
+    "SocialOpportunity",
+    "SocialOpportunityBuffer",
+    # SI-3 compact aggregator (緊湊社交狀態聚合器)
+    "CompactSocialState",
+    "SocialPerceptionAggregator",
+    "ANTI_FRAMING_HINT",
 ]
