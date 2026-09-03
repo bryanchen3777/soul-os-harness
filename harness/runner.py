@@ -68,6 +68,7 @@ _MUTATION_SKIP_DIRS = {TIME_LAPSE_DIR_NAME}
 # harness 的 0 mutation 契约只约束「production 数据文件」, 不约束 server 日志。
 _MUTATION_SKIP_EXTS = {
     ".log", ".err", ".pid", ".txt", ".bak", ".old", ".tmp",
+    ".sqlite-shm", ".sqlite-wal", "-shm", "-wal",
 }
 
 
@@ -93,7 +94,10 @@ def snapshot_data_root_hashes(data_root_dir: Path) -> Dict[str, str]:
             continue
         if path.suffix.lower() in _MUTATION_SKIP_EXTS:
             continue
-        snapshot[rel.as_posix()] = _sha256_file(path)
+        try:
+            snapshot[rel.as_posix()] = _sha256_file(path)
+        except PermissionError:
+            continue
     return snapshot
 
 
