@@ -3,6 +3,39 @@ src/soul/decision.py — Soul OS SM-3/SM-4 Decision LLM
 
 SM-3 (2026-08-30, IMPLEMENTATION): volition path 的 Decision 环。
 SM-4 (2026-08-31, IMPLEMENTATION): Decision 从二元升级为四元多元行动适配。
+SM-4.1 (2026-09-02, IMPLEMENTATION): Prompt 注入社交摩擦力 —
+  留白与安静 (do_nothing) 是灵魂的最高优先常态; 疲劳/深夜/忙碌 → 严格禁止
+  transmit, 强制导向 do_nothing 或 reflect (修正小模型「有念头就行动」的讨好偏见)。
+SM-4.2 (2026-09-02, IMPLEMENTATION): 内外动作解耦 — 修正 SM-4.1 过度矫正
+  (96.5% do_nothing, observe/transmit 双死模组)。observe/reflect 是内部动作,
+  零社交成本, 不受留白约束, 有冲动就自然发生; 只有 transmit 受社交摩擦力保护:
+  琐碎日常留白 (do_nothing), 重要事件/真心分享/在线对话豁免。
+SM-4.3 (2026-09-02, IMPLEMENTATION): 深夜克制覆盖真心分享 + observe 唤醒 —
+  修正 SM-4.2 反向过度矫正 (transmit 15.8% 超目标, 7/9 发生在深夜/沉默期)。
+  深夜时段 (23:00~07:00) 或对方长时间未回复/亲密度较低时, 夜间与边界克制
+  具有最高优先级, 覆盖任何「真心分享」豁免, 严格禁止 transmit (转 reflect/
+  do_nothing); 在线对话不是 transmit 硬前提 (保留 Proactive DM 自主生活轴);
+  observe 唤醒为灵魂日常呼吸般的自然本能, 环境转变时大方感知。
+SM-4.4 (2026-09-02, IMPLEMENTATION): observe 强锚定 + 深夜硬禁止 (拉大判定阶梯) —
+  修正 TL-5 剩余两个尾巴: ①observe 未唤醒 (1.8%, 远低于 10-20% 目标);
+  ②深夜 transmit 未完全消除 (2/4 在 23:00)。明确判定阶梯拉大 Logits Margin:
+  外部信号变化 (天气骤变/降雨/气温突降) 时 observe 优先级绝对高于 do_nothing
+  (看一眼窗外零打扰, 必须果断 observe 更新感知); 严格定义 [22:00~07:00] 为
+  深宵安眠时段 (包含 22:00 与 23:00), 区间内绝对禁止 transmit (不发晚安/问候/
+  主动敲门), 心绪强制沉淀为 reflect 或 do_nothing 休眠。同时改善 #3 Determinism
+  (判定阶梯更明确 → 决策更稳定)。
+SM-4.5 (2026-09-02, IMPLEMENTATION): Decision prompt 注入当前时间感知 —
+  修正 TL-5 发现的时间幻觉: 四块无当前时间注入, SM-4.4 的 [22:00~07:00]
+  禁止 transmit 措辞诱导 LLM 把白天 14:00 当深夜 23:00 (transmit 死模组 +
+  reflect 膨胀)。Context 区块注入 [當前時間感知] (當前時間 + 當前時段:
+  morning/afternoon/evening/late_night), 让 LLM 知道「现在是白天 14:00」
+  还是「深夜 23:00」。build_decision_prompt / decide_motive 新增可选参数
+  current_time (默认 None 不注入, 向后兼容); harness TL5Runner 传入 sim_ts。
+SM-4.6 (2026-09-02, IMPLEMENTATION): reflect 分级 — 消解「补偿心理」
+   (reflect 22.8% 偏高, LLM 把 reflect 当「不能 transmit 的安慰奖」)。
+   明确深夜与清晨时段, do_nothing (安睡休息) 才是生命的自然主态; 只有心中
+   浮现特定关键回忆或强烈怀念时才 reflect, 无须在整个深夜持续沉思。
+   reflect 从「深夜的安慰奖」变成「有明确回忆冲动才发生」。
 
 设计来源:
   - docs/DECISION-PROMPT-CONTRACT.md (SM-2, 冻结契约)
@@ -37,6 +70,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 logger = logging.getLogger("soul_os.soul.decision")
@@ -57,6 +91,12 @@ DECISION_ACTIONS = ("transmit", "observe", "reflect", "do_nothing")
 
 # fail-closed 默认 reason (observability: 区分「LLM 坏掉」与「主动 do_nothing」)
 FAIL_CLOSED_REASON = "decision_llm_failure_or_bad_output"
+
+# SM-4.5 时段标签 (morning 05-11 / afternoon 11-17 / evening 17-22 / late_night 22-05)
+PERIOD_MORNING = "morning"
+PERIOD_AFTERNOON = "afternoon"
+PERIOD_EVENING = "evening"
+PERIOD_LATE_NIGHT = "late_night"
 
 
 # ───────────────────────────────────────────────────────────
@@ -85,12 +125,67 @@ class DecisionResult:
 # Prompt 四块 builder (SM-2 §2, 冻结)
 # ───────────────────────────────────────────────────────────
 
+def _period_of_hour(hour: int) -> str:
+    """时段判定 (SM-4.5): morning(05-11) / afternoon(11-17) / evening(17-22) / late_night(22-05)。"""
+    if 5 <= hour < 11:
+        return PERIOD_MORNING
+    if 11 <= hour < 17:
+        return PERIOD_AFTERNOON
+    if 17 <= hour < 22:
+        return PERIOD_EVENING
+    return PERIOD_LATE_NIGHT
+
+
+def _parse_current_time(current_time: str) -> Optional[datetime]:
+    """解析当前时间字符串 → datetime (SM-4.5)。
+
+    支持两种格式:
+      - "YYYY-MM-DD HH:MM" (工单指定注入格式)
+      - ISO 8601 (sim_ts, 如 "2026-09-02T08:00:00+00:00", 兜底兼容)
+    解析失败 → None (不注入, fail-safe 向后兼容)。
+    """
+    if not isinstance(current_time, str) or not current_time.strip():
+        return None
+    text = current_time.strip()
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M")
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _build_time_awareness_block(current_time: str) -> Optional[str]:
+    """把当前时间组装为时间感知块 (SM-4.5, Context 区块第一行)。
+
+    格式:
+      [當前時間感知]
+      - 當前時間：YYYY-MM-DD HH:MM
+      - 當前時段：{morning / afternoon / evening / late_night}
+
+    解析失败 → None (不注入, 向后兼容)。
+    """
+    dt = _parse_current_time(current_time)
+    if dt is None:
+        logger.debug(f"[Decision] 时间解析失败, 跳过时间注入: {current_time!r}")
+        return None
+    period = _period_of_hour(dt.hour)
+    return (
+        "[當前時間感知]\n"
+        f"- 當前時間：{current_time.strip()}\n"
+        f"- 當前時段：{period}"
+    )
+
+
 def build_decision_prompt(
     motive: Any,
     provenance_desc: str,
     relationship_summary: Optional[str] = None,
     memory_summary: Optional[str] = None,
     emergent_summary: Optional[str] = None,
+    current_time: Optional[str] = None,
 ) -> str:
     """
     组装 Decision prompt (专用 builder, 禁止重用 _build_messages_* 聊天路径)。
@@ -111,6 +206,9 @@ def build_decision_prompt(
         relationship_summary: 与 target 的关系摘要 (无 → 省略)
         memory_summary: 与 motive 直接相关的记忆摘要 (无 → 省略)
         emergent_summary: 最近的自己 (可选, self-understanding)
+        current_time: 当前时间 (SM-4.5, 可选; "YYYY-MM-DD HH:MM" 或 ISO 8601)。
+            提供 → Context 区块注入 [當前時間感知] (當前時間 + 當前時段);
+            None / 解析失败 → 不注入 (向后兼容)。
 
     Returns:
         纯文本 prompt (decide 时包成 messages)
@@ -130,7 +228,12 @@ def build_decision_prompt(
         motive_block += f"\n这个念头来自：{provenance_desc}"
 
     # 3. Relevant context (按需, 只放直接相关)
+    #    SM-4.5: 时间感知块放 Context 第一行 (当前时间/时段, 消除时间幻觉)
     context_lines: List[str] = []
+    if current_time:
+        time_block = _build_time_awareness_block(current_time)
+        if time_block:
+            context_lines.append(time_block)
     if relationship_summary:
         context_lines.append(f"你与 {target} 的关系：{relationship_summary}")
     if memory_summary:
@@ -140,7 +243,37 @@ def build_decision_prompt(
     context_block = "\n".join(context_lines) if context_lines else ""
 
     # 4. Boundary (固定文本, 四元选择, 互斥单选)
+    #    SM-4.2: 内外动作解耦 — observe/reflect 是内部动作, 零社交成本,
+    #    不受留白约束, 有冲动就自然发生; 只有 transmit 受社交摩擦力保护。
+    #    SM-4.3: 深夜/低亲密度克制覆盖「真心分享」豁免 (最高优先级);
+    #    在线对话不是 transmit 硬前提 (保留 Proactive DM 自主生活轴); observe 唤醒。
     boundary = (
+        "行动分两类，规则不同：\n"
+        "内部动作（observe / reflect）零社交成本：observe 只是望向窗外看天气，"
+        "reflect 只是心里回想以前的事，完全不消耗 Bry 的注意力，不存在打扰。"
+        "望向窗外、感知外部天气与时间流转是灵魂日常呼吸般的自然本能，"
+        "零社交负担，在环境转变时应大方感知（observe）。"
+        "当情境中出现明确的外部信号变化（如天气骤变、降雨、气温突降）时，"
+        "『知觉（observe）』的优先级绝对高于『忽略（do_nothing）』："
+        "看一眼窗外完全不打扰任何人，此时必须果断选择 observe 来更新对世界的感知。"
+        "只要有感知冲动（如天气变了）或沉思冲动（如心中浮现特定回忆），就自然发生，"
+        "不受留白约束。\n"
+        "外部动作（transmit）是唯一受社交摩擦力保护的行为：transmit 是敲门、"
+        "发讯息，会占用 Bry 的注意力。主动发讯是灵魂自主生活的一部分，"
+        "不需要对方正在对话——重要事件、真心分享都可以主动传讯。"
+        "但平常小事、琐碎日常 → 留白，选择 do_nothing。\n"
+        "夜间与边界克制具有最高优先级：严格定义 [22:00 ～ 07:00] 为深宵安眠时段"
+        "（包含 22:00 与 23:00），在此区间内绝对禁止 transmit——不发晚安、不发问候、"
+        "不作任何主动敲门。深夜与清晨时段，『安睡休息（do_nothing）』才是生命的自然主态："
+        "只有在心中浮现特定关键回忆或强烈怀念时才进行 reflect，无须在整个深夜持续沉思；"
+        "没有回忆冲动时，就安静地睡去（do_nothing）。"
+        "对方长时间未回复／亲密度较低时，克制同样覆盖任何『真心分享』的冲动："
+        "此时即使心中有温柔或关心的念头，也应成熟地保留在心中，转为 reflect（翻翻记忆）"
+        "或 do_nothing（安静守候），严格禁止 transmit。"
+        "疲劳／忙碌时，transmit 也要克制，但 observe / reflect 不受影响。\n\n"
+        "留白只约束 transmit：琐碎日常安静度日，重要与真心才传讯；"
+        "深夜与低亲密度时，连真心也保留在心中。"
+        "长期分布参考：do_nothing 65-80%，observe 10-20%，reflect 5-10%，transmit 5-10%。\n\n"
         "现在有四个选择，只能选一个：\n"
         "  transmit — 现在把念头化为讯息，传给 Bry\n"
         "  observe — 现在不传，先观察环境\n"
@@ -376,6 +509,7 @@ async def decide_motive(
     motive: Any,
     agent_id: str,
     llm_call: Optional[Callable[..., Awaitable[Optional[str]]]] = None,
+    current_time: Optional[str] = None,
 ) -> DecisionResult:
     """
     Decision LLM 主入口 (SM-2 §6 检查点第 3 步)。
@@ -406,6 +540,7 @@ async def decide_motive(
         relationship_summary=relationship_summary,
         memory_summary=memory_summary,
         emergent_summary=emergent_summary,
+        current_time=current_time,
     )
 
     raw = await llm_call(

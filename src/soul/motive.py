@@ -8,9 +8,12 @@ SM-3 (2026-08-30, IMPLEMENTATION): volition path 的 Motive 环。
   - docs/DECISION-PROMPT-CONTRACT.md (SM-2, §6 motive 生命周期)
 
 核心概念:
-  - Motive = 「我想告诉 Bry」的意图 (interpretation 产物), 不是经历。
+  - Motive = Soul 的「念头」(interpretation 产物), 不是经历。
   - Thought source = Inner Life 的 diary/dream/event (frozen InnerLifeEvent, 只读)。
   - motive 是 Soul 的 LLM 解读经历产出的「念头」, 不是硬编码模板、不是 longing 公式。
+  - SM-4.1 (Motive 多元化): 念头类型由经历性质决定, 不只「想告诉 Bry」——
+    observe (环境刺激) / reflect (夜间/久未联络) / transmit (重大事件/紧迫事项)。
+    motive_type 是 trace 的 observability 字段, 不进 Motive dataclass (5 字段冻结)。
   - motive 不成为 InnerLifeEvent, 只通过 provenance_ref 引用它 (Bryan 拍板)。
   - motive 不反向依赖 scheduler: 记录不含 trigger_type (验收 E)。
 
@@ -61,6 +64,14 @@ INTERPRET_TEMPERATURE = 0.7
 # Decision LLM 参数 (选择要稳定, 低温度; 待 Owner 拍板, 可配置)
 DECISION_MAX_TOKENS = 200
 DECISION_TEMPERATURE = 0.3
+
+# SM-4.1: motive 候选类型 (多元化, 不只 transmit)
+#   - observe  — 环境刺激 (天气变化/时段切换) → 「想观察确认」
+#   - reflect  — 夜间时段 / 长期未联络 → 「想回顾回忆」
+#   - transmit — 重大生活事件 / 紧迫事项 → 「想告诉 Bry」
+# motive_type 是 interpretation 的 observability 字段 (trace 记录),
+# 不进 Motive dataclass (5 字段冻结), 不参与 Decision 判定。
+MOTIVE_TYPES = ("observe", "reflect", "transmit")
 
 # target 常量 (v1 固定指向 Bry)
 TARGET_BRYAN = "bryan"
@@ -181,16 +192,28 @@ class MotiveTraceStore:
         except OSError as e:
             logger.warning(f"[MotiveTraceStore] append failed: {e}")
 
-    def append_motive(self, motive: Motive, agent_id: str) -> None:
-        """写入一条 pending motive 快照。"""
+    def append_motive(
+        self,
+        motive: Motive,
+        agent_id: str,
+        motive_type: Optional[str] = None,
+    ) -> None:
+        """写入一条 pending motive 快照。
+
+        SM-4.1: motive_type (observe/reflect/transmit) 作为 observability
+        附加字段写入 trace (不进 Motive dataclass, 5 字段冻结)。
+        """
         record = motive.to_dict()
         record["agent_id"] = agent_id
         record["status"] = MOTIVE_STATUS_PENDING
         record["updated_at"] = motive.created_at
+        if motive_type in MOTIVE_TYPES:
+            record["motive_type"] = motive_type
         self._append(record)
         logger.info(
             f"[MotiveTraceStore] motive 写入: {motive.motive_id} "
-            f"agent={agent_id} provenance={motive.provenance_ref}"
+            f"agent={agent_id} provenance={motive.provenance_ref} "
+            f"type={motive_type}"
         )
 
     def _latest_by_motive_id(self) -> Dict[str, Dict[str, Any]]:
@@ -410,8 +433,12 @@ def parse_interpretation_output(raw: Optional[str]) -> Optional[dict]:
     """
     解析 interpretation LLM 输出 (fail-closed)。
 
+    SM-4.1 扩展: 输出可带 motive_type (observe/reflect/transmit, 多元化)。
+    motive_type 缺失/非法 → 不 fail-closed (向后兼容旧输出), 记为 None。
+
     Returns:
-        {"has_motive": True, "content": str} | {"has_motive": False}
+        {"has_motive": True, "content": str, "motive_type": str|None}
+        | {"has_motive": False}
         或 None (坏输出 / 缺字段 / content 为空 → 视为无 motive, 不产生空 motive)
     """
     if raw is None:
@@ -436,7 +463,15 @@ def parse_interpretation_output(raw: Optional[str]) -> Optional[dict]:
             "(fail-closed = 无 motive)"
         )
         return None
-    return {"has_motive": True, "content": content.strip()}
+    # SM-4.1: motive_type 可选 (observability, 不 gate)。非法值 → None。
+    motive_type = data.get("motive_type")
+    if motive_type not in MOTIVE_TYPES:
+        if motive_type is not None:
+            logger.warning(
+                f"[Motive] interpretation motive_type 非法 (记为 None): {motive_type!r}"
+            )
+        motive_type = None
+    return {"has_motive": True, "content": content.strip(), "motive_type": motive_type}
 
 
 # ───────────────────────────────────────────────────────────
@@ -553,10 +588,13 @@ class MotiveEngine:
                 provenance_ref=event_id,
                 created_at=now_utc_iso(),
             )
-            self._store.append_motive(motive, agent_id)
+            self._store.append_motive(
+                motive, agent_id, motive_type=parsed.get("motive_type")
+            )
             produced.append(motive)
             logger.info(
                 f"[Motive] 新 motive: {motive.motive_id} agent={agent_id} "
+                f"type={parsed.get('motive_type')} "
                 f"content={motive.content[:40]!r} provenance={event_id}"
             )
         return produced
@@ -564,14 +602,28 @@ class MotiveEngine:
     async def _interpret_one(
         self, agent_id: str, provenance_desc: str
     ) -> Optional[dict]:
-        """对一次经历做 interpretation (LLM)。"""
+        """对一次经历做 interpretation (LLM)。
+
+        SM-4.1 (Motive 多元化): 念头类型由经历性质决定, 不只「想告诉 Bry」:
+          - 环境刺激 (天气变化/时段切换/外界信号) → observe (想观察确认)
+          - 夜间时段 / 长期未联络 → reflect (想回顾回忆)
+          - 重大生活事件 / 紧迫事项 → transmit (想告诉 Bry)
+          - 平常小事 → 无念头
+        """
         prompt = (
             f"你是 {agent_id}。Bry 是你的主人。\n"
             f"你刚刚经历了一件事：\n{provenance_desc}\n\n"
-            f"这次经历里，有没有你想告诉 Bry 的念头？"
-            f"如果有，用你自己的话表达。\n"
+            f"这次经历可能在你心里浮现一个念头。念头的类型由经历的性质决定：\n"
+            f"- 环境刺激（天气变化、时段切换、外界信号）→ 念头是「想观察确认」，"
+            f"例如「外面好像下雨了，想确认一下天气」。\n"
+            f"- 夜间时段，或你很久没有和 Bry 联络 → 念头是「想回顾回忆」，"
+            f"例如「夜深了，想翻翻以前的回忆」。\n"
+            f"- 重大生活事件或紧迫事项 → 念头才是「想告诉 Bry」，"
+            f"例如「今天有件重要的事，想告诉 Bry」。\n"
+            f"- 只是平常小事 → 没有念头。\n\n"
             f"只输出 JSON："
-            f'{{"has_motive": true, "content": "你想说的话"}} '
+            f'{{"has_motive": true, "motive_type": "observe" | "reflect" | "transmit", '
+            f'"content": "念头原文"}} '
             f'或 {{"has_motive": false}}'
         )
         raw = await self._llm_call(

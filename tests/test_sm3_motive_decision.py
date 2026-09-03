@@ -913,3 +913,90 @@ class TestSM4_QuadrupleDecision:
             store = MotiveTraceStore(trace_path=motive_trace_path)
             latest = store._latest_by_motive_id()[mid]
             assert latest["status"] == MOTIVE_STATUS_REJECTED
+
+
+# ────────────────────────────────────────────────────────────
+# SM-4.5 时间注入 (消除时间幻觉)
+# ────────────────────────────────────────────────────────────
+
+class TestSM45_TimeInjection:
+    """SM-4.5: Decision prompt 注入当前时间感知 (Context 区块)。"""
+
+    def test_l1_time_injected_in_context_block(self):
+        """L.1: current_time 提供时, Context 区块注入 [當前時間感知] (時間 + 時段)。"""
+        motive = Motive(
+            motive_id="m1", content="我想告诉你今天的事",
+            target="bryan", provenance_ref="evt1", created_at=now_utc_iso(),
+        )
+        prompt = build_decision_prompt(
+            motive, provenance_desc="diary:night @ 2026-08-30",
+            current_time="2026-09-02 14:00",
+        )
+        assert "[當前時間感知]" in prompt
+        assert "當前時間：2026-09-02 14:00" in prompt
+        assert "當前時段：afternoon" in prompt
+
+    def test_l2_period_boundaries(self):
+        """L.2: 时段判定边界 (05/11/17/22)。"""
+        cases = [
+            ("2026-09-02 05:00", "morning"),
+            ("2026-09-02 10:59", "morning"),
+            ("2026-09-02 11:00", "afternoon"),
+            ("2026-09-02 16:59", "afternoon"),
+            ("2026-09-02 17:00", "evening"),
+            ("2026-09-02 21:59", "evening"),
+            ("2026-09-02 22:00", "late_night"),
+            ("2026-09-02 23:00", "late_night"),
+            ("2026-09-02 00:00", "late_night"),
+            ("2026-09-02 04:59", "late_night"),
+        ]
+        for ts, period in cases:
+            prompt = build_decision_prompt(
+                Motive(
+                    motive_id="m1", content="x", target="bryan",
+                    provenance_ref="evt1", created_at=now_utc_iso(),
+                ),
+                provenance_desc="",
+                current_time=ts,
+            )
+            assert f"當前時段：{period}" in prompt, f"{ts} → {period}"
+
+    def test_l3_default_none_no_injection(self):
+        """L.3: 默认 current_time=None → 不注入时间 (向后兼容)。"""
+        motive = Motive(
+            motive_id="m1", content="我想告诉你今天的事",
+            target="bryan", provenance_ref="evt1", created_at=now_utc_iso(),
+        )
+        prompt = build_decision_prompt(motive, provenance_desc="diary:night @ 2026-08-30")
+        assert "當前時間感知" not in prompt
+        assert "當前時間" not in prompt
+        assert "當前時段" not in prompt
+
+    def test_l4_invalid_time_no_injection(self):
+        """L.4: 无法解析的时间 → 不注入 (fail-safe)。"""
+        motive = Motive(
+            motive_id="m1", content="x", target="bryan",
+            provenance_ref="evt1", created_at=now_utc_iso(),
+        )
+        prompt = build_decision_prompt(
+            motive, provenance_desc="", current_time="not-a-time"
+        )
+        assert "當前時間感知" not in prompt
+
+    def test_l5_decide_motive_passes_time(self, isolated_root, tmp_path, monkeypatch):
+        """L.5: decide_motive 透传 current_time 进 prompt。"""
+        m = Motive(
+            motive_id="m1", content="我想告诉你今天的事",
+            target="bryan", provenance_ref="evt1", created_at=now_utc_iso(),
+        )
+        fake = FakeProxy(['{"decision": "do_nothing", "reason": "安静"}'])
+        monkeypatch.setattr("src.soul.motive._find_llm_proxy", lambda: fake)
+
+        async def _scenario():
+            return await decide_motive(m, "agent_yua", current_time="2026-09-02 14:00")
+
+        r = _run(_scenario())
+        assert r.decision == "do_nothing"
+        prompt = fake.calls[0]["messages"][0]["content"]
+        assert "[當前時間感知]" in prompt
+        assert "當前時段：afternoon" in prompt
