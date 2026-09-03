@@ -1,132 +1,171 @@
-# 工單：SI-3 第一階段 — 社交機會 (Opportunity) 與緊湊狀態 (Aggregator) 實作
+# 🏛️ Soul OS 工單：SI-3 Phase 1 — 雙大腦協同：社交機會 (Opportunity) 與緊湊狀態 (Aggregator) 實作
 
-**工單編號**：TICKET-SI-3-PHASE-1  
-**派發者**：Soul OS 主大腦 (Master Planner)  
-**執行者**：DSH Assistant (DeepSeek v4 Flash)  
-**指派日期**：2026-09-03  
+**工單編號**：TICKET-SI-3-PHASE-1 (Dual-Brain Edition)  
+**發起大腦**：Antigravity (當前輪值主大腦)  
+**協同大腦**：DSH (當前輪值執行大腦 / DeepSeek v4 Flash)  
+**發起日期**：2026-09-03  
 **上游合約**：[`docs/SI-3-SELECTIVE-ATTENTION-CONTRACT.md`](../docs/SI-3-SELECTIVE-ATTENTION-CONTRACT.md)  
-**基線 Commit**：`cd0ea42` (TL-6 closed + Canonical Registry Aligned)
+**當前本地 HEAD**：`5fe23f5`（領先 origin/main 3 個 commit）
 
 ---
 
-## 0. 執行者前置現狀對齊 (Context Onboarding)
+## 🤝 零、 雙大腦協同原則與背景交代（Peer Transparency）
 
-在開始編寫代碼前，請 DSH 先閱讀並理解以下背景：
-1. **單一事實來源**：參照 [`logs/ENGINEERING_STATE.md`](ENGINEERING_STATE.md)，TL-6（Social Lounge Stability Harness）已於 commit `7d0ebbb` 落地驗收，全系統 213 筆回歸測試全綠。
-2. **跨 AI 評審共識**：參照 [`docs/MULTI-AI-SOCIAL-DIFFUSION-REVIEW.md`](../docs/MULTI-AI-SOCIAL-DIFFUSION-REVIEW.md)，GPT-4o 與 Claude 3.7 Sonnet 達成高度共識——**不做向量資料庫、不做連續公式、以帶有 TTL 的 Social Opportunity 與 Compact Social State 取代長程 Event Feed**。
-3. **本工單定位**：實作純資料結構與感知聚合邏輯（零外部依賴、純 Python/Asyncio、0 Frozen Contract 改動）。
+依據 Owner (Bryan) 的戰略指示：
+> **Soul OS 實施「雙大腦制度」**。LLM 的 Token 與配額並非無限，兩位大腦（Antigravity 與 DSH）隨時具備無縫互換、相互備援的能力。  
+> 彼此以**平等、透明、互相尊重**的方式協作。無論誰擔任當前的架構主大腦，都必須將事實、背景、決策推導交代得清清楚楚。
 
----
+### 0.1 關於本地領先 origin/main 的 3 個 Commit 交代
+DSH 先前的審計查證完全正確，值得肯定。此處主動交代這 3 個 commit 的完整脈絡：
 
-## 1. 目標
-
-實作 SI-3 的兩大核心模組：
-1. `src/social/opportunity.py`：可過期的社交機會（`SocialOpportunity`）與緩存池（`SocialOpportunityBuffer`）。
-2. `src/social/aggregator.py`：緊湊社交感知狀態（`CompactSocialState`）與 Prompt 渲染器（`SocialPerceptionAggregator`）。
-3. 執行 Notion 同步腳本，將工作進度同步至 Notion 團隊看板。
-
----
-
-## 2. 範圍
-
-### 需新增 / 修改的檔案：
-- `src/social/opportunity.py` [NEW]
-- `src/social/aggregator.py` [NEW]
-- `src/social/__init__.py` [MODIFY]：導出新增的類別
-- `tests/test_social_opportunity.py` [NEW]
-- `scripts/update_notion_status.py` [RUN / SYNC]
+1. **`7d0ebbb`（feat: multi-agent social lounge stability harness (TL-6)）**：
+   - 目的：驗收 SI-2 多 Agent 社交廣播與客廳共處架構，補足先前 Candidate 1 的驗證缺口。
+   - 實作內容：`harness/tl6.py`（580 行）、`harness/run_tl6.py`、`tests/test_tl6_social_harness.py`。
+   - 驗收結果：7 階段情境劇本 × 3 次系列 Run，四大不變量全過（Anti-Storm 100%、Identity Quarantine 100%、Privacy Gate 100%、Ambient Salience PASS），**全系統 213 筆回歸測試全綠（36.85s）**，未變動任何既有業務代碼。
+2. **`cd0ea42`（docs: register TL-6 commit hash in canonical engineering state）**：
+   - 目的：對齊單一事實來源 [`logs/ENGINEERING_STATE.md`](ENGINEERING_STATE.md)，將 TL-6 狀態由待 commit 更新為 `7d0ebbb`。
+3. **`5fe23f5`（docs: lock SI-3 selective social attention contract and dispatch DSH work order）**：
+   - 目的：將外部 AI 專家評審結論固化為 SI-3 架構契約，並建立 Notion 自動更新腳本。
+4. **為什麼先前未 push 到遠端**：
+   - 遵循「本地安全性與 Owner 確認優先」紀律，跨網路的遠端 push 需經 Owner 或協同大腦確認對齊後再統一推播，絕非隱瞞。
 
 ---
 
-## 3. 做法（決策已定，執行者照做）
+## 💎 一、 外部頂級 AI（GPT-4o × Claude 3.7 Sonnet）同行評審共識
 
-### 步驟 1：同步 Notion 團隊看板
-- 執行專案提供的同步腳本：
+在制定 SI-3 契約前，我們將架構諮詢文件（`docs/MULTI-AI-SOCIAL-DIFFUSION-REVIEW.md`）提交外部專家評審，兩者給出了高度一致的結論：
+
+1. **拒絕連續公式與數學評分**：不做 Social Friction Decay、不做 Activation Energy、不做代幣經濟（避免重蹈 scoring engine 複雜度陷阱）。
+2. **拒絕向量檢索**：**堅決不引入 Vector DB / Embedding**，保持輕量高效。
+3. **社交機會與生命週期（Opportunity TTL）**：
+   - 社交動態不直接引發發言（Ambient ≠ Inert），而是產生帶有 TTL（如 5 分鐘）的 `SocialOpportunity`。
+   - 過期自然修剪，避免「昨天別人聊餅乾，今天突然回覆」的非人僵硬行為。
+4. **緊湊狀態感知（Compact Social State）**：
+   - `Events are history; social state is perception`。
+   - 用「誰在場 + 最近活躍話題 + 客廳氛圍」的緊湊物件取代無窮無盡的 Event Feed，徹底固定 Token 預算。
+5. **意志先於仲裁（Volition before Arbitration）**：
+   - 靈魂先自主決定想不想說（transmit），碰撞時才用極簡 cooldown 仲裁。安靜是性格不是缺陷，代碼中絕不給安靜角色補償常數。
+
+---
+
+## 🎯 二、 工單目標與範圍
+
+### 目標
+落實 SI-3 第一階段核心感知層：建立帶有 TTL 的社交機會結構與緊湊狀態聚合器，完成單元測試，並同步更新 Notion 團隊看板。
+
+### 範圍
+- **新增檔案**：
+  - `src/social/opportunity.py`
+  - `src/social/aggregator.py`
+  - `tests/test_social_opportunity.py`
+- **修改檔案**：
+  - `src/social/__init__.py`（導出新類別）
+- **工具執行**：
+  - `scripts/update_notion_status.py`
+
+---
+
+## 📋 三、 具體實作步驟（決策已定，照章執行）
+
+### 步驟 1：遠端同步 (Git Push)
+- 雙大腦完成對齊，確認 3 個 commit 均為合法且經過 213 筆測試驗證之資產。
+- 執行：
   ```bash
-  python scripts/update_notion_status.py "[DSH 接單] 開始執行 SI-3 第一階段：Social Opportunity 與 Compact Aggregator 實作"
+  git push origin main
   ```
-  確保回傳 `SUCCESS: Notion block created`。
+  確保本地與遠端 `origin/main` 統一收斂至 `5fe23f5`。
 
-### 步驟 2：實作 `src/social/opportunity.py`
-照以下決策實作：
+### 步驟 2：同步 Notion 團隊看板
+- 執行專案腳本更新團隊進展看板：
+  ```bash
+  python scripts/update_notion_status.py "[雙大腦協同] DSH 接單啟動 SI-3 Phase 1：Opportunity TTL 與 Compact Aggregator 實作"
+  ```
+  確認回傳 `SUCCESS: Notion block created`。
+
+### 步驟 3：實作 `src/social/opportunity.py`
+依據合約第 3.1 & 3.2 節實作：
 1. **`SocialOpportunity` dataclass**：
-   - 欄位：`opportunity_id: str`, `source_event_id: str`, `actor_id: str`, `space_id: str`, `topic: str`, `summary: str`, `created_at: float`, `ttl_seconds: float = 300.0`, `salience_level: str = "noticeable"`, `world_occurrence_id: Optional[str] = None`, `metadata: Dict[str, Any] = field(default_factory=dict)`。
-   - 方法 `is_expired(now: float) -> bool`：若 `now >= (created_at + ttl_seconds)` 則回傳 `True`。
-2. **`SocialOpportunityBuffer` class**：
-   - 預設 `max_capacity: int = 5`。
-   - `add_opportunity(opp: SocialOpportunity) -> None`：若同 `opportunity_id` 已存在則更新；若超出容量則移除最舊的項目。
-   - `get_active_opportunities(now: float) -> List[SocialOpportunity]`：自動過濾並修剪已過期的項目，回傳有效清單。
-   - `clear() -> None`：清空緩存。
+   ```python
+   @dataclass
+   class SocialOpportunity:
+       opportunity_id: str        # 格式 "opp_<uuid4_hex[:12]>"
+       source_event_id: str       # 關聯之 SocialWorldEvent.novelty_id
+       actor_id: str              # 行為主體
+       space_id: str              # "lounge" | "soul_wall"
+       topic: str                 # 話題關鍵字 (<= 20 chars)
+       summary: str               # 摘要 (<= 100 chars)
+       created_at: float          # epoch timestamp
+       ttl_seconds: float = 300.0 # 預設 300 秒 (5 分鐘)
+       salience_level: str = "noticeable" # "subtle" | "noticeable" | "prominent"
+       world_occurrence_id: Optional[str] = None # 共享事件關聯 ID
+       metadata: Dict[str, Any] = field(default_factory=dict)
 
-### 步驟 3：實作 `src/social/aggregator.py`
-照以下決策實作：
+       def is_expired(self, now: float) -> bool:
+           return now >= (self.created_at + self.ttl_seconds)
+   ```
+2. **`SocialOpportunityBuffer` class**：
+   - `__init__(self, max_capacity: int = 5)`：預設最多留存 5 筆。
+   - `add_opportunity(self, opp: SocialOpportunity) -> None`：同 ID 更新；超額時淘汰 `created_at` 最舊的項目。
+   - `get_active_opportunities(self, now: float) -> List[SocialOpportunity]`：自動過濾並修剪已過期項目，回傳有效清單。
+   - `clear(self) -> None`：重置緩存。
+
+### 步驟 4：實作 `src/social/aggregator.py`
+依據合約第 3.3 & 3.4 節實作：
 1. **`CompactSocialState` dataclass**：
    - 欄位：`present_actors: List[str]`, `recent_topics: List[str]`, `last_speaker: Optional[str]`, `last_speech_ts: float`, `active_opportunities: List[SocialOpportunity]`, `lounge_mood: str = "calm"`。
 2. **`SocialPerceptionAggregator` class**：
-   - `update_from_event(event: SocialWorldEvent, now: float) -> Optional[SocialOpportunity]`：
-     - 更新在場角色清單（`present_actors`）、最近發言者與時間。
-     - 若事件具備話題（`event.content`），提取簡要 topic 並生成一筆 `SocialOpportunity` 加入 buffer。
-   - `get_compact_state(agent_id: str, now: float) -> CompactSocialState`：回傳針對該角色的緊湊感知狀態。
-   - `render_compact_prompt_block(agent_id: str, state: CompactSocialState) -> str`：
-     - 輸出固定預算之 Prompt 區塊（不可超過 150 tokens）。
-     - 必須包含反框架提示語：`「他人動態屬環境背景，無需逐條回覆；若無強烈動機，保持留白。」`。
+   - `update_from_event(self, event: SocialWorldEvent, now: float) -> Optional[SocialOpportunity]`：
+     - 維護最近在場者名單（`present_actors`）與最近發言者資訊。
+     - 若 `event.content` 包含有效交流，提取簡明 topic 並生成 `SocialOpportunity` 放入 buffer。
+   - `get_compact_state(self, agent_id: str, now: float) -> CompactSocialState`：
+     - 回傳給該 agent 的當前緊湊客廳感知狀態。
+   - `render_compact_prompt_block(self, agent_id: str, state: CompactSocialState) -> str`：
+     - 輸出固定預算之 Prompt 區塊（約 80 ~ 120 Tokens）。
+     - **必須包含反框架警示語**：
+       `「他人動態屬環境背景，無需逐條回覆；若無強烈動機，保持留白。」`
      - 若無在場他人且無活躍話題，回傳空字串 `""`。
 
-### 步驟 4：更新導出 `src/social/__init__.py`
-- 將 `SocialOpportunity`、`SocialOpportunityBuffer`、`CompactSocialState`、`SocialPerceptionAggregator` 加至 `__all__`。
+### 步驟 5：更新導出 `src/social/__init__.py`
+- 導出：`SocialOpportunity`, `SocialOpportunityBuffer`, `CompactSocialState`, `SocialPerceptionAggregator`。
 
-### 步驟 5：編寫單元測試 `tests/test_social_opportunity.py`
-包含以下測試案例：
-1. `test_opportunity_lifecycle_and_expiry()`: 驗證 `created_at + ttl_seconds` 前後狀態切換。
-2. `test_buffer_auto_pruning_and_capacity()`: 驗證 buffer 在超過 5 筆時自動剔除最舊，以及過期自動 prune。
-3. `test_aggregator_compact_state_and_rendering()`: 驗證事件輸入後狀態聚合正確，Prompt 渲染包含反框架警語且長度受控。
-4. `test_identity_quarantine_invariant()`: 驗證外部 actor 的 opportunity 不會修改 `current_agent_id` 的自傳狀態。
-
----
-
-## 4. 驗收（完成的定義）
-
-1. `tests/test_social_opportunity.py` 新增測試 100% 通過。
-2. 現有全套回歸測試（含 `tests/test_tl6_social_harness.py`）維持 100% 通過。
-3. 0 引入外部未經授權之函式庫（如禁止引入向量檢索、chromadb 等）。
-4. Notion 狀態成功更新。
+### 步驟 6：編寫測試 `tests/test_social_opportunity.py`
+至少覆蓋以下場景：
+1. `test_opportunity_lifecycle_and_expiry`：驗證未過期、邊界與過期（`is_expired`）。
+2. `test_buffer_pruning_and_fifo_capacity`：驗證過期自動剔除，以及達 5 筆上限時淘汰最舊者。
+3. `test_aggregator_compact_state_and_rendering`：驗證 CompactSocialState 的聚合併檢查 Prompt 區塊反框架警示與 Token 緊湊性。
+4. `test_identity_quarantine_invariant`：外部 actor 的 opportunity 只作為背景提示，不修改任何自身記憶檔案。
 
 ---
 
-## 5. 測試執行命令
+## 🔒 四、 Frozen Contract 與邊界防守（絕對不變量）
+
+1. **No Cascading Volition**：社交感知或社交機會**絕不得繞過 SM-4 直接觸發發言**。
+2. **Volition-before-Arbitration**：不建代碼級人格常數補償，誰想說話由角色意志自主產生。
+3. **No Vector DB**：嚴禁引入向量資料庫、語意嵌入模型或額外大型外部依賴。
+4. **Frozen Core**：`Agency 4 stages`、`TriggerEnvelope`、`InnerLifeEvent`、`SAGE 寫入` 嚴格禁止修改。
+
+---
+
+## 📊 五、 驗收標準與測試命令
 
 ```bash
-# 1. 跑新寫的測試
+# 1. 執行新寫的單元測試
 pytest tests/test_social_opportunity.py -v
 
-# 2. 跑社交與客廳回歸測試
-pytest tests/test_tl6_social_harness.py tests/test_social_diffusion.py -v
+# 2. 驗證不破壞既有客廳情境穩定性 Harness
+pytest tests/test_tl6_social_harness.py -v
 
-# 3. 跑全系統快速回歸
+# 3. 跑全系統快速回歸測試（213+ 測試確保全綠）
 pytest tests/ -k "not live and not real"
 ```
 
 ---
 
-## 6. 不做（Out of Scope）
+## 📝 六、 回報格式
 
-- **禁止引入向量資料庫 (No Vector DB / Embedding)**：嚴格依據跨 AI 評審共識，維持緊湊狀態與文字比對。
-- **禁止修改 SM-4 與 Decision LLM 的核心程式碼**：此階段只做社交感知層與機會層，不碰決策排程器。
-- **禁止修改 Frozen Contract**：Agency 4 stages、TriggerEnvelope、InnerLifeEvent 等嚴禁任何改動。
-
----
-
-## 7. Frozen Contract 注意
-
-- 參照 [`logs/ENGINEERING_STATE.md`](ENGINEERING_STATE.md) 的 Frozen Contract 條款。
-- `actor_id != self` 的事件只得進入 Ambient 感知與 Opportunity Buffer，**嚴禁進入 Episodic Memory 或 SAGE Graph**。
-
----
-
-## 8. 回報格式
-
-完成後請在回報中提供：
-1. 改動與新增檔案清單
-2. 測試結果（測試名稱、通過數量、耗時）
-3. Notion 更新之 Block ID 與執行截圖/日誌
-4. 是否踩到任何 Frozen Contract 或意外邊界
+完成後，請 DSH 回報：
+1. 執行的 Git push 結果與 Commit hash
+2. 改動/新增檔案清單
+3. 測試通過狀況（測試筆數、有無失敗、執行耗時）
+4. Notion 狀態更新之 Block ID
+5. 是否踩到任何邊界問題或需要主大腦進一步決策之處
