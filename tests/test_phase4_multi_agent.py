@@ -41,7 +41,7 @@ logger = logging.getLogger("soul_os.test.phase4")
 # ─────────────────────────────────────────────
 
 class MockLLMBackend(LLMBackend):
-    async def complete(self, messages, model, max_tokens, temperature):
+    async def complete(self, messages, model, max_tokens, temperature, **kwargs):
         sys_content = next((m["content"] for m in messages if m["role"] == "system"), "")
         # 根據 draft 内容决定回复
         draft = next((m["content"] for m in messages if m["role"] == "user"), "")

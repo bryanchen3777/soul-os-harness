@@ -1296,6 +1296,8 @@ class OpenAIBackend(LLMBackend):
         model: str = "gpt-4o-mini",
         max_tokens: int = 500,
         temperature: float = 0.85,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
         **kwargs,
     ) -> str:
         """
@@ -1356,6 +1358,12 @@ class OpenAIBackend(LLMBackend):
             "max_completion_tokens": max_tokens,  # 2026-07-25 Bry 拍板: 替換 legacy max_tokens, F 保留
             "temperature": temperature,
         }
+        # 2026-09-02 工單 (Bry 派工): 角色訊息生成 repetition penalty
+        # 只透傳非 None 值 (預設 None 向後相容), 事件/diary/dream 路徑不傳 → 請求體不含 penalty
+        if frequency_penalty is not None:
+            json_body["frequency_penalty"] = frequency_penalty
+        if presence_penalty is not None:
+            json_body["presence_penalty"] = presence_penalty
         # 2026-08-05 拍板 Lesson 32 (Bry 拍板 revert D 1): 只用 response_format 純一路
         if response_format:
             json_body["response_format"] = response_format
@@ -1551,6 +1559,10 @@ class ClaudeBackend(LLMBackend):
         # 階段 5.5 (Bry 拍板): Claude 不支援 response_format,**kwargs 吃下來 ignore
         # (kwargs.pop 確保真的消費掉,不污染後續)
         kwargs.pop("response_format", None)
+        # 2026-09-02 工單: Claude API 不支援 frequency_penalty / presence_penalty,
+        # 角色訊息生成路徑傳入時 pop 掉 ignore (跟 response_format 同模式)
+        kwargs.pop("frequency_penalty", None)
+        kwargs.pop("presence_penalty", None)
         # Claude API 將 system message 獨立出來
         system_msg = ""
         user_messages = []
@@ -3705,6 +3717,11 @@ class LLMProxy:
                     model=self.model,
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
+                    # 2026-09-02 工單 (Bry 派工): 角色訊息生成 repetition penalty
+                    # 修 Yua 卡在重複循環 (一直回同一句話) — 只加在角色訊息生成路徑,
+                    # 事件 (event_temperature) / diary / dream (獨立 temperature) 不傳, 保持原樣
+                    frequency_penalty=0.4,
+                    presence_penalty=0.3,
                     thinking=self.thinking,
                     response_format=emit_response_format,
                 )

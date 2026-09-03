@@ -50,7 +50,7 @@ logger = logging.getLogger("soul_os.test.m8")
 
 class MockLLMBackend(LLMBackend):
     """簡單 mock：從 system 抽 person，產短回應。"""
-    async def complete(self, messages, model, max_tokens, temperature):
+    async def complete(self, messages, model, max_tokens, temperature, **kwargs):
         sys_content = next(
             (m["content"] for m in messages if m["role"] == "system"), ""
         )

@@ -64,6 +64,7 @@ class MockLLMBackend(LLMBackend):
         model: str,
         max_tokens: int,
         temperature: float,
+        **kwargs,
     ) -> str:
         self.call_count += 1
         self.received_messages.append(list(messages))

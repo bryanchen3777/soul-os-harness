@@ -44,7 +44,7 @@ class MockLLMBackend(LLMBackend):
     def __init__(self):
         self.captured_messages: List[List[dict]] = []
 
-    async def complete(self, messages, model, max_tokens, temperature):
+    async def complete(self, messages, model, max_tokens, temperature, **kwargs):
         self.captured_messages.append(list(messages))
         return "[MOCK] 收到"
 
