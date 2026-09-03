@@ -24,6 +24,10 @@ InnerLifeWriter 创建、producer 合法、trace 佐证存在），伪造 id **f
       4. trace 佐证（可选）：配置了 ``trace_reader`` 时要求 trace 记录存在
       5. producer 合法：``provenance.trigger_type`` 在合法 producer 集合内
          （8 个 TRIGGER_TYPE_* 常量 + ``world:*`` 前缀，M5.9-3 WorldInnerLifeAdapter）
+      6. actor_id 身份检查（SI-2.1 防线 3, additive）：配置了 IdentityFirewall
+         时, ``provenance.actor_id != current_agent_id`` → 打 EXTERNAL_OTHER_ACTION
+         标签, fail-closed 拒绝内化/升华（他者事件只能作背景感知, 不 consume、
+         不写 SAGE、不 elevate）。未配置 firewall → 跳过, 向后兼容。
   - **只 consume 不 elevate**：``submit()`` 验证通过后调 ``run_elevation``
     （内部只 ``engine.consume()``，产 pattern 候选节点）；本模块**不暴露也不调用**
     ``elevate()``（测试用 AST 红线锁定）。
@@ -59,6 +63,11 @@ from .event import (
     TRIGGER_TYPE_USER_MESSAGE,
 )
 from .identity import IdentityValidationError, validate_event_id
+
+# SI-2.1 (Social Diffusion Contract, 2026-09-03): 防線 3 Identity Firewall —
+# verify() 第 6 步 actor_id 身份檢查 (additive, 既有 5 步 0 改動)。
+# src/social/ 是獨立新模組, 不 import inner_life, 無 circular import。
+from src.social.identity_firewall import EXTERNAL_OTHER_ACTION, IdentityFirewall
 
 if TYPE_CHECKING:  # 仅类型标注，运行时不执行
     from .event import InnerLifeEvent
@@ -146,6 +155,7 @@ class SubmissionGate:
         store_dir: Optional[Any] = None,
         agent_id: Optional[str] = None,
         enabled: bool = True,
+        identity_firewall: Optional[IdentityFirewall] = None,
     ) -> None:
         """
         Args:
@@ -156,8 +166,13 @@ class SubmissionGate:
                 （writer per-instance 权威已足够）。
             llm: 可选 ElevationLLM 实现（透传给 run_elevation 的 consume）。
             store_dir: 可选 store 目录（透传，缺省 data_root()/elevation）。
-            agent_id: 可选归属 agent（灵魂本体）覆盖。
+            agent_id: 可选归属 agent（灵魂本体）覆盖（透传给 run_elevation 的
+                consume）。注意: 不自动启用防线 3 — 防线 3 需显式注入
+                identity_firewall (SI-2.1 additive, 既有调用方 0 影响)。
             enabled: False 时 submit() 直接返回 []（no-op，不验证不 consume）。
+            identity_firewall: SI-2.1 (additive) — 可选显式注入 IdentityFirewall
+                （防线 3）。提供时 verify() 第 6 步 actor_id 检查生效;
+                None 则第 6 步跳过（向后兼容，既有调用方 0 影响）。
         """
         if writer is None:
             raise ValueError(
@@ -170,6 +185,11 @@ class SubmissionGate:
         self._store_dir = store_dir
         self._agent_id = agent_id
         self.enabled = enabled
+        # SI-2.1 (additive): 防线 3 Identity Firewall — 仅显式注入启用。
+        # 不自动从 agent_id 构造: agent_id 的既有语义是「归属 agent 覆盖,
+        # 透传给 run_elevation 的 consume」, 自动构造会改变其语义并影响
+        # 既有调用方 (additive 原则: 既有调用方 0 影响)。
+        self._identity_firewall: Optional[IdentityFirewall] = identity_firewall
         # Observability counters
         self._stats = {
             "submissions": 0,
@@ -177,11 +197,13 @@ class SubmissionGate:
             "rejected": 0,
             "consumed": 0,
             "consume_failures": 0,
+            "identity_firewall_rejected": 0,  # SI-2.1: 防线 3 拒绝计数
         }
         logger.info(
             f"[SubmissionGate] initialized "
             f"trace_reader={'yes' if trace_reader is not None else 'no'} "
-            f"enabled={enabled}"
+            f"enabled={enabled} "
+            f"identity_firewall={'yes' if self._identity_firewall is not None else 'no'}"
         )
 
     # ─────────────────────────────────────────────────────────────
@@ -197,6 +219,9 @@ class SubmissionGate:
           3. canonical InnerLifeEvent 存在（``writer.get_event``）
           4. trace 佐证（可选）：配置了 trace_reader 时要求 trace 记录存在
           5. producer 合法：trigger_type 在合法集合内
+          6. actor_id 身份检查（SI-2.1 防线 3, additive）：配置了
+             IdentityFirewall 时, actor_id != current_agent_id → EXTERNAL_OTHER_ACTION
+             标签, fail-closed 拒绝内化/升华（他者事件只能作背景感知）
 
         Returns:
             SubmissionVerdict（accepted=True 时带 canonical event）。
@@ -250,6 +275,27 @@ class SubmissionGate:
                     f"{sorted(VALID_PRODUCER_TRIGGER_TYPES)} + world:* — fail-closed"
                 ),
             )
+
+        # 6. actor_id 身份检查 (SI-2.1 防线 3, additive — 既有 5 步 0 改动)
+        #    读取 canonical InnerLifeEvent.provenance.actor_id:
+        #      a. actor_id == current_agent_id (自己)  → 通过, 正常内化路径
+        #      b. actor_id != current_agent_id (他者)  → EXTERNAL_OTHER_ACTION
+        #         标签, fail-closed 拒绝内化/升华 (不 consume, 不 elevate)
+        #      c. actor_id is None (系统事件)          → 维持现状 (既有 world:* 路径)
+        #    未配置 identity_firewall (agent_id 也未提供) → 跳过, 向后兼容。
+        if self._identity_firewall is not None:
+            actor_id = event.provenance.actor_id
+            if not self._identity_firewall.verify_internalizable(actor_id):
+                self._stats["identity_firewall_rejected"] += 1
+                return SubmissionVerdict(
+                    accepted=False,
+                    reason=(
+                        f"{EXTERNAL_OTHER_ACTION}: actor_id={actor_id!r} != "
+                        f"current_agent_id={self._identity_firewall.current_agent_id!r} "
+                        f"— 他者事件禁止内化/升华 (防线 3 Identity Firewall, "
+                        f"SI-2.1)"
+                    ),
+                )
 
         return SubmissionVerdict(
             accepted=True,

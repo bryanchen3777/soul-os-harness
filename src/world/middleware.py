@@ -31,7 +31,7 @@ import logging
 import re
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from src.eventbus.bus import SoulEventBus
 from src.eventbus.schema import (
@@ -59,12 +59,28 @@ from .state import WorldPerceptionState
 from .trace import WorldPerceptionTraceWriter
 from .validation import WorldEventValidationError, validate_world_event
 
+# SI-2.1 (Social Diffusion Contract, 2026-09-03): 防線 1 Ambient Perception Path —
+# SOCIAL_WORLD_EVENT 平行訂閱 (additive, 既有 WORLD_EVENT / AGENT_INTENT_ENRICHED
+# 訂閱與處理路徑 0 變更)。SocialWorldEvent 繼承 WorldEvent, 可進同一個
+# WorldPerceptionState (ephemeral 容器, 0 改動) 與 compute_scores 評分管道。
+#
+# 注意: 不在模組頂層 import src.social — src/social/schema.py 依賴
+# src.world.perception (WorldEvent), 而 src/world/__init__.py 會 import 本模組,
+# 頂層 import 會造成 circular import。改為方法內局部 import (Python import
+# 有快取, 開銷可忽略)。
+if TYPE_CHECKING:  # 僅類型標註, 運行時不執行
+    from src.social.schema import SocialWorldEvent
+
 logger = logging.getLogger("soul_os.world.middleware")
 
 
 # Bry 拍板 2026-08-07 19:40: Perception Budget 做成 config, Phase 1 initial = 3
 # 拒絕「一個時間點只有一個世界事件」假設
 DEFAULT_PERCEPTION_BUDGET = 3
+
+# SI-2.1 (2026-09-03): 社交感知獨立 budget (低刺激度背景氛圍, 比世界感知更收斂)。
+# 平行於 DEFAULT_PERCEPTION_BUDGET, 不佔用世界事件的名額。
+DEFAULT_SOCIAL_PERCEPTION_BUDGET = 2
 
 
 def _extract_user_context_keywords(agent_intent_payload: Dict[str, Any]) -> List[str]:
@@ -185,6 +201,7 @@ class WorldPerceptionMiddleware:
         novelty_window: timedelta = timedelta(hours=24),
         accept_threshold: float = DEFAULT_ACCEPT_THRESHOLD,
         perception_budget: int = DEFAULT_PERCEPTION_BUDGET,
+        social_perception_budget: int = DEFAULT_SOCIAL_PERCEPTION_BUDGET,
     ):
         """
         Args:
@@ -194,12 +211,15 @@ class WorldPerceptionMiddleware:
             novelty_window: Bry 拍板做成 config, 預設 24h
             accept_threshold: accept gate, 預設 0.35
             perception_budget: top-N 數量, 預設 3
+            social_perception_budget: SI-2.1 — 社交感知 top-N 數量, 預設 2
+                (低刺激度背景氛圍, 平行於世界感知 budget)
         """
         self.bus = bus
         self.state = state or WorldPerceptionState(novelty_window=novelty_window)
         self.trace_writer = trace_writer or WorldPerceptionTraceWriter()
         self.accept_threshold = accept_threshold
         self.perception_budget = perception_budget
+        self.social_perception_budget = social_perception_budget
 
         # observability counters
         self._events_received = 0
@@ -215,6 +235,7 @@ class WorldPerceptionMiddleware:
         向 Event Bus 註冊, 開始接收:
         - WORLD_EVENT (新事件, source 發布)
         - AGENT_INTENT_ENRICHED (MemoryMiddleware 已 enrich, WorldPerception 加 world_context)
+        - SOCIAL_WORLD_EVENT (SI-2.1 新增: 平行訂閱, 防線 1 Ambient Path)
         """
         self.bus.subscribe(
             subscriber_id="world_perception",
@@ -222,11 +243,13 @@ class WorldPerceptionMiddleware:
             event_filter={
                 EventType.WORLD_EVENT,
                 EventType.AGENT_INTENT_ENRICHED,
+                EventType.SOCIAL_WORLD_EVENT,  # SI-2.1: 平行訂閱 (additive)
             },
         )
         logger.info(
             f"[WorldPerception] 已掛載 ✓ "
             f"perception_budget={self.perception_budget} "
+            f"social_perception_budget={self.social_perception_budget} "
             f"accept_threshold={self.accept_threshold} "
             f"novelty_window={self.state.novelty_window}"
         )
@@ -240,6 +263,9 @@ class WorldPerceptionMiddleware:
             await self._on_world_event(event)
         elif event.event_type == EventType.AGENT_INTENT_ENRICHED:
             await self._on_agent_intent_enriched(event)
+        elif event.event_type == EventType.SOCIAL_WORLD_EVENT:
+            # SI-2.1: 平行分派分支 (additive) — 防線 1 Ambient Path
+            await self._on_social_world_event(event)
 
     async def _on_world_event(self, event: SoulEvent) -> None:
         """
@@ -302,6 +328,116 @@ class WorldPerceptionMiddleware:
             f"count_in_window={novelty_count}"
         )
 
+    async def _on_social_world_event(self, event: SoulEvent) -> None:
+        """
+        SI-2.1 (2026-09-03): 收到 SOCIAL_WORLD_EVENT — 防線 1 Ambient Path。
+
+        復用 `_on_world_event` 同款管道 (validate → state → trace), 但驗證器
+        換成 SocialWorldEvent 驗證器 (src/social/validation.py, 薄驗證, fail-closed)。
+
+        額外契約檢查 (SI-2.1 §3.4): visibility=private 出現在 bus 上 = 契約違例
+        (防線 2 已把 private 攔截在廣播總線之外) → fail-closed 丟棄, 不進 state。
+
+        不觸發 transmit / AGENT_INTENT / AGENCY_TRIGGER — 只進 world_context
+        (Ambient Perception, 低刺激度背景氛圍)。
+        """
+        # 局部 import (避免 circular: src/social/schema.py 依賴 src.world.perception)
+        from src.social.schema import VISIBILITY_PRIVATE
+        from src.social.validation import (
+            SocialWorldEventValidationError,
+            validate_social_world_event,
+        )
+
+        self._events_received += 1
+        try:
+            social_event = validate_social_world_event(event.payload)
+        except SocialWorldEventValidationError as e:
+            self._events_validation_rejected += 1
+            self.state.record_validation_reject()
+            self.trace_writer.write(WorldPerceptionTrace(
+                event_id=event.event_id,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                source=event.payload.get("actor_id", "unknown"),
+                event_type=event.payload.get("event_type", "unknown"),
+                novelty_id=event.payload.get("novelty_id", "unknown"),
+                scores=PerceptionScores(),  # 全部 0 (沒 scoring)
+                accepted=False,
+                reason=f"validation_reject: {e}",
+                context_injected=False,
+                memory_written=False,
+                novelty_count_in_window=0,
+                selection_reason=SELECTION_REJECTED_AT_VALIDATION,
+                extra={"phase": "validation", "event_kind": "social"},
+            ))
+            logger.warning(f"[WorldPerception] social validation reject: {e}")
+            return
+
+        # SI-2.1 §3.4: private 出現在 bus 上 = 契約違例 → fail-closed 丟棄
+        if social_event.visibility == VISIBILITY_PRIVATE:
+            self._events_validation_rejected += 1
+            self.state.record_validation_reject()
+            self.trace_writer.write(WorldPerceptionTrace(
+                event_id=event.event_id,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                source=social_event.actor_id,
+                event_type=social_event.event_type,
+                novelty_id=social_event.novelty_id,
+                scores=PerceptionScores(),
+                accepted=False,
+                reason=(
+                    "private_on_bus_contract_violation: visibility=private 出現在 "
+                    "bus 上 (防線 2 應已攔截) — fail-closed 丟棄"
+                ),
+                context_injected=False,
+                memory_written=False,
+                novelty_count_in_window=0,
+                selection_reason=SELECTION_REJECTED_AT_VALIDATION,
+                extra={
+                    "phase": "validation",
+                    "event_kind": "social",
+                    "actor_id": social_event.actor_id,
+                    "space_id": social_event.space_id,
+                },
+            ))
+            logger.warning(
+                f"[WorldPerception] social private_on_bus 契約違例, 丟棄: "
+                f"actor_id={social_event.actor_id} novelty_id={social_event.novelty_id}"
+            )
+            return
+
+        # valid → 加到 state (同一個 WorldPerceptionState, ephemeral, 24h novelty window)
+        novelty_count = self.state.add(social_event)
+        self._events_state_added += 1
+
+        self.trace_writer.write(WorldPerceptionTrace(
+            event_id=event.event_id,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            source=social_event.source,
+            event_type=social_event.event_type,
+            novelty_id=social_event.novelty_id,
+            scores=PerceptionScores(),  # 此時還沒算
+            accepted=False,  # placeholder, 真正的 decision 在 AGENT_INTENT 處理時
+            reason="received_valid_social_event_pending_evaluation",
+            context_injected=False,
+            memory_written=False,
+            novelty_count_in_window=novelty_count,
+            selection_reason="",  # 待 evaluate 後填
+            extra={
+                "phase": "received",
+                "event_kind": "social",
+                "actor_id": social_event.actor_id,
+                "space_id": social_event.space_id,
+                "visibility": social_event.visibility,
+            },
+        ))
+        logger.info(
+            f"[WorldPerception] 收到 valid social event | "
+            f"actor_id={social_event.actor_id} space={social_event.space_id} "
+            f"event_type={social_event.event_type} "
+            f"novelty_id={social_event.novelty_id} "
+            f"count_in_window={novelty_count}"
+        )
+
     async def _on_agent_intent_enriched(self, event: SoulEvent) -> None:
         """
         收到 AGENT_INTENT_ENRICHED (MemoryMiddleware 已 enrich):
@@ -330,12 +466,20 @@ class WorldPerceptionMiddleware:
             await self._publish_perceived(event, world_context=WorldContext(), agent_id=agent_id)
             return
 
+        # SI-2.1 (additive): 分流 social events — 平行感知路徑, 不混入 [世界感知]。
+        # SocialWorldEvent 繼承 WorldEvent, 會跟 world events 一起在 state 裡;
+        # 這裡把兩者分開: world events 走既有邏輯 (0 變更), social events 走
+        # 獨立 [社交感知] 渲染 (防線 1 Ambient, 帶「他者行為、非我經歷」反框架語)。
+        from src.social.schema import SocialWorldEvent  # 局部 import (避免 circular)
+        world_events = [ev for ev in active_events if not isinstance(ev, SocialWorldEvent)]
+        social_events = [ev for ev in active_events if isinstance(ev, SocialWorldEvent)]
+
         # ── Pass 1: 算所有 scores + accept/reject decisions ──
         # Bry 拍板: novelty_count 按 perceived_at 順序算 position
         novelty_position: Dict[str, int] = {}
         scored: List[Tuple[WorldEvent, PerceptionScores, PerceptionDecision, int]] = []
 
-        for world_event in active_events:
+        for world_event in world_events:
             nid = world_event.novelty_id
             novelty_position[nid] = novelty_position.get(nid, 0) + 1
             novelty_count = novelty_position[nid]
@@ -415,27 +559,53 @@ class WorldPerceptionMiddleware:
         if not world_context.is_empty:
             self._contexts_injected += 1
 
+        # SI-2.1 (additive): social events 獨立渲染 [社交感知] 區塊 (防線 1 Ambient)
+        social_block = self._render_social_context(
+            social_events,
+            user_keywords=user_keywords,
+            temporal_salience=temporal_salience,
+            anticipatory_flavor=anticipatory_flavor,
+            vulnerability_window=vulnerability_window,
+            agent_id=agent_id,
+        )
+
         logger.info(
             f"[WorldPerception] agent={agent_id} "
             f"active={len(active_events)} "
             f"accepted={sum(1 for d in world_context.decisions if d.accepted)} "
             f"top_n={len(top_n_events)} "
-            f"perception_budget={self.perception_budget}"
+            f"perception_budget={self.perception_budget} "
+            f"social_active={len(social_events)}"
         )
 
-        await self._publish_perceived(event, world_context=world_context, agent_id=agent_id)
+        await self._publish_perceived(
+            event,
+            world_context=world_context,
+            agent_id=agent_id,
+            social_block=social_block,
+        )
 
     async def _publish_perceived(
         self,
         enriched_event: SoulEvent,
         world_context: WorldContext,
         agent_id: str,
+        social_block: str = "",
     ) -> None:
         """
         Re-publish 為 AGENT_INTENT_PERCEIVED。
         payload 帶: 原 enriched payload + world_context (text) + world_perception_meta。
+
+        SI-2.1 (additive): social_block 參數 (預設 "") — [社交感知] 區塊文字,
+        追加在 [世界感知] 區塊之後 (防線 1 Ambient Perception)。
         """
         world_context_text = format_world_context_block(world_context)
+        if social_block:
+            world_context_text = (
+                world_context_text + social_block
+                if world_context_text
+                else social_block
+            )
 
         # 收集 top-N event ids + accept/reject counts (observability)
         meta = {
@@ -463,6 +633,110 @@ class WorldPerceptionMiddleware:
             correlation_id=enriched_event.correlation_id,
         )
         await self.bus.publish(perceived)
+
+    # ── SI-2.1: 社交感知渲染 (防線 1 Ambient Path) ─────────
+
+    def _render_social_context(
+        self,
+        social_events: List[SocialWorldEvent],
+        *,
+        user_keywords: List[str],
+        temporal_salience: str,
+        anticipatory_flavor: str,
+        vulnerability_window: bool,
+        agent_id: str,
+    ) -> str:
+        """
+        SI-2.1 (2026-09-03): 把 active social events 渲染成 [社交感知] 區塊。
+
+        復用 compute_scores (SocialWorldEvent 繼承 WorldEvent, 接口兼容),
+        取 top-N (social_perception_budget, 預設 2), 渲染成:
+
+            [社交感知] 以下是你剛才注意到的客廳/靈魂牆動態。
+            這些是他人的行為, 屬於環境背景, 不是你的經歷; 自然感知即可,
+            不要過度反應, 不要逐條回應。
+
+            ## 你注意到的社交動態
+            - [lounge/greeting] agent_miku 向大家打了招呼
+
+        關鍵: 渲染文案帶「他者行為、環境背景、非我經歷」反框架語 (防線 3 的
+        prompt 層配合; 硬 gate 在 Submission Gate 第 6 步)。
+
+        選擇語義 (SI-2.1 §6.1): 社交事件是 Ambient 背景感知 — 低刺激度指的是
+        「不觸發即時行動 (transmit)」, 不是「被 threshold 過濾」。因此 top-N
+        按 final score 排名直接取 (不過 should_accept threshold), 讓社交動態
+        自然進入背景感知; trace 仍誠實記錄 threshold 判定 (observability)。
+
+        不觸發 transmit / AGENT_INTENT / AGENCY_TRIGGER — 只進 world_context。
+        """
+        if not social_events:
+            return ""
+
+        # 簡單 scoring (novelty_count 按 perceived_at 順序算 position)
+        novelty_position: Dict[str, int] = {}
+        scored: List[tuple] = []
+        for ev in social_events:
+            nid = ev.novelty_id
+            novelty_position[nid] = novelty_position.get(nid, 0) + 1
+            scores = compute_scores(
+                event=ev,
+                novelty_count=novelty_position[nid],
+                current_user_context_keywords=user_keywords,
+                temporal_salience=temporal_salience,
+                anticipatory_flavor=anticipatory_flavor,
+                vulnerability_window=vulnerability_window,
+                silence_hours=0.0,
+                event_priority=ev.priority,
+            )
+            accepted, reason = should_accept(scores, threshold=self.accept_threshold)
+            scored.append((ev, scores, accepted, reason, novelty_position[nid]))
+
+        # Ambient 選擇: 按 final score 排名取 top-N (不過 threshold)
+        ranked = sorted(scored, key=lambda t: t[1].final(), reverse=True)
+        top_n = ranked[: self.social_perception_budget]
+        top_n_ids = {id(t[0]) for t in top_n}
+
+        # trace (social evaluate — 必寫, 不論 accept/reject)
+        for ev, scores, accepted, reason, novelty_count in scored:
+            is_top_n = id(ev) in top_n_ids
+            self.trace_writer.write(WorldPerceptionTrace(
+                event_id=ev.novelty_id,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                source=ev.source,
+                event_type=ev.event_type,
+                novelty_id=ev.novelty_id,
+                scores=scores,
+                accepted=accepted,
+                reason=reason,
+                context_injected=is_top_n,
+                memory_written=False,  # 防線 3: 他者事件永不寫 memory
+                novelty_count_in_window=novelty_count,
+                selection_reason=(
+                    f"{SELECTION_SELECTED_TOP_N} (social_budget={self.social_perception_budget})"
+                    if is_top_n
+                    else SELECTION_BELOW_BUDGET
+                ),
+                extra={
+                    "phase": "social_evaluated",
+                    "agent_id": agent_id,
+                    "actor_id": ev.actor_id,
+                    "space_id": ev.space_id,
+                    "visibility": ev.visibility,
+                },
+            ))
+
+        if not top_n:
+            return ""
+
+        lines = [
+            "\n[社交感知] 以下是你剛才注意到的客廳/靈魂牆動態。",
+            "這些是他人的行為, 屬於環境背景, 不是你的經歷; 自然感知即可, "
+            "不要過度反應, 不要逐條回應。",
+            "\n## 你注意到的社交動態",
+        ]
+        for ev, _, _, _, _ in top_n:
+            lines.append(f"- [{ev.space_id}/{ev.event_type}] {ev.actor_id} {ev.summary}")
+        return "\n".join(lines) + "\n"
 
     # ── External API (給 test / observability) ───────────
 

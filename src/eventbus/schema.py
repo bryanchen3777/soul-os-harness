@@ -52,6 +52,14 @@ class EventType(str, Enum):
     # 既有 event type 名稱 / payload / semantics 不變, 純 additive
     AGENCY_TRIGGER  = "agency_trigger"     # M5.2-G: Scheduler 發給 Agency 的 trigger (proactive_dm etc.)
 
+    # SI-2.1 (Social Diffusion Contract, 2026-09-03): 靈魂間社交事件 (廣播擴散)
+    # 既有 20 個枚舉值語意 0 變更, 純 additive。
+    # 語意: 有行為主體 (actor_id = 靈魂 id) 的社交行為, 跟 WORLD_EVENT (客觀世界事實)
+    # 平行不混用。感知路徑: WorldPerceptionMiddleware 平行訂閱 (防線 1 Ambient Path)。
+    # 身份防污染: 防線 3 Identity Firewall 判定 actor_id != current_agent_id →
+    # EXTERNAL_OTHER_ACTION, fail-closed 拒絕內化/昇華。
+    SOCIAL_WORLD_EVENT = "social_world_event"   # SI-2.1: 靈魂間社交事件 (廣播擴散)
+
 
 class EventPriority(int, Enum):
     """
@@ -157,6 +165,29 @@ class SoulEvent(BaseModel):
             "Cross-reference 到 canonical InnerLifeEvent.event_id (M5.4-5.1)。"
             "M5.4-5.5 開始: producer 可選填, consumer 可讀取。"
             "預設 None 表示此事件未跟特定 Inner Life event 綁定 (向後相容既有 producer)。"
+        )
+    )
+
+    # ── Social identity (SI-2.1 Social Diffusion Contract, 2026-09-03) ──
+    # 行為主體靈魂身份 (agent_id, e.g. 'agent_ruka')。
+    # 跟 inner_life_event_id 同性質: top-level Optional 欄位, 預設 None (向後相容,
+    # 既有 producer 不填不受影響)。
+    #
+    # 跟 source 的差別:
+    #   - source: 管道發送者 (誰把事件放上 bus)
+    #   - actor_id: 行為主體 (誰做了這個社交行為)
+    #   對 SOCIAL_WORLD_EVENT 二者通常一致; 對系統轉發事件, source 可為系統而
+    #   actor_id 指向原行為靈魂。
+    #
+    # 防線 3 Identity Firewall 的判定依據: actor_id != current_agent_id →
+    # EXTERNAL_OTHER_ACTION 標籤, fail-closed 拒絕內化/昇華 (他者事件只能作背景感知)。
+    actor_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "行為主體靈魂身份 (agent_id, e.g. 'agent_ruka')。"
+            "SI-2.1 新增: 社交事件的行為主體; 系統級事件為 None。"
+            "防線 3 Identity Firewall 的判定依據。"
+            "預設 None 向後相容 (既有 producer 不填不受影響)。"
         )
     )
 
@@ -302,3 +333,28 @@ class SoulEvent(BaseModel):
 #           - DiaryHandler (M5.2-H Phase 3)  → "morning"|"night" → diary_writer_executor
 #   Schema 定義 (EventType.AGENCY_TRIGGER 枚舉值 + SoulEvent 結構) 自 M5.2-G 起 frozen;
 #   J-1 只補 payload convention 文件, 不動 schema definition 本身。
+#
+# EventType.SOCIAL_WORLD_EVENT (SI-2.1 Social Diffusion Contract, 2026-09-03):
+#   source = 管道發送者 (通常 = actor_id)
+#   actor_id = 行為主體靈魂 id (SoulEvent.actor_id, 與 payload.actor_id 一致)
+#   target = "broadcast" (防線 2 已把 private 攔截在廣播總線之外)
+#   priority = EventPriority.LOW (低刺激度, 防線 1 Ambient 預設)
+#   payload = {
+#       "actor_id": str,        # 行為主體靈魂 id (與 SoulEvent.actor_id 一致, 冗餘便於獨立消費)
+#       "space_id": str,        # 發生空間: "lounge" (客廳群聊) | "soul_wall" (靈魂牆)
+#       "visibility": str,      # 可見性: "public" | "private" (到 bus 時必為 "public",
+#                               #   防線 2 已攔截 private; "private" 出現在 bus 上 = 契約違例,
+#                               #   訂閱端 fail-closed 丟棄)
+#       "event_type": str,      # 社交行為細分類 (v1 白名單: greeting/share/reply/mood/activity)
+#       "content": str,         # 簡明內容 (<= 200 chars)
+#       "novelty_id": str,      # 去重 key ([a-z0-9_] 4-128, 復用 WorldEvent 規則)
+#       "ts": str,              # 事件發生時間 (ISO 8601 UTC)
+#       "summary": str,         # 客觀描述 (World Context 渲染用, <= 500 chars)
+#       "data": dict,           # 結構化擴展 (選填, 預設 {})
+#       "priority": int,        # 刺激度 hint (預設 0 = 低刺激度, 防線 1)
+#   }
+#   用途: 靈魂間社交事件廣播擴散。防線 1 (WorldPerceptionMiddleware 平行訂閱) →
+#   world_context [社交感知] 區塊 (Ambient Perception, 不觸發 transmit);
+#   防線 3 (Identity Firewall) 判定 actor_id != current_agent_id →
+#   EXTERNAL_OTHER_ACTION, fail-closed 拒絕內化/昇華。
+#   詳細契約見 docs/SOCIAL-DIFFUSION-CONTRACT.md。
