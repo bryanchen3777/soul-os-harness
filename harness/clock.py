@@ -56,14 +56,17 @@ class SimulationClock:
 
     # ── 模拟时间戳 ───────────────────────────────────────
 
-    def sim_ts(self, day: Optional[int] = None) -> str:
-        """把 day 映射成 ISO 8601 UTC 字符串 (epoch + day 偏移)。
+    def sim_ts(self, day: Optional[int] = None, hour: int = 0) -> str:
+        """把 day (+可选 hour) 映射成 ISO 8601 UTC 字符串 (epoch + 偏移)。
 
         供 InnerLifeEvent.ts 使用 (identity.py TS_PATTERN 校验:
         YYYY-MM-DDTHH:MM:SS[.ffffff]+00:00)。
+
+        hour 是 TL-5 加的 additive 参数 (默认 0, 现有调用行为不变):
+        心跳 tick 需要小时精度 (08:00 / 14:00 / 20:00 / 23:00 / 03:00)。
         """
         d = self._day if day is None else int(day)
-        ts = self._epoch + timedelta(days=d)
+        ts = self._epoch + timedelta(days=d, hours=int(hour))
         return ts.isoformat()
 
     def __repr__(self) -> str:  # pragma: no cover
