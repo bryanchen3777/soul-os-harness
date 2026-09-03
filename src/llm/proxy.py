@@ -639,6 +639,12 @@ def _build_messages_group(
             attachment_str = _format_attachment_str(agent_id)
             if attachment_str:
                 temporal_block += f"\n{attachment_str}"
+        # TA-2 (Bry 拍板 2026-09-02): TEMPORAL ANCHOR 三行 (主观时间现象学)
+        # 注入位置: 时间区块内 (TA-1 同区), 作为时间感知的现象学补充
+        # (三态张力: 无感/牵挂/释然, 现象化无数字, 内嵌防 transmit 措辞)
+        anchor_str = _format_temporal_anchor(agent_id, last_interaction_ts, now, event_ts)
+        if anchor_str:
+            temporal_block += f"\n{anchor_str}"
         system_parts.append(temporal_block)
 
     # 短期記憶 — Bry 最近訊息注入 (Bry 拍板 2026-08-02 16:xx, N=3)
@@ -921,6 +927,30 @@ def _format_attachment_str(agent_id: str) -> str:
     return f"你對 Bry 的親密度目前是 {int(intimacy)}/100。"
 
 
+def _format_temporal_anchor(
+    agent_id: str,
+    last_interaction_ts: int,
+    now: int,
+    event_ts: Optional[datetime] = None,
+) -> str:
+    """TA-2 (Bry 拍板 2026-09-02): TEMPORAL ANCHOR 三行 (主观时间现象学)。
+
+    委托 src/soul.temporal_phenomenology.format_temporal_anchor (纯函数, fail-silent)。
+    注入位置: 时间区块内 (TA-1 同区), 作为时间感知的现象学补充。
+
+    三态张力模型 (无感/牵挂/释然): 离散状态, 非连续公式, 不持久化 (每次现算)。
+    牵挂资格判定复用 M5.13-3 亲密度 Band (熟悉 >= 0.5, 资格判定非强度公式)。
+    reflect-only 加权: 牵挂态第三行让 reflect 更自然 (情境呈现, 非指令),
+    绝不提升 transmit (第三行内嵌「但這絕不代表必須主動聯絡」, T1 防线)。
+    """
+    try:
+        from src.soul.temporal_phenomenology import format_temporal_anchor
+        return format_temporal_anchor(agent_id, last_interaction_ts, now, event_ts)
+    except Exception as e:
+        logger.debug(f"[TA-2] _format_temporal_anchor 失敗: {type(e).__name__}: {e}")
+        return ""
+
+
 def _format_emergent_block(agent_id: str) -> str:
     """
     Emergent read-side projection (工單「靈魂成長閉環」): 把該靈魂自己長出來的
@@ -1135,6 +1165,12 @@ def _build_messages_private(
             attachment_str = _format_attachment_str(agent_id)
             if attachment_str:
                 temporal_block += f"\n{attachment_str}"
+        # TA-2 (Bry 拍板 2026-09-02): TEMPORAL ANCHOR 三行 (主观时间现象学)
+        # 注入位置: 时间区块内 (TA-1 同区), 作为时间感知的现象学补充
+        # (三态张力: 无感/牵挂/释然, 现象化无数字, 内嵌防 transmit 措辞)
+        anchor_str = _format_temporal_anchor(agent_id, last_interaction_ts, now, event_ts)
+        if anchor_str:
+            temporal_block += f"\n{anchor_str}"
         system_parts.append(temporal_block)
 
     messages.append({"role": "system", "content": "\n".join(system_parts)})

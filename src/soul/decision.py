@@ -70,7 +70,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 logger = logging.getLogger("soul_os.soul.decision")
@@ -186,6 +186,7 @@ def build_decision_prompt(
     memory_summary: Optional[str] = None,
     emergent_summary: Optional[str] = None,
     current_time: Optional[str] = None,
+    temporal_anchor: Optional[str] = None,
 ) -> str:
     """
     组装 Decision prompt (专用 builder, 禁止重用 _build_messages_* 聊天路径)。
@@ -209,6 +210,9 @@ def build_decision_prompt(
         current_time: 当前时间 (SM-4.5, 可选; "YYYY-MM-DD HH:MM" 或 ISO 8601)。
             提供 → Context 区块注入 [當前時間感知] (當前時間 + 當前時段);
             None / 解析失败 → 不注入 (向后兼容)。
+        temporal_anchor: TEMPORAL ANCHOR 三行 (TA-2, 可选; 主观时间现象学)。
+            提供 → Context 区块注入 (emergent 子块位置, 三态张力情境);
+            None → 不注入 (向后兼容)。只进 Relevant context, 不进 Framing/Boundary。
 
     Returns:
         纯文本 prompt (decide 时包成 messages)
@@ -240,6 +244,12 @@ def build_decision_prompt(
         context_lines.append(f"与此念头直接相关的记忆：{memory_summary}")
     if emergent_summary:
         context_lines.append(f"最近的自己：{emergent_summary}")
+    # TA-2 (Bry 拍板 2026-09-02): TEMPORAL ANCHOR 三行 (主观时间现象学)
+    # 只进 Relevant context (emergent 子块位置), 不进 Framing/Boundary。
+    # 三态张力情境 (无感/牵挂/释然) 让 Soul 在 Decision 中面对牵挂/释然,
+    # 牵挂态第三行让 reflect 更自然 (情境呈现, 非指令), 绝不提升 transmit。
+    if temporal_anchor:
+        context_lines.append(temporal_anchor)
     context_block = "\n".join(context_lines) if context_lines else ""
 
     # 4. Boundary (固定文本, 四元选择, 互斥单选)
@@ -472,6 +482,39 @@ def _build_emergent_summary(agent_id: str) -> Optional[str]:
         return None
 
 
+def _build_temporal_anchor(agent_id: str) -> Optional[str]:
+    """
+    TA-2 (Bry 拍板 2026-09-02): TEMPORAL ANCHOR 三行 (Relevant context 子块)。
+
+    数据源: relationships.json 的 user_bryan entry
+      - last_interaction_at (ISO → ts) + confidence (M5.13-3 复用)
+    三态张力模型 (无感/牵挂/释然): 离散状态, 非连续公式, 不持久化 (每次现算)。
+    reflect-only 加权: 牵挂态第三行让 reflect 更自然, 绝不提升 transmit。
+
+    规则 (SM-2 §2.3): 无 entry / 解析失败 → None (省略, fail-silent, 不编造)。
+    """
+    try:
+        from src.paths import data_root
+        path = data_root() / "soul" / agent_id / "relationships.json"
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        entry = data.get("others", {}).get("user_bryan")
+        if not isinstance(entry, dict):
+            return None
+        last_interaction_at = entry.get("last_interaction_at")
+        if not last_interaction_at:
+            return None
+        dt = datetime.fromisoformat(str(last_interaction_at).replace("Z", "+00:00"))
+        last_ts = int(dt.timestamp())
+        now = int(datetime.now(timezone.utc).timestamp())
+        from src.soul.temporal_phenomenology import format_temporal_anchor
+        return format_temporal_anchor(agent_id, last_ts, now)
+    except Exception as e:
+        logger.debug(f"[Decision] temporal anchor 跳过: {type(e).__name__}: {e}")
+        return None
+
+
 def _resolve_provenance_desc(motive: Any, agent_id: str) -> str:
     """
     把 motive.provenance_ref (InnerLifeEvent.event_id) 解析为经历的可读描述
@@ -510,6 +553,7 @@ async def decide_motive(
     agent_id: str,
     llm_call: Optional[Callable[..., Awaitable[Optional[str]]]] = None,
     current_time: Optional[str] = None,
+    temporal_anchor: Optional[str] = None,
 ) -> DecisionResult:
     """
     Decision LLM 主入口 (SM-2 §6 检查点第 3 步)。
@@ -533,6 +577,10 @@ async def decide_motive(
     relationship_summary = _build_relationship_summary(agent_id)
     memory_summary = _build_memory_summary(agent_id, query=motive.content)
     emergent_summary = _build_emergent_summary(agent_id)
+    # TA-2 (Bry 拍板 2026-09-02): TEMPORAL ANCHOR 三行 (主观时间现象学)
+    # 默认从 relationships.json 现算 (三态张力, 不持久化); 显式传入则用传入值。
+    if temporal_anchor is None:
+        temporal_anchor = _build_temporal_anchor(agent_id)
 
     prompt = build_decision_prompt(
         motive=motive,
@@ -541,6 +589,7 @@ async def decide_motive(
         memory_summary=memory_summary,
         emergent_summary=emergent_summary,
         current_time=current_time,
+        temporal_anchor=temporal_anchor,
     )
 
     raw = await llm_call(
