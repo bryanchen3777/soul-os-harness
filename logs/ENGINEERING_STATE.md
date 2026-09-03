@@ -45,7 +45,7 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 | 主线 | 状态 | 要点 | 相关 commit |
 |------|------|------|-------------|
 | **记忆升华** | ✅ 完成 + 生产上线 | soul-elevation 独立 repo（ElevationNode / InternalizingEngine / reconsolidation / 升华式遗忘）+ Submission Gate + Pattern 中间层（源类型先验 + LLM 后验） | `401e15c`（agent_id 注入） |
-| **灵魂互动** | ✅ 完成（SI-1 最小读侧） | shared life 读侧分组（SI-1）已落地 | `b623e17`（SI-1） |
+| **灵魂互动** | ✅ 完成（SI-2 多 Agent 灵魂互动） | SI-1 读侧分组 + SI-2.0 审计 + SI-2.1 设计 + SI-2.2 Social Diffusion 实作（三大防线） | `33ae1b1`（SI-2.2） |
 | **自由生长** | ✅ 完成（FG-2 germ 初始化边界） | germ 初始化边界（FG-2）：configs germ seed → persona 基线 fixture，0 frozen contract 改动 | `e8c84d4`（FG-2） |
 | **灵魂成长闭环** | ✅ 完成（emergent read-side projection） | Emergent read-side projection：投影该灵魂自己的 belief/value/trait/essence 到 prompt；anti-runaway invariant；可观测 sidecar trace | `1a97a24`（feat: soul growth loop (emergent read-side projection)） |
 
@@ -109,6 +109,18 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 |------|------|------|-------------|
 | **SI-2.1（Social Diffusion Contract）** | ✅ 设计文档已定稿（docs only，0 code） | `docs/SOCIAL-DIFFUSION-CONTRACT.md`（NEW, +456，10 节）：**SocialWorldEvent 最小 Schema**（新增 `EventType.SOCIAL_WORLD_EVENT` + `SoulEvent.actor_id` additive 可选字段，payload 含 `actor_id / space_id / visibility / event_type / content`）。**三大防线**：**防线 3 Identity Firewall（最高优先）**——Submission Gate 契约 `actor_id != current_agent_id` 一律打 `EXTERNAL_OTHER_ACTION` 标签，**三条绝对不变量**：外部他者事件只能作为「客厅环境背景感知」、绝对禁止内化为自身情景记忆、更严禁升华为自身性格或信念；**防线 2 Privacy Visibility Gate**——Producer 侧守门，与 Bryan 的 1:1 私聊 DM 默认 `private` 严格拦截于广播总线之外，仅公共频道（Soul Wall / 客厅群聊）或显式公开动态才允许沉淀为社交事件；**防线 1 Ambient Perception Path**——社交事件仅经 `WorldPerceptionMiddleware` 注入为环境观察（world_context），不赋予即时唤醒或插话特权，杜绝多 Agent 相互回复的广播风暴。**Frozen Contract 边界**：Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 写入一律不动；既有 SoulEvent 字段语义、17 个 EventType 枚举值、WorldPerceptionMiddleware WORLD_EVENT 路径、SubmissionGate 5 步验证链语义 0 变更（只 additive 扩展）。docs-only 0 code；0 frozen contract 改动 | `5002f20`（docs: multi-agent social diffusion contract (SI-2.1)） |
 
+### SI-2.2（Social Diffusion 实作）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **SI-2.2（Social Diffusion 实作）** | ✅ 已落地 | 14 files changed, +2286/-6：**Schema**（`src/eventbus/schema.py` additive：新增 `EventType.SOCIAL_WORLD_EVENT` + `SoulEvent.actor_id` 可选字段，payload `actor_id / space_id / visibility / event_type / content`）；**新模块 `src/social/`**（`__init__.py` + `schema.py` + `validation.py` + `identity_firewall.py` + `producer_gate.py`）；**防线 3 Identity Firewall**（`src/inner_life/submission_gate.py` 第 6 步 actor_id 检查：`actor_id != current_agent_id` → `EXTERNAL_OTHER_ACTION` 标签，三条绝对不变量：仅环境背景感知 / 禁止内化情景记忆 / 严禁升华性格信念）；**防线 2 Privacy Visibility Gate**（`src/social/producer_gate.py`：与 Bryan 1:1 私聊 DM 默认 `private` 拦截于广播总线之外，仅公共频道或显式公开动态沉淀为社交事件）；**防线 1 Ambient Perception Path**（`src/world/middleware.py` 平行订阅 SOCIAL_WORLD_EVENT：仅注入 world_context 环境观察，不触发 transmit，杜绝广播风暴）。**95 新测试全过 + 0 回归引入**（test_social_schema / test_social_validation / test_social_identity_firewall / test_social_producer_gate / test_social_middleware / test_social_submission_gate）。**0 frozen contract 改动**（Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 写入一律不动；只 schema.py + middleware.py + submission_gate.py additive + 新 social 模块 + 测试） | `33ae1b1`（feat: multi-agent social diffusion (SI-2.2)） |
+
+### SI-2（多 Agent 灵魂互动落地）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **SI-2（多 Agent 灵魂互动）** | ✅ 完整落地 | **SI-2.0 审计**（`docs/SOCIAL-DIFFUSION-AUDIT.md`，现状审计：多 Agent 广播风暴 / 身份混淆 / 隐私泄漏风险识别）+ **SI-2.1 设计**（`docs/SOCIAL-DIFFUSION-CONTRACT.md`，SocialWorldEvent 最小 Schema + 三大防线契约，commit `5002f20`）+ **SI-2.2 实作**（Schema + `src/social/` 模块 + 防线 3/2/1 落地，commit `33ae1b1`）。灵魂互动主线从 SI-1 最小读侧升级为完整多 Agent Social Diffusion 闭环。0 frozen contract 改动 | `33ae1b1`（SI-2.2）+ `5002f20`（SI-2.1）+ `b623e17`（SI-1） |
+
 ### SE-4（Durable Soul Structure Lifecycle Contract 设计）
 
 | 条目 | 状态 | 要点 | 相关 commit |
@@ -161,8 +173,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `5002f20` (docs: multi-agent social diffusion contract (SI-2.1))
-- SI-2.1 commit: `5002f20` (docs: multi-agent social diffusion contract (SI-2.1); **Current HEAD**)
+- Current HEAD: `33ae1b1` (feat: multi-agent social diffusion (SI-2.2))
+- SI-2.2 commit: `33ae1b1` (feat: multi-agent social diffusion (SI-2.2); **Current HEAD**)
+- SI-2.1 commit: `5002f20` (docs: multi-agent social diffusion contract (SI-2.1); **distinct from Current HEAD**)
 - MR-2 commit: `3eacae8` (feat: temporal memory & mem0 primitives (MR-2); **distinct from Current HEAD**)
 - MR-1 commit: `6419166` (docs: temporal memory & mem0 primitives contract (MR-1); **distinct from Current HEAD**)
 - TA-2 commit: `cc83daa` (feat: subjective temporal phenomenology (TA-2); **distinct from Current HEAD**)
@@ -1250,5 +1263,7 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09 (MR-2) | Temporal Memory & Mem0 Primitives 实作（commit `3eacae8`）。7 files changed: `src/memory/sage/models.py`（+14，Schema v7：Fact 加 `valid_from`/`invalidated_at`，迁移分支 valid_from 回填 timestamp + invalidated_at NULL）、`src/memory/sage/graph_store.py`（+193，`invalidate_fact` 软删 → `invalidated_at` 时间戳 + `get_facts_as_of` 回溯到指定时刻）、`src/memory/primitives.py`（NEW +104，Mem0 原语：显式 add/update/delete/resolve_conflict）、`src/memory/sage/reader.py`（+42，`as_of` 参数默认过滤 `invalidated_at IS NULL`）、`tests/test_temporal_memory_mr2.py`（NEW +381，21 tests）、`tests/test_m5_4_5_2_memory_inner_life_integration.py`（+4 -2）、`tests/test_pig_filter_v2.py`（+9 -2，v5→v7 schema 断言更新）。**135 tests 全过**。0 frozen contract 改动（只改 sage/models + graph_store + reader + 新 primitives + 测试，不改 writer.py / evolution.py / v1 / event.py / inner_life / middleware）。 | Mavis / Lin | MR-2 |
 | 2026-09 (阶段 B-P0) | 阶段 B-P0 记忆检索工程落地：**MR-0 审计**（`docs/MEMORY-RETRIEVAL-AUDIT.md`，event_time 生产数据 100% NULL + INSERT OR REPLACE 覆写破坏历史，B1-B4 四缺口）+ **MR-1 设计**（`docs/TEMPORAL-MEMORY-CONTRACT.md`）+ **MR-2 实作**（commit `3eacae8`）。记忆检索工程三条链闭环：可随时间回溯（get_facts_as_of + as_of 过滤）/ 软删不破坏历史（invalidate_fact）/ 显式原语替代隐式覆写（primitives.add/update/delete/resolve_conflict）。0 frozen contract 改动。 | Mavis / Lin | 阶段 B-P0 |
 | 2026-09 (SI-2.1) | Social Diffusion Contract 设计文档定稿（commit `5002f20`）。1 file changed: `docs/SOCIAL-DIFFUSION-CONTRACT.md`（NEW, +456，10 节）。**SocialWorldEvent 最小 Schema**（`EventType.SOCIAL_WORLD_EVENT` + `SoulEvent.actor_id` additive 可选字段，payload 含 `actor_id / space_id / visibility / event_type / content`）。**三大防线**：防线 3 Identity Firewall（`actor_id != current_agent_id` → `EXTERNAL_OTHER_ACTION`，三条绝对不变量：外部他者事件只能作环境背景感知 / 禁止内化为自身情景记忆 / 严禁升华为自身性格信念）；防线 2 Privacy Visibility Gate（与 Bryan 1:1 私聊 DM 默认 `private` 拦截于广播总线之外，仅公共频道或显式公开动态才沉淀为社交事件）；防线 1 Ambient Perception Path（社交事件仅经 WorldPerceptionMiddleware 注入 world_context，不触发 transmit，杜绝广播风暴）。docs-only 0 code；0 frozen contract 改动（Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 不动，既有字段与枚举语义 0 变更）。 | Mavis / Lin | SI-2.1 |
+| 2026-09 (SI-2.2) | Social Diffusion 实作（commit `33ae1b1`）。14 files changed, +2286/-6：`src/eventbus/schema.py`（additive：`EventType.SOCIAL_WORLD_EVENT` + `SoulEvent.actor_id` 可选字段）、`src/social/`（NEW 5 文件：`__init__.py` / `schema.py` / `validation.py` / `identity_firewall.py` / `producer_gate.py`）、`src/inner_life/submission_gate.py`（防线 3：第 6 步 actor_id 检查，`actor_id != current_agent_id` → `EXTERNAL_OTHER_ACTION`）、`src/world/middleware.py`（防线 1：平行订阅 SOCIAL_WORLD_EVENT 注入 world_context）、6 个新测试文件（test_social_schema / test_social_validation / test_social_identity_firewall / test_social_producer_gate / test_social_middleware / test_social_submission_gate）。**95 新测试全过 + 0 回归引入**。0 frozen contract 改动（只 schema.py + middleware.py + submission_gate.py additive + 新 social 模块 + 测试）。 | Mavis / Lin | SI-2.2 |
+| 2026-09 (SI-2) | 多 Agent 灵魂互动完整落地：**SI-2.0 审计**（`docs/SOCIAL-DIFFUSION-AUDIT.md`）+ **SI-2.1 设计**（`docs/SOCIAL-DIFFUSION-CONTRACT.md`，commit `5002f20`）+ **SI-2.2 实作**（commit `33ae1b1`）。灵魂互动主线从 SI-1 最小读侧升级为完整多 Agent Social Diffusion 闭环（Schema + 三大防线：Identity Firewall / Privacy Visibility Gate / Ambient Perception Path）。0 frozen contract 改动。 | Mavis / Lin | SI-2 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
