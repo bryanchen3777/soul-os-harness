@@ -127,6 +127,12 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 |------|------|------|-------------|
 | **TL-6（Social Lounge Stability Validation）** | ✅ 完成（**四大不变量全过**） | `harness/tl6.py`（TL6Runner / TL6Tick / build_tl6_script(seed=42) 7 阶段客廳劇本：晨間問候 / Bryan 留言 / 1:1 私聊隔離 / 晚間觀察 / 深夜留白 / 5 筆連續社交脈衝 / 深度記憶審計）+ `harness/run_tl6.py`（CLI 入口）+ `tests/test_tl6_social_harness.py`（5 tests PASS）。**四大不變量全過**：① **Anti-Storm Invariant**（100% PASS，社交感知路徑不自發引發連鎖搶話，客廳 transmit 激勵率受控）；② **Identity Quarantine Invariant**（100% PASS，他者行為 0 內化為自傳情景記憶，0 昇華性格信念，SubmissionGate 第 6 步硬守門）；③ **Privacy Gate Invariant**（100% PASS，1:1 私聊 DM 100% 攔截於總線外，0 泄漏至客廳）；④ **Ambient Salience**（PASS，[社交感知] 區塊攜帶反框架提示，Top-N 預算約束生效）；⑤ **D2 Determinism & 0 Mutation**（3 runs 軌跡一致，生產數據 0 diff）。**213 tests 全回歸通過（36.85s）**；0 frozen contract 改動（只 harness + tests，不改動既有業務代碼）。 | `7d0ebbb`（TL-6） |
 
+### SI-3 Phase 1（Selective Social Attention：Social Opportunity + Compact Aggregator）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **SI-3 Phase 1（Selective Social Attention）** | ✅ 已落地 | `src/social/opportunity.py`（NEW，+112：**SocialOpportunity** TTL 300s 過期 + **SocialOpportunityBuffer** 容量 5 FIFO 淘汰）+ `src/social/aggregator.py`（NEW，+207：**CompactSocialState** + **SocialPerceptionAggregator** 反框架渲染 ≤150 tokens）+ `src/social/__init__.py`（additive 匯出）+ `tests/test_social_opportunity.py`（NEW，+247，5 tests）。**5 新測試全過 + 100 回歸全過**；**0 frozen contract 改動**（只 social 模組 + 測試）；**0 Vector DB**（純記憶體 FIFO，不引入向量檢索）。 | `554202c`（feat: social opportunity + compact aggregator (SI-3 phase 1)） |
+
 ### SE-4（Durable Soul Structure Lifecycle Contract 设计）
 
 | 条目 | 状态 | 要点 | 相关 commit |
@@ -179,8 +185,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `33ae1b1` (feat: multi-agent social diffusion (SI-2.2))
-- SI-2.2 commit: `33ae1b1` (feat: multi-agent social diffusion (SI-2.2); **Current HEAD**)
+- Current HEAD: `554202c` (feat: social opportunity + compact aggregator (SI-3 phase 1))
+- SI-3 Phase 1 commit: `554202c` (feat: social opportunity + compact aggregator (SI-3 phase 1); **Current HEAD**)
+- SI-2.2 commit: `33ae1b1` (feat: multi-agent social diffusion (SI-2.2); **distinct from Current HEAD**)
 - SI-2.1 commit: `5002f20` (docs: multi-agent social diffusion contract (SI-2.1); **distinct from Current HEAD**)
 - MR-2 commit: `3eacae8` (feat: temporal memory & mem0 primitives (MR-2); **distinct from Current HEAD**)
 - MR-1 commit: `6419166` (docs: temporal memory & mem0 primitives contract (MR-1); **distinct from Current HEAD**)
