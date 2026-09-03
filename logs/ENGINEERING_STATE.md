@@ -103,6 +103,12 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 |------|------|------|-------------|
 | **TL-5（Behavior Distribution Validation）** | ✅ 完成（**最终验收 PASS**） | `harness/tl5.py`（TL5Runner：SimulationClock 小时精度 tick + 四元 Decision 自发行为分布 + derived 三大指标）+ `harness/run_tl5.py`（入口）+ `harness/clock.py`（`sim_ts` 加 additive `hour` 参数，默认 0 向后兼容）+ `tests/test_tl5_behavior_distribution.py`。**Behavioral Diversity PASS**：四动作均 > 0（无死模组），do_nothing 82.5% / reflect 10.5% / transmit 3.5% / observe 3.5%（do_nothing 落在 65%-85% 目标区间内，真实生命「大多数时间平静生活」）。**Contextual Appropriateness PASS**：observe 集中信号突变点（env_signal）；reflect 集中夜间/等待期（night/dawn/relationship_silence，SM-4.6 dawn 补入合法集合）；transmit 遵守 CD 与亲密度（只发生在 intimacy=high）。**D2 Determinism 按 MoE 特性记录 7 mismatches**（3 runs 决策轨迹基本一致；7 处 mismatch 归因 MoE 采样特性，非逻辑缺陷，如实记录）。**0 production mutation**（隔离 data_root，harness 只活在 harness/ + tests/，不改 src/，0 frozen contract 改动）。 | `89e9cdf`（feat: time-lapse behavior distribution validation (TL-5)） |
 
+### SI-2.1（Social Diffusion Contract 设计）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **SI-2.1（Social Diffusion Contract）** | ✅ 设计文档已定稿（docs only，0 code） | `docs/SOCIAL-DIFFUSION-CONTRACT.md`（NEW, +456，10 节）：**SocialWorldEvent 最小 Schema**（新增 `EventType.SOCIAL_WORLD_EVENT` + `SoulEvent.actor_id` additive 可选字段，payload 含 `actor_id / space_id / visibility / event_type / content`）。**三大防线**：**防线 3 Identity Firewall（最高优先）**——Submission Gate 契约 `actor_id != current_agent_id` 一律打 `EXTERNAL_OTHER_ACTION` 标签，**三条绝对不变量**：外部他者事件只能作为「客厅环境背景感知」、绝对禁止内化为自身情景记忆、更严禁升华为自身性格或信念；**防线 2 Privacy Visibility Gate**——Producer 侧守门，与 Bryan 的 1:1 私聊 DM 默认 `private` 严格拦截于广播总线之外，仅公共频道（Soul Wall / 客厅群聊）或显式公开动态才允许沉淀为社交事件；**防线 1 Ambient Perception Path**——社交事件仅经 `WorldPerceptionMiddleware` 注入为环境观察（world_context），不赋予即时唤醒或插话特权，杜绝多 Agent 相互回复的广播风暴。**Frozen Contract 边界**：Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 写入一律不动；既有 SoulEvent 字段语义、17 个 EventType 枚举值、WorldPerceptionMiddleware WORLD_EVENT 路径、SubmissionGate 5 步验证链语义 0 变更（只 additive 扩展）。docs-only 0 code；0 frozen contract 改动 | `5002f20`（docs: multi-agent social diffusion contract (SI-2.1)） |
+
 ### SE-4（Durable Soul Structure Lifecycle Contract 设计）
 
 | 条目 | 状态 | 要点 | 相关 commit |
@@ -155,8 +161,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `3eacae8` (feat: temporal memory & mem0 primitives (MR-2))
-- MR-2 commit: `3eacae8` (feat: temporal memory & mem0 primitives (MR-2); **Current HEAD**)
+- Current HEAD: `5002f20` (docs: multi-agent social diffusion contract (SI-2.1))
+- SI-2.1 commit: `5002f20` (docs: multi-agent social diffusion contract (SI-2.1); **Current HEAD**)
+- MR-2 commit: `3eacae8` (feat: temporal memory & mem0 primitives (MR-2); **distinct from Current HEAD**)
 - MR-1 commit: `6419166` (docs: temporal memory & mem0 primitives contract (MR-1); **distinct from Current HEAD**)
 - TA-2 commit: `cc83daa` (feat: subjective temporal phenomenology (TA-2); **distinct from Current HEAD**)
 - TA-2 docs commit: `4f0ec41` (docs: subjective temporal phenomenology contract (TA-2); **distinct from Current HEAD**)
@@ -1242,5 +1249,6 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09 (MR-1) | Temporal Memory & Mem0 Primitives Contract 设计文档定稿（commit `6419166`）。1 file changed: `docs/TEMPORAL-MEMORY-CONTRACT.md`（NEW, +289，8 节）。**Schema v7 迁移**（valid_from 回填 timestamp + invalidated_at NULL）；**GraphStore invalidate_fact 软删 + get_facts_as_of 回溯**；**Mem0 原语模块 primitives.py 显式 add/update/delete/resolve_conflict**；**SAGE Reader as_of 默认过滤 invalidated_at IS NULL**。docs-only 0 code；0 frozen contract 改动。 | Mavis / Lin | MR-1 |
 | 2026-09 (MR-2) | Temporal Memory & Mem0 Primitives 实作（commit `3eacae8`）。7 files changed: `src/memory/sage/models.py`（+14，Schema v7：Fact 加 `valid_from`/`invalidated_at`，迁移分支 valid_from 回填 timestamp + invalidated_at NULL）、`src/memory/sage/graph_store.py`（+193，`invalidate_fact` 软删 → `invalidated_at` 时间戳 + `get_facts_as_of` 回溯到指定时刻）、`src/memory/primitives.py`（NEW +104，Mem0 原语：显式 add/update/delete/resolve_conflict）、`src/memory/sage/reader.py`（+42，`as_of` 参数默认过滤 `invalidated_at IS NULL`）、`tests/test_temporal_memory_mr2.py`（NEW +381，21 tests）、`tests/test_m5_4_5_2_memory_inner_life_integration.py`（+4 -2）、`tests/test_pig_filter_v2.py`（+9 -2，v5→v7 schema 断言更新）。**135 tests 全过**。0 frozen contract 改动（只改 sage/models + graph_store + reader + 新 primitives + 测试，不改 writer.py / evolution.py / v1 / event.py / inner_life / middleware）。 | Mavis / Lin | MR-2 |
 | 2026-09 (阶段 B-P0) | 阶段 B-P0 记忆检索工程落地：**MR-0 审计**（`docs/MEMORY-RETRIEVAL-AUDIT.md`，event_time 生产数据 100% NULL + INSERT OR REPLACE 覆写破坏历史，B1-B4 四缺口）+ **MR-1 设计**（`docs/TEMPORAL-MEMORY-CONTRACT.md`）+ **MR-2 实作**（commit `3eacae8`）。记忆检索工程三条链闭环：可随时间回溯（get_facts_as_of + as_of 过滤）/ 软删不破坏历史（invalidate_fact）/ 显式原语替代隐式覆写（primitives.add/update/delete/resolve_conflict）。0 frozen contract 改动。 | Mavis / Lin | 阶段 B-P0 |
+| 2026-09 (SI-2.1) | Social Diffusion Contract 设计文档定稿（commit `5002f20`）。1 file changed: `docs/SOCIAL-DIFFUSION-CONTRACT.md`（NEW, +456，10 节）。**SocialWorldEvent 最小 Schema**（`EventType.SOCIAL_WORLD_EVENT` + `SoulEvent.actor_id` additive 可选字段，payload 含 `actor_id / space_id / visibility / event_type / content`）。**三大防线**：防线 3 Identity Firewall（`actor_id != current_agent_id` → `EXTERNAL_OTHER_ACTION`，三条绝对不变量：外部他者事件只能作环境背景感知 / 禁止内化为自身情景记忆 / 严禁升华为自身性格信念）；防线 2 Privacy Visibility Gate（与 Bryan 1:1 私聊 DM 默认 `private` 拦截于广播总线之外，仅公共频道或显式公开动态才沉淀为社交事件）；防线 1 Ambient Perception Path（社交事件仅经 WorldPerceptionMiddleware 注入 world_context，不触发 transmit，杜绝广播风暴）。docs-only 0 code；0 frozen contract 改动（Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 不动，既有字段与枚举语义 0 变更）。 | Mavis / Lin | SI-2.1 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
