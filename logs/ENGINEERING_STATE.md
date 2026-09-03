@@ -125,7 +125,7 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 
 | 条目 | 状态 | 要点 | 相关 commit |
 |------|------|------|-------------|
-| **TL-6（Social Lounge Stability Validation）** | ✅ 完成（**四大不变量全过**） | `harness/tl6.py`（TL6Runner / TL6Tick / build_tl6_script(seed=42) 7 阶段客厅剧本：晨间问候 / Bryan 留言 / 1:1 私聊隔离 / 晚间观察 / 深夜留白 / 5 笔连续社交脉冲 / 深度记忆审计）+ `harness/run_tl6.py`（CLI 入口）+ `tests/test_tl6_social_harness.py`（5 tests PASS）。**四大不变量全过**：① **Anti-Storm Invariant**（100% PASS，社交感知路径不自发引发连锁抢话，客厅 transmit 激励率受控）；② **Identity Quarantine Invariant**（100% PASS，他者行为 0 内化为自传情景记忆，0 升华性格信念，SubmissionGate 第 6 步硬守门）；③ **Privacy Gate Invariant**（100% PASS，1:1 私聊 DM 100% 拦截于总线外，0 泄漏至客厅）；④ **Ambient Salience**（PASS，[社交感知] 区块携带反框架提示，Top-N 预算约束生效）；⑤ **D2 Determinism & 0 Mutation**（3 runs 轨迹一致，生产数据 0 diff）。**213 tests 全回归通过（36.85s）**；0 frozen contract 改动（只 harness + tests，不改动既有业务代码）。 | 待 commit |
+| **TL-6（Social Lounge Stability Validation）** | ✅ 完成（**四大不变量全过**） | `harness/tl6.py`（TL6Runner / TL6Tick / build_tl6_script(seed=42) 7 阶段客廳劇本：晨間問候 / Bryan 留言 / 1:1 私聊隔離 / 晚間觀察 / 深夜留白 / 5 筆連續社交脈衝 / 深度記憶審計）+ `harness/run_tl6.py`（CLI 入口）+ `tests/test_tl6_social_harness.py`（5 tests PASS）。**四大不變量全過**：① **Anti-Storm Invariant**（100% PASS，社交感知路徑不自發引發連鎖搶話，客廳 transmit 激勵率受控）；② **Identity Quarantine Invariant**（100% PASS，他者行為 0 內化為自傳情景記憶，0 昇華性格信念，SubmissionGate 第 6 步硬守門）；③ **Privacy Gate Invariant**（100% PASS，1:1 私聊 DM 100% 攔截於總線外，0 泄漏至客廳）；④ **Ambient Salience**（PASS，[社交感知] 區塊攜帶反框架提示，Top-N 預算約束生效）；⑤ **D2 Determinism & 0 Mutation**（3 runs 軌跡一致，生產數據 0 diff）。**213 tests 全回歸通過（36.85s）**；0 frozen contract 改動（只 harness + tests，不改動既有業務代碼）。 | `7d0ebbb`（TL-6） |
 
 ### SE-4（Durable Soul Structure Lifecycle Contract 设计）
 
