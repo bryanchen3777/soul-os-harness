@@ -133,6 +133,12 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 |------|------|------|-------------|
 | **SI-3 Phase 1（Selective Social Attention）** | ✅ 已落地 | `src/social/opportunity.py`（NEW，+112：**SocialOpportunity** TTL 300s 過期 + **SocialOpportunityBuffer** 容量 5 FIFO 淘汰）+ `src/social/aggregator.py`（NEW，+207：**CompactSocialState** + **SocialPerceptionAggregator** 反框架渲染 ≤150 tokens）+ `src/social/__init__.py`（additive 匯出）+ `tests/test_social_opportunity.py`（NEW，+247，5 tests）。**5 新測試全過 + 100 回歸全過**；**0 frozen contract 改動**（只 social 模組 + 測試）；**0 Vector DB**（純記憶體 FIFO，不引入向量檢索）。 | `554202c`（feat: social opportunity + compact aggregator (SI-3 phase 1)） |
 
+### SI-3 Phase 2（Selective Social Attention：感知聚合器接入 Middleware 與 SM-4 決策管線）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **SI-3 Phase 2（感知聚合器 + SM-4 決策管線接線）** | ✅ 已落地 | `src/world/middleware.py`（改：`_render_social_context` 升級為 CompactSocialState 緊湊渲染 ≤150 tokens，反框架語在場，無他人動態返回 ""；per-agent `SocialPerceptionAggregator` 緩存 + `_get_social_aggregator` + `_ts_to_epoch`）+ `src/soul/decision.py`（改：`build_decision_prompt` 新增可選參數 `social_context`，只進 Relevant context，向後兼容）+ `src/soul/motive.py`（改：新增 `motive_from_social_opportunity` 純函數，SocialOpportunity → 合法 Motive 5 字段）+ `harness/tl6.py`（改：quarantine 檢測適配新渲染格式 `[客廳現況]` + ANTI_FRAMING_HINT）+ `tests/test_si3_phase2_integration.py`（NEW，4 tests：緊湊渲染 / TTL 過期留白 / Motive 決策轉換 / 0 連鎖意志）。**14 tests 全過（2.57s，工單驗收命令）**；**0 frozen contract 改動**（Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 未動）；**0 Vector DB**。 | `d7c7c70`（feat: wire social perception aggregator into middleware and SM-4 decision (SI-3 phase 2)） |
+
 ### SE-4（Durable Soul Structure Lifecycle Contract 设计）
 
 | 条目 | 状态 | 要点 | 相关 commit |
@@ -185,8 +191,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `554202c` (feat: social opportunity + compact aggregator (SI-3 phase 1))
-- SI-3 Phase 1 commit: `554202c` (feat: social opportunity + compact aggregator (SI-3 phase 1); **Current HEAD**)
+- Current HEAD: `d7c7c70` (feat: wire social perception aggregator into middleware and SM-4 decision (SI-3 phase 2))
+- SI-3 Phase 2 commit: `d7c7c70` (feat: wire social perception aggregator into middleware and SM-4 decision (SI-3 phase 2); **Current HEAD**)
+- SI-3 Phase 1 commit: `554202c` (feat: social opportunity + compact aggregator (SI-3 phase 1); **distinct from Current HEAD**)
 - SI-2.2 commit: `33ae1b1` (feat: multi-agent social diffusion (SI-2.2); **distinct from Current HEAD**)
 - SI-2.1 commit: `5002f20` (docs: multi-agent social diffusion contract (SI-2.1); **distinct from Current HEAD**)
 - MR-2 commit: `3eacae8` (feat: temporal memory & mem0 primitives (MR-2); **distinct from Current HEAD**)
