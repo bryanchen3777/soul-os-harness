@@ -469,21 +469,31 @@ def test_I6_acceptance_decision_driven_by_scoring_threshold():
 
 
 def test_I7_worldevent_payload_contract_unchanged():
-    """I7: WorldEvent 序列化契約 (to_payload) 不變 — 對 bus / downstream 仍然 0 暴露 priority。
+    """I7: WorldEvent 序列化契約 (to_payload) — M5.4-3.1 升級後 priority 為 additive 欄位。
 
-    M3.1 拍板的契約: payload 不含 priority, 既有 downstream consumer 0 感知。
+    M5.4-3.1 contract repair (Bry 派工 2026-08-09 17:43, 見 src/world/perception.py
+    to_payload/from_payload): WorldEvent.priority 正式納入 bus-payload 序列化,
+    讓 M3.2-A priority_boost 在 E2E path 上恢復作用。向後相容: 舊 payload
+    (無 priority key) 仍可 round-trip (fallback 0), 既有 5 維度 scoring 0 變更。
+    本測試對齊 M5.4-3.1: 驗證 priority 完整 round-trip (payload 含 priority,
+    from_payload 還原同值)。
     """
     event = _make_event(
         source="weather", type_="rain_started",
         novelty_id="i7_001", priority=20,
     )
     payload = event.to_payload()
-    forbidden_keys = {"priority"}
-    for k in forbidden_keys:
-        assert k not in payload, f"I7 failed: payload 含 {k!r} ({payload})"
-    # 反向: from_payload 也不能還原 priority (M3.1 既有行為)
+    # M5.4-3.1: payload 必須含 priority (additive 欄位, 向下相容)
+    assert payload["priority"] == 20, f"I7 failed: payload 缺 priority=20 ({payload})"
+    # 反向: from_payload 還原 priority (M5.4-3.1 round-trip 保證)
     restored = WorldEvent.from_payload(payload)
-    assert restored.priority == 0  # default, priority 沒被序列化也沒被還原
+    assert restored.priority == 20, (
+        f"I7 failed: from_payload 未還原 priority, got {restored.priority}"
+    )
+    # 向後相容: 舊 payload (無 priority key) → fallback 0, 既有行為 100% 保留
+    legacy_payload = {k: v for k, v in payload.items() if k != "priority"}
+    legacy_restored = WorldEvent.from_payload(legacy_payload)
+    assert legacy_restored.priority == 0
 
 
 def test_I8_trace_observability_intact(monkeypatch, tmp_path):

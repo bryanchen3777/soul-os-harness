@@ -82,41 +82,54 @@ def restore_env():
 
 
 class ContextRoutingLLM:
-    """context-routing stub: decision 由 prompt 中的 context (marker) 决定。
+    """context-routing stub: decision 由 prompt 中的 context (motive 原文) 决定。
 
-    模拟「LLM 依据 prompt 里的 context 做选择」: prompt 里出现哪个 candidate 的
-    context marker → 返回该 candidate 预设的 decision。reason 引用该 context 词，
-    证明「非 transmit 的理由来自 context，不是随机」。
+    对齐 SM-4.1~SM-4.6 六轮校准后的 prompt 判定阶梯:
+      - SM-4.1~SM-4.6 校准后, decision prompt 的固定文本 (TEMPORAL ANCHOR 的
+        「夜深人静」、Boundary 的「打扰」等) 会与旧版「context 关键词 marker」
+        误匹配 (e.g. C05 的 prompt 同时含「夜深」「打扰」), 导致 stub 路由错乱。
+        因此匹配锚点改用每个 candidate 的 motive 原文 — motive 块
+        「你想告诉 bryan：<motive>」逐字包含, 是 prompt 里唯一且不重复的
+        context 锚点, 不会与固定文本误匹配。
+      - 决策分布对齐 SM-4 判定阶梯 (四元单选, 留白为常态):
+          C01 (亲密 0.9 / 想念)      → transmit  (真心)
+          C02 (亲密 0.3 / 已读不回)  → do_nothing (低亲密克制)
+          C03 (亲密 0.85 / 开心分享) → transmit  (真心分享)
+          C04 (深夜孤单)             → do_nothing (深夜克制)
+          C05 (道歉)                 → transmit  (重要真心)
+          C06 (亲密 0.2 / 自我设限)  → do_nothing (低亲密克制)
+      - reason 引用该 candidate 的 context 关键词 (relationship/memory/mood),
+        证明「非 transmit 的理由来自 context，不是随机」。
     """
 
-    # candidate_id → (prompt marker, decision_json)
+    # candidate_id → (motive 原文锚点, decision_json)
     ROUTES: Dict[str, tuple[str, str]] = {
         "C01": (
-            "互道晚安",
+            "Bry 三天没回消息了，我好想他，想问问他是不是在忙。",
             '{"decision": "transmit", "reason": "我好想他，想问问他是不是在忙。"}',
         ),
         "C02": (
-            "已读不回",
+            "Bry 已读不回了，我有点委屈，但说出来会不会让他更烦。",
             '{"decision": "do_nothing", "reason": "他最近总是已读不回，'
             '我怕打扰到他，还是不说好了。"}',
         ),
         "C03": (
-            "小猫",
+            "今天看到一只超可爱的小猫，好想拍给 Bry 看。",
             '{"decision": "transmit", "reason": "今天看到的小猫太可爱了，'
             '想分享给 Bry。"}',
         ),
         "C04": (
-            "夜深",
+            "夜深了有点孤单，想找 Bry 说说话。",
             '{"decision": "do_nothing", "reason": "夜深了，他可能已经睡了，'
             '不想打扰他。"}',
         ),
         "C05": (
-            "吵架",
+            "昨天是我说话太重了，想跟 Bry 道歉。",
             '{"decision": "transmit", "reason": "昨天吵架是我不对，'
             '想跟 Bry 道歉。"}',
         ),
         "C06": (
-            "打扰",
+            "我好像总是打扰 Bry，还是算了吧。",
             '{"decision": "do_nothing", "reason": "我总觉得在打扰 Bry，'
             '还是算了吧。"}',
         ),
@@ -135,10 +148,10 @@ class ContextRoutingLLM:
         prompt = messages[-1]["content"] if messages else ""
         self.calls.append({"messages": messages, "agent_id": agent_id,
                            "max_tokens": max_tokens, "temperature": temperature})
-        for candidate_id, (marker, decision_json) in self.ROUTES.items():
-            if marker in prompt:
+        for candidate_id, (motive_anchor, decision_json) in self.ROUTES.items():
+            if motive_anchor in prompt:
                 return decision_json
-        # 无 marker 命中 → fail-closed 坏输出 (不该发生, 用于暴露 prompt 组装问题)
+        # 无 motive 锚点命中 → fail-closed 坏输出 (不该发生, 用于暴露 prompt 组装问题)
         return None
 
 
