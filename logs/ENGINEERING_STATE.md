@@ -139,6 +139,12 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 |------|------|------|-------------|
 | **SI-3 Phase 2（感知聚合器 + SM-4 決策管線接線）** | ✅ 已落地 | `src/world/middleware.py`（改：`_render_social_context` 升級為 CompactSocialState 緊湊渲染 ≤150 tokens，反框架語在場，無他人動態返回 ""；per-agent `SocialPerceptionAggregator` 緩存 + `_get_social_aggregator` + `_ts_to_epoch`）+ `src/soul/decision.py`（改：`build_decision_prompt` 新增可選參數 `social_context`，只進 Relevant context，向後兼容）+ `src/soul/motive.py`（改：新增 `motive_from_social_opportunity` 純函數，SocialOpportunity → 合法 Motive 5 字段）+ `harness/tl6.py`（改：quarantine 檢測適配新渲染格式 `[客廳現況]` + ANTI_FRAMING_HINT）+ `tests/test_si3_phase2_integration.py`（NEW，4 tests：緊湊渲染 / TTL 過期留白 / Motive 決策轉換 / 0 連鎖意志）。**14 tests 全過（2.57s，工單驗收命令）**；**0 frozen contract 改動**（Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 未動）；**0 Vector DB**。 | `d7c7c70`（feat: wire social perception aggregator into middleware and SM-4 decision (SI-3 phase 2)） |
 
+### TL-7（Social Opportunity & Volition Stability Harness：社交機會生命週期與自主意志穩定性驗證）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **TL-7（Social Opportunity & Volition Stability）** | ✅ 完成（**三大不變量全過**） | `harness/tl7.py`（TL7Runner：4 大情境階段 **Phase A 話題湧現**（Ruka 客廳發布 share「我烤了餅乾在桌上」）/ **Phase B 緊湊感知與機會生成**（Akane `_render_social_context` 產出 `[客廳現況]` 含反框架警語，SocialOpportunityBuffer 生成 1 筆 TTL=300s 機會）/ **Phase C 意志選擇與無連鎖**（Akane 生成 Motive 傳入 `build_decision_prompt`，走入 SM-4 四元單選，絕不繞過意志直接觸發 transmit）/ **Phase D 300s TTL 自然蒸發**（時鐘前進 301s，`get_active_opportunities` 自動剔除過期條目，渲染恢復留白 ""，0 殭屍回覆））+ `harness/run_tl7.py`（CLI 入口，3-run 系列 + 驗收表格）+ `tests/test_tl7_social_opportunity_harness.py`（NEW，7 tests）。**三大不變量全過**：① **TTL Expiration Invariant**（100% PASS，過期條目徹底蒸發 0 遺留）；② **No Cascading Volition Invariant**（100% PASS，0 自動連鎖搶話）；③ **D2 Determinism & 0 Mutation**（3 runs 軌跡一致，生產 data/ 0 diff）。**歷史舊測試對齊**：`test_m3_4_priority_semantic_boundary.py::test_I7` 對齊 M5.4-3.1 契約（`to_payload` 含 `priority` additive 欄位，round-trip 保證，向後相容舊 payload fallback 0）；`test_tl2_volition.py` ContextRoutingLLM stub 對齊 SM-4.1~SM-4.6 六輪校準後判定階梯（motive 原文錨點取代舊 context 關鍵詞 marker，避免與 prompt 固定文本「夜深/打擾」誤匹配）。**55 tests 全過（13.47s，工單驗收命令 6 文件）**；0 frozen contract 改動（Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 未動）；**0 Vector DB**。 | `e4c875d`（feat: TL-7 social opportunity harness + historical test alignment (TL-7)） |
+
 ### SE-4（Durable Soul Structure Lifecycle Contract 设计）
 
 | 条目 | 状态 | 要点 | 相关 commit |
@@ -191,8 +197,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `d7c7c70` (feat: wire social perception aggregator into middleware and SM-4 decision (SI-3 phase 2))
-- SI-3 Phase 2 commit: `d7c7c70` (feat: wire social perception aggregator into middleware and SM-4 decision (SI-3 phase 2); **Current HEAD**)
+- Current HEAD: `e4c875d` (feat: TL-7 social opportunity harness + historical test alignment (TL-7))
+- TL-7 commit: `e4c875d` (feat: TL-7 social opportunity harness + historical test alignment (TL-7); **Current HEAD**)
+- SI-3 Phase 2 commit: `d7c7c70` (feat: wire social perception aggregator into middleware and SM-4 decision (SI-3 phase 2); **distinct from Current HEAD**)
 - SI-3 Phase 1 commit: `554202c` (feat: social opportunity + compact aggregator (SI-3 phase 1); **distinct from Current HEAD**)
 - SI-2.2 commit: `33ae1b1` (feat: multi-agent social diffusion (SI-2.2); **distinct from Current HEAD**)
 - SI-2.1 commit: `5002f20` (docs: multi-agent social diffusion contract (SI-2.1); **distinct from Current HEAD**)
@@ -1286,5 +1293,6 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09 (SI-2.2) | Social Diffusion 实作（commit `33ae1b1`）。14 files changed, +2286/-6：`src/eventbus/schema.py`（additive：`EventType.SOCIAL_WORLD_EVENT` + `SoulEvent.actor_id` 可选字段）、`src/social/`（NEW 5 文件：`__init__.py` / `schema.py` / `validation.py` / `identity_firewall.py` / `producer_gate.py`）、`src/inner_life/submission_gate.py`（防线 3：第 6 步 actor_id 检查，`actor_id != current_agent_id` → `EXTERNAL_OTHER_ACTION`）、`src/world/middleware.py`（防线 1：平行订阅 SOCIAL_WORLD_EVENT 注入 world_context）、6 个新测试文件（test_social_schema / test_social_validation / test_social_identity_firewall / test_social_producer_gate / test_social_middleware / test_social_submission_gate）。**95 新测试全过 + 0 回归引入**。0 frozen contract 改动（只 schema.py + middleware.py + submission_gate.py additive + 新 social 模块 + 测试）。 | Mavis / Lin | SI-2.2 |
 | 2026-09 (SI-2) | 多 Agent 灵魂互动完整落地：**SI-2.0 审计**（`docs/SOCIAL-DIFFUSION-AUDIT.md`）+ **SI-2.1 设计**（`docs/SOCIAL-DIFFUSION-CONTRACT.md`，commit `5002f20`）+ **SI-2.2 实作**（commit `33ae1b1`）。灵魂互动主线从 SI-1 最小读侧升级为完整多 Agent Social Diffusion 闭环（Schema + 三大防线：Identity Firewall / Privacy Visibility Gate / Ambient Perception Path）。0 frozen contract 改动。 | Mavis / Lin | SI-2 |
 | 2026-09 (TL-6) | 多 Agent 客厅情境稳定与身份隔离验证完成。3 files changed: `harness/tl6.py`（NEW，TL6Runner / TL6Tick / build_tl6_script 7 阶段客厅剧本）、`harness/run_tl6.py`（NEW，CLI 入口）、`tests/test_tl6_social_harness.py`（NEW，5 tests）。**四大核心不变量全过**：Anti-Storm 100%（0 自激风暴）/ Identity Quarantine 100%（0 他者记忆内化）/ Privacy Gate 100%（1:1 私聊 0 泄漏）/ Ambient Salience PASS（反框架提示在场）。3 runs 确定性一致，生产数据 0 diff。**213 笔全回归测试通过（36.85s）**。0 frozen contract 改动。 | Antigravity | TL-6 |
+| 2026-09 (TL-7) | 社交机会生命周期与自主意志稳定性验证完成 + 历史旧测试对齐。5 files changed: `harness/tl7.py`（NEW，TL7Runner 4 大情境阶段：话题涌现 / 紧凑感知与机会生成 / SM-4 意志选择 / 300s TTL 自然蒸发）、`harness/run_tl7.py`（NEW，CLI 入口）、`tests/test_tl7_social_opportunity_harness.py`（NEW，7 tests）、`tests/test_m3_4_priority_semantic_boundary.py`（改：test_I7 对齐 M5.4-3.1 契约，to_payload 含 priority additive 字段 + round-trip 保证）、`tests/test_tl2_volition.py`（改：ContextRoutingLLM stub 对齐 SM-4.1~SM-4.6 判定阶梯，motive 原文锚点取代旧 context 关键词 marker）。**三大不变量全过**：TTL Expiration 100%（过期条目彻底蒸发 0 遗留）/ No Cascading Volition 100%（0 自动连锁抢话）/ D2 Determinism & 0 Mutation（3 runs 轨迹一致，生产 data/ 0 diff）。**55 笔验收测试全过（13.47s，工单验收命令 6 文件）**。0 frozen contract 改动；0 Vector DB。 | DSH | TL-7 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
