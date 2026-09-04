@@ -146,6 +146,41 @@ class Actuator:
             永不 raise：任何異常 → 降級空結果（fail-closed）。
         """
         action = self._decision_action(decision)
+        return await self._dispatch_action(action, motive, agent_id)
+
+    async def execute_observe(
+        self,
+        motive: Any,
+        agent_id: str = "",
+    ) -> Optional[ToolResult]:
+        """observe 單次執行入口（TS-2.1 scheduler 接線用）。
+
+        強制走 observe_environment 組單次工具調用，結果回流 world_context 感知。
+        與 ``dispatch(decision=observe)`` 行為完全一致（同款路由 / 權限 / 回流），
+        0 自主遞迴（§3.2）、無權 publish。永不 raise（fail-closed）。
+        """
+        return await self._dispatch_action("observe", motive, agent_id)
+
+    async def execute_reflect(
+        self,
+        motive: Any,
+        agent_id: str = "",
+    ) -> Optional[ToolResult]:
+        """reflect 單次執行入口（TS-2.1 scheduler 接線用）。
+
+        強制走 reflect_memory 組單次工具調用，結果回流記憶摘要（memory_sink）。
+        與 ``dispatch(decision=reflect)`` 行為完全一致（同款路由 / 權限 / 回流），
+        0 自主遞迴（§3.2）、無權 publish。永不 raise（fail-closed）。
+        """
+        return await self._dispatch_action("reflect", motive, agent_id)
+
+    async def _dispatch_action(
+        self,
+        action: str,
+        motive: Any,
+        agent_id: str = "",
+    ) -> Optional[ToolResult]:
+        """內部：按 action 派發單次調用（dispatch / execute_observe / execute_reflect 共用）。"""
         group = _ACTION_TO_GROUP.get(action)
         if group is None:
             # transmit（既有路徑）/ do_nothing（合法不執行）/ 未知 → 不在此派發

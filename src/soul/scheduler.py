@@ -161,6 +161,10 @@ class SoulScheduler:
         shared_activity_max_interval_minutes: int = 720,   # 12h
         cross_chat_min_interval_minutes: int = 360,     # 6h
         cross_chat_max_interval_minutes: int = 720,     # 12h
+        # TS-2.1 (2026-09-04): Actuator 依赖注入（observe/reflect 决策后真执行 + 回流）。
+        # 只作用于 _decision_check 的内部动作分支; 默认 None 向后兼容——
+        # 不注入时 observe/reflect 决策行为与现状完全等价（空转, 直接 mark_rejected）。
+        actuator: Optional[Any] = None,
     ):
         self.morning_time = morning_time
         self.night_time = night_time
@@ -214,6 +218,8 @@ class SoulScheduler:
         # (各一個全體共用 timer = 全體共用冷卻, 不會 10 隻同時開聊)
         self._next_shared_event_time: Optional[datetime] = None
         self._next_cross_chat_time: Optional[datetime] = None
+        # TS-2.1: Actuator（observe/reflect 执行器）注入; None = 空转（向前兼容）
+        self._actuator = actuator
 
     # ───────────────────────────────────────────────────────────
     # M1.1: Event Bus 發布層
@@ -407,6 +413,10 @@ class SoulScheduler:
                     f"reason={result.reason!r}"
                 )
                 return True
+            # TS-2.1 (2026-09-04): observe/reflect 决策 → Actuator 单次执行 + 结果回流。
+            # 发布端仍 mark_rejected（observe/reflect 是内部动作, 不 publish AGENT_SPEAK）;
+            # Actuator 未注入（默认 None）→ 完全跳过, 与现状等价（空转决策）。
+            await self._execute_internal_action(result, motive, agent_id)
             engine.mark_rejected(motive.motive_id)
             logger.info(
                 f"[SM-3 Decision] {agent_id} not_transmit motive={motive.motive_id} "
@@ -420,6 +430,42 @@ class SoulScheduler:
                 f"{type(e).__name__}: {e}"
             )
             return False
+
+    async def _execute_internal_action(
+        self,
+        result: Any,
+        motive: Any,
+        agent_id: str,
+    ) -> None:
+        """
+        TS-2.1 (2026-09-04): observe/reflect 决策 → Actuator 单次执行 + 结果回流。
+
+        接线铁律（兑現「空转决策」闭环, 0 自主递归）:
+          - actuator 未注入（默认 None）→ 完全跳过, 行为与现状等价（向后兼容）。
+          - actuator 注入 + observe → execute_observe → 结果回流感知（world_context）。
+          - actuator 注入 + reflect → execute_reflect → 结果回流认知（memory_sink）。
+          - transmit → 既有 publish 通道（本方法不处理, _decision_check 已 return True）。
+          - do_nothing → 不执行（合法主动选择）。
+          - 单次调用、结果只回写感知/认知, 不产生新工具调用、不 publish
+            （Actuator 自身持有 0 递归硬规则, 这里只负责按 action 接线）。
+          - 任何异常 fail-closed: log warning, 不阻断调用方 mark_rejected
+            （motive 生命周期照常收敛, 不因执行器坏掉而悬挂 pending）。
+        """
+        if self._actuator is None:
+            return
+        try:
+            action = getattr(result, "decision", "")
+            if action == "observe":
+                await self._actuator.execute_observe(motive, agent_id)
+            elif action == "reflect":
+                await self._actuator.execute_reflect(motive, agent_id)
+            # transmit → publish 通道; do_nothing → 合法不执行（两者都不进 Actuator）
+        except Exception as e:
+            logger.warning(
+                f"[TS-2.1 Actuator] {agent_id} 内部动作执行异常 (fail-closed, "
+                f"motive 照常 rejected): action={getattr(result, 'decision', '')} "
+                f"err={type(e).__name__}: {e}"
+            )
 
     async def _publish_agent_intent(
         self,
