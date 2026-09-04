@@ -145,6 +145,12 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 |------|------|------|-------------|
 | **TL-7（Social Opportunity & Volition Stability）** | ✅ 完成（**三大不變量全過**） | `harness/tl7.py`（TL7Runner：4 大情境階段 **Phase A 話題湧現**（Ruka 客廳發布 share「我烤了餅乾在桌上」）/ **Phase B 緊湊感知與機會生成**（Akane `_render_social_context` 產出 `[客廳現況]` 含反框架警語，SocialOpportunityBuffer 生成 1 筆 TTL=300s 機會）/ **Phase C 意志選擇與無連鎖**（Akane 生成 Motive 傳入 `build_decision_prompt`，走入 SM-4 四元單選，絕不繞過意志直接觸發 transmit）/ **Phase D 300s TTL 自然蒸發**（時鐘前進 301s，`get_active_opportunities` 自動剔除過期條目，渲染恢復留白 ""，0 殭屍回覆））+ `harness/run_tl7.py`（CLI 入口，3-run 系列 + 驗收表格）+ `tests/test_tl7_social_opportunity_harness.py`（NEW，7 tests）。**三大不變量全過**：① **TTL Expiration Invariant**（100% PASS，過期條目徹底蒸發 0 遺留）；② **No Cascading Volition Invariant**（100% PASS，0 自動連鎖搶話）；③ **D2 Determinism & 0 Mutation**（3 runs 軌跡一致，生產 data/ 0 diff）。**歷史舊測試對齊**：`test_m3_4_priority_semantic_boundary.py::test_I7` 對齊 M5.4-3.1 契約（`to_payload` 含 `priority` additive 欄位，round-trip 保證，向後相容舊 payload fallback 0）；`test_tl2_volition.py` ContextRoutingLLM stub 對齊 SM-4.1~SM-4.6 六輪校準後判定階梯（motive 原文錨點取代舊 context 關鍵詞 marker，避免與 prompt 固定文本「夜深/打擾」誤匹配）。**55 tests 全過（13.47s，工單驗收命令 6 文件）**；0 frozen contract 改動（Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 未動）；**0 Vector DB**。 | `e4c875d`（feat: TL-7 social opportunity harness + historical test alignment (TL-7)） |
 
+### TS-1（Tooling & MCP Contract：动态 Tool 注册表 + Tooling Volition Gate 双轴治理）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **TS-1（Tooling & MCP Contract）** | ✅ 设计文档已定稿（docs only，0 code） | `docs/TOOLING-MCP-CONTRACT.md`（376 行，TS-0 采信摘要为前置）。**契约 1 `tool_registry.py` 动态注册表**：tool 注册从静态集中改为动态分组，自动归类 **3 能力组（observe / reflect / communicate）**，MCP tool 动态接入，健康检查 fail-silent 投影，与 capability.py 投影合并（capability.py 0 改动）。**契约 2 Tooling Volition Gate**：调用链 = Decision 批准 → Actuator 派发单次调用 → 结果回流 World Context / Perception；**0 自主递归硬规则（锁死）共 5 条**，agent 不可无限自我递归调用自身工具。**契约 3 权限分级与安全降级**：`Auto-Approved` / `Ask-Required` 双档 + **Fail-closed 平滑降级**（异常一律拒绝，不阻塞主心跳）+ **5s 硬超时**。**契约 4 冻结契约审查**：**12 项冻结契约逐条审查 0 冲突**（5.1 逐条审查表 + 5.2 结论），0 frozen contract 改动。**0 code**（docs-only：0 src/ 变更，0 测试变更）。TS-2 依此实现。 | `814f16a`（docs: tool registry and volition gate contract (TS-1)） |
+
 ### SE-4（Durable Soul Structure Lifecycle Contract 设计）
 
 | 条目 | 状态 | 要点 | 相关 commit |
@@ -197,8 +203,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `e4c875d` (feat: TL-7 social opportunity harness + historical test alignment (TL-7))
-- TL-7 commit: `e4c875d` (feat: TL-7 social opportunity harness + historical test alignment (TL-7); **Current HEAD**)
+- Current HEAD: `814f16a` (docs: tool registry and volition gate contract (TS-1))
+- TS-1 commit: `814f16a` (docs: tool registry and volition gate contract (TS-1); **Current HEAD**)
+- TL-7 commit: `e4c875d` (feat: TL-7 social opportunity harness + historical test alignment (TL-7); **distinct from Current HEAD**)
 - SI-3 Phase 2 commit: `d7c7c70` (feat: wire social perception aggregator into middleware and SM-4 decision (SI-3 phase 2); **distinct from Current HEAD**)
 - SI-3 Phase 1 commit: `554202c` (feat: social opportunity + compact aggregator (SI-3 phase 1); **distinct from Current HEAD**)
 - SI-2.2 commit: `33ae1b1` (feat: multi-agent social diffusion (SI-2.2); **distinct from Current HEAD**)
