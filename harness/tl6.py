@@ -11,8 +11,9 @@ harness/tl6.py — TL-6 Multi-Agent Social Lounge Stability & Identity Quarantin
          自身情景記憶、嚴禁升華為自身性格或信念。
       3. 隱私守門不變量 (Privacy Gate Invariant): 防線 2 (Privacy Visibility Gate)
          在 1:1 私聊場景 100% 攔截於總線外, 零洩漏到客廳。
-      4. 背景感知自然度 (Ambient Salience): 社交動態以 [社交感知] 區塊注入 Prompt,
-         帶有反框架提示, 且受 Top-N budget (預設 2) 預算約束。
+      4. 背景感知自然度 (Ambient Salience): 社交動態以緊湊感知區塊 ([客廳現況],
+         SI-3 Phase 2 CompactSocialState) 注入 Prompt, 帶有反框架提示
+         (ANTI_FRAMING_HINT), 且受 Top-N budget (預設 2) 預算約束。
       5. D2 決定性與零生產污染: 3 次 runs 軌跡一致, 隔離 data_root (data/time_lapse/TL-6/),
          production data_root 0 diff。
 
@@ -39,6 +40,7 @@ from src.eventbus.schema import EventPriority, EventType, SoulEvent
 from src.inner_life.submission_gate import SubmissionGate, SubmissionVerdict
 from src.paths import data_root, reset_data_root
 from src.social import (
+    ANTI_FRAMING_HINT,
     EXTERNAL_OTHER_ACTION,
     SPACE_LOUNGE,
     VISIBILITY_PRIVATE,
@@ -451,7 +453,9 @@ class TL6Runner:
                     if social_block:
                         perceived_agents.append(aid)
                         # 驗證反框架提示是否在場
-                        if "[社交感知]" not in social_block or "這些是他人的行為" not in social_block:
+                        # SI-3 Phase 2: 渲染格式升级为 CompactSocialState
+                        # ([客廳現況] 區塊 + ANTI_FRAMING_HINT 反框架語)
+                        if "[客廳現況]" not in social_block or ANTI_FRAMING_HINT not in social_block:
                             quarantine_leaks += 1
 
             # ── 驗證防風暴不變量 (Anti-Storm Invariant) ──

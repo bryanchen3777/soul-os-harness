@@ -69,6 +69,7 @@ from .validation import WorldEventValidationError, validate_world_event
 # 頂層 import 會造成 circular import。改為方法內局部 import (Python import
 # 有快取, 開銷可忽略)。
 if TYPE_CHECKING:  # 僅類型標註, 運行時不執行
+    from src.social.aggregator import SocialPerceptionAggregator
     from src.social.schema import SocialWorldEvent
 
 logger = logging.getLogger("soul_os.world.middleware")
@@ -176,6 +177,22 @@ def _infer_silence_hours(agent_intent_payload: Dict[str, Any]) -> float:
     return 0.0
 
 
+def _ts_to_epoch(ts: str) -> float:
+    """
+    SI-3 Phase 2 (2026-09-03): ISO 8601 UTC timestamp → epoch 秒。
+
+    給 SocialPerceptionAggregator 的 now 用 (TTL 從事件時間起算, 測試可控)。
+    解析失敗 → 回傳當前時間 (fail-safe, 不阻斷感知管線)。
+    """
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except (ValueError, TypeError):
+        return datetime.now(timezone.utc).timestamp()
+
+
 class WorldPerceptionMiddleware:
     """
     World Perception Layer 的 Bus 整合。
@@ -227,6 +244,10 @@ class WorldPerceptionMiddleware:
         self._events_state_added = 0
         self._agent_intents_processed = 0
         self._contexts_injected = 0
+
+        # SI-3 Phase 2 (2026-09-03): per-agent SocialPerceptionAggregator 緩存
+        # (純記憶體, 0 檔案 IO; 每個 agent 一個聚合器, 保持身份隔離)
+        self._social_aggregators: Dict[str, SocialPerceptionAggregator] = {}
 
     # ── Bus integration ──────────────────────────────────
 
@@ -636,6 +657,21 @@ class WorldPerceptionMiddleware:
 
     # ── SI-2.1: 社交感知渲染 (防線 1 Ambient Path) ─────────
 
+    def _get_social_aggregator(self, agent_id: str) -> SocialPerceptionAggregator:
+        """
+        SI-3 Phase 2 (2026-09-03): 取 (或 lazy 建立) 該 agent 的 SocialPerceptionAggregator。
+
+        每個 agent 一個聚合器 (身份隔離: 外部 actor 事件只作背景感知, 0 檔案 IO)。
+        """
+        # 局部 import (避免 circular: src/social/schema.py 依賴 src.world.perception)
+        from src.social.aggregator import SocialPerceptionAggregator
+
+        if agent_id not in self._social_aggregators:
+            self._social_aggregators[agent_id] = SocialPerceptionAggregator(
+                current_agent_id=agent_id
+            )
+        return self._social_aggregators[agent_id]
+
     def _render_social_context(
         self,
         social_events: List[SocialWorldEvent],
@@ -647,31 +683,33 @@ class WorldPerceptionMiddleware:
         agent_id: str,
     ) -> str:
         """
-        SI-2.1 (2026-09-03): 把 active social events 渲染成 [社交感知] 區塊。
+        SI-3 Phase 2 (2026-09-03): 把 active social events 渲染成緊湊社交感知區塊。
 
-        復用 compute_scores (SocialWorldEvent 繼承 WorldEvent, 接口兼容),
-        取 top-N (social_perception_budget, 預設 2), 渲染成:
+        升級: 用 SocialPerceptionAggregator (SI-3 Phase 1) 取代 raw event feed 渲染 —
+        聚合為 CompactSocialState (在場/話題/氛圍/有效機會), 固定 Token 預算 (<=150),
+        帶反框架警示語 (ANTI_FRAMING_HINT)。無在場他人且無活躍話題 → 回傳 "" (留白)。
 
-            [社交感知] 以下是你剛才注意到的客廳/靈魂牆動態。
-            這些是他人的行為, 屬於環境背景, 不是你的經歷; 自然感知即可,
-            不要過度反應, 不要逐條回應。
-
-            ## 你注意到的社交動態
-            - [lounge/greeting] agent_miku 向大家打了招呼
-
-        關鍵: 渲染文案帶「他者行為、環境背景、非我經歷」反框架語 (防線 3 的
-        prompt 層配合; 硬 gate 在 Submission Gate 第 6 步)。
-
-        選擇語義 (SI-2.1 §6.1): 社交事件是 Ambient 背景感知 — 低刺激度指的是
-        「不觸發即時行動 (transmit)」, 不是「被 threshold 過濾」。因此 top-N
-        按 final score 排名直接取 (不過 should_accept threshold), 讓社交動態
-        自然進入背景感知; trace 仍誠實記錄 threshold 判定 (observability)。
+        保留既有 trace 記錄 (WorldPerceptionTrace, observability): 每個 social event
+        仍走 compute_scores + should_accept 判定並寫 trace (行為 0 變更), 但渲染
+        改由 aggregator 的 compact block 輸出。
 
         不觸發 transmit / AGENT_INTENT / AGENCY_TRIGGER — 只進 world_context。
         """
         if not social_events:
             return ""
 
+        # SI-3 Phase 2: 依序吸收事件到 per-agent aggregator。
+        # now = 事件 ts 的 epoch 秒 (TTL 從事件時間起算, 測試可控)。
+        aggregator = self._get_social_aggregator(agent_id)
+        now_epoch = 0.0
+        for ev in social_events:
+            now_epoch = _ts_to_epoch(ev.ts)
+            aggregator.update_from_event(ev, now_epoch)
+
+        state = aggregator.get_compact_state(agent_id, now_epoch)
+        block = aggregator.render_compact_prompt_block(agent_id, state)
+
+        # 保留既有 trace (observability, 行為 0 變更)
         # 簡單 scoring (novelty_count 按 perceived_at 順序算 position)
         novelty_position: Dict[str, int] = {}
         scored: List[tuple] = []
@@ -725,18 +763,7 @@ class WorldPerceptionMiddleware:
                 },
             ))
 
-        if not top_n:
-            return ""
-
-        lines = [
-            "\n[社交感知] 以下是你剛才注意到的客廳/靈魂牆動態。",
-            "這些是他人的行為, 屬於環境背景, 不是你的經歷; 自然感知即可, "
-            "不要過度反應, 不要逐條回應。",
-            "\n## 你注意到的社交動態",
-        ]
-        for ev, _, _, _, _ in top_n:
-            lines.append(f"- [{ev.space_id}/{ev.event_type}] {ev.actor_id} {ev.summary}")
-        return "\n".join(lines) + "\n"
+        return block
 
     # ── External API (給 test / observability) ───────────
 

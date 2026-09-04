@@ -36,6 +36,11 @@ SM-4.6 (2026-09-02, IMPLEMENTATION): reflect 分级 — 消解「补偿心理」
    明确深夜与清晨时段, do_nothing (安睡休息) 才是生命的自然主态; 只有心中
    浮现特定关键回忆或强烈怀念时才 reflect, 无须在整个深夜持续沉思。
    reflect 从「深夜的安慰奖」变成「有明确回忆冲动才发生」。
+SI-3 Phase 2 (2026-09-03, IMPLEMENTATION): 社交感知接入决策管线 —
+   build_decision_prompt 新增可选参数 social_context (默认 None, 向后兼容),
+   只进 Relevant context (不碰 Framing/Boundary, 严守 SM-2 契约)。
+   由 WorldPerceptionMiddleware 的 CompactSocialState 渲染块 (<=150 tokens)
+   Lazy 注入, 贯彻「Volition-before-Arbitration」。
 
 设计来源:
   - docs/DECISION-PROMPT-CONTRACT.md (SM-2, 冻结契约)
@@ -187,6 +192,7 @@ def build_decision_prompt(
     emergent_summary: Optional[str] = None,
     current_time: Optional[str] = None,
     temporal_anchor: Optional[str] = None,
+    social_context: Optional[str] = None,
 ) -> str:
     """
     组装 Decision prompt (专用 builder, 禁止重用 _build_messages_* 聊天路径)。
@@ -213,6 +219,9 @@ def build_decision_prompt(
         temporal_anchor: TEMPORAL ANCHOR 三行 (TA-2, 可选; 主观时间现象学)。
             提供 → Context 区块注入 (emergent 子块位置, 三态张力情境);
             None → 不注入 (向后兼容)。只进 Relevant context, 不进 Framing/Boundary。
+        social_context: SI-3 Phase 2 — 紧凑社交感知块 (CompactSocialState 渲染,
+            <=150 tokens, 含反框架提示语)。提供 → 只进 Relevant context (客廳背景
+            情境, 不碰 Framing/Boundary, 严守 SM-2 契约); None → 不注入 (向后兼容)。
 
     Returns:
         纯文本 prompt (decide 时包成 messages)
@@ -250,6 +259,10 @@ def build_decision_prompt(
     # 牵挂态第三行让 reflect 更自然 (情境呈现, 非指令), 绝不提升 transmit。
     if temporal_anchor:
         context_lines.append(temporal_anchor)
+    # SI-3 Phase 2 (2026-09-03): 紧凑社交感知块 (客廳背景情境) — 只进 Relevant
+    # context, 不碰 Framing/Boundary (严守 SM-2 契约)。None → 不注入 (向后兼容)。
+    if social_context:
+        context_lines.append(social_context)
     context_block = "\n".join(context_lines) if context_lines else ""
 
     # 4. Boundary (固定文本, 四元选择, 互斥单选)

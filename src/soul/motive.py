@@ -140,6 +140,42 @@ def now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def motive_from_social_opportunity(
+    opp: Any,  # SocialOpportunity
+    soul_name: str = "",
+) -> Motive:
+    """
+    SI-3 Phase 2 (2026-09-03): 將有效的 SocialOpportunity 轉換為 Motive 候選
+    (SM-1/SM-3 兼容)。嚴格維持 Motive 5 字段凍結
+    (motive_id, content, target, provenance_ref, created_at)。
+
+    純函數: 不進 class, 不依賴全局狀態, 不寫任何 trace/檔案。
+    只接受未過期之機會 (TTL 修剪由 SocialOpportunityBuffer 負責, fail-closed)。
+
+    Args:
+        opp: SocialOpportunity (帶 300s TTL 的短期社交機會)
+        soul_name: 保留參數 (未來可注入靈魂名, 目前不影響 content)
+
+    Returns:
+        Motive (target 固定指向 Bry, provenance_ref 引用 opp:opportunity_id)
+    """
+    content = f"關於 {opp.actor_id} 在客廳提到的話題「{opp.topic}」"
+    # created_at: opp 是 epoch 秒 (float), Motive 凍結為 ISO 8601 UTC (str)。
+    # 壞值 → fail-safe 用當前時間 (不 crash, 不阻斷決策管線)。
+    try:
+        created_dt = datetime.fromtimestamp(float(opp.created_at), tz=timezone.utc)
+        created_at = created_dt.isoformat()
+    except (TypeError, ValueError, OSError):
+        created_at = now_utc_iso()
+    return Motive(
+        motive_id=f"mot_{uuid.uuid4().hex[:12]}",
+        content=content,
+        target=TARGET_BRYAN,
+        provenance_ref=f"opp:{opp.opportunity_id}",
+        created_at=created_at,
+    )
+
+
 # ───────────────────────────────────────────────────────────
 # MotiveTraceStore — 独立 append-only JSONL
 # ───────────────────────────────────────────────────────────
