@@ -151,6 +151,12 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 |------|------|------|-------------|
 | **TS-1（Tooling & MCP Contract）** | ✅ 设计文档已定稿（docs only，0 code） | `docs/TOOLING-MCP-CONTRACT.md`（376 行，TS-0 采信摘要为前置）。**契约 1 `tool_registry.py` 动态注册表**：tool 注册从静态集中改为动态分组，自动归类 **3 能力组（observe / reflect / communicate）**，MCP tool 动态接入，健康检查 fail-silent 投影，与 capability.py 投影合并（capability.py 0 改动）。**契约 2 Tooling Volition Gate**：调用链 = Decision 批准 → Actuator 派发单次调用 → 结果回流 World Context / Perception；**0 自主递归硬规则（锁死）共 5 条**，agent 不可无限自我递归调用自身工具。**契约 3 权限分级与安全降级**：`Auto-Approved` / `Ask-Required` 双档 + **Fail-closed 平滑降级**（异常一律拒绝，不阻塞主心跳）+ **5s 硬超时**。**契约 4 冻结契约审查**：**12 项冻结契约逐条审查 0 冲突**（5.1 逐条审查表 + 5.2 结论），0 frozen contract 改动。**0 code**（docs-only：0 src/ 变更，0 测试变更）。TS-2 依此实现。 | `814f16a`（docs: tool registry and volition gate contract (TS-1)） |
 
+### TS-2（Tooling & MCP 实作：动态 Tool 注册表 + observe/reflect 执行器）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **TS-2（Tooling & MCP 实作）** | ✅ 完成 | `src/soul/tool_registry.py`（NEW）动态注册表：tool 注册改为动态分组，分组聚合 **3 能力组（observe / reflect / communicate）**，**健康三态** + **fail-closed 归类**（异常一律拒绝，不阻塞主心跳）+ **权限分级**（`Auto-Approved` / `Ask-Required` 双档）+ **5s 硬超时降级**；`src/soul/actuator.py`（NEW）observe/reflect 执行器，调用链 = Decision 批准 → Actuator 派发单次调用 → 结果回流 World Context / Perception，**0 自主递归硬规则**。**96 tests 全过**；0 frozen contract 改动（只新增 tool_registry.py + actuator.py + 测试，未动 scheduler.py / capability.py / decision.py / motive.py）。注：scheduler 接线留待 TS-2.1。 | `c668739`（feat: tool registry and observe/reflect actuators (TS-2)） |
+
 ### SE-4（Durable Soul Structure Lifecycle Contract 设计）
 
 | 条目 | 状态 | 要点 | 相关 commit |
@@ -203,8 +209,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `814f16a` (docs: tool registry and volition gate contract (TS-1))
-- TS-1 commit: `814f16a` (docs: tool registry and volition gate contract (TS-1); **Current HEAD**)
+- Current HEAD: `c668739` (feat: tool registry and observe/reflect actuators (TS-2))
+- TS-2 commit: `c668739` (feat: tool registry and observe/reflect actuators (TS-2); **Current HEAD**)
+- TS-1 commit: `814f16a` (docs: tool registry and volition gate contract (TS-1); **distinct from Current HEAD**)
 - TL-7 commit: `e4c875d` (feat: TL-7 social opportunity harness + historical test alignment (TL-7); **distinct from Current HEAD**)
 - SI-3 Phase 2 commit: `d7c7c70` (feat: wire social perception aggregator into middleware and SM-4 decision (SI-3 phase 2); **distinct from Current HEAD**)
 - SI-3 Phase 1 commit: `554202c` (feat: social opportunity + compact aggregator (SI-3 phase 1); **distinct from Current HEAD**)
@@ -1301,5 +1308,6 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09 (SI-2) | 多 Agent 灵魂互动完整落地：**SI-2.0 审计**（`docs/SOCIAL-DIFFUSION-AUDIT.md`）+ **SI-2.1 设计**（`docs/SOCIAL-DIFFUSION-CONTRACT.md`，commit `5002f20`）+ **SI-2.2 实作**（commit `33ae1b1`）。灵魂互动主线从 SI-1 最小读侧升级为完整多 Agent Social Diffusion 闭环（Schema + 三大防线：Identity Firewall / Privacy Visibility Gate / Ambient Perception Path）。0 frozen contract 改动。 | Mavis / Lin | SI-2 |
 | 2026-09 (TL-6) | 多 Agent 客厅情境稳定与身份隔离验证完成。3 files changed: `harness/tl6.py`（NEW，TL6Runner / TL6Tick / build_tl6_script 7 阶段客厅剧本）、`harness/run_tl6.py`（NEW，CLI 入口）、`tests/test_tl6_social_harness.py`（NEW，5 tests）。**四大核心不变量全过**：Anti-Storm 100%（0 自激风暴）/ Identity Quarantine 100%（0 他者记忆内化）/ Privacy Gate 100%（1:1 私聊 0 泄漏）/ Ambient Salience PASS（反框架提示在场）。3 runs 确定性一致，生产数据 0 diff。**213 笔全回归测试通过（36.85s）**。0 frozen contract 改动。 | Antigravity | TL-6 |
 | 2026-09 (TL-7) | 社交机会生命周期与自主意志稳定性验证完成 + 历史旧测试对齐。5 files changed: `harness/tl7.py`（NEW，TL7Runner 4 大情境阶段：话题涌现 / 紧凑感知与机会生成 / SM-4 意志选择 / 300s TTL 自然蒸发）、`harness/run_tl7.py`（NEW，CLI 入口）、`tests/test_tl7_social_opportunity_harness.py`（NEW，7 tests）、`tests/test_m3_4_priority_semantic_boundary.py`（改：test_I7 对齐 M5.4-3.1 契约，to_payload 含 priority additive 字段 + round-trip 保证）、`tests/test_tl2_volition.py`（改：ContextRoutingLLM stub 对齐 SM-4.1~SM-4.6 判定阶梯，motive 原文锚点取代旧 context 关键词 marker）。**三大不变量全过**：TTL Expiration 100%（过期条目彻底蒸发 0 遗留）/ No Cascading Volition 100%（0 自动连锁抢话）/ D2 Determinism & 0 Mutation（3 runs 轨迹一致，生产 data/ 0 diff）。**55 笔验收测试全过（13.47s，工单验收命令 6 文件）**。0 frozen contract 改动；0 Vector DB。 | DSH | TL-7 |
+| 2026-09 (TS-2) | Tooling & MCP 实作（commit `c668739`）。4 files changed: `src/soul/tool_registry.py`（NEW）、`src/soul/actuator.py`（NEW）、`tests/test_tool_registry.py`（NEW）、`tests/test_actuator_volition_gate.py`（NEW）。**动态注册表**：tool 注册从静态集中改为动态分组，分组聚合 **3 能力组（observe / reflect / communicate）**，健康检查 **三态** + **fail-closed 归类**（异常一律拒绝，不阻塞主心跳）+ **权限分级**（`Auto-Approved` / `Ask-Required` 双档）+ **5s 硬超时降级**；**observe/reflect 执行器**：调用链 = Decision 批准 → Actuator 派发单次调用 → 结果回流 World Context / Perception，**0 自主递归硬规则**。**96 tests 全过**；0 frozen contract 改动（只新增 tool_registry.py + actuator.py + 测试，未动 scheduler.py / capability.py / decision.py / motive.py）。注：scheduler 接线留待 TS-2.1。 | DSH | TS-2 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
