@@ -267,6 +267,14 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 |------|------|------|-------------|
 | **C-1（自主目标与意向引擎主线）** | ✅ **正式 CLOSED**（五阶全通关） | **TG-0 审计 → TG-1 设计 → TG-2 实作 → TG-3 验收 → TG-3.1 修复** 全链闭环：审计（volition 链盘点 + Goal Ledger 落点评估，docs only）→ 契约（10 项决策锁定，docs only）→ 实作（Schema v8 goals 表 + GoalMotiveProvider Plan B 零侵入 + _decision_check 接线 0 新定时器，35 tests）→ 验收（4 剧本 6 tests + 52 回归，No-Scoring 三层铁证，0 直写 facts）→ 生产缺陷修复（UTC 沉淀对齐 + SUSPENDED 陈旧候选守卫，43 passed）。**累计 5 commits**（`136cb95` → `058e060` → `26da28d` → `3adaf57` → `d55253f`）；**0 frozen contract 改动全程保持**。 | `136cb95` + `058e060` + `26da28d` + `3adaf57` + `d55253f` |
 
+### LS 系列（C-2：长期共生阶段）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **LS-0（长期共生架构审计）** | ✅ CLOSED（READ-ONLY，docs only 0 code） | `docs/LS-0-LONG-TERM-COEXISTENCE-AUDIT.md`（NEW）。**四维度审计全干净**：0 CONTRACT CONFLICT；四维度（生成器承诺 / 相位 / 叙事 / 内容安全）全部 KEEP existing / 最小 additive。**关键发现**：goal 创建器（种子→goal）production 未实现——`upsert_goal` 调用方只有测试直写，无生产路径。这是 C-2 的核心缺口。**0 frozen contract 改动（docs only 0 code）**。 | （docs only，随 LS-1 closeout 一并落地） |
+| **LS-1（长期共生设计契约：C-2 共生设计）** | ✅ CLOSED（docs only 0 code），**Owner 拍板方案 B** | `docs/LS-1-LONG-TERM-COEXISTENCE-CONTRACT.md`（NEW，9 节，359 行）。**契约锁定**：① 生成器（Goal Seed 生成器承诺语义）；② 承诺（promise 语义 + 生命周期）；③ 相位（phase 语义）；④ 叙事（narrative 语义）；⑤ 三案对比（A 独立 goal 引擎 / B 既有 proxy LLM 通道语义化 / C 混合）；**Owner（Bryan）拍板方案 B：既有 proxy LLM 通道语义化**——不复用 C-1 Goal Engine 路线，在既有 proxy LLM 通道上做语义化升级；⑥ 成本估算：月增量 ≈2 万 tokens（低开销）。**LS-2 实作 + TL-8 护栏 NEXT**（Goal Seed 生成器生产落地）。**0 frozen contract 改动（docs only 0 code）**。 | `6514ac1`（docs: LS-1 long-term coexistence contract (C-2)） |
+| **LS-2（实作 + TL-8 护栏）** | ⏳ NEXT | Goal Seed 生成器生产落地（补齐 LS-0 发现的核心缺口：种子→goal 生产路径）。**独立工单并行执行中**，收尾工单不触碰 src/。 | 待定 |
+
 ### North Star v2（canonical 引用）
 
 **Canonical 完整版**：Notion 页面「🧭 Soul OS Strategic Roadmap & Evolution」的「North Star v2」段（2026-08-29，Bryan 亲述）。七点愿景简述：
@@ -291,12 +299,12 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current authorized ticket
 
-**NONE.** No ticket has been AUTHORIZED per the §5 transition rule. All candidate next-ticket work is recorded in §3 ACTIVE DECISIONS or §4 DEFERRED WORK. **M5.15-1 remains CANDIDATE only — MUST NOT be dispatched** without explicit Owner authorization (per GOV-2-R1 spec).
+**LS-2（实作 + TL-8 护栏：Goal Seed 生成器生产落地）。** Per §5 transition rule，LS-2 已 AUTHORIZED 并派发（与 LS-1 closeout 并行，独立工单）。**M5.15-1 remains CANDIDATE only — MUST NOT be dispatched** without explicit Owner authorization (per GOV-2-R1 spec).
 
 ### Current HEAD
 
-- Current HEAD: `f410867` (docs: register TG-3 + TG-3.1 + C-1 CLOSED)
-- C-1 closeout docs commit: `f410867` (docs: register TG-3 + TG-3.1 + C-1 CLOSED; **Current HEAD**)
+- Current HEAD: `6514ac1` (docs: LS-1 long-term coexistence contract (C-2))
+- LS-1 contract docs commit: `6514ac1` (docs: LS-1 long-term coexistence contract (C-2); **Current HEAD**)
 - TG-3.1 fix commit: `d55253f` (fix: sediment UTC + suspended stale-candidate guard (TG-3.1); **distinct from Current HEAD**)
 - TG-3 commit: `3adaf57` (feat: goal-driven behavior harness acceptance (TG-3); **distinct from Current HEAD**)
 - TG-2 commit: `26da28d` (feat: goal engine (schema v8 + goal provider + scheduler wiring) (TG-2); **distinct from Current HEAD**)
@@ -1425,5 +1433,7 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09 (TG-3) | Goal Engine 验收（commit `3adaf57`）。`tests/harness/test_goal_driven_harness.py`（NEW）。**四大剧本 6 tests 全过**：① 跨心跳长程推进；② 突发中断与唤醒（SUSPENDED 冻结 → 恢复 → 续跑）；③ 双轴配额轮替防饥饿（No Scoring）；④ 终态记忆沉淀（InnerLifeEvent + Trace）。**52 回归全过**；**No-Scoring 三层铁证**（结构配额轮替驱动 / 0 scoring 字段 / 0 数值比较断言）；**0 直写 facts**（沉淀只走 InnerLifeEvent 通道）。**0 frozen contract 改动**（新增 harness 测试 + fixture，0 production mutation）。**TG-3 CLOSED、TG-3.1 NEXT**（生产缺陷 2 项修复）。 | DSH | TG-3 |
 | 2026-09 (TG-3.1) | 生产缺陷修复（commit `d55253f`）。`src/goals/motive_provider.py` 2 缺陷：① **sediment_completion ts UTC 对齐**（`astimezone(timezone.utc).isoformat()`，杜绝非 UTC 时区下 validate_ts 拒绝 → fail-closed 静默丢弃）；② **on_decision SUSPENDED 拦截守卫**（中断窗口残留 pending 候选不得误推进已挂起目标，唤醒后重新入轮替）。+ `tests/goals/test_goal_engine.py`（TestTG31ProductionDefectFixes 2 笔：跨时区 UTC-4 沉淀断言 + SUSPENDED 守卫断言）。**43 passed**（tests/goals 37 + harness 6）。**0 frozen contract 改动**（只改 motive_provider.py + 测试）。 | DSH | TG-3.1 |
 | 2026-09 (C-1 CLOSED) | **C-1 自主目标与意向引擎主线：正式 CLOSED**。五阶全链 `136cb95`（TG-0 审计）→ `058e060`（TG-1 设计）→ `26da28d`（TG-2 实作）→ `3adaf57`（TG-3 验收）→ `d55253f`（TG-3.1 修复）。**全程 0 frozen contract 改动**。本批次登记 docs commit `f410867`。 | DSH | C-1 |
+| 2026-09 (LS-0) | **LS-0 长期共生架构审计 CLOSED**（READ-ONLY docs only 0 code）。`docs/LS-0-LONG-TERM-COEXISTENCE-AUDIT.md`：四维度（生成器承诺 / 相位 / 叙事 / 内容安全）全干净，0 CONTRACT CONFLICT，全部 KEEP existing / 最小 additive。**关键发现**：goal 创建器（种子→goal）production 未实现（`upsert_goal` 调用方只有测试直写）——C-2 核心缺口。0 frozen contract 改动。 | DSH | LS-0 |
+| 2026-09 (LS-1) | **LS-1 长期共生设计契约 CLOSED**（docs only 0 code，commit `6514ac1`）。`docs/LS-1-LONG-TERM-COEXISTENCE-CONTRACT.md`（9 节，359 行）：生成器（Goal Seed 生成器承诺语义）/ 承诺（promise 语义 + 生命周期）/ 相位 / 叙事 + 三案对比（A 独立 goal 引擎 / B 既有 proxy LLM 通道语义化 / C 混合）。**Owner（Bryan）拍板方案 B：既有 proxy LLM 通道语义化**——不复用 C-1 Goal Engine 路线。成本估算：月增量 ≈2 万 tokens。**LS-2 实作 + TL-8 护栏 NEXT**（Goal Seed 生成器生产落地）。0 frozen contract 改动。 | DSH | LS-1 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
