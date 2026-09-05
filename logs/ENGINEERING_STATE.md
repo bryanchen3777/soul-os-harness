@@ -163,11 +163,17 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 |------|------|------|-------------|
 | **TS-2.1（Actuator 接线）** | ✅ 完成（79/89/100 测试全过，36 条 SM-3 零回归） | `src/soul/scheduler.py`（+46）`scheduler._decision_check` 依赖注入 actuator：observe / reflect 决策后经 **Actuator 派发单次调用**，结果回流感知 / 认知（World Context / Perception）；**发布端仍 mark_rejected**（不因 actuator 存在而放行拒绝的 transmit）；**transmit 保持既有通道**（不经过 Actuator，走原消息管线）；**do_nothing 不执行**（无调用派发）；`src/soul/actuator.py`（+35，additive）；`tests/test_ts21_actuator_wiring.py`（NEW，**10 新测试**）。**79/89/100 测试全过**（TS-2.1 10 + actuator volition gate + tool registry + SM-3 motive/decision 回归），**36 条 SM-3 零回归**。0 frozen contract 改动（只改 scheduler.py + actuator.py additive + 新测试，未动 Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 写入逻辑）。 |
 
-### 工具层标准化全线贯通（TS-0 审计 → TS-1 设计 → TS-2 实作 → TS-2.1 接线）
+### TS-3（真实 MCP Server 端到端验证：官方 mcp SDK + 手写 stdio client 双实现）
 
 | 条目 | 状态 | 要点 | 相关 commit |
 |------|------|------|-------------|
-| **TS-0 → TS-2.1（工具层标准化全线贯通）** | ✅ 四条链闭环 | **TS-0 审计**（`docs/TOOLING-MCP-AUDIT.md`，工具层现状盘点 + MCP 接入缺口）→ **TS-1 设计**（`docs/TOOLING-MCP-CONTRACT.md`，contract 四节：动态注册表 / Volition Gate / 权限分级 + Fail-closed / 冻结契约审查 0 冲突，commit `814f16a`）→ **TS-2 实作**（`src/soul/tool_registry.py` 动态注册表 3 能力组 + `src/soul/actuator.py` observe/reflect 执行器，96 tests 全过，commit `c668739`）→ **TS-2.1 接线**（scheduler._decision_check 经 Actuator 派发单次调用，89 测试全过，commit `10a6a98`）。**工具调用标准化主线完整打通**：Decision 批准 → Actuator 派发单次调用 → 结果回流感知 / 认知；0 自主递归硬规则；5s 硬超时降级；全程 0 frozen contract 改动。 | `814f16a` / `c668739` / `10a6a98` |
+| **TS-3（真实 MCP Server 端到端验证）** | ✅ 完成（**73 测试全过**；工具层状态升级「生产验证完毕 Production-Verified」） | `scripts/mcp_fixture_server.py`（NEW，**官方 mcp SDK** 实现的真实 MCP server fixture）+ `src/soul/mcp_stdio_client.py`（NEW，**手写 stdio MCP client**：JSON-RPC 2.0 初始化握手 / tool 动态发现 / 调用派发 / 响应解析）+ `tests/test_ts3_real_mcp_e2e.py`（NEW，真实进程端到端：spawn 真实子进程 server → stdin/stdout 进程通讯 → tools/list + tools/call 全链路）+ `tests/test_ts3_official_mcp_server.py`（NEW，官方 mcp SDK server 测试）。**三大验证全过**：① **进程通讯**（真实子进程 spawn + stdio 双向 JSON-RPC，**非 mock**，实证 MCP 接入主线真实可用）；② **5s 硬超时 Fail-closed**（客户端超时降级，异常一律拒绝、不阻塞主心跳，TS-1 契约 3 实证）；③ **Volition Gate**（调用链 = Decision 批准 → Actuator 派发单次调用 → 结果回流，**权限分级 `Auto-Approved` / `Ask-Required` 实证**）。**73 测试全过**；**0 frozen contract 改动**（只新增 mcp_fixture_server.py + mcp_stdio_client.py + 2 测试，未动 tool_registry.py / actuator.py 既有接口）。 | `0acadbc`（feat: real MCP server end-to-end validation (TS-3)） |
+
+### 工具层标准化全线贯通（TS-0 审计 → TS-1 设计 → TS-2 实作 → TS-2.1 接线 → TS-3 生产验证）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **TS-0 → TS-3（工具层标准化全线贯通）** | ✅ 四条链闭环 + **生产验证完毕（Production-Verified）** | **TS-0 审计**（`docs/TOOLING-MCP-AUDIT.md`，工具层现状盘点 + MCP 接入缺口）→ **TS-1 设计**（`docs/TOOLING-MCP-CONTRACT.md`，contract 四节：动态注册表 / Volition Gate / 权限分级 + Fail-closed / 冻结契约审查 0 冲突，commit `814f16a`）→ **TS-2 实作**（`src/soul/tool_registry.py` 动态注册表 3 能力组 + `src/soul/actuator.py` observe/reflect 执行器，96 tests 全过，commit `c668739`）→ **TS-2.1 接线**（scheduler._decision_check 经 Actuator 派发单次调用，89 测试全过，commit `10a6a98`）→ **TS-3 生产验证**（真实 MCP Server 端到端：官方 mcp SDK + 手写 stdio client 双实现，进程通讯 / 5s 硬超时 Fail-closed / Volition Gate 三大验证全过 + 权限分级实证，73 测试全过，commit `0acadbc`）。**工具调用标准化主线完整打通**：Decision 批准 → Actuator 派发单次调用 → 结果回流感知 / 认知；0 自主递归硬规则；5s 硬超时降级；全程 0 frozen contract 改动。**工具层状态：生产验证完毕（Production-Verified）**。 | `814f16a` / `c668739` / `10a6a98` / `0acadbc` |
 
 ### SE-4（Durable Soul Structure Lifecycle Contract 设计）
 
@@ -221,8 +227,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `10a6a98` (feat: wire actuator into scheduler decision check (TS-2.1))
-- TS-2.1 commit: `10a6a98` (feat: wire actuator into scheduler decision check (TS-2.1); **Current HEAD**)
+- Current HEAD: `0acadbc` (feat: real MCP server end-to-end validation (TS-3))
+- TS-3 commit: `0acadbc` (feat: real MCP server end-to-end validation (TS-3); **Current HEAD**)
+- TS-2.1 commit: `10a6a98` (feat: wire actuator into scheduler decision check (TS-2.1); **distinct from Current HEAD**)
 - TS-2 commit: `c668739` (feat: tool registry and observe/reflect actuators (TS-2); **distinct from Current HEAD**)
 - TS-1 commit: `814f16a` (docs: tool registry and volition gate contract (TS-1); **distinct from Current HEAD**)
 - TL-7 commit: `e4c875d` (feat: TL-7 social opportunity harness + historical test alignment (TL-7); **distinct from Current HEAD**)
@@ -1323,5 +1330,6 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09 (TL-7) | 社交机会生命周期与自主意志稳定性验证完成 + 历史旧测试对齐。5 files changed: `harness/tl7.py`（NEW，TL7Runner 4 大情境阶段：话题涌现 / 紧凑感知与机会生成 / SM-4 意志选择 / 300s TTL 自然蒸发）、`harness/run_tl7.py`（NEW，CLI 入口）、`tests/test_tl7_social_opportunity_harness.py`（NEW，7 tests）、`tests/test_m3_4_priority_semantic_boundary.py`（改：test_I7 对齐 M5.4-3.1 契约，to_payload 含 priority additive 字段 + round-trip 保证）、`tests/test_tl2_volition.py`（改：ContextRoutingLLM stub 对齐 SM-4.1~SM-4.6 判定阶梯，motive 原文锚点取代旧 context 关键词 marker）。**三大不变量全过**：TTL Expiration 100%（过期条目彻底蒸发 0 遗留）/ No Cascading Volition 100%（0 自动连锁抢话）/ D2 Determinism & 0 Mutation（3 runs 轨迹一致，生产 data/ 0 diff）。**55 笔验收测试全过（13.47s，工单验收命令 6 文件）**。0 frozen contract 改动；0 Vector DB。 | DSH | TL-7 |
 | 2026-09 (TS-2) | Tooling & MCP 实作（commit `c668739`）。4 files changed: `src/soul/tool_registry.py`（NEW）、`src/soul/actuator.py`（NEW）、`tests/test_tool_registry.py`（NEW）、`tests/test_actuator_volition_gate.py`（NEW）。**动态注册表**：tool 注册从静态集中改为动态分组，分组聚合 **3 能力组（observe / reflect / communicate）**，健康检查 **三态** + **fail-closed 归类**（异常一律拒绝，不阻塞主心跳）+ **权限分级**（`Auto-Approved` / `Ask-Required` 双档）+ **5s 硬超时降级**；**observe/reflect 执行器**：调用链 = Decision 批准 → Actuator 派发单次调用 → 结果回流 World Context / Perception，**0 自主递归硬规则**。**96 tests 全过**；0 frozen contract 改动（只新增 tool_registry.py + actuator.py + 测试，未动 scheduler.py / capability.py / decision.py / motive.py）。注：scheduler 接线留待 TS-2.1。 | DSH | TS-2 |
 | 2026-09 (TS-2.1) | Actuator 接线（commit `10a6a98`）。3 files changed: `src/soul/scheduler.py`（+46，`scheduler._decision_check` 依赖注入 actuator：observe/reflect 决策后经 Actuator 派发单次调用，结果回流感知/认知；发布端仍 mark_rejected；transmit 保持既有通道；do_nothing 不执行）、`src/soul/actuator.py`（+35，additive）、`tests/test_ts21_actuator_wiring.py`（NEW，10 新测试）。**79/89/100 测试全过（TS-2.1 10 + actuator volition gate + tool registry + SM-3 回归），36 条 SM-3 零回归**。**工具层标准化全线贯通**（TS-0 审计 `docs/TOOLING-MCP-AUDIT.md` + TS-1 设计 `814f16a` + TS-2 实作 `c668739` + TS-2.1 接线 `10a6a98`）：Decision 批准 → Actuator 派发单次调用 → 结果回流，0 自主递归硬规则，5s 硬超时，全程 0 frozen contract 改动（只改 scheduler.py + actuator.py additive + 新测试，未动 Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 写入逻辑）。注：`tests/test_soul_md_loader.py` 先前 dirty 状态现不存在，未被本次触碰。 | DSH | TS-2.1 |
+| 2026-09 (TS-3) | 真实 MCP Server 端到端验证（commit `0acadbc`）。4 files changed: `scripts/mcp_fixture_server.py`（NEW，官方 mcp SDK 实现的真实 MCP server fixture）、`src/soul/mcp_stdio_client.py`（NEW，手写 stdio MCP client：JSON-RPC 2.0 初始化握手 / tool 动态发现 / 调用派发 / 响应解析）、`tests/test_ts3_real_mcp_e2e.py`（NEW，真实进程端到端：spawn 真实子进程 server → stdin/stdout 进程通讯 → tools/list + tools/call 全链路）、`tests/test_ts3_official_mcp_server.py`（NEW）。**三大验证全过**：① 进程通讯（真实子进程 + stdio 双向 JSON-RPC，非 mock）；② 5s 硬超时 Fail-closed（超时降级、异常一律拒绝不阻塞主心跳，契约 3 实证）；③ Volition Gate（Decision 批准 → Actuator 派发单次调用 → 结果回流，权限分级 Auto-Approved / Ask-Required 实证）。**73 测试全过**；**工具层状态升级「生产验证完毕（Production-Verified）」**；0 frozen contract 改动（只新增 4 文件，未动 tool_registry.py / actuator.py 既有接口）。注：`tests/test_soul_md_loader.py` 未被本次触碰。 | DSH | TS-3 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
