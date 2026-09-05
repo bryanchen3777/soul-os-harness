@@ -1505,10 +1505,15 @@ class SoulScheduler:
             return
         try:
             from src.goals.motive_provider import GoalMotiveProvider
+            from src.goals.seed_provider import GoalSeedProvider
             for agent_id in self._all_agents:
                 provider = GoalMotiveProvider.for_agent(agent_id)
                 provider.apply_interrupt_signals()
                 provider.scheduled_wakeup_scan()
+                # LS-2 (2026-09-06): Goal Seed 生成器 — 并列分支, 0 新定时器。
+                # 30s wake 只是检查时机, 内部 24h 节流（GOAL_QUOTA_WINDOW_SECONDS）
+                # 保证实际生成 ≤1 次/24h/agent; fail-closed 不阻断主循环。
+                await GoalSeedProvider.for_agent(agent_id).scan_seeds()
         except Exception as e:
             logger.warning(
                 f"[Goal] 主循环扫描异常 (fail-closed): {type(e).__name__}: {e}"

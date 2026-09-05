@@ -727,9 +727,19 @@ class TestScenario3DualAxisQuotaRoundRobin:
         state_file = tmp / "memory" / AGENT / "goal_provider.json"
         assert state_file.is_file()
         data = json.loads(state_file.read_text(encoding="utf-8"))
-        assert set(data.keys()) == {
-            "last_candidate_at", "rotation", "consecutive_do_nothing", "consecutive_skips",
-        }
+        # LS-2 (2026-09-06): GoalProviderState 扩展种子生成器 5 个 additive 结构字段
+        # （last_seed_scan_at / seed_source_cursor / seed_axis_streak /
+        #   last_seed_axis / seed_empty_rounds — 旧文件 from_dict 缺省兼容）;
+        # 既有 4 字段行为 0 变更, 断言改为包含关系 + 新字段类型校验。
+        assert {
+            "last_candidate_at", "rotation", "consecutive_do_nothing",
+            "consecutive_skips", "last_seed_scan_at", "seed_source_cursor",
+            "seed_axis_streak", "last_seed_axis", "seed_empty_rounds",
+        } <= set(data.keys())
+        assert isinstance(data["last_seed_scan_at"], (int, float))
+        assert isinstance(data["seed_source_cursor"], int)
+        assert isinstance(data["seed_axis_streak"], int)
+        assert data["seed_empty_rounds"] == 0
         assert len(data["rotation"]) <= GOAL_ROTATION_WINDOW == 3
         for entry in data["rotation"]:
             assert set(entry.keys()) == {"axis", "goal_id", "ts"}

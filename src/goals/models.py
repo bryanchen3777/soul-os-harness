@@ -227,11 +227,24 @@ class GoalProviderState:
       - rotation: 最近 N 次已产候选的轴分布（N = GOAL_ROTATION_WINDOW）
       - consecutive_do_nothing: per-goal 连续 do_nothing 计数（§8.1 信号 6）
       - consecutive_skips: 因强制换轴失败连续放弃次数（防饿死兜底）
+      - last_seed_scan_at: LS-2 种子扫描节流（上次实际扫描时刻, epoch; 24h 窗复用
+        GOAL_QUOTA_WINDOW_SECONDS, 同构第二配额计数——候选配额 vs 创建配额）
+      - seed_source_cursor: LS-2 8 源确定性轮序游标（0-7, 记录上次扫到哪）
+      - seed_axis_streak: LS-2 生成轴同轴连续计数（≤2 强制换轴）
+      - last_seed_axis: LS-2 上次生成的轴（"bryan"|"self"）
+      - seed_empty_rounds: LS-2 生成轴连续无命中轮数（防饿死兜底, 对齐
+        consecutive_skips 同精神）
     """
     last_candidate_at: float = 0.0
     rotation: List[Dict[str, Any]] = field(default_factory=list)
     consecutive_do_nothing: Dict[str, int] = field(default_factory=dict)
     consecutive_skips: int = 0
+    # ── LS-2 种子生成器状态（additive, 旧文件缺省兼容 0 迁移成本）──
+    last_seed_scan_at: float = 0.0
+    seed_source_cursor: int = 0
+    seed_axis_streak: int = 0
+    last_seed_axis: Optional[str] = None
+    seed_empty_rounds: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -239,12 +252,18 @@ class GoalProviderState:
             "rotation": self.rotation,
             "consecutive_do_nothing": self.consecutive_do_nothing,
             "consecutive_skips": self.consecutive_skips,
+            "last_seed_scan_at": self.last_seed_scan_at,
+            "seed_source_cursor": self.seed_source_cursor,
+            "seed_axis_streak": self.seed_axis_streak,
+            "last_seed_axis": self.last_seed_axis,
+            "seed_empty_rounds": self.seed_empty_rounds,
         }
 
     @classmethod
     def from_dict(cls, d: Any) -> "GoalProviderState":
         if not isinstance(d, dict):
             return cls()
+        last_axis = d.get("last_seed_axis")
         return cls(
             last_candidate_at=float(d.get("last_candidate_at", 0.0) or 0.0),
             rotation=[
@@ -256,6 +275,15 @@ class GoalProviderState:
                 if isinstance(v, (int, float)) and v > 0
             },
             consecutive_skips=int(d.get("consecutive_skips", 0) or 0),
+            last_seed_scan_at=float(d.get("last_seed_scan_at", 0.0) or 0.0),
+            seed_source_cursor=int(d.get("seed_source_cursor", 0) or 0),
+            seed_axis_streak=int(d.get("seed_axis_streak", 0) or 0),
+            last_seed_axis=(
+                last_axis if isinstance(last_axis, str) and last_axis in (
+                    "bryan", "self"
+                ) else None
+            ),
+            seed_empty_rounds=int(d.get("seed_empty_rounds", 0) or 0),
         )
 
 

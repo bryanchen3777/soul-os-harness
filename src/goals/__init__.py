@@ -7,6 +7,7 @@ TG-2 (2026-09-05): 自主目标引擎实现。
 模块:
   - models: Goal dataclass + 状态机（ACTIVE/IN_PROGRESS/SUSPENDED + COMPLETED/ABANDONED）
   - motive_provider: GoalMotiveProvider（方案 B — 产候选/引用/不决策/状态同步）
+  - seed_provider: GoalSeedProvider（LS-2 — 8 源确定性种子生成, 生产自产自驱入口）
 
 治理:
   - frozen contract 0 破坏（纯 Additive）: Agency 4 stages / TriggerEnvelope /
@@ -25,6 +26,7 @@ from src.goals.models import (
     InvalidGoalTransitionError,
 )
 from src.goals.motive_provider import GoalMotiveProvider, reset_goal_providers
+from src.goals.seed_provider import GoalSeedProvider, reset_seed_providers
 
 __all__ = [
     "AXIS_BRYAN",
@@ -36,6 +38,8 @@ __all__ = [
     "GOAL_STATE_SUSPENDED",
     "Goal",
     "GoalMotiveProvider",
+    "GoalSeedProvider",
     "InvalidGoalTransitionError",
     "reset_goal_providers",
+    "reset_seed_providers",
 ]

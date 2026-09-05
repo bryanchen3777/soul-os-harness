@@ -433,10 +433,17 @@ class TestRotationQuota:
         data = json.loads(state_file.read_text(encoding="utf-8"))
         assert len(data["rotation"]) == 1
         assert set(data["rotation"][0].keys()) == {"axis", "goal_id", "ts"}
-        assert set(data.keys()) == {
+        # LS-2 (2026-09-06): GoalProviderState 扩展种子生成器 5 个 additive 结构字段
+        # （旧文件 from_dict 缺省兼容）→ 断言改为既有 4 字段 + 新字段类型校验
+        assert {
             "last_candidate_at", "rotation", "consecutive_do_nothing",
             "consecutive_skips",
-        }
+        } <= set(data.keys())
+        assert isinstance(data["last_seed_scan_at"], (int, float))
+        assert isinstance(data["seed_source_cursor"], int)
+        assert isinstance(data["seed_axis_streak"], int)
+        assert data["last_seed_axis"] is None          # 生成器未跑 → 缺省 None
+        assert isinstance(data["seed_empty_rounds"], int)
 
 
 # ───────────────────────────────────────────────────────────
