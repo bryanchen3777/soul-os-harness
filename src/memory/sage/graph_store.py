@@ -316,17 +316,23 @@ class GraphStore:
 
     @_locked
     def add_fact(self, fact: Fact) -> str:
+        # LS-2 修復 (2026-09-05): INSERT 清單補上 confidence 列（DDL v4 即有該列，
+        # 清單漏列 → 實際寫入恆為 DB 默認 1.0，自訂值如 0.85 寫不進去）。
+        # 向後兼容：Fact.confidence 默認 1.0，未傳時寫 1.0 與原行為逐字節一致；
+        # 傳入自訂值時精確寫入。None 防呆視為 1.0（對齊 DB NOT NULL DEFAULT）。
+        confidence = fact.confidence if fact.confidence is not None else 1.0
         self._add_to_graph(fact)
         conn = self._get_conn()
         conn.execute(
             """INSERT OR REPLACE INTO facts
                (fact_id, subject, predicate, object,
-                timestamp, event_time, weight, source,
+                timestamp, event_time, weight, confidence, source,
                 session_id, tags, is_anchor, source_pair,
                 inner_life_event_id, valid_from, invalidated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (fact.fact_id, fact.subject, fact.predicate, fact.object,
-             fact.timestamp, fact.event_time, fact.weight, fact.source,
+             fact.timestamp, fact.event_time, fact.weight, confidence,
+             fact.source,
              fact.session_id, "", int(fact.is_anchor),
              fact.source_pair or "",
              fact.inner_life_event_id or "",
