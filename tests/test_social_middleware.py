@@ -7,7 +7,7 @@ tests/test_social_middleware.py — SI-2.1 防线 1: Ambient Perception Path
 验收项:
   - 平行订阅: register() event_filter 含 SOCIAL_WORLD_EVENT (additive)
   - SOCIAL_WORLD_EVENT 进 WorldPerceptionState (ephemeral, 24h novelty window)
-  - world_context 注入 [社交感知] 区块, 带「他者行为、非我经历」反框架语
+  - world_context 注入 [客廳現況] 区块, 带「他人动态属环境背景」反框架语
   - 不触发 transmit: 处理 SOCIAL_WORLD_EVENT 本身不 publish 任何事件
   - private 契约违例 (visibility=private 出现在 bus 上) → fail-closed 丢弃
   - 既有 WORLD_EVENT 路径行为不变 (回归)
@@ -175,13 +175,13 @@ def test_social_event_private_on_bus_dropped():
 
 
 # ───────────────────────────────────────────────────────────
-# 3. world_context 注入 [社交感知] 区块
+# 3. world_context 注入 [客廳現況] 区块
 # ───────────────────────────────────────────────────────────
 
 def test_social_context_injected_into_world_context():
     """
-    防线 1: AGENT_INTENT_ENRICHED 处理后, world_context 含 [社交感知] 区块,
-    带「他者行为、非我经历」反框架语。
+    防线 1: AGENT_INTENT_ENRICHED 处理后, world_context 含 [客廳現況] 区块,
+    带「他人动态属环境背景」反框架语。
     """
     with tempfile.TemporaryDirectory() as tmp:
         bus = MagicMock()
@@ -201,11 +201,11 @@ def test_social_context_injected_into_world_context():
         perceived = published[0]
         assert perceived.event_type == EventType.AGENT_INTENT_PERCEIVED
         world_context_text = perceived.payload.get("world_context", "")
-        assert "[社交感知]" in world_context_text
+        assert "[客廳現況]" in world_context_text
         assert "他" in world_context_text  # 反框架语: 他人的行为
-        assert "不是你的經歷" in world_context_text
+        assert "他人動態屬環境背景" in world_context_text
         assert "agent_miku" in world_context_text
-        assert "[lounge/greeting]" in world_context_text
+        assert "[lounge/greeting]" not in world_context_text  # 紧凑渲染不再注入原始 venue
 
 
 def test_social_context_does_not_trigger_transmit():
@@ -235,7 +235,7 @@ def test_social_context_does_not_trigger_transmit():
 
 
 def test_social_context_empty_when_no_social_events():
-    """没有 social events 时, world_context 不含 [社交感知] 区块 (既有行为不变)。"""
+    """没有 social events 时, world_context 不含 [客廳現況] 区块 (既有行为不变)。"""
     with tempfile.TemporaryDirectory() as tmp:
         bus = MagicMock()
         mw, _ = _make_middleware(Path(tmp), bus=bus)
@@ -248,7 +248,7 @@ def test_social_context_empty_when_no_social_events():
 
         assert len(published) == 1
         world_context_text = published[0].payload.get("world_context", "")
-        assert "[社交感知]" not in world_context_text
+        assert "[客廳現況]" not in world_context_text
 
 
 # ───────────────────────────────────────────────────────────
@@ -277,7 +277,7 @@ def test_world_event_path_unchanged():
         assert len(published) == 1
         world_context_text = published[0].payload.get("world_context", "")
         assert "[世界感知]" in world_context_text
-        assert "[社交感知]" not in world_context_text  # 没有 social events
+        assert "[客廳現況]" not in world_context_text  # 没有 social events
 
 
 # ───────────────────────────────────────────────────────────
