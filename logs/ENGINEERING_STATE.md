@@ -316,8 +316,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `a4f974e` (test(tl11): commitment closure + periodic narrative end-to-end harness)
-- TL-11 acceptance commit: `a4f974e` (test(tl11): commitment closure + periodic narrative end-to-end harness; **Current HEAD**)
+- Current HEAD: `a9335df` (docs: register C-2.1 CLOSED (TL-11 acceptance, a4f974e))
+- C-2.1 register commit: `a9335df` (docs: register C-2.1 CLOSED (TL-11 acceptance, a4f974e); **Current HEAD**)
+- TL-11 acceptance commit: `a4f974e` (test(tl11): commitment closure + periodic narrative end-to-end harness; **distinct from Current HEAD**)
 - C-2.1 implementation commit: `306943f` (feat(c-2.1): commitment closure seed B6 + periodic narrative sublimation; **distinct from Current HEAD**)
 - C-2.1 contract commit: `328c5e1` (docs(c-2.1): commitment lifecycle + narrative sublimation contract; **distinct from Current HEAD**)
 - TL-10 acceptance commit: `29fd27d` (test(tl10): relational expression end-to-end harness (P1 routing + band injection + A2U preserve + fail-safe); **distinct from Current HEAD**)
