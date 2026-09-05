@@ -338,7 +338,10 @@ class TestTransmitWiring:
         assert payload["reason"] == "scheduler.proactive_dm"
         assert isinstance(payload["elapsed_mins"], float)
         assert isinstance(payload["timestamp"], str)
-        assert payload["extra"] == {}
+        # C-3.1 (2026-09-05, 契约 §2.3 #1): transmit 时 scheduler 把 motive.target
+        # 写入既有 extra 通道 (TriggerEnvelope 0 结构变更, 0 新字段; extra 内容对齐
+        # 新授权行为: extra={"motive_target": "bryan"})。seed target fixed="bryan"。
+        assert payload["extra"] == {"motive_target": "bryan"}
         # Actuator 完全不被触碰（transmit 走既有 Expression 路径, 0 工具调用）
         assert client.calls == []
         assert state.get_active_events() == []

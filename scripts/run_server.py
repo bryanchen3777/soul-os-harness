@@ -77,6 +77,38 @@ except ImportError:
     pass
 
 
+# ───────────────────────────────────────────────────────────
+# C-3.1 P1 投递分流判定 (Owner 授权 2026-09-05, ENGINEERING_STATE C-3.1 登记;
+# M3.1 frozen scope 解冻范围 = 仅限目标分流判断; 严禁触碰底层 TG/频道通信客户端
+# 核心代码, 只改 executor 层的分流选择)。
+#
+#   判定表:
+#     - motive_target == "user_bryan"（或原始 "bryan"）→ 维持原状:
+#       Bryan 1:1 Telegram 私聊（mode="private" + telegram + Bry chat_id）
+#     - motive_target in AGENT_IDS（SG-2 既有注册表 src.soul.motive.get_agent_ids()）→
+#       改道投递 lounge / soul_wall 公开频道（mode="group" 公开语义, 对齐
+#       SOCIAL-DIFFUSION-CONTRACT 防线 2 判定表: lounge/soul_wall = group + public）;
+#       不设私聊 target （不再直穿 Bryan 私聊）
+#     - 未知 / 空 target → 维持既有默认行为（fail-safe, 不报错）
+#
+# 返回值: {"mode": "private"|"group", "target_channel": str|None,
+#          "target_user_id": str|None} —— None 字段 = 不写入 chrono_payload。
+# ───────────────────────────────────────────────────────────
+def resolve_proactive_delivery(motive_target: Any) -> Dict[str, Any]:
+    """C-3.1 P1: 依 motive_target 判定投递路由（executor 层分流, 0 触碰底层客户端）。"""
+    from src.soul.motive import get_agent_ids
+    _target_norm = "user_bryan" if motive_target == "bryan" else motive_target
+    if isinstance(_target_norm, str) and _target_norm in get_agent_ids():
+        # agent-target → 公开频道 (lounge/soul_wall = group 公开语义)
+        return {"mode": "group", "target_channel": None, "target_user_id": None}
+    # user_bryan / 未知 / 空 → 维持原状 (fail-safe): Bryan 1:1 TG 私聊
+    return {
+        "mode": "private",
+        "target_channel": "telegram",
+        "target_user_id": "1696287850",  # Bry 的 TG chat_id
+    }
+
+
 class MockLLMBackend:
     """
     階段 3+ 升級版（2026-07-14 Bry 拍板）：
@@ -995,6 +1027,12 @@ async def lifespan(app: FastAPI):
             # 有的話把 draft 接地到活動 (「你今天做了 X, 想跟 Bryan 分享嗎」);
             # 沒有則 fall back 到既有通用 draft。
             _extra = getattr(trigger, "extra", None) or {}
+            # C-3.1 (2026-09-05): 读透传的 motive_target (契约 §2.3 #3)
+            # 链路: scheduler._decision_check → TriggerEnvelope.extra → 本 executor;
+            # 缺省 None = 非目标驱动 (user_message 等), 0 分流, 零行为变化。
+            _motive_target = (
+                _extra.get("motive_target") if isinstance(_extra, dict) else None
+            )
             _activity = _extra.get("activity") if isinstance(_extra, dict) else None
             if _activity and _activity.get("activity"):
                 _activity_name = _activity.get("activity", "")
@@ -1034,11 +1072,28 @@ async def lifespan(app: FastAPI):
                     f"agent_id={agent_id} err={type(_e).__name__}: {_e}"
                 )
                 _event_id = None
+            # C-3.1 P1 (Owner 授权 2026-09-05, ENGINEERING_STATE C-3.1 登记):
+            # 投递分流判定 —— 仅限 executor 层分流选择, 严禁触碰底层 TG/频道
+            # 通信客户端核心代码 (M3.1 frozen scope 解冻范围仅限此分流判断):
+            #   - target == "user_bryan"（或原始 "bryan"）→ 维持原状:
+            #     Bryan 1:1 Telegram 私聊 (mode="private" + telegram + Bry chat_id)
+            #   - target in AGENT_IDS（SG-2 既有注册表 src.soul.motive.get_agent_ids()）→
+            #     改道投递 lounge / soul_wall 公开频道（mode="group" 公开语义,
+            #     对齐 SOCIAL-DIFFUSION 防线 2 判定表）; 不再直穿私聊
+            #   - 未知 / 空 target → 维持既有默认行为（fail-safe, 不报错）
+            # 判定实现在模块级 resolve_proactive_delivery()（可测纯函数）。
+            _delivery = resolve_proactive_delivery(_motive_target)
+            _delivery_mode = _delivery["mode"]
             _chrono_payload: Dict[str, Any] = {
-                "draft": _draft,            # 非空 draft (Lesson 41)
-                "target_channel": "telegram",
-                "target_user_id": "1696287850",  # Bry 的 TG chat_id
+                "draft": _draft,  # 非空 draft (Lesson 41)
             }
+            if _delivery.get("target_channel"):
+                _chrono_payload["target_channel"] = _delivery["target_channel"]
+            if _delivery.get("target_user_id"):
+                _chrono_payload["target_user_id"] = _delivery["target_user_id"]
+            # C-3.1 (契约 §2.3 #3): motive_target 继续透传 (供 proxy 组装层注入)
+            if _motive_target:
+                _chrono_payload["motive_target"] = _motive_target
             # M5.4-6.2: 透過既有 chrono_payload pattern 傳 inner_life_event_id
             # (跟 target_channel / target_user_id / dry_run 走同樣透傳鏈)
             if _event_id is not None:
@@ -1049,7 +1104,7 @@ async def lifespan(app: FastAPI):
                         reason="proactive_dm",
                         elapsed_mins=_elapsed,
                         chrono_payload=_chrono_payload,
-                        mode="private",
+                        mode=_delivery_mode,
                     )
                 except Exception as e:
                     logger.warning(f"[AgencyTriggerHandler] LLM executor {agent_id} 失敗: {e}")

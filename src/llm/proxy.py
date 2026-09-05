@@ -481,6 +481,101 @@ def _format_relationship_block(agent_id: str) -> str:
         return ""
 
 
+# ─────────────────────────────────────────────────────────────────────
+# C-3.1 (契約 docs/C-3.1-RELATIONAL-EXPRESSION-CONTRACT.md, 2026-09-05):
+# [關係感知] 信息块 —— transmit 且 motive.target 明確指向某他者時,
+# 把該他者在 relationships.json schema 4.2 的 relational_band + impression_tags
+# 投影進 Expression prompt。**信息注入, 非語氣指令** (契約 §1.3 #1):
+# 只呈現關係事實 (band + tags), 0 評分 / 0 權重 / 0 排序 (No-Scoring, 契約 §5.1);
+# 措辭由 LLM 從事實自然推理。stranger 也注入 (契約 §4.3: 對陌生夥伴客氣疏離
+# 正是機制本身)。渲染後整塊 ≤80 tokens (契約 §4.2)。
+# ─────────────────────────────────────────────────────────────────────
+
+# C-3.1 (契約 §4.1): band label 映射 (對齊 SG-1 §3.1 四帶語義, 0 數字)
+_RELATIONAL_BAND_LABELS = {
+    "stranger": "陌生人",
+    "known": "認識",
+    "familiar": "熟悉",
+    "close": "親近",
+}
+
+# C-3.1 (契約 §4.2): Token 預算硬上限 ≤80 —— 印象標籤至多 5 個、單項 ≤12 字符
+_MAX_IMPRESSION_TAGS = 5
+_MAX_IMPRESSION_TAG_CHARS = 12
+
+
+def _format_relational_perception_block(agent_id: str, target: str) -> str:
+    """
+    C-3.1 (契約 §2.2/§4): 渲染 [關係感知] 信息块 (deterministic, bounded, read-only)。
+
+    只投影 motive.target 指向的**單一**他者 (面向誰就注入誰), 與 M5.13-3 的
+    Bryan + top3 全量投影互補 (契約 §4.3 兩塊並存, 0 改動 M5.13-3)。
+
+    目標歸一化 (契約 §2.4, 防 key 錯位靜默漏注入):
+      - target == "bryan" (motive.TARGET_BRYAN) → 查 "user_bryan" (BRYAN_ENTITY_ID) entry
+      - 其他 target (agent_id) → 直用同 key (relationships others dict key 即 agent_id)
+
+    三重 fail-safe (契約 §3.3, 任何一重 → 返回 "" 整塊省略, 不編造):
+      1. agent_id / target 非法 (None / 非 str / 空串) → ""
+      2. store.get(other_key) 無 entry → ""
+      3. 讀取異常 (manager None / store None / 壞檔) → try/except → logger.debug + ""
+
+    Render 格式 (契約 §4.1, 繁體, 確定性):
+        [關係感知]
+        - 對 {target} 的關係帶：{band_label}
+        - 印象：{tag1}、{tag2}    ← impression_tags 至多前 5 個、`、` 連接; 空列表省略本行
+
+    0 輸出: confidence / interaction_count / 計數 / band 序號 / 任何分數;
+    塊尾不加使用說明句 (純事實陳述, 對齊 M5.13-3 風格)。
+    0 寫入: 只走 manager.get_store(agent_id).get(other_id), 0 調用
+    touch / update_impression / apply_relation_evaluation / ensure_relationship。
+    """
+    if not isinstance(agent_id, str) or not agent_id:
+        return ""
+    if not isinstance(target, str) or not target:
+        return ""
+    try:
+        # Lazy import 避免 cycle (對齊 M5.13-3 先例 proxy.py:396-401)
+        from src.soul.relationships import (
+            get_relationships_manager,
+            BRYAN_ENTITY_ID,
+        )
+        manager = get_relationships_manager()
+        if manager is None:
+            return ""
+        store = manager.get_store(agent_id)
+        if store is None:
+            return ""
+        # 歸一化釘死 (契約 §2.4): "bryan" → "user_bryan", 杜絕 key 錯位漏注入
+        other_key = BRYAN_ENTITY_ID if target == "bryan" else target
+        entry = store.get(other_key)
+        if not entry or not isinstance(entry, dict):
+            return ""
+        band = entry.get("relational_band", "stranger")
+        if not isinstance(band, str) or band not in _RELATIONAL_BAND_LABELS:
+            band = "stranger"  # 4.2 缺省語義 (SG-1 §2.3; 4.1 舊檔 0 遷移)
+        band_label = _RELATIONAL_BAND_LABELS[band]
+        lines: List[str] = [f"[關係感知]", f"- 對 {target} 的關係帶：{band_label}"]
+        tags = entry.get("impression_tags", [])
+        if isinstance(tags, list):
+            # 單項 [:12] 截斷 (防 LLM 長 tag) + 至多前 5 個 (契約 §4.2 硬上限)
+            clean_tags = [
+                str(t).strip()[:_MAX_IMPRESSION_TAG_CHARS]
+                for t in tags
+                if isinstance(t, str) and str(t).strip()
+            ][:_MAX_IMPRESSION_TAGS]
+            if clean_tags:
+                lines.append(f"- 印象：{'、'.join(clean_tags)}")
+        return "\n".join(lines)
+    except Exception as e:
+        # Fail-silent: 任何失敗不阻塞 LLM 呼叫 (對齊 M5.13-3)
+        logger.debug(
+            f"[C-3.1 RELATIONAL PERCEPTION] projection failed (fail-silent): "
+            f"agent={agent_id} target={target} err={type(e).__name__}: {e}"
+        )
+        return ""
+
+
 def _session_key(agent_id: str, user_id: str) -> str:
     """KI-001: per (user, agent) session key,確保多 owner 隔離
 
@@ -523,6 +618,7 @@ def _build_messages_group(
     world_context: str = "",  # M3 Phase 1 (Bry 拍板 2026-08-07 19:40): WorldPerception 注入的世界感知
     germ_anchor: Optional[str] = None,  # FG-2 (germ 初始化邊界): germ 模式下替換 seeded identity_anchor; seeded 傳 None = 零行為變化
     last_interaction_ts: int = 0,  # TA-1 (Bry 拍板 2026-08-30): 跨 session 最後互動 timestamp (conversation_elapsed 資料源)
+    motive_target: Optional[str] = None,  # C-3.1 (2026-09-05): transmit 的 motive.target 透傳 (A2A agent-target 注入 [關係感知]); None = 非目標驅動, 0 注入
 ) -> List[Dict[str, str]]:
     """
     群聊模式的 messages 組裝:
@@ -588,6 +684,19 @@ def _build_messages_group(
     relationship_block = _format_relationship_block(agent_id)
     if relationship_block:
         system_parts.append(f"\n{relationship_block}")
+
+    # C-3.1 (2026-09-05): [關係感知] 信息块注入 (A2A 公开发言路径)
+    # 注入位置: M5.13-3 relationship_block 之後, inner_life (M2.0) 之前
+    # (關係類塊集中呈現, 對齊既有測試錨點; 契約 §2.2)
+    # 信息注入, 非語氣指令: 只呈現 band + impression_tags 事實 (契約 §1.3/§5.1),
+    # 0 評分 / 0 權重 / 0 排序; stranger 也注入。三重 fail-safe: 無 motive_target
+    # (非目標驅動發言) → 不注入; 無 entry → helper 返回 "" 不注入; 讀取異常 → ""。
+    if motive_target:
+        rel_perception_block = _format_relational_perception_block(
+            agent_id, motive_target
+        )
+        if rel_perception_block:
+            system_parts.append(f"\n{rel_perception_block}")
 
     # M2.0 (Bry 拍板 2026-08-07 15:44): 內在人生記憶注入
     # 跟 β2.1 事件背景 (L2472-2479) 同方向, 範圍限定 proxy.py
@@ -1041,6 +1150,7 @@ def _build_messages_private(
     germ_anchor: Optional[str] = None,  # FG-2 (germ 初始化邊界): germ 模式下替換 seeded identity_anchor; seeded 傳 None = 零行為變化
     last_interaction_ts: int = 0,  # TA-1 (Bry 拍板 2026-08-30): 跨 session 最後互動 timestamp (conversation_elapsed 資料源)
     reason: str = "user_message",  # 工單 (2026-09-01): proactive 觸發判定 (reason != "user_message" = 主動發起, 非回應 Bry)
+    motive_target: Optional[str] = None,  # C-3.1 (2026-09-05): transmit 的 motive.target 透傳 (A2U bryan-target 注入 [關係感知]); None = 非目標驅動, 0 注入
 ) -> List[Dict[str, str]]:
     """
     私聊模式的 messages 組裝:
@@ -1092,6 +1202,19 @@ def _build_messages_private(
     relationship_block = _format_relationship_block(agent_id)
     if relationship_block:
         system_parts.append(f"\n{relationship_block}")
+
+    # C-3.1 (2026-09-05): [關係感知] 信息块注入 (A2U private 路径)
+    # 注入位置: M5.13-3 relationship_block 之後, inner_life (M2.0) 之前
+    # (關係類塊集中呈現, 對齊既有測試錨點; 契約 §2.2)
+    # 信息注入, 非語氣指令: 只呈現 band + impression_tags 事實 (契約 §1.3/§5.1),
+    # 0 評分 / 0 權重 / 0 排序; stranger 也注入。三重 fail-safe: 無 motive_target
+    # (非目標驅動發言) → 不注入; 無 entry → helper 返回 "" 不注入; 讀取異常 → ""。
+    if motive_target:
+        rel_perception_block = _format_relational_perception_block(
+            agent_id, motive_target
+        )
+        if rel_perception_block:
+            system_parts.append(f"\n{rel_perception_block}")
 
     # M2.0 (Bry 拍板 2026-08-07 15:44): 內在人生記憶注入
     # 跟 β2.1 事件背景 (L2472-2479) 同方向, 範圍限定 proxy.py
@@ -3164,6 +3287,11 @@ class LLMProxy:
         # KI-001: 從 event 抽 user_id(從 router/telegram 透傳的 target_user_id)
         # 預設 "bryan" 維持向後相容(既有對話都是 bryan)
         user_id = event.payload.get("target_user_id", "bryan")
+        # C-3.1 (2026-09-05): motive.target 透傳解出 (契約 §2.3 #4)
+        # 鏈路: scheduler._decision_check → TriggerEnvelope.extra → executor
+        # chrono_payload → consciousness._fire_intent → 本處抽取。
+        # 缺省 None = 非目標驅動發言 (user_message 等), 0 注入, 零行為變化。
+        motive_target = event.payload.get("motive_target")
 
         # 從 event payload 取 mode(gateway 寫入的)
         mode = event.payload.get("mode", "group")
@@ -3269,9 +3397,9 @@ class LLMProxy:
             # L1818 的 user_id 已經從 event.payload.get("target_user_id", "bryan") 拿到,
             # 跟 _build_messages_private L230 user_id 預設值對齊, 群聊觸發 fallback "bryan"
             # (跟 _load_private L100 fallback 邏輯一致)。
-            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts)
+            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts, motive_target=motive_target)
         else:
-            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts, reason=reason)
+            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts, reason=reason, motive_target=motive_target)
 
         # ── M2 task 3 (Bry + Perplexity 8/2 12:05 派工): proactive draft user → system ──
         # 修法動機: heartbeat / proactive_dm 觸發時, _build_intent_payload 組的 draft

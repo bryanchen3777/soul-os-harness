@@ -220,6 +220,10 @@ class SoulScheduler:
         self._next_cross_chat_time: Optional[datetime] = None
         # TS-2.1: Actuator（observe/reflect 执行器）注入; None = 空转（向前兼容）
         self._actuator = actuator
+        # C-3.1 (2026-09-05): 最近一次 transmit 的 motive.target 暂存
+        # （契约 §2.3 #1）: _decision_check transmit 分支记录 → _publish_agency_trigger
+        # payload 组装时写入 extra（既有透传通道），单次消费后清空。
+        self._last_transmit_target: Optional[str] = None
 
     # ───────────────────────────────────────────────────────────
     # M1.1: Event Bus 發布層
@@ -284,6 +288,14 @@ class SoulScheduler:
             elapsed_mins = 0.0
             if self._last_proactive_dm_time is not None:
                 elapsed_mins = (now_local() - self._last_proactive_dm_time).total_seconds() / 60.0
+            # C-3.1 (2026-09-05): motive.target 透传 —— 写入既有 extra dict 通道
+            # （TriggerEnvelope.extra 是既有透传通道, 0 字段新增, 契约 §2.3 #1/§6 #2）。
+            # 只有 _decision_check transmit 分支记录过才写入; 单次消费后清空,
+            # 避免残留 target 泄漏到下一次 trigger。
+            extra_out: Dict[str, Any] = dict(extra) if extra else {}
+            if self._last_transmit_target:
+                extra_out["motive_target"] = self._last_transmit_target
+                self._last_transmit_target = None
             trigger_event = SoulEvent(
                 event_type=EventType.AGENCY_TRIGGER,
                 source="soul_scheduler",
@@ -295,7 +307,7 @@ class SoulScheduler:
                     "reason": f"scheduler.{trigger_type}",
                     "elapsed_mins": elapsed_mins,
                     "timestamp": now_local().isoformat(),
-                    "extra": dict(extra) if extra else {},
+                    "extra": extra_out,
                 },
             )
             await self._bus.publish(trigger_event)
@@ -440,6 +452,9 @@ class SoulScheduler:
                 )
             if result.transmit:
                 engine.mark_transmitted(motive.motive_id)
+                # C-3.1 (契约 §2.3 #1): 记录 transmit 目标, 供 _publish_agency_trigger
+                # 写入 TriggerEnvelope.extra（既有透传通道, 0 新字段）→ 下游注入 [關係感知]
+                self._last_transmit_target = getattr(motive, "target", None)
                 logger.info(
                     f"[SM-3 Decision] {agent_id} transmit motive={motive.motive_id} "
                     f"reason={result.reason!r}"

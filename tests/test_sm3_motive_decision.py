@@ -384,7 +384,10 @@ class TestAcceptanceC_MotiveTransmitPublishes:
         assert payload["reason"] == "scheduler.proactive_dm"
         assert isinstance(payload["elapsed_mins"], float)
         assert isinstance(payload["timestamp"], str)
-        assert payload["extra"] == {}
+        # C-3.1 (2026-09-05, 契约 §2.3 #1): transmit 时 scheduler 把 motive.target
+        # 写入既有 extra 通道 (TriggerEnvelope 0 结构变更, 0 新字段; extra 内容对齐
+        # 新授权行为: extra={"motive_target": "bryan"})。seed target fixed="bryan"。
+        assert payload["extra"] == {"motive_target": "bryan"}
         # motive 内容不进 payload (motive 是意图, 不是 payload 字段)
         assert "motive" not in payload
         assert "content" not in payload

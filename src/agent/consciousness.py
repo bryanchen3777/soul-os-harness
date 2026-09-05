@@ -446,6 +446,11 @@ class AgentConsciousness(ABC):
                 intent_payload["target_channel"] = chrono_payload["target_channel"]
             if "target_user_id" in chrono_payload:
                 intent_payload["target_user_id"] = chrono_payload["target_user_id"]
+            # C-3.1 (2026-09-05): motive_target 透传 (契约 §2.3 #2)
+            # 对照 target_user_id 提取先例; chrono_payload 没 motive_target 键 →
+            # 不写 intent_payload (非目标驱动发言, 零行为变化)
+            if "motive_target" in chrono_payload:
+                intent_payload["motive_target"] = chrono_payload["motive_target"]
             # Bry 拍板 2026-08-05 21:08: dry_run 標記從 chrono_payload 透傳
             # 觸發鏈 chrono_payload → intent_payload → AGENT_INTENT event → LLMProxy →
             # AGENT_SPEAK event → ChannelRouter (看到 dry_run=True 跳過 TG 推播)
