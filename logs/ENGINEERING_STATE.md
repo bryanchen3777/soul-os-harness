@@ -193,6 +193,12 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 |------|------|------|-------------|
 | **MS-2（实作）** | ✅ 完成（IMPLEMENTED，6 files +1088/-2） | **多模态感知实作全落地**（MS-0 审计 + MS-1 设计 + MS-2 实作闭环）：① **工具层三处 additive**——`src/soul/tool_registry.py`：`_OBSERVE_KEYWORDS` 补 audio/voice/stt/camera 关键词 + `EXPLICIT_GROUP_MAP` 对应组映射 + 对应能力定义（audio_input / camera_capture 遵行 observe 语义，多模态输入一律进 `observe_environment` 组，**不直通 USER_MESSAGE**——Volition Gate 边界保持）；② **`VALID_SOURCES` additive 扩展**——`src/world/perception.py`：additive 加 `audio_input` / `camera_capture` 两 source（MS-0 唯一 Frozen Contract 触点，已获主大脑 + Owner 批准），0 破坏性改动；③ **两个自研薄 MCP server**——`scripts/audio_stream_mcp.py`（语音流 STT 封装）与 `scripts/camera_mcp.py`（相机帧视觉封装），挂在 `register_mcp_server` 唯一入口 Auto-Approved 权限；④ **感知边界不变量实证**——Ambient Observation 语义（多模态事件回流感知、不越权为直接指令）由 `src/soul/actuator.py` 感知边界逻辑落实。**28 新测试全过 + 314 回归全过（342 total）**；0 frozen contract 改动（Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 写入逻辑均未触碰）。注：`tests/test_soul_md_loader.py` 未被本次触碰（保持未提交）。 | `1d1b9af`（feat: multimodal perception (audio/camera MCP) (MS-2)） |
 
+### MS-3（Voice Interaction Contract：语音交互契约设计）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **MS-3（Voice Interaction Contract）** | ✅ 完成（DESIGN，docs only 0 code） | `docs/MS-3-VOICE-INTERACTION-CONTRACT.md`（NEW，366 行）。**设计决策**：① **三路分流**——语音输入按语义分 `USER_MESSAGE` / `AMBIENT` / `DROP` 三路（严格区分直接指令 vs 环境观测 vs 丢弃）；② **本地启发式决策梯 + fail-ambient 兜底**——分流由本地启发式规则阶梯决定（不依赖云端/LLM 判定），无法判定时安全落 AMBIENT，**不越权为指令**；③ **唤醒门控 address_score 三信号源**——唤醒判定由三个信号源综合打分；④ **VAD 防抖 utterance 合并 + 3s 冷却 + TTS echo 抑制**——防语音流碎片化、防重复触发、防 TTS 自反馈回声触发；⑤ **契约相容性无旁路注入**——设计不绕过既有 Frozen Contract 通道（Volition Gate / USER_MESSAGE 边界保持）。**§5.5 合规性已获 Owner 批准**；**0 frozen contract 改动（本次 docs only 0 code）**。注：`tests/test_soul_md_loader.py` 未被本次触碰。 | `a61beff`（docs: voice interaction contract (MS-3)） |
+
 ### 工具层标准化全线贯通（TS-0 审计 → TS-1 设计 → TS-2 实作 → TS-2.1 接线 → TS-3 生产验证）
 
 | 条目 | 状态 | 要点 | 相关 commit |
@@ -251,8 +257,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `973971d` (feat: multi-agent social diffusion harness validation (SI-2 harness))
-- SI-2 harness commit: `973971d` (feat: multi-agent social diffusion harness validation (SI-2 harness); **Current HEAD**)
+- Current HEAD: `a61beff` (docs: voice interaction contract (MS-3))
+- MS-3 commit: `a61beff` (docs: voice interaction contract (MS-3); **Current HEAD**)
+- SI-2 harness commit: `973971d` (feat: multi-agent social diffusion harness validation (SI-2 harness); **distinct from Current HEAD**)
 - MS-2 commit: `1d1b9af` (feat: multimodal perception (audio/camera MCP) (MS-2); **distinct from Current HEAD**)
 - MS-1 commit: `172bca0` (docs: multimodal perception contract (MS-1); **distinct from Current HEAD**)
 - MS-0 commit: `c30314e` (docs: multimodal perception architecture audit (MS-0); **distinct from Current HEAD**)
@@ -1363,5 +1370,6 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09 (MS-1) | Multimodal Perception Contract 设计（commit `172bca0`）。**docs only 0 code**。1 file changed: `docs/MULTIMODAL-PERCEPTION-CONTRACT.md`（NEW，413 行）。**设计决策全锁定**：① **STT 语义 v1 锁 observe**——语音输入人话语义一律进 `observe_environment` 组，**严禁直通 USER_MESSAGE**（Volition Gate 边界保持，语言不越权为直接指令）；② **`VALID_SOURCES` additive 扩展已获 Owner 批准**——MS-0 标记的唯一 Frozen Contract 触点闭环：additive 加 `audio_input` / `camera_capture` 两 source（主大脑 + Owner 两级批准，化工单级决策已授权）；③ **工具层三处 additive 扩展清单**——`_OBSERVE_KEYWORDS` 补 audio/voice/stt/camera 关键词、`EXPLICIT_GROUP_MAP` 对应组映射、对应能力定义（三处均 MS-0 缺口，标记待 MS-2 实作工单）；④ **自研薄 MCP 封装**——`audio-stream-mcp` / `camera-mcp` 自研薄封装（挂 `register_mcp_server` 唯一入口，Auto-Approved 权限）；⑤ **ASR 锁定 faster-whisper small 本地离线**（选型已定：本地离线、无云端付费；SenseVoice / 云端 STT 不采用）。**0 frozen contract 改动（本次 docs only 0 code）**；MS-1 为 `docs/MULTIMODAL-PERCEPTION-CONTRACT.md` 单文件设计交付，实作全部移交 MS-2 CANDIDATE 工单。注：`tests/test_soul_md_loader.py` 未被本次触碰。 | DSH | MS-1 |
 | 2026-09 (MS-2) | Multimodal Perception 实作（commit `1d1b9af`）。**6 files changed, 1088 insertions(+), 2 deletions(-)**：`src/soul/tool_registry.py`（M，工具层三处 additive——`_OBSERVE_KEYWORDS` 补 audio/voice/stt/camera 关键词 + `EXPLICIT_GROUP_MAP` 对应组映射 + audio_input/camera_capture 能力定义）、`src/world/perception.py`（M，`VALID_SOURCES` additive 扩展 `audio_input`/`camera_capture`——MS-0 唯一 Frozen Contract 触点，主大脑 + Owner 已批准）、`src/soul/actuator.py`（M，感知边界逻辑）、`scripts/audio_stream_mcp.py`（NEW，语音流薄 MCP server）、`scripts/camera_mcp.py`（NEW，相机帧薄 MCP server）、`tests/test_ms2_multimodal_perception.py`（NEW）。**DoD 实证**：多模态输入经 MCP 工具 → `observe_environment` 组 → Volition Gate 审核后回流感知，**Ambient Observation 不直通 USER_MESSAGE**（感知边界不变量保持）。**28 新测试全过 + 314 回归全过（342 total）**；0 frozen contract 改动（VALID_SOURCES 为 additive 扩展，Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 写入逻辑均未触碰）。多模态感知模块 MS-0（审计）→ MS-1（设计）→ MS-2（实作）三段全部落地。注：`tests/test_soul_md_loader.py` 未被本次触碰（保持未提交）。 | DSH | MS-2 |
 | 2026-09 (SI-2 harness) | 多体共存 Harness 验证 Closed（commit `973971d`）。3 files changed: `tests/harness/test_social_diffusion_harness.py`（NEW）、`tests/harness/social_harness_fixtures.py`（NEW）、`tests/test_social_middleware.py`（改，旧渲染区断言对齐）。**4 剧本 + 三大防线刚性断言实证**：**Identity Firewall 0 内化**（外部他者事件 0 内化为自身记忆）/ **Privacy Gate 0 泄漏**（1:1 私聊 0 泄漏）/ **Ambient Path 0 自激**（0 自激广播风暴）。**11 测试全过**（middleware 9 + harness 11 = 20 tests 全绿）。顺手修 `test_social_middleware` 旧渲染区断言（`[社交感知]` → `[客廳現況]`，对齐 SI-3 Phase 2 聚合器紧凑渲染）。**0 frozen contract 改动**（只新增 harness 测试 + 修测试断言，0 production 改动）。 | DSH | SI-2 harness |
+| 2026-09 (MS-3) | Voice Interaction Contract 设计（commit `a61beff`）。**docs only 0 code**。1 file changed: `docs/MS-3-VOICE-INTERACTION-CONTRACT.md`（NEW，366 行）。**设计决策全锁定**：① **三路分流**——语音输入按语义分 `USER_MESSAGE` / `AMBIENT` / `DROP` 三路（严格区分直接指令 vs 环境观测 vs 丢弃）；② **本地启发式决策梯 + fail-ambient 兜底**——分流由本地启发式规则阶梯决定（不依赖云端/LLM 判定），无法判定时安全落 AMBIENT，不越权为指令；③ **唤醒门控 address_score 三信号源**——唤醒判定由三个信号源综合打分；④ **VAD 防抖 utterance 合并 + 3s 冷却 + TTS echo 抑制**——防碎片化、防重复触发、防 TTS 自反馈回声触发；⑤ **契约相容性无旁路注入**——不绕过 Volition Gate / USER_MESSAGE 边界。**§5.5 合规性已获 Owner 批准**；**0 frozen contract 改动（docs only 0 code）**。注：`tests/test_soul_md_loader.py` 未被本次触碰。 | DSH | MS-3 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
