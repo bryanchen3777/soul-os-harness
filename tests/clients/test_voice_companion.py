@@ -14,6 +14,7 @@ tests/clients/test_voice_companion.py — VC-1 黑川茜即時語音伴侶客戶
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from clients.voice_companion.akane_voice_brain import (
     contains_markdown_chars,
 )
 from clients.voice_companion.asr_refiner import AsrRefiner, refine_speech_text
+from clients.voice_companion.env_config import apply_env_overrides, load_dotenv, resolve_config
 from clients.voice_companion.fish_tts_streamer import FishTTSStreamer
 from clients.voice_companion.vad_listener import VADListener, VoiceActivityDetector
 
@@ -321,3 +323,78 @@ class TestFullChainOffline:
         assert session.calls[0]["json"]["text"] == "我在。說說看。"  # 分句整句交給 TTS
         assert streamer.queue_size == 1  # 1 個子句 → 1 個音訊分片入隊
         assert not contains_markdown_chars(session.calls[0]["json"]["text"])
+
+
+# ─────────────────────────────────────────────────────────────
+# Test 5：執行期配置解析（env 覆寫 + .env 載入，全離線 Mock）
+# ─────────────────────────────────────────────────────────────
+
+class TestEnvConfig:
+    def test_env_overrides_beat_config_defaults(self, monkeypatch):
+        """os.environ 優先於 config.json：五個覆寫鍵全部生效"""
+        cfg = {
+            "fish_audio": {"api_key": "", "voice_id": "4c11d21b14284d428074f76a1cf32298"},
+            "llm": {"endpoint": "https://ollama.com/v1", "model": "deepseek-v4-flash:0731", "api_key": ""},
+        }
+        monkeypatch.setenv("FISH_API_KEY", "env-fish-key")
+        monkeypatch.setenv("FISH_VOICE_ID", "env-voice-id")
+        monkeypatch.setenv("LLM_BASE_URL", "https://ollama.com/v1")
+        monkeypatch.setenv("LLM_API_KEY", "env-llm-key")
+        monkeypatch.setenv("LLM_MODEL", "env-model")
+        resolved = apply_env_overrides(cfg)
+        assert resolved["fish_audio"]["api_key"] == "env-fish-key"
+        assert resolved["fish_audio"]["voice_id"] == "env-voice-id"
+        assert resolved["llm"]["endpoint"] == "https://ollama.com/v1"
+        assert resolved["llm"]["api_key"] == "env-llm-key"
+        assert resolved["llm"]["model"] == "env-model"
+
+    def test_missing_env_keeps_config_defaults(self, monkeypatch):
+        """環境變數缺席時 config.json 默認值原樣保留（含空 api_key 不被污染）"""
+        for env_name in ("FISH_API_KEY", "FISH_VOICE_ID", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"):
+            monkeypatch.delenv(env_name, raising=False)
+        cfg = {
+            "fish_audio": {"api_key": "", "voice_id": "4c11d21b14284d428074f76a1cf32298"},
+            "llm": {"endpoint": "https://ollama.com/v1", "model": "deepseek-v4-flash:0731", "api_key": ""},
+        }
+        resolved = apply_env_overrides(cfg)
+        assert resolved == cfg
+
+    def test_dotenv_loaded_but_existing_env_wins(self, tmp_path, monkeypatch):
+        """.env 載入變數；已存在的環境變數不被 .env 覆蓋"""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "FISH_API_KEY=dotenv-fish\n"
+            "# 註解行\n"
+            "FISH_VOICE_ID=\"dotenv-voice\"\n"
+            "LLM_MODEL=dotenv-model\n",
+            encoding="utf-8",
+        )
+        # 確保 .env 目標鍵不在環境中（自包含，且 test teardown 會清理載入的鍵）
+        monkeypatch.delenv("FISH_VOICE_ID", raising=False)
+        monkeypatch.delenv("LLM_MODEL", raising=False)
+        monkeypatch.setenv("FISH_API_KEY", "existing-fish")  # 已存在 → 不覆蓋
+        loaded = load_dotenv(str(env_file))
+        assert loaded is True
+        assert os.environ["FISH_API_KEY"] == "existing-fish"
+        assert os.environ["FISH_VOICE_ID"] == "dotenv-voice"
+        assert os.environ["LLM_MODEL"] == "dotenv-model"
+
+    def test_dotenv_missing_is_noop(self, tmp_path):
+        assert load_dotenv(str(tmp_path / "nope.env")) is False
+
+    def test_resolve_config_full_pipeline(self, tmp_path, monkeypatch):
+        """.env 載入 + env 覆寫完整流程：env > .env > config 默認"""
+        # 自包含隔離：測試過程載入/設定到的鍵在 teardown 全部清理
+        monkeypatch.delenv("FISH_VOICE_ID", raising=False)
+        monkeypatch.delenv("LLM_MODEL", raising=False)
+        env_file = tmp_path / ".env"
+        env_file.write_text("FISH_VOICE_ID=dotenv-voice\n", encoding="utf-8")
+        cfg = {
+            "fish_audio": {"api_key": "", "voice_id": "config-default-voice"},
+            "llm": {"endpoint": "https://ollama.com/v1", "model": "deepseek-v4-flash:0731", "api_key": ""},
+        }
+        monkeypatch.setenv("FISH_API_KEY", "env-fish")
+        resolved = resolve_config(cfg, env_file=str(env_file))
+        assert resolved["fish_audio"]["api_key"] == "env-fish"        # env > .env
+        assert resolved["fish_audio"]["voice_id"] == "dotenv-voice"   # .env > config 默認
+        assert resolved["llm"]["model"] == "deepseek-v4-flash:0731"   # config 默認保留

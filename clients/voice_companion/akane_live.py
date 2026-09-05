@@ -28,11 +28,13 @@ try:  # pragma: no cover - 導入路徑相容
     from .akane_voice_brain import AkaneVoiceBrain
     from .fish_tts_streamer import FishTTSStreamer
     from .vad_listener import VADListener
+    from .env_config import resolve_config
 except ImportError:  # pragma: no cover
     from asr_refiner import AsrRefiner
     from akane_voice_brain import AkaneVoiceBrain
     from fish_tts_streamer import FishTTSStreamer
     from vad_listener import VADListener
+    from env_config import resolve_config
 
 
 def load_config(path: Optional[str] = None) -> dict:
@@ -178,14 +180,20 @@ class VoiceCompanionApp:
 
 
 def main(argv: Optional[list] = None) -> int:
-    """CLI 入口：python -m clients.voice_companion.akane_live [--config path]"""
+    """CLI 入口：python -m clients.voice_companion.akane_live [--config path]
+
+    啟動時套用執行期配置解析：載入 clients/voice_companion/.env（若存在，
+    不覆蓋既有環境變數），再以 os.environ 覆寫 config.json 預設值。
+    """
     args = list(sys.argv[1:] if argv is None else argv)
     config_path = None
     if "--config" in args:
         i = args.index("--config")
         if i + 1 < len(args):
             config_path = args[i + 1]
-    app = VoiceCompanionApp.from_config(load_config(config_path) if config_path else None)
+    cfg = load_config(config_path) if config_path else load_config()
+    cfg = resolve_config(cfg)
+    app = VoiceCompanionApp.from_config(cfg)
     app.run()
     return 0
 

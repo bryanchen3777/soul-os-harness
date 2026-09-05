@@ -1,7 +1,7 @@
 {
   "fish_audio": {
-    "api_key": "YOUR_FISH_AUDIO_API_KEY",
-    "voice_id": "YOUR_AKANE_VOICE_ID",
+    "api_key": "",
+    "voice_id": "4c11d21b14284d428074f76a1cf32298",
     "endpoint": "https://api.fish.audio/v1/tts"
   },
   "stt": {
@@ -19,8 +19,8 @@
     "ephemeral_mode": false
   },
   "llm": {
-    "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
-    "model": "qwen2.5-7b-instruct",
+    "endpoint": "https://ollama.com/v1",
+    "model": "deepseek-v4-flash:0731",
     "api_key": ""
   }
 }
