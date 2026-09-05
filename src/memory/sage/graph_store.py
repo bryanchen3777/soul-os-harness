@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -13,9 +14,11 @@ import networkx as nx
 
 from .models import Fact
 
+logger = logging.getLogger("soul_os.sage.graph_store")
+
 # 每累積 N 次寫入才 commit（WAL 模式下安全）
 _BATCH_SIZE = 20
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 
 
 def _locked(method):
@@ -232,6 +235,34 @@ class GraphStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_validity "
                 "ON facts(valid_from, invalidated_at)"
+            )
+
+        if from_version < 8:
+            # TG-2 (2026-09-05, C-1 自主目标规划): Schema v8 — goals 表
+            # 设计来源: docs/TG-1-GOAL-ENGINE-CONTRACT.md §2.2 (DDL v1 锁定)
+            # 幂等性: v7 既有库升级平滑无损耗 — goals 表是全新独立表,
+            #         不影响既有 facts/nodes; 重复打开由 CREATE IF NOT EXISTS 兜底
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS goals (
+                  goal_id             TEXT PRIMARY KEY,
+                  agent_id            TEXT NOT NULL,
+                  axis                TEXT NOT NULL,
+                  title               TEXT NOT NULL,
+                  description         TEXT NOT NULL,
+                  seed_source_ref     TEXT NOT NULL,
+                  state               TEXT NOT NULL DEFAULT 'ACTIVE',
+                  state_updated_at    REAL NOT NULL,
+                  created_at          REAL NOT NULL,
+                  last_advanced_at    REAL,
+                  advance_count       INTEGER NOT NULL DEFAULT 0,
+                  suspend_snapshot    TEXT,
+                  completion_criteria TEXT,
+                  superseded_by       TEXT
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_goals_agent_state "
+                "ON goals(agent_id, state)"
             )
 
     def _row_to_fact(self, row: sqlite3.Row) -> Fact:
@@ -497,6 +528,101 @@ class GraphStore:
                 (f"%{entity}%", f"%{entity}%", f"%{entity}%", min_weight),
             ).fetchall()
         return [self._row_to_fact(r) for r in rows]
+
+    # ── Goals（TG-2, C-1 自主目标规划）─────────────────────────
+
+    @_locked
+    def upsert_goal(self, goal: "Goal") -> None:
+        """INSERT OR REPLACE goals 表（幂等; 对齐 add_fact 命名/批写风格）。
+
+        Args:
+            goal: src.goals.models.Goal（字段与 DDL 一一对应）
+        """
+        from src.goals.models import Goal  # 延迟 import 避免包级循环
+
+        conn = self._get_conn()
+        conn.execute(
+            """INSERT OR REPLACE INTO goals
+               (goal_id, agent_id, axis, title, description, seed_source_ref,
+                state, state_updated_at, created_at, last_advanced_at,
+                advance_count, suspend_snapshot, completion_criteria, superseded_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            goal.to_row(),
+        )
+        self._pending_writes += 1
+        if self._pending_writes >= self.batch_size:
+            conn.commit()
+            self._pending_writes = 0
+
+    @_locked
+    def get_goals(self, agent_id: str, state: Optional[str] = None) -> list["Goal"]:
+        """读侧: 该 agent 的 goals（可选 state 过滤; per-agent 隔离, N3）。
+
+        Returns:
+            List[Goal]（按 created_at 升序, 确定性排序）
+        """
+        from src.goals.models import Goal  # 延迟 import 避免包级循环
+
+        conn = self._get_conn()
+        if state is None:
+            rows = conn.execute(
+                "SELECT * FROM goals WHERE agent_id = ? ORDER BY created_at",
+                (agent_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM goals WHERE agent_id = ? AND state = ? "
+                "ORDER BY created_at",
+                (agent_id, state),
+            ).fetchall()
+        return [Goal(**dict(r)) for r in rows]
+
+    @_locked
+    def transition_goal(
+        self,
+        goal_id: str,
+        new_state: str,
+        meta: Optional[dict] = None,
+    ) -> bool:
+        """goal 状态转移写（含 state_updated_at; SUSPENDED 无损只写三字段, N2）。
+
+        Args:
+            goal_id: 目标 goal id
+            new_state: 目标状态（TG-1 §3.3 转移表; 非法转移抛 InvalidGoalTransitionError）
+            meta: 可选 {"suspend_snapshot": str}（SUSPENDED 现场快照; 恢复时保留原值）
+
+        Returns:
+            True = 转移成功; False = goal_id 不存在
+        """
+        from src.goals.models import validate_goal_transition  # 延迟 import
+
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT state FROM goals WHERE goal_id = ?", (goal_id,)
+        ).fetchone()
+        if row is None:
+            logger.warning(
+                f"[GraphStore] transition_goal 失败: goal {goal_id} 不存在"
+            )
+            return False
+        validate_goal_transition(row["state"], new_state)  # 非法转移拒绝并记录
+        now_ts = time.time()
+        if meta and "suspend_snapshot" in meta:
+            conn.execute(
+                "UPDATE goals SET state = ?, state_updated_at = ?, "
+                "suspend_snapshot = ? WHERE goal_id = ?",
+                (new_state, now_ts, meta["suspend_snapshot"], goal_id),
+            )
+        else:
+            # 恢复/推进等: 保留 suspend_snapshot 原值（无损语义）
+            conn.execute(
+                "UPDATE goals SET state = ?, state_updated_at = ? "
+                "WHERE goal_id = ?",
+                (new_state, now_ts, goal_id),
+            )
+        conn.commit()
+        self._pending_writes = 0
+        return True
 
     # ── Entity Fuzzy Matching ─────────────────────────────────
 

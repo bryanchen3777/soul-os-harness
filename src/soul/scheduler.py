@@ -397,6 +397,30 @@ class SoulScheduler:
             engine = MotiveEngine()
             # 1. interpretation: 检查新 InnerLifeEvent → 产出 motive (若有)
             await engine.interpret_new_events(agent_id)
+            # TG-2 (2026-09-05, C-1 自主目标规划): Goal 引擎接线（全 additive）
+            #   - 顺序规则 (TG-1 §10.2): 先经历后目标 — interpret 先跑, Goal 候选不得
+            #     抢占经历解读 (经历是 Soul 的第一 Thought 源, 目标只是候补上游)
+            #   - 中断/唤醒扫描: 挂本检查点 (proactive_dm 既有 wake), 0 新定时器 0 新 tick
+            #   - 装配 ≤1 (24h 配额): GoalMotiveProvider 内部约束, 产出 0 或 1 候选
+            #     经 MotiveTraceStore 汇入 pending 池, resolve_pending 取最新语义 0 变更
+            #   - 任何 Goal 异常 fail-closed: 只 log warning, 不阻断既有 Decision 管线
+            from src.goals.motive_provider import GoalMotiveProvider
+            goal_provider = GoalMotiveProvider.for_agent(agent_id)
+            try:
+                goal_provider.apply_interrupt_signals()
+                goal_provider.scheduled_wakeup_scan()
+            except Exception as goal_err:
+                logger.warning(
+                    f"[Goal] 中断/唤醒扫描异常 (fail-closed): "
+                    f"{type(goal_err).__name__}: {goal_err}"
+                )
+            try:
+                goal_provider.assemble_candidate()
+            except Exception as goal_err:
+                logger.warning(
+                    f"[Goal] 候选装配异常 (fail-closed): "
+                    f"{type(goal_err).__name__}: {goal_err}"
+                )
             # 2. resolve pending motive
             motive = engine.resolve_pending(agent_id)
             if motive is None:
@@ -406,6 +430,14 @@ class SoulScheduler:
                 return False
             # 3. Decision LLM
             result = await engine.decide(motive, agent_id)
+            # TG-2: Goal 状态同步（观察 Decision 结果; 普通 motive → no-op; fail-closed）
+            try:
+                goal_provider.on_decision(motive, result)
+            except Exception as goal_err:
+                logger.warning(
+                    f"[Goal] 状态同步异常 (fail-closed): "
+                    f"{type(goal_err).__name__}: {goal_err}"
+                )
             if result.transmit:
                 engine.mark_transmitted(motive.motive_id)
                 logger.info(
@@ -1441,6 +1473,9 @@ class SoulScheduler:
                 # 5. Lesson 39: proactive DM (2-4 小時, 透過 TG DM 找 Bryan, 帶冷卻+靜音防護)
                 if self._is_proactive_dm_time(now):
                     await self._fire_proactive_dm()
+                # 5.5 TG-2 Goal (2026-09-05): 中断/唤醒扫描 — 挂既有 30s wake 顺带检查
+                #     (TG-1 §8.3「心跳 schedule scan」; 0 新定时器 0 新 tick 0 新 sleep)
+                await self._goal_scan_all()
                 # 健康檢查 log
                 if (now.timestamp() - last_health_log) > HEALTH_CHECK_INTERVAL_SECS:
                     next_slot, next_time = self._compute_next_slot(now)
@@ -1456,6 +1491,28 @@ class SoulScheduler:
             except Exception as e:
                 logger.exception(f"[Scheduler] 主迴圈錯誤 (繼續跑): {e}")
                 await asyncio.sleep(30)
+
+    async def _goal_scan_all(self) -> None:
+        """
+        TG-2 (2026-09-05): 每个 canonical agent 的 Goal 中断/唤醒扫描。
+
+        挂在既有主循环 30s wake 上顺带检查（TG-1 §8.3「心跳 schedule scan」）:
+          0 新定时器 / 0 新 tick / 0 新 sleep / 不参与决策（装配只在 _decision_check 内,
+          1HB1S 拓扑不变）。
+        fail-closed: 任何异常只 log warning, 不阻断主循环。
+        """
+        if not self._all_agents:
+            return
+        try:
+            from src.goals.motive_provider import GoalMotiveProvider
+            for agent_id in self._all_agents:
+                provider = GoalMotiveProvider.for_agent(agent_id)
+                provider.apply_interrupt_signals()
+                provider.scheduled_wakeup_scan()
+        except Exception as e:
+            logger.warning(
+                f"[Goal] 主循环扫描异常 (fail-closed): {type(e).__name__}: {e}"
+            )
 
     def _compute_next_slot(self, now: datetime) -> tuple[str, datetime]:
         candidates = []

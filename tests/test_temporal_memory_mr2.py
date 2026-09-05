@@ -53,8 +53,8 @@ def _make_fact(
 
 class TestSchemaV7Migration:
     def test_a1_schema_version_is_7(self):
-        """A1: _SCHEMA_VERSION = 7."""
-        assert _SCHEMA_VERSION == 7
+        """A1: _SCHEMA_VERSION = 8 (TG-2: v8 新增 goals 表; 版本快照随迁移 bump 对齐)。"""
+        assert _SCHEMA_VERSION == 8
 
     def test_a2_v6_db_migrates_to_v7_backfills_valid_from(self, tmp_path: Path):
         """A2: 既有 v6 DB 開 GraphStore → valid_from 回填 timestamp, invalidated_at NULL."""
