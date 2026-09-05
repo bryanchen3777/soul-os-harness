@@ -295,8 +295,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `d55253f` (fix: sediment UTC + suspended stale-candidate guard (TG-3.1))
-- TG-3.1 fix commit: `d55253f` (fix: sediment UTC + suspended stale-candidate guard (TG-3.1); **Current HEAD**)
+- Current HEAD: `f410867` (docs: register TG-3 + TG-3.1 + C-1 CLOSED)
+- C-1 closeout docs commit: `f410867` (docs: register TG-3 + TG-3.1 + C-1 CLOSED; **Current HEAD**)
+- TG-3.1 fix commit: `d55253f` (fix: sediment UTC + suspended stale-candidate guard (TG-3.1); **distinct from Current HEAD**)
 - TG-3 commit: `3adaf57` (feat: goal-driven behavior harness acceptance (TG-3); **distinct from Current HEAD**)
 - TG-2 commit: `26da28d` (feat: goal engine (schema v8 + goal provider + scheduler wiring) (TG-2); **distinct from Current HEAD**)
 - TG-1 commit: `058e060` (docs: goal engine contract (TG-1); **distinct from Current HEAD**)
@@ -1423,6 +1424,6 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09 (TG-2) | Goal Engine 实作（commit `26da28d`）。**8 files changed, 2013 insertions(+), 5 deletions(-)**：`src/memory/sage/graph_store.py`（Schema v8 `goals` 表幂等迁移 + upsert_goal/get_goals/transition_goal）、`src/goals/`（NEW：models.py / motive_provider.py / `__init__.py`）、`src/soul/scheduler.py`（_decision_check 内扩 + goal scan，0 新定时器）、`tests/goals/test_goal_engine.py`（NEW，35 笔）+ 2 处版本快照断言更新（test_temporal_memory_mr2 / test_m5_4_5_2）。**关键交付**：Schema v8 幂等迁移、GoalMotiveProvider Plan B 零侵入、结构配额轮替 No Scoring、状态机 ACTIVE-IN_PROGRESS-SUSPENDED + COMPLETED-ABANDONED、_decision_check 接线 0 新定时器。**35 新测试全过 + 回归通过**；**0 frozen contract 改动**。**TG-2 CLOSED、TG-3 NEXT**（目标驱动行为 Harness 验收）。 | DSH | TG-2 |
 | 2026-09 (TG-3) | Goal Engine 验收（commit `3adaf57`）。`tests/harness/test_goal_driven_harness.py`（NEW）。**四大剧本 6 tests 全过**：① 跨心跳长程推进；② 突发中断与唤醒（SUSPENDED 冻结 → 恢复 → 续跑）；③ 双轴配额轮替防饥饿（No Scoring）；④ 终态记忆沉淀（InnerLifeEvent + Trace）。**52 回归全过**；**No-Scoring 三层铁证**（结构配额轮替驱动 / 0 scoring 字段 / 0 数值比较断言）；**0 直写 facts**（沉淀只走 InnerLifeEvent 通道）。**0 frozen contract 改动**（新增 harness 测试 + fixture，0 production mutation）。**TG-3 CLOSED、TG-3.1 NEXT**（生产缺陷 2 项修复）。 | DSH | TG-3 |
 | 2026-09 (TG-3.1) | 生产缺陷修复（commit `d55253f`）。`src/goals/motive_provider.py` 2 缺陷：① **sediment_completion ts UTC 对齐**（`astimezone(timezone.utc).isoformat()`，杜绝非 UTC 时区下 validate_ts 拒绝 → fail-closed 静默丢弃）；② **on_decision SUSPENDED 拦截守卫**（中断窗口残留 pending 候选不得误推进已挂起目标，唤醒后重新入轮替）。+ `tests/goals/test_goal_engine.py`（TestTG31ProductionDefectFixes 2 笔：跨时区 UTC-4 沉淀断言 + SUSPENDED 守卫断言）。**43 passed**（tests/goals 37 + harness 6）。**0 frozen contract 改动**（只改 motive_provider.py + 测试）。 | DSH | TG-3.1 |
-| 2026-09 (C-1 CLOSED) | **C-1 自主目标与意向引擎主线：正式 CLOSED**。五阶全链 `136cb95`（TG-0 审计）→ `058e060`（TG-1 设计）→ `26da28d`（TG-2 实作）→ `3adaf57`（TG-3 验收）→ `d55253f`（TG-3.1 修复）。**全程 0 frozen contract 改动**。 | DSH | C-1 |
+| 2026-09 (C-1 CLOSED) | **C-1 自主目标与意向引擎主线：正式 CLOSED**。五阶全链 `136cb95`（TG-0 审计）→ `058e060`（TG-1 设计）→ `26da28d`（TG-2 实作）→ `3adaf57`（TG-3 验收）→ `d55253f`（TG-3.1 修复）。**全程 0 frozen contract 改动**。本批次登记 docs commit `f410867`。 | DSH | C-1 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
