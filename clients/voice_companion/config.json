@@ -1,0 +1,26 @@
+{
+  "fish_audio": {
+    "api_key": "YOUR_FISH_AUDIO_API_KEY",
+    "voice_id": "YOUR_AKANE_VOICE_ID",
+    "endpoint": "https://api.fish.audio/v1/tts"
+  },
+  "stt": {
+    "model_size": "base",
+    "language": "zh"
+  },
+  "vad": {
+    "sample_rate": 16000,
+    "silence_threshold_sec": 0.8,
+    "energy_threshold": 0.015
+  },
+  "dialogue": {
+    "wake_words": ["茜", "小茜", "あかね", "akane"],
+    "continuous_timeout_sec": 30.0,
+    "ephemeral_mode": false
+  },
+  "llm": {
+    "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+    "model": "qwen2.5-7b-instruct",
+    "api_key": ""
+  }
+}
