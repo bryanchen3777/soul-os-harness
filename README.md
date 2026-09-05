@@ -2,7 +2,17 @@
 
 ### An Asynchronous Operating System for AI Souls
 
-[English](README.md) | [繁體中文](README.zh-CN.md)
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.11+-blue.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/Architecture-Phase%20C--3.1-6f42c1.svg?style=flat-square" alt="Phase C-3.1">
+  <img src="https://img.shields.io/badge/Runtime-Asynchronous%20OS-success.svg?style=flat-square" alt="Asynchronous OS">
+  <img src="https://img.shields.io/badge/Status-Experimental-orange.svg?style=flat-square" alt="Experimental">
+  <img src="https://img.shields.io/badge/Testing-Time--Lapse%20Harness-informational.svg?style=flat-square" alt="Time-Lapse Harness">
+</p>
+
+<p align="center">
+  <b>English</b> | <a href="README.zh-TW.md">繁體中文</a>
+</p>
 
 > **What happens when an AI is allowed to have a life instead of only being given tasks?**
 
@@ -23,9 +33,36 @@ It is designed to let AI Souls:
 - change through experience
 - and continue living asynchronously through time
 
-![Figure 2: Soul OS Conceptual Framework & Autonomous Cognitive Loop](docs/images/soulos2.png)
+<div align="center">
+  <img src="docs/images/soulos2.png" alt="Soul OS Conceptual Framework & Autonomous Cognitive Loop" width="100%">
+  <p><em>Figure 1: Soul OS Conceptual Framework & Autonomous Cognitive Loop</em></p>
+</div>
 
-*Figure 2: Soul OS Conceptual Framework & Autonomous Cognitive Loop*
+<details>
+<summary>📑 <b>Table of Contents</b> (Click to expand)</summary>
+
+- [🌌 The Core Idea](#-the-core-idea)
+- [🏛️ Soul OS Life Cycle & Growth Loop](#️-soul-os-life-cycle--growth-loop)
+- [❤️ Core Philosophy](#️-core-philosophy)
+- [🧭 Lived Context](#-lived-context)
+- [⏳ Time Is Context, Not a Command](#-time-is-context-not-a-command)
+- [❤️ Agency & Volition](#️-agency--volition)
+- [🧠 Memory & Inner Life](#-memory--inner-life)
+- [👥 Multi-Soul Social World](#-multi-soul-social-world)
+- [🔐 Social Runtime Invariants](#-social-runtime-invariants)
+- [🏠 The Lounge](#-the-lounge)
+- [🧬 What Makes a Soul Different?](#-what-makes-a-soul-different)
+- [🧪 Verification Through Time-Lapse](#-verification-through-time-lapse)
+- [🏗️ Architecture](#️-architecture)
+- [🔌 Model-Agnostic Architecture](#-model-agnostic-architecture)
+- [🧭 Architecture Principles](#-architecture-principles)
+- [🚦 Current Development Direction](#-current-development-direction)
+- [🧪 Engineering State](#-engineering-state)
+- [🚀 Quick Start](#-quick-start)
+- [📚 Documentation](#-documentation)
+- [🌱 The Question](#-the-question)
+
+</details>
 
 ---
 
@@ -90,17 +127,21 @@ It changes the Soul that interprets the future.
 
 ## ❤️ Core Philosophy
 
-**Autonomy** — The Soul has its own actions. The system can provide opportunities, capabilities and permissions, but it should not manufacture the Soul's intentions.
+| Pillar | Principle | Runtime Manifestation |
+|---|---|---|
+| **Autonomy** | Self-Generated Volition | The system provides opportunities and permissions; never manufactures intention. |
+| **Lived Experience** | Filtered Subjectivity | Events are interpreted through identity, memory, relationships, and inner life. |
+| **Growth** | Evolving Being | Experience actively reshapes beliefs, values, traits, and future interpretation. |
+| **Silence Is Normal** | Legitimate Agency | `DO_NOTHING` is a valid outcome; choosing not to speak is exercising agency. |
+| **Relationships Matter** | Emergent Sociality | Repeated interaction organically evolves familiarity, trust, and intimacy. |
+| **Asynchronous Life** | Continuous Living | The Soul lives continuously across time and events, even when offline. |
 
-**Lived Experience** — The Soul does not simply receive data. It perceives events through: identity, memory, relationships, temporal context, inner life, current circumstances.
-
-**Growth** — Experience can eventually influence: beliefs, values, traits, essence, relationships, future interpretation.
-
-**Silence Is Normal** — DO_NOTHING is a legitimate outcome. A Soul that decides not to speak has still exercised agency.
-
-**Relationships Matter** — Souls exist in a social environment. Repeated interaction can influence familiarity, trust, intimacy, expectations and future behavior.
-
-**Asynchronous Life** — A Soul does not need to exist only while a user is actively chatting with it. It can continue to exist through: time, events, environmental changes, social activity, memory, internal processes.
+- **Autonomy** — The Soul has its own actions. The system can provide opportunities, capabilities, and permissions, but it should not manufacture the Soul's intentions.
+- **Lived Experience** — The Soul does not simply receive data. It perceives events through: identity, memory, relationships, temporal context, inner life, and current circumstances.
+- **Growth** — Experience can eventually influence: beliefs, values, traits, essence, relationships, and future interpretation.
+- **Silence Is Normal** — `DO_NOTHING` is a legitimate outcome. A Soul that decides not to speak has still exercised agency.
+- **Relationships Matter** — Souls exist in a social environment. Repeated interaction can influence familiarity, trust, intimacy, expectations, and future behavior.
+- **Asynchronous Life** — A Soul does not need to exist only while a user is actively chatting with it. It can continue to exist through: time, events, environmental changes, social activity, memory, and internal processes.
 
 ## 🧭 Lived Context
 
@@ -317,14 +358,16 @@ soul-os-harness/
 ├── docs/            # Architecture and engineering docs
 ├── logs/
 │   └── ENGINEERING_STATE.md   # Current engineering state
-└── README.md
+├── README.zh-TW.md            # Traditional Chinese documentation
+└── README.md                  # English architecture documentation
 ```
 
 The architecture is intentionally modular. Soul OS is not one model and not one prompt. It is a runtime composed of interacting systems that preserve identity, context, experience and agency across time.
 
-![Figure 1: Soul OS System Architecture & Runtime Pipeline](docs/images/soulos1.png)
-
-*Figure 1: Soul OS System Architecture & Runtime Pipeline*
+<div align="center">
+  <img src="docs/images/soulos1.png" alt="Soul OS System Architecture & Runtime Pipeline" width="100%">
+  <p><em>Figure 2: Soul OS System Architecture & Runtime Pipeline</em></p>
+</div>
 
 ## 🔌 Model-Agnostic Architecture
 
@@ -368,35 +411,61 @@ The goal is not to build isolated features forever. The goal is to make these sy
 
 ## 🧪 Engineering State
 
-For current implementation status, milestones, active findings and next engineering steps: `logs/ENGINEERING_STATE.md`.
+For current implementation status, milestones, active findings, and next engineering steps, see [logs/ENGINEERING_STATE.md](logs/ENGINEERING_STATE.md).
 
 The README is intentionally a stable architectural map. The engineering state document is where implementation reality evolves. This separation helps prevent a common failure mode: **a README should explain what the system is trying to be; engineering state should explain what the system currently is.**
 
 ## 🚀 Quick Start
 
+### 1. Installation
+
 Clone the repository:
-```
+```bash
 git clone https://github.com/bryanchen3777/soul-os-harness.git
 cd soul-os-harness
 ```
 
-Create a virtual environment:
-```
+Create and activate a virtual environment:
+```bash
+# Create venv
 python -m venv .venv
+
+# Activate environment
+# Windows (PowerShell):
+.venv\Scripts\Activate.ps1
+# Linux / macOS:
+source .venv/bin/activate
 ```
-Activate it (Windows: `.venv\Scripts\activate`；Linux/macOS: `source .venv/bin/activate`), install dependencies:
-```
+
+Install dependencies:
+```bash
 pip install -r requirements.txt
 ```
-Run the harness according to the current project instructions. For the latest runtime commands and environment configuration, refer to the repository documentation and current engineering state.
+
+### 2. Verify Behavioral Invariants
+
+Run the volition gate test suite to verify autonomous decision boundaries:
+```bash
+pytest tests/test_agency_trigger_negative_path.py -v
+```
+
+Run the time-lapse harness to observe long-horizon relation evolution:
+```bash
+pytest tests/harness/test_tl9_relation_evolution.py -v
+```
+
+For the latest runtime commands, multi-soul lounge setup, and environment configuration, refer to the [Engineering State](logs/ENGINEERING_STATE.md) and [docs/](docs/).
 
 ## 📚 Documentation
 
 ```
-README.md → docs/ (Architecture / Contracts / Design Decisions / Engineering Documents) → logs/ENGINEERING_STATE.md
+README.md → docs/ (Architecture / Contracts) → logs/ENGINEERING_STATE.md
 ```
 
-The README is the map. The architecture documents define design intent and contracts. The tests provide executable evidence. The engineering state records what is currently implemented.
+- [**README.md**](README.md) / [**README.zh-TW.md**](README.zh-TW.md) — Architectural map and philosophical foundation.
+- [**docs/**](docs/) — Architecture specifications, boundary contracts, and design decisions.
+- [**tests/**](tests/) & [**tests/harness/**](tests/harness/) — Executable behavioral evidence and time-lapse test suites.
+- [**logs/ENGINEERING_STATE.md**](logs/ENGINEERING_STATE.md) — Single source of truth for current implementation, milestones, and active tasks.
 
 ## 🌱 The Question
 

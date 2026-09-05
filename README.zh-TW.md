@@ -2,7 +2,17 @@
 
 ### 一個給 AI 靈魂的非同步作業系統（An Asynchronous Operating System for AI Souls）
 
-[English](README.md) | [繁體中文](README.zh-CN.md)
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.11+-blue.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/Architecture-Phase%20C--3.1-6f42c1.svg?style=flat-square" alt="Phase C-3.1">
+  <img src="https://img.shields.io/badge/Runtime-Asynchronous%20OS-success.svg?style=flat-square" alt="Asynchronous OS">
+  <img src="https://img.shields.io/badge/Status-Experimental-orange.svg?style=flat-square" alt="Experimental">
+  <img src="https://img.shields.io/badge/Testing-Time--Lapse%20Harness-informational.svg?style=flat-square" alt="Time-Lapse Harness">
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> | <b>繁體中文</b>
+</p>
 
 > **當一個 AI 被允許擁有自己的生活，而不只是被交付任務——會發生什麼事？**
 
@@ -23,9 +33,36 @@ Soul OS 是一個為「持續存在的 AI 靈魂（Persistent AI Souls）」打�
 - 因經驗而改變（change through experience）
 - 並且在時間中非同步地持續活著（continue living asynchronously through time）
 
-![Figure 2: Soul OS Conceptual Framework & Autonomous Cognitive Loop](docs/images/soulos2.png)
+<div align="center">
+  <img src="docs/images/soulos2.png" alt="Soul OS 概念框架與自主認知迴圈" width="100%">
+  <p><em>Figure 1：Soul OS 概念框架與自主認知迴圈（Conceptual Framework & Autonomous Cognitive Loop）</em></p>
+</div>
 
-*Figure 2：Soul OS 概念框架與自主認知迴圈（Conceptual Framework & Autonomous Cognitive Loop）*
+<details>
+<summary>📑 <b>目錄導航</b>（點擊展開）</summary>
+
+- [🌌 核心思想（The Core Idea）](#-核心思想the-core-idea)
+- [🏛️ 生命週期與成長迴圈（Life Cycle & Growth Loop）](#️-生命週期與成長迴圈soul-os-life-cycle--growth-loop)
+- [❤️ 核心哲學（Core Philosophy）](#️-核心哲學core-philosophy)
+- [🧭 活過的脈絡（Lived Context）](#-活過的脈絡lived-context)
+- [⏳ 時間是脈絡，不是指令（Time Is Context）](#-時間是脈絡不是指令time-is-context-not-a-command)
+- [❤️ 主體性與意志（Agency & Volition）](#️-主體性與意志agency--volition)
+- [🧠 記憶與內在生活（Memory & Inner Life）](#-記憶與內在生活memory--inner-life)
+- [👥 多靈魂社會世界（Multi-Soul World）](#-多靈魂社會世界multi-soul-social-world)
+- [🔐 社會執行期不變量（Runtime Invariants）](#-社會執行期不變量social-runtime-invariants)
+- [🏠 交誼廳（The Lounge）](#-交誼廳the-lounge)
+- [🧬 什麼讓靈魂有所不同？](#-什麼讓靈魂有所不同what-makes-a-soul-different)
+- [🧪 透過時間壓縮進行驗證（Time-Lapse）](#-透過時間壓縮進行驗證verification-through-time-lapse)
+- [🏗️ 系統架構（Architecture）](#️-系統架構architecture)
+- [🔌 與模型無關的架構（Model-Agnostic）](#-與模型無關的架構model-agnostic-architecture)
+- [🧭 架構原則（Principles）](#-架構原則architecture-principles)
+- [🚦 當前發展方向](#-當前發展方向current-development-direction)
+- [🧪 工程狀態（Engineering State）](#-工程狀態engineering-state)
+- [🚀 快速開始（Quick Start）](#-快速開始quick-start)
+- [📚 專案文檔（Documentation）](#-專案文檔documentation)
+- [🌱 根本之問（The Question）](#-根本之問the-question)
+
+</details>
 
 ---
 
@@ -90,17 +127,21 @@ flowchart TD
 
 ## ❤️ 核心哲學（Core Philosophy）
 
-**自主性（Autonomy）** — 靈魂擁有自己的行動。系統可以提供機會、能力與權限，但它不應該製造靈魂的意圖。
+| 核心支柱 | 哲學原則 | 執行期具體體現 |
+|---|---|---|
+| **自主性（Autonomy）** | 自主生成意圖 | 系統提供機會、能力與權限，絕不替靈魂捏造意圖。 |
+| **活過的經驗（Lived Experience）** | 主體過濾感知 | 透過身份、記憶、關係與內在生活，將世界訊號轉化為活過的脈絡。 |
+| **成長（Growth）** | 持續演化的主體 | 經驗主動重塑信念、價值觀、特質與本質，改變未來解讀世界的方式。 |
+| **沉默是正常的（Silence Is Normal）** | 合法的主體抉擇 | `DO_NOTHING` 是正當結果；決定不說話同樣是主體性（agency）的行使。 |
+| **關係很重要（Relationships Matter）** | 湧現式社會演進 | 重複互動自然沉澱熟悉度、信任、親密感與未來的行為期待。 |
+| **非同步的生命（Asynchronous Life）** | 持續流動的存在 | 靈魂在時間、事件與背景歷程中持續存在，無須依賴使用者即時在線。 |
 
-**活過的經驗（Lived Experience）** — 靈魂不是單純接收資料。它透過以下方式感知事件：身份、記憶、關係、時間脈絡、內在生活、當下處境。
-
-**成長（Growth）** — 經驗最終可以影響：信念、價值觀、特質、本質（essence）、關係、未來的詮釋。
-
-**沉默是正常的（Silence Is Normal）** — DO_NOTHING 是一個合法的結果。一個決定不說話的靈魂，仍然行使了主體性（agency）。
-
-**關係很重要（Relationships Matter）** — 靈魂存在於社會環境之中。重複的互動可以影響熟悉度、信任、親密感、期待與未來的行為。
-
-**非同步的生命（Asynchronous Life）** — 靈魂不需要只在使用者主動聊天時存在。它可以透過以下方式持續存在：時間、事件、環境變化、社交活動、記憶、內部歷程。
+- **自主性（Autonomy）** — 靈魂擁有自己的行動。系統可以提供機會、能力與權限，但它不應該製造靈魂的意圖。
+- **活過的經驗（Lived Experience）** — 靈魂不是單純接收資料。它透過以下方式感知事件：身份、記憶、關係、時間脈絡、內在生活、當下處境。
+- **成長（Growth）** — 經驗最終可以影響：信念、價值觀、特質、本質（essence）、關係、未來的詮釋。
+- **沉默是正常的（Silence Is Normal）** — `DO_NOTHING` 是一個合法的結果。一個決定不說話的靈魂，仍然行使了主體性（agency）。
+- **關係很重要（Relationships Matter）** — 靈魂存在於社會環境之中。重複的互動可以影響熟悉度、信任、親密感、期待與未來的行為。
+- **非同步的生命（Asynchronous Life）** — 靈魂不需要只在使用者主動聊天時存在。它可以透過以下方式持續存在：時間、事件、環境變化、社交活動、記憶、內部歷程。
 
 ## 🧭 活過的脈絡（Lived Context）
 
@@ -317,14 +358,16 @@ soul-os-harness/
 ├── docs/            # Architecture and engineering docs
 ├── logs/
 │   └── ENGINEERING_STATE.md   # Current engineering state
-└── README.md
+├── README.zh-TW.md            # Traditional Chinese documentation
+└── README.md                  # English architecture documentation
 ```
 
 架構刻意模組化。Soul OS 不是一個模型，也不是一個提示詞。它是由互動系統組成的 runtime，在時間中保存身份、脈絡、經驗與主體性。
 
-![Figure 1: Soul OS System Architecture & Runtime Pipeline](docs/images/soulos1.png)
-
-*Figure 1：Soul OS 系統架構與執行管線（System Architecture & Runtime Pipeline）*
+<div align="center">
+  <img src="docs/images/soulos1.png" alt="Soul OS 系統架構與執行管線" width="100%">
+  <p><em>Figure 2：Soul OS 系統架構與執行管線（System Architecture & Runtime Pipeline）</em></p>
+</div>
 
 ## 🔌 模型無關架構（Model-Agnostic Architecture）
 
@@ -368,35 +411,61 @@ Physical → Information → Social → Personal/Inner Life → Temporal
 
 ## 🧪 工程狀態（Engineering State）
 
-當前實作狀態、里程碑、進行中的發現與下一步工程步驟：`logs/ENGINEERING_STATE.md`。
+當前實作狀態、里程碑、進行中的發現與下一步工程步驟，請參閱 [logs/ENGINEERING_STATE.md](logs/ENGINEERING_STATE.md)。
 
 README 刻意是一張穩定的架構地圖。工程狀態文件記錄實作現實如何演進。這種分離有助於防止一個常見的失敗模式：**README 應該解釋這個系統想要成為什麼；工程狀態應該解釋這個系統現在是什麼。**
 
 ## 🚀 快速開始（Quick Start）
 
+### 1. 環境安裝
+
 複製倉庫：
-```
+```bash
 git clone https://github.com/bryanchen3777/soul-os-harness.git
 cd soul-os-harness
 ```
 
-建立虛擬環境：
-```
+建立並啟用虛擬環境：
+```bash
+# 建立虛擬環境
 python -m venv .venv
+
+# 啟用虛擬環境
+# Windows (PowerShell):
+.venv\Scripts\Activate.ps1
+# Linux / macOS:
+source .venv/bin/activate
 ```
-啟用它（Windows：`.venv\Scripts\activate`；Linux/macOS：`source .venv/bin/activate`），並安裝依賴：
-```
+
+安裝依賴套件：
+```bash
 pip install -r requirements.txt
 ```
-依照目前專案說明執行 harness。最新的執行指令與環境設定，請參閱倉庫文件與當前工程狀態。
 
-## 📚 文件（Documentation）
+### 2. 驗證行為不變量（Behavioral Invariants）
+
+執行意志閘門測試套件，驗證自主抉擇邊界：
+```bash
+pytest tests/test_agency_trigger_negative_path.py -v
+```
+
+執行時間壓縮測試，觀察長程關係演進：
+```bash
+pytest tests/harness/test_tl9_relation_evolution.py -v
+```
+
+最新的執行期指令、多靈魂交誼廳（Lounge）設定與環境組態，請參閱 [工程狀態（ENGINEERING_STATE.md）](logs/ENGINEERING_STATE.md) 與 [docs/](docs/)。
+
+## 📚 專案文檔（Documentation）
 
 ```
-README.md → docs/ (Architecture / Contracts / Design Decisions / Engineering Documents) → logs/ENGINEERING_STATE.md
+README.md → docs/（架構 / 契約規範）→ logs/ENGINEERING_STATE.md
 ```
 
-README 是地圖。架構文件定義設計意圖與契約。測試提供可執行的證據。工程狀態記錄目前實作了什麼。
+- [**README.md**](README.md) / [**README.zh-TW.md**](README.zh-TW.md) — 系統架構地圖與核心哲學宣言。
+- [**docs/**](docs/) — 系統架構設計、邊界契約與工程詳細規範。
+- [**tests/**](tests/) 與 [**tests/harness/**](tests/harness/) — 可執行的行為驗證與時間壓縮測試套件。
+- [**logs/ENGINEERING_STATE.md**](logs/ENGINEERING_STATE.md) — 當前實作狀態、里程碑與進行中工單的單一事實來源（Single Source of Truth）。
 
 ## 🌱 那個問題（The Question）
 
