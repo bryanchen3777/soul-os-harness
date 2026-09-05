@@ -322,7 +322,10 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `2a8c335` (docs: register agent registry test fix (ad39376))
+- Current HEAD: `262516c` (feat(vc-1): fish tts payload model field (s2.1-pro-free))
+- VC-1 runtime wiring commit: `262516c` (feat(vc-1): fish tts payload model field (s2.1-pro-free); **Current HEAD**)
+- VC-1 model field commit: `9fd19be` (feat(vc-1): fish tts model field wiring (s2.1-pro-free + FISH_MODEL override); **distinct from Current HEAD**)
+- VC-1 env wiring commit: `3f29e32` (feat(vc-1): env-override config wiring (fish + ollama cloud llm); **distinct from Current HEAD**)
 - Agent registry test fix register commit: `2a8c335` (docs: register agent registry test fix (ad39376); **Current HEAD**)
 - Agent registry test fix commit: `ad39376` (test: fix stale agent registry assertion (len 3 → actual enabled agent count); **distinct from Current HEAD**)
 - VC-1 register commit: `87edcc2` (docs: register VC-1 voice companion client (6532b96); **distinct from Current HEAD**)
@@ -1498,5 +1501,7 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09-05 (VC-1) | **VC-1 黑川茜即時語音伴侶客戶端 CLOSED**（commit `6532b96`，9 files +1496，全部新增；本行 + §1 VC 系列段 + §1.1 Current HEAD 同步）。獨立客戶端模組 `clients/voice_companion/`（asr_refiner／akane_voice_brain／fish_tts_streamer／vad_listener／akane_live 等 8 檔，config.json 含自用 llm 小節）＋`tests/clients/test_voice_companion.py`（NEW，20 筆，全 Mock 外部網路與音訊硬體）。**驗收**：`pytest tests/clients/test_voice_companion.py -v` → **20 passed（0.09s，主大腦複跑驗證）**；四項剛性斷言全過（ASR 語意淨化「欠...那个...今天好累→茜，今天好累。」＋雜音熔斷 None／語音輸出 0 Markdown 符號守門＋分句器即時切分／Fish Audio Payload text＋reference_id＋Bearer／Barge-in interrupt() 清佇列＋sd.stop＋HTTP 取消）；回歸 spot-check 9 passed。**0 src/ 改動、0 Frozen Contract 觸碰**（`git diff --stat HEAD~1 -- src/` 空）；`test_agent_registry.py` 1 筆失敗為既有陳舊測試（最後提交 `475525c`，與本次 0 關聯）。 | DSH | VC-1 |
 
 | 2026-09-05 (agent registry test fix) | **`tests/test_agent_registry.py` 既有陳舊斷言修復 CLOSED**（commit `ad39376`，1 file +7 -1）。背景：VC-1 收尾時發現的既有失敗（硬編碼 `len(agents) == 3` vs `configs/default.yaml` 已 10 位啟用 Agent）。修復：改為**動態計算啟用 Agent 數**（與 `create_agents` 相同 enabled 預設值語義：`sum(1 for c in cfg["agents"] if c.get("enabled", True))`），隨 default.yaml 擴充不會再陳舊。驗收：`pytest tests/test_agent_registry.py -v` → **3 passed（主大腦複跑驗證）**；spot-check 27 passed（subagent 回報）。**0 src/ 改動、0 Frozen Contract 觸碰、0 其他檔案改動**。 | DSH | VC-1 收尾微修 |
+
+| 2026-09-05 (VC-1 runtime wiring) | **VC-1 執行期配置接線 CLOSED**（3 commits：`3f29e32` env-override config wiring（新增 `clients/voice_companion/env_config.py`：.env 載入＋env 覆寫 FISH_API_KEY/FISH_VOICE_ID/LLM_BASE_URL/LLM_API_KEY/LLM_MODEL，解析順序 os.environ > .env > config.json；akane_live 接 resolve_config）→ `9fd19be` fish payload model 欄位 → `262516c` 按主大腦拍板移除 FISH_MODEL 覆寫鍵，固化 config 預設）。**config.json 最終態**：voice_id=`4c11d21b14284d428074f76a1cf32298`（茜，與生產 `src/voice/fish_tts.py` VOICES 一致）、fish model=`s2.1-pro-free`（與生產 DEFAULT_MODEL 一致，free tier）、llm.endpoint=`https://ollama.com/v1`＋model=`deepseek-v4-flash:0731`（Ollama Cloud，沿用生產配對，**Owner 拍板**）、api_key 全空（機密走 gitignore 的 `clients/voice_companion/.env`，根 .env OLLAMA_API_KEY 程式化帶入，0 金鑰進 git/commit/輸出）。**驗收**：25 passed（20 舊＋5 新 env 測試，主大腦複跑驗證）；Ollama Cloud `GET /v1/models` 唯讀確認 `deepseek-v4-flash:0731` 精確存在。**環境事實**：Fish 金鑰有效但帳戶 HTTP 402 無額度（需魚音效帳戶充值後才能合成）；本機音效裝置（麥克風＋喇叭）正常；依賴 miniaudio 補裝完成。**0 src/ 改動、0 Frozen Contract 觸碰**。 | DSH | VC-1 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
