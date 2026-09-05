@@ -387,8 +387,13 @@ class GoalMotiveProvider:
         with self._lock:
             store = self._store_for()
             goal = _find_goal(store.get_goals(self.agent_id), goal_id)
-            if goal is None or is_terminal_state(goal.state):
-                return None  # 终态无出边（§3.3）
+            # TG-3.1: SUSPENDED 拦截守卫 — 中断窗口残留的 pending 候选可能对
+            # 已挂起目标误推进（advance_count +1 / 误判完成）; 挂起中直接忽略,
+            # 状态不变、计数不推（do_nothing 同样不计数; 唤醒后重新入轮替）
+            if goal is None or is_terminal_state(goal.state) or (
+                goal.state == GOAL_STATE_SUSPENDED
+            ):
+                return None  # 终态无出边（§3.3）; SUSPENDED 不接收陈旧候选
 
             action = getattr(result, "decision", "")
             if action == "do_nothing":
@@ -489,6 +494,11 @@ class GoalMotiveProvider:
           - 0 新增 trigger_type（复用 "system", §11.2）; InnerLifeEvent 9 字段不加第 10 个
           - goal 经 trace_ref 引用, 不进 lineage tree
           失败 fail-closed: log warning, 不影响 COMPLETED 状态。
+
+        TG-3.1 (2026-09-06): ts 必须为 UTC ISO-8601（InnerLifeEvent 契约
+        TS_PATTERN: +00:00|Z）— 无论调用方传本地 aware now 还是缺省
+        （生产 scheduler 调 on_decision 不传 now）, 一律 astimezone(utc) 转换,
+        杜绝非 UTC 时区下 validate_ts 拒绝 → 事件被 fail-closed 静默丢弃。
         """
         now = now or _local_now()
         try:
@@ -509,7 +519,9 @@ class GoalMotiveProvider:
                         "advance_count": str(goal.advance_count),
                     },
                 ),
-                ts=now.isoformat(),
+                # TG-3.1: 契约要求 UTC ISO-8601（+00:00/Z）; 本地 aware now 转换,
+                # 保证任何调用路径通过 InnerLifeEvent 校验、Trace 正常产出
+                ts=now.astimezone(timezone.utc).isoformat(),
             )
             logger.info(
                 f"[Goal] 沉淀完成经验: goal={goal.goal_id} event={event.event_id} "

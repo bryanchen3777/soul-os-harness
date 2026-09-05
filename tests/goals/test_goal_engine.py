@@ -675,6 +675,94 @@ class TestCompletionCriteria:
 
 
 # ───────────────────────────────────────────────────────────
+# TG-3.1: 2 个 production 缺陷回归（UTC 沉淀对齐 + SUSPENDED 守卫）
+# ───────────────────────────────────────────────────────────
+
+class TestTG31ProductionDefectFixes:
+    """TG-3 验收发现的 2 个生产缺陷修复断言。
+
+    缺陷 1: sediment_completion 事件 ts 用本地时间 → 非 UTC 时区下
+            InnerLifeEvent validate_ts（TS_PATTERN: +00:00|Z）拒绝 →
+            fail-closed 静默丢弃, Trace 无产出。修复: 事件 ts 统一 UTC。
+    缺陷 2: on_decision 只过滤终态, 中断窗口残留的 pending 候选会对
+            SUSPENDED 目标误推进（advance_count +1 / 误判完成）。
+            修复: SUSPENDED 拦截守卫（状态不变、计数不推）。
+    """
+
+    def test_sediment_ts_utc_cross_timezone(self, iso_env):
+        """缺陷 1: 非 UTC 时区（UTC-4）下 COMPLETED 沉淀 → trace.jsonl 正常写入,
+        事件 ts 为 UTC ISO-8601（+00:00/Z）且时刻等于推进时刻的 UTC 换算。"""
+        provider, store = _provider(iso_env)
+        gid = "gtz" + "0" * 28
+        store.upsert_goal(_make_goal(
+            gid, completion_criteria=json.dumps({
+                "kind": "interaction", "count": 1, "timeout_days": 30,
+            }),
+        ))
+        # 跨时区基准: UTC-4 aware now（模拟非 UTC 生产环境/显式传参路径）
+        t0 = datetime(2026, 9, 6, 10, 30, tzinfo=timezone(timedelta(hours=-4)))
+        m = provider.assemble_candidate(now=t0)
+        assert m is not None
+        r = provider.on_decision(m, _decision("transmit"), now=t0)
+        assert r == GOAL_STATE_COMPLETED   # 完成 + 沉淀链路全走通
+
+        trace = iso_env / "inner_life" / "trace.jsonl"
+        assert trace.is_file(), "COMPLETED 沉淀事件应写入 trace（修复前非 UTC 被静默丢弃）"
+        lines = [json.loads(l) for l in trace.read_text(encoding="utf-8").splitlines() if l.strip()]
+        assert lines, "trace 不应为空"
+        last = lines[-1]
+        assert last["provenance"]["trace_ref"] == f"goal:{gid}"
+        ts = last["ts"]
+        # 契约断言: 必须是 UTC ISO-8601（+00:00 或 Z 后缀）
+        assert ts.endswith("+00:00") or ts.endswith("Z"), f"ts 非 UTC 格式: {ts!r}"
+        parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        assert parsed.tzinfo is not None
+        assert parsed.utcoffset().total_seconds() == 0
+        # 时刻等价: 事件 ts == 推进时刻 t0 的 UTC 换算
+        assert parsed == t0.astimezone(timezone.utc)
+
+    def test_suspended_goal_stale_candidate_guard(self, iso_env):
+        """缺陷 2: 目标被挂起后, 中断窗口残留候选被决策选中 → 守卫拦截（transmit/
+        do_nothing 均 no-op, 状态不变、advance_count 不推）; 唤醒后守卫不误伤。"""
+        provider, store = _provider(iso_env)
+        gid = "gsu" + "0" * 28
+        store.upsert_goal(_make_goal(
+            gid, completion_criteria=json.dumps({
+                "kind": "interaction", "count": 2, "timeout_days": 30,
+            }),
+        ))
+        t0 = _utc(10)
+        m = provider.assemble_candidate(now=t0)   # ACTIVE 时产出的候选（陈旧）
+        assert m is not None
+        # 装配后目标被中断挂起（候选仍残留 pending 池/决策已发出）
+        store.transition_goal(
+            gid, GOAL_STATE_SUSPENDED,
+            meta={"suspend_snapshot": json.dumps({"reason": "interrupt", "ts": t0.timestamp()})},
+        )
+        # 陈旧候选 transmit → 拦截: 无推进、无状态变更
+        assert provider.on_decision(
+            m, _decision("transmit"), now=t0 + timedelta(hours=1)
+        ) is None
+        got = store.get_goals(AGENT)[0]
+        assert got.state == GOAL_STATE_SUSPENDED
+        assert got.advance_count == 0           # 计数不推（修复前会误 +1）
+        # 陈旧候选 do_nothing → 同样拦截（不进 do_nothing 计数, 不会二次计数挂起）
+        assert provider.on_decision(
+            m, _decision("do_nothing"), now=t0 + timedelta(hours=2)
+        ) is None
+        got = store.get_goals(AGENT)[0]
+        assert got.state == GOAL_STATE_SUSPENDED
+        assert got.advance_count == 0
+        # 守卫只拦 SUSPENDED: 唤醒 → ACTIVE 后接续推进正常（不误伤）
+        store.transition_goal(gid, GOAL_STATE_ACTIVE)
+        r = provider.on_decision(m, _decision("transmit"), now=t0 + timedelta(hours=3))
+        assert r == GOAL_STATE_IN_PROGRESS
+        got = store.get_goals(AGENT)[0]
+        assert got.state == GOAL_STATE_IN_PROGRESS
+        assert got.advance_count == 1
+
+
+# ───────────────────────────────────────────────────────────
 # 8. 心跳接线（装配 ≤1 汇入 pending → resolve_pending; _decision_check 内扩）
 # ───────────────────────────────────────────────────────────
 
