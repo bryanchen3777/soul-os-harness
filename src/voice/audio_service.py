@@ -24,15 +24,18 @@ frozen contract：与 MS-2 `mic_listen`/`audio_transcribe`（single-shot）无�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence
 
 from src.voice.gate import (
+    RouteDecision,
     RoutingFeatures,
     VoiceGateConfig,
     _now_ms,
     extract_features,
+    route,
     stt_novelty_key,
 )
 
@@ -410,3 +413,114 @@ class VoiceSessionService:
                 force_ambient=True,
             ))
         return out
+
+
+# ─────────────────────────────────────────────────────────────
+# AudioStreamResult / process_audio_stream（MS-3.1 additive：设备层完整音频流
+# → ASR（注入）→ MS-3 路由判定，端到端闭环）
+# ─────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class AudioStreamResult:
+    """设备层完整音频流经 ASR + MS-3 路由判定后的结构化结果（voice_session_stop 返回源）。
+
+    route 字段 = RouteDecision.name（"USER_MESSAGE" / "AMBIENT" / "DROP"）。
+    """
+
+    route: str
+    decision: Any
+    text: str
+    has_speech: bool
+    address_score: float
+    stage: str
+    reason: str
+    features: RoutingFeatures
+    asr_error: str = ""
+
+    @property
+    def is_user_message(self) -> bool:
+        return self.decision == RouteDecision.USER_MESSAGE
+
+
+async def process_audio_stream(
+    pcm: Any,
+    asr_fn: Callable[[Any], str],
+    config: Optional[VoiceGateConfig] = None,
+    router: Optional[Any] = None,
+    *,
+    sample_rate: int = 16000,
+    energy_threshold: float = 0.01,
+    in_conversation: bool = False,
+    ts_ms: Optional[int] = None,
+    device_ref: str = "voice-session:stream",
+    asr_timeout_sec: float = 45.0,
+) -> AudioStreamResult:
+    """完整音频流端到端：VAD 能量门控 → ASR（注入回调）→ MS-3 路由判定。
+
+    定位（MS-3.1）：设备/MCP 层负责 PCM 缓冲与 VAD 分片；本函数接收完整 float32
+    PCM（16k mono）与 asr_fn 注入，产出**已过 MS-3 判定阶梯**的结果——「转写后
+    100% 走 InputRouter 判定」的落点（router 注入 VoiceInputRouter(bus=None) 实例；
+    None → gate.route 纯函数兜底）。
+
+    不变量（§2.4 锁死）：in_conversation=False（设备层无对话上下文通道）+ 无唤醒
+    锚点 → gate 阶 3/不变量 100% 降级 AMBIENT/DROP，**永不 USER_MESSAGE**。
+
+    fail-closed：
+      - pcm 空/静音 → has_speech=False → gate DROP（无语音能量）；
+      - ASR 异常/超时 → has_speech 抹平为 False → 降级 DROP（asr_error 标注），
+        绝不因 ASR 坏而误升 USER_MESSAGE，也不抛未捕获异常阻断主循环。
+    """
+    cfg = config or VoiceGateConfig()
+    ts = ts_ms if ts_ms is not None else _now_ms()
+
+    import numpy as np  # 惰性：纯计算库，保持模块顶部 0 重依赖
+
+    try:
+        arr = np.asarray(pcm, dtype=np.float32).reshape(-1)
+        arr = arr[np.isfinite(arr)]  # NaN/Inf 防护
+    except Exception:  # pragma: no cover — 异常输入只降级不抛出
+        arr = np.zeros(0, dtype=np.float32)
+
+    has_speech = False
+    if arr.size > 0:
+        rms = float(np.sqrt(np.mean(np.square(arr))))
+        has_speech = rms >= energy_threshold
+
+    text = ""
+    asr_error = ""
+    if has_speech:
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(asr_fn, arr), timeout=asr_timeout_sec
+            )
+            text = (result or "").strip()
+        except Exception as e:
+            asr_error = repr(e)
+            # fail-closed：ASR 失败 → 抹平语音判定 → DROP 级，绝不误升
+            has_speech = False
+            logger.warning(
+                f"[VoiceStream] ASR 失败 fail-closed → DROP（{e!r}）；"
+                f"sample_rate={sample_rate} elapsed_ms={_now_ms() - ts}"
+            )
+
+    features = extract_features(
+        text, cfg, has_speech=has_speech, in_conversation=in_conversation,
+        device_ref=device_ref, ts_ms=ts,
+    )
+    if router is not None:
+        # 100% 走 InputRouter 判定链（gate + §4.5 防洪 + trace），无旁路
+        outcome = await router.route_features(features)
+    else:
+        outcome = route(features, cfg)
+
+    return AudioStreamResult(
+        route=outcome.decision.name,
+        decision=outcome.decision,
+        text=features.text,
+        has_speech=has_speech,
+        address_score=outcome.address_score,
+        stage=outcome.stage,
+        reason=outcome.reason,
+        features=features,
+        asr_error=asr_error,
+    )
