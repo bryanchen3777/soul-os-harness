@@ -43,7 +43,14 @@ logger = logging.getLogger("soul_os.world.perception")
 
 # Bry 拍板 2026-08-07 19:40 拍板: valid source 白名單
 # (跟 validation.py source whitelist 對齊, 這裡是 dataclass 預設值)
-VALID_SOURCES = frozenset({"weather", "news", "calendar", "social", "synthetic"})
+# MS-1 D2（MS-2 落地，Owner 已批准）：additive 新增多模态感知源——
+#   audio_input     = 語音輸入流（STT 轉寫 → Ambient Observation）
+#   camera_capture  = 相機抓幀事件
+# 既有 5 source 0 變動（只增不改名/不刪除）。
+VALID_SOURCES = frozenset({
+    "weather", "news", "calendar", "social", "synthetic",
+    "audio_input", "camera_capture",
+})
 
 
 @dataclass
@@ -339,6 +346,12 @@ TYPE_KEYWORDS: Dict[str, List[str]] = {
     "celebrity_news":     ["celebrity", "明星", "entertainment", "娛樂"],
     "calendar_event":     ["calendar", "會議", "meeting", "schedule", "行程"],
     "user_going_outside": ["outside", "外出", "出門"],
+    # MS-1 D3（MS-2 落地）：多模态感知細分 type（additive，既有 5 type 0 改动）。
+    # 語音一律落 voice_transcript / ambient_audio，相機落 camera_scene。
+    # 這些 type 不在 WORLD_QUALIFYING_TYPES → 不寫 InnerLifeEvent/SAGE（正確防守）。
+    "voice_transcript":   ["voice", "speech", "transcript", "语音", "語音", "说话", "說話", "转写", "轉寫"],
+    "ambient_audio":      ["audio", "sound", "music", "环境", "環境", "声音", "聲音"],
+    "camera_scene":       ["camera", "scene", "看到", "看见", "看見", "画面", "畫面"],
 }
 
 # Bry 拍板: Phase 1 baseline relevance per type
@@ -355,6 +368,12 @@ TYPE_BASELINE_RELEVANCE: Dict[str, float] = {
     "rain_started": 0.20,
     "weather_temp_change": 0.05,
     "celebrity_news": 0.05,
+    # MS-1 D3（MS-2 落地）：多模态 type baseline（additive，既有 5 type 0 改动）。
+    # 語音含 Bryan 相關語音的可能性比純環境噪聲高 → 中/低基線；
+    # 相機場景可能相關 → 中基線（對齊 user_going_outside 略低）。
+    "voice_transcript": 0.30,
+    "ambient_audio": 0.10,
+    "camera_scene": 0.25,
 }
 DEFAULT_TYPE_BASELINE_RELEVANCE: float = 0.10  # 未知 type 用這個
 

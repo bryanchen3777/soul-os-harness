@@ -108,6 +108,15 @@ EXPLICIT_GROUP_MAP: Dict[str, str] = {
     "memory_search": CAPABILITY_GROUP_REFLECT,
     "diary_read": CAPABILITY_GROUP_REFLECT,
     "memory_retrieve": CAPABILITY_GROUP_REFLECT,
+    # MS-1 D3（MS-2 落地）：多模态感知工具 → observe_environment（additive，
+    # 既有 12 项 0 改动；audio-stream-mcp / camera-mcp 的 tool schema 描述
+    # 若未命中此表，也會被 §2.3 語義兜底攔住，見 _OBSERVE_KEYWORDS）
+    "mic_listen": CAPABILITY_GROUP_OBSERVE,
+    "audio_transcribe": CAPABILITY_GROUP_OBSERVE,
+    "stt": CAPABILITY_GROUP_OBSERVE,
+    "camera_capture": CAPABILITY_GROUP_OBSERVE,
+    "camera_snapshot": CAPABILITY_GROUP_OBSERVE,
+    "image_capture": CAPABILITY_GROUP_OBSERVE,
 }
 
 # 顯式映射表含權限類（§4.1.1）：唯讀感知類 → auto_approved；
@@ -125,6 +134,15 @@ EXPLICIT_PERMISSION_MAP: Dict[str, str] = {
     "message_send": PERM_ASK_REQUIRED,
     "telegram_send": PERM_ASK_REQUIRED,
     "dm_send": PERM_ASK_REQUIRED,
+    # MS-1 D5（MS-2 落地）：mic/STT 唯讀感知 → auto_approved（與 weather/news
+    # 同語義，家庭環境收音不產生外部副作用）；camera 隱私敏感（可能捕捉私密
+    # 畫面）→ ask_required（additive，既有 12 項 0 改动）
+    "mic_listen": PERM_AUTO_APPROVED,
+    "audio_transcribe": PERM_AUTO_APPROVED,
+    "stt": PERM_AUTO_APPROVED,
+    "camera_capture": PERM_ASK_REQUIRED,
+    "camera_snapshot": PERM_ASK_REQUIRED,
+    "image_capture": PERM_ASK_REQUIRED,
 }
 
 
@@ -134,6 +152,14 @@ EXPLICIT_PERMISSION_MAP: Dict[str, str] = {
 _OBSERVE_KEYWORDS = (
     "weather", "calendar", "news", "search", "time",
     "查询", "天氣", "天气", "日历", "日曆", "新闻", "新聞", "搜索", "时间", "時間",
+    # MS-1 D3（MS-2 落地）：多模态关键词（description 语义兜底，大小写不敏感）。
+    # additive：既有 12 词 0 改动；未入显式表的多模态工具靠这些词归入 observe。
+    # 注：substring 匹配，故意用短词覆盖变体（listen/transcri/stt），
+    # 避免 audio_transcribe 因描述用词变体漏网。
+    "audio", "voice", "speech", "speak", "camera", "image", "vision", "stt",
+    "麦克风", "麥克風", "语音", "語音", "声音", "聲音", "说话", "說話",
+    "相机", "相機", "摄像头", "攝像頭", "画面", "畫面", "图像", "圖像",
+    "listen", "transcri",
 )
 _COMMUNICATE_KEYWORDS = (
     "send", "message", "notify",

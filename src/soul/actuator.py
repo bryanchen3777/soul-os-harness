@@ -36,7 +36,10 @@ Frozen contract 邊界（0 change）：
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
 
@@ -65,6 +68,8 @@ _ACTION_TO_GROUP = {
 
 # Motive 內容關鍵詞 → 工具名路由表（Actuator 層展開工具明細，§3.1）。
 # 執行時按 Motive 內容路由到組內具體工具；無命中 → 組內第一個可用工具。
+# MS-1 D3（MS-2 落地，additive）：多模态路由——「聽/語音/麦克风」→ mic_listen；
+# 「看/相机/画面」→ camera_capture。用詞組避免單字誤路由（如「聽聽看」）。
 _ROUTE_KEYWORDS: tuple = (
     (("天氣", "天气", "weather", "rain", "temperature", "气温", "氣溫"), "weather"),
     (("日历", "日曆", "calendar", "会议", "會議", "日程", "schedule"), "calendar"),
@@ -73,13 +78,21 @@ _ROUTE_KEYWORDS: tuple = (
     (("时间", "時間", "time", "几点", "幾點"), "time"),
     (("记忆", "記憶", "memory", "回忆", "回憶", "之前", "想不起"), "memory_search"),
     (("日记", "日記", "diary", "昨天", "前天"), "diary_read"),
+    (("麦克风", "麥克風", "语音", "語音", "收音", "voice", "speech", "stt",
+      "聽一聽", "聽聽看", "听一听", "环境声音", "環境聲音"), "mic_listen"),
+    (("相机", "相機", "摄像头", "攝像頭", "画面", "畫面", "camera", "vision",
+      "看一看", "看看房间", "看看客廳", "看看客厅", "拍一张", "拍一張"), "camera_capture"),
 )
 
 # 工具名 → WorldEvent.source（VALID_SOURCES 白名單：weather/news/calendar/social/synthetic）
+# MS-1 D2（MS-2 落地）：多模态管道認領新 source（audio_input / camera_capture），
+# 取代 synthetic 兜底——保留「耳朵/眼睛」語義；未知工具仍 fallback synthetic。
 _SOURCE_HINT_MAP = (
     (("weather",), "weather"),
     (("calendar",), "calendar"),
     (("news",), "news"),
+    (("mic_listen", "audio_transcribe", "stt"), "audio_input"),
+    (("camera_capture", "camera_snapshot", "image_capture"), "camera_capture"),
 )
 
 
@@ -332,12 +345,39 @@ class Actuator:
         return WorldEvent(
             source=source,
             type=f"tool_{tool.name}",
-            novelty_id=f"{tool.name}:{ts}",
+            novelty_id=self._content_novelty_id(tool.name, data, ts),
             ts=ts,
             summary=summary[:300],
             data=data,
             priority=0,
         )
+
+    @staticmethod
+    def _content_novelty_id(tool_name: str, data: Dict[str, Any], ts: str) -> str:
+        """MS-1 D9 內容級 novelty_id（additive，無特徵時 fallback 維持 ``tool:ts``）。
+
+        - STT（audio_transcribe / stt）：``"stt:" + SHA256(normalize(text))[:12]``
+          —— 同一句話重複出現 → 同一 id → novelty 衰減生效（句級去重）。
+        - Camera（camera_capture / camera_snapshot / image_capture）：
+          ``"cam:" + scene_tag + ":" + utc_date`` —— 場景語義桶 + 日桶
+          （單幀像素 hash 因光照噪點失真，故用粗分類 + 日桶去重）。
+        - Fallback：工具未提供內容特徵（text / scene_tag）→ 維持既有 ``tool:ts``
+          （不破壞既有路徑，已 100% 保留）。
+        """
+        if "text" in data and isinstance(data["text"], str) and data["text"].strip():
+            norm = Actuator._normalize_transcript(data["text"])
+            digest = hashlib.sha256(norm.encode("utf-8")).hexdigest()[:12]
+            return f"stt:{digest}"
+        if "scene_tag" in data and isinstance(data["scene_tag"], str) and data["scene_tag"].strip():
+            utc_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            return f"cam:{data['scene_tag'].strip()}:{utc_date}"
+        return f"{tool_name}:{ts}"
+
+    @staticmethod
+    def _normalize_transcript(text: str) -> str:
+        """D9 normalize：小寫 + Unicode NFKC（全形→半形）+ 去標點空白。"""
+        norm = unicodedata.normalize("NFKC", text).lower()
+        return re.sub(r"[\s\W_]+", "", norm, flags=re.UNICODE)
 
     @staticmethod
     def _source_for(tool_name: str) -> str:
