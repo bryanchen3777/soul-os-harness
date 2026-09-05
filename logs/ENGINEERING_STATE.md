@@ -322,8 +322,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `6532b96` (feat: VC-1 akane voice companion client (clients/voice_companion/))
-- VC-1 implementation commit: `6532b96` (feat: VC-1 akane voice companion client (clients/voice_companion/); **Current HEAD**)
+- Current HEAD: `87edcc2` (docs: register VC-1 voice companion client (6532b96))
+- VC-1 register commit: `87edcc2` (docs: register VC-1 voice companion client (6532b96); **Current HEAD**)
+- VC-1 implementation commit: `6532b96` (feat: VC-1 akane voice companion client (clients/voice_companion/); **distinct from Current HEAD**)
 - C-2.1 register commit: `a9335df` (docs: register C-2.1 CLOSED (TL-11 acceptance, a4f974e); **Current HEAD**)
 - TL-11 acceptance commit: `a4f974e` (test(tl11): commitment closure + periodic narrative end-to-end harness; **distinct from Current HEAD**)
 - C-2.1 implementation commit: `306943f` (feat(c-2.1): commitment closure seed B6 + periodic narrative sublimation; **distinct from Current HEAD**)
