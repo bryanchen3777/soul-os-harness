@@ -322,8 +322,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `262516c` (feat(vc-1): fish tts payload model field (s2.1-pro-free))
-- VC-1 runtime wiring commit: `262516c` (feat(vc-1): fish tts payload model field (s2.1-pro-free); **Current HEAD**)
+- Current HEAD: `d067094` (docs: register VC-1 runtime wiring (3f29e32 + 9fd19be + 262516c))
+- VC-1 wiring register commit: `d067094` (docs: register VC-1 runtime wiring (3f29e32 + 9fd19be + 262516c); **Current HEAD**)
+- VC-1 runtime wiring commit: `262516c` (feat(vc-1): fish tts payload model field (s2.1-pro-free); **distinct from Current HEAD**)
 - VC-1 model field commit: `9fd19be` (feat(vc-1): fish tts model field wiring (s2.1-pro-free + FISH_MODEL override); **distinct from Current HEAD**)
 - VC-1 env wiring commit: `3f29e32` (feat(vc-1): env-override config wiring (fish + ollama cloud llm); **distinct from Current HEAD**)
 - Agent registry test fix register commit: `2a8c335` (docs: register agent registry test fix (ad39376); **Current HEAD**)
