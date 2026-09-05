@@ -336,28 +336,28 @@ class TestFullChainOffline:
 
 class TestEnvConfig:
     def test_env_overrides_beat_config_defaults(self, monkeypatch):
-        """os.environ 優先於 config.json：六個覆寫鍵全部生效"""
+        """os.environ 優先於 config.json：五個覆寫鍵全部生效（FISH_MODEL 不存在）"""
         cfg = {
             "fish_audio": {"api_key": "", "voice_id": "4c11d21b14284d428074f76a1cf32298", "model": "s2.1-pro-free"},
             "llm": {"endpoint": "https://ollama.com/v1", "model": "deepseek-v4-flash:0731", "api_key": ""},
         }
         monkeypatch.setenv("FISH_API_KEY", "env-fish-key")
         monkeypatch.setenv("FISH_VOICE_ID", "env-voice-id")
-        monkeypatch.setenv("FISH_MODEL", "env-fish-model")
         monkeypatch.setenv("LLM_BASE_URL", "https://ollama.com/v1")
         monkeypatch.setenv("LLM_API_KEY", "env-llm-key")
         monkeypatch.setenv("LLM_MODEL", "env-model")
+        monkeypatch.delenv("FISH_MODEL", raising=False)  # 拍板：不支援 FISH_MODEL 覆寫
         resolved = apply_env_overrides(cfg)
         assert resolved["fish_audio"]["api_key"] == "env-fish-key"
         assert resolved["fish_audio"]["voice_id"] == "env-voice-id"
-        assert resolved["fish_audio"]["model"] == "env-fish-model"
+        assert resolved["fish_audio"]["model"] == "s2.1-pro-free"  # config 默認保留（無 FISH_MODEL 覆寫）
         assert resolved["llm"]["endpoint"] == "https://ollama.com/v1"
         assert resolved["llm"]["api_key"] == "env-llm-key"
         assert resolved["llm"]["model"] == "env-model"
 
     def test_missing_env_keeps_config_defaults(self, monkeypatch):
         """環境變數缺席時 config.json 默認值原樣保留（含空 api_key 不被污染）"""
-        for env_name in ("FISH_API_KEY", "FISH_VOICE_ID", "FISH_MODEL", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"):
+        for env_name in ("FISH_API_KEY", "FISH_VOICE_ID", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"):
             monkeypatch.delenv(env_name, raising=False)
         cfg = {
             "fish_audio": {"api_key": "", "voice_id": "4c11d21b14284d428074f76a1cf32298", "model": "s2.1-pro-free"},
