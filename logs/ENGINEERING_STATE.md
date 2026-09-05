@@ -273,7 +273,7 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 |------|------|------|-------------|
 | **LS-0（长期共生架构审计）** | ✅ CLOSED（READ-ONLY，docs only 0 code） | `docs/LS-0-LONG-TERM-COEXISTENCE-AUDIT.md`（NEW）。**四维度审计全干净**：0 CONTRACT CONFLICT；四维度（生成器承诺 / 相位 / 叙事 / 内容安全）全部 KEEP existing / 最小 additive。**关键发现**：goal 创建器（种子→goal）production 未实现——`upsert_goal` 调用方只有测试直写，无生产路径。这是 C-2 的核心缺口。**0 frozen contract 改动（docs only 0 code）**。 | （docs only，随 LS-1 closeout 一并落地） |
 | **LS-1（长期共生设计契约：C-2 共生设计）** | ✅ CLOSED（docs only 0 code），**Owner 拍板方案 B** | `docs/LS-1-LONG-TERM-COEXISTENCE-CONTRACT.md`（NEW，9 节，359 行）。**契约锁定**：① 生成器（Goal Seed 生成器承诺语义）；② 承诺（promise 语义 + 生命周期）；③ 相位（phase 语义）；④ 叙事（narrative 语义）；⑤ 三案对比（A 独立 goal 引擎 / B 既有 proxy LLM 通道语义化 / C 混合）；**Owner（Bryan）拍板方案 B：既有 proxy LLM 通道语义化**——不复用 C-1 Goal Engine 路线，在既有 proxy LLM 通道上做语义化升级；⑥ 成本估算：月增量 ≈2 万 tokens（低开销）。**LS-2 实作 + TL-8 护栏 NEXT**（Goal Seed 生成器生产落地）。**0 frozen contract 改动（docs only 0 code）**。 | `6514ac1`（docs: LS-1 long-term coexistence contract (C-2)） |
-| **LS-2（实作 + TL-8 护栏）** | ⏳ NEXT | Goal Seed 生成器生产落地（补齐 LS-0 发现的核心缺口：种子→goal 生产路径）。**独立工单并行执行中**，收尾工单不触碰 src/。 | 待定 |
+| **LS-2（实作 + TL-8 护栏）** | ✅ CLOSED（生产落地，commit `aadd5ef`） | `src/goals/seed_provider.py`（NEW，GoalSeedProvider）+ `tests/goals/test_tl8_volition_guardrails.py`（NEW，18 用例，TL-8 六项护栏全绿）+ additive 修改 `src/goals/models.py` / `src/goals/__init__.py` / `src/soul/scheduler.py`（`_goal_scan_all` 内 1 行并列分支 `await GoalSeedProvider.for_agent(agent_id).scan_seeds()`，**0 新定时器**）/ 2 个测试 sidecar 适配。**GoalSeedProvider 要点**：24h 节流 / 8 源固定轮序 B1-B4+S1-S4 / seed_source_ref 幂等去重 / 同轴 ≤2 强制换轴 / 3 轮空转防饿死 / 方案 B 复用 `_default_llm_call` 语义化（**fail-closed**）/ criteria 确定性模板 / `_is_quiet_hours`+bryan_last_seen>4h 抑制 B 轴。**TL-8 六项护栏 18 用例**：0 直通 publish AST 审计 / 0 新定时器 AST 审计 / 候选 ≤1 / 承诺不挤占自我轴 / 0 直写 facts / SM-4.2 分布锁单元级。**验收 61/61**；**全量回归 3084 passed 与基线一致**。**0 frozen contract 改动**（`git show --stat` 核对：src/inner_life/*、agency/*、SAGE 写入路径均不在本批次）。**⚠️ confidence 缺陷观察（待 Owner 拍板）**：`GraphStore.add_fact` INSERT 列清单不含 confidence 列（DDL 有默认 1.0）→ 所有 fact 的 confidence 恒 1.0 写不进去；S2 探针已用 weight 绕过；因 add_fact 属「SAGE 写入逻辑」frozen 边界，**修复需 Owner 拍板，暂不擅改**。 | `aadd5ef`（feat: goal seed provider + TL-8 volition guardrails (LS-2)） |
 
 ### North Star v2（canonical 引用）
 
@@ -303,8 +303,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `6514ac1` (docs: LS-1 long-term coexistence contract (C-2))
-- LS-1 contract docs commit: `6514ac1` (docs: LS-1 long-term coexistence contract (C-2); **Current HEAD**)
+- Current HEAD: `aadd5ef` (feat: goal seed provider + TL-8 volition guardrails (LS-2))
+- LS-2 implementation commit: `aadd5ef` (feat: goal seed provider + TL-8 volition guardrails (LS-2); **Current HEAD**)
+- LS-1 contract docs commit: `6514ac1` (docs: LS-1 long-term coexistence contract (C-2); **distinct from Current HEAD**)
 - TG-3.1 fix commit: `d55253f` (fix: sediment UTC + suspended stale-candidate guard (TG-3.1); **distinct from Current HEAD**)
 - TG-3 commit: `3adaf57` (feat: goal-driven behavior harness acceptance (TG-3); **distinct from Current HEAD**)
 - TG-2 commit: `26da28d` (feat: goal engine (schema v8 + goal provider + scheduler wiring) (TG-2); **distinct from Current HEAD**)
@@ -1435,5 +1436,6 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09 (C-1 CLOSED) | **C-1 自主目标与意向引擎主线：正式 CLOSED**。五阶全链 `136cb95`（TG-0 审计）→ `058e060`（TG-1 设计）→ `26da28d`（TG-2 实作）→ `3adaf57`（TG-3 验收）→ `d55253f`（TG-3.1 修复）。**全程 0 frozen contract 改动**。本批次登记 docs commit `f410867`。 | DSH | C-1 |
 | 2026-09 (LS-0) | **LS-0 长期共生架构审计 CLOSED**（READ-ONLY docs only 0 code）。`docs/LS-0-LONG-TERM-COEXISTENCE-AUDIT.md`：四维度（生成器承诺 / 相位 / 叙事 / 内容安全）全干净，0 CONTRACT CONFLICT，全部 KEEP existing / 最小 additive。**关键发现**：goal 创建器（种子→goal）production 未实现（`upsert_goal` 调用方只有测试直写）——C-2 核心缺口。0 frozen contract 改动。 | DSH | LS-0 |
 | 2026-09 (LS-1) | **LS-1 长期共生设计契约 CLOSED**（docs only 0 code，commit `6514ac1`）。`docs/LS-1-LONG-TERM-COEXISTENCE-CONTRACT.md`（9 节，359 行）：生成器（Goal Seed 生成器承诺语义）/ 承诺（promise 语义 + 生命周期）/ 相位 / 叙事 + 三案对比（A 独立 goal 引擎 / B 既有 proxy LLM 通道语义化 / C 混合）。**Owner（Bryan）拍板方案 B：既有 proxy LLM 通道语义化**——不复用 C-1 Goal Engine 路线。成本估算：月增量 ≈2 万 tokens。**LS-2 实作 + TL-8 护栏 NEXT**（Goal Seed 生成器生产落地）。0 frozen contract 改动。 | DSH | LS-1 |
+| 2026-09 (LS-2 + TL-8) | **LS-2 实作 CLOSED + TL-8 护栏通过**（commit `aadd5ef`，7 files +1592/-5）。GoalSeedProvider 生产落地（`src/goals/seed_provider.py`）：24h 节流 / 8 源固定轮序 B1-B4+S1-S4 / seed_source_ref 幂等去重 / 同轴 ≤2 强制换轴 / 3 轮空转防饿死 / 方案 B 复用 `_default_llm_call` 语义化 fail-closed / criteria 确定性模板 / 作息抑制（`_is_quiet_hours`+bryan_last_seen>4h 抑制 B 轴）。挂 `_goal_scan_all` 并列分支，**0 新定时器**（AST 审计佐证）。TL-8 六项护栏 18 用例全绿；验收 61/61；全量回归 3084 passed 与基线一致。**0 frozen contract 改动**。**⚠️ confidence 缺陷观察**：`GraphStore.add_fact` INSERT 列清单不含 confidence 列（DDL 默认 1.0）→ fact confidence 恒 1.0 写不进去；S2 探针已用 weight 绕过；add_fact 属「SAGE 写入逻辑」frozen 边界，修复需 Owner 拍板。 | DSH | LS-2 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
