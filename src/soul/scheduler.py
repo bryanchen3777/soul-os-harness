@@ -1501,6 +1501,12 @@ class SoulScheduler:
                 # 5.5 TG-2 Goal (2026-09-05): 中断/唤醒扫描 — 挂既有 30s wake 顺带检查
                 #     (TG-1 §8.3「心跳 schedule scan」; 0 新定时器 0 新 tick 0 新 sleep)
                 await self._goal_scan_all()
+                # 5.6 C-2.1 (2026-09-06): 週期敘事昇華 — night slot 檢查鏈 additive 分支。
+                #     判據 = 既有 night slot（22:00, _slot_for_time=="night" 60s 觸發窗）;
+                #     0 新定時器 / 0 新 payload 通道（沉澱唯一出口 = InnerLifeWriter）;
+                #     冪等鍵 periodic:{key} trace 判重為主要閘門（週記 1 次/週、
+                #     紀念日 1 次/日）— 檢查窗偶發重入亦擋二次沉澱（契約 §5.6 雙保險）。
+                await self._fire_periodic_narrative()
                 # 健康檢查 log
                 if (now.timestamp() - last_health_log) > HEALTH_CHECK_INTERVAL_SECS:
                     next_slot, next_time = self._compute_next_slot(now)
@@ -1548,6 +1554,37 @@ class SoulScheduler:
         except Exception as e:
             logger.warning(
                 f"[Goal] 主循环扫描异常 (fail-closed): {type(e).__name__}: {e}"
+            )
+
+    async def _fire_periodic_narrative(self) -> None:
+        """
+        C-2.1 (2026-09-06): 週期敘事昇華 — night slot 檢查鏈 additive 分支。
+
+        掛點 (契約 docs/C-2.1-COMMITMENT-AND-NARRATIVE-CONTRACT.md §5.1/§5.6):
+          - 主循環 30s wake 內、night slot（22:00, _slot_for_time=="night"）檢查
+            與 _fire_all("night") / _goal_scan_all 並列; 0 新定時器 0 新通道
+          - 判據 1: 週記 — 當前 ISO 週（YYYY-Www）無既有沉澱 → 觸發（頻率 1 次/週）
+          - 判據 2: 紀念日 — 今晚有「事件日 == 今天」accepted calendar_event → 觸發
+          - 沉澱唯一出口 = PeriodicNarrativeSublimator →
+            InnerLifeWriter.create_event（producer 前置, 0 直寫 facts）
+        fail-closed: 任何異常只 log warning, 不阻断主循环 (与 _goal_scan_all 同级)。
+        """
+        if not self._all_agents:
+            return
+        now = now_local()
+        if self._slot_for_time(now) != "night":
+            return
+        try:
+            from src.goals.narrative_sublimator import PeriodicNarrativeSublimator
+            for agent_id in self._all_agents:
+                sublimator = PeriodicNarrativeSublimator(agent_id=agent_id)
+                # 同一 now 貫穿 slot 判定與聚合窗（讀側判據確定性）
+                await sublimator.sublimate_weekly(now=now)
+                await sublimator.sublimate_memorial(now=now)
+        except Exception as e:
+            logger.warning(
+                f"[PeriodicNarrative] 週期敘事檢查異常 (fail-closed): "
+                f"{type(e).__name__}: {e}"
             )
 
     def _compute_next_slot(self, now: datetime) -> tuple[str, datetime]:

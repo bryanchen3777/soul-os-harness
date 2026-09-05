@@ -138,6 +138,8 @@ def _audit_seed_provider_no_timers() -> List[str]:
 _SORT_KEY_ALLOWED_FIELDS = frozenset({
     "timestamp", "last_advanced_at", "last_ts", "created_at", "ts",
     "axis", "goal_id", "event_id", "fact_id", "node_id",
+    # C-2.1 (2026-09-06): B6 閉環時間輪候字段（契約 §3.3「state_updated_at 最舊優先」）
+    "state_updated_at",
 })
 
 
@@ -447,7 +449,8 @@ class TestThrottleAndRotation:
         # 已被追踪（幂等）→ 轮到 fact 前仍无创建; 验证轮序状态持久化
         state_file = tmp / "memory" / AGENT / "goal_provider.json"
         state = json.loads(state_file.read_text(encoding="utf-8"))
-        assert state["seed_source_cursor"] == 6  # index 0 + 6 探测 = 6（SG-2: 9 源含 B5 relation）
+        # C-2.1: 10 源含 B6 commitment_closure → B1-B6 空转 6 探 + S1 elevation 命中 1
+        assert state["seed_source_cursor"] == 7  # index 0 + 6 探测 + 1 命中 = 7
         assert state["last_seed_axis"] == AXIS_SELF
         assert state["seed_axis_streak"] == 1
         assert state["last_seed_scan_at"] > 0

@@ -33,6 +33,7 @@ from src.goals.models import (
     AXIS_BRYAN,
     AXIS_SELF,
     GOAL_STATE_ACTIVE,
+    GOAL_STATE_COMPLETED,
     GOAL_TERMINAL_STATES,
     Goal,
     GoalProviderState,
@@ -53,15 +54,18 @@ logger = logging.getLogger("soul_os.goals.seed_provider")
 # 种子轮序与轴约束（LS-1 §2.3/§2.4, D4 锁死, No Scoring）
 # ───────────────────────────────────────────────────────────
 
-# 固定 9 源确定性轮序（B1→B2→B3→B4→B5→S1→S2→S3→S4 循环; 0 权重 0 打分）
+# 固定 10 源确定性轮序（B1→B2→B3→B4→B5→B6→S1→S2→S3→S4 循环; 0 权重 0 打分）
 # SG-2 (D5): 第 9 源 B5 relation — 他者源（relationships.json 4.2 的
 # band + impression_tags 读侧; 契约 SG-1 §9.3.3 additive 扩张, 轴属既有 AXIS_BRYAN）
+# C-2.1 (D1/D8/D9): 第 10 源 B6 commitment_closure — 承诺闭环源（终态承诺 → 关怀/回报;
+# 契约 docs/C-2.1-COMMITMENT-AND-NARRATIVE-CONTRACT.md §3.3; 插在 B5 之后、S1 之前）
 SEED_ROTATION: List[Dict[str, str]] = [
     {"key": "commitment",   "axis": AXIS_BRYAN},
     {"key": "calendar",     "axis": AXIS_BRYAN},
     {"key": "trace",        "axis": AXIS_BRYAN},
     {"key": "interaction",  "axis": AXIS_BRYAN},
     {"key": "relation",     "axis": AXIS_BRYAN},
+    {"key": "commitment_closure", "axis": AXIS_BRYAN},
     {"key": "elevation",    "axis": AXIS_SELF},
     {"key": "fact",         "axis": AXIS_SELF},
     {"key": "tool",         "axis": AXIS_SELF},
@@ -81,6 +85,8 @@ _CRITERIA_TEMPLATES: Dict[str, Dict[str, Any]] = {
     "trace":        {"kind": "interaction", "count": 1, "timeout_days": 7},
     "interaction":  {"kind": "interaction", "count": 2, "timeout_days": 14},
     "relation":     {"kind": "interaction", "count": 2, "timeout_days": 14},
+    # C-2.1 (D1): B6 承诺闭环 — 一次关怀互动即达成反馈（契约 §3.3）
+    "commitment_closure": {"kind": "interaction", "count": 1, "timeout_days": 7},
     "elevation":    {"kind": "observation", "count": 2, "timeout_days": 14},
     "fact":         {"kind": "observation", "count": 2, "timeout_days": 14},
     "tool":         {"kind": "observation", "count": 1, "timeout_days": 14},
@@ -470,6 +476,53 @@ class GoalSeedProvider:
                 material=material,
             )
         return None
+
+    def _probe_commitment_closure(self, now: datetime) -> Optional[SeedHit]:
+        """B6 承諾閉環 (C-2.1 D1/D8/D9): 本窗內進入終態的承諾類 goal → 關懷/回報種子。
+
+        規則 (契約 docs/C-2.1-COMMITMENT-AND-NARRATIVE-CONTRACT.md §3.3):
+          - 候選: axis==bryan 且 state ∈ {COMPLETED, ABANDONED} 且
+            seed_source_ref 前綴 ∈ {"relationship:", "commitment:"}
+            （relation: = B5 他者源, 他者閉環回饋屬 C-3 系列, v1 不進 B6）
+          - 窗口: state_updated_at ∈ (last_seed_scan_at, now] —— 上次實際掃描 → 本次;
+            終態無出邊（models.py 轉移表）⇒ 每個終態承諾至多進窗一次（閉環主冪等閘門）
+          - 選取: state_updated_at 最舊優先（純時間輪候, 0 打分）; 每窗至多 1 條
+            （與 scan_seeds「24h 至多 1 新 goal」共享節流）
+          - ref = commitment_closure:{goal_id}（goal 維度冪等鍵, 與 B1 關係維度正交）;
+            新增後再遇同終態由既有 _already_tracked（同 ref 非終態 goal）作第二重保險
+          - material 只含結構事實（No-Scoring, §4.3 不變式 3）: title + 終態標記 +
+            推進次數 + 終態時點; 語調由方案 B 語義化生成（0 情感打分 0 評判）
+        """
+        state = self._load_state()
+        lower = state.last_seed_scan_at
+        upper = now.timestamp()
+        candidates: List[Goal] = []
+        for g in self._store_for().get_goals(self.agent_id):
+            if g.axis != AXIS_BRYAN:
+                continue
+            if g.state not in GOAL_TERMINAL_STATES:
+                continue
+            ref = g.seed_source_ref or ""
+            if not (ref.startswith("relationship:") or ref.startswith("commitment:")):
+                continue
+            if not (lower < g.state_updated_at <= upper):
+                continue
+            candidates.append(g)
+        if not candidates:
+            return None
+        candidates.sort(key=lambda g: g.state_updated_at)  # 最舊優先（時間輪候, 0 打分）
+        g = candidates[0]
+        closed_label = "已達成" if g.state == GOAL_STATE_COMPLETED else "已逾期釋懷"
+        material = (
+            f"一份承諾已收束: title={g.title} 終態={closed_label}({g.state}) "
+            f"推進次數={g.advance_count} 終態時點={g.state_updated_at}"
+        )
+        return SeedHit(
+            key="commitment_closure",
+            axis=AXIS_BRYAN,
+            ref=f"commitment_closure:{g.goal_id}",
+            material=material,
+        )
 
     def _probe_elevation(self, now: datetime) -> Optional[SeedHit]:
         """S1 trait 好奇: SE-5 ACTIVE 投影节点只读（不写, 缺省=active）。"""
