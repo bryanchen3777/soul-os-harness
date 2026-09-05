@@ -315,8 +315,11 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `12838c6` (docs: README v2 bilingual rewrite (English + zh-CN, Mermaid + architecture posters))
-- README v2 bilingual commit: `12838c6` (docs: README v2 bilingual rewrite (English + zh-CN, Mermaid + architecture posters); **Current HEAD**)
+- Current HEAD: `57f28d7` (docs(c-3.1): register approved relational expression contract + P1 delivery routing authorization)
+- C-3.1 register commit: `57f28d7` (docs(c-3.1): register approved relational expression contract + P1 delivery routing authorization; **Current HEAD**)
+- README v2 polish commit: `47d4a63` (docs: polish bilingual READMEs (badges, TOC, poster centering, zh-TW standard); **distinct from Current HEAD**)
+- README v2 register commit: `474b529` (docs: register README v2 bilingual baseline in ENGINEERING_STATE; **distinct from Current HEAD**)
+- README v2 bilingual commit: `12838c6` (docs: README v2 bilingual rewrite (English + zh-CN, Mermaid + architecture posters); **distinct from Current HEAD**)
 - README flagship (v1) commit: `76bc718` (docs: README flagship architecture rewrite (Phase C-3.1); **distinct from Current HEAD**)
 - SG-2.2 fix commit: `779a639` (fix: settle_relations 4.1 band-key compat (SG-2.2); **distinct from Current HEAD**)
 - SG-2.1 fix commit: `ca3d52f` (fix: relational band slow-climb requires in-window signal (SG-2.1); **distinct from Current HEAD**)
