@@ -121,6 +121,12 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 |------|------|------|-------------|
 | **SI-2（多 Agent 灵魂互动）** | ✅ 完整落地 | **SI-2.0 审计**（`docs/SOCIAL-DIFFUSION-AUDIT.md`，现状审计：多 Agent 广播风暴 / 身份混淆 / 隐私泄漏风险识别）+ **SI-2.1 设计**（`docs/SOCIAL-DIFFUSION-CONTRACT.md`，SocialWorldEvent 最小 Schema + 三大防线契约，commit `5002f20`）+ **SI-2.2 实作**（Schema + `src/social/` 模块 + 防线 3/2/1 落地，commit `33ae1b1`）。灵魂互动主线从 SI-1 最小读侧升级为完整多 Agent Social Diffusion 闭环。0 frozen contract 改动 | `33ae1b1`（SI-2.2）+ `5002f20`（SI-2.1）+ `b623e17`（SI-1） |
 
+### SI-2 Harness（多体共存 Harness 验证）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **SI-2 Harness（多体共存 Harness 验证）** | ✅ Closed | `tests/harness/test_social_diffusion_harness.py`（NEW，**11 测试全过**）+ `tests/harness/social_harness_fixtures.py`（NEW，4 剧本场景 fixture）：**三大防线刚性断言实证**——**Identity Firewall 0 内化**（防线 3：外部他者事件 0 内化为自身记忆）/ **Privacy Gate 0 泄漏**（防线 2：1:1 私聊 0 泄漏于广播总线之外）/ **Ambient Path 0 自激**（防线 1：0 自激回声广播风暴）。顺手修 `tests/test_social_middleware.py` 旧渲染区断言（`[社交感知]` → `[客廳現況]`，对齐 SI-3 Phase 2 聚合器紧凑渲染，含反框架警示语）。**0 frozen contract 改动**（只新增 harness 测试 + 修测试断言，0 production 代码改动） | `973971d`（feat: multi-agent social diffusion harness validation (SI-2 harness)） |
+
 ### TL-6（Social Lounge Multi-Agent Behavioral Stability Validation：多 Agent 客厅情境验证）
 
 | 条目 | 状态 | 要点 | 相关 commit |
@@ -245,8 +251,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `1d1b9af` (feat: multimodal perception (audio/camera MCP) (MS-2))
-- MS-2 commit: `1d1b9af` (feat: multimodal perception (audio/camera MCP) (MS-2); **Current HEAD**)
+- Current HEAD: `973971d` (feat: multi-agent social diffusion harness validation (SI-2 harness))
+- SI-2 harness commit: `973971d` (feat: multi-agent social diffusion harness validation (SI-2 harness); **Current HEAD**)
+- MS-2 commit: `1d1b9af` (feat: multimodal perception (audio/camera MCP) (MS-2); **distinct from Current HEAD**)
 - MS-1 commit: `172bca0` (docs: multimodal perception contract (MS-1); **distinct from Current HEAD**)
 - MS-0 commit: `c30314e` (docs: multimodal perception architecture audit (MS-0); **distinct from Current HEAD**)
 - TS-3 commit: `0acadbc` (feat: real MCP server end-to-end validation (TS-3); **distinct from Current HEAD**)
@@ -1355,5 +1362,6 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09 (MS-0) | Multimodal Perception 架构审计（commit `c30314e`）。**READ-ONLY，docs only 0 code**。1 file changed: `docs/MULTIMODAL-PERCEPTION-AUDIT.md`（NEW，250 行）。**三大审计结论**：① **输入侧全空白**——语音 STT（whisper / sensevoice / sounddevice / pyaudio venv 0 依赖、源码 0 引用、data 0 痕迹）与视觉 Camera（opencv 0 依赖、源码 0 引用）均无实现，当前全部输入 = 纯文字（WebSocket USER_MESSAGE + Telegram text）；输出侧 Fish TTS + Edge 兜底已生产验证。② **工具层接入点就绪但分类表缺词**——麦克风/相机 → MCP 工具 → `observe_environment` 组路径可行（`register_mcp_server` 唯一入口 + `project_capabilities` 自动投影 + Auto-Approved 权限），但 `_OBSERVE_KEYWORDS` 与 `EXPLICIT_GROUP_MAP` 无 audio / voice / stt / camera 关键词 → 新人工具 fail-closed 拒绝注册，需 **三处 additive**。③ **感知边界完整遵守 Volition Gate**——Actuator `_flowback` → `WorldPerceptionState` → `WorldPerceptionMiddleware` → prompt 注入，scheduler 发布端仍 `mark_rejected`；多模态事件不进 `WORLD_QUALIFYING_TYPES`（M5.9-2 白名单）→ 不污染 InnerLife / SAGE。**唯一 Frozen Contract 触点**：`VALID_SOURCES`（`src/world/perception.py:46`）需 additive 扩展（当前默认落 `synthetic`），化工单级决策需主大脑 + Owner 批准，不阻塞 MS-1 设计。0 frozen contract 改动（本次 0 code）。注：`tests/test_soul_md_loader.py` 未被本次触碰。 | DSH | MS-0 |
 | 2026-09 (MS-1) | Multimodal Perception Contract 设计（commit `172bca0`）。**docs only 0 code**。1 file changed: `docs/MULTIMODAL-PERCEPTION-CONTRACT.md`（NEW，413 行）。**设计决策全锁定**：① **STT 语义 v1 锁 observe**——语音输入人话语义一律进 `observe_environment` 组，**严禁直通 USER_MESSAGE**（Volition Gate 边界保持，语言不越权为直接指令）；② **`VALID_SOURCES` additive 扩展已获 Owner 批准**——MS-0 标记的唯一 Frozen Contract 触点闭环：additive 加 `audio_input` / `camera_capture` 两 source（主大脑 + Owner 两级批准，化工单级决策已授权）；③ **工具层三处 additive 扩展清单**——`_OBSERVE_KEYWORDS` 补 audio/voice/stt/camera 关键词、`EXPLICIT_GROUP_MAP` 对应组映射、对应能力定义（三处均 MS-0 缺口，标记待 MS-2 实作工单）；④ **自研薄 MCP 封装**——`audio-stream-mcp` / `camera-mcp` 自研薄封装（挂 `register_mcp_server` 唯一入口，Auto-Approved 权限）；⑤ **ASR 锁定 faster-whisper small 本地离线**（选型已定：本地离线、无云端付费；SenseVoice / 云端 STT 不采用）。**0 frozen contract 改动（本次 docs only 0 code）**；MS-1 为 `docs/MULTIMODAL-PERCEPTION-CONTRACT.md` 单文件设计交付，实作全部移交 MS-2 CANDIDATE 工单。注：`tests/test_soul_md_loader.py` 未被本次触碰。 | DSH | MS-1 |
 | 2026-09 (MS-2) | Multimodal Perception 实作（commit `1d1b9af`）。**6 files changed, 1088 insertions(+), 2 deletions(-)**：`src/soul/tool_registry.py`（M，工具层三处 additive——`_OBSERVE_KEYWORDS` 补 audio/voice/stt/camera 关键词 + `EXPLICIT_GROUP_MAP` 对应组映射 + audio_input/camera_capture 能力定义）、`src/world/perception.py`（M，`VALID_SOURCES` additive 扩展 `audio_input`/`camera_capture`——MS-0 唯一 Frozen Contract 触点，主大脑 + Owner 已批准）、`src/soul/actuator.py`（M，感知边界逻辑）、`scripts/audio_stream_mcp.py`（NEW，语音流薄 MCP server）、`scripts/camera_mcp.py`（NEW，相机帧薄 MCP server）、`tests/test_ms2_multimodal_perception.py`（NEW）。**DoD 实证**：多模态输入经 MCP 工具 → `observe_environment` 组 → Volition Gate 审核后回流感知，**Ambient Observation 不直通 USER_MESSAGE**（感知边界不变量保持）。**28 新测试全过 + 314 回归全过（342 total）**；0 frozen contract 改动（VALID_SOURCES 为 additive 扩展，Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 写入逻辑均未触碰）。多模态感知模块 MS-0（审计）→ MS-1（设计）→ MS-2（实作）三段全部落地。注：`tests/test_soul_md_loader.py` 未被本次触碰（保持未提交）。 | DSH | MS-2 |
+| 2026-09 (SI-2 harness) | 多体共存 Harness 验证 Closed（commit `973971d`）。3 files changed: `tests/harness/test_social_diffusion_harness.py`（NEW）、`tests/harness/social_harness_fixtures.py`（NEW）、`tests/test_social_middleware.py`（改，旧渲染区断言对齐）。**4 剧本 + 三大防线刚性断言实证**：**Identity Firewall 0 内化**（外部他者事件 0 内化为自身记忆）/ **Privacy Gate 0 泄漏**（1:1 私聊 0 泄漏）/ **Ambient Path 0 自激**（0 自激广播风暴）。**11 测试全过**（middleware 9 + harness 11 = 20 tests 全绿）。顺手修 `test_social_middleware` 旧渲染区断言（`[社交感知]` → `[客廳現況]`，对齐 SI-3 Phase 2 聚合器紧凑渲染）。**0 frozen contract 改动**（只新增 harness 测试 + 修测试断言，0 production 改动）。 | DSH | SI-2 harness |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
