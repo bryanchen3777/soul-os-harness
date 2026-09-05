@@ -447,7 +447,7 @@ class TestThrottleAndRotation:
         # 已被追踪（幂等）→ 轮到 fact 前仍无创建; 验证轮序状态持久化
         state_file = tmp / "memory" / AGENT / "goal_provider.json"
         state = json.loads(state_file.read_text(encoding="utf-8"))
-        assert state["seed_source_cursor"] == 5  # index 0 + 5 探测 = 5
+        assert state["seed_source_cursor"] == 6  # index 0 + 6 探测 = 6（SG-2: 9 源含 B5 relation）
         assert state["last_seed_axis"] == AXIS_SELF
         assert state["seed_axis_streak"] == 1
         assert state["last_seed_scan_at"] > 0

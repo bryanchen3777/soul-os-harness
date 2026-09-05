@@ -286,14 +286,28 @@ class GoalMotiveProvider:
             goal = axis_goals[0]
 
             # 5) 产候选（Motive 5 字段冻结; provenance_ref 命名空间 goal:{id}）
-            from src.soul.motive import TARGET_BRYAN, Motive, new_motive_id
-            motive = Motive(
-                motive_id=new_motive_id(),
-                content=goal.title,
-                target=TARGET_BRYAN,
-                provenance_ref=f"{GOAL_PROVENANCE_PREFIX}{goal.goal_id}",
-                created_at=now.isoformat(),
+            # D2 (SG-1 §5.1): 出口统一 fail-closed 校验 — target 不在值域 →
+            # InvalidMotiveTargetError → 该候选不产生 (0 静默放行)
+            from src.soul.motive import (
+                InvalidMotiveTargetError,
+                TARGET_BRYAN,
+                make_motive,
+                new_motive_id,
             )
+            try:
+                motive = make_motive(
+                    motive_id=new_motive_id(),
+                    content=goal.title,
+                    target=TARGET_BRYAN,
+                    provenance_ref=f"{GOAL_PROVENANCE_PREFIX}{goal.goal_id}",
+                    created_at=now.isoformat(),
+                )
+            except InvalidMotiveTargetError as e:
+                logger.warning(
+                    f"[Goal] 候选因 target 非法被拒绝 (fail-closed): "
+                    f"agent={self.agent_id} err={e}"
+                )
+                return None
             # 汇入 pending 池（与普通 motive 同池; resolve_pending 取最新语义 0 变更）
             self._trace_store.append_motive(motive, self.agent_id)
 

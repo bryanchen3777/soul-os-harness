@@ -245,6 +245,9 @@ class GoalProviderState:
     seed_axis_streak: int = 0
     last_seed_axis: Optional[str] = None
     seed_empty_rounds: int = 0
+    # ── SG-2 关系演化沉淀节流（additive, D3 契约 SG-1 §4.2; 对齐
+    #    last_seed_scan_at 同构: 24h 窗复用 GOAL_QUOTA_WINDOW_SECONDS）──
+    last_relation_update_at: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -257,6 +260,7 @@ class GoalProviderState:
             "seed_axis_streak": self.seed_axis_streak,
             "last_seed_axis": self.last_seed_axis,
             "seed_empty_rounds": self.seed_empty_rounds,
+            "last_relation_update_at": self.last_relation_update_at,
         }
 
     @classmethod
@@ -284,6 +288,7 @@ class GoalProviderState:
                 ) else None
             ),
             seed_empty_rounds=int(d.get("seed_empty_rounds", 0) or 0),
+            last_relation_update_at=float(d.get("last_relation_update_at", 0.0) or 0.0),
         )
 
 

@@ -93,7 +93,20 @@ def _new_relationship_entry(
     last_interaction_at: Optional[str] = None,
     last_updated: Optional[str] = None,
 ) -> Dict:
-    """建立一個新的 relationship entry。"""
+    """建立一個新的 relationship entry。
+
+    SG-2 (schema 4.2, 契约 SG-1 §2.2): additive 8 字段:
+      - objective (客观观察分区): reply_exchanges / co_presence_sessions /
+        dream_exchanges / last_signal_at — 全部整数计数, 仅沉淀层写入
+      - impression_tags (主观投射): 质性印象标签, 0 数值权重
+      - relational_band (主观投射): stranger|known|familiar|close 离散带
+      - band_updated_at / last_relation_update_ref (幂等引用键)
+
+    4.1 旧字段 (impression/feeling/confidence/interaction_count/
+    last_interaction_at/last_updated/created_at) 全部保留读取;
+    confidence 降级为只读遗留字段 (D4: 关系状态唯一真值 = band + impression_tags,
+    新写入面 0 confidence 运算)。
+    """
     now = _now_iso()
     return {
         "impression": impression,
@@ -103,6 +116,17 @@ def _new_relationship_entry(
         "last_interaction_at": last_interaction_at,
         "last_updated": last_updated or now,
         "created_at": now,
+        # ── SG-2 additive (schema 4.2) ─────────────────────
+        "objective": {
+            "reply_exchanges": 0,
+            "co_presence_sessions": 0,
+            "dream_exchanges": 0,
+            "last_signal_at": None,
+        },
+        "impression_tags": [],
+        "relational_band": "stranger",
+        "band_updated_at": None,
+        "last_relation_update_ref": None,
     }
 
 
@@ -110,7 +134,7 @@ def _new_relationships_file(agent_id: str) -> Dict:
     """建立一個新的 relationships 檔案結構。"""
     return {
         "agent_id": agent_id,
-        "schema_version": "4.1",
+        "schema_version": "4.2",
         "created_at": _now_iso(),
         "last_decay_at": _now_iso(),
         "others": {},
@@ -311,6 +335,7 @@ class RelationshipsStore:
         other_id: str,
         impression_text: str,
         max_length: int = 20,
+        impression_tags: Optional[List[str]] = None,
     ) -> Dict:
         """
         Stage 4.3: LLM 抽到的 impression 寫進 relationships (短日文片語, 預設 ≤20 字).
@@ -319,6 +344,8 @@ class RelationshipsStore:
         - 長度 cap 避免 LLM 吐長句
         - 失敗 / 空字串 → 留空不寫 (「拒絕問, 強制讀」, 失敗不假資料)
         - impression 欄位是 4.1 schema 預留的, 4.3 第一次填
+        - SG-2 (schema 4.2): 可選 impression_tags (List[str], 质性印象标签,
+          additive 参数, 缺省不寫 → 0 破坏既有调用方)
         """
         with self._lock:
             self._decay_locked()
@@ -330,6 +357,16 @@ class RelationshipsStore:
             if len(text) > max_length:
                 text = text[:max_length].rstrip() + "…"
             entry["impression"] = text
+            if impression_tags is not None:
+                if not isinstance(impression_tags, list):
+                    logger.warning(
+                        f"[RelationshipsStore] impression_tags 非 list, 忽略: "
+                        f"{type(impression_tags).__name__}"
+                    )
+                else:
+                    entry["impression_tags"] = [
+                        str(t).strip() for t in impression_tags if str(t).strip()
+                    ]
             entry["last_updated"] = _now_iso()
             self._flush_locked()
             logger.debug(
@@ -371,6 +408,109 @@ class RelationshipsStore:
                 f"[RelationshipsStore] {self.agent_id} touch {other_id} "
                 f"delta={confidence_delta:+.2f} conf={entry['confidence']:.2f} "
                 f"count={entry['interaction_count']}"
+            )
+            return entry
+
+    # ── SG-2 关系演化沉淀写入口（schema 4.2, 唯一写路径）────────────
+
+    def apply_relation_evaluation(
+        self,
+        other_id: str,
+        reply_exchanges_delta: int = 0,
+        co_presence_sessions_delta: int = 0,
+        dream_exchanges_delta: int = 0,
+        ref: Optional[str] = None,
+        now_iso: Optional[str] = None,
+    ) -> Dict:
+        """SG-2 沉淀层评估写入口: objective 整数计数增量 + 带状态机步进。
+
+        契约约束 (SG-1 §2.2/§3/§4.2):
+          - objective.* 仅沉淀层 24h 评估窗口写入（采集层 0 写）
+          - 全整数计数（0 加权公式, 0 浮点）
+          - band 由 src/social/relational_bands 纯函数判定（离散阶梯, 至多升 1 级/评估）
+          - 幂等: ref (last_relation_update_ref = rel:<other_id>:<ts>) 重复 → 0 变更
+          - 0 confidence 写入（D4: 关系域唯一真值 = band + impression_tags;
+            本方法 0 处 confidence 运算, 只走 4.2 字段面）
+          - 0 SAGE / 0 InnerLifeWriter / 0 SubmissionGate（写路径物理隔离）
+
+        Args:
+            other_id: 对方 entity（agent_id 或 BRYAN_ENTITY_ID）
+            reply_exchanges_delta / co_presence_sessions_delta / dream_exchanges_delta:
+                本 24h 窗口确定性聚合出的整数增量（≥0）
+            ref: 幂等引用键 `rel:<other_id>:<ts>`（契约 §2.2）; None → 不写幂等键
+            now_iso: 评估时刻（ISO 8601 UTC）; None → 当前时刻
+
+        Returns:
+            写入后的 entry（含 band 判定结果; 幂等命中时返回原 entry）
+        """
+        from src.social.relational_bands import (
+            demote_band,
+            evaluate_band,
+            should_demote,
+        )
+        now_iso = now_iso or _now_iso()
+        try:
+            now_dt = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            now_dt = datetime.now(timezone.utc)
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=timezone.utc)
+        deltas = {
+            "reply_exchanges": int(reply_exchanges_delta),
+            "co_presence_sessions": int(co_presence_sessions_delta),
+            "dream_exchanges": int(dream_exchanges_delta),
+        }
+        for k, v in deltas.items():
+            if v < 0:
+                logger.warning(
+                    f"[RelationshipsStore] 负增量拒绝 (fail-closed): {k}={v} "
+                    f"other={other_id}"
+                )
+                deltas[k] = 0
+        with self._lock:
+            self._decay_locked()
+            entry = self.ensure_relationship(other_id)
+            # 幂等去重（契约 §4.2.4: 同一信号窗口不重复写）
+            if ref and entry.get("last_relation_update_ref") == ref:
+                return entry
+            obj = entry.setdefault("objective", {})
+            for k, v in deltas.items():
+                obj[k] = int(obj.get(k, 0)) + v
+            has_signal = any(v > 0 for v in deltas.values())
+            if has_signal:
+                obj["last_signal_at"] = now_iso
+            # 带状态机步进（离散阶梯, 0 浮动）:
+            # - 有信号 → 只升带（evaluate_band, 累计计数, 每评估至多升 1 级）
+            # - 无信号 → 先查 30 天降带（stale → 降 1 带, 本轮不再升）;
+            #   不降带则慢爬评估（计数满足更高门槛时顺带升带, 幂等）
+            demoted = False
+            if not has_signal and should_demote(
+                obj.get("last_signal_at"),
+                now_dt,
+                fallback_ts=entry.get("last_interaction_at"),
+            ):
+                new_band = demote_band(entry.get("relational_band", "stranger"))
+                if new_band != entry.get("relational_band", "stranger"):
+                    entry["relational_band"] = new_band
+                    entry["band_updated_at"] = now_iso
+                    demoted = True
+            if not demoted:
+                new_band = evaluate_band(
+                    entry.get("relational_band", "stranger"),
+                    reply_exchanges=obj.get("reply_exchanges", 0),
+                    co_presence_sessions=obj.get("co_presence_sessions", 0),
+                    dream_exchanges=obj.get("dream_exchanges", 0),
+                )
+                if new_band != entry.get("relational_band", "stranger"):
+                    entry["relational_band"] = new_band
+                    entry["band_updated_at"] = now_iso
+            if ref:
+                entry["last_relation_update_ref"] = ref
+            entry["last_updated"] = now_iso
+            self._flush_locked()
+            logger.debug(
+                f"[RelationshipsStore] SG-2 关系演化沉淀: {self.agent_id}→{other_id} "
+                f"deltas={deltas} ref={ref} band={entry['relational_band']}"
             )
             return entry
 

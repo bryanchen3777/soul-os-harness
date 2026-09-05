@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -75,6 +76,88 @@ MOTIVE_TYPES = ("observe", "reflect", "transmit")
 
 # target 常量 (v1 固定指向 Bry)
 TARGET_BRYAN = "bryan"
+
+# ───────────────────────────────────────────────────────────
+# D2 (Owner 拍板, SG-1 §5.1): Motive.target 值域解冻 + 出口 Validator
+#   - 值域: {"bryan"} ∪ AGENT_IDS, 其中 AGENT_IDS = canonical agent 注册表
+#     (scheduler.register 先例, scheduler.py:541-552; run_server 全链路注入)
+#   - 生成出口 fail-closed: target 不在值域 → make_motive 抛 InvalidMotiveTargetError
+#     (调用方 catch → motive 不产生 / 不进入 Decision; 0 静默放行)
+#   - Motive 其余 5 字段与结构冻结不动; 0 新投递通道 (契约 §5.3: 复用既有公开频道)
+# ───────────────────────────────────────────────────────────
+
+# process-global agent 注册表 (对齐 set_llm_proxy pattern, 0 依赖 scheduler 实例)
+_AGENT_IDS: set = set()
+_AGENT_IDS_LOCK = threading.Lock()
+
+
+def register_agent_id(agent_id: str) -> None:
+    """注册一个 canonical agent_id 到 target 值域 (scheduler.register 同步注入)。"""
+    with _AGENT_IDS_LOCK:
+        _AGENT_IDS.add(agent_id)
+
+
+def set_agent_ids(agent_ids: List[str]) -> None:
+    """整体覆写 agent 注册表 (测试隔离 / 一次性注入)。"""
+    with _AGENT_IDS_LOCK:
+        _AGENT_IDS.clear()
+        for a in agent_ids:
+            if isinstance(a, str) and a:
+                _AGENT_IDS.add(a)
+
+
+def get_agent_ids() -> frozenset:
+    """当前 target 值域里的 agent id 集合 (只读快照)。"""
+    with _AGENT_IDS_LOCK:
+        return frozenset(_AGENT_IDS)
+
+
+def validate_motive_target(target: str) -> bool:
+    """D2 值域校验: target ∈ {"bryan"} ∪ AGENT_IDS。
+
+    Returns:
+        True 合法; False 非法 (fail-closed 拒绝该 motive)
+    """
+    if not isinstance(target, str):
+        return False
+    if target == TARGET_BRYAN:
+        return True
+    with _AGENT_IDS_LOCK:
+        return target in _AGENT_IDS
+
+
+class InvalidMotiveTargetError(ValueError):
+    """D2(SG-1 §5.1): target 不在 {"bryan"} ∪ AGENT_IDS → fail-closed 拒绝。"""
+
+    def __init__(self, target: Any) -> None:
+        self.target = target
+        super().__init__(
+            f"非法 motive target: {target!r} (允许: bryan + 已注册 agent_ids)"
+        )
+
+
+def make_motive(
+    *,
+    motive_id: str,
+    content: str,
+    target: str,
+    provenance_ref: str,
+    created_at: str,
+) -> Motive:
+    """Motive 生成出口统一工厂 (fail-closed 校验, D2)。
+
+    target 不在值域 → 抛 InvalidMotiveTargetError (调用方 catch → 丢弃该 motive,
+    0 静默放行)。Motive 5 字段与结构冻结不动。
+    """
+    if not validate_motive_target(target):
+        raise InvalidMotiveTargetError(target)
+    return Motive(
+        motive_id=motive_id,
+        content=content,
+        target=target,
+        provenance_ref=provenance_ref,
+        created_at=created_at,
+    )
 
 # trigger_type → diary jsonl slot 映射 (provenance 解析用)
 _TRIGGER_TO_SLOT = {
@@ -167,7 +250,9 @@ def motive_from_social_opportunity(
         created_at = created_dt.isoformat()
     except (TypeError, ValueError, OSError):
         created_at = now_utc_iso()
-    return Motive(
+    # D2 (SG-1 §5.1): 出口统一 fail-closed 校验 (target=TARGET_BRYAN 恒合法;
+    # 未来 agent-target 扩展若注册表缺失 → 抛 InvalidMotiveTargetError, 0 静默放行)
+    return make_motive(
         motive_id=f"mot_{uuid.uuid4().hex[:12]}",
         content=content,
         target=TARGET_BRYAN,
@@ -617,13 +702,22 @@ class MotiveEngine:
                     f"[Motive] interpretation: 无念头 event={event_id} agent={agent_id}"
                 )
                 continue
-            motive = Motive(
-                motive_id=new_motive_id(),
-                content=parsed["content"],
-                target=TARGET_BRYAN,
-                provenance_ref=event_id,
-                created_at=now_utc_iso(),
-            )
+            try:
+                # D2 (SG-1 §5.1): 出口 fail-closed 校验 — target 不在值域 →
+                # InvalidMotiveTargetError → 该 motive 不产生 (0 静默放行)
+                motive = make_motive(
+                    motive_id=new_motive_id(),
+                    content=parsed["content"],
+                    target=TARGET_BRYAN,
+                    provenance_ref=event_id,
+                    created_at=now_utc_iso(),
+                )
+            except InvalidMotiveTargetError as e:
+                logger.warning(
+                    f"[Motive] motive 因 target 非法被拒绝 (fail-closed): "
+                    f"agent={agent_id} err={e}"
+                )
+                continue
             self._store.append_motive(
                 motive, agent_id, motive_type=parsed.get("motive_type")
             )

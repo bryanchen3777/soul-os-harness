@@ -549,6 +549,16 @@ class SoulScheduler:
         """
         if agent_id not in self._all_agents:
             self._all_agents.append(agent_id)
+        # SG-2 (D2, SG-1 §5.1): canonical agent 注册表同步注入 Motive target 值域
+        # （AGENT_IDS = {"bryan"} ∪ 注册过的 agent_id; run_server 全链路自动填充）
+        try:
+            from src.soul.motive import register_agent_id
+            register_agent_id(agent_id)
+        except Exception as e:
+            logger.warning(
+                f"[Scheduler] motive register_agent_id 失败 (fail-closed 不影响注册): "
+                f"{type(e).__name__}: {e}"
+            )
         logger.info(f"[Scheduler] 註冊 {agent_id} (morning + night)")
 
     def register_dream_event(
@@ -1514,6 +1524,12 @@ class SoulScheduler:
                 # 30s wake 只是检查时机, 内部 24h 节流（GOAL_QUOTA_WINDOW_SECONDS）
                 # 保证实际生成 ≤1 次/24h/agent; fail-closed 不阻断主循环。
                 await GoalSeedProvider.for_agent(agent_id).scan_seeds()
+                # SG-2 (2026-09-06, C-3): 关系演化沉淀 — 并列分支, 0 新定时器。
+                # 30s wake 只是检查时机, 内部 24h 节流（GOAL_QUOTA_WINDOW_SECONDS,
+                # sidecar last_relation_update_at）保证实际评估 ≤1 次/24h/agent;
+                # fail-closed 不阻断主循环。
+                from src.social.relation_settlement import settle_relations
+                settle_relations(agent_id)
         except Exception as e:
             logger.warning(
                 f"[Goal] 主循环扫描异常 (fail-closed): {type(e).__name__}: {e}"

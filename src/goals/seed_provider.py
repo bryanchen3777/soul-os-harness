@@ -53,12 +53,15 @@ logger = logging.getLogger("soul_os.goals.seed_provider")
 # 种子轮序与轴约束（LS-1 §2.3/§2.4, D4 锁死, No Scoring）
 # ───────────────────────────────────────────────────────────
 
-# 固定 8 源确定性轮序（B1→B2→B3→B4→S1→S2→S3→S4 循环; 0 权重 0 打分）
+# 固定 9 源确定性轮序（B1→B2→B3→B4→B5→S1→S2→S3→S4 循环; 0 权重 0 打分）
+# SG-2 (D5): 第 9 源 B5 relation — 他者源（relationships.json 4.2 的
+# band + impression_tags 读侧; 契约 SG-1 §9.3.3 additive 扩张, 轴属既有 AXIS_BRYAN）
 SEED_ROTATION: List[Dict[str, str]] = [
     {"key": "commitment",   "axis": AXIS_BRYAN},
     {"key": "calendar",     "axis": AXIS_BRYAN},
     {"key": "trace",        "axis": AXIS_BRYAN},
     {"key": "interaction",  "axis": AXIS_BRYAN},
+    {"key": "relation",     "axis": AXIS_BRYAN},
     {"key": "elevation",    "axis": AXIS_SELF},
     {"key": "fact",         "axis": AXIS_SELF},
     {"key": "tool",         "axis": AXIS_SELF},
@@ -77,6 +80,7 @@ _CRITERIA_TEMPLATES: Dict[str, Dict[str, Any]] = {
     "calendar":     {"kind": "interaction", "count": 1, "timeout_days": 1},
     "trace":        {"kind": "interaction", "count": 1, "timeout_days": 7},
     "interaction":  {"kind": "interaction", "count": 2, "timeout_days": 14},
+    "relation":     {"kind": "interaction", "count": 2, "timeout_days": 14},
     "elevation":    {"kind": "observation", "count": 2, "timeout_days": 14},
     "fact":         {"kind": "observation", "count": 2, "timeout_days": 14},
     "tool":         {"kind": "observation", "count": 1, "timeout_days": 14},
@@ -421,6 +425,48 @@ class GoalSeedProvider:
                 key="interaction",
                 axis=AXIS_BRYAN,
                 ref=f"interaction:{ts}",
+                material=material,
+            )
+        return None
+
+    def _probe_relation(self, now: datetime) -> Optional[SeedHit]:
+        """B5 他者源 (SG-2 D5): relationships.json 4.2 band + impression_tags 读侧。
+
+        规则 (契约 SG-1 §2.4 / §9.3.3):
+          - 遍历 others, 跳过 user_bryan（B1 commitment 已覆盖 Bry 维度）
+          - 只有 band ≥ known 或 impression_tags 非空才产种子; stranger 不出
+          - 确定性选取: others dict 插入序最早命中（对照其他探针「append 序最早」精神,
+            0 排序打分, 0 数值权重）
+          - ref = relation:<other_id>（精确幂等键, 每个 other 至多 1 个关系种子）
+          - material 只含质性质地 + 客观整数计数（No-Scoring）
+        """
+        from src.soul.relationships import (
+            BRYAN_ENTITY_ID,
+            get_relationships_manager,
+        )
+        entries = get_relationships_manager().get_store(self.agent_id).get_all()
+        for other_id, entry in entries.items():  # dict 插入序 = 时间最早优先
+            if other_id == BRYAN_ENTITY_ID:
+                continue  # B1 已管 Bry 维度, B5 只做他者 (A2A)
+            band = entry.get("relational_band", "stranger")
+            tags = entry.get("impression_tags") or []
+            if band == "stranger" and not tags:
+                continue  # stranger 不出种子
+            obj = entry.get("objective") or {}
+            material = (
+                f"与 {other_id} 的一段关系: band={band} "
+                f"impression_tags={tags or '(无)'} "
+                f"impression={entry.get('impression') or '(空)'} "
+                f"reply_exchanges={obj.get('reply_exchanges', 0)} "
+                f"co_presence_sessions={obj.get('co_presence_sessions', 0)} "
+                f"dream_exchanges={obj.get('dream_exchanges', 0)} "
+                f"last_signal_at={obj.get('last_signal_at') or '(从未)'} "
+                f"interaction_count={entry.get('interaction_count', 0)}"
+            )
+            return SeedHit(
+                key="relation",
+                axis=AXIS_BRYAN,
+                ref=f"relation:{other_id}",
                 material=material,
             )
         return None
