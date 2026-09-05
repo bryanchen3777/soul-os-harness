@@ -12,7 +12,9 @@ Motive.target 指向他者灵魂」端到端生命链路, 四大剧本硬断言�
      Motive.target == "agent_akane" (make_motive 合法); stranger 0 种子;
      非法 target fail-closed; Decision 四元透传 (真实 parse, stub LLM)。
   3. 剧本 3 现象学自然冷却: 30 天整不降、31 天降 1 级 (familiar→known→
-     stranger 方向), 不跌穿 stranger, band_updated_at 更新。
+     stranger 方向), 不跌穿 stranger, band_updated_at 更新; SG-2.1:
+     底带 stranger 无信号不慢爬回升 (继续 30 天无信号保持 stranger),
+     新窗口 reply 信号 → 正常恢复 known (门槛照旧)。
   4. 剧本 4 三大防线 + No-Scoring 刚性复核: AST 审计 SG-2 模块 0 直通
      publish / 0 定时器 / 0 float 权重; Direct Query (sqlite3 只读) 断言
      SAGE facts 0 关系域写入、自体情景记忆 0 他者事件; 候选 ≤1。
@@ -184,14 +186,24 @@ class TestScenario3NaturalCooling:
         assert recs[1].band_updated_at == recs[1].sim_ts
         # 62 天 → known→stranger
         assert recs[2].band_after == "stranger"
-        # 93 天 → 底带不跌穿 (不再执行降带, demoted==0)
+        # 93 天 → 底带不跌穿 (不再执行降带, demoted==0) 且无信号不慢爬回升
+        # (SG-2.1 修复: 原来会因累计计数非零被补升回 known 的确定性振荡)
+        assert recs[3].band_after == "stranger"
         assert recs[3].settle_demoted == 0
-        # 契约歧义如实记录 (TL-9 呈报主大脑): 无信号不降带时慢爬评估会把
-        # 底带 stranger 补升回 known (落地语义, 非新降带, 确定性可复现)
-        assert d.checks["slow_climb_rebound_documented"] is True
-        # 计数冻结 (0 增量)
-        assert recs[-1].reply_exchanges == 5
-        assert recs[-1].co_presence_sessions == 6
+        assert d.checks["no_slow_climb_rebound"] is True
+        # 123 天 → 降带后继续无信号 30 天, 仍保持 stranger (不再回升)
+        assert recs[4].band_after == "stranger"
+        assert recs[4].settle_demoted == 0
+        assert d.checks["stranger_held_no_rebound"] is True
+        # 计数冻结 (0 增量; 历史计数保留不清零)
+        assert recs[4].reply_exchanges == 5
+        assert recs[4].co_presence_sessions == 6
+        # 124 天 → 窗口出现新 reply 信号 → 正常升级路径升回 known (门槛照旧)
+        assert recs[5].band_before == "stranger"
+        assert recs[5].band_after == "known"
+        assert recs[5].settle_updated >= 1
+        assert recs[5].reply_exchanges == 6  # 计数累计 (不清零)
+        assert d.checks["new_signal_recovers_known"] is True
 
 
 # ───────────────────────────────────────────────────────────

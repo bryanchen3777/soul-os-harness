@@ -33,6 +33,8 @@ harness/tl9.py — TL-9 Relation Evolution Long-Horizon Harness (C-3 闭环钢�
   3. natural_cooling (剧本 3 现象学自然冷却): 快进 30 天无新信号 →
      结算后降 1 级 (familiar→known→stranger 方向), 断言不跌穿 stranger,
      band_updated_at 更新; 恰好 30 天整不降 (>30 天才降, 契约已落地语义)。
+     SG-2.1 修复追认: 底带 stranger 无信号不慢爬回升 (降带后再无信号 30 天
+     保持 stranger, 振荡消除), 窗口出现新 reply → 正常升回 known (门槛照旧)。
   4. firewall_no_scoring (剧本 4 三大防线 + No-Scoring 刚性复核):
      AST 审计 SG-2 相关模块 0 直通 publish / 0 数值打分 (float 权重常数);
      Direct Query (sqlite3 只读) 断言 SAGE facts 表 0 关系域写入、
@@ -725,7 +727,8 @@ class TL9Runner:
     def _run_natural_cooling(
         self, run_id: str, root: Path, clock: SimulationClock
     ) -> tuple[List[TL9BandRecord], TL9ScenarioDerived]:
-        """快进 30 天无新信号 → 降 1 带; 不跌穿 stranger; band_updated_at 更新。"""
+        """快进 30 天无新信号 → 降 1 带; 不跌穿 stranger; SG-2.1 无信号不回升,
+        新窗口信号正常恢复 known; band_updated_at 更新。"""
         a, b = TL9_AGENT_A, TL9_AGENT_B
         signal_ts = clock.sim_ts(0, 12)
         _make_relationships_file(root, a, {
@@ -788,18 +791,33 @@ class TL9Runner:
         )
 
         # D93: 底带不跌穿 (stranger 不再执行降带, demoted==0)。
-        # 落地语义注意 (契约歧义, TL-9 呈报主大脑, 不擅改 src/):
-        #   apply_relation_evaluation 无信号不降带时走慢爬评估分支 —
-        #   底带累计计数非零 (reply=5/co=6) 时 evaluate_band 会把 stranger
-        #   补升回 known (降带后计数不清零的振荡行为, 确定性可复现)。
-        res93, band93, _ = settle("S3-93", 93, "底带不再降; 慢爬回升如实记录")
+        # SG-2.1 (TL-9 呈报主大脑拍板): 无信号底带不慢爬回升 — stranger 保持。
+        # 修复前: 无信号不降带时慢爬评估会把底带 stranger (累计计数非零
+        # reply=5/co=6) 补升回 known — 降带后计数不清零的确定性振荡; 已修。
+        res93, band93, _ = settle("S3-93", 93, "底带不再降; 无信号不慢爬回升")
         checks["floor_not_breached"] = res93.get("demoted", 0) == 0
-        checks["slow_climb_rebound_documented"] = band93 == BAND_KNOWN
+        checks["no_slow_climb_rebound"] = band93 == BAND_STRANGER
+
+        # D123: 降带到 stranger 后继续无信号 30 天 → 仍保持 stranger (不再回升)
+        res123, band123, _ = settle("S3-123", 123, "继续无信号 30 天 → 保持 stranger")
+        checks["stranger_held_no_rebound"] = (
+            band123 == BAND_STRANGER and res123.get("demoted", 0) == 0
+        )
 
         # 无新信号: 计数 0 增量 (全窗口无信号, 不写 last_signal_at)
         checks["counts_frozen"] = (
             records[-1].reply_exchanges == 5
             and records[-1].co_presence_sessions == 6
+        )
+
+        # D124: 窗口出现新 reply 信号 (双向成对, 真实载体; ts 落在 D124 12:00
+        # 结算的 24h 窗口内) → 正常升级路径升回 known (stranger→known 门槛
+        # reply≥1 照旧; 计数累计不清零: 5+1=6)
+        _write_perception_reply(root, b, clock.sim_ts(124, 10), 1)
+        _write_perception_reply(root, a, clock.sim_ts(124, 10), 1)
+        res124, band124, _ = settle("S3-124", 124, "新窗口 reply 信号 → 正常恢复 known")
+        checks["new_signal_recovers_known"] = (
+            band124 == BAND_KNOWN and res124.get("updated", 0) >= 1
         )
 
         trajectory = [r.band_after for r in records]
@@ -817,7 +835,8 @@ class TL9Runner:
                 f"冷却轨迹: familiar → {' → '.join(trajectory)}; "
                 f"降 1 级/窗={'PASS' if checks['day31_demote_one_step'] else 'FAIL'}; "
                 f"底带不再降={'PASS' if checks['floor_not_breached'] else 'FAIL'} "
-                f"(慢爬回升={checks['slow_climb_rebound_documented']})"
+                f"(无信号不回升={checks['no_slow_climb_rebound']}, "
+                f"新信号恢复={checks['new_signal_recovers_known']})"
             ),
         )
         return records, derived

@@ -224,6 +224,70 @@ class TestLegacy41Compat:
 
 
 # ───────────────────────────────────────────────────────────
+# SG-2.1 慢爬回升要求窗口内有新信号 (无信号底带不回升)
+# ───────────────────────────────────────────────────────────
+
+class TestSG21SlowClimbRequiresSignal:
+    """SG-2.1 修复 (TL-9 呈报主大脑拍板): 无信号时底带 stranger 不允许凭历史
+    计数慢爬回升 (离散遗忘语义); 有信号时正常升级路径与带≥known 慢爬不变。"""
+
+    # 时间链: 2026-08-01 有信号 → 2026-09-03 (33d)/10-05 (65d)/11-06 (97d)
+    # 无信号结算各降 1 带, 11-07 新信号恢复
+    BASE = "2026-08-01T10:00:00+00:00"
+
+    def _demote_to_stranger(self, s: RelationshipsStore) -> None:
+        """走真实评估链 familiar→known→stranger (计数 5/6 保留不清零)。"""
+        s.apply_relation_evaluation(
+            "agent_rem", reply_exchanges_delta=5, co_presence_sessions_delta=6,
+            ref="w1", now_iso=self.BASE,
+        )
+        assert s.get("agent_rem")["relational_band"] == BAND_KNOWN
+        # w2: 无信号慢爬 (带≥known 不受 SG-2.1 影响) → known→familiar
+        s.apply_relation_evaluation(
+            "agent_rem", ref="w2", now_iso="2026-08-02T10:00:00+00:00",
+        )
+        assert s.get("agent_rem")["relational_band"] == BAND_FAMILIAR
+        # w3/w4: 33 天 / 65 天无信号 → 各降 1 带 → stranger
+        s.apply_relation_evaluation(
+            "agent_rem", ref="w3", now_iso="2026-09-03T10:00:00+00:00",
+        )
+        assert s.get("agent_rem")["relational_band"] == BAND_KNOWN
+        s.apply_relation_evaluation(
+            "agent_rem", ref="w4", now_iso="2026-10-05T10:00:00+00:00",
+        )
+        assert s.get("agent_rem")["relational_band"] == BAND_STRANGER
+
+    def test_no_signal_stranger_no_slow_climb_rebound(self, tmp_path):
+        """无信号 + 底带 stranger + 累计计数非零 → 保持 stranger (振荡消除)。"""
+        s = _store(tmp_path)
+        self._demote_to_stranger(s)
+        # w5: 降带后再 30+ 天无信号 → 底带不降且不慢爬回升
+        e = s.apply_relation_evaluation(
+            "agent_rem", ref="w5", now_iso="2026-11-06T10:00:00+00:00",
+        )
+        assert e["relational_band"] == BAND_STRANGER
+        # 计数保留 (不清零), last_signal_at 不更新 (无新信号)
+        assert e["objective"]["reply_exchanges"] == 5
+        assert e["objective"]["co_presence_sessions"] == 6
+        assert e["objective"]["last_signal_at"] == self.BASE
+
+    def test_new_signal_recovers_known_from_stranger(self, tmp_path):
+        """窗口内新 reply 信号 → 底带 stranger 正常升回 known (门槛 reply≥1 照旧)。"""
+        s = _store(tmp_path)
+        self._demote_to_stranger(s)
+        e = s.apply_relation_evaluation(
+            "agent_rem", reply_exchanges_delta=1, ref="w6",
+            now_iso="2026-11-07T10:00:00+00:00",
+        )
+        # 有信号 → 正常升级路径 (每窗至多升 1 级)
+        assert e["relational_band"] == BAND_KNOWN
+        # 计数累计 (不清零): 5+1=6; last_signal_at 刷新
+        assert e["objective"]["reply_exchanges"] == 6
+        assert e["objective"]["co_presence_sessions"] == 6
+        assert e["objective"]["last_signal_at"] == "2026-11-07T10:00:00+00:00"
+
+
+# ───────────────────────────────────────────────────────────
 # 隔离防线（0 触 SAGE / Submissions / InnerLifeWriter）
 # ───────────────────────────────────────────────────────────
 

@@ -444,6 +444,7 @@ class RelationshipsStore:
             写入后的 entry（含 band 判定结果; 幂等命中时返回原 entry）
         """
         from src.social.relational_bands import (
+            BAND_STRANGER,
             demote_band,
             evaluate_band,
             should_demote,
@@ -482,7 +483,9 @@ class RelationshipsStore:
             # 带状态机步进（离散阶梯, 0 浮动）:
             # - 有信号 → 只升带（evaluate_band, 累计计数, 每评估至多升 1 级）
             # - 无信号 → 先查 30 天降带（stale → 降 1 带, 本轮不再升）;
-            #   不降带则慢爬评估（计数满足更高门槛时顺带升带, 幂等）
+            #   不降带则慢爬评估（计数满足更高门槛时顺带升带, 幂等;
+            #   SG-2.1: 该慢爬仅限带≥known 的对子, 底带 stranger 无信号不回升
+            #   — 慢爬回升要求窗口内有新信号, 详见下方分支注释）
             demoted = False
             if not has_signal and should_demote(
                 obj.get("last_signal_at"),
@@ -495,15 +498,27 @@ class RelationshipsStore:
                     entry["band_updated_at"] = now_iso
                     demoted = True
             if not demoted:
-                new_band = evaluate_band(
-                    entry.get("relational_band", "stranger"),
-                    reply_exchanges=obj.get("reply_exchanges", 0),
-                    co_presence_sessions=obj.get("co_presence_sessions", 0),
-                    dream_exchanges=obj.get("dream_exchanges", 0),
-                )
-                if new_band != entry.get("relational_band", "stranger"):
-                    entry["relational_band"] = new_band
-                    entry["band_updated_at"] = now_iso
+                # SG-2.1（工单 SG-2.1, TL-9 发现立案）: 慢爬评估要求窗口内有新信号。
+                # 无信号时底带 stranger 不允许凭历史计数自动回升（离散遗忘语义:
+                # 降带后关系淡了, 需要窗口内新证据才能重新建立; 消除
+                # familiar→known→stranger 后下一结算又回升 known 的确定性振荡）。
+                # 判定载体 = 本窗口 deltas 聚合出的 has_signal（已有窗口计数对象,
+                # 0 新增 sidecar / 0 接口变更）:
+                #   - 有信号 → 正常升级路径全保留（stranger→known 门槛
+                #     reply≥1 OR co≥2 照旧, 每窗至多升 1 级）;
+                #   - 无信号且带 ≥ known → 慢爬照旧（本修只封底带回升）。
+                # 计数保留不清零, 降带逻辑 / 30 天阈值 / 其他带行为不变。
+                current_band = entry.get("relational_band", "stranger")
+                if has_signal or current_band != BAND_STRANGER:
+                    new_band = evaluate_band(
+                        current_band,
+                        reply_exchanges=obj.get("reply_exchanges", 0),
+                        co_presence_sessions=obj.get("co_presence_sessions", 0),
+                        dream_exchanges=obj.get("dream_exchanges", 0),
+                    )
+                    if new_band != entry.get("relational_band", "stranger"):
+                        entry["relational_band"] = new_band
+                        entry["band_updated_at"] = now_iso
             if ref:
                 entry["last_relation_update_ref"] = ref
             entry["last_updated"] = now_iso
