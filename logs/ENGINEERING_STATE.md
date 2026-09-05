@@ -241,7 +241,13 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 
 | 条目 | 状态 | 要点 | 相关 commit |
 |------|------|------|-------------|
-| **TG-1（Goal Engine Contract）** | ✅ CLOSED（docs only 0 code）→ **TG-2 NEXT**（实作阶段） | `docs/TG-1-GOAL-ENGINE-CONTRACT.md`（NEW，459 行）。**10 项决策全锁定**：① **graph.sqlite v8 `goals` 表**（Schema v8 迁移）；② **ACTIVE-IN_PROGRESS-SUSPENDED-COMPLETED-ABANDONED 状态机**；③ **方案 B GoalMotiveProvider**（独立 Goal 动机提供器，复用 SM-3 motive proxy 注入先例）；④ **结构配额轮替 No Scoring**（结构配额轮替驱动，不做数值评分）；⑤ **SM-4 动作面 1 心跳 1 步**（严格 Volition Gate 相容，0 自主递归）；⑥ **双轴种子源**（Bryan 羁绊 + 自由生长）；⑦ **中断信号 6 类**；⑧ **沉淀通道**；⑨ **心跳接线**；⑩ **0 frozen 破坏**。**TG-1 CLOSED、TG-2 NEXT**（下一阶段 = 实作）。**0 frozen contract 改动（docs only 0 code）**。 | `058e060`（docs: goal engine contract (TG-1)） |
+| **TG-1（Goal Engine Contract）** | ✅ CLOSED（docs only 0 code）→ **TG-2 CLOSED**（实作完成，见下） | `docs/TG-1-GOAL-ENGINE-CONTRACT.md`（NEW，459 行）。**10 项决策全锁定**：① **graph.sqlite v8 `goals` 表**（Schema v8 迁移）；② **ACTIVE-IN_PROGRESS-SUSPENDED-COMPLETED-ABANDONED 状态机**；③ **方案 B GoalMotiveProvider**（独立 Goal 动机提供器，复用 SM-3 motive proxy 注入先例）；④ **结构配额轮替 No Scoring**（结构配额轮替驱动，不做数值评分）；⑤ **SM-4 动作面 1 心跳 1 步**（严格 Volition Gate 相容，0 自主递归）；⑥ **双轴种子源**（Bryan 羁绊 + 自由生长）；⑦ **中断信号 6 类**；⑧ **沉淀通道**；⑨ **心跳接线**；⑩ **0 frozen 破坏**。**TG-1 CLOSED、TG-2 CLOSED**（实作完成，见下）。**0 frozen contract 改动（docs only 0 code）**。 | `058e060`（docs: goal engine contract (TG-1)） |
+
+### TG-2（Goal Engine 实作：目标引擎落地）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **TG-2（Goal Engine 实作）** | ✅ CLOSED → **TG-3 NEXT**（目标驱动行为 Harness 验收） | **8 files changed, 2013 insertions(+), 5 deletions(-)**。`src/memory/sage/graph_store.py`（Schema v8 幂等迁移 + `goals` 表 + upsert_goal/get_goals/transition_goal）+ `src/goals/`（NEW：models.py / motive_provider.py / `__init__.py`）+ `src/soul/scheduler.py`（_decision_check 内扩 + goal scan）+ `tests/goals/test_goal_engine.py`（NEW，35 笔）+ 2 处版本快照断言更新（test_temporal_memory_mr2 / test_m5_4_5_2_memory_inner_life_integration）。**关键交付**：① **Schema v8 `goals` 表幂等迁移**（graph.sqlite 落点，re-run 安全）；② **GoalMotiveProvider Plan B 零侵入**（注入层叠加，0 改动既有 motive 链）；③ **结构配额轮替 No Scoring**（不做数值评分）；④ **状态机 ACTIVE-IN_PROGRESS-SUSPENDED + COMPLETED-ABANDONED**（三态+两终态）；⑤ **_decision_check 接线 0 新定时器**（既有心跳内扩，Volition Gate 1HB1S 相容）。**35 新测试全过 + 回归通过**；**0 frozen contract 改动**（Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 写入逻辑 / Motive 5 字段 / DECISION-PROMPT 全未触碰）。**TG-2 CLOSED、TG-3 NEXT**（目标驱动行为 Harness 验收）。 | `26da28d`（feat: goal engine (schema v8 + goal provider + scheduler wiring) (TG-2)） |
 
 ### North Star v2（canonical 引用）
 
@@ -271,8 +277,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `058e060` (docs: goal engine contract (TG-1))
-- TG-1 commit: `058e060` (docs: goal engine contract (TG-1); **Current HEAD**)
+- Current HEAD: `26da28d` (feat: goal engine (schema v8 + goal provider + scheduler wiring) (TG-2))
+- TG-2 commit: `26da28d` (feat: goal engine (schema v8 + goal provider + scheduler wiring) (TG-2); **Current HEAD**)
+- TG-1 commit: `058e060` (docs: goal engine contract (TG-1); **distinct from Current HEAD**)
 - TG-0 commit: `136cb95` (docs: goal engine architecture audit (TG-0); **distinct from Current HEAD**)
 - MS-3 contract commit: `a61beff` (docs: voice interaction contract (MS-3); **distinct from Current HEAD**)
 - MS-3 implementation commit: `e308365` (feat: voice interaction input (MS-3); **distinct from Current HEAD**)
@@ -1393,5 +1400,6 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09 (MS-3.1 实作) | **语音互动「实体设备闭环」**（commit `bc7bbda`）。**3 files changed, 885 insertions(+)**：`src/voice/audio_service.py`（+116，process_audio_stream ASR 注入式 + MS-3 路由判定）、`scripts/audio_stream_mcp.py`（+448，voice_session_start/feed/stop 三工具）、`tests/tools/test_voice_session_mcp.py`（NEW，20 笔）。**设备层音频采集与 MCP 会话工具对接**：① voice_session_start/feed/stop 三工具**纯 additive**；② VoiceSessionRegistry **30s 硬超时 janitor**；③ **VAD 静音状态机**；④ process_audio_stream **ASR 注入式** + MS-3 三路分流路由判定。**20 新测试 + 71 回归全过**；**0 frozen contract 改动**（只改 audio_service.py + audio_stream_mcp.py + 测试，0 破坏既有契约）。 | DSH | MS-3.1 |
 | 2026-09 (TG-0) | Goal Engine 架构审计（commit `136cb95`）。**docs only 0 code**。1 file changed: `docs/TG-0-GOAL-ENGINE-AUDIT.md`（NEW，261 行）。**关键结论**：① **volition 链已闭环**（motive → Decision 四元 → transmit/observe/reflect/do_nothing → Actuator 派发单次调用）；② **Motive 源 4 模块盘点**（motive.py / decision.py / scheduler.py proactive_dm / run_server.py motive proxy 注入）；③ **注入层推荐方案 B GoalMotiveProvider**（复用 motive proxy 独立注入先例）；④ **Goal Ledger 落点 graph.sqlite v8 `goals` 表**（SAGE SQLite schema 演进路径）；⑤ **状态机 = 三态+两终态+SUSPENDED**；⑥ **Volition Gate 相容 1HB1S**（单次行动原则，0 自主递归）；⑦ **双轴种子源 Bryan / 自我 各 4 源**（「Bryan 羁绊 + 自由生长」双轴）；⑧ **10 项 TG-1 决策清单**（待 C-1 阶段工单逐项拍板）。0 frozen contract 改动（docs only 0 code）。 | DSH | TG-0 |
 | 2026-09 (TG-1) | Goal Engine Contract 设计（commit `058e060`）。**docs only 0 code**。1 file changed: `docs/TG-1-GOAL-ENGINE-CONTRACT.md`（NEW，459 行）。**10 项决策全锁定**：① **graph.sqlite v8 `goals` 表**（Schema v8 迁移）；② **ACTIVE-IN_PROGRESS-SUSPENDED-COMPLETED-ABANDONED 状态机**；③ **方案 B GoalMotiveProvider**（独立 Goal 动机提供器）；④ **结构配额轮替 No Scoring**；⑤ **SM-4 动作面 1 心跳 1 步**（Volition Gate 相容）；⑥ **双轴种子源**（Bryan 羁绊 + 自由生长）；⑦ **中断信号 6 类**；⑧ **沉淀通道**；⑨ **心跳接线**；⑩ **0 frozen 破坏**。**TG-1 CLOSED、TG-2 NEXT**。0 frozen contract 改动（docs only 0 code）。 | DSH | TG-1 |
+| 2026-09 (TG-2) | Goal Engine 实作（commit `26da28d`）。**8 files changed, 2013 insertions(+), 5 deletions(-)**：`src/memory/sage/graph_store.py`（Schema v8 `goals` 表幂等迁移 + upsert_goal/get_goals/transition_goal）、`src/goals/`（NEW：models.py / motive_provider.py / `__init__.py`）、`src/soul/scheduler.py`（_decision_check 内扩 + goal scan，0 新定时器）、`tests/goals/test_goal_engine.py`（NEW，35 笔）+ 2 处版本快照断言更新（test_temporal_memory_mr2 / test_m5_4_5_2）。**关键交付**：Schema v8 幂等迁移、GoalMotiveProvider Plan B 零侵入、结构配额轮替 No Scoring、状态机 ACTIVE-IN_PROGRESS-SUSPENDED + COMPLETED-ABANDONED、_decision_check 接线 0 新定时器。**35 新测试全过 + 回归通过**；**0 frozen contract 改动**。**TG-2 CLOSED、TG-3 NEXT**（目标驱动行为 Harness 验收）。 | DSH | TG-2 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
