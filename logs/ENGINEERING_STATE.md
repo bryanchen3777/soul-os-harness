@@ -249,6 +249,24 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 |------|------|------|-------------|
 | **TG-2（Goal Engine 实作）** | ✅ CLOSED → **TG-3 NEXT**（目标驱动行为 Harness 验收） | **8 files changed, 2013 insertions(+), 5 deletions(-)**。`src/memory/sage/graph_store.py`（Schema v8 幂等迁移 + `goals` 表 + upsert_goal/get_goals/transition_goal）+ `src/goals/`（NEW：models.py / motive_provider.py / `__init__.py`）+ `src/soul/scheduler.py`（_decision_check 内扩 + goal scan）+ `tests/goals/test_goal_engine.py`（NEW，35 笔）+ 2 处版本快照断言更新（test_temporal_memory_mr2 / test_m5_4_5_2_memory_inner_life_integration）。**关键交付**：① **Schema v8 `goals` 表幂等迁移**（graph.sqlite 落点，re-run 安全）；② **GoalMotiveProvider Plan B 零侵入**（注入层叠加，0 改动既有 motive 链）；③ **结构配额轮替 No Scoring**（不做数值评分）；④ **状态机 ACTIVE-IN_PROGRESS-SUSPENDED + COMPLETED-ABANDONED**（三态+两终态）；⑤ **_decision_check 接线 0 新定时器**（既有心跳内扩，Volition Gate 1HB1S 相容）。**35 新测试全过 + 回归通过**；**0 frozen contract 改动**（Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 写入逻辑 / Motive 5 字段 / DECISION-PROMPT 全未触碰）。**TG-2 CLOSED、TG-3 NEXT**（目标驱动行为 Harness 验收）。 | `26da28d`（feat: goal engine (schema v8 + goal provider + scheduler wiring) (TG-2)） |
 
+### TG-3（Goal Engine 验收：目标驱动行为 Harness 通关）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **TG-3（Goal Engine 验收）** | ✅ CLOSED → **TG-3.1 修复确认**（生产缺陷 2 项，见下） | `tests/harness/test_goal_driven_harness.py`（NEW）。**四大剧本 6 tests 全过**：① 跨心跳长程推进（数轮心跳逐步逼近目标）；② 突发中断与唤醒（SUSPENDED 冻结 → 条件恢复 → 续跑）；③ 双轴配额轮替防饥饿（Bryan / 自我 双轴结构配额轮替，No Scoring 无数值评分）；④ 终态记忆沉淀（COMPLETED 沉淀 InnerLifeEvent + Trace 落库）。**52 回归全过**；**No-Scoring 三层铁证**（结构配额轮替驱动 / 0 scoring 字段 / 0 数值比较断言）；**0 直写 facts**（目标沉淀只走 InnerLifeEvent 通道，不直写 SAGE facts）。**0 frozen contract 改动**（新增 harness 测试 + fixture，0 production mutation）。 | `3adaf57`（feat: goal-driven behavior harness acceptance (TG-3)） |
+
+### TG-3.1（生产缺陷修复：UTC 沉淀对齐 + SUSPENDED 陈旧候选守卫）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **TG-3.1（生产缺陷修复）** | ✅ CLOSED | `src/goals/motive_provider.py`（2 缺陷）：① **sediment_completion 事件 ts UTC 对齐**——`ts=now.astimezone(timezone.utc).isoformat()`，无论调用方传本地 aware now 还是缺省（生产 scheduler 调 on_decision 不传 now），一律转 UTC，杜绝非 UTC 时区下 validate_ts 拒绝 → 事件被 fail-closed 静默丢弃（InnerLifeEvent 契约 TS_PATTERN: +00:00\|Z）；② **on_decision SUSPENDED 拦截守卫**——中断窗口残留的 pending 候选不得对已挂起目标误推进（advance_count +1 / 误判完成），挂起中直接忽略，状态不变、计数不推，唤醒后重新入轮替。+ `tests/goals/test_goal_engine.py`（TestTG31ProductionDefectFixes 2 笔：跨时区 UTC-4 沉淀断言 + SUSPENDED 守卫断言）。**43 passed**（tests/goals 37 笔 + harness 6 笔）。**0 frozen contract 改动**（只改 motive_provider.py + 测试）。 | `d55253f`（fix: sediment UTC + suspended stale-candidate guard (TG-3.1)） |
+
+### C-1（自主目标与意向引擎主线：正式 CLOSED）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **C-1（自主目标与意向引擎主线）** | ✅ **正式 CLOSED**（五阶全通关） | **TG-0 审计 → TG-1 设计 → TG-2 实作 → TG-3 验收 → TG-3.1 修复** 全链闭环：审计（volition 链盘点 + Goal Ledger 落点评估，docs only）→ 契约（10 项决策锁定，docs only）→ 实作（Schema v8 goals 表 + GoalMotiveProvider Plan B 零侵入 + _decision_check 接线 0 新定时器，35 tests）→ 验收（4 剧本 6 tests + 52 回归，No-Scoring 三层铁证，0 直写 facts）→ 生产缺陷修复（UTC 沉淀对齐 + SUSPENDED 陈旧候选守卫，43 passed）。**累计 5 commits**（`136cb95` → `058e060` → `26da28d` → `3adaf57` → `d55253f`）；**0 frozen contract 改动全程保持**。 | `136cb95` + `058e060` + `26da28d` + `3adaf57` + `d55253f` |
+
 ### North Star v2（canonical 引用）
 
 **Canonical 完整版**：Notion 页面「🧭 Soul OS Strategic Roadmap & Evolution」的「North Star v2」段（2026-08-29，Bryan 亲述）。七点愿景简述：
@@ -277,8 +295,10 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `26da28d` (feat: goal engine (schema v8 + goal provider + scheduler wiring) (TG-2))
-- TG-2 commit: `26da28d` (feat: goal engine (schema v8 + goal provider + scheduler wiring) (TG-2); **Current HEAD**)
+- Current HEAD: `d55253f` (fix: sediment UTC + suspended stale-candidate guard (TG-3.1))
+- TG-3.1 fix commit: `d55253f` (fix: sediment UTC + suspended stale-candidate guard (TG-3.1); **Current HEAD**)
+- TG-3 commit: `3adaf57` (feat: goal-driven behavior harness acceptance (TG-3); **distinct from Current HEAD**)
+- TG-2 commit: `26da28d` (feat: goal engine (schema v8 + goal provider + scheduler wiring) (TG-2); **distinct from Current HEAD**)
 - TG-1 commit: `058e060` (docs: goal engine contract (TG-1); **distinct from Current HEAD**)
 - TG-0 commit: `136cb95` (docs: goal engine architecture audit (TG-0); **distinct from Current HEAD**)
 - MS-3 contract commit: `a61beff` (docs: voice interaction contract (MS-3); **distinct from Current HEAD**)
@@ -1401,5 +1421,8 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09 (TG-0) | Goal Engine 架构审计（commit `136cb95`）。**docs only 0 code**。1 file changed: `docs/TG-0-GOAL-ENGINE-AUDIT.md`（NEW，261 行）。**关键结论**：① **volition 链已闭环**（motive → Decision 四元 → transmit/observe/reflect/do_nothing → Actuator 派发单次调用）；② **Motive 源 4 模块盘点**（motive.py / decision.py / scheduler.py proactive_dm / run_server.py motive proxy 注入）；③ **注入层推荐方案 B GoalMotiveProvider**（复用 motive proxy 独立注入先例）；④ **Goal Ledger 落点 graph.sqlite v8 `goals` 表**（SAGE SQLite schema 演进路径）；⑤ **状态机 = 三态+两终态+SUSPENDED**；⑥ **Volition Gate 相容 1HB1S**（单次行动原则，0 自主递归）；⑦ **双轴种子源 Bryan / 自我 各 4 源**（「Bryan 羁绊 + 自由生长」双轴）；⑧ **10 项 TG-1 决策清单**（待 C-1 阶段工单逐项拍板）。0 frozen contract 改动（docs only 0 code）。 | DSH | TG-0 |
 | 2026-09 (TG-1) | Goal Engine Contract 设计（commit `058e060`）。**docs only 0 code**。1 file changed: `docs/TG-1-GOAL-ENGINE-CONTRACT.md`（NEW，459 行）。**10 项决策全锁定**：① **graph.sqlite v8 `goals` 表**（Schema v8 迁移）；② **ACTIVE-IN_PROGRESS-SUSPENDED-COMPLETED-ABANDONED 状态机**；③ **方案 B GoalMotiveProvider**（独立 Goal 动机提供器）；④ **结构配额轮替 No Scoring**；⑤ **SM-4 动作面 1 心跳 1 步**（Volition Gate 相容）；⑥ **双轴种子源**（Bryan 羁绊 + 自由生长）；⑦ **中断信号 6 类**；⑧ **沉淀通道**；⑨ **心跳接线**；⑩ **0 frozen 破坏**。**TG-1 CLOSED、TG-2 NEXT**。0 frozen contract 改动（docs only 0 code）。 | DSH | TG-1 |
 | 2026-09 (TG-2) | Goal Engine 实作（commit `26da28d`）。**8 files changed, 2013 insertions(+), 5 deletions(-)**：`src/memory/sage/graph_store.py`（Schema v8 `goals` 表幂等迁移 + upsert_goal/get_goals/transition_goal）、`src/goals/`（NEW：models.py / motive_provider.py / `__init__.py`）、`src/soul/scheduler.py`（_decision_check 内扩 + goal scan，0 新定时器）、`tests/goals/test_goal_engine.py`（NEW，35 笔）+ 2 处版本快照断言更新（test_temporal_memory_mr2 / test_m5_4_5_2）。**关键交付**：Schema v8 幂等迁移、GoalMotiveProvider Plan B 零侵入、结构配额轮替 No Scoring、状态机 ACTIVE-IN_PROGRESS-SUSPENDED + COMPLETED-ABANDONED、_decision_check 接线 0 新定时器。**35 新测试全过 + 回归通过**；**0 frozen contract 改动**。**TG-2 CLOSED、TG-3 NEXT**（目标驱动行为 Harness 验收）。 | DSH | TG-2 |
+| 2026-09 (TG-3) | Goal Engine 验收（commit `3adaf57`）。`tests/harness/test_goal_driven_harness.py`（NEW）。**四大剧本 6 tests 全过**：① 跨心跳长程推进；② 突发中断与唤醒（SUSPENDED 冻结 → 恢复 → 续跑）；③ 双轴配额轮替防饥饿（No Scoring）；④ 终态记忆沉淀（InnerLifeEvent + Trace）。**52 回归全过**；**No-Scoring 三层铁证**（结构配额轮替驱动 / 0 scoring 字段 / 0 数值比较断言）；**0 直写 facts**（沉淀只走 InnerLifeEvent 通道）。**0 frozen contract 改动**（新增 harness 测试 + fixture，0 production mutation）。**TG-3 CLOSED、TG-3.1 NEXT**（生产缺陷 2 项修复）。 | DSH | TG-3 |
+| 2026-09 (TG-3.1) | 生产缺陷修复（commit `d55253f`）。`src/goals/motive_provider.py` 2 缺陷：① **sediment_completion ts UTC 对齐**（`astimezone(timezone.utc).isoformat()`，杜绝非 UTC 时区下 validate_ts 拒绝 → fail-closed 静默丢弃）；② **on_decision SUSPENDED 拦截守卫**（中断窗口残留 pending 候选不得误推进已挂起目标，唤醒后重新入轮替）。+ `tests/goals/test_goal_engine.py`（TestTG31ProductionDefectFixes 2 笔：跨时区 UTC-4 沉淀断言 + SUSPENDED 守卫断言）。**43 passed**（tests/goals 37 + harness 6）。**0 frozen contract 改动**（只改 motive_provider.py + 测试）。 | DSH | TG-3.1 |
+| 2026-09 (C-1 CLOSED) | **C-1 自主目标与意向引擎主线：正式 CLOSED**。五阶全链 `136cb95`（TG-0 审计）→ `058e060`（TG-1 设计）→ `26da28d`（TG-2 实作）→ `3adaf57`（TG-3 验收）→ `d55253f`（TG-3.1 修复）。**全程 0 frozen contract 改动**。 | DSH | C-1 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
