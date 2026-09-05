@@ -508,7 +508,13 @@ class RelationshipsStore:
                 #     reply≥1 OR co≥2 照旧, 每窗至多升 1 级）;
                 #   - 无信号且带 ≥ known → 慢爬照旧（本修只封底带回升）。
                 # 计数保留不清零, 降带逻辑 / 30 天阈值 / 其他带行为不变。
-                current_band = entry.get("relational_band", "stranger")
+                # SG-2.2（4.1 兼容）: 老 4.1 entry 无 relational_band 键,
+                # 且无信号 stranger 对子跳过下方升级分支 → 一旦写盘, 末尾日志
+                # 直接索引会 KeyError。先 setdefault 兜底（语义 = get 默认值
+                # stranger, 与读取路径严格一致; 已有键时 no-op, 升级/降带/慢爬
+                # 分支逻辑 0 变更）。
+                entry.setdefault("relational_band", BAND_STRANGER)
+                current_band = entry["relational_band"]
                 if has_signal or current_band != BAND_STRANGER:
                     new_band = evaluate_band(
                         current_band,
@@ -525,7 +531,7 @@ class RelationshipsStore:
             self._flush_locked()
             logger.debug(
                 f"[RelationshipsStore] SG-2 关系演化沉淀: {self.agent_id}→{other_id} "
-                f"deltas={deltas} ref={ref} band={entry['relational_band']}"
+                f"deltas={deltas} ref={ref} band={entry.get('relational_band', BAND_STRANGER)}"
             )
             return entry
 

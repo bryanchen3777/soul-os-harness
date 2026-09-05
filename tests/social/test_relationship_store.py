@@ -288,6 +288,71 @@ class TestSG21SlowClimbRequiresSignal:
 
 
 # ───────────────────────────────────────────────────────────
+# SG-2.2 4.1 老数据 band 键兜底（无信号 stranger × 老 entry 组合缺口）
+# ───────────────────────────────────────────────────────────
+
+class TestSG22BandKeyCompat:
+    """SG-2.2 修复（生产实证: settle_relations 每 30s KeyError 'relational_band'）:
+    老 4.1 entry 无 relational_band 键 + 无信号 stranger 对子 → SG-2.1 跳过升级
+    分支后写盘, 末尾 debug 日志直接索引炸 KeyError。修复 = 写盘前 setdefault
+    'stranger'（语义 = get 默认值, 升级/降带/慢爬逻辑 0 变更）。本类覆盖
+    4.1 老数据 × SG-2.1 跳过路径组合缺口 + 升级路径不受影响回归。"""
+
+    NOW = "2026-09-06T10:00:00+00:00"
+
+    def test_41_entry_no_signal_stranger_no_keyerror_and_backfill(self, tmp_path):
+        """老 4.1 entry（无 relational_band 键）× 无信号 stranger 对子 → 不抛
+        KeyError、补全 band=="stranger"、sidecar 幂等 ref / last_updated 正常落盘。"""
+        _write_41_file(tmp_path)
+        s = _store(tmp_path)
+        entry = s.apply_relation_evaluation(
+            "agent_rem",
+            ref="rel:agent_rem:sg22-w1",
+            now_iso=self.NOW,
+        )
+        # 不抛 KeyError（隐式）; band 补全 stranger
+        assert entry["relational_band"] == BAND_STRANGER
+        # sidecar 正常推进（修复前: 无信号 stranger 跳过分支不写 band,
+        # objective/ref 落盘后 528 行日志直接索引炸 → 本行不达）
+        assert entry["last_relation_update_ref"] == "rel:agent_rem:sg22-w1"
+        assert entry["last_updated"] == self.NOW
+        # 0 信号 → 0 增量（计数不凭空增长）
+        assert entry["objective"]["reply_exchanges"] == 0
+        # 磁盘也补全（setdefault 后重写, 半成品自愈）
+        raw_entry = _raw(tmp_path)["others"]["agent_rem"]
+        assert raw_entry["relational_band"] == "stranger"
+        assert raw_entry["last_relation_update_ref"] == "rel:agent_rem:sg22-w1"
+        assert raw_entry["last_updated"] == self.NOW
+
+    def test_41_entry_no_signal_idempotent_ref_after_backfill(self, tmp_path):
+        """补全后同 ref 重复结算 0 变更（幂等 ref 正常, 不重复累加 / 不重写 band）。"""
+        _write_41_file(tmp_path)
+        s = _store(tmp_path)
+        s.apply_relation_evaluation("agent_rem", ref="rel:agent_rem:sg22-w2",
+                                    now_iso=self.NOW)
+        entry = s.apply_relation_evaluation("agent_rem", ref="rel:agent_rem:sg22-w2",
+                                            now_iso=self.NOW)
+        assert entry["relational_band"] == BAND_STRANGER
+        assert entry["objective"]["reply_exchanges"] == 0
+        raw_entry = _raw(tmp_path)["others"]["agent_rem"]
+        assert raw_entry["objective"]["reply_exchanges"] == 0
+
+    def test_41_entry_new_signal_upgrade_path_unchanged(self, tmp_path):
+        """有信号时正常升级路径不受 SG-2.2 影响: 老 4.1 entry 带 reply 信号 →
+        stranger→known 照旧（setdefault 兜底 no-op）。"""
+        _write_41_file(tmp_path)
+        s = _store(tmp_path)
+        entry = s.apply_relation_evaluation(
+            "agent_rem", reply_exchanges_delta=2,
+            ref="rel:agent_rem:sg22-w3", now_iso=self.NOW,
+        )
+        assert entry["relational_band"] == BAND_KNOWN
+        assert entry["band_updated_at"] == self.NOW
+        assert entry["objective"]["reply_exchanges"] == 2
+        assert entry["objective"]["last_signal_at"] == self.NOW
+
+
+# ───────────────────────────────────────────────────────────
 # 隔离防线（0 触 SAGE / Submissions / InnerLifeWriter）
 # ───────────────────────────────────────────────────────────
 

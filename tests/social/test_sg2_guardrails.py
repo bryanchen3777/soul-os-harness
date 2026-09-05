@@ -299,6 +299,95 @@ def _facts_count(tmp_path: Path) -> int:
         conn.close()
 
 
+# ───────────────────────────────────────────────────────────
+# SG-2.2: 4.1 老数据 × 无信号 stranger 组合缺口（settle 全链）
+# ───────────────────────────────────────────────────────────
+
+def _write_legacy_41_relationships(tmp_path: Path) -> None:
+    """写一份 schema 4.1 老格式 relationships.json（entry 无 relational_band /
+    objective / last_relation_update_ref 键, 对应生产半成品前身）。"""
+    path = tmp_path / "soul" / AGENT / "relationships.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "agent_id": AGENT,
+        "schema_version": "4.1",
+        "created_at": "2026-09-01T00:00:00+00:00",
+        "last_decay_at": "2026-09-01T00:00:00+00:00",
+        "others": {
+            "agent_rem": {
+                "impression": "静かな人",
+                "feeling": "neutral",
+                "confidence": 0.5,
+                "interaction_count": 2,
+                "last_interaction_at": "2026-09-05T10:00:00+00:00",
+                "last_updated": "2026-09-05T10:00:00+00:00",
+                "created_at": "2026-08-01T00:00:00+00:00",
+            }
+        },
+    }
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+class TestSG22SettleLegacy41Compat:
+    """SG-2.2 settle 全链回归：老 4.1 entry × 无信号 stranger 对子（窗口 0 信号
+    文件）→ settle_relations 完整跑完（0 KeyError）、entry 补全 band、sidecar
+    last_relation_update_at 推进（24h 节流恢复生效）、幂等 ref 落盘。"""
+
+    def test_settle_41_no_signal_no_keyerror_sidecar_advances(self, iso_env):
+        tmp = iso_env
+        now = datetime(2026, 9, 6, 10, tzinfo=timezone.utc)
+        _write_legacy_41_relationships(tmp)
+        # 窗口 0 信号: 不写 perception_trace / interactions → 无信号 stranger 对子
+        result = settle_relations(AGENT, now=now, base_dir=tmp)
+        # settle 完整跑完（修复前: apply 末尾日志 KeyError, _goal_scan_all
+        # fail-closed 中断, 本行不达）
+        assert result["skipped"] is None
+        assert result["updated"] == 0
+        assert result["demoted"] == 0
+        # 老 entry 补全 band + 幂等 ref 落盘（半成品自愈）
+        data = json.loads(
+            (tmp / "soul" / AGENT / "relationships.json").read_text(encoding="utf-8")
+        )
+        entry = data["others"]["agent_rem"]
+        assert entry["relational_band"] == "stranger"
+        assert entry["last_relation_update_ref"] == f"rel:agent_rem:{now.isoformat()}"
+        assert entry["last_updated"] == now.isoformat()
+        # sidecar last_relation_update_at 推进 → 24h 节流失效修复
+        from src.goals.motive_provider import GoalMotiveProvider
+        state = GoalMotiveProvider.for_agent(AGENT)._load_state()
+        assert abs(state.last_relation_update_at - now.timestamp()) < 2.0
+        # 节流生效（sidecar 推进的直接反面证据: 次轮跳过）
+        r2 = settle_relations(
+            AGENT, now=now + timedelta(hours=1), base_dir=tmp,
+        )
+        assert r2["skipped"] == "throttle"
+
+    def test_settle_41_signal_upgrade_path_unchanged(self, iso_env):
+        """有信号时升级路径不受影响（settle 层回归）: 老 4.1 entry + 窗口 reply
+        信号 → stranger→known 照旧（SG-2.1 语义保留）。"""
+        tmp = iso_env
+        now = datetime(2026, 9, 6, 10, tzinfo=timezone.utc)
+        _write_legacy_41_relationships(tmp)
+        _write_perception_trace(tmp, [{
+            "event_id": "ev1", "timestamp": "2026-09-06T09:00:00+00:00",
+            "event_type": "reply", "extra": {"event_kind": "social",
+                                             "actor_id": "agent_rem"},
+        }, {
+            "event_id": "ev2", "timestamp": "2026-09-06T09:05:00+00:00",
+            "event_type": "reply", "extra": {"event_kind": "social",
+                                             "actor_id": AGENT},
+        }])
+        result = settle_relations(AGENT, now=now, base_dir=tmp)
+        assert result["skipped"] is None
+        assert result["updated"] >= 1
+        data = json.loads(
+            (tmp / "soul" / AGENT / "relationships.json").read_text(encoding="utf-8")
+        )
+        entry = data["others"]["agent_rem"]
+        assert entry["relational_band"] == "known"  # reply≥1 → stranger→known 照旧
+        assert entry["objective"]["reply_exchanges"] == 1  # min(他 1, 我 1)
+
+
 class TestSettlementBehavior:
     def test_settle_updates_band_and_counts(self, iso_env):
         tmp = iso_env
