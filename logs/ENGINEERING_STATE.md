@@ -322,8 +322,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `ad39376` (test: fix stale agent registry assertion (len 3 → actual enabled agent count))
-- Agent registry test fix commit: `ad39376` (test: fix stale agent registry assertion (len 3 → actual enabled agent count); **Current HEAD**)
+- Current HEAD: `2a8c335` (docs: register agent registry test fix (ad39376))
+- Agent registry test fix register commit: `2a8c335` (docs: register agent registry test fix (ad39376); **Current HEAD**)
+- Agent registry test fix commit: `ad39376` (test: fix stale agent registry assertion (len 3 → actual enabled agent count); **distinct from Current HEAD**)
 - VC-1 register commit: `87edcc2` (docs: register VC-1 voice companion client (6532b96); **distinct from Current HEAD**)
 - VC-1 implementation commit: `6532b96` (feat: VC-1 akane voice companion client (clients/voice_companion/); **distinct from Current HEAD**)
 - C-2.1 register commit: `a9335df` (docs: register C-2.1 CLOSED (TL-11 acceptance, a4f974e); **Current HEAD**)
