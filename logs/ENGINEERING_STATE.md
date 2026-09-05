@@ -231,6 +231,12 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 |------|------|------|-------------|
 | **CA-3（Capability Affordance 定义扩展）** | ✅ 完成（19 tests 全过） | `src/soul/capability.py`（CAPABILITY_DEFINITIONS 扩展到 3 个：communicate / observe_environment / reflect_memory）+ `tests/test_capability_awareness.py`（3 处断言更新）。**措辞原则**：expression 陈述「可以」（can），不陈述「应」（should）——写「你可以…」不写「你应该…」，防止从「我能」滑成「我应」。**do_nothing 不进 Capability**（是 Decision 选项，不是 Capability）。**19 tests 全过（0.34s）**。0 frozen contract 改动（只改 capability.py + 测试，不改 Agency/TriggerEnvelope/InnerLifeEvent/4 handlers/SAGE）。 | `1f48108`（feat: expand capability definitions to observe and reflect (CA-3)） |
 
+### TG-0（Goal Engine 架构审计：volition 链盘点 + Goal Ledger 落点评估）
+
+| 条目 | 状态 | 要点 | 相关 commit |
+|------|------|------|-------------|
+| **TG-0（Goal Engine 架构审计）** | ✅ 完成（READ-ONLY，docs only 0 code） | `docs/TG-0-GOAL-ENGINE-AUDIT.md`（NEW，261 行）。**关键结论**：① **volition 链已闭环**——motive → Decision 四元（transmit/observe/reflect/do_nothing）→ Actuator 派发单次调用，目标引擎在既有 volition 链上叠加；② **Motive 源 4 模块盘点**——`src/soul/motive.py`（MotiveEngine）+ `src/soul/decision.py`（四元 Decision）+ `src/soul/scheduler.py`（proactive_dm 心跳 = 唯一 Motive 消费路径）+ `scripts/run_server.py`（SM-3 motive proxy 独立注入）；③ **注入层推荐方案 B GoalMotiveProvider**——复用 SM-3 motive proxy 独立注入先例，Goal 动机在注入层叠加；④ **Goal Ledger 落点 graph.sqlite v8 `goals` 表**——SAGE SQLite 既有 schema 演进路径；⑤ **状态机 = 三态+两终态+SUSPENDED**（注意与 SE-5 四态生命周期区分）；⑥ **Volition Gate 相容 1HB1S**——目标引擎严格依循单次行动原则，不引入自主递归；⑦ **双轴种子源 Bryan / 自我 各 4 源**——「Bryan 羁绊 + 自由生长」双轴锁定；⑧ **10 项 TG-1 决策清单**——待 C-1 阶段工单逐项拍板。**0 frozen contract 改动（docs only 0 code）**。 | `136cb95`（docs: goal engine architecture audit (TG-0)） |
+
 ### North Star v2（canonical 引用）
 
 **Canonical 完整版**：Notion 页面「🧭 Soul OS Strategic Roadmap & Evolution」的「North Star v2」段（2026-08-29，Bryan 亲述）。七点愿景简述：
@@ -259,10 +265,11 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `bc7bbda` (feat: device-level voice session MCP tools (MS-3.1))
+- Current HEAD: `136cb95` (docs: goal engine architecture audit (TG-0))
+- TG-0 commit: `136cb95` (docs: goal engine architecture audit (TG-0); **Current HEAD**)
 - MS-3 contract commit: `a61beff` (docs: voice interaction contract (MS-3); **distinct from Current HEAD**)
 - MS-3 implementation commit: `e308365` (feat: voice interaction input (MS-3); **distinct from Current HEAD**)
-- MS-3.1 implementation commit: `bc7bbda` (feat: device-level voice session MCP tools (MS-3.1); **Current HEAD**)
+- MS-3.1 implementation commit: `bc7bbda` (feat: device-level voice session MCP tools (MS-3.1); **distinct from Current HEAD**)
 - SI-2 harness commit: `973971d` (feat: multi-agent social diffusion harness validation (SI-2 harness); **distinct from Current HEAD**)
 - MS-2 commit: `1d1b9af` (feat: multimodal perception (audio/camera MCP) (MS-2); **distinct from Current HEAD**)
 - MS-1 commit: `172bca0` (docs: multimodal perception contract (MS-1); **distinct from Current HEAD**)
@@ -1377,5 +1384,6 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09 (MS-3) | Voice Interaction Contract 设计（commit `a61beff`）。**docs only 0 code**。1 file changed: `docs/MS-3-VOICE-INTERACTION-CONTRACT.md`（NEW，366 行）。**设计决策全锁定**：① **三路分流**——语音输入按语义分 `USER_MESSAGE` / `AMBIENT` / `DROP` 三路（严格区分直接指令 vs 环境观测 vs 丢弃）；② **本地启发式决策梯 + fail-ambient 兜底**——分流由本地启发式规则阶梯决定（不依赖云端/LLM 判定），无法判定时安全落 AMBIENT，不越权为指令；③ **唤醒门控 address_score 三信号源**——唤醒判定由三个信号源综合打分；④ **VAD 防抖 utterance 合并 + 3s 冷却 + TTS echo 抑制**——防碎片化、防重复触发、防 TTS 自反馈回声触发；⑤ **契约相容性无旁路注入**——不绕过 Volition Gate / USER_MESSAGE 边界。**§5.5 合规性已获 Owner 批准**；**0 frozen contract 改动（docs only 0 code）**。注：`tests/test_soul_md_loader.py` 未被本次触碰。 | DSH | MS-3 |
 | 2026-09 (MS-3 实作) | Voice Interaction 语音互动输入实作（commit `e308365`）。**5 files changed, 2157 insertions(+)**：`src/voice/__init__.py`（NEW）、`src/voice/gate.py`（NEW，三路分流决策 + address_score）、`src/voice/input_router.py`（NEW，USER_MESSAGE/AMBIENT/DROP 分流 + 白名单 + 速率防洪）、`src/voice/audio_service.py`（NEW，VAD 防抖 utterance 合并 + 会话窗口 + TTS echo 抑制）、`tests/test_ms3_voice_gate.py`（NEW）。**MS-3 契约 → 实作闭环**：① **三路分流** USER_MESSAGE/AMBIENT/DROP + **本地启发式决策梯 + fail-ambient 兜底**；② **唤醒门控** address_score 三信号源（name/wake/second_person）+ `VOICE_OWNER_IDS` 白名单；③ **VAD 防抖 utterance 合并 + 3s 冷却 + TTS echo 抑制 + 速率防洪**；④ **契约相容性无旁路注入**（USER_MESSAGE 仅经既有契约通道发布）。**71 新测试全过** + **无唤醒 100% 降级验证**；**0 frozen contract 改动**（只新增 src/voice/ + 测试，不改 gateway.py / router.py / consciousness.py / proxy.py）。注：`tests/test_soul_md_loader.py` 未被本次触碰（保持未提交）。 | DSH | MS-3 |
 | 2026-09 (MS-3.1 实作) | **语音互动「实体设备闭环」**（commit `bc7bbda`）。**3 files changed, 885 insertions(+)**：`src/voice/audio_service.py`（+116，process_audio_stream ASR 注入式 + MS-3 路由判定）、`scripts/audio_stream_mcp.py`（+448，voice_session_start/feed/stop 三工具）、`tests/tools/test_voice_session_mcp.py`（NEW，20 笔）。**设备层音频采集与 MCP 会话工具对接**：① voice_session_start/feed/stop 三工具**纯 additive**；② VoiceSessionRegistry **30s 硬超时 janitor**；③ **VAD 静音状态机**；④ process_audio_stream **ASR 注入式** + MS-3 三路分流路由判定。**20 新测试 + 71 回归全过**；**0 frozen contract 改动**（只改 audio_service.py + audio_stream_mcp.py + 测试，0 破坏既有契约）。 | DSH | MS-3.1 |
+| 2026-09 (TG-0) | Goal Engine 架构审计（commit `136cb95`）。**docs only 0 code**。1 file changed: `docs/TG-0-GOAL-ENGINE-AUDIT.md`（NEW，261 行）。**关键结论**：① **volition 链已闭环**（motive → Decision 四元 → transmit/observe/reflect/do_nothing → Actuator 派发单次调用）；② **Motive 源 4 模块盘点**（motive.py / decision.py / scheduler.py proactive_dm / run_server.py motive proxy 注入）；③ **注入层推荐方案 B GoalMotiveProvider**（复用 motive proxy 独立注入先例）；④ **Goal Ledger 落点 graph.sqlite v8 `goals` 表**（SAGE SQLite schema 演进路径）；⑤ **状态机 = 三态+两终态+SUSPENDED**；⑥ **Volition Gate 相容 1HB1S**（单次行动原则，0 自主递归）；⑦ **双轴种子源 Bryan / 自我 各 4 源**（「Bryan 羁绊 + 自由生长」双轴）；⑧ **10 项 TG-1 决策清单**（待 C-1 阶段工单逐项拍板）。0 frozen contract 改动（docs only 0 code）。 | DSH | TG-0 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
