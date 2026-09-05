@@ -70,12 +70,14 @@ class FishTTSStreamer:
         api_key: str = "",
         voice_id: str = "",
         endpoint: str = DEFAULT_ENDPOINT,
+        model: str = "",
         session=None,
         audio_device=None,
     ):
         self.api_key = api_key
         self.voice_id = voice_id
         self.endpoint = endpoint
+        self.model = model
         self._session = session
         self._audio = audio_device or SoundDeviceAudio()
 
@@ -93,6 +95,7 @@ class FishTTSStreamer:
             api_key=fa.get("api_key", ""),
             voice_id=fa.get("voice_id", ""),
             endpoint=fa.get("endpoint", DEFAULT_ENDPOINT),
+            model=fa.get("model", ""),
         )
 
     # ── HTTP 合成 ──
@@ -108,7 +111,12 @@ class FishTTSStreamer:
         """呼叫 Fish Audio TTS，回傳 mp3 bytes。取消旗標已設 → 直接放棄。"""
         if self._cancel_event.is_set():
             return b""
-        payload = {"text": clause_text, "reference_id": self.voice_id, "format": "mp3"}
+        payload = {
+            "text": clause_text,
+            "reference_id": self.voice_id,
+            "format": "mp3",
+            "model": self.model,
+        }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",

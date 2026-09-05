@@ -181,17 +181,22 @@ class TestAkaneVoiceBrain:
 # ─────────────────────────────────────────────────────────────
 
 class TestFishTTSStreamer:
-    def test_payload_contains_text_reference_and_bearer(self):
-        """Payload 正確包含 text、reference_id、format=mp3，Header 帶 Bearer Token"""
+    def test_payload_contains_text_reference_model_and_bearer(self):
+        """Payload 正確包含 text/reference_id/format/model，Header 帶 Bearer Token"""
         session = FakeSession()
-        streamer = FishTTSStreamer(api_key="fish-key-123", voice_id="akane-voice-9", session=session)
+        streamer = FishTTSStreamer(api_key="fish-key-123", voice_id="akane-voice-9", model="s2.1-pro-free", session=session)
         audio = streamer.synthesize("你好，Bryan。")
 
         assert audio == b"\x00\x03MP3FAKE"
         assert len(session.calls) == 1
         call = session.calls[0]
         assert call["url"] == VOICE_ENDPOINT
-        assert call["json"] == {"text": "你好，Bryan。", "reference_id": "akane-voice-9", "format": "mp3"}
+        assert call["json"] == {
+            "text": "你好，Bryan。",
+            "reference_id": "akane-voice-9",
+            "format": "mp3",
+            "model": "s2.1-pro-free",
+        }
         assert call["headers"]["Authorization"] == "Bearer fish-key-123"
         assert call["headers"]["Content-Type"] == "application/json"
 
@@ -331,29 +336,31 @@ class TestFullChainOffline:
 
 class TestEnvConfig:
     def test_env_overrides_beat_config_defaults(self, monkeypatch):
-        """os.environ 優先於 config.json：五個覆寫鍵全部生效"""
+        """os.environ 優先於 config.json：六個覆寫鍵全部生效"""
         cfg = {
-            "fish_audio": {"api_key": "", "voice_id": "4c11d21b14284d428074f76a1cf32298"},
+            "fish_audio": {"api_key": "", "voice_id": "4c11d21b14284d428074f76a1cf32298", "model": "s2.1-pro-free"},
             "llm": {"endpoint": "https://ollama.com/v1", "model": "deepseek-v4-flash:0731", "api_key": ""},
         }
         monkeypatch.setenv("FISH_API_KEY", "env-fish-key")
         monkeypatch.setenv("FISH_VOICE_ID", "env-voice-id")
+        monkeypatch.setenv("FISH_MODEL", "env-fish-model")
         monkeypatch.setenv("LLM_BASE_URL", "https://ollama.com/v1")
         monkeypatch.setenv("LLM_API_KEY", "env-llm-key")
         monkeypatch.setenv("LLM_MODEL", "env-model")
         resolved = apply_env_overrides(cfg)
         assert resolved["fish_audio"]["api_key"] == "env-fish-key"
         assert resolved["fish_audio"]["voice_id"] == "env-voice-id"
+        assert resolved["fish_audio"]["model"] == "env-fish-model"
         assert resolved["llm"]["endpoint"] == "https://ollama.com/v1"
         assert resolved["llm"]["api_key"] == "env-llm-key"
         assert resolved["llm"]["model"] == "env-model"
 
     def test_missing_env_keeps_config_defaults(self, monkeypatch):
         """環境變數缺席時 config.json 默認值原樣保留（含空 api_key 不被污染）"""
-        for env_name in ("FISH_API_KEY", "FISH_VOICE_ID", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"):
+        for env_name in ("FISH_API_KEY", "FISH_VOICE_ID", "FISH_MODEL", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"):
             monkeypatch.delenv(env_name, raising=False)
         cfg = {
-            "fish_audio": {"api_key": "", "voice_id": "4c11d21b14284d428074f76a1cf32298"},
+            "fish_audio": {"api_key": "", "voice_id": "4c11d21b14284d428074f76a1cf32298", "model": "s2.1-pro-free"},
             "llm": {"endpoint": "https://ollama.com/v1", "model": "deepseek-v4-flash:0731", "api_key": ""},
         }
         resolved = apply_env_overrides(cfg)
@@ -390,11 +397,12 @@ class TestEnvConfig:
         env_file = tmp_path / ".env"
         env_file.write_text("FISH_VOICE_ID=dotenv-voice\n", encoding="utf-8")
         cfg = {
-            "fish_audio": {"api_key": "", "voice_id": "config-default-voice"},
+            "fish_audio": {"api_key": "", "voice_id": "config-default-voice", "model": "s2.1-pro-free"},
             "llm": {"endpoint": "https://ollama.com/v1", "model": "deepseek-v4-flash:0731", "api_key": ""},
         }
         monkeypatch.setenv("FISH_API_KEY", "env-fish")
         resolved = resolve_config(cfg, env_file=str(env_file))
         assert resolved["fish_audio"]["api_key"] == "env-fish"        # env > .env
         assert resolved["fish_audio"]["voice_id"] == "dotenv-voice"   # .env > config 默認
+        assert resolved["fish_audio"]["model"] == "s2.1-pro-free"     # config 默認保留
         assert resolved["llm"]["model"] == "deepseek-v4-flash:0731"   # config 默認保留

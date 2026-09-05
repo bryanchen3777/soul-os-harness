@@ -27,6 +27,7 @@ ENV_FILE_NAME = ".env"
 ENV_OVERRIDE_MAP: list[tuple[str, str, str]] = [
     ("FISH_API_KEY", "fish_audio", "api_key"),
     ("FISH_VOICE_ID", "fish_audio", "voice_id"),
+    ("FISH_MODEL", "fish_audio", "model"),
     ("LLM_BASE_URL", "llm", "endpoint"),
     ("LLM_API_KEY", "llm", "api_key"),
     ("LLM_MODEL", "llm", "model"),
