@@ -325,8 +325,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `240f657` (feat(vc-1.1): fish audio official ASR (stt_service) + token-level ws-live feeding)
-- VC-1.1 ASR + token feeding commit: `240f657` (feat(vc-1.1): fish audio official ASR (stt_service) + token-level ws-live feeding; **Current HEAD**)
+- Current HEAD: `c8e2640` (docs: register VC-1.2 TTS-Live + VC-1.1 fish ASR (f742a7d + 240f657))
+- VC-1.2/VC-1.1 register commit: `c8e2640` (docs: register VC-1.2 TTS-Live + VC-1.1 fish ASR (f742a7d + 240f657); **Current HEAD**)
+- VC-1.1 ASR + token feeding commit: `240f657` (feat(vc-1.1): fish audio official ASR (stt_service) + token-level ws-live feeding; **distinct from Current HEAD**)
 - VC-1.2 TTS-Live commit: `f742a7d` (feat(vc-1.2): fish audio websocket tts-live streaming (pcm + barge-in); **distinct from Current HEAD**)
 - VC-1 wiring register commit: `d067094` (docs: register VC-1 runtime wiring (3f29e32 + 9fd19be + 262516c); **Current HEAD**)
 - VC-1 runtime wiring commit: `262516c` (feat(vc-1): fish tts payload model field (s2.1-pro-free); **distinct from Current HEAD**)
