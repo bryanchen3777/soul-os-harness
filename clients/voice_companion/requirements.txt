@@ -4,6 +4,8 @@ requests>=2.31.0
 numpy>=1.26.0
 sounddevice>=0.4.6
 miniaudio>=1.59
+msgpack>=1.0
+websocket-client>=1.7
 
 # 可選：本地/雲端 STT（依 config.json 的 stt.model_size 指定）
 # openai-whisper>=20231117

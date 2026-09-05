@@ -18,10 +18,12 @@ import os
 import sys
 from pathlib import Path
 
+import msgpack
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from clients.voice_companion.akane_live import VoiceCompanionApp
+from clients.voice_companion.akane_live import VoiceCompanionApp, create_tts_streamer
 from clients.voice_companion.akane_voice_brain import (
     AKANE_LAYER3_PERSONA,
     AKANE_VOICE_INVARIANTS,
@@ -32,6 +34,7 @@ from clients.voice_companion.akane_voice_brain import (
 from clients.voice_companion.asr_refiner import AsrRefiner, refine_speech_text
 from clients.voice_companion.env_config import apply_env_overrides, load_dotenv, resolve_config
 from clients.voice_companion.fish_tts_streamer import FishTTSStreamer
+from clients.voice_companion.fish_tts_live import FishTTSError, FishTTSLiveStreamer
 from clients.voice_companion.vad_listener import VADListener, VoiceActivityDetector
 
 VOICE_ENDPOINT = "https://api.fish.audio/v1/tts"
@@ -208,6 +211,185 @@ class TestFishTTSStreamer:
             assert False, "應拋出 FishTTSError"
         except Exception as exc:
             assert "500" in str(exc)
+
+
+# ─────────────────────────────────────────────────────────────
+# Test 3b：Fish Audio WebSocket TTS-Live（VC-1.2，全離線 Mock）
+# ─────────────────────────────────────────────────────────────
+
+class FakeLiveSocket:
+    """預錄 msgpack 訊息序列回放的偽 WebSocket：記錄 send / close。
+
+    recv() 依序回放 replies（msgpack 封裝）；after_recv 回呼可模擬
+    「接收循環中 interrupt 從另一執行緒觸發」；已關閉或回放完畢 → None（連線結束語意）。
+    """
+
+    def __init__(self, replies=None, after_recv=None):
+        self.replies = [msgpack.packb(r) for r in (replies or [])]
+        self.after_recv = after_recv
+        self.sent: list[bytes] = []
+        self.close_calls = 0
+        self.closed = False
+
+    def send(self, data: bytes):
+        self.sent.append(data)
+
+    def recv(self):
+        if self.after_recv is not None:
+            self.after_recv()
+        if self.closed or not self.replies:
+            return None
+        return self.replies.pop(0)
+
+    def close(self):
+        self.closed = True
+        self.close_calls += 1
+
+
+class FakeLivePlayer:
+    """偽音效卡（對應 sounddevice OutputStream 介面）：記錄 open/write/stop/close 呼叫。"""
+
+    def __init__(self):
+        self.written: list[bytes] = []
+        self.open_calls = 0
+        self.stop_calls = 0
+        self.close_calls = 0
+
+    def open(self):
+        self.open_calls += 1
+
+    def write(self, chunk: bytes):
+        self.written.append(chunk)
+
+    def stop(self):
+        self.stop_calls += 1
+
+    def close(self):
+        self.close_calls += 1
+
+
+class TestFishTTSLiveStreamer:
+    def test_start_payload_exact(self):
+        """start 訊息 payload 精確：event=start，request 含 reference_id/format=pcm/sample_rate/chunk_length/latency"""
+        sock = FakeLiveSocket([{"event": "finish", "reason": "stop"}])
+        streamer = FishTTSLiveStreamer(
+            api_key="fish-key-123", voice_id="akane-voice-9", model="s2.1-pro-free",
+            socket_factory=lambda: sock, audio_player=FakeLivePlayer(),
+        )
+        streamer.speak(["你好，Bryan。"])
+
+        assert len(sock.sent) == 4  # start / text / flush / stop
+        start_msg = msgpack.unpackb(sock.sent[0])
+        assert start_msg["event"] == "start"
+        req = start_msg["request"]
+        assert req["reference_id"] == "akane-voice-9"
+        assert req["format"] == "pcm"
+        assert req["sample_rate"] == 44100
+        assert req["chunk_length"] == 300
+        assert req["latency"] == "normal"
+        assert req["text"] == ""
+
+    def test_text_flush_stop_sequence(self):
+        """多個 text 依分句順序送出；flush 與 stop 次序正確"""
+        sock = FakeLiveSocket([{"event": "finish", "reason": "stop"}])
+        streamer = FishTTSLiveStreamer(api_key="k", voice_id="v", socket_factory=lambda: sock, audio_player=FakeLivePlayer())
+        streamer.speak(["第一句。", "第二句。", "第三句。"])
+
+        msgs = [msgpack.unpackb(s) for s in sock.sent]
+        assert [m["event"] for m in msgs] == ["start", "text", "text", "text", "flush", "stop"]
+        assert [m["text"] for m in msgs if m["event"] == "text"] == ["第一句。", "第二句。", "第三句。"]
+
+    def test_audio_chunks_played_in_order_then_finish(self):
+        """audio 分片依序餵給 player；finish(stop) 正常結束 session（連線關閉、無錯誤）"""
+        player = FakeLivePlayer()
+        sock = FakeLiveSocket([
+            {"event": "audio", "audio": b"\x01" * 200},
+            {"event": "audio", "audio": b"\x02" * 400},
+            {"event": "finish", "reason": "stop"},
+        ])
+        streamer = FishTTSLiveStreamer(api_key="k", voice_id="v", socket_factory=lambda: sock, audio_player=player)
+        streamer.speak(["測試"])
+
+        assert player.written == [b"\x01" * 200, b"\x02" * 400], "audio 分片必須依序邊收邊播"
+        assert sock.close_calls == 1, "finish(stop) 後 session 結束、連線關閉"
+        assert streamer.last_error is None
+
+    def test_finish_error_records_error_and_stops_playback(self):
+        """finish reason=error → 停止播放、關閉連線、記錄錯誤，不 crash、不重試"""
+        player = FakeLivePlayer()
+        sock = FakeLiveSocket([{"event": "finish", "reason": "error", "message": "boom"}])
+        streamer = FishTTSLiveStreamer(api_key="k", voice_id="v", socket_factory=lambda: sock, audio_player=player)
+        streamer.speak(["測試"])  # 不應拋出
+
+        assert isinstance(streamer.last_error, FishTTSError)
+        assert "error" in str(streamer.last_error)
+        assert player.stop_calls == 1, "finish error 必須停止播放"
+        assert sock.close_calls == 1, "finish error 後連線必須關閉"
+
+    def test_interrupt_during_session_closes_socket_and_stops_player(self):
+        """speak 接收循環中 interrupt（模擬 VAD barge-in）→ socket 立即關閉、player 停止、狀態重置"""
+        player = FakeLivePlayer()
+        streamer = FishTTSLiveStreamer(api_key="k", voice_id="v", socket_factory=lambda: sock, audio_player=player)
+        sock = FakeLiveSocket(
+            [{"event": "audio", "audio": b"\x7f" * 300}, {"event": "audio", "audio": b"\x7e" * 300}],
+            after_recv=streamer.interrupt,  # 第一次 recv 時觸發 barge-in
+        )
+        streamer.speak(["被打斷"])
+
+        assert sock.close_calls == 1, "interrupt 必須立即關閉 WS 連線（中止合成）"
+        assert player.stop_calls == 1, "interrupt 必須立即停止播放"
+        assert streamer.queue_size == 0, "interrupt 必須清空佇列"
+        assert streamer.pending_chunks() == []
+        assert streamer.is_playing is False, "播放狀態必須重置"
+        assert streamer.interrupt_event.is_set()
+
+    def test_interrupt_clears_queued_chunks(self):
+        """播放中佇列已有分片 → interrupt() 立即清空"""
+        player = FakeLivePlayer()
+        sock = FakeLiveSocket([{"event": "finish", "reason": "stop"}])
+        streamer = FishTTSLiveStreamer(api_key="k", voice_id="v", socket_factory=lambda: sock, audio_player=player)
+        streamer._chunks.append(b"queued-1")
+        streamer._chunks.append(b"queued-2")
+
+        streamer.interrupt()
+
+        assert streamer.queue_size == 0
+        assert streamer.pending_chunks() == []
+
+    def test_speak_noop_after_interrupt(self):
+        """interrupt 後 speak() no-op：不建連線、0 訊息送出"""
+        player = FakeLivePlayer()
+        sock = FakeLiveSocket()
+        streamer = FishTTSLiveStreamer(api_key="k", voice_id="v", socket_factory=lambda: sock, audio_player=player)
+        streamer.interrupt()
+
+        streamer.speak(["還有話說"])
+
+        assert sock.sent == [], "interrupt 後不得送出任何協定訊息"
+        assert sock.close_calls == 0, "interrupt 後不得建立/關閉新連線"
+
+    def test_close_releases_ws_and_player(self):
+        """close()：關閉播放器、狀態鎖死，close 後 speak() no-op"""
+        player = FakeLivePlayer()
+        sock = FakeLiveSocket()
+        streamer = FishTTSLiveStreamer(api_key="k", voice_id="v", socket_factory=lambda: sock, audio_player=player)
+        streamer.close()
+
+        assert player.close_calls == 1
+        streamer.speak(["關閉後"])
+        assert sock.sent == []
+
+    def test_mode_live_selects_live_streamer(self):
+        cfg = {"fish_audio": {"api_key": "k", "voice_id": "v", "model": "s2.1-pro-free", "mode": "live", "live_format": "pcm"}}
+        assert isinstance(create_tts_streamer(cfg), FishTTSLiveStreamer)
+
+    def test_mode_rest_selects_rest_streamer(self):
+        cfg = {"fish_audio": {"api_key": "k", "voice_id": "v", "model": "s2.1-pro-free", "mode": "rest"}}
+        assert isinstance(create_tts_streamer(cfg), FishTTSStreamer)
+
+    def test_mode_default_is_live(self):
+        cfg = {"fish_audio": {"api_key": "k", "voice_id": "v"}}
+        assert isinstance(create_tts_streamer(cfg), FishTTSLiveStreamer)
 
 
 # ─────────────────────────────────────────────────────────────

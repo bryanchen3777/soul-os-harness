@@ -3,7 +3,9 @@
     "api_key": "",
     "voice_id": "4c11d21b14284d428074f76a1cf32298",
     "endpoint": "https://api.fish.audio/v1/tts",
-    "model": "s2.1-pro-free"
+    "model": "s2.1-pro-free",
+    "mode": "live",
+    "live_format": "pcm"
   },
   "stt": {
     "model_size": "base",
