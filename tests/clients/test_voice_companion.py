@@ -35,6 +35,7 @@ from clients.voice_companion.asr_refiner import AsrRefiner, refine_speech_text
 from clients.voice_companion.env_config import apply_env_overrides, load_dotenv, resolve_config
 from clients.voice_companion.fish_tts_streamer import FishTTSStreamer
 from clients.voice_companion.fish_tts_live import FishTTSError, FishTTSLiveStreamer
+from clients.voice_companion.stt_service import FishASRService, pcm16_to_wav_bytes
 from clients.voice_companion.vad_listener import VADListener, VoiceActivityDetector
 
 VOICE_ENDPOINT = "https://api.fish.audio/v1/tts"
@@ -80,6 +81,31 @@ class FakeAudioDevice:
 
     def stop(self):
         self.stop_calls += 1
+
+
+class FakeASRSession:
+    """記錄 multipart post 呼叫的偽 requests.Session（Fish ASR 用）。"""
+
+    def __init__(self, payload: dict | None = None, status_code: int = 200, error: Exception | None = None):
+        self.calls = []
+        self.payload = payload or {}
+        self.status_code = status_code
+        self.error = error
+
+    def post(self, url, files=None, data=None, headers=None, timeout=None):
+        self.calls.append({"url": url, "files": files, "data": data, "headers": headers, "timeout": timeout})
+        if self.error is not None:
+            raise self.error
+        return FakeASRResponse(payload=self.payload, status_code=self.status_code)
+
+
+class FakeASRResponse:
+    def __init__(self, payload: dict, status_code: int = 200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
 
 
 # ─────────────────────────────────────────────────────────────
@@ -379,6 +405,49 @@ class TestFishTTSLiveStreamer:
         streamer.speak(["關閉後"])
         assert sock.sent == []
 
+    def test_feed_text_piece_no_punctuation_no_flush(self):
+        """feed_text_piece：無標點 piece → 只送 text，不觸發 flush（自動開 session）"""
+        sock = FakeLiveSocket()
+        streamer = FishTTSLiveStreamer(api_key="k", voice_id="v", socket_factory=lambda: sock, audio_player=FakeLivePlayer())
+        streamer.feed_text_piece("今天天")
+
+        msgs = [msgpack.unpackb(s) for s in sock.sent]
+        assert [m["event"] for m in msgs] == ["start", "text"]
+        assert msgs[1]["text"] == "今天天"
+
+    def test_feed_text_piece_punctuation_triggers_flush(self):
+        """feed_text_piece：含標點（，。、！？…\\n）的 piece → text 後立即送 flush"""
+        sock = FakeLiveSocket()
+        streamer = FishTTSLiveStreamer(api_key="k", voice_id="v", socket_factory=lambda: sock, audio_player=FakeLivePlayer())
+        for piece in ["你好，", "今天好累。", "等一下！"]:
+            streamer.feed_text_piece(piece)
+
+        msgs = [msgpack.unpackb(s) for s in sock.sent]
+        assert [m["event"] for m in msgs] == ["start", "text", "flush", "text", "flush", "text", "flush"]
+        assert [m["text"] for m in msgs if m["event"] == "text"] == ["你好，", "今天好累。", "等一下！"]
+
+    def test_end_session_flush_stop_finish(self):
+        """串流 feed 收尾：flush → stop → 等 finish → 關連線"""
+        sock = FakeLiveSocket([{"event": "finish", "reason": "stop"}])
+        streamer = FishTTSLiveStreamer(api_key="k", voice_id="v", socket_factory=lambda: sock, audio_player=FakeLivePlayer())
+        streamer.feed_text_piece("最後一句")
+        streamer.end_session()
+
+        msgs = [msgpack.unpackb(s) for s in sock.sent]
+        assert [m["event"] for m in msgs] == ["start", "text", "flush", "stop"]
+        assert sock.close_calls == 1, "end_session 後連線必須關閉"
+
+    def test_feed_text_piece_noop_after_interrupt(self):
+        """feed 模式 interrupt 後：feed_text_piece / end_session 皆 no-op（0 訊息送出）"""
+        sock = FakeLiveSocket()
+        streamer = FishTTSLiveStreamer(api_key="k", voice_id="v", socket_factory=lambda: sock, audio_player=FakeLivePlayer())
+        streamer.interrupt()
+
+        streamer.feed_text_piece("被打斷後")
+        streamer.end_session()
+
+        assert sock.sent == [], "interrupt 後 feed 不得送出任何訊息"
+
     def test_mode_live_selects_live_streamer(self):
         cfg = {"fish_audio": {"api_key": "k", "voice_id": "v", "model": "s2.1-pro-free", "mode": "live", "live_format": "pcm"}}
         assert isinstance(create_tts_streamer(cfg), FishTTSLiveStreamer)
@@ -390,6 +459,91 @@ class TestFishTTSLiveStreamer:
     def test_mode_default_is_live(self):
         cfg = {"fish_audio": {"api_key": "k", "voice_id": "v"}}
         assert isinstance(create_tts_streamer(cfg), FishTTSLiveStreamer)
+
+
+# ─────────────────────────────────────────────────────────────
+# Test 3c：Fish Audio 官方 ASR（VC-1.1 輸入側，全離線 Mock）
+# ─────────────────────────────────────────────────────────────
+
+class TestFishASRService:
+    ASR_URL = "https://api.fish.audio/v1/asr"
+
+    def test_transcribe_200_returns_text(self):
+        """200 → resp.json().text.strip()；multipart 構造（files/data/headers/timeout）精確斷言"""
+        session = FakeASRSession(payload={"text": "  你好，Bryan。  "})
+        svc = FishASRService(api_key="asr-key-1", session=session)
+        out = svc.transcribe(b"RIFF....WAVE-data")
+
+        assert out == "你好，Bryan。"
+        assert len(session.calls) == 1
+        call = session.calls[0]
+        assert call["url"] == self.ASR_URL
+        assert call["headers"]["Authorization"] == "Bearer asr-key-1"
+        assert call["data"] == {"language": "zh"}
+        assert call["timeout"] == 10.0
+        fname, fdata, ftype = call["files"]["audio"]
+        assert fname == "speech.wav"
+        assert fdata == b"RIFF....WAVE-data"
+        assert ftype == "audio/wav"
+
+    def test_transcribe_non200_returns_empty(self):
+        session = FakeASRSession(payload={}, status_code=500)
+        svc = FishASRService(api_key="k", session=session)
+        assert svc.transcribe(b"wav-bytes") == ""
+
+    def test_transcribe_network_error_returns_empty(self):
+        """網路異常 → ""（0 崩潰）"""
+        session = FakeASRSession(error=RuntimeError("connection boom"))
+        svc = FishASRService(api_key="k", session=session)
+        assert svc.transcribe(b"wav-bytes") == ""
+
+    def test_transcribe_empty_input_returns_empty(self):
+        svc = FishASRService(api_key="k", session=FakeASRSession(payload={"text": "x"}))
+        assert svc.transcribe(b"") == ""
+        assert svc.transcribe(None) == ""
+
+    def test_transcribe_invalid_json_returns_empty(self):
+        """非 200 外的失敗（json 解析失敗）→ ""（0 崩潰）"""
+        session = FakeASRSession(payload={"text": "x"})
+
+        class BadJsonResponse(FakeASRResponse):
+            def json(self):
+                raise ValueError("bad json")
+
+        session.post = lambda url, files=None, data=None, headers=None, timeout=None: (session.calls.append({"url": url}) or BadJsonResponse(payload={}))
+        svc = FishASRService(api_key="k", session=session)
+        assert svc.transcribe(b"wav-bytes") == ""
+
+
+class TestPcm16ToWav:
+    def test_header_roundtrip_correct(self):
+        """pcm16_to_wav_bytes：RIFF/WAVE/fmt PCM16 單聲道、data size 正確、內容可 wave 讀回"""
+        pcm = bytes(range(0, 256)) * 50  # 12800 bytes = 6400 frames @16k（0.4s）
+        wav = pcm16_to_wav_bytes(pcm, sample_rate=16000)
+
+        assert wav[:4] == b"RIFF"
+        assert wav[8:12] == b"WAVE"
+        assert wav[12:16] == b"fmt "
+        # RIFF size = 檔案長度 - 8
+        assert int.from_bytes(wav[4:8], "little") == len(wav) - 8
+        # fmt chunk：audio format=PCM(1)、channels=1、sample width=2
+        assert int.from_bytes(wav[20:22], "little") == 1  # PCM
+        assert int.from_bytes(wav[22:24], "little") == 1  # mono
+        assert int.from_bytes(wav[24:28], "little") == 16000
+        assert int.from_bytes(wav[34:36], "little") == 16  # bits per sample 16（sampwidth 2 × 8）
+
+        import io
+        import wave as wave_mod
+
+        with wave_mod.open(io.BytesIO(wav)) as wf:
+            assert wf.getnchannels() == 1
+            assert wf.getsampwidth() == 2
+            assert wf.getframerate() == 16000
+            assert wf.getnframes() == 6400
+            assert wf.readframes(6400) == pcm  # 資料位元組不變
+
+    def test_empty_input_returns_empty(self):
+        assert pcm16_to_wav_bytes(b"") == b""
 
 
 # ─────────────────────────────────────────────────────────────
@@ -477,6 +631,24 @@ class TestVADWiring:
         assert "speech_end" in events
         assert got == ["茜，今天好累"]
 
+    def test_utterance_end_transcribes_via_fish_asr(self):
+        """VC-1.1：utterance 結束 → float32 樣本量化 PCM16 → WAV → Fish ASR transcribe → on_transcript"""
+        got: list[str] = []
+        session = FakeASRSession(payload={"text": "茜，今天好累"})
+        listener = VADListener(
+            detector=self.make_detector(),
+            asr_service=FishASRService(api_key="k", session=session),
+            on_transcript=lambda t: got.append(t),
+            on_barge_in=lambda: None,
+            playing_check=lambda: False,
+        )
+        listener.feed_frame(self.frames(0.1, level=0.5))   # speech_start
+        listener.feed_frame(self.frames(0.03, level=0.5))  # 語音持續
+        events = listener.feed_frame(self.frames(0.06, level=0.0))  # 靜音 → speech_end
+        assert "speech_end" in events
+        assert got == ["茜，今天好累"]
+        assert session.calls[0]["files"]["audio"][0] == "speech.wav"  # pcm→wav 已發生
+
 
 class TestFullChainOffline:
     def test_transcript_to_speech_pipeline(self):
@@ -510,6 +682,37 @@ class TestFullChainOffline:
         assert session.calls[0]["json"]["text"] == "我在。說說看。"  # 分句整句交給 TTS
         assert streamer.queue_size == 1  # 1 個子句 → 1 個音訊分片入隊
         assert not contains_markdown_chars(session.calls[0]["json"]["text"])
+
+    def test_live_reply_streams_tokens_via_feed_text_piece(self):
+        """VC-1.1：live streamer + LLM 串流 token → _speak_reply 走 feed_text_piece 逐 token 邊生邊送"""
+        sock = FakeLiveSocket()
+        streamer = FishTTSLiveStreamer(api_key="k", voice_id="v", socket_factory=lambda: sock, audio_player=FakeLivePlayer())
+        brain = AkaneVoiceBrain(llm_stream=lambda msgs: iter(["我在，", "說說看。"]))
+        app = VoiceCompanionApp({}, refiner=None, brain=brain, streamer=streamer, listener=None)
+
+        app._speak_reply("今天好累")
+
+        msgs = [msgpack.unpackb(s) for s in sock.sent]
+        events = [m["event"] for m in msgs]
+        assert events == ["start", "text", "flush", "text", "flush", "flush", "stop"]
+        assert [m["text"] for m in msgs if m["event"] == "text"] == ["我在，", "說說看。"]
+        assert sock.close_calls == 1
+        assert app._last_interaction > 0
+
+    def test_no_stream_tokens_falls_back_to_speak(self):
+        """無 LLM 串流能力（llm_stream None）→ live 走 speak(分句列表) 而非 feed 迴圈"""
+        sock = FakeLiveSocket()
+        streamer = FishTTSLiveStreamer(api_key="k", voice_id="v", socket_factory=lambda: sock, audio_player=FakeLivePlayer())
+        brain = AkaneVoiceBrain(llm_stream=None, config={"llm": {"endpoint": "", "api_key": ""}})
+        app = VoiceCompanionApp({}, refiner=None, brain=brain, streamer=streamer, listener=None)
+
+        app._speak_reply("今天好累")
+
+        msgs = [msgpack.unpackb(s) for s in sock.sent]
+        events = [m["event"] for m in msgs]
+        # llm_stream None → stream_respond yield 內建「我在。說說看。」（無標點 token → 不 flush）
+        assert events[0] == "start" and events[-1] == "stop"
+        assert [m["event"] for m in msgs] == ["start", "text", "flush", "stop"]
 
 
 # ─────────────────────────────────────────────────────────────

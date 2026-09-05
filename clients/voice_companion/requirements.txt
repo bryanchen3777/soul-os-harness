@@ -1,11 +1,9 @@
 # VC-1 黑川茜即時語音伴侶客戶端 — 獨立依賴清單
 # 僅生產環境需要；驗收測試全離線 Mock，不需安裝本清單任何套件。
+# VC-1.1：輸入側改用 Fish Audio 官方 ASR（stt_service.py），無本地 STT 依賴。
 requests>=2.31.0
 numpy>=1.26.0
 sounddevice>=0.4.6
 miniaudio>=1.59
 msgpack>=1.0
 websocket-client>=1.7
-
-# 可選：本地/雲端 STT（依 config.json 的 stt.model_size 指定）
-# openai-whisper>=20231117

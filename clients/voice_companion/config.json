@@ -3,12 +3,14 @@
     "api_key": "",
     "voice_id": "4c11d21b14284d428074f76a1cf32298",
     "endpoint": "https://api.fish.audio/v1/tts",
+    "asr_endpoint": "https://api.fish.audio/v1/asr",
+    "tts_ws_endpoint": "wss://api.fish.audio/v1/tts/live",
     "model": "s2.1-pro-free",
     "mode": "live",
     "live_format": "pcm"
   },
   "stt": {
-    "model_size": "base",
+    "engine": "fish",
     "language": "zh"
   },
   "vad": {

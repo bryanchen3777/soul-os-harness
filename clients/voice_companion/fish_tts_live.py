@@ -29,6 +29,8 @@ DEFAULT_MODEL = "s2.1-pro-free"
 DEFAULT_SAMPLE_RATE = 44100
 DEFAULT_CHUNK_LENGTH = 300
 DEFAULT_LATENCY = "normal"
+# feed_text_piece 逐 token 模式：piece 含下列任一字元 → text 後立即送 flush（立即合成，降延遲）
+FLUSH_PUNCTUATION = "，。、！？…\n"
 
 
 class FishTTSError(RuntimeError):
@@ -98,6 +100,9 @@ class FishTTSLiveStreamer:
 
     API 表面（與既有 FishTTSStreamer 相容，akane_live 呼叫點不變）：
     - speak(clause_texts: list[str]): 開 session → 逐句 text → flush → stop → 等 finish（同步；邊收邊播）
+    - feed_text_piece(piece: str): 串流 token 模式（VC-1.1）— 立即送 text，piece 含標點 → 立即送 flush；
+      無活動 session 時自動開新 session；配合 end_session() 收尾
+    - end_session(): 串流 feed 收尾 — flush → stop → 等 finish → 關連線
     - interrupt(): Barge-in 入口 — 置位 interrupt_event、立即關閉 WS、停止播放、清空佇列、狀態重置
     - close() / stop(): 完全關閉（WS + 播放器 + 狀態）
     - start(): 釋放 interrupt 旗標，允許新 session（akane_live.run 呼叫點）
@@ -141,6 +146,7 @@ class FishTTSLiveStreamer:
             api_key=fa.get("api_key", ""),
             voice_id=fa.get("voice_id", ""),
             model=fa.get("model", DEFAULT_MODEL),
+            endpoint=fa.get("tts_ws_endpoint", DEFAULT_LIVE_ENDPOINT),
             live_format=fa.get("live_format", "pcm"),
         )
 
@@ -180,6 +186,14 @@ class FishTTSLiveStreamer:
 
     # ── 對外 API ──
 
+    def _open_session(self):
+        """開新 TTS-Live session：連線 + 送 start。回傳 ws。"""
+        ws = self._connect()
+        self._current_ws = ws
+        self._chunks.clear()
+        self._send(ws, {"event": "start", "request": self._start_request()})
+        return ws
+
     def speak(self, clause_texts: List[str]) -> None:
         """開 session → 逐句 text → flush → stop → 等 finish（同步，邊收邊播）。
 
@@ -191,17 +205,52 @@ class FishTTSLiveStreamer:
             return  # 已有 session 進行中，避免重入
 
         ws = None
-        self._chunks.clear()
         try:
-            ws = self._connect()
-            self._current_ws = ws
-            self._send(ws, {"event": "start", "request": self._start_request()})
+            ws = self._open_session()
             for clause in clause_texts:
                 self._send(ws, {"event": "text", "text": clause})
             self._send(ws, {"event": "flush"})
             self._send(ws, {"event": "stop"})
             self._recv_until_finish(ws)
         except Exception as exc:  # 網路/協定例外 → 記錄，不 crash
+            self.last_error = exc
+        finally:
+            self._close_socket(ws)
+            self._current_ws = None
+            self._chunks.clear()
+
+    def feed_text_piece(self, piece: str) -> None:
+        """串流 token 模式（VC-1.1，對齊低延遲目標）：立即送 text。
+
+        piece 含標點（，。、！？…\\n）→ 在 text 之後立即送 flush（強制立即合成緩衝文字）。
+        無活動 session 時自動開新 session；interrupt / close 後 no-op。
+        """
+        if self._interrupted or self._closed:
+            return
+        ws = self._current_ws
+        try:
+            if ws is None:
+                ws = self._open_session()
+            import msgpack  # 懶載入
+
+            ws.send(msgpack.packb({"event": "text", "text": piece}))
+            if self._has_punctuation(piece):
+                ws.send(msgpack.packb({"event": "flush"}))
+        except Exception as exc:
+            self.last_error = exc
+            self._close_socket(ws)
+            self._current_ws = None
+
+    def end_session(self) -> None:
+        """串流 feed 收尾：flush → stop → 等 finish → 關連線（與 speak 尾段同語意）。"""
+        ws = self._current_ws
+        if ws is None:
+            return
+        try:
+            self._send(ws, {"event": "flush"})
+            self._send(ws, {"event": "stop"})
+            self._recv_until_finish(ws)
+        except Exception as exc:
             self.last_error = exc
         finally:
             self._close_socket(ws)
@@ -251,6 +300,11 @@ class FishTTSLiveStreamer:
     close = stop  # 語意別名
 
     # ── 協定 ──
+
+    @staticmethod
+    def _has_punctuation(piece: str) -> bool:
+        """piece 是否含觸發立即合成的標點（，。、！？…\\n）。"""
+        return any(ch in piece for ch in FLUSH_PUNCTUATION)
 
     def _start_request(self) -> dict:
         return {

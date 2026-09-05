@@ -7,8 +7,11 @@ akane_live.py — 黑川茜即時語音伴侶客戶端主入口（VC-1 模組 5�
          → AkaneVoiceBrain 回應 → ClauseSplitter 邊生邊播 → TTS 串流播放
     Bryan 開口（speaking 期間）→ VADListener barge-in → streamer.interrupt()
 
+    輸入側（VC-1.1）：VADListener 接 FishASRService（Fish Audio 官方 ASR，utterance
+    結束 → pcm→wav → transcribe）；本地 whisper 路徑已移除。
     TTS 通路依 config fish_audio.mode 切換（VC-1.2）：
-    - mode=live（預設）：FishTTSLiveStreamer — WebSocket TTS-Live 即時串流（邊生邊播 + 真打斷）
+    - mode=live（預設）：FishTTSLiveStreamer — WebSocket TTS-Live 即時串流
+      （有 LLM 串流 token 時走 feed_text_piece 逐 token 邊生邊送，否則 speak 分句列表）
     - mode=rest：既有 REST FishTTSStreamer（HTTP 逐句合成，fallback，行為 0 改動）
 
 構件全部可注入/懶載入：import 本模組不需要任何重型依賴（離線可測）。
@@ -32,6 +35,7 @@ try:  # pragma: no cover - 導入路徑相容
     from .akane_voice_brain import AkaneVoiceBrain
     from .fish_tts_streamer import FishTTSStreamer
     from .fish_tts_live import FishTTSLiveStreamer
+    from .stt_service import FishASRService
     from .vad_listener import VADListener
     from .env_config import resolve_config
 except ImportError:  # pragma: no cover
@@ -39,6 +43,7 @@ except ImportError:  # pragma: no cover
     from akane_voice_brain import AkaneVoiceBrain
     from fish_tts_streamer import FishTTSStreamer
     from fish_tts_live import FishTTSLiveStreamer
+    from stt_service import FishASRService
     from vad_listener import VADListener
     from env_config import resolve_config
 
@@ -100,9 +105,11 @@ class VoiceCompanionApp:
             persona_file=str(REPO_ROOT / "personas" / "agent_akane.md"),
         )
         streamer = create_tts_streamer(cfg)
+        asr = FishASRService.from_config(cfg)  # api_key 來自 env_config 解析後的 fish_audio.api_key
         app = cls(cfg, refiner=refiner, brain=brain, streamer=streamer, listener=None)
         listener = VADListener(
             config=cfg,
+            asr_service=asr,
             on_transcript=app._handle_transcript,
             on_barge_in=app._handle_barge_in,
             playing_check=lambda: streamer.is_playing,
@@ -128,8 +135,7 @@ class VoiceCompanionApp:
                 return
 
             self._log(f"ASR → {clean}")
-            reply = self.brain.respond(clean)
-            self._speak_reply(reply)
+            self._speak_reply(clean)
         except Exception as exc:  # 主循環不可死
             self._log(f"ERROR · {exc}")
         finally:
@@ -141,11 +147,16 @@ class VoiceCompanionApp:
         self._log("⏸ barge-in · 茜已收聲")
         self._set_state(self.STATE_LISTENING)
 
-    def _speak_reply(self, reply: str) -> None:
+    def _speak_reply(self, user_text: str) -> None:
         self._set_state(self.STATE_SPEAKING)
+        if isinstance(self.streamer, FishTTSLiveStreamer) and self.brain.llm_stream is not None:
+            # TTS-Live 串流路徑：有 LLM 串流 token 時逐 piece 邊生邊送（feed_text_piece，對齊低延遲目標）
+            self._speak_streaming(user_text)
+            return
+        reply = self.brain.respond(user_text)
         clauses = list(self.brain.splitter.split_stream([reply]))
         if isinstance(self.streamer, FishTTSLiveStreamer):
-            # TTS-Live：單一 WS session 送全部子句（邊生邊播，interrupt 由 WS 關閉達成）
+            # TTS-Live 非串流路徑：單一 WS session 送全部子句（邊生邊播）
             self.streamer.speak(clauses)
         else:
             # REST fallback：逐句合成入隊（既有 VC-1 行為，0 改動）
@@ -153,6 +164,16 @@ class VoiceCompanionApp:
                 self.streamer.speak(clause)
         self._last_interaction = time.time()
         self._log(f"茜 → {reply}")
+
+    def _speak_streaming(self, user_text: str) -> None:
+        """LLM 逐 token → streamer.feed_text_piece 邊生邊送，結束後 end_session 收尾。"""
+        parts: list[str] = []
+        for token in self.brain.stream_respond(user_text):
+            parts.append(token)
+            self.streamer.feed_text_piece(token)
+        self.streamer.end_session()
+        self._last_interaction = time.time()
+        self._log(f"茜 → {''.join(parts)}")
 
     # ── 喚醒閘門 ──
 

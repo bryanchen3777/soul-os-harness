@@ -1,12 +1,15 @@
 """
-vad_listener.py — sounddevice 常駐音訊流採集 + VAD 靜音斷句器（VC-1 模組 4）。
+vad_listener.py — sounddevice 常駐音訊流採集 + VAD 靜音斷句器（VC-1 模組 4；VC-1.1 輸入側改造）。
 
 - VoiceActivityDetector：能量型 VAD（RMS > energy_threshold → speech；
   靜音累計 ≥ silence_threshold_sec → speech_end 斷句）。
 - VADListener：包裝音訊串流（sounddevice 懶載入），speech_start 時若茜正在
   說話 → 觸發 Barge-in 打斷；speech_end 時把語音片段送 STT → on_transcript。
+  STT 通路（VC-1.1）：asr_service（FishASRService）可注入 — utterance 結束
+  → float32 樣本量化 PCM16 → pcm16_to_wav_bytes → transcribe → 文字。
+  既有 stt_engine（callable）注入介面保留（測試給 fake）；本地 whisper 路徑已移除。
 
-離線可測：detector / stt_engine / stream_factory / playing_check / 回呼全部可注入。
+離線可測：detector / stt_engine / asr_service / stream_factory / playing_check / 回呼全部可注入。
 """
 
 from __future__ import annotations
@@ -87,7 +90,9 @@ class VoiceActivityDetector:
 class VADListener:
     """常駐音訊採集 + VAD 斷句 + Barge-in 偵測 + STT 轉錄。
 
-    - stt_engine：callable(語音片段) -> str；None → 預設 whisper（懶載入）
+    - stt_engine：callable(語音片段) -> str（可注入；測試給 fake，優先於 asr_service）
+    - asr_service：FishASRService（可注入）— utterance 結束 → pcm→wav → transcribe
+      （本地 whisper 路徑已移除，改由 Fish Audio 官方 ASR 提供輸入側轉錄）
     - on_transcript：callable(text)，斷句完成時收到轉錄文本
     - on_barge_in：callable()，Bryan 在茜說話時開口 → 觸發 streamer.interrupt()
     - playing_check：callable() -> bool，茜是否正在播放語音
@@ -99,6 +104,7 @@ class VADListener:
         config: Optional[dict] = None,
         detector: Optional[VoiceActivityDetector] = None,
         stt_engine: Optional[Callable] = None,
+        asr_service: Optional[object] = None,
         on_transcript: Optional[Callable[[str], None]] = None,
         on_barge_in: Optional[Callable[[], None]] = None,
         stream_factory: Optional[Callable[["VADListener"], object]] = None,
@@ -114,6 +120,7 @@ class VADListener:
             energy_threshold=float(vad.get("energy_threshold", 0.015)),
         )
         self.stt_engine = stt_engine
+        self.asr_service = asr_service
         self.on_transcript = on_transcript
         self.on_barge_in = on_barge_in
         self.stream_factory = stream_factory
@@ -122,7 +129,6 @@ class VADListener:
         self._stream = None
         self._frames_buffer: List[float] = []
         self._running = False
-        self._stt_model = None
 
     # ── 測試/共用的幀處理入口 ──
 
@@ -204,32 +210,20 @@ class VADListener:
     def _transcribe(self, captured) -> str:
         if self.stt_engine is not None:
             return self.stt_engine(captured)
-        engine = self._default_stt()
-        if engine is None:
-            return ""
-        return engine(captured)
+        if self.asr_service is not None:
+            return self._transcribe_via_asr(captured)
+        return ""
 
-    def _default_stt(self):
-        """預設 STT：whisper（懶載入，僅生產環境需要）。"""
-        if self._stt_model is not None:
-            model = self._stt_model
-        else:
-            try:
-                import whisper  # 懶載入
-            except ImportError:
-                return None
-            stt = self.config.get("stt") or {}
-            model = whisper.load_model(stt.get("model_size", "base"))
-            self._stt_model = model
+    def _transcribe_via_asr(self, captured) -> str:
+        """Fish Audio 官方 ASR：float32 樣本 → PCM16 → WAV → transcribe（VC-1.1 輸入側）。"""
+        import numpy as np  # 懶載入
 
-        stt = self.config.get("stt") or {}
-        language = stt.get("language", "zh")
+        try:  # pragma: no cover - 導入路徑相容
+            from .stt_service import pcm16_to_wav_bytes
+        except ImportError:  # pragma: no cover
+            from stt_service import pcm16_to_wav_bytes
 
-        def transcribe(samples) -> str:
-            import numpy as np  # 懶載入
-
-            audio = np.asarray(samples, dtype=np.float32)
-            result = model.transcribe(audio, language=language, fp16=False)
-            return (result.get("text") or "").strip()
-
-        return transcribe
+        samples = np.asarray(captured, dtype=np.float32)
+        pcm = (np.clip(samples, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+        wav = pcm16_to_wav_bytes(pcm, sample_rate=self.sample_rate)
+        return self.asr_service.transcribe(wav)
