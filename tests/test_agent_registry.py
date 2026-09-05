@@ -31,7 +31,13 @@ def test_create_agents_from_config(mock_bus):
 
     assert "agent_yua" in ids, f"agent_yua not in {ids}"
     assert "agent_ruka" in ids, f"agent_ruka not in {ids}"
-    assert len(agents) == 3, f"Expected 3 agents, got {len(agents)}: {ids}"
+    # 動態取得啟用 Agent 數（與 create_agents 相同的 enabled 預設值），避免隨 default.yaml 擴充再度陳舊
+    expected = sum(
+        1 for agent_cfg in cfg.get("agents", []) if agent_cfg.get("enabled", True)
+    )
+    assert len(agents) == expected, (
+        f"Expected {expected} enabled agents, got {len(agents)}: {ids}"
+    )
 
     # 確認 intimacy_level 正確
     yua = next(a for a in agents if a.agent_id == "agent_yua")
