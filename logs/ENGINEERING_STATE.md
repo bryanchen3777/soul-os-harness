@@ -331,9 +331,10 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
+- Current HEAD: `ea11465` (docs: register VC-1.6 sdk transport (984f51c))
+- VC-1.6 register commit: `ea11465` (docs: register VC-1.6 sdk transport (984f51c); **Current HEAD**)
+- VC-1.6 SDK transport fix commit: `984f51c` (fix(vc-1.6): real TTS-Live via official fish-audio-sdk transport (websocket-client rejected by server); **distinct from Current HEAD**; 3 檔 +315/-304)
 - Current HEAD: `984f51c` (fix(vc-1.6): real TTS-Live via official fish-audio-sdk transport (websocket-client rejected by server))
-- VC-1.6 SDK transport fix commit: `984f51c` (fix(vc-1.6): real TTS-Live via official fish-audio-sdk transport (websocket-client rejected by server); **Current HEAD**; 3 檔 +315/-304)
-- Current HEAD: `cf752a7` (docs: register VC-1 sse utf-8 fix (7e491d7))
 - VC-1 sse fix register commit: `cf752a7` (docs: register VC-1 sse utf-8 fix (7e491d7); **Current HEAD**)
 - VC-1 SSE utf-8 fix commit: `7e491d7` (fix(vc-1): force utf-8 sse decode in llm stream (chinese mojibake); **distinct from Current HEAD**)
 - VC-1 405 fix register commit: `f12e46a` (docs: register VC-1 405 endpoint fix (53c3fab); **Current HEAD**)
