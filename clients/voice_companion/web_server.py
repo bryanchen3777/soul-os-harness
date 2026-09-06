@@ -473,11 +473,123 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
+class RestPCMWebStreamer:
+    """REST TTS 實驗音源（--tts rest）：收完整句 → Fish REST mp3 → miniaudio 解 44100 PCM → relay sink。
+
+    實作與 FishTTSLiveStreamer 相同的 feed API（start/feed_text_piece/end_session/interrupt/close
+    /is_playing/queue_size/pending_chunks/last_error），WebSession 免改動。
+    用途：隔離「live 合成音源」vs「瀏覽器播放層」——若 REST 音源經同一播放管線聽起來正常，
+    即證實問題在 live 音源；反之則在播放層。
+    """
+
+    def __init__(self, api_key: str = "", voice_id: str = "", model: str = "s2.1-pro-free", audio_player: Optional[object] = None):
+        self.api_key = api_key
+        self.voice_id = voice_id
+        self.model = model or "s2.1-pro-free"
+        self._audio = audio_player
+        self._pieces: List[str] = []
+        self._worker: Optional[threading.Thread] = None
+        self._interrupted = False
+        self._closed = False
+        self.last_error: Optional[Exception] = None
+        self._chunks: List[bytes] = []
+
+    def _synth_pcm(self, text: str) -> bytes:
+        import array
+        import miniaudio  # 懶載入
+        from clients.voice_companion.fish_tts_streamer import FishTTSStreamer
+
+        st = FishTTSStreamer(api_key=self.api_key, voice_id=self.voice_id, model=self.model)
+        mp3 = st.synthesize(text)  # REST mp3 bytes（既有、實測 200）
+        sf = miniaudio.decode(
+            mp3, output_format=miniaudio.SampleFormat.SIGNED16, nchannels=1, sample_rate=44100
+        )
+        # DecodedSoundFile.samples = int 串列（SIGNED16 樣本值）→ 打包成 PCM16LE bytes
+        return array.array("h", sf.samples).tobytes()
+
+    def _run(self) -> None:
+        text = "".join(self._pieces)
+        if not text or self._interrupted or self._closed:
+            return
+        try:
+            pcm = self._synth_pcm(text)
+            if pcm and not (self._interrupted or self._closed):
+                self._chunks.append(pcm)
+                if self._audio is not None:
+                    self._audio.write(pcm)
+        except Exception as exc:
+            if not (self._interrupted or self._closed):
+                self.last_error = exc
+
+    def start(self) -> None:
+        self._interrupted = False
+        self._closed = False
+        self.last_error = None
+        self._pieces = []
+        self._chunks = []
+
+    def feed_text_piece(self, piece: str) -> None:
+        if self._interrupted or self._closed:
+            return
+        self._pieces.append(piece)
+
+    def end_session(self) -> None:
+        if self._interrupted or self._closed or self._worker is not None:
+            return
+        import threading  # 懶載入
+
+        worker = threading.Thread(target=self._run, daemon=True, name="rest-pcm-web-tts")
+        self._worker = worker
+        worker.start()
+        worker.join(timeout=90)  # REST 合成為整句一次性，等待完成
+        self._worker = None
+        self._pieces = []
+
+    def interrupt(self) -> None:
+        self._interrupted = True
+        try:
+            if self._audio is not None:
+                self._audio.stop()
+        except Exception:
+            pass
+        self._chunks = []
+
+    def stop(self) -> None:
+        self._closed = True
+        self._interrupted = True
+        try:
+            if self._audio is not None:
+                self._audio.close()
+        except Exception:
+            pass
+        self._chunks = []
+
+    close = stop  # 語意別名
+
+    @property
+    def is_playing(self) -> bool:
+        return self._worker is not None and self._worker.is_alive()
+
+    @property
+    def queue_size(self) -> int:
+        return len(self._chunks)
+
+    def pending_chunks(self) -> List[bytes]:
+        return list(self._chunks)
+
+
 def default_streamer_factory(config: dict) -> Callable[[AudioRelaySink], FishTTSLiveStreamer]:
-    """生產 streamer factory：FishTTSLiveStreamer 以 AudioRelaySink 為 audio_player。"""
+    """生產 streamer factory：依 fish_audio.mode 選音源（live=官方 SDK；rest=REST mp3 解碼實驗）。"""
     fa = (config or {}).get("fish_audio") or {}
 
     def factory(sink: AudioRelaySink) -> FishTTSLiveStreamer:
+        if (fa.get("mode") or "live") == "rest":
+            return RestPCMWebStreamer(  # type: ignore[return-value]
+                api_key=fa.get("api_key", ""),
+                voice_id=fa.get("voice_id", ""),
+                model=fa.get("model", "s2.1-pro-free"),
+                audio_player=sink,
+            )
         return FishTTSLiveStreamer(
             api_key=fa.get("api_key", ""),
             voice_id=fa.get("voice_id", ""),
@@ -552,6 +664,11 @@ def main(argv: Optional[list] = None) -> int:
             port = int(args[i + 1])
     cfg = load_config()
     cfg = resolve_config(cfg)
+    if "--tts" in args:  # VC-1.6 音源實驗切換：--tts rest（REST mp3 解碼）／預設 live（官方 SDK）
+        i = args.index("--tts")
+        if i + 1 < len(args):
+            (cfg.setdefault("fish_audio", {})).setdefault("mode", "live")
+            cfg["fish_audio"]["mode"] = args[i + 1]
     web_cfg = cfg.get("web") or {}
     host = web_cfg.get("host", "0.0.0.0")
     port = port or int(web_cfg.get("port", 8765))
