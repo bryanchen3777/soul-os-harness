@@ -4,7 +4,7 @@ web_ui.py — 黑川茜 Web 語音伴侶前端（VC-1.3；VC-1.4 可視化 + 失
 單頁 UI（HTML+CSS+JS 全內嵌，繁體中文，無建置步驟）。瀏覽器端負責：
 - 收音：getUserMedia（echoCancellation/noiseSuppression）→ 降採樣 16k PCM → WS binary
 - PTT 按鈕（按住說話，滑鼠/觸碰/空白鍵）＋ Auto-VAD 切換（本地 RMS）
-- 放音：AudioContext 44.1k，收 WS binary（Int16 PCM）→ Float32 佇列餵 ScriptProcessor
+- 放音（VC-2.3-04）：AudioWorklet 獨立音訊執行緒＋Float32 環形緩衝區（Blob URL 動態註冊），相容 ScriptProcessor fallback
 - 打斷：播放中本地收音 RMS 超門檻 150ms → 送 WS interrupt
 - 可視化（VC-1.4）：即時輸入音量表（AnalyserNode getByteTimeDomainData RMS → 水平 bar）＋
   「🎙️ 傳送中」指示；server `{"type":"error"}` 事件顯示於 #errorBox（黃底紅字，
@@ -110,20 +110,33 @@ HTML_PAGE = """<!DOCTYPE html>
   var state = "IDLE";
   var ws = null, audioCtx = null, micStream = null;
   var recNode = null, playNode = null, micSource = null, analyser = null;
-  var playQueue = [];                 // Float32 播放佇列（Int16 → /32768）
-  var MAX_PLAY_BUFFER = 44100 * 30;      // 30s @44.1k：live 合成速度快於即時播放，200ms 上限會丟掉長句尾段
+  var workletNode = null, workletReady = false, workletLoading = false;
+  var pendingAudioChunks = [];        // Worklet 加載期間暫存分片
+  var MAX_PLAY_BUFFER = 44100 * 30;   // 30s @44.1k 環形緩衝容量
+  var fallbackCap = MAX_PLAY_BUFFER;
+  var fallbackBuf = new Float32Array(fallbackCap);
+  var fallbackRead = 0, fallbackWrite = 0, fallbackAvail = 0;
   var pttActive = false, autoSpeaking = false, autoSilenceMs = 0, autoHoldFrames = 0, autoVoiceMs = 0;
-  var speakEnergyMs = 0;
-  var VAD_THRESHOLD = 0.02, VAD_SILENCE_MS = 500, BARGE_MS = 150, AUTO_START_MS = 260, AUTO_HOLD_MS = 1800;
+  var speakEnergyMs = 0, barging = false;
+  var VAD_THRESHOLD = 0.02, VAD_SILENCE_MS = 500, BARGE_MS = 150, BARGE_AUTO_THRESHOLD = 0.04, BARGE_AUTO_MS = 200, AUTO_START_MS = 260, AUTO_HOLD_MS = 1800;
   var $ = function (id) { return document.getElementById(id); };
 
   function setState(s) {
     var leavingSpeaking = (state === "SPEAKING") && s !== "SPEAKING";
     state = s;
+    if (workletReady && workletNode) {
+      workletNode.port.postMessage({ type: "state", state: s });
+    }
     if (s === "SPEAKING") { ensurePlayback(); } // 茜開始說話 → 確保播放圖存在（打字路徑也能出聲）
     if (leavingSpeaking) {
-      // 茜講完 → AUTO_HOLD_MS 不聽：喇叭尾音/殘響不該觸發 Auto-VAD（曾 0.6s 太短仍回授）
-      autoHoldFrames = Math.ceil(AUTO_HOLD_MS * (audioCtx ? audioCtx.sampleRate : 44100) / 1000 / 4096);
+      if (barging) {
+        // 使用者主動開口打斷（VC-2.2 Barge-in）→ 豁免講完冷卻期，直接收音
+        autoHoldFrames = 0;
+        barging = false;
+      } else {
+        // 茜自然講完 → AUTO_HOLD_MS 不聽：喇叭尾音/殘響不該觸發 Auto-VAD（曾 0.6s 太短仍回授）
+        autoHoldFrames = Math.ceil(AUTO_HOLD_MS * (audioCtx ? audioCtx.sampleRate : 44100) / 1000 / 4096);
+      }
       autoVoiceMs = 0;
     }
     var dot = $("statusDot"), txt = $("statusText");
@@ -131,7 +144,7 @@ HTML_PAGE = """<!DOCTYPE html>
     txt.textContent = s === "SPEAKING" ? "🔴 茜說話中…（開口可打斷）" : s === "THINKING" ? "🟡 思考中…" : s === "LISTENING" ? "🟢 聆聽中…" : "🟢 聆聽";
     var btn = $("micBtn");
     if (s === "LISTENING") { btn.classList.add("hold"); } else { btn.classList.remove("hold"); }
-    // 注意：不在此清空 playQueue —— IDLE 不代表瀏覽器已播完（伺服器 send 完即回 IDLE），
+    // 注意：不在此清空環形緩衝區 —— IDLE 不代表瀏覽器已播完（伺服器 send 完即回 IDLE），
     // 過早清空會砍掉未播音訊（「只聽到開頭兩字、後半省略」）。只在打斷/新回合時 flush（flushPlayback）。
   }
   function addMsg(role, text) {
@@ -194,41 +207,213 @@ HTML_PAGE = """<!DOCTYPE html>
     requestAnimationFrame(updateMeter);
   }
 
-  // ── WebSocket ──
+  // ── WebSocket 與自動重連（VC-2.1）──
+  var reconnectAttempts = 0, reconnectTimer = null, heartbeatTimer = null;
+  var PREBUFFER_SAMPLES = 3500; // ~80ms @44.1k：行動網路防抖動預緩衝
+  var isBuffering = true;
+
+  function scheduleReconnect() {
+    clearTimeout(reconnectTimer);
+    reconnectAttempts++;
+    var delay = Math.min(10000, Math.floor(1000 * Math.pow(1.5, reconnectAttempts - 1)));
+    var dot = $("statusDot"), txt = $("statusText");
+    dot.className = "dot thinking";
+    txt.textContent = "🟡 連線中斷，正在自動重連 (第 " + reconnectAttempts + " 次)…";
+    reconnectTimer = setTimeout(function () {
+      connect();
+    }, delay);
+  }
+
+  function startHeartbeat() {
+    stopHeartbeat();
+    heartbeatTimer = setInterval(function () {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        send({ type: "ping" });
+      }
+    }, 25000);
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  }
+
   function connect() {
+    clearTimeout(reconnectTimer);
+    if (ws) {
+      try {
+        ws.onopen = null;
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.onmessage = null;
+        ws.close();
+      } catch (e) {}
+      ws = null;
+    }
     var proto = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(proto + "://" + location.host + "/ws");
     ws.binaryType = "arraybuffer";
-    ws.onopen = function () { $("micBtn").disabled = false; showError(""); };
-    ws.onclose = function () { $("micBtn").disabled = true; setState("IDLE"); showError("連線已中斷，重新載入頁面重連。"); };
-    ws.onerror = function () { showError("WebSocket 錯誤"); };
+    ws.onopen = function () {
+      reconnectAttempts = 0;
+      clearTimeout(reconnectTimer);
+      $("micBtn").disabled = false;
+      setState("IDLE");
+      showError("");
+      startHeartbeat();
+    };
+    ws.onclose = function () {
+      stopHeartbeat();
+      $("micBtn").disabled = true;
+      setState("IDLE");
+      scheduleReconnect();
+    };
+    ws.onerror = function () {
+      // 錯誤伴隨 onclose 事件，由 onclose 統一調度重連
+    };
     ws.onmessage = function (ev) {
       if (typeof ev.data === "string") {
         var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
         if (msg.type === "state") { setState(msg.state); }
         else if (msg.type === "transcript") { addMsg(msg.role, msg.text); }
         else if (msg.type === "error") { showError(msg.message || "錯誤"); }
+        else if (msg.type === "pong") { /* 心跳正常回應 */ }
       } else {
         // binary = Int16 PCM 44.1k mono 播放分片（server 固定 44100）
         ensurePlayback();
         var i16 = new Int16Array(ev.data);
-        if (state === "SPEAKING" && playQueue.length < MAX_PLAY_BUFFER) {
+        if (state === "SPEAKING") {
           var rate = audioCtx ? audioCtx.sampleRate : 44100;
+          var f32in = new Float32Array(i16.length);
+          for (var j = 0; j < i16.length; j++) { f32in[j] = i16[j] / 32768.0; }
           if (rate !== 44100) {
             // ctx 實際採樣率 ≠44100（裝置端）→ 線性重採樣，避免變調（怪聲）
-            var f32in = new Float32Array(i16.length);
-            for (var j = 0; j < i16.length; j++) { f32in[j] = i16[j] / 32768.0; }
             var rs = resampleLinear(f32in, 44100, rate);
-            for (var m = 0; m < rs.length; m++) { playQueue.push(rs[m]); }
+            queuePlaybackSamples(rs);
           } else {
-            for (var n = 0; n < i16.length; n++) { playQueue.push(i16[n] / 32768.0); }
+            queuePlaybackSamples(f32in);
           }
         }
       }
     };
   }
 
-  // ── 放音（44.1k）──
+  // ── 放音（44.1k：AudioWorklet 獨立音訊執行緒 ＋ 0 複製環形緩衝區，相容 ScriptProcessor fallback）──
+  var WORKLET_CODE = [
+    "class AkaneAudioProcessor extends AudioWorkletProcessor {",
+    "  constructor() {",
+    "    super();",
+    "    this.capacity = 44100 * 30;",
+    "    this.buffer = new Float32Array(this.capacity);",
+    "    this.readIndex = 0;",
+    "    this.writeIndex = 0;",
+    "    this.available = 0;",
+    "    this.isBuffering = true;",
+    "    this.prebufferSamples = 3500;",
+    "    this.speaking = false;",
+    "    this.port.onmessage = (e) => {",
+    "      var d = e.data;",
+    "      if (!d) return;",
+    "      if (d.type === 'audio') {",
+    "        var s = d.samples, len = s.length;",
+    "        for (var i = 0; i < len; i++) {",
+    "          if (this.available < this.capacity) {",
+    "            this.buffer[this.writeIndex] = s[i];",
+    "            this.writeIndex = (this.writeIndex + 1) % this.capacity;",
+    "            this.available++;",
+    "          } else {",
+    "            this.buffer[this.writeIndex] = s[i];",
+    "            this.writeIndex = (this.writeIndex + 1) % this.capacity;",
+    "            this.readIndex = (this.readIndex + 1) % this.capacity;",
+    "          }",
+    "        }",
+    "      } else if (d.type === 'flush') {",
+    "        var fade = Math.min(128, this.available);",
+    "        for (var k = 0; k < fade; k++) {",
+    "          var idx = (this.readIndex + k) % this.capacity;",
+    "          this.buffer[idx] *= (1.0 - k / fade);",
+    "        }",
+    "        this.available = fade;",
+    "        this.writeIndex = (this.readIndex + fade) % this.capacity;",
+    "        this.isBuffering = true;",
+    "      } else if (d.type === 'state') {",
+    "        this.speaking = (d.state === 'SPEAKING');",
+    "      }",
+    "    };",
+    "  }",
+    "  process(inputs, outputs) {",
+    "    var out = outputs[0];",
+    "    if (!out || !out[0]) return true;",
+    "    var ch = out[0];",
+    "    var n = ch.length;",
+    "    if (this.isBuffering) {",
+    "      if (this.available >= this.prebufferSamples || !this.speaking) {",
+    "        this.isBuffering = false;",
+    "      } else {",
+    "        ch.fill(0);",
+    "        return true;",
+    "      }",
+    "    }",
+    "    for (var i = 0; i < n; i++) {",
+    "      if (this.available > 0) {",
+    "        ch[i] = this.buffer[this.readIndex];",
+    "        this.readIndex = (this.readIndex + 1) % this.capacity;",
+    "        this.available--;",
+    "      } else {",
+    "        ch[i] = 0;",
+    "        this.isBuffering = true;",
+    "      }",
+    "    }",
+    "    for (var c = 1; c < out.length; c++) { out[c].set(ch); }",
+    "    return true;",
+    "  }",
+    "}",
+    "registerProcessor('akane-audio-processor', AkaneAudioProcessor);"
+  ].join('\\n');
+
+  function pushFallbackSamples(s) {
+    var len = s.length;
+    for (var i = 0; i < len; i++) {
+      if (fallbackAvail < fallbackCap) {
+        fallbackBuf[fallbackWrite] = s[i];
+        fallbackWrite = (fallbackWrite + 1) % fallbackCap;
+        fallbackAvail++;
+      } else {
+        fallbackBuf[fallbackWrite] = s[i];
+        fallbackWrite = (fallbackWrite + 1) % fallbackCap;
+        fallbackRead = (fallbackRead + 1) % fallbackCap;
+      }
+    }
+  }
+
+  function flushFallbackBuffer() {
+    var fade = Math.min(128, fallbackAvail);
+    for (var k = 0; k < fade; k++) {
+      var idx = (fallbackRead + k) % fallbackCap;
+      fallbackBuf[idx] *= (1.0 - k / fade);
+    }
+    fallbackAvail = fade;
+    fallbackWrite = (fallbackRead + fade) % fallbackCap;
+    isBuffering = true;
+  }
+
+  function queuePlaybackSamples(f32) {
+    if (workletReady && workletNode) {
+      try {
+        workletNode.port.postMessage({ type: "audio", samples: f32 }, [f32.buffer]);
+      } catch (e) {
+        workletNode.port.postMessage({ type: "audio", samples: f32 });
+      }
+    } else if (workletLoading) {
+      if (pendingAudioChunks.length < 100) {
+        pendingAudioChunks.push(f32);
+      }
+    } else {
+      pushFallbackSamples(f32);
+    }
+  }
+
   function resampleLinear(input, fromRate, toRate) {
     // 線性插值重採樣：44100 輸入 → ctx 實際採樣率（防止裝置端 48k 造成變調）
     var ratio = toRate / fromRate;
@@ -248,16 +433,73 @@ HTML_PAGE = """<!DOCTYPE html>
     if (audioCtx && audioCtx.state === "suspended" && audioCtx.resume) { audioCtx.resume(); }
   }
 
+  function initScriptProcessorFallback() {
+    if (playNode) return;
+    playNode = audioCtx.createScriptProcessor(2048, 0, 1);
+    playNode.onaudioprocess = function (e) {
+      var out = e.outputBuffer.getChannelData(0);
+      if (isBuffering) {
+        if (fallbackAvail >= PREBUFFER_SAMPLES || state !== "SPEAKING") {
+          isBuffering = false;
+        } else {
+          for (var z = 0; z < out.length; z++) { out[z] = 0; }
+          return;
+        }
+      }
+      for (var i = 0; i < out.length; i++) {
+        if (fallbackAvail > 0) {
+          out[i] = fallbackBuf[fallbackRead];
+          fallbackRead = (fallbackRead + 1) % fallbackCap;
+          fallbackAvail--;
+        } else {
+          out[i] = 0;
+          isBuffering = true;
+        }
+      }
+    };
+    playNode.connect(audioCtx.destination);
+  }
+
+  function initAudioWorklet() {
+    if (!window.AudioWorkletNode || !audioCtx.audioWorklet) {
+      initScriptProcessorFallback();
+      return;
+    }
+    workletLoading = true;
+    var blob = new Blob([WORKLET_CODE], { type: "application/javascript" });
+    var blobUrl = URL.createObjectURL(blob);
+    audioCtx.audioWorklet.addModule(blobUrl).then(function () {
+      URL.revokeObjectURL(blobUrl);
+      if (!audioCtx) return;
+      workletNode = new AudioWorkletNode(audioCtx, "akane-audio-processor");
+      workletNode.connect(audioCtx.destination);
+      workletReady = true;
+      workletLoading = false;
+      workletNode.port.postMessage({ type: "state", state: state });
+      while (pendingAudioChunks.length > 0) {
+        var chunk = pendingAudioChunks.shift();
+        try {
+          workletNode.port.postMessage({ type: "audio", samples: chunk }, [chunk.buffer]);
+        } catch (e) {
+          workletNode.port.postMessage({ type: "audio", samples: chunk });
+        }
+      }
+    }).catch(function (err) {
+      console.warn("AudioWorklet failed, fallback to ScriptProcessor", err);
+      workletLoading = false;
+      workletReady = false;
+      initScriptProcessorFallback();
+      while (pendingAudioChunks.length > 0) {
+        pushFallbackSamples(pendingAudioChunks.shift());
+      }
+    });
+  }
+
   function startPlayback() {
     if (audioCtx) { ensureAudioResume(); return; } // 冪等：已存在則只解凍
     audioCtx = new AudioContext({ sampleRate: 44100 });
     if (audioCtx.state === "suspended" && audioCtx.resume) { audioCtx.resume(); }
-    playNode = audioCtx.createScriptProcessor(2048, 0, 1);
-    playNode.onaudioprocess = function (e) {
-      var out = e.outputBuffer.getChannelData(0);
-      for (var i = 0; i < out.length; i++) { out[i] = playQueue.length ? playQueue.shift() : 0; }
-    };
-    playNode.connect(audioCtx.destination);
+    initAudioWorklet();
   }
   // 播放與麥克風解耦：任何觸發點（手勢/收到語音）確保播放圖存在並嘗試解凍
   function ensurePlayback() {
@@ -265,7 +507,12 @@ HTML_PAGE = """<!DOCTYPE html>
   }
   // 打斷/新回合才清播放佇列（正常播放由 onaudioprocess 自然消耗，勿在 IDLE 清空）
   function flushPlayback() {
-    playQueue.length = 0;
+    isBuffering = true;
+    pendingAudioChunks = [];
+    if (workletReady && workletNode) {
+      workletNode.port.postMessage({ type: "flush" });
+    }
+    flushFallbackBuffer();
   }
 
   // ── 收音（getUserMedia → 降採樣 16k → Int16 → WS binary）──
@@ -301,12 +548,35 @@ HTML_PAGE = """<!DOCTYPE html>
           if (autoHoldFrames > 0) { autoHoldFrames--; }
           // Auto-VAD 不聽自己喇叭：茜講話期間＋講完 holdoff 內不收音/不觸發（防回授迴圈）
           var autoMuted = auto && (state === "SPEAKING" || autoHoldFrames > 0);
-          if (autoMuted) { autoVoiceMs = 0; }
-          if (autoMuted && autoSpeaking) { autoSpeaking = false; autoSilenceMs = 0; sendPttStop(); }
-          if (state === "SPEAKING" && !auto) {  // 打斷（barge-in）僅在手動 PTT 模式；auto 模式不自我觸發
-            speakEnergyMs = rms > VAD_THRESHOLD ? speakEnergyMs + durMs : 0;
-            if (speakEnergyMs >= BARGE_MS) { speakEnergyMs = 0; flushPlayback(); send({ type: "interrupt" }); }
+          if (autoMuted && !autoSpeaking) { autoVoiceMs = 0; }
+          if (autoMuted && autoSpeaking && !barging) { autoSpeaking = false; autoSilenceMs = 0; sendPttStop(); }
+
+          if (state === "SPEAKING") {
+            if (auto) {
+              // VC-2.2 Auto-VAD Barge-in：提升門檻（0.04）防喇叭回授，連續發音 ≥ BARGE_AUTO_MS (200ms) 打斷
+              speakEnergyMs = rms > BARGE_AUTO_THRESHOLD ? speakEnergyMs + durMs : 0;
+              if (speakEnergyMs >= BARGE_AUTO_MS) {
+                speakEnergyMs = 0;
+                barging = true;
+                flushPlayback();
+                send({ type: "interrupt" });
+                autoSpeaking = true;
+                autoVoiceMs = 0;
+                autoSilenceMs = 0;
+                setState("LISTENING");
+                sendPttStart();
+              }
+            } else {
+              // 手動模式打斷
+              speakEnergyMs = rms > VAD_THRESHOLD ? speakEnergyMs + durMs : 0;
+              if (speakEnergyMs >= BARGE_MS) {
+                speakEnergyMs = 0;
+                flushPlayback();
+                send({ type: "interrupt" });
+              }
+            }
           }
+
           if (auto && !autoMuted) {
             if (rms > VAD_THRESHOLD) {
               autoSilenceMs = 0;
@@ -320,7 +590,7 @@ HTML_PAGE = """<!DOCTYPE html>
             }
           }
           // 只有 LISTENING（auto）或 PTT 按住時才把音訊送伺服器（binary = Int16 PCM 16k mono）
-          if (ws && ws.readyState === WebSocket.OPEN && (pttActive || (auto && !autoMuted))) {
+          if (ws && ws.readyState === WebSocket.OPEN && (pttActive || (auto && (!autoMuted || autoSpeaking)))) {
             var s16 = resampleTo16k(ch, ratio);
             var buf = new Int16Array(s16.length);
             for (var j = 0; j < s16.length; j++) {
@@ -380,6 +650,21 @@ HTML_PAGE = """<!DOCTYPE html>
   $("autoVad").addEventListener("change", function () {
     if (!this.checked) { autoSpeaking = false; autoSilenceMs = 0; sendPttStop(); }
   });
+
+  // VC-2.1：手機端前景喚醒與焦點恢復
+  function handleVisibilityOrFocus() {
+    ensureAudioResume();
+    if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+      clearTimeout(reconnectTimer);
+      reconnectAttempts = 0;
+      connect();
+    }
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") { handleVisibilityOrFocus(); }
+  });
+  window.addEventListener("focus", handleVisibilityOrFocus);
+  document.addEventListener("touchstart", function () { ensurePlayback(); }, { passive: true });
 
   connect();
   micBtn.addEventListener("click", function () { startMic(); }, { once: true });

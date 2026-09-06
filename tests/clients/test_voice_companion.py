@@ -37,6 +37,7 @@ from clients.voice_companion.akane_voice_brain import (
     ClauseSplitter,
     AkaneVoiceBrain,
     contains_markdown_chars,
+    StreamingVoiceSanitizer,
 )
 from clients.voice_companion.asr_refiner import AsrRefiner, refine_speech_text
 from clients.voice_companion.env_config import apply_env_overrides, load_dotenv, normalize_chat_endpoint, resolve_config
@@ -158,6 +159,16 @@ class TestAsrRefiner:
         refiner = AsrRefiner(llm_call=lambda prompt: "排成好了，Bryan。")
         assert refiner.refine_speech_text("欠...那个...排成好了") == "排成好了，Bryan。"
 
+    def test_refiner_preserves_functional_words(self):
+        """VC-2.0 P0: 正常日常詞彙（這樣、然後、就是、那個）不得被全域 replace 誤殺"""
+        assert refine_speech_text("這樣可以嗎？") == "這樣可以嗎？"
+        assert refine_speech_text("然後呢？") == "然後呢？"
+        assert refine_speech_text("這就是我要的") == "這就是我要的。"
+        assert refine_speech_text("可以拿那個給我嗎？") == "可以拿那個給我嗎？"
+        assert refine_speech_text("呃，那個，今天天氣好嗎？") == "今天天氣好嗎？"
+        assert refine_speech_text("那個那個，今天開會嗎？") == "今天開會嗎？"
+        assert refine_speech_text("我們然後然後就去了") == "我們然後就去了。"
+
 
 # ─────────────────────────────────────────────────────────────
 # Test 2：語音大腦格式審計
@@ -203,6 +214,21 @@ class TestAkaneVoiceBrain:
         assert sanitize_voice_output("嗯（停頓）我想想。") == "嗯 我想想。" or sanitize_voice_output("嗯（停頓）我想想。") == "嗯我想想。"
         assert "微笑" not in sanitize_voice_output("（微笑）累不累？")
         assert "嘆氣" not in sanitize_voice_output("（嘆氣）好吧。")
+
+    def test_streaming_strips_stage_directions_across_split_tokens(self):
+        """VC-2.0 P0: 串流模式下動作/表情跨 token 拆碎時，整段括號內容必須被徹底抑制"""
+        tokens = ["（", "輕", "聲", "嘆", "氣", "）", "今", "天", "天氣", "很好"]
+        parts = list(AkaneVoiceBrain(llm_stream=lambda msgs: iter(tokens)).stream_respond("早安"))
+        joined = "".join(parts)
+        assert "輕聲嘆氣" not in joined
+        assert "嘆氣" not in joined
+        assert joined == "今天天氣很好"
+
+        star_tokens = ["*", "微", "笑", "*", "累不累？"]
+        star_parts = list(AkaneVoiceBrain(llm_stream=lambda msgs: iter(star_tokens)).stream_respond("嗨"))
+        star_joined = "".join(star_parts)
+        assert "微笑" not in star_joined
+        assert star_joined == "累不累？"
 
     def test_history_injected_before_new_user(self):
         """對話記憶：history 依序插在 system 之後、新 user 句之前（連貫）"""
@@ -253,6 +279,96 @@ class TestAkaneVoiceBrain:
         splitter = ClauseSplitter()
         out = list(splitter.split_stream(["好累啊！", "明天再說……"]))
         assert out == ["好累啊！", "明天再說……"]
+
+    def test_memory_retriever_injection(self):
+        """VC-2.2: 記憶檢索器注入，檢索到的事實注入 system prompt"""
+        captured = {}
+
+        def fake_stream(msgs):
+            captured["msgs"] = msgs
+            return iter(["嗯，我記得。"])
+
+        brain = AkaneVoiceBrain(
+            llm_stream=fake_stream,
+            memory_retriever=lambda q: "Bryan 正在準備開會" if "開會" in q else None,
+            temporal_provider=None,
+        )
+        res = brain.respond("我有提到開會的事嗎？")
+        assert "我記得" in res
+        assert "msgs" in captured
+        sys_msg = captured["msgs"][0]["content"]
+        assert "【關於 Bryan 的記憶】" in sys_msg
+        assert "Bryan 正在準備開會" in sys_msg
+
+    def test_temporal_provider_injection(self):
+        """VC-2.2: 時序現象學檢索器注入，TEMPORAL ANCHOR 注入 system prompt"""
+        captured = {}
+
+        def fake_stream(msgs):
+            captured["msgs"] = msgs
+            return iter(["這段時間辛苦了。"])
+
+        mock_anchor = "[TEMPORAL ANCHOR]\n- 時間座標：2026-09-06 18:00\n- 體感經驗：傍晚時分\n- 關係時序：一切如常"
+        brain = AkaneVoiceBrain(
+            llm_stream=fake_stream,
+            memory_retriever=None,
+            temporal_provider=lambda: mock_anchor,
+        )
+        brain.respond("茜，你在嗎？")
+        sys_msg = captured["msgs"][0]["content"]
+        assert "【當前時序體感】" in sys_msg
+        assert mock_anchor in sys_msg
+
+    def test_both_memory_and_temporal_streaming(self):
+        """VC-2.2: 串流模式下記憶與時序同時注入，正常切句輸出"""
+        captured = {}
+
+        def fake_stream(msgs):
+            captured["msgs"] = msgs
+            return iter(["記得你說過，", "今晚要早點睡。"])
+
+        mock_anchor = "[TEMPORAL ANCHOR]\n- 時間座標：夜深"
+        brain = AkaneVoiceBrain(
+            llm_stream=fake_stream,
+            memory_retriever=lambda q: "Bryan 昨晚熬夜了",
+            temporal_provider=lambda: mock_anchor,
+        )
+        parts = list(brain.stream_respond("好累喔"))
+        assert "".join(parts) == "記得你說過，今晚要早點睡。"
+        sys_msg = captured["msgs"][0]["content"]
+        assert "【當前時序體感】" in sys_msg
+        assert "【關於 Bryan 的記憶】" in sys_msg
+        assert "Bryan 昨晚熬夜了" in sys_msg
+
+    def test_memory_and_temporal_fail_silent(self):
+        """VC-2.2: 檢索器拋出例外或回傳 None 時 fail-silent，對話正常進行"""
+        def bad_mem(q):
+            raise RuntimeError("db lock")
+
+        def bad_anchor():
+            raise ValueError("bad time")
+
+        captured = {}
+        brain = AkaneVoiceBrain(
+            llm_stream=lambda msgs: (captured.__setitem__("msgs", msgs) or iter(["我在。"])),
+            memory_retriever=bad_mem,
+            temporal_provider=bad_anchor,
+        )
+        res = brain.respond("測試容錯")
+        assert res == "我在。"
+        sys_msg = captured["msgs"][0]["content"]
+        assert "【當前時序體感】" not in sys_msg
+        assert "【關於 Bryan 的記憶】" not in sys_msg
+
+    def test_default_retrievers_fail_silent(self):
+        """VC-2.2: default_memory_retriever 與 default_temporal_provider 於缺檔時回傳 None（0 異常）"""
+        from clients.voice_companion.akane_voice_brain import (
+            default_memory_retriever,
+            default_temporal_provider,
+        )
+
+        assert default_memory_retriever("query", agent_id="non_existent_agent_xyz") is None
+        assert default_temporal_provider(agent_id="non_existent_agent_xyz") is None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1321,6 +1437,42 @@ class TestWebServer:
         assert "傳送中" in HTML_PAGE
         assert "額度" in HTML_PAGE  # 內建提示（HTML 註解）
 
+    def test_ws_ping_pong_heartbeat(self):
+        """VC-2.1: 前端送 ping → 後端回 pong 心跳保活"""
+        async def _run():
+            app, _ = _make_web_app()
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                await ws.send_json({"type": "ping"})
+                msg = await ws.receive(timeout=3)
+                assert msg.type == WSMsgType.TEXT
+                data = json.loads(msg.data)
+                assert data.get("type") == "pong"
+                await ws.close()
+            finally:
+                await client.close()
+
+        asyncio.run(_run())
+
+    def test_ui_reconnect_and_lifecycle_elements(self):
+        """VC-2.1: HTML_PAGE 包含自動重連、心跳保活與手機端前景喚醒監聽"""
+        assert "visibilitychange" in HTML_PAGE
+        assert "scheduleReconnect" in HTML_PAGE
+        assert "startHeartbeat" in HTML_PAGE
+        assert "ping" in HTML_PAGE
+        assert "touchstart" in HTML_PAGE
+
+    def test_ui_autovad_barge_in_elements(self):
+        """VC-2.2: HTML_PAGE 包含 Auto-VAD Barge-in 門檻與狀態連動"""
+        assert "BARGE_AUTO_THRESHOLD = 0.04" in HTML_PAGE
+        assert "BARGE_AUTO_MS = 200" in HTML_PAGE
+        assert "barging = false" in HTML_PAGE
+        assert "barging = true" in HTML_PAGE
+        assert "BARGE_AUTO_THRESHOLD" in HTML_PAGE
+
+
 
 # ─────────────────────────────────────────────────────────────
 # Test 7：HTTPS 模式 + 不安全來源提示 + 診斷日誌（VC-1.5，全離線）
@@ -1400,3 +1552,367 @@ class TestHttpsAndDiagnostics:
         assert "[UTT] reply" in out, "回合完成必須記錄回覆結果"
         assert "[WS] interrupt" in out
         assert "[WS] close" in out
+
+
+# ─────────────────────────────────────────────────────────────
+# Test 8：Web 回合取消與過期結果隔離（VC-2.3-02，全離線）
+# ─────────────────────────────────────────────────────────────
+
+class TestWebTurnCancellation:
+    def test_interrupt_during_asr_discards_stale_result(self):
+        """VC-2.3-02: ASR 延遲期間收到 interrupt → ASR 完成後不得送出 user transcript、不得進入 speaking"""
+        class SlowASR:
+            def transcribe(self, wav_bytes):
+                import time
+                time.sleep(0.15)
+                return "這是一句過期語音"
+
+        async def _run():
+            brain = AkaneVoiceBrain(llm_stream=lambda msgs: iter(["回覆"]))
+            app = build_app(
+                WEB_TEST_CONFIG,
+                brain=brain,
+                refiner=AsrRefiner(llm_call=None),
+                asr=SlowASR(),
+                streamer_factory=lambda sink: FakeWebStreamer(sink=sink),
+            )
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                await ws.send_json({"type": "ptt_start"})
+                pcm = (np.full(1600, 0.5) * 32767).astype(np.int16).tobytes()
+                await ws.send_bytes(pcm)
+                await ws.send_json({"type": "ptt_stop"})
+
+                # 等待進入 THINKING
+                while True:
+                    m = await ws.receive(timeout=2)
+                    if m.type == WSMsgType.TEXT and json.loads(m.data).get("state") == "THINKING":
+                        break
+
+                # 在 ASR 進行中發送 interrupt
+                await ws.send_json({"type": "interrupt"})
+                while True:
+                    m = await ws.receive(timeout=2)
+                    if m.type == WSMsgType.TEXT and json.loads(m.data).get("state") == "IDLE":
+                        break
+
+                # 等待 SlowASR 結束
+                await asyncio.sleep(0.25)
+
+                received = []
+                while True:
+                    try:
+                        m = await ws.receive(timeout=0.1)
+                        if m.type == WSMsgType.TEXT:
+                            received.append(json.loads(m.data))
+                        else:
+                            break
+                    except Exception:
+                        break
+                assert not any(r.get("text") == "這是一句過期語音" for r in received)
+                assert not any(r.get("state") == "SPEAKING" for r in received)
+                await ws.close()
+            finally:
+                await client.close()
+
+        asyncio.run(_run())
+
+    def test_interrupt_during_refiner_discards_stale_result(self):
+        """VC-2.3-02: Refiner 延遲期間收到 interrupt → 不得進入 speaking"""
+        class SlowRefiner:
+            def refine_speech_text(self, text):
+                import time
+                time.sleep(0.15)
+                return "過期淨化文字"
+
+        async def _run():
+            brain = AkaneVoiceBrain(llm_stream=lambda msgs: iter(["回覆"]))
+            app = build_app(
+                WEB_TEST_CONFIG,
+                brain=brain,
+                refiner=SlowRefiner(),
+                asr=FakeWebASR("語音輸入"),
+                streamer_factory=lambda sink: FakeWebStreamer(sink=sink),
+            )
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                await ws.send_json({"type": "ptt_start"})
+                pcm = (np.full(1600, 0.5) * 32767).astype(np.int16).tobytes()
+                await ws.send_bytes(pcm)
+                await ws.send_json({"type": "ptt_stop"})
+
+                # 等待收到 user transcript (此時即將進入 refiner)
+                while True:
+                    m = await ws.receive(timeout=2)
+                    if m.type == WSMsgType.TEXT and json.loads(m.data).get("type") == "transcript":
+                        break
+
+                # 在 refiner 進行中發送 interrupt
+                await ws.send_json({"type": "interrupt"})
+                while True:
+                    m = await ws.receive(timeout=2)
+                    if m.type == WSMsgType.TEXT and json.loads(m.data).get("state") == "IDLE":
+                        break
+
+                await asyncio.sleep(0.25)
+                received = []
+                while True:
+                    try:
+                        m = await ws.receive(timeout=0.1)
+                        if m.type == WSMsgType.TEXT:
+                            received.append(json.loads(m.data))
+                        else:
+                            break
+                    except Exception:
+                        break
+                assert not any(r.get("state") == "SPEAKING" for r in received)
+                await ws.close()
+            finally:
+                await client.close()
+
+        asyncio.run(_run())
+
+    def test_new_text_turn_supersedes_old_voice_turn(self):
+        """VC-2.3-02: 語音 THINKING 中送出文字訊息 → 舊語音直接作廢，新文字優先回覆"""
+        asr_gate = threading.Event()
+
+        class GatedASR:
+            def transcribe(self, wav_bytes):
+                asr_gate.wait(timeout=2)
+                return "舊語音"
+
+        async def _run():
+            brain = AkaneVoiceBrain(llm_stream=lambda msgs: iter(["文字回覆。"]))
+            app = build_app(
+                WEB_TEST_CONFIG,
+                brain=brain,
+                refiner=AsrRefiner(llm_call=None),
+                asr=GatedASR(),
+                streamer_factory=lambda sink: FakeWebStreamer(sink=sink),
+            )
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                await ws.send_json({"type": "ptt_start"})
+                pcm = (np.full(1600, 0.5) * 32767).astype(np.int16).tobytes()
+                await ws.send_bytes(pcm)
+                await ws.send_json({"type": "ptt_stop"})
+
+                # 等待進入 THINKING
+                while True:
+                    m = await ws.receive(timeout=2)
+                    if m.type == WSMsgType.TEXT and json.loads(m.data).get("state") == "THINKING":
+                        break
+
+                # 立即送出文字打斷舊語音
+                await ws.send_json({"type": "text", "text": "新文字"})
+                await asyncio.sleep(0.05)
+                asr_gate.set() # 放行舊 ASR 執行緒
+
+                events = []
+                while True:
+                    try:
+                        m = await ws.receive(timeout=2)
+                        if m.type == WSMsgType.TEXT:
+                            data = json.loads(m.data)
+                            events.append(data)
+                            if data.get("type") == "state" and data.get("state") == "IDLE":
+                                break
+                        else:
+                            break
+                    except Exception:
+                        break
+
+                user_texts = [e.get("text") for e in events if e.get("type") == "transcript" and e.get("role") == "user"]
+                assert "新文字" in user_texts
+                assert "舊語音" not in user_texts
+                await ws.close()
+            finally:
+                await client.close()
+
+        asyncio.run(_run())
+
+    def test_barged_in_reply_is_not_added_to_history(self):
+        """VC-2.3-02: 說話中被打斷的半截回覆不得寫入對話記憶 _history"""
+        captured_prompts = []
+        first_called = threading.Event()
+
+        class BlockingStreamer(FakeWebStreamer):
+            def __init__(self, sink=None):
+                super().__init__(sink)
+                self.release = threading.Event()
+
+            def feed_text_piece(self, piece: str):
+                self.fed.append(piece)
+                self.release.wait(timeout=2)
+
+        def mock_llm(msgs):
+            captured_prompts.append(list(msgs))
+            first_called.set()
+            return iter(["回覆片段一，", "回覆片段二。"])
+
+        async def _run():
+            streamer = BlockingStreamer()
+            brain = AkaneVoiceBrain(llm_stream=mock_llm)
+            app = build_app(
+                WEB_TEST_CONFIG,
+                brain=brain,
+                refiner=AsrRefiner(llm_call=None),
+                asr=FakeWebASR(),
+                streamer_factory=lambda sink: streamer,
+            )
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                # 第一回合：打字發送
+                await ws.send_json({"type": "text", "text": "這是一句會被打斷的話"})
+                # 等待進入 SPEAKING
+                while True:
+                    m = await ws.receive(timeout=2)
+                    if m.type == WSMsgType.TEXT and json.loads(m.data).get("state") == "SPEAKING":
+                        break
+                await asyncio.to_thread(first_called.wait, 2)
+                # 打斷第一回合
+                await ws.send_json({"type": "interrupt"})
+                streamer.release.set() # 讓背景執行緒通過
+                # 等待第一回合回到 IDLE
+                while True:
+                    m = await ws.receive(timeout=2)
+                    if m.type == WSMsgType.TEXT and json.loads(m.data).get("state") == "IDLE":
+                        break
+
+                # 第二回合：新文字
+                streamer.release = threading.Event()
+                streamer.release.set() # 第二回合不阻擋
+                await ws.send_json({"type": "text", "text": "第二回合正常對話"})
+                while True:
+                    m = await ws.receive(timeout=2)
+                    if m.type == WSMsgType.TEXT and json.loads(m.data).get("state") == "IDLE":
+                        break
+
+                # 檢查第二回合收到的 messages，不應含有「這是一句會被打斷的話」
+                assert len(captured_prompts) >= 2
+                second_prompt_contents = [m["content"] for m in captured_prompts[1]]
+                assert "這是一句會被打斷的話" not in second_prompt_contents
+                assert "第二回合正常對話" in second_prompt_contents
+                await ws.close()
+            finally:
+                await client.close()
+
+        asyncio.run(_run())
+
+    def test_session_close_cancels_reply_task_cleanly(self):
+        """VC-2.3-02: Session 關閉時乾淨取消正在運行的 reply task，0 未捕獲例外"""
+        class HangingStreamer(FakeWebStreamer):
+            def __init__(self, sink=None):
+                super().__init__(sink)
+                self.release = threading.Event()
+
+            def feed_text_piece(self, piece: str):
+                self.fed.append(piece)
+                self.release.wait(timeout=5)
+
+        async def _run():
+            streamer = HangingStreamer()
+            app, _ = _make_web_app(
+                brain_tokens=("很長的話，", "說不完。"),
+                streamer_factory=lambda sink: streamer,
+            )
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                await ws.send_json({"type": "text", "text": "關閉測試"})
+                # 等待進入 SPEAKING
+                while True:
+                    m = await ws.receive(timeout=2)
+                    if m.type == WSMsgType.TEXT and json.loads(m.data).get("state") == "SPEAKING":
+                        break
+                # 仍在 SPEAKING 時直接關閉連線
+                await ws.close()
+                await asyncio.sleep(0.1)
+                streamer.release.set()
+            finally:
+                await client.close()
+
+        asyncio.run(_run())
+
+
+# ─────────────────────────────────────────────────────────────
+# Test 9：前端 AudioWorklet 與無複製 Ring Buffer（VC-2.3-04，全離線）
+# ─────────────────────────────────────────────────────────────
+
+class TestWebAudioWorkletAndRingBuffer:
+    def test_ui_contains_audio_worklet_processor_and_blob_loader(self):
+        """VC-2.3-04: HTML_PAGE 包含 AudioWorkletProcessor 定義、Blob URL 動態註冊與 AudioWorkletNode"""
+        from clients.voice_companion.web_ui import HTML_PAGE
+
+        assert "class AkaneAudioProcessor extends AudioWorkletProcessor" in HTML_PAGE
+        assert "registerProcessor('akane-audio-processor', AkaneAudioProcessor)" in HTML_PAGE or \
+               'registerProcessor("akane-audio-processor", AkaneAudioProcessor)' in HTML_PAGE
+        assert "URL.createObjectURL(blob)" in HTML_PAGE or "URL.createObjectURL(new Blob" in HTML_PAGE or "createObjectURL" in HTML_PAGE
+        assert "new AudioWorkletNode(audioCtx, \"akane-audio-processor\")" in HTML_PAGE
+        assert "audioWorklet.addModule" in HTML_PAGE
+
+    def test_ui_zero_copy_ring_buffer_structure_and_no_shift(self):
+        """VC-2.3-04: 環形緩衝區採用預分配 Float32Array 與指標推進，徹底消除 playQueue.shift()"""
+        from clients.voice_companion.web_ui import HTML_PAGE
+
+        # 30 秒容量與指標
+        assert "44100 * 30" in HTML_PAGE
+        assert "readIndex" in HTML_PAGE
+        assert "writeIndex" in HTML_PAGE
+        assert "fallbackBuf" in HTML_PAGE
+        assert "fallbackRead" in HTML_PAGE
+        assert "fallbackWrite" in HTML_PAGE
+
+        # 驗證所有播放路徑均已淘汰 playQueue.shift()
+        assert "playQueue.shift()" not in HTML_PAGE
+
+    def test_ui_linear_fade_out_on_flush(self):
+        """VC-2.3-04: 打斷/清空時做 128-sample 線性淡出消除直流爆音"""
+        from clients.voice_companion.web_ui import HTML_PAGE
+
+        assert "Math.min(128," in HTML_PAGE
+        assert "(1.0 - k / fade)" in HTML_PAGE
+        assert 'workletNode.port.postMessage({ type: "flush" })' in HTML_PAGE
+
+    def test_ui_script_processor_fallback_retained(self):
+        """VC-2.3-04: 保留 ScriptProcessorNode 作為 fallback，相容舊瀏覽器或無 Worklet 環境"""
+        from clients.voice_companion.web_ui import HTML_PAGE
+
+        assert "initScriptProcessorFallback" in HTML_PAGE
+        assert "createScriptProcessor(2048, 0, 1)" in HTML_PAGE
+        assert "pushFallbackSamples" in HTML_PAGE
+
+    def test_ui_prebuffer_and_state_sync(self):
+        """VC-2.3-04: Worklet 維持 80ms 預緩衝門檻並同步狀態機"""
+        from clients.voice_companion.web_ui import HTML_PAGE
+
+        assert "prebufferSamples = 3500" in HTML_PAGE or "3500" in HTML_PAGE
+        assert 'workletNode.port.postMessage({ type: "state", state: s })' in HTML_PAGE
+
+    def test_web_server_serves_worklet_enabled_html(self):
+        """VC-2.3-04: Web 伺服器實際響應包含 AudioWorklet 播放架構"""
+        async def _run():
+            app, _ = _make_web_app()
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                resp = await client.get("/")
+                assert resp.status == 200
+                html = await resp.text()
+                assert "AkaneAudioProcessor" in html
+                assert "akane-audio-processor" in html
+                assert "readIndex" in html
+                assert "writeIndex" in html
+            finally:
+                await client.close()
+
+        asyncio.run(_run())
