@@ -331,8 +331,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `7e491d7` (fix(vc-1): force utf-8 sse decode in llm stream (chinese mojibake))
-- VC-1 SSE utf-8 fix commit: `7e491d7` (fix(vc-1): force utf-8 sse decode in llm stream (chinese mojibake); **Current HEAD**)
+- Current HEAD: `cf752a7` (docs: register VC-1 sse utf-8 fix (7e491d7))
+- VC-1 sse fix register commit: `cf752a7` (docs: register VC-1 sse utf-8 fix (7e491d7); **Current HEAD**)
+- VC-1 SSE utf-8 fix commit: `7e491d7` (fix(vc-1): force utf-8 sse decode in llm stream (chinese mojibake); **distinct from Current HEAD**)
 - VC-1 405 fix register commit: `f12e46a` (docs: register VC-1 405 endpoint fix (53c3fab); **Current HEAD**)
 - VC-1 405 fix commit: `53c3fab` (fix(vc-1): normalize chat completions endpoint (405 on ollama.com/v1 root); **distinct from Current HEAD**)
 - VC-1 LLM key fix register commit: `3da9a67` (docs: register VC-1 LLM key fix (2b77631); **Current HEAD**)
