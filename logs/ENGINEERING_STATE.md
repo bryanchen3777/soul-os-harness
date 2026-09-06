@@ -331,7 +331,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `a30ffa5` (docs: register VC-1.6 audio batch CLOSED (12f216f, owner confirmed good))
+- Current HEAD: `e3e195e` (docs: register VC-1 boot autostart (task VC1_AkaneVoiceCompanion, pythonw https 8765))
+- VC-1 boot autostart register commit: `e3e195e` (docs: register VC-1 boot autostart; **Current HEAD**)
+- VC-1.6 batch register commit: `a30ffa5` (docs: register VC-1.6 audio batch CLOSED; **distinct from Current HEAD**)
 - VC-1.6 batch register commit: `a30ffa5` (docs: register VC-1.6 audio batch CLOSED; **Current HEAD**)
 - VC-1.6 audio batch final commit: `12f216f` (auto-VAD anti-echo; **distinct from Current HEAD** — 本批次結案）
 - VC-1.6 audio batch commits（音源/播放/記憶/模型/守門/auto-VAD，主大腦直接實作）：`984f51c`（TTS-Live 真實層換官方 fish-audio-sdk；websocket-client 被伺服器拒收）、`f9e758b`（明確 44100＋瀏覽器重採樣）、`a3d95b8`＋`039f476`（IDLE 不清佇列＋佇列上限 30s，修砍尾）、`3ec82a9`（web REST 音源模式 --tts rest）、`c4153b5`（每連線對話記憶 10 輪）、`0475ea3`（付費模型 s2.1-pro）、`2c854d4`（動作/表情段整段剝離）、`5fecf34`＋`12f216f`（auto-VAD 不聽自己喇叭：SPEAKING＋1.8s holdoff 鎖、260ms 起始門檻）
