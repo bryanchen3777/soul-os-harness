@@ -331,8 +331,10 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `acb1398` (docs: register VC-1.3 playback root fixes (1a1d016 + 90dcd77))
-- VC-1.3 playback register commit: `acb1398` (docs: register VC-1.3 playback root fixes (1a1d016 + 90dcd77); **Current HEAD**)
+- Current HEAD: `12f216f` (fix(vc-1.3): auto-VAD anti-echo — 1.8s holdoff + 260ms onset gate)
+- VC-1.6 audio batch final commit: `12f216f` (auto-VAD anti-echo; **Current HEAD** — 本批次結案）
+- VC-1.6 audio batch commits（音源/播放/記憶/模型/守門/auto-VAD，主大腦直接實作）：`984f51c`（TTS-Live 真實層換官方 fish-audio-sdk；websocket-client 被伺服器拒收）、`f9e758b`（明確 44100＋瀏覽器重採樣）、`a3d95b8`＋`039f476`（IDLE 不清佇列＋佇列上限 30s，修砍尾）、`3ec82a9`（web REST 音源模式 --tts rest）、`c4153b5`（每連線對話記憶 10 輪）、`0475ea3`（付費模型 s2.1-pro）、`2c854d4`（動作/表情段整段剝離）、`5fecf34`＋`12f216f`（auto-VAD 不聽自己喇叭：SPEAKING＋1.8s holdoff 鎖、260ms 起始門檻）
+- VC-1.3 playback register commit: `acb1398` (docs: register VC-1.3 playback root fixes (1a1d016 + 90dcd77); **distinct from Current HEAD**)
 - VC-1.3 playback decouple fix commit: `90dcd77` (fix(vc-1.3): decouple playback init from mic start (text-only users were silent); **distinct from Current HEAD**)
 - VC-1.3 autoplay resume fix commit: `1a1d016` (fix(vc-1.3): resume AudioContext on first gesture (autoplay policy made playback silent); **distinct from Current HEAD**)
 - Current HEAD: `ea11465` (docs: register VC-1.6 sdk transport (984f51c))
@@ -1555,5 +1557,7 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09-05 (VC-1.6) | **真實 TTS-Live 傳輸換官方 fish-audio-sdk CLOSED**（commit `984f51c`，3 檔 +315/-304；本行 + §1.1 Current HEAD 同步）。**實機診斷（分層實證）**：瀏覽器有文字無聲音 → REST TTS 200（16KB）但真實 WS 自測 0 bytes；手寫 msgpack start 補齊欄位（含 sample_rate/prosody 顯式 null 位元組級對齊 SDK）仍被伺服器「start 後空 TXT ack→斷線」；官方 `fish-audio-sdk`（httpx_ws 傳輸）同 key/voice/model 實測成功 102,400 bytes → **根因 = websocket-client 傳輸與 Fish WS 閘道不相容**。修：`fish_tts_live.py` 真實層重寫為 `WebSocketSession.tts(TTSRequest, text_iter, backend=model)` daemon worker（公開 API/建構式/AudioRelaySink 注入全不動；feed queue＋interrupt 關 session）；requirements `fish-audio-sdk`（移除 msgpack/websocket-client）；Live 測試遷移 SDK 接縫（FakeSDKSession）。驗收 71 passed（主大腦複跑）；**真實 CollectSink 自測 135,168 bytes PCM、last_error None（決勝門過）**；伺服器重啟（PID 25136，https 200）。**備註**：本日三批 developer subagent 連環失敗 = OpenCode Go 週配額 100% 用罄（非工單問題），主大腦彈性兜底自行實作。0 src/、0 Frozen、0 金鑰。 | DSH | VC-1.6 |
 
 | 2026-09-05 (VC-1.3 靜音 root fix) | **瀏覽器播放兩層根治 CLOSED**（`1a1d016` resume＋`90dcd77` 解耦；本行 + §1.1 Current HEAD 同步）。**分層實證**：全真路徑端到端自測（build_app＋WebSession＋AudioRelaySink＋真實 SDK TTS→ 真 WS 客戶端）打字「你好」→ SPEAKING → **BINARY 86,016 bytes PCM** → 回覆文字 → IDLE，伺服器→WS 中繼無誤（且證實先前診斷被 stdout 緩衝遮蔽 → 重啟改 `python -u`）。**剩餘根因＝瀏覽器端**：`AudioContext`＋播放節點只在「首次點擊 micBtn」的 startMic() 內建立 → 純打字（或沒按過麥克風鈕）的使用者 audioCtx 永不建立 → binary 收進佇列卻無人播放＝有文字沒聲音。修：(a) `ensurePlayback()` 冪等 helper（建立＋resume）與播放解耦；(b) 任何手勢（pointerdown/空白鍵/送文字/Enter）、收到 SPEAKING 狀態、收到 binary、麥克風就緒皆觸發。驗收 72 passed（71＋1 回歸斷言）。伺服器重啟 `python -u`（PID 7452，https 200）。0 src/、0 Frozen、0 金鑰。 | DSH | VC-1.3 |
+
+| 2026-09-06 (VC-1.6 系列) | **語音音訊全面修復批次 CLOSED（暫時結案，Owner 實機確認「目前表現很好」）**（主大腦兜底直接實作——當日 OpenCode Go 週配額 100% 致三批 developer subagent 連環死亡）。**根因鏈與修復**：(1) websocket-client 傳輸被 Fish WS 閘道拒收 → `fish_tts_live` 真實層換官方 fish-audio-sdk（`984f51c`，實測 135KB PCM）；(2) 長句怪聲/砍尾 → 明確 44100＋瀏覽器自動重採樣（`f9e758b`）、IDLE 不再清播放佇列＋上限 200ms→30s（`a3d95b8`+`039f476`）；(3) 隔離實驗 REST 音源模式（`3ec82a9`，--tts rest，mp3→miniaudio 44100，實測 255KB/2.9s）；(4) 付費模型 `s2.1-pro`（`0475ea3`，Owner 拍板去 -free）；(5) 每連線對話記憶 10 輪（`c4153b5`——修「對話難連貫」：原本每回合失憶）；(6) 動作/表情（微笑/嘆氣）整段剝離不再被 TTS 唸出（`2c854d4`）；(7) auto-VAD 反回授（`5fecf34`+`12f216f`：SPEAKING＋1.8s holdoff 完全鎖、連續 260ms 才觸發——修「茜講話被自己聲音打斷」）。伺服器即時日誌（python -u）常駐。**驗收**：74 passed（主大腦複跑）；決勝門真實合成 >0 bytes；Owner 實機確認語音+auto-VAD+對話連貫 OK。HEAD == origin/main == `12f216f`。0 src/、0 Frozen、0 金鑰。REST/live 可隨時 `--tts rest|live` 切換。 | DSH | VC-1.6 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
