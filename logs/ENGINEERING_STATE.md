@@ -327,8 +327,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `79e5dc9` (feat(vc-1.3): browser voice companion web server (aiohttp + ws relay))
-- VC-1.3 web server commit: `79e5dc9` (feat(vc-1.3): browser voice companion web server (aiohttp + ws relay); **Current HEAD**)
+- Current HEAD: `7707814` (docs: register VC-1.3 web voice companion (79e5dc9))
+- VC-1.3 register commit: `7707814` (docs: register VC-1.3 web voice companion (79e5dc9); **Current HEAD**)
+- VC-1.3 web server commit: `79e5dc9` (feat(vc-1.3): browser voice companion web server (aiohttp + ws relay); **distinct from Current HEAD**)
 - VC-1.2/VC-1.1 register commit: `c8e2640` (docs: register VC-1.2 TTS-Live + VC-1.1 fish ASR (f742a7d + 240f657); **Current HEAD**)
 - VC-1.1 ASR + token feeding commit: `240f657` (feat(vc-1.1): fish audio official ASR (stt_service) + token-level ws-live feeding; **distinct from Current HEAD**)
 - VC-1.2 TTS-Live commit: `f742a7d` (feat(vc-1.2): fish audio websocket tts-live streaming (pcm + barge-in); **distinct from Current HEAD**)
