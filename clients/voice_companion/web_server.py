@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -182,6 +183,7 @@ class AudioRelaySink:
         self._sending = False
         self._written_chunks = 0
         self._finished_chunks = 0
+        self.first_chunk_time: Optional[float] = None
         self._drained_event: asyncio.Event = asyncio.Event()
         self._drained_event.set()
 
@@ -214,6 +216,8 @@ class AudioRelaySink:
     def write(self, chunk: bytes) -> None:
         if self._closed or not chunk:
             return
+        if self.first_chunk_time is None:
+            self.first_chunk_time = time.perf_counter()
         self._written_chunks += 1
         self._drained_event.clear()
         try:
@@ -295,6 +299,8 @@ class WebSession:
     STATE_THINKING = "THINKING"
     STATE_SPEAKING = "SPEAKING"
     MAX_HISTORY_TURNS = 10  # 對話記憶：保留最近 N 輪（每輪 user+assistant 兩條）
+    MAX_FRAME_BYTES = 64 * 1024  # 64 KB 邊界防禦（VC-2.3-05）
+    MAX_UTTERANCE_SAMPLES = VAD_SAMPLE_RATE * 30  # 30 秒上限（16k mono 480k samples，約 960 KB）
 
     def __init__(self, ws, *, config, brain, refiner, asr, streamer, detector, sink):
         self._ws = ws
@@ -340,10 +346,19 @@ class WebSession:
         """瀏覽器收音分片（Int16 PCM 16k mono）：餵能量 VAD；0.8s 靜音 → 斷句。"""
         if self.state != self.STATE_LISTENING:
             return
+        if len(chunk) > self.MAX_FRAME_BYTES:
+            print(f"[WS] pcm frame exceeded {self.MAX_FRAME_BYTES} bytes ({len(chunk)}), dropped")
+            return
         samples = np.frombuffer(chunk, dtype="<i2").astype(np.float32) / 32768.0
         events = self._vad.feed(samples.tolist())
         if self._vad.in_speech:
             self._frames.extend(samples.tolist())
+            if len(self._frames) >= self.MAX_UTTERANCE_SAMPLES:
+                print(f"[UTT] max utterance limit reached ({len(self._frames)} samples / 30s), forcing speech_end")
+                if self._utterance_task and not self._utterance_task.done():
+                    self._utterance_task.cancel()
+                self._utterance_task = asyncio.create_task(self._handle_utterance())
+                return
         if "speech_end" in events:
             if self._utterance_task and not self._utterance_task.done():
                 self._utterance_task.cancel()
@@ -360,13 +375,17 @@ class WebSession:
         text = (text or "").strip()
         if not text:
             return
+        if len(text) > self.MAX_FRAME_BYTES:
+            print(f"[WS] text exceeded {self.MAX_FRAME_BYTES} chars ({len(text)}), truncated")
+            text = text[:self.MAX_FRAME_BYTES]
         print(f"[WS] text {text[:40]}")  # VC-1.5 診斷日誌
         if self.state in (self.STATE_LISTENING, self.STATE_THINKING, self.STATE_SPEAKING):
             self._barge()
         self._generation += 1
         gen = self._generation
+        t_start = time.perf_counter()
         await self._send_json({"type": "transcript", "role": "user", "text": text})
-        await self._run_reply(text, gen=gen)
+        await self._run_reply(text, gen=gen, t_start=t_start, t_asr_done=t_start)
 
     async def on_ping(self) -> None:
         """心跳保活（VC-2.1）：前端每 25 秒送 ping，回傳 pong 防 NAT/隧道斷線。"""
@@ -378,6 +397,8 @@ class WebSession:
         """斷句 → THINKING → ASR → 淨化 → 回覆管線。"""
         if self.state != self.STATE_LISTENING:
             return
+        t_start = time.perf_counter()
+        t_asr_done = None
         self._generation += 1
         gen = self._generation
         await self._set_state(self.STATE_THINKING)
@@ -394,6 +415,7 @@ class WebSession:
         wav = pcm16_to_wav_bytes(pcm, sample_rate=VAD_SAMPLE_RATE)
         try:
             text = await asyncio.to_thread(self._asr.transcribe, wav)
+            t_asr_done = time.perf_counter()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -446,9 +468,15 @@ class WebSession:
             return
         if gen != self._generation:
             return
-        await self._run_reply(clean, gen=gen)
+        await self._run_reply(clean, gen=gen, t_start=t_start, t_asr_done=t_asr_done)
 
-    async def _run_reply(self, user_text: str, gen: Optional[int] = None) -> None:
+    async def _run_reply(
+        self,
+        user_text: str,
+        gen: Optional[int] = None,
+        t_start: Optional[float] = None,
+        t_asr_done: Optional[float] = None,
+    ) -> None:
         """THINKING 完成 → SPEAKING：LLM 串流 token → feed_text_piece → end_session。
 
         收尾以 create_task 並行執行（不阻塞 WS handler），interrupt 訊息可立即打斷；
@@ -460,6 +488,13 @@ class WebSession:
         elif gen != self._generation:
             return
 
+        if t_start is None:
+            t_start = time.perf_counter()
+        if t_asr_done is None:
+            t_asr_done = t_start
+
+        if hasattr(self._sink, "first_chunk_time"):
+            self._sink.first_chunk_time = None
         await self._set_state(self.STATE_SPEAKING)
 
         def _generate() -> str:
@@ -499,7 +534,19 @@ class WebSession:
                         cap = self.MAX_HISTORY_TURNS * 2
                         if len(self._history) > cap:
                             self._history = self._history[-cap:]
+                t_done = time.perf_counter()
+                total_ms = (t_done - t_start) * 1000.0
+                asr_ms = ((t_asr_done - t_start) * 1000.0) if t_asr_done is not None else 0.0
+                first_audio_ms = (
+                    ((self._sink.first_chunk_time - t_start) * 1000.0)
+                    if getattr(self._sink, "first_chunk_time", None) is not None
+                    else total_ms
+                )
                 print(f"[UTT] reply chars={len(reply)}")  # VC-1.5 診斷日誌
+                print(
+                    f"[LATENCY] asr={asr_ms:.1f}ms first_audio={first_audio_ms:.1f}ms "
+                    f"total={total_ms:.1f}ms chars={len(reply)}"
+                )  # VC-2.3-05 延遲可觀測性
             finally:
                 if task_gen == self._generation:  # 仍是本世代 → 正常結束；被打斷則已由 interrupt 收尾
                     await self._set_state(self.STATE_IDLE)
@@ -567,7 +614,7 @@ async def index_handler(request: web.Request) -> web.Response:
 
 
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
-    ws = web.WebSocketResponse()
+    ws = web.WebSocketResponse(max_msg_size=WebSession.MAX_FRAME_BYTES)
     await ws.prepare(request)
     app = request.app
     cfg = app[VC_CONFIG_KEY]

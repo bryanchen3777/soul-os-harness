@@ -2067,3 +2067,137 @@ class TestAudioRelayBackpressureAndDrain:
                 assert b_idx < akane_transcript_idx < idle_state_idx
 
         asyncio.run(_run())
+
+
+# ─────────────────────────────────────────────────────────────
+# Test 11：邊界防禦與端到端延遲可觀測性（VC-2.3-05，全離線）
+# ─────────────────────────────────────────────────────────────
+
+class TestEdgeDefenseAndLatencyTelemetry:
+    def test_oversized_payload_defense(self):
+        """VC-2.3-05: 超過 64KB 的 WS frame 觸發底層中斷關閉；WebSession 防禦上限生效"""
+        async def _run():
+            app, _ = _make_web_app()
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                # 70KB 超大 PCM frame（> 64KB），底層 WebSocket 應拒絕並關閉連線防 OOM
+                huge_pcm = b"\x10\x00" * 36000
+                await ws.send_bytes(huge_pcm)
+                msg = await ws.receive(timeout=2)
+                assert msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR)
+            finally:
+                await client.close()
+
+        asyncio.run(_run())
+
+    def test_session_level_payload_truncation_and_drop(self):
+        """VC-2.3-05: WebSession 層級防禦：超長 text 截斷至 MAX_FRAME_BYTES，超長 PCM 被 drop"""
+        from clients.voice_companion.web_server import WebSession
+
+        async def _run():
+            class FakeWS:
+                def __init__(self):
+                    self.sent = []
+                async def send_json(self, data):
+                    self.sent.append(data)
+
+            fws = FakeWS()
+            detector = VoiceActivityDetector(sample_rate=16000, silence_threshold_sec=0.05, energy_threshold=0.05)
+            session = WebSession(
+                fws,
+                config=WEB_TEST_CONFIG,
+                brain=AkaneVoiceBrain(llm_stream=lambda msgs: iter(["回覆"])),
+                refiner=AsrRefiner(llm_call=None),
+                asr=FakeWebASR(),
+                streamer=FakeWebStreamer(),
+                detector=detector,
+                sink=AudioRelaySink(asyncio.get_running_loop(), fws),
+            )
+            # 測試 on_text 截斷
+            huge_text = "茜" * 70000
+            await session.on_text(huge_text)
+            user_transcript = next(m["text"] for m in fws.sent if m.get("type") == "transcript" and m.get("role") == "user")
+            assert len(user_transcript) == session.MAX_FRAME_BYTES
+
+            # 測試 on_pcm 丟棄超大 frame
+            session.state = session.STATE_LISTENING
+            huge_pcm = b"\x10\x00" * 36000
+            await session.on_pcm(huge_pcm)
+            assert len(session._frames) == 0, "超大 PCM frame 必須直接丟棄，不進入 _frames"
+            await session.close()
+
+        asyncio.run(_run())
+
+    def test_max_utterance_30s_forced_cut(self):
+        """VC-2.3-05: 說話時間超過 30 秒上限時強制觸發斷句進入 ASR，防止記憶體無上限累積"""
+        async def _run():
+            asr_calls = []
+            class MockASR:
+                def transcribe(self, wav):
+                    asr_calls.append(len(wav))
+                    return "超長說話強制斷句"
+
+            app = build_app(
+                WEB_TEST_CONFIG,
+                brain=AkaneVoiceBrain(llm_stream=lambda msgs: iter(["收到。"])),
+                refiner=AsrRefiner(llm_call=None),
+                asr=MockASR(),
+                streamer_factory=lambda sink: FakeWebStreamer(sink=sink),
+            )
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                await ws.send_json({"type": "ptt_start"})
+                # 一次 1 秒（16000 samples = 32000 bytes）
+                one_sec_pcm = (np.full(16000, 0.5) * 32767).astype(np.int16).tobytes()
+                # 連續送 31 秒語音，不送 ptt_stop
+                for _ in range(31):
+                    await ws.send_bytes(one_sec_pcm)
+                    await asyncio.sleep(0.005)
+
+                events = []
+                while not any(e.get("type") == "state" and e.get("state") == "SPEAKING" for e in events):
+                    msg = await ws.receive(timeout=3)
+                    if msg.type == WSMsgType.TEXT:
+                        events.append(json.loads(msg.data))
+                    elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
+                        break
+                await ws.close()
+            finally:
+                await client.close()
+
+            assert len(asr_calls) >= 1, "超過 30 秒必須強制觸發 ASR 斷句"
+
+        asyncio.run(_run())
+
+    def test_latency_telemetry_logged(self, capsys):
+        """VC-2.3-05: 每回合結束輸出標準格式的 [LATENCY] 延遲日誌"""
+        async def _run():
+            app, _ = _make_web_app(brain_tokens=("你好，", "我是茜。"))
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                await ws.send_json({"type": "text", "text": "量測延遲"})
+                while True:
+                    msg = await ws.receive(timeout=3)
+                    if msg.type == WSMsgType.TEXT:
+                        data = json.loads(msg.data)
+                        if data.get("type") == "state" and data.get("state") == "IDLE":
+                            break
+                    elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
+                        break
+                await ws.close()
+            finally:
+                await client.close()
+
+        asyncio.run(_run())
+        out = capsys.readouterr().out
+        assert "[LATENCY]" in out
+        assert "asr=" in out
+        assert "first_audio=" in out
+        assert "total=" in out
+        assert "chars=" in out
