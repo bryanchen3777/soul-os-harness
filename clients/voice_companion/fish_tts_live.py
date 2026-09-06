@@ -1,26 +1,22 @@
 """
-fish_tts_live.py — Fish Audio WebSocket TTS-Live 即時串流（VC-1.2 模組）。
+fish_tts_live.py — Fish Audio WebSocket TTS-Live 即時串流（VC-1.2 模組；VC-1.6 換官方 SDK 傳輸）。
 
-- Endpoint: wss://api.fish.audio/v1/tts/live，Headers: Authorization: Bearer <api_key>, model: <model_name>
-- 序列化：MessagePack（msgpack）。所有 client→server 與 server→client 訊息都是 msgpack map。
-- Client→Server 事件（依序）：
-    1. start：{"event":"start","request":{text:"",format,chunk_length,reference_id,latency}}
-    2. text ：{"event":"text","text":"<分句文字>"}（可連續多個，server 依 chunk_length 緩衝合成）
-    3. flush：{"event":"flush"}（強制立即合成緩衝文字，互動場景降低延遲）
-    4. stop ：{"event":"stop"}（結束 session；server 合成完殘餘後回 finish 才斷線）
-- Server→Client 事件：
-    1. audio ：{"event":"audio","audio":<binary bytes>}（可多個，需依序播放/拼接）
-    2. finish：{"event":"finish","reason":"stop"|"error"}（session 結束，連線隨後關閉）
-- 音訊格式：pcm（raw PCM16LE，44100Hz mono）→ sounddevice OutputStream 邊收邊播。
-- Barge-in：interrupt() → 立即關閉目前 WS 連線（中止合成）＋停止播放＋清空佇列＋狀態重置；
-  下一句 speak() 重開全新 session（interrupt 後 speak 為 no-op）。
+- Endpoint: wss://api.fish.audio/v1/tts/live（由官方 fish-audio-sdk 驅動）。
+- 真實連線層 = fish_audio_sdk.WebSocketSession.tts(TTSRequest, text_iter, backend=model)：
+  官方 SDK 內部自行送 start → text×N → CloseEvent(=stop)，並 yield audio 分片 bytes。
+  實測（2026-09-05）：同 key/voice/model 經 SDK 合成 102,400 bytes PCM；websocket-client
+  自送 msgpack 會被伺服器「start 後空 ack 即斷線」拒收 → VC-1.6 全面改用 SDK。
+- 音訊格式：pcm（raw PCM16LE 44100Hz mono）→ audio_player 邊收邊播。
+- Barge-in：interrupt() → 關閉目前 SDK session（中止合成）＋停止播放＋清空佇列＋狀態重置；
+  下一回合 start() 後重開全新 session。
 
-離線可測：socket_factory（回傳具 send/recv/close 的假 WS）與 audio_player（open/write/stop/close）
-均可注入；msgpack / websocket-client / sounddevice 一律懶載入。
+離線可測：session_factory（回傳具 tts(request, text_iter, backend) 的假 SDK session）與
+audio_player（open/write/stop/close）均可注入；fish-audio-sdk / sounddevice 一律懶載入。
 """
 
 from __future__ import annotations
 
+import queue
 import threading
 from typing import Callable, List, Optional
 
@@ -29,7 +25,7 @@ DEFAULT_MODEL = "s2.1-pro-free"
 DEFAULT_SAMPLE_RATE = 44100
 DEFAULT_CHUNK_LENGTH = 300
 DEFAULT_LATENCY = "normal"
-# feed_text_piece 逐 token 模式：piece 含下列任一字元 → text 後立即送 flush（立即合成，降延遲）
+# 相容保留（舊 flush 語意由 SDK 改為 chunk_length 緩衝合成；此常數不再參與協定）
 FLUSH_PUNCTUATION = "，。、！？…\n"
 
 
@@ -87,25 +83,34 @@ class PCMAudioSink:
 
 
 # ─────────────────────────────────────────────────────────────
-# TTS-Live 串流器主體
+# TTS-Live 串流器主體（官方 fish-audio-sdk 傳輸）
 # ─────────────────────────────────────────────────────────────
 
 class FishTTSLiveStreamer:
     """Fish Audio WebSocket TTS-Live 串流客戶端 + PCM 邊收邊播 + Barge-in。
 
-    - socket_factory:  可注入的 WS factory（無參數呼叫回傳具 send(bytes) / recv() / close() 的物件；
-                       預設以 websocket-client 建立 wss 連線）
-    - audio_player:    可注入的播放器（具 open() / write(bytes) / stop() / close() 介面）
-    - interrupt_event: 可注入的 threading.Event（預設自建；外部攔截 / 測試用）
+    真實連線（VC-1.6）：
+    - 每回合（utterance）建立一個 fish_audio_sdk.WebSocketSession；
+    - daemon worker thread 驅動 session.tts(TTSRequest(...), text_iter, backend=model)，
+      逐 audio 分片依序 audio_player.write()（邊生邊播）；
+    - 內部 thread-safe queue 供給 text_iter：feed_text_piece(piece) push、end_session() 收尾。
+    - interrupt()：關閉目前 SDK session（中斷合成）＋ audio_player.stop()＋清佇列＋狀態重置。
 
-    API 表面（與既有 FishTTSStreamer 相容，akane_live 呼叫點不變）：
-    - speak(clause_texts: list[str]): 開 session → 逐句 text → flush → stop → 等 finish（同步；邊收邊播）
-    - feed_text_piece(piece: str): 串流 token 模式（VC-1.1）— 立即送 text，piece 含標點 → 立即送 flush；
-      無活動 session 時自動開新 session；配合 end_session() 收尾
-    - end_session(): 串流 feed 收尾 — flush → stop → 等 finish → 關連線
-    - interrupt(): Barge-in 入口 — 置位 interrupt_event、立即關閉 WS、停止播放、清空佇列、狀態重置
-    - close() / stop(): 完全關閉（WS + 播放器 + 狀態）
-    - start(): 釋放 interrupt 旗標，允許新 session（akane_live.run 呼叫點）
+    注入點：
+    - session_factory(api_key): 回傳具 tts(request, text_iter, backend) 的物件
+      （預設 fish_audio_sdk.WebSocketSession；離線測試注入假 SDK session）
+    - audio_player: 具 open() / write(bytes) / stop() / close() 介面
+      （AudioRelaySink 為 web 版注入；PCMAudioSink 為預設本機播放）
+    - interrupt_event: 可注入 threading.Event（外部攔截 / 測試用）
+
+    API 表面（與既有 FishTTSStreamer 相容，akane_live / web_server 呼叫點不變）：
+    - speak(clause_texts): 開 session → 逐句餵送 → 收尾（同步；邊收邊播）
+    - feed_text_piece(piece: str): 串流 token 模式 — push 進隊列；無活動 session 自動開新；
+      配合 end_session() 收尾
+    - end_session(): 串流 feed 收尾 — 停止餵送 → 等 worker 播完 → 關 SDK session
+    - interrupt(): Barge-in 入口 — 置位 interrupt_event、關閉 session、停止播放、清空佇列、狀態重置
+    - close() / stop(): 完全關閉（SDK session + 播放器 + 狀態）
+    - start(): 釋放 interrupt 旗標，允許新 session
     - is_playing / queue_size / pending_chunks(): 與 REST streamer 同語意的唯讀查詢
     """
 
@@ -116,9 +121,10 @@ class FishTTSLiveStreamer:
         model: str = DEFAULT_MODEL,
         endpoint: str = DEFAULT_LIVE_ENDPOINT,
         live_format: str = "pcm",
-        socket_factory: Optional[Callable[[], object]] = None,
+        socket_factory: Optional[Callable[[], object]] = None,  # 相容保留（VC-1.6 起棄用，傳入會被忽略）
         audio_player: Optional[object] = None,
         interrupt_event: Optional[threading.Event] = None,
+        session_factory: Optional[Callable[[str], object]] = None,
     ):
         self.api_key = api_key
         self.voice_id = voice_id
@@ -126,11 +132,13 @@ class FishTTSLiveStreamer:
         self.endpoint = endpoint
         self.live_format = live_format or "pcm"
 
-        self._socket_factory = socket_factory
+        self._session_factory = session_factory or self._default_session_factory
         self._audio = audio_player or PCMAudioSink()
         self.interrupt_event = interrupt_event or threading.Event()
 
-        self._current_ws = None
+        self._feed_queue: "queue.Queue[str]" = queue.Queue()
+        self._current_session = None  # 活動 SDK session（utterance 期間）
+        self._worker: Optional[threading.Thread] = None  # 活動 utterance worker
         self._chunks: List[bytes] = []  # 音訊佇列（收到即播；interrupt/結束清空）
         self._playing = False
         self._interrupted = False
@@ -150,130 +158,173 @@ class FishTTSLiveStreamer:
             live_format=fa.get("live_format", "pcm"),
         )
 
-    # ── 連線 ──
+    # ── 內部：SDK session／worker ──
 
-    def _default_socket_factory(self):
-        """websocket-client 建立 wss 連線（headers 帶 Bearer 與 model）。"""
-        from websocket import create_connection  # 懶載入
+    def _default_session_factory(self, api_key: str) -> object:
+        """官方 fish-audio-sdk WebSocketSession（httpx_ws 傳輸，實證可用）。"""
+        from fish_audio_sdk import WebSocketSession  # 懶載入
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "model": self.model,
-        }
-        return create_connection(self.endpoint, header=headers, timeout=10)
+        return WebSocketSession(api_key)
 
-    def _connect(self):
-        factory = self._socket_factory or self._default_socket_factory
-        ws = factory()
-        if ws is None:
-            raise FishTTSError("socket factory 回傳 None，無法建立 TTS-Live session")
-        return ws
+    def _text_iter(self):
+        """blocking text 供給器：feed push 的字串逐個 yield；None 或 interrupt/close → 結束。"""
+        while not (self._interrupted or self._closed):
+            try:
+                piece = self._feed_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if piece is None:
+                return
+            yield piece
 
-    def _send(self, ws, msg: dict) -> None:
-        import msgpack  # 懶載入
+    def _sdk_request(self):
+        from fish_audio_sdk import TTSRequest  # 懶載入
 
-        ws.send(msgpack.packb(msg))
+        return TTSRequest(
+            text="",
+            reference_id=self.voice_id,
+            format=self.live_format,
+            chunk_length=DEFAULT_CHUNK_LENGTH,
+            latency=DEFAULT_LATENCY,
+        )
 
-    def _close_socket(self, ws) -> None:
-        if ws is None:
-            return
-        if getattr(ws, "closed", False):
-            return
+    def _run_worker(self, session: object, backend: str) -> None:
+        """daemon thread：驅動 SDK tts generator → 依序寫 audio_player；例外不 crash 呼叫端。"""
+        gen = None
         try:
-            ws.close()
+            gen = session.tts(self._sdk_request(), self._text_iter(), backend=backend)
+            for chunk in gen:
+                if self._interrupted or self._closed:
+                    break
+                if chunk:
+                    self._play(chunk)
+        except Exception as exc:
+            if not (self._interrupted or self._closed):
+                self.last_error = exc
+                try:
+                    self._audio.stop()
+                except Exception:
+                    pass
+        finally:
+            if gen is not None:
+                try:
+                    gen.close()
+                except Exception:
+                    pass
+            with self._lock:
+                self._chunks.clear()
+                if self._current_session is session:
+                    self._current_session = None
+                self._worker = None
+            if not (self._interrupted or self._closed):
+                try:
+                    session.close()
+                except Exception:
+                    pass
+            self._set_playing(False)
+
+    def _open_session(self) -> object:
+        """開新 utterance：SDK session + daemon worker；回傳 session。"""
+        session = self._session_factory(self.api_key)
+        with self._lock:
+            self._current_session = session
+            self._chunks.clear()
+            self._feed_queue = queue.Queue()
+            worker = threading.Thread(
+                target=self._run_worker, args=(session, self.model), daemon=True, name="fish-tts-live-worker"
+            )
+            self._worker = worker
+        worker.start()
+        return session
+
+    def _finish_utterance(self, join_timeout: float = 60.0) -> None:
+        """餵送結束（None）→ join worker → 關 SDK session → 狀態重置。"""
+        try:
+            self._feed_queue.put(None)
         except Exception:
             pass
+        worker = self._worker
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(timeout=join_timeout)
+        with self._lock:
+            sess = self._current_session
+            self._current_session = None
+            self._worker = None
+            self._chunks.clear()
+        if sess is not None:
+            try:
+                sess.close()
+            except Exception:
+                pass
+        self._set_playing(False)
 
     # ── 對外 API ──
 
-    def _open_session(self):
-        """開新 TTS-Live session：連線 + 送 start。回傳 ws。"""
-        ws = self._connect()
-        self._current_ws = ws
-        self._chunks.clear()
-        self._send(ws, {"event": "start", "request": self._start_request()})
-        return ws
-
     def speak(self, clause_texts: List[str]) -> None:
-        """開 session → 逐句 text → flush → stop → 等 finish（同步，邊收邊播）。
+        """開 session → 逐句餵送 → 收尾（同步；邊收邊播）。
 
-        interrupt / close 後為 no-op；WS 例外優雅關閉並記錄 last_error，不 crash 主迴圈。
+        interrupt / close 後為 no-op；已有活動 session 時 no-op（避免重入）。
+        SDK 例外在 worker 內記錄 last_error，不 crash 主迴圈。
         """
         if self._interrupted or self._closed:
             return
-        if self._current_ws is not None:
-            return  # 已有 session 進行中，避免重入
-
-        ws = None
+        with self._lock:
+            if self._current_session is not None:
+                return  # 已有 session 進行中，避免重入
         try:
-            ws = self._open_session()
-            for clause in clause_texts:
-                self._send(ws, {"event": "text", "text": clause})
-            self._send(ws, {"event": "flush"})
-            self._send(ws, {"event": "stop"})
-            self._recv_until_finish(ws)
-        except Exception as exc:  # 網路/協定例外 → 記錄，不 crash
+            self._open_session()
+        except Exception as exc:
             self.last_error = exc
+            return
+        try:
+            for clause in clause_texts:
+                self._feed_queue.put(clause)
         finally:
-            self._close_socket(ws)
-            self._current_ws = None
-            self._chunks.clear()
+            self._finish_utterance()
 
     def feed_text_piece(self, piece: str) -> None:
-        """串流 token 模式（VC-1.1，對齊低延遲目標）：立即送 text。
+        """串流 token 模式：push 進隊列（SDK 依 chunk_length 緩衝合成）。
 
-        piece 含標點（，。、！？…\\n）→ 在 text 之後立即送 flush（強制立即合成緩衝文字）。
         無活動 session 時自動開新 session；interrupt / close 後 no-op。
         """
         if self._interrupted or self._closed:
             return
-        ws = self._current_ws
         try:
-            if ws is None:
-                ws = self._open_session()
-            import msgpack  # 懶載入
-
-            ws.send(msgpack.packb({"event": "text", "text": piece}))
-            if self._has_punctuation(piece):
-                ws.send(msgpack.packb({"event": "flush"}))
+            if self._current_session is None:
+                self._open_session()
+            self._feed_queue.put(piece)
         except Exception as exc:
             self.last_error = exc
-            self._close_socket(ws)
-            self._current_ws = None
 
     def end_session(self) -> None:
-        """串流 feed 收尾：flush → stop → 等 finish → 關連線（與 speak 尾段同語意）。"""
-        ws = self._current_ws
-        if ws is None:
+        """串流 feed 收尾：停止餵送 → 等 worker 播完 → 關 SDK session。"""
+        if self._current_session is None:
             return
-        try:
-            self._send(ws, {"event": "flush"})
-            self._send(ws, {"event": "stop"})
-            self._recv_until_finish(ws)
-        except Exception as exc:
-            self.last_error = exc
-        finally:
-            self._close_socket(ws)
-            self._current_ws = None
-            self._chunks.clear()
+        self._finish_utterance()
 
     def interrupt(self) -> None:
         """Barge-in 入口（監聽器偵測到 Bryan 重新說話時呼叫）：
-        1. 置位 interrupt_event（同執行緒的 speak recv 循環立即退出）
-        2. 立即關閉目前 WS 連線（中止 server 合成）
+        1. 置位 interrupt_event
+        2. 關閉目前 SDK session（中止 server 合成，worker 因 recv 中斷而退出）
         3. 停止當前音訊輸出
-        4. 清空音訊佇列、播放狀態重置；interrupt 後 speak() 為 no-op
+        4. 清空音訊佇列、播放狀態重置；interrupt 後 speak()/feed 為 no-op
         """
         self.interrupt_event.set()
         self._interrupted = True
-        ws = self._current_ws
-        self._current_ws = None
-        self._close_socket(ws)
+        with self._lock:
+            sess = self._current_session
+            self._current_session = None
+        if sess is not None:
+            try:
+                sess.close()
+            except Exception:
+                pass
         try:
             self._audio.stop()
         except Exception:
             pass
-        self._chunks.clear()
+        with self._lock:
+            self._chunks.clear()
         self._set_playing(False)
 
     def start(self) -> None:
@@ -283,69 +334,27 @@ class FishTTSLiveStreamer:
         self.last_error = None
 
     def stop(self) -> None:
-        """完全關閉：關 WS + 停止/關閉播放器 + 清佇列 + 狀態重置。"""
+        """完全關閉：關 SDK session + 停止/關閉播放器 + 清佇列 + 狀態重置。"""
         self._closed = True
         self.interrupt_event.set()
         self._interrupted = True
-        ws = self._current_ws
-        self._current_ws = None
-        self._close_socket(ws)
+        with self._lock:
+            sess = self._current_session
+            self._current_session = None
+        if sess is not None:
+            try:
+                sess.close()
+            except Exception:
+                pass
         try:
             self._audio.close()
         except Exception:
             pass
-        self._chunks.clear()
+        with self._lock:
+            self._chunks.clear()
         self._set_playing(False)
 
-    close = stop  # 語意別名
-
-    # ── 協定 ──
-
-    @staticmethod
-    def _has_punctuation(piece: str) -> bool:
-        """piece 是否含觸發立即合成的標點（，。、！？…\\n）。"""
-        return any(ch in piece for ch in FLUSH_PUNCTUATION)
-
-    def _start_request(self) -> dict:
-        return {
-            "text": "",
-            "format": self.live_format,
-            "sample_rate": DEFAULT_SAMPLE_RATE,
-            "chunk_length": DEFAULT_CHUNK_LENGTH,
-            "reference_id": self.voice_id,
-            "latency": DEFAULT_LATENCY,
-        }
-
-    def _recv_until_finish(self, ws) -> None:
-        """接收循環：audio → 立即播放；finish → session 結束；interrupt/例外 → 優雅退出。"""
-        import msgpack  # 懶載入
-
-        while not self.interrupt_event.is_set() and not self._closed:
-            try:
-                data = ws.recv()
-            except Exception:
-                return  # 連線已關閉（如 interrupt 觸發的 close）→ 優雅結束
-            if data is None:
-                return
-            try:
-                msg = msgpack.unpackb(data)
-            except Exception:
-                continue  # 無法解析的分片跳過，不癱瘓 session
-            if not isinstance(msg, dict):
-                continue
-            event = msg.get("event")
-            if event == "audio":
-                audio = msg.get("audio")
-                if audio:
-                    self._play(audio)
-            elif event == "finish":
-                if msg.get("reason") == "error":
-                    self.last_error = FishTTSError(f"TTS-Live finish reason=error: {msg}")
-                    try:
-                        self._audio.stop()
-                    except Exception:
-                        pass
-                return  # session 結束，連線隨後由 speak 關閉
+    close = stop  # 語意別名（akane_live 等呼叫點使用 close()）
 
     # ── 播放 ──
 
