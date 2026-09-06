@@ -539,6 +539,12 @@ def main(argv: Optional[list] = None) -> int:
     （clients/voice_companion/certs/，已 gitignore）並以 https:// 提供服務。
     """
     args = list(sys.argv[1:] if argv is None else argv)
+    # Windows 主控台（cp950/Big5）列印 emoji/中文會 UnicodeEncodeError → 強制 UTF-8 + 容錯編碼
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     port = None
     if "--port" in args:
         i = args.index("--port")
