@@ -125,7 +125,8 @@ HTML_PAGE = """<!DOCTYPE html>
     txt.textContent = s === "SPEAKING" ? "🔴 茜說話中…（開口可打斷）" : s === "THINKING" ? "🟡 思考中…" : s === "LISTENING" ? "🟢 聆聽中…" : "🟢 聆聽";
     var btn = $("micBtn");
     if (s === "LISTENING") { btn.classList.add("hold"); } else { btn.classList.remove("hold"); }
-    if (s !== "SPEAKING") { playQueue.length = 0; } // 非說話狀態 → 清播放佇列（打斷靜音）
+    // 注意：不在此清空 playQueue —— IDLE 不代表瀏覽器已播完（伺服器 send 完即回 IDLE），
+    // 過早清空會砍掉未播音訊（「只聽到開頭兩字、後半省略」）。只在打斷/新回合時 flush（flushPlayback）。
   }
   function addMsg(role, text) {
     var chat = $("chat"), div = document.createElement("div");
@@ -161,6 +162,7 @@ HTML_PAGE = """<!DOCTYPE html>
       return;
     }
     pttActive = true;
+    flushPlayback();  // 新回合開始 → 中斷上一輪殘音（barge-in 語意）
     if ($("errorBox").dataset.persistent !== "1") { setError("", false); }  // 下一個 utterance 開始 → 自動清除暫態錯誤
     send({ type: "ptt_start" });
   }
@@ -255,6 +257,10 @@ HTML_PAGE = """<!DOCTYPE html>
   function ensurePlayback() {
     if (audioCtx) { ensureAudioResume(); } else { startPlayback(); }
   }
+  // 打斷/新回合才清播放佇列（正常播放由 onaudioprocess 自然消耗，勿在 IDLE 清空）
+  function flushPlayback() {
+    playQueue.length = 0;
+  }
 
   // ── 收音（getUserMedia → 降採樣 16k → Int16 → WS binary）──
   function resampleTo16k(input, ratio) {
@@ -287,7 +293,7 @@ HTML_PAGE = """<!DOCTYPE html>
           var durMs = len / audioCtx.sampleRate * 1000;
           if (state === "SPEAKING") {
             speakEnergyMs = rms > VAD_THRESHOLD ? speakEnergyMs + durMs : 0;
-            if (speakEnergyMs >= BARGE_MS) { speakEnergyMs = 0; send({ type: "interrupt" }); }
+            if (speakEnergyMs >= BARGE_MS) { speakEnergyMs = 0; flushPlayback(); send({ type: "interrupt" }); }
           }
           var auto = $("autoVad").checked;
           if (auto) {
@@ -345,12 +351,14 @@ HTML_PAGE = """<!DOCTYPE html>
   document.addEventListener("keyup", function (e) { if (e.code === "Space") { sendPttStop(); } });
   $("sendText").addEventListener("click", function () {
     ensurePlayback(); // 送出打字 → 手勢內建立播放（純打字使用者也出聲）
+    flushPlayback();  // 新回合 → 中斷上一輪殘音
     var t = $("textInput").value.trim();
     if (t) { send({ type: "text", text: t }); $("textInput").value = ""; }
   });
   $("textInput").addEventListener("keydown", function (e) {
     if (e.key === "Enter") {
       ensurePlayback();
+      flushPlayback(); // 新回合 → 中斷上一輪殘音
       var t = e.target.value.trim();
       if (t) { send({ type: "text", text: t }); e.target.value = ""; }
     }
