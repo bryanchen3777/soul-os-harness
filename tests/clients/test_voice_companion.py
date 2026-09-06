@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import ssl
 import sys
 import threading
 from pathlib import Path
@@ -44,7 +45,13 @@ from clients.voice_companion.fish_tts_streamer import FishTTSStreamer
 from clients.voice_companion.fish_tts_live import FishTTSError, FishTTSLiveStreamer
 from clients.voice_companion.stt_service import FishASRService, pcm16_to_wav_bytes
 from clients.voice_companion.vad_listener import VADListener, VoiceActivityDetector
-from clients.voice_companion.web_server import AudioRelaySink, build_app
+from clients.voice_companion.web_server import (
+    HTTPS_SELF_SIGNED_HINT,
+    AudioRelaySink,
+    build_app,
+    build_ssl_context,
+    make_self_signed_cert,
+)
 from clients.voice_companion.web_ui import HTML_PAGE
 
 VOICE_ENDPOINT = "https://api.fish.audio/v1/tts"
@@ -1209,3 +1216,83 @@ class TestWebServer:
         assert "🎙️" in HTML_PAGE
         assert "傳送中" in HTML_PAGE
         assert "額度" in HTML_PAGE  # 內建提示（HTML 註解）
+
+
+# ─────────────────────────────────────────────────────────────
+# Test 7：HTTPS 模式 + 不安全來源提示 + 診斷日誌（VC-1.5，全離線）
+# ─────────────────────────────────────────────────────────────
+
+class TestHttpsAndDiagnostics:
+    def test_https_cert_generation_and_ssl_load(self, tmp_path):
+        """make_self_signed_cert：產出 cert.pem/key.pem（PEM），build_ssl_context 可讀取（--https 啟動鏈路）"""
+        cert = tmp_path / "cert.pem"
+        key = tmp_path / "key.pem"
+        make_self_signed_cert(cert, key)
+        assert cert.is_file() and key.is_file()
+        assert "BEGIN CERTIFICATE" in cert.read_text(encoding="utf-8")
+        key_pem = key.read_text(encoding="utf-8")
+        assert "BEGIN" in key_pem and "PRIVATE KEY" in key_pem  # PKCS#1/PKCS#8 皆可被 ssl 讀取
+        ctx = build_ssl_context(cert, key)
+        assert isinstance(ctx, ssl.SSLContext)
+
+    def test_https_self_signed_hint_constant(self):
+        """HTTPS 啟動 stdout 指引字串常數存在（自簽憑證 → 瀏覽器選「繼續前往」）"""
+        assert "繼續前往" in HTTPS_SELF_SIGNED_HINT
+        assert "麥克風" in HTTPS_SELF_SIGNED_HINT
+
+    def test_https_urls_scheme(self):
+        """lan_urls 支援 https scheme（啟動列印 https:// 網址）"""
+        from clients.voice_companion.web_server import lan_urls
+
+        urls = lan_urls(8765, scheme="https")
+        assert any(u.startswith("https://127.0.0.1:8765") for u in urls)
+
+    def test_insecure_context_banner(self):
+        """VC-1.5：HTML_PAGE 含 isSecureContext 常駐檢測、不安全來源提示、mic 未就緒提示、關閉鈕、err.name 分類"""
+        assert "isSecureContext" in HTML_PAGE
+        assert "麥克風需要 HTTPS 或 localhost" in HTML_PAGE
+        assert "麥克風尚未就緒" in HTML_PAGE
+        assert 'id="errorDismiss"' in HTML_PAGE
+        assert "NotAllowedError" in HTML_PAGE
+        assert "SecurityError" in HTML_PAGE
+
+    def test_certs_dir_gitignored(self):
+        """certs/（自簽憑證含私鑰）必須被 .gitignore 排除（0 金鑰進 git）"""
+        ig = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+        assert "clients/voice_companion/certs/" in ig
+
+    def test_ws_diagnostics_logged(self, capsys):
+        """VC-1.5：完整回合的診斷日誌（[WS] 連線/事件、[UTT] 開始/ASR 結果/回覆）寫到 stdout"""
+        async def _run():
+            app, _ = _make_web_app()
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            ws = await client.ws_connect("/ws")
+            await ws.send_json({"type": "ptt_start"})
+            pcm = (np.full(1600, 0.5) * 32767).astype(np.int16).tobytes()
+            await ws.send_bytes(pcm)
+            await ws.send_bytes(pcm)
+            await ws.send_json({"type": "ptt_stop"})
+            events = []
+            while len(events) < 6:
+                msg = await ws.receive(timeout=3)
+                if msg.type == WSMsgType.TEXT:
+                    events.append(json.loads(msg.data))
+                elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
+                    break
+            await ws.send_json({"type": "interrupt"})
+            await asyncio.sleep(0.1)
+            await ws.close()
+            await asyncio.sleep(0.2)  # 等 server handler finally 收尾
+            await client.close()
+
+        asyncio.run(_run())
+        out = capsys.readouterr().out
+        assert "[WS] connect" in out
+        assert "[WS] ptt_start" in out
+        assert "[WS] ptt_stop" in out
+        assert "[UTT] start frames=" in out
+        assert "[UTT] asr-ok" in out, "回合完成必須記錄 ASR 結果"
+        assert "[UTT] reply" in out, "回合完成必須記錄回覆結果"
+        assert "[WS] interrupt" in out
+        assert "[WS] close" in out

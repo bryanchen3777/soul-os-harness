@@ -2,6 +2,7 @@
 # 僅生產環境需要；驗收測試全離線 Mock，不需安裝本清單任何套件。
 # VC-1.1：輸入側改用 Fish Audio 官方 ASR（stt_service.py），無本地 STT 依賴。
 # VC-1.3：Web 語音伴侶伺服器（web_server.py，aiohttp）。
+# VC-1.5：HTTPS 模式自簽憑證（web_server.py certs/，cryptography）。
 requests>=2.31.0
 numpy>=1.26.0
 sounddevice>=0.4.6
@@ -9,3 +10,4 @@ miniaudio>=1.59
 msgpack>=1.0
 websocket-client>=1.7
 aiohttp>=3.9
+cryptography>=42.0

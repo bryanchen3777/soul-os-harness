@@ -64,10 +64,13 @@ HTML_PAGE = """<!DOCTYPE html>
   #textInput { flex: 1; padding: 10px 12px; border-radius: 10px; border: 1px solid #3a3a4e; background: #1e1e2a; color: #e8e6f0; font-size: 14px; }
   #sendText { padding: 10px 18px; border-radius: 10px; border: none; background: #4a4a66; color: #fff; cursor: pointer; font-size: 14px; }
   #errorBox {
+    display: none; align-items: center; justify-content: space-between; gap: 8px;
     color: #ff6b6b; background: rgba(255, 210, 60, 0.14); border: 1px solid rgba(255, 210, 60, 0.45);
     font-size: 13px; min-height: 20px; max-width: 640px; text-align: center;
     padding: 6px 12px; border-radius: 8px; width: min(640px, 96vw);
   }
+  #errorText { flex: 1; }
+  #errorDismiss { background: none; border: none; color: #ffd23c; cursor: pointer; font-size: 15px; padding: 0 2px; }
   #meterWrap { width: min(640px, 96vw); display: flex; flex-direction: column; gap: 4px; }
   #meterLabel { font-size: 12px; color: #9a94b0; letter-spacing: 0.5px; }
   #meterBar { height: 10px; border-radius: 999px; background: #2a2a3c; overflow: hidden; }
@@ -100,7 +103,7 @@ HTML_PAGE = """<!DOCTYPE html>
     <input id="textInput" placeholder="打字給茜…（Enter 送出）" autocomplete="off">
     <button id="sendText">送出</button>
   </div>
-  <div id="errorBox"></div>
+  <div id="errorBox"><span id="errorText"></span><button id="errorDismiss" title="關閉">✕</button></div>
 <script>
 (function () {
   "use strict";
@@ -134,15 +137,34 @@ HTML_PAGE = """<!DOCTYPE html>
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
   }
-  function showError(m) { $("errorBox").textContent = m; setTimeout(function () { $("errorBox").textContent = ""; }, 6000); }
+  function setError(m, persistent) {
+    var box = $("errorBox");
+    box.dataset.persistent = persistent ? "1" : "";
+    box.style.display = m ? "flex" : "none";
+    $("errorText").textContent = m;
+  }
+  function showError(m) {
+    // 暫態錯誤：6 秒後自動清除
+    setError(m, false);
+    if (m) { setTimeout(function () { setError("", false); }, 6000); }
+  }
+  function persistentError(m) {
+    // 常駐錯誤（VC-1.5）：不自動清除，直到點擊 ✕ 或重新載入
+    setError(m, true);
+  }
   function send(obj) { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(obj)); } }
   function sendPttStart() {
     if (pttActive) { return; }
+    if (!micStream) {
+      persistentError("⚠️ 麥克風尚未就緒：請允許麥克風權限（瀏覽器會彈出詢問）");
+      return;
+    }
     pttActive = true;
-    $("errorBox").textContent = "";  // 下一個 utterance 開始 → 自動清除舊錯誤
+    if ($("errorBox").dataset.persistent !== "1") { setError("", false); }  // 下一個 utterance 開始 → 自動清除暫態錯誤
     send({ type: "ptt_start" });
   }
   function sendPttStop() { if (!pttActive) { return; } pttActive = false; send({ type: "ptt_stop" }); }
+  $("errorDismiss").addEventListener("click", function () { setError("", false); });
 
   // ── 輸入音量表（VC-1.4：AnalyserNode RMS → 水平 bar ＋ 傳送中指示）──
   function updateMeter() {
@@ -262,7 +284,16 @@ HTML_PAGE = """<!DOCTYPE html>
         showError("");
         requestAnimationFrame(updateMeter);  // 啟動音量表繪製迴圈
       })
-      .catch(function (err) { showError("麥克風權限被拒：" + err.message); });
+      .catch(function (err) {
+        // VC-1.5：錯誤分類常駐顯示（不自動清除）
+        var name = err && err.name ? err.name : "UnknownError";
+        var hint;
+        if (name === "NotAllowedError") { hint = "權限被拒：請在瀏覽器網址列鎖頭允許麥克風權限"; }
+        else if (name === "SecurityError") { hint = "不安全來源：麥克風需要 HTTPS 或 localhost"; }
+        else if (name === "NotFoundError") { hint = "找不到麥克風裝置，請檢查連接"; }
+        else { hint = (err && err.message) || "未知錯誤"; }
+        persistentError("⚠️ 麥克風無法啟動（" + name + "）：" + hint);
+      });
   }
 
   // ── 事件綁定 ──
@@ -291,6 +322,13 @@ HTML_PAGE = """<!DOCTYPE html>
 
   connect();
   micBtn.addEventListener("click", function () { startMic(); }, { once: true });
+
+  // VC-1.5：不安全來源常駐提示（getUserMedia 只在 HTTPS 或 localhost 可用）
+  if (window.isSecureContext === false) {
+    persistentError(
+      "⚠️ 麥克風需要 HTTPS 或 localhost 才可使用。請改開 https://" + location.hostname + ":8765（接受憑證警告）或 http://127.0.0.1:8765"
+    );
+  }
 })();
 </script>
 </body>
