@@ -331,6 +331,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
+- Current HEAD: `90dcd77` (fix(vc-1.3): decouple playback init from mic start (text-only users were silent))
+- VC-1.3 playback decouple fix commit: `90dcd77` (fix(vc-1.3): decouple playback init from mic start; **Current HEAD**; 2 檔 +21/-4)
+- VC-1.3 autoplay resume fix commit: `1a1d016` (fix(vc-1.3): resume AudioContext on first gesture (autoplay policy made playback silent); **distinct from Current HEAD**)
 - Current HEAD: `ea11465` (docs: register VC-1.6 sdk transport (984f51c))
 - VC-1.6 register commit: `ea11465` (docs: register VC-1.6 sdk transport (984f51c); **Current HEAD**)
 - VC-1.6 SDK transport fix commit: `984f51c` (fix(vc-1.6): real TTS-Live via official fish-audio-sdk transport (websocket-client rejected by server); **distinct from Current HEAD**; 3 檔 +315/-304)
@@ -1549,5 +1552,7 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09-05 (VC-1 亂碼 fix) | **LLM SSE 中文亂碼修復 CLOSED**（commit `7e491d7`，2 檔 +33；本行 + §1.1 Current HEAD 同步）。**實機診斷**：茜回覆正常（「你好。」）但頁面顯示 `ä½ å¥½`——Ollama SSE（text/event-stream）不帶 charset，`requests.iter_lines(decode_unicode=True)` 預設以 ISO-8859-1 解碼 UTF-8 位元組 → 中文變亂碼。修：`akane_voice_brain.build_llm_stream` 在 iter_lines 前強制 `resp.encoding = "utf-8"`＋回歸測試（fake resp 模擬 requests 編碼機制：初始 ISO-8859-1、stream 內被強制 utf-8 → 輸出正確「你」，並斷言端點正規化 URL）。驗收 71 passed（70＋1，主大腦複跑）；**真實串流路徑冒煙**：joined 含「好」（OK-UTF8 判定）；伺服器重啟（PID 22812，https 200）。0 src/、0 Frozen、0 金鑰。 | DSH | VC-1 |
 
 | 2026-09-05 (VC-1.6) | **真實 TTS-Live 傳輸換官方 fish-audio-sdk CLOSED**（commit `984f51c`，3 檔 +315/-304；本行 + §1.1 Current HEAD 同步）。**實機診斷（分層實證）**：瀏覽器有文字無聲音 → REST TTS 200（16KB）但真實 WS 自測 0 bytes；手寫 msgpack start 補齊欄位（含 sample_rate/prosody 顯式 null 位元組級對齊 SDK）仍被伺服器「start 後空 TXT ack→斷線」；官方 `fish-audio-sdk`（httpx_ws 傳輸）同 key/voice/model 實測成功 102,400 bytes → **根因 = websocket-client 傳輸與 Fish WS 閘道不相容**。修：`fish_tts_live.py` 真實層重寫為 `WebSocketSession.tts(TTSRequest, text_iter, backend=model)` daemon worker（公開 API/建構式/AudioRelaySink 注入全不動；feed queue＋interrupt 關 session）；requirements `fish-audio-sdk`（移除 msgpack/websocket-client）；Live 測試遷移 SDK 接縫（FakeSDKSession）。驗收 71 passed（主大腦複跑）；**真實 CollectSink 自測 135,168 bytes PCM、last_error None（決勝門過）**；伺服器重啟（PID 25136，https 200）。**備註**：本日三批 developer subagent 連環失敗 = OpenCode Go 週配額 100% 用罄（非工單問題），主大腦彈性兜底自行實作。0 src/、0 Frozen、0 金鑰。 | DSH | VC-1.6 |
+
+| 2026-09-05 (VC-1.3 靜音 root fix) | **瀏覽器播放兩層根治 CLOSED**（`1a1d016` resume＋`90dcd77` 解耦；本行 + §1.1 Current HEAD 同步）。**分層實證**：全真路徑端到端自測（build_app＋WebSession＋AudioRelaySink＋真實 SDK TTS→ 真 WS 客戶端）打字「你好」→ SPEAKING → **BINARY 86,016 bytes PCM** → 回覆文字 → IDLE，伺服器→WS 中繼無誤（且證實先前診斷被 stdout 緩衝遮蔽 → 重啟改 `python -u`）。**剩餘根因＝瀏覽器端**：`AudioContext`＋播放節點只在「首次點擊 micBtn」的 startMic() 內建立 → 純打字（或沒按過麥克風鈕）的使用者 audioCtx 永不建立 → binary 收進佇列卻無人播放＝有文字沒聲音。修：(a) `ensurePlayback()` 冪等 helper（建立＋resume）與播放解耦；(b) 任何手勢（pointerdown/空白鍵/送文字/Enter）、收到 SPEAKING 狀態、收到 binary、麥克風就緒皆觸發。驗收 72 passed（71＋1 回歸斷言）。伺服器重啟 `python -u`（PID 7452，https 200）。0 src/、0 Frozen、0 金鑰。 | DSH | VC-1.3 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
