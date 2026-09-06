@@ -331,6 +331,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
+- Current HEAD: `dec4271` (docs: register VC-2.4 multi-companion CLOSED (723d577))
+- VC-2.4 register commit: `dec4271` (docs: register VC-2.4 multi-companion CLOSED; **Current HEAD**)
+- VC-2.4 batch final commit: `723d577` (feat(vc-2.4): rem companion profile, port 8767 service, and https support; **distinct from Current HEAD** — VC-2.4 櫻島麻衣＋雷姆多伴侶批次結案）
 - Current HEAD: `ed88fb6` (docs: register VC-2/2.3 batch CLOSED (8b99f7c))
 - VC-2/2.3 register commit: `ed88fb6` (docs: register VC-2/2.3 batch CLOSED; **Current HEAD**)
 - VC-2/2.3 batch final commit: `8b99f7c` (feat(vc-2.3-05): lan security; **distinct from Current HEAD**)
