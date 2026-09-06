@@ -168,6 +168,8 @@ def build_llm_stream(llm_cfg: dict) -> Optional[Callable[[List[dict]], Iterable[
             timeout=60,
         )
         resp.raise_for_status()
+        # SSE（text/event-stream）常無 charset：requests 預設 ISO-8859-1 會把 UTF-8 中文解成亂碼 → 強制 UTF-8
+        resp.encoding = "utf-8"
         for line in resp.iter_lines(decode_unicode=True):
             if not line:
                 continue

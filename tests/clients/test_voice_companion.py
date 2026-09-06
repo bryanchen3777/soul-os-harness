@@ -850,6 +850,37 @@ class TestEnvConfig:
         assert normalize_chat_endpoint("") == ""
         assert normalize_chat_endpoint("   ") == ""
 
+    def test_llm_stream_sse_utf8_decode(self, monkeypatch):
+        """SSE 回應無 charset 時強制 UTF-8 解碼（防 ISO-8859-1 亂碼）；端點正規化同時生效"""
+        from clients.voice_companion import akane_voice_brain as brain
+
+        class FakeResp:
+            encoding = "ISO-8859-1"  # 模擬 Ollama SSE 不帶 charset（requests 預設會誤判）
+
+            def raise_for_status(self):
+                pass
+
+            def iter_lines(self, decode_unicode=True):
+                # 模擬 requests：依 resp.encoding 解碼位元組（stream 內先被 fix 強制為 utf-8）
+                raw = 'data: {"choices":[{"delta":{"content":"你"}}]}'.encode("utf-8")
+                if decode_unicode:
+                    yield raw.decode(self.encoding, errors="replace")
+                else:
+                    yield raw
+                yield b"data: [DONE]" if not decode_unicode else "data: [DONE]"
+
+        captured = {}
+
+        def fake_post(url, **kwargs):
+            captured["url"] = url
+            return FakeResp()
+
+        monkeypatch.setattr("requests.post", fake_post)
+        stream = brain.build_llm_stream({"endpoint": "https://ollama.com/v1", "model": "m", "api_key": "k"})
+        tokens = list(stream([{"role": "user", "content": "hi"}]))
+        assert "".join(tokens) == "你"                       # UTF-8 正確解碼，非 "ä½ "
+        assert captured["url"] == "https://ollama.com/v1/chat/completions"  # 正規化生效
+
 
 # ─────────────────────────────────────────────────────────────
 # Test 6：Web 語音伴侶伺服器（VC-1.3，全離線注入 fake，0 網路）
