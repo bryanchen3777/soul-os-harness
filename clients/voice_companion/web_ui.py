@@ -112,9 +112,9 @@ HTML_PAGE = """<!DOCTYPE html>
   var recNode = null, playNode = null, micSource = null, analyser = null;
   var playQueue = [];                 // Float32 播放佇列（Int16 → /32768）
   var MAX_PLAY_BUFFER = 44100 * 30;      // 30s @44.1k：live 合成速度快於即時播放，200ms 上限會丟掉長句尾段
-  var pttActive = false, autoSpeaking = false, autoSilenceMs = 0, autoHoldFrames = 0;
+  var pttActive = false, autoSpeaking = false, autoSilenceMs = 0, autoHoldFrames = 0, autoVoiceMs = 0;
   var speakEnergyMs = 0;
-  var VAD_THRESHOLD = 0.02, VAD_SILENCE_MS = 500, BARGE_MS = 150;
+  var VAD_THRESHOLD = 0.02, VAD_SILENCE_MS = 500, BARGE_MS = 150, AUTO_START_MS = 260, AUTO_HOLD_MS = 1800;
   var $ = function (id) { return document.getElementById(id); };
 
   function setState(s) {
@@ -122,8 +122,9 @@ HTML_PAGE = """<!DOCTYPE html>
     state = s;
     if (s === "SPEAKING") { ensurePlayback(); } // 茜開始說話 → 確保播放圖存在（打字路徑也能出聲）
     if (leavingSpeaking) {
-      // 茜講完 → 0.6s 不聽：喇叭尾音不該觸發 Auto-VAD
-      autoHoldFrames = Math.ceil(0.6 * (audioCtx ? audioCtx.sampleRate : 44100) / 4096);
+      // 茜講完 → AUTO_HOLD_MS 不聽：喇叭尾音/殘響不該觸發 Auto-VAD（曾 0.6s 太短仍回授）
+      autoHoldFrames = Math.ceil(AUTO_HOLD_MS * (audioCtx ? audioCtx.sampleRate : 44100) / 1000 / 4096);
+      autoVoiceMs = 0;
     }
     var dot = $("statusDot"), txt = $("statusText");
     dot.className = "dot " + (s === "SPEAKING" ? "speaking" : s === "THINKING" ? "thinking" : s === "LISTENING" ? "listening" : "idle");
@@ -300,6 +301,7 @@ HTML_PAGE = """<!DOCTYPE html>
           if (autoHoldFrames > 0) { autoHoldFrames--; }
           // Auto-VAD 不聽自己喇叭：茜講話期間＋講完 holdoff 內不收音/不觸發（防回授迴圈）
           var autoMuted = auto && (state === "SPEAKING" || autoHoldFrames > 0);
+          if (autoMuted) { autoVoiceMs = 0; }
           if (autoMuted && autoSpeaking) { autoSpeaking = false; autoSilenceMs = 0; sendPttStop(); }
           if (state === "SPEAKING" && !auto) {  // 打斷（barge-in）僅在手動 PTT 模式；auto 模式不自我觸發
             speakEnergyMs = rms > VAD_THRESHOLD ? speakEnergyMs + durMs : 0;
@@ -308,8 +310,11 @@ HTML_PAGE = """<!DOCTYPE html>
           if (auto && !autoMuted) {
             if (rms > VAD_THRESHOLD) {
               autoSilenceMs = 0;
-              if (!autoSpeaking) { autoSpeaking = true; sendPttStart(); }
+              autoVoiceMs += durMs;
+              // 需連續說話 ≥ AUTO_START_MS 才觸發：短促回音/殘響不誤開
+              if (!autoSpeaking && autoVoiceMs >= AUTO_START_MS) { autoSpeaking = true; autoVoiceMs = 0; sendPttStart(); }
             } else {
+              autoVoiceMs = 0;
               autoSilenceMs += durMs;
               if (autoSpeaking && autoSilenceMs >= VAD_SILENCE_MS) { autoSpeaking = false; sendPttStop(); }
             }
