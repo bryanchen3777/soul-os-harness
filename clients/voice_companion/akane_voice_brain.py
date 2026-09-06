@@ -51,6 +51,10 @@ AKANE_LAYER3_PERSONA = """# 黑川茜（Kurokawa Akane）
 MARKDOWN_CHARS = set("*#[]()（）")
 # 條列點（行首 "- "/"• "）
 _BULLET_RE = re.compile(r"(^|\n)[-•]\s*")
+# 括號動作/補充段（（）或 ()，含內容整段剝離——只刪符號會把「微笑」唸出來）
+_STAGE_PAREN_RE = re.compile(r"[（(][^（(）)]*[）)]")
+# 星號表情/強調段（*…*，含內容整段剝離）
+_STAGE_STAR_RE = re.compile(r"\*[^*\n]*\*")
 
 
 def contains_markdown_chars(text: str) -> bool:
@@ -59,10 +63,17 @@ def contains_markdown_chars(text: str) -> bool:
 
 
 def sanitize_voice_output(text: str) -> str:
-    """守門淨化：移除 Markdown/括號動作符號與行首條列點。"""
-    out = "".join(ch for ch in text if ch not in MARKDOWN_CHARS)
+    """守門淨化：移除動作/表情段（*…*、（…）含內容）、Markdown/括號符號與行首條列點。"""
+    out = text
+    for _ in range(3):  # 巢狀括號收斂
+        nxt = _STAGE_STAR_RE.sub("", out)
+        nxt = _STAGE_PAREN_RE.sub("", nxt)
+        if nxt == out:
+            break
+        out = nxt
+    out = "".join(ch for ch in out if ch not in MARKDOWN_CHARS)
     out = _BULLET_RE.sub(r"\1", out)
-    return out
+    return out.strip()
 
 
 # ─────────────────────────────────────────────────────────────

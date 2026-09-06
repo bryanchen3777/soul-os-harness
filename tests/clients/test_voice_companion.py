@@ -193,6 +193,17 @@ class TestAkaneVoiceBrain:
         assert not contains_markdown_chars(joined)
         assert all(ch not in joined for ch in self.FORBIDDEN)
 
+    def test_sanitize_strips_stage_directions_whole(self):
+        """動作/表情段整段剝離：括號與星號內容不得殘留被唸出（（微笑）→ 空，非『微笑』）"""
+        from clients.voice_companion.akane_voice_brain import sanitize_voice_output
+
+        assert sanitize_voice_output("（微笑著說）嗯，我很好。") == "嗯，我很好。"
+        assert sanitize_voice_output("*輕輕嘆氣* 這樣啊。") == "這樣啊。"
+        assert sanitize_voice_output("（看著窗外）今天天氣真好。") == "今天天氣真好。"
+        assert sanitize_voice_output("嗯（停頓）我想想。") == "嗯 我想想。" or sanitize_voice_output("嗯（停頓）我想想。") == "嗯我想想。"
+        assert "微笑" not in sanitize_voice_output("（微笑）累不累？")
+        assert "嘆氣" not in sanitize_voice_output("（嘆氣）好吧。")
+
     def test_history_injected_before_new_user(self):
         """對話記憶：history 依序插在 system 之後、新 user 句之前（連貫）"""
         seen = {}
