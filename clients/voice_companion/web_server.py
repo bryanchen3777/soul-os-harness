@@ -246,6 +246,16 @@ class WebSession:
         text = await asyncio.to_thread(self._asr.transcribe, wav)
         text = (text or "").strip()
         if not text:
+            # VC-1.4 失敗透通：ASR 有錯誤（402 額度 / 網路例外）→ 顯示給使用者，不再靜默 DROP；
+            # last_error 為 None（真雜音/靜音）才維持既有 DROP 靜默
+            err = getattr(self._asr, "last_error", None)
+            if err:
+                status = int(err.get("status", 0) or 0)
+                body = (err.get("message") or "")[:200]
+                message = f"語音辨識失敗（HTTP {status}）：{body}"
+                if status == 402:
+                    message += "（請檢查 Fish API 額度）"
+                await self._send_json({"type": "error", "message": message})
             await self._set_state(self.STATE_IDLE)
             return
         await self._send_json({"type": "transcript", "role": "user", "text": text})

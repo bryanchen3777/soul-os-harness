@@ -38,12 +38,18 @@ class FishASRService:
 
     - session: 可注入的 HTTP session（具 post(url, files=, data=, headers=, timeout=) 介面）
     - transcribe: 空輸入回 ""；任何失敗 / 非 200 → ""，絕不拋出（0 崩潰主迴圈）
+    - last_error / last_status（VC-1.4 additive）：失敗原因透通給上層 —
+      成功 200 → 兩者清空；非 200 → last_error={"status": code, "message": body 前 200 字}、
+      last_status=code；例外 → {"status": 0, "message": str(e)}。不回傳給呼叫端，
+      transcribe 回傳合約維持不變。
     """
 
     def __init__(self, api_key: str = "", endpoint: str = DEFAULT_ASR_ENDPOINT, session=None):
         self.api_key = api_key
         self.endpoint = endpoint
         self._session = session
+        self.last_error: Optional[dict] = None
+        self.last_status: Optional[int] = None
 
     @classmethod
     def from_config(cls, config: dict) -> "FishASRService":
@@ -62,7 +68,10 @@ class FishASRService:
         return self._session
 
     def transcribe(self, wav_bytes: bytes) -> str:
-        """WAV bytes → 轉錄文字；空輸入 / 非 200 / 網路異常 / 解析失敗 → ""（0 崩潰）。"""
+        """WAV bytes → 轉錄文字；空輸入 / 非 200 / 網路異常 / 解析失敗 → ""（0 崩潰）。
+
+        失敗原因記入 last_error / last_status（透通用），回傳合約不變。
+        """
         if not wav_bytes:
             return ""
         try:
@@ -73,13 +82,17 @@ class FishASRService:
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 timeout=10.0,
             )
-        except Exception:
-            return ""
-        if resp.status_code != 200:
-            return ""
-        try:
+            if resp.status_code != 200:
+                body = getattr(resp, "text", "") or ""
+                self.last_error = {"status": resp.status_code, "message": body[:200]}
+                self.last_status = resp.status_code
+                return ""
             data = resp.json()
-        except Exception:
+        except Exception as exc:
+            self.last_error = {"status": 0, "message": str(exc)}
+            self.last_status = 0
             return ""
+        self.last_error = None
+        self.last_status = None
         text = data.get("text") if isinstance(data, dict) else None
         return (text or "").strip()

@@ -1,13 +1,17 @@
 """
-web_ui.py — 黑川茜 Web 語音伴侶前端（VC-1.3）。
+web_ui.py — 黑川茜 Web 語音伴侶前端（VC-1.3；VC-1.4 可視化 + 失敗透通）。
 
 單頁 UI（HTML+CSS+JS 全內嵌，繁體中文，無建置步驟）。瀏覽器端負責：
 - 收音：getUserMedia（echoCancellation/noiseSuppression）→ 降採樣 16k PCM → WS binary
 - PTT 按鈕（按住說話，滑鼠/觸碰/空白鍵）＋ Auto-VAD 切換（本地 RMS）
 - 放音：AudioContext 44.1k，收 WS binary（Int16 PCM）→ Float32 佇列餵 ScriptProcessor
 - 打斷：播放中本地收音 RMS 超門檻 150ms → 送 WS interrupt
+- 可視化（VC-1.4）：即時輸入音量表（AnalyserNode getByteTimeDomainData RMS → 水平 bar）＋
+  「🎙️ 傳送中」指示；server `{"type":"error"}` 事件顯示於 #errorBox（黃底紅字，
+  402 額度等失敗原因透通），下一個 utterance 開始時自動清除
 
-畫面關鍵元素（測試依賴）：#micBtn（PTT 按鈕）、#statusText（狀態文字）。
+畫面關鍵元素（測試依賴）：#micBtn（PTT 按鈕）、#statusText（狀態文字）、
+#errorBox（錯誤訊息區）、#meterBar/#meterFill/#meterLabel（輸入音量表）。
 """
 
 HTML_PAGE = """<!DOCTYPE html>
@@ -59,11 +63,24 @@ HTML_PAGE = """<!DOCTYPE html>
   #typeRow { display: flex; gap: 8px; width: min(640px, 96vw); }
   #textInput { flex: 1; padding: 10px 12px; border-radius: 10px; border: 1px solid #3a3a4e; background: #1e1e2a; color: #e8e6f0; font-size: 14px; }
   #sendText { padding: 10px 18px; border-radius: 10px; border: none; background: #4a4a66; color: #fff; cursor: pointer; font-size: 14px; }
-  #errorBox { color: #ff9d9d; font-size: 13px; min-height: 18px; max-width: 640px; text-align: center; }
+  #errorBox {
+    color: #ff6b6b; background: rgba(255, 210, 60, 0.14); border: 1px solid rgba(255, 210, 60, 0.45);
+    font-size: 13px; min-height: 20px; max-width: 640px; text-align: center;
+    padding: 6px 12px; border-radius: 8px; width: min(640px, 96vw);
+  }
+  #meterWrap { width: min(640px, 96vw); display: flex; flex-direction: column; gap: 4px; }
+  #meterLabel { font-size: 12px; color: #9a94b0; letter-spacing: 0.5px; }
+  #meterBar { height: 10px; border-radius: 999px; background: #2a2a3c; overflow: hidden; }
+  #meterFill {
+    height: 100%; width: 0%; border-radius: 999px;
+    background: linear-gradient(90deg, #3fae5a, #d9a414 70%, #e25555);
+    transition: width 0.06s linear;
+  }
   .hint { font-size: 12px; color: #8a84a0; margin-top: -8px; }
 </style>
 </head>
 <body>
+  <!-- 提示：若長時間無反應，請檢查 Fish API 額度（402：Insufficient API credit）。ASR 與 TTS 共用同一筆額度 -->
   <header>黑川茜<small>Web 語音伴侶 · VC-1.3</small></header>
   <div id="statusBar">
     <span id="statusDot" class="dot idle"></span>
@@ -73,6 +90,10 @@ HTML_PAGE = """<!DOCTYPE html>
   <div class="controlRow">
     <label><input type="checkbox" id="autoVad"> Auto-VAD（自動聆聽）</label>
     <span class="hint">PTT：按住說話（滑鼠 / 觸碰 / 空白鍵）</span>
+  </div>
+  <div id="meterWrap">
+    <div id="meterLabel">麥克風待命</div>
+    <div id="meterBar"><div id="meterFill"></div></div>
   </div>
   <div id="chat"></div>
   <div id="typeRow">
@@ -85,7 +106,7 @@ HTML_PAGE = """<!DOCTYPE html>
   "use strict";
   var state = "IDLE";
   var ws = null, audioCtx = null, micStream = null;
-  var recNode = null, playNode = null, micSource = null;
+  var recNode = null, playNode = null, micSource = null, analyser = null;
   var playQueue = [];                 // Float32 播放佇列（Int16 → /32768）
   var MAX_PLAY_BUFFER = 8820;         // 200ms @44.1k（超過即丟棄防堆積）
   var pttActive = false, autoSpeaking = false, autoSilenceMs = 0;
@@ -115,8 +136,32 @@ HTML_PAGE = """<!DOCTYPE html>
   }
   function showError(m) { $("errorBox").textContent = m; setTimeout(function () { $("errorBox").textContent = ""; }, 6000); }
   function send(obj) { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(obj)); } }
-  function sendPttStart() { if (pttActive) { return; } pttActive = true; send({ type: "ptt_start" }); }
+  function sendPttStart() {
+    if (pttActive) { return; }
+    pttActive = true;
+    $("errorBox").textContent = "";  // 下一個 utterance 開始 → 自動清除舊錯誤
+    send({ type: "ptt_start" });
+  }
   function sendPttStop() { if (!pttActive) { return; } pttActive = false; send({ type: "ptt_stop" }); }
+
+  // ── 輸入音量表（VC-1.4：AnalyserNode RMS → 水平 bar ＋ 傳送中指示）──
+  function updateMeter() {
+    var fill = $("meterFill"), label = $("meterLabel");
+    if (!analyser) {
+      fill.style.width = "0%";
+      label.textContent = "麥克風待命";
+      requestAnimationFrame(updateMeter);
+      return;
+    }
+    var buf = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(buf);
+    var sum = 0;
+    for (var i = 0; i < buf.length; i++) { var v = (buf[i] - 128) / 128; sum += v * v; }
+    var rms = Math.sqrt(sum / buf.length);
+    fill.style.width = Math.min(100, Math.round(rms * 400)) + "%";
+    label.textContent = (state === "LISTENING" || pttActive || autoSpeaking) ? "🎙️ 傳送中" : "麥克風待命";
+    requestAnimationFrame(updateMeter);
+  }
 
   // ── WebSocket ──
   function connect() {
@@ -208,10 +253,14 @@ HTML_PAGE = """<!DOCTYPE html>
           }
         };
         micSource.connect(recNode);
+        analyser = audioCtx.createAnalyser();  // 音量表資料源（VC-1.4）
+        analyser.fftSize = 512;
+        micSource.connect(analyser);
         var silentGain = audioCtx.createGain(); silentGain.gain.value = 0; // 靜音目的地：驅動 onaudioprocess 且無回授
         recNode.connect(silentGain);
         silentGain.connect(audioCtx.destination);
         showError("");
+        requestAnimationFrame(updateMeter);  // 啟動音量表繪製迴圈
       })
       .catch(function (err) { showError("麥克風權限被拒：" + err.message); });
   }

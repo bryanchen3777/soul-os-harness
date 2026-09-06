@@ -523,6 +523,29 @@ class TestFishASRService:
         svc = FishASRService(api_key="k", session=session)
         assert svc.transcribe(b"wav-bytes") == ""
 
+    def test_last_error_tracks_http_status_and_clears_on_ok(self):
+        """VC-1.4 additive：非 200 → last_error/last_status 記錄（回傳合約 "" 不變）；成功 200 → 清空"""
+        session = FakeASRSession(payload={}, status_code=402)
+        svc = FishASRService(api_key="k", session=session)
+        assert svc.transcribe(b"wav-bytes") == ""
+        assert svc.last_status == 402
+        assert svc.last_error is not None and svc.last_error["status"] == 402
+        assert "message" in svc.last_error
+
+        ok_session = FakeASRSession(payload={"text": "好"}, status_code=200)
+        svc2 = FishASRService(api_key="k", session=ok_session)
+        assert svc2.transcribe(b"wav-bytes") == "好"
+        assert svc2.last_error is None
+        assert svc2.last_status is None
+
+    def test_last_error_tracks_exception(self):
+        """VC-1.4 additive：網路/解析例外 → last_error={"status":0,...}"""
+        session = FakeASRSession(error=RuntimeError("connection boom"))
+        svc = FishASRService(api_key="k", session=session)
+        assert svc.transcribe(b"wav-bytes") == ""
+        assert svc.last_status == 0
+        assert "boom" in svc.last_error["message"]
+
 
 class TestPcm16ToWav:
     def test_header_roundtrip_correct(self):
@@ -855,6 +878,8 @@ class FakeWebASR:
     def __init__(self, text="茜，今天好累"):
         self.text = text
         self.calls = 0
+        self.last_error: dict | None = None  # VC-1.4 失敗透通（類比 FishASRService additive 屬性）
+        self.last_status: int | None = None
 
     def transcribe(self, wav_bytes):
         self.calls += 1
@@ -1095,3 +1120,92 @@ class TestWebServer:
         assert "interrupt" in HTML_PAGE
         assert "AudioContext" in HTML_PAGE
         assert "int16" in HTML_PAGE.lower() or "Int16Array" in HTML_PAGE
+
+    def test_ws_asr_402_error_transparency(self):
+        """VC-1.4：ASR 402（額度不足）→ error 事件含「402」與「額度」→ 狀態回 IDLE（不靜默 DROP）"""
+        async def _run():
+            asr = FakeWebASR("")  # transcribe 回 ""（既有容錯語義）
+            asr.last_error = {"status": 402, "message": "Insufficient API credit. API credit is managed independently from platform credit"}
+            asr.last_status = 402
+
+            def factory(sink):
+                return FakeWebStreamer(sink=sink)
+
+            brain = AkaneVoiceBrain(llm_stream=lambda msgs: iter(("x",)))
+            app = build_app(WEB_TEST_CONFIG, brain=brain, refiner=AsrRefiner(llm_call=None),
+                            asr=asr, streamer_factory=factory)
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                await ws.send_json({"type": "ptt_start"})
+                pcm = (np.full(1600, 0.5) * 32767).astype(np.int16).tobytes()
+                await ws.send_bytes(pcm)
+                await ws.send_bytes(pcm)
+                await ws.send_json({"type": "ptt_stop"})
+                events = []
+                while len(events) < 4:
+                    msg = await ws.receive(timeout=3)
+                    if msg.type == WSMsgType.TEXT:
+                        events.append(json.loads(msg.data))
+                    elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
+                        break
+                await ws.close()
+            finally:
+                await client.close()
+
+            errors = [e["message"] for e in events if e["type"] == "error"]
+            assert len(errors) == 1, "402 必須透通成 error 事件"
+            assert "402" in errors[0]
+            assert "額度" in errors[0]
+            states = [e["state"] for e in events if e["type"] == "state"]
+            assert states[-1] == "IDLE", "ASR 失敗後狀態必須回 IDLE"
+
+        asyncio.run(_run())
+
+    def test_ws_asr_drop_silent_no_error(self):
+        """VC-1.4：ASR 回 "" 且 last_error=None（真雜音/靜音）→ 0 error 事件（維持 DROP 靜默）"""
+        async def _run():
+            asr = FakeWebASR("")  # 無 last_error（真雜音熔斷語意）
+
+            def factory(sink):
+                return FakeWebStreamer(sink=sink)
+
+            brain = AkaneVoiceBrain(llm_stream=lambda msgs: iter(("x",)))
+            app = build_app(WEB_TEST_CONFIG, brain=brain, refiner=AsrRefiner(llm_call=None),
+                            asr=asr, streamer_factory=factory)
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                await ws.send_json({"type": "ptt_start"})
+                pcm = (np.full(1600, 0.5) * 32767).astype(np.int16).tobytes()
+                await ws.send_bytes(pcm)
+                await ws.send_bytes(pcm)
+                await ws.send_json({"type": "ptt_stop"})
+                events = []
+                while len(events) < 3:
+                    msg = await ws.receive(timeout=3)
+                    if msg.type == WSMsgType.TEXT:
+                        events.append(json.loads(msg.data))
+                    elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
+                        break
+                await ws.close()
+            finally:
+                await client.close()
+
+            assert [e["type"] for e in events if e["type"] == "error"] == [], "真雜音必須靜默 DROP（0 error 事件）"
+            states = [e["state"] for e in events if e["type"] == "state"]
+            assert states[-1] == "IDLE"
+
+        asyncio.run(_run())
+
+    def test_ui_meter_error_box_elements(self):
+        """VC-1.4：HTML_PAGE 含錯誤訊息區 id、音量表元素 id、🎙️ 傳送中字樣與額度提示註解"""
+        assert 'id="errorBox"' in HTML_PAGE
+        assert 'id="meterBar"' in HTML_PAGE
+        assert 'id="meterFill"' in HTML_PAGE
+        assert 'id="meterLabel"' in HTML_PAGE
+        assert "🎙️" in HTML_PAGE
+        assert "傳送中" in HTML_PAGE
+        assert "額度" in HTML_PAGE  # 內建提示（HTML 註解）
