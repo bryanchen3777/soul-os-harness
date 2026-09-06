@@ -5,7 +5,7 @@
     "endpoint": "https://api.fish.audio/v1/tts",
     "asr_endpoint": "https://api.fish.audio/v1/asr",
     "tts_ws_endpoint": "wss://api.fish.audio/v1/tts/live",
-    "model": "s2.1-pro-free",
+    "model": "s2.1-pro",
     "mode": "live",
     "live_format": "pcm"
   },
