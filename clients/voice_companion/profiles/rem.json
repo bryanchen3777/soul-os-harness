@@ -1,0 +1,46 @@
+{
+  "companion": {
+    "id": "agent_rem",
+    "display_name": "雷姆",
+    "short_name": "雷姆",
+    "persona_file": "personas/agent_rem.md"
+  },
+  "fish_audio": {
+    "api_key": "",
+    "voice_id": "055de7dab3aa411ea544f2673ff537fa",
+    "endpoint": "https://api.fish.audio/v1/tts",
+    "asr_endpoint": "https://api.fish.audio/v1/asr",
+    "tts_ws_endpoint": "wss://api.fish.audio/v1/tts/live",
+    "model": "s2.1-pro",
+    "mode": "live",
+    "live_format": "pcm"
+  },
+  "stt": {
+    "engine": "fish",
+    "language": "zh"
+  },
+  "vad": {
+    "sample_rate": 16000,
+    "silence_threshold_sec": 0.8,
+    "energy_threshold": 0.015
+  },
+  "dialogue": {
+    "wake_words": [
+      "雷姆",
+      "Rem",
+      "rem",
+      "レム"
+    ],
+    "continuous_timeout_sec": 30.0,
+    "ephemeral_mode": false
+  },
+  "llm": {
+    "endpoint": "https://ollama.com/v1",
+    "model": "deepseek-v4-flash:0731"
+  },
+  "web": {
+    "host": "127.0.0.1",
+    "port": 8767,
+    "https": true
+  }
+}

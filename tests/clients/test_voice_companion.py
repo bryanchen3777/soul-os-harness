@@ -2672,3 +2672,158 @@ class TestMaiCompanionVC24:
                 await client.close()
 
         asyncio.run(_run())
+
+
+# ─────────────────────────────────────────────────────────────
+# 雷姆獨立語音伴侶服務（Port 8767）測試
+# ─────────────────────────────────────────────────────────────
+
+class TestRemCompanion:
+    """驗收雷姆獨立語音伴侶服務（Port 8767）：
+
+    - 雷姆 Profile 設定（agent_rem、personas/agent_rem.md、voice_id 055de7dab3aa411ea544f2673ff537fa）
+    - 獨立 Port 8767 與 Loopback HTTPS 綁定
+    - 環境變數 REM_* 優先級覆寫
+    - 記憶庫隔離（agent_rem 命名空間）
+    - Web UI 角色名稱適配（雷姆）
+    - 三伴侶獨立 Port 與 Agent ID 防呆
+    - WebSocket transcript 角色身分（role: rem）
+    """
+
+    def test_rem_profile_uses_agent_rem_and_rem_persona(self):
+        """1. 雷姆 profile 使用 agent_rem 與 personas/agent_rem.md，且檔案存在且內容正確"""
+        rem_cfg_path = REPO_ROOT / "clients/voice_companion/profiles/rem.json"
+        assert rem_cfg_path.is_file(), "profiles/rem.json 必須存在"
+        with open(rem_cfg_path, encoding="utf-8-sig") as f:
+            rem_cfg = json.load(f)
+        companion = rem_cfg.get("companion") or {}
+        assert companion.get("id") == "agent_rem"
+        assert companion.get("display_name") == "雷姆"
+        assert companion.get("short_name") == "雷姆"
+        assert rem_cfg.get("fish_audio", {}).get("voice_id") == "055de7dab3aa411ea544f2673ff537fa"
+        persona_file = REPO_ROOT / companion.get("persona_file", "")
+        assert persona_file.is_file(), f"Persona 檔案 {persona_file} 必須存在"
+        content = persona_file.read_text(encoding="utf-8")
+        assert "雷姆" in content
+        assert "Voice Companion Invariants" in content
+
+    def test_rem_profile_defaults_to_port_8767_and_loopback(self):
+        """2. 雷姆 profile 預設監聽 127.0.0.1:8767，且預設啟用 https"""
+        with open(REPO_ROOT / "clients/voice_companion/profiles/rem.json", encoding="utf-8-sig") as f:
+            rem_cfg = json.load(f)
+        web_cfg = rem_cfg.get("web") or {}
+        assert web_cfg.get("port") == 8767
+        assert web_cfg.get("host") == "127.0.0.1"
+        assert web_cfg.get("https") is True
+
+    def test_rem_specific_env_vars_override_generic_vars(self, monkeypatch):
+        """3. 環境變數優先級：REM_* > 通用變數 > profile JSON 預設"""
+        with open(REPO_ROOT / "clients/voice_companion/profiles/rem.json", encoding="utf-8-sig") as f:
+            base_cfg = json.load(f)
+
+        monkeypatch.setenv("FISH_AUDIO_API_KEY", "generic_fish_key")
+        monkeypatch.setenv("REM_FISH_API_KEY", "rem_specific_fish_key")
+        monkeypatch.setenv("LLM_API_KEY", "generic_llm_key")
+        monkeypatch.setenv("REM_LLM_API_KEY", "rem_specific_llm_key")
+        monkeypatch.setenv("REM_FISH_VOICE_ID", "rem_voice_uuid_custom")
+        monkeypatch.setenv("REM_PORT", "8997")
+
+        resolved = resolve_config(base_cfg)
+        assert resolved["fish_audio"]["api_key"] == "rem_specific_fish_key"
+        assert resolved["llm"]["api_key"] == "rem_specific_llm_key"
+        assert resolved["fish_audio"]["voice_id"] == "rem_voice_uuid_custom"
+        assert resolved["web"]["port"] == 8997
+
+    def test_rem_does_not_read_akane_or_mai_memory_namespace(self, tmp_path, monkeypatch):
+        """4. 雷姆服務隔離：SAGE 記憶庫檢索嚴格限定 agent_rem 命名空間"""
+        data_dir = tmp_path / "data"
+        akane_mem = data_dir / "memory" / "agent_akane"
+        akane_mem.mkdir(parents=True, exist_ok=True)
+        (akane_mem / "graph.sqlite").write_text("fake akane db")
+
+        monkeypatch.setattr("src.paths.data_root", lambda: data_dir)
+
+        brain_rem = AkaneVoiceBrain(agent_id="agent_rem")
+        assert brain_rem.agent_id == "agent_rem"
+        retrieved = brain_rem.memory_retriever("Bryan")
+        assert retrieved is None
+
+        queried_agents = []
+
+        def custom_retriever(q, agent_id="agent_rem"):
+            queried_agents.append(agent_id)
+            return None
+
+        brain_rem_custom = AkaneVoiceBrain(
+            agent_id="agent_rem",
+            memory_retriever=lambda q: custom_retriever(q, agent_id="agent_rem"),
+        )
+        brain_rem_custom._build_messages("你好")
+        assert "agent_rem" in queried_agents
+        assert "agent_akane" not in queried_agents
+        assert "agent_mai" not in queried_agents
+
+    def test_web_ui_uses_configured_rem_display_name(self):
+        """5. Web 前端 UI 角色名稱動態替換為雷姆"""
+        html_rem = render_html_page(display_name="雷姆", short_name="雷姆")
+        assert "<title>雷姆 · 語音伴侶</title>" in html_rem
+        assert "<header>雷姆<small>Web 語音伴侶" in html_rem
+        assert 'placeholder="打字給雷姆…（Enter 送出）"' in html_rem
+        assert 'var COMPANION_DISPLAY_NAME = "雷姆";' in html_rem
+        assert 'var COMPANION_SHORT_NAME = "雷姆";' in html_rem
+
+    def test_all_three_companions_have_distinct_ports_and_identities(self):
+        """6. 三伴侶雙向隔離防呆：茜 (8765)、麻衣 (8766)、雷姆 (8767) 全數獨立"""
+        akane_cfg = load_config()
+        mai_cfg = load_config("clients/voice_companion/profiles/mai.json")
+        rem_cfg = load_config("clients/voice_companion/profiles/rem.json")
+
+        ports = [akane_cfg["web"]["port"], mai_cfg["web"]["port"], rem_cfg["web"]["port"]]
+        assert len(set(ports)) == 3, f"Port 必須完全不同: {ports}"
+        assert ports == [8765, 8766, 8767]
+
+        agent_ids = [akane_cfg["companion"]["id"], mai_cfg["companion"]["id"], rem_cfg["companion"]["id"]]
+        assert len(set(agent_ids)) == 3, f"Agent ID 必須完全不同: {agent_ids}"
+        assert agent_ids == ["agent_akane", "agent_mai", "agent_rem"]
+
+        personas = [akane_cfg["companion"]["persona_file"], mai_cfg["companion"]["persona_file"], rem_cfg["companion"]["persona_file"]]
+        assert len(set(personas)) == 3, f"Persona 檔案必須完全不同: {personas}"
+
+        voice_ids = [akane_cfg["fish_audio"]["voice_id"], mai_cfg["fish_audio"]["voice_id"], rem_cfg["fish_audio"]["voice_id"]]
+        assert len(set(voice_ids)) == 3, f"Voice ID 必須完全不同: {voice_ids}"
+
+    def test_rem_websocket_transcript_event_role_is_rem(self):
+        """7. WebSocket transcript 事件身分：雷姆送出 role: rem"""
+        rem_cfg = load_config("clients/voice_companion/profiles/rem.json")
+        app = build_app(
+            rem_cfg,
+            brain=AkaneVoiceBrain(agent_id="agent_rem", llm_stream=lambda msgs: iter(["雷姆回答。"])),
+            refiner=FakeWebASR(""),
+            asr=FakeWebASR(""),
+            streamer_factory=lambda sink: FakeWebStreamer(sink=sink),
+        )
+
+        async def _run():
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                await ws.send_json({"type": "text", "text": "你好雷姆"})
+                events = []
+                while True:
+                    msg = await ws.receive(timeout=3)
+                    if msg.type == WSMsgType.TEXT:
+                        data = json.loads(msg.data)
+                        events.append(data)
+                        if data.get("type") == "state" and data.get("state") == "IDLE":
+                            break
+                    elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
+                        break
+                await ws.close()
+                transcripts = [e for e in events if e.get("type") == "transcript" and e.get("role") == "rem"]
+                assert len(transcripts) == 1
+                assert transcripts[0]["text"] == "雷姆回答。"
+            finally:
+                await client.close()
+
+        asyncio.run(_run())

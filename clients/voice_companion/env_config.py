@@ -46,6 +46,16 @@ MAI_OVERRIDE_MAP: list[tuple[str, str, str]] = [
     ("MAI_PORT", "web", "port"),
 ]
 
+# 雷姆專屬環境變數（僅 companion.id == 'agent_rem' 時覆寫）
+REM_OVERRIDE_MAP: list[tuple[str, str, str]] = [
+    ("REM_FISH_API_KEY", "fish_audio", "api_key"),
+    ("REM_FISH_VOICE_ID", "fish_audio", "voice_id"),
+    ("REM_LLM_BASE_URL", "llm", "endpoint"),
+    ("REM_LLM_API_KEY", "llm", "api_key"),
+    ("REM_LLM_MODEL", "llm", "model"),
+    ("REM_PORT", "web", "port"),
+]
+
 
 def load_dotenv(path: Optional[str] = None) -> bool:
     """載入 .env（預設為本模組旁的 .env）到 os.environ。
@@ -77,7 +87,7 @@ def apply_env_overrides(config: dict) -> dict:
     """以 os.environ 中「存在且非空」的變數覆寫 config 對應鍵（原地修改並回傳）。
 
     優先序：
-    1. 角色專屬變數（例如 companion.id == 'agent_mai' 時讀取 MAI_*）
+    1. 角色專屬變數（例如 companion.id == 'agent_mai' 讀取 MAI_*，agent_rem 讀取 REM_*）
     2. 既有通用變數（FISH_* / LLM_* / VOICE_WEB_*）
     3. profile JSON 預設值
     """
@@ -87,8 +97,14 @@ def apply_env_overrides(config: dict) -> dict:
             config.setdefault(section, {})[key] = value
 
     companion_id = (config.get("companion") or {}).get("id")
+    override_map = None
     if companion_id == "agent_mai":
-        for env_name, section, key in MAI_OVERRIDE_MAP:
+        override_map = MAI_OVERRIDE_MAP
+    elif companion_id == "agent_rem":
+        override_map = REM_OVERRIDE_MAP
+
+    if override_map:
+        for env_name, section, key in override_map:
             value = os.environ.get(env_name)
             if value:
                 if key == "port":
