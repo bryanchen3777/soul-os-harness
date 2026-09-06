@@ -331,8 +331,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `53c3fab` (fix(vc-1): normalize chat completions endpoint (405 on ollama.com/v1 root))
-- VC-1 405 fix commit: `53c3fab` (fix(vc-1): normalize chat completions endpoint (405 on ollama.com/v1 root); **Current HEAD**)
+- Current HEAD: `f12e46a` (docs: register VC-1 405 endpoint fix (53c3fab))
+- VC-1 405 fix register commit: `f12e46a` (docs: register VC-1 405 endpoint fix (53c3fab); **Current HEAD**)
+- VC-1 405 fix commit: `53c3fab` (fix(vc-1): normalize chat completions endpoint (405 on ollama.com/v1 root); **distinct from Current HEAD**)
 - VC-1 LLM key fix register commit: `3da9a67` (docs: register VC-1 LLM key fix (2b77631); **Current HEAD**)
 - VC-1 LLM key fix commit: `2b77631` (fix(vc-1): llm api key env fallback (OLLAMA_API_KEY, explicit LLM_API_KEY wins) + test; **distinct from Current HEAD**)
 - VC-1.5 register commit: `c90fe2d` (docs: register VC-1.5 https + secure-mic fixes (3b62328 + 5e99042); **Current HEAD**)
