@@ -112,14 +112,19 @@ HTML_PAGE = """<!DOCTYPE html>
   var recNode = null, playNode = null, micSource = null, analyser = null;
   var playQueue = [];                 // Float32 播放佇列（Int16 → /32768）
   var MAX_PLAY_BUFFER = 44100 * 30;      // 30s @44.1k：live 合成速度快於即時播放，200ms 上限會丟掉長句尾段
-  var pttActive = false, autoSpeaking = false, autoSilenceMs = 0;
+  var pttActive = false, autoSpeaking = false, autoSilenceMs = 0, autoHoldFrames = 0;
   var speakEnergyMs = 0;
   var VAD_THRESHOLD = 0.02, VAD_SILENCE_MS = 500, BARGE_MS = 150;
   var $ = function (id) { return document.getElementById(id); };
 
   function setState(s) {
+    var leavingSpeaking = (state === "SPEAKING") && s !== "SPEAKING";
     state = s;
     if (s === "SPEAKING") { ensurePlayback(); } // 茜開始說話 → 確保播放圖存在（打字路徑也能出聲）
+    if (leavingSpeaking) {
+      // 茜講完 → 0.6s 不聽：喇叭尾音不該觸發 Auto-VAD
+      autoHoldFrames = Math.ceil(0.6 * (audioCtx ? audioCtx.sampleRate : 44100) / 4096);
+    }
     var dot = $("statusDot"), txt = $("statusText");
     dot.className = "dot " + (s === "SPEAKING" ? "speaking" : s === "THINKING" ? "thinking" : s === "LISTENING" ? "listening" : "idle");
     txt.textContent = s === "SPEAKING" ? "🔴 茜說話中…（開口可打斷）" : s === "THINKING" ? "🟡 思考中…" : s === "LISTENING" ? "🟢 聆聽中…" : "🟢 聆聽";
@@ -291,12 +296,16 @@ HTML_PAGE = """<!DOCTYPE html>
           for (var k = 0; k < len; k++) { sum += ch[k] * ch[k]; }
           var rms = Math.sqrt(sum / len);
           var durMs = len / audioCtx.sampleRate * 1000;
-          if (state === "SPEAKING") {
+          var auto = $("autoVad").checked;
+          if (autoHoldFrames > 0) { autoHoldFrames--; }
+          // Auto-VAD 不聽自己喇叭：茜講話期間＋講完 holdoff 內不收音/不觸發（防回授迴圈）
+          var autoMuted = auto && (state === "SPEAKING" || autoHoldFrames > 0);
+          if (autoMuted && autoSpeaking) { autoSpeaking = false; autoSilenceMs = 0; sendPttStop(); }
+          if (state === "SPEAKING" && !auto) {  // 打斷（barge-in）僅在手動 PTT 模式；auto 模式不自我觸發
             speakEnergyMs = rms > VAD_THRESHOLD ? speakEnergyMs + durMs : 0;
             if (speakEnergyMs >= BARGE_MS) { speakEnergyMs = 0; flushPlayback(); send({ type: "interrupt" }); }
           }
-          var auto = $("autoVad").checked;
-          if (auto) {
+          if (auto && !autoMuted) {
             if (rms > VAD_THRESHOLD) {
               autoSilenceMs = 0;
               if (!autoSpeaking) { autoSpeaking = true; sendPttStart(); }
@@ -305,8 +314,8 @@ HTML_PAGE = """<!DOCTYPE html>
               if (autoSpeaking && autoSilenceMs >= VAD_SILENCE_MS) { autoSpeaking = false; sendPttStop(); }
             }
           }
-          // 只有 LISTENING 才把音訊送伺服器（binary = Int16 PCM 16k mono）
-          if (ws && ws.readyState === WebSocket.OPEN && (pttActive || auto)) {
+          // 只有 LISTENING（auto）或 PTT 按住時才把音訊送伺服器（binary = Int16 PCM 16k mono）
+          if (ws && ws.readyState === WebSocket.OPEN && (pttActive || (auto && !autoMuted))) {
             var s16 = resampleTo16k(ch, ratio);
             var buf = new Int16Array(s16.length);
             for (var j = 0; j < s16.length; j++) {
