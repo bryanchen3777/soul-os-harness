@@ -201,17 +201,40 @@ HTML_PAGE = """<!DOCTYPE html>
         else if (msg.type === "transcript") { addMsg(msg.role, msg.text); }
         else if (msg.type === "error") { showError(msg.message || "錯誤"); }
       } else {
-        // binary = Int16 PCM 44.1k mono 播放分片
+        // binary = Int16 PCM 44.1k mono 播放分片（server 固定 44100）
         ensurePlayback();
         var i16 = new Int16Array(ev.data);
         if (state === "SPEAKING" && playQueue.length < MAX_PLAY_BUFFER) {
-          for (var i = 0; i < i16.length; i++) { playQueue.push(i16[i] / 32768.0); }
+          var rate = audioCtx ? audioCtx.sampleRate : 44100;
+          if (rate !== 44100) {
+            // ctx 實際採樣率 ≠44100（裝置端）→ 線性重採樣，避免變調（怪聲）
+            var f32in = new Float32Array(i16.length);
+            for (var j = 0; j < i16.length; j++) { f32in[j] = i16[j] / 32768.0; }
+            var rs = resampleLinear(f32in, 44100, rate);
+            for (var m = 0; m < rs.length; m++) { playQueue.push(rs[m]); }
+          } else {
+            for (var n = 0; n < i16.length; n++) { playQueue.push(i16[n] / 32768.0); }
+          }
         }
       }
     };
   }
 
   // ── 放音（44.1k）──
+  function resampleLinear(input, fromRate, toRate) {
+    // 線性插值重採樣：44100 輸入 → ctx 實際採樣率（防止裝置端 48k 造成變調）
+    var ratio = toRate / fromRate;
+    var n = Math.floor(input.length * ratio);
+    if (n <= 0 || n === input.length) { return input; }
+    var out = new Float32Array(n);
+    for (var i = 0; i < n; i++) {
+      var pos = i / ratio;
+      var i0 = Math.floor(pos), frac = pos - i0;
+      var i1 = i0 + 1 < input.length ? i0 + 1 : i0;
+      out[i] = input[i0] * (1 - frac) + input[i1] * frac;
+    }
+    return out;
+  }
   function ensureAudioResume() {
     // 瀏覽器自動播放政策：非手勢建立的 AudioContext 會停在 suspended → 無聲
     if (audioCtx && audioCtx.state === "suspended" && audioCtx.resume) { audioCtx.resume(); }

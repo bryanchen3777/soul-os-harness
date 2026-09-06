@@ -184,6 +184,7 @@ class FishTTSLiveStreamer:
             text="",
             reference_id=self.voice_id,
             format=self.live_format,
+            sample_rate=DEFAULT_SAMPLE_RATE,  # 明確 44100：None 讓伺服器預設，避免樣本率不確定（怪聲）
             chunk_length=DEFAULT_CHUNK_LENGTH,
             latency=DEFAULT_LATENCY,
         )

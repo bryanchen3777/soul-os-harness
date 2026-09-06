@@ -329,6 +329,7 @@ class TestFishTTSLiveStreamer:
 
         assert sess.request.reference_id == "v"
         assert sess.request.format == "pcm"
+        assert sess.request.sample_rate == 44100  # VC-1.6：明確樣本率（None 會留給伺服器預設 → 不確定性）
         assert sess.request.chunk_length == 300
         assert sess.request.latency == "normal"
         assert sess.request.text == ""
