@@ -40,7 +40,7 @@ from clients.voice_companion.akane_voice_brain import (
     contains_markdown_chars,
 )
 from clients.voice_companion.asr_refiner import AsrRefiner, refine_speech_text
-from clients.voice_companion.env_config import apply_env_overrides, load_dotenv, resolve_config
+from clients.voice_companion.env_config import apply_env_overrides, load_dotenv, normalize_chat_endpoint, resolve_config
 from clients.voice_companion.fish_tts_streamer import FishTTSStreamer
 from clients.voice_companion.fish_tts_live import FishTTSError, FishTTSLiveStreamer
 from clients.voice_companion.stt_service import FishASRService, pcm16_to_wav_bytes
@@ -841,6 +841,14 @@ class TestEnvConfig:
         assert resolve_config(dict(cfg), env_file=str(missing))["llm"]["api_key"] == "ollama-key"   # fallback 生效
         monkeypatch.setenv("LLM_API_KEY", "explicit-key")
         assert resolve_config(dict(cfg), env_file=str(missing))["llm"]["api_key"] == "explicit-key" # 顯式鍵優先
+
+    def test_normalize_chat_endpoint(self):
+        """OpenAI 相容端點正規化：缺 /chat/completions 自動補、有則原樣、空值回空"""
+        assert normalize_chat_endpoint("https://ollama.com/v1") == "https://ollama.com/v1/chat/completions"
+        assert normalize_chat_endpoint("https://ollama.com/v1/") == "https://ollama.com/v1/chat/completions"
+        assert normalize_chat_endpoint("https://x.example/v1/chat/completions") == "https://x.example/v1/chat/completions"
+        assert normalize_chat_endpoint("") == ""
+        assert normalize_chat_endpoint("   ") == ""
 
 
 # ─────────────────────────────────────────────────────────────

@@ -70,6 +70,22 @@ def apply_env_overrides(config: dict) -> dict:
     return config
 
 
+def normalize_chat_endpoint(endpoint: str) -> str:
+    """OpenAI 相容 chat/completions 端點正規化：缺 `/chat/completions` 時自動補上。
+
+    - 空值 / 空白 → ""（呼叫端自行降級）
+    - "https://ollama.com/v1"      → "https://ollama.com/v1/chat/completions"
+    - "https://.../chat/completions" → 原樣
+    - 尾斜線一律先剝除
+    """
+    e = (endpoint or "").strip().rstrip("/")
+    if not e:
+        return ""
+    if e.endswith("/chat/completions"):
+        return e
+    return e + "/chat/completions"
+
+
 def resolve_config(config: dict, env_file: Optional[str] = None) -> dict:
     """完整解析：載入 .env（不覆蓋既有 env）→ os.environ 覆寫 config → 回傳最終 config。"""
     load_dotenv(env_file)

@@ -145,7 +145,9 @@ class ClauseSplitter:
 
 def build_llm_stream(llm_cfg: dict) -> Optional[Callable[[List[dict]], Iterable[str]]]:
     """依 config `llm` 小節建立 OpenAI 相容串流通道；endpoint 缺省 → None（離線降級）。"""
-    endpoint = (llm_cfg or {}).get("endpoint") or ""
+    from .env_config import normalize_chat_endpoint  # 正規化：缺 /chat/completions 自動補
+
+    endpoint = normalize_chat_endpoint((llm_cfg or {}).get("endpoint") or "")
     if not endpoint:
         return None
     model = (llm_cfg or {}).get("model") or "qwen2.5-7b-instruct"

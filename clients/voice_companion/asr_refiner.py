@@ -131,7 +131,9 @@ def build_refine_prompt(raw_stt_text: str) -> str:
 
 def build_llm_call(llm_cfg: dict) -> Callable[[str], Optional[str]]:
     """依 config `llm` 小節建立 OpenAI 相容 chat/completions 呼叫（requests 懶載入）。"""
-    endpoint = (llm_cfg or {}).get("endpoint") or ""
+    from .env_config import normalize_chat_endpoint  # 正規化：缺 /chat/completions 自動補
+
+    endpoint = normalize_chat_endpoint((llm_cfg or {}).get("endpoint") or "")
     model = (llm_cfg or {}).get("model") or "qwen2.5-7b-instruct"
     api_key = (llm_cfg or {}).get("api_key") or ""
 
