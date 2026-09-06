@@ -301,6 +301,8 @@ Historical closeout files in `logs/` are **preserved unchanged** per §4 Histori
 
 | **VC-1.4（輸入可視化＋失敗透通）** | ✅ CLOSED（commit `c65a5cf`，4 檔 +199/-13） | 起因（實測）：Fish API credit=0 → `POST /v1/asr` 402（ASR/TTS 共用 API credit，與平台餘額獨立），轉寫空字串被靜默 DROP，使用者無從判斷。修：`stt_service` additive `last_error`/`last_status`（200 清空、非 200 記 status+body、例外記 0，transcribe 合約不變）；`web_server` 空結果＋last_error → 送 error 事件（402 附「請檢查 Fish API 額度」）回 IDLE，真雜音維持 DROP 靜默；`web_ui` 即時輸入音量表（AnalyserNode RMS→`#meterFill` bar＋「🎙️ 傳送中」/「麥克風待命」）＋`#errorBox` 黃底紅字（下一 utterance 自動清除）＋註解提示額度。驗收 62 passed（57＋5，主大腦複跑）；伺服器已重啟為受管背景常駐（新 UI 生效，HTTP 200＋meterFill/errorBox 在頁面實證）。0 src/、0 Frozen、0 金鑰。 | `c65a5cf`（feat(vc-1.4): mic level meter + asr error transparency in web ui） |
 
+| **VC-1.5（HTTPS 模式＋麥克風安全來源根治）** | ✅ CLOSED（commit `3b62328`＋修復 `5e99042`，7 檔 +251/-16） | 起因：`getUserMedia` 僅允許 HTTPS/localhost——`http://區網IP` 非安全來源，麥克風被瀏覽器擋下、音量條不動。修：`--https` 模式（`make_self_signed_cert` cryptography 自簽憑證，SAN 含 127.0.0.1＋區網 IP，certs/ gitignored；`build_ssl_context`＋`lan_urls(scheme=https)`＋瀏覽器「繼續前往」指引）；UI `isSecureContext===false` **常駐**提示＋`err.name` 分類（NotAllowed/Security/NotFound）＋`micStream` 未就緒擋 PTT＋`#errorDismiss` ✕；伺服器 `[WS]`/`[UTT]` 診斷日誌（連線/事件/回合/ASR 結果/錯誤 status）。**修復 `5e99042`**：Windows cp950 主控台印 ⚠️ emoji `UnicodeEncodeError` 崩潰 → `main()` 開頭 stdout/stderr `reconfigure(utf-8, errors="replace")`（主大腦直接修，一行級）。驗收 68 passed（62＋6，主大腦複跑）；HTTPS 實機上線 HTTP 200＋banner 元素實證。0 src/、0 Frozen、0 金鑰（certs/ gitignored）。 | `3b62328`（feat(vc-1.5)）+ `5e99042`（fix(vc-1.5) utf-8 stdout） |
+
 ### North Star v2（canonical 引用）
 
 **Canonical 完整版**：Notion 页面「🧭 Soul OS Strategic Roadmap & Evolution」的「North Star v2」段（2026-08-29，Bryan 亲述）。七点愿景简述：
@@ -329,7 +331,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `1a941f9` (docs: register VC-1.4 mic visibility + asr error transparency (c65a5cf))
+- Current HEAD: `5e99042` (fix(vc-1.5): utf-8 stdout reconfigure for windows cp950 console (emoji print crash))
+- VC-1.5 stdout fix commit: `5e99042` (fix(vc-1.5): utf-8 stdout reconfigure for windows cp950 console (emoji print crash); **Current HEAD**)
+- VC-1.5 https mode commit: `3b62328` (feat(vc-1.5): https mode + insecure-origin mic banner + ws diagnostics; **distinct from Current HEAD**)
 - VC-1.4 register commit: `1a941f9` (docs: register VC-1.4 mic visibility + asr error transparency (c65a5cf); **Current HEAD**)
 - VC-1.4 UI visibility commit: `c65a5cf` (feat(vc-1.4): mic level meter + asr error transparency in web ui; **distinct from Current HEAD**)
 - VC-1.3 register commit: `7707814` (docs: register VC-1.3 web voice companion (79e5dc9); **Current HEAD**)
@@ -1525,5 +1529,7 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09-05 (VC-1.3) | **VC-1.3 黑川茜 Web 語音伴侶 CLOSED**（commit `79e5dc9`，5 檔 +1024/-2；本行 + §1 VC 系列段 + §1.1 Current HEAD 同步）。`web_server.py`（NEW 463 行）：aiohttp 應用，`AudioRelaySink`（TTS-Live PCM→瀏覽器 WS relay，thread-safe）、`WebSession`（四態狀態機＋barge-in 世代號）、`build_app` 全注入、區網網址列印。`web_ui.py`（NEW 249 行）：單頁 UI（PTT＋Auto-VAD＋瀏覽器側打斷偵測＋44.1k 播放佇列＋打字 fallback）。config +`web:{host:"0.0.0.0",port:8765}`；requirements +aiohttp。**架構**：瀏覽器收音/放音，伺服器只跑大腦（VAD→Fish 官方 ASR→茜 LLM 串流→TTS-Live→PCM 中繼），區網瀏覽器直開即用；終端版 0 改動並存。驗收 57 passed（50＋7，主大腦複跑）；冒煙 `http://192.168.0.60:8765`。**0 src/、0 Frozen Contract、0 金鑰**（api_key 僅從 env_config/.env 解析）。 | DSH | VC-1.3 |
 
 | 2026-09-05 (VC-1.4) | **VC-1.4 輸入可視化＋失敗透通 CLOSED**（commit `c65a5cf`，4 檔 +199/-13；本行 + §1 VC 系列段 + §1.1 Current HEAD 同步）。**實測根因**：Fish API credit=0（`/v1/asr` 402，message「API credit is managed independently from platform credit」）→ ASR 空轉寫被當雜音靜默 DROP → 使用者按 PTT 無反應且無任何提示。修：`stt_service.FishASRService` additive `last_error`/`last_status`（transcribe 合約不變）；`web_server` ASR 空結果＋last_error → `{"type":"error"}` 透通（402 附額度提示）回 IDLE，真雜音維持 DROP；`web_ui` 即時音量表（`#meterFill`＋🎙️ 傳送中/麥克風待命）＋`#errorBox`（下一 utterance 清除）＋額度提示註解。驗收 62 passed（57＋5，主大腦複跑）；伺服器重啟為受管背景常駐，頁面實證 meterFill/errorBox 在 HTML。**0 src/、0 Frozen Contract、0 金鑰**。 | DSH | VC-1.4 |
+
+| 2026-09-05 (VC-1.5) | **VC-1.5 HTTPS 模式＋麥克風安全來源根治 CLOSED**（`3b62328` feat＋`5e99042` fix，共 7 檔 +251/-16；本行 + §1 VC 系列段 + §1.1 Current HEAD 同步）。**根因**：getUserMedia 僅限安全上下文（HTTPS/localhost），`http://區網IP` 被瀏覽器擋麥克風（音量條不動、看似上傳失敗）。修：`--https`／`config.web.https=true` 模式（cryptography 自簽憑證自動產生，SAN 127.0.0.1＋區網 IP，`certs/` gitignored；stdout 印「繼續前往」指引）；UI 不安全來源**常駐**警示＋麥克風錯誤 `err.name` 分類＋PTT 前置檢查＋✕ 關閉；伺服器 `[WS]`/`[UTT]` 診斷日誌。**實機發現並修復**：Windows cp950 主控台 `print(⚠️)` UnicodeEncodeError 崩潰 → `main()` 開頭 stdout/stderr `reconfigure(utf-8, errors="replace")`（commit `5e99042`，主大腦一行級直接修）。驗收 68 passed（62＋6，主大腦複跑）；HTTPS 上線 HTTP 200＋isSecureContext/errorDismiss 頁面實證（curl -k）。**0 src/、0 Frozen Contract、0 金鑰**。 | DSH | VC-1.5 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
