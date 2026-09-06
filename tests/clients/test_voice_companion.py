@@ -47,6 +47,7 @@ from clients.voice_companion.stt_service import FishASRService, pcm16_to_wav_byt
 from clients.voice_companion.vad_listener import VADListener, VoiceActivityDetector
 from clients.voice_companion.web_server import (
     HTTPS_SELF_SIGNED_HINT,
+    VC_CONFIG_KEY,
     AudioRelaySink,
     build_app,
     build_ssl_context,
@@ -2345,3 +2346,117 @@ class TestEdgeDefenseAndLatencyTelemetry:
         assert "first_audio=" in out
         assert "total=" in out
         assert "chars=" in out
+
+    def test_web_defaults_to_loopback_only(self):
+        """VC-2.3-05: 預設 web.host 必須為 loopback（127.0.0.1），不對外網/區網裸露"""
+        from clients.voice_companion.web_server import is_loopback_host, load_config
+        cfg = load_config()
+        host = (cfg.get("web") or {}).get("host")
+        assert host == "127.0.0.1"
+        assert is_loopback_host(host) is True
+
+    def test_lan_bind_requires_voice_web_token(self):
+        """VC-2.3-05: 非 loopback 綁定（如 0.0.0.0）且未提供 VOICE_WEB_TOKEN 時拒絕啟動"""
+        from clients.voice_companion.web_server import validate_host_and_token
+        import pytest
+
+        # 綁定 0.0.0.0 且缺 token → 拋出 RuntimeError
+        with pytest.raises(RuntimeError, match="VOICE_WEB_TOKEN"):
+            validate_host_and_token("0.0.0.0", token=None)
+        with pytest.raises(RuntimeError, match="VOICE_WEB_TOKEN"):
+            validate_host_and_token("0.0.0.0", token="")
+
+        # 綁定 0.0.0.0 且有 token → 允許通過
+        validate_host_and_token("0.0.0.0", token="valid-token-123")
+
+        # 綁定 127.0.0.1（loopback）→ 無 token 也允許通過
+        validate_host_and_token("127.0.0.1", token=None)
+
+    def test_websocket_rejects_invalid_token(self):
+        """VC-2.3-05: 配置 VOICE_WEB_TOKEN 時，未提供或提供錯誤 token 的 WS 連線均被拒絕 (HTTP 401)"""
+        from aiohttp.client_exceptions import WSServerHandshakeError
+        import pytest
+
+        async def _run():
+            app, _ = _make_web_app()
+            app[VC_CONFIG_KEY]["web"]["token"] = "secret-tok-999"
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                # 1. 缺 token 連線 → 拒絕 (HTTP 401)
+                with pytest.raises(WSServerHandshakeError) as exc_info:
+                    await client.ws_connect("/ws")
+                assert exc_info.value.status == 401
+
+                # 2. 錯誤 token 連線 → 拒絕 (HTTP 401)
+                with pytest.raises(WSServerHandshakeError) as exc_info:
+                    await client.ws_connect("/ws?token=wrong-token")
+                assert exc_info.value.status == 401
+
+                # 3. 正確 token 連線 → 成功建立
+                ws = await client.ws_connect("/ws?token=secret-tok-999")
+                assert ws.closed is False
+                await ws.close()
+            finally:
+                await client.close()
+
+        asyncio.run(_run())
+
+    def test_websocket_rejects_disallowed_origin(self):
+        """VC-2.3-05: 配置 allowed_origins 時，非法 Origin 連線被拒絕 (HTTP 403)"""
+        from aiohttp.client_exceptions import WSServerHandshakeError
+        import pytest
+
+        async def _run():
+            app, _ = _make_web_app()
+            app[VC_CONFIG_KEY]["web"]["allowed_origins"] = "https://akane.brynetsolutions.com,https://localhost:8765"
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                # 1. 不在白名單的惡意 Origin → 拒絕 (HTTP 403)
+                with pytest.raises(WSServerHandshakeError) as exc_info:
+                    await client.ws_connect("/ws", headers={"Origin": "https://evil-site.com"})
+                assert exc_info.value.status == 403
+
+                # 2. 白名單內的合法 Origin → 允許連線
+                ws = await client.ws_connect("/ws", headers={"Origin": "https://akane.brynetsolutions.com"})
+                assert ws.closed is False
+                await ws.close()
+            finally:
+                await client.close()
+
+        asyncio.run(_run())
+
+    def test_observability_logs_exclude_secrets_and_transcript(self, capsys):
+        """VC-2.3-05: 觀測性日誌中嚴禁出現金鑰明文（Fish API key、LLM API key、TOKEN）與逐字稿"""
+        async def _run():
+            app, _ = _make_web_app(brain_tokens=("好的。",))
+            app[VC_CONFIG_KEY]["fish_audio"]["api_key"] = "fish-super-secret-key-xyz"
+            app[VC_CONFIG_KEY]["llm"]["api_key"] = "llm-super-secret-key-123"
+            app[VC_CONFIG_KEY]["web"]["token"] = "web-super-secret-token-789"
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws?token=web-super-secret-token-789")
+                await ws.send_json({"type": "text", "text": "Bryan的私密對話不應出現在結構化遙測日誌"})
+                while True:
+                    msg = await ws.receive(timeout=3)
+                    if msg.type == WSMsgType.TEXT:
+                        data = json.loads(msg.data)
+                        if data.get("type") == "state" and data.get("state") == "IDLE":
+                            break
+                    elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
+                        break
+                await ws.close()
+            finally:
+                await client.close()
+
+        asyncio.run(_run())
+        out = capsys.readouterr().out
+        assert "fish-super-secret-key-xyz" not in out
+        assert "llm-super-secret-key-123" not in out
+        assert "web-super-secret-token-789" not in out
+        # 結構化遙測日誌中僅記錄 chars= 長度，不印出完整敏感對話
+        if "[LATENCY]" in out:
+            lat_line = next(line for line in out.splitlines() if "[LATENCY]" in line)
+            assert "Bryan的私密對話" not in lat_line

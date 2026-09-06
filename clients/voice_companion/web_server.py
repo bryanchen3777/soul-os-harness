@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -613,11 +614,43 @@ async def index_handler(request: web.Request) -> web.Response:
     return web.Response(text=HTML_PAGE, content_type="text/html", charset="utf-8")
 
 
-async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
-    ws = web.WebSocketResponse(max_msg_size=WebSession.MAX_FRAME_BYTES)
-    await ws.prepare(request)
+def is_loopback_host(host: str) -> bool:
+    """判斷 host 是否為本機迴路位址（loopback）。"""
+    h = (host or "").strip().lower()
+    return h in ("127.0.0.1", "localhost", "::1")
+
+
+def validate_host_and_token(host: str, token: Optional[str] = None) -> None:
+    """VC-2.3-05：非 loopback 主機（如 0.0.0.0）綁定時必須配置 VOICE_WEB_TOKEN。"""
+    if not is_loopback_host(host):
+        if not token or not str(token).strip():
+            raise RuntimeError(
+                f"Binding to non-loopback host '{host}' requires VOICE_WEB_TOKEN to be set."
+            )
+
+
+async def websocket_handler(request: web.Request) -> web.StreamResponse:
     app = request.app
     cfg = app[VC_CONFIG_KEY]
+    web_cfg = cfg.get("web") or {}
+
+    # VC-2.3-05: 檢查 Allowed Origins（若有配置）
+    allowed_origins_raw = web_cfg.get("allowed_origins") or os.environ.get("VOICE_WEB_ALLOWED_ORIGINS") or ""
+    if allowed_origins_raw:
+        allowed = [o.strip() for o in allowed_origins_raw.split(",") if o.strip()]
+        origin = request.headers.get("Origin")
+        if not origin or origin not in allowed:
+            return web.Response(status=403, text="Forbidden: Origin not allowed")
+
+    # VC-2.3-05: 檢查 Token 鑑權（若有配置）
+    configured_token = web_cfg.get("token") or os.environ.get("VOICE_WEB_TOKEN") or ""
+    if configured_token:
+        client_token = request.query.get("token", "")
+        if client_token != configured_token:
+            return web.Response(status=401, text="Unauthorized: Invalid token")
+
+    ws = web.WebSocketResponse(max_msg_size=WebSession.MAX_FRAME_BYTES)
+    await ws.prepare(request)
     peer = request.remote or "?"
     print(f"[WS] connect peer={peer}")  # VC-1.5 診斷日誌
     sink = AudioRelaySink(request.loop, ws)
@@ -809,7 +842,8 @@ def build_app(
     未注入時依 config 建立生產組件：AkaneVoiceBrain（llm_stream 走 config llm 端點）、
     AsrRefiner.from_config、FishASRService.from_config、FishTTSLiveStreamer（relay sink）。
     """
-    cfg = config or load_config()
+    import copy
+    cfg = copy.deepcopy(config) if config is not None else load_config()
     if brain is None:
         brain = AkaneVoiceBrain(
             config=cfg,
@@ -864,7 +898,13 @@ def main(argv: Optional[list] = None) -> int:
             (cfg.setdefault("fish_audio", {})).setdefault("mode", "live")
             cfg["fish_audio"]["mode"] = args[i + 1]
     web_cfg = cfg.get("web") or {}
-    host = web_cfg.get("host", "0.0.0.0")
+    host = web_cfg.get("host", "127.0.0.1")
+    if "--host" in args:
+        i = args.index("--host")
+        if i + 1 < len(args):
+            host = args[i + 1]
+    token = web_cfg.get("token") or os.environ.get("VOICE_WEB_TOKEN")
+    validate_host_and_token(host, token)
     port = port or int(web_cfg.get("port", 8765))
     https = "--https" in args or bool(web_cfg.get("https", False))
     ssl_ctx = None

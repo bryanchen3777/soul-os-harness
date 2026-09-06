@@ -240,6 +240,21 @@ HTML_PAGE = """<!DOCTYPE html>
     }
   }
 
+  function getAuthToken() {
+    try {
+      var hash = window.location.hash || "";
+      if (hash.indexOf("#") === 0) { hash = hash.substring(1); }
+      var pairs = hash.split("&");
+      for (var i = 0; i < pairs.length; i++) {
+        var part = pairs[i].split("=");
+        if (decodeURIComponent(part[0]) === "token" && part.length > 1) {
+          return decodeURIComponent(part[1]);
+        }
+      }
+    } catch (e) {}
+    return "";
+  }
+
   function connect() {
     clearTimeout(reconnectTimer);
     if (ws) {
@@ -253,7 +268,9 @@ HTML_PAGE = """<!DOCTYPE html>
       ws = null;
     }
     var proto = location.protocol === "https:" ? "wss" : "ws";
-    ws = new WebSocket(proto + "://" + location.host + "/ws");
+    var token = getAuthToken();
+    var wsUrl = proto + "://" + location.host + "/ws" + (token ? "?token=" + encodeURIComponent(token) : "");
+    ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
     ws.onopen = function () {
       reconnectAttempts = 0;

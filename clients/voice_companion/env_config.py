@@ -32,6 +32,8 @@ ENV_OVERRIDE_MAP: list[tuple[str, str, str]] = [
     ("OLLAMA_API_KEY", "llm", "api_key"),
     ("LLM_API_KEY", "llm", "api_key"),
     ("LLM_MODEL", "llm", "model"),
+    ("VOICE_WEB_TOKEN", "web", "token"),
+    ("VOICE_WEB_ALLOWED_ORIGINS", "web", "allowed_origins"),
 ]
 
 
