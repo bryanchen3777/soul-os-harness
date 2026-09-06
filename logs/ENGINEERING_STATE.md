@@ -331,6 +331,8 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
+- Current HEAD: `984f51c` (fix(vc-1.6): real TTS-Live via official fish-audio-sdk transport (websocket-client rejected by server))
+- VC-1.6 SDK transport fix commit: `984f51c` (fix(vc-1.6): real TTS-Live via official fish-audio-sdk transport (websocket-client rejected by server); **Current HEAD**; 3 檔 +315/-304)
 - Current HEAD: `cf752a7` (docs: register VC-1 sse utf-8 fix (7e491d7))
 - VC-1 sse fix register commit: `cf752a7` (docs: register VC-1 sse utf-8 fix (7e491d7); **Current HEAD**)
 - VC-1 SSE utf-8 fix commit: `7e491d7` (fix(vc-1): force utf-8 sse decode in llm stream (chinese mojibake); **distinct from Current HEAD**)
@@ -1544,5 +1546,7 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09-05 (VC-1 405 fix) | **Ollama Cloud 405 端點路徑修復 CLOSED**（commit `53c3fab`，4 檔 +31/-3；本行 + §1.1 Current HEAD 同步）。**實機診斷**：金鑰修復（2b77631）後上游改報 HTTP 405 Method Not Allowed——`akane_voice_brain.build_llm_stream` 與 `asr_refiner.build_llm_call` 直接把 POST 打到 `llm.endpoint`（`https://ollama.com/v1` 根路徑不允許 POST），缺 OpenAI 相容 `/chat/completions` 尾綴。修：`env_config.normalize_chat_endpoint()`（缺尾綴自動補、已有原樣、空值回空）＋兩處呼叫點接入＋測試 5 斷言。驗收 70 passed（69＋1，主大腦複跑）；**客戶端真實路徑冒煙**（build_llm_call 不手動拼 URL）→ 200＋content len 1；伺服器重啟（PID 26584，https 200）。0 src/、0 Frozen、0 金鑰進 git。 | DSH | VC-1 |
 
 | 2026-09-05 (VC-1 亂碼 fix) | **LLM SSE 中文亂碼修復 CLOSED**（commit `7e491d7`，2 檔 +33；本行 + §1.1 Current HEAD 同步）。**實機診斷**：茜回覆正常（「你好。」）但頁面顯示 `ä½ å¥½`——Ollama SSE（text/event-stream）不帶 charset，`requests.iter_lines(decode_unicode=True)` 預設以 ISO-8859-1 解碼 UTF-8 位元組 → 中文變亂碼。修：`akane_voice_brain.build_llm_stream` 在 iter_lines 前強制 `resp.encoding = "utf-8"`＋回歸測試（fake resp 模擬 requests 編碼機制：初始 ISO-8859-1、stream 內被強制 utf-8 → 輸出正確「你」，並斷言端點正規化 URL）。驗收 71 passed（70＋1，主大腦複跑）；**真實串流路徑冒煙**：joined 含「好」（OK-UTF8 判定）；伺服器重啟（PID 22812，https 200）。0 src/、0 Frozen、0 金鑰。 | DSH | VC-1 |
+
+| 2026-09-05 (VC-1.6) | **真實 TTS-Live 傳輸換官方 fish-audio-sdk CLOSED**（commit `984f51c`，3 檔 +315/-304；本行 + §1.1 Current HEAD 同步）。**實機診斷（分層實證）**：瀏覽器有文字無聲音 → REST TTS 200（16KB）但真實 WS 自測 0 bytes；手寫 msgpack start 補齊欄位（含 sample_rate/prosody 顯式 null 位元組級對齊 SDK）仍被伺服器「start 後空 TXT ack→斷線」；官方 `fish-audio-sdk`（httpx_ws 傳輸）同 key/voice/model 實測成功 102,400 bytes → **根因 = websocket-client 傳輸與 Fish WS 閘道不相容**。修：`fish_tts_live.py` 真實層重寫為 `WebSocketSession.tts(TTSRequest, text_iter, backend=model)` daemon worker（公開 API/建構式/AudioRelaySink 注入全不動；feed queue＋interrupt 關 session）；requirements `fish-audio-sdk`（移除 msgpack/websocket-client）；Live 測試遷移 SDK 接縫（FakeSDKSession）。驗收 71 passed（主大腦複跑）；**真實 CollectSink 自測 135,168 bytes PCM、last_error None（決勝門過）**；伺服器重啟（PID 25136，https 200）。**備註**：本日三批 developer subagent 連環失敗 = OpenCode Go 週配額 100% 用罄（非工單問題），主大腦彈性兜底自行實作。0 src/、0 Frozen、0 金鑰。 | DSH | VC-1.6 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
