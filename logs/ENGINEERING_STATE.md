@@ -329,8 +329,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `c65a5cf` (feat(vc-1.4): mic level meter + asr error transparency in web ui)
-- VC-1.4 UI visibility commit: `c65a5cf` (feat(vc-1.4): mic level meter + asr error transparency in web ui; **Current HEAD**)
+- Current HEAD: `1a941f9` (docs: register VC-1.4 mic visibility + asr error transparency (c65a5cf))
+- VC-1.4 register commit: `1a941f9` (docs: register VC-1.4 mic visibility + asr error transparency (c65a5cf); **Current HEAD**)
+- VC-1.4 UI visibility commit: `c65a5cf` (feat(vc-1.4): mic level meter + asr error transparency in web ui; **distinct from Current HEAD**)
 - VC-1.3 register commit: `7707814` (docs: register VC-1.3 web voice companion (79e5dc9); **Current HEAD**)
 - VC-1.3 web server commit: `79e5dc9` (feat(vc-1.3): browser voice companion web server (aiohttp + ws relay); **distinct from Current HEAD**)
 - VC-1.2/VC-1.1 register commit: `c8e2640` (docs: register VC-1.2 TTS-Live + VC-1.1 fish ASR (f742a7d + 240f657); **Current HEAD**)
