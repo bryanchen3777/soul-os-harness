@@ -842,6 +842,150 @@ class TestVADWiring:
         assert got == ["茜，今天好累"]
         assert session.calls[0]["files"]["audio"][0] == "speech.wav"  # pcm→wav 已發生
 
+    def test_vad_worker_thread_async_processing(self):
+        """VC-2.3-01：start() 啟動背景 worker 執行緒，utterance 經隊列由 worker 非同步執行轉錄"""
+        class DummyStream:
+            def __init__(self):
+                self.active = False
+            def start(self): self.active = True
+            def stop(self): self.active = False
+
+        got: list[str] = []
+        listener = VADListener(
+            detector=self.make_detector(),
+            stt_engine=lambda s: "非阻塞非同步測試",
+            on_transcript=lambda t: got.append(t),
+            on_barge_in=lambda: None,
+            playing_check=lambda: False,
+            stream_factory=lambda l: DummyStream(),
+        )
+        listener.start()
+        try:
+            assert listener._worker_thread is not None and listener._worker_thread.is_alive()
+            listener.feed_frame(self.frames(0.1, level=0.5))
+            events = listener.feed_frame(self.frames(0.06, level=0.0))
+            assert "speech_end" in events
+            # 等待 worker 消化完佇列
+            listener._utterance_queue.join()
+            assert got == ["非阻塞非同步測試"]
+        finally:
+            listener.stop()
+            assert listener._worker_thread is None
+
+    def test_vad_callback_non_blocking_barge_in_during_slow_asr(self):
+        """VC-2.3-01：在 ASR 網路延遲／阻塞期間，sounddevice callback 不受阻且可即時觸發 barge-in"""
+        import threading
+        import time
+
+        asr_started = threading.Event()
+        asr_can_proceed = threading.Event()
+        barge_in_fired = threading.Event()
+
+        def slow_stt(samples):
+            asr_started.set()
+            asr_can_proceed.wait(timeout=2.0)
+            return "第一句"
+
+        is_playing = False
+        def check_playing():
+            return is_playing
+
+        class DummyStream:
+            def start(self): pass
+            def stop(self): pass
+
+        listener = VADListener(
+            detector=self.make_detector(),
+            stt_engine=slow_stt,
+            on_transcript=lambda t: None,
+            on_barge_in=lambda: barge_in_fired.set(),
+            playing_check=check_playing,
+            stream_factory=lambda l: DummyStream(),
+        )
+        listener.start()
+        try:
+            # 餵入第一句，觸發 speech_end 並進入 slow_stt
+            listener.feed_frame(self.frames(0.1, level=0.5))
+            listener.feed_frame(self.frames(0.06, level=0.0))
+            assert asr_started.wait(timeout=1.0), "Worker 應已開始 ASR"
+
+            # 模擬茜正在播放語音
+            is_playing = True
+
+            # 在 ASR 仍在等待 (asr_can_proceed 未 set) 期間，Bryan 開口
+            t0 = time.time()
+            events = listener.feed_frame(self.frames(0.1, level=0.5))
+            elapsed = time.time() - t0
+
+            # 回呼應在幾毫秒內返回，絕不被 ASR 阻塞
+            assert elapsed < 0.1, f"feed_frame 被阻塞了: {elapsed:.3f}s"
+            assert "barge_in" in events
+            assert barge_in_fired.is_set(), "barge-in 應立即觸發"
+
+            # 釋放 ASR
+            asr_can_proceed.set()
+            listener._utterance_queue.join()
+        finally:
+            asr_can_proceed.set()
+            listener.stop()
+
+    def test_vad_queue_overflow_drops_oldest(self):
+        """VC-2.3-01：工作佇列滿時，丟棄最舊 utterance 並記錄 drop warning，容納最新 utterance"""
+        import threading
+
+        hold_worker = threading.Event()
+        got: list[str] = []
+
+        def blocking_stt(samples):
+            hold_worker.wait(timeout=2.0)
+            # 以樣本數區分句子
+            return f"utt-{len(samples)}"
+
+        class DummyStream:
+            def start(self): pass
+            def stop(self): pass
+
+        config = {"vad": {"utterance_queue_maxsize": 2}}
+        listener = VADListener(
+            config=config,
+            detector=self.make_detector(),
+            stt_engine=blocking_stt,
+            on_transcript=lambda t: got.append(t),
+            playing_check=lambda: False,
+            stream_factory=lambda l: DummyStream(),
+        )
+        listener.start()
+        try:
+            # 第一句：直接被 worker 取走並卡在 hold_worker
+            listener.feed_frame(self.frames(0.05, level=0.5))  # len 800
+            listener.feed_frame(self.frames(0.06, level=0.0))
+            import time
+            time.sleep(0.05)  # 讓 worker 取出第一句
+
+            # 佇列容量為 2：餵入第二句 (len 1600) 與第三句 (len 2400)
+            listener.feed_frame(self.frames(0.10, level=0.5))
+            listener.feed_frame(self.frames(0.06, level=0.0))
+
+            listener.feed_frame(self.frames(0.15, level=0.5))
+            listener.feed_frame(self.frames(0.06, level=0.0))
+
+            # 此時佇列已滿 (2 筆)。餵入第四句 (len 3200)，應導致佇列最舊的第二句被 drop
+            listener.feed_frame(self.frames(0.20, level=0.5))
+            listener.feed_frame(self.frames(0.06, level=0.0))
+
+            # 釋放 worker 消化全部
+            hold_worker.set()
+            listener._utterance_queue.join()
+
+            # 第一句被 worker 取走處理了；第二句被 drop；第三、四句應處理完成
+            assert "utt-800" in got
+            assert "utt-1600" not in got, "第二句應已被 drop"
+            assert "utt-2400" in got
+            assert "utt-3200" in got
+        finally:
+            hold_worker.set()
+            listener.stop()
+
 
 class TestFullChainOffline:
     def test_transcript_to_speech_pipeline(self):

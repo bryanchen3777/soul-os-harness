@@ -48,13 +48,111 @@ AKANE_LAYER3_PERSONA = """# 黑川茜（Kurokawa Akane）
 絕對禁止：情緒宣言式告白、長篇自我剖析、過度完美的心理解釋、明確自我總結句。"""
 
 # 守門符號（測試 2 審計標的）
-MARKDOWN_CHARS = set("*#[]()（）")
+MARKDOWN_CHARS = set("*#[]()（）【】")
 # 條列點（行首 "- "/"• "）
 _BULLET_RE = re.compile(r"(^|\n)[-•]\s*")
 # 括號動作/補充段（（）或 ()，含內容整段剝離——只刪符號會把「微笑」唸出來）
 _STAGE_PAREN_RE = re.compile(r"[（(][^（(）)]*[）)]")
 # 星號表情/強調段（*…*，含內容整段剝離）
 _STAGE_STAR_RE = re.compile(r"\*[^*\n]*\*")
+
+OPEN_BRACKETS = {"（": "）", "(": ")", "[": "]", "【": "】"}
+CLOSE_BRACKETS = {"）": "（", ")": "(", "]": "[", "】": "【"}
+
+
+class StreamingVoiceSanitizer:
+    """串流輸出守門狀態機：逐字元/逐 token 濾除跨 token 的動作描述（（…）、(…)、[…]、*…*）。
+
+    當進入括號或星號區間時，內容被暫存並不輸出；一旦閉合，暫存直接丟棄；
+    若緩衝區字元超過 max_suppress（防未閉合異常），則安全釋放。
+    """
+
+    def __init__(self, max_suppress: int = 50):
+        self.max_suppress = max_suppress
+        self._bracket_stack: List[str] = []
+        self._in_star = False
+        self._suppress_buf: List[str] = []
+        self._line_start = True
+
+    def feed(self, token: str) -> str:
+        out: List[str] = []
+        for ch in token:
+            if ch == "\n":
+                self._line_start = True
+                if not self._bracket_stack and not self._in_star:
+                    out.append(ch)
+                continue
+
+            # 行首條列點過濾 (- 或 •)
+            if self._line_start and ch in ("-", "•"):
+                continue
+            if self._line_start and ch not in (" ", "\t"):
+                self._line_start = False
+
+            # 星號動作描述 (*...*)
+            if ch == "*":
+                if not self._in_star:
+                    self._in_star = True
+                    self._suppress_buf.append(ch)
+                else:
+                    self._in_star = False
+                    self._suppress_buf.clear()
+                continue
+
+            # 括號開頭
+            if ch in OPEN_BRACKETS:
+                self._bracket_stack.append(OPEN_BRACKETS[ch])
+                self._suppress_buf.append(ch)
+                continue
+
+            # 括號結尾
+            if ch in CLOSE_BRACKETS:
+                if self._bracket_stack:
+                    if ch == self._bracket_stack[-1]:
+                        self._bracket_stack.pop()
+                    elif ch in self._bracket_stack:
+                        while self._bracket_stack and self._bracket_stack[-1] != ch:
+                            self._bracket_stack.pop()
+                        if self._bracket_stack:
+                            self._bracket_stack.pop()
+                    if not self._bracket_stack and not self._in_star:
+                        self._suppress_buf.clear()
+                    continue
+                else:
+                    continue
+
+            # 處於動作抑制區間
+            if self._bracket_stack or self._in_star:
+                self._suppress_buf.append(ch)
+                if len(self._suppress_buf) > self.max_suppress:
+                    # 安全閥：未閉合超長，釋放內容（過濾 markdown 符號）
+                    flushed = "".join(self._suppress_buf)
+                    self._suppress_buf.clear()
+                    self._bracket_stack.clear()
+                    self._in_star = False
+                    for c in flushed:
+                        if c not in MARKDOWN_CHARS:
+                            out.append(c)
+                continue
+
+            # 正常區間：過濾 Markdown 標記符號
+            if ch in MARKDOWN_CHARS:
+                continue
+
+            out.append(ch)
+
+        return "".join(out)
+
+    def flush(self) -> str:
+        out: List[str] = []
+        if self._suppress_buf and len(self._suppress_buf) > self.max_suppress:
+            for c in self._suppress_buf:
+                if c not in MARKDOWN_CHARS:
+                    out.append(c)
+        self._suppress_buf.clear()
+        self._bracket_stack.clear()
+        self._in_star = False
+        return "".join(out)
 
 
 def contains_markdown_chars(text: str) -> bool:
@@ -64,14 +162,8 @@ def contains_markdown_chars(text: str) -> bool:
 
 def sanitize_voice_output(text: str) -> str:
     """守門淨化：移除動作/表情段（*…*、（…）含內容）、Markdown/括號符號與行首條列點。"""
-    out = text
-    for _ in range(3):  # 巢狀括號收斂
-        nxt = _STAGE_STAR_RE.sub("", out)
-        nxt = _STAGE_PAREN_RE.sub("", nxt)
-        if nxt == out:
-            break
-        out = nxt
-    out = "".join(ch for ch in out if ch not in MARKDOWN_CHARS)
+    sanitizer = StreamingVoiceSanitizer()
+    out = sanitizer.feed(text) + sanitizer.flush()
     out = _BULLET_RE.sub(r"\1", out)
     return out.strip()
 
@@ -202,6 +294,64 @@ def build_llm_stream(llm_cfg: dict) -> Optional[Callable[[List[dict]], Iterable[
 
 
 # ─────────────────────────────────────────────────────────────
+# VC-2.2 唯讀記憶與時序現象學檢索器（Fail-silent，0 寫入）
+# ─────────────────────────────────────────────────────────────
+
+def default_memory_retriever(query: str, agent_id: str = "agent_akane") -> Optional[str]:
+    """唯讀讀取 SAGE GraphStore；缺檔/例外時 fail-silent 回傳 None（VC-2.2）。"""
+    try:
+        from src.memory.sage.graph_store import GraphStore
+        from src.memory.sage.reader import MemoryReader
+        from src.paths import data_root
+
+        db_path = data_root() / "memory" / agent_id / "graph.sqlite"
+        if not db_path.is_file():
+            return None
+        store = GraphStore(db_path=db_path)
+        try:
+            reader = MemoryReader(store)
+            result = reader.retrieve_context(
+                query=query,
+                top_k=3,
+                max_tokens=300,
+                mode="precise",
+            )
+            summary = getattr(result, "summary", "") or ""
+            return summary.strip() if summary.strip() else None
+        finally:
+            store.close()
+    except Exception:
+        return None
+
+
+def default_temporal_provider(agent_id: str = "agent_akane") -> Optional[str]:
+    """唯讀讀取 relationships.json 並產出 TEMPORAL ANCHOR；缺檔/例外時 fail-silent 回傳 None（VC-2.2）。"""
+    try:
+        import json
+        from datetime import datetime, timezone
+        from src.paths import data_root
+        from src.soul.temporal_phenomenology import format_temporal_anchor
+
+        path = data_root() / "soul" / agent_id / "relationships.json"
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        entry = data.get("others", {}).get("user_bryan")
+        if not isinstance(entry, dict):
+            return None
+        last_interaction_at = entry.get("last_interaction_at")
+        if not last_interaction_at:
+            return None
+        dt = datetime.fromisoformat(str(last_interaction_at).replace("Z", "+00:00"))
+        last_ts = int(dt.timestamp())
+        now = int(datetime.now(timezone.utc).timestamp())
+        anchor = format_temporal_anchor(agent_id, last_ts, now)
+        return anchor.strip() if anchor and anchor.strip() else None
+    except Exception:
+        return None
+
+
+# ─────────────────────────────────────────────────────────────
 # 茜語音大腦
 # ─────────────────────────────────────────────────────────────
 
@@ -210,6 +360,7 @@ class AkaneVoiceBrain:
 
     llm_stream 可注入（callable(messages) -> Iterable[str]）；None 且 config 無
     endpoint 時離線降級為內建短回覆。所有輸出必過守門，保證 0 Markdown。
+    支援 VC-2.2 記憶（SAGE Reader）與主觀時序（Temporal Anchor）唯讀注入。
     """
 
     def __init__(
@@ -218,16 +369,65 @@ class AkaneVoiceBrain:
         persona: Optional[str] = None,
         persona_file: Optional[str] = None,
         config: Optional[dict] = None,
+        memory_retriever: Optional[Callable[[str], Optional[str]]] = None,
+        temporal_provider: Optional[Callable[[], Optional[str]]] = None,
+        agent_id: str = "agent_akane",
     ):
         self.config = config or {}
+        self.agent_id = agent_id
         self.persona = persona or build_system_prompt(persona_file)
         self.splitter = ClauseSplitter()
         self.llm_stream = llm_stream
         if self.llm_stream is None:
             self.llm_stream = build_llm_stream(self.config.get("llm") or {})
 
+        # VC-2.2 記憶與時序讀側鉤子（可注入；未注入且未停用時預設安全讀取器）
+        mem_cfg = self.config.get("memory", {})
+        if memory_retriever is not None:
+            self.memory_retriever = memory_retriever
+        elif mem_cfg.get("enabled", True):
+            self.memory_retriever = lambda q: default_memory_retriever(q, agent_id=self.agent_id)
+        else:
+            self.memory_retriever = None
+
+        tempo_cfg = self.config.get("temporal", {})
+        if temporal_provider is not None:
+            self.temporal_provider = temporal_provider
+        elif tempo_cfg.get("enabled", True):
+            self.temporal_provider = lambda: default_temporal_provider(agent_id=self.agent_id)
+        else:
+            self.temporal_provider = None
+
     def system_prompt(self) -> str:
         return self.persona
+
+    def _build_messages(self, user_text: str, history=None) -> List[dict]:
+        """組裝對話歷史、時序現象學（TA-2）與 SAGE 記憶檢索，注入 system prompt。"""
+        sys_parts = [self.persona]
+
+        # 1. 時序現象學錨點（若有）
+        if self.temporal_provider:
+            try:
+                anchor = self.temporal_provider()
+                if anchor and anchor.strip():
+                    sys_parts.append(f"【當前時序體感】\n{anchor.strip()}")
+            except Exception:
+                pass
+
+        # 2. SAGE 唯讀記憶檢索（若有）
+        if self.memory_retriever and user_text:
+            try:
+                mem = self.memory_retriever(user_text)
+                if mem and mem.strip():
+                    sys_parts.append(f"【關於 Bryan 的記憶】\n你記得以下這些事情：\n{mem.strip()}")
+            except Exception:
+                pass
+
+        full_system = "\n\n".join(sys_parts)
+        messages = [{"role": "system", "content": full_system}]
+        messages += list(history or [])
+        messages.append({"role": "user", "content": user_text})
+        return messages
 
     def respond(self, user_text: str, history=None) -> str:
         """產生茜的回覆（整段）。輸出必過守門檢查。
@@ -235,9 +435,7 @@ class AkaneVoiceBrain:
         history: 選用——先前輪次訊息（role=user/assistant），依序插入 system 之後，
         讓茜承接前文（對話連貫）。缺省 None = 維持原本單回合行為。
         """
-        messages = [{"role": "system", "content": self.persona}]
-        messages += list(history or [])
-        messages.append({"role": "user", "content": user_text})
+        messages = self._build_messages(user_text, history=history)
         if self.llm_stream is None:
             return self._guarded("我在。說說看。")
         try:
@@ -254,16 +452,18 @@ class AkaneVoiceBrain:
 
         history: 選用——先前輪次訊息（role=user/assistant），依序插入 system 之後（對話連貫）。
         """
-        messages = [{"role": "system", "content": self.persona}]
-        messages += list(history or [])
-        messages.append({"role": "user", "content": user_text})
+        messages = self._build_messages(user_text, history=history)
         if self.llm_stream is None:
             yield "我在。說說看。"
             return
+        sanitizer = StreamingVoiceSanitizer()
         for token in self.llm_stream(messages):
-            cleaned = sanitize_voice_output(token)
+            cleaned = sanitizer.feed(token)
             if cleaned:
                 yield cleaned
+        tail = sanitizer.flush()
+        if tail:
+            yield tail
 
     def _guarded(self, text: str) -> str:
         result = sanitize_voice_output(text).strip()

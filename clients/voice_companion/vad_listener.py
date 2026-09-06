@@ -14,8 +14,13 @@ vad_listener.py — sounddevice 常駐音訊流採集 + VAD 靜音斷句器（VC
 
 from __future__ import annotations
 
+import logging
 import math
+import queue
+import threading
 from typing import Callable, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -129,11 +134,18 @@ class VADListener:
         self._stream = None
         self._frames_buffer: List[float] = []
         self._running = False
+        queue_maxsize = int(vad.get("utterance_queue_maxsize", 16))
+        self._utterance_queue: queue.Queue = queue.Queue(maxsize=queue_maxsize)
+        self._worker_thread: Optional[threading.Thread] = None
 
     # ── 測試/共用的幀處理入口 ──
 
     def feed_frame(self, samples) -> List[str]:
-        """餵入一幀樣本：驅動 VAD、Barge-in 判定與斷句轉錄。回傳事件列表。"""
+        """餵入一幀樣本：驅動 VAD、Barge-in 判定與斷句入隊。回傳事件列表。
+
+        注意：sounddevice callback 僅做 VAD、frame 收集與 barge-in 通知；
+        禁止在 callback 執行緒內直接執行 ASR、LLM、TTS 或任何網路/磁碟 I/O。
+        """
         events: List[str] = []
         for event in self.detector.feed(samples):
             if event == "speech_start":
@@ -143,17 +155,27 @@ class VADListener:
                     events.append("barge_in")
                 events.append("speech_start")
             elif event == "speech_end":
-                self._fire_transcript()
+                self._enqueue_utterance()
                 events.append("speech_end")
         if self.detector.in_speech:
             self._frames_buffer.extend(samples)
         return events
 
-    # ── 串流生命週期（sounddevice 懶載入） ──
+    # ── 串流生命週期（sounddevice 懶載入 + 背景 worker） ──
 
     def start(self) -> None:
         if self._running:
             return
+        self._running = True
+
+        # 啟動背景 ASR / 回呼 worker 執行緒
+        self._worker_thread = threading.Thread(
+            target=self._worker_loop,
+            name="VADListenerWorker",
+            daemon=True,
+        )
+        self._worker_thread.start()
+
         if self.stream_factory is not None:
             stream = self.stream_factory(self)
         else:
@@ -168,8 +190,11 @@ class VADListener:
                 callback=lambda indata, frames, time, status: self.feed_frame(indata[:, 0].tolist()),
             )
         self._stream = stream
-        self._stream.start()
-        self._running = True
+        try:
+            self._stream.start()
+        except Exception:
+            self.stop()
+            raise
 
     def stop(self) -> None:
         self._running = False
@@ -179,6 +204,22 @@ class VADListener:
             except Exception:
                 pass
             self._stream = None
+
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            try:
+                self._utterance_queue.put(None, timeout=0.5)
+            except (queue.Full, Exception):
+                pass
+            self._worker_thread.join(timeout=2.0)
+            self._worker_thread = None
+
+        while not self._utterance_queue.empty():
+            try:
+                self._utterance_queue.get_nowait()
+                self._utterance_queue.task_done()
+            except (queue.Empty, ValueError):
+                break
+
         self.detector.reset()
         self._frames_buffer = []
 
@@ -192,20 +233,67 @@ class VADListener:
         except Exception:
             pass
 
-    def _fire_transcript(self) -> None:
+    def _worker_loop(self) -> None:
+        """背景工作執行緒：排空 utterance 佇列並執行 ASR 與 on_transcript。"""
+        while self._running:
+            try:
+                item = self._utterance_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if item is None:
+                self._utterance_queue.task_done()
+                break
+            try:
+                self._process_utterance(item)
+            finally:
+                self._utterance_queue.task_done()
+
+    def _enqueue_utterance(self) -> None:
         if not self._frames_buffer:
             return
         captured = list(self._frames_buffer)
         self._frames_buffer = []
+
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            try:
+                self._utterance_queue.put_nowait(captured)
+            except queue.Full:
+                try:
+                    dropped = self._utterance_queue.get_nowait()
+                    self._utterance_queue.task_done()
+                    logger.warning(
+                        "[VADListener] Utterance queue full (maxsize=%d); dropped oldest utterance (%d samples)",
+                        self._utterance_queue.maxsize,
+                        len(dropped) if dropped else 0,
+                    )
+                except (queue.Empty, ValueError):
+                    pass
+                try:
+                    self._utterance_queue.put_nowait(captured)
+                except queue.Full:
+                    logger.warning("[VADListener] Utterance queue still full; dropping current utterance")
+        else:
+            # 同步模式（離線單元測試未呼叫 start() 時相容）
+            self._process_utterance(captured)
+
+    def _fire_transcript(self) -> None:
+        """相容既有呼叫點。"""
+        self._enqueue_utterance()
+
+    def _process_utterance(self, captured: List[float]) -> None:
         if self.on_transcript is None:
             return
         try:
             text = self._transcribe(captured)
-        except Exception:
+        except Exception as exc:
+            logger.debug("[VADListener] transcribe error: %s", exc)
             text = ""
         text = (text or "").strip()
         if text:
-            self.on_transcript(text)
+            try:
+                self.on_transcript(text)
+            except Exception as exc:
+                logger.error("[VADListener] on_transcript callback error: %s", exc)
 
     def _transcribe(self, captured) -> str:
         if self.stt_engine is not None:

@@ -86,25 +86,53 @@ def local_refine(raw_text: str) -> Optional[str]:
     # 3. 單獨同音字（千/欠/西/籤/签 → 茜）
     text = AKANE_ALIAS_CHAR_RE.sub("茜", text)
 
-    # 4. 口吃/贅詞移除
-    for filler in FILLER_TOKENS:
-        text = text.replace(filler, "")
+    # 4. 點點點 / 省略號正規化
+    text = re.sub(r"[.\．]{2,}", "…", text)
 
-    # 5. 省略號與重複標點收斂
-    text = re.sub(r"[.\．]{2,}", "", text)          # "..." → ""
-    text = re.sub(r"…{2,}", "…", text)              # "……" → "…"
-    text = re.sub(r"[，,]{2,}", "，", text)
-    text = re.sub(r"[。．]{2,}", "。", text)
-    text = re.sub(r"^[\s，,、。．！？!?~～…]+", "", text)  # 去開頭殘留標點
+    # 5. 連續口吃重複消除（例如：那個那個 → 那個；然後然後 → 然後）
+    text = re.sub(r"(那個|那个|然後|然后|就是說|就是说|就是){2,}", r"\1", text)
 
-    if not text:
+    # 6. 句首停頓贅詞消除（例如：呃、那個、就是說...，或「茜...那個...」）
+    call_match = re.match(r"^(茜|小茜|Akane|あかね)(?:[，,、…]+)?", text)
+    prefix = ""
+    rest = text
+    if call_match:
+        prefix = call_match.group(1) + "，"
+        rest = text[call_match.end():]
+
+    # 逐次剝離開頭停頓詞與感嘆詞
+    hesitation_re = re.compile(r"^[，,、…\s]*(?:[嗯呃啊哦喔唉呼哼]|那個|那个|就是說|就是说)+(?:[，,、…\s]*|$)")
+    while True:
+        m = hesitation_re.match(rest)
+        if not m or not m.group(0):
+            break
+        rest = rest[m.end():]
+
+    # 去除句中夾在標點間的純語氣詞（如「，呃，」「，嗯，」）
+    rest = re.sub(r"([，,、…])[嗯呃啊唉呼哼]+([，,、…])", r"\1", rest)
+
+    # 收斂重複標點與開頭殘留標點
+    rest = re.sub(r"…{2,}", "…", rest)
+    rest = re.sub(r"[，,]{2,}", "，", rest)
+    rest = re.sub(r"[。．]{2,}", "。", rest)
+    rest = re.sub(r"^[\s，,、。．！？!?~～…]+", "", rest)
+
+    if not rest:
+        if prefix:
+            text = prefix.rstrip("，")
+        else:
+            return None
+    else:
+        text = prefix + rest if prefix else rest
+
+    if is_noise(text):
         return None
 
-    # 6. 稱呼後補逗號：茜/小茜/Akane/あかね 直接接中文字時插入「，」
+    # 7. 稱呼後補逗號：茜/小茜/Akane/あかね 直接接中文字時插入「，」
     text = re.sub(r"^(茜|小茜|Akane|あかね)(?=[一-龥])", r"\1，", text)
 
-    # 7. 終點標點
-    text = re.sub(r"[，,、~～]+$", "", text).rstrip()
+    # 8. 終點標點
+    text = re.sub(r"[，,、~～…]+$", "", text).rstrip()
     if text and text[-1] not in TERMINAL_PUNCT:
         text += "。"
 

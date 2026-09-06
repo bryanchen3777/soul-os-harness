@@ -149,6 +149,10 @@ class VoiceCompanionApp:
 
     def _speak_reply(self, user_text: str) -> None:
         self._set_state(self.STATE_SPEAKING)
+        if isinstance(self.streamer, FishTTSLiveStreamer):
+            self.streamer.start()
+        elif hasattr(self.streamer, "resume"):
+            self.streamer.resume()
         if isinstance(self.streamer, FishTTSLiveStreamer) and self.brain.llm_stream is not None:
             # TTS-Live 串流路徑：有 LLM 串流 token 時逐 piece 邊生邊送（feed_text_piece，對齊低延遲目標）
             self._speak_streaming(user_text)
@@ -161,6 +165,9 @@ class VoiceCompanionApp:
         else:
             # REST fallback：逐句合成入隊（既有 VC-1 行為，0 改動）
             for clause in clauses:
+                if getattr(self.streamer, "interrupt_event", None) and self.streamer.interrupt_event.is_set():
+                    self._log("TTS playback interrupted by barge-in")
+                    break
                 self.streamer.speak(clause)
         self._last_interaction = time.time()
         self._log(f"茜 → {reply}")
@@ -169,6 +176,9 @@ class VoiceCompanionApp:
         """LLM 逐 token → streamer.feed_text_piece 邊生邊送，結束後 end_session 收尾。"""
         parts: list[str] = []
         for token in self.brain.stream_respond(user_text):
+            if getattr(self.streamer, "interrupt_event", None) and self.streamer.interrupt_event.is_set():
+                self._log("LLM stream interrupted by barge-in")
+                break
             parts.append(token)
             self.streamer.feed_text_piece(token)
         self.streamer.end_session()
