@@ -1780,12 +1780,12 @@ class TestWebTurnCancellation:
                 await asyncio.to_thread(first_called.wait, 2)
                 # 打斷第一回合
                 await ws.send_json({"type": "interrupt"})
-                streamer.release.set() # 讓背景執行緒通過
-                # 等待第一回合回到 IDLE
+                # 等待第一回合回到 IDLE（確認 server 已接收並處理 interrupt，generation 已遞增）
                 while True:
                     m = await ws.receive(timeout=2)
                     if m.type == WSMsgType.TEXT and json.loads(m.data).get("state") == "IDLE":
                         break
+                streamer.release.set() # 放行被取消的背景執行緒收尾
 
                 # 第二回合：新文字
                 streamer.release = threading.Event()
@@ -1914,5 +1914,156 @@ class TestWebAudioWorkletAndRingBuffer:
                 assert "writeIndex" in html
             finally:
                 await client.close()
+
+        asyncio.run(_run())
+
+
+# ─────────────────────────────────────────────────────────────
+# Test 10：音訊背壓、溢位丟棄與排空通知（VC-2.3-03，全離線）
+# ─────────────────────────────────────────────────────────────
+
+class TestAudioRelayBackpressureAndDrain:
+    def test_backpressure_queue_overflow_drops_oldest(self):
+        """VC-2.3-03: AudioRelaySink maxsize 限制，溢位時丟棄最舊分片，不拋例外且佇列不超限"""
+        async def _run():
+            class SlowWS:
+                def __init__(self):
+                    self.sent = []
+                async def send_bytes(self, chunk):
+                    self.sent.append(chunk)
+
+            sws = SlowWS()
+            # 建立容量為 3 的 sink，不啟動 sender
+            sink = AudioRelaySink(asyncio.get_running_loop(), sws, maxsize=3)
+            # 塞入 5 個分片
+            for i in range(1, 6):
+                sink.write(f"chunk-{i}".encode("ascii"))
+            await asyncio.sleep(0.05)
+
+            # 佇列長度應維持在 3
+            assert sink._queue.qsize() == 3
+            # 取出內容應為最新的 3, 4, 5（1, 2 被 drop）
+            items = []
+            while not sink._queue.empty():
+                items.append(sink._queue.get_nowait())
+            assert items == [b"chunk-3", b"chunk-4", b"chunk-5"]
+            sink.close()
+
+        asyncio.run(_run())
+
+    def test_drain_waits_until_all_chunks_sent(self):
+        """VC-2.3-03: drain() 等待所有分片完全透過 WebSocket 送出才返回"""
+        async def _run():
+            class DelayWS:
+                def __init__(self):
+                    self.sent = []
+                async def send_bytes(self, chunk):
+                    await asyncio.sleep(0.02)
+                    self.sent.append(chunk)
+
+            dws = DelayWS()
+            sink = AudioRelaySink(asyncio.get_running_loop(), dws, maxsize=10)
+            sink.start()
+            sink.write(b"part-1")
+            sink.write(b"part-2")
+            sink.write(b"part-3")
+
+            # 呼叫 drain
+            ok = await sink.drain(timeout=1.0)
+            assert ok is True
+            assert dws.sent == [b"part-1", b"part-2", b"part-3"]
+            assert sink._queue.empty()
+            sink.close()
+
+        asyncio.run(_run())
+
+    def test_drain_instant_when_empty(self):
+        """VC-2.3-03: 空佇列呼叫 drain() 立即返回 True"""
+        async def _run():
+            class DummyWS:
+                async def send_bytes(self, chunk):
+                    pass
+
+            sink = AudioRelaySink(asyncio.get_running_loop(), DummyWS(), maxsize=10)
+            sink.start()
+            ok = await sink.drain(timeout=0.1)
+            assert ok is True
+            sink.close()
+
+        asyncio.run(_run())
+
+    def test_stop_unblocks_drain_and_clears_queue(self):
+        """VC-2.3-03: 打斷 (stop) 立即清空佇列並解除 drain 等待"""
+        async def _run():
+            class BlockedWS:
+                def __init__(self):
+                    self.block = asyncio.Event()
+                    self.sent = []
+                async def send_bytes(self, chunk):
+                    await self.block.wait()
+                    self.sent.append(chunk)
+
+            bws = BlockedWS()
+            sink = AudioRelaySink(asyncio.get_running_loop(), bws, maxsize=10)
+            sink.start()
+            sink.write(b"pending-1")
+            sink.write(b"pending-2")
+            await asyncio.sleep(0.02)
+
+            # 打斷
+            sink.stop()
+            await asyncio.sleep(0.02)
+            assert sink._queue.qsize() == 0
+
+            # drain 應立刻通過
+            ok = await sink.drain(timeout=0.1)
+            assert ok is True
+            bws.block.set()
+            sink.close()
+
+        asyncio.run(_run())
+
+    def test_reply_pipeline_drains_audio_before_idle(self):
+        """VC-2.3-03: 完整回覆管線保證所有音訊分片在收到 akane transcript 與 IDLE 前已發送完畢"""
+        async def _run():
+            app, streamers = _make_web_app(brain_tokens=("這是一句", "完整的話。"))
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                await ws.send_json({"type": "text", "text": "測試完整排空"})
+
+                received_sequence = []
+                while True:
+                    msg = await ws.receive(timeout=3)
+                    if msg.type == WSMsgType.BINARY:
+                        received_sequence.append(("binary", len(msg.data)))
+                    elif msg.type == WSMsgType.TEXT:
+                        data = json.loads(msg.data)
+                        received_sequence.append(("text", data.get("type"), data.get("state") or data.get("role")))
+                        if data.get("type") == "state" and data.get("state") == "IDLE":
+                            break
+                    elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
+                        break
+                await ws.close()
+            finally:
+                await client.close()
+
+            # 提取所有二進位封包出現的索引位置
+            binary_indices = [idx for idx, item in enumerate(received_sequence) if item[0] == "binary"]
+            # 提取 akane transcript 與 IDLE 出現的索引位置
+            akane_transcript_idx = next(
+                idx for idx, item in enumerate(received_sequence)
+                if item[0] == "text" and item[1] == "transcript" and item[2] == "akane"
+            )
+            idle_state_idx = next(
+                idx for idx, item in enumerate(received_sequence)
+                if item[0] == "text" and item[1] == "state" and item[2] == "IDLE"
+            )
+
+            # 斷言：所有 binary 必須在 akane transcript 與 IDLE 之前送達客戶端（解決尾字截斷）
+            assert len(binary_indices) >= 3  # 2 tokens + 1 end_session
+            for b_idx in binary_indices:
+                assert b_idx < akane_transcript_idx < idle_state_idx
 
         asyncio.run(_run())

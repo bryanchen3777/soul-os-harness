@@ -165,15 +165,25 @@ class AudioRelaySink:
     介面對齊 fish_tts_live.PCMAudioSink（open/write/stop/close）：FishTTSLiveStreamer
     的工作執行緒呼叫 write；以 loop.call_soon_threadsafe 放進 asyncio 佇列，
     sender task（asyncio 迴圈內）依序 await ws.send_bytes() 送出。
+    背壓防禦（VC-2.3-03）：佇列設 maxsize（預設 256 分片，約 25s），溢位丟棄最舊分片防 OOM。
+    排空等待（VC-2.3-03）：drain() 異步等待所有排入分片完全發送至 WS，徹底解決尾字截斷。
     stop() 為 interrupt 語意：清空待送出佇列（瀏覽器另收 state=IDLE 通知自行靜音）。
     """
 
-    def __init__(self, loop, ws):
+    DEFAULT_MAXSIZE = 256
+
+    def __init__(self, loop, ws, maxsize: int = DEFAULT_MAXSIZE):
         self._loop = loop
         self._ws = ws
-        self._queue: asyncio.Queue = asyncio.Queue()
+        self._maxsize = maxsize
+        self._queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self._task: Optional[asyncio.Task] = None
         self._closed = False
+        self._sending = False
+        self._written_chunks = 0
+        self._finished_chunks = 0
+        self._drained_event: asyncio.Event = asyncio.Event()
+        self._drained_event.set()
 
     def start(self) -> None:
         if self._task is None and not self._closed:
@@ -181,11 +191,20 @@ class AudioRelaySink:
 
     async def _sender(self) -> None:
         while True:
-            chunk = await self._queue.get()
             try:
+                chunk = await self._queue.get()
+            except asyncio.CancelledError:
+                break
+            try:
+                self._sending = True
                 await self._ws.send_bytes(chunk)
             except Exception:
                 break
+            finally:
+                self._sending = False
+                self._finished_chunks += 1
+                if self._finished_chunks >= self._written_chunks and self._queue.empty():
+                    self._drained_event.set()
 
     # ── PCMAudioSink 相容介面（由 streamer 工作執行緒呼叫）──
 
@@ -195,29 +214,62 @@ class AudioRelaySink:
     def write(self, chunk: bytes) -> None:
         if self._closed or not chunk:
             return
+        self._written_chunks += 1
+        self._drained_event.clear()
         try:
-            self._loop.call_soon_threadsafe(self._queue.put_nowait, chunk)
+            self._loop.call_soon_threadsafe(self._enqueue, chunk)
         except RuntimeError:
             pass  # loop 關閉中
+
+    def _enqueue(self, chunk: bytes) -> None:
+        if self._closed:
+            return
+        if self._queue.full():
+            try:
+                self._queue.get_nowait()
+                self._finished_chunks += 1
+                print("[RELAY] queue overflow, dropped oldest frame")
+            except Exception:
+                pass
+        try:
+            self._queue.put_nowait(chunk)
+        except asyncio.QueueFull:
+            self._finished_chunks += 1
+
+    async def drain(self, timeout: float = 10.0) -> bool:
+        """等待所有已排入的 PCM 分片完全由 WebSocket 送出（解決尾字截斷 VC-2.3-03）。"""
+        if self._closed or (self._finished_chunks >= self._written_chunks and self._queue.empty() and not self._sending):
+            return True
+        try:
+            await asyncio.wait_for(self._drained_event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            print("[RELAY] drain timeout")
+            return False
 
     def stop(self) -> None:
         """interrupt 語意：清空待送出佇列。"""
         if self._closed:
             return
         try:
-            self._loop.call_soon_threadsafe(self._drain)
+            self._loop.call_soon_threadsafe(self._do_stop)
         except RuntimeError:
             pass
 
-    def _drain(self) -> None:
+    def _do_stop(self) -> None:
         while True:
             try:
                 self._queue.get_nowait()
+                self._finished_chunks += 1
             except Exception:
                 break
+        self._finished_chunks = max(self._finished_chunks, self._written_chunks)
+        self._drained_event.set()
 
     def close(self) -> None:
         self._closed = True
+        self._finished_chunks = max(self._finished_chunks, self._written_chunks)
+        self._drained_event.set()
         task, self._task = self._task, None
         if task is not None:
             try:
@@ -257,6 +309,8 @@ class WebSession:
         self._frames: List[float] = []
         self._generation = 0  # 回合世代：打斷後遞增，舊回合收尾不得覆蓋狀態
         self._history: List[dict] = []  # 每連線對話歷史（role user/assistant，供 LLM 承接前文）
+        self._utterance_task: Optional[asyncio.Task] = None
+        self._reply_task: Optional[asyncio.Task] = None
         self._streamer.start()
 
     # ── WS 事件入口（全部在 asyncio 迴圈內）──
@@ -270,11 +324,17 @@ class WebSession:
             await self._set_state(self.STATE_LISTENING)
 
     async def on_ptt_stop(self) -> None:
-        """PTT 放開 / Auto-VAD 靜音：強制斷句，進入思考→回覆管線。"""
+        """PTT 放開 / Auto-VAD 靜音：強制斷句，進入思考→回覆管線。
+
+        以 create_task 非同步執行，確保 WS handler 迴圈不被 ASR/Refiner 阻塞，
+        interrupt 與新輸入可即時打斷。
+        """
         print("[WS] ptt_stop")  # VC-1.5 診斷日誌
         if self.state != self.STATE_LISTENING:
             return
-        await self._handle_utterance()
+        if self._utterance_task and not self._utterance_task.done():
+            self._utterance_task.cancel()
+        self._utterance_task = asyncio.create_task(self._handle_utterance())
 
     async def on_pcm(self, chunk: bytes) -> None:
         """瀏覽器收音分片（Int16 PCM 16k mono）：餵能量 VAD；0.8s 靜音 → 斷句。"""
@@ -285,7 +345,9 @@ class WebSession:
         if self._vad.in_speech:
             self._frames.extend(samples.tolist())
         if "speech_end" in events:
-            await self._handle_utterance()
+            if self._utterance_task and not self._utterance_task.done():
+                self._utterance_task.cancel()
+            self._utterance_task = asyncio.create_task(self._handle_utterance())
 
     async def on_interrupt(self) -> None:
         """瀏覽器打斷（Bryan 在茜說話時開口）：立即中斷合成/播放，回 IDLE（瀏覽器靜音）。"""
@@ -299,10 +361,16 @@ class WebSession:
         if not text:
             return
         print(f"[WS] text {text[:40]}")  # VC-1.5 診斷日誌
-        if self.state in (self.STATE_THINKING, self.STATE_SPEAKING):
+        if self.state in (self.STATE_LISTENING, self.STATE_THINKING, self.STATE_SPEAKING):
             self._barge()
+        self._generation += 1
+        gen = self._generation
         await self._send_json({"type": "transcript", "role": "user", "text": text})
-        await self._run_reply(text)
+        await self._run_reply(text, gen=gen)
+
+    async def on_ping(self) -> None:
+        """心跳保活（VC-2.1）：前端每 25 秒送 ping，回傳 pong 防 NAT/隧道斷線。"""
+        await self._send_json({"type": "pong"})
 
     # ── 管線 ──
 
@@ -310,18 +378,31 @@ class WebSession:
         """斷句 → THINKING → ASR → 淨化 → 回覆管線。"""
         if self.state != self.STATE_LISTENING:
             return
+        self._generation += 1
+        gen = self._generation
         await self._set_state(self.STATE_THINKING)
         captured = self._frames
         self._frames = []
         self._vad.reset()
         if not captured:
             print("[UTT] start frames=0 (skip)")  # VC-1.5 診斷日誌
-            await self._set_state(self.STATE_IDLE)
+            if gen == self._generation:
+                await self._set_state(self.STATE_IDLE)
             return
         print(f"[UTT] start frames={len(captured)}")  # VC-1.5 診斷日誌
         pcm = (np.clip(np.asarray(captured, dtype=np.float32), -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
         wav = pcm16_to_wav_bytes(pcm, sample_rate=VAD_SAMPLE_RATE)
-        text = await asyncio.to_thread(self._asr.transcribe, wav)
+        try:
+            text = await asyncio.to_thread(self._asr.transcribe, wav)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            text = ""
+            print(f"[UTT] asr-exception {exc}")
+
+        if gen != self._generation:
+            print(f"[UTT] asr-cancelled gen={gen} curr={self._generation}")
+            return
         text = (text or "").strip()
         if not text:
             # VC-1.4 失敗透通：ASR 有錯誤（402 額度 / 網路例外）→ 顯示給使用者，不再靜默 DROP；
@@ -333,31 +414,53 @@ class WebSession:
                 message = f"語音辨識失敗（HTTP {status}）：{body}"
                 if status == 402:
                     message += "（請檢查 Fish API 額度）"
-                await self._send_json({"type": "error", "message": message})
+                if gen == self._generation:
+                    await self._send_json({"type": "error", "message": message})
                 print(f"[UTT] asr-error status={status}")  # VC-1.5 診斷日誌
             else:
                 print("[UTT] asr-empty (drop)")  # VC-1.5 診斷日誌
-            await self._set_state(self.STATE_IDLE)
+            if gen == self._generation:
+                await self._set_state(self.STATE_IDLE)
+            return
+        if gen != self._generation:
             return
         print(f"[UTT] asr-ok text={text[:40]}")  # VC-1.5 診斷日誌
         await self._send_json({"type": "transcript", "role": "user", "text": text})
-        clean = await asyncio.to_thread(self._refiner.refine_speech_text, text)
+
+        try:
+            clean = await asyncio.to_thread(self._refiner.refine_speech_text, text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            clean = ""
+            print(f"[UTT] refiner-exception {exc}")
+
+        if gen != self._generation:
+            print(f"[UTT] refiner-cancelled gen={gen} curr={self._generation}")
+            return
         if not clean:
             # 雜音熔斷（DROP）：不打擾茜
             print("[UTT] refine-drop")  # VC-1.5 診斷日誌
-            await self._set_state(self.STATE_IDLE)
+            if gen == self._generation:
+                await self._set_state(self.STATE_IDLE)
             return
-        await self._run_reply(clean)
+        if gen != self._generation:
+            return
+        await self._run_reply(clean, gen=gen)
 
-    async def _run_reply(self, user_text: str) -> None:
+    async def _run_reply(self, user_text: str, gen: Optional[int] = None) -> None:
         """THINKING 完成 → SPEAKING：LLM 串流 token → feed_text_piece → end_session。
 
         收尾以 create_task 並行執行（不阻塞 WS handler），interrupt 訊息可立即打斷；
         世代號確保被打斷的舊回合收尾不會覆蓋新回合狀態。
         """
+        if gen is None:
+            self._generation += 1
+            gen = self._generation
+        elif gen != self._generation:
+            return
+
         await self._set_state(self.STATE_SPEAKING)
-        self._generation += 1
-        gen = self._generation
 
         def _generate() -> str:
             # 同步阻塞段（LLM requests + TTS WS）在 dedicated thread 執行，不卡 asyncio 迴圈
@@ -370,17 +473,27 @@ class WebSession:
             self._streamer.end_session()
             return "".join(parts)
 
-        async def _finish(gen: int) -> None:
+        async def _finish(task_gen: int) -> None:
             try:
                 reply = await asyncio.to_thread(_generate)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
-                await self._send_json({"type": "error", "message": f"上游失敗: {exc}"})
-                print(f"[UTT] reply-error {exc}")  # VC-1.5 診斷日誌
+                if task_gen == self._generation:
+                    await self._send_json({"type": "error", "message": f"上游失敗: {exc}"})
+                    print(f"[UTT] reply-error {exc}")  # VC-1.5 診斷日誌
             else:
+                if task_gen != self._generation:
+                    return
+                # VC-2.3-03: 排空音訊分片，確保 WebSocket 底層完全送出，徹底消除尾字截斷
+                if hasattr(self._sink, "drain"):
+                    await self._sink.drain()
+                if task_gen != self._generation:
+                    return
                 reply = (reply or "").strip()
                 if reply:
                     await self._send_json({"type": "transcript", "role": "akane", "text": reply})
-                    if gen == self._generation:  # 本世代正常結束 → 寫入對話記憶（被 barge-in 打斷的半截回覆不入記憶）
+                    if task_gen == self._generation:  # 本世代正常結束 → 寫入對話記憶（被 barge-in 打斷的半截回覆不入記憶）
                         self._history.append({"role": "user", "content": user_text})
                         self._history.append({"role": "assistant", "content": reply})
                         cap = self.MAX_HISTORY_TURNS * 2
@@ -388,12 +501,29 @@ class WebSession:
                             self._history = self._history[-cap:]
                 print(f"[UTT] reply chars={len(reply)}")  # VC-1.5 診斷日誌
             finally:
-                if gen == self._generation:  # 仍是本世代 → 正常結束；被打斷則已由 interrupt 收尾
+                if task_gen == self._generation:  # 仍是本世代 → 正常結束；被打斷則已由 interrupt 收尾
                     await self._set_state(self.STATE_IDLE)
 
-        asyncio.create_task(_finish(gen))
+        if self._reply_task and not self._reply_task.done():
+            self._reply_task.cancel()
+        self._reply_task = asyncio.create_task(_finish(gen))
 
     async def close(self) -> None:
+        self._barge()
+        if self._utterance_task and not self._utterance_task.done():
+            self._utterance_task.cancel()
+            try:
+                await self._utterance_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._utterance_task = None
+        if self._reply_task and not self._reply_task.done():
+            self._reply_task.cancel()
+            try:
+                await self._reply_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._reply_task = None
         try:
             self._streamer.close()
         except Exception:
@@ -408,6 +538,12 @@ class WebSession:
         self._frames = []
         self._vad.reset()
         self._generation += 1  # 舊回合收尾失去狀態控制權
+        if self._utterance_task and not self._utterance_task.done():
+            self._utterance_task.cancel()
+            self._utterance_task = None
+        if self._reply_task and not self._reply_task.done():
+            self._reply_task.cancel()
+            self._reply_task = None
 
     async def _set_state(self, state: str) -> None:
         if state == self.state:
@@ -474,6 +610,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                     await session.on_interrupt()
                 elif mtype == "text":
                     await session.on_text(data.get("text", ""))
+                elif mtype == "ping":
+                    await session.on_ping()
             elif msg.type == WSMsgType.ERROR:
                 break
     finally:
