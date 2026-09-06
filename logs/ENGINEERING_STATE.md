@@ -331,7 +331,8 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `3da9a67` (docs: register VC-1 LLM key fix (2b77631))
+- Current HEAD: `53c3fab` (fix(vc-1): normalize chat completions endpoint (405 on ollama.com/v1 root))
+- VC-1 405 fix commit: `53c3fab` (fix(vc-1): normalize chat completions endpoint (405 on ollama.com/v1 root); **Current HEAD**)
 - VC-1 LLM key fix register commit: `3da9a67` (docs: register VC-1 LLM key fix (2b77631); **Current HEAD**)
 - VC-1 LLM key fix commit: `2b77631` (fix(vc-1): llm api key env fallback (OLLAMA_API_KEY, explicit LLM_API_KEY wins) + test; **distinct from Current HEAD**)
 - VC-1.5 register commit: `c90fe2d` (docs: register VC-1.5 https + secure-mic fixes (3b62328 + 5e99042); **Current HEAD**)
@@ -1536,5 +1537,7 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09-05 (VC-1.5) | **VC-1.5 HTTPS 模式＋麥克風安全來源根治 CLOSED**（`3b62328` feat＋`5e99042` fix，共 7 檔 +251/-16；本行 + §1 VC 系列段 + §1.1 Current HEAD 同步）。**根因**：getUserMedia 僅限安全上下文（HTTPS/localhost），`http://區網IP` 被瀏覽器擋麥克風（音量條不動、看似上傳失敗）。修：`--https`／`config.web.https=true` 模式（cryptography 自簽憑證自動產生，SAN 127.0.0.1＋區網 IP，`certs/` gitignored；stdout 印「繼續前往」指引）；UI 不安全來源**常駐**警示＋麥克風錯誤 `err.name` 分類＋PTT 前置檢查＋✕ 關閉；伺服器 `[WS]`/`[UTT]` 診斷日誌。**實機發現並修復**：Windows cp950 主控台 `print(⚠️)` UnicodeEncodeError 崩潰 → `main()` 開頭 stdout/stderr `reconfigure(utf-8, errors="replace")`（commit `5e99042`，主大腦一行級直接修）。驗收 68 passed（62＋6，主大腦複跑）；HTTPS 上線 HTTP 200＋isSecureContext/errorDismiss 頁面實證（curl -k）。**0 src/、0 Frozen Contract、0 金鑰**。 | DSH | VC-1.5 |
 
 | 2026-09-05 (VC-1 LLM key fix) | **Ollama Cloud 上游 401 根因修復 CLOSED**（commit `2b77631`，2 檔 +19/-6；本行 + §1.1 Current HEAD 同步）。**實機診斷**：`resolve_config` 解析後 `llm.api_key` 為空（`.env` 存 `OLLAMA_API_KEY`，解析器只認 `LLM_API_KEY`）→ 茜的大腦呼叫 Ollama Cloud 帶空 Bearer → 401 → 頁面「上游失敗」。修：`env_config.ENV_OVERRIDE_MAP` 加 `OLLAMA_API_KEY → llm.api_key` fallback（`LLM_API_KEY` 排序在後＝顯式鍵優先，後者覆寫前者語義）＋測試 2 斷言（fallback 生效／顯式鍵優先，隔離真實 .env）；本機 `.env` 同步補 `LLM_API_KEY` 行。驗收 69 passed（68＋1，主大腦複跑）；Ollama Cloud `/v1/chat/completions` 實機冒煙 200＋content 回傳（max_tokens=1024 驗證）；伺服器重啟（PID 7240，https 200）。**⚠️ 配額事實**：Ollama Cloud 週配額已用 **92.5%**（剩 7.5%；本週 flash 請求 4349，主要來自生產線）。0 src/、0 Frozen、0 金鑰進 git。 | DSH | VC-1 |
+
+| 2026-09-05 (VC-1 405 fix) | **Ollama Cloud 405 端點路徑修復 CLOSED**（commit `53c3fab`，4 檔 +31/-3；本行 + §1.1 Current HEAD 同步）。**實機診斷**：金鑰修復（2b77631）後上游改報 HTTP 405 Method Not Allowed——`akane_voice_brain.build_llm_stream` 與 `asr_refiner.build_llm_call` 直接把 POST 打到 `llm.endpoint`（`https://ollama.com/v1` 根路徑不允許 POST），缺 OpenAI 相容 `/chat/completions` 尾綴。修：`env_config.normalize_chat_endpoint()`（缺尾綴自動補、已有原樣、空值回空）＋兩處呼叫點接入＋測試 5 斷言。驗收 70 passed（69＋1，主大腦複跑）；**客戶端真實路徑冒煙**（build_llm_call 不手動拼 URL）→ 200＋content len 1；伺服器重啟（PID 26584，https 200）。0 src/、0 Frozen、0 金鑰進 git。 | DSH | VC-1 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
