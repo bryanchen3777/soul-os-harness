@@ -193,6 +193,30 @@ class TestAkaneVoiceBrain:
         assert not contains_markdown_chars(joined)
         assert all(ch not in joined for ch in self.FORBIDDEN)
 
+    def test_history_injected_before_new_user(self):
+        """對話記憶：history 依序插在 system 之後、新 user 句之前（連貫）"""
+        seen = {}
+
+        def capture(msgs):
+            seen["messages"] = msgs
+            return iter(["好。"])
+
+        brain = AkaneVoiceBrain(llm_stream=capture)
+        hist = [
+            {"role": "user", "content": "我們在聊劇本"},
+            {"role": "assistant", "content": "好啊，說來聽聽。"},
+        ]
+        list(brain.stream_respond("你剛剛說想聽劇本？", history=hist))
+        msgs = seen["messages"]
+        assert [m["role"] for m in msgs] == ["system", "user", "assistant", "user"]
+        assert [m["content"] for m in msgs[1:]] == ["我們在聊劇本", "好啊，說來聽聽。", "你剛剛說想聽劇本？"]
+
+        # 缺省 history=None → 維持原單回合行為（system + user 兩條）
+        seen2 = {}
+        brain2 = AkaneVoiceBrain(llm_stream=lambda msgs: (seen2.__setitem__("m", msgs) or iter(["嗯。"])))
+        list(brain2.stream_respond("測試"))
+        assert [m["role"] for m in seen2["m"]] == ["system", "user"]
+
     def test_clause_splitter_splits_immediately_on_comma_period(self):
         """分句器：遇到逗號/句號（且字數 ≥ 4）即時切分"""
         splitter = ClauseSplitter()

@@ -242,6 +242,7 @@ class WebSession:
     STATE_LISTENING = "LISTENING"
     STATE_THINKING = "THINKING"
     STATE_SPEAKING = "SPEAKING"
+    MAX_HISTORY_TURNS = 10  # 對話記憶：保留最近 N 輪（每輪 user+assistant 兩條）
 
     def __init__(self, ws, *, config, brain, refiner, asr, streamer, detector, sink):
         self._ws = ws
@@ -255,6 +256,7 @@ class WebSession:
         self.state = self.STATE_IDLE
         self._frames: List[float] = []
         self._generation = 0  # 回合世代：打斷後遞增，舊回合收尾不得覆蓋狀態
+        self._history: List[dict] = []  # 每連線對話歷史（role user/assistant，供 LLM 承接前文）
         self._streamer.start()
 
     # ── WS 事件入口（全部在 asyncio 迴圈內）──
@@ -360,8 +362,9 @@ class WebSession:
         def _generate() -> str:
             # 同步阻塞段（LLM requests + TTS WS）在 dedicated thread 執行，不卡 asyncio 迴圈
             self._streamer.start()  # 釋放 interrupt 旗標（若有）
+            hist = list(self._history)  # 對話快照：本回合結束前由 _finish 更新
             parts: list[str] = []
-            for token in self._brain.stream_respond(user_text):
+            for token in self._brain.stream_respond(user_text, history=hist):
                 parts.append(token)
                 self._streamer.feed_text_piece(token)
             self._streamer.end_session()
@@ -377,6 +380,12 @@ class WebSession:
                 reply = (reply or "").strip()
                 if reply:
                     await self._send_json({"type": "transcript", "role": "akane", "text": reply})
+                    if gen == self._generation:  # 本世代正常結束 → 寫入對話記憶（被 barge-in 打斷的半截回覆不入記憶）
+                        self._history.append({"role": "user", "content": user_text})
+                        self._history.append({"role": "assistant", "content": reply})
+                        cap = self.MAX_HISTORY_TURNS * 2
+                        if len(self._history) > cap:
+                            self._history = self._history[-cap:]
                 print(f"[UTT] reply chars={len(reply)}")  # VC-1.5 診斷日誌
             finally:
                 if gen == self._generation:  # 仍是本世代 → 正常結束；被打斷則已由 interrupt 收尾

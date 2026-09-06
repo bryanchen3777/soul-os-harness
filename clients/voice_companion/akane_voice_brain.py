@@ -218,12 +218,15 @@ class AkaneVoiceBrain:
     def system_prompt(self) -> str:
         return self.persona
 
-    def respond(self, user_text: str) -> str:
-        """產生茜的回覆（整段）。輸出必過守門檢查。"""
-        messages = [
-            {"role": "system", "content": self.persona},
-            {"role": "user", "content": user_text},
-        ]
+    def respond(self, user_text: str, history=None) -> str:
+        """產生茜的回覆（整段）。輸出必過守門檢查。
+
+        history: 選用——先前輪次訊息（role=user/assistant），依序插入 system 之後，
+        讓茜承接前文（對話連貫）。缺省 None = 維持原本單回合行為。
+        """
+        messages = [{"role": "system", "content": self.persona}]
+        messages += list(history or [])
+        messages.append({"role": "user", "content": user_text})
         if self.llm_stream is None:
             return self._guarded("我在。說說看。")
         try:
@@ -235,12 +238,14 @@ class AkaneVoiceBrain:
             text = "嗯。我在聽。"
         return self._guarded(text)
 
-    def stream_respond(self, user_text: str) -> Iterator[str]:
-        """串流回應：token 邊收邊過守門，交由分句器即時切句（邊生邊播）。"""
-        messages = [
-            {"role": "system", "content": self.persona},
-            {"role": "user", "content": user_text},
-        ]
+    def stream_respond(self, user_text: str, history=None) -> Iterator[str]:
+        """串流回應：token 邊收邊過守門，交由分句器即時切句（邊生邊播）。
+
+        history: 選用——先前輪次訊息（role=user/assistant），依序插入 system 之後（對話連貫）。
+        """
+        messages = [{"role": "system", "content": self.persona}]
+        messages += list(history or [])
+        messages.append({"role": "user", "content": user_text})
         if self.llm_stream is None:
             yield "我在。說說看。"
             return
