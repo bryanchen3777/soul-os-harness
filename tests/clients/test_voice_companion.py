@@ -14,14 +14,21 @@ tests/clients/test_voice_companion.py — VC-1 黑川茜即時語音伴侶客戶
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import sys
+import threading
 from pathlib import Path
 
 import msgpack
+import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+
+from aiohttp import WSMsgType
+from aiohttp.test_utils import TestClient, TestServer
 
 from clients.voice_companion.akane_live import VoiceCompanionApp, create_tts_streamer
 from clients.voice_companion.akane_voice_brain import (
@@ -37,6 +44,8 @@ from clients.voice_companion.fish_tts_streamer import FishTTSStreamer
 from clients.voice_companion.fish_tts_live import FishTTSError, FishTTSLiveStreamer
 from clients.voice_companion.stt_service import FishASRService, pcm16_to_wav_bytes
 from clients.voice_companion.vad_listener import VADListener, VoiceActivityDetector
+from clients.voice_companion.web_server import AudioRelaySink, build_app
+from clients.voice_companion.web_ui import HTML_PAGE
 
 VOICE_ENDPOINT = "https://api.fish.audio/v1/tts"
 
@@ -791,3 +800,298 @@ class TestEnvConfig:
         assert resolved["fish_audio"]["voice_id"] == "dotenv-voice"   # .env > config 默認
         assert resolved["fish_audio"]["model"] == "s2.1-pro-free"     # config 默認保留
         assert resolved["llm"]["model"] == "deepseek-v4-flash:0731"   # config 默認保留
+
+
+# ─────────────────────────────────────────────────────────────
+# Test 6：Web 語音伴侶伺服器（VC-1.3，全離線注入 fake，0 網路）
+# ─────────────────────────────────────────────────────────────
+
+WEB_TEST_CONFIG = {
+    "fish_audio": {
+        "api_key": "fake-key", "voice_id": "v", "model": "s2.1-pro-free",
+        "mode": "live", "live_format": "pcm",
+        "asr_endpoint": "https://api.fish.audio/v1/asr",
+        "tts_ws_endpoint": "wss://api.fish.audio/v1/tts/live",
+    },
+    "stt": {"engine": "fish", "language": "zh"},
+    "vad": {"sample_rate": 16000, "silence_threshold_sec": 0.05, "energy_threshold": 0.05},
+    "llm": {"endpoint": "", "api_key": ""},
+    "web": {"host": "127.0.0.1", "port": 8765},
+}
+
+
+class FakeWebStreamer:
+    """記錄呼叫的偽 TTS streamer（介面：start/feed_text_piece/end_session/interrupt/close）。"""
+
+    def __init__(self, sink=None, tokens=("我在，", "說說看。")):
+        self.sink = sink
+        self.tokens = tokens
+        self.fed: list[str] = []
+        self.interrupt_calls = 0
+        self.end_calls = 0
+        self.start_calls = 0
+
+    def start(self):
+        self.start_calls += 1
+
+    def feed_text_piece(self, piece: str):
+        self.fed.append(piece)
+        if self.sink is not None:
+            self.sink.write(b"\x10\x00" * 160)  # 模擬 TTS 產出 PCM 分片 → relay
+
+    def end_session(self):
+        self.end_calls += 1
+        if self.sink is not None:
+            self.sink.write(b"\x20\x00" * 80)
+
+    def interrupt(self):
+        self.interrupt_calls += 1
+
+    def close(self):
+        pass
+
+
+class FakeWebASR:
+    def __init__(self, text="茜，今天好累"):
+        self.text = text
+        self.calls = 0
+
+    def transcribe(self, wav_bytes):
+        self.calls += 1
+        return self.text
+
+
+def _make_web_app(brain_tokens=("我在，", "說說看。"), asr_text="茜，今天好累", streamer_factory=None):
+    """建立注入 fake 的 web app + 收集 fake streamer 的容器。"""
+    streamers: list = []
+    brain = AkaneVoiceBrain(llm_stream=lambda msgs: iter(brain_tokens))
+
+    def default_factory(sink):
+        s = FakeWebStreamer(sink=sink)
+        streamers.append(s)
+        return s
+
+    app = build_app(
+        WEB_TEST_CONFIG,
+        brain=brain,
+        refiner=AsrRefiner(llm_call=None),  # 離線確定性淨化
+        asr=FakeWebASR(asr_text),
+        streamer_factory=streamer_factory or default_factory,
+    )
+    return app, streamers
+
+
+class TestWebServer:
+    def test_index_page_served(self):
+        """GET / → 200 且含關鍵 UI 元件（mic 按鈕 / 狀態文字）"""
+        async def _run():
+            app, _ = _make_web_app()
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                resp = await client.get("/")
+                assert resp.status == 200
+                html = await resp.text()
+                assert "micBtn" in html
+                assert "statusText" in html
+                assert "黑川茜" in html
+            finally:
+                await client.close()
+
+        asyncio.run(_run())
+
+    def test_ws_text_input_pipeline(self):
+        """WS 文字輸入路徑：送 text JSON → transcript user → SPEAKING → transcript akane → IDLE"""
+        async def _run():
+            app, streamers = _make_web_app()
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                await ws.send_json({"type": "text", "text": "今天好累"})
+                events = []
+                while len(events) < 4:
+                    msg = await ws.receive(timeout=3)
+                    if msg.type == WSMsgType.TEXT:
+                        events.append(json.loads(msg.data))
+                    elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
+                        break
+                await ws.close()
+            finally:
+                await client.close()
+
+            assert [e["type"] for e in events] == ["transcript", "state", "transcript", "state"]
+            assert events[0]["role"] == "user" and events[0]["text"] == "今天好累"
+            assert events[1]["state"] == "SPEAKING"
+            assert events[2]["role"] == "akane" and events[2]["text"] == "我在，說說看。"
+            assert events[3]["state"] == "IDLE"
+            assert streamers[0].fed == ["我在，", "說說看。"]  # LLM token 依序 feed
+            assert streamers[0].end_calls == 1
+
+        asyncio.run(_run())
+
+    def test_ws_interrupt_triggers_streamer_interrupt(self):
+        """SPEAKING 中送 interrupt → fake streamer.interrupt 被呼叫、狀態回 IDLE（瀏覽器靜音通知）"""
+
+        class BlockingWebStreamer(FakeWebStreamer):
+            """feed 阻塞（模擬 TTS 播放中）直到 release，讓 interrupt 在 SPEAKING 中被處理。"""
+
+            def __init__(self, sink=None):
+                super().__init__(sink)
+                self.release = threading.Event()
+
+            def feed_text_piece(self, piece: str):
+                self.fed.append(piece)
+                self.release.wait(timeout=2)  # to_thread 內阻塞
+
+        async def _run():
+            blocking = BlockingWebStreamer()
+            brain = AkaneVoiceBrain(llm_stream=lambda msgs: iter(("我在，", "說說看。")))
+            app = build_app(
+                WEB_TEST_CONFIG, brain=brain, refiner=AsrRefiner(llm_call=None),
+                asr=FakeWebASR(), streamer_factory=lambda sink: blocking,
+            )
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                await ws.send_json({"type": "text", "text": "測試"})
+                events = []
+                while not any(e.get("type") == "state" and e.get("state") == "SPEAKING" for e in events):
+                    msg = await ws.receive(timeout=3)
+                    if msg.type == WSMsgType.TEXT:
+                        events.append(json.loads(msg.data))
+                    elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
+                        break
+                await ws.send_json({"type": "interrupt"})  # SPEAKING 中打斷
+                extra = []
+                for _ in range(2):
+                    try:
+                        msg = await ws.receive(timeout=1)
+                    except asyncio.TimeoutError:
+                        break
+                    if msg.type == WSMsgType.TEXT:
+                        extra.append(json.loads(msg.data))
+                    elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
+                        break
+                blocking.release.set()  # 放行 feed thread 收尾
+                await asyncio.sleep(0.05)
+                await ws.close()
+            finally:
+                await client.close()
+
+            assert blocking.interrupt_calls >= 1, "interrupt 必須呼叫 streamer.interrupt()"
+            states = [e["state"] for e in events + extra if e.get("type") == "state"]
+            assert states and states[-1] == "IDLE", "打斷後狀態必須回 IDLE（瀏覽器靜音通知）"
+
+        asyncio.run(_run())
+
+    def test_ws_relay_forwards_pcm_binary_ordered(self):
+        """relay sink：TTS PCM 分片 → WS binary frame 依序送出（aiohttp test client 收集）"""
+        async def _run():
+            app, _ = _make_web_app(brain_tokens=("二，", "三。"))
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                await ws.send_json({"type": "text", "text": "請說"})
+                binaries: list[bytes] = []
+                texts = 0
+                while texts < 4 or len(binaries) < 3:
+                    msg = await ws.receive(timeout=3)
+                    if msg.type == WSMsgType.BINARY:
+                        binaries.append(msg.data)
+                    elif msg.type == WSMsgType.TEXT:
+                        texts += 1
+                    elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
+                        break
+                await ws.close()
+            finally:
+                await client.close()
+
+            # 2 個 token 各觸發 1 分片（fake feed）+ end_session 1 分片 → 依序送出
+            assert binaries == [b"\x10\x00" * 160, b"\x10\x00" * 160, b"\x20\x00" * 80]
+
+        asyncio.run(_run())
+
+    def test_ws_state_machine_ptt_flow(self):
+        """狀態機：ptt_start → LISTENING；語音分片 + ptt_stop → THINKING → SPEAKING → IDLE"""
+        async def _run():
+            asr = FakeWebASR("茜，今天好累")
+            streamers: list = []
+
+            def factory(sink):
+                s = FakeWebStreamer(sink=sink)
+                streamers.append(s)
+                return s
+
+            brain = AkaneVoiceBrain(llm_stream=lambda msgs: iter(("我在，", "說說看。")))
+            app = build_app(
+                WEB_TEST_CONFIG, brain=brain, refiner=AsrRefiner(llm_call=None),
+                asr=asr, streamer_factory=factory,
+            )
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                await ws.send_json({"type": "ptt_start"})
+                pcm = (np.full(1600, 0.5) * 32767).astype(np.int16).tobytes()  # 0.1s 語音
+                await ws.send_bytes(pcm)
+                await ws.send_bytes(pcm)
+                await ws.send_json({"type": "ptt_stop"})
+                events = []
+                while len(events) < 6:
+                    msg = await ws.receive(timeout=3)
+                    if msg.type == WSMsgType.TEXT:
+                        events.append(json.loads(msg.data))
+                    elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
+                        break
+                await ws.close()
+            finally:
+                await client.close()
+
+            states = [e["state"] for e in events if e["type"] == "state"]
+            assert states[0] == "LISTENING"
+            assert "THINKING" in states
+            assert "SPEAKING" in states
+            assert states[-1] == "IDLE"
+            assert asr.calls == 1, "斷句後必須送 Fish ASR"
+            roles = [e["role"] for e in events if e["type"] == "transcript"]
+            assert roles == ["user", "akane"]
+
+        asyncio.run(_run())
+
+    def test_audio_relay_sink_order_and_stop(self):
+        """AudioRelaySink：write 依序送出；stop 清空佇列（interrupt 語意）"""
+        async def _run():
+            class FakeWS:
+                def __init__(self):
+                    self.sent: list[bytes] = []
+
+                async def send_bytes(self, data: bytes):
+                    self.sent.append(data)
+
+            fws = FakeWS()
+            sink = AudioRelaySink(asyncio.get_running_loop(), fws)
+            sink.start()
+            sink.write(b"a" * 8)
+            sink.write(b"b" * 8)
+            await asyncio.sleep(0.05)
+            assert fws.sent == [b"a" * 8, b"b" * 8], "分片必須依序送出"
+
+            sink.write(b"c" * 8)
+            sink.stop()  # 同 tick：put 先排、drain 隨後排 → sender 拿不到 c
+            await asyncio.sleep(0.05)
+            assert fws.sent == [b"a" * 8, b"b" * 8], "stop 後殘留分片不得送出"
+            assert sink._queue.qsize() == 0
+            sink.close()
+
+        asyncio.run(_run())
+
+    def test_index_page_contains_ui_script(self):
+        """HTML_PAGE 內嵌完整前端（收音/放音/打斷 JS 關鍵片段）"""
+        assert "getUserMedia" in HTML_PAGE
+        assert "ptt_start" in HTML_PAGE
+        assert "interrupt" in HTML_PAGE
+        assert "AudioContext" in HTML_PAGE
+        assert "int16" in HTML_PAGE.lower() or "Int16Array" in HTML_PAGE

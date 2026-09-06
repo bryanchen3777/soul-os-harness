@@ -27,5 +27,9 @@
     "endpoint": "https://ollama.com/v1",
     "model": "deepseek-v4-flash:0731",
     "api_key": ""
+  },
+  "web": {
+    "host": "0.0.0.0",
+    "port": 8765
   }
 }
