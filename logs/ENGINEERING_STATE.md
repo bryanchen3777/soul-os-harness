@@ -331,8 +331,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `5e99042` (fix(vc-1.5): utf-8 stdout reconfigure for windows cp950 console (emoji print crash))
-- VC-1.5 stdout fix commit: `5e99042` (fix(vc-1.5): utf-8 stdout reconfigure for windows cp950 console (emoji print crash); **Current HEAD**)
+- Current HEAD: `c90fe2d` (docs: register VC-1.5 https + secure-mic fixes (3b62328 + 5e99042))
+- VC-1.5 register commit: `c90fe2d` (docs: register VC-1.5 https + secure-mic fixes (3b62328 + 5e99042); **Current HEAD**)
+- VC-1.5 stdout fix commit: `5e99042` (fix(vc-1.5): utf-8 stdout reconfigure for windows cp950 console (emoji print crash); **distinct from Current HEAD**)
 - VC-1.5 https mode commit: `3b62328` (feat(vc-1.5): https mode + insecure-origin mic banner + ws diagnostics; **distinct from Current HEAD**)
 - VC-1.4 register commit: `1a941f9` (docs: register VC-1.4 mic visibility + asr error transparency (c65a5cf); **Current HEAD**)
 - VC-1.4 UI visibility commit: `c65a5cf` (feat(vc-1.4): mic level meter + asr error transparency in web ui; **distinct from Current HEAD**)
