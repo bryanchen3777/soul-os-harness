@@ -331,8 +331,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `90dcd77` (fix(vc-1.3): decouple playback init from mic start (text-only users were silent))
-- VC-1.3 playback decouple fix commit: `90dcd77` (fix(vc-1.3): decouple playback init from mic start; **Current HEAD**; 2 檔 +21/-4)
+- Current HEAD: `acb1398` (docs: register VC-1.3 playback root fixes (1a1d016 + 90dcd77))
+- VC-1.3 playback register commit: `acb1398` (docs: register VC-1.3 playback root fixes (1a1d016 + 90dcd77); **Current HEAD**)
+- VC-1.3 playback decouple fix commit: `90dcd77` (fix(vc-1.3): decouple playback init from mic start (text-only users were silent); **distinct from Current HEAD**)
 - VC-1.3 autoplay resume fix commit: `1a1d016` (fix(vc-1.3): resume AudioContext on first gesture (autoplay policy made playback silent); **distinct from Current HEAD**)
 - Current HEAD: `ea11465` (docs: register VC-1.6 sdk transport (984f51c))
 - VC-1.6 register commit: `ea11465` (docs: register VC-1.6 sdk transport (984f51c); **Current HEAD**)
