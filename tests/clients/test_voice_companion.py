@@ -850,6 +850,14 @@ class TestEnvConfig:
         assert normalize_chat_endpoint("") == ""
         assert normalize_chat_endpoint("   ") == ""
 
+    def test_ui_audio_resume_autoplay(self):
+        """播放端 AudioContext autoplay 政策解凍：resume helper＋suspended 檢查＋手勢掛鉤存在"""
+        from clients.voice_companion.web_ui import HTML_PAGE
+        assert "ensureAudioResume" in HTML_PAGE
+        assert 'audioCtx.state === "suspended"' in HTML_PAGE
+        assert "audioCtx.resume()" in HTML_PAGE
+        assert "pointerdown" in HTML_PAGE
+
     def test_llm_stream_sse_utf8_decode(self, monkeypatch):
         """SSE 回應無 charset 時強制 UTF-8 解碼（防 ISO-8859-1 亂碼）；端點正規化同時生效"""
         from clients.voice_companion import akane_voice_brain as brain

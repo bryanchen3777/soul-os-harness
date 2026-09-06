@@ -210,8 +210,14 @@ HTML_PAGE = """<!DOCTYPE html>
   }
 
   // ── 放音（44.1k）──
+  function ensureAudioResume() {
+    // 瀏覽器自動播放政策：非手勢建立的 AudioContext 會停在 suspended → 無聲
+    if (audioCtx && audioCtx.state === "suspended" && audioCtx.resume) { audioCtx.resume(); }
+  }
+
   function startPlayback() {
     audioCtx = new AudioContext({ sampleRate: 44100 });
+    if (audioCtx.state === "suspended" && audioCtx.resume) { audioCtx.resume(); }
     playNode = audioCtx.createScriptProcessor(2048, 0, 1);
     playNode.onaudioprocess = function (e) {
       var out = e.outputBuffer.getChannelData(0);
@@ -298,10 +304,11 @@ HTML_PAGE = """<!DOCTYPE html>
 
   // ── 事件綁定 ──
   var micBtn = $("micBtn");
-  micBtn.addEventListener("pointerdown", function (e) { e.preventDefault(); sendPttStart(); });
+  micBtn.addEventListener("pointerdown", function (e) { e.preventDefault(); ensureAudioResume(); sendPttStart(); });
   micBtn.addEventListener("pointerup", sendPttStop);
   micBtn.addEventListener("pointerleave", sendPttStop);
   micBtn.addEventListener("pointercancel", sendPttStop);
+  document.addEventListener("pointerdown", function () { ensureAudioResume(); }); // 任意首次點擊解凍播放
   document.addEventListener("keydown", function (e) {
     if (e.code === "Space" && !e.repeat && document.activeElement !== $("textInput")) { e.preventDefault(); if (!pttActive) { sendPttStart(); } }
   });
