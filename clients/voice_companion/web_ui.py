@@ -119,6 +119,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
   function setState(s) {
     state = s;
+    if (s === "SPEAKING") { ensurePlayback(); } // 茜開始說話 → 確保播放圖存在（打字路徑也能出聲）
     var dot = $("statusDot"), txt = $("statusText");
     dot.className = "dot " + (s === "SPEAKING" ? "speaking" : s === "THINKING" ? "thinking" : s === "LISTENING" ? "listening" : "idle");
     txt.textContent = s === "SPEAKING" ? "🔴 茜說話中…（開口可打斷）" : s === "THINKING" ? "🟡 思考中…" : s === "LISTENING" ? "🟢 聆聽中…" : "🟢 聆聽";
@@ -201,6 +202,7 @@ HTML_PAGE = """<!DOCTYPE html>
         else if (msg.type === "error") { showError(msg.message || "錯誤"); }
       } else {
         // binary = Int16 PCM 44.1k mono 播放分片
+        ensurePlayback();
         var i16 = new Int16Array(ev.data);
         if (state === "SPEAKING" && playQueue.length < MAX_PLAY_BUFFER) {
           for (var i = 0; i < i16.length; i++) { playQueue.push(i16[i] / 32768.0); }
@@ -216,6 +218,7 @@ HTML_PAGE = """<!DOCTYPE html>
   }
 
   function startPlayback() {
+    if (audioCtx) { ensureAudioResume(); return; } // 冪等：已存在則只解凍
     audioCtx = new AudioContext({ sampleRate: 44100 });
     if (audioCtx.state === "suspended" && audioCtx.resume) { audioCtx.resume(); }
     playNode = audioCtx.createScriptProcessor(2048, 0, 1);
@@ -224,6 +227,10 @@ HTML_PAGE = """<!DOCTYPE html>
       for (var i = 0; i < out.length; i++) { out[i] = playQueue.length ? playQueue.shift() : 0; }
     };
     playNode.connect(audioCtx.destination);
+  }
+  // 播放與麥克風解耦：任何觸發點（手勢/收到語音）確保播放圖存在並嘗試解凍
+  function ensurePlayback() {
+    if (audioCtx) { ensureAudioResume(); } else { startPlayback(); }
   }
 
   // ── 收音（getUserMedia → 降採樣 16k → Int16 → WS binary）──
@@ -244,7 +251,7 @@ HTML_PAGE = """<!DOCTYPE html>
     navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
       .then(function (stream) {
         micStream = stream;
-        if (!audioCtx) { startPlayback(); }
+        ensurePlayback(); // 麥克風就緒 → 播放圖確保存在（冪等；播放不再依賴首次點擊 micBtn）
         micSource = audioCtx.createMediaStreamSource(stream);
         recNode = audioCtx.createScriptProcessor(4096, 1, 1);
         var ratio = 16000 / audioCtx.sampleRate;
@@ -304,21 +311,23 @@ HTML_PAGE = """<!DOCTYPE html>
 
   // ── 事件綁定 ──
   var micBtn = $("micBtn");
-  micBtn.addEventListener("pointerdown", function (e) { e.preventDefault(); ensureAudioResume(); sendPttStart(); });
+  micBtn.addEventListener("pointerdown", function (e) { e.preventDefault(); ensurePlayback(); sendPttStart(); });
   micBtn.addEventListener("pointerup", sendPttStop);
   micBtn.addEventListener("pointerleave", sendPttStop);
   micBtn.addEventListener("pointercancel", sendPttStop);
-  document.addEventListener("pointerdown", function () { ensureAudioResume(); }); // 任意首次點擊解凍播放
+  document.addEventListener("pointerdown", function () { ensurePlayback(); }); // 任意首次點擊 → 建立並解凍播放（使用者手勢內）
   document.addEventListener("keydown", function (e) {
-    if (e.code === "Space" && !e.repeat && document.activeElement !== $("textInput")) { e.preventDefault(); if (!pttActive) { sendPttStart(); } }
+    if (e.code === "Space" && !e.repeat && document.activeElement !== $("textInput")) { e.preventDefault(); if (!pttActive) { ensurePlayback(); sendPttStart(); } }
   });
   document.addEventListener("keyup", function (e) { if (e.code === "Space") { sendPttStop(); } });
   $("sendText").addEventListener("click", function () {
+    ensurePlayback(); // 送出打字 → 手勢內建立播放（純打字使用者也出聲）
     var t = $("textInput").value.trim();
     if (t) { send({ type: "text", text: t }); $("textInput").value = ""; }
   });
   $("textInput").addEventListener("keydown", function (e) {
     if (e.key === "Enter") {
+      ensurePlayback();
       var t = e.target.value.trim();
       if (t) { send({ type: "text", text: t }); e.target.value = ""; }
     }

@@ -860,6 +860,14 @@ class TestEnvConfig:
         assert "audioCtx.resume()" in HTML_PAGE
         assert "pointerdown" in HTML_PAGE
 
+    def test_ui_playback_decoupled_from_mic(self):
+        """播放與麥克風解耦：打字路徑（無 mic）也會建立播放圖（VC-1.6 靜音根因回歸）"""
+        from clients.voice_companion.web_ui import HTML_PAGE
+        assert "function ensurePlayback()" in HTML_PAGE
+        assert "if (audioCtx) { ensureAudioResume(); return; }" in HTML_PAGE  # 冪等守衛
+        assert 'if (s === "SPEAKING") { ensurePlayback(); }' in HTML_PAGE    # 收到 SPEAKING 即建播放
+        assert "ensurePlayback();" in HTML_PAGE                               # 手勢/送文字/binary 皆觸發
+
     def test_llm_stream_sse_utf8_decode(self, monkeypatch):
         """SSE 回應無 charset 時強制 UTF-8 解碼（防 ISO-8859-1 亂碼）；端點正規化同時生效"""
         from clients.voice_companion import akane_voice_brain as brain
