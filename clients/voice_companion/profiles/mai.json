@@ -1,0 +1,36 @@
+{
+  "companion": {
+    "id": "agent_mai",
+    "display_name": "櫻島麻衣",
+    "short_name": "麻衣",
+    "persona_file": "personas/agent_mai.md"
+  },
+  "fish_audio": {
+    "voice_id": "",
+    "mode": "live",
+    "live_format": "pcm"
+  },
+  "stt": {
+    "engine": "fish",
+    "language": "zh"
+  },
+  "vad": {
+    "sample_rate": 16000,
+    "silence_threshold_sec": 0.8,
+    "energy_threshold": 0.015
+  },
+  "dialogue": {
+    "wake_words": ["麻衣", "學姐", "まい", "mai"],
+    "continuous_timeout_sec": 30.0,
+    "ephemeral_mode": false
+  },
+  "llm": {
+    "endpoint": "https://ollama.com/v1",
+    "model": "deepseek-v4-flash:0731"
+  },
+  "web": {
+    "host": "127.0.0.1",
+    "port": 8766,
+    "https": false
+  }
+}

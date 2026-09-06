@@ -48,12 +48,14 @@ from clients.voice_companion.vad_listener import VADListener, VoiceActivityDetec
 from clients.voice_companion.web_server import (
     HTTPS_SELF_SIGNED_HINT,
     VC_CONFIG_KEY,
+    VC_BRAIN_KEY,
     AudioRelaySink,
     build_app,
     build_ssl_context,
+    load_config,
     make_self_signed_cert,
 )
-from clients.voice_companion.web_ui import HTML_PAGE
+from clients.voice_companion.web_ui import HTML_PAGE, render_html_page
 
 VOICE_ENDPOINT = "https://api.fish.audio/v1/tts"
 
@@ -2460,3 +2462,213 @@ class TestEdgeDefenseAndLatencyTelemetry:
         if "[LATENCY]" in out:
             lat_line = next(line for line in out.splitlines() if "[LATENCY]" in line)
             assert "Bryan的私密對話" not in lat_line
+
+
+# ─────────────────────────────────────────────────────────────
+# VC-2.4-01：櫻島麻衣獨立語音伴侶服務（Port 8766）測試
+# ─────────────────────────────────────────────────────────────
+
+class TestMaiCompanionVC24:
+    """驗收 VC-2.4-01 櫻島麻衣獨立語音伴侶服務：
+
+    - 設定驅動角色服務（茜維持相容，麻衣使用獨立設定與 Persona）
+    - 獨立 Port 8766 與 Loopback 綁定
+    - 環境變數 MAI_* 優先級覆寫
+    - 記憶庫隔離（agent_mai vs agent_akane 命名空間獨立）
+    - Web UI 角色名稱適配與 XSS 轉義
+    - CLI --config 載入與多伴侶雙常駐防呆
+    - WebSocket transcript 角色身分動態適配 (mai vs akane)
+    """
+
+    def test_default_akane_profile_remains_backward_compatible(self):
+        """1. 預設茜設定維持向下相容：id=agent_akane, port=8765, personas/agent_akane.md"""
+        cfg = load_config()
+        companion = cfg.get("companion") or {}
+        assert companion.get("id") == "agent_akane"
+        assert companion.get("display_name") == "黑川茜"
+        assert companion.get("short_name") == "茜"
+        assert companion.get("persona_file") == "personas/agent_akane.md"
+        assert cfg.get("web", {}).get("port") == 8765
+        resolved = resolve_config(cfg)
+        assert resolved["companion"]["id"] == "agent_akane"
+        assert resolved["web"]["port"] == 8765
+
+    def test_mai_profile_uses_agent_mai_and_mai_persona(self):
+        """2. 麻衣 profile 使用 agent_mai 與 personas/agent_mai.md，且檔案存在且內容正確"""
+        mai_cfg_path = REPO_ROOT / "clients/voice_companion/profiles/mai.json"
+        assert mai_cfg_path.is_file(), "profiles/mai.json 必須存在"
+        with open(mai_cfg_path, encoding="utf-8") as f:
+            mai_cfg = json.load(f)
+        companion = mai_cfg.get("companion") or {}
+        assert companion.get("id") == "agent_mai"
+        assert companion.get("display_name") == "櫻島麻衣"
+        assert companion.get("short_name") == "麻衣"
+        persona_file = REPO_ROOT / companion.get("persona_file", "")
+        assert persona_file.is_file(), f"Persona 檔案 {persona_file} 必須存在"
+        content = persona_file.read_text(encoding="utf-8")
+        assert "櫻島麻衣" in content
+        assert "麻衣" in content
+
+    def test_mai_profile_defaults_to_port_8766_and_loopback(self):
+        """3. 麻衣 profile 預設監聽 127.0.0.1:8766，不影響 8765"""
+        with open(REPO_ROOT / "clients/voice_companion/profiles/mai.json", encoding="utf-8") as f:
+            mai_cfg = json.load(f)
+        web_cfg = mai_cfg.get("web") or {}
+        assert web_cfg.get("port") == 8766
+        assert web_cfg.get("host") == "127.0.0.1"
+
+    def test_mai_specific_env_vars_override_generic_vars(self, monkeypatch):
+        """4. 環境變數優先級：MAI_* > 通用 FISH_*/LLM_* > profile JSON 預設"""
+        with open(REPO_ROOT / "clients/voice_companion/profiles/mai.json", encoding="utf-8") as f:
+            base_cfg = json.load(f)
+
+        monkeypatch.setenv("FISH_AUDIO_API_KEY", "generic_fish_key")
+        monkeypatch.setenv("MAI_FISH_API_KEY", "mai_specific_fish_key")
+        monkeypatch.setenv("LLM_API_KEY", "generic_llm_key")
+        monkeypatch.setenv("MAI_LLM_API_KEY", "mai_specific_llm_key")
+        monkeypatch.setenv("MAI_FISH_VOICE_ID", "mai_voice_uuid_xyz")
+        monkeypatch.setenv("MAI_PORT", "8999")
+
+        resolved = resolve_config(base_cfg)
+        assert resolved["fish_audio"]["api_key"] == "mai_specific_fish_key"
+        assert resolved["llm"]["api_key"] == "mai_specific_llm_key"
+        assert resolved["fish_audio"]["voice_id"] == "mai_voice_uuid_xyz"
+        assert resolved["web"]["port"] == 8999
+
+    def test_mai_does_not_read_akane_memory_namespace(self, tmp_path, monkeypatch):
+        """5. 麻衣服務隔離：SAGE 記憶庫檢索嚴格限定 agent_mai 命名空間，不讀取 agent_akane"""
+        data_dir = tmp_path / "data"
+        akane_mem = data_dir / "memory" / "agent_akane"
+        akane_mem.mkdir(parents=True, exist_ok=True)
+        (akane_mem / "graph.sqlite").write_text("fake akane db")
+
+        monkeypatch.setattr("src.paths.data_root", lambda: data_dir)
+
+        brain_mai = AkaneVoiceBrain(agent_id="agent_mai")
+        assert brain_mai.agent_id == "agent_mai"
+        # 麻衣檢索記憶時不應碰茜的 db（mai 目錄不存在時 fail-silent 回傳 None）
+        retrieved = brain_mai.memory_retriever("Bryan")
+        assert retrieved is None
+
+        # 驗證自定義檢索鉤子時 agent_id 正確傳遞為 agent_mai
+        queried_agents = []
+
+        def custom_retriever(q, agent_id="agent_mai"):
+            queried_agents.append(agent_id)
+            return None
+
+        brain_mai_custom = AkaneVoiceBrain(
+            agent_id="agent_mai",
+            memory_retriever=lambda q: custom_retriever(q, agent_id="agent_mai"),
+        )
+        brain_mai_custom._build_messages("你好")
+        assert "agent_mai" in queried_agents
+        assert "agent_akane" not in queried_agents
+
+    def test_web_ui_uses_configured_companion_display_name(self):
+        """6. Web 前端 UI 角色名稱動態替換為麻衣"""
+        html_mai = render_html_page(display_name="櫻島麻衣", short_name="麻衣")
+        assert "<title>櫻島麻衣 · 語音伴侶</title>" in html_mai
+        assert "<header>櫻島麻衣<small>Web 語音伴侶" in html_mai
+        assert 'placeholder="打字給麻衣…（Enter 送出）"' in html_mai
+        assert 'var COMPANION_DISPLAY_NAME = "櫻島麻衣";' in html_mai
+        assert 'var COMPANION_SHORT_NAME = "麻衣";' in html_mai
+
+        # 預設茜頁面維持相容
+        html_akane = render_html_page("黑川茜", "茜")
+        assert "<title>黑川茜 · 語音伴侶</title>" in html_akane
+        assert 'placeholder="打字給茜…（Enter 送出）"' in html_akane
+
+    def test_web_ui_escapes_companion_display_name(self):
+        """7. Web UI 角色名稱 XSS 安全性：HTML 與 JS 字串皆正確轉義"""
+        import html
+        bad_display = "<script>alert('xss')</script>"
+        bad_short = '"><b onmouseover=alert(1)>'
+        rendered = render_html_page(display_name=bad_display, short_name=bad_short)
+        assert "<script>alert('xss')</script>" not in rendered
+        assert html.escape(bad_display) in rendered
+        assert "<b onmouseover" not in rendered
+        assert html.escape(bad_short) in rendered
+
+    def test_web_server_config_argument_loads_selected_profile(self):
+        """8. Web server 支援載入指定的設定檔並正確初始化組件"""
+        mai_cfg = load_config("clients/voice_companion/profiles/mai.json")
+        assert mai_cfg["companion"]["id"] == "agent_mai"
+
+        fake_asr = FakeWebASR("")
+        fake_streamer = lambda sink: FakeWebStreamer(sink=sink)
+        app = build_app(
+            mai_cfg,
+            brain=AkaneVoiceBrain(agent_id="agent_mai", llm_stream=lambda msgs: iter(["回覆"])),
+            refiner=fake_asr,
+            asr=fake_asr,
+            streamer_factory=fake_streamer,
+        )
+        assert app[VC_CONFIG_KEY]["companion"]["id"] == "agent_mai"
+        assert app[VC_BRAIN_KEY].agent_id == "agent_mai"
+
+        async def _run():
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                resp = await client.get("/")
+                assert resp.status == 200
+                text = await resp.text()
+                assert "櫻島麻衣" in text
+                assert "麻衣" in text
+            finally:
+                await client.close()
+
+        asyncio.run(_run())
+
+    def test_akane_and_mai_configs_have_distinct_ports_and_agent_ids(self):
+        """9. 雙常駐防呆：茜與麻衣的設定擁有完全獨立的 Port、Agent ID 與 Persona 檔案"""
+        akane_cfg = load_config()
+        mai_cfg = load_config("clients/voice_companion/profiles/mai.json")
+
+        assert akane_cfg["web"]["port"] == 8765
+        assert mai_cfg["web"]["port"] == 8766
+        assert akane_cfg["web"]["port"] != mai_cfg["web"]["port"]
+
+        assert akane_cfg["companion"]["id"] == "agent_akane"
+        assert mai_cfg["companion"]["id"] == "agent_mai"
+        assert akane_cfg["companion"]["id"] != mai_cfg["companion"]["id"]
+
+        assert akane_cfg["companion"]["persona_file"] != mai_cfg["companion"]["persona_file"]
+        assert akane_cfg["dialogue"]["wake_words"] != mai_cfg["dialogue"]["wake_words"]
+
+    def test_mai_websocket_transcript_event_role_is_mai(self):
+        """10. WebSocket transcript 事件身分：麻衣送出 role: mai 而非 akane"""
+        mai_cfg = load_config("clients/voice_companion/profiles/mai.json")
+        app = build_app(
+            mai_cfg,
+            brain=AkaneVoiceBrain(agent_id="agent_mai", llm_stream=lambda msgs: iter(["麻衣回答。"])),
+            refiner=FakeWebASR(""),
+            asr=FakeWebASR(""),
+            streamer_factory=lambda sink: FakeWebStreamer(sink=sink),
+        )
+
+        async def _run():
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                ws = await client.ws_connect("/ws")
+                await ws.send_json({"type": "text", "text": "你好麻衣"})
+                events = []
+                while True:
+                    msg = await ws.receive(timeout=3)
+                    if msg.type == WSMsgType.TEXT:
+                        data = json.loads(msg.data)
+                        events.append(data)
+                        if data.get("type") == "state" and data.get("state") == "IDLE":
+                            break
+                    elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
+                        break
+                await ws.close()
+                transcripts = [e for e in events if e.get("type") == "transcript" and e.get("role") == "mai"]
+                assert len(transcripts) == 1
+                assert transcripts[0]["text"] == "麻衣回答。"
+            finally:
+                await client.close()
+
+        asyncio.run(_run())

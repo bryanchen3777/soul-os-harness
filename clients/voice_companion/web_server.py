@@ -43,7 +43,7 @@ try:  # pragma: no cover - 導入路徑相容
     from .fish_tts_live import DEFAULT_LIVE_ENDPOINT, FishTTSLiveStreamer
     from .stt_service import FishASRService, pcm16_to_wav_bytes
     from .vad_listener import VoiceActivityDetector
-    from .web_ui import HTML_PAGE
+    from .web_ui import HTML_PAGE, render_html_page
 except ImportError:  # pragma: no cover
     from akane_voice_brain import AkaneVoiceBrain
     from asr_refiner import AsrRefiner
@@ -51,7 +51,7 @@ except ImportError:  # pragma: no cover
     from fish_tts_live import DEFAULT_LIVE_ENDPOINT, FishTTSLiveStreamer
     from stt_service import FishASRService, pcm16_to_wav_bytes
     from vad_listener import VoiceActivityDetector
-    from web_ui import HTML_PAGE
+    from web_ui import HTML_PAGE, render_html_page
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
@@ -75,8 +75,13 @@ VC_STREAMER_FACTORY_KEY = web.AppKey("vc_streamer_factory", object)
 
 def load_config(path: Optional[str] = None) -> dict:
     """載入客戶端 config.json（預設為模組旁 config.json）。"""
-    p = Path(path) if path else CONFIG_PATH
-    with open(p, encoding="utf-8") as f:
+    if path:
+        p = Path(path)
+        if not p.is_file() and (REPO_ROOT / p).is_file():
+            p = REPO_ROOT / p
+    else:
+        p = CONFIG_PATH
+    with open(p, encoding="utf-8-sig") as f:
         return json.load(f)
 
 
@@ -528,7 +533,9 @@ class WebSession:
                     return
                 reply = (reply or "").strip()
                 if reply:
-                    await self._send_json({"type": "transcript", "role": "akane", "text": reply})
+                    companion_id = (self._config.get("companion") or {}).get("id", "agent_akane")
+                    role_name = companion_id.replace("agent_", "")
+                    await self._send_json({"type": "transcript", "role": role_name, "text": reply})
                     if task_gen == self._generation:  # 本世代正常結束 → 寫入對話記憶（被 barge-in 打斷的半截回覆不入記憶）
                         self._history.append({"role": "user", "content": user_text})
                         self._history.append({"role": "assistant", "content": reply})
@@ -611,7 +618,13 @@ class WebSession:
 # ─────────────────────────────────────────────────────────────
 
 async def index_handler(request: web.Request) -> web.Response:
-    return web.Response(text=HTML_PAGE, content_type="text/html", charset="utf-8")
+    app = request.app
+    cfg = app.get(VC_CONFIG_KEY) or {}
+    companion = cfg.get("companion") or {}
+    display_name = companion.get("display_name", "黑川茜")
+    short_name = companion.get("short_name", "茜")
+    content = render_html_page(display_name=display_name, short_name=short_name)
+    return web.Response(text=content, content_type="text/html", charset="utf-8")
 
 
 def is_loopback_host(host: str) -> bool:
@@ -627,6 +640,17 @@ def validate_host_and_token(host: str, token: Optional[str] = None) -> None:
             raise RuntimeError(
                 f"Binding to non-loopback host '{host}' requires VOICE_WEB_TOKEN to be set."
             )
+
+
+def check_port_available(host: str, port: int) -> None:
+    """檢查指定 host 與 port 是否已被佔用。若已佔用則拋出 RuntimeError。"""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+        except OSError as exc:
+            raise RuntimeError(f"Port {port} on {host} is already in use: {exc}") from exc
 
 
 async def websocket_handler(request: web.Request) -> web.StreamResponse:
@@ -844,10 +868,16 @@ def build_app(
     """
     import copy
     cfg = copy.deepcopy(config) if config is not None else load_config()
+    companion = cfg.get("companion") or {}
+    agent_id = companion.get("id", "agent_akane")
+    persona_rel = companion.get("persona_file", "personas/agent_akane.md")
+    persona_path = REPO_ROOT / persona_rel
+
     if brain is None:
         brain = AkaneVoiceBrain(
             config=cfg,
-            persona_file=str(REPO_ROOT / "personas" / "agent_akane.md"),
+            persona_file=str(persona_path),
+            agent_id=agent_id,
         )
     if refiner is None:
         refiner = AsrRefiner.from_config(cfg)
@@ -872,9 +902,10 @@ def build_app(
 # ─────────────────────────────────────────────────────────────
 
 def main(argv: Optional[list] = None) -> int:
-    """python -m clients.voice_companion.web_server [--port N] [--https]
+    """python -m clients.voice_companion.web_server [--port N] [--https] [--config PATH]
 
     啟動時套用 env_config.resolve_config（.env + 環境變數覆寫，api_key 只來自環境）。
+    --config PATH：載入指定設定檔（如 profiles/mai.json）。
     --https（或 config web.https=true）：HTTPS 模式 — 檢查/產生自簽憑證
     （clients/voice_companion/certs/，已 gitignore）並以 https:// 提供服務。
     """
@@ -885,13 +916,18 @@ def main(argv: Optional[list] = None) -> int:
             _stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+    config_path = None
+    if "--config" in args:
+        i = args.index("--config")
+        if i + 1 < len(args):
+            config_path = args[i + 1]
+    cfg = load_config(config_path)
+    cfg = resolve_config(cfg)
     port = None
     if "--port" in args:
         i = args.index("--port")
         if i + 1 < len(args):
             port = int(args[i + 1])
-    cfg = load_config()
-    cfg = resolve_config(cfg)
     if "--tts" in args:  # VC-1.6 音源實驗切換：--tts rest（REST mp3 解碼）／預設 live（官方 SDK）
         i = args.index("--tts")
         if i + 1 < len(args):
@@ -906,6 +942,7 @@ def main(argv: Optional[list] = None) -> int:
     token = web_cfg.get("token") or os.environ.get("VOICE_WEB_TOKEN")
     validate_host_and_token(host, token)
     port = port or int(web_cfg.get("port", 8765))
+    check_port_available(host, port)
     https = "--https" in args or bool(web_cfg.get("https", False))
     ssl_ctx = None
     if https:
@@ -914,7 +951,10 @@ def main(argv: Optional[list] = None) -> int:
             make_self_signed_cert(CERT_PATH, KEY_PATH)
         ssl_ctx = build_ssl_context(CERT_PATH, KEY_PATH)
     scheme = "https" if https else "http"
-    print("黑川茜 Web 語音伴侶已啟動（VC-1.5）— Ctrl-C 結束")
+    companion = cfg.get("companion") or {}
+    display_name = companion.get("display_name", "黑川茜")
+    agent_id = companion.get("id", "agent_akane")
+    print(f"[{display_name} ({agent_id})] Web 語音伴侶已啟動（VC-2.4）— Ctrl-C 結束")
     if https:
         print(HTTPS_SELF_SIGNED_HINT)
     for url in lan_urls(port, scheme=scheme):

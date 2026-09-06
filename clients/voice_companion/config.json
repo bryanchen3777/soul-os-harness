@@ -1,4 +1,10 @@
 {
+  "companion": {
+    "id": "agent_akane",
+    "display_name": "黑川茜",
+    "short_name": "茜",
+    "persona_file": "personas/agent_akane.md"
+  },
   "fish_audio": {
     "api_key": "",
     "voice_id": "4c11d21b14284d428074f76a1cf32298",

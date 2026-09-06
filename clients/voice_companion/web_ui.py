@@ -14,12 +14,15 @@ web_ui.py — 黑川茜 Web 語音伴侶前端（VC-1.3；VC-1.4 可視化 + 失
 #errorBox（錯誤訊息區）、#meterBar/#meterFill/#meterLabel（輸入音量表）。
 """
 
-HTML_PAGE = """<!DOCTYPE html>
+import html
+import json
+
+_HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>黑川茜 · 語音伴侶</title>
+<title>__COMPANION_DISPLAY_NAME__ · 語音伴侶</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -58,7 +61,7 @@ HTML_PAGE = """<!DOCTYPE html>
   }
   .msg { max-width: 85%; padding: 8px 12px; border-radius: 12px; white-space: pre-wrap; word-break: break-word; }
   .msg.user { align-self: flex-end; background: #2d3a56; }
-  .msg.akane { align-self: flex-start; background: #3a2d52; }
+  .msg.akane, .msg.mai, .msg.companion, .msg.assistant { align-self: flex-start; background: #3a2d52; }
   .msg .who { font-size: 11px; opacity: 0.65; margin-bottom: 2px; }
   #typeRow { display: flex; gap: 8px; width: min(640px, 96vw); }
   #textInput { flex: 1; padding: 10px 12px; border-radius: 10px; border: 1px solid #3a3a4e; background: #1e1e2a; color: #e8e6f0; font-size: 14px; }
@@ -84,7 +87,7 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body>
   <!-- 提示：若長時間無反應，請檢查 Fish API 額度（402：Insufficient API credit）。ASR 與 TTS 共用同一筆額度 -->
-  <header>黑川茜<small>Web 語音伴侶 · VC-1.3</small></header>
+  <header>__COMPANION_DISPLAY_NAME__<small>Web 語音伴侶 · VC-2.4</small></header>
   <div id="statusBar">
     <span id="statusDot" class="dot idle"></span>
     <span id="statusText">🟢 聆聽</span>
@@ -100,13 +103,15 @@ HTML_PAGE = """<!DOCTYPE html>
   </div>
   <div id="chat"></div>
   <div id="typeRow">
-    <input id="textInput" placeholder="打字給茜…（Enter 送出）" autocomplete="off">
+    <input id="textInput" placeholder="打字給__COMPANION_SHORT_NAME__…（Enter 送出）" autocomplete="off">
     <button id="sendText">送出</button>
   </div>
   <div id="errorBox"><span id="errorText"></span><button id="errorDismiss" title="關閉">✕</button></div>
 <script>
 (function () {
   "use strict";
+  var COMPANION_DISPLAY_NAME = __COMPANION_DISPLAY_NAME_JS__;
+  var COMPANION_SHORT_NAME = __COMPANION_SHORT_NAME_JS__;
   var state = "IDLE";
   var ws = null, audioCtx = null, micStream = null;
   var recNode = null, playNode = null, micSource = null, analyser = null;
@@ -141,7 +146,7 @@ HTML_PAGE = """<!DOCTYPE html>
     }
     var dot = $("statusDot"), txt = $("statusText");
     dot.className = "dot " + (s === "SPEAKING" ? "speaking" : s === "THINKING" ? "thinking" : s === "LISTENING" ? "listening" : "idle");
-    txt.textContent = s === "SPEAKING" ? "🔴 茜說話中…（開口可打斷）" : s === "THINKING" ? "🟡 思考中…" : s === "LISTENING" ? "🟢 聆聽中…" : "🟢 聆聽";
+    txt.textContent = s === "SPEAKING" ? ("🔴 " + COMPANION_SHORT_NAME + "說話中…（開口可打斷）") : s === "THINKING" ? "🟡 思考中…" : s === "LISTENING" ? "🟢 聆聽中…" : "🟢 聆聽";
     var btn = $("micBtn");
     if (s === "LISTENING") { btn.classList.add("hold"); } else { btn.classList.remove("hold"); }
     // 注意：不在此清空環形緩衝區 —— IDLE 不代表瀏覽器已播完（伺服器 send 完即回 IDLE），
@@ -150,7 +155,8 @@ HTML_PAGE = """<!DOCTYPE html>
   function addMsg(role, text) {
     var chat = $("chat"), div = document.createElement("div");
     div.className = "msg " + role;
-    div.innerHTML = '<div class="who">' + (role === "user" ? "你" : "茜") + "</div>" + escapeHtml(text);
+    var who = (role === "user" ? "你" : COMPANION_SHORT_NAME);
+    div.innerHTML = '<div class="who">' + escapeHtml(who) + '</div>' + escapeHtml(text);
     chat.appendChild(div); chat.scrollTop = chat.scrollHeight;
   }
   function escapeHtml(t) {
@@ -688,8 +694,9 @@ HTML_PAGE = """<!DOCTYPE html>
 
   // VC-1.5：不安全來源常駐提示（getUserMedia 只在 HTTPS 或 localhost 可用）
   if (window.isSecureContext === false) {
+    var p = location.port || "8765";
     persistentError(
-      "⚠️ 麥克風需要 HTTPS 或 localhost 才可使用。請改開 https://" + location.hostname + ":8765（接受憑證警告）或 http://127.0.0.1:8765"
+      "⚠️ 麥克風需要 HTTPS 或 localhost 才可使用。請改開 https://" + location.hostname + ":" + p + "（接受憑證警告）或 http://127.0.0.1:" + p
     );
   }
 })();
@@ -697,3 +704,22 @@ HTML_PAGE = """<!DOCTYPE html>
 </body>
 </html>
 """
+
+
+def render_html_page(display_name: str = "黑川茜", short_name: str = "茜") -> str:
+    """Render the web UI HTML with properly escaped companion display and short names."""
+    esc_disp = html.escape(display_name)
+    esc_short = html.escape(short_name)
+    # JS 字串安全轉義：防止 </script> 提早閉合與 inline script 注入
+    js_disp = json.dumps(display_name, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
+    js_short = json.dumps(short_name, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
+    return (
+        _HTML_TEMPLATE
+        .replace("__COMPANION_DISPLAY_NAME__", esc_disp)
+        .replace("__COMPANION_SHORT_NAME__", esc_short)
+        .replace("__COMPANION_DISPLAY_NAME_JS__", js_disp)
+        .replace("__COMPANION_SHORT_NAME_JS__", js_short)
+    )
+
+
+HTML_PAGE = render_html_page("黑川茜", "茜")
