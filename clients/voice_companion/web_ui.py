@@ -111,7 +111,7 @@ HTML_PAGE = """<!DOCTYPE html>
   var ws = null, audioCtx = null, micStream = null;
   var recNode = null, playNode = null, micSource = null, analyser = null;
   var playQueue = [];                 // Float32 播放佇列（Int16 → /32768）
-  var MAX_PLAY_BUFFER = 8820;         // 200ms @44.1k（超過即丟棄防堆積）
+  var MAX_PLAY_BUFFER = 44100 * 30;      // 30s @44.1k：live 合成速度快於即時播放，200ms 上限會丟掉長句尾段
   var pttActive = false, autoSpeaking = false, autoSilenceMs = 0;
   var speakEnergyMs = 0;
   var VAD_THRESHOLD = 0.02, VAD_SILENCE_MS = 500, BARGE_MS = 150;
