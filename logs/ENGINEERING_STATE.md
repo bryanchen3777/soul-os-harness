@@ -331,7 +331,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `8b99f7c` (feat(vc-2.3-05): add lan security token authentication and loopback default host)
+- Current HEAD: `ed88fb6` (docs: register VC-2/2.3 batch CLOSED (8b99f7c))
+- VC-2/2.3 register commit: `ed88fb6` (docs: register VC-2/2.3 batch CLOSED; **Current HEAD**)
+- VC-2/2.3 batch final commit: `8b99f7c` (feat(vc-2.3-05): lan security; **distinct from Current HEAD**)
 - VC-2/2.3 batch final commit: `8b99f7c` (VC-2.3-05 lan security; **Current HEAD** — VC-2 P0-P2 + 2.3 批次結案）
 - VC-1 boot autostart register commit: `e3e195e` (docs: register VC-1 boot autostart; **Current HEAD**)
 - VC-1.6 batch register commit: `a30ffa5` (docs: register VC-1.6 audio batch CLOSED; **distinct from Current HEAD**)
