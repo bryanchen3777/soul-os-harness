@@ -8,11 +8,12 @@ env_config.py — VC-1 客戶端執行期配置解析（env 覆寫 + .env 載入
 解析順序：os.environ > config.json 預設值。
 - 啟動時若 clients/voice_companion/.env 存在則載入到 os.environ（不覆蓋既有的環境變數）。
 - 環境變數覆寫鍵（對應 config 路徑）：
-  FISH_API_KEY  → fish_audio.api_key
-  FISH_VOICE_ID → fish_audio.voice_id
-  LLM_BASE_URL  → llm.endpoint
-  LLM_API_KEY   → llm.api_key
-  LLM_MODEL     → llm.model
+  FISH_API_KEY    → fish_audio.api_key
+  FISH_VOICE_ID   → fish_audio.voice_id
+  LLM_BASE_URL    → llm.endpoint
+  LLM_API_KEY     → llm.api_key（優先）
+  OLLAMA_API_KEY  → llm.api_key（生產慣例 fallback，LLM_API_KEY 優先）
+  LLM_MODEL       → llm.model
 """
 
 from __future__ import annotations
@@ -23,11 +24,12 @@ from typing import Optional
 
 ENV_FILE_NAME = ".env"
 
-# (環境變數名, config 區段, config 鍵)
+# (環境變數名, config 區段, config 鍵)；後者覆寫前者，故 LLM_API_KEY 排在 OLLAMA_API_KEY 之後（顯式鍵優先）
 ENV_OVERRIDE_MAP: list[tuple[str, str, str]] = [
     ("FISH_API_KEY", "fish_audio", "api_key"),
     ("FISH_VOICE_ID", "fish_audio", "voice_id"),
     ("LLM_BASE_URL", "llm", "endpoint"),
+    ("OLLAMA_API_KEY", "llm", "api_key"),
     ("LLM_API_KEY", "llm", "api_key"),
     ("LLM_MODEL", "llm", "model"),
 ]

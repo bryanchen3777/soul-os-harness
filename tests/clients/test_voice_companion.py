@@ -831,6 +831,17 @@ class TestEnvConfig:
         assert resolved["fish_audio"]["model"] == "s2.1-pro-free"     # config 默認保留
         assert resolved["llm"]["model"] == "deepseek-v4-flash:0731"   # config 默認保留
 
+    def test_ollama_api_key_fallback_and_precedence(self, tmp_path, monkeypatch):
+        """OLLAMA_API_KEY（生產慣例）作為 llm.api_key fallback；LLM_API_KEY 設定時優先"""
+        for k in ("FISH_API_KEY", "FISH_VOICE_ID", "LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY", "OLLAMA_API_KEY"):
+            monkeypatch.delenv(k, raising=False)
+        missing = tmp_path / "missing.env"   # 隔離真實 .env（不載入）
+        cfg = {"llm": {"endpoint": "https://ollama.com/v1", "model": "m", "api_key": ""}}
+        monkeypatch.setenv("OLLAMA_API_KEY", "ollama-key")
+        assert resolve_config(dict(cfg), env_file=str(missing))["llm"]["api_key"] == "ollama-key"   # fallback 生效
+        monkeypatch.setenv("LLM_API_KEY", "explicit-key")
+        assert resolve_config(dict(cfg), env_file=str(missing))["llm"]["api_key"] == "explicit-key" # 顯式鍵優先
+
 
 # ─────────────────────────────────────────────────────────────
 # Test 6：Web 語音伴侶伺服器（VC-1.3，全離線注入 fake，0 網路）
