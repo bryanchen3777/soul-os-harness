@@ -331,7 +331,8 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- Current HEAD: `e3e195e` (docs: register VC-1 boot autostart (task VC1_AkaneVoiceCompanion, pythonw https 8765))
+- Current HEAD: `8b99f7c` (feat(vc-2.3-05): add lan security token authentication and loopback default host)
+- VC-2/2.3 batch final commit: `8b99f7c` (VC-2.3-05 lan security; **Current HEAD** — VC-2 P0-P2 + 2.3 批次結案）
 - VC-1 boot autostart register commit: `e3e195e` (docs: register VC-1 boot autostart; **Current HEAD**)
 - VC-1.6 batch register commit: `a30ffa5` (docs: register VC-1.6 audio batch CLOSED; **distinct from Current HEAD**)
 - VC-1.6 batch register commit: `a30ffa5` (docs: register VC-1.6 audio batch CLOSED; **Current HEAD**)
@@ -1564,5 +1565,7 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09-06 (VC-1.6 系列) | **語音音訊全面修復批次 CLOSED（暫時結案，Owner 實機確認「目前表現很好」）**（主大腦兜底直接實作——當日 OpenCode Go 週配額 100% 致三批 developer subagent 連環死亡）。**根因鏈與修復**：(1) websocket-client 傳輸被 Fish WS 閘道拒收 → `fish_tts_live` 真實層換官方 fish-audio-sdk（`984f51c`，實測 135KB PCM）；(2) 長句怪聲/砍尾 → 明確 44100＋瀏覽器自動重採樣（`f9e758b`）、IDLE 不再清播放佇列＋上限 200ms→30s（`a3d95b8`+`039f476`）；(3) 隔離實驗 REST 音源模式（`3ec82a9`，--tts rest，mp3→miniaudio 44100，實測 255KB/2.9s）；(4) 付費模型 `s2.1-pro`（`0475ea3`，Owner 拍板去 -free）；(5) 每連線對話記憶 10 輪（`c4153b5`——修「對話難連貫」：原本每回合失憶）；(6) 動作/表情（微笑/嘆氣）整段剝離不再被 TTS 唸出（`2c854d4`）；(7) auto-VAD 反回授（`5fecf34`+`12f216f`：SPEAKING＋1.8s holdoff 完全鎖、連續 260ms 才觸發——修「茜講話被自己聲音打斷」）。伺服器即時日誌（python -u）常駐。**驗收**：74 passed（主大腦複跑）；決勝門真實合成 >0 bytes；Owner 實機確認語音+auto-VAD+對話連貫 OK。HEAD == origin/main == `12f216f`。0 src/、0 Frozen、0 金鑰。REST/live 可隨時 `--tts rest|live` 切換。 | DSH | VC-1.6 |
 
 | 2026-09-06 (VC-1 部署) | **開機背景自動執行上線**：Scheduled Task \VC1_AkaneVoiceCompanion（LogonTrigger / InteractiveToken / LeastPrivilege / IgnoreNew）→ pythonw.exe -u -m clients.voice_companion.web_server --https（WorkingDirectory=repo，live＋s2.1-pro，https 8765）。對齊 Soul OS 的 SoulOS_Watchdog 排程模式。實測 task run → pythonw PID 2536 https 200；雙開由 IgnoreNew 防護；診斷 log 需求時可手動 python -u 執行。| DSH | VC-1 |
+
+| 2026-09-06 (VC-2/2.3) | **VC-2（P0-P2）＋ VC-2.3 五大工業級升級批次 CLOSED**（Antigravity 執行；5 commits：e000bbe VC-2.3-04 AudioWorklet/零複製 RingBuffer、aee6471 VC-2.3-03 背壓 maxsize256＋drain 防吞尾、522e99b VC-2.3-05 64KB frame/30s 熔斷/延遲遙測、23d3f1e VC-2.3-01 終端 VAD 非阻塞 worker、8b99f7c VC-2.3-05 loopback 預設＋VOICE_WEB_TOKEN 鑑權＋Origin 白名單；報告之 a42a037 hash 不存在於歷史——02 取消/隔離內容由 112 測試涵蓋、疑併入上述 commits）。另含 VC-2 P0-P2（StreamingVoiceSanitizer/ASR 放寬/行動重連心跳/預緩衝/SAGE+TA-2 注入，先前未 commit 已整併）。驗收：112/112 全綠（主大腦複跑）＋關鍵功能 grep 實證；HEAD==origin/main==8b99f7c（主大腦 push）。0 src/、0 Frozen。維運：排程任務＋Cloudflare Tunnel akane.brynetsolutions.com；web.host 預設改 127.0.0.1（安全迴路）。| DSH | VC-2 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
