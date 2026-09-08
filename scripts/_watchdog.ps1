@@ -1,4 +1,4 @@
-﻿# Soul OS Watchdog (P0-2 升級版)
+# Soul OS Watchdog (P0-2 升級版)
 # - 每 5 分鐘被 Task Scheduler 叫一次
 # - 檢查 port 8000 是不是還 listen + run_server.py 還活著
 # - 死了就呼叫 Plan A launcher 拉起來
@@ -20,6 +20,16 @@ $stateDir = Join-Path $harness 'data\state'
 $lastObservedHashFile = Join-Path $stateDir '_last_observed_hash.txt'
 $N_CAP = 10
 $TRIAL_TARGET = 98
+# 方案 A (2026-09-08, Bry 拍板): 啟動窗口保護
+# 伺服器啟動需 30s+ (載入 10 個 Telegram bot + 模型), watchdog 在啟動窗口內
+# 不應判定崩潰。距上次 Plan A 啟動 < STARTUP_WINDOW_SECONDS 時, port_listen=False
+# 只記 WARN 不 restart (避免啟動初期誤判 → 反覆拉新實例 → 雙實例 → getUpdates 409
+# 風暴 → httpx socket 並發損壞 → Windows IOCP access violation)。
+$STARTUP_WINDOW_SECONDS = 90
+# 方案 B (2026-09-08, Bry 拍板): Plan A 前殺進程樹 + 等 port 釋放
+# 杜絕「舊實例未死透 + 新實例啟動」的雙實例窗口。
+$PORT_RELEASE_WAIT_SECONDS = 30
+$lastLaunchFile = Join-Path $stateDir 'watchdog_last_launch.txt'
 
 # === Logging (放最前面,讓其他 function 可以呼叫) ===
 
@@ -281,6 +291,26 @@ if ($healthy) {
     exit 0
 }
 
+# 5.5 啟動窗口保護 (方案 A, 2026-09-08): 距上次 Plan A 啟動 < 90s 視為啟動窗口,
+# 窗口內 port_listen=False 不判定崩潰 (伺服器載入 10 bot 需 30s+), 只 WARN 不 restart。
+# 基準 = 上次 Plan A 啟動時間 (watchdog_last_launch.txt), 首次無檔案 → 不進窗口保護。
+$lastLaunchTs = $null
+if (Test-Path $lastLaunchFile) {
+    try {
+        $lastLaunchTs = [datetime]::ParseExact(
+            ([System.IO.File]::ReadAllText($lastLaunchFile, [System.Text.Encoding]::UTF8)).Trim(),
+            'yyyy-MM-ddTHH:mm:ss', $null)
+    } catch { $lastLaunchTs = $null }
+}
+if ($null -ne $lastLaunchTs) {
+    $sinceLaunchSec = [int]((Get-Date) - $lastLaunchTs).TotalSeconds
+    if ($sinceLaunchSec -lt $STARTUP_WINDOW_SECONDS) {
+        Write-Counter-Atomic $counterFile $counter
+        Log-Watch "WARN  post-$shortHash startup window (${sinceLaunchSec}s < ${STARTUP_WINDOW_SECONDS}s since last launch) - port not up yet, skip restart"
+        exit 0
+    }
+}
+
 # 6. 不健康: N≤10 cap 檢查 (P0-2 Bry 拍板)
 if ($counter.n_restarts -ge $N_CAP) {
     Write-Counter-Atomic $counterFile $counter
@@ -294,14 +324,33 @@ $counter.last_update_ts = Get-Date -Format "yyyy-MM-ddTHH:mm:ss"
 Write-Counter-Atomic $counterFile $counter
 Log-Watch "WARN  post-$shortHash N=$($counter.n_restarts)/$N_CAP trial=$($counter.trial_count)/$TRIAL_TARGET port_listen=$($null -ne $listener) procs=$($procs.Count) -> restart"
 
-# 8. 砍舊 process
-foreach ($p in $procs) {
+# 8. 砍舊 process 樹 + 等 port 釋放 (方案 B, 2026-09-08):
+#    舊邏輯用 Name='python.exe' 匹配, 對 uv redirector + uv-managed python 進程樹
+#    匹配不上 (watchdog-procs-misjudgment-uv), 導致舊實例沒被殺掉 → 雙實例窗口。
+#    修法: 用 CommandLine like '*run_server.py*' 寬匹配抓所有相關進程 (不限 Name),
+#    殺進程樹, 然後輪詢等 port 8000 釋放 (最多 30s), 確認釋放後才啟動新實例。
+$serverProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like '*run_server.py*' }
+foreach ($p in $serverProcs) {
     try {
         Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
         Log-Watch "  killed PID $($p.ProcessId)"
     } catch {}
 }
-Start-Sleep -Seconds 4
+# 等 port 釋放 (最多 PORT_RELEASE_WAIT_SECONDS 秒, 每 1s 檢查一次)
+$portReleased = $false
+$waitSec = 0
+for ($i = 0; $i -lt $PORT_RELEASE_WAIT_SECONDS; $i++) {
+    Start-Sleep -Seconds 1
+    $waitSec = $i + 1
+    $l = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+    if ($null -eq $l) { $portReleased = $true; break }
+}
+if ($portReleased) {
+    Log-Watch "  port $port released after ${waitSec}s"
+} else {
+    Log-Watch "  WARN port $port still listening after ${PORT_RELEASE_WAIT_SECONDS}s - proceeding anyway"
+}
 
 # 9. 拉 Plan A launcher
 try {
@@ -311,6 +360,15 @@ try {
         -WindowStyle Hidden `
         -PassThru
     Log-Watch "  launched Plan A (PID $($ps.Id))"
+    # 記錄啟動時間 (方案 A 啟動窗口基準, 2026-09-08)
+    try {
+        [System.IO.File]::WriteAllText(
+            $lastLaunchFile,
+            (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'),
+            [System.Text.Encoding]::UTF8)
+    } catch {
+        Log-Watch "  WARN writing last_launch timestamp: $_"
+    }
 } catch {
     Log-Watch "  ERROR launching Plan A: $_"
 }
