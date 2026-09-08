@@ -24,6 +24,7 @@ import os
 from typing import Callable, Awaitable, Optional
 
 from telegram import Update
+from telegram.error import Conflict, TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -32,6 +33,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.request import HTTPXRequest
 
 from .base import ChannelAdapter, OnMessageCallback
 # TTS 全域開關 (Bry 派工 2026-08-15): /tts on|off 切換是否使用 TTS
@@ -103,6 +105,8 @@ class TelegramAdapter(ChannelAdapter):
         self._tokens = tokens or _load_tokens()
         self._apps: dict[str, Application] = {}
         self._on_message: Optional[OnMessageCallback] = None
+        # 方案 C (2026-09-08): 409 Conflict 重試計數, ≥3 次 fail-closed 停止該 bot polling
+        self._conflict_counts: dict[str, int] = {}
 
     def _make_handler(self, agent_id: str):
         """每個 bot 一個 handler，closure 帶 agent_id。"""
@@ -183,7 +187,16 @@ class TelegramAdapter(ChannelAdapter):
         """啟動十個 bot 開始 polling（AGENT_ENV_MAP 列出多少就多少）。"""
         self._on_message = on_message
         for agent_id, token in self._tokens.items():
-            app = ApplicationBuilder().token(token).build()
+            # 方案 D (2026-09-08): 限制 get_updates 連接池大小, 防極端並發下
+            # httpx/httpcore 連接池過載損壞 Windows IOCP (crash root cause 2026-09-08)
+            app = (
+                ApplicationBuilder()
+                .token(token)
+                .get_updates_request(
+                    HTTPXRequest(connection_pool_size=5, pool_timeout=1.0)
+                )
+                .build()
+            )
             # TTS 開關指令（Bry 派工 2026-08-15）：/tts on|off
             app.add_handler(
                 CommandHandler("tts", self._make_tts_command_handler(agent_id))
@@ -198,11 +211,46 @@ class TelegramAdapter(ChannelAdapter):
 
             await app.initialize()
             await app.start()
-            await app.updater.start_polling()
+            # 方案 C (2026-09-08): 409 Conflict 重試限制 — error_callback 檢測
+            # Conflict 計數, ≥3 次 fail-closed 停止該 bot polling, 避免 ptb
+            # network_retry_loop (max_retries=-1 無限重試) 重試風暴打崩 IOCP
+            await app.updater.start_polling(
+                error_callback=self._make_error_callback(agent_id)
+            )
             logger.info(
                 f"[TG:{agent_id}] polling started "
                 f"(token={token[:8]}...)"
             )
+
+    def _make_error_callback(self, agent_id: str):
+        """方案 C (2026-09-08): 409 Conflict 重試限制。
+
+        ptb 的 network_retry_loop 對 polling 用 max_retries=-1 (無限重試) + interval=0
+        (無退避)。雙實例或 token 衝突時, 每個 bot 的 get_updates 會無限 409 重試,
+        重試風暴 → httpx 連接池過載 → Windows IOCP 損壞 → access violation。
+        此 callback 檢測 Conflict(409) 計數, ≥3 次 fail-closed 停止該 bot polling。
+        error_callback 必須是同步函數 (ptb 文檔明確), 內部用 create_task 調度 stop。
+        """
+        def _on_error(exc: TelegramError) -> None:
+            if not isinstance(exc, Conflict):
+                return
+            count = self._conflict_counts.get(agent_id, 0) + 1
+            self._conflict_counts[agent_id] = count
+            if count >= 3:
+                logger.error(
+                    f"[TG:{agent_id}] 409 Conflict x{count} — fail-closed stopping "
+                    f"polling to prevent retry storm (crash root cause 2026-09-08)"
+                )
+                app = self._apps.get(agent_id)
+                if app is not None:
+                    asyncio.create_task(app.updater.stop())
+                self._conflict_counts[agent_id] = 0
+            else:
+                logger.warning(
+                    f"[TG:{agent_id}] 409 Conflict x{count}/3 — will stop polling "
+                    f"if conflict persists"
+                )
+        return _on_error
 
     async def send(self, agent_id: str, text: str,
                    user_id: "int | str") -> bool:
