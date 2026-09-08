@@ -1,4 +1,4 @@
-# Soul OS Watchdog (P0-2 升級版)
+﻿# Soul OS Watchdog (P0-2 升級版)
 # - 每 5 分鐘被 Task Scheduler 叫一次
 # - 檢查 port 8000 是不是還 listen + run_server.py 還活著
 # - 死了就呼叫 Plan A launcher 拉起來
