@@ -23,6 +23,7 @@ import threading
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -125,6 +126,15 @@ class FakeASRResponse:
 
     def json(self):
         return self._payload
+
+
+# ─────────────────────────────────────────────────────────────
+# VC-2.5：隔離 SessionStore 預設 data_dir，避免測試讀到真實 data/sessions
+# ─────────────────────────────────────────────────────────────
+@pytest.fixture(autouse=True)
+def _isolate_session_store(tmp_path, monkeypatch):
+    import clients.voice_companion.session_store as _ss_mod
+    monkeypatch.setattr(_ss_mod, "_repo_root", lambda: tmp_path)
 
 
 # ─────────────────────────────────────────────────────────────

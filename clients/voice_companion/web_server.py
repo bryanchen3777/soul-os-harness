@@ -542,6 +542,15 @@ class WebSession:
                         cap = self.MAX_HISTORY_TURNS * 2
                         if len(self._history) > cap:
                             self._history = self._history[-cap:]
+                        # VC-2.5：user+assistant 語音回合寫入共享短期會話流
+                        # （與 _history 同語義：僅正常完成入記憶，barge-in/失敗不入）
+                        _ss = getattr(self._brain, "session_store", None)
+                        if _ss is not None:
+                            try:
+                                _ss.append_turn(companion_id, "user_bryan", "user", user_text, "voice")
+                                _ss.append_turn(companion_id, "user_bryan", "assistant", reply, "voice")
+                            except Exception:
+                                pass
                 t_done = time.perf_counter()
                 total_ms = (t_done - t_start) * 1000.0
                 asr_ms = ((t_asr_done - t_start) * 1000.0) if t_asr_done is not None else 0.0

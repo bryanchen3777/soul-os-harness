@@ -39,6 +39,27 @@ from .base import ChannelAdapter, OnMessageCallback
 # TTS 全域開關 (Bry 派工 2026-08-15): /tts on|off 切換是否使用 TTS
 from src.llm.tts_toggle import is_tts_enabled, set_tts_enabled
 
+# VC-2.5：Bryan 的 TG 對話寫入共享短期會話流（SessionStore）
+# Bryan 的 TG user id 見 src/memory/middleware.py L135（TG: 1696287850）
+_BRYAN_TG_USER_ID = 1696287850
+
+
+def _append_session_turn(agent_id: str, role: str, text: str, user_id) -> None:
+    """Bryan 的 TG 回合寫入 SessionStore（fail-silent，0 影響主流程）。"""
+    try:
+        if int(user_id) != _BRYAN_TG_USER_ID:
+            return
+        from clients.voice_companion.session_store import SessionStore
+        full_agent_id = (
+            agent_id if agent_id.startswith("agent_")
+            else f"agent_{agent_id}"
+        )
+        SessionStore().append_turn(
+            full_agent_id, "user_bryan", role, text, "telegram"
+        )
+    except Exception:
+        pass
+
 logger = logging.getLogger("soul_os.channels.telegram")
 
 
@@ -128,6 +149,7 @@ class TelegramAdapter(ChannelAdapter):
                 f"[TG:{agent_id}] recv from {user_id} "
                 f"(@{user.username or '?'}): {text[:50]!r}"
             )
+            _append_session_turn(agent_id, "user", text, user_id)  # VC-2.5
             if self._on_message:
                 # Phase 5d+：typing indicator — 立刻送 typing，然後背景每 4s 重送
                 # 直到 callback 完成。LLM 慢的時候不會讓用戶以為 bot 壞了。
@@ -264,6 +286,7 @@ class TelegramAdapter(ChannelAdapter):
             logger.info(
                 f"[TG:{agent_id}] sent to {user_id}: {text[:50]!r}"
             )
+            _append_session_turn(agent_id, "assistant", text, user_id)  # VC-2.5
             return True
         except Exception as e:
             logger.error(f"[TG:{agent_id}] send error: {e}")

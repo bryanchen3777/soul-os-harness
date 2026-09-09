@@ -21,6 +21,11 @@ import re
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, List, Optional
 
+try:
+    from .session_store import SessionStore
+except ImportError:  # 直接以檔案執行（非套件）時
+    from session_store import SessionStore
+
 # ─────────────────────────────────────────────────────────────
 # Layer 3（現役）Persona 內嵌常數
 # ─────────────────────────────────────────────────────────────
@@ -371,6 +376,7 @@ class AkaneVoiceBrain:
         config: Optional[dict] = None,
         memory_retriever: Optional[Callable[[str], Optional[str]]] = None,
         temporal_provider: Optional[Callable[[], Optional[str]]] = None,
+        session_store: Optional[object] = None,
         agent_id: str = "agent_akane",
     ):
         self.config = config or {}
@@ -398,6 +404,14 @@ class AkaneVoiceBrain:
         else:
             self.temporal_provider = None
 
+        # VC-2.5 跨介面共享短期會話流（可注入；未注入且未停用時預設 SessionStore）
+        if session_store is not None:
+            self.session_store = session_store
+        elif mem_cfg.get("session_store", {}).get("enabled", True):
+            self.session_store = SessionStore()
+        else:
+            self.session_store = None
+
     def system_prompt(self) -> str:
         return self.persona
 
@@ -423,9 +437,24 @@ class AkaneVoiceBrain:
             except Exception:
                 pass
 
+        # 3. 跨介面時空體感（VC-2.5 SessionStore，若有）
+        session_history = None  # None → 回退用傳入 history 參數
+        if self.session_store is not None:
+            try:
+                ctx = self.session_store.get_active_context(self.agent_id, "user_bryan")
+                if ctx["history"] or ctx["phase"] != "NO_TURNS":
+                    sys_parts.append(f"【跨介面時空體感】\n{ctx['anchor']}")
+                    if ctx["history"]:
+                        session_history = ctx["history"]
+            except Exception:
+                pass
+
         full_system = "\n\n".join(sys_parts)
         messages = [{"role": "system", "content": full_system}]
-        messages += list(history or [])
+        if session_history is not None:
+            messages += session_history
+        else:
+            messages += list(history or [])
         messages.append({"role": "user", "content": user_text})
         return messages
 
