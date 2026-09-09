@@ -331,6 +331,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
+- Current HEAD: `471fe26` (docs: register VC-2.5 unified session CLOSED (5e76d0f))
+- VC-2.5 register commit: `471fe26` (docs: register VC-2.5 unified session CLOSED; **Current HEAD**)
+- VC-2.5 implementation commit: `5e76d0f` (feat(vc-2.5): unified cross-interface session store with 4-phase temporal anchor; **distinct from Current HEAD** — VC-2.5 跨介面會話流批次結案）
 - Current HEAD: `dec4271` (docs: register VC-2.4 multi-companion CLOSED (723d577))
 - VC-2.4 register commit: `dec4271` (docs: register VC-2.4 multi-companion CLOSED; **Current HEAD**)
 - VC-2.4 batch final commit: `723d577` (feat(vc-2.4): rem companion profile, port 8767 service, and https support; **distinct from Current HEAD** — VC-2.4 櫻島麻衣＋雷姆多伴侶批次結案）
