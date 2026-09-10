@@ -43,13 +43,95 @@ logger = logging.getLogger("soul_os.sage")
 # 注意：其他 agent 的 sync_turn/post_reply_commit 行為不受影響（回歸測試必跑）。
 NO_DIARY_AGENTS: set[str] = {"agent_ram"}
 
-# EH-3 (Write-Side Assimilation): 句法定義標記 — 使用者本輪文本需含「解釋／定義性」
+# EH-3/3.1 (Write-Side Assimilation): 句法定義標記 — 使用者本輪文本需含「解釋／定義性」
 # 句法才觸發 assimilated 打標。純句法詞, 0 hardcoded tech keywords（無「插電／機器／
 # 科技／電腦／家電」等實體詞 — 打標依據是「定義句的形式」而非「定義了什麼」）。
+# EH-3.1: 移除裸「就是」與簡體「是一个」— 裸「就是」會誤捕「就是想／就是要」等
+# 主觀生命狀態句法（由 _SUBJECTIVE_MODAL_PHRASES 另行排除）；保留「就是個」等
+# 兼完整定義式 marker。
 _ASSIMILATION_SYNTAX_MARKERS: tuple[str, ...] = (
-    "就是", "是個", "是一个", "是一種", "是一种",
-    "用來", "用来", "所謂", "意思是", "指的", "指的是",
+    "就是個", "是個", "是一個", "是一种", "是一種",
+    "用來", "用来", "所謂", "意思是", "指的是", "指的",
 )
+
+# EH-3.1: 主觀生命狀態句法 — 「就是」+ 情態／情緒助詞 = 主觀表述, 非定義句。
+# 「就是想／就要／就會／就愛／就喜歡／就在／就覺得」前一語段的實體 = 主觀主體,
+# 該實體相關 fact 一律不打標（Ex: 「今天就是想休息」→ 今天）。
+_SUBJECTIVE_MODAL_PHRASES: tuple[str, ...] = (
+    "就是想", "就是要", "就是會", "就是愛",
+    "就是喜歡", "就是在", "就是覺得",
+)
+
+# EH-3.1: 人稱代名詞主語精確排除集（exact match, 非 substring）— 主觀敘述主體。
+_DEICTIC_SUBJECT_BLOCK: frozenset[str] = frozenset(
+    {"我", "你", "妳", "我們", "咱們", "主人"}
+)
+
+# EH-3.1: 被定義實體的語段切隔符（上個標點／空白）與尾綴剝離字。
+_ENTITY_SEGMENT_SEPARATORS: str = "，。、；;：:！？!?（）()「」『』【】《》<> \t\n"
+_ENTITY_TRAILING_PARTICLES: str = "呢嗎啊呀喔哦吧啦的囉是就"
+
+# ── EH-3.1 helpers（純文字掃描, module-level, 可單元測試）──────────
+
+
+def _segment_entity(text: str, marker_pos: int) -> str:
+    """回傳 marker 前一語段（上個標點／空白之後）的候選實體。
+
+    Ex: 「氣炸鍋就是個…箱子。」的「就是個」marker → "氣炸鍋";
+        「今天就是想休息。」的「就是想」marker → "今天"。
+    剝離尾綴語助詞（的／呢／啊／是／就…）; 空實體回傳 ""。
+    """
+    segment = text[:marker_pos].rstrip()
+    cut = -1
+    for sep in _ENTITY_SEGMENT_SEPARATORS:
+        idx = segment.rfind(sep)
+        if idx > cut:
+            cut = idx
+    entity = segment[cut + 1:].strip()
+    while entity and entity[-1] in _ENTITY_TRAILING_PARTICLES:
+        entity = entity[:-1]
+    return entity.strip()
+
+
+def _scan_assimilation_entities(user_text: str) -> tuple[set[str], set[str]]:
+    """掃描 user 文本, 回傳 (定義實體集合, 主觀實體集合)。
+
+    定義實體: 任一 _ASSIMILATION_SYNTAX_MARKERS 前一語段的實體（被定義者）。
+    主觀實體: 任一 _SUBJECTIVE_MODAL_PHRASES 前一語段的實體（主觀生命狀態主體）。
+    """
+    definitional: set[str] = set()
+    modal: set[str] = set()
+    for marker in _ASSIMILATION_SYNTAX_MARKERS:
+        start = 0
+        while True:
+            idx = user_text.find(marker, start)
+            if idx < 0:
+                break
+            entity = _segment_entity(user_text, idx)
+            if entity:
+                definitional.add(entity)
+            start = idx + len(marker)
+    for phrase in _SUBJECTIVE_MODAL_PHRASES:
+        start = 0
+        while True:
+            idx = user_text.find(phrase, start)
+            if idx < 0:
+                break
+            entity = _segment_entity(user_text, idx)
+            if entity:
+                modal.add(entity)
+            start = idx + len(phrase)
+    return definitional, modal
+
+
+def _fact_intersects_entity(fact: Fact, entities: set[str]) -> bool:
+    """fact.subject / fact.object 是否與定義實體集合相交（entity 為 needle）。"""
+    if not entities:
+        return False
+    for entity in entities:
+        if entity in fact.subject or entity in fact.object:
+            return True
+    return False
 
 
 class SAGELiteProvider:
@@ -309,33 +391,37 @@ class SAGELiteProvider:
             )
         self._turn_count += 1
 
-    # ── EH-3: Write-Side Assimilation（寫側內化閉環）───────────────
+    # ── EH-3.1: Write-Side Assimilation（寫側內化閉環, Fact-Level）────
 
     def _tag_explanatory_assimilations(
         self,
         fact_ids: list[str],
         user_text: str,
     ) -> None:
-        """EH-3 post-commit hook：對「user 解釋句」萃取的 fact 打 assimilated 標記。
+        """EH-3.1 post-commit hook：Fact-Level 精準打標（EH-3 turn-level 粗標升級）。
 
         同步方法, 由 post_reply_commit 以 run_in_executor 包覆在 worker 執行緒內
         執行（GraphStore.set_fact_dimensions 為同步 DB/圖更新, 維持 thread-affinity,
         不在主 asyncio thread 呼叫, 避免阻塞 event loop）。
 
-        Filter chain（任一不滿足 → Early Return no-op）:
-          1. 現代原生白名單（horizon.MODERN_NATIVE_AGENTS, 直接引用禁止重複維護）:
-             白名單角色現代常識是固有常識, 維持預設 lived_experience。
-          2. 特殊模式: 本輪 0 個新增 fact_ids（skip_graph / no-diary / 0 萃取
-             天然為空）→ no-op。
-          3. 句法定義標記: user 文本需含解釋／定義性句法（如「X 就是個……的箱子」）
-             → 才觸發打標。日常使用句（如「我剛用氣炸鍋弄了豆腐」）不含定義詞 → 不打標。
+        EH-3 缺陷: turn-level 粗標 — user 文本只要含任一定義性 marker, 整輪所有
+        user fact 全被打 assimilated; 「今天就是想休息」這類主觀生命狀態
+        （就是想/就是要/…）被誤標成內化常識, 污染 Idiolect 檢索。
 
-        打標僅作用於 source == 'user' 的 fact（User-Only Source — 不對 Assistant
-        自身回覆／推論萃取（source == 'inference'）的 fact 打標）:
-          origin=assimilated / horizon_state=aware / learned_at=time.time() (float)。
+        EH-3.1 改為逐 Fact 五閘門（A–E 全過才打標）:
+          A. fact.source == 'user'（User-Only Source, 不對 assistant/inference 打標）
+          B. user 原始文本含定義性 marker（_ASSIMILATION_SYNTAX_MARKERS）
+          C. fact.subject 精確排除人稱代名詞（_DEICTIC_SUBJECT_BLOCK,
+             exact match 非 substring）— 主觀敘述主體不打標
+          D. 「就是」+ 情態助詞主觀句法排除: 文本中任 _SUBJECTIVE_MODAL_PHRASES
+             前一語段的實體 = 主觀生命狀態主體, fact 不得觸及
+             （Ex: 「今天就是想休息。」→ 今天）
+          E. fact.subject/object 必須與被定義實體相交（定義 marker 前一語段的
+             實體, Ex: 「氣炸鍋就是個…箱子。」→ 氣炸鍋）— 只標被定義實體
 
+        打標: origin=assimilated / horizon_state=aware / learned_at=time.time() (float)。
         Fail-silent: 任何未預期例外僅記錄 logger.warning, 嚴禁中斷主流程或
-        回滾既有 Graph 寫入。
+        回滾既有 Graph 寫入; 未過閘門的 fact 維持預設 lived_experience, 永不刪改。
         """
         # Gate 1: 現代原生白名單（契約 §6.1 D3 分流）
         try:
@@ -347,26 +433,40 @@ class SAGELiteProvider:
             is_modern_native = None
         if is_modern_native is not None and is_modern_native(self.profile_id):
             logger.debug(
-                f"[SAGE] EH-3 skip (modern native): profile={self.profile_id}"
+                f"[SAGE] EH-3.1 skip (modern native): profile={self.profile_id}"
             )
             return
         # Gate 2: 本輪無新增 fact（skip_graph / no-diary / 0 萃取）→ no-op
         if not fact_ids:
             return
-        # Gate 3: 句法定義標記 — 解釋／定義性句法才打標（0 hardcoded tech keywords:
-        # 依據是「定義句的形式」, 不是「定義了哪個科技實體」）
-        if not any(marker in user_text for marker in _ASSIMILATION_SYNTAX_MARKERS):
+        # Gate B (text-level): 無定義性 marker → 本輪不打標
+        definitional_entities, modal_entities = _scan_assimilation_entities(user_text)
+        if not definitional_entities:
             logger.debug(
-                f"[SAGE] EH-3 no syntax clue, skip tagging: profile={self.profile_id}"
+                f"[SAGE] EH-3.1 no definitional syntax, skip tagging: "
+                f"profile={self.profile_id}"
             )
             return
         if self._store is None:
             return
         try:
+            tagged = 0
             for fact_id in fact_ids:
                 fact = self._store.get_fact(fact_id)
                 if fact is None or fact.source != "user":
-                    # User-Only Source: assistant/inference fact 不打標
+                    # Gate A: User-Only Source — assistant/inference fact 不打標
+                    continue
+                # Gate C: 人稱代名詞主語精確排除（exact match, 非 substring）
+                if fact.subject in _DEICTIC_SUBJECT_BLOCK:
+                    continue
+                # Gate D: 主觀生命狀態實體觸及排除
+                if (
+                    fact.subject in modal_entities
+                    or fact.object in modal_entities
+                ):
+                    continue
+                # Gate E: 必須觸及被定義實體
+                if not _fact_intersects_entity(fact, definitional_entities):
                     continue
                 self._store.set_fact_dimensions(
                     fact_id=fact_id,
@@ -374,17 +474,18 @@ class SAGELiteProvider:
                     horizon_state="aware",
                     learned_at=time.time(),  # float Unix timestamp (契約 §3.2)
                 )
+                tagged += 1
             # 強制 commit: set_fact_dimensions 只在 batch_size 達標時才自動 commit,
             # 讀側 Idiolect 檢索（retrieve_idiolect）開新 sqlite 連接, 未 commit 的
             # UPDATE 讀不到 → 閉環斷裂。flush 維持在 worker 執行緒內（@_locked 安全）。
             self._store.flush()
             logger.info(
-                f"[SAGE] EH-3 assimilated tagging ok | profile={self.profile_id} | "
-                f"synced={len(fact_ids)}"
+                f"[SAGE] EH-3.1 assimilated tagging ok | profile={self.profile_id} | "
+                f"tagged={tagged}/{len(fact_ids)}"
             )
         except Exception as exc:  # noqa: BLE001 — fail-silent: 絕不中斷主流程
             logger.warning(
-                f"[SAGE] EH-3 assimilated tagging failed "
+                f"[SAGE] EH-3.1 assimilated tagging failed "
                 f"(profile={self.profile_id}): {type(exc).__name__}: {exc}"
             )
 
