@@ -171,19 +171,32 @@ class VoiceCompanionApp:
                 self.streamer.speak(clause)
         self._last_interaction = time.time()
         self._log(f"茜 → {reply}")
+        # VC-UNIFY-1：語音回合結束 → SAGE 記憶背景入庫（fire-and-forget，0 阻塞播放；fail-silent）
+        try:
+            self.brain.schedule_sage_commit(user_text, reply)
+        except Exception:
+            pass
 
     def _speak_streaming(self, user_text: str) -> None:
         """LLM 逐 token → streamer.feed_text_piece 邊生邊送，結束後 end_session 收尾。"""
         parts: list[str] = []
+        interrupted = False
         for token in self.brain.stream_respond(user_text):
             if getattr(self.streamer, "interrupt_event", None) and self.streamer.interrupt_event.is_set():
                 self._log("LLM stream interrupted by barge-in")
+                interrupted = True
                 break
             parts.append(token)
             self.streamer.feed_text_piece(token)
         self.streamer.end_session()
         self._last_interaction = time.time()
         self._log(f"茜 → {''.join(parts)}")
+        # VC-UNIFY-1：完整回合（未被 barge-in 打斷）→ SAGE 背景入庫（fire-and-forget；fail-silent）
+        if not interrupted:
+            try:
+                self.brain.schedule_sage_commit(user_text, "".join(parts))
+            except Exception:
+                pass
 
     # ── 喚醒閘門 ──
 

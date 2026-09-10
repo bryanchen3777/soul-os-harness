@@ -17,7 +17,10 @@ personas/agent_akane.md 不存在時以內嵌常數（AKANE_LAYER3_PERSONA）運
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
+import threading
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, List, Optional
 
@@ -25,6 +28,8 @@ try:
     from .session_store import SessionStore
 except ImportError:  # 直接以檔案執行（非套件）時
     from session_store import SessionStore
+
+logger = logging.getLogger("soul_os.vc_brain")
 
 # ─────────────────────────────────────────────────────────────
 # Layer 3（現役）Persona 內嵌常數
@@ -302,6 +307,33 @@ def build_llm_stream(llm_cfg: dict) -> Optional[Callable[[List[dict]], Iterable[
 # VC-2.2 唯讀記憶與時序現象學檢索器（Fail-silent，0 寫入）
 # ─────────────────────────────────────────────────────────────
 
+def format_voice_horizon_block(agent_id: str, session_context: str = "") -> str:
+    """VC-UNIFY-1 讀側：認知地平線（EH-2 Horizon Gate）語音端投影。
+
+    直接複用文字端主服務的 `_format_horizon_block`（src.llm.proxy），確保雷姆在
+    語音端獲得與文字端完全相同的阻力約束與 Idiolect 放行名單（Single Soul
+    Multi-Modalities）。fail-silent：任何異常 → 空字串跳過，0 影響既有管線。
+    """
+    try:
+        from src.llm.proxy import _format_horizon_block  # 實際定義於 src/llm/proxy.py
+
+        return _format_horizon_block(agent_id, session_context=session_context) or ""
+    except Exception:  # noqa: BLE001 — fail-silent：Gate 掛掉 = 無 Horizon 塊
+        return ""
+
+
+class _JudgeShim:
+    """LLM-as-judge 用的 proxy shim：只暴露 backend + model 兩個屬性。
+
+    對齊 harness/eh2_smoke_natural3._JudgeShim 與 run_server 的 set_llm_proxy 先例：
+    LLMJudge 只讀 self.llm_proxy.backend 與 self.llm_proxy.model，通道不變。
+    """
+
+    def __init__(self, backend, model: str):
+        self.backend = backend
+        self.model = model
+
+
 def default_memory_retriever(query: str, agent_id: str = "agent_akane") -> Optional[str]:
     """唯讀讀取 SAGE GraphStore；缺檔/例外時 fail-silent 回傳 None（VC-2.2）。"""
     try:
@@ -412,12 +444,24 @@ class AkaneVoiceBrain:
         else:
             self.session_store = None
 
+        # VC-UNIFY-1 寫側：SAGE 記憶背景入庫（config `memory.sage_write.enabled` 顯式開啟）
+        self._sage_write_enabled = bool(
+            (self.config.get("memory") or {}).get("sage_write", {}).get("enabled", False)
+        )
+        self._sage_provider = None
+        self._sage_provider_failed = False
+
     def system_prompt(self) -> str:
         return self.persona
 
     def _build_messages(self, user_text: str, history=None) -> List[dict]:
         """組裝對話歷史、時序現象學（TA-2）與 SAGE 記憶檢索，注入 system prompt。"""
         sys_parts = [self.persona]
+
+        # 0. VC-UNIFY-1：認知地平線（Persona 之後、即時對話之前；fail-silent 空字串跳過）
+        horizon_block = format_voice_horizon_block(self.agent_id)
+        if horizon_block:
+            sys_parts.append(horizon_block)
 
         # 1. 時序現象學錨點（若有）
         if self.temporal_provider:
@@ -497,6 +541,112 @@ class AkaneVoiceBrain:
     def _guarded(self, text: str) -> str:
         result = sanitize_voice_output(text).strip()
         return result if result else "……"
+
+    # ── VC-UNIFY-1 寫側：SAGE 記憶背景入庫（Fire-and-Forget，0 阻塞音訊）────
+
+    def _get_sage_provider(self):
+        """Lazy init SAGELiteProvider。
+
+        data_root 與 default_memory_retriever 完全一致：
+        ``data_root()/memory/<agent_id>/graph.sqlite``（src.paths.data_root 規則）。
+        LLM judge 通道沿用 VC 既有 llm config；無 endpoint → regex fallback（writer 內建）。
+        fail-silent：任何異常 → None（不阻斷呼叫端）。
+        """
+        if self._sage_provider is not None:
+            return self._sage_provider
+        if self._sage_provider_failed:
+            return None
+        try:
+            from src.memory.sage.provider import SAGELiteProvider  # 懶載入重型依賴
+            from src.paths import data_root
+
+            agent_dir = data_root() / "memory" / self.agent_id
+            agent_dir.mkdir(parents=True, exist_ok=True)
+            provider = SAGELiteProvider(
+                profile_id=self.agent_id,
+                data_dir=str(agent_dir),
+            )
+            provider.initialize(session_id=f"voice_{self.agent_id}")
+            self._wire_sage_judge()
+            self._sage_provider = provider
+        except Exception as exc:  # noqa: BLE001 — fail-silent
+            self._sage_provider_failed = True
+            logger.warning(f"[VC-UNIFY-1] SAGE provider init fail-silent: {exc}")
+            self._sage_provider = None
+        return self._sage_provider
+
+    def _wire_sage_judge(self) -> None:
+        """把 VC 既有 LLM 通道（config llm）以 shim 形式接入 SAGE writer 的 LLM judge。
+
+        對齊 run_server（set_llm_proxy）與 harness/eh2_smoke_natural3 的 _JudgeShim 先例：
+        LLMJudge 只讀 llm_proxy.backend / llm_proxy.model。無 llm.endpoint → 不接線，
+        writer 自動 fallback regex heuristic（fail-silent，0 網路）。
+        """
+        try:
+            llm_cfg = self.config.get("llm") or {}
+            endpoint = str(llm_cfg.get("endpoint") or "").strip()
+            if not endpoint:
+                return
+            from src.llm.proxy import OpenAIBackend
+
+            from .env_config import normalize_chat_endpoint
+
+            backend = OpenAIBackend(
+                api_key=str(llm_cfg.get("api_key") or ""),
+                base_url=normalize_chat_endpoint(endpoint),
+            )
+            shim = _JudgeShim(backend, str(llm_cfg.get("model") or "deepseek-v4-flash:0731"))
+            from src.memory.sage.writer import set_llm_proxy
+
+            set_llm_proxy(shim)
+        except Exception as exc:  # noqa: BLE001 — fail-silent
+            logger.warning(f"[VC-UNIFY-1] SAGE judge wiring fail-silent: {exc}")
+
+    def schedule_sage_commit(
+        self,
+        user_text: str,
+        agent_text: str,
+        session_id: Optional[str] = None,
+    ) -> Optional[asyncio.Task]:
+        """VC-UNIFY-1 寫側：把一輪語音對話以背景 task 非同步寫入 SAGE 記憶庫。
+
+        - Fire-and-Forget：asyncio.create_task，不 await、不阻塞音訊串流輸出。
+        - 若無 running loop（終端版同步回呼），降級為 daemon thread 內 asyncio.run。
+        - Fail-silent：task 內任何異常 → log warning，絕不中斷語音服務。
+        - 僅在 config ``memory.sage_write.enabled: true`` 時啟用（預設關閉，0 既有行為）。
+        - 回傳 asyncio.Task（呼叫方可忽略，即 fire-and-forget；測試可 await 驗收）。
+        """
+        if not self._sage_write_enabled:
+            return None
+        provider = self._get_sage_provider()
+        if provider is None:
+            return None
+        sid = session_id or f"voice_{self.agent_id}"
+        source_pair = f"user_bryan:{self.agent_id}"
+
+        async def _commit() -> None:
+            try:
+                await provider.post_reply_commit(
+                    session_id=sid,
+                    last_user_msg=user_text,
+                    agent_reply=agent_text,
+                    source_pair=source_pair,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — fail-silent
+                logger.warning(f"[VC-UNIFY-1] SAGE commit fail-silent: {exc}")
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            threading.Thread(target=lambda: asyncio.run(_commit()), daemon=True).start()
+            return None
+        try:
+            return asyncio.create_task(_commit())  # 0 await、0 阻塞
+        except Exception as exc:  # noqa: BLE001 — fail-silent
+            logger.warning(f"[VC-UNIFY-1] SAGE commit schedule fail-silent: {exc}")
+            return None
 
 
 # 模組級預設實例（離線模式）

@@ -551,6 +551,12 @@ class WebSession:
                                 _ss.append_turn(companion_id, "user_bryan", "assistant", reply, "voice")
                             except Exception:
                                 pass
+                        # VC-UNIFY-1：語音回合結束 → SAGE 記憶背景入庫（fire-and-forget，
+                        # 不 await、0 阻塞音訊串流；task 內部 fail-silent，不中斷語音服務）。
+                        try:
+                            self._brain.schedule_sage_commit(user_text, reply)
+                        except Exception:
+                            pass
                 t_done = time.perf_counter()
                 total_ms = (t_done - t_start) * 1000.0
                 asr_ms = ((t_asr_done - t_start) * 1000.0) if t_asr_done is not None else 0.0
