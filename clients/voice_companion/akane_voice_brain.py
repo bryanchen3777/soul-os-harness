@@ -622,7 +622,8 @@ class AkaneVoiceBrain:
         if provider is None:
             return None
         sid = session_id or f"voice_{self.agent_id}"
-        source_pair = f"user_bryan:{self.agent_id}"
+        # VC-UNIFY-1.1：canonical 唯一格式 bryan:{agent_id}（與文字端 middleware / SAGE 一致）
+        source_pair = f"bryan:{self.agent_id}"
 
         async def _commit() -> None:
             try:
