@@ -331,6 +331,9 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
+- Current HEAD: `806645d` (fix(memory): keyword-only source_pair in post_reply_commit (skip_graph misbind))
+- MEM-WIRING-1 fix commit: `806645d` (fix(memory): keyword-only source_pair in post_reply_commit; **Current HEAD**)
+- Current HEAD: `4e3b407` (docs: register EH-2.1 hotfix (c9aa9e2))
 - Current HEAD: `c9aa9e2` (fix(eh-2.1): world media trigger precision + modern native whitelist expansion)
 - EH-2.1 hotfix commit: `c9aa9e2` (fix(eh-2.1): world media trigger precision + modern native whitelist expansion; **Current HEAD**)
 - Current HEAD: `16a890b` (feat(eh-2): epistemic horizon implementation (v9 migration + horizon gate + vertical firewall + probes))
@@ -1595,5 +1598,7 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 | 2026-09-09 (EH-2) | **EH-2 Epistemic Horizon 實作完成（IMPLEMENTATION AUTHORIZED → DONE）**（commit `16a890b`；17 檔 +1386/-48）。**四項實作**：① SAGE v9 migration（facts 表加 `origin` DEFAULT 'lived_experience' / `horizon_state` DEFAULT 'aware' / `learned_at` REAL + idx_horizon，additive 冪等，`set_fact_dimensions` 標記 API + `get_idiolect_facts`）；② Horizon Gate（`_format_horizon_block(agent_id, session_context)` 掛 proxy.py:658/1241，identity 之後，modern_earth 角色 fail-silent bypass，雷姆 Pilot 阻力句 + Idiolect 清單 + 外部未解動態降級，0 既有塊移動）；③ 垂直防火牆（R1 external_world/news 禁入 run_elevation 雙層攔截 submission_gate + elevation_adapter、R2 lived_experience 放行、R3 assimilated 封頂 Fact/Pattern/Meaning 禁入 Belief/Value/Trait/Essence，含證據邊計票隔離）；④ 四條 Probes（tests/test_epistemic_horizon.py 23 項：Probe 1 全知平滑拒絕 / Probe 2 二次遭遇流暢 / Probe 3 劇情背誦克制 / Probe 4 現代對照組 Bypass 全 PASS）。**驗證**：主大腦複跑 86 passed（EH-2 23 + 回歸 63）；21 項主幹既有失敗 git stash 對照確認 pre-existing；順帶修好 pig_filter_v2 主幹已壞斷言。**0 踩線**：personas/ 零改動、ENGINEERING_STATE 零改動（本行除外）、SAGE 寫入主幹（INSERT OR REPLACE 18 欄）逐字節未動、InnerLifeEvent/Agency/4 handlers 未碰。 | DSH | EH-2 |
 
 | 2026-09-09 (EH-2.1) | **EH-2.1 Hotfix：world:* 過切修正 + 現代原生白名單補齊**（commit `c9aa9e2`；6 檔 +220/-29）。**裁定一**：R1 阻斷從 `startswith("world:")` 收斂為 `is_world_media_trigger()`（僅 `world:news*`/`world:feed*`/`world:celebrity_news` 阻斷；`world:weather*`/`world:rain*`/`world:calendar*`/`world:user_going_outside*` 放行——環境與日程屬 Co-living 感知邊界，可沉澱環境 Pattern，防感知閹割）。**裁定二**：`MODERN_NATIVE_AGENTS` 2→7 名（akane/mai/anna/aoi/miku/ruka/yua，含 persona 檔名+行號查證；ram/rem/mahiru 維持異界阻力）。**驗證**：三核心檔 72 passed；聚焦回歸 52 檔 1393 passed，8 failed 全 pre-existing（git stash 雙重驗證）。**待 Owner 確認**：agent_yua（原創角色，依現代生活線索入白名單，可移除）。0 personas/ 改動、0 Frozen Contract。 | DSH | EH-2.1 |
+
+| 2026-09-09 (MEM-WIRING-1) | **MEM-WIRING-1 P0 BUGFIX：post_reply_commit 位置參數錯位修復（graph.sqlite 0 落庫）**（commit `806645d`；provider.py +11/-4 + 新測試檔）。**根因**：`post_reply_commit` 的 `run_in_executor(None, write_turn, u, a, sid, source_pair, inner_life_event_id)` 位置傳參，`source_pair`（"bryan:agent_rem" truthy）被綁進第 4 位置參數 `skip_graph` → 誤跳 graph 萃取落庫（v1 mirror 仍寫）；`inner_life_event_id` 同時錯綁進 `source_pair`。**修法**：`functools.partial` keyword 繫結（`source_pair=...`, `inner_life_event_id=...`）；no-diary（agent_ram）有意的 `skip_graph=True` 分支原樣保留。**驗證**：A/B 鐵證（source_pair=None → 2 Facts；"bryan:agent_rem" → 修復前 0 → 修復後 2 Facts）；v1 mirror 一致性（兩案均 2 筆）；AST 防回歸測試（位置參數 ≤3 斷言）；新套件 6/6 + 回歸 118/118（主大腦複跑 7 passed）。**影響**：production middleware 寫入鏈（USER_MESSAGE→AGENT_SPEAK→post_reply_commit）自 source_pair 引入以來對 graph.sqlite 寫入為 0 的 bug 已修復——Turn 2 真機冒煙發現。0 簽名變更、0 Schema 變更、0 Frozen Contract。 | DSH | MEM-WIRING-1 |
 
 **End of canonical state registry. Next update requires Owner authorization per §2.4 lifecycle.**
