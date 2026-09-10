@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from functools import partial
 from pathlib import Path
 from typing import Any, Optional
@@ -41,6 +42,14 @@ logger = logging.getLogger("soul_os.sage")
 # 「Ram 的對話不寫入 graph.sqlite facts」，情感狀態由 emotional-state.json 表達。
 # 注意：其他 agent 的 sync_turn/post_reply_commit 行為不受影響（回歸測試必跑）。
 NO_DIARY_AGENTS: set[str] = {"agent_ram"}
+
+# EH-3 (Write-Side Assimilation): 句法定義標記 — 使用者本輪文本需含「解釋／定義性」
+# 句法才觸發 assimilated 打標。純句法詞, 0 hardcoded tech keywords（無「插電／機器／
+# 科技／電腦／家電」等實體詞 — 打標依據是「定義句的形式」而非「定義了什麼」）。
+_ASSIMILATION_SYNTAX_MARKERS: tuple[str, ...] = (
+    "就是", "是個", "是一个", "是一種", "是一种",
+    "用來", "用来", "所謂", "意思是", "指的", "指的是",
+)
 
 
 class SAGELiteProvider:
@@ -264,7 +273,8 @@ class SAGELiteProvider:
         # 非空字串 truthy → skip_graph=True → 誤跳 graph.sqlite 萃取落庫。
         # 修法: partial 以 keyword 繫結 source_pair / inner_life_event_id,
         #       前三個位置參數 (user_content, assistant_content, session_id) 保留原序。
-        await loop.run_in_executor(
+        # EH-3: 捕獲 write_turn 返回的新增 fact_id 清單（不可丟棄）供 post-commit hook。
+        fact_ids = await loop.run_in_executor(
             None,
             partial(
                 self._writer.write_turn,
@@ -275,6 +285,19 @@ class SAGELiteProvider:
             agent_reply,
             session_id,
         )
+        # EH-3 (Write-Side Assimilation): post-commit hook — 對「user 解釋句」萃取的
+        # fact 打 assimilated/aware + learned_at。同步 GraphStore 呼叫維持在
+        # run_in_executor 的 worker 執行緒內（不在主 asyncio thread 觸發 SQLite 寫入）。
+        # Fail-silent: hook 內部任何例外僅 warning, 不中斷主流程。
+        if fact_ids:
+            await loop.run_in_executor(
+                None,
+                partial(
+                    self._tag_explanatory_assimilations,
+                    fact_ids,
+                    last_user_msg,
+                ),
+            )
         self._cache.invalidate()
 
         if self._turn_count % 20 == 0:
@@ -285,6 +308,85 @@ class SAGELiteProvider:
                 None, self._evolution.auto_resolve_conflicts
             )
         self._turn_count += 1
+
+    # ── EH-3: Write-Side Assimilation（寫側內化閉環）───────────────
+
+    def _tag_explanatory_assimilations(
+        self,
+        fact_ids: list[str],
+        user_text: str,
+    ) -> None:
+        """EH-3 post-commit hook：對「user 解釋句」萃取的 fact 打 assimilated 標記。
+
+        同步方法, 由 post_reply_commit 以 run_in_executor 包覆在 worker 執行緒內
+        執行（GraphStore.set_fact_dimensions 為同步 DB/圖更新, 維持 thread-affinity,
+        不在主 asyncio thread 呼叫, 避免阻塞 event loop）。
+
+        Filter chain（任一不滿足 → Early Return no-op）:
+          1. 現代原生白名單（horizon.MODERN_NATIVE_AGENTS, 直接引用禁止重複維護）:
+             白名單角色現代常識是固有常識, 維持預設 lived_experience。
+          2. 特殊模式: 本輪 0 個新增 fact_ids（skip_graph / no-diary / 0 萃取
+             天然為空）→ no-op。
+          3. 句法定義標記: user 文本需含解釋／定義性句法（如「X 就是個……的箱子」）
+             → 才觸發打標。日常使用句（如「我剛用氣炸鍋弄了豆腐」）不含定義詞 → 不打標。
+
+        打標僅作用於 source == 'user' 的 fact（User-Only Source — 不對 Assistant
+        自身回覆／推論萃取（source == 'inference'）的 fact 打標）:
+          origin=assimilated / horizon_state=aware / learned_at=time.time() (float)。
+
+        Fail-silent: 任何未預期例外僅記錄 logger.warning, 嚴禁中斷主流程或
+        回滾既有 Graph 寫入。
+        """
+        # Gate 1: 現代原生白名單（契約 §6.1 D3 分流）
+        try:
+            from .horizon import is_modern_native
+        except Exception as exc:  # noqa: BLE001 — fail-silent: import 失敗視為不 bypass
+            logger.warning(
+                f"[SAGE] EH-3 horizon import failed: {type(exc).__name__}: {exc}"
+            )
+            is_modern_native = None
+        if is_modern_native is not None and is_modern_native(self.profile_id):
+            logger.debug(
+                f"[SAGE] EH-3 skip (modern native): profile={self.profile_id}"
+            )
+            return
+        # Gate 2: 本輪無新增 fact（skip_graph / no-diary / 0 萃取）→ no-op
+        if not fact_ids:
+            return
+        # Gate 3: 句法定義標記 — 解釋／定義性句法才打標（0 hardcoded tech keywords:
+        # 依據是「定義句的形式」, 不是「定義了哪個科技實體」）
+        if not any(marker in user_text for marker in _ASSIMILATION_SYNTAX_MARKERS):
+            logger.debug(
+                f"[SAGE] EH-3 no syntax clue, skip tagging: profile={self.profile_id}"
+            )
+            return
+        if self._store is None:
+            return
+        try:
+            for fact_id in fact_ids:
+                fact = self._store.get_fact(fact_id)
+                if fact is None or fact.source != "user":
+                    # User-Only Source: assistant/inference fact 不打標
+                    continue
+                self._store.set_fact_dimensions(
+                    fact_id=fact_id,
+                    origin="assimilated",
+                    horizon_state="aware",
+                    learned_at=time.time(),  # float Unix timestamp (契約 §3.2)
+                )
+            # 強制 commit: set_fact_dimensions 只在 batch_size 達標時才自動 commit,
+            # 讀側 Idiolect 檢索（retrieve_idiolect）開新 sqlite 連接, 未 commit 的
+            # UPDATE 讀不到 → 閉環斷裂。flush 維持在 worker 執行緒內（@_locked 安全）。
+            self._store.flush()
+            logger.info(
+                f"[SAGE] EH-3 assimilated tagging ok | profile={self.profile_id} | "
+                f"synced={len(fact_ids)}"
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-silent: 絕不中斷主流程
+            logger.warning(
+                f"[SAGE] EH-3 assimilated tagging failed "
+                f"(profile={self.profile_id}): {type(exc).__name__}: {exc}"
+            )
 
     # ── 健康指標 ──────────────────────────────────────────────
 
