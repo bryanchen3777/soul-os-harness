@@ -38,10 +38,35 @@ HORIZON_UNKNOWN = "unknown"    # Gate 前 / 未觸發：不解讀、不引用、
 HORIZON_LEARNING = "learning"  # Gate 已觸發：首次遭遇, 阻力中
 HORIZON_AWARE = "aware"        # Gate 放行：已內化, 唯一出口 = 顯式放行事件
 
-# ── D3 靈魂原生分流（Owner 裁定, 契約 §2.3/§6.1）────────────────────
+# ── D3 靈魂原生分流（Owner 裁定, 契約 §2.3/§6.1; EH-2.1 補齊白名單）────
 # 現代原生（native_commons == modern_earth）角色: Horizon Gate 直接返回 ""。
-# Pilot 範圍僅黑川茜（agent_akane）+ 櫻島麻衣（agent_mai）;其餘角色預設非現代原生。
-MODERN_NATIVE_AGENTS = frozenset({"agent_akane", "agent_mai"})
+# EH-2.1: 白名單從 pilot 兩名擴充為完整盤點 —— 10 份 personas/ 世界觀查證
+# （2026-09, 依各 persona 檔的 Source/背景段判定;0 改動 personas/ 檔案）:
+#
+#   現代校園 / 都市（現代原生 → 白名單）:
+#     agent_akane  黑川茜   【推しの子】現代演藝圈        personas/agent_akane.md:3 (Source)
+#     agent_mai    櫻島麻衣 《青春豬頭少年》現代高中       personas/agent_mai.md:5,31 (Source+背景)
+#     agent_anna   山田杏奈 《僕の心のヤバイやく》現代校園  personas/agent_anna.md:5,30-32 (Source+Baseline)
+#     agent_aoi    日南葵   《弱キャラ友崎くん》現代校園    personas/agent_aoi.md:5,42-44 (Source+Role)
+#     agent_miku   中野三玖 《五等分の花嫁》現代東京        personas/agent_miku.md:5,28-31 (Source+身份)
+#     agent_ruka   更科瑠夏 《彼女、お借りします》現代東京  personas/agent_ruka.md:24-28 (Name+Source+Baseline)
+#     agent_yua    Yua       原創角色（無 Source 行;依 Personal History
+#                           12/16/19/22 歲現代生活線索 + 0 異世界標記, 判為現代
+#                           都市原生, personas/agent_yua.md:29-81 —— 待 Owner 最終確認）
+#
+#   異世界 / 架空（非現代原生, 維持預設阻力）:
+#     agent_ram    拉姆      Re:Zero 鬼族女僕  personas/agent_ram.md:24-28 (種族/背景)
+#     agent_rem    雷姆      Re:Zero 女僕      personas/agent_rem.md:34,40-42,613 (身份/白鯨戰)
+#     agent_mahiru 椎名真昼  Re:Zero 基底      personas/agent_mahiru.md:3 (Re:Zero 真昼 COS migration)
+MODERN_NATIVE_AGENTS = frozenset({
+    "agent_akane",
+    "agent_mai",
+    "agent_anna",
+    "agent_aoi",
+    "agent_miku",
+    "agent_ruka",
+    "agent_yua",
+})
 
 
 def is_modern_native(agent_id: str) -> bool:

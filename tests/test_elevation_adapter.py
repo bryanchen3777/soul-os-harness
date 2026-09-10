@@ -370,6 +370,27 @@ def test_run_elevation_world_event_blocked_defense_in_depth(tmp_path):
     assert nodes == []
 
 
+def test_run_elevation_env_event_allowed_defense_in_depth(tmp_path):
+    """EH-2.1 R1 收斂 (defense-in-depth 對照): 環境事件 → run_elevation 放行。
+
+    對照上例（world:news_event 阻斷）: 陰晴風雨與主人作息行程
+    （world:rain_started / world:calendar_event 等）屬共同生活的感知邊界,
+    可正常 consume 進昇華鏈沉澱環境 Pattern —— 不得感知閹割。"""
+    from src.memory.sage.models import Fact
+
+    writer = InnerLifeWriter()
+    event = writer.create_event(
+        provenance=Provenance(
+            trigger_type="world:rain_started",
+            actor_id=None,
+            source_system="narrative",
+        ),
+    )
+    lived = Fact(subject="雷姆", predicate="感知", object="外面下雨了")
+    nodes = run_elevation(event, [lived], store_dir=tmp_path / "elevation_env")
+    assert len(nodes) >= 1  # 環境事件正常進昇華 (0 阻斷)
+
+
 def test_run_elevation_external_world_facts_filtered(tmp_path):
     """EH-2 R1: memory_facts 中 origin == external_world 剔除；lived_experience 放行。"""
     from src.memory.sage.models import Fact

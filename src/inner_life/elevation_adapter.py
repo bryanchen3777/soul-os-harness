@@ -60,10 +60,13 @@ EDGES_FILENAME = "elevation_edges.jsonl"
 # CATEGORY_TRIGGER_TYPES 分支，依 provenance 里的 category 决定先验维度）。
 _EVENT_TYPE_MEMORY_FACT = "memory_fact"
 
-# EH-2 垂直防火牆（契約 §4.3）: WORLD_TRIGGER_PREFIX 與 submission_gate 同源
-# （M5.9-3 WorldInnerLifeAdapter 產生的 world:<type>）; origin 常數由
-# src/memory/sage/horizon.py 提供（單一事實來源, 輕量常數）。
-_WORLD_TRIGGER_PREFIX = "world:"
+# EH-2.1 垂直防火牆（契約 §4.3）: 阻斷判定與 submission_gate 同源 ——
+# is_world_media_trigger（外部媒體情報 world:news* / world:feed* /
+# world:celebrity_news 阻斷;環境與日程 world:weather* / world:rain* /
+# world:calendar* / world:user_going_outside* 放行）。origin 常數由
+# src/memory/sage/horizon.py 提供（單一事實來源, 輕量常數, 無重依賴）。
+from .submission_gate import is_world_media_trigger
+
 _ORIGIN_EXTERNAL_WORLD = "external_world"
 _ORIGIN_ASSIMILATED = "assimilated"
 
@@ -344,16 +347,19 @@ def run_elevation(
     try:
         resolved_dir = _resolve_store_dir(store_dir)
 
-        # EH-2 R1 垂直防火牆 defense-in-depth（契約 §4.3 Checkpoint ②, 雙層都擋）:
-        # ① 事件層: world:* 外部世界事件（news / weather / calendar）一律阻斷 ——
-        #    不得 consume、不得產 pattern 候選（Submission Gate 已擋, 這裡是
-        #    ElevationObserver / 直接呼叫路徑的第二道防線）。
+        # EH-2.1 R1 垂直防火牆 defense-in-depth（契約 §4.3 Checkpoint ②, 雙層都擋）:
+        # ① 事件層: 僅外部媒體情報（world:news* / world:feed* /
+        #    world:celebrity_news）阻斷 —— 不得 consume、不得產 pattern 候選
+        #    （Submission Gate 已擋, 這裡是 ElevationObserver / 直接呼叫路徑的
+        #    第二道防線）。環境與日程事件（world:weather* / world:rain* /
+        #    world:calendar* / world:user_going_outside*）放行 —— 共同生活的
+        #    感知邊界, 可正常沉澱環境 Pattern。
         ev_prov = getattr(inner_life_event, "provenance", None)
         ev_trigger = str(getattr(ev_prov, "trigger_type", "") or "")
-        if ev_trigger.startswith(_WORLD_TRIGGER_PREFIX):
+        if is_world_media_trigger(ev_trigger):
             logger.info(
                 f"[elevation] EH-2 R1 BLOCKED (defense-in-depth): "
-                f"world:* 事件不入昇華 ({ev_trigger})"
+                f"外部媒體情報不入昇華 ({ev_trigger})"
             )
             return []
 

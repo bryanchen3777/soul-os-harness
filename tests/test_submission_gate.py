@@ -13,6 +13,7 @@ Elevation Submission Gate（SG-1）— 测试
   D. submit：伪造 id → fail-closed 返回 []，不产节点
   E. 只 consume 不 elevate（AST 红线 + 行为验证：产 pattern 而非灵魂结构）
   F. world:* trigger_type 通过（M5.9-3 WorldInnerLifeAdapter 产生的 world 事件）
+     （EH-2.1: 環境/日程 events 放行昇華, 外部媒體情報 world:news* 阻斷）
   G. 失败隔离 + disabled no-op
 """
 from __future__ import annotations
@@ -296,24 +297,48 @@ class TestWorldTrigger:
         gate = _make_gate(writer, tmp_path)
         assert gate.verify(event.event_id).accepted
 
-    def test_f2_world_trigger_blocked_from_elevation(self, tmp_path):
-        """F.2 (EH-2 R1, D2 裁定): world:rain_started → submit 阻斷昇華（R1 producer-side）。
-        origin=external_world / news 系一律嚴禁進入 run_elevation —— 不得 consume、
-        不得產 pattern 候選;既有 SG-1 whitelist 解凍路徑在昇華入口被垂直防火牆截斷。"""
+    def test_f2_weather_event_allowed_into_elevation(self, tmp_path):
+        """F.2 (EH-2.1 R1 收斂, Owner 裁定): world:rain_started → submit 放行昇華。
+        環境與日程事件（weather / rain / calendar）是共同生活的感知邊界——
+        陰晴風雨、主人作息行程可正常 consume 進昇華鏈, 沉澱環境 Pattern
+        （「這幾天都在下雨」），不得感知閹割與行為回退。"""
         writer = _make_writer(tmp_path)
         event = _create_event(
             writer,
             trigger_type="world:rain_started",
             source_system="narrative",
+            actor_id=None,
             extras={"world_source": "weather", "world_type": "rain_started"},
         )
         gate = _make_gate(writer, tmp_path, store_dir=tmp_path / "elevation")
 
         nodes = gate.submit(event.event_id)
 
-        assert nodes == []  # EH-2 R1: 阻斷（0 consume / 0 pattern 候選）
+        assert len(nodes) == 1  # EH-2.1: 環境事件放行（1 pattern 候選, 不 elevate）
+        stats = gate.get_stats()
+        assert stats["eh2_world_blocked"] == 0
+        assert stats["consumed"] == 1
+
+    def test_f3_news_event_blocked_from_elevation(self, tmp_path):
+        """F.3 (EH-2.1 R1 收斂): world:news_event → submit 阻斷昇華（對照 F.2）。
+        外部媒體情報（BBC 新聞等）不是這個靈魂活過的事, 不得 consume、
+        不得產 pattern 候選 —— 外界情報不得沉澱成「我成為」。"""
+        writer = _make_writer(tmp_path)
+        event = _create_event(
+            writer,
+            trigger_type="world:news_event",
+            source_system="narrative",
+            actor_id=None,
+            extras={"world_source": "news", "world_type": "news_event"},
+        )
+        gate = _make_gate(writer, tmp_path, store_dir=tmp_path / "elevation")
+
+        nodes = gate.submit(event.event_id)
+
+        assert nodes == []  # EH-2 R1: 外部媒體阻斷（0 consume / 0 pattern 候選）
         stats = gate.get_stats()
         assert stats["eh2_world_blocked"] == 1
+        assert stats["consumed"] == 0
 
 
 # ── G. 失败隔离 + disabled no-op ────────────────────────────────────
@@ -390,9 +415,10 @@ class TestAgentIdAttribution:
             assert nodes[0].agent_id != "default"
 
     def test_h3_world_blocked_default_never_consumed(self, tmp_path):
-        """H.3 (EH-2 R1 修訂): world 事件（actor_id=None）→ submit 阻斷昇華。
-        世界情報不得昇華成「我成為」（D2 裁定垂直防火牆）——「default」節點
-        不因 world 事件產生;此路徑是昇華鏈阻斷, 非 actor 歸屬語義。"""
+        """H.3 (EH-2.1 R1 收斂): 外部媒體事件 world:news_event（actor_id=None）→ submit 阻斷昇華。
+        外部媒體情報不得昇華成「我成為」（D2 裁定垂直防火牆;EH-2.1 收斂後僅
+        外部媒體阻斷, 環境/日程 events 不再在此路徑）——「default」節點
+        不因外部媒體事件產生;此路徑是昇華鏈阻斷, 非 actor 歸屬語義。"""
         writer = _make_writer(tmp_path)
         event = _create_event(
             writer,

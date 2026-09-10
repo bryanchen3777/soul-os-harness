@@ -93,6 +93,20 @@ VALID_PRODUCER_TRIGGER_TYPES: frozenset = frozenset({
 # M5.9-3 WorldInnerLifeAdapter 的 trigger_type 前缀（world:<type>）。
 WORLD_TRIGGER_PREFIX = "world:"
 
+# EH-2.1 R1 收斂（Owner 裁定, 契約 §4.3）: 昇華阻斷從「全部 world:*」收斂為
+# 「僅外部媒體情報」—— world:news* / world:feed* / world:celebrity_news 阻斷;
+# 環境與日程事件（world:weather* / world:rain* / world:calendar* /
+# world:user_going_outside*）放行 —— 陰晴風雨與主人行程是共同生活（Co-living）
+# 的感知邊界, 可 consume 進昇華鏈沉澱環境 Pattern（例:「這幾天都在下雨,
+# 主人出門要多加件衣裳」），不得感知閹割與行為回退。
+# _GERM_ANCHOR 核心: 「你成為誰必須來自你活過的事」—— 外界 BBC 新聞不是生活
+# 經歷; 但天氣/日程是兩人共同生活的環境感知。
+# 實際 world:<type> 全集（src/world/inner_life_adapter.py 白名單 + synthetic）:
+#   news_event / calendar_event / user_going_outside / rain_started /
+#   weather_temp_change（production）+ celebrity_news（TEST_B, synthetic）。
+WORLD_MEDIA_BLOCK_PREFIXES: tuple = ("world:news", "world:feed")
+WORLD_MEDIA_BLOCK_EXACT: frozenset = frozenset({"world:celebrity_news"})
+
 # EH-2 垂直防火牆 R1（契約 §4.3）: origin == external_world 一律嚴禁進入昇華鏈。
 # 常數由 src/memory/sage/horizon.py 提供（單一事實來源, 輕量常數, 無重依賴）。
 _ORIGIN_EXTERNAL_WORLD = "external_world"
@@ -115,6 +129,28 @@ def _is_valid_producer_trigger(trigger_type: str) -> bool:
     return (
         trigger_type in VALID_PRODUCER_TRIGGER_TYPES
         or trigger_type.startswith(WORLD_TRIGGER_PREFIX)
+    )
+
+
+def is_world_media_trigger(trigger_type: str) -> bool:
+    """EH-2.1 R1 阻斷判定: 該 ``world:*`` trigger_type 是否為「外部媒體情報」。
+
+    True  → 外部媒體情報（``world:news*`` / ``world:feed*`` /
+      ``world:celebrity_news``）: 不得 consume、不得產 pattern 候選
+      （外界新聞情報不是這個靈魂活過的事, 不得沉澱成「我成為」）。
+    False → 0 阻斷。含環境與日程事件（``world:weather*`` / ``world:rain*`` /
+      ``world:calendar*`` / ``world:user_going_outside*``）與所有非 ``world:*``
+      trigger —— 環境感知屬 lived experience 的感知邊界。
+
+    與 ``_is_valid_producer_trigger`` 的分工: 後者決定「能否成為合法
+    InnerLifeEvent producer」（全部 ``world:*`` 仍合法, 不受本函式影響），
+    本函式只決定「能否進入昇華鏈 consume」。
+    """
+    if not isinstance(trigger_type, str) or not trigger_type:
+        return False
+    return (
+        trigger_type in WORLD_MEDIA_BLOCK_EXACT
+        or trigger_type.startswith(WORLD_MEDIA_BLOCK_PREFIXES)
     )
 
 
@@ -353,11 +389,14 @@ class SubmissionGate:
 
         self._stats["accepted"] += 1
 
-        # EH-2 R1 (垂直防火牆, D2 裁定 / 契約 §4.3): external_world / news 昇華阻斷。
-        # ① producer-side: world:* 事件（news / weather / calendar 等世界情報）直接
-        #    阻斷 —— 不得 consume、不得產 pattern 候選（Checkpoint ①② 雙層都擋）。
+        # EH-2.1 R1 (垂直防火牆, D2 裁定 / 契約 §4.3, 收斂修訂):
+        # ① producer-side: 僅外部媒體情報（world:news* / world:feed* /
+        #    world:celebrity_news）直接阻斷 —— 不得 consume、不得產 pattern 候選
+        #    （Checkpoint ①② 雙層都擋）。環境與日程事件（world:weather* /
+        #    world:rain* / world:calendar* / world:user_going_outside*）放行,
+        #    屬共同生活的感知邊界, 可正常沉澱環境 Pattern。
         trigger_type = verdict.event.provenance.trigger_type
-        if trigger_type.startswith(WORLD_TRIGGER_PREFIX):
+        if is_world_media_trigger(trigger_type):
             self._stats["eh2_world_blocked"] += 1
             logger.info(
                 f"[SubmissionGate] EH-2 R1 BLOCKED (world→elevation 阻斷): "
@@ -420,6 +459,9 @@ class SubmissionGate:
 __all__ = [
     "VALID_PRODUCER_TRIGGER_TYPES",
     "WORLD_TRIGGER_PREFIX",
+    "WORLD_MEDIA_BLOCK_PREFIXES",
+    "WORLD_MEDIA_BLOCK_EXACT",
+    "is_world_media_trigger",
     "SubmissionGate",
     "SubmissionVerdict",
     "_is_valid_producer_trigger",

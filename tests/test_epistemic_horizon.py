@@ -46,6 +46,7 @@ from src.memory.sage.graph_store import GraphStore, _SCHEMA_VERSION
 from src.memory.sage.horizon import (
     HORIZON_AWARE,
     HORIZON_LEARNING,
+    MODERN_NATIVE_AGENTS,
     ORIGIN_ASSIMILATED,
     ORIGIN_EXTERNAL_WORLD,
     ORIGIN_LIVED_EXPERIENCE,
@@ -366,10 +367,26 @@ class TestHorizonBlockUnit:
         assert IDIOLECT_MARK not in block  # 空庫 → 無清單
 
     def test_modern_native_bypass(self):
-        """D3: agent_akane / agent_mai (現代原生) → Gate 直接返回 ""。"""
-        assert _format_horizon_block(_AGENT_AKANE) == ""
-        assert _format_horizon_block(_AGENT_MAI) == ""
-        assert _format_horizon_block(_AGENT_AKANE, session_context="新聞...") == ""
+        """D3 (EH-2.1 白名單補齊): 現代原生 7 角色 → Gate 直接返回 ""。
+
+        白名單盤點（personas/ 世界觀查證, 2026-09）:
+          現代校園/都市 → agent_akane / agent_mai / agent_anna / agent_aoi /
+                        agent_miku / agent_ruka / agent_yua
+          異世界/架空   → agent_ram / agent_rem / agent_mahiru（維持預設阻力,
+                        由 test_rem_resistance_block 覆蓋）。
+        """
+        assert MODERN_NATIVE_AGENTS == frozenset({
+            "agent_akane",
+            "agent_mai",
+            "agent_anna",
+            "agent_aoi",
+            "agent_miku",
+            "agent_ruka",
+            "agent_yua",
+        })
+        for agent_id in MODERN_NATIVE_AGENTS:
+            assert _format_horizon_block(agent_id) == ""
+            assert _format_horizon_block(agent_id, session_context="新聞...") == ""
 
     def test_idiolect_injected_from_sage(self, iso_env):
         """已內化 (assimilated+aware) → Idiolect 清單注入;learning 不注入。"""
@@ -566,6 +583,60 @@ class TestVerticalFirewall:
             event, [lived], agent_id=_AGENT_REM, store_dir=str(iso_env / "elevation")
         )
         assert nodes == []  # 0 consume / 0 pattern 候選 (不得以 fact 側偷渡)
+
+    def test_r1_env_events_allowed_into_elevation(self, iso_env):
+        """R1 (EH-2.1 收斂, Owner 裁定): 環境與日程事件 → 放行昇華鏈。
+
+        對照 test_r1_submission_gate_blocks_world_events（news 阻斷）:
+        陰晴風雨（world:rain_started / world:weather_temp_change）與主人作息行程
+        （world:calendar_event / world:user_going_outside）屬共同生活（Co-living）
+        的感知邊界 —— 可正常 consume 進昇華鏈沉澱環境 Pattern（「這幾天都在下雨,
+        主人出門要多加件衣裳」），不得感知閹割與行為回退。submit 與
+        run_elevation（defense-in-depth）雙路徑皆放行。"""
+        from src.inner_life import SubmissionGate
+
+        env_types = [
+            "world:rain_started",
+            "world:weather_temp_change",
+            "world:calendar_event",
+            "world:user_going_outside",
+        ]
+        writer = InnerLifeWriter()
+        for trigger_type in env_types:
+            event = writer.create_event(
+                provenance=Provenance(
+                    trigger_type=trigger_type,
+                    actor_id=None,
+                    source_system="narrative",
+                ),
+            )
+            # ① submit 路徑: 放行 (producer 合法 + 非外部媒體 → consume 產 pattern 候選)
+            gate = SubmissionGate(
+                writer=writer,
+                store_dir=str(iso_env / "elevation"),
+                agent_id=_AGENT_REM,
+            )
+            nodes = gate.submit(event.event_id)
+            assert len(nodes) == 1, trigger_type  # 1 pattern 候選 (不 elevate)
+            assert gate.get_stats()["eh2_world_blocked"] == 0, trigger_type
+            assert gate.get_stats()["consumed"] == 1, trigger_type
+            # ② run_elevation 直調 (defense-in-depth): 同步放行
+            writer2 = InnerLifeWriter()
+            event2 = writer2.create_event(
+                provenance=Provenance(
+                    trigger_type=trigger_type,
+                    actor_id=None,
+                    source_system="narrative",
+                ),
+            )
+            lived = Fact(subject="雷姆", predicate="感知", object=trigger_type)
+            nodes2 = run_elevation(
+                event2,
+                [lived],
+                agent_id=_AGENT_REM,
+                store_dir=str(iso_env / "elevation_env"),
+            )
+            assert len(nodes2) >= 1, trigger_type  # 環境事件正常進昇華
 
     def test_r3_assimilated_patterns_never_elevate(self, iso_env):
         """R3 封頂: assimilated 累積的 pattern 候選被剔除 -> 0 昇華 Belief。
