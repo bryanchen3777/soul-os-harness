@@ -284,7 +284,8 @@ class TestConsumeOnlyNeverElevate:
 
 class TestWorldTrigger:
     def test_f1_world_trigger_passes(self, tmp_path):
-        """F.1: world:news_event（M5.9-3 WorldInnerLifeAdapter 产生）→ ACCEPT。"""
+        """F.1: world:news_event（M5.9-3 WorldInnerLifeAdapter 产生）→ verify ACCEPT。
+        (EH-2 垂直防火牆只阻斷昇華, 不阻斷 InnerLifeEvent 產生/驗證 —— producer 合法。)"""
         writer = _make_writer(tmp_path)
         event = _create_event(
             writer,
@@ -295,8 +296,10 @@ class TestWorldTrigger:
         gate = _make_gate(writer, tmp_path)
         assert gate.verify(event.event_id).accepted
 
-    def test_f2_world_trigger_consumes(self, tmp_path):
-        """F.2: world:rain_started → submit consume 产 pattern。"""
+    def test_f2_world_trigger_blocked_from_elevation(self, tmp_path):
+        """F.2 (EH-2 R1, D2 裁定): world:rain_started → submit 阻斷昇華（R1 producer-side）。
+        origin=external_world / news 系一律嚴禁進入 run_elevation —— 不得 consume、
+        不得產 pattern 候選;既有 SG-1 whitelist 解凍路徑在昇華入口被垂直防火牆截斷。"""
         writer = _make_writer(tmp_path)
         event = _create_event(
             writer,
@@ -308,8 +311,9 @@ class TestWorldTrigger:
 
         nodes = gate.submit(event.event_id)
 
-        assert len(nodes) == 1
-        assert nodes[0].node_type == "pattern"
+        assert nodes == []  # EH-2 R1: 阻斷（0 consume / 0 pattern 候選）
+        stats = gate.get_stats()
+        assert stats["eh2_world_blocked"] == 1
 
 
 # ── G. 失败隔离 + disabled no-op ────────────────────────────────────
@@ -385,8 +389,10 @@ class TestAgentIdAttribution:
             assert nodes[0].agent_id == event.provenance.actor_id
             assert nodes[0].agent_id != "default"
 
-    def test_h3_world_keeps_default(self, tmp_path):
-        """H.3: world 事件（actor_id=None，不传 agent_id）→ 节点保持 "default"。"""
+    def test_h3_world_blocked_default_never_consumed(self, tmp_path):
+        """H.3 (EH-2 R1 修訂): world 事件（actor_id=None）→ submit 阻斷昇華。
+        世界情報不得昇華成「我成為」（D2 裁定垂直防火牆）——「default」節點
+        不因 world 事件產生;此路徑是昇華鏈阻斷, 非 actor 歸屬語義。"""
         writer = _make_writer(tmp_path)
         event = _create_event(
             writer,
@@ -400,8 +406,8 @@ class TestAgentIdAttribution:
 
         nodes = gate.submit(event.event_id)  # 不传 agent_id（EL-OWN-0 决策 #2）
 
-        assert len(nodes) == 1
-        assert nodes[0].agent_id == "default"  # system-level，无 agent 语义
+        assert nodes == []  # EH-2 R1: 阻斷（0 consume / 0 pattern / 0 soul node）
+        assert gate.get_stats()["eh2_world_blocked"] == 1
 
     def test_h4_gate_constructor_agent_id_default(self, tmp_path):
         """H.4: Gate 构造 agent_id 作默认；submit 不传时用之，显式传则覆盖。"""

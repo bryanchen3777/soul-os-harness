@@ -317,12 +317,13 @@ def test_adapter_does_not_reference_sage_write_path():
 # ── H. agent_id 传递链（EL-OWN-0）────────────────────────────────────
 
 
-def _make_world_event() -> "InnerLifeWriter":
-    """world 语义事件：actor_id=None（无 agent actor）。"""
+def _make_non_agent_event() -> "InnerLifeWriter":
+    """non-agent 語義事件：actor_id=None（負向歸屬測試用; EH-2 R1 後不再用
+    world:* 事件測 run_elevation —— world 事件已被垂直防火牆阻斷昇華）。"""
     writer = InnerLifeWriter()
     return writer.create_event(
         provenance=Provenance(
-            trigger_type="world:news_event",
+            trigger_type="diary:night",
             actor_id=None,
             source_system="narrative",
         ),
@@ -331,7 +332,7 @@ def _make_world_event() -> "InnerLifeWriter":
 
 def test_run_elevation_explicit_agent_id_attribution(tmp_path):
     """H.1: run_elevation(agent_id=...) → 节点归属该灵魂（即使 actor_id=None）。"""
-    event = _make_world_event()
+    event = _make_non_agent_event()
     store_dir = tmp_path / "elevation"
 
     nodes = run_elevation(event, [], agent_id="agent_rem", store_dir=store_dir)
@@ -348,11 +349,52 @@ def test_run_elevation_explicit_agent_id_attribution(tmp_path):
 
 
 def test_run_elevation_no_agent_id_keeps_default(tmp_path):
-    """H.2: 不传 agent_id + actor_id=None（world 路径）→ 节点保持 "default"。"""
-    event = _make_world_event()
+    """H.2: 不传 agent_id + actor_id=None → 节点保持 "default"。"""
+    event = _make_non_agent_event()
     nodes = run_elevation(event, [], store_dir=tmp_path / "elevation")
     assert len(nodes) == 1
     assert nodes[0].agent_id == "default"  # 引擎兜底 self._agent_id="default"
+
+
+def test_run_elevation_world_event_blocked_defense_in_depth(tmp_path):
+    """EH-2 R1 (defense-in-depth): world:* 事件直接調 run_elevation 也被阻斷。"""
+    writer = InnerLifeWriter()
+    event = writer.create_event(
+        provenance=Provenance(
+            trigger_type="world:news_event",
+            actor_id=None,
+            source_system="narrative",
+        ),
+    )
+    nodes = run_elevation(event, [], store_dir=tmp_path / "elevation")
+    assert nodes == []
+
+
+def test_run_elevation_external_world_facts_filtered(tmp_path):
+    """EH-2 R1: memory_facts 中 origin == external_world 剔除；lived_experience 放行。"""
+    from src.memory.sage.models import Fact
+
+    writer = InnerLifeWriter()
+    event = writer.create_event(
+        provenance=Provenance(
+            trigger_type="diary:night",
+            actor_id="agent_rem",
+            source_system="narrative",
+        ),
+    )
+    ext = Fact(subject="雷姆", predicate="聽到", object="新聞：某國火箭發射")
+    ext.origin = "external_world"
+    ext.horizon_state = "aware"
+    lived = Fact(subject="雷姆", predicate="與主人", object="一起散步")
+    lived.origin = "lived_experience"
+    lived.horizon_state = "aware"
+
+    nodes = run_elevation(event, [ext, lived], store_dir=tmp_path / "elevation")
+
+    assert len(nodes) == 2  # 事件 1 + lived_experience fact 1 (external_world 被剔除)
+    contents = [n.content for n in nodes]
+    assert any("散步" in c for c in contents)
+    assert not any("火箭" in c for c in contents)
 
 
 def test_run_elevation_memory_facts_inherit_explicit_agent_id(tmp_path):

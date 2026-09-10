@@ -313,11 +313,16 @@ class TestPigFilterV2(unittest.TestCase):
             f"(e) v5 migration 應該加 source_pair 欄位, 實際欄位: {col_names}"
         )
 
-        # 確認 schema_version 是目前版本 (MR-2: v7 加 valid_from/invalidated_at)
+        # 確認 schema_version 是目前版本 (EH-2: v9 雙維度 Schema)
         row = conn.execute("SELECT value FROM schema_meta WHERE key='version'").fetchone()
         self.assertEqual(int(row["value"]), _SCHEMA_VERSION,
                          f"(e) schema_version 應為 {_SCHEMA_VERSION}, 實際: {row['value']}")
-        self.assertEqual(_SCHEMA_VERSION, 7, f"(e) _SCHEMA_VERSION 應為 7, 實際: {_SCHEMA_VERSION}")
+        self.assertEqual(_SCHEMA_VERSION, 9, f"(e) _SCHEMA_VERSION 應為 9, 實際: {_SCHEMA_VERSION}")
+
+        # EH-2 v9: 雙維度欄位存在 (additive migration 冪等)
+        self.assertIn("origin", col_names, f"(e) v9 migration 應該加 origin 欄位")
+        self.assertIn("horizon_state", col_names, f"(e) v9 migration 應該加 horizon_state 欄位")
+        self.assertIn("learned_at", col_names, f"(e) v9 migration 應該加 learned_at 欄位")
 
         gs.close()
         print(f"[v2 (e)] schema migration v5 OK: source_pair column exists, version=5")

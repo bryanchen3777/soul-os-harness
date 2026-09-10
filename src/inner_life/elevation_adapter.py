@@ -60,6 +60,52 @@ EDGES_FILENAME = "elevation_edges.jsonl"
 # CATEGORY_TRIGGER_TYPES 分支，依 provenance 里的 category 决定先验维度）。
 _EVENT_TYPE_MEMORY_FACT = "memory_fact"
 
+# EH-2 垂直防火牆（契約 §4.3）: WORLD_TRIGGER_PREFIX 與 submission_gate 同源
+# （M5.9-3 WorldInnerLifeAdapter 產生的 world:<type>）; origin 常數由
+# src/memory/sage/horizon.py 提供（單一事實來源, 輕量常數）。
+_WORLD_TRIGGER_PREFIX = "world:"
+_ORIGIN_EXTERNAL_WORLD = "external_world"
+_ORIGIN_ASSIMILATED = "assimilated"
+
+
+def _fact_origin(fact: Any) -> str:
+    """SAGE Fact 的 origin 標記（EH-2 additive; 缺省空字串 = 未標記, 不阻斷）。"""
+    return str(getattr(fact, "origin", None) or "")
+
+
+def _load_fact_origins(agent_id: str) -> dict[str, str]:
+    """讀該 agent 的 SAGE graph.sqlite 建 fact_id → origin 映射（EH-2 R3 用）。
+
+    位置: ``data_root()/memory/{agent_id}/graph.sqlite``（對齊 MemoryMiddleware 佈局）。
+    純讀（一般連線 + SELECT-only, 0 資料寫入）;fail-silent:
+    檔案不存在 / 舊庫無 origin 欄 / 任何異常 → 回 {}（不阻斷既有昇華主路徑）。
+    """
+    if not agent_id:
+        return {}
+    try:
+        from src.paths import data_root
+
+        db_path = data_root() / "memory" / agent_id / "graph.sqlite"
+        if not db_path.exists():
+            return {}
+        import sqlite3
+
+        # 不能用 URI mode=ro: SAGE 走 WAL 模式 — sqlite 的唯讀連線無法讀 WAL
+        # (SQLITE_READONLY_CANTLOCK), 會靜默失敗。一般連線配 SELECT-only
+        # 即為讀側 (0 資料寫入; 僅可能產生 transient -shm)。
+        conn = sqlite3.connect(str(db_path))
+        try:
+            rows = conn.execute(
+                "SELECT fact_id, origin FROM facts "
+                "WHERE origin IS NOT NULL AND origin != ''"
+            ).fetchall()
+            return {r[0]: r[1] for r in rows}
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 — fail-silent: 讀不到 origin 不阻斷昇華
+        logger.debug(f"[elevation] _load_fact_origins 失敗: {type(exc).__name__}: {exc}")
+        return {}
+
 
 def _utcnow_iso() -> str:
     """当前 UTC 时刻的 ISO 8601 字符串。"""
@@ -201,6 +247,9 @@ def sage_fact_to_input(fact: Any, *, agent_id: Optional[str] = None) -> Elevatio
         "source": fact.source,
         "session_id": fact.session_id,
         "inner_life_event_id": fact.inner_life_event_id,
+        # EH-2 (additive metadata): origin 標記隨 provenance 落庫, 供 R3 審查
+        # （assimilated 知識封頂 Fact/Pattern/Meaning, 禁入 Belief/Value/Trait/Essence）。
+        "origin": getattr(fact, "origin", None),
     }
     return ElevationInput(
         event_type=_EVENT_TYPE_MEMORY_FACT,
@@ -294,9 +343,29 @@ def run_elevation(
     """
     try:
         resolved_dir = _resolve_store_dir(store_dir)
-        # 1) 归一化输入：事件 + 全部记忆 fact。
+
+        # EH-2 R1 垂直防火牆 defense-in-depth（契約 §4.3 Checkpoint ②, 雙層都擋）:
+        # ① 事件層: world:* 外部世界事件（news / weather / calendar）一律阻斷 ——
+        #    不得 consume、不得產 pattern 候選（Submission Gate 已擋, 這裡是
+        #    ElevationObserver / 直接呼叫路徑的第二道防線）。
+        ev_prov = getattr(inner_life_event, "provenance", None)
+        ev_trigger = str(getattr(ev_prov, "trigger_type", "") or "")
+        if ev_trigger.startswith(_WORLD_TRIGGER_PREFIX):
+            logger.info(
+                f"[elevation] EH-2 R1 BLOCKED (defense-in-depth): "
+                f"world:* 事件不入昇華 ({ev_trigger})"
+            )
+            return []
+
+        # ② fact 層: memory_facts 中 origin == external_world 剔除（不進 inputs）。
+        visible_facts = [
+            m for m in memory_facts
+            if _fact_origin(m) != _ORIGIN_EXTERNAL_WORLD
+        ]
+
+        # 1) 归一化输入：事件 + 全部可见记忆 fact。
         inputs: List[ElevationInput] = [_to_input(inner_life_event, agent_id=agent_id)]
-        inputs.extend(_to_input(m, agent_id=agent_id) for m in memory_facts)
+        inputs.extend(_to_input(m, agent_id=agent_id) for m in visible_facts)
 
         # 2) 构造引擎：注入 LLM + soul-elevation 自有 trace writer（写到 data/elevation/）。
         #    EL-OWN-0 传递链：run_elevation(agent_id) → InternalizingEngine(agent_id)，
@@ -531,9 +600,38 @@ def elevate_matured_patterns(
             )
             # 候选维度分组（保持创建顺序），每组取第一个 pattern 为升华锚点
             # （elevate 内部聚合同候选维度的全部 pattern 有效证据边）。
+            # EH-2 R3（垂直防火牆, D2 裁定 / 契約 §4.3）: assimilated 知識封頂
+            # Fact/Pattern/Meaning —— 嚴禁穿透 Belief/Value/Trait/Essence。
+            # 候選審查: 依 evidence 邊的 sage_fact source_id → SAGE origin 判定,
+            # 「由 assimilated fact 累積出的 pattern」直接剔出候選 group（不當錨點）。
+            fact_origins = _load_fact_origins(agent_id)
+            eh2_blocked_patterns: set[str] = set()
+            if fact_origins:
+                assimilated_source_ids = {
+                    e.source_id
+                    for e in engine._edges
+                    if str(e.source_type) == "sage_fact"
+                    and fact_origins.get(e.source_id) == _ORIGIN_ASSIMILATED
+                }
+                if assimilated_source_ids:
+                    for nid, node in engine._nodes.items():
+                        if node.node_type != "pattern":
+                            continue
+                        pattern_sources = {
+                            e.source_id
+                            for e in engine._edges if e.node_id == nid
+                        }
+                        if pattern_sources & assimilated_source_ids:
+                            eh2_blocked_patterns.add(nid)
+                            logger.info(
+                                f"[elevate] EH-2 R3 SKIP pattern={nid[:8]}... "
+                                f"(assimilated 封頂, 禁入 Belief/Value/Trait/Essence)"
+                            )
             candidates: dict[str, list[str]] = {}
             for nid, node in engine._nodes.items():
                 if node.node_type != "pattern":
+                    continue
+                if nid in eh2_blocked_patterns:
                     continue
                 candidates.setdefault(node.candidate_node_type, []).append(nid)
 
@@ -542,25 +640,42 @@ def elevate_matured_patterns(
             for cand, pids in candidates.items():
                 if not pids:
                     continue
+                # EH-2 R3 計票層隔離: engine.elevate 按「候選維度」聚合全部 pattern 的
+                # 有效證據邊 — 被 R3 封頂的 pattern 即使不當錨點, 其證據邊仍會參與
+                # 同維度計票。故在 elevate 前先把被封頂 pattern 的有效證據邊暫時
+                # 失效 (valid_until_ts 置標), 使其 0 參與計票 / 0 被複製到靈魂節點;
+                # 證據不足 (ValueError, 無副作用) 或異常時還原, 不永久丟失。
+                _EH2_SENTINEL = "_eh2_r3_blocked"
+                neutralized: List[Any] = []
+                for e in engine._edges:
+                    if e.node_id in eh2_blocked_patterns and e.valid_until_ts is None:
+                        neutralized.append(e)
+                        e.valid_until_ts = _EH2_SENTINEL
                 try:
                     soul = engine.elevate(pids[0], min_evidence=min_evidence)
-                    agent_elevated.append(soul)
-                    elevated.append(soul)
-                    logger.info(
-                        f"[elevate] ✓ agent={agent_id} candidate={cand} "
-                        f"patterns={len(pids)} → {soul.node_type} "
-                        f"(min_evidence={min_evidence})"
-                    )
                 except ValueError as exc:
                     # 独立证据不足 → 不升（不提前）。这是常态（多数组未达阈值）。
+                    for e in neutralized:
+                        e.valid_until_ts = None
                     logger.info(
                         f"[elevate] skip agent={agent_id} candidate={cand}: {exc}"
                     )
+                    continue
                 except Exception as exc:  # noqa: BLE001 — 失败隔离
+                    for e in neutralized:
+                        e.valid_until_ts = None
                     logger.warning(
                         f"[elevate] failed agent={agent_id} candidate={cand}: "
                         f"{type(exc).__name__}: {exc}"
                     )
+                    continue
+                agent_elevated.append(soul)
+                elevated.append(soul)
+                logger.info(
+                    f"[elevate] ✓ agent={agent_id} candidate={cand} "
+                    f"patterns={len(pids)} → {soul.node_type} "
+                    f"(min_evidence={min_evidence})"
+                )
             # 只 append 本次新增的边（加载的历史边不重复写，supersede 原地改不动文件）。
             _persist_result(
                 resolved_dir, agent_elevated, engine.evidence_edges[baseline_edges:]

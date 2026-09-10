@@ -204,6 +204,18 @@ class TestM3PromptIntegrity(unittest.TestCase):
         self.assertNotIn("[世界感知]", sys_no, "P10: world='' 不應有 [世界感知]")
         self.assertIn("[世界感知]", sys_with, "P10: world='X' 應有 [世界感知]")
 
+        # EH-2 (Epistemic Horizon): 外部新聞進入時, 異世界/架空角色 (非現代原生) 的
+        # HORIZON block 多一段「外部未解動態」降級標記 — 這是設計行為 (契約 §2.3 D1);
+        # 驗證它出現, 並在 backward-compat 比較前剝離 (它屬 Horizon block, 非 world 區塊)。
+        _EH2_DEMOTION = (
+            "若有外部世界的動態（新聞、世界事件）出現，對你而言屬「外部未解動態」：\n"
+            "你不具備對其技術或政治背景的預設理解；不解讀、不分析，僅以當下感知回應。\n"
+        )
+        if "外部未解動態" in sys_with:
+            self.assertIn(_EH2_DEMOTION, sys_with, "EH-2: world 進入應有 Horizon 降級標記")
+            sys_with = sys_with.replace(_EH2_DEMOTION, "")
+        self.assertNotIn("外部未解動態", sys_no, "EH-2: world='' 不應有降級標記")
+
         # 2. 移除 [世界感知] 區塊後, 兩者應完全等價 (backward compat)
         # [世界感知] 區塊到下一個區塊 (Bry 最近訊息 或 ## 當下時間) 之前的部分
         # 簡化: 找 [世界感知] 開頭, 找下一個 \n## 或 \n[Bry (group chat) 結尾

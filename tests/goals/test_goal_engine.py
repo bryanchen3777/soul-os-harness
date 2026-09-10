@@ -172,12 +172,12 @@ class TestSchemaV8Migration:
 
         gs = GraphStore(db_path=db)
 
-        # 版本升级 7 → 8
+        # 版本升级 7 → 9 (EH-2 v9 雙維度 Schema; EH-1.1 契約 §3.2)
         conn = sqlite3.connect(db)
         row = conn.execute(
             "SELECT value FROM schema_meta WHERE key='version'"
         ).fetchone()
-        assert row[0] == str(_SCHEMA_VERSION) == "8"
+        assert row[0] == str(_SCHEMA_VERSION) == "9"
 
         # goals 表 + 索引建立
         tables = {r[0] for r in conn.execute(
@@ -207,14 +207,16 @@ class TestSchemaV8Migration:
         gs.close()
 
     def test_fresh_db_creates_v8(self, iso_env):
-        """空库 → 直接建到 v8（幂等 CREATE IF NOT EXISTS）。"""
+        """空库 → 直接建到 v9（幂等 CREATE IF NOT EXISTS; EH-2 v9 雙維度 Schema）。"""
         db = iso_env / "memory" / AGENT / "graph.sqlite"
         gs = GraphStore(db_path=db)
         conn = sqlite3.connect(db)
         row = conn.execute(
             "SELECT value FROM schema_meta WHERE key='version'"
         ).fetchone()
-        assert row[0] == "8"
+        assert row[0] == "9"
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(facts)").fetchall()}
+        assert {"origin", "horizon_state", "learned_at"} <= cols
         assert "goals" in {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )}
@@ -230,7 +232,7 @@ class TestSchemaV8Migration:
         self._build_v7_db(db)
         for _ in range(3):
             gs = GraphStore(db_path=db)
-            assert _SCHEMA_VERSION == 8
+            assert _SCHEMA_VERSION == 9  # EH-2 v9 (雙維度 Schema)
             assert len(gs.get_all_facts(min_weight=0.0)) == 1
             gs.close()
 

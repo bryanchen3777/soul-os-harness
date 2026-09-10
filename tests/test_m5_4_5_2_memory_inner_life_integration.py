@@ -185,9 +185,9 @@ class TestSectionC_GraphStoreSchemaV6:
     """GraphStore schema v6 migration (idempotent, NOT data migration)."""
 
     def test_c1_schema_version_bumped_to_6(self):
-        """C1: _SCHEMA_VERSION = 8 (MR-2 adds valid_from/invalidated_at columns; M5.4-5.2 added inner_life_event_id at v6; TG-2 added goals at v8)."""
+        """C1: _SCHEMA_VERSION = 9 (MR-2 adds valid_from/invalidated_at columns; M5.4-5.2 added inner_life_event_id at v6; TG-2 added goals at v8; EH-2 added origin/horizon_state/learned_at at v9)."""
         from src.memory.sage import graph_store
-        assert graph_store._SCHEMA_VERSION == 8
+        assert graph_store._SCHEMA_VERSION == 9
 
     def test_c2_v6_migration_adds_column_to_existing_v5_db(self, tmp_data_dir):
         """C2: 既有 v5 database (沒有 inner_life_event_id column) 自動 ALTER TABLE 加上去."""

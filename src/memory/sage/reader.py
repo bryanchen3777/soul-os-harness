@@ -29,6 +29,21 @@ def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
 
 
+# EH-2 (Epistemic Horizon, 契約 EH-1.1 §3.3/§3.4/§5 不變量 5):
+# 檢索端三態過濾 — 僅對三態 origin (assimilated / external_world) 生效:
+# 解讀層只命中 aware;unknown / learning 不過給解讀層 (工具路由仍可見)。
+# 非三態 origin (native_commons / lived_experience / 未標記 None) 一律放行,
+# 與遷移前行為逐位一致。
+_HORIZON_3STATE_ORIGINS = frozenset({"assimilated", "external_world"})
+
+
+def _horizon_visible(fact: Fact) -> bool:
+    origin = getattr(fact, "origin", None) or ""
+    if origin not in _HORIZON_3STATE_ORIGINS:
+        return True
+    return (getattr(fact, "horizon_state", None) or "") == "aware"
+
+
 class MemoryReader:
     """Reader v4: sigmoid 正規化 + diversity penalty + retrieval feedback hook"""
 
@@ -229,12 +244,18 @@ class MemoryReader:
             for fact in self.store.get_facts_as_of(as_of):
                 if fact.weight < min_weight:
                     continue
+                # EH-2: 三態過濾 (assimilated/external_world 僅 aware 進解讀層)
+                if not _horizon_visible(fact):
+                    continue
                 if fact.fact_id not in seen_ids:
                     candidates.append(fact)
                     seen_ids.add(fact.fact_id)
             return candidates
         for kw in keywords:
             for fact in self.store.search_by_entity(kw, min_weight=min_weight):
+                # EH-2: 三態過濾 (assimilated/external_world 僅 aware 進解讀層)
+                if not _horizon_visible(fact):
+                    continue
                 if fact.fact_id not in seen_ids:
                     candidates.append(fact)
                     seen_ids.add(fact.fact_id)
@@ -272,7 +293,13 @@ class MemoryReader:
                     source=data.get("source", "user"),
                     fact_id=fid,
                     session_id=data.get("session_id", ""),
+                    # EH-2: chain 事实携带双维度, 供三态过滤 (仅 aware 进解读层)
+                    origin=data.get("origin"),
+                    horizon_state=data.get("horizon_state"),
+                    learned_at=data.get("learned_at"),
                 ))
+            # EH-2: 三态过滤 — 未放行 (unknown/learning) 的 concept fact 不进 chain
+            chain = [f for f in chain if _horizon_visible(f)]
             chain_key = frozenset(f.fact_id for f in chain)
             if chain and chain_key not in seen_chain_keys:
                 chains.append(chain)
@@ -339,6 +366,10 @@ class MemoryReader:
             ][:top_k]
         else:
             facts = self.store.get_all_facts(min_weight=0.5)[:top_k]
+        # EH-2 (契約 §3.4): fallback 排除未放行 concept fact —
+        # unknown / learning 不進 fallback 召回;非三態 origin (含未標記既有 fact)
+        # 不套用新增過濾 (維持既有可見性)。
+        facts = [f for f in facts if _horizon_visible(f)]
         # 修法 1: 跟 _gather_candidates 一致, Bry 拍板防呆「空 source_pair 保留」
         if source_pair_filter is not None:
             facts = [

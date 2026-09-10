@@ -93,6 +93,15 @@ VALID_PRODUCER_TRIGGER_TYPES: frozenset = frozenset({
 # M5.9-3 WorldInnerLifeAdapter 的 trigger_type 前缀（world:<type>）。
 WORLD_TRIGGER_PREFIX = "world:"
 
+# EH-2 垂直防火牆 R1（契約 §4.3）: origin == external_world 一律嚴禁進入昇華鏈。
+# 常數由 src/memory/sage/horizon.py 提供（單一事實來源, 輕量常數, 無重依賴）。
+_ORIGIN_EXTERNAL_WORLD = "external_world"
+
+
+def _fact_origin(fact: Any) -> str:
+    """SAGE Fact 的 origin 標記（EH-2 additive; 缺省空字串 = 未標記, 不阻斷）。"""
+    return str(getattr(fact, "origin", None) or "")
+
 
 def _is_valid_producer_trigger(trigger_type: str) -> bool:
     """producer 合法判断：8 个 TRIGGER_TYPE_* 常量 或 ``world:*`` 前缀。
@@ -198,6 +207,8 @@ class SubmissionGate:
             "consumed": 0,
             "consume_failures": 0,
             "identity_firewall_rejected": 0,  # SI-2.1: 防线 3 拒绝计数
+            "eh2_world_blocked": 0,           # EH-2 R1: world:* 外部世界事件昇華阻斷
+            "eh2_external_facts_filtered": 0,  # EH-2 R1: external_world facts 剔除計數
         }
         logger.info(
             f"[SubmissionGate] initialized "
@@ -342,6 +353,31 @@ class SubmissionGate:
 
         self._stats["accepted"] += 1
 
+        # EH-2 R1 (垂直防火牆, D2 裁定 / 契約 §4.3): external_world / news 昇華阻斷。
+        # ① producer-side: world:* 事件（news / weather / calendar 等世界情報）直接
+        #    阻斷 —— 不得 consume、不得產 pattern 候選（Checkpoint ①② 雙層都擋）。
+        trigger_type = verdict.event.provenance.trigger_type
+        if trigger_type.startswith(WORLD_TRIGGER_PREFIX):
+            self._stats["eh2_world_blocked"] += 1
+            logger.info(
+                f"[SubmissionGate] EH-2 R1 BLOCKED (world→elevation 阻斷): "
+                f"trigger_type={trigger_type!r} event_id={event_id[:12]}..."
+            )
+            return []
+
+        # ② fact 層: origin == external_world 的 memory_facts 剔除（不進 run_elevation）。
+        #    既有 facts 預設 lived_experience（v9 DEFAULT）→ 不影響自身經歷系昇華（R2）。
+        safe_facts = [
+            f for f in memory_facts
+            if _fact_origin(f) != _ORIGIN_EXTERNAL_WORLD
+        ]
+        if len(safe_facts) != len(memory_facts):
+            self._stats["eh2_external_facts_filtered"] += 1
+            logger.info(
+                f"[SubmissionGate] EH-2 R1 fact 過濾: "
+                f"{len(memory_facts) - len(safe_facts)} 條 external_world fact 不入昇華"
+            )
+
         # 只 consume（destination=pattern），永不 elevate。
         # run_elevation 内部只调 engine.consume()（产 pattern 候选节点）。
         try:
@@ -349,7 +385,7 @@ class SubmissionGate:
 
             nodes = run_elevation(
                 verdict.event,
-                memory_facts,
+                safe_facts,
                 llm=self._llm,
                 store_dir=self._store_dir,
                 agent_id=agent_id or self._agent_id,

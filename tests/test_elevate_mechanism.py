@@ -14,7 +14,7 @@ Elevate 调用机制（EL-DD-2：diary/dream → elevation 打通 + elevate 调�
   A. 不提前：独立证据不足（<2）不 elevate，只留 pattern
   B. 阈值达标：两条独立 diary 事件 → elevate 产 value（prior 基调），agent 归属正确
   C. dream → trait：两条独立 dream:dream 事件 → elevate 产 trait
-  D. world → belief：两条独立 world:news_event（default）→ elevate 产 belief，保持 "default"
+  D. world → 昇華阻斷（EH-2 R1 修訂）: world:news_event 一律嚴禁進入 run_elevation
   E. 幂等：已消化证据不重复计票，无新 consume 时再跑不产新节点
   F. agent 隔离：只聚合同一 agent 的 pattern 计票
   G. min_evidence 可配：3 条才升（min_evidence=3）
@@ -159,12 +159,13 @@ def test_c1_two_dream_events_elevate_to_trait(tmp_path):
     assert elevated[0].agent_id == "agent_yua"
 
 
-# ── D. world → belief（default 保持）─────────────────────────────────
+# ── D. world → elevation 阻斷（EH-2 R1 垂直防火牆, D2 裁定）────────────
 
 
-def test_d1_two_world_events_elevate_belief_default(tmp_path):
-    """两条独立 world:news_event（actor_id=None，不传 agent_id）→ elevate 产 belief，
-    归属保持 "default"（system-level，无具体灵魂语义）。"""
+def test_d1_world_events_blocked_from_elevation(tmp_path):
+    """EH-2 R1 修訂（D2 裁定, 契約 §4.3）: world:* 外部世界事件一律嚴禁進入
+    run_elevation —— 0 consume / 0 pattern 候選 / 0 昇華。原 SG-1 whitelist 解凍
+    路徑（F-2 審計發現的 news→信念 穿透通道）在昇華入口被垂直防火牆截斷。"""
     writer = InnerLifeWriter()
     store_dir = tmp_path / "elevation"
     for _ in range(2):
@@ -175,12 +176,32 @@ def test_d1_two_world_events_elevate_belief_default(tmp_path):
                 source_system="narrative",
             ),
         )
-        run_elevation(event, [], store_dir=store_dir)
+        # defense-in-depth: run_elevation fact 入口直接阻斷 (contract §4.3 Checkpoint ②)
+        nodes = run_elevation(event, [], store_dir=store_dir)
+        assert nodes == []
 
+    # world 事件不產任何 pattern → 無候選可升維
     elevated = elevate_matured_patterns(store_dir=store_dir)
-    assert len(elevated) == 1
-    assert elevated[0].node_type == "belief"  # world:news_event prior ("belief",)
-    assert elevated[0].agent_id == "default"
+    assert elevated == []
+    assert _write_node_types(store_dir) == []
+
+
+def test_d2_world_event_blocked_even_with_memory_facts(tmp_path):
+    """R1 防呆: world:* 事件即使帶 memory_facts 也整體阻斷（不得以 fact 側偷渡）。"""
+    writer = InnerLifeWriter()
+    store_dir = tmp_path / "elevation"
+    from src.memory.sage.models import Fact
+
+    event = writer.create_event(
+        provenance=Provenance(
+            trigger_type="world:news_event",
+            actor_id=None,
+            source_system="narrative",
+        ),
+    )
+    mem = Fact(subject="雷姆", predicate="聽到", object="某國發射火箭")
+    nodes = run_elevation(event, [mem], store_dir=store_dir)
+    assert nodes == []
 
 
 # ── E. 幂等：已消化证据不重复计票 ─────────────────────────────────────

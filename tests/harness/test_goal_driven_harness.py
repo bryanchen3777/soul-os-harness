@@ -180,7 +180,7 @@ def iso_env(tmp_path, monkeypatch):
     monkeypatch.setattr(gs_mod, "time", clock)
     monkeypatch.setattr(mp_mod, "time", clock)
 
-    # Schema v8 迁移预检: 全新库走迁移 → goals + facts 表, version=8
+    # Schema v9 迁移预检 (EH-2: v9 雙維度 Schema): 全新库走迁移 → goals + facts 表, version=9
     db = tmp_path / "memory" / AGENT / "graph.sqlite"
     db.parent.mkdir(parents=True, exist_ok=True)
     GraphStore(db_path=db).close()
@@ -189,7 +189,7 @@ def iso_env(tmp_path, monkeypatch):
         row = conn.execute(
             "SELECT value FROM schema_meta WHERE key='version'"
         ).fetchone()
-        assert row[0] == "8", f"Schema v8 迁移失败: version={row[0]}"
+        assert row[0] == "9", f"Schema v9 迁移失败: version={row[0]}"
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )}

@@ -42,6 +42,18 @@ class Fact:
     #   - 半開區間 [valid_from, invalidated_at): valid_from <= t < invalidated_at 時可見。
     valid_from: Optional[float] = None
     invalidated_at: Optional[float] = None
+    # EH-2 (Epistemic Horizon, 契約 EH-1.1 §3.2): 正交雙維度 Schema (v9 additive)
+    # origin: 資料源頭五類 — native_commons / native_episode / lived_experience /
+    #   assimilated / external_world。None = 未標記 (既有資料, 視為無新增約束;
+    #   DB 層 add_fact 未填時由 v9 欄位 DEFAULT 'lived_experience' 兜底)。
+    # horizon_state: 認知三態 — 僅 assimilated / external_world 走
+    #   unknown | learning | aware; 其餘 origin 不走三態 (預設 aware 僅為 DB 兜底,
+    #   檢索端只對三態 origin 套用過濾)。
+    # learned_at: Gate 顯式放行事件時間戳 (unix float)。None = 未曾被 Gate 放行。
+    #   內化判定唯一出口 = Gate 顯式放行事件 (契約 §3.3), 無第二條升到 aware 的路。
+    origin: Optional[str] = None
+    horizon_state: Optional[str] = None
+    learned_at: Optional[float] = None
 
     def to_dict(self) -> dict:
         return {
@@ -62,6 +74,9 @@ class Fact:
             "inner_life_event_id": self.inner_life_event_id,
             "valid_from":   self.valid_from,
             "invalidated_at": self.invalidated_at,
+            "origin":       self.origin,
+            "horizon_state": self.horizon_state,
+            "learned_at":   self.learned_at,
         }
 
     @classmethod
@@ -77,6 +92,10 @@ class Fact:
         # MR-1/MR-2: backward compat for pre-v7 Facts (v6 及以下的 facts 沒有時序欄位)
         d.setdefault("valid_from", None)
         d.setdefault("invalidated_at", None)
+        # EH-2: backward compat for pre-v9 Facts (v8 及以下的 facts 沒有雙維度欄位)
+        d.setdefault("origin", None)
+        d.setdefault("horizon_state", None)
+        d.setdefault("learned_at", None)
         return cls(**d)
 
     def validate(self) -> list[str]:

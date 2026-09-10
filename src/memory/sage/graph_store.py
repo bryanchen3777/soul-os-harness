@@ -18,7 +18,7 @@ logger = logging.getLogger("soul_os.sage.graph_store")
 
 # 每累積 N 次寫入才 commit（WAL 模式下安全）
 _BATCH_SIZE = 20
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 
 
 def _locked(method):
@@ -265,6 +265,46 @@ class GraphStore:
                 "ON goals(agent_id, state)"
             )
 
+        if from_version < 9:
+            # EH-2 (Epistemic Horizon, 契約 EH-1.1 §3.2/§8.3 — Owner 實作授權):
+            # SAGE facts 雙維度 Schema v9 — additive ALTER，重跑冪等。
+            # - origin: 資料源頭五類 (native_commons / native_episode /
+            #   lived_experience / assimilated / external_world)。
+            #   DEFAULT 'lived_experience'：既有 rows 回讀即得該值 (SQLite ADD COLUMN
+            #   語義)，視為自身經歷系 → 不套三態過濾、可正常昇華 (契約 §3.2/§4.3 R2)，
+            #   與遷移前行為逐位一致。
+            # - horizon_state: 認知三態 (unknown | learning | aware)，僅對三態 origin
+            #   (assimilated / external_world) 生效；DEFAULT 'aware' 僅為 DB 兜底，
+            #   非三態 origin 檢索端不套用過濾 (契約 §3.2「不走三態」)。
+            # - learned_at: Gate 顯式放行事件時間戳 (REAL, NULL = 未曾放行)。
+            # 仿 MR-1/MR-2 先例 (graph_store.py:210-238): try/except OperationalError
+            # 冪等 — 重跑不炸；不回溯標記既有資料 (契約 §3.2 空值防呆)。
+            try:
+                conn.execute(
+                    "ALTER TABLE facts ADD COLUMN origin TEXT "
+                    "DEFAULT 'lived_experience'"
+                )
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute(
+                    "ALTER TABLE facts ADD COLUMN horizon_state TEXT DEFAULT 'aware'"
+                )
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute(
+                    "ALTER TABLE facts ADD COLUMN learned_at REAL"
+                )
+            except sqlite3.OperationalError:
+                pass
+            # 檢索 index (additive): Idiolect 檢索 (origin + horizon_state) 與
+            # 檢索端三態過濾共用。
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_horizon "
+                "ON facts(origin, horizon_state)"
+            )
+
     def _row_to_fact(self, row: sqlite3.Row) -> Fact:
         d = dict(row)
         d.pop("tags", None)
@@ -282,6 +322,10 @@ class GraphStore:
         # MR-1/MR-2: 時序欄位向後相容 (v6 及以下的 DB 沒有這兩列)
         d.setdefault("valid_from", None)
         d.setdefault("invalidated_at", None)
+        # EH-2: 雙維度欄位向後相容 (v8 及以下的 DB 沒有這三列)
+        d.setdefault("origin", None)
+        d.setdefault("horizon_state", None)
+        d.setdefault("learned_at", None)
         return Fact(**d)
 
     def _load_from_db(self) -> None:
@@ -312,6 +356,10 @@ class GraphStore:
             # MR-1/MR-2: 時序維度同步到記憶體圖 (invalidate_fact 雙寫用)
             valid_from=fact.valid_from,
             invalidated_at=fact.invalidated_at,
+            # EH-2: 雙維度同步到記憶體圖 (reader chain 建構携带 origin, 供三態過濾)
+            origin=fact.origin,
+            horizon_state=fact.horizon_state,
+            learned_at=fact.learned_at,
         )
 
     @_locked
@@ -343,6 +391,59 @@ class GraphStore:
             conn.commit()
             self._pending_writes = 0
         return fact.fact_id
+
+    @_locked
+    def set_fact_dimensions(
+        self,
+        fact_id: str,
+        *,
+        origin: Optional[str] = None,
+        horizon_state: Optional[str] = None,
+        learned_at: Optional[float] = None,
+    ) -> bool:
+        """EH-2 (additive): 由寫入者 / Gate 事件側標記 fact 的雙維度。
+
+        不觸碰既有 add_fact 寫入主幹 (frozen, 契約 §8.1) — 既有寫入路徑維持
+        18 欄 INSERT 原樣, 新欄位由本 additive 方法依需 UPDATE。任一指標
+        為 None 則不更新該欄 (partial update)。fact_id 不存在 → False (no-op)。
+        冪等: 重複標記同一值不報錯。
+        """
+        if origin is None and horizon_state is None and learned_at is None:
+            return False
+        conn = self._get_conn()
+        assignments: list[str] = []
+        params: list[Any] = []
+        if origin is not None:
+            assignments.append("origin = ?")
+            params.append(origin)
+        if horizon_state is not None:
+            assignments.append("horizon_state = ?")
+            params.append(horizon_state)
+        if learned_at is not None:
+            assignments.append("learned_at = ?")
+            params.append(learned_at)
+        params.append(fact_id)
+        cur = conn.execute(
+            f"UPDATE facts SET {', '.join(assignments)} WHERE fact_id = ?",
+            params,
+        )
+        if cur.rowcount == 0:
+            return False
+        # 雙寫: 同步記憶體圖 edge (仿 update_weight / invalidate_fact 模式)
+        for u, v, k, data in self.graph.edges(keys=True, data=True):
+            if data.get("fact_id") == fact_id:
+                if origin is not None:
+                    self.graph[u][v][k]["origin"] = origin
+                if horizon_state is not None:
+                    self.graph[u][v][k]["horizon_state"] = horizon_state
+                if learned_at is not None:
+                    self.graph[u][v][k]["learned_at"] = learned_at
+                break
+        self._pending_writes += 1
+        if self._pending_writes >= self.batch_size:
+            conn.commit()
+            self._pending_writes = 0
+        return True
 
     @_locked
     def get_fact(self, fact_id: str) -> Optional[Fact]:
@@ -533,6 +634,23 @@ class GraphStore:
                    ORDER BY weight DESC, timestamp DESC""",
                 (f"%{entity}%", f"%{entity}%", f"%{entity}%", min_weight),
             ).fetchall()
+        return [self._row_to_fact(r) for r in rows]
+
+    @_locked
+    def get_idiolect_facts(self) -> list[Fact]:
+        """EH-2 (契約 §3.5): 撈取已內化 (assimilated + aware) 的 Idiolect 條目。
+
+        唯一判定 = Gate 顯式放行 (origin == 'assimilated' AND horizon_state == 'aware')。
+        依 weight DESC, timestamp DESC 排序 (確定性), 供 Horizon block 注入。
+        """
+        conn = self._get_conn()
+        rows = conn.execute(
+            """SELECT * FROM facts
+               WHERE origin = 'assimilated'
+                 AND horizon_state = 'aware'
+                 AND invalidated_at IS NULL
+               ORDER BY weight DESC, timestamp DESC""",
+        ).fetchall()
         return [self._row_to_fact(r) for r in rows]
 
     # ── Goals（TG-2, C-1 自主目标规划）─────────────────────────

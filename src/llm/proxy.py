@@ -654,6 +654,13 @@ def _build_messages_group(
 
     system_parts = [identity_anchor + soul.strip()]
 
+    # EH-2 (Epistemic Horizon): identity 之後、capability 之前注入 (契約 §2.1 唯一定序)
+    # HORIZON block —— 認知地平線投影: 界定「我知道/不知道的邊界」, 逐事件實例化
+    # (依 agent 現況 + 當前 world_context), 非全域靜態。fail-silent: 空字串。
+    horizon_block = _format_horizon_block(agent_id, session_context=world_context)
+    if horizon_block:
+        system_parts.append(horizon_block)
+
     # CA-2 (Soul Capability Awareness): identity 之後、emergent 之前注入
     # CAPABILITY block —— 靈魂對「我能做什麼」的認知投影（read-side, inference-time）。
     # 語義邊界: IDENTITY(從哪開始) → CAPABILITY(我能做什麼) → EMERGENT(成為什麼) → 記憶/內在生活。
@@ -1081,6 +1088,64 @@ def _format_emergent_block(agent_id: str) -> str:
         return ""
 
 
+def _format_horizon_block(agent_id: str, session_context: str = "") -> str:
+    """
+    EH-2 (Epistemic Horizon): 認知地平線讀側投影 (read-side, inference-time)。
+
+    語義順序 (契約 §2.1 唯一定序): IDENTITY → HORIZON → CAPABILITY → EMERGENT → 記憶。
+    HORIZON 在 identity 之後: 角色先確立「我是誰」, 再界定「我知道/不知道的邊界」;
+    在 capability 之前: 認知邊界先於能力宣告。
+
+    機制 (契約 §2.2/§2.3/§2.5):
+      - 逐事件實例化: 每次對話依 agent 現況動態生成, 非全域靜態宣告。
+      - D3 文明基底分流: 現代原生角色 (native_commons == modern_earth) →
+        直接返回 ""（fail-silent bypass, 現代常識是其固有常識）。
+      - 異世界/架空角色 (agent_rem 等): 注入負向約束 (約束 Interpretation,
+        不限制 Volition) — 對未內化現代事物無預設運作原理認知、允複述主人用詞、
+        禁現代專家/分析師/百科口吻。
+      - Idiolect 檢索 (契約 §3.5): origin == assimilated AND horizon_state == aware
+        的 SAGE 條目 → 「已理解的默契事物清單」, 二次遭遇自然流暢 (M7 達標)。
+      - World Context 降級 (D1): session_context 有外部新聞進入時, 包裹為
+        「外部未解動態」— 角色不具備預設技術/政治背景;不重複新聞正文 (新聞
+        正文仍在 M3 world block 原位, 0 既有塊移動, M5.13-3 先例)。
+      - fail-silent (契約 §2.2): 任何異常 → 返回 "" (不拋錯、不注入半截內容),
+        Gate 掛掉退行為「無 Horizon 塊」, 不影響既有管線。
+
+    措辭負向化 (契約 §2.4): 沿用 _GERM_ANCHOR 先例 — 寫「無預設認知/嚴禁解說」,
+    不寫正向宣言 (不注入全知)。
+    """
+    try:
+        from src.memory.sage.horizon import is_modern_native, retrieve_idiolect
+
+        # D3 fail-silent bypass: 現代原生角色的現代常識是固有常識, 0 注入
+        if is_modern_native(agent_id):
+            return ""
+
+        lines: List[str] = []
+        lines.append("[HORIZON-認知地平線]")
+        lines.append(
+            "你對未內化的現代事物（科技、數位、電氣概念）無預設運作原理認知；"
+            "允許自然複述主人用詞，嚴禁以現代專家、分析師或百科口吻解釋原理。"
+        )
+        idiolect = retrieve_idiolect(agent_id)
+        if idiolect:
+            lines.append("你已理解的默契事物清單（Idiolect）：")
+            for f in idiolect[:8]:
+                lines.append(f"- {f.subject} {f.predicate} {f.object}")
+            lines.append(
+                "以上是你已內化、可自然使用的稱呼與理解——知道不等於能解釋原理，"
+                "對其運作原理仍不主動解說。"
+            )
+        if session_context and str(session_context).strip():
+            lines.append(
+                "若有外部世界的動態（新聞、世界事件）出現，對你而言屬「外部未解動態」：\n"
+                "你不具備對其技術或政治背景的預設理解；不解讀、不分析，僅以當下感知回應。"
+            )
+        return "\n".join(lines)
+    except Exception:  # noqa: BLE001 — fail-silent: Gate 掛掉 = 無 Horizon 塊
+        return ""
+
+
 def _format_capability_block(agent_id: str) -> str:
     """
     CA-2 (Soul Capability Awareness): 把 CAPABILITY_DEFINITIONS 投影成 CAPABILITY block,
@@ -1171,6 +1236,13 @@ def _build_messages_private(
 
 
     system_parts = [identity_anchor + soul.strip()]
+
+    # EH-2 (Epistemic Horizon): identity 之後、capability 之前注入 (契約 §2.1 唯一定序)
+    # HORIZON block —— 認知地平線投影: 界定「我知道/不知道的邊界」, 逐事件實例化
+    # (依 agent 現況 + 當前 world_context), 非全域靜態。fail-silent: 空字串。
+    horizon_block = _format_horizon_block(agent_id, session_context=world_context)
+    if horizon_block:
+        system_parts.append(horizon_block)
 
     # CA-2 (Soul Capability Awareness): identity 之後、emergent 之前注入
     # CAPABILITY block —— 靈魂對「我能做什麼」的認知投影（read-side, inference-time）。
