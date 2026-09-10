@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import threading
+from functools import partial
 from pathlib import Path
 from typing import Any, Optional
 
@@ -245,7 +246,6 @@ class SAGELiteProvider:
                 f"(跳 graph 寫入, 仍 v1 mirror)"
             )
             loop = asyncio.get_event_loop()
-            from functools import partial
             await loop.run_in_executor(
                 None,
                 partial(
@@ -259,14 +259,21 @@ class SAGELiteProvider:
             self._cache.invalidate()
             return
         loop = asyncio.get_event_loop()
+        # MEM-WIRING-1 (P0 BUGFIX): run_in_executor 只收位置參數, 直接位置傳遞會把
+        # source_pair（第 5 位置參數）錯綁成 write_turn 的第 4 位置參數 skip_graph；
+        # 非空字串 truthy → skip_graph=True → 誤跳 graph.sqlite 萃取落庫。
+        # 修法: partial 以 keyword 繫結 source_pair / inner_life_event_id,
+        #       前三個位置參數 (user_content, assistant_content, session_id) 保留原序。
         await loop.run_in_executor(
             None,
-            self._writer.write_turn,
+            partial(
+                self._writer.write_turn,
+                source_pair=source_pair,
+                inner_life_event_id=inner_life_event_id,
+            ),
             last_user_msg,
             agent_reply,
             session_id,
-            source_pair,
-            inner_life_event_id,
         )
         self._cache.invalidate()
 
