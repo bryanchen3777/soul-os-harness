@@ -224,6 +224,20 @@ if (Test-Path $maintenanceLock) {
     }
 }
 
+# 0.5 崩潰 dump 收集 (CRASH-OBS-1, additive, 2026-09-10): 獨立小腳本把 Windows
+# WER 的 AppCrash_python.exe_* 報告 (.mdmp + Report.wer) 搶救到 data/crash_dumps/。
+# 獨立 process + 全 try/catch: 任何失敗只記 WARN, 0 影響 watchdog 判決與 Plan A。
+try {
+    $collector = Start-Process -FilePath 'powershell.exe' `
+        -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$harness\scripts\_collect_crash_dumps.ps1" `
+        -WorkingDirectory $harness `
+        -WindowStyle Hidden `
+        -PassThru
+    Log-Watch "  crash dump collector launched (PID $($collector.Id))"
+} catch {
+    Log-Watch "  WARN crash dump collector launch failed: $_"
+}
+
 # 1. 抓 git HEAD hash (P0-2 必要前置)
 $shortHash = Get-GitShortHash
 $fullHash = Get-GitFullHash

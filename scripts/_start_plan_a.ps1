@@ -1,4 +1,4 @@
-# _start_plan_a.ps1 - Soul OS Plan A Launcher
+﻿# _start_plan_a.ps1 - Soul OS Plan A Launcher
 # 用途: watchdog 偵測 server 死掉後呼叫此腳本拉新 server
 # Bry 拍板 2026-08-15 23:33 修法: 跟 server_ops.ps1 一樣明確指定
 # soul-os .venv python (有 networkx/telegram/icalendar 全部依賴), 不依賴系統 PATH
@@ -44,6 +44,16 @@ function Log-PlanA([string]$msg) {
     }
 }
 
+# CRASH-OBS-1 (2026-09-10): 載入共用 nohup log 輪替 helper
+# 盲區 i: Start-Process -RedirectStandard* 是 truncate 模式, 每次重啟會清掉
+# 崩潰實例的最後輸出 → 啟動前先把舊 data/server_nohup.{log,err} 改名保留。
+# 載入失敗只記 WARN, 絕不阻擋啟動 (觀測層 0 影響)。
+try {
+    . (Join-Path $PSScriptRoot '_nohup_log_rotation.ps1')
+} catch {
+    Log-PlanA "WARN failed to load nohup rotation helper (continue): $_"
+}
+
 # === 啟動前 sanity check ===
 if (-not (Test-Path $python)) {
     Log-PlanA "ERROR python not found at $python - Plan A FAILED"
@@ -61,6 +71,15 @@ try {
 } catch {
     Log-PlanA "ERROR pre-check exception: $_ - Plan A FAILED"
     exit 1
+}
+
+# === 啟動前: 輪替保留舊 nohup log (CRASH-OBS-1) ===
+# 崩潰實例的日誌必須永遠存活到被輪替, 不得在啟動時被清空。
+# 本函式由共用 helper 提供 (scripts\_nohup_log_rotation.ps1), 失敗不阻擋啟動。
+if (Get-Command Backup-Rotate-NohupLogs -ErrorAction SilentlyContinue) {
+    Backup-Rotate-NohupLogs -Root $root -BackupDir (Join-Path $root 'data\logs') -LogFn { param($m) Log-PlanA $m }
+} else {
+    Log-PlanA "WARN nohup rotation helper not loaded - skip rotation (start anyway)"
 }
 
 # === 啟動 server ===

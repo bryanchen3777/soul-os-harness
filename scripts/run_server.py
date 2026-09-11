@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -35,6 +36,17 @@ sys.path.insert(0, str(_root))
 #      每次 dump 覆寫 heartbeat_trace.log（只留最近一份,可讀性高），
 #      loop 死了就只靠 #2 的 append 檔
 #
+# CRASH-OBS-1 (2026-09-10, 崩潰觀測補洞 — 盲區 iii 修正):
+#   - dump_traceback_later 的週期 dump 沒有時間戳 → 由 _faulthandler_marker_loop
+#     (純 thread, 不依賴 asyncio) 每 60s: 先寫 `===== periodic dump @ <ISO> =====`
+#     標記行, 再重新註冊 timeout=1 的一次性 timer → 每次週期傾印都對齊牆鐘時間
+#     (實驗驗證: 重新註冊會取消舊 timer 並寫到新 file handle)。
+#   - 大小上限: faulthandler.log ≥ 32MB → 輪替為 faulthandler.<ts>.log (保留 3 份),
+#     避免無限期增長 (現況單檔 68.9MB / 94907 線程頭)。
+#   - marker/輪替全部 try/except 吞掉, marker 失敗時退回 repeat=True 保險;
+#     **不可移除** dump_traceback_later 這條 C-level 保險 (唯一能在 C 層崩潰
+#     時留下痕跡的機制)。
+#
 # 檔案控制代碼是**模組層級變數**,**不能**放在函式內（會被 GC 導致 dump 寫到關閉的 handle）
 import faulthandler
 
@@ -45,12 +57,117 @@ from src.async_utils import create_managed_task
 
 _FAULTHANDLER_PATH = data_root() / "faulthandler.log"
 _FAULTHANDLER_PATH.parent.mkdir(parents=True, exist_ok=True)
+# CRASH-OBS-1: 大小上限 (32MB; 現況 7 天 68.9MB) 與保留份數
+_FAULTHANDLER_MAX_BYTES = 32 * 1024 * 1024
+_FAULTHANDLER_KEEP = 3
+_FAULTHANDLER_MARKER_INTERVAL_SECS = 60
 _FAULTHANDLER_FILE = open(_FAULTHANDLER_PATH, "a", encoding="utf-8", buffering=1)  # line-buffered
-faulthandler.enable(file=_FAULTHANDLER_FILE)
-# 60 秒後第一次 dump,之後每 60 秒重複。檔案用 append,自然按時間順序排列。
-faulthandler.dump_traceback_later(timeout=60, repeat=True, file=_FAULTHANDLER_FILE)
-# Rotate 提醒：這個檔案會一直 append,如果手動看時太大,直接砍掉重來就好
-# (下次 dump 會重新建立檔案 append,不會丟歷史以外的內容)
+
+
+def _faulthandler_open() -> None:
+    """(re)open faulthandler.log 並重指 enable() + dump_traceback_later()。
+    輪替後呼叫; file handle 是模組層級變數, 重指後 marker loop 自動跟到新檔。"""
+    global _FAULTHANDLER_FILE
+    _FAULTHANDLER_FILE = open(_FAULTHANDLER_PATH, "a", encoding="utf-8", buffering=1)
+    faulthandler.enable(file=_FAULTHANDLER_FILE)
+    # C-level 保險 (不可移除): 獨立 thread 週期 dump, asyncio 卡死也能寫
+    faulthandler.dump_traceback_later(timeout=60, repeat=True, file=_FAULTHANDLER_FILE)
+
+
+def _faulthandler_rotate_if_needed() -> bool:
+    """faulthandler.log ≥ MAX → 關檔改名保留 → 重開重指; 吞掉所有例外。回傳是否輪替。"""
+    try:
+        if not _FAULTHANDLER_PATH.exists():
+            return False
+        if _FAULTHANDLER_PATH.stat().st_size < _FAULTHANDLER_MAX_BYTES:
+            return False
+        _FAULTHANDLER_FILE.flush()
+        _FAULTHANDLER_FILE.close()
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        rotated = _FAULTHANDLER_PATH.with_name(f"faulthandler.{ts}.log")
+        _FAULTHANDLER_PATH.replace(rotated)
+        _faulthandler_open()
+        old = sorted(_FAULTHANDLER_PATH.parent.glob("faulthandler.*.log"))
+        for p in old[: max(0, len(old) - _FAULTHANDLER_KEEP)]:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        try:
+            sys.stderr.write(f"[faulthandler] rotated -> {rotated.name} (size cap)\n")
+        except Exception:
+            pass
+        return True
+    except Exception:
+        # 輪替失敗: 若 handle 已關, 至少重開重指 (最壞繼續寫舊檔, 觀測層不崩)
+        try:
+            if getattr(_FAULTHANDLER_FILE, "closed", True):
+                _faulthandler_open()
+        except Exception:
+            pass
+        return False
+
+
+# 啟動即檢查: 上次殘留 ≥ 32MB → 立刻輪替 (每次重啟都重置大小上限)
+_faulthandler_rotate_if_needed()
+
+
+def _faulthandler_marker_tick() -> None:
+    """單次 marker tick (供 marker loop 與離線驗證呼叫):
+    1) 寫時間戳標記行; 2) 重註冊 1s 後的一次性 dump (標記後 ~1s 寫出);
+    3) 大小檢查輪替。任何例外由呼叫方吞掉。"""
+    iso = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    _FAULTHANDLER_FILE.write(f"\n===== periodic dump @ {iso} =====\n")
+    _FAULTHANDLER_FILE.flush()
+    faulthandler.dump_traceback_later(timeout=1, repeat=False, file=_FAULTHANDLER_FILE)
+    _faulthandler_rotate_if_needed()
+
+
+def _faulthandler_marker_loop() -> None:
+    """faulthandler 週期 dump 的時間戳對齊 + 大小輪替 (純 daemon thread)。
+
+    每 60s: marker tick; 失敗 → 退回 repeat=True 保險 (C-level 保險永不移除)。
+    所有例外吞掉: 觀測層絕不影響主服務。
+    """
+    while True:
+        time.sleep(_FAULTHANDLER_MARKER_INTERVAL_SECS)
+        try:
+            _faulthandler_marker_tick()
+        except Exception:
+            try:
+                faulthandler.dump_traceback_later(timeout=60, repeat=True, file=_FAULTHANDLER_FILE)
+            except Exception:
+                pass
+
+
+# === Heartbeat trace 快照 (CRASH-OBS-1, 盲區 ii 修正) ===
+# 盲區: _heartbeat_dumper 每 60s 覆寫 data/heartbeat_trace.log → 只剩最後一份,
+# 崩潰實例留下的最後 dump 會被下一次啟動的首次覆寫清掉。
+# 修法: 每次啟動 (dumper 首輪) 先把上一實例留下的 heartbeat_trace.log 快照為
+# heartbeat_trace.<ts>.log, 保留最近 10 份; 原路徑與語意不變 (scripts/state_report.py
+# 仍讀 data/heartbeat_trace.log)。快照失敗絕不影響 dumper 主循環。
+_HEARTBEAT_TRACE_KEEP = 10
+
+
+def _snapshot_heartbeat_trace(path: Path) -> None:
+    """把上一實例的 heartbeat_trace.log 快照保留 (內容逐 byte 拷貝)。"""
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            return
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        snap = path.with_name(f"heartbeat_trace.{ts}.log")
+        snap.write_bytes(path.read_bytes())
+        old = sorted(path.parent.glob("heartbeat_trace.*.log"))
+        for p in old[: max(0, len(old) - _HEARTBEAT_TRACE_KEEP)]:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    except Exception:
+        try:
+            sys.stderr.write("[heartbeat_dumper] snapshot skipped (non-fatal)\n")
+        except Exception:
+            pass
 
 logger = logging.getLogger("soul_os.server")
 
@@ -1445,7 +1562,11 @@ async def lifespan(app: FastAPI):
             try:
                 # 第一次等 30s（讓 init 跑完）,之後每 60s
                 await asyncio.sleep(30 if _first else 60)
-                _first = False
+                if _first:
+                    # CRASH-OBS-1: 首輪覆寫前, 先把上一實例留下的 heartbeat trace
+                    # 快照保留 (盲區 ii: 覆寫會清掉崩潰實例的最後輸出), 保留 10 份
+                    _snapshot_heartbeat_trace(_dumper_path)
+                    _first = False
                 with open(_dumper_path, "w", encoding="utf-8") as f:
                     f.write(f"=== {time.strftime('%Y-%m-%d %H:%M:%S')} (overwrite, every 60s) ===\n")
                     faulthandler.dump_traceback(file=f, all_threads=True)
@@ -1460,6 +1581,15 @@ async def lifespan(app: FastAPI):
 
     app.state._dumper_task = asyncio.create_task(_heartbeat_dumper())
     logger.info("[Server] heartbeat dumper 啟動 (60s/次, 寫 data/heartbeat_trace.log)")
+
+    # CRASH-OBS-1: 啟動 faulthandler marker thread (時間戳對齊 + 大小輪替)
+    # 純 daemon thread, 不依賴 asyncio; 崩潰/例外全部吞掉, 0 主服務影響
+    _fh_marker_thread = threading.Thread(
+        target=_faulthandler_marker_loop, name="faulthandler-marker", daemon=True
+    )
+    _fh_marker_thread.start()
+    app.state._faulthandler_marker_thread = _fh_marker_thread
+    logger.info("[Server] faulthandler marker thread 啟動 (60s/次, dump 加時間戳 + 大小輪替)")
 
     # ── Event loop self-check (Bry 拍板 2026-08-03 13:40) ───────
     # 跟 Lesson 38 dumper 互補:

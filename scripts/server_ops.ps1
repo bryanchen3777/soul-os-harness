@@ -1,4 +1,4 @@
-# server_ops.ps1 - Soul OS server deployment helper
+﻿# server_ops.ps1 - Soul OS server deployment helper
 # Usage (in PowerShell, no mavis session needed):
 #   cd C:\Users\bbfcc\.local\bin\soul-os-harness
 #   .\scripts\server_ops.ps1 start
@@ -48,6 +48,14 @@ function Write-OpsLog([string]$msg) {
     }
 }
 
+# CRASH-OBS-1 (2026-09-10): 載入共用 nohup log 輪替 helper (與 _start_plan_a.ps1 一致)
+# 失敗只記 WARN, 絕不阻擋啟動
+try {
+    . (Join-Path $PSScriptRoot '_nohup_log_rotation.ps1')
+} catch {
+    Write-OpsLog "WARN failed to load nohup rotation helper (continue): $_"
+}
+
 function Start-SoulOsServer {
     if (Get-ServerProcess) {
         Write-OpsLog "[skip] Server already running"
@@ -89,15 +97,13 @@ function Start-SoulOsServer {
     # (派工原話: 「沿用既有修法拼湊拒絕大改」)
     # 解決 8/7 17:31 cron 修法 12 一天回顧報告 ⚠️ (24h scheduler log 全丟, 因為 Start-Process
     # -RedirectStandardOutput 是 truncate 模式, 每次重啟都把歷史 log 清掉)
-    # 範圍: 只動 server_ops.ps1, 不加 log rotate / size limit 邏輯
-    # (Bry 派工 spirit: 「不為假設中的未來灑過濾網」)
-    $backupDir = Join-Path $root 'data\logs'
-    $backupTs = Get-Date -Format 'yyyyMMdd_HHmmss'
-    if (Test-Path $outLog) {
-        Move-Item -Path $outLog -Destination (Join-Path $backupDir "server_${backupTs}.log")
-    }
-    if (Test-Path $errLog) {
-        Move-Item -Path $errLog -Destination (Join-Path $backupDir "server_${backupTs}.err")
+    # CRASH-OBS-1 (2026-09-10): 改用共用輪替 helper (與 _start_plan_a.ps1 同一份邏輯):
+    #   - 命名統一為 server_nohup.<ts>.{err,log} (舊的 server_<ts> 備份檔不受影響)
+    #   - 各 ext 保留最近 5 份, 防止無限增長
+    if (Get-Command Backup-Rotate-NohupLogs -ErrorAction SilentlyContinue) {
+        Backup-Rotate-NohupLogs -Root $root -BackupDir (Join-Path $root 'data\logs') -LogFn { param($m) Write-OpsLog $m }
+    } else {
+        Write-OpsLog "WARN nohup rotation helper not loaded - skip rotation (start anyway)"
     }
 
     $proc = Start-Process -FilePath $python `
