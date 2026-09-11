@@ -331,7 +331,7 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 
 ### Current HEAD
 
-- MEM-VISIBILITY-0 audit registration: docs/MEM-VISIBILITY-0-AUDIT.md 納入版本控制（P0: 普通生活句未提交 + VC 讀側 database is locked ~11s fail-silent；A/B 實證；非對稱漏洞；C1-C3 未選型；下一步 MEM-VISIBILITY-C2-V；Current HEAD 於 Commit B 補記）
+- Current HEAD: `04f79b3` (docs: register MEM-VISIBILITY-0 cross-process lock audit) — MEM-VISIBILITY-0 audit registration（docs/MEM-VISIBILITY-0-AUDIT.md 隨 Commit A 納入；P0 / A/B 實證 / 非對稱漏洞；C1-C3 未選型；下一步 MEM-VISIBILITY-C2-V 專項驗證；**Current HEAD**）
 - Current HEAD: `f416eb9` (test(vc): restore full vc-eh unification regression contract suite)
 - VC-UNIFY-1.2.1 test commit: `f416eb9` (test(vc): restore full vc-eh unification regression contract suite; **Current HEAD**)
 - Current HEAD: `47d7fa6` (fix(vc): flush background sage commits for cross-process memory visibility)
