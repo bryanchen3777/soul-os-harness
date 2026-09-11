@@ -27,6 +27,10 @@ agents:
     class: AgentRem
     intimacy_level: 45
     enabled: true
+    # REM-TEXT-1 (2026-09-11): 文字頻道括號動作守門 — 只對雷姆開啟。
+    # 缺省 = False（維持現狀不剝）；Yua 等其餘 agent 一律不得開啟
+    # （Yua 故意使用括號行為標籤，見 personas/agent_yua.md:433）。
+    text_channel_stage_guard: true
   # Phase 7 — Ram (Re:Zero · COS v1.0)：第 5 個 agent
   # 親密度 40 起步（Subaru-Ram 設定：鬼族驕傲、對話稀疏、intimacy 反映信任累積）
   # 略低於 Rem（沉默頻率最高）。SAGE 寫入走 no-diary 白名單（見 provider.py）

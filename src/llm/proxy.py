@@ -52,6 +52,8 @@ from src.agent.emotion import emotion_engine
 from src.llm._agent_constants import _JP_AGENT_IDS, is_jp_agent  # noqa: E402
 # TTS 全域開關 (Bry 派工 2026-08-15): /tts on|off 切換是否使用 TTS
 from src.llm.tts_toggle import is_tts_enabled
+# REM-TEXT-1 (2026-09-11): 文字頻道括號動作守門（純函式，src/ 側，不依賴 clients/）
+from src.text_guard import sanitize_text_channel_output
 
 logger = logging.getLogger("soul_os.llm_proxy")
 
@@ -619,6 +621,7 @@ def _build_messages_group(
     germ_anchor: Optional[str] = None,  # FG-2 (germ 初始化邊界): germ 模式下替換 seeded identity_anchor; seeded 傳 None = 零行為變化
     last_interaction_ts: int = 0,  # TA-1 (Bry 拍板 2026-08-30): 跨 session 最後互動 timestamp (conversation_elapsed 資料源)
     motive_target: Optional[str] = None,  # C-3.1 (2026-09-05): transmit 的 motive.target 透傳 (A2A agent-target 注入 [關係感知]); None = 非目標驅動, 0 注入
+    strip_assistant_parens: bool = False,  # REM-TEXT-1 (2026-09-11): read-side 破除自我歷史鎖定 — 剝除本 agent 自己的 assistant 歷史括號動作段（只影響 prompt，不寫回 data/）
 ) -> List[Dict[str, str]]:
     """
     群聊模式的 messages 組裝:
@@ -820,7 +823,11 @@ def _build_messages_group(
                 continue
             messages.append({"role": "user", "content": m["content"]})
         elif m["speaker"] == agent_id:
-            messages.append({"role": "assistant", "content": m["content"]})
+            content = m["content"]
+            if strip_assistant_parens:
+                # REM-TEXT-1: 群聊歷史中「自己講過的話」剝除括號動作段
+                content = sanitize_text_channel_output(content)
+            messages.append({"role": "assistant", "content": content})
         else:
             # 其他 Agent 的話,寫進 system 讓 LLM 知道上下文
             messages.append({
@@ -1216,6 +1223,7 @@ def _build_messages_private(
     last_interaction_ts: int = 0,  # TA-1 (Bry 拍板 2026-08-30): 跨 session 最後互動 timestamp (conversation_elapsed 資料源)
     reason: str = "user_message",  # 工單 (2026-09-01): proactive 觸發判定 (reason != "user_message" = 主動發起, 非回應 Bry)
     motive_target: Optional[str] = None,  # C-3.1 (2026-09-05): transmit 的 motive.target 透傳 (A2U bryan-target 注入 [關係感知]); None = 非目標驅動, 0 注入
+    strip_assistant_parens: bool = False,  # REM-TEXT-1 (2026-09-11): read-side 破除自我歷史鎖定 — 剝除 assistant 歷史括號動作段（只影響 prompt，不寫回 data/）
 ) -> List[Dict[str, str]]:
     """
     私聊模式的 messages 組裝:
@@ -1313,7 +1321,12 @@ def _build_messages_private(
             "## 你最近的發言",
         ]
         for m in self_recent:
-            self_lines.append(f"- 你: {m['content']}")
+            content = m["content"]
+            if strip_assistant_parens:
+                # REM-TEXT-1: 「你最近的發言」也是自己講過的話 → 剝除括號動作段
+                # （避免把舊格式教材餵回給 LLM，維持自我歷史鎖定破除）
+                content = sanitize_text_channel_output(content)
+            self_lines.append(f"- 你: {content}")
         system_parts.append("\n".join(self_lines) + "\n")
 
     # M3 Phase 1 (Bry 拍板 2026-08-07 19:40): 世界感知注入 (跟 _build_messages_group 對齊)
@@ -1382,7 +1395,11 @@ def _build_messages_private(
             # Bry 的 user 訊息, 只保留 assistant 訊息作「自己最近說過什麼」參考,
             # 避免靈魂以為自己在回應 Bry (8/19 起 11 次「嘿嘿～Bryan 主動來找人家啦」)
             continue
-        messages.append({"role": m["role"], "content": m["content"]})
+        content = m["content"]
+        if strip_assistant_parens and m.get("role") == "assistant":
+            # REM-TEXT-1: 私聊歷史中自己講過的話剝除括號動作段（只影響 prompt）
+            content = sanitize_text_channel_output(content)
+        messages.append({"role": m["role"], "content": content})
 
     if current_input:
         messages.append({"role": "user", "content": current_input})
@@ -2492,6 +2509,26 @@ def _resolve_init_mode(config, agent_id: str) -> str:
     return "seeded"
 
 
+def _text_channel_guard_enabled(config, agent_id: str) -> bool:
+    """REM-TEXT-1 (2026-09-11): per-agent 文字頻道括號守門開關。
+
+    讀 configs/default.yaml 的 agents[].text_channel_stage_guard（跟
+    _resolve_init_mode 同款 config 讀取模式）。缺省 = False = 維持現狀不剝。
+    目前只對 agent_rem 設定開啟；Yua 等其餘 agent 一律未開啟
+    （Yua 故意使用括號行為標籤，見 personas/agent_yua.md）。
+
+    Returns:
+        True → 該 agent 的文字輸出/歷史要剝除括號動作段
+    """
+    try:
+        for agent_cfg in (config or {}).get("agents", []):
+            if agent_cfg.get("id") == agent_id:
+                return bool(agent_cfg.get("text_channel_stage_guard", False))
+    except Exception:
+        pass
+    return False
+
+
 # FG-2 (germ 初始化邊界): 組出 germ 的 identity_anchor（germ anchor 三句 + 名字 handle）。
 # handle 只錨定 continuity，不錨定 personality；handle 之後不接任何「所以你是…」句式。
 def _build_germ_anchor(agent_id: str) -> str:
@@ -2638,7 +2675,13 @@ def _strip_action_descriptions(text: str) -> str:
         return text
     # 全形/半形括號包動作描述: （動作） / (action)
     # 11 條破折號樣本檢查後確認是 mahiru 對話風格, 暫不剝 (避免誤殺)
-    text = re.sub(r"[（(][^（）)\n]+[）)]", "", text)
+    # REM-TEXT-1 (2026-09-11): 改 import src/text_guard 的共用括號正則
+    # （原 inline `[（(][^（）)\n]+[）)]` 語意等價），與文字頻道守門共用
+    # 單一事實來源，避免兩套括號正則漂移。本函式仍是 TTS/audio_text 專用
+    # 管線（只剝括號 + 空白收斂）；文字頻道守門（*…*、行首孤立標點、
+    # 未閉合安全閥）是 src.text_guard.sanitize_text_channel_output 的職責。
+    from src.text_guard import _STAGE_PAREN_RE
+    text = _STAGE_PAREN_RE.sub("", text)
     # 清掉多餘空白 (regex 剝掉後會留連續空格)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n[ \t]+", "\n", text)
@@ -3463,15 +3506,19 @@ class LLMProxy:
         # WorldPerceptionMiddleware 在 AGENT_INTENT_ENRICHED → AGENT_INTENT_PERCEIVED 注入
         # 沒 world events 時 = "" (注入 skip, 跟 memory_context 一致)
         world_context = event.payload.get("world_context", "")
+        # REM-TEXT-1 (2026-09-11): read-side 自我歷史鎖定破除 — 該 agent 開啟守門時,
+        # 組裝歷史時剝除 assistant 括號動作段（只影響 prompt 內容, 不寫回 data/）。
+        # 只對開啟的 agent 生效 (目前 agent_rem)；未開啟 = 原文字一字不動。
+        strip_assistant_parens = _text_channel_guard_enabled(self.config, agent_id)
         if mode == "group":
             # 短期記憶 (Bry 拍板 2026-08-02 16:xx): 把 user_id 傳進去讓 _build_messages_group
             # 從 Bry 跟該 agent 的 private history 撈最近 N 條 Bry user 訊息注入 system prompt。
             # L1818 的 user_id 已經從 event.payload.get("target_user_id", "bryan") 拿到,
             # 跟 _build_messages_private L230 user_id 預設值對齊, 群聊觸發 fallback "bryan"
             # (跟 _load_private L100 fallback 邏輯一致)。
-            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts, motive_target=motive_target)
+            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts, motive_target=motive_target, strip_assistant_parens=strip_assistant_parens)
         else:
-            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts, reason=reason, motive_target=motive_target)
+            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts, reason=reason, motive_target=motive_target, strip_assistant_parens=strip_assistant_parens)
 
         # ── M2 task 3 (Bry + Perplexity 8/2 12:05 派工): proactive draft user → system ──
         # 修法動機: heartbeat / proactive_dm 觸發時, _build_intent_payload 組的 draft
@@ -3674,6 +3721,25 @@ class LLMProxy:
                         self._group_history = self._load_group_instance()
                 return
 
+            # ── REM-TEXT-1 (2026-09-11): 文字頻道輸出守門 — 淨化點 ──
+            # Owner 2026-08-07「text 保留括號、只 TTS 剝離」決策反轉（選項 A）：
+            # 文字頻道 (TG 出站 + 網頁 WS broadcast) 完全不要括號動作描寫。
+            # per-agent 開關（configs/default.yaml agents[].text_channel_stage_guard，
+            # 缺省 False = 維持現狀不剝；目前只對 agent_rem 開啟，Yua/Ruka 等
+            # 明文允許括號的 agent 一字不動）。
+            # 淨化點放在「寫 history」之前：
+            #   ① memory／對話歷史不再累積括號模板 → 切斷「模型模仿自己歷史」
+            #      的正回饋鎖定（本次問題最關鍵的槓桿）
+            #   ② 接下來的 history 寫入與 AGENT_SPEAK payload["text"] 都是同一份
+            #      乾淨文字 → IOGateway (web WS) / ChannelRouter (TG 出站 + outbox)
+            #      兩種媒介完全一致（payload 是唯一發布點，見 :3750）
+            # data/ 既有檔案不動（legacy 括號隨滾動視窗自然淘汰）；既存髒歷史由
+            # read-side 剝除處理（_build_messages_* 的 strip_assistant_parens）。
+            if _text_channel_guard_enabled(self.config, agent_id):
+                _ui_text = sanitize_text_channel_output(generated_text)
+            else:
+                _ui_text = generated_text
+
             # ── 寫入歷史(user + assistant 一起寫)──────────
             # 這樣保證 LLM 看到的 prompt 跟實際 history 一致,不會出現「你問兩遍」的重複問題
             # M2 task 4 (Bry 8/2 14:14 派工): user 訊息只在 reason == "user_message" 才寫,
@@ -3682,7 +3748,7 @@ class LLMProxy:
                 if user_message and reason == "user_message":
                     self._append_group_user_instance("bryan", user_message)
                     self._memory.append("group", "user", user_message, "bryan", is_private=False)
-                self._append_group_instance(speaker=agent_id, content=generated_text, triggered_by=reason)
+                self._append_group_instance(speaker=agent_id, content=_ui_text, triggered_by=reason)
                 self._group_history = self._load_group_instance()
             else:
                 if user_message and reason == "user_message":
@@ -3693,16 +3759,16 @@ class LLMProxy:
                         content=f"({agent_id} 與 Bryan 私聊中)",
                         is_private=True,
                     )
-                    self._append_private_history_instance(agent_id, user_id, "assistant", generated_text, triggered_by=reason)
-                    self._memory.append(f"session_{user_id}_{agent_id}", "assistant", generated_text, "agent_id", is_private=True)
-                    self._append_group_instance(speaker=agent_id, content=generated_text, is_private=True, triggered_by=reason)
+                    self._append_private_history_instance(agent_id, user_id, "assistant", _ui_text, triggered_by=reason)
+                    self._memory.append(f"session_{user_id}_{agent_id}", "assistant", _ui_text, "agent_id", is_private=True)
+                    self._append_group_instance(speaker=agent_id, content=_ui_text, is_private=True, triggered_by=reason)
                     self._history[_session_key(agent_id, user_id)] = self._load_private_instance(agent_id, user_id)
                 else:
                     # Proactive 觸發: 不寫 user, 但 assistant 訊息要寫入保持上下文連貫
                     # 加 triggered_by metadata 標記這是主動搭話, 不是 Bry 真實對話後的回應
-                    self._append_private_history_instance(agent_id, user_id, "assistant", generated_text, triggered_by=reason)
-                    self._memory.append(f"session_{user_id}_{agent_id}", "assistant", generated_text, "agent_id", is_private=True)
-                    self._append_group_instance(speaker=agent_id, content=generated_text, is_private=True, triggered_by=reason)
+                    self._append_private_history_instance(agent_id, user_id, "assistant", _ui_text, triggered_by=reason)
+                    self._memory.append(f"session_{user_id}_{agent_id}", "assistant", _ui_text, "agent_id", is_private=True)
+                    self._append_group_instance(speaker=agent_id, content=_ui_text, is_private=True, triggered_by=reason)
                     self._history[_session_key(agent_id, user_id)] = self._load_private_instance(agent_id, user_id)
                 self._group_history = self._load_group_instance()
 
@@ -3713,7 +3779,10 @@ class LLMProxy:
             # - 沒有 persona signature 安全網 (中文 persona 不會說日文簽名)
             # - _broadcast_text 直接用 generated_text (LLM 中文回應)
             translation = None
-            _broadcast_text = generated_text
+            # REM-TEXT-1: text 已在「寫 history 之前」淨化（見上），payload 直接
+            # 用同一份乾淨文字 → IOGateway (web WS) / ChannelRouter (TG + outbox)
+            # 兩種媒介一致；text_jp 保留 raw 供 debug / 查表。
+            _broadcast_text = _ui_text
 
             speak_event = SoulEvent(
                 event_type=EventType.AGENT_SPEAK,
