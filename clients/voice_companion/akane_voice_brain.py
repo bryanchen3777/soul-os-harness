@@ -611,6 +611,8 @@ class AkaneVoiceBrain:
         """VC-UNIFY-1 寫側：把一輪語音對話以背景 task 非同步寫入 SAGE 記憶庫。
 
         - Fire-and-Forget：asyncio.create_task，不 await、不阻塞音訊串流輸出。
+        - VC-UNIFY-1.2：背景 task 內 post_reply_commit 成功後顯式 flush GraphStore
+          （跨進程事務可見性），flush 例外 fail-silent（僅 warning），語音 0 延遲影響。
         - 若無 running loop（終端版同步回呼），降級為 daemon thread 內 asyncio.run。
         - Fail-silent：task 內任何異常 → log warning，絕不中斷語音服務。
         - 僅在 config ``memory.sage_write.enabled: true`` 時啟用（預設關閉，0 既有行為）。
@@ -633,6 +635,17 @@ class AkaneVoiceBrain:
                     agent_reply=agent_text,
                     source_pair=source_pair,
                 )
+                # VC-UNIFY-1.2：僅在 post_reply_commit 成功返回後執行顯式 flush。
+                # 確保已寫入的事務立即 commit 至 SQLite，讓外部進程（文字端主服務）
+                # 的獨立連線立即可讀 —— 語音剛說的話文字端立刻接上（即時陪伴感）。
+                try:
+                    if hasattr(provider, "_writer") and hasattr(provider._writer, "store"):
+                        provider._writer.store.flush()
+                    elif hasattr(provider, "store"):
+                        provider.store.flush()
+                except Exception as exc:  # noqa: BLE001 — fail-silent
+                    # Fail-Silent：僅記錄 warning，嚴禁中斷語音或拋出異常
+                    logger.warning(f"[VC-UNIFY-1.2] SAGE flush fail-silent: {exc}")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — fail-silent
