@@ -12,11 +12,15 @@ sounddevice / requests 一律懶載入。
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 from typing import List, Optional
 
 DEFAULT_ENDPOINT = "https://api.fish.audio/v1/tts"
+
+# VC-LOG-1：檔案日誌 logger（handler 由 web_server main() 掛在 root；import/測試 0 副作用）
+log = logging.getLogger("vc.fish_tts_streamer")
 
 
 class FishTTSError(RuntimeError):
@@ -124,6 +128,8 @@ class FishTTSStreamer:
         session = self._ensure_session()
         resp = session.post(self.endpoint, json=payload, headers=headers, timeout=30)
         if resp.status_code != 200:
+            log.error("[TTS] rest-http-error status=%s body=%s", resp.status_code,
+                      getattr(resp, "text", "")[:200])
             raise FishTTSError(f"Fish Audio TTS HTTP {resp.status_code}: {getattr(resp, 'text', '')[:200]}")
         return resp.content
 

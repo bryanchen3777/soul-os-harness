@@ -1674,6 +1674,13 @@ class TestHttpsAndDiagnostics:
         ig = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
         assert "clients/voice_companion/certs/" in ig
 
+    def test_logs_dir_gitignored(self):
+        """VC-LOG-1：logs/（vc_*.log 與輪替檔 .log.1/.2/.3）必須被 .gitignore 排除"""
+        ig = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+        assert "clients/voice_companion/logs/" in ig
+        # 一般 .log 由全域 *.log 覆蓋；輪替檔尾綴 .1/.2/.3 只有目錄規則能擋
+        assert "*.log" in ig
+
     def test_ws_diagnostics_logged(self, capsys):
         """VC-1.5：完整回合的診斷日誌（[WS] 連線/事件、[UTT] 開始/ASR 結果/回覆）寫到 stdout"""
         async def _run():

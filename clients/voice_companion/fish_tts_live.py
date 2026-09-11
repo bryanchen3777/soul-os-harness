@@ -16,6 +16,7 @@ audio_player（open/write/stop/close）均可注入；fish-audio-sdk / sounddevi
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 from typing import Callable, List, Optional
@@ -27,6 +28,9 @@ DEFAULT_CHUNK_LENGTH = 300
 DEFAULT_LATENCY = "normal"
 # 相容保留（舊 flush 語意由 SDK 改為 chunk_length 緩衝合成；此常數不再參與協定）
 FLUSH_PUNCTUATION = "，。、！？…\n"
+
+# VC-LOG-1：檔案日誌 logger（handler 由 web_server main() 掛在 root；import/測試 0 副作用）
+log = logging.getLogger("vc.fish_tts_live")
 
 
 class FishTTSError(RuntimeError):
@@ -202,10 +206,14 @@ class FishTTSLiveStreamer:
         except Exception as exc:
             if not (self._interrupted or self._closed):
                 self.last_error = exc
+                log.exception("[TTS] live-error: %s", exc)
                 try:
                     self._audio.stop()
                 except Exception:
                     pass
+            else:
+                # VC-LOG-1：被 interrupt/close 中斷的合成也要留痕跡（2026-09-11 事故教訓）
+                log.warning("[TTS] live-interrupted during synthesis: %r", exc)
         finally:
             if gen is not None:
                 try:

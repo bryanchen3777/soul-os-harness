@@ -27,9 +27,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -55,6 +57,11 @@ except ImportError:  # pragma: no cover
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
+LOG_DIR = Path(__file__).resolve().parent / "logs"
+
+# VC-LOG-1：檔案日誌 logger（handler 只在 main() 的 setup_logging() 掛上；
+# 測試/import 時無 handler → 訊息靜默落空，0 污染）
+log = logging.getLogger("vc.web_server")
 
 VAD_SAMPLE_RATE = 16000   # 瀏覽器收音分片率（Int16 PCM mono）
 OUT_SAMPLE_RATE = 44100   # 播放分片率（Int16 PCM mono）
@@ -83,6 +90,51 @@ def load_config(path: Optional[str] = None) -> dict:
         p = CONFIG_PATH
     with open(p, encoding="utf-8-sig") as f:
         return json.load(f)
+
+
+# ─────────────────────────────────────────────────────────────
+# VC-LOG-1：檔案日誌（消除 pythonw 生產環境的觀測盲區）
+# ─────────────────────────────────────────────────────────────
+
+def setup_logging(agent_id: str) -> str:
+    """初始化檔案日誌：logs/vc_<agent_id>.log（RotatingFileHandler，5MB×3，utf-8）。
+
+    - 目錄不存在自動建立；level 預設 INFO，可用環境變數 VC_LOG_LEVEL 覆寫
+    - 格式含時間/level/logger name；handler 掛在 root logger，
+      讓 fish_tts_live / fish_tts_streamer 等子模組的記錄都落同一檔
+    - 掛 sys.excepthook（主執行緒未捕捉例外落檔）
+    - 冪等：同一 log 檔的 handler 不重複掛（防同進程多次 main() 重入污染）
+    回傳 log 檔絕對路徑（供啟動橫幅使用）。僅在 main() 呼叫 — import/測試 0 副作用。
+    """
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / f"vc_{agent_id}.log"
+    root = logging.getLogger()
+    for h in root.handlers:
+        if isinstance(h, RotatingFileHandler) and os.path.normcase(
+            str(getattr(h, "baseFilename", ""))
+        ) == os.path.normcase(str(log_path)):
+            return str(log_path)
+    level_name = os.environ.get("VC_LOG_LEVEL", "INFO").upper()
+    root.setLevel(getattr(logging, level_name, logging.INFO))
+    handler = RotatingFileHandler(log_path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+    root.addHandler(handler)
+
+    def _excepthook(exc_type, exc, tb) -> None:
+        # 主執行緒未捕捉例外 → 落檔（pythonw 下 print 不可見，這是唯一痕跡）
+        logging.getLogger("vc").critical("unhandled exception", exc_info=(exc_type, exc, tb))
+
+    sys.excepthook = _excepthook
+    return str(log_path)
+
+
+def _on_async_exception(loop, context) -> None:
+    """asyncio 迴圈例外 handler（task 內未捕捉例外 / loop 錯誤 → 落檔）。"""
+    exc = context.get("exception")
+    if exc is not None:
+        log.error("asyncio error: %s", context.get("message", "?"), exc_info=exc)
+    else:
+        log.error("asyncio error: %s (context=%r)", context.get("message", "?"), context)
 
 
 def lan_ips() -> List[str]:
@@ -188,6 +240,7 @@ class AudioRelaySink:
         self._closed = False
         self._sending = False
         self._written_chunks = 0
+        self._written_bytes = 0  # VC-LOG-1：供每回合 TTS chunk/bytes 統計
         self._finished_chunks = 0
         self.first_chunk_time: Optional[float] = None
         self._drained_event: asyncio.Event = asyncio.Event()
@@ -225,6 +278,7 @@ class AudioRelaySink:
         if self.first_chunk_time is None:
             self.first_chunk_time = time.perf_counter()
         self._written_chunks += 1
+        self._written_bytes += len(chunk)
         self._drained_event.clear()
         try:
             self._loop.call_soon_threadsafe(self._enqueue, chunk)
@@ -413,10 +467,12 @@ class WebSession:
         self._vad.reset()
         if not captured:
             print("[UTT] start frames=0 (skip)")  # VC-1.5 診斷日誌
+            log.info("[UTT] start frames=0 (skip)")
             if gen == self._generation:
                 await self._set_state(self.STATE_IDLE)
             return
         print(f"[UTT] start frames={len(captured)}")  # VC-1.5 診斷日誌
+        log.info("[UTT] start frames=%d", len(captured))
         pcm = (np.clip(np.asarray(captured, dtype=np.float32), -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
         wav = pcm16_to_wav_bytes(pcm, sample_rate=VAD_SAMPLE_RATE)
         try:
@@ -427,6 +483,7 @@ class WebSession:
         except Exception as exc:
             text = ""
             print(f"[UTT] asr-exception {exc}")
+            log.exception("[UTT] asr-exception %s", exc)
 
         if gen != self._generation:
             print(f"[UTT] asr-cancelled gen={gen} curr={self._generation}")
@@ -445,14 +502,17 @@ class WebSession:
                 if gen == self._generation:
                     await self._send_json({"type": "error", "message": message})
                 print(f"[UTT] asr-error status={status}")  # VC-1.5 診斷日誌
+                log.info("[UTT] asr-error status=%s body=%s", status, body)
             else:
                 print("[UTT] asr-empty (drop)")  # VC-1.5 診斷日誌
+                log.info("[UTT] asr-empty (drop)")
             if gen == self._generation:
                 await self._set_state(self.STATE_IDLE)
             return
         if gen != self._generation:
             return
         print(f"[UTT] asr-ok text={text[:40]}")  # VC-1.5 診斷日誌
+        log.info("[UTT] asr-ok text=%s", text[:40])
         await self._send_json({"type": "transcript", "role": "user", "text": text})
 
         try:
@@ -462,6 +522,7 @@ class WebSession:
         except Exception as exc:
             clean = ""
             print(f"[UTT] refiner-exception {exc}")
+            log.exception("[UTT] refiner-exception %s", exc)
 
         if gen != self._generation:
             print(f"[UTT] refiner-cancelled gen={gen} curr={self._generation}")
@@ -469,6 +530,7 @@ class WebSession:
         if not clean:
             # 雜音熔斷（DROP）：不打擾茜
             print("[UTT] refine-drop")  # VC-1.5 診斷日誌
+            log.info("[UTT] refine-drop")
             if gen == self._generation:
                 await self._set_state(self.STATE_IDLE)
             return
@@ -501,6 +563,10 @@ class WebSession:
 
         if hasattr(self._sink, "first_chunk_time"):
             self._sink.first_chunk_time = None
+        # VC-LOG-1：本回合音訊統計起點（sink 計數為累計值，取回合前快照算差值）
+        _chunks_before = int(getattr(self._sink, "_written_chunks", 0) or 0)
+        _bytes_before = int(getattr(self._sink, "_written_bytes", 0) or 0)
+        _tts_mode = (self._config.get("fish_audio") or {}).get("mode", "live")
         await self._set_state(self.STATE_SPEAKING)
 
         def _generate() -> str:
@@ -523,6 +589,13 @@ class WebSession:
                 if task_gen == self._generation:
                     await self._send_json({"type": "error", "message": f"上游失敗: {exc}"})
                     print(f"[UTT] reply-error {exc}")  # VC-1.5 診斷日誌
+                    _chunks = int(getattr(self._sink, "_written_chunks", 0) or 0) - _chunks_before
+                    _bytes = int(getattr(self._sink, "_written_bytes", 0) or 0) - _bytes_before
+                    log.exception(
+                        "[TTS] round FAILED mode=%s input_chars=%d chunks=%d bytes=%d last_error=%r",
+                        _tts_mode, len(user_text), _chunks, _bytes,
+                        getattr(self._streamer, "last_error", None),
+                    )
             else:
                 if task_gen != self._generation:
                     return
@@ -570,6 +643,25 @@ class WebSession:
                     f"[LATENCY] asr={asr_ms:.1f}ms first_audio={first_audio_ms:.1f}ms "
                     f"total={total_ms:.1f}ms chars={len(reply)}"
                 )  # VC-2.3-05 延遲可觀測性
+                log.info("[LATENCY] asr=%.1fms first_audio=%.1fms total=%.1fms chars=%d",
+                         asr_ms, first_audio_ms, total_ms, len(reply))
+                # VC-LOG-1：每回合 TTS 結果統計（mode/文字長度/chunk 數/總 bytes/耗時）
+                _chunks = int(getattr(self._sink, "_written_chunks", 0) or 0) - _chunks_before
+                _bytes = int(getattr(self._sink, "_written_bytes", 0) or 0) - _bytes_before
+                if _chunks == 0:
+                    log.warning(
+                        "[TTS] round ZERO-AUDIO mode=%s input_chars=%d reply_chars=%d chunks=0 bytes=0 "
+                        "first_audio_ms=%.1f total_ms=%.1f last_error=%r",
+                        _tts_mode, len(user_text), len(reply), first_audio_ms, total_ms,
+                        getattr(self._streamer, "last_error", None),
+                    )
+                else:
+                    log.info(
+                        "[TTS] round mode=%s input_chars=%d reply_chars=%d chunks=%d bytes=%d "
+                        "first_audio_ms=%.1f total_ms=%.1f",
+                        _tts_mode, len(user_text), len(reply), _chunks, _bytes,
+                        first_audio_ms, total_ms,
+                    )
             finally:
                 if task_gen == self._generation:  # 仍是本世代 → 正常結束；被打斷則已由 interrupt 收尾
                     await self._set_state(self.STATE_IDLE)
@@ -692,6 +784,7 @@ async def websocket_handler(request: web.Request) -> web.StreamResponse:
     await ws.prepare(request)
     peer = request.remote or "?"
     print(f"[WS] connect peer={peer}")  # VC-1.5 診斷日誌
+    log.info("[WS] connect peer=%s", peer)
     sink = AudioRelaySink(request.loop, ws)
     sink.start()
     streamer = app[VC_STREAMER_FACTORY_KEY](sink)
@@ -714,13 +807,19 @@ async def websocket_handler(request: web.Request) -> web.StreamResponse:
     try:
         async for msg in ws:
             if msg.type == WSMsgType.BINARY:
+                log.info("[WS] msg binary bytes=%d", len(msg.data))
                 await session.on_pcm(msg.data)
             elif msg.type == WSMsgType.TEXT:
                 try:
                     data = json.loads(msg.data)
                 except (ValueError, TypeError):
+                    log.warning("[WS] msg non-json len=%d", len(msg.data))
                     continue
                 mtype = data.get("type")
+                if mtype == "text":
+                    log.info("[WS] msg type=text text=%s", str(data.get("text", ""))[:40])
+                else:
+                    log.info("[WS] msg type=%s", mtype)
                 if mtype == "ptt_start":
                     await session.on_ptt_start()
                 elif mtype == "ptt_stop":
@@ -732,10 +831,12 @@ async def websocket_handler(request: web.Request) -> web.StreamResponse:
                 elif mtype == "ping":
                     await session.on_ping()
             elif msg.type == WSMsgType.ERROR:
+                log.warning("[WS] ws error %r", msg.data)
                 break
     finally:
         await session.close()
         print(f"[WS] close peer={peer}")  # VC-1.5 診斷日誌
+        log.info("[WS] close peer=%s", peer)
     return ws
 
 
@@ -783,9 +884,15 @@ class RestPCMWebStreamer:
                 self._chunks.append(pcm)
                 if self._audio is not None:
                     self._audio.write(pcm)
+                log.info("[TTS] rest-ok chars=%d bytes=%d", len(text), len(pcm))
+            elif not (self._interrupted or self._closed):
+                log.warning("[TTS] rest-empty reply chars=%d pcm=0", len(text))
         except Exception as exc:
             if not (self._interrupted or self._closed):
                 self.last_error = exc
+                log.exception("[TTS] rest-error chars=%d: %s", len(text), exc)
+            else:
+                log.warning("[TTS] rest-interrupted during synth chars=%d: %r", len(text), exc)
 
     def start(self) -> None:
         self._interrupted = False
@@ -938,6 +1045,9 @@ def main(argv: Optional[list] = None) -> int:
             config_path = args[i + 1]
     cfg = load_config(config_path)
     cfg = resolve_config(cfg)
+    companion = cfg.get("companion") or {}
+    agent_id = companion.get("id", "agent_akane")
+    log_path = setup_logging(agent_id)  # VC-LOG-1：檔案日誌（logs/vc_<agent_id>.log）+ excepthook
     port = None
     if "--port" in args:
         i = args.index("--port")
@@ -970,12 +1080,26 @@ def main(argv: Optional[list] = None) -> int:
     display_name = companion.get("display_name", "黑川茜")
     agent_id = companion.get("id", "agent_akane")
     print(f"[{display_name} ({agent_id})] Web 語音伴侶已啟動（VC-2.4）— Ctrl-C 結束")
+    # VC-LOG-1：啟動橫幅（api_key 只記前 4 碼＋長度，嚴禁完整金鑰）
+    fa = cfg.get("fish_audio") or {}
+    api_key = fa.get("api_key") or ""
+    api_key_desc = f"{api_key[:4]}…(len={len(api_key)})" if api_key else "(未設定)"
+    log.info(
+        "startup agent_id=%s display_name=%s tts_mode=%s voice_id=%s model=%s "
+        "host=%s port=%s scheme=%s config=%s log_file=%s api_key=%s",
+        agent_id, display_name, fa.get("mode", "live"), fa.get("voice_id", ""),
+        fa.get("model", ""), host, port, scheme, config_path or "(default config.json)",
+        log_path, api_key_desc,
+    )
     if https:
         print(HTTPS_SELF_SIGNED_HINT)
     for url in lan_urls(port, scheme=scheme):
         print(f"  {url}")
     app = build_app(cfg)
-    web.run_app(app, host=host, port=port, ssl_context=ssl_ctx)
+    # VC-LOG-1：asyncio 迴圈例外（task 內未捕捉例外）→ 落檔
+    loop = asyncio.new_event_loop()
+    loop.set_exception_handler(_on_async_exception)
+    web.run_app(app, host=host, port=port, ssl_context=ssl_ctx, loop=loop)
     return 0
 
 
