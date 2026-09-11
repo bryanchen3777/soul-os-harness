@@ -26,6 +26,11 @@ from src.async_utils import create_managed_task
 from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
 from src.memory.sage import SAGELiteProvider
+# MEM-IDENTITY-1 (2026-09): 通道身分正規化單一事實來源。
+# 寫側以 canonical_user_id 組 source_pair；讀側以 source_pair_candidates 放行
+# 該使用者的所有已知身分別 (bryan / user_bryan / 1696287850)，讓 VC↔TG/web
+# 記憶跨模態互相可見。正規化只在記憶層內部，不改 event payload 的 target_user_id。
+from src.memory.user_identity import canonical_user_id, source_pair_candidates
 
 # β2.1 (Bry 拍板 2026-08-02 21:48): LLMProxy 引用 (Optional, 給 type hint 用)
 # 實際 import 延遲到 _maybe_generate_event 內部避免循環引用
@@ -294,7 +299,9 @@ class MemoryMiddleware:
         # 過濾掉 other pair (bryan:<other_agent>, where other != self) 的事實
         # 避免 ram/miku/yua 撈到 Bry-mai/Bry-ruka 私域喇稱記憶
         target_user_id = event.payload.get("target_user_id", "bryan")
-        source_pair_filter = {f"{target_user_id}:{agent_id}"}
+        # MEM-IDENTITY-1: 讀側放行該使用者的所有已知身分別 (bryan/user_bryan/1696287850)
+        # 讓 VC 寫的 "bryan:*" 與 TG/web 寫的 "1696287850:*" 在同一使用者下互相可見
+        source_pair_filter = source_pair_candidates(target_user_id, agent_id)
 
         # prefetch 是 sync；包進 thread executor 不阻塞 event loop
         context = await asyncio.to_thread(
@@ -458,7 +465,8 @@ class MemoryMiddleware:
         # 格式: "<target_user_id>:<agent_id>", 例 "bryan:agent_ruka"
         # 未來 prefetch 對 agent_X 撈事實, 看到 source_pair="bryan:<other>" 會被過濾
         target_user_id = event.payload.get("target_user_id", "bryan")
-        source_pair = f"{target_user_id}:{agent_id}"
+        # MEM-IDENTITY-1: 以 canonical id 組 source_pair (TG/web 的 1696287850 → bryan)
+        source_pair = f"{canonical_user_id(target_user_id)}:{agent_id}"
         # M5.5-2 (Bry 派工 2026-08-10): thread canonical inner_life_event_id from
         # AGENT_SPEAK SoulEvent (M5.4-5.5 frozen top-level field) into Memory.
         # Memory 是 consumer/reference holder (不建立 InnerLifeEvent).
