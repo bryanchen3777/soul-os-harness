@@ -101,11 +101,18 @@ class GraphStore:
         # Migration
         self._migrate(conn, current_version)
 
-        conn.execute(
-            "INSERT OR REPLACE INTO schema_meta VALUES ('version', ?)",
-            (str(_SCHEMA_VERSION),),
-        )
-        conn.commit()
+        # MEM-VISIBILITY-C2 (2026-09-05): schema 已是現行版本時，跳過 schema_meta
+        # 的 INSERT/REPLACE 與其 commit — 避免第二個 process 的 GraphStore() 開連線
+        # 就變成寫者，撞上未提交 writer 而 database is locked（C2-V 實證：僅此
+        # INSERT 阻塞 11s）。新庫（無 version）與 version != current 維持既有
+        # create / migrate / 寫 version 行為。C2 只解「讀側開連線搶寫鎖」，
+        # 不提供未提交資料的即時可見性（快照隔離，flush 後才可見）。
+        if current_version != _SCHEMA_VERSION:
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_meta VALUES ('version', ?)",
+                (str(_SCHEMA_VERSION),),
+            )
+            conn.commit()
 
     def _migrate(self, conn: sqlite3.Connection, from_version: int) -> None:
         """依序執行所有需要的 migration"""
