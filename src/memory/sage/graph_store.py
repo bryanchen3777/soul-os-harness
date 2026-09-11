@@ -6,6 +6,7 @@ import logging
 import sqlite3
 import threading
 import time
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
@@ -42,6 +43,12 @@ class GraphStore:
     新增：WAL 模式、schema migration、export/import、stats、context manager
     """
 
+    # SAGE-FLUSH-1 (2026-09-09, Owner 授權窄域解凍): 活躍實例註冊表。
+    # weakref.WeakSet → 註冊不阻止實例被 GC（close() 時也會 discard）；
+    # flush_all_live() 供 scripts/run_server.py 每 15s 掃描呼叫既有 flush()。
+    # 只註冊「已存在」的實例，掃描絕不實例化任何新 store。
+    _live_stores: "weakref.WeakSet[GraphStore]" = weakref.WeakSet()
+
     def __init__(self, db_path: Path, batch_size: int = _BATCH_SIZE):
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,6 +64,8 @@ class GraphStore:
         self._lock = threading.RLock()
         self._init_db()
         self._load_from_db()
+        # SAGE-FLUSH-1: 註冊為活躍實例（WeakSet 不阻 GC；close 時 discard）
+        GraphStore._live_stores.add(self)
 
     # ── Context Manager ───────────────────────────────────────
 
@@ -896,12 +905,41 @@ class GraphStore:
             self._conn.commit()
             self._pending_writes = 0
 
+    @classmethod
+    def flush_all_live(cls) -> tuple[int, int]:
+        """SAGE-FLUSH-1: 掃描所有活躍實例並逐一 flush（崩潰止損）。
+
+        只 flush「已存在」的實例（WeakSet 迭代）——絕不因掃描而實例化任何
+        新 store。每個實例各自 try/except：單一失敗不中斷其他、也不向外拋。
+        回傳 (n_live, n_flushed)；失敗只記 WARNING。
+        flush() 語意不變：僅在 _pending_writes > 0 且連線存在時 commit。
+        """
+        n_live = 0
+        n_flushed = 0
+        for store in list(cls._live_stores):
+            n_live += 1
+            try:
+                # 前置條件與 flush() 內部一致；先 peek 是為了統計「真的 commit
+                # 了 pending 的」實例數（供定時任務決定是否記 INFO 日誌）。
+                if store._conn is not None and store._pending_writes > 0:
+                    store.flush()
+                    n_flushed += 1
+            except Exception:
+                logger.warning(
+                    "flush_all_live: flush %s 失敗（已隔離，不中斷其他實例）",
+                    getattr(store, "db_path", "?"),
+                    exc_info=True,
+                )
+        return n_live, n_flushed
+
     @_locked
     def close(self) -> None:
         if self._conn:
             self.flush()
             self._conn.close()
             self._conn = None
+        # SAGE-FLUSH-1: 不再活躍（close 語意不變，僅註冊表維護）
+        GraphStore._live_stores.discard(self)
 
     @_locked
     def vacuum(self) -> None:

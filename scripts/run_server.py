@@ -1481,6 +1481,42 @@ async def lifespan(app: FastAPI):
         f"({_self_check_interval}s/次, 寫 data/state/event_loop_alive.json)"
     )
 
+    # ── SAGE-FLUSH-1 (Owner 授權窄域解凍 2026-09-09) ──────────────
+    # 崩潰止損：主服務每隔數十分鐘 native access violation 被硬殺，每 store
+    # 損失 _pending_writes ∈ [1,19] 筆未 commit 資料。本工單不修崩潰，只把
+    # 未 commit 視窗縮短到固定 15 秒：每 15s flush 所有 live GraphStore。
+    #   - 只 flush 既有實例（GraphStore.flush_all_live），絕不實例化新 store
+    #   - 任務本體包 try/except：例外只記 WARNING，任務不可死亡
+    #   - import 放在啟動路徑（lifespan）：module 被 import 時 0 副作用
+    #     （VC 也會 import src/memory/，不得在 module 層級啟動任何任務）
+    #   - 日誌：首次啟動一條 INFO；後續只在真的 commit 了 pending 時記
+    from src.memory.sage.graph_store import GraphStore
+
+    _SAGE_FLUSH_INTERVAL_SECS = 15.0
+
+    async def _sage_flush_loop():
+        first = True
+        while True:
+            try:
+                if first:
+                    logger.info(
+                        "[Server] SAGE flush 定時任務啟動 "
+                        f"({_SAGE_FLUSH_INTERVAL_SECS:g}s/次, SAGE-FLUSH-1)"
+                    )
+                    first = False
+                await asyncio.sleep(_SAGE_FLUSH_INTERVAL_SECS)
+                n_live, n_flushed = GraphStore.flush_all_live()
+                if n_flushed > 0:
+                    logger.info(
+                        f"[Server] SAGE flush: {n_flushed}/{n_live} 個 store 已提交 pending"
+                    )
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"[Server] SAGE flush 任務錯誤: {e}")
+
+    app.state._sage_flush_task = asyncio.create_task(_sage_flush_loop())
+
     yield
 
     # ── Shutdown ────────────────────────────────────────────
@@ -1503,6 +1539,16 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         logger.info("[Server] event loop self-check 停止 ✓")
+
+    # SAGE-FLUSH-1: 停掉 SAGE flush 定時任務（乾淨取消，不留 pending task）
+    sage_flush = getattr(app.state, "_sage_flush_task", None)
+    if sage_flush is not None:
+        sage_flush.cancel()
+        try:
+            await sage_flush
+        except asyncio.CancelledError:
+            pass
+        logger.info("[Server] SAGE flush 定時任務停止 ✓")
 
     if channel_router is not None:
         await channel_router.stop()
