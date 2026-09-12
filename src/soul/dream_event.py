@@ -66,6 +66,13 @@ EVENT_AGENTS_PER_TICK = 2              # Stage 4.3 (Mavis 拍板 2026-07-21 16:3
 # Bry 派工 A1 截斷邏輯: 沿用修法 10 _safe_truncate_on_length, 保留 LLM 內容裁短到 80 字
 DREAM_EVENT_MAX_CLEAN_CHARS = 80
 
+# DREAM-MAXTOKENS-1 (2026-09): reasoning 模型的安全下限。
+# deepseek-v4.1-flash 為 reasoning 模型, 實測單次 reasoning 消耗約 200–360 tokens;
+# max_tokens 低於約 120 時 content 會是空字串且 finish_reason=length（靜默失敗, 不報錯）。
+# 400 提供安全餘裕。所有經 _call_llm_for_dream_event 送出的 max_tokens 一律 clamp 到 ≥ 此值
+# （clamp 只抬升不縮減, max_tokens 已 ≥ 400 者維持原值）。
+REASONING_SAFE_MIN_TOKENS = 400
+
 # 場景池 (夢境 / 事件共用)
 SCENE_POOL = [
     "走廊的盡頭",
@@ -194,14 +201,20 @@ async def _call_llm_for_dream_event(
     user_prompt: str,
     api_key: str,
     timeout: float = 15.0,
-    max_tokens: int = 120,
+    max_tokens: int = 120,  # 意圖下限: 實際生效值由 REASONING_SAFE_MIN_TOKENS clamp 決定
     temperature: float = 0.8,
     agent_id: str = "dream_event",  # 僅 log 用, 讓 generate_text 知道是哪個角色
 ) -> Optional[str]:
     """拿 dream / event / impression 文字。優先走 LLMProxy (v4-flash), 無則 fallback minimax.
 
     失敗回 None, 走 fallback 模板（「拒絕問, 強制讀」）。
+
+    DREAM-MAXTOKENS-1: max_tokens 一律 clamp 到 ≥ REASONING_SAFE_MIN_TOKENS(400)。
+    reasoning 模型 (deepseek-v4.1-flash) 在 max_tokens 過低時會把預算吃光,
+    content 回空字串且 finish_reason=length（靜默失敗, 不報錯）。clamp 只抬升不縮減。
     """
+    # DREAM-MAXTOKENS-1: reasoning 安全下限 clamp（只抬升, 不縮減既有較大的 max_tokens）
+    effective = max(REASONING_SAFE_MIN_TOKENS, max_tokens)
     # v4-flash 主路徑（Ollama 包月）: 統一用 LLMProxy.generate_text
     proxy = _find_llm_proxy()
     if proxy is not None:
@@ -213,7 +226,7 @@ async def _call_llm_for_dream_event(
                         {"role": "user", "content": user_prompt},
                     ],
                     agent_id=agent_id,
-                    max_tokens=max_tokens,
+                    max_tokens=effective,
                     temperature=temperature,
                 )
         except Exception as e:
@@ -245,7 +258,7 @@ async def _call_llm_for_dream_event(
                             {"role": "user", "content": user_prompt},
                         ],
                         "temperature": temperature,
-                        "max_tokens": max_tokens,
+                        "max_tokens": effective,
                     },
                 )
         if r.status_code != 200:
@@ -712,7 +725,8 @@ class DreamEventWriter:
         Stage 4.3 (Mavis 拍板 2026-07-21 16:35): LLM 抽 observer 對 target 的印象.
 
         - 走 _call_llm_for_dream_event (v4-flash, 跟 dream/event 同一路徑)
-        - prompt 短, max_tokens 50 (impression 短日文片語)
+        - prompt 短, max_tokens 50 只是意圖下限: 實際生效值由 REASONING_SAFE_MIN_TOKENS
+          clamp 決定 (50 → 400, 見 DREAM-MAXTOKENS-1; 低於下限會靜默空回)
         - 失敗留空 (「拒絕問, 強制讀」)
         - 不 call get_relationships_manager, 只回傳 impression 文字
         """
@@ -726,11 +740,13 @@ class DreamEventWriter:
             f"{kind_jp}內容: {diary_content[:200]}\n"
             f"對 {target_id} 的印象:"
         )
-        # 短 impression 用同個 _call_llm_for_dream_event (max_tokens 短, 給短印象)
+        # 短 impression 用同個 _call_llm_for_dream_event。
+        # DREAM-MAXTOKENS-1: max_tokens=50 僅為意圖下限, 實際送出值由
+        # REASONING_SAFE_MIN_TOKENS clamp 成 400 (原始 50 會靜默空回)。
         raw = await _call_llm_for_dream_event(
             system, user, self.api_key,
             timeout=10.0,  # 短 task 縮短 timeout
-            max_tokens=50,  # impression 只需 5-15 字日文片語
+            max_tokens=50,  # 意圖下限: 實際生效值由 REASONING_SAFE_MIN_TOKENS clamp 決定 (50 → 400)
             temperature=0.5,  # 推理型 model, 低溫穩定輸出單一片語
             agent_id=observer_id,
         )
