@@ -660,7 +660,10 @@ def _build_messages_group(
     # EH-2 (Epistemic Horizon): identity 之後、capability 之前注入 (契約 §2.1 唯一定序)
     # HORIZON block —— 認知地平線投影: 界定「我知道/不知道的邊界」, 逐事件實例化
     # (依 agent 現況 + 當前 world_context), 非全域靜態。fail-silent: 空字串。
-    horizon_block = _format_horizon_block(agent_id, session_context=world_context)
+    # EH-4.1: 傳入當前輪輸入 (current_input) → L2 認知差量（本體隱喻錨點 + 當輪姿態）。
+    horizon_block = _format_horizon_block(
+        agent_id, session_context=world_context, utterance=current_input
+    )
     if horizon_block:
         system_parts.append(horizon_block)
 
@@ -1095,7 +1098,25 @@ def _format_emergent_block(agent_id: str) -> str:
         return ""
 
 
-def _format_horizon_block(agent_id: str, session_context: str = "") -> str:
+def _format_epistemic_delta(agent_id: str, utterance: str) -> str:
+    """
+    EH-4 L2 認知差量（本體隱喻錨點 + 當輪關切姿態）讀側投影。
+
+    雙端同構（契約 §2.4）：差量邏輯只在 src/inner_life/epistemic_appraisal.py
+    實作一份；文字端與語音端（VC 轉呼 _format_horizon_block）共用同一份輸出。
+    fail-silent（O4）：任何異常 → ""（不注入本段，0 影響既有 Horizon 塊）。
+    """
+    if not utterance:
+        return ""
+    try:
+        from src.inner_life.epistemic_appraisal import format_epistemic_horizon_delta
+
+        return format_epistemic_horizon_delta(agent_id, utterance) or ""
+    except Exception:  # noqa: BLE001 — fail-silent: 差量掛掉 = 無本體參照段
+        return ""
+
+
+def _format_horizon_block(agent_id: str, session_context: str = "", utterance: str = "") -> str:
     """
     EH-2 (Epistemic Horizon): 認知地平線讀側投影 (read-side, inference-time)。
 
@@ -1134,6 +1155,12 @@ def _format_horizon_block(agent_id: str, session_context: str = "") -> str:
             "你對未內化的現代事物（科技、數位、電氣概念）無預設運作原理認知；"
             "允許自然複述主人用詞，嚴禁以現代專家、分析師或百科口吻解釋原理。"
         )
+        # EH-4 L2 認知差量注入（契約 §2.3）：負向約束句之後、Idiolect 清單之前。
+        # 讀側 isomorph：差量邏輯只在 src/inner_life/epistemic_appraisal.py 一份，
+        # 此處僅呼叫並注入；fail-silent（任何異常 → 不注入本段）。
+        epistemic_delta = _format_epistemic_delta(agent_id, utterance)
+        if epistemic_delta:
+            lines.append(epistemic_delta)
         idiolect = retrieve_idiolect(agent_id)
         if idiolect:
             lines.append("你已理解的默契事物清單（Idiolect）：")
@@ -1248,7 +1275,10 @@ def _build_messages_private(
     # EH-2 (Epistemic Horizon): identity 之後、capability 之前注入 (契約 §2.1 唯一定序)
     # HORIZON block —— 認知地平線投影: 界定「我知道/不知道的邊界」, 逐事件實例化
     # (依 agent 現況 + 當前 world_context), 非全域靜態。fail-silent: 空字串。
-    horizon_block = _format_horizon_block(agent_id, session_context=world_context)
+    # EH-4.1: 傳入當前輪輸入 (current_input) → L2 認知差量（本體隱喻錨點 + 當輪姿態）。
+    horizon_block = _format_horizon_block(
+        agent_id, session_context=world_context, utterance=current_input
+    )
     if horizon_block:
         system_parts.append(horizon_block)
 

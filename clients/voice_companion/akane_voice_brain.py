@@ -336,17 +336,24 @@ def build_llm_stream(llm_cfg: dict) -> Optional[Callable[[List[dict]], Iterable[
 # VC-2.2 唯讀記憶與時序現象學檢索器（Fail-silent，0 寫入）
 # ─────────────────────────────────────────────────────────────
 
-def format_voice_horizon_block(agent_id: str, session_context: str = "") -> str:
+def format_voice_horizon_block(agent_id: str, session_context: str = "", utterance: str = "") -> str:
     """VC-UNIFY-1 讀側：認知地平線（EH-2 Horizon Gate）語音端投影。
 
     直接複用文字端主服務的 `_format_horizon_block`（src.llm.proxy），確保雷姆在
     語音端獲得與文字端完全相同的阻力約束與 Idiolect 放行名單（Single Soul
-    Multi-Modalities）。fail-silent：任何異常 → 空字串跳過，0 影響既有管線。
+    Multi-Modalities）。EH-4.1：`utterance` 僅**透傳**（不做任何差量實作），
+    使語音端與文字端產出位元級相同的 Horizon Block（契約 §2.4 ISO-2）。
+    fail-silent：任何異常 → 空字串跳過，0 影響既有管線。
     """
     try:
         from src.llm.proxy import _format_horizon_block  # 實際定義於 src/llm/proxy.py
 
-        return _format_horizon_block(agent_id, session_context=session_context) or ""
+        return (
+            _format_horizon_block(
+                agent_id, session_context=session_context, utterance=utterance
+            )
+            or ""
+        )
     except Exception:  # noqa: BLE001 — fail-silent：Gate 掛掉 = 無 Horizon 塊
         return ""
 
@@ -488,7 +495,8 @@ class AkaneVoiceBrain:
         sys_parts = [self.persona]
 
         # 0. VC-UNIFY-1：認知地平線（Persona 之後、即時對話之前；fail-silent 空字串跳過）
-        horizon_block = format_voice_horizon_block(self.agent_id)
+        #    EH-4.1：utterance 僅透傳（差量實作只在主服務讀側模組一份，VC 端 0 實作）
+        horizon_block = format_voice_horizon_block(self.agent_id, utterance=user_text)
         if horizon_block:
             sys_parts.append(horizon_block)
 
