@@ -2558,6 +2558,55 @@ def _get_safe_emotion(agent_id: str) -> str:
     return whitelist[0] if whitelist else "calm"
 
 
+# ── PERSONA-FIX-3 (2026-09-05): Ruka heartbeat session-once code 層強制 ──
+# 契約來源 (唯讀, 不在此改):
+#   - personas/agent_ruka.md:94-117 「心跳只能在整個 session 內出現一次,
+#     之後的約會完全不提心跳; 單次 session 內心跳 reference 超過一次即違規」
+#   - src/voice/build_system_prompt.py:157-173 ruka 白名單註解
+#     「`heartbeat` 是 session-once 特殊觸發 tag, 單個 session 內最多觸發 1 次」
+# 稽核定案: 全庫 grep 顯示此規則只存在於 prompt 字串, 無任何 code 層 enforce。
+# 生產越界實證: data/logs/server_20260730_230718.err 同一 session 內
+#   emotion='heartbeat' 反覆觸發 (L815/L3468/L4712/L19004);
+#   server_20260801_205401.err:760/1858、server_20260801_002651.err:913 亦多次。
+# 既有先例: 下方 Mahiru Sweet Landing hook (agent-specific post-generation hook,
+#   proxy.py:3754-3765) — 但該 hook 是無狀態純函式, 手上有沒有 session 狀態可複製,
+#   故 session 身份沿用本檔既有的 per-session 來源:
+#   - session key = _session_key(agent_id, user_id) — 跟 AGENT_SPEAK payload 的
+#     session_id (proxy.py:3858) 同一套, 也是 self._history 的 key (proxy.py:3308)
+#   - 狀態容器 = LLMProxy 實例上的 in-proxy set, 比照既有 self._in_flight
+#     (proxy.py:3311) 的輕量 set 先例
+# 只開 agent_ruka: 呼叫端 (LLMProxy._handle_event_impl) 以 agent_id == "agent_ruka"
+# 守門, 其餘角色根本不進呼叫點, 行為完全不變。
+RUKA_HEARTBEAT_EMOTION = "heartbeat"
+RUKA_HEARTBEAT_DOWNGRADE_EMOTION = "approaching"
+
+
+def enforce_ruka_heartbeat_session_once(
+    emotion: str,
+    session_id: str,
+    fired_sessions: set,
+) -> str:
+    """agent_ruka 專屬: 同一 session 內 `heartbeat` emotion 至多放行 1 次。
+
+    第一次遇到 `heartbeat` → 放行原值並把 session_id 記入 fired_sessions;
+    同一 session 內再次出現 → 降級為 `approaching` (ruka 白名單預設 tag)。
+
+    Args:
+        emotion: LLM 解析後的 emotion 值 (phase 3 白名單驗證後)。
+        session_id: 本檔既有的 per-session key (_session_key(agent_id, user_id)),
+            跟 AGENT_SPEAK payload 的 session_id 同一套 (proxy.py:3858)。
+        fired_sessions: 已放行過 heartbeat 的 session_id set (LLMProxy 實例持有)。
+
+    Returns:
+        放行 (原值) 或降級後的 emotion。非 heartbeat 一律原樣, 不記錄不污染。
+    """
+    if emotion == RUKA_HEARTBEAT_EMOTION:
+        if session_id in fired_sessions:
+            return RUKA_HEARTBEAT_DOWNGRADE_EMOTION
+        fired_sessions.add(session_id)
+    return emotion
+
+
 # 修法 6 (Bry 拍板 2026-08-03 23:48): 輸出後處理截斷
 # 防止 anna 8/3 21:42 退化重複事件: tool_calls 內 50+「嗯。」(3851 chars, 60+ 次重複)
 # finish_reason=length, completion=4000 打滿 max_tokens
@@ -3309,6 +3358,10 @@ class LLMProxy:
 
         # 去重:追蹤正在處理中的 event_id,防止同一事件被處理兩次
         self._in_flight: set = set()
+        # PERSONA-FIX-3 (2026-09-05): Ruka heartbeat session-once gate 的狀態容器
+        # 比照上方 self._in_flight 的 in-proxy set 先例; key 用 _session_key
+        # (跟 AGENT_SPEAK payload 的 session_id 同一套, proxy.py:3858)
+        self._ruka_heartbeat_fired: set = set()
         # KI-001: 預設 user_id(向後相容既有對話;運行時由 event.payload 覆蓋)
         self._user_id_legacy_default = "bryan"
 
@@ -3762,6 +3815,28 @@ class LLMProxy:
                     logger.info(
                         f"[LLMProxy] Mahiru Sweet Landing triggered: "
                         f"agent={agent_id} sweet keyword detected, landing appended"
+                    )
+
+            # ── PERSONA-FIX-3 (2026-09-05): Ruka heartbeat session-once gate ──
+            # 契約: personas/agent_ruka.md:94-117 心跳整個 session 只能出現一次;
+            # build_system_prompt.py:157-173 `heartbeat` 是 session-once 特殊 tag。
+            # 先例: 上方 Mahiru Sweet Landing (agent-specific post-generation hook,
+            # try 內, 不改 finally) — 該 hook 無 session 狀態, 故 session 身份沿用
+            # _session_key(agent_id, user_id) (跟 AGENT_SPEAK session_id 同一套,
+            # proxy.py:3858), 狀態容器比照 self._in_flight 的 in-proxy set。
+            # 只開 agent_ruka: 其餘角色 (agent_yua/agent_rem/agent_mahiru/...) 
+            # 不進此分支, emotion 一字不動。
+            if agent_id == "agent_ruka":
+                _session_key_gate = _session_key(agent_id, user_id)
+                _before_emotion = emotion
+                emotion = enforce_ruka_heartbeat_session_once(
+                    emotion, _session_key_gate, self._ruka_heartbeat_fired
+                )
+                if emotion != _before_emotion:
+                    logger.info(
+                        f"[LLMProxy] Ruka heartbeat session-once gate: "
+                        f"emotion='{_before_emotion}' 已在本 session 放行過, "
+                        f"降級為 '{emotion}' (session={_session_key_gate})"
                     )
 
             if generated_text is None:
