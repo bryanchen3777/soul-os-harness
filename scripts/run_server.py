@@ -1815,7 +1815,102 @@ async def test_spawn_intent(agent_id: str, dry_run: bool = False):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+
+# ─────────────────────────────────────────────────────────────
+# CRASH-F1: Windows event loop policy 實驗開關（可切換，預設維持現狀）
+# ─────────────────────────────────────────────────────────────
+# 實驗背景: 主服務每 25–80 分鐘發生無聲原生崩潰 (python311.dll / 0xc0000005
+#   ACCESS_VIOLATION, Fault Offset 落在 _overlapped / IOCP)。假說: Windows 預設
+#   ProactorEventLoop 的 IOCP 完成埠在 10 個 Telegram Bot 長輪詢下的底層併發衝突;
+#   WindowsSelectorEventLoopPolicy 可完全繞開 IOCP。
+#
+# 本區塊只提供「可切換的開關」, 不啟動實驗 (Owner 已授權假說檢驗, 非根因已證)。
+# 切換動作由幕僚長在部署時刻意執行; 本 commit 預設維持 proactor = 現狀 = 0 行為變更。
+#
+# 解析優先序 (決策已定): SOUL_OS_EVENT_LOOP 環境變數 → configs/default.yaml 的
+#   server.event_loop → 預設 proactor。
+#   - 環境變數在 watchdog 自動重啟後會遺失 (新進程不繼承 session 級變數)，撐不住
+#     48 小時實驗 → config 才持久 (差異 #2 刻意設計)。
+#   - 僅在 sys.platform == "win32" 時設定 policy; 非 Windows 平台不動作 (記 INFO)。
+#   - 無效值 → 記 WARNING 並回退 proactor, 不得拋例外 (啟動必須永遠成功)。
+
+# 實驗翻牌點 (CRASH-F1): 幕僚長部署時只需把這一行改成 "selector" 即可翻牌
+# (或設環境變數 SOUL_OS_EVENT_LOOP=selector / configs/default.yaml
+#  server.event_loop: selector — 環境變數優先)。
+_DEFAULT_EVENT_LOOP = "proactor"
+
+_VALID_EVENT_LOOPS = ("selector", "proactor")
+
+
+def _resolve_event_loop(cfg: dict | None = None) -> str:
+    """CRASH-F1: 解析 event loop 偏好 (env → config → 預設 proactor)。
+
+    回傳值永遠是 _VALID_EVENT_LOOPS 之一: 無效值記 WARNING 回退 proactor,
+    絕不拋例外 (啟動必須永遠成功)。
+    """
+    raw = os.getenv("SOUL_OS_EVENT_LOOP")
+    source = "env SOUL_OS_EVENT_LOOP"
+    if raw is None or raw == "":
+        raw = ((cfg or {}).get("server") or {}).get("event_loop")
+        source = "configs/default.yaml server.event_loop"
+        if raw is None or raw == "":
+            raw = _DEFAULT_EVENT_LOOP
+            source = "default"
+    value = str(raw).strip().lower()
+    if value not in _VALID_EVENT_LOOPS:
+        logger.warning(
+            "[CRASH-F1] invalid event loop %r (source=%s), falling back to %r",
+            raw, source, _DEFAULT_EVENT_LOOP,
+        )
+        value = _DEFAULT_EVENT_LOOP
+    return value
+
+
+def _apply_event_loop_policy(pref: str) -> None:
+    """CRASH-F1: 依偏好設定 asyncio event loop policy。
+
+    僅 sys.platform == "win32" 時動作; 非 Windows 平台略過 (記 INFO)。
+    """
+    if sys.platform != "win32":
+        logger.info(
+            "[CRASH-F1] platform=%r is not win32, event loop policy unchanged (skipped)",
+            sys.platform,
+        )
+        return
+    if pref == "selector":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        logger.info("[CRASH-F1] event loop policy -> WindowsSelectorEventLoopPolicy")
+    else:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        logger.info("[CRASH-F1] event loop policy -> WindowsProactorEventLoopPolicy (default)")
+
+
+def _active_loop_class_name() -> str:
+    """CRASH-F1: 實際生效的 event loop class 全名。
+
+    透過 asyncio.new_event_loop() (= asyncio.get_event_loop_policy().new_event_loop())
+    建立 probe loop 再關閉, 因此印出的是「實際會由 policy 建立的 loop 型別」,
+    不是設定的偏好字串 — 這是 48 小時實驗的翻牌時刻證據。
+    """
+    probe = asyncio.new_event_loop()
+    try:
+        return type(probe).__name__.lstrip("_")
+    finally:
+        probe.close()
+
+
 if __name__ == "__main__":
+    # CRASH-F1: 在任何 asyncio loop / uvicorn.run 建立之前設定 event loop policy
+    from configs.loader import load_config as _crash_f1_load_config
+
+    _crash_f1_cfg = _crash_f1_load_config()
+    _crash_f1_pref = _resolve_event_loop(_crash_f1_cfg)
+    _apply_event_loop_policy(_crash_f1_pref)
+    logger.info(
+        "[Server] Active asyncio event loop: %s (preference=%s)",
+        _active_loop_class_name(),
+        _crash_f1_pref,
+    )
     uvicorn.run(
         app,
         host="0.0.0.0",

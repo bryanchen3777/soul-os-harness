@@ -170,3 +170,10 @@ rag:
   enabled: true
   top_k: 3                      # 最多注入幾條過去相關記憶
   exclude_current_session: true # 排除當下對話（避免跟 history 重複）
+
+# ── CRASH-F1: server 啟動選項 ──
+# event_loop: proactor 是刻意維持的預設（＝現狀，0 行為變更）。
+# 實驗翻牌（切換到 selector 繞開 IOCP）由幕僚長在部署時刻意執行，
+# 可改這裡，或優先以環境變數 SOUL_OS_EVENT_LOOP=selector 覆蓋。
+server:
+  event_loop: proactor
