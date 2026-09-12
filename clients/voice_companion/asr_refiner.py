@@ -65,6 +65,46 @@ def is_noise(raw_text: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────
+# 條件式執行判定（VC-ASR-COND-1）：預設 Bypass，異常才 Run
+# ─────────────────────────────────────────────────────────────
+
+# 異常重複字元連續長度門檻（轉錄模型幻想/口吃標記，如「呵呵呵呵呵呵」）
+REPEAT_RUN_LIMIT = 6
+
+
+def needs_refiner(raw_text: str) -> tuple[bool, str]:
+    """判定 ASR 轉錄是否需要 Refiner：回傳 (False=bypass, reason) / (True=run, reason)。
+
+    預設 Bypass：清晰、高信心的日常完整語句直接直通 Voice Brain（每回合 1 次 LLM 呼叫）。
+    任一異常條件命中才 Run（Refiner 保留為第二道防線）：
+      1. too-short  — ≤ 2 個字元（極短/可能為語助詞或雜音片段）
+      2. noise      — 命中既有雜音熔斷器候選特徵（is_noise）
+      3. repeat     — 單字元連續重複 ≥ REPEAT_RUN_LIMIT（幻想/口吃標記）
+      4. punct-only — 無中日韓字/拉丁字母/數字（全標點或符號殘渣）
+      5. punct-heavy— 標點/非文字符號數 > 文字字元數（格式明顯損毀）
+    空白輸入 → (False, "empty")：Refiner 無內容可淨化，呼叫端沿用既有空轉錄處理，
+    （VC-ASR-COND-1 的 decision 日誌仍會印出 reason=empty）。
+    """
+    if not raw_text or not raw_text.strip():
+        return False, "empty"
+    chars = len(raw_text.strip())
+    if chars <= 2:
+        return True, "too-short"
+    if is_noise(raw_text):
+        return True, "noise"
+    core = re.sub(r"[\W_]+", "", raw_text)  # 保留中日韓字/拉丁字母/數字
+    if not core:
+        return True, "punct-only"
+    m = re.search(r"(.)\1{%d,}" % (REPEAT_RUN_LIMIT - 1), core)
+    if m:
+        return True, "repeat"
+    non_core = re.findall(r"[\W_]", raw_text)
+    if len(non_core) > len(core):
+        return True, "punct-heavy"
+    return False, "clear"
+
+
+# ─────────────────────────────────────────────────────────────
 # 內建確定性修復（極速模式，離線可用）
 # ─────────────────────────────────────────────────────────────
 

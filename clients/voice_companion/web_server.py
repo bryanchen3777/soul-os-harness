@@ -40,7 +40,7 @@ from aiohttp import WSMsgType, web
 
 try:  # pragma: no cover - 導入路徑相容
     from .akane_voice_brain import AkaneVoiceBrain
-    from .asr_refiner import AsrRefiner
+    from .asr_refiner import AsrRefiner, needs_refiner
     from .env_config import resolve_config
     from .fish_tts_live import DEFAULT_LIVE_ENDPOINT, FishTTSLiveStreamer
     from .stt_service import FishASRService, pcm16_to_wav_bytes
@@ -48,7 +48,7 @@ try:  # pragma: no cover - 導入路徑相容
     from .web_ui import HTML_PAGE, render_html_page
 except ImportError:  # pragma: no cover
     from akane_voice_brain import AkaneVoiceBrain
-    from asr_refiner import AsrRefiner
+    from asr_refiner import AsrRefiner, needs_refiner
     from env_config import resolve_config
     from fish_tts_live import DEFAULT_LIVE_ENDPOINT, FishTTSLiveStreamer
     from stt_service import FishASRService, pcm16_to_wav_bytes
@@ -495,6 +495,11 @@ class WebSession:
             return
         text = (text or "").strip()
         if not text:
+            # VC-ASR-COND-1：空轉錄 → Refiner 無內容可淨化，決策為 bypass（reason=empty）；
+            # 既有 VC-1.4 失敗透通 / 真雜音靜默 DROP 路徑保持不變。
+            elapsed_ms = round(((t_asr_done or t_start) - t_start) * 1000)
+            print(f"[ASR-REFINE] decision=bypass reason=empty chars=0 conf=none elapsed_ms={elapsed_ms}")
+            log.info("[ASR-REFINE] decision=bypass reason=empty chars=0 conf=none elapsed_ms=%d", elapsed_ms)
             # VC-1.4 失敗透通：ASR 有錯誤（402 額度 / 網路例外）→ 顯示給使用者，不再靜默 DROP；
             # last_error 為 None（真雜音/靜音）才維持既有 DROP 靜默
             err = getattr(self._asr, "last_error", None)
@@ -520,27 +525,40 @@ class WebSession:
         log.info("[UTT] asr-ok text=%s", text[:40])
         await self._send_json({"type": "transcript", "role": "user", "text": text})
 
-        try:
-            clean = await asyncio.to_thread(self._refiner.refine_speech_text, text)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            clean = ""
-            print(f"[UTT] refiner-exception {exc}")
-            log.exception("[UTT] refiner-exception %s", exc)
+        # ── VC-ASR-COND-1：條件式 Refiner 執行（預設 Bypass 直通 Voice Brain）──
+        # 清晰、高信心的日常完整語句 → 100% Bypass（原始轉錄文本直送 Voice Brain，
+        # 每回合維持 1 次 LLM 呼叫）；異常條件（needs_refiner）才 Run Refiner 第二道防線。
+        run_refiner, reason = needs_refiner(text)
+        chars = len(text)
+        elapsed_ms = round(((t_asr_done or t_start) - t_start) * 1000)  # ASR 轉錄耗時
+        if run_refiner:
+            print(f"[ASR-REFINE] decision=run reason={reason} chars={chars} conf=none elapsed_ms={elapsed_ms}")
+            log.info("[ASR-REFINE] decision=run reason=%s chars=%d conf=none elapsed_ms=%d", reason, chars, elapsed_ms)
+            try:
+                clean = await asyncio.to_thread(self._refiner.refine_speech_text, text)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                clean = ""
+                print(f"[UTT] refiner-exception {exc}")
+                log.exception("[UTT] refiner-exception %s", exc)
 
-        if gen != self._generation:
-            print(f"[UTT] refiner-cancelled gen={gen} curr={self._generation}")
-            return
-        if not clean:
-            # 雜音熔斷（DROP）：不打擾茜
-            print("[UTT] refine-drop")  # VC-1.5 診斷日誌
-            log.info("[UTT] refine-drop")
-            if gen == self._generation:
-                await self._set_state(self.STATE_IDLE)
-            return
-        if gen != self._generation:
-            return
+            if gen != self._generation:
+                print(f"[UTT] refiner-cancelled gen={gen} curr={self._generation}")
+                return
+            if not clean:
+                # 雜音熔斷（DROP）：不打擾茜
+                print("[UTT] refine-drop")  # VC-1.5 診斷日誌
+                log.info("[UTT] refine-drop")
+                if gen == self._generation:
+                    await self._set_state(self.STATE_IDLE)
+                return
+            if gen != self._generation:
+                return
+        else:
+            clean = text
+            print(f"[ASR-REFINE] decision=bypass reason={reason} chars={chars} conf=none elapsed_ms={elapsed_ms}")
+            log.info("[ASR-REFINE] decision=bypass reason=%s chars=%d conf=none elapsed_ms=%d", reason, chars, elapsed_ms)
         await self._run_reply(clean, gen=gen, t_start=t_start, t_asr_done=t_asr_done)
 
     async def _run_reply(
