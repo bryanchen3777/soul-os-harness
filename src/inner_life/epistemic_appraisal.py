@@ -659,11 +659,64 @@ def _is_native_immune(entity: str, pack: InstancePack) -> bool:
     return False
 
 
+#: S3（EH-4.2-FIX-1）主詞尾綴規範化用：尾隨語助詞／虛詞封閉集（純語法、0 世界觀名詞）。
+#: 用途：SAGE 寫側（frozen，不在本單範圍）抽出的 ``subject`` 可能尾隨虛詞 ——
+#: 例：核心詞 + 一個虛詞（``⟨核心詞⟩就``）。若以整串做比對，
+#: 讀側 entity 一旦被多餘動詞／特徵詞尾隨（``⟨核心詞⟩吹熱風烤…``）即漏鎖。
+_SUBJECT_TAIL_TRIM = frozenset("就是了個的了吧呢啊嘛呀喔哦啦而且也都很太於在有")
+
+
+def _subject_core(subject: str) -> str:
+    """S3 規範化：剝除尾隨語助詞／虛詞，取得核心詞（0 世界觀名詞、0 詞表）。
+
+    保留至少 2 字元（與 ``_core_noun`` 的單字防護同一條防線）——
+    單字殘片不得作為實體鍵，否則會與任意同字開頭的實體誤撞。
+    """
+    text = str(subject or "").strip()
+    while len(text) > 2 and text[-1] in _SUBJECT_TAIL_TRIM:
+        text = text[:-1]
+    return text
+
+
+def _assimilated_subject_match(entity: str, subject: str) -> bool:
+    """S3 實體同一性判定（EH-4.2-FIX-1：對 entity 過度捕獲免疫）。
+
+    三層判準（短路序；全部為純字元規則，0 LLM、0 NLP 依賴、0 世界觀名詞）：
+
+    ① 原判準（backward compatible）—— 完全相等或雙向子串；
+    ② **規範化核心詞方向性包含** —— ``_subject_core(subject)`` 與 entity 任一方向
+       包含即視為同一實體。這一層是本單的結構保證：entity 被多餘動詞／特徵詞
+       尾隨時（``⟨核心詞⟩＋謂語殘串``），核心詞仍 ⊆ entity → 命中，
+       不再依賴「尾隨字恰好落在 ``_CUT_CHARS``」的運氣；
+    ③ 最長共同前綴 —— 共同前綴覆蓋較短一方全長（≥2 字）即同源，
+       吸收 entity 被**過度截短**（核心詞只剩前 2 字）的反向情形。
+
+    誤殺防護：核心詞長度 ≥2，且判準皆要求整段核心詞（或其前綴）與 entity 對齊，
+    未同化的實體與已同化核心詞 0 交集 → 仍正常產生差量。
+    """
+    if not entity or not subject:
+        return False
+    if entity == subject or entity in subject or subject in entity:
+        return True
+    core = _subject_core(subject)
+    if len(core) < 2:
+        return False
+    if entity == core or entity in core or core in entity:
+        return True
+    common = 0
+    for a, b in zip(entity, core):
+        if a != b:
+            break
+        common += 1
+    return common >= 2 and common >= min(len(core), len(entity))
+
+
 def _is_assimilated_entity(agent_id: str, entity: str) -> bool:
     """S3（EH-4.2）：entity 是否已於 SAGE 內化（``assimilated`` + ``aware``）。
 
     唯一判準沿用既有讀側 Idiolect 檢索（``retrieve_idiolect``，契約 §3.5/§4.3）：
-    實體鍵與已內化列的 ``subject`` 相交（完全相等或雙向子串）即視為已同化。
+    實體鍵與已內化列的 ``subject`` 同一（判定細節見 ``_assimilated_subject_match``；
+    EH-4.2-FIX-1 起為三層判準，對 entity 過度捕獲免疫）即視為已同化。
 
     fail-silent（O4）：SAGE 不存在／查詢失敗／無 agent_id → ``False``
     （退回初次遭遇語義，絕不因讀側失敗而吞掉正當差量）。
@@ -677,7 +730,7 @@ def _is_assimilated_entity(agent_id: str, entity: str) -> bool:
             subject = str(getattr(fact, "subject", "") or "")
             if not subject:
                 continue
-            if entity == subject or entity in subject or subject in entity:
+            if _assimilated_subject_match(entity, subject):
                 return True
     except Exception as exc:  # noqa: BLE001 — O4 fail-silent
         logger.debug("[epistemic] S3 內化查詢失敗: %s: %s", type(exc).__name__, exc)
