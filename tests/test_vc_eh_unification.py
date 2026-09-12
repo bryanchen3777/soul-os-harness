@@ -274,9 +274,12 @@ class Test2_VoiceDefinitionalSourcePurification:
             assert isinstance(f["learned_at"], float) and f["learned_at"] is not None, (
                 f"learned_at 必須為 float（EH-3.1 閘門 5/5），got {f['learned_at']!r}"
             )
-        # Gate A 反向防回歸：assistant/inference fact 不得誤標
+        # Gate A 反向防回歸：assistant/inference fact 不得誤標。
+        # EH-4.2 §4.1 例外（保留命名空間）：`eh4_` 四條衍生列**依契約**為
+        # source='inference'（L4-D1 槽位 2~5）+ origin='assimilated'，
+        # 不屬 Gate A（User-Only Source）的範疇。
         for f in facts:
-            if f["source"] != "user":
+            if f["source"] != "user" and not str(f["predicate"]).startswith("eh4_"):
                 assert f["origin"] != "assimilated", (
                     f"inference/assistant fact 不得被打 assimilated: {f!r}"
                 )

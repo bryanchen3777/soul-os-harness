@@ -323,10 +323,11 @@ def build_concept_quintuple_slots(
         mental_model = "；".join(p for p in (analogy, safety_narrative, duty_clause) if p)
 
         # ── idiolect（槽位 5）：那個{特徵詞}的{主人名物詞} ──
+        hit_features = set(features)
         displays = [
             ea._FEATURE_DISPLAY[k]
             for k, _t, _a in ea._FEATURE_LEXICON
-            if k in set(features) and k in ea._FEATURE_DISPLAY
+            if k in hit_features and k in ea._FEATURE_DISPLAY
         ]
         master_noun = _eh4_master_noun(user_text) or anchor
         idiolect = (
