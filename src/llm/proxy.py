@@ -2976,6 +2976,47 @@ def _unescape_llm_text(s: str) -> str:
     return s
 
 
+# PERSONA-FIX-1 (D1, 2026-09-05): JSON 殼 unwrap (純 text 兜底專用)
+# 成功路徑 (Layer 1/2) 能 parse 的 JSON, 在 Layer 3 純 text 兜底眼裡是「假純文字」:
+# raw 是 `{"text": "...` 開頭的 JSON 殼 (半殘或完整), 舊兜底直接當 text + audio_text
+# 廣播並送 TTS。log 鐵證: server_20260730_205447.err L9374-9399 (raw JSON 連前綴一起
+# 廣播, FishTTS text_len 37→49 連 `{"text": "` 都合成); server_20260730_230718.err
+# L19243 (Yua 同樣漏); server_20260801_205401.err L4701 (Ruka `[停頓]` 標籤漏出)。
+_TEXT_JSON_SHELL_PREFIX = re.compile(r'^\{\s*"text"\s*:\s*"')
+# 結尾 `"}` (含尾隨空白/換行); `}` 可選是為了 cover 截斷在半路的 `{"text": "..."`
+_TEXT_JSON_SHELL_SUFFIX = re.compile(r'"\s*\}?\s*$')
+
+
+def _unwrap_text_json_shell(cleaned: str) -> str:
+    """把純 text 兜底收到的 JSON 殼 unwrap 成 text 內容 (PERSONA-FIX-1 D1)。
+
+    順序 (與工單一致):
+      1. 先試 json.loads → 成功且是 dict 且有 "text" 欄位 → 回傳該欄位
+      2. 失敗 (半殘/截斷 JSON) → 字面剝除 `{"text": "` 前綴與結尾 `"}` (含尾隨空白/換行)
+      3. 都不中 (真純文字) → 原樣回傳, 不破壞正常情況 (回歸保護)
+
+    只 unwrap 殼, 不做其他淨化; 偽函式 / emotion tag 的清理由呼叫端
+    (純 text 兜底) 與成功路徑同一套處理。
+    """
+    if not cleaned:
+        return cleaned
+    stripped = cleaned.strip()
+    try:
+        obj = json.loads(stripped)
+    except (ValueError, TypeError):
+        obj = None
+    if isinstance(obj, dict):
+        text_value = obj.get("text")
+        if isinstance(text_value, str):
+            return text_value
+    m = _TEXT_JSON_SHELL_PREFIX.match(stripped)
+    if m:
+        rest = stripped[m.end():]
+        rest = _TEXT_JSON_SHELL_SUFFIX.sub("", rest)
+        return rest.strip()
+    return cleaned
+
+
 def _parse_llm_output(raw: str, agent_id: str) -> Dict[str, str]:
     """3 層容錯解析 LLM 輸出,返回 {text, audio_text, emotion}。
 
@@ -3072,9 +3113,25 @@ def _parse_llm_output(raw: str, agent_id: str) -> Dict[str, str]:
             if cleaned.startswith("```"):
                 cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
                 cleaned = re.sub(r"\n?```$", "", cleaned)
+            # PERSONA-FIX-1 (D1, 2026-09-05): 純 text 兜底漏掉淨化
+            # 舊兜底只做 fence 剝除 + _truncate_repetition, 成功路徑 (L3128-3136) 才套用的
+            # _strip_fake_function_calls / _strip_emotion_tags_from_text 在這裡全漏 →
+            # raw JSON (`{"text": ...`) 原樣當 text + audio_text 廣播並送 TTS
+            # (log 鐵證: server_20260730_205447.err L9374-9399 FishTTS 連 JSON 前綴一起合成)。
+            # 修法: 先 unwrap JSON 殼, 再與成功路徑 (L3128-3136) 套同一套淨化, 順序照抄。
+            if cleaned:
+                cleaned = _unwrap_text_json_shell(cleaned)
             if cleaned:
                 # 修法 6 B: 套用 _truncate_repetition 截斷退化重複
                 cleaned = _truncate_repetition(cleaned)
+                # PERSONA-FIX-1 (D1): 與成功路徑同一套 (照抄 L3128-3136)
+                #   text       → 偽函式 + 全剝 [emotion tag] (給 Bry 看, 要純日文+中文)
+                #   audio_text → 偽函式 + 只剝開頭 [tag] (給 TTS, 保留表演指示,
+                #                避免跟 fish_tts_handler 注入的 marker 疊加)
+                layer3_text = _strip_fake_function_calls(cleaned)
+                layer3_text = _strip_emotion_tags_from_text(layer3_text)
+                layer3_audio = _strip_fake_function_calls(cleaned)
+                layer3_audio = _EMOTION_TAG_LINE_PREFIX.sub("", layer3_audio, count=1).lstrip()
                 # 修法 6 D.2: emotion 從 _get_safe_emotion 改 "confused" (Bry 從情緒標記感覺出問題)
                 logger.warning(
                     f"[LLMProxy] {agent_id} 純 text 兜底 (Bry 7/27 00:15 拍板), "
@@ -3082,8 +3139,8 @@ def _parse_llm_output(raw: str, agent_id: str) -> Dict[str, str]:
                     f"emotion=confused (Bry 拍板 2026-08-03 修法 6 D.2)"
                 )
                 return {
-                    "text": cleaned,
-                    "audio_text": cleaned,
+                    "text": layer3_text,
+                    "audio_text": layer3_audio,
                     "emotion": "confused",  # 修法 6 D.2
                     "_parse_failed": True,
                 }
@@ -3640,17 +3697,20 @@ class LLMProxy:
             audio_text = parsed["audio_text"]
             emotion = parsed["emotion"]
 
-            # ── 階段 5.5+ hotfix #7: parse 完全失敗也 retry (2026-07-15 Bry 拍板) ──
+            # ── 階段 5.5+ hotfix #7 marker: parse 完全失敗 (Layer 3 兜底) ──
             # 透過 _parse_llm_output 回傳的 _parse_failed 標記偵測
-            # Layer 3 走 E 兜底(LLM 沒回 JSON)時設為 True
-            # 這種「半殘」回應對 Bry 是垃圾 → 也要 retry
+            # Layer 3 走 E 兜底 (LLM 沒回 JSON) 時設為 True
+            # PERSONA-FIX-1 (D4②, 2026-09-05): 修正誤導性死碼 log
+            # 舊版 log 宣稱「重打 LLM 強制 JSON」且把 audio_text 設空,
+            # 但下方 JP rollback (2026-07-22) 立即用 audio_text = generated_text 覆寫
+            # → 根本沒有第二次 LLM 呼叫 (2026-07-22 已移除 retry 實作, log 留存誤導後人)。
+            # 現在誠實記錄: 僅做 Layer 3 兜底 + JP rollback 覆寫, 不重打 LLM。
             if parsed.get("_parse_failed"):
                 logger.warning(
-                    f"[LLMProxy] {agent_id} parse 完全失敗 (Layer 3 E 兜底),"
-                    f"audio_text 僅 {len(audio_text)} chars,retry with JSON enforcement"
+                    f"[LLMProxy] {agent_id} parse 完全失敗 (Layer 3 兜底),"
+                    f"audio_text 僅 {len(audio_text)} chars, 由 JP rollback 用 "
+                    f"generated_text 覆寫, 無第二次 LLM 呼叫 (retry 2026-07-22 已移除)"
                 )
-                # 強致 retry 路徑觸發:把 audio_text 設空,下面 retry 邏輯會 catch
-                audio_text = ""
 
             # JP rollback (Bry 拍板 2026-07-22 20:59):
             # - audio_text 跟 text 不再分開, TTS 拿 text 就好
