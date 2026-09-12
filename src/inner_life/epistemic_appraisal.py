@@ -185,6 +185,11 @@ del _key, _triggers, _axis, _t
 #: bridge ``requires`` 合法元素集合（V7）
 _KNOWN_FEATURES = frozenset(k for k, _t, _a in _FEATURE_LEXICON)
 
+#: EH-4.2 §步驟 1（UR-2 靜默邊界）：取得動詞階梯（「買了／有一台」）的**唯一**特徵鍵。
+#: 該鍵只證明「主人添了新物」，**不構成任何物理特徵證據** —— 單獨命中時嚴禁
+#: 觸發差量（0 錨點、0 品名回退、0 無特徵腦補 FSA-1）。
+_ACQUISITION_FEATURE_KEYS = frozenset({"acquisition"})
+
 
 # ─────────────────────────────────────────────────────────────────────
 # 實體抽取階梯（Spoken Ingestion Ladder，契約 §2.2；0 名詞白名單）
@@ -478,10 +483,28 @@ def _appraise_impl(inp: AppraisalInput) -> Optional[DeltaRecord]:
         logger.debug("[epistemic] FSA-0 原生免疫命中（0 對撞）")
         return None
 
+    # S3: 已內化鎖定（EH-4.2 §步驟 3）——該 entity 已於 SAGE 具 aware 標記
+    # （origin=assimilated + horizon_state=aware，即已同化過）→ 直接 None：
+    # 二次遭遇**不再執行初次見面的差量對撞**，Horizon Block 完全改由 Idiolect
+    # 清單投影已內化的心智模型與稱謂（平滑接話）。
+    if _is_assimilated_entity(inp.agent_id, entity):
+        logger.debug("[epistemic] S3 已內化鎖定（0 差量對撞）")
+        return None
+
     # S1: 表面物理特徵（空集合 → FSA-1(b)）
     features = _match_features(utterance + "\n" + context)
     if not features:
         logger.debug("[epistemic] FSA-1(b) 無特徵詞證據")
+        return None
+
+    # S1a: UR-2 靜默邊界（EH-4.2 §步驟 1）——取得動詞階梯若除 acquisition 外
+    # 別無任何**次級物理特徵詞**（熱風／玻璃門／平底／低溫…），嚴格 FSA-1 → None。
+    # 校準理由：添購陳述只說「主人有了新物」，未經特徵描述或定義之前
+    # 0 隱喻注入、0 品名回退（嚴禁無特徵腦補）。
+    if ladder == "spoken_acquisition" and not (
+        set(features) - _ACQUISITION_FEATURE_KEYS
+    ):
+        logger.debug("[epistemic] UR-2 取得句無次級物理特徵 → FSA-1")
         return None
 
     # S4: 軸映射
@@ -633,6 +656,31 @@ def _is_native_immune(entity: str, pack: InstancePack) -> bool:
     for term in pack.native_immunity_terms:
         if entity == term or (term and term in entity):
             return True
+    return False
+
+
+def _is_assimilated_entity(agent_id: str, entity: str) -> bool:
+    """S3（EH-4.2）：entity 是否已於 SAGE 內化（``assimilated`` + ``aware``）。
+
+    唯一判準沿用既有讀側 Idiolect 檢索（``retrieve_idiolect``，契約 §3.5/§4.3）：
+    實體鍵與已內化列的 ``subject`` 相交（完全相等或雙向子串）即視為已同化。
+
+    fail-silent（O4）：SAGE 不存在／查詢失敗／無 agent_id → ``False``
+    （退回初次遭遇語義，絕不因讀側失敗而吞掉正當差量）。
+    """
+    if not agent_id or not entity:
+        return False
+    try:
+        from src.memory.sage.horizon import retrieve_idiolect
+
+        for fact in retrieve_idiolect(agent_id):
+            subject = str(getattr(fact, "subject", "") or "")
+            if not subject:
+                continue
+            if entity == subject or entity in subject or subject in entity:
+                return True
+    except Exception as exc:  # noqa: BLE001 — O4 fail-silent
+        logger.debug("[epistemic] S3 內化查詢失敗: %s: %s", type(exc).__name__, exc)
     return False
 
 

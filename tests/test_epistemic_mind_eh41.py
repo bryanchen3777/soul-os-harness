@@ -51,11 +51,21 @@ _MODERN_NATIVE_AGENTS = (
 
 
 @pytest.fixture(autouse=True)
-def _isolate_pack_cache():
-    """pack 快取為進程內 dict（契約 §1.6）→ 每個測試前後清空，保證隔離。"""
+def _isolate_pack_cache(tmp_path_factory, monkeypatch):
+    """pack 快取為進程內 dict（契約 §1.6）→ 每個測試前後清空，保證隔離。
+
+    EH-4.2 追加：同時隔離 SAGE ``data_root`` —— ``appraise()`` 的 S3「已內化鎖定」
+    會讀 ``data_root()/memory/<agent>/graph.sqlite``；不隔離則本套件會隨生產資料庫
+    狀態漂移（非 hermetic 測試）。
+    """
+    from src.paths import reset_data_root
+
     clear_pack_cache()
+    monkeypatch.setenv("SOUL_OS_DATA_DIR", str(tmp_path_factory.mktemp("eh41_data")))
+    reset_data_root()
     yield
     clear_pack_cache()
+    reset_data_root()
 
 
 def _record(utterance: str):
@@ -116,17 +126,14 @@ def test_b_secondary_feature_routing_and_no_name_lookup():
     assert "封閉石爐" in rec_b.anchor
     assert rec_b.anchor != rec_a.anchor
 
-    # C：0 次級特徵（純取得句）→ 未命中任何分流 → 回退基準錨點（AC-3）
-    #    證明分流靠「句中的物理特徵詞」，而非「品名 → 錨點」對照表：
-    #    句中從未出現氣炸鍋三字以外的線索，錨點仍是基準【烘爐】。
+    # C：0 次級物理特徵（純取得句）→ EH-4.2 UR-2 靜默邊界（FSA-1 嚴格化）：
+    #    取得動詞（「買了」）只證明主人添了新物，**不是物理特徵證據** →
+    #    嚴格回 None（0 錨點、0 烘爐回退、0 隱喻注入、0 無特徵腦補）。
     rec_c = _record("我買了一台氣炸鍋")
-    assert rec_c is not None
-    assert rec_c.anchor_class == ""
-    assert rec_c.extraction_ladder == "spoken_acquisition"
-    assert rec_c.entity_terms == ("氣炸鍋",)
-    assert rec_c.anchor.startswith("似烘爐，卻無")
-    # 三個錨點互不相同（INV-18 單一模板化的反例鋼印）
-    assert len({rec_a.anchor, rec_b.anchor, rec_c.anchor}) == 3
+    assert rec_c is None
+    assert format_epistemic_horizon_delta(_AGENT_REM, "我買了一台氣炸鍋") == ""
+    # 兩個特徵分流錨點仍互不相同（INV-18 單一模板化的反例鋼印）
+    assert rec_a.anchor != rec_b.anchor
 
 
 def test_b_four_anchor_classes_are_distinct():

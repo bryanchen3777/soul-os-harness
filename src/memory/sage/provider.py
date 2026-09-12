@@ -134,6 +134,285 @@ def _fact_intersects_entity(fact: Fact, entities: set[str]) -> bool:
     return False
 
 
+# ═════════════════════════════════════════════════════════════════════
+# EH-4.2 (L4 雙軌概念同化圖譜) — 五元組寫回 + 安全熔接
+#
+# 契約：docs/EH-4-EPISTEMIC-MIND-CONTRACT.md §4.1 / §4.2（含 SF-1~SF-7）/ §4.3
+#   - 槽位 1 earth_term：**現況不動**（EH-3.1 既有 user 列即為槽位 1，本模組不重寫）
+#   - 槽位 2~5：本模組以決定性模板追加 4 條衍生列（0 LLM；契約 L4-D2）
+#   - 觸發唯一閘門：EH-3.1 定義句閘門「成功打標之實體」（0 新句法判定）
+#   - 純日常提及／購買陳述（「買了／有一台」）→ 0 寫入
+# ═════════════════════════════════════════════════════════════════════
+
+#: 保留命名空間（契約 §4.1）：一般抽取器不得產生此前綴，投影端只認 prefix。
+EH4_PREDICATE_MENTAL_MODEL = "eh4_mental_model"
+EH4_PREDICATE_SAFETY_RULE = "eh4_safety_rule"
+EH4_PREDICATE_DUTY_ACTION = "eh4_duty_action"
+EH4_PREDICATE_IDIOLECT = "eh4_idiolect"
+
+#: 一輪一實體最多寫 4 條衍生列（契約 §4.2 I2；earth_term 由 EH-3.1 既有列承擔）。
+_EH4_DERIVED_PREDICATES: tuple[str, ...] = (
+    EH4_PREDICATE_MENTAL_MODEL,
+    EH4_PREDICATE_SAFETY_RULE,
+    EH4_PREDICATE_DUTY_ACTION,
+    EH4_PREDICATE_IDIOLECT,
+)
+
+#: 安全子句偵測詞（通用感官／安全語彙；0 世界觀名詞、0 現代器具名）。
+_EH4_SAFETY_TOKENS: tuple[str, ...] = (
+    "燙", "熱", "危險", "注意", "小心", "焦", "煙", "觸電", "漏電", "割", "濕",
+)
+#: 叮嚀／命令式尾綴（SF-3：熔接子句必為**敘述性直覺**，不得寫成命令句）→ 剝除。
+_EH4_HORTATORY_TAILS: tuple[str, ...] = (
+    "要注意", "要小心", "務必小心", "務必注意", "小心", "注意", "務必", "記得",
+)
+#: 子句切分標點（決定性組裝用；與抽取器同構）。
+_EH4_CLAUSE_SPLIT = "，。！？、；：,.!?;:\n\t "
+#: 非家務軸時的侍奉分工敘述（SF-6：含「誰碰／怎麼碰」界線、不列動作清單、非命令句）。
+_EH4_DUTY_FALLBACK = "我負責在旁看顧，先問過主人才動手"
+
+
+def _eh4_clauses(user_text: str) -> list[str]:
+    """依標點切分子句（保序、去空白；0 語義判斷）。"""
+    raw = str(user_text or "")
+    for sep in "。！？!?\n":
+        raw = raw.replace(sep, "，")
+    return [c.strip() for c in raw.split("，") if c.strip()]
+
+
+def _eh4_master_safety_clause(user_text: str) -> str:
+    """主人解釋句中的**安全子句**（敘述性直覺；剝除叮嚀尾綴）。
+
+    取「最後一個含安全詞的子句」→ 去掉尾端叮嚀（「要注意」…）→ 回傳描述句。
+    Ex: 「…箱子，外殼會燙要注意。」→ ``外殼會燙``（SF-3：非命令句）。
+    """
+    for clause in reversed(_eh4_clauses(user_text)):
+        if not any(tok in clause for tok in _EH4_SAFETY_TOKENS):
+            continue
+        text = clause.strip()
+        changed = True
+        while changed and text:
+            changed = False
+            for tail in _EH4_HORTATORY_TAILS:
+                if text.endswith(tail) and len(text) > len(tail):
+                    text = text[: -len(tail)].strip()
+                    changed = True
+                    break
+        return text
+    return ""
+
+
+def _eh4_master_noun(user_text: str) -> str:
+    """定義子句尾端的**名物詞**（主人用詞；0 品名硬編碼）。
+
+    Ex: 「氣炸鍋就是個插電吹熱風把食物烤熟的箱子」→ ``箱子``
+        「…是插電加熱的小箱子」→ ``小箱子``（取最後一個「的」之後、上限 6 字）。
+    """
+    raw = str(user_text or "")
+    for marker in _ASSIMILATION_SYNTAX_MARKERS:
+        idx = raw.find(marker)
+        if idx < 0:
+            continue
+        tail = raw[idx + len(marker):]
+        for sep in _EH4_CLAUSE_SPLIT:
+            cut = tail.find(sep)
+            if cut >= 0:
+                tail = tail[:cut]
+        tail = tail.strip()
+        if not tail:
+            continue
+        if "的" in tail:
+            tail = tail.rsplit("的", 1)[1].strip()
+        while tail and tail[-1] in _ENTITY_TRAILING_PARTICLES:
+            tail = tail[:-1]
+        tail = tail.strip()[:6]
+        if len(tail) >= 2:
+            return tail
+    return ""
+
+
+def _eh4_dedup_substrings(terms: tuple[str, ...]) -> list[str]:
+    """去除互為子串的重複詞條（「柴火」與「火」→ 只留「柴火」；保序）。"""
+    out: list[str] = []
+    for term in terms:
+        if not term:
+            continue
+        if any(term in kept for kept in out):
+            continue
+        out = [kept for kept in out if kept not in term]
+        out.append(term)
+    return out
+
+
+def build_concept_quintuple_slots(
+    agent_id: str,
+    entity: str,
+    user_text: str,
+) -> Optional[dict[str, str]]:
+    """以 L1 pack ＋ 通用特徵詞決定性組裝槽位 2~5（0 LLM；契約 §4.2）。
+
+    回傳 ``{predicate: object}``（恰 4 條衍生列）；材料不足（無 pack／無特徵詞／
+    無可解析軸）→ ``None``（fail-silent，不寫任何列）。
+
+    - ``eh4_mental_model``（SF-2／SF-3）：``似{anchor}，卻無{absent}；{安全直覺}；{侍奉界線}``
+      —— 安全直覺**強制熔接**進描述句（raw safety 欄位不投影，SF-5／L4-D3）。
+    - ``eh4_safety_rule``：該軸 ``hazard_rules`` ＋ 主人描述（raw，永不投影進 prompt）。
+    - ``eh4_duty_action``：``labor_domesticity`` 命中時取其 ``duty_hooks[0]``，
+      否則用通用侍奉界線敘述（SF-6）。
+    - ``eh4_idiolect``：``那個{特徵詞}的{主人名物詞}``（契約 §4.1 槽位 5）。
+    """
+    try:
+        from src.inner_life import epistemic_appraisal as ea
+
+        pack = ea.load_epistemic_pack(agent_id)
+        if pack is None or not entity:
+            return None
+        features = tuple(ea._match_features(str(user_text or "")))
+        if not features:
+            return None
+        axis_hits = ea._map_axes(features)
+        if not axis_hits:
+            return None
+
+        anchor_class = ea._resolve_anchor_class(features)
+        bridge = ea._select_bridge(pack, features, anchor_class)
+        if bridge is not None:
+            anchor = bridge.preferred_anchor
+            axis_key = bridge.axis if bridge.axis in pack.axes else axis_hits[0]
+            absent = tuple(
+                t for t in bridge.expect_absent if t and t not in str(user_text or "")
+            )
+        else:
+            axis_key = axis_hits[0]
+            axis_pack = pack.axes.get(axis_key)
+            if axis_pack is None or not axis_pack.analogy_anchors:
+                return None
+            anchor = axis_pack.analogy_anchors[0]
+            absent = tuple(
+                t for t in axis_pack.native_basis if t and t not in str(user_text or "")
+            )
+
+        # ── 安全軸（SF-1）：主人給出安全子句或命中 hot_shell 時，取
+        #    safety_hazard 軸的 hazard_rules；否則取該輪主軸條款 ──
+        own_safety = _eh4_master_safety_clause(user_text)
+        safety_axis_key = (
+            "safety_hazard"
+            if ("hot_shell" in features or own_safety) and "safety_hazard" in pack.axes
+            else axis_key
+        )
+        hazard_rules = tuple(pack.axes[safety_axis_key].hazard_rules) if safety_axis_key in pack.axes else ()
+        safety_narrative = own_safety or (hazard_rules[0] if hazard_rules else "")
+        safety_rule_obj = "；".join(hazard_rules)
+        if own_safety:
+            safety_rule_obj = (
+                f"{safety_rule_obj}；主人描述：{own_safety}" if safety_rule_obj else own_safety
+            )
+
+        # ── 侍奉界線（SF-6）：labor_domesticity 命中 → pack duty_hooks；否則通用敘述 ──
+        duty_clause = _EH4_DUTY_FALLBACK
+        if "labor_domesticity" in axis_hits:
+            hooks = tuple(pack.axes["labor_domesticity"].duty_hooks)
+            if hooks:
+                duty_clause = f"我負責{hooks[0]}"
+
+        # ── mental_model（SF-2）：{anchor 類比}，{absent 缺席}；{安全直覺}；{侍奉界線} ──
+        absent_core = _eh4_dedup_substrings(absent)
+        analogy = f"似{anchor}"
+        if absent_core:
+            analogy += f"，卻無{'、'.join(absent_core)}"
+        mental_model = "；".join(p for p in (analogy, safety_narrative, duty_clause) if p)
+
+        # ── idiolect（槽位 5）：那個{特徵詞}的{主人名物詞} ──
+        displays = [
+            ea._FEATURE_DISPLAY[k]
+            for k, _t, _a in ea._FEATURE_LEXICON
+            if k in set(features) and k in ea._FEATURE_DISPLAY
+        ]
+        master_noun = _eh4_master_noun(user_text) or anchor
+        idiolect = (
+            f"那個{'、'.join(displays[:2])}的{master_noun}"
+            if displays
+            else f"那個{master_noun}"
+        )
+
+        return {
+            EH4_PREDICATE_MENTAL_MODEL: mental_model,
+            EH4_PREDICATE_SAFETY_RULE: safety_rule_obj,
+            EH4_PREDICATE_DUTY_ACTION: duty_clause,
+            EH4_PREDICATE_IDIOLECT: idiolect,
+        }
+    except Exception as exc:  # noqa: BLE001 — fail-silent（契約 §4.2 I5）
+        logger.warning(
+            f"[SAGE] EH-4.2 槽位組裝失敗: {type(exc).__name__}: {exc}"
+        )
+        return None
+
+
+def assimilate_concept_graph(
+    store: "GraphStore",
+    agent_id: str,
+    entity: str,
+    user_text: str,
+    *,
+    session_id: str = "",
+    source_pair: Optional[str] = None,
+) -> int:
+    """EH-4.2 (L4)：為**已成功打標**的實體追加 4 條衍生列（契約 §4.2）。
+
+    冪等（I1）：同 ``(subject, predicate)`` 已有 aware 列 → skip（不覆寫、不重複）。
+    維度：``origin='assimilated'`` / ``horizon_state='aware'`` / ``learned_at=time.time()``
+    （經既有 ``set_fact_dimensions`` 標記，0 DDL／0 schema 變更）。
+
+    回傳實際新增列數（0 = 全數跳過或材料不足）。任何異常 → ``logger.warning``
+    ＋ 靜默放棄（I5 fail-silent，不得影響已完成的回覆）。
+    """
+    try:
+        slots = build_concept_quintuple_slots(agent_id, entity, user_text)
+        if not slots:
+            return 0
+        # 冪等預檢（I1）：一次撈齊既有 aware 列，避免逐列查詢。
+        existing = {
+            (f.subject, f.predicate) for f in store.get_idiolect_facts()
+        }
+        written = 0
+        for predicate in _EH4_DERIVED_PREDICATES:
+            obj = slots.get(predicate) or ""
+            if not obj or (entity, predicate) in existing:
+                continue
+            fact = Fact(
+                subject=entity,
+                predicate=predicate,
+                object=obj,
+                source="inference",
+                session_id=session_id,
+                source_pair=source_pair,
+            )
+            fact_id = store.add_fact(fact)
+            store.set_fact_dimensions(
+                fact_id=fact_id,
+                origin="assimilated",
+                horizon_state="aware",
+                learned_at=time.time(),
+            )
+            existing.add((entity, predicate))
+            written += 1
+        if written:
+            # 沿用 EH-3.1 既有強制提交語義：讀側 retrieve_idiolect 開新連線，
+            # 未 commit 的 INSERT 讀不到 → 閉環斷裂。
+            store.flush()
+        logger.info(
+            f"[SAGE] EH-4.2 五元組同化 ok | profile={agent_id} | "
+            f"entity={entity} | written={written}/4"
+        )
+        return written
+    except Exception as exc:  # noqa: BLE001 — fail-silent（契約 §4.2 I5）
+        logger.warning(
+            f"[SAGE] EH-4.2 五元組同化失敗 (profile={agent_id}, entity={entity}): "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return 0
+
+
 class SAGELiteProvider:
     """soul-os-harness 相容的 SAGE-lite 記憶服務
 
@@ -372,7 +651,8 @@ class SAGELiteProvider:
         # run_in_executor 的 worker 執行緒內（不在主 asyncio thread 觸發 SQLite 寫入）。
         # Fail-silent: hook 內部任何例外僅 warning, 不中斷主流程。
         if fact_ids:
-            await loop.run_in_executor(
+            # EH-3.1 回傳本輪**成功打標之實體**（定義句閘門唯一判準）。
+            tagged_entities = await loop.run_in_executor(
                 None,
                 partial(
                     self._tag_explanatory_assimilations,
@@ -380,6 +660,20 @@ class SAGELiteProvider:
                     last_user_msg,
                 ),
             )
+            # EH-4.2 (L4)：唯一觸發閘門 = EH-3.1 定義句閘門打標成功之實體
+            # （契約 §4.2；0 新句法判定、0 重跑分類）。純日常提及／購買陳述
+            # （「買了／有一台」）不經此閘門 → 嚴格 0 寫入。
+            if tagged_entities:
+                await loop.run_in_executor(
+                    None,
+                    partial(
+                        self._assimilate_concept_graph,
+                        list(tagged_entities),
+                        last_user_msg,
+                        session_id=session_id,
+                        source_pair=source_pair,
+                    ),
+                )
         self._cache.invalidate()
 
         if self._turn_count % 20 == 0:
@@ -397,7 +691,7 @@ class SAGELiteProvider:
         self,
         fact_ids: list[str],
         user_text: str,
-    ) -> None:
+    ) -> list[str]:
         """EH-3.1 post-commit hook：Fact-Level 精準打標（EH-3 turn-level 粗標升級）。
 
         同步方法, 由 post_reply_commit 以 run_in_executor 包覆在 worker 執行緒內
@@ -422,6 +716,10 @@ class SAGELiteProvider:
         打標: origin=assimilated / horizon_state=aware / learned_at=time.time() (float)。
         Fail-silent: 任何未預期例外僅記錄 logger.warning, 嚴禁中斷主流程或
         回滾既有 Graph 寫入; 未過閘門的 fact 維持預設 lived_experience, 永不刪改。
+
+        EH-4.2: 回傳本輪**成功打標之實體**（``fact.subject``、保序去重）——
+        此即 L4 五元組同化的**唯一觸發閘門**（契約 §4.2；0 新句法判定）。
+        未過閘門 / 例外 → 回空 list。
         """
         # Gate 1: 現代原生白名單（契約 §6.1 D3 分流）
         try:
@@ -435,10 +733,10 @@ class SAGELiteProvider:
             logger.debug(
                 f"[SAGE] EH-3.1 skip (modern native): profile={self.profile_id}"
             )
-            return
+            return []
         # Gate 2: 本輪無新增 fact（skip_graph / no-diary / 0 萃取）→ no-op
         if not fact_ids:
-            return
+            return []
         # Gate B (text-level): 無定義性 marker → 本輪不打標
         definitional_entities, modal_entities = _scan_assimilation_entities(user_text)
         if not definitional_entities:
@@ -446,9 +744,10 @@ class SAGELiteProvider:
                 f"[SAGE] EH-3.1 no definitional syntax, skip tagging: "
                 f"profile={self.profile_id}"
             )
-            return
+            return []
         if self._store is None:
-            return
+            return []
+        tagged_entities: list[str] = []
         try:
             tagged = 0
             for fact_id in fact_ids:
@@ -475,6 +774,8 @@ class SAGELiteProvider:
                     learned_at=time.time(),  # float Unix timestamp (契約 §3.2)
                 )
                 tagged += 1
+                if fact.subject and fact.subject not in tagged_entities:
+                    tagged_entities.append(fact.subject)
             # 強制 commit: set_fact_dimensions 只在 batch_size 達標時才自動 commit,
             # 讀側 Idiolect 檢索（retrieve_idiolect）開新 sqlite 連接, 未 commit 的
             # UPDATE 讀不到 → 閉環斷裂。flush 維持在 worker 執行緒內（@_locked 安全）。
@@ -488,6 +789,38 @@ class SAGELiteProvider:
                 f"[SAGE] EH-3.1 assimilated tagging failed "
                 f"(profile={self.profile_id}): {type(exc).__name__}: {exc}"
             )
+            return []
+        return tagged_entities
+
+    # ── EH-4.2 (L4): 五元組同化寫回（契約 §4.2）────────────────
+
+    def _assimilate_concept_graph(
+        self,
+        entities: list[str],
+        user_text: str,
+        *,
+        session_id: str = "",
+        source_pair: Optional[str] = None,
+    ) -> int:
+        """逐實體追加 4 條衍生列（槽位 2~5）。
+
+        呼叫端已限定為 EH-3.1 定義句閘門打標成功之實體；本方法維持在
+        ``run_in_executor`` 的 worker 執行緒內（I3 SQLite thread-affinity）。
+        Fail-silent（I5）：任何例外僅 warning，回 0。
+        """
+        if self._store is None or not entities:
+            return 0
+        total = 0
+        for entity in entities:
+            total += assimilate_concept_graph(
+                self._store,
+                self.profile_id,
+                entity,
+                user_text,
+                session_id=session_id,
+                source_pair=source_pair,
+            )
+        return total
 
     # ── 健康指標 ──────────────────────────────────────────────
 

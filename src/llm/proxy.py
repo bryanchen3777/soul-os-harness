@@ -1164,8 +1164,27 @@ def _format_horizon_block(agent_id: str, session_context: str = "", utterance: s
         idiolect = retrieve_idiolect(agent_id)
         if idiolect:
             lines.append("你已理解的默契事物清單（Idiolect）：")
-            for f in idiolect[:8]:
-                lines.append(f"- {f.subject} {f.predicate} {f.object}")
+            # EH-4.2 §4.3 L4-D3（投影規則）：`eh4_` 為保留命名空間 ——
+            #   eh4_idiolect      → `- {subject}：{object}`（角色自己的稱謂）
+            #   eh4_mental_model  → `- {subject}（你的理解）：{object}`
+            #   eh4_safety_rule / eh4_duty_action → **不投影**（防行為約束被當成
+            #     偽指令照做）；安全直覺與侍奉界線已熔接進 eh4_mental_model（SF-1）。
+            # 無 `eh4_` 前綴的既有列（EH-3.1 產物）照舊投影（0 行為變化，向後兼容）。
+            # 全域投影行數上限沿用既有 8 行。
+            projected = 0
+            for f in idiolect:
+                if projected >= 8:
+                    break
+                predicate = str(getattr(f, "predicate", "") or "")
+                if predicate == "eh4_idiolect":
+                    lines.append(f"- {f.subject}：{f.object}")
+                elif predicate == "eh4_mental_model":
+                    lines.append(f"- {f.subject}（你的理解）：{f.object}")
+                elif predicate.startswith("eh4_"):
+                    continue
+                else:
+                    lines.append(f"- {f.subject} {f.predicate} {f.object}")
+                projected += 1
             lines.append(
                 "以上是你已內化、可自然使用的稱呼與理解——知道不等於能解釋原理，"
                 "對其運作原理仍不主動解說。"
