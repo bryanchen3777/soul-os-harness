@@ -6,6 +6,8 @@ web_ui.py — 黑川茜 Web 語音伴侶前端（VC-1.3；VC-1.4 可視化 + 失
 - PTT 按鈕（按住說話，滑鼠/觸碰/空白鍵）＋ Auto-VAD 切換（本地 RMS）
 - 放音（VC-2.3-04）：AudioWorklet 獨立音訊執行緒＋Float32 環形緩衝區（Blob URL 動態註冊），相容 ScriptProcessor fallback
 - 打斷：播放中本地收音 RMS 超門檻 150ms → 送 WS interrupt
+- 開麥錨點（VC-VAD-TIMING-1 D4）：autoMuted 綁定「播放緩衝實際排空（onPlaybackDrained）+ 400ms Tail Buffer」，
+  不再以伺服器 IDLE 起算固定 1.8s；barge-in（0.04/200ms）原封不動仍 armed
 - 可視化（VC-1.4）：即時輸入音量表（AnalyserNode getByteTimeDomainData RMS → 水平 bar）＋
   「🎙️ 傳送中」指示；server `{"type":"error"}` 事件顯示於 #errorBox（黃底紅字，
   402 額度等失敗原因透通），下一個 utterance 開始時自動清除
@@ -121,9 +123,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   var fallbackCap = MAX_PLAY_BUFFER;
   var fallbackBuf = new Float32Array(fallbackCap);
   var fallbackRead = 0, fallbackWrite = 0, fallbackAvail = 0;
-  var pttActive = false, autoSpeaking = false, autoSilenceMs = 0, autoHoldFrames = 0, autoVoiceMs = 0;
+  var pttActive = false, autoSpeaking = false, autoSilenceMs = 0, autoVoiceMs = 0;
   var speakEnergyMs = 0, barging = false;
-  var VAD_THRESHOLD = 0.02, VAD_SILENCE_MS = 500, BARGE_MS = 150, BARGE_AUTO_THRESHOLD = 0.04, BARGE_AUTO_MS = 200, AUTO_START_MS = 260, AUTO_HOLD_MS = 1800;
+  // VC-VAD-TIMING-1 D4：開麥錨點 = 播放緩衝「實際排空」+ Tail Buffer（不再以伺服器 IDLE 起算固定 1.8s）
+  var playbackActive = false, playbackDrained = true, tailTimer = null, roundQueuedSamples = 0;
+  var VAD_THRESHOLD = 0.02, VAD_SILENCE_MS = 500, BARGE_MS = 150, BARGE_AUTO_THRESHOLD = 0.04, BARGE_AUTO_MS = 200, AUTO_START_MS = 260, TAIL_BUFFER_MS = 400;
   var $ = function (id) { return document.getElementById(id); };
 
   function setState(s) {
@@ -135,13 +139,15 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     if (s === "SPEAKING") { ensurePlayback(); } // 茜開始說話 → 確保播放圖存在（打字路徑也能出聲）
     if (leavingSpeaking) {
       if (barging) {
-        // 使用者主動開口打斷（VC-2.2 Barge-in）→ 豁免講完冷卻期，直接收音
-        autoHoldFrames = 0;
+        // 使用者主動開口打斷（VC-2.2 Barge-in）→ 豁免冷卻，直接解除自動收音冷卻（barge 0 倒退）
+        cancelTailTimer();
+        playbackDrained = true;
         barging = false;
-      } else {
-        // 茜自然講完 → AUTO_HOLD_MS 不聽：喇叭尾音/殘響不該觸發 Auto-VAD（曾 0.6s 太短仍回授）
-        autoHoldFrames = Math.ceil(AUTO_HOLD_MS * (audioCtx ? audioCtx.sampleRate : 44100) / 1000 / 4096);
       }
+      // 自然講完 → 不再以 IDLE 錨點啟動固定 1.8s 計時器（VC-VAD-TIMING-1 D4）。
+      // 開麥時機改由「Worklet 實際排空（onPlaybackDrained）+ Tail Buffer」決定；
+      // 若音訊圖被瀏覽器凍結（suspended）則喇叭不會有輸出 → 直接視為已排空，避免 auto-vad 永久卡死。
+      if (audioCtx && audioCtx.state === "suspended") { playbackDrained = true; }
       autoVoiceMs = 0;
     }
     var dot = $("statusDot"), txt = $("statusText");
@@ -187,7 +193,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       return;
     }
     pttActive = true;
-    flushPlayback();  // 新回合開始 → 中斷上一輪殘音（barge-in 語意）
+    flushPlayback("sendPttStart");  // 新回合開始 → 中斷上一輪殘音（barge-in 語意）
     if ($("errorBox").dataset.persistent !== "1") { setError("", false); }  // 下一個 utterance 開始 → 自動清除暫態錯誤
     send({ type: "ptt_start" });
   }
@@ -370,6 +376,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     "    if (!out || !out[0]) return true;",
     "    var ch = out[0];",
     "    var n = ch.length;",
+    "    var hadAudio = this.available > 0;",
     "    if (this.isBuffering) {",
     "      if (this.available >= this.prebufferSamples || !this.speaking) {",
     "        this.isBuffering = false;",
@@ -387,6 +394,10 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     "        ch[i] = 0;",
     "        this.isBuffering = true;",
     "      }",
+    "    }",
+    "    // VC-VAD-TIMING-1 D4：緩衝區實際排空（available == 0）→ 通知主執行緒（喇叭播完最後一個採樣點）",
+    "    if (hadAudio && this.available === 0) {",
+    "      this.port.postMessage({ type: 'drained' });",
     "    }",
     "    for (var c = 1; c < out.length; c++) { out[c].set(ch); }",
     "    return true;",
@@ -422,6 +433,14 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   }
 
   function queuePlaybackSamples(f32) {
+    // VC-VAD-TIMING-1 D4：任何新音訊進來 → 取消 Tail Buffer、回到「未排空」狀態（autoMuted 保持 true）
+    playbackActive = true;
+    playbackDrained = false;
+    cancelTailTimer();
+    roundQueuedSamples += f32.length;
+    console.log("[Playback] queued +" + (f32.length / (audioCtx ? audioCtx.sampleRate : 44100)).toFixed(2) +
+      "s chunk at " + new Date().toISOString() + " (round total ~" +
+      (roundQueuedSamples / (audioCtx ? audioCtx.sampleRate : 44100)).toFixed(2) + "s)");
     if (workletReady && workletNode) {
       try {
         workletNode.port.postMessage({ type: "audio", samples: f32 }, [f32.buffer]);
@@ -461,6 +480,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     playNode = audioCtx.createScriptProcessor(2048, 0, 1);
     playNode.onaudioprocess = function (e) {
       var out = e.outputBuffer.getChannelData(0);
+      var hadAudio = fallbackAvail > 0;
       if (isBuffering) {
         if (fallbackAvail >= PREBUFFER_SAMPLES || state !== "SPEAKING") {
           isBuffering = false;
@@ -479,6 +499,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
           isBuffering = true;
         }
       }
+      // VC-VAD-TIMING-1 D4：fallback 路徑同樣在實際排空時通知（不可留下第二條漏時鐘路徑）
+      if (hadAudio && fallbackAvail === 0) { onPlaybackDrained(); }
     };
     playNode.connect(audioCtx.destination);
   }
@@ -495,6 +517,16 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       URL.revokeObjectURL(blobUrl);
       if (!audioCtx) return;
       workletNode = new AudioWorkletNode(audioCtx, "akane-audio-processor");
+      // VC-VAD-TIMING-1 D4：Worklet 排空通知 → onPlaybackDrained（開麥錨點）
+      workletNode.port.onmessage = function (e) {
+        if (e.data && e.data.type === "drained") { onPlaybackDrained(); }
+      };
+      workletNode.onprocessorerror = function () {
+        // Processor 崩潰 → 無任何喇叭輸出 → 安全開麥（防 auto-vad 永久卡死）
+        console.warn("[Playback] worklet processor error — treating playback as drained");
+        playbackDrained = true;
+        cancelTailTimer();
+      };
       workletNode.connect(audioCtx.destination);
       workletReady = true;
       workletLoading = false;
@@ -529,13 +561,34 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     if (audioCtx) { ensureAudioResume(); } else { startPlayback(); }
   }
   // 打斷/新回合才清播放佇列（正常播放由 onaudioprocess 自然消耗，勿在 IDLE 清空）
-  function flushPlayback() {
+  function flushPlayback(origin) {
+    // VC-VAD-TIMING-1 診斷：記錄 flush 的調用源頭（追蹤是否由真實打斷引起，而非回授自掐）
+    console.log("[Playback] flushPlayback triggered by " + (origin || "unknown") + " at " + new Date().toISOString());
     isBuffering = true;
     pendingAudioChunks = [];
+    roundQueuedSamples = 0;
     if (workletReady && workletNode) {
       workletNode.port.postMessage({ type: "flush" });
     }
     flushFallbackBuffer();
+  }
+
+  // ── VC-VAD-TIMING-1 D4：開麥錨點 = 播放緩衝實際排空 + Tail Buffer ──
+  function cancelTailTimer() {
+    if (tailTimer) { clearTimeout(tailTimer); tailTimer = null; }
+  }
+  function onPlaybackDrained() {
+    // Worklet 環形緩衝 / fallback 緩衝「真正播完最後一個採樣點」（available == 0）→ 啟動殘響消化計時器
+    playbackActive = false;
+    console.log("[Playback] playback drained (available == 0) at " + new Date().toISOString() +
+      " (round played ~" + (roundQueuedSamples / 44100).toFixed(2) + "s)");
+    cancelTailTimer();
+    // 房間聲學反射/揚聲器尾音的消化窗口：期間若有新音訊進來會被 queuePlaybackSamples 取消重來
+    tailTimer = setTimeout(function () {
+      tailTimer = null;
+      playbackDrained = true;
+      console.log("[Playback] tail buffer (" + TAIL_BUFFER_MS + "ms) expired — mic unmuted at " + new Date().toISOString());
+    }, TAIL_BUFFER_MS);
   }
 
   // ── 收音（getUserMedia → 降採樣 16k → Int16 → WS binary）──
@@ -553,9 +606,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     return out;
   }
   function startMic() {
-    navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
+    navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
       .then(function (stream) {
         micStream = stream;
+        // VC-VAD-TIMING-1 D1：實測裝置實際生效的麥克風處理（exact 約束；裝置不支援會拋 OverconstrainedError，不靜默降級）
+        var micTrack = stream.getAudioTracks()[0];
+        if (micTrack && micTrack.getSettings) { console.log('[VC Audio] Mic constraints active:', JSON.stringify(micTrack.getSettings())); }
         ensurePlayback(); // 麥克風就緒 → 播放圖確保存在（冪等；播放不再依賴首次點擊 micBtn）
         micSource = audioCtx.createMediaStreamSource(stream);
         recNode = audioCtx.createScriptProcessor(4096, 1, 1);
@@ -568,9 +624,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
           var rms = Math.sqrt(sum / len);
           var durMs = len / audioCtx.sampleRate * 1000;
           var auto = $("autoVad").checked;
-          if (autoHoldFrames > 0) { autoHoldFrames--; }
-          // Auto-VAD 不聽自己喇叭：茜講話期間＋講完 holdoff 內不收音/不觸發（防回授迴圈）
-          var autoMuted = auto && (state === "SPEAKING" || autoHoldFrames > 0);
+          // Auto-VAD 不聽自己喇叭（VC-VAD-TIMING-1 D4）：Speak 期間 ＋ 播放緩衝未真正排空（含 Tail Buffer）期間不收音
+          var autoMuted = auto && (state === "SPEAKING" || !playbackDrained);
           if (autoMuted && !autoSpeaking) { autoVoiceMs = 0; }
           if (autoMuted && autoSpeaking && !barging) { autoSpeaking = false; autoSilenceMs = 0; sendPttStop(); }
 
@@ -581,7 +636,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
               if (speakEnergyMs >= BARGE_AUTO_MS) {
                 speakEnergyMs = 0;
                 barging = true;
-                flushPlayback();
+                flushPlayback("autoBargeIn");
                 send({ type: "interrupt" });
                 autoSpeaking = true;
                 autoVoiceMs = 0;
@@ -594,7 +649,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
               speakEnergyMs = rms > VAD_THRESHOLD ? speakEnergyMs + durMs : 0;
               if (speakEnergyMs >= BARGE_MS) {
                 speakEnergyMs = 0;
-                flushPlayback();
+                flushPlayback("manualBargeIn");
                 send({ type: "interrupt" });
               }
             }
@@ -658,14 +713,14 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   document.addEventListener("keyup", function (e) { if (e.code === "Space") { sendPttStop(); } });
   $("sendText").addEventListener("click", function () {
     ensurePlayback(); // 送出打字 → 手勢內建立播放（純打字使用者也出聲）
-    flushPlayback();  // 新回合 → 中斷上一輪殘音
+    flushPlayback("sendText");  // 新回合 → 中斷上一輪殘音
     var t = $("textInput").value.trim();
     if (t) { send({ type: "text", text: t }); $("textInput").value = ""; }
   });
   $("textInput").addEventListener("keydown", function (e) {
     if (e.key === "Enter") {
       ensurePlayback();
-      flushPlayback(); // 新回合 → 中斷上一輪殘音
+      flushPlayback("sendText"); // 新回合 → 中斷上一輪殘音
       var t = e.target.value.trim();
       if (t) { send({ type: "text", text: t }); e.target.value = ""; }
     }

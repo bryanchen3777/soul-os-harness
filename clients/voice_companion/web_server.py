@@ -658,10 +658,10 @@ class WebSession:
                 else:
                     log.info(
                         "[TTS] round mode=%s input_chars=%d reply_chars=%d chunks=%d bytes=%d "
-                        "first_audio_ms=%.1f total_ms=%.1f",
+                        "first_audio_ms=%.1f total_ms=%.1f reply_text=%s",
                         _tts_mode, len(user_text), len(reply), _chunks, _bytes,
-                        first_audio_ms, total_ms,
-                    )
+                        first_audio_ms, total_ms, reply[:40],
+                    )  # VC-VAD-TIMING-1：reply 原文（截斷 40 字）供比對 ASR 文字與剛播出文字
             finally:
                 if task_gen == self._generation:  # 仍是本世代 → 正常結束；被打斷則已由 interrupt 收尾
                     await self._set_state(self.STATE_IDLE)
