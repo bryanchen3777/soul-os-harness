@@ -18,6 +18,9 @@ EH-4.2 — SAGE 五元組概念同化 ＆ UR-2 第一輪靜默邊界（Phase 2�
   C 二次遭遇鎖定驗證（核心）: 已同化該實體後 appraise() → None（差量段空），
     但 Horizon Block 仍有 Idiolect 投影（mental_model + idiolect；raw safety/duty 不投影）
   D 防回歸全套: L4-D3 投影規則單元斷言 + 既有三套件（eh41 / eh31 / clients）全綠
+  E S3 過度捕獲免疫（EH-4.2-FIX-1 核心）: entity 被多餘動詞／特徵詞尾隨時，
+    已同化實體仍必須鎖定（0 差量對撞）；未同化實體仍必須正常產生差量（防誤殺）；
+    FSA-0 / UR-2 既有保證不得回歸
 
 隔離：全程 tmp_path（SOUL_OS_DATA_DIR）→ 0 生產資料庫污染、0 服務重啟。
 """
@@ -323,3 +326,107 @@ class TestD_Regression:
                 text=True,
             )
             assert proc.returncode == 0, f"{target} 回歸失敗:\n{proc.stdout[-3000:]}"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Test E — S3 過度捕獲免疫（EH-4.2-FIX-1 · 核心）
+# ─────────────────────────────────────────────────────────────────────
+
+#: 二次遭遇句組（已同化實體；全部必須 0 差量對撞）。
+#: 鑑別句「用〈實體〉吹熱風烤點薯條吧。」的尾隨字（吹／熱／風／烤／點／薯／條／吧）
+#: **不在** ``_CUT_CHARS`` → entity 必然被過度捕獲成「核心詞 ＋ 謂語殘串」；
+#: 修正前此句 S3 漏鎖、差量重新對撞（本組即該缺陷的紅轉綠鋼印）。
+OVER_CAPTURE_ENCOUNTERS = (
+    "用氣炸鍋弄點薯條吧。",
+    "用氣炸鍋吹熱風烤點薯條吧。",
+    "用氣炸鍋烤點東西吧。",
+    "拿氣炸鍋來用用。",
+)
+
+#: 對照組：**未**同化的實體，同樣的過度捕獲句型（證明差量未被整條關掉）。
+UNKNOWN_ENTITY_ENCOUNTER = "用微波爐吹熱風烤點東西吧。"
+
+#: FSA-0 原生免疫閘（契約 EH-4-AMEND-2）
+NATIVE_IMMUNE_SENTENCE = "我用鐵鍋炒了菜。"
+
+
+class TestE_S3OverCaptureImmunity:
+    def test_e_assimilated_entity_locks_under_entity_over_capture(self, tmp_path):
+        """核心：已同化實體在 entity 被多餘動詞／特徵詞尾隨時仍鎖定（0 差量）。"""
+        prov, _ = _make_provider(tmp_path)
+        try:
+            asyncio.run(_commit(prov, DEFINITION_SENTENCE))
+            aware = prov._store.get_idiolect_facts()
+            assert aware, "前置失敗：定義句竟未產生任何內化列"
+            assert [f for f in aware if f.origin == "assimilated"], "前置失敗：竟無 assimilated 列"
+
+            for utterance in OVER_CAPTURE_ENCOUNTERS:
+                record = appraise(AppraisalInput(agent_id=AGENT_REM, utterance=utterance))
+                assert record is None, (
+                    f"{utterance!r} 竟重新觸發差量對撞（S3 漏鎖）: {record.anchor!r}"
+                )
+                delta = format_epistemic_horizon_delta(AGENT_REM, utterance)
+                assert delta == "", f"{utterance!r} 竟注入差量段: {delta!r}"
+                assert "[本體參照]" not in delta
+        finally:
+            prov.shutdown()
+            _restore_data_root()
+
+    def test_e_unknown_entity_still_appraises(self, tmp_path):
+        """防誤殺：未同化實體在**同一**已同化環境下仍正常產生差量（非整條關閉）。"""
+        prov, _ = _make_provider(tmp_path)
+        try:
+            asyncio.run(_commit(prov, DEFINITION_SENTENCE))
+            assert [f for f in prov._store.get_idiolect_facts() if f.origin == "assimilated"]
+            # 同一句型、同一環境、僅實體不同（未同化）→ S3 不得命中
+            record = appraise(
+                AppraisalInput(agent_id=AGENT_REM, utterance=UNKNOWN_ENTITY_ENCOUNTER)
+            )
+            assert record is not None, "對照組竟回 None —— S3 判準過寬（誤殺初次遭遇）"
+            assert record.anchor_class == "forced_air_heat", record.anchor_class
+            delta = format_epistemic_horizon_delta(AGENT_REM, UNKNOWN_ENTITY_ENCOUNTER)
+            assert "[本體參照]" in delta, delta
+        finally:
+            prov.shutdown()
+            _restore_data_root()
+
+    def test_e_clean_root_contrast(self, tmp_path):
+        """對照組（0 同化環境）：同句型仍有差量；UR-2 靜默邊界照舊。"""
+        other_root = tmp_path / "clean"
+        os.environ["SOUL_OS_DATA_DIR"] = str(other_root)
+        reset_data_root()
+        try:
+            record = appraise(
+                AppraisalInput(agent_id=AGENT_REM, utterance=UNKNOWN_ENTITY_ENCOUNTER)
+            )
+            assert record is not None, "對照組竟無差量 —— 本測試失去區辨力"
+            assert "[本體參照]" in format_epistemic_horizon_delta(
+                AGENT_REM, UNKNOWN_ENTITY_ENCOUNTER
+            )
+            # UR-2：未內化環境下的純購買句仍靜默
+            assert (
+                appraise(AppraisalInput(agent_id=AGENT_REM, utterance=PURCHASE_SENTENCE)) is None
+            )
+        finally:
+            _isolated_data_root(tmp_path)
+            _restore_data_root()
+
+    def test_e_fsa0_and_ur2_guarantees_intact(self, tmp_path):
+        """既有保證不回歸：FSA-0 原生免疫閘、UR-2 靜默邊界（S3 判準變更後）。"""
+        prov, _ = _make_provider(tmp_path)
+        try:
+            asyncio.run(_commit(prov, DEFINITION_SENTENCE))
+            assert (
+                appraise(AppraisalInput(agent_id=AGENT_REM, utterance=NATIVE_IMMUNE_SENTENCE))
+                is None
+            ), "FSA-0 原生免疫閘竟回歸"
+            assert (
+                appraise(AppraisalInput(agent_id=AGENT_REM, utterance=PURCHASE_SENTENCE)) is None
+            ), "UR-2 靜默邊界竟回歸"
+            assert format_epistemic_horizon_delta(AGENT_REM, PURCHASE_SENTENCE) == ""
+            assert (
+                format_epistemic_horizon_delta(AGENT_REM, NATIVE_IMMUNE_SENTENCE) == ""
+            )
+        finally:
+            prov.shutdown()
+            _restore_data_root()
