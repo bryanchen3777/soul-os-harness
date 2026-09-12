@@ -595,7 +595,7 @@ class AkaneVoiceBrain:
                 api_key=str(llm_cfg.get("api_key") or ""),
                 base_url=normalize_chat_endpoint(endpoint),
             )
-            shim = _JudgeShim(backend, str(llm_cfg.get("model") or "deepseek-v4-flash:0731"))
+            shim = _JudgeShim(backend, str(llm_cfg.get("model") or "deepseek-v4.1-flash"))
             from src.memory.sage.writer import set_llm_proxy
 
             set_llm_proxy(shim)
