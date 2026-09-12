@@ -180,5 +180,15 @@ rag:
 # 觀察窗口：48h，成功判準 = python311.dll 0xc0000005 崩潰數嚴格為 0。
 # 回滾：把 event_loop 改回 proactor + 重啟主服務即可（單行設定，零程式碼變更）。
 # 註：環境變數 SOUL_OS_EVENT_LOOP 優先序高於本檔（bogus 值會安全退回 proactor）。
+#
+# 🔴 2026-09-12 17:03 — 【假說否證，已回滾】（Owner 裁定，幕僚長執行）
+#   翻牌後程序在 selector 下連續運行（12:38:06 橫幅 WindowsSelectorEventLoop），
+#   仍於 17:03:01 崩潰，簽名完全相同：python311.dll + c0000005 + 位移 0x26659b
+#   （WER: data/crash_dumps/20260912_170301_AppCrash_python.exe_*/Report.wer）。
+#   存活 4h25m（自 selector 生效）／6h05m（自窗口起算）→ 48h「0 崩潰」判準失敗。
+#   結論：Windows IOCP / _overlapped 已排除為根因（兩種 event loop 皆同簽名崩潰）。
+#   回滾理由：selector 未換得任何穩定性，卻留下「不支援 asyncio.subprocess」的
+#   能力缺口與較差的輪詢效率 → 無理由保留。後續交由 CRASH-AUDIT-2（READ-ONLY）
+#   以「跨 loop 共通的 native C-extension / 跨執行緒記憶體踩踏」為新假說續查。
 server:
-  event_loop: selector
+  event_loop: proactor
