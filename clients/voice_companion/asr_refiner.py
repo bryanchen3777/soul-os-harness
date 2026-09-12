@@ -78,9 +78,9 @@ def needs_refiner(raw_text: str) -> tuple[bool, str]:
     預設 Bypass：清晰、高信心的日常完整語句直接直通 Voice Brain（每回合 1 次 LLM 呼叫）。
     任一異常條件命中才 Run（Refiner 保留為第二道防線）：
       1. too-short  — ≤ 2 個字元（極短/可能為語助詞或雜音片段）
-      2. noise      — 命中既有雜音熔斷器候選特徵（is_noise）
-      3. repeat     — 單字元連續重複 ≥ REPEAT_RUN_LIMIT（幻想/口吃標記）
-      4. punct-only — 無中日韓字/拉丁字母/數字（全標點或符號殘渣）
+      2. punct-only — 無中日韓字/拉丁字母/數字（全標點或符號殘渣）
+      3. noise      — 命中既有雜音熔斷器候選特徵（is_noise）
+      4. repeat     — 單字元連續重複 ≥ REPEAT_RUN_LIMIT（幻想/口吃標記）
       5. punct-heavy— 標點/非文字符號數 > 文字字元數（格式明顯損毀）
     空白輸入 → (False, "empty")：Refiner 無內容可淨化，呼叫端沿用既有空轉錄處理，
     （VC-ASR-COND-1 的 decision 日誌仍會印出 reason=empty）。
@@ -90,11 +90,13 @@ def needs_refiner(raw_text: str) -> tuple[bool, str]:
     chars = len(raw_text.strip())
     if chars <= 2:
         return True, "too-short"
-    if is_noise(raw_text):
-        return True, "noise"
     core = re.sub(r"[\W_]+", "", raw_text)  # 保留中日韓字/拉丁字母/數字
     if not core:
+        # 全標點/符號殘渣：is_noise() 對空 core 恆回 True（既有熔斷語義），
+        # 須先於雜音判定區分 punct-only，否則此分支不可達（VC-ASR-COND-1 修正）。
         return True, "punct-only"
+    if is_noise(raw_text):
+        return True, "noise"
     m = re.search(r"(.)\1{%d,}" % (REPEAT_RUN_LIMIT - 1), core)
     if m:
         return True, "repeat"
