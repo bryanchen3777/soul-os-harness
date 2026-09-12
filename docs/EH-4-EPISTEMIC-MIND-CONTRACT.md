@@ -7,6 +7,7 @@
 > **系列定位**：EH-1 系列＝**認知地平線**（讀側閘門／內化判定／垂直防火牆／Idiolect）；EH-4＝**認知心智**（差量算子／求知動機／概念同化圖譜）。EH-4 是 `logs/ENGINEERING_STATE.md:1635` 所載「**EV 主動求知列為下一階段獨立架構研究（Motive → Decision → Transmit，非修補票）**」的架構契約化。
 > **性質**：非施工授權。canonical 狀態以 `logs/ENGINEERING_STATE.md` 為準；本文檔是後續 EH-4 實作工單的輸入。
 > **風格對照**：`docs/EH-1-EPISTEMIC-HORIZON-CONTRACT.md`（目標／契約／不變量／驗收／不做）。
+> **修訂紀錄 — EH-4-AMEND-1（DESIGN ONLY）**：① **當輪探詢姿態 vs. 跨輪自主意圖雙軌解耦**（§2.3 當輪姿態段／§3.0／§5 Probe 3 校準）；② **`entity_key` 工具介質優先級與 Fail-Silent 放棄**（§2.2，杜絕「豆腐似烘爐」）；③ **`safety_rule` 熔接 `mental_model` 投影**（§4.2 SF-1~SF-7／§4.3 補充）。新增不變量 INV-13~15（§6）。**本修訂仍為 DESIGN ONLY：0 code / 0 `src/` / 0 production mutation。**
 
 ---
 
@@ -34,9 +35,9 @@
 **核心機制（四件，對應四層）**：
 
 1. **L1 實例包**：四維原生常識軸規格化；**嚴禁在程式碼中硬編碼「羅茲瓦爾／柴火／魔石」**——一切世界觀名詞只准出現在 L1 資料檔（`configs/epistemic_packs/*.yaml`）。
-2. **L2 差量算子**：`feature_lexicon`（通用）× `pack.axes`（實例）→ `DeltaRecord` → 注入 Horizon Block 的「**本體隱喻錨點**」；**嚴格禁止輸出空洞的「雷姆不懂」**，也嚴格禁止現代原理解說。
-3. **L3 求知動機**：`EpistemicTension = UnknownModernEntity ∧ (SafetyFlag ∨ DutyFlag)`，**純結構布林、0 浮點打分、0 第 5 動詞**；由既有 `transmit / observe / reflect / do_nothing` 四元吸收。
-4. **L4 同化圖譜**：`earth_term / mental_model / safety_rule / duty_action / idiolect` 五元組，以既有 `add_fact` + `set_fact_dimensions` API **非同步**寫回，**絕不卡死對話主鏈路**。
+2. **L2 差量算子**：`feature_lexicon`（通用）× `pack.axes`（實例）→ `DeltaRecord` → 注入 Horizon Block 的「**本體隱喻錨點**」；**嚴格禁止輸出空洞的「雷姆不懂」**，也嚴格禁止現代原理解說。**（EH-4-AMEND-1）** 差量主詞 `entity_key` 只取 **P0 工具介質**（介詞引導之器具／設備），動作受詞與食材降級為背景；句法不確信即 **Fail-Silent Abort**（整段差量回 `None`，§2.2）。
+3. **L3 求知動機（雙軌解耦，EH-4-AMEND-1）**：`EpistemicTension = UnknownModernEntity ∧ (SafetyFlag ∨ DutyFlag)`，**純結構布林、0 浮點打分、0 第 5 動詞**；**當輪探詢姿態**走 `Interpreted` 層（Horizon Block 投影、當輪即時、不經 Decision，§2.3）；**跨輪自主意圖**走 `MotiveEngine`（Scheduler 心跳、靜默期地板、禁止當輪結束即自激發訊，§3.0）；最終仍由既有 `transmit / observe / reflect / do_nothing` 四元吸收。
+4. **L4 同化圖譜**：`earth_term / mental_model / safety_rule / duty_action / idiolect` 五元組，以既有 `add_fact` + `set_fact_dimensions` API **非同步**寫回，**絕不卡死對話主鏈路**。**（EH-4-AMEND-1）** `mental_model` 於寫回時**強制熔接**安全直覺與操作邊界（§4.2 SF），使 raw `safety_rule` 不投影亦**不丟失**。
 
 ---
 
@@ -231,6 +232,7 @@ forbidden_output_terms:
 | 情境 | L2 產出的錨點（示意） | 判準 |
 |---|---|---|
 | 主人：「我用氣炸鍋弄了豆腐」 | 「似**烘爐**，卻無柴、無火、無煙氣；箱子會自己吹出熱風」 | PASS（有原生軸對撞） |
+| （FAIL 例）同上句，但差量主詞取成受詞「豆腐」 | 「似**烘爐**的豆腐」 | FAIL（**荒謬類比**：受詞／食材永不得作差量主詞；§2.2 FSA-2／P1） |
 | （FAIL 例） | 「雷姆不懂這是什麼」 | FAIL（空洞） |
 | （FAIL 例） | 「氣炸鍋是利用高速熱風循環加熱」 | FAIL（現代原理） |
 | 二次遭遇（L4 已同化） | 「那個插電的烘烤箱子」＋沿用 mental_model | PASS（§5 Probe 2） |
@@ -295,6 +297,41 @@ class AppraisalInput:
 
 - **該 Agent 的 `native_commons` 軸**：由 `load_pack(agent_id)` 提供（§1.6）。`pack is None` → **立即回 `None`**（0 差量、0 注入）。
 
+#### 實體提取優先級與 Fail-Silent 放棄（EH-4-AMEND-1：杜絕「豆腐似烘爐」）
+
+> **問題**：初版 S2 只寫「抽出名詞性片語候選」，**未定序**。實務上「我用氣炸鍋弄了豆腐」會同時抽出「氣炸鍋」（工具介質）與「豆腐」（動作受詞／食材）；取錯主詞就會撞出「**似烘爐的豆腐**」這種荒謬類比，並讓原生世界既有的日常名詞被當成未知物反覆對撞。
+
+**P0 優先原則（工具介質優先）**：
+
+| 優先級 | 類別 | 句法線索 | 處置 |
+|---|---|---|---|
+| **P0** | **工具介質（instrument / medium）** | 緊跟在介詞「**用／拿／透過／以／在…裡／裝在**」之後的**器具／設備名詞片語** | **唯一可作 `entity_key` 者**（差量對撞主詞、錨點主詞、L4 `subject`、`provenance_ref` 鍵） |
+| P1 | **動作受詞／食材／客體** | 動詞之後的受詞（如「弄了**豆腐**」「切了**肉**」） | **降級為背景**（`background_terms`）：可觀測，**永不**作 `entity_key`、不作錨點主詞、不作 L4 `subject` |
+| P2 | 其他名詞片語 | 其餘 | 背景（同上） |
+
+- **P0-1（單一性）**：多個 P0 候選 → 取**句中出現序第一個**（確定性；與 §3.4 B3「每輪最多 1 候選」一致）。
+- **P0-2（反硬編碼）**：判定**只看句法位置**（是否站在介詞引導的器具位），**不得**維護「器具名詞白名單」、**不得**出現任何世界觀名詞（§1.2 O1）。
+- **P0-3（0 LLM）**：純字元／片語規則（§8 D-2 決策 (b)）；0 依存剖析器、0 外部 NLP 依賴。
+
+**Fail-Silent 放棄規則（Fail-Silent Abort，FSA）**：
+
+| # | 規則 |
+|---|---|
+| **FSA-1** | 若 (a) **無 P0 候選**，或 (b) P0 候選**缺乏任何 §2.2 特徵詞證據**可支撐「非原生現代器具」之判定 → `entity_terms = ()` → **`appraise()` 整段回 `None`**（**Fail-Silent Abort**：0 錨點、0 當輪探詢姿態、0 求知 Motive、0 L4 寫入）。 |
+| **FSA-2** | **嚴格禁止猜測**，**嚴格禁止**把原生世界既有的日常名詞（豆腐、水、衣服、飯、肉…）當作未知物進行差量對撞。此類名詞一律落 P1／P2 背景——判定依 **P0 句法位置**，**不靠名詞黑名單**（與 O1 反硬編碼一致）。 |
+| **FSA-3** | 放棄＝**退回通用平滑對話**（角色照常以日常方式回應，0 阻力措辭、0 探詢姿態）。fail-silent 與 §1.2 O4／§2.5 同源：**不 raise、不注入半截內容、不阻斷對話**。 |
+| **FSA-4** | 放棄為**靜默**行為：僅 `logger.debug`（0 使用者可見訊息、0 prompt 痕跡）。 |
+| **FSA-5** | FSA 與 S3（內化檢查）**同級早退**，且**先於**軸映射（S4）與錨點組裝（S6）——「**無確信主詞即無類比**」。 |
+
+**判準對照（同一句、兩種抽取）**：
+
+| 輸入 | `entity_key`（P0） | `background_terms`（P1/P2） | 結果 |
+|---|---|---|---|
+| 「我用**氣炸鍋**弄了豆腐」 | `氣炸鍋` | `豆腐` | PASS：錨點主詞＝氣炸鍋（「似烘爐，卻無柴…」） |
+| 同上，若抽取器取受詞 | （錯誤）`豆腐` | — | **FAIL**：「似烘爐的豆腐」＝荒謬類比（本契約之反例鋼印） |
+| 「今天煮了**豆腐**湯」 | （無 P0） | `豆腐`、`湯` | **Fail-Silent Abort** → `None`（豆腐是原生日常名詞，非未知物） |
+| 「我把衣服**裝在**箱子裡」 | `箱子`（P0 位置，但無特徵詞證據） | `衣服` | **Fail-Silent Abort** → `None`（FSA-1(b)：無「非原生現代器具」之證據） |
+
 #### Logic
 
 ```python
@@ -307,8 +344,9 @@ def appraise(inp: AppraisalInput) -> DeltaRecord | None: ...
 |---|---|---|
 | S0 | `load_pack(agent_id) is None` | → `None`（bypass；現代原生角色與未建包角色走此路） |
 | S1 | 由 `utterance` + `session_context` 抽出 `features: set[str]`（詞表命中，**命中即集合成員，無權重**） | 空集合 → `None` |
-| S2 | 抽出 `entity_terms`（句中名詞性片語候選；實作採**既有抽取器**或純字元規則，0 LLM） | 空 → `None` |
-| S3 | **內化檢查**：對每個 entity 查 SAGE `origin='assimilated'` 且 `horizon_state='aware'`（沿用 `retrieve_idiolect`／`get_idiolect_facts`，`src/memory/sage/graph_store.py:656`） | 全部已內化 → `None`（**二次遭遇不重演困惑**，Probe 2） |
+| S2 | **P0 工具介質提取**（EH-4-AMEND-1）：抽出介詞引導之器具／設備名詞片語（「實體提取優先級」P0）；**抽取只看句法位置，0 名詞白名單** | 無 P0（或 P0 無特徵詞證據）→ `None`（**FSA-1**） |
+| S2b | **背景降級**（EH-4-AMEND-1）：動作受詞／食材／客體 → `background_terms`（FSA-2：**永不**升級為 `entity_key`） | — |
+| S3 | **內化檢查**：對 `entity_key` 查 SAGE `origin='assimilated'` 且 `horizon_state='aware'`（沿用 `retrieve_idiolect`／`get_idiolect_facts`，`src/memory/sage/graph_store.py:656`） | 全部已內化 → `None`（**二次遭遇不重演困惑**，Probe 2） |
 | S4 | **軸映射**：`feature → axis`（`pack.lexicon_bridges` 優先，否則 §2.2 預設表）；≥1 命中 | 空 → `None` |
 | S5 | **缺席判定**：取該軸的 `expect_absent`（bridge）或 `native_basis`（預設）作為「有熱必有之物」；檢查 `utterance` 是否**未提及**其中任一 → 缺席集合非空 → 成立 | 空 → `None`（代表原生期待已滿足，無差量） |
 | S6 | **錨點組裝**：`anchor = "似{preferred_anchor 或 analogy_anchors[0]}，卻無{缺席集合以『、』連接}"` | — |
@@ -320,13 +358,14 @@ def appraise(inp: AppraisalInput) -> DeltaRecord | None: ...
 @dataclass(frozen=True)
 class DeltaRecord:
     agent_id: str
-    entity_terms: tuple[str, ...]        # 未內化的實體候選（L4 的 subject 來源；L3 的 UnknownModernEntity）
+    entity_terms: tuple[str, ...]        # 未內化的實體候選（**只含 P0 工具介質**；L4 的 subject 來源；L3 的 UnknownModernEntity）
+    background_terms: tuple[str, ...]    # (EH-4-AMEND-1) P1/P2 背景名詞（受詞／食材／客體）；**永不**作 entity_key／錨點主詞／L4 subject
     features: frozenset[str]             # 命中的感知特徵（generic keys）
     axis_hits: tuple[str, ...]           # 命中的軸（⊂ 四軸封閉集合）
     absent_native_requirements: tuple[str, ...]  # 「無柴、無火、無魔石」的結構化來源
     anchor: str                          # 本體隱喻錨點（注入 Horizon Block 的那一句）
-    hazard_suspected: bool               # 是否命中 safety_hazard 軸（L3 SafetyFlag 的材料）
-    duty_relevant: bool                  # 是否命中 labor_domesticity 軸的 duty_hooks（L3 DutyFlag 的材料）
+    hazard_suspected: bool               # 是否命中 safety_hazard 軸（L3 SafetyFlag／§2.3 當輪姿態的材料）
+    duty_relevant: bool                  # 是否命中 labor_domesticity 軸的 duty_hooks（L3 DutyFlag／§2.3 當輪姿態的材料）
 ```
 
 **`DeltaRecord` 的責任邊界**：它是**唯讀的評估結果**，不持久化、不寫 SAGE（「0 新狀態」，算子性質 O5）。
@@ -336,7 +375,7 @@ class DeltaRecord:
 **注入位置**：Horizon Block 內、**負向約束句之後、Idiolect 清單之前**（`src/llm/proxy.py:1133-1145` 區段內）。語義順序（唯一定序，**不改動既有順序**）：
 
 ```
-IDENTITY → HORIZON{ 負向約束 → 本體隱喻錨點(NEW) → Idiolect 清單 → 外部未解動態 } → CAPABILITY → EMERGENT → 記憶
+IDENTITY → HORIZON{ 負向約束 → 本體隱喻錨點(NEW) → 當輪關切姿態(NEW, EH-4-AMEND-1) → Idiolect 清單 → 外部未解動態 } → CAPABILITY → EMERGENT → 記憶
 ```
 
 **注入字面（模板契約，措辭不得自由發揮）**：
@@ -348,6 +387,31 @@ IDENTITY → HORIZON{ 負向約束 → 本體隱喻錨點(NEW) → Idiolect 清�
 只以這個比擬去理解它。不要解說它的運作原理，也不要只說自己不懂——
 用你熟悉之物的樣子去描述它。
 ```
+
+**（＋ 僅當 `hazard_suspected ∨ duty_relevant` 成立時，追加下一段；否則只注入上面那一段）**
+
+```
+[當下的關切]
+以你熟悉的世界比擬之餘，出於職責自然探詢一句：這物是否安全、我該如何協助。
+一句為度，是此刻的關切，不是連環盤問；主人若未答，也不追問。
+```
+
+> **模板字面的反硬編碼約束（D-INV-1／O1）**：本段與上面「[本體參照]」段**同為可執行碼內的模板字面** → **0 世界觀名詞**。「公館」「雷姆（自稱）」「烘爐」等名詞一律由 **persona 與 L1 pack** 提供（例：pack 的 `duty_hooks`／`analogy_anchors`，persona 的自稱），**不得**寫死進模板；§3.0 與 §5 中以「公館常識／雷姆該如何協助」表述者為**示意語**，實作時以本模板字面為準。
+
+#### 當輪探詢姿態（In-Turn Inquisitive Stance，EH-4-AMEND-1）
+
+> **歸屬：`Interpreted` 階段（讀側 Horizon Block 投影，§2.4 雙端同構）。此姿態是「這一輪回覆」的一部分——不經 Decision、不等心跳、不產生 Motive。**
+
+| # | 規定 |
+|---|---|
+| **IT-1** | **觸發**：當前輪 `appraise()` 回非 `None`（未同化現代實體，§2.2）**且** `DeltaRecord.hazard_suspected ∨ duty_relevant` 成立 → 注入「[當下的關切]」段。兩旗標皆 `False`（如純裝飾物）→ **只注入類比段、不注入關切段**（維持 Probe 3 (c)：無安全／職責關聯者不得長出探詢）。 |
+| **IT-2** | **載體**：Horizon Block 內、與本體隱喻錨點**同段並列**——**類比（認知材料）＋關切（職責姿態）一次給足**，由**既有那次主 LLM 呼叫**吸收（0 額外呼叫，§2.1）。 |
+| **IT-3** | **不在 Decision 路徑**：此段是回覆的**語氣與內容傾向**，不是 `transmit` 候選；**嚴禁**因本段而呼叫 Decision、產生 Motive 或觸發任何發訊（§3.0 A-1）。 |
+| **IT-4** | **一次性（防連環盤問）**：同一 `entity_key` 若已進過 L3（`known_provenance_refs()` 命中 `epistemic:{entity_key}`，與 §3.4 B1 **同一集合**）→ 後續輪**只注入類比段、不注入關切段**（0 新狀態）。 |
+| **IT-5** | **不索答**：姿態是「女僕出於職責的關切」；主人未答不催、不追問、不重複（Probe 3 ⑤）。 |
+| **IT-6** | **雙端同構**：VC 端由同一份 `_format_horizon_block` 產出（§2.4 ISO-2）；**禁止**在 `clients/` 內另行組裝此段。 |
+
+**與跨輪軌的關係**：本段**只**負責「當輪說得出來」；「數小時後主人離線仍掛心」由 §3.0 的跨輪軌（`MotiveEngine`）承擔。**兩軌共用 §3.2 的布林材料，但載體、時序與出口完全不同**——這是 EH-4-AMEND-1 的核心修正（初版把兩者混為一談，導致 Probe 3 驗收在等一個**根本不在當輪發生**的事件）。
 
 **輸出禁令（加入 `forbidden_output_terms` 與通用禁令，二者聯集）**：
 
@@ -395,6 +459,28 @@ IDENTITY → HORIZON{ 負向約束 → 本體隱喻錨點(NEW) → Idiolect 清�
 
 ## 3. L3 求知動機網絡（Epistemic Motive Integration）
 
+### 3.0 雙軌解耦：當輪探詢姿態 vs. 跨輪自主意圖（EH-4-AMEND-1）
+
+> **修正對象**：初版把「求知」整體押在 `MotiveEngine` 心跳上，於是 Probe 3 的驗收實際上在等一個**根本不在當輪發生**的事件（時序錯位）；而若把心跳節律對齊對話節律，又會退化成「**當輪對話一結束就自激發訊**」的模板行為。本節把兩件事在架構上**徹底拆開**。
+
+| 維度 | **當輪探詢姿態**（In-Turn Inquisitive Stance） | **跨輪自主意圖**（Cross-Turn Epistemic Motive） |
+|---|---|---|
+| **歸屬層** | **`Interpreted`**（讀側 Horizon Block 投影；§2.3） | **`MotiveEngine`**（Scheduler 心跳驅動；`src/soul/scheduler.py:390-460`） |
+| **觸發** | 當前輪 `appraise()` 非 `None` ∧（`hazard_suspected ∨ duty_relevant`） | **同一組布林材料**（§3.2）＋**既有心跳節律**（`proactive_dm`）＋**靜默期地板**（§3.4 B6） |
+| **載體** | Horizon Block「[當下的關切]」段（隨主 LLM 呼叫一起產出，**0 額外呼叫**） | `Motive`（`provenance_ref = "epistemic:{entity_key}"`，§3.3）→ `transmit` 候選 |
+| **是否經 Decision** | **否**（是這一輪回覆的內容傾向） | **是**（四元互斥單選；Decision 全權裁定，§3.1） |
+| **時序** | **當輪即時** | **主人離線／閒置之後**（≥ 靜默期；如數小時後自主關心「剛才那個東西用得還安全嗎」） |
+| **禁止** | 連環盤問、追問未答之事 | **當輪對話結束後自激發訊**（靜默期未滿即發＝模板退化） |
+| **驗收出口** | **Probe 3 (a)**（檢查**當輪回覆語料**） | Probe 3 備註（跨輪 `transmit` 以 `epistemic:` 前綴另計，§3.4 B8） |
+
+**硬規定**：
+
+- **A-1（歸屬不可混用）**：當輪姿態**不得**以 Motive／Decision／發訊實作；跨輪意圖**不得**以「Horizon 段直接命令角色晚點再問」實作（Horizon 是讀側材料，不是排程器）。
+- **A-2（時序地板＝沿用既有節律，0 新定時器）**：跨輪意圖的最早可消費時點由**既有**排程節律決定——沿用 `proactive_dm` 喚醒（`src/soul/scheduler.py:390-460` 既有 `_decision_check`）＋既有 M5.8-4 Inner Life Gate（`GATE_PROACTIVE_DM_MIN_INTERVAL_MINUTES = 30`，`src/agency/inner_life_gate.py:96`）＋既有 scheduler cooldown（`proactive_dm_min_interval_minutes = 180`，`src/soul/scheduler.py:141`）＋既有 quiet hours（`src/soul/scheduler.py:144-145, 1129-1136`）。**0 新定時器、0 新掃描器、0 新設定項**（見 §8 D-7）。
+- **A-3（嚴禁自激發訊）**：**禁止**在當輪對話結束後立即（靜默期未滿）自激發訊。靜默期未滿時，該 `epistemic:` pending 動機**保持 `pending`**（不消費、不 rejected、不改狀態），直至 B6 條件成立或 TTL 到期。
+- **A-4（材料只有一份）**：兩軌**共用** §3.2 的布林材料與 §3.3 的 `provenance_ref` 命名空間；材料唯一來源＝L2 `DeltaRecord`，**不得**為兩軌各算一份差量（0 duplicated heuristics）。
+- **A-5（決策層 0 改動）**：跨輪軌的任何異常／壞輸出 → 既有 Decision fail-closed（`do_nothing`）照舊（§3.1）；本節**0 改動** `DECISION_ACTIONS`、Decision prompt 四塊與 `Motive` 5 欄。
+
 ### 3.1 四元決策不動（No 5th Action）
 
 > **鐵律 L3-0：探詢本質為發送訊息。決策選項嚴格維持現有四元 `transmit / observe / reflect / do_nothing`。嚴禁新增第 5 個動詞（如 `inquire`）。**
@@ -412,13 +498,19 @@ IDENTITY → HORIZON{ 負向約束 → 本體隱喻錨點(NEW) → Idiolect 清�
 - 求知與其他傳訊意圖**共用同一套** Framing／Boundary／fail-closed 語義；
 - 「要不要問」的裁量權**完全留在 Decision**（角色志願），L3 只負責**供給候選動機**。
 
-### 3.2 No-Scoring 結構化觸發
+### 3.2 No-Scoring 結構化觸發（雙軌共用材料）
 
 > **鐵律 L3-1：嚴格禁止浮點數張力打分（與目標引擎哲學對齊）。求知意圖由純結構布林條件判定。**
 
 ```
 EpistemicTension = UnknownModernEntity ∧ (SafetyFlag ∨ DutyFlag)
 ```
+
+> **（EH-4-AMEND-1）** 這組布林材料的唯一來源是 L2 `DeltaRecord`（§2.2），且**同時**供給兩條軌道：
+> - **當輪軌**：`hazard_suspected` / `duty_relevant` → Horizon Block「[當下的關切]」段（§2.3 IT-1；**不經 Decision**）；
+> - **跨輪軌**：`EpistemicTension` → `Motive` 候選（§3.3；經心跳＋靜默期 → Decision 四元裁定）。
+>
+> 兩軌共用材料**不代表**共用出口：不得因為當輪姿態被說出來，就認定跨輪動機已滿足或已消耗（反之亦然）。
 
 | 變數 | 型別 | 定義 | 來源 |
 |---|---|---|---|
@@ -458,9 +550,11 @@ def motive_from_epistemic_tension(
 
     - content：以角色自己的話表述「想弄清楚這個東西」的念頭（模板 + entity/feature 組裝，0 LLM）
     - target：TARGET_BRYAN（既有常數；make_motive fail-closed 校驗照舊）
-    - provenance_ref：f"epistemic:{entity_key}"（entity_key 由 entity_terms 正規化而來，確定性）
+    - provenance_ref：f"epistemic:{entity_key}"（entity_key = §2.2 **P0 工具介質** `entity_terms[0]` 之正規化，確定性；**無 P0 → FSA 放棄，不產候選**）
     """
 ```
+
+**寫入時序（EH-4-AMEND-1）**：候選於 **post-reply worker**（沿用 L4 同一非同步 hook，§4.2）以 `pending` 狀態落庫，`created_at` ＝該輪時間。**當輪對話不消費它**（§3.0 A-3）；最早消費時點由 §3.4 B6 的靜默期地板決定，消費出口仍是既有 `resolve_pending` → Decision（§3.1）。
 
 **`content` 的措辭契約**：必須是**帶認知失調的求知念頭**（沿用 §2.3 的錨點材料），**不得**是百科問句（「它的加熱原理是什麼」）——因為 Motive content 會直接進入 Decision prompt 的 Motive 區塊（`src/soul/decision.py:239`）。
 
@@ -471,7 +565,7 @@ def motive_from_epistemic_tension(
 
 ### 3.4 生命週期與防轟炸（No Question Bombardment）
 
-**問題**：求知動機若可重複產生，會出現「問答轟炸」（每輪追問同一物）。
+**問題**：求知動機若可重複產生，會出現「問答轟炸」（每輪追問同一物）；若把當輪姿態與跨輪動機混用，還會出現「**時序退化**」（對話一結束就自激發訊）。
 
 **設計（全部使用既有機制，0 新狀態）**：
 
@@ -480,21 +574,25 @@ def motive_from_epistemic_tension(
 | B1 | **一次性**：同一 `entity_key` 的 `provenance_ref` 只產生一次 | `MotiveEngine` 既有去重：`known_provenance_refs()` 過濾已解釋 `provenance_ref`（`src/soul/motive.py:674-679`）→ L3 產生前先查同一集合，命中即 `None` |
 | B2 | **0 重試**：Decision 未選 `transmit`（選 observe/reflect/do_nothing）→ motive 進 `rejected` **終態，不重試** | 既有生命週期（`src/soul/motive.py:27-30`） |
 | B3 | **單一候選**：每輪最多產生 **1** 個求知 Motive（多實體時取 `entity_terms[0]`，確定性排序） | 本契約 L3-D2（防止一輪多問） |
-| B4 | **供給端節流**：L3 只在**當前輪**評估（不回溯掃描歷史輪、不建立待辦佇列） | 本契約 L3-D3（0 新定時器、0 新掃描器） |
-| B5 | **鈍條件優先**：純生活雜談（`DeltaRecord is None`）→ **完全不成動機** | §3.2 布林式 |
+| B4 | **供給端節流（當輪評估、0 掃描器）**：L3 的**材料**只在**當前輪**由 L2 產生（不回溯掃描歷史輪、不建立新掃描器）；跨輪軌**沿用既有心跳喚醒**（§3.0 A-2），**0 新定時器** | 本契約 L3-D3 ＋ §3.0 A-2（EH-4-AMEND-1 修正：初版「不建立待辦佇列」與跨輪軌矛盾 → 改為「**不建新佇列**，候選以既有 `pending` 動機載體承載」） |
+| B5 | **鈍條件優先**：純生活雜談（`DeltaRecord is None`，**含 §2.2 Fail-Silent Abort**）→ **完全不成動機**，且 0 當輪姿態 | §3.2 布林式 ＋ §2.2 FSA |
+| **B6** | **靜默期地板（跨輪軌，EH-4-AMEND-1）**：`epistemic:` 前綴之 `pending` 動機，僅在**距其 `created_at` ≥ 既有 scheduler `proactive_dm_min_interval_minutes`（預設 180 分鐘）**且**非 quiet hours** 時才可被心跳消費；未滿則**保持 `pending`**（不消費、不 rejected） | §3.0 A-2／A-3；**0 新定時器、0 新狀態**（沿用既有常數＋既有 `pending` 狀態；TTL 沿用 `MOTIVE_TTL_HOURS`） |
+| **B7** | **不自激發訊（EH-4-AMEND-1）**：當輪對話結束後**不得**立即發訊（B6 未滿即發＝時序退化 FAIL）；當輪的**唯一**求知出口是 §2.3 的姿態段 | §3.0 A-3 |
+| **B8** | **跨輪分佈另計（EH-4-AMEND-1）**：跨輪軌的 `transmit` 以 `provenance_ref` 前綴 `epistemic:` 單獨觀測，**不得**與既有動機來源混算（避免求知稀釋既有 Decision 分佈的可觀測性） | §5 Probe 3 備註 |
 
 **與既有 MotiveEngine 的關係（0 侵入）**：L3 是**第二個動機來源**，與 `MotiveEngine.produce()`（InnerLifeEvent 驅動、`src/soul/motive.py:602`）**並列**，共用 `MotiveTraceStore` 落庫與 `pending → transmitted|rejected` 生命週期；**不修改** `MotiveEngine` 內部（0 改 `produce`／0 改 interpretation prompt）。
 
-### 3.5 觸發／不觸發對照表（驗收用）
+### 3.5 觸發／不觸發對照表（雙軌，驗收用；EH-4-AMEND-1）
 
-| 情境 | `UnknownModernEntity` | `SafetyFlag` | `DutyFlag` | 產生求知 Motive？ | Probe |
-|---|---|---|---|---|---|
-| 首次遭遇電器（主人提到，帶發熱/按鈕） | ✅ | 軸命中 safety | 軸命中 duty | **✅ 允許**（仍由 Decision 決定是否 transmit） | Probe 1 / 3 |
-| 首次遭遇現代物但純裝飾性（例：一張現代印刷的畫） | ✅ | ❌ | ❌ | **❌ 不產生** | Probe 3 |
-| 已內化（L4 已有 aware 五元組） | ❌ | — | — | **❌**（`appraise` 回 `None`，S3） | Probe 2 |
-| 純生活雜談（「今天天氣好」） | ❌ | ❌ | ❌ | **❌** | Probe 3 |
-| 現代原生角色（7 名白名單） | ❌（無 pack） | — | — | **❌**（0 差量運算） | Probe 4 |
-| 同一物第二次求知（B1 去重命中） | ✅ | ✅ | ✅ | **❌**（`provenance_ref` 已知） | Probe 3 |
+| 情境 | `UnknownModernEntity` | `SafetyFlag` | `DutyFlag` | **當輪探詢姿態**（§2.3，Interpreted） | **跨輪求知 Motive**（MotiveEngine） | Probe |
+|---|---|---|---|---|---|---|
+| 首次遭遇涉安全／侍奉的電器（主人提到外殼發燙、要備料） | ✅ | ✅ | ✅ | **✅ 一句為度**（當輪即時，不經 Decision） | **✅ 產生候選**（經 B6 靜默期後由 Decision 裁定是否 transmit） | Probe 1 / 3 |
+| 首次遭遇現代物但純裝飾性（有 P0，但無安全／職責關聯；例：現代印刷的畫） | ✅ | ❌ | ❌ | **❌**（只注入類比段，IT-1） | **❌ 不產生** | Probe 3 |
+| 首次遭遇現代物但**無 P0 器具介質**（句法不確信，例：「今天煮了豆腐湯」） | ❌（**FSA**） | — | — | **❌**（0 錨點亦 0 姿態） | **❌** | Probe 3 / §2.2 單元 |
+| 已內化（L4 已有 aware 五元組） | ❌ | — | — | **❌**（`appraise` 回 `None`，S3） | **❌** | Probe 2 |
+| 純生活雜談（「今天天氣好」） | ❌ | ❌ | ❌ | **❌** | **❌** | Probe 3 |
+| 現代原生角色（7 名白名單） | ❌（無 pack） | — | — | **❌**（0 差量運算） | **❌** | Probe 4 |
+| 同一物第二次求知（B1 去重命中 `epistemic:{entity_key}`） | ✅ | ✅ | ✅ | **❌**（IT-4：只注入類比段） | **❌**（`provenance_ref` 已知） | Probe 3 |
 
 ---
 
@@ -556,10 +654,24 @@ post_reply_commit (async)
 
 | 槽位 | 組裝來源 |
 |---|---|
-| `mental_model` | L1 pack 的 `analogy_anchors`（功能最近者）+ L2 `DeltaRecord.features`（中文特徵詞）+ `absent_native_requirements`（「不用 X」） |
+| `mental_model` | L1 pack 的 `analogy_anchors`（功能最近者）+ L2 `DeltaRecord.features`（中文特徵詞）+ `absent_native_requirements`（「不用 X」）**＋ 安全熔接子句（§4.2「安全熔接規範」；EH-4-AMEND-1 強制）** |
 | `safety_rule` | L1 pack 的 `hazard_rules`（該軸相關條款）+ 主人解釋句中的安全許可（若 EH-3.1 已捕獲該 fact） |
 | `duty_action` | L1 pack 的 `duty_hooks`（該軸可用動作，如「切菜備料」「按開關」） |
 | `idiolect` | `analogy_anchors[0]` + 特徵詞的**名物化組合**（例：「那個插電的烘烤箱子」） |
+
+> **安全熔接規範（Safety Fusion，EH-4-AMEND-1）**
+>
+> **背景（要修補的漏洞）**：§4.3 L4-D3 為防指令注入，規定 raw `eh4_safety_rule` **不投影**進 prompt。其副作用是：讀側只看得到 `eh4_idiolect` 與 `eh4_mental_model` → **安全直覺與操作邊界在二次遭遇時會憑空消失**（靈魂記得「它叫什麼、像什麼」，卻忘了「它會燙、不能碰水」）。本規範修補此漏洞——**安全不靠投影 raw 欄位，而是熔接進 `mental_model` 的描述句**。
+
+| # | 規定 |
+|---|---|
+| **SF-1** | **強制熔接**：`mental_model` 的組裝模板**必須**包含安全直覺與操作邊界子句；材料取自該軸 `hazard_rules`（＋主人解釋句中的安全許可，若 EH-3.1 已捕獲該 fact）。 |
+| **SF-2** | **模板**：`{anchor 類比}，{absent 缺席}；{操作邊界／安全直覺}`。**範例**：「不用柴火與魔石的插電烘箱，外殼會發燙且不可碰水」。 |
+| **SF-3** | **措辭形態（防偽指令）**：以**敘述性直覺**陳述（「外殼會發燙且不可碰水」），**不得**寫成命令句（「必須遠離水源」「禁止觸碰」）——維持 L4-D2 的 0 LLM 模板組裝，且不製造第二套指令源。 |
+| **SF-4** | **原生語言**：熔接子句只准用 L1 pack 名詞與原生語彙，**0 現代原理詞**（`forbidden_output_terms` 為硬邊界）。 |
+| **SF-5** | **欄位不動**：熔接**只改 `mental_model` 的 `object` 文字**；raw `eh4_safety_rule` 列**照舊寫入、且照舊不投影**（§4.3，防火牆不撤、0 schema 變更）。 |
+| **SF-6** | **侍奉直覺**：命中 `labor_domesticity` 之 `duty_hooks` 的實體，其操作邊界子句**得**含「誰碰／怎麼碰」的分工界線（**不列動作清單**）；raw `eh4_duty_action` 列同樣照舊不投影（§8 D-8）。 |
+| **SF-7** | **讀側保證**：讀側即便只投影 2 槽位（`eh4_idiolect` + `eh4_mental_model`），二次遭遇仍保有**完整的安全警惕與侍奉直覺**——本規範是 §4.3 L4-D3 的**補償條款**，兩者必須成對實作（缺一即不成立）。 |
 
 > **決策 L4-D2**：EH-4 **不授權**任何 LLM 生成／潤飾這四欄（Options B 背景 LLM 精修列為**未授權**，記錄於 §8 D-3 待 Owner 拍板）。理由：決定性模板可硬斷言、可回歸、0 額外成本、0 幻覺風險。
 
@@ -576,10 +688,12 @@ post_reply_commit (async)
 | 無 `eh4_` 前綴（EH-3.1 既有） | **照舊**投影為 `- {subject} {predicate} {object}`（0 行為變化，向後兼容） |
 | `eh4_idiolect` | 投影為 `- {subject}：{object}`（稱謂） |
 | `eh4_mental_model` | 投影為 `- {subject}（你的理解）：{object}` |
-| `eh4_safety_rule` / `eh4_duty_action` | **不投影**（避免 prompt 注入侍奉指令與安全指令，防「指令化」污染角色志願） |
+| `eh4_safety_rule` / `eh4_duty_action` | **不投影**（避免 prompt 注入侍奉指令與安全指令，防「指令化」污染角色志願）；**安全直覺與侍奉界線改由 §4.2 SF 熔接進 `eh4_mental_model`**（不投影 ≠ 不記得） |
 | 每實體投影行數上限 | 2；全域投影行數上限沿用既有 `idiolect[:8]` 上限（`src/llm/proxy.py:1140`） |
 
 **為什麼 `safety_rule` / `duty_action` 不投影**：這兩者屬**行為約束**材料，若直接進 system prompt 會變成偽指令（模型傾向「照做」），汙染 Decision 的志願語義（`src/soul/decision.py:56` 的 do_nothing 合法性）。它們的正確出口是 **L3 的旗標材料**與工具路由（EH-1 §5 不變量 2）。
+
+> **（EH-4-AMEND-1 補充）**「不投影 raw 欄位」**不等於**「安全直覺丟失」：安全直覺與操作邊界已**強制熔接**進 `eh4_mental_model`（§4.2 SF-1~SF-7）。因此投影 2 槽位即已涵蓋**稱謂、理解、安全、侍奉界線**；防火牆禁的是 **raw `eh4_safety_rule` 欄位**（避免行為約束被模型當成指令照做），**不是**禁止角色記得安全。L4-D3 與 §4.2 SF **必須成對實作**——只做 L4-D3 不做 SF，會造出「記得它像烘爐、卻忘了它會燙」的失憶靈魂。
 
 ### 4.4 與垂直防火牆（EH-1 §4 R3）的關係
 
@@ -616,20 +730,21 @@ post_reply_commit (async)
 | **場景** | Probe 1 後，同一概念二次出現（L4 已寫入五元組；`eh4_idiolect` / `eh4_mental_model` 已 aware） |
 | **輸入** | 同一物再次提及（跨 session 亦可） |
 | **預期** | 調用其 `mental_model` 與 `idiolect` 承接；**不演第一次困惑**，**也不講現代工程百科** |
-| **PASS 判準** | ① 輸出**含** `eh4_idiolect`（與 L4 寫入值逐字一致或同義穩定）；② 輸出**反映** `mental_model` 的語義（原生軸組裝的功能理解）；③ 阻力措辭不再出現（L2 因 S3 已內化而回 `None`，0 錨點注入） |
-| **FAIL 判準** | ① 重演首次困惑（回退 unknown）→ FAIL；② 改用現代術語／工程百科口吻 → FAIL；③ 稱謂與 L4 寫入值不一致（漂移）→ FAIL |
+| **PASS 判準** | ① 輸出**含** `eh4_idiolect`（與 L4 寫入值逐字一致或同義穩定）；② 輸出**反映** `mental_model` 的語義（原生軸組裝的功能理解）；**當 `mental_model` 含 §4.2 SF 熔接子句時，輸出亦須反映安全直覺與操作邊界（如「外殼會燙、不可碰水」）——這是 §4.3 L4-D3 投影上限下的安全保命條款（EH-4-AMEND-1）**；③ 阻力措辭不再出現（L2 因 S3 已內化而回 `None`，0 錨點注入） |
+| **FAIL 判準** | ① 重演首次困惑（回退 unknown）→ FAIL；② 改用現代術語／工程百科口吻 → FAIL；③ 稱謂與 L4 寫入值不一致（漂移）→ FAIL；④ **安全失憶**：二次遭遇只剩稱謂與類比，卻丟失熔接的安全直覺／操作邊界 → FAIL（§4.2 SF-7） |
 | **備註** | 對齊 EH-1 Probe 2／Probe 4（跨 session Idiolect 一致性），本契約把它**升級為「雙槽位」**（稱謂 + 心智模型），而非只有一句事實 |
 
-### Probe 3（求知動機純化）
+### Probe 3（求知動機純化 → **當輪探詢姿態校準**，EH-4-AMEND-1）
 
 | 項 | 內容 |
 |---|---|
-| **場景** | (a) 未知物**涉及安全或侍奉職責**；(b) 純生活雜談；(c) 未知物但無安全／職責關聯 |
-| **輸入** | (a) 主人提到外殼發燙／需要備料的電器；(b) 「今天天氣好」；(c) 純裝飾性現代物 |
-| **預期** | **只有 (a)** 允許伴隨發問（且仍由 Decision 決定是否 transmit）；(b)(c) **嚴禁自發長出突兀的連環發問** |
-| **PASS 判準** | ① (a) 輸出可含求知問句，且問句內容**帶原生錨點**（不是百科問句）；② (b) 0 求知問句、0 追問（輸出為生活回應）；③ (c) 0 求知問句；④ 全域：同一輪**最多 1 個**求知問句；⑤ 全域：同一物**不重複追問** |
-| **FAIL 判準** | ① 純雜談長出連環發問 → FAIL；② 未知物無安全／職責關聯仍發問 → FAIL；③ 同一輪多問 → FAIL；④ 問句為現代原理問句（「它的加熱原理是什麼」）→ FAIL |
-| **備註** | 這是「**問答轟炸**」的專項防線；驗收需同時檢查 Decision 的 `transmit` 分佈**不得**因 L3 而顯著上升（長期分佈參考：`src/soul/decision.py:299` 之 do_nothing 65-80%） |
+| **場景** | (a) 未知物**涉及安全或侍奉職責**；(b) 純生活雜談；(c) 未知物但無安全／職責關聯（含**無 P0 器具介質**、Fail-Silent 放棄的情形） |
+| **輸入** | (a) 主人提到外殼發燙／需要備料的電器（如「我用氣炸鍋弄了豆腐」）；(b) 「今天天氣好」；(c) 純裝飾性現代物（如「我買了一幅印刷的畫」） |
+| **預期** | **只有 (a)** 的**當輪回覆**允許自然流露**一句**伴隨探詢（出於職責問「是否安全、該如何協助」，§2.3）；(b)(c) **0 探詢**。 |
+| **校準聲明（本 Probe 的核心，EH-4-AMEND-1）** | **Probe 3 驗收的是「當輪對話回覆」中自然流露的伴隨探詢（§2.3 IT-1~IT-6），不是等待心跳。** 判定必須在**該輪回覆語料**上完成：<br>・該輪已有得體探詢 → **PASS**（**不得**以「尚未發訊／沒有 transmit」判 FAIL）；<br>・該輪 0 探詢、而在數小時後由心跳發出關心訊息 → **FAIL（時序錯位退化）**。 |
+| **PASS 判準** | ① (a) 該輪回覆**含**伴隨探詢（**1 句為度**），問句內容**帶原生錨點**（不是百科問句）；② (b) 0 求知問句、0 追問（輸出為生活回應）；③ (c) 0 求知問句（至多只含類比段，或 FSA 後 0 錨點）；④ 全域：同一輪**最多 1 個**求知問句；⑤ 全域：同一物**不重複追問**（§2.3 IT-4） |
+| **FAIL 判準** | ① 純雜談長出連環發問 → FAIL；② (c) 無安全／職責關聯仍發問 → FAIL；③ 同一輪多問 → FAIL；④ 問句為現代原理問句（「它的加熱原理是什麼」）→ FAIL；⑤ **時序錯位**：當輪 0 探詢、事後（心跳）才發問 → FAIL；⑥ **自激發訊**：當輪對話結束後**未滿靜默期**即發訊 → FAIL（§3.0 A-3／§3.4 B7） |
+| **備註** | ① 本 Probe 是「**問答轟炸**」與「**時序退化**」的雙重防線。② **當輪姿態不經 Decision**，故**不得**以 `transmit` 分佈來驗收當輪姿態。③ **跨輪軌**的 `transmit` 需以 `epistemic:` 前綴**單獨觀測**（§3.4 B8），且整體 proactive_dm 頻率不得顯著抬升（既有分佈參考：`src/soul/decision.py:299` 之 do_nothing 65-80%）。 |
 
 ### Probe 4（現代原生 Bypass 鋼印）
 
@@ -647,13 +762,13 @@ post_reply_commit (async)
 | 項 | 規格 |
 |---|---|
 | Pilot 範圍 | 異界阻力 Pilot = `agent_rem`（唯一有 L1 pack）；現代對照組 Pilot = 7 名白名單。**不擴散**到其他 persona（避免全域角色設定膨脹，EH-1 D3 裁定沿用） |
-| 層次 | ① 單元（L1 loader schema V1–V6／L2 純函式 I/O／L3 布林真值表／L4 冪等與欄位映射）→ ② Probe 端到端 → ③ 回歸（`tests/test_epistemic_horizon.py`、`test_epistemic_horizon_eh3.py`、`test_epistemic_horizon_eh31.py`、`tests/test_vc_eh_unification.py` **必須全綠**） |
-| 靜態斷言 | 附錄 B 的 S1–S8（反硬編碼／雙端同構／四元不動／0 LLM） |
+| 層次 | ① 單元（L1 loader schema V1–V6／L2 純函式 I/O／**L2 實體優先級與 Fail-Silent：P0-1~P0-3、FSA-1~FSA-5、`background_terms` 降級（EH-4-AMEND-1）**／**L3 雙軌：§3.2 布林真值表、§3.4 B6 靜默期地板（未滿 → 保持 `pending`）**／**L4 冪等與欄位映射、§4.2 SF-1~SF-7 安全熔接組裝**）→ ② Probe 端到端 → ③ 回歸（`tests/test_epistemic_horizon.py`、`test_epistemic_horizon_eh3.py`、`test_epistemic_horizon_eh31.py`、`tests/test_vc_eh_unification.py` **必須全綠**） |
+| 靜態斷言 | 附錄 B 的 S1–S12（反硬編碼／雙端同構／四元不動／0 LLM；**S9–S12 為 EH-4-AMEND-1 新增**：實體優先級與 FSA／安全熔接／姿態模板反硬編碼／靜默期地板） |
 | 判定 | 四條 Probe 全過 + 靜態斷言全過 + 回歸 0 破壞 = EH-4 實作驗收通過 |
 
 ---
 
-## 6. 不變量清單（INV-1 ~ INV-12）
+## 6. 不變量清單（INV-1 ~ INV-15；13~15 為 EH-4-AMEND-1 新增）
 
 | # | 不變量 | 來源 | 違反後果 |
 |---|---|---|---|
@@ -669,6 +784,9 @@ post_reply_commit (async)
 | 10 | **Motive 5 欄凍結**：標記以 `provenance_ref` 命名空間承載 | §3.3 L3-D1 | frozen dataclass 破契約；SI-3／SM 系列相容性斷裂 |
 | 11 | **L4 非同步 + 冪等**：僅定義句觸發、post-reply worker thread、同 `(subject, predicate)` 不重寫、fail-silent | §4.2 I1–I5 | 對話主鏈路卡死；跨 session 稱謂漂移（Probe 2 FAIL） |
 | 12 | **L4 封頂於 Fact 層**：五元組不得進入昇華鏈 | §4.4 / EH-1 §4.3 R3 | 現代概念偽裝成本體（比 context 洩漏更深的假殘留） |
+| 13 | **雙軌時序解耦**（EH-4-AMEND-1）：當輪探詢姿態屬 `Interpreted`（不經 Decision、不等心跳）；跨輪自主意圖屬 `MotiveEngine`（靜默期地板、禁止當輪結束即自激發訊） | §3.0 A-1~A-5 / §2.3 IT-1~IT-6 | 時序錯位（驗收在等一個不在當輪發生的事件）；或退化成「心跳一響就發訊」的模板行為 |
+| 14 | **實體優先級與 Fail-Silent**（EH-4-AMEND-1）：`entity_key` 只取 P0 介詞引導之器具介質；句法不確信 → 整段差量回 `None`；原生日常名詞永不作未知物 | §2.2 P0-1~P0-3 / FSA-1~FSA-5 | 荒謬類比（「似烘爐的豆腐」）；阻力外溢到平凡對話，日常事物被當成未知物 |
+| 15 | **安全熔接不丟失**（EH-4-AMEND-1）：raw `eh4_safety_rule` 不投影（防火牆不撤），但安全直覺與操作邊界**強制熔接**進 `eh4_mental_model` 描述句 | §4.2 SF-1~SF-7 / §4.3 補充 | 二次遭遇只剩稱謂與類比，安全警惕與侍奉直覺消失（比 Probe 2 失敗更危險） |
 
 **優先序（與 EH-1 §5 不變量 8 串接）**：
 
@@ -714,7 +832,8 @@ runtime Gate 判定（內化事實） > EH-4 錨點材料（本體類比） > pe
 | L3 算子 | `src/soul/epistemic_motive.py` | NEW |
 | L4 寫回 | `src/memory/sage/concept_assimilation.py` | NEW |
 | 掛載（additive） | `src/llm/proxy.py`（`_format_horizon_block` 加 `utterance` 參數 + 注入段） | additive |
-| 掛載（additive） | `src/memory/sage/provider.py`（`_tag_explanatory_assimilations` 之後加一次呼叫） | additive |
+| 掛載（additive） | `src/memory/sage/provider.py`（post-reply worker 內：`_tag_explanatory_assimilations` 之後加 L4 一次呼叫；**並於同一 worker 落庫 L3 `epistemic:` pending 候選**，§3.3 寫入時序） | additive |
+| 掛載（additive） | `src/soul/scheduler.py`（`_decision_check` 既有 pending 消費點，對 `epistemic:` 前綴動機加 §3.4 B6 靜默期過濾；`src/soul/scheduler.py:390-460`） | additive |
 | 掛載（透傳） | `clients/voice_companion/akane_voice_brain.py:491`（單行參數透傳） | additive |
 | 測試 | `tests/test_epistemic_mind.py` + 單元測試 | NEW |
 
@@ -722,7 +841,7 @@ runtime Gate 判定（內化事實） > EH-4 錨點材料（本體類比） > pe
 
 ## 8. 待 Owner 拍板 / 決策點
 
-> 本契約的五大章節架構決策**已由工單鎖定**（L2-0 / L3-0 / L3-1 / L3-D1 / L4-0 / L4-D1 / L4-D3）。以下為**實作階段需要 Owner 或 persona 校準**的項目，實作工單不得自行拍板：
+> 本契約的架構決策**已由工單鎖定**（L2-0 / L3-0 / L3-1 / L3-D1 / L4-0 / L4-D1 / L4-D3；**EH-4-AMEND-1 追加鎖定：雙軌 A-1~A-5（§3.0）／當輪姿態 IT-1~IT-6（§2.3）／實體優先級 P0-1~P0-3 與 FSA-1~FSA-5（§2.2）／安全熔接 SF-1~SF-7（§4.2）／靜默期地板 B6（§3.4）**）。以下為**實作階段需要 Owner 或 persona 校準**的項目，實作工單不得自行拍板：
 
 | # | 決策點 | 選項 | 本契約傾向 |
 |---|---|---|---|
@@ -732,6 +851,8 @@ runtime Gate 判定（內化事實） > EH-4 錨點材料（本體類比） > pe
 | **D-4** | Probe 4 的「0 差量運算」驗收形式 | (a) 呼叫次數 = 0（成本最小）/ (b) 呼叫但回 `None` | **(a)**——以 `is_modern_native()` 前置短路 |
 | **D-5** | L3 求知 Motive 是否需**獨立可觀測欄位**（側車 JSONL） | (a) 只靠 `provenance_ref` 前綴 / (b) 新增側車審計記錄 | **(a)** for v1（0 新狀態）；(b) 若觀測不足再另開票 |
 | **D-6** | L4 五元組的**投影行數上限**（現定每實體 2 行、全域 8 行） | (a) 維持 / (b) 調整 | **(a)**——與 `src/llm/proxy.py:1140` 既有上限一致 |
+| **D-7** | **跨輪軌靜默期地板**（EH-4-AMEND-1） | (a) 沿用既有 `proactive_dm_min_interval_minutes`（180 分）＋既有 Gate／quiet hours / (b) 另立專用常數（如 `EPISTEMIC_CROSS_TURN_MIN_IDLE_SECONDS = 7200`） | **(a)**——0 新設定項、0 新定時器、0 新狀態；若觀察到過早或過晚，再另開票調參 |
+| **D-8** | `mental_model` 熔接是否含**侍奉分工界線**（EH-4-AMEND-1） | (a) 命中 `duty_hooks` 時熔接「誰碰／怎麼碰」界線（不列動作清單）/ (b) 只熔接安全直覺 | **(a)**——讀側只剩 2 槽位時，侍奉直覺與安全直覺同樣需要保命（§4.2 SF-6） |
 
 ---
 
@@ -742,7 +863,7 @@ runtime Gate 判定（內化事實） > EH-4 錨點材料（本體類比） > pe
 - **不修改** `src/llm/proxy.py` / `src/memory/sage/provider.py` / `clients/voice_companion/`（§2.4／§4.2 只給掛載點與 additive 形態）。
 - **不修改** `personas/`（含 `agent_rem.md`）；persona 校準屬 D-1 後續工單。
 - **不新增** 決策動詞、Decision prompt 區塊、SAGE 欄位、migration、設定項。
-- **不新增** 定時器／背景輪詢／掃描器（L3 只在當前輪評估；L4 只掛既有 post-reply hook）。
+- **不新增** 定時器／背景輪詢／掃描器（L3 的**材料**只在當前輪由 L2 產生；**跨輪軌沿用既有 `proactive_dm` 心跳與既有 Gate／cooldown／quiet hours**，§3.0 A-2；L4 只掛既有 post-reply hook）。
 - **不改動** `logs/ENGINEERING_STATE.md`（主大腦收尾職責）。
 - **不處理** `PromptContext` 死代碼、Hermes 執行期殘留（`CLEAN-HERMES-RESIDUE`，EH-1 D4 裁定）。
 - **不擴散** 到其他 persona（EH-1 D3 Pilot 範圍沿用）；第二個異界角色（`agent_ram` / `agent_mahiru`）建包為**後續獨立工單**。
@@ -787,8 +908,12 @@ runtime Gate 判定（內化事實） > EH-4 錨點材料（本體類比） > pe
 | A32 | configs 載入慣例（`Path(__file__).parent`） | `configs/loader.py:46-55` |
 | A33 | runtime data root（`data_root()`，唯讀側不需新路徑） | `src/paths.py:29-48` |
 | A34 | EH-1 契約（§0 摘要 / §2 Gate / §3 雙維度 / §6 四條 Probes / §4 垂直防火牆） | `docs/EH-1-EPISTEMIC-HORIZON-CONTRACT.md` |
+| A35 | `_decision_check`（`proactive_dm` 既有 wake：MotiveEngine → `resolve_pending` → Decision；跨輪軌的既有心跳載體） | `src/soul/scheduler.py:390-460` |
+| A36 | `proactive_dm_min_interval_minutes = 180` / quiet hours 23:00–08:00 / `_is_quiet_hours` | `src/soul/scheduler.py:141, 144-145, 1129-1136` |
+| A37 | M5.8-4 Inner Life Gate 最小間隔（`GATE_PROACTIVE_DM_MIN_INTERVAL_MINUTES = 30`） | `src/agency/inner_life_gate.py:96`（gate 語義 :25-40） |
+| A38 | `MotiveTraceStore.resolve_pending`（取最新 pending、TTL 過期不返回、fail-closed 入口） | `src/soul/motive.py:350-379` |
 
-## 附錄 B：靜態斷言（實作驗收用，S1–S8）
+## 附錄 B：靜態斷言（實作驗收用，S1–S12；S9–S12 為 EH-4-AMEND-1 新增）
 
 | # | 斷言 | 驗收形式 |
 |---|---|---|
@@ -800,7 +925,11 @@ runtime Gate 判定（內化事實） > EH-4 錨點材料（本體類比） > pe
 | **S6** | Motive 5 欄未變 | `dataclasses.fields(Motive)` 長度 == 5 且名稱集合不變 |
 | **S7** | L4 0 DDL：schema 版本未變 | `_SCHEMA_VERSION` 不變 + 測試中 `PRAGMA table_info(facts)` 欄位集合不變 |
 | **S8** | Bypass 鋼印：7 名白名單 agent 不觸發 L2 | `is_modern_native(a) is True` ⇒ `appraise()` 呼叫次數 0（§8 D-4 採 (a)） |
+| **S9** | **實體優先級與 Fail-Silent**（EH-4-AMEND-1）：P1/P2 名詞永不進入 `entity_terms`；無確信 P0 → 回 `None` | 單元測試：對「我用 X 弄了豆腐」斷言 `entity_terms == (X,)` 且 `'豆腐' in background_terms`；對「今天煮了豆腐湯」斷言 `appraise(...) is None`（§2.2 P0／FSA） |
+| **S10** | **安全熔接**（EH-4-AMEND-1）：命中 `safety_hazard` 的實體，其 `eh4_mental_model` 產物**必含**熔接子句 | 單元測試：斷言組裝字串含該軸 `hazard_rules` 至少一條，且為**敘述句、非命令句**（§4.2 SF-1~SF-4） |
+| **S11** | **當輪姿態模板 0 世界觀名詞**（EH-4-AMEND-1）：§2.3 兩段模板字面不得含 pack／世界觀名詞 | 單元測試：斷言模板常數對 pack 名詞清單 0 命中（§2.3 反硬編碼約束／D-INV-1） |
+| **S12** | **靜默期地板**（EH-4-AMEND-1）：`epistemic:` pending 未滿靜默期 → 不被消費且狀態仍 `pending` | 單元測試：以注入 `now` 斷言消費端回 `None`（或 skip）且 `MotiveTraceStore` 狀態仍 `pending`（§3.4 B6） |
 
 ---
 
-> **EH-4 契約結束。本文件為 DESIGN ONLY：0 code / 0 `src/` / 0 `clients/` / 0 `personas/` / 0 `configs/` / 0 `tests/` / 0 production mutation。一切實作（L1 載入器、L2 算子、L3 動機、L4 圖譜、掛載點 additive 修改、Probes 與靜態斷言）均需後續實作工單授權。**
+> **EH-4 契約結束（含 EH-4-AMEND-1：雙軌解耦／實體優先級與 Fail-Silent／安全熔接）。本文件為 DESIGN ONLY：0 code / 0 `src/` / 0 `clients/` / 0 `personas/` / 0 `configs/` / 0 `tests/` / 0 production mutation。一切實作（L1 載入器、L2 算子、L3 動機、L4 圖譜、掛載點 additive 修改、Probes 與靜態斷言）均需後續實作工單授權。**
