@@ -66,6 +66,10 @@ log = logging.getLogger("vc.web_server")
 VAD_SAMPLE_RATE = 16000   # 瀏覽器收音分片率（Int16 PCM mono）
 OUT_SAMPLE_RATE = 44100   # 播放分片率（Int16 PCM mono）
 
+# VC-NOREPLY-1：回合 LLM 最終失敗時對使用者的提示
+# （沿用既有 WS error 訊息型別；詳細例外/耗時只進 ERROR 日誌，不裸露給使用者）
+TURN_FAILURE_HINT = "連線異常，請再說一次"
+
 # VC-1.5：HTTPS 模式（自簽憑證目錄；certs/ 已 gitignore）
 CERT_DIR = Path(__file__).resolve().parent / "certs"
 CERT_PATH = CERT_DIR / "cert.pem"
@@ -365,6 +369,7 @@ class WebSession:
     def __init__(self, ws, *, config, brain, refiner, asr, streamer, detector, sink):
         self._ws = ws
         self._config = config
+        self._agent_id = (config.get("companion") or {}).get("id", "agent_akane")  # VC-NOREPLY-1：失敗日誌標識
         self._brain = brain
         self._refiner = refiner
         self._asr = asr
@@ -587,7 +592,14 @@ class WebSession:
                 raise
             except Exception as exc:
                 if task_gen == self._generation:
-                    await self._send_json({"type": "error", "message": f"上游失敗: {exc}"})
+                    # VC-NOREPLY-1：失敗可見化 — ERROR 級別日誌（agent/回合標識/總耗時/例外型別）
+                    _elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+                    log.error(
+                        "[VC-TURN-FAIL] agent_id=%s gen=%d elapsed_ms=%.0f exc_type=%s last_error=%r",
+                        self._agent_id, task_gen, _elapsed_ms, type(exc).__name__,
+                        getattr(self._streamer, "last_error", None),
+                    )
+                    await self._send_json({"type": "error", "message": TURN_FAILURE_HINT})
                     print(f"[UTT] reply-error {exc}")  # VC-1.5 診斷日誌
                     _chunks = int(getattr(self._sink, "_written_chunks", 0) or 0) - _chunks_before
                     _bytes = int(getattr(self._sink, "_written_bytes", 0) or 0) - _bytes_before
@@ -605,6 +617,17 @@ class WebSession:
                 if task_gen != self._generation:
                     return
                 reply = (reply or "").strip()
+                if not reply:
+                    # VC-NOREPLY-1：LLM 回傳空值而無法產生回覆 → 失敗可見化（不得靜默）
+                    # （此分支已通過 drain 前後的世代守衛，task_gen == self._generation）
+                    _elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+                    log.error(
+                        "[VC-TURN-FAIL] agent_id=%s gen=%d elapsed_ms=%.0f "
+                        "exc_type=empty_llm_output last_error=%r",
+                        self._agent_id, task_gen, _elapsed_ms,
+                        getattr(self._streamer, "last_error", None),
+                    )
+                    await self._send_json({"type": "error", "message": TURN_FAILURE_HINT})
                 if reply:
                     companion_id = (self._config.get("companion") or {}).get("id", "agent_akane")
                     role_name = companion_id.replace("agent_", "")

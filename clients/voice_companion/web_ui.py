@@ -64,6 +64,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   .msg { max-width: 85%; padding: 8px 12px; border-radius: 12px; white-space: pre-wrap; word-break: break-word; }
   .msg.user { align-self: flex-end; background: #2d3a56; }
   .msg.akane, .msg.mai, .msg.companion, .msg.assistant { align-self: flex-start; background: #3a2d52; }
+  /* VC-NOREPLY-1：回合失敗提示（error 型別）→ 聊天區系統列（不只在 #errorBox 閃一下就消失） */
+  .msg.error { align-self: flex-start; background: rgba(255, 107, 107, 0.10); border: 1px solid rgba(255, 107, 107, 0.45); color: #ffb3b3; font-size: 13px; }
   .msg .who { font-size: 11px; opacity: 0.65; margin-bottom: 2px; }
   #typeRow { display: flex; gap: 8px; width: min(640px, 96vw); }
   #textInput { flex: 1; padding: 10px 12px; border-radius: 10px; border: 1px solid #3a3a4e; background: #1e1e2a; color: #e8e6f0; font-size: 14px; }
@@ -161,7 +163,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   function addMsg(role, text) {
     var chat = $("chat"), div = document.createElement("div");
     div.className = "msg " + role;
-    var who = (role === "user" ? "你" : COMPANION_SHORT_NAME);
+    // VC-NOREPLY-1：error 型別以「系統」名義呈現在聊天區（失敗可見化）
+    var who = (role === "user" ? "你" : role === "error" ? "系統" : COMPANION_SHORT_NAME);
     div.innerHTML = '<div class="who">' + escapeHtml(who) + '</div>' + escapeHtml(text);
     chat.appendChild(div); chat.scrollTop = chat.scrollHeight;
   }
@@ -306,7 +309,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
         if (msg.type === "state") { setState(msg.state); }
         else if (msg.type === "transcript") { addMsg(msg.role, msg.text); }
-        else if (msg.type === "error") { showError(msg.message || "錯誤"); }
+        else if (msg.type === "error") {
+          // VC-NOREPLY-1：失敗訊息 → #errorBox 暫態顯示 + 聊天區系統列（持久可見）
+          showError(msg.message || "錯誤");
+          addMsg("error", "⚠️ " + (msg.message || "錯誤"));
+        }
         else if (msg.type === "pong") { /* 心跳正常回應 */ }
       } else {
         // binary = Int16 PCM 44.1k mono 播放分片（server 固定 44100）
