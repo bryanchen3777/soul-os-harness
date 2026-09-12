@@ -1616,6 +1616,7 @@ class OpenAIBackend(LLMBackend):
                             f"redacted_body={_c1_body_redact}"
                         )
 
+                    _attempt_start = time.perf_counter()
                     resp = await client.post(
                         self.base_url,
                         headers={"Authorization": f"Bearer {self.api_key}"},
@@ -1657,7 +1658,11 @@ class OpenAIBackend(LLMBackend):
                         raise  # 不可 retry 的 HTTP error (e.g. 400, 401, 403) 直接 raise
                     continue
                 except (httpx.ConnectError, httpx.TimeoutException) as e:
-                    last_error = f"network {type(e).__name__}"
+                    # VC-TURN-OBS-1：附上 attempt elapsed_ms（區分 <5s 快速失敗 vs 120s full timeout）
+                    _attempt_elapsed_ms = (time.perf_counter() - _attempt_start) * 1000.0
+                    last_error = (
+                        f"network {type(e).__name__} elapsed_ms={_attempt_elapsed_ms:.0f}"
+                    )
                     continue
             else:
                 # max_retries+1 次都失敗

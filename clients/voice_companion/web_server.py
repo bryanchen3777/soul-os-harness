@@ -390,7 +390,7 @@ class WebSession:
         """PTT 按下 / Auto-VAD 語音開始：若進行中 → 先 interrupt 再開新回合。"""
         print("[WS] ptt_start")  # VC-1.5 診斷日誌
         if self.state in (self.STATE_THINKING, self.STATE_SPEAKING):
-            self._barge()
+            self._barge("ptt_start")
         if self.state != self.STATE_LISTENING:
             await self._set_state(self.STATE_LISTENING)
 
@@ -432,7 +432,7 @@ class WebSession:
     async def on_interrupt(self) -> None:
         """瀏覽器打斷（Bryan 在茜說話時開口）：立即中斷合成/播放，回 IDLE（瀏覽器靜音）。"""
         print("[WS] interrupt")  # VC-1.5 診斷日誌
-        self._barge()
+        self._barge("interrupt")
         await self._set_state(self.STATE_IDLE)
 
     async def on_text(self, text: str) -> None:
@@ -445,7 +445,7 @@ class WebSession:
             text = text[:self.MAX_FRAME_BYTES]
         print(f"[WS] text {text[:40]}")  # VC-1.5 診斷日誌
         if self.state in (self.STATE_LISTENING, self.STATE_THINKING, self.STATE_SPEAKING):
-            self._barge()
+            self._barge("text")
         self._generation += 1
         gen = self._generation
         t_start = time.perf_counter()
@@ -559,6 +559,8 @@ class WebSession:
             self._generation += 1
             gen = self._generation
         elif gen != self._generation:
+            # VC-TURN-OBS-1：世代守衛丟棄（進 task 前）→ 留痕跡（WARNING）
+            log.warning("[UTT] reply-superseded gen=%d curr=%d stage=pre-task", gen, self._generation)
             return
 
         if t_start is None:
@@ -586,9 +588,21 @@ class WebSession:
             return "".join(parts)
 
         async def _finish(task_gen: int) -> None:
+            # VC-TURN-OBS-1：回合收尾任務起點（含 t_start 起算的已耗 ms）
+            log.info(
+                "[UTT] reply-start gen=%d t_start=%.0fms",
+                task_gen, (time.perf_counter() - t_start) * 1000.0,
+            )
             try:
+                # VC-TURN-OBS-1：LLM 同步呼叫起點（to_thread 內不可取消，逾時會卡到 60s）
+                log.info("[UTT] reply-awaiting-llm gen=%d", task_gen)
                 reply = await asyncio.to_thread(_generate)
             except asyncio.CancelledError:
+                # VC-TURN-OBS-1：回合被 barge 取消 → 留痕跡後原樣 re-raise（asyncio 語意不變）
+                log.warning(
+                    "[UTT] reply-cancelled gen=%d curr=%d",
+                    task_gen, self._generation,
+                )
                 raise
             except Exception as exc:
                 if task_gen == self._generation:
@@ -608,13 +622,29 @@ class WebSession:
                         _tts_mode, len(user_text), _chunks, _bytes,
                         getattr(self._streamer, "last_error", None),
                     )
+                else:
+                    # VC-TURN-OBS-1：世代不符的例外 → 丟棄但留痕跡（WARNING；不得吞掉/改寫例外語意）
+                    log.warning(
+                        "[UTT] reply-dropped-exc gen=%d curr=%d exc_type=%s exc=%r",
+                        task_gen, self._generation, type(exc).__name__, exc,
+                    )
             else:
                 if task_gen != self._generation:
+                    # VC-TURN-OBS-1：LLM 完成但世代已不符 → 舊回合收尾被丟棄（WARNING）
+                    log.warning(
+                        "[UTT] reply-superseded gen=%d curr=%d stage=after-llm",
+                        task_gen, self._generation,
+                    )
                     return
                 # VC-2.3-03: 排空音訊分片，確保 WebSocket 底層完全送出，徹底消除尾字截斷
                 if hasattr(self._sink, "drain"):
                     await self._sink.drain()
                 if task_gen != self._generation:
+                    # VC-TURN-OBS-1：drain 期間世代又變 → 半截回覆丟棄（WARNING）
+                    log.warning(
+                        "[UTT] reply-superseded gen=%d curr=%d stage=after-drain",
+                        task_gen, self._generation,
+                    )
                     return
                 reply = (reply or "").strip()
                 if not reply:
@@ -717,12 +747,17 @@ class WebSession:
 
     # ── 內部 ──
 
-    def _barge(self) -> None:
-        """打斷當前回合（新語音 / 新文字 / 顯式 interrupt 共用）。"""
+    def _barge(self, reason: str = "interrupt") -> None:
+        """打斷當前回合（新語音 / 新文字 / 顯式 interrupt 共用）。
+
+        VC-TURN-OBS-1：記錄打斷理由與世代推移（WARNING），量化 barge 取消路徑。
+        """
+        _gen_old = self._generation
         self._streamer.interrupt()
         self._frames = []
         self._vad.reset()
         self._generation += 1  # 舊回合收尾失去狀態控制權
+        log.warning("[UTT] barge reason=%s gen:%d->%d", reason, _gen_old, self._generation)
         if self._utterance_task and not self._utterance_task.done():
             self._utterance_task.cancel()
             self._utterance_task = None

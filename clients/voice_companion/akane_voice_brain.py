@@ -21,6 +21,7 @@ import asyncio
 import logging
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, List, Optional
 
@@ -271,34 +272,62 @@ def build_llm_stream(llm_cfg: dict) -> Optional[Callable[[List[dict]], Iterable[
 
         import requests  # 懶載入
 
+        # VC-TURN-OBS-1：同步 LLM 呼叫全生命週期可見化（requests+SSE 會被 to_thread 包住，
+        # 60s timeout 內不可取消；每筆 log 都帶 elapsed_ms 供判讀）
+        _t0 = time.perf_counter()
+
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        resp = requests.post(
-            endpoint,
-            json={"model": model, "messages": messages, "stream": True},
-            headers=headers,
-            timeout=60,
+        logger.info(
+            "[LLM-STREAM] request-start endpoint=%s model=%s elapsed_ms=%.0f",
+            endpoint, model, (time.perf_counter() - _t0) * 1000.0,
         )
-        resp.raise_for_status()
-        # SSE（text/event-stream）常無 charset：requests 預設 ISO-8859-1 會把 UTF-8 中文解成亂碼 → 強制 UTF-8
-        resp.encoding = "utf-8"
-        for line in resp.iter_lines(decode_unicode=True):
-            if not line:
-                continue
-            line = line.strip()
-            if line == "data: [DONE]":
-                break
-            if not line.startswith("data:"):
-                continue
-            try:
-                payload = json.loads(line[len("data:"):])
-            except (ValueError, TypeError):
-                continue
-            delta = (payload.get("choices") or [{}])[0].get("delta") or {}
-            piece = delta.get("content")
-            if piece:
-                yield piece
+        try:
+            resp = requests.post(
+                endpoint,
+                json={"model": model, "messages": messages, "stream": True},
+                headers=headers,
+                timeout=60,
+            )
+            resp.raise_for_status()
+            # SSE（text/event-stream）常無 charset：requests 預設 ISO-8859-1 會把 UTF-8 中文解成亂碼 → 強制 UTF-8
+            resp.encoding = "utf-8"
+            _first_token = True
+            _tokens = 0
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                line = line.strip()
+                if line == "data: [DONE]":
+                    break
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    payload = json.loads(line[len("data:"):])
+                except (ValueError, TypeError):
+                    continue
+                delta = (payload.get("choices") or [{}])[0].get("delta") or {}
+                piece = delta.get("content")
+                if piece:
+                    _tokens += 1
+                    if _first_token:
+                        _first_token = False
+                        logger.info(
+                            "[LLM-STREAM] first-token elapsed_ms=%.0f",
+                            (time.perf_counter() - _t0) * 1000.0,
+                        )
+                    yield piece
+            logger.info(
+                "[LLM-STREAM] done tokens=%d elapsed_ms=%.0f",
+                _tokens, (time.perf_counter() - _t0) * 1000.0,
+            )
+        except Exception as exc:  # noqa: BLE001 — 生命週期可見化：異常必須留痕再原樣 re-raise
+            logger.error(
+                "[LLM-STREAM] error exc_type=%s exc=%r elapsed_ms=%.0f",
+                type(exc).__name__, exc, (time.perf_counter() - _t0) * 1000.0,
+            )
+            raise
 
     return stream
 

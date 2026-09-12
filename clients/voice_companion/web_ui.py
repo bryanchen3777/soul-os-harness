@@ -130,6 +130,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   // VC-VAD-TIMING-1 D4：開麥錨點 = 播放緩衝「實際排空」+ Tail Buffer（不再以伺服器 IDLE 起算固定 1.8s）
   var playbackActive = false, playbackDrained = true, tailTimer = null, roundQueuedSamples = 0;
   var VAD_THRESHOLD = 0.02, VAD_SILENCE_MS = 500, BARGE_MS = 150, BARGE_AUTO_THRESHOLD = 0.04, BARGE_AUTO_MS = 200, AUTO_START_MS = 260, TAIL_BUFFER_MS = 400;
+  // VC-TURN-OBS-1：THINKING 持續超過 8 秒 → 升級等待提示（正常回合首音 3–12s；上游不穩時 29–60s）
+  var THINKING_SLOW_MS = 8000, THINKING_SLOW_TEXT = "🟡 上游較慢，還在處理…（請稍候，不用再按）", thinkingSlowTimer = null;
   var $ = function (id) { return document.getElementById(id); };
 
   function setState(s) {
@@ -154,6 +156,18 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     }
     var dot = $("statusDot"), txt = $("statusText");
     dot.className = "dot " + (s === "SPEAKING" ? "speaking" : s === "THINKING" ? "thinking" : s === "LISTENING" ? "listening" : "idle");
+    // VC-TURN-OBS-1：THINKING 逾 THINKING_SLOW_MS(8s) → 文字升級（上游較慢提示）；離開 THINKING → 取消計時並還原
+    if (s === "THINKING") {
+      if (!thinkingSlowTimer) {
+        thinkingSlowTimer = setTimeout(function () {
+          thinkingSlowTimer = null;
+          if (state === "THINKING") { txt.textContent = THINKING_SLOW_TEXT; }
+        }, THINKING_SLOW_MS);
+      }
+    } else if (thinkingSlowTimer) {
+      clearTimeout(thinkingSlowTimer);
+      thinkingSlowTimer = null;
+    }
     txt.textContent = s === "SPEAKING" ? ("🔴 " + COMPANION_SHORT_NAME + "說話中…（開口可打斷）") : s === "THINKING" ? "🟡 思考中…" : s === "LISTENING" ? "🟢 聆聽中…" : "🟢 聆聽";
     var btn = $("micBtn");
     if (s === "LISTENING") { btn.classList.add("hold"); } else { btn.classList.remove("hold"); }
