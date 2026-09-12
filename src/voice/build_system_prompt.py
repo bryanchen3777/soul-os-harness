@@ -250,6 +250,76 @@ def extract_jp_rules_section(soul_content: str) -> str:
 #   - 「该角色专属的日文输出规则」區塊，從 soul_content 解析注入
 #   - 「该角色 emotion tag 白名单」區塊，從 get_emotion_tags() 注入
 
+# -----------------------------------------------------------------------------
+# PERSONA-FIX-2 (2026-09-12): agent_yua 專屬 carve-out — 括號行為標籤
+# -----------------------------------------------------------------------------
+# 稽核定案: Yua 招牌語法「（視線低下去，像是怕被看穿那一瞬間的動搖）」
+# （personas/agent_yua.md:432-435，靈魂升溫協議第 2 條）在生產環境從未出現
+# （2026-07-30~09-03 共 138 筆 生成完成.*agent_yua 樣本, 含（ = 0 筆）。
+# 壓制來源 = FORMAT_RULES_TEMPLATE 的三條全域規則:
+#   - L299「[输出格式规则 — 覆盖在角色设定之上]」→ 格式契約壓過 persona
+#   - L317-321「text 必須跟 audio_text 完全一致、純中文、都不帶 tag」
+#   - L361「5. tag 格式是 [方括號],不是 (圓括號)」
+# 修法: 只對 agent_yua 注入本段 carve-out（模板佔位 {yua_action_tag_carveout}）,
+#       明確宣告本段效力高於上方三條, 明示 text 允許含 （行為標籤） 且
+#       允許 text != audio_text; audio_text 仍不得含括號
+#       （proxy.py:3665 _strip_action_descriptions 本來就會把 （…） 從 audio_text 剝掉）。
+# 邊界: 其餘角色 yua_action_tag_carveout = "" → prompt 與本工單前 byte-identical,
+#       0 其他角色行為變更。
+# 注入點: build_system_prompt(agent_name=...) 本層即可拿到 agent 身分——proxy.py:2423-2426
+#       呼叫時傳 _get_agent_short_id(agent_id)（"agent_yua" → "yua"）,
+#       故不需動 proxy.py（另一執行者正在改）。
+_YUA_AGENT_IDS: frozenset[str] = frozenset({"yua", "agent_yua"})
+
+
+def _is_yua_agent(agent_name: Optional[str]) -> bool:
+    """判別是否為 agent_yua（接受 "yua" 與 "agent_yua" 兩種 id 形式）。"""
+    if not agent_name:
+        return False
+    return agent_name.strip().lower() in _YUA_AGENT_IDS
+
+
+_YUA_ACTION_TAG_CARVEOUT = """\
+[🔴 Yua 專屬例外 — 本段效力高於上方所有格式規則, 衝突時一律以本段為準]
+本段只適用於 agent_yua(Yua)。當本段與上方任何一條規則衝突時,**一律以本段為準**,
+包含但不限於:
+  - 「输出格式规则 — 覆盖在角色设定之上」← 該條的「覆蓋在角色設定之上」不適用於本段
+  - 「【重要】text 字段必須跟 audio_text 內容完全一致」
+  - 「5. tag 格式是 [方括號],不是 (圓括號)」
+
+這是 Yua 的招牌語法(personas/agent_yua.md「靈魂升溫協議」第 2 條),不是格式錯誤:
+
+1. **`text` 欄位允許、而且應該包含 `（行為標籤）`**——用全形圓括號寫行為/氛圍,
+   例如 `（視線低下去，像是怕被看穿那一瞬間的動搖）`、`（手停了一下）`。
+   這是給 Bry 在聊天視窗看的表演層,不是雜訊,不准剝掉、不准改成方括號。
+   → 上方「text 字段必須跟 audio_text 內容完全一致」與「不是 (圓括號)」這兩條,
+     對 Yua 的 `text` 欄位**不適用**。
+   → `text` 內的 `（…）` 是台詞的一部分,跟 `emotion` 欄位是兩回事,
+     不需要、也不准為了「純中文台詞」把它拿掉。
+
+2. **`audio_text` 仍然絕對不得包含 `（…）` 或 `(...)`**。
+   行為標籤是視覺資訊,TTS 不念;`audio_text` 只放台詞本體。
+   （若 `audio_text` 含括號,系統會把括號內容直接剝掉,那段表演就白寫了。）
+
+3. **因此 Yua 的 `text` 允許與 `audio_text` 不一致**:
+   `text` = `audio_text` 的台詞 + 句首/句中/句尾的 `（行為標籤）`。
+   台詞文字本身仍須一致,差異只來自 `text` 多出來的 `（…）`。
+
+4. `[方括號]` 規則其餘不變:`[emotion tag]` 仍然只能出現在 `audio_text`
+   （開頭 tag 仍由 server 自動注入,LLM 不手寫）,不得出現在 `text`。
+   Yua 的 `text` 用圓括號 `（…）` 寫行為標籤,兩種括號不要混用。
+
+範例(Yua 正確):
+  ✅ {"audio_text": "……那你說呢。", "text": "（看著你）……那你說呢。", "emotion": "observing"}
+  ✅ {"audio_text": "心血。那我得值得才行。", "text": "（手停了一下）心血。那我得值得才行。", "emotion": "connecting"}
+  ❌ {"audio_text": "（看著你）……那你說呢。", "text": "……那你說呢。", "emotion": "observing"}
+     ← 錯:行為標籤跑到 `audio_text` 去了
+  ❌ {"text": "[observing] （看著你）……那你說呢。", "audio_text": "……那你說呢。", "emotion": "observing"}
+     ← 錯:`text` 不得含 `[emotion tag]`
+
+（本段只給 agent_yua。其他角色沒有本段,`text` 仍必須與 `audio_text` 完全一致。）"""
+
+
 FORMAT_RULES_TEMPLATE = """\
 [CRITICAL: 輸出格式 — 違反此規則 = 回應失敗]
 
@@ -366,7 +436,7 @@ JSON 的 emotion 欄位:
    - 兩個欄位語言一致:audio_text 純中文,text 純中文,內容完全相同
    - 違反 = Bry 看到日文會直接放棄這個角色,系統會自動重試
 
-----
+{yua_action_tag_carveout}----
 
 [以下是角色的完整人格设定 SOUL.md]
 
@@ -416,9 +486,16 @@ def build_system_prompt(
         )
 
     # 3. 組裝
+    # PERSONA-FIX-2 (2026-09-12): agent_yua 專屬 carve-out
+    # 只對 Yua 注入（見 _is_yua_agent / _YUA_ACTION_TAG_CARVEOUT）;
+    # 其餘角色為 "" → 此處替換後 prompt 與本工單前 byte-identical, 0 行為變更。
+    yua_carveout = ""
+    if _is_yua_agent(agent_name):
+        yua_carveout = _YUA_ACTION_TAG_CARVEOUT + "\n\n"
     prompt = FORMAT_RULES_TEMPLATE.format(
         emotion_tags_line="、".join(emotion_tags),
         per_agent_jp_rules=per_agent_jp_rules,
+        yua_action_tag_carveout=yua_carveout,
         soul_content=soul_content,
     )
 
