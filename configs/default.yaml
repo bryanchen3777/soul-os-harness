@@ -173,8 +173,12 @@ rag:
   exclude_current_session: true # 排除當下對話（避免跟 history 重複）
 
 # ── CRASH-F1: server 啟動選項 ──
-# event_loop: proactor 是刻意維持的預設（＝現狀，0 行為變更）。
-# 實驗翻牌（切換到 selector 繞開 IOCP）由幕僚長在部署時刻意執行，
-# 可改這裡，或優先以環境變數 SOUL_OS_EVENT_LOOP=selector 覆蓋。
+# 2026-09-12 幕僚長部署翻牌：selector 實驗正式上線（Owner 拍板執行）。
+# 動機：主服務 2026-09-12 崩 4 次（00:03 / 08:33 / 08:53 / 09:38），
+#       WER 證據 = 錯誤模組 python311.dll + 例外狀況代碼 c0000005（access violation）。
+# 假說：ProactorEventLoop（Windows IOCP）路徑觸發 CPython 原生層崩潰。
+# 觀察窗口：48h，成功判準 = python311.dll 0xc0000005 崩潰數嚴格為 0。
+# 回滾：把 event_loop 改回 proactor + 重啟主服務即可（單行設定，零程式碼變更）。
+# 註：環境變數 SOUL_OS_EVENT_LOOP 優先序高於本檔（bogus 值會安全退回 proactor）。
 server:
-  event_loop: proactor
+  event_loop: selector
