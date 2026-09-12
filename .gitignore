@@ -91,3 +91,7 @@ configs_default_utf8.txt
 
 # proxy.py 的混合備份（mixed_backup 命名表示是某次混合修改的中間狀態，git diff 已涵蓋）
 src/llm/proxy.py.mixed_backup
+
+# CRASH-DUMP-1: local WER dumps must never enter git
+*.dmp
+data/crash_dumps/
