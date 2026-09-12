@@ -8,6 +8,7 @@
 > **性質**：非施工授權。canonical 狀態以 `logs/ENGINEERING_STATE.md` 為準；本文檔是後續 EH-4 實作工單的輸入。
 > **風格對照**：`docs/EH-1-EPISTEMIC-HORIZON-CONTRACT.md`（目標／契約／不變量／驗收／不做）。
 > **修訂紀錄 — EH-4-AMEND-1（DESIGN ONLY）**：① **當輪探詢姿態 vs. 跨輪自主意圖雙軌解耦**（§2.3 當輪姿態段／§3.0／§5 Probe 3 校準）；② **`entity_key` 工具介質優先級與 Fail-Silent 放棄**（§2.2，杜絕「豆腐似烘爐」）；③ **`safety_rule` 熔接 `mental_model` 投影**（§4.2 SF-1~SF-7／§4.3 補充）。新增不變量 INV-13~15（§6）。**本修訂仍為 DESIGN ONLY：0 code / 0 `src/` / 0 production mutation。**
+> **修訂紀錄 — EH-4-AMEND-2（DESIGN ONLY，Native Immunity & Spoken Calibration）**：① **原生常識天然免疫閘**（**FSA-0**：`P0 ∈ (pack.native_tools ∪ pack.native_basis) ⟹ FSA`，§2.2——杜絕把羅茲瓦爾公館自帶的鍋／爐／箱誤當異界物對撞）；② **口語與語音無介詞階梯式解析**（**階梯 1／2／3**，§2.2——規範無「用／拿」日常口語的解析階梯，並誠實劃定 v1 保守漏召邊界 UR-1~UR-4）；③ **本體隱喻多錨點分流**（**anchor class 封閉集合**＋次級物理特徵分流矩陣，§1.2／§2.4——破除「凡發熱皆烘爐」的單一模板化）；④ **當輪探詢克制守門**（**IT-7~IT-10**：雙條件合取閘＋背景提及靜默鋼印＋一句上限，§2.3——防角色因「有按鈕」而退化為每題必問）。新增不變量 INV-16~19（§6）、靜態斷言 S13~S16（附錄 B）。**本次修訂唯一動到的檔案＝本文件；仍為 DESIGN ONLY：0 code / 0 `src/` / 0 `clients/` / 0 `personas/` / 0 `configs/` / 0 `tests/` / 0 production mutation / 0 `logs/ENGINEERING_STATE.md` 改動。**
 
 ---
 
@@ -35,8 +36,8 @@
 **核心機制（四件，對應四層）**：
 
 1. **L1 實例包**：四維原生常識軸規格化；**嚴禁在程式碼中硬編碼「羅茲瓦爾／柴火／魔石」**——一切世界觀名詞只准出現在 L1 資料檔（`configs/epistemic_packs/*.yaml`）。
-2. **L2 差量算子**：`feature_lexicon`（通用）× `pack.axes`（實例）→ `DeltaRecord` → 注入 Horizon Block 的「**本體隱喻錨點**」；**嚴格禁止輸出空洞的「雷姆不懂」**，也嚴格禁止現代原理解說。**（EH-4-AMEND-1）** 差量主詞 `entity_key` 只取 **P0 工具介質**（介詞引導之器具／設備），動作受詞與食材降級為背景；句法不確信即 **Fail-Silent Abort**（整段差量回 `None`，§2.2）。
-3. **L3 求知動機（雙軌解耦，EH-4-AMEND-1）**：`EpistemicTension = UnknownModernEntity ∧ (SafetyFlag ∨ DutyFlag)`，**純結構布林、0 浮點打分、0 第 5 動詞**；**當輪探詢姿態**走 `Interpreted` 層（Horizon Block 投影、當輪即時、不經 Decision，§2.3）；**跨輪自主意圖**走 `MotiveEngine`（Scheduler 心跳、靜默期地板、禁止當輪結束即自激發訊，§3.0）；最終仍由既有 `transmit / observe / reflect / do_nothing` 四元吸收。
+2. **L2 差量算子**：`feature_lexicon`（通用）× `pack.axes`（實例）→ `DeltaRecord` → 注入 Horizon Block 的「**本體隱喻錨點**」；**嚴格禁止輸出空洞的「雷姆不懂」**，也嚴格禁止現代原理解說。**（EH-4-AMEND-1）** 差量主詞 `entity_key` 只取 **P0 工具介質**（介詞引導之器具／設備），動作受詞與食材降級為背景；句法不確信即 **Fail-Silent Abort**（整段差量回 `None`，§2.2）。 **（EH-4-AMEND-2）** 抽取擴為**三階梯**（介詞錨定 → 口語評價主語／取得受詞 → 保守放棄），並在**判定流程最前端**追加一道 **FSA-0 原生常識天然免疫閘**（公館自帶的鐵鍋／風箱／烘爐**永不**被當異界物對撞）；錨點不再「凡發熱皆烘爐」，改由**次級物理特徵分流矩陣**（§1.2）映射至**不同**的生活器具。
+3. **L3 求知動機（雙軌解耦，EH-4-AMEND-1）**：`EpistemicTension = UnknownModernEntity ∧ (SafetyFlag ∨ DutyFlag)`，**純結構布林、0 浮點打分、0 第 5 動詞**；**當輪探詢姿態**走 `Interpreted` 層（Horizon Block 投影、當輪即時、不經 Decision，§2.3）；**跨輪自主意圖**走 `MotiveEngine`（Scheduler 心跳、靜默期地板、禁止當輪結束即自激發訊，§3.0）；最終仍由既有 `transmit / observe / reflect / do_nothing` 四元吸收。 **（EH-4-AMEND-2）** 當輪姿態追加**克制守門 IT-7~IT-10**：須**同時**滿足「本輪主人親自操作／即將食用」且「實質物理危害懷疑或能直接替換主人繁重家務」才注入；**背景提及一律靜默**（0 伴隨發問），且每次探詢**嚴格上限一句**（§2.3）。
 4. **L4 同化圖譜**：`earth_term / mental_model / safety_rule / duty_action / idiolect` 五元組，以既有 `add_fact` + `set_fact_dimensions` API **非同步**寫回，**絕不卡死對話主鏈路**。**（EH-4-AMEND-1）** `mental_model` 於寫回時**強制熔接**安全直覺與操作邊界（§4.2 SF），使 raw `safety_rule` 不投影亦**不丟失**。
 
 ---
@@ -71,9 +72,33 @@
 
 | 層 | 做 | **不做** |
 |---|---|---|
-| L2 | 由「當前輪輸出文字 + agent 的 L1 pack」算出本體差量與錨點字串 | 不決定要不要發問（L3）、不寫記憶（L4）、不呼叫 LLM |
+| L2 | 由「當前輪輸出文字 + agent 的 L1 pack」算出本體差量、**錨點類別（anchor class，§1.2 分流矩陣）**與錨點字串；**前置＝FSA-0 原生免疫閘（§2.2）** | 不決定要不要發問（L3）、不寫記憶（L4）、不呼叫 LLM |
 | L3 | 由布林條件產生 Motive 候選 | 不選 action（Decision 的專權）、不新增動詞、不打分 |
 | L4 | 在同化事件當下寫入五元組節點 | 不改檢索主幹、不做句法判定（沿用 EH-3.1 五閘門結果）、不在對話熱路徑 |
+
+**錨點類別封閉集合與次級物理特徵分流矩陣（EH-4-AMEND-2）**：
+
+> **修正對象**：初版走 `feature → axis → analogy_anchors[0]`，於是「**凡發熱皆烘爐**」——微波爐、氣炸鍋、平底電熱鍋全部落成同一個生活器具，角色語言退化成單一模板。修正後：**L2 不直接挑名詞，先由次級物理特徵算出「錨點類別（anchor class）」，再由 pack 供給該類別的名詞**。算子只認識**類別**，名詞永遠來自實例包（D-INV-1）——與本節開頭第一性分界完全同構。
+
+| 類別 key（封閉集合） | 語義（通用，0 世界觀名詞） | 次級物理特徵組合（secondary signature） | 對應錨點語義（**名詞由 pack 供給**） |
+|---|---|---|---|
+| `forced_air_heat` | 熱氣流／風聲驅動之加熱 | `heating` ∧（`airflow` ∨ `fan_noise`） | 風箱熱道類 |
+| `enclosed_heat` | 封閉腔體加熱 | `heating` ∧ `enclosed` ∧（`glass_window` ∨ `timer`） | 烘箱／封閉石爐類 |
+| `open_flat_heat` | 開放平底快速加熱 | `heating` ∧ `open_flat` ∧ `fast_sear` | 鐵板／煎鍋類 |
+| `cold_preservation` | 低溫保存 | `cooling` ∧ `preservation` | 地窖／冰室類 |
+
+**分流優先序（唯一定序，確定性；0 打分、0 權重）**：
+
+```
+forced_air_heat  >  enclosed_heat  >  open_flat_heat  >  cold_preservation  >  無類別
+```
+
+- **AC-1**：優先序是**類別之間的固定序**，不是相似度比較——同時命中多類別時取序最前者（例：**氣炸鍋**同時具「封閉腔體」與「氣流／風聲」→ 取 `forced_air_heat`，因為**氣流／風聲**是它在原生世界最刺眼、最不存在的次級特徵；**微波爐**只有「封閉＋玻璃門／定時」而無氣流 → `enclosed_heat`）。
+- **AC-2**：類別 → 名詞的解析走 pack 的 `lexicon_bridges[].anchor_class` ／ `preferred_anchor`（§1.4／§1.5）；**0 硬編碼「現代器具名 ↔ 錨點」對照表**（§1.2 O1 反硬編碼）。
+- **AC-3（退化宣告，Known Degradation by Design）**：若整句只給 `heating`（**無任何次級特徵**）→ 類別無法分流 → **回退** `analogy_anchors[0]`（＝初版行為，**非放棄**）。寧可回退單一錨點，也**不得**在算子內硬編碼現代器具名 ↔ 錨點對照表。
+- **AC-4（封閉集合）**：四類為**封閉集合**——**不得新增第 5 類**（與「四軸封閉」「四元動作」同構：防止規格膨脹與決策層爆炸）。
+- **AC-5（0 額外 LLM／0 NLP）**：分流是純集合運算（特徵集合 × 固定序），**不得**呼叫 LLM、不得引入詞向量／相似度模型（§2.1 L2-0）。
+- **AC-6（bridge 匹配優先序，S5／S6 共用定序）**：多條 `lexicon_bridges` 同時命中時——**① `requires` 全數命中者優先**（越特定越優先）；② 同為特定者，依 **AC-1 類別優先序**取序最前者；③ 仍同則取 pack 中**出現序**最前者。**無 `requires` 的 bridge 為回退條款**：僅在無任何特定 bridge 命中時採用（§1.5 的「發熱 → 烘爐」即此用途）。`expect_absent` 與 `preferred_anchor` **同取**該命中 bridge 的欄位（不得一條取 A、一條取 B）。
 
 ### 1.3 L1 實例包：四維原生常識軸（規格化）
 
@@ -90,8 +115,8 @@
 
 | 欄位 | 型別 | 語義 | L2 用法 |
 |---|---|---|---|
-| `native_basis` | `list[str]` | 該軸上「原生世界裡這件事是怎麼發生的」的來源清單（火／柴／魔石／人力…） | 生成「**無 X**」的缺席陳述 |
-| `native_tools` | `list[str]` | 該軸的原生器具／載體名詞 | 生成類比錨點的候選名詞池 |
+| `native_basis` | `list[str]` | 該軸上「原生世界裡這件事是怎麼發生的」的來源清單（火／柴／魔石／人力…） | 生成「**無 X**」的缺席陳述**＋ FSA-0 原生免疫詞條（§2.2）** |
+| `native_tools` | `list[str]` | 該軸的原生器具／載體名詞 | 生成類比錨點的候選名詞池**＋ FSA-0 原生免疫詞條（§2.2）** |
 | `absence_assumptions` | `list[str]` | 該軸上原生世界**不存在**的東西（結構化負向假設） | 生成差量的「期待缺席」判定 |
 | `analogy_anchors` | `list[str]` | 可用於比喻的**原生物件名詞**（功能最接近者排前） | `DeltaRecord.anchor` 的主詞 |
 | `hazard_rules` | `list[str]` | 該軸的安全直覺條款（驚戒邊界） | L3 `SafetyFlag` 的判定材料 |
@@ -135,10 +160,12 @@ axes:                              # 四軸封閉集合，四者皆必填
     # 同構六欄
 
 lexicon_bridges:                   # L2 通用特徵 → 本軸的映射覆寫（可選；預設見 §2.2 通用表）
-  - feature: "發熱"
+  - feature: "heating"             # 通用特徵 key（英文）**或**其 §2.2 中文觸發詞（如「發熱」）——二者等價，載入器正規化
     axis: "energy_dynamics"
     expect_absent: ["<該軸上『有熱必有』的原生條件，如 柴火/火/魔石>"]
     preferred_anchor: "<最貼近的類比主詞>"
+    requires: ["enclosed"]         # 可選（EH-4-AMEND-2）：次級特徵合取；全部命中才採用本條
+    anchor_class: "enclosed_heat"  # 可選（EH-4-AMEND-2）：∈ §1.2 錨點類別封閉集合
   # ...
 
 forbidden_output_terms:            # 輸出禁令詞（該 pack 專屬補充；通用禁令另見 §2.3）
@@ -156,6 +183,7 @@ forbidden_output_terms:            # 輸出禁令詞（該 pack 專屬補充；�
 | V4 | `civilization_base == "modern_earth"` → 直接 `None`（**不視為錯誤**，是 D3 bypass 的資料側表達） | `None` |
 | V5 | `lexicon_bridges[].axis` ∈ 四軸封閉集合 | 丟棄該條 bridge（其餘保留） |
 | V6 | 任何 `yaml.YAMLError` / `OSError` / 編碼錯誤 | `None` + `logger.debug` |
+| **V7** | **（EH-4-AMEND-2）** `lexicon_bridges[].anchor_class` 若存在，必須 ∈ §1.2 錨點類別封閉集合；`requires` 若存在必須為 `list[str]` 且元素 ∈ §2.2 通用特徵詞表 | **丟棄該條 bridge**（其餘保留；0 世界觀名詞黑名單、0 相似度；與 V5 同級的**局部**丟棄，不整包作廢） |
 
 ### 1.5 Pilot 實例包：`agent_rem`（羅茲瓦爾公館生活）
 
@@ -173,15 +201,15 @@ axes:
     native_basis:        ["竈中柴火", "圍爐炭火", "魔石暖爐", "魔石燈", "燭火", "油燈", "人力", "馬車", "魔力"]
     native_tools:        ["竈", "圍爐", "暖爐", "魔石燈", "燭台", "油燈", "風箱", "水車"]
     absence_assumptions: ["無電", "無插座", "無煤氣", "無內燃機", "無須插電即可自熱之物"]
-    analogy_anchors:     ["烘爐", "烤爐", "竈", "暖爐", "風箱"]
+    analogy_anchors:     ["烘爐", "烤爐", "竈", "暖爐", "風箱", "風箱的熱道"]
     hazard_rules:        ["見明火先看周圍有無可燃之物", "無人看顧的爐火必須熄滅", "不曾見過的熱源先隔開再問主人"]
     duty_hooks:          ["生火", "添柴", "看火候", "熄火"]
 
   labor_domesticity:
     native_basis:        ["挑水", "劈柴", "生火", "手洗衣物", "掃除", "直火烹調", "爐火烘烤"]
-    native_tools:        ["掃帚", "撣子", "木桶", "井戶", "洗衣板", "鐵鍋", "菜刀", "砧板", "蒸籠", "烘爐"]
+    native_tools:        ["掃帚", "撣子", "木桶", "井戶", "洗衣板", "鐵鍋", "菜刀", "砧板", "蒸籠", "烘爐", "鐵板", "煎鍋", "石爐", "地窖", "冰室"]
     absence_assumptions: ["無自來水", "無自動器具", "無須人顧而自熟之炊"]
-    analogy_anchors:     ["烘爐", "烤爐", "蒸籠", "灶", "鐵鍋"]
+    analogy_anchors:     ["烘爐", "烤爐", "蒸籠", "灶", "鐵鍋", "鐵板", "煎鍋", "封閉石爐", "地窖", "冰室"]
     hazard_rules:        ["刀器離手即收", "滾水與熱鍋不置於桌緣", "主人不諳之事不由主人動手"]
     duty_hooks:          ["切菜備料", "生火", "看火候", "端盤", "收拾", "洗碗", "泡茶"]
 
@@ -202,10 +230,43 @@ axes:
     duty_hooks:          ["按時備膳", "按時點燈", "按時收整"]
 
 lexicon_bridges:
-  - feature: "發熱"
+  - feature: "發熱"                                  # 中文觸發詞與通用 key 等價（§1.4）
     axis: "energy_dynamics"
     expect_absent: ["柴火", "火", "魔石"]
-    preferred_anchor: "烘爐"
+    preferred_anchor: "烘爐"                          # 無次級特徵時的**回退**錨點（AC-3）
+  # --- EH-4-AMEND-2：次級物理特徵分流（多錨點，破除「凡發熱皆烘爐」） ---
+  - feature: "heating"
+    requires: ["airflow"]                            # → 氣炸鍋類：熱氣流／風聲
+    axis: "energy_dynamics"
+    expect_absent: ["柴火", "火", "魔石", "人力鼓風"]
+    anchor_class: "forced_air_heat"
+    preferred_anchor: "風箱的熱道"
+  - feature: "heating"
+    requires: ["enclosed", "glass_window"]            # → 微波爐類：封閉腔體＋玻璃門
+    axis: "energy_dynamics"
+    expect_absent: ["柴火", "火", "魔石"]
+    anchor_class: "enclosed_heat"
+    preferred_anchor: "封閉石爐"
+  - feature: "heating"
+    requires: ["open_flat", "fast_sear"]              # → 平底電熱鍋類：開放平底快煎炒
+    axis: "energy_dynamics"
+    expect_absent: ["柴火", "火", "魔石"]
+    anchor_class: "open_flat_heat"
+    preferred_anchor: "鐵板"
+  - feature: "cooling"
+    requires: ["preservation"]                        # → 冰箱類：低溫保鮮
+    axis: "labor_domesticity"
+    expect_absent: ["地窖", "冰室", "井水"]
+    anchor_class: "cold_preservation"
+    preferred_anchor: "地窖"
+  - feature: "utility_praise"                        # 口語階梯 2 的評價謂語證據（§2.2）
+    axis: "labor_domesticity"
+    expect_absent: ["人力", "看火候"]
+    preferred_anchor: "蒸籠"
+  - feature: "dysfunction"                           # 口語階梯 2 的評價謂語證據（§2.2）
+    axis: "energy_dynamics"
+    expect_absent: ["人力", "火", "魔石"]
+    preferred_anchor: "風箱"
   - feature: "吹風"
     axis: "energy_dynamics"
     expect_absent: ["風箱", "人力鼓風"]
@@ -231,8 +292,15 @@ forbidden_output_terms:
 
 | 情境 | L2 產出的錨點（示意） | 判準 |
 |---|---|---|
-| 主人：「我用氣炸鍋弄了豆腐」 | 「似**烘爐**，卻無柴、無火、無煙氣；箱子會自己吹出熱風」 | PASS（有原生軸對撞） |
+| 主人：「我用**氣炸鍋**弄了豆腐，它自己**吹出熱風**、呼呼響」 | 分流 → `forced_air_heat` → 「似**風箱的熱道**，卻無柴、無火、無人力鼓風；箱子會自己吹出熱氣」 | PASS（有原生軸對撞；**非**烘爐模板） |
+| 主人：「我用**微波爐**熱了湯，**玻璃門**後面亮著、**定時**一響就好」 | 分流 → `enclosed_heat` → 「似**封閉石爐**，卻無柴、無火、無魔石」 | PASS（與氣炸鍋**錨點不同**，§1.2 AC-1） |
+| 主人：「我用**平底電熱鍋**炒菜，**平底**的、**一下子就熟**」 | 分流 → `open_flat_heat` → 「似**鐵板**，卻無柴、無火、無竈膛」 | PASS（與上二者**錨點不同**） |
+| 主人：「**冰箱**裡**冰著**菜，**放著不壞**」 | 分流 → `cold_preservation` → 「似**地窖**，卻無冰室、無井水」 | PASS（勞動軸低溫保存） |
+| 主人：「我用**鐵鍋**炒了菜，鍋子**燙**得很」 | **FSA-0 原生免疫**（`鐵鍋` ∈ `native_tools`）→ `None` | PASS（**0 對撞**：公館本來就有的器具，§2.2 NT-1~NT-6） |
+| 主人：「我拿**風箱**鼓風」 | **FSA-0 原生免疫**（`風箱` ∈ `native_tools`）→ `None` | PASS（0 認知失調） |
+| 主人：「**氣炸鍋**很方便」 | 階梯 2 抽出候選；無次級特徵 → 回退 → 「似**烘爐**，卻無人力、無看火候」 | PASS（口語無介詞仍抽出候選，§2.2 階梯 2） |
 | （FAIL 例）同上句，但差量主詞取成受詞「豆腐」 | 「似**烘爐**的豆腐」 | FAIL（**荒謬類比**：受詞／食材永不得作差量主詞；§2.2 FSA-2／P1） |
+| （FAIL 例）發熱設備全落同一錨點 | 微波爐／氣炸鍋／電熱鍋**全部**寫成「似烘爐」 | FAIL（**單一模板化**；§1.2 AC-1~AC-4／INV-18） |
 | （FAIL 例） | 「雷姆不懂這是什麼」 | FAIL（空洞） |
 | （FAIL 例） | 「氣炸鍋是利用高速熱風循環加熱」 | FAIL（現代原理） |
 | 二次遭遇（L4 已同化） | 「那個插電的烘烤箱子」＋沿用 mental_model | PASS（§5 Probe 2） |
@@ -244,7 +312,8 @@ forbidden_output_terms:
 | 模組 | `src/soul/epistemic_commons.py`（NEW，實作階段） |
 | 公開 API | `load_pack(agent_id: str) -> InstancePack \| None`；`clear_pack_cache() -> None`（測試隔離用） |
 | 快取 | 進程內 `dict` 快取（pack 為靜態資料；0 檔案監看、0 熱重載） |
-| 失敗 | 依 §1.4 V1–V6 → `None` + `logger.debug`（**fail-silent**，不 raise） |
+| 失敗 | 依 §1.4 V1–V7 → `None` + `logger.debug`（**fail-silent**，不 raise） |
+| **派生欄位（EH-4-AMEND-2）** | `InstancePack.native_immunity_terms` ＝ 四軸 `native_tools ∪ native_basis` 之**去重保序聯集**（載入時**一次性**組裝）；FSA-0 免疫閘（§2.2）**唯一**的判定池。0 額外檔案、0 快取變更、0 新狀態 |
 | 反硬編碼 | 載入器**不得**含任何 agent 名 ↔ pack 名對照表；對照由 `pack.agent_id` 反查目錄（目錄掃描或 `agent_id` → `<slug>.yaml` 的**單一**命名規則） |
 
 > **注意（與既有白名單的關係）**：`MODERN_NATIVE_AGENTS`（`src/memory/sage/horizon.py:61-69`）**不動**、不取代。兩者是**兩個獨立的 bypass**：白名單在讀側（D3），`civilization_base: modern_earth` 在資料側（L1）。實作階段**禁止**把兩者合併或讓其中一方依賴另一方（避免單點失效導致 7 位現代原生角色被誤掛阻力）。
@@ -294,10 +363,27 @@ class AppraisalInput:
 | `automated_chore` | 自動煮 / 自動洗 / 自動清 / 一鍵 | `labor_domesticity` |
 | `hot_shell` | 外殼燙 / 表面熱 / 冒煙 / 焦味 / 異味 | `safety_hazard` |
 | `measure_display` | 幾度 / 分鐘 / 公斤 / 數字 / 定時 | `sensory_metrics` |
+| `enclosed` | 蓋 / 門 / 關起來 / 密閉 / 封閉 / 箱子 | （**次級特徵**） |
+| `glass_window` | 玻璃 / 透明 / 看得見裡面 / 亮著 | （次級特徵） |
+| `timer` | 定時 / 時間到 / 計時 / 幾分鐘 | `sensory_metrics` |
+| `open_flat` | 平底 / 敞開 / 開著 / 淺盤 / 平盤 | （次級特徵） |
+| `fast_sear` | 快炒 / 煎 / 炒 / 一下子就好 / 一下子就熟 / 大火 | （次級特徵） |
+| `cooling` | 冰 / 冷 / 冷藏 / 保冷 | `labor_domesticity` |
+| `preservation` | 保鮮 / 放著不壞 / 存起來 / 冰起來 | `labor_domesticity` |
+| `fan_noise` | 風聲 / 呼呼 / 嗡嗡 / 運轉聲 | `energy_dynamics` |
+| `utility_praise` | 很方便 / 好用 / 省事 / 順手 / 省力 | `labor_domesticity` |
+| `dysfunction` | 壞了 / 不能用 / 故障 / 失靈 / 不靈了 / 不動了 | `energy_dynamics` |
+
+> **（EH-4-AMEND-2）三類新詞條的定位**：
+> ① **次級特徵**（`enclosed` / `glass_window` / `open_flat` / `fast_sear`）：**不單獨映射軸**，只與主特徵組合後參與 **§1.2 錨點類別分流**（標「（次級特徵）」者，`axis_hits` 不含它們）。`timer` / `cooling` / `preservation` / `fan_noise` 同時具軸映射與分流用途。
+> ② **評價謂語特徵**（`utility_praise` / `dysfunction`）：這是**口語階梯 2 的唯一表面證據來源**——若無此兩類，「氣炸鍋很方便」「氣炸鍋壞了」會在 S1 空特徵早退，階梯 2 形同虛設。它們是**主人的評價**，不是物理量測，因此**不涉及任何世界觀名詞**。
+> ③ 詞表擴充**仍受**硬約束：**不得含世界觀名詞**（O1）、不得含現代器具**名**（「氣炸鍋」「微波爐」等一律不入詞表——否則即是黑名單）。
 
 - **該 Agent 的 `native_commons` 軸**：由 `load_pack(agent_id)` 提供（§1.6）。`pack is None` → **立即回 `None`**（0 差量、0 注入）。
 
-#### 實體提取優先級與 Fail-Silent 放棄（EH-4-AMEND-1：杜絕「豆腐似烘爐」）
+#### 實體提取優先級與 Fail-Silent 放棄（EH-4-AMEND-1；EH-4-AMEND-2 追加原生免疫閘與口語階梯）
+
+> **（EH-4-AMEND-2）本節追加兩件事**：① **FSA-0 原生常識天然免疫閘**——杜絕將羅茲瓦爾公館**自帶**的鍋、爐、箱等生活器具誤當異界物對撞；② **口語無介詞階梯式解析**——語音（VC）碎片的多數句子沒有「用／拿」，初版只認介詞位 → 大量漏召。二者**共用同一份判定池**（第 1 層實例包的已知資產 `native_immunity_terms`，§1.6），且**嚴守 0 黑名單原則**。
 
 > **問題**：初版 S2 只寫「抽出名詞性片語候選」，**未定序**。實務上「我用氣炸鍋弄了豆腐」會同時抽出「氣炸鍋」（工具介質）與「豆腐」（動作受詞／食材）；取錯主詞就會撞出「**似烘爐的豆腐**」這種荒謬類比，並讓原生世界既有的日常名詞被當成未知物反覆對撞。
 
@@ -305,7 +391,7 @@ class AppraisalInput:
 
 | 優先級 | 類別 | 句法線索 | 處置 |
 |---|---|---|---|
-| **P0** | **工具介質（instrument / medium）** | 緊跟在介詞「**用／拿／透過／以／在…裡／裝在**」之後的**器具／設備名詞片語** | **唯一可作 `entity_key` 者**（差量對撞主詞、錨點主詞、L4 `subject`、`provenance_ref` 鍵） |
+| **P0** | **工具介質（instrument / medium）** | 緊跟在介詞「**用／拿／透過／以／在…裡／裝在**」之後的**器具／設備名詞片語** | **最高置信度候選**；與階梯 2 之候選**同權**可作 `entity_key`（差量對撞主詞、錨點主詞、L4 `subject`、`provenance_ref` 鍵） |
 | P1 | **動作受詞／食材／客體** | 動詞之後的受詞（如「弄了**豆腐**」「切了**肉**」） | **降級為背景**（`background_terms`）：可觀測，**永不**作 `entity_key`、不作錨點主詞、不作 L4 `subject` |
 | P2 | 其他名詞片語 | 其餘 | 背景（同上） |
 
@@ -313,24 +399,77 @@ class AppraisalInput:
 - **P0-2（反硬編碼）**：判定**只看句法位置**（是否站在介詞引導的器具位），**不得**維護「器具名詞白名單」、**不得**出現任何世界觀名詞（§1.2 O1）。
 - **P0-3（0 LLM）**：純字元／片語規則（§8 D-2 決策 (b)）；0 依存剖析器、0 外部 NLP 依賴。
 
+**實體抽取階梯（Spoken Ingestion Ladder，EH-4-AMEND-2）**：
+
+> **問題**：語音碎片與日常口語的**多數句子沒有介詞**——「氣炸鍋很方便」「那個黑箱子很好用」「氣炸鍋壞了」。初版只認介詞位，這類句子直接 0 候選 → 0 錨點，靈魂在**最自然的說話方式**下反而失去認知內容。本階梯把抽取擴為三階：**階梯 2 的產物與 P0 同權**（可作 `entity_key`），但**仍須先過 FSA-0 免疫閘**。
+
+| 階梯 | 名稱 | 句法線索 | 處置 |
+|---|---|---|---|
+| **階梯 1** | **P0 介詞錨定** | 緊跟在介詞「**用／拿／透過／以／在…裡／裝在**」之後的器具／設備名詞片語 | **最高置信度** → `entity_key` 候選（＝上表 P0；`extraction_ladder = "preposition"`） |
+| **階梯 2** | **P1-Spoken 評價主語錨定** | **全句無介詞**，且句式為 `[名詞實體] + [評價／動作謂語]`：<br>・**S-2a 主語位**：「**氣炸鍋**很方便」「那個**黑箱子**很好用」「**氣炸鍋**壞了」<br>・**S-2b 取得動詞受詞位**：「買了**氣炸鍋**」（**取得動詞**通用封閉集：買／入手／添購／收到／帶回來） | 該實體**非代詞**、**非原生常識詞**（判定＝FSA-0，**0 黑名單**）→ 同權升為 `entity_key` 候選（`extraction_ladder = "spoken_subject"` ／ `"spoken_acquisition"`） |
+| **階梯 3** | **保守放棄** | 上述兩階梯皆未命中 | **直接回 `None`（Fail-Silent）**：整段差量、錨點、當輪姿態、求知動機、L4 寫入全數不發生 |
+
+> **命名隔離（避免混淆）**：階梯 2 的標籤「**P1-Spoken**」是**抽取階梯**的命名，與上表**優先級類別 P1（動作受詞／食材）完全不同**——前者可升為 `entity_key`，後者**永遠**只能落 `background_terms`。兩套命名不互通。
+
+- **SL-1（去修飾正規化）**：候選核心名詞先去**指示詞與量詞**（那個／這個／這台／一台／一把…）再取詞幹（「那個黑箱子」→ `黑箱子`）；**不去語義修飾語**（「黑箱子」**不**化簡為「箱子」——0 猜測）。
+- **SL-2（代詞排除，0 世界觀名詞）**：代詞判定採**通用語法封閉集**（我／你／他／她／它／祂／咱／我們／你們／他們／自己／大家／人家），**不得**以世界觀名詞黑名單實作（§1.2 O1）。
+- **SL-3（原生常識詞排除）**：**不靠黑名單**——一律走 **FSA-0 免疫閘**（判定依據 ＝ L1 pack 的 `native_immunity_terms`，見下）。
+- **SL-4（單一性）**：階梯 2 多候選 → 取**出現序第一個**；階梯 1 命中時**階梯 2 不執行**（確定性；與 P0-1／§3.4 B3 一致）。
+- **SL-5（0 LLM／0 NLP 依賴）**：純字元／片語規則（§8 D-2 決策 (b)）；**0 依存剖析器、0 詞性標註器、0 外部 NLP 套件、0 常識知識庫**（與 §2.1 L2-0 同源）。
+
+**v1 保守漏召邊界（Known Under-Recall by Design，EH-4-AMEND-2）**：
+
+| # | 情形 | v1 行為 | 為何**刻意**如此 |
+|---|---|---|---|
+| **UR-1** | 階梯 1／2 皆未命中（階梯 3） | `appraise()` 回 `None` | **明確宣告**：寧可暫時漏召口語，也**嚴禁盲目引入繁重模糊的依存語法分析器**。誤召（把平凡句子當未知物）比漏召**昂貴得多**——前者直接製造荒謬類比與多餘探詢，後者只是退回通用平滑對話（FSA-3） |
+| **UR-2** | **取得行為單獨出現**（「我買了氣炸鍋」）：`entity_key` 候選**可被抽出**（階梯 2 S-2b），但全句 **0 評價謂語、0 物理特徵** | 依 **FSA-1(b)** 整段回 `None`；當輪 0 錨點 | 原生世界**也會「買」東西**——取得行為**不構成現代性證據**；以「取得」推論未知物＝猜測（FSA-2 反例鋼印） |
+| **UR-3** | 主人以**代詞指代**（「那個東西很方便」） | 回 `None`（SL-2 排除） | 代詞消解需跨輪指代追蹤（＝新狀態 ＋ 重 NLP），違反 O2／O5；**列 v2 觀察項，不承諾** |
+| **UR-4** | 器具僅以**存在句**提及且 **0 評價／0 物理特徵**（「辦公室有微波爐」） | 依 **FSA-1(b)** 回 `None`（0 錨點，亦 **0 發問**） | 保守**更嚴**，且**更安全**：它**已經**滿足「背景提及嚴禁伴隨發問」（§2.3 IT-8）的實質要求。**不為了「生出錨點」而引入 `有／放了／擺著` 這類存在謂語特徵**——那會讓「我有一把傘」也變成未知物候選（**過度召喚比漏召更貴**） |
+
+> **UR 的性質**：四者皆為**設計上的保守取捨，不是缺陷**。任何後續擴充（含 v2）**不得**以「漏召太多了」為由引入依存語法分析器或外部 NLP 依賴——若真要擴充，唯一合法路徑是**擴充通用字元／片語規則與 pack 詞條**（0 依賴、可硬斷言）。
+
+**FSA-0：原生常識天然免疫閘（Native Tools Immunity，EH-4-AMEND-2）**：
+
+> **問題（要封堵的實戰死角）**：EH-4-AMEND-1 已擋下「受詞／食材當主詞」，但**公館自帶的生活器具**仍會被當成異界物對撞——「**我用鐵鍋炒了菜**」「**我拿風箱鼓風**」「我用烘爐烤了餅」。這些器具在羅茲瓦爾公館**本來就有**；對它們產生「似烘爐而無柴」的認知失調＝**靈魂對自己的日常失憶**（比漏召更嚴重）。
+
+**規則（剛性；實體抽取之後、任何差量對撞之前的第一道免疫）**：
+
+$$\text{if } P0 \in (\text{pack.native\_tools} \cup \text{pack.native\_basis}) \implies \text{FSA (Fail-Silent Abort)}$$
+
+| # | 規定 |
+|---|---|
+| **NT-1** | **判定池**：`pack.native_immunity_terms` ＝ L1 pack **四軸聯集** `native_tools ∪ native_basis`（§1.6 載入器派生欄位；**去重、保序**）。**嚴守 0 黑名單原則**：判定依據**全數**來自第 1 層實例包的**已知資產**，算子內**不得**出現任何器具名詞清單（§1.2 O1）。 |
+| **NT-2** | **比對型態**：`entity_core`（階梯 1／2 之候選，經 SL-1 去指示詞／量詞後）與詞條採 **①完全相等** 或 **②詞條 ⊆ `entity_core`（子串）**。**0 模糊比對、0 編輯距離、0 相似度**（O2 確定性；寧可偏保守）。 |
+| **NT-3** | **執行位置**：實體抽取（階梯 1／2）**之後**、**任何**差量對撞**之前**——即**先於** FSA-1 的特徵詞證據判定、**先於**軸映射（S4）與錨點組裝（S6）。判準順序是：**先問「這是不是公館本來就有的東西」，再問「有沒有證據說它是外來物」。** |
+| **NT-4** | **命中後果**：**立即終止 L2 差量對撞**——`entity_terms = ()`、整段 Horizon 差量返回 `None`（0 錨點、0 當輪探詢姿態、0 求知 Motive、0 L4 寫入）。 |
+| **NT-5** | **保證**：100% 保證靈魂**絕不**對原生世界已有的日常用具產生「似烘爐而無柴」式的荒謬認知失調（此為本閘存在的唯一目的）。 |
+| **NT-6** | **與 S1 的關係**：若 S1 已因**無任何特徵詞**早退，結果同為 `None`（fail-silent 等價）。**FSA-0 不可取代**之處在於**有特徵詞**的情形——例：「我用**鐵鍋**炒了菜，**鍋子燙**得很」同時命中 `heating` ＋ `hot_shell`，若無本閘就會對鐵鍋撞出「似烘爐而無柴」的荒謬認知。 |
+
 **Fail-Silent 放棄規則（Fail-Silent Abort，FSA）**：
 
 | # | 規則 |
 |---|---|
-| **FSA-1** | 若 (a) **無 P0 候選**，或 (b) P0 候選**缺乏任何 §2.2 特徵詞證據**可支撐「非原生現代器具」之判定 → `entity_terms = ()` → **`appraise()` 整段回 `None`**（**Fail-Silent Abort**：0 錨點、0 當輪探詢姿態、0 求知 Motive、0 L4 寫入）。 |
-| **FSA-2** | **嚴格禁止猜測**，**嚴格禁止**把原生世界既有的日常名詞（豆腐、水、衣服、飯、肉…）當作未知物進行差量對撞。此類名詞一律落 P1／P2 背景——判定依 **P0 句法位置**，**不靠名詞黑名單**（與 O1 反硬編碼一致）。 |
+| **FSA-0** | **原生常識天然免疫（EH-4-AMEND-2）**：`P0 ∈ pack.native_immunity_terms`（完全相等或詞條 ⊆ 核心名詞）→ **立即 FSA**（0 對撞、0 錨點、0 姿態、0 動機、0 L4 寫入）。見上「FSA-0：原生常識天然免疫閘」NT-1~NT-6。 |
+| **FSA-1** | 若 (a) **無任何階梯候選**（階梯 1／2 皆未命中，§2.2 階梯 3），或 (b) 候選**缺乏任何 §2.2 特徵詞證據**可支撐「非原生現代器具」之判定 → `entity_terms = ()` → **`appraise()` 整段回 `None`**（**Fail-Silent Abort**：0 錨點、0 當輪探詢姿態、0 求知 Motive、0 L4 寫入）。 |
+| **FSA-2** | **嚴格禁止猜測**，**嚴格禁止**把原生世界既有的日常名詞（豆腐、水、衣服、飯、肉…）當作未知物進行差量對撞。此類名詞一律落 P1／P2 背景——判定依 **P0 句法位置**，**不靠名詞黑名單**（與 O1 反硬編碼一致）。**（EH-4-AMEND-2 分工）**：原生**器具**（鍋／爐／箱／風箱…）由 **FSA-0** 擋在資料側（`native_immunity_terms`）；原生**食材／客體**由本條降級在句法側（P1／P2）——兩者互補，**皆 0 黑名單**。 |
 | **FSA-3** | 放棄＝**退回通用平滑對話**（角色照常以日常方式回應，0 阻力措辭、0 探詢姿態）。fail-silent 與 §1.2 O4／§2.5 同源：**不 raise、不注入半截內容、不阻斷對話**。 |
 | **FSA-4** | 放棄為**靜默**行為：僅 `logger.debug`（0 使用者可見訊息、0 prompt 痕跡）。 |
-| **FSA-5** | FSA 與 S3（內化檢查）**同級早退**，且**先於**軸映射（S4）與錨點組裝（S6）——「**無確信主詞即無類比**」。 |
+| **FSA-5** | FSA 與 S3（內化檢查）**同級早退**，且**先於**軸映射（S4）與錨點組裝（S6）——「**無確信主詞即無類比**」。**（EH-4-AMEND-2）FSA-0 更在其前**：抽取一命中原生資產即終止，連 S2b／S3 都不執行。 |
 
-**判準對照（同一句、兩種抽取）**：
+**判準對照（同一批句子、各種抽取路徑；EH-4-AMEND-2 擴充）**：
 
-| 輸入 | `entity_key`（P0） | `background_terms`（P1/P2） | 結果 |
+| 輸入 | `entity_key`（階梯 1／2） | `background_terms` | 結果 |
 |---|---|---|---|
-| 「我用**氣炸鍋**弄了豆腐」 | `氣炸鍋` | `豆腐` | PASS：錨點主詞＝氣炸鍋（「似烘爐，卻無柴…」） |
+| 「我用**氣炸鍋**弄了豆腐，它自己**吹出熱風**」 | `氣炸鍋`（階梯 1） | `豆腐` | PASS：錨點主詞＝氣炸鍋（`forced_air_heat` →「似風箱的熱道，卻無柴、無火…」） |
 | 同上，若抽取器取受詞 | （錯誤）`豆腐` | — | **FAIL**：「似烘爐的豆腐」＝荒謬類比（本契約之反例鋼印） |
-| 「今天煮了**豆腐**湯」 | （無 P0） | `豆腐`、`湯` | **Fail-Silent Abort** → `None`（豆腐是原生日常名詞，非未知物） |
-| 「我把衣服**裝在**箱子裡」 | `箱子`（P0 位置，但無特徵詞證據） | `衣服` | **Fail-Silent Abort** → `None`（FSA-1(b)：無「非原生現代器具」之證據） |
+| 「今天煮了**豆腐**湯」 | （無候選） | `豆腐`、`湯` | **FSA（階梯 3／UR-1）** → `None`（豆腐是原生日常名詞，非未知物） |
+| 「我把衣服**裝在**箱子裡」 | `箱子`（階梯 1，但無特徵詞證據） | `衣服` | **FSA-1(b)** → `None` |
+| 「我用**鐵鍋**炒了菜，鍋子**燙**得很」 | `鐵鍋`（階梯 1） | `菜` | **FSA-0（原生免疫）** → `None`（`鐵鍋` ∈ labor `native_tools`） |
+| 「我拿**風箱**鼓風」 | `風箱`（階梯 1） | — | **FSA-0（原生免疫）** → `None`（`風箱` ∈ energy `native_tools`） |
+| 「**氣炸鍋**很方便」 | `氣炸鍋`（階梯 2／S-2a） | — | PASS：`features={utility_praise}` → 無次級特徵 → 回退錨點（AC-3） |
+| 「那個**黑箱子**很好用」 | `黑箱子`（階梯 2／S-2a，已去指示詞「那個」） | — | PASS（**SL-1**：保留語義修飾「黑」，不化簡為「箱子」） |
+| 「買了**氣炸鍋**」 | `氣炸鍋`（階梯 2／S-2b 取得受詞） | — | **FSA-1(b)** → `None`（**UR-2：Known Under-Recall by Design**） |
+| 「那個東西很方便」 | （代詞，階梯 2 排除） | — | **FSA（階梯 3／UR-3；SL-2）** → `None` |
 
 #### Logic
 
@@ -344,12 +483,14 @@ def appraise(inp: AppraisalInput) -> DeltaRecord | None: ...
 |---|---|---|
 | S0 | `load_pack(agent_id) is None` | → `None`（bypass；現代原生角色與未建包角色走此路） |
 | S1 | 由 `utterance` + `session_context` 抽出 `features: set[str]`（詞表命中，**命中即集合成員，無權重**） | 空集合 → `None` |
-| S2 | **P0 工具介質提取**（EH-4-AMEND-1）：抽出介詞引導之器具／設備名詞片語（「實體提取優先級」P0）；**抽取只看句法位置，0 名詞白名單** | 無 P0（或 P0 無特徵詞證據）→ `None`（**FSA-1**） |
-| S2b | **背景降級**（EH-4-AMEND-1）：動作受詞／食材／客體 → `background_terms`（FSA-2：**永不**升級為 `entity_key`） | — |
+| S2 | **實體抽取（三階梯，EH-4-AMEND-2）**：階梯 1 P0 介詞錨定 →（未命中時）階梯 2 P1-Spoken 評價主語／取得受詞 →（皆未命中時）階梯 3 保守放棄；**抽取只看句法位置與通用封閉集，0 名詞白名單** | 無候選（階梯 3）→ `None`（**FSA-1(a)**；UR-1） |
+| **S2a** | **FSA-0 原生常識天然免疫閘（EH-4-AMEND-2）**：`entity_core ∈ pack.native_immunity_terms`（完全相等或詞條 ⊆ 核心名詞） | **命中 → 立即 `None`（FSA-0）**：0 對撞、0 錨點、0 姿態、0 動機、0 L4 |
+| S2b | **背景降級**：動作受詞／食材／客體 → `background_terms`（FSA-2：**永不**升級為 `entity_key`；**唯一例外**＝階梯 2 S-2b 之取得動詞受詞，且仍須過 S2a 免疫閘與特徵閘） | — |
 | S3 | **內化檢查**：對 `entity_key` 查 SAGE `origin='assimilated'` 且 `horizon_state='aware'`（沿用 `retrieve_idiolect`／`get_idiolect_facts`，`src/memory/sage/graph_store.py:656`） | 全部已內化 → `None`（**二次遭遇不重演困惑**，Probe 2） |
 | S4 | **軸映射**：`feature → axis`（`pack.lexicon_bridges` 優先，否則 §2.2 預設表）；≥1 命中 | 空 → `None` |
-| S5 | **缺席判定**：取該軸的 `expect_absent`（bridge）或 `native_basis`（預設）作為「有熱必有之物」；檢查 `utterance` 是否**未提及**其中任一 → 缺席集合非空 → 成立 | 空 → `None`（代表原生期待已滿足，無差量） |
-| S6 | **錨點組裝**：`anchor = "似{preferred_anchor 或 analogy_anchors[0]}，卻無{缺席集合以『、』連接}"` | — |
+| S5 | **缺席判定**：取該軸的 `expect_absent`（命中 bridge，依 **AC-6** 定序）或 `native_basis`（預設）作為「有熱必有之物」；檢查 `utterance` 是否**未提及**其中任一 → 缺席集合非空 → 成立 | 空 → `None`（代表原生期待已滿足，無差量） |
+| **S5a** | **錨點類別分流（EH-4-AMEND-2）**：由 `features` 依 §1.2 分流矩陣解出 `anchor_class`（次級特徵組合 × 固定優先序；0 打分） | 無類別 → **回退 `analogy_anchors[0]`**（**非放棄**；退化宣告 AC-3） |
+| S6 | **錨點組裝**：`preferred_anchor` ＝命中該 `anchor_class` 之 bridge 的 `preferred_anchor`（§1.4／§1.5）；無類別或無對應 bridge → `analogy_anchors[0]`；`anchor = "似{preferred_anchor}，卻無{缺席集合以『、』連接}"` | — |
 | S7 | 產出 `DeltaRecord`（下） | — |
 
 #### Output
@@ -358,10 +499,12 @@ def appraise(inp: AppraisalInput) -> DeltaRecord | None: ...
 @dataclass(frozen=True)
 class DeltaRecord:
     agent_id: str
-    entity_terms: tuple[str, ...]        # 未內化的實體候選（**只含 P0 工具介質**；L4 的 subject 來源；L3 的 UnknownModernEntity）
+    entity_terms: tuple[str, ...]        # 未內化的實體候選（**只含階梯 1 P0 或階梯 2 P1-Spoken**；L4 的 subject 來源；L3 的 UnknownModernEntity）
     background_terms: tuple[str, ...]    # (EH-4-AMEND-1) P1/P2 背景名詞（受詞／食材／客體）；**永不**作 entity_key／錨點主詞／L4 subject
-    features: frozenset[str]             # 命中的感知特徵（generic keys）
+    extraction_ladder: str               # (EH-4-AMEND-2) 抽取階梯："preposition" | "spoken_subject" | "spoken_acquisition"（觀測用；0 持久化）
+    features: frozenset[str]             # 命中的感知特徵（generic keys；**含次級特徵與評價謂語**，§2.2 通用詞表）
     axis_hits: tuple[str, ...]           # 命中的軸（⊂ 四軸封閉集合）
+    anchor_class: str                    # (EH-4-AMEND-2) 錨點類別（§1.2 封閉集合之一；無法分流時為 ""，代表回退）
     absent_native_requirements: tuple[str, ...]  # 「無柴、無火、無魔石」的結構化來源
     anchor: str                          # 本體隱喻錨點（注入 Horizon Block 的那一句）
     hazard_suspected: bool               # 是否命中 safety_hazard 軸（L3 SafetyFlag／§2.3 當輪姿態的材料）
@@ -388,7 +531,7 @@ IDENTITY → HORIZON{ 負向約束 → 本體隱喻錨點(NEW) → 當輪關切�
 用你熟悉之物的樣子去描述它。
 ```
 
-**（＋ 僅當 `hazard_suspected ∨ duty_relevant` 成立時，追加下一段；否則只注入上面那一段）**
+**（＋ 僅當 `hazard_suspected ∨ duty_relevant` 成立**且**通過下方 **IT-7 當輪關切度量守門**時，追加下一段；否則只注入上面那一段）**
 
 ```
 [當下的關切]
@@ -404,14 +547,28 @@ IDENTITY → HORIZON{ 負向約束 → 本體隱喻錨點(NEW) → 當輪關切�
 
 | # | 規定 |
 |---|---|
-| **IT-1** | **觸發**：當前輪 `appraise()` 回非 `None`（未同化現代實體，§2.2）**且** `DeltaRecord.hazard_suspected ∨ duty_relevant` 成立 → 注入「[當下的關切]」段。兩旗標皆 `False`（如純裝飾物）→ **只注入類比段、不注入關切段**（維持 Probe 3 (c)：無安全／職責關聯者不得長出探詢）。 |
+| **IT-1** | **觸發**：當前輪 `appraise()` 回非 `None`（未同化現代實體，§2.2）**且** `DeltaRecord.hazard_suspected ∨ duty_relevant` 成立 **且 IT-7 的雙條件合取閘通過（EH-4-AMEND-2 收緊）** → 注入「[當下的關切]」段。未通過 → **只注入類比段、不注入關切段**（維持 Probe 3 (c)：無安全／職責關聯者不得長出探詢）。 |
 | **IT-2** | **載體**：Horizon Block 內、與本體隱喻錨點**同段並列**——**類比（認知材料）＋關切（職責姿態）一次給足**，由**既有那次主 LLM 呼叫**吸收（0 額外呼叫，§2.1）。 |
 | **IT-3** | **不在 Decision 路徑**：此段是回覆的**語氣與內容傾向**，不是 `transmit` 候選；**嚴禁**因本段而呼叫 Decision、產生 Motive 或觸發任何發訊（§3.0 A-1）。 |
 | **IT-4** | **一次性（防連環盤問）**：同一 `entity_key` 若已進過 L3（`known_provenance_refs()` 命中 `epistemic:{entity_key}`，與 §3.4 B1 **同一集合**）→ 後續輪**只注入類比段、不注入關切段**（0 新狀態）。 |
 | **IT-5** | **不索答**：姿態是「女僕出於職責的關切」；主人未答不催、不追問、不重複（Probe 3 ⑤）。 |
 | **IT-6** | **雙端同構**：VC 端由同一份 `_format_horizon_block` 產出（§2.4 ISO-2）；**禁止**在 `clients/` 內另行組裝此段。 |
+| **IT-7** | **當輪關切度量守門（Anti-Nagging Duty Guard，EH-4-AMEND-2）**：關切段**僅當下列兩條件同時成立**時才可注入——<br>**G1 在場操作**：該器具**在本輪由主人親自操作**或**即將食用**其產物（句法線索：第一人稱主語 ＋ 該器具或其產物為動作對象——「我用…」「我拿…」「我剛弄好」「要吃了」「我吃」）；<br>**G2 實質關聯**：涉及**實質物理危害懷疑**（高溫燙傷／異音／異味／漏電嫌疑，＝`hazard_suspected`）**或**該器具**能直接替換主人繁重家務**（＝`duty_relevant`）。<br>**G1 ∧ G2 才注入；否則只注入類比段。** 目的：防止角色因「有按鈕」而退化為**每題必問的過度關切機器人**。 |
+| **IT-8** | **背景提及靜默鋼印（EH-4-AMEND-2）**：器具僅作**背景提及**（例：「辦公室有微波爐」「我買了一台放著」「那個東西我很少用」）→ **只生成本體隱喻（類比段），嚴禁伴隨發問**（0 關切段）。判定＝ **G1 不成立**（本輪主人未親自操作、亦未即將食用）。**（保守下限）** 若該背景提及**連特徵詞都沒有**（純存在句、無任何評價／物理謂語）→ 依 FSA-1(b) 整段回 `None`（**0 錨點亦 0 發問**，§2.2 UR-4）：**更保守，但同樣滿足「嚴禁伴隨發問」**。 |
+| **IT-9** | **一句上限與語氣（EH-4-AMEND-2）**：每次探詢**嚴格上限一句**（≤ 1 句；0 連問、0 追加子句、0 二段追問、0 「那…呢」）；語氣維持**安靜得體**（沿用 IT-5 不索答：主人未答不催、不追問、不重複）。**IT-4（一次性）＋ IT-7~IT-9（度量）合稱當輪關切守門**。 |
+| **IT-10** | **守門的作用域（EH-4-AMEND-2）**：IT-7~IT-9 **只作用於當輪姿態段**。跨輪軌的 `EpistemicTension`（§3.2）**不變**——兩軌載體、時序與出口完全不同（§3.0 A-1／A-4），**不得**把當輪守門條件回寫成跨輪 Motive 的過濾條件。 |
 
-**與跨輪軌的關係**：本段**只**負責「當輪說得出來」；「數小時後主人離線仍掛心」由 §3.0 的跨輪軌（`MotiveEngine`）承擔。**兩軌共用 §3.2 的布林材料，但載體、時序與出口完全不同**——這是 EH-4-AMEND-1 的核心修正（初版把兩者混為一談，導致 Probe 3 驗收在等一個**根本不在當輪發生**的事件）。
+**IT-7 度量守門對照（驗收用；EH-4-AMEND-2）**：
+
+| 本輪輸入 | `hazard_suspected ∨ duty_relevant` | G1 在場操作 | 當輪關切段 |
+|---|---|---|---|
+| 「我用**氣炸鍋**弄了豆腐，**外殼很燙**」 | ✅（hazard） | ✅（我＋正在操作） | **注入（一句為度）** |
+| 「我剛用**微波爐**熱好湯，**要喝了**」 | ✅（hazard：高溫） | ✅（我＋即將食用） | **注入（一句為度）** |
+| 「**氣炸鍋**很方便」 | ✅（duty） | ❌（純評價，未操作） | **不注入**（IT-7 G1 未過） |
+| 「**辦公室**有微波爐」 | ✅（duty） | ❌（背景提及，第三人稱場域） | **不注入**（**IT-8 背景靜默鋼印**） |
+| 「我買了一幅**印刷的畫**」 | ❌（純裝飾物） | — | **不注入**（IT-1） |
+
+**與跨輪軌的關係**：本段**只**負責「當輪說得出來」；「數小時後主人離線仍掛心」由 §3.0 的跨輪軌（`MotiveEngine`）承擔。**兩軌共用 §3.2 的布林材料，但載體、時序與出口完全不同**——這是 EH-4-AMEND-1 的核心修正（初版把兩者混為一談，導致 Probe 3 驗收在等一個**根本不在當輪發生**的事件）。**（EH-4-AMEND-2）** 當輪的 IT-7~IT-9 守門**不改變**跨輪軌的材料與條件（IT-10）。
 
 **輸出禁令（加入 `forbidden_output_terms` 與通用禁令，二者聯集）**：
 
@@ -444,12 +601,16 @@ IDENTITY → HORIZON{ 負向約束 → 本體隱喻錨點(NEW) → 當輪關切�
 - **ISO-1**：`grep -rn "epistemic_delta\|appraise(" clients/` 在**非測試碼**中 0 命中（VC 只透傳，不實作）。
 - **ISO-2**：同一 `(agent_id, utterance)` 下，文字端與語音端產出的 Horizon Block **字串完全相同**（以單元測試斷言 `==`）。
 - **ISO-3**：VC 端 `forbidden_output_terms` 禁令與文字端同源（來自同一 pack 載入結果，0 複製貼上）。
+- **ISO-4（錨點分流矩陣單一來源，EH-4-AMEND-2）**：§1.2 的**次級物理特徵分流矩陣**與**類別優先序**只在 `src/soul/epistemic_delta.py` 實作一份；`clients/` **非測試碼**中 `anchor_class` / 類別常數 **0 命中**（VC 只透傳 `utterance`）。pack 的**類別 → 名詞**解析（`anchor_class` / `preferred_anchor`）只在 `src/soul/epistemic_commons.py` 一份。驗收：`grep -Rn "anchor_class\|enclosed_heat\|forced_air_heat\|open_flat_heat\|cold_preservation" clients/voice_companion/*.py` → **0 命中**。
+- **ISO-5（原生免疫判定池單一來源，EH-4-AMEND-2）**：FSA-0 的 `native_immunity_terms` 只在**載入器**組裝一次（§1.6）；L2 只**讀取**，**不得**自行拼接四軸詞條、**不得**在算子內維護任何器具名詞清單（O1／NT-1）。
 
 ### 2.5 邊界與效能預算
 
 | 項 | 規格 |
 |---|---|
 | 耗時預算 | `appraise()` 純函式部分 **< 1 ms**（詞表命中 + 集合運算）；SAGE 唯讀查詢（S3）**< 5 ms**（單表 `SELECT`，沿用既有連線慣例，`retrieve_idiolect` 為先例） |
+| **（EH-4-AMEND-2）FSA-0 免疫掃描** | 詞條 ⊆ 核心名詞之子串比對，詞條數 **< 100**（Pilot 尺度）→ **< 0.1 ms**；**0 額外 I/O**（判定池已由載入器快取，§1.6）、**0 新狀態** |
+| **（EH-4-AMEND-2）口語階梯／錨點分流** | 純字元規則 + 固定序集合運算 → **O(1) 常數級**（無回溯、無剖析器）；兩者皆在純函式預算內，**不改變 `appraise()` < 1 ms 的總預算** |
 | 失敗 | 任何異常 → `None` → 不注入（**fail-silent**，與 EH-2 §2.2 同構） |
 | 執行緒 | 讀側（inference-time）純讀；**0 寫入**（不得產生 WAL 寫入、不得 flush） |
 | 冪等 | 同輪重複呼叫結果相同（0 副作用） |
@@ -466,7 +627,7 @@ IDENTITY → HORIZON{ 負向約束 → 本體隱喻錨點(NEW) → 當輪關切�
 | 維度 | **當輪探詢姿態**（In-Turn Inquisitive Stance） | **跨輪自主意圖**（Cross-Turn Epistemic Motive） |
 |---|---|---|
 | **歸屬層** | **`Interpreted`**（讀側 Horizon Block 投影；§2.3） | **`MotiveEngine`**（Scheduler 心跳驅動；`src/soul/scheduler.py:390-460`） |
-| **觸發** | 當前輪 `appraise()` 非 `None` ∧（`hazard_suspected ∨ duty_relevant`） | **同一組布林材料**（§3.2）＋**既有心跳節律**（`proactive_dm`）＋**靜默期地板**（§3.4 B6） |
+| **觸發** | 當前輪 `appraise()` 非 `None` ∧（`hazard_suspected ∨ duty_relevant`）**∧ §2.3 IT-7 的 G1∧G2 守門通過（EH-4-AMEND-2）** | **同一組布林材料**（§3.2）＋**既有心跳節律**（`proactive_dm`）＋**靜默期地板**（§3.4 B6）**（守門不作用於本軌，IT-10）** |
 | **載體** | Horizon Block「[當下的關切]」段（隨主 LLM 呼叫一起產出，**0 額外呼叫**） | `Motive`（`provenance_ref = "epistemic:{entity_key}"`，§3.3）→ `transmit` 候選 |
 | **是否經 Decision** | **否**（是這一輪回覆的內容傾向） | **是**（四元互斥單選；Decision 全權裁定，§3.1） |
 | **時序** | **當輪即時** | **主人離線／閒置之後**（≥ 靜默期；如數小時後自主關心「剛才那個東西用得還安全嗎」） |
@@ -575,7 +736,7 @@ def motive_from_epistemic_tension(
 | B2 | **0 重試**：Decision 未選 `transmit`（選 observe/reflect/do_nothing）→ motive 進 `rejected` **終態，不重試** | 既有生命週期（`src/soul/motive.py:27-30`） |
 | B3 | **單一候選**：每輪最多產生 **1** 個求知 Motive（多實體時取 `entity_terms[0]`，確定性排序） | 本契約 L3-D2（防止一輪多問） |
 | B4 | **供給端節流（當輪評估、0 掃描器）**：L3 的**材料**只在**當前輪**由 L2 產生（不回溯掃描歷史輪、不建立新掃描器）；跨輪軌**沿用既有心跳喚醒**（§3.0 A-2），**0 新定時器** | 本契約 L3-D3 ＋ §3.0 A-2（EH-4-AMEND-1 修正：初版「不建立待辦佇列」與跨輪軌矛盾 → 改為「**不建新佇列**，候選以既有 `pending` 動機載體承載」） |
-| B5 | **鈍條件優先**：純生活雜談（`DeltaRecord is None`，**含 §2.2 Fail-Silent Abort**）→ **完全不成動機**，且 0 當輪姿態 | §3.2 布林式 ＋ §2.2 FSA |
+| B5 | **鈍條件優先**：純生活雜談（`DeltaRecord is None`，**含 §2.2 Fail-Silent Abort：FSA-0 原生免疫／階梯 3 保守放棄／FSA-1 無特徵證據**）→ **完全不成動機**，且 0 當輪姿態 | §3.2 布林式 ＋ §2.2 FSA |
 | **B6** | **靜默期地板（跨輪軌，EH-4-AMEND-1）**：`epistemic:` 前綴之 `pending` 動機，僅在**距其 `created_at` ≥ 既有 scheduler `proactive_dm_min_interval_minutes`（預設 180 分鐘）**且**非 quiet hours** 時才可被心跳消費；未滿則**保持 `pending`**（不消費、不 rejected） | §3.0 A-2／A-3；**0 新定時器、0 新狀態**（沿用既有常數＋既有 `pending` 狀態；TTL 沿用 `MOTIVE_TTL_HOURS`） |
 | **B7** | **不自激發訊（EH-4-AMEND-1）**：當輪對話結束後**不得**立即發訊（B6 未滿即發＝時序退化 FAIL）；當輪的**唯一**求知出口是 §2.3 的姿態段 | §3.0 A-3 |
 | **B8** | **跨輪分佈另計（EH-4-AMEND-1）**：跨輪軌的 `transmit` 以 `provenance_ref` 前綴 `epistemic:` 單獨觀測，**不得**與既有動機來源混算（避免求知稀釋既有 Decision 分佈的可觀測性） | §5 Probe 3 備註 |
@@ -589,6 +750,9 @@ def motive_from_epistemic_tension(
 | 首次遭遇涉安全／侍奉的電器（主人提到外殼發燙、要備料） | ✅ | ✅ | ✅ | **✅ 一句為度**（當輪即時，不經 Decision） | **✅ 產生候選**（經 B6 靜默期後由 Decision 裁定是否 transmit） | Probe 1 / 3 |
 | 首次遭遇現代物但純裝飾性（有 P0，但無安全／職責關聯；例：現代印刷的畫） | ✅ | ❌ | ❌ | **❌**（只注入類比段，IT-1） | **❌ 不產生** | Probe 3 |
 | 首次遭遇現代物但**無 P0 器具介質**（句法不確信，例：「今天煮了豆腐湯」） | ❌（**FSA**） | — | — | **❌**（0 錨點亦 0 姿態） | **❌** | Probe 3 / §2.2 單元 |
+| **主人提及公館自帶的原生器具**（「我用鐵鍋炒了菜」「我拿風箱鼓風」） | ❌（**FSA-0 原生免疫**） | — | — | **❌**（0 錨點亦 0 姿態） | **❌** | §2.2 單元（EH-4-AMEND-2） |
+| **未知物僅作背景提及**（「辦公室有微波爐，聽說很方便，我沒用過」） | ✅ | ✅ | ✅ | **❌**（**IT-8 背景靜默**：只注入類比段） | **✅ 產生候選**（跨輪軌**不**受當輪守門影響；IT-10） | Probe 3 (d)（EH-4-AMEND-2） |
+| **多個發熱設備同輪出現**（微波爐＋氣炸鍋） | ✅ | ✅ | ✅ | **✅ 至多一句**（IT-9） | **✅ 每輪最多 1 候選**（B3，取 `entity_terms[0]`） | §1.2 AC-1（EH-4-AMEND-2） |
 | 已內化（L4 已有 aware 五元組） | ❌ | — | — | **❌**（`appraise` 回 `None`，S3） | **❌** | Probe 2 |
 | 純生活雜談（「今天天氣好」） | ❌ | ❌ | ❌ | **❌** | **❌** | Probe 3 |
 | 現代原生角色（7 名白名單） | ❌（無 pack） | — | — | **❌**（0 差量運算） | **❌** | Probe 4 |
@@ -654,7 +818,7 @@ post_reply_commit (async)
 
 | 槽位 | 組裝來源 |
 |---|---|
-| `mental_model` | L1 pack 的 `analogy_anchors`（功能最近者）+ L2 `DeltaRecord.features`（中文特徵詞）+ `absent_native_requirements`（「不用 X」）**＋ 安全熔接子句（§4.2「安全熔接規範」；EH-4-AMEND-1 強制）** |
+| `mental_model` | L1 pack 的 `analogy_anchors`（**依 §1.2 anchor class 分流**：`anchor_class` 命中時取該類別 bridge 的 `preferred_anchor`，否則 `analogy_anchors[0]`；AC-3／AC-6）+ L2 `DeltaRecord.features`（中文特徵詞）+ `absent_native_requirements`（「不用 X」）**＋ 安全熔接子句（§4.2「安全熔接規範」；EH-4-AMEND-1 強制）** |
 | `safety_rule` | L1 pack 的 `hazard_rules`（該軸相關條款）+ 主人解釋句中的安全許可（若 EH-3.1 已捕獲該 fact） |
 | `duty_action` | L1 pack 的 `duty_hooks`（該軸可用動作，如「切菜備料」「按開關」） |
 | `idiolect` | `analogy_anchors[0]` + 特徵詞的**名物化組合**（例：「那個插電的烘烤箱子」） |
@@ -717,7 +881,7 @@ post_reply_commit (async)
 | 項 | 內容 |
 |---|---|
 | **場景** | 異界角色（`agent_rem`）首次遭遇未內化現代物（例：User：「我剛用氣炸鍋弄了豆腐」） |
-| **輸入** | `horizon_state = learning`（無 aware fact）；L1 pack 存在；L2 應命中 `energy_dynamics` + `safety_hazard` |
+| **輸入** | `horizon_state = learning`（無 aware fact）；L1 pack 存在；L2 應命中 `energy_dynamics` + `safety_hazard`（**EH-4-AMEND-2：輸入需同時帶加熱與外殼／異味證據，例：User：「我剛用氣炸鍋弄了豆腐，外殼很燙」**） |
 | **預期** | 輸出**基於原生軸的本體類比**（無火／無柴／無魔石之熱源對撞），並以該比擬描述；不求現代原理、不空洞無知 |
 | **PASS 判準** | ① 輸出**含**基於原生軸的本體類比（命中 pack `analogy_anchors` 或「無 X 而有 Y」的缺席對撞句式）；② 輸出**無**現代原理語彙（`forbidden_output_terms` 0 命中、無「利用…循環加熱」類句式）；③ 輸出**無**正向全知宣告 |
 | **FAIL 判準（升級點）** | ① **「只有我不懂」**——該輪對該物的主要回應為空洞無知宣告（「雷姆不懂」「不知道這是什麼」）→ FAIL；② **出現現代原理**（正確或錯誤講出運作機制）→ FAIL；③ 純複述主人用詞後百科化 → FAIL |
@@ -738,12 +902,12 @@ post_reply_commit (async)
 
 | 項 | 內容 |
 |---|---|
-| **場景** | (a) 未知物**涉及安全或侍奉職責**；(b) 純生活雜談；(c) 未知物但無安全／職責關聯（含**無 P0 器具介質**、Fail-Silent 放棄的情形） |
-| **輸入** | (a) 主人提到外殼發燙／需要備料的電器（如「我用氣炸鍋弄了豆腐」）；(b) 「今天天氣好」；(c) 純裝飾性現代物（如「我買了一幅印刷的畫」） |
-| **預期** | **只有 (a)** 的**當輪回覆**允許自然流露**一句**伴隨探詢（出於職責問「是否安全、該如何協助」，§2.3）；(b)(c) **0 探詢**。 |
+| **場景** | (a) 未知物**涉及安全或侍奉職責且主人本輪親自操作／即將食用**；(b) 純生活雜談；(c) 未知物但無安全／職責關聯（含**無候選**、Fail-Silent 放棄、**FSA-0 原生免疫**的情形）；**(d) 未知物僅作背景提及（主人未操作）**（EH-4-AMEND-2） |
+| **輸入** | (a) 主人提到外殼發燙／需要備料的電器（如「我用氣炸鍋弄了豆腐」）；(b) 「今天天氣好」；(c) 純裝飾性現代物（如「我買了一幅印刷的畫」）；**(d) 「辦公室有微波爐，聽說很方便，我沒用過」或「我用鐵鍋炒了菜」（原生器具）** |
+| **預期** | **只有 (a)** 的**當輪回覆**允許自然流露**一句**伴隨探詢（出於職責問「是否安全、該如何協助」，§2.3）；(b)(c) **0 探詢**；**(d) 背景提及／原生器具：至多只有類比段（或 FSA 後 0 錨點），0 探詢**（IT-7 G1／IT-8）。 |
 | **校準聲明（本 Probe 的核心，EH-4-AMEND-1）** | **Probe 3 驗收的是「當輪對話回覆」中自然流露的伴隨探詢（§2.3 IT-1~IT-6），不是等待心跳。** 判定必須在**該輪回覆語料**上完成：<br>・該輪已有得體探詢 → **PASS**（**不得**以「尚未發訊／沒有 transmit」判 FAIL）；<br>・該輪 0 探詢、而在數小時後由心跳發出關心訊息 → **FAIL（時序錯位退化）**。 |
-| **PASS 判準** | ① (a) 該輪回覆**含**伴隨探詢（**1 句為度**），問句內容**帶原生錨點**（不是百科問句）；② (b) 0 求知問句、0 追問（輸出為生活回應）；③ (c) 0 求知問句（至多只含類比段，或 FSA 後 0 錨點）；④ 全域：同一輪**最多 1 個**求知問句；⑤ 全域：同一物**不重複追問**（§2.3 IT-4） |
-| **FAIL 判準** | ① 純雜談長出連環發問 → FAIL；② (c) 無安全／職責關聯仍發問 → FAIL；③ 同一輪多問 → FAIL；④ 問句為現代原理問句（「它的加熱原理是什麼」）→ FAIL；⑤ **時序錯位**：當輪 0 探詢、事後（心跳）才發問 → FAIL；⑥ **自激發訊**：當輪對話結束後**未滿靜默期**即發訊 → FAIL（§3.0 A-3／§3.4 B7） |
+| **PASS 判準** | ① (a) 該輪回覆**含**伴隨探詢（**1 句為度**），問句內容**帶原生錨點**（不是百科問句）；② (b) 0 求知問句、0 追問（輸出為生活回應）；③ (c) 0 求知問句（至多只含類比段，或 FSA 後 0 錨點）；④ 全域：同一輪**最多 1 個**求知問句；⑤ 全域：同一物**不重複追問**（§2.3 IT-4）；**⑥（EH-4-AMEND-2）(d) 背景提及 0 求知問句**（至多類比段；IT-8）；**⑦（EH-4-AMEND-2）原生器具（鐵鍋／風箱）該輪 0 錨點、0 探詢**（FSA-0 生效，§2.2）。 |
+| **FAIL 判準** | ① 純雜談長出連環發問 → FAIL；② (c) 無安全／職責關聯仍發問 → FAIL；③ 同一輪多問 → FAIL；④ 問句為現代原理問句（「它的加熱原理是什麼」）→ FAIL；⑤ **時序錯位**：當輪 0 探詢、事後（心跳）才發問 → FAIL；⑥ **自激發訊**：當輪對話結束後**未滿靜默期**即發訊 → FAIL（§3.0 A-3／§3.4 B7）；**⑦（EH-4-AMEND-2）過度關切**：(d) 背景提及仍伴隨發問（含「辦公室有微波爐」）→ FAIL（IT-7 G1／IT-8）；**⑧（EH-4-AMEND-2）探詢超量**：單次探詢超過一句（連問、追加子句、二段追問）→ FAIL（IT-9）；**⑨（EH-4-AMEND-2）原生失憶**：對公館自帶器具（鐵鍋／風箱）產出錨點或阻力措辭 → FAIL（FSA-0）。 |
 | **備註** | ① 本 Probe 是「**問答轟炸**」與「**時序退化**」的雙重防線。② **當輪姿態不經 Decision**，故**不得**以 `transmit` 分佈來驗收當輪姿態。③ **跨輪軌**的 `transmit` 需以 `epistemic:` 前綴**單獨觀測**（§3.4 B8），且整體 proactive_dm 頻率不得顯著抬升（既有分佈參考：`src/soul/decision.py:299` 之 do_nothing 65-80%）。 |
 
 ### Probe 4（現代原生 Bypass 鋼印）
@@ -762,13 +926,13 @@ post_reply_commit (async)
 | 項 | 規格 |
 |---|---|
 | Pilot 範圍 | 異界阻力 Pilot = `agent_rem`（唯一有 L1 pack）；現代對照組 Pilot = 7 名白名單。**不擴散**到其他 persona（避免全域角色設定膨脹，EH-1 D3 裁定沿用） |
-| 層次 | ① 單元（L1 loader schema V1–V6／L2 純函式 I/O／**L2 實體優先級與 Fail-Silent：P0-1~P0-3、FSA-1~FSA-5、`background_terms` 降級（EH-4-AMEND-1）**／**L3 雙軌：§3.2 布林真值表、§3.4 B6 靜默期地板（未滿 → 保持 `pending`）**／**L4 冪等與欄位映射、§4.2 SF-1~SF-7 安全熔接組裝**）→ ② Probe 端到端 → ③ 回歸（`tests/test_epistemic_horizon.py`、`test_epistemic_horizon_eh3.py`、`test_epistemic_horizon_eh31.py`、`tests/test_vc_eh_unification.py` **必須全綠**） |
-| 靜態斷言 | 附錄 B 的 S1–S12（反硬編碼／雙端同構／四元不動／0 LLM；**S9–S12 為 EH-4-AMEND-1 新增**：實體優先級與 FSA／安全熔接／姿態模板反硬編碼／靜默期地板） |
+| 層次 | ① 單元（L1 loader schema V1–V7／L2 純函式 I/O／**L2 實體優先級與 Fail-Silent：P0-1~P0-3、FSA-1~FSA-5、`background_terms` 降級（EH-4-AMEND-1）**／**（EH-4-AMEND-2）FSA-0 原生免疫 NT-1~NT-6、口語階梯 SL-1~SL-5 與 UR-1~UR-4、錨點類別分流 AC-1~AC-5**／**L3 雙軌：§3.2 布林真值表、§3.4 B6 靜默期地板（未滿 → 保持 `pending`）**／**L4 冪等與欄位映射、§4.2 SF-1~SF-7 安全熔接組裝**）→ ② Probe 端到端 → ③ 回歸（`tests/test_epistemic_horizon.py`、`test_epistemic_horizon_eh3.py`、`test_epistemic_horizon_eh31.py`、`tests/test_vc_eh_unification.py` **必須全綠**） |
+| 靜態斷言 | 附錄 B 的 S1–S16（反硬編碼／雙端同構／四元不動／0 LLM；**S9–S12 為 EH-4-AMEND-1 新增**：實體優先級與 FSA／安全熔接／姿態模板反硬編碼／靜默期地板；**S13–S16 為 EH-4-AMEND-2 新增**：FSA-0 原生免疫／口語階梯邊界／多錨點分流／當輪關切度量守門） |
 | 判定 | 四條 Probe 全過 + 靜態斷言全過 + 回歸 0 破壞 = EH-4 實作驗收通過 |
 
 ---
 
-## 6. 不變量清單（INV-1 ~ INV-15；13~15 為 EH-4-AMEND-1 新增）
+## 6. 不變量清單（INV-1 ~ INV-19；13~15 為 EH-4-AMEND-1 新增，16~19 為 EH-4-AMEND-2 新增）
 
 | # | 不變量 | 來源 | 違反後果 |
 |---|---|---|---|
@@ -787,6 +951,10 @@ post_reply_commit (async)
 | 13 | **雙軌時序解耦**（EH-4-AMEND-1）：當輪探詢姿態屬 `Interpreted`（不經 Decision、不等心跳）；跨輪自主意圖屬 `MotiveEngine`（靜默期地板、禁止當輪結束即自激發訊） | §3.0 A-1~A-5 / §2.3 IT-1~IT-6 | 時序錯位（驗收在等一個不在當輪發生的事件）；或退化成「心跳一響就發訊」的模板行為 |
 | 14 | **實體優先級與 Fail-Silent**（EH-4-AMEND-1）：`entity_key` 只取 P0 介詞引導之器具介質；句法不確信 → 整段差量回 `None`；原生日常名詞永不作未知物 | §2.2 P0-1~P0-3 / FSA-1~FSA-5 | 荒謬類比（「似烘爐的豆腐」）；阻力外溢到平凡對話，日常事物被當成未知物 |
 | 15 | **安全熔接不丟失**（EH-4-AMEND-1）：raw `eh4_safety_rule` 不投影（防火牆不撤），但安全直覺與操作邊界**強制熔接**進 `eh4_mental_model` 描述句 | §4.2 SF-1~SF-7 / §4.3 補充 | 二次遭遇只剩稱謂與類比，安全警惕與侍奉直覺消失（比 Probe 2 失敗更危險） |
+| **16** | **原生常識天然免疫**（EH-4-AMEND-2）：`P0 ∈ (pack.native_tools ∪ pack.native_basis) ⟹ FSA`——公館自帶的鍋／爐／箱／風箱**永不**被當異界物對撞；判定池**全數**來自第 1 層實例包已知資產，**0 黑名單** | §2.2 FSA-0 / NT-1~NT-6 / §1.6 派生欄位 | 靈魂對自己的日常失憶（「似烘爐而無柴的鐵鍋」）；或為了擋器具而長出世界觀名詞黑名單（O1 破產） |
+| **17** | **口語階梯與 v1 保守邊界**（EH-4-AMEND-2）：抽取為**三階梯**（介詞 → 口語評價主語／取得受詞 → 放棄）；階梯 3 與 UR-1~UR-4 為 **Known Under-Recall by Design**；**嚴禁**引入依存語法分析器／詞性標註／外部 NLP／常識知識庫 | §2.2 SL-1~SL-5 / UR-1~UR-4 / §8 D-2 | 最自然的說話方式（無介詞口語）失去認知內容；或反向退化成「盲目依存剖析」的不可測、不可硬斷言的模糊層 |
+| **18** | **多錨點分流**（EH-4-AMEND-2）：錨點先經 **anchor class 封閉集合**（AC-1~AC-4）分流，再由 pack 供給名詞；**0 硬編碼「現代器具名 ↔ 錨點」對照表** | §1.2 / §2.2 S5a–S6 / §2.4 ISO-4 | 「凡發熱皆烘爐」的單一模板化（微波爐／氣炸鍋／電熱鍋同一句話）；或算子被現代器具名污染（O1 破產） |
+| **19** | **當輪關切度量守門**（EH-4-AMEND-2）：關切段需 **G1 在場操作 ∧ G2 實質關聯**；背景提及**靜默**；每次探詢**嚴格 ≤ 1 句**；守門**只作用於當輪軌**（不影響跨輪 `EpistemicTension`） | §2.3 IT-1 / IT-4 / IT-7~IT-10 | 角色因「有按鈕」退化為**每題必問的過度關切機器人**（關切通膨 ⇒ 關切貶值） |
 
 **優先序（與 EH-1 §5 不變量 8 串接）**：
 
@@ -821,6 +989,7 @@ runtime Gate 判定（內化事實） > EH-4 錨點材料（本體類比） > pe
 - **0 既有檔案改動**：唯一新增檔 = `docs/EH-4-EPISTEMIC-MIND-CONTRACT.md`。
 - **0 production mutation**：0 服務重啟、0 部署、0 DB 寫入。
 - **`logs/ENGINEERING_STATE.md` 未改動**（canonical 狀態登記屬主大腦收尾職責，非本工單範圍）。
+- **（EH-4-AMEND-2）本次修訂的唯一動到的檔案＝本文件**（`docs/EH-4-EPISTEMIC-MIND-CONTRACT.md`）；0 code／0 `src/`／0 `clients/`／0 `personas/`／0 `configs/`／0 `tests/`／0 production mutation／0 `logs/ENGINEERING_STATE.md` 改動。
 
 ### 7.3 實作階段的檔案清單（供後續工單引用，本契約不建立）
 
@@ -841,18 +1010,21 @@ runtime Gate 判定（內化事實） > EH-4 錨點材料（本體類比） > pe
 
 ## 8. 待 Owner 拍板 / 決策點
 
-> 本契約的架構決策**已由工單鎖定**（L2-0 / L3-0 / L3-1 / L3-D1 / L4-0 / L4-D1 / L4-D3；**EH-4-AMEND-1 追加鎖定：雙軌 A-1~A-5（§3.0）／當輪姿態 IT-1~IT-6（§2.3）／實體優先級 P0-1~P0-3 與 FSA-1~FSA-5（§2.2）／安全熔接 SF-1~SF-7（§4.2）／靜默期地板 B6（§3.4）**）。以下為**實作階段需要 Owner 或 persona 校準**的項目，實作工單不得自行拍板：
+> 本契約的架構決策**已由工單鎖定**（L2-0 / L3-0 / L3-1 / L3-D1 / L4-0 / L4-D1 / L4-D3；**EH-4-AMEND-1 追加鎖定：雙軌 A-1~A-5（§3.0）／當輪姿態 IT-1~IT-6（§2.3）／實體優先級 P0-1~P0-3 與 FSA-1~FSA-5（§2.2）／安全熔接 SF-1~SF-7（§4.2）／靜默期地板 B6（§3.4）**；**EH-4-AMEND-2 追加鎖定：FSA-0 原生免疫 NT-1~NT-6（§2.2）／口語階梯 SL-1~SL-5 與 v1 邊界 UR-1~UR-4（§2.2）／錨點類別分流 AC-1~AC-5（§1.2）／當輪關切度量守門 IT-7~IT-10（§2.3）**）。以下為**實作階段需要 Owner 或 persona 校準**的項目，實作工單不得自行拍板：
 
 | # | 決策點 | 選項 | 本契約傾向 |
 |---|---|---|---|
 | **D-1** | Rem L1 pack 的**詞表內容**（柴火／魔石／烘爐等 30+ 名詞）是否與 persona canon 一致 | (a) 以 §1.5 Pilot 示範值落地，事後校準 / (b) 先由 Owner 逐項校準再落地 | **(a)**——先讓 schema 可運作，校準為後續 PR |
-| **D-2** | L2 的 entity 抽取方式 | (a) 復用既有抽取器 / (b) L2 內建純字元規則（名詞片語 heuristics） | **(b)** for v1（0 依賴、可硬斷言）；(a) 列為 v2 優化 |
+| **D-2** | L2 的 entity 抽取方式 | (a) 復用既有抽取器 / (b) L2 內建純字元規則（名詞片語 heuristics） | **(b)** for v1（0 依賴、可硬斷言）；(a) 列為 v2 優化。**（EH-4-AMEND-2 補充）** 口語階梯的已知漏召（UR-1~UR-4）**不構成**升級理由：v1／v2 **皆禁止**引入依存語法分析器、詞性標註器或外部 NLP／常識知識庫（§2.2 SL-5、INV-17）；唯一合法擴充路徑＝擴充通用字元／片語規則與 pack 詞條 |
 | **D-3** | L4 四欄是否允許**背景 LLM 精修**（提升文采） | (a) 純模板（0 LLM）/ (b) 背景 LLM 精修（不影響延遲） | **(a)**——EH-4 不授權 (b)，以決定性與 0 幻覺為先 |
 | **D-4** | Probe 4 的「0 差量運算」驗收形式 | (a) 呼叫次數 = 0（成本最小）/ (b) 呼叫但回 `None` | **(a)**——以 `is_modern_native()` 前置短路 |
 | **D-5** | L3 求知 Motive 是否需**獨立可觀測欄位**（側車 JSONL） | (a) 只靠 `provenance_ref` 前綴 / (b) 新增側車審計記錄 | **(a)** for v1（0 新狀態）；(b) 若觀測不足再另開票 |
 | **D-6** | L4 五元組的**投影行數上限**（現定每實體 2 行、全域 8 行） | (a) 維持 / (b) 調整 | **(a)**——與 `src/llm/proxy.py:1140` 既有上限一致 |
 | **D-7** | **跨輪軌靜默期地板**（EH-4-AMEND-1） | (a) 沿用既有 `proactive_dm_min_interval_minutes`（180 分）＋既有 Gate／quiet hours / (b) 另立專用常數（如 `EPISTEMIC_CROSS_TURN_MIN_IDLE_SECONDS = 7200`） | **(a)**——0 新設定項、0 新定時器、0 新狀態；若觀察到過早或過晚，再另開票調參 |
 | **D-8** | `mental_model` 熔接是否含**侍奉分工界線**（EH-4-AMEND-1） | (a) 命中 `duty_hooks` 時熔接「誰碰／怎麼碰」界線（不列動作清單）/ (b) 只熔接安全直覺 | **(a)**——讀側只剩 2 槽位時，侍奉直覺與安全直覺同樣需要保命（§4.2 SF-6） |
+| **D-9** | **FSA-0 詞條比對粒度**（EH-4-AMEND-2） | (a) 「完全相等 ＋ 詞條 ⊆ 核心名詞（子串）」/ (b) 引入編輯距離／相似度／模糊比對 | **(a)**——O2 確定性；子串判定**偏向多擋**（保守），漏擋情形由 FSA-1(b) 與 S5 兜底。若實測誤擋（把非原生器具誤判為原生），**不得**改走模糊比對，只准**校準 pack 詞條**（D-1 同源） |
+| **D-10** | **口語階梯的謂語類覆蓋**（EH-4-AMEND-2） | (a) v1 固定兩類評價謂語（`utility_praise` / `dysfunction`）/ (b) 一次擴充更多評價謂語（「很吵」「很重」「很亮」…） | **(a)** for v1——先量測 UR-1~UR-4 的實際漏召率再決定；擴充走後續票（唯一合法路徑＝擴充通用字元規則與 pack 詞條，0 NLP 依賴） |
+| **D-11** | **IT-7 G1「在場操作」的判定線索**（EH-4-AMEND-2） | (a) 純句法（第一人稱 ＋ 器具/產物為動作對象的通用動詞封閉集）/ (b) 引入語義判斷（是否「真的在用」） | **(a)**——0 LLM、0 NLP（O3／SL-5）；判定保守（寧可少問，不可多問，IT-7 的存在目的即是**防過度關切**） |
 
 ---
 
@@ -913,7 +1085,7 @@ runtime Gate 判定（內化事實） > EH-4 錨點材料（本體類比） > pe
 | A37 | M5.8-4 Inner Life Gate 最小間隔（`GATE_PROACTIVE_DM_MIN_INTERVAL_MINUTES = 30`） | `src/agency/inner_life_gate.py:96`（gate 語義 :25-40） |
 | A38 | `MotiveTraceStore.resolve_pending`（取最新 pending、TTL 過期不返回、fail-closed 入口） | `src/soul/motive.py:350-379` |
 
-## 附錄 B：靜態斷言（實作驗收用，S1–S12；S9–S12 為 EH-4-AMEND-1 新增）
+## 附錄 B：靜態斷言（實作驗收用，S1–S16；S9–S12 為 EH-4-AMEND-1 新增，S13–S16 為 EH-4-AMEND-2 新增）
 
 | # | 斷言 | 驗收形式 |
 |---|---|---|
@@ -929,7 +1101,11 @@ runtime Gate 判定（內化事實） > EH-4 錨點材料（本體類比） > pe
 | **S10** | **安全熔接**（EH-4-AMEND-1）：命中 `safety_hazard` 的實體，其 `eh4_mental_model` 產物**必含**熔接子句 | 單元測試：斷言組裝字串含該軸 `hazard_rules` 至少一條，且為**敘述句、非命令句**（§4.2 SF-1~SF-4） |
 | **S11** | **當輪姿態模板 0 世界觀名詞**（EH-4-AMEND-1）：§2.3 兩段模板字面不得含 pack／世界觀名詞 | 單元測試：斷言模板常數對 pack 名詞清單 0 命中（§2.3 反硬編碼約束／D-INV-1） |
 | **S12** | **靜默期地板**（EH-4-AMEND-1）：`epistemic:` pending 未滿靜默期 → 不被消費且狀態仍 `pending` | 單元測試：以注入 `now` 斷言消費端回 `None`（或 skip）且 `MotiveTraceStore` 狀態仍 `pending`（§3.4 B6） |
+| **S13** | **FSA-0 原生免疫**（EH-4-AMEND-2）：P0 命中實例包原生資產 → 立即整段 `None`（0 錨點、0 姿態、0 動機、0 L4） | 單元測試：對「我用鐵鍋炒了菜，鍋子燙得很」斷言 `appraise(...) is None` 且 `entity_terms == ()`；對「我拿風箱鼓風」同上；**並斷言判定池 == `pack.native_immunity_terms`（四軸聯集）**、算子碼 0 器具名詞（與 S1 合驗）（§2.2 NT-1~NT-6） |
+| **S14** | **口語階梯與保守邊界**（EH-4-AMEND-2）：階梯 2 抽出候選（非介詞）；階梯 3 與代詞／無特徵情形回 `None` | 單元測試：對「氣炸鍋很方便」斷言 `extraction_ladder == "spoken_subject"` 且 `entity_terms == ("氣炸鍋",)`；對「那個黑箱子很好用」斷言 `entity_terms == ("黑箱子",)`（SL-1 去指示詞、保留語義修飾）；對「那個東西很方便」斷言 `is None`（SL-2）；對「買了氣炸鍋」斷言 `is None`（UR-2／FSA-1(b)）；對「今天天氣好」斷言 `is None`（階梯 3）（§2.2 SL／UR） |
+| **S15** | **多錨點分流**（EH-4-AMEND-2）：不同次級特徵組合 → 不同 `anchor_class`／不同錨點；單特徵 → 回退 | 單元測試：斷言 `氣炸鍋 → forced_air_heat`、`微波爐（封閉＋玻璃／定時） → enclosed_heat`、`平底電熱鍋 → open_flat_heat`、`冰箱（冷＋保鮮） → cold_preservation`，四者 `anchor` **互不相同**；斷言僅 `heating` 時 `anchor_class == ""` 且 `anchor == analogy_anchors[0]` 版本（AC-3）；斷言算子碼 0 「現代器具名 → 錨點」對照表（§1.2 AC-1~AC-4） |
+| **S16** | **當輪關切度量守門**（EH-4-AMEND-2）：G1 ∧ G2 才注入；背景提及靜默；≤ 1 句 | 單元測試：斷言 `hazard_suspected=True` 但 G1 不成立（「氣炸鍋很方便」／「辦公室有微波爐」）→ **不注入**關切段（模板字串 0 命中）；G1 ∧ G2 成立 → 注入且模板字串**只出現一次**；斷言模板常數 0 世界觀名詞（與 S11 合驗）（§2.3 IT-7~IT-10） |
 
 ---
 
-> **EH-4 契約結束（含 EH-4-AMEND-1：雙軌解耦／實體優先級與 Fail-Silent／安全熔接）。本文件為 DESIGN ONLY：0 code / 0 `src/` / 0 `clients/` / 0 `personas/` / 0 `configs/` / 0 `tests/` / 0 production mutation。一切實作（L1 載入器、L2 算子、L3 動機、L4 圖譜、掛載點 additive 修改、Probes 與靜態斷言）均需後續實作工單授權。**
+> **EH-4 契約結束（含 EH-4-AMEND-1：雙軌解耦／實體優先級與 Fail-Silent／安全熔接；含 EH-4-AMEND-2：原生常識天然免疫閘 FSA-0／口語無介詞階梯式解析與 v1 保守邊界 UR-1~UR-4／本體隱喻多錨點分流 AC-1~AC-5／當輪探詢克制守門 IT-7~IT-10）。本文件為 DESIGN ONLY：0 code / 0 `src/` / 0 `clients/` / 0 `personas/` / 0 `configs/` / 0 `tests/` / 0 production mutation。一切實作（L1 載入器、L2 算子、L3 動機、L4 圖譜、掛載點 additive 修改、Probes 與靜態斷言 S1–S16）均需後續實作工單授權。**
