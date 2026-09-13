@@ -62,32 +62,88 @@ _FAULTHANDLER_MAX_BYTES = 32 * 1024 * 1024
 _FAULTHANDLER_KEEP = 3
 _FAULTHANDLER_MARKER_INTERVAL_SECS = 60
 _FAULTHANDLER_FILE = open(_FAULTHANDLER_PATH, "a", encoding="utf-8", buffering=1)  # line-buffered
+# CRASH-OBS-2 (致命傾印 / 週期 dump 分檔 — 觀測管線隔離):
+#   致命傾印 (faulthandler.enable)         → _FAULTHANDLER_PATH (目標不變)
+#   週期 dump (faulthandler.dump_traceback_later) → _FAULTHANDLER_PERIODIC_PATH (新檔)
+#   動機: 兩者共用一檔時, marker 的週期傾印會與致命例外標頭交錯 (實測
+#   data/faulthandler.log:6073 = `  File Windows fatal exception: access violation`
+#   插在 frame 行中間), 且崩潰執行緒自己的 Python 堆疊從未被完整寫出
+#   (66035 行中 `Current thread 0x` 出現 0 次)。
+#   週期 dump 頻率 (60s) 與 SOUL_OS_EVENT_LOOP 一律不動 (單一變數原則)。
+#   本改動需下次重啟才生效 (0 服務重啟, 不干擾 selector 實驗)。
+_FAULTHANDLER_PERIODIC_PATH = data_root() / "faulthandler_periodic.log"
+# 週期檔 handle: lazy 開啟 (首次週期 dump 才建檔) — 避免 import run_server 的
+# 測試在生產 data/ 下建立新檔 (0 生產資料變更); None = 不可用 (絕不退回致命檔)
+_FAULTHANDLER_PERIODIC_FILE = None
 
 
 def _faulthandler_open() -> None:
-    """(re)open faulthandler.log 並重指 enable() + dump_traceback_later()。
-    輪替後呼叫; file handle 是模組層級變數, 重指後 marker loop 自動跟到新檔。"""
+    """(re)open faulthandler.log 並重指 enable() (致命傾印目標不變)。
+    輪替後呼叫; file handle 是模組層級變數, 重指後自動跟到新檔。
+    CRASH-OBS-2: 週期 dump 已分檔 → 本函式不再註冊 dump_traceback_later,
+    也絕不碰週期 handle (週期檔見 _faulthandler_periodic_open)。"""
     global _FAULTHANDLER_FILE
     _FAULTHANDLER_FILE = open(_FAULTHANDLER_PATH, "a", encoding="utf-8", buffering=1)
     faulthandler.enable(file=_FAULTHANDLER_FILE)
-    # C-level 保險 (不可移除): 獨立 thread 週期 dump, asyncio 卡死也能寫
-    faulthandler.dump_traceback_later(timeout=60, repeat=True, file=_FAULTHANDLER_FILE)
 
 
-def _faulthandler_rotate_if_needed() -> bool:
-    """faulthandler.log ≥ MAX → 關檔改名保留 → 重開重指; 吞掉所有例外。回傳是否輪替。"""
+def _faulthandler_periodic_open() -> bool:
+    """(re)open faulthandler_periodic.log (append) 並把週期 dump 重指到它。
+
+    只碰週期 handle; 致命 handle (faulthandler.enable 的目標) 不動。
+    C-level 保險 (不可移除) 在此重註冊: 獨立 thread 每 60s dump, asyncio
+    卡死也能寫; 重註冊會覆蓋舊 timer (marker 的 timeout=1 一次性 timer 亦然)。
+    開啟失敗 → handle 設 None + 回 False: 呼叫端寧可該次週期 dump 不寫,
+    絕不退回致命檔 (觀測層絕不影響主服務)。
+    """
+    global _FAULTHANDLER_PERIODIC_FILE
     try:
-        if not _FAULTHANDLER_PATH.exists():
+        f = open(_FAULTHANDLER_PERIODIC_PATH, "a", encoding="utf-8", buffering=1)
+    except Exception:
+        _FAULTHANDLER_PERIODIC_FILE = None
+        return False
+    _FAULTHANDLER_PERIODIC_FILE = f
+    try:
+        faulthandler.dump_traceback_later(timeout=60, repeat=True, file=f)
+    except Exception:
+        pass
+    return True
+
+
+def _faulthandler_periodic_handle():
+    """取得週期 dump 目標 handle (首次使用 lazy 開啟); 不可用回 None。
+
+    lazy 開啟的理由: 只在真正要寫週期 dump 時才建檔, 避免 import run_server
+    的既有測試在生產 data/ 下建立新檔 (0 生產資料變更)。
+    """
+    if _FAULTHANDLER_PERIODIC_FILE is None or getattr(
+        _FAULTHANDLER_PERIODIC_FILE, "closed", True
+    ):
+        if not _faulthandler_periodic_open():
+            return None
+    return _FAULTHANDLER_PERIODIC_FILE
+
+
+def _faulthandler_rotate_one(path: Path, handle, reopen, stem: str) -> bool:
+    """單一 faulthandler 檔的輪替: ≥ MAX → 關檔改名保留 → 重開重指。
+
+    吞掉所有例外; 回傳是否輪替。CRASH-OBS-2: 由 _faulthandler_rotate_if_needed
+    對致命檔 (stem="faulthandler") 與週期檔 (stem="faulthandler_periodic") 各呼叫
+    一次, 沿用既有 keep 數與 `<stem>.<ts>.log` 命名慣例。
+    """
+    try:
+        if not path.exists():
             return False
-        if _FAULTHANDLER_PATH.stat().st_size < _FAULTHANDLER_MAX_BYTES:
+        if path.stat().st_size < _FAULTHANDLER_MAX_BYTES:
             return False
-        _FAULTHANDLER_FILE.flush()
-        _FAULTHANDLER_FILE.close()
+        if handle is not None:
+            handle.flush()
+            handle.close()
         ts = time.strftime("%Y%m%d_%H%M%S")
-        rotated = _FAULTHANDLER_PATH.with_name(f"faulthandler.{ts}.log")
-        _FAULTHANDLER_PATH.replace(rotated)
-        _faulthandler_open()
-        old = sorted(_FAULTHANDLER_PATH.parent.glob("faulthandler.*.log"))
+        rotated = path.with_name(f"{stem}.{ts}.log")
+        path.replace(rotated)
+        reopen()  # handle 必須重指到新檔, 不可留在已改名的舊檔上
+        old = sorted(path.parent.glob(f"{stem}.*.log"))
         for p in old[: max(0, len(old) - _FAULTHANDLER_KEEP)]:
             try:
                 p.unlink()
@@ -101,11 +157,25 @@ def _faulthandler_rotate_if_needed() -> bool:
     except Exception:
         # 輪替失敗: 若 handle 已關, 至少重開重指 (最壞繼續寫舊檔, 觀測層不崩)
         try:
-            if getattr(_FAULTHANDLER_FILE, "closed", True):
-                _faulthandler_open()
+            if handle is None or getattr(handle, "closed", True):
+                reopen()
         except Exception:
             pass
         return False
+
+
+def _faulthandler_rotate_if_needed() -> bool:
+    """致命檔與週期檔各自 ≥ MAX → 各自輪替; 回傳是否有任一輪替。"""
+    fatal = _faulthandler_rotate_one(
+        _FAULTHANDLER_PATH, _FAULTHANDLER_FILE, _faulthandler_open, "faulthandler"
+    )
+    periodic = _faulthandler_rotate_one(
+        _FAULTHANDLER_PERIODIC_PATH,
+        _FAULTHANDLER_PERIODIC_FILE,
+        _faulthandler_periodic_open,
+        "faulthandler_periodic",
+    )
+    return fatal or periodic
 
 
 # 啟動即檢查: 上次殘留 ≥ 32MB → 立刻輪替 (每次重啟都重置大小上限)
@@ -115,11 +185,16 @@ _faulthandler_rotate_if_needed()
 def _faulthandler_marker_tick() -> None:
     """單次 marker tick (供 marker loop 與離線驗證呼叫):
     1) 寫時間戳標記行; 2) 重註冊 1s 後的一次性 dump (標記後 ~1s 寫出);
-    3) 大小檢查輪替。任何例外由呼叫方吞掉。"""
+    3) 大小檢查輪替 (兩檔)。任何例外由呼叫方吞掉。
+    CRASH-OBS-2: 目標一律是週期檔; 週期檔不可用 → 本次不寫,
+    絕不退回致命檔 (否則崩潰現場又會被週期快照污染)。"""
     iso = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-    _FAULTHANDLER_FILE.write(f"\n===== periodic dump @ {iso} =====\n")
-    _FAULTHANDLER_FILE.flush()
-    faulthandler.dump_traceback_later(timeout=1, repeat=False, file=_FAULTHANDLER_FILE)
+    target = _faulthandler_periodic_handle()
+    if target is None:
+        return
+    target.write(f"\n===== periodic dump @ {iso} =====\n")
+    target.flush()
+    faulthandler.dump_traceback_later(timeout=1, repeat=False, file=target)
     _faulthandler_rotate_if_needed()
 
 
@@ -128,6 +203,7 @@ def _faulthandler_marker_loop() -> None:
 
     每 60s: marker tick; 失敗 → 退回 repeat=True 保險 (C-level 保險永不移除)。
     所有例外吞掉: 觀測層絕不影響主服務。
+    CRASH-OBS-2: tick 與 fail-safe 保險的目標都是**週期檔** (絕不寫致命檔)。
     """
     while True:
         time.sleep(_FAULTHANDLER_MARKER_INTERVAL_SECS)
@@ -135,7 +211,9 @@ def _faulthandler_marker_loop() -> None:
             _faulthandler_marker_tick()
         except Exception:
             try:
-                faulthandler.dump_traceback_later(timeout=60, repeat=True, file=_FAULTHANDLER_FILE)
+                target = _faulthandler_periodic_handle()
+                if target is not None:
+                    faulthandler.dump_traceback_later(timeout=60, repeat=True, file=target)
             except Exception:
                 pass
 
