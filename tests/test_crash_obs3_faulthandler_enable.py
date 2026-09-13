@@ -18,8 +18,12 @@ CRASH-OBS-3 驗收: 啟動時必須**無條件**安裝 faulthandler 致命傾印
   3. 冪等 (連續呼叫不拋例外、語意不變、不關正在使用的 handle)
   4. fail-safe (enable 拋例外 → 啟動流程不受影響, 只記 warning)
   5. 輪替後 enable() 目標是新 handle (非已改名的舊 handle)
-  6. 週期 dump 凍結 (目標檔/頻率/marker 格式與 CRASH-OBS-2 版逐字相同)
-  7. heartbeat dumper 未動 (仍在, 仍 dump_traceback(all_threads=True))
+  6. 週期全執行緒 dump 已移除 (CRASH-F1-FIX, 2026-09-12): 0 處
+     `dump_traceback_later` / 週期檔常量與函式 / marker 機制。
+     原斷言「週期行為與 CRASH-OBS-2 版逐字相同」已隨根因修復失效 → 改寫為
+     「週期機制已不存在」的正向守門 (見 docs/CRASH-F1-SYMBOLS-1.md)。
+  7. heartbeat dumper 仍在 / 仍 60s / 已改 dump_traceback(all_threads=False)
+     (all_threads=True 是本票移除的崩潰路徑, 見 CRASH-F1-FIX)
   8. 0 生產資料變更 (data/faulthandler* + data/heartbeat_trace* 檔名快照一致)
 
 隔離手法 (沿用 tests/test_crash_obs2_faulthandler_split.py):
@@ -338,9 +342,14 @@ def test_4_enable_failure_never_breaks_startup(tmp_path, monkeypatch, caplog):
 
     assert "致命傾印安裝失敗" in caplog.text, caplog.text
     # 模組其餘啟動常數完好 → 例外沒有打斷啟動
-    assert mod._FAULTHANDLER_MARKER_INTERVAL_SECS == 60
     assert mod._FAULTHANDLER_MAX_BYTES == 32 * 1024 * 1024
-    assert mod._FAULTHANDLER_PERIODIC_PATH.name == "faulthandler_periodic.log"
+    assert mod._FAULTHANDLER_KEEP == 3
+    assert mod._FAULTHANDLER_PATH.name == "faulthandler.log"
+    # CRASH-F1-FIX: 週期機制常量已移除 (原斷言 _FAULTHANDLER_MARKER_INTERVAL_SECS
+    # == 60 / _FAULTHANDLER_PERIODIC_PATH.name == "faulthandler_periodic.log"
+    # 守的是已廢除的週期分檔狀態 → 改寫為「已不存在」的正向守門)
+    assert not hasattr(mod, "_FAULTHANDLER_MARKER_INTERVAL_SECS")
+    assert not hasattr(mod, "_FAULTHANDLER_PERIODIC_PATH")
     _close_handles(mod)
 
 
@@ -375,86 +384,95 @@ def test_5_after_rotation_enable_targets_new_handle(tmp_path, monkeypatch):
         _close_handles(mod)
 
 
-# ── 6. 週期 dump 行為凍結 (紅線 2) ────────────────────────
+# ── 6. 週期全執行緒 dump 已移除 (CRASH-F1-FIX 守門) ────────
 
-def test_6_periodic_dump_target_cadence_marker_unchanged(tmp_path, monkeypatch):
-    """週期 dump 的目標檔 / 頻率 / marker 格式與 CRASH-OBS-2 完全一致。"""
+def test_6_periodic_dump_mechanism_absent(tmp_path, monkeypatch):
+    """CRASH-F1-FIX: 週期全執行緒 dump 與其分檔已不存在 (本檔原斷言的「凍結」狀態
+    正是已證實的崩潰根因, 因此改寫為「機制已不存在」的正向守門)。
+
+    根因: `dump_traceback_later` **沒有 all_threads 參數, 永遠走訪全部執行緒**,
+    faulthandler 不停世界 → 與其他執行緒釋放 frame 競態 → c0000005 @ 0xA0。
+    """
     mod, _ = _exec_with_enable_recorder(tmp_path, "_rs_obs3_t6")
     try:
-        assert mod._FAULTHANDLER_MARKER_INTERVAL_SECS == 60
+        # (a) 週期檔常量 / handle 0 殘留
+        for name in (
+            "_FAULTHANDLER_PERIODIC_PATH",
+            "_FAULTHANDLER_PERIODIC_FILE",
+            "_FAULTHANDLER_MARKER_INTERVAL_SECS",
+            "_faulthandler_periodic_open",
+            "_faulthandler_periodic_handle",
+            "_faulthandler_marker_tick",
+            "_faulthandler_marker_loop",
+        ):
+            assert not hasattr(mod, name), f"{name} 必須已移除"
         assert mod._FAULTHANDLER_KEEP == 3
         assert mod._FAULTHANDLER_MAX_BYTES == 32 * 1024 * 1024
-        assert mod._FAULTHANDLER_PERIODIC_PATH.name == "faulthandler_periodic.log"
-        assert mod._FAULTHANDLER_PERIODIC_PATH != mod._FAULTHANDLER_PATH
-        # lazy 語意不變: 啟動不建立/不開啟週期檔 (0 生產資料變更)
-        assert mod._FAULTHANDLER_PERIODIC_FILE is None
-        assert not mod._FAULTHANDLER_PERIODIC_PATH.exists()
 
-        # 首次 lazy 開啟 (含 repeat=True 的 60s 註冊) 不計入本段斷言
-        assert mod._faulthandler_periodic_handle() is not None
-
+        # (b) 任何 dump_traceback_later 註冊都不得發生 (含 import 副作用)
         dumped = []
         monkeypatch.setattr(
             mod.faulthandler, "dump_traceback_later",
-            lambda timeout=None, repeat=False, file=None, **k: dumped.append(
-                {"timeout": timeout, "repeat": repeat, "file": file}
-            ),
+            lambda *a, **k: dumped.append((a, k)),
         )
+        mod._faulthandler_install_fatal_handler()
+        mod._faulthandler_rotate_if_needed()
+        assert dumped == [], f"週期全執行緒 dump 不得回歸: {dumped}"
 
-        fatal_before = mod._FAULTHANDLER_PATH.read_text(encoding="utf-8")
-        mod._faulthandler_marker_tick()
-
-        assert len(dumped) == 1, dumped
-        assert dumped[0]["file"] is mod._FAULTHANDLER_PERIODIC_FILE
-        assert dumped[0]["file"] is not mod._FAULTHANDLER_FILE
-        assert (dumped[0]["timeout"], dumped[0]["repeat"]) == (1, False)
-
-        content = mod._FAULTHANDLER_PERIODIC_PATH.read_text(encoding="utf-8")
-        lines = [ln for ln in content.split("\n") if "periodic dump" in ln]
-        assert lines, content[-300:]
-        prefix, suffix = "===== periodic dump @ ", " ====="
-        line = lines[-1]
-        assert line.startswith(prefix) and line.endswith(suffix), line
-        iso = line[len(prefix): -len(suffix)]
-        assert datetime.fromisoformat(iso).tzinfo is not None, f"ISO 必須帶 offset: {iso!r}"
-        assert f"\n===== periodic dump @ {iso} =====\n" in content
-
-        # 致命檔不得被週期 marker 污染 (分檔語意不變)
-        assert mod._FAULTHANDLER_PATH.read_text(encoding="utf-8") == fatal_before
+        # (c) 週期檔永不建立; 致命檔不被 marker 污染
+        assert not (tmp_path / "faulthandler_periodic.log").exists()
+        assert not list(tmp_path.glob("faulthandler_periodic*"))
+        content = mod._FAULTHANDLER_PATH.read_text(encoding="utf-8")
+        assert "periodic dump" not in content
     finally:
         _close_handles(mod)
 
 
-def test_6b_periodic_functions_source_identical_to_crash_obs2():
-    """逐字比對: 週期 dump 相關函式原始碼與 CRASH-OBS-2 (a20b4e8) 完全相同。"""
-    old = _func_sources(_git_show(CRASH_OBS2_REV, "scripts/run_server.py"))
-    cur = _func_sources(_read_source())
-    for name in (
+def test_6b_no_periodic_functions_source_scan():
+    """AST 掃描 (取代原「與 CRASH-OBS-2 逐字相同」比對): 週期相關符號 0 定義。
+
+    原 test_6b 逐字比對七個週期函式與 a20b4e8 相同 —— 被比對的函式本票已刪除,
+    該斷言必然紅且守的是舊狀態, 因此移除並以本守門取代 (不得放寬為空洞斷言)。
+    """
+    norm = _read_source().replace("\r\n", "\n")
+    tree = ast.parse(norm)
+    defined = {
+        node.name for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "_faulthandler_marker_tick" not in defined
+    assert "_faulthandler_marker_loop" not in defined
+    assert "_faulthandler_periodic_open" not in defined
+    assert "_faulthandler_periodic_handle" not in defined
+    # 仍存在的致命路徑函式 (不可順手刪掉)
+    for keep in (
         "_faulthandler_open",
-        "_faulthandler_periodic_open",
-        "_faulthandler_periodic_handle",
-        "_faulthandler_marker_tick",
-        "_faulthandler_marker_loop",
+        "_faulthandler_install_fatal_handler",
         "_faulthandler_rotate_one",
         "_faulthandler_rotate_if_needed",
     ):
-        assert name in cur, f"{name} 不見了"
-        assert name in old, f"{name} 不在 CRASH-OBS-2 版本"
-        assert cur[name] == old[name], (
-            f"{name} 與 CRASH-OBS-2 ({CRASH_OBS2_REV}) 不一致 → 動到凍結的週期 dump 行為"
-        )
+        assert keep in defined, f"{keep} 不該消失"
+
+    code_only = ast.unparse(tree)
+    assert "dump_traceback_later" not in code_only
+    assert "faulthandler_periodic" not in code_only
 
 
-# ── 7. heartbeat dumper 未動 (紅線 4) ─────────────────────
+# ── 7. heartbeat dumper (CRASH-F1-FIX: all_threads=False) ─
 
 def test_7_heartbeat_dumper_intact():
-    """_heartbeat_dumper 仍在、仍 dump_traceback(all_threads=True)、仍被 create_task。"""
+    """_heartbeat_dumper 仍在、仍 60s、且已改 dump_traceback(all_threads=False)。
+
+    CRASH-F1-FIX: all_threads=True 會走訪全部執行緒 → 已證實的崩潰路徑;
+    all_threads=False 只傾印呼叫者自己 (event loop), 不可能與其他執行緒競態。
+    """
     src_all = _read_source()
     funcs = _func_sources(src_all)
     assert "_heartbeat_dumper" in funcs, "heartbeat dumper 不可停用或移除"
 
     body = funcs["_heartbeat_dumper"]
-    assert "faulthandler.dump_traceback(file=f, all_threads=True)" in body
+    assert "faulthandler.dump_traceback(file=f, all_threads=False)" in body
+    assert "all_threads=True" not in body, "全執行緒 dump 是 CRASH-F1 崩潰根因"
     assert 'data_root() / "heartbeat_trace.log"' in body
     assert "_snapshot_heartbeat_trace(_dumper_path)" in body
     assert "await asyncio.sleep(30 if _first else 60)" in body
@@ -462,13 +480,29 @@ def test_7_heartbeat_dumper_intact():
     assert "_HEARTBEAT_TRACE_KEEP = 10" in src_all
 
 
-def test_7b_heartbeat_dumper_source_identical_to_crash_obs2():
-    """逐字比對: _heartbeat_dumper / _snapshot_heartbeat_trace 與 CRASH-OBS-2 完全相同。"""
+def test_7b_heartbeat_dumper_differs_only_by_all_threads_flag():
+    """逐字比對 (改寫版): `_snapshot_heartbeat_trace` 與 CRASH-OBS-2 完全相同;
+    `_heartbeat_dumper` **只准**差在 all_threads 這一個布林 (本票唯一改動)。
+
+    原斷言要求 `_heartbeat_dumper` 與 CRASH-OBS-2 逐字相同 —— 本票必須改掉
+    all_threads=True, 因此改寫為「差異恰為該一個 token」的等價強度斷言
+    (不是放寬成空洞斷言: 任何其他改動仍會紅)。
+    """
     old = _func_sources(_git_show(CRASH_OBS2_REV, "scripts/run_server.py"))
     cur = _func_sources(_read_source())
-    for name in ("_heartbeat_dumper", "_snapshot_heartbeat_trace"):
-        assert name in cur and name in old
-        assert cur[name] == old[name], f"{name} 與 CRASH-OBS-2 ({CRASH_OBS2_REV}) 不一致"
+
+    # 快照邏輯 (盲區 ii 修正) 逐字不變
+    snap = "_snapshot_heartbeat_trace"
+    assert snap in cur and snap in old
+    assert cur[snap] == old[snap], f"{snap} 與 CRASH-OBS-2 ({CRASH_OBS2_REV}) 不一致"
+
+    # dumper 本體: 差異恰為 all_threads True→False
+    dumper = "_heartbeat_dumper"
+    assert dumper in cur and dumper in old
+    assert old[dumper] != cur[dumper], "本票必須改掉 all_threads=True"
+    assert old[dumper].replace("all_threads=True", "all_threads=False") == cur[dumper], (
+        f"{dumper} 除 all_threads 外不得有任何其他改動"
+    )
 
 
 # ── 8. 0 生產資料變更 ─────────────────────────────────────
@@ -482,13 +516,15 @@ def test_8_no_production_data_touched(tmp_path, monkeypatch):
         assert Path(mod._FAULTHANDLER_PATH).parent == tmp_path
         assert Path(mod._FAULTHANDLER_PATH) != PROD_DATA / "faulthandler.log"
         for attr in ("_FAULTHANDLER_FILE", "_FAULTHANDLER_PERIODIC_FILE"):
+            if not hasattr(mod, attr):  # CRASH-F1-FIX: 週期 handle 已移除
+                continue
             handle = getattr(mod, attr)
             if handle is not None:
                 assert Path(handle.name).parent == tmp_path, attr
 
-        # 跑完整一輪 (marker tick + 輪替) 仍不得碰生產資料
-        monkeypatch.setattr(mod.faulthandler, "dump_traceback_later", lambda **k: None)
-        mod._faulthandler_marker_tick()
+        # 跑完整一輪 (輪替) 仍不得碰生產資料
+        # (CRASH-F1-FIX: 原 `mod._faulthandler_marker_tick()` 已隨週期機制移除 →
+        #  改用輪替檢查, 隔離強度不變)
         monkeypatch.setattr(mod, "_FAULTHANDLER_MAX_BYTES", 1)
         mod._faulthandler_rotate_if_needed()
     finally:

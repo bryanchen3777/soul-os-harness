@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import sys
-import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -27,25 +26,44 @@ sys.path.insert(0, str(_root))
 #       .err log 完全沒有 traceback,Windows 事件也沒有 shutdown 訊號。
 #       下次再死時要能直接看到卡在哪個 await。
 #
-# 三個機制（互補）:
-#   1. faulthandler.enable() 攔 C-level crash（segfault / C extension panic）
-#   2. faulthandler.dump_traceback_later(60s, repeat=True) 獨立 thread 每 60 秒
-#      抓所有 thread 的 stack trace，**即使 asyncio event loop 卡死也能寫**
-#      （Windows 用 thread + WaitForSingleObject，不是 signal,不受 signal 限制）
-#   3. 下方 _heartbeat_dumper() 在 lifespan 啟動：asyncio-based,
-#      每次 dump 覆寫 heartbeat_trace.log（只留最近一份,可讀性高），
-#      loop 死了就只靠 #2 的 append 檔
+# === CRASH-F1-FIX (2026-09-12): 移除週期性「全執行緒」dump ===
+# 根因 (指令級鐵證, docs/CRASH-F1-SYMBOLS-1.md):
+#   python311.dll + c0000005 + 存取位址 0xA0 的 244/245 次崩潰, 全部落在
+#   faulthandler 傾印器自己的走訪路徑上 —
+#     PyCode_Addr2Line+0xE  ← mov rcx,[rcx+0xA0], RCX=0 (NULL 的 code object)
+#     dump_frame+0xB1 → dump_traceback+0x6D → _Py_DumpTracebackThreads+0x160
+#     → faulthandler_thread+0x50
+#   成因: faulthandler **不停世界**, 在其他執行緒正在執行/釋放 frame 的同時
+#   走訪全部執行緒堆疊 → dump_frame 在 +0x18 讀到的非 NULL `f_code`, 到 +0x95
+#   重讀已變 0。時間軸: 數月零原生崩潰 → 2026-07-30 15:18 兩套全執行緒 dump
+#   啟動 → 5 小時 13 分後首次崩潰 → 45 天 245 次。
 #
-# CRASH-OBS-1 (2026-09-10, 崩潰觀測補洞 — 盲區 iii 修正):
-#   - dump_traceback_later 的週期 dump 沒有時間戳 → 由 _faulthandler_marker_loop
-#     (純 thread, 不依賴 asyncio) 每 60s: 先寫 `===== periodic dump @ <ISO> =====`
-#     標記行, 再重新註冊 timeout=1 的一次性 timer → 每次週期傾印都對齊牆鐘時間
-#     (實驗驗證: 重新註冊會取消舊 timer 並寫到新 file handle)。
-#   - 大小上限: faulthandler.log ≥ 32MB → 輪替為 faulthandler.<ts>.log (保留 3 份),
-#     避免無限期增長 (現況單檔 68.9MB / 94907 線程頭)。
-#   - marker/輪替全部 try/except 吞掉, marker 失敗時退回 repeat=True 保險;
-#     **不可移除** dump_traceback_later 這條 C-level 保險 (唯一能在 C 層崩潰
-#     時留下痕跡的機制)。
+# 修法 (移除下列三處 `faulthandler.dump_traceback_later` 呼叫, 全部移除):
+#   1. 本檔模組層級 (曾為 repeat=True)      — 已移除
+#   2. _faulthandler_marker_tick() timeout=1 — 已移除
+#   3. marker loop fail-safe   timeout=60    — 已移除
+#   **理由**: `dump_traceback_later` **沒有 all_threads 參數, 永遠走訪全部
+#   執行緒** → 就是已證實的崩潰路徑。連帶移除整個 marker 機制
+#   (_faulthandler_marker_loop / _faulthandler_marker_tick / 啟動其 daemon
+#   thread 的區塊) 與週期檔相關程式 (_FAULTHANDLER_PERIODIC_PATH /
+#   _FAULTHANDLER_PERIODIC_FILE / _faulthandler_periodic_open /
+#   _faulthandler_periodic_handle)。marker 的唯一用途是給週期 dump 加時間戳,
+#   週期 dump 既已移除, marker 即無意義。輪替回歸**只管致命檔**。
+#
+# 現存機制（互補）:
+#   1. faulthandler.enable(file=faulthandler.log) 攔 C-level crash
+#      (segfault / C extension panic); CRASH-OBS-3 起在啟動時**無條件安裝**
+#      (_faulthandler_install_fatal_handler, 見下方 L298 區塊的呼叫)。
+#   2. 下方 _heartbeat_dumper() 在 lifespan 啟動：asyncio-based, 每 60s 覆寫
+#      heartbeat_trace.log（只留最近一份,可讀性高）; **all_threads=False**
+#      → 只傾印呼叫者自己那一條執行緒 (event loop 自己, 此刻正阻塞在該呼叫中)
+#      → 不可能與其他執行緒競態, 同時保留「event loop 還活著」的 liveness 觀測。
+#
+# 已知限制 (刻意接受的殘餘風險, 不得當成 bug):
+#   真正的致命錯誤發生時, faulthandler 的致命傾印**仍會傾印全部執行緒**
+#   (Python 不提供限制參數), 因此**該次傾印本身仍可能再崩** (掩蓋原始 fault)。
+#   但這只在「已經發生真實 fault」之後才執行, **不會製造崩潰**; 且 WER
+#   LocalDumps 仍會獨立擷取 minidump 作為無偏證據。
 #
 # 檔案控制代碼是**模組層級變數**,**不能**放在函式內（會被 GC 導致 dump 寫到關閉的 handle）
 import faulthandler
@@ -60,28 +78,16 @@ _FAULTHANDLER_PATH.parent.mkdir(parents=True, exist_ok=True)
 # CRASH-OBS-1: 大小上限 (32MB; 現況 7 天 68.9MB) 與保留份數
 _FAULTHANDLER_MAX_BYTES = 32 * 1024 * 1024
 _FAULTHANDLER_KEEP = 3
-_FAULTHANDLER_MARKER_INTERVAL_SECS = 60
 _FAULTHANDLER_FILE = open(_FAULTHANDLER_PATH, "a", encoding="utf-8", buffering=1)  # line-buffered
-# CRASH-OBS-2 (致命傾印 / 週期 dump 分檔 — 觀測管線隔離):
-#   致命傾印 (faulthandler.enable)         → _FAULTHANDLER_PATH (目標不變)
-#   週期 dump (faulthandler.dump_traceback_later) → _FAULTHANDLER_PERIODIC_PATH (新檔)
-#   動機: 兩者共用一檔時, marker 的週期傾印會與致命例外標頭交錯 (實測
-#   data/faulthandler.log:6073 = `  File Windows fatal exception: access violation`
-#   插在 frame 行中間), 且崩潰執行緒自己的 Python 堆疊從未被完整寫出
-#   (66035 行中 `Current thread 0x` 出現 0 次)。
-#   週期 dump 頻率 (60s) 與 SOUL_OS_EVENT_LOOP 一律不動 (單一變數原則)。
-#   本改動需下次重啟才生效 (0 服務重啟, 不干擾 selector 實驗)。
-_FAULTHANDLER_PERIODIC_PATH = data_root() / "faulthandler_periodic.log"
-# 週期檔 handle: lazy 開啟 (首次週期 dump 才建檔) — 避免 import run_server 的
-# 測試在生產 data/ 下建立新檔 (0 生產資料變更); None = 不可用 (絕不退回致命檔)
-_FAULTHANDLER_PERIODIC_FILE = None
+# CRASH-F1-FIX: 週期 dump 相關常數 (_FAULTHANDLER_MARKER_INTERVAL_SECS /
+# _FAULTHANDLER_PERIODIC_PATH / _FAULTHANDLER_PERIODIC_FILE) 已隨週期機制一併移除。
+# 現存唯一目標檔 = 致命檔 _FAULTHANDLER_PATH (data/faulthandler.log)。
 
 
 def _faulthandler_open() -> None:
-    """(re)open faulthandler.log 並重指 enable() (致命傾印目標不變)。
+    """(re)open faulthandler.log 並重指 enable() (致命傾印目標唯一不變)。
     輪替後呼叫; file handle 是模組層級變數, 重指後自動跟到新檔。
-    CRASH-OBS-2: 週期 dump 已分檔 → 本函式不再註冊 dump_traceback_later,
-    也絕不碰週期 handle (週期檔見 _faulthandler_periodic_open)。"""
+    CRASH-F1-FIX: 週期 dump 已移除 → 本函式不註冊任何全執行緒週期傾印。"""
     global _FAULTHANDLER_FILE
     _FAULTHANDLER_FILE = open(_FAULTHANDLER_PATH, "a", encoding="utf-8", buffering=1)
     faulthandler.enable(file=_FAULTHANDLER_FILE)
@@ -119,49 +125,12 @@ def _faulthandler_install_fatal_handler() -> bool:
     return True
 
 
-def _faulthandler_periodic_open() -> bool:
-    """(re)open faulthandler_periodic.log (append) 並把週期 dump 重指到它。
-
-    只碰週期 handle; 致命 handle (faulthandler.enable 的目標) 不動。
-    C-level 保險 (不可移除) 在此重註冊: 獨立 thread 每 60s dump, asyncio
-    卡死也能寫; 重註冊會覆蓋舊 timer (marker 的 timeout=1 一次性 timer 亦然)。
-    開啟失敗 → handle 設 None + 回 False: 呼叫端寧可該次週期 dump 不寫,
-    絕不退回致命檔 (觀測層絕不影響主服務)。
-    """
-    global _FAULTHANDLER_PERIODIC_FILE
-    try:
-        f = open(_FAULTHANDLER_PERIODIC_PATH, "a", encoding="utf-8", buffering=1)
-    except Exception:
-        _FAULTHANDLER_PERIODIC_FILE = None
-        return False
-    _FAULTHANDLER_PERIODIC_FILE = f
-    try:
-        faulthandler.dump_traceback_later(timeout=60, repeat=True, file=f)
-    except Exception:
-        pass
-    return True
-
-
-def _faulthandler_periodic_handle():
-    """取得週期 dump 目標 handle (首次使用 lazy 開啟); 不可用回 None。
-
-    lazy 開啟的理由: 只在真正要寫週期 dump 時才建檔, 避免 import run_server
-    的既有測試在生產 data/ 下建立新檔 (0 生產資料變更)。
-    """
-    if _FAULTHANDLER_PERIODIC_FILE is None or getattr(
-        _FAULTHANDLER_PERIODIC_FILE, "closed", True
-    ):
-        if not _faulthandler_periodic_open():
-            return None
-    return _FAULTHANDLER_PERIODIC_FILE
-
-
 def _faulthandler_rotate_one(path: Path, handle, reopen, stem: str) -> bool:
     """單一 faulthandler 檔的輪替: ≥ MAX → 關檔改名保留 → 重開重指。
 
-    吞掉所有例外; 回傳是否輪替。CRASH-OBS-2: 由 _faulthandler_rotate_if_needed
-    對致命檔 (stem="faulthandler") 與週期檔 (stem="faulthandler_periodic") 各呼叫
-    一次, 沿用既有 keep 數與 `<stem>.<ts>.log` 命名慣例。
+    吞掉所有例外; 回傳是否輪替。CRASH-F1-FIX: 週期檔已移除 → 通用形式僅由
+    _faulthandler_rotate_if_needed 對致命檔 (stem="faulthandler") 呼叫一次,
+    沿用既有 keep 數與 `<stem>.<ts>.log` 命名慣例 (通用形式刻意保留)。
     """
     try:
         if not path.exists():
@@ -197,57 +166,26 @@ def _faulthandler_rotate_one(path: Path, handle, reopen, stem: str) -> bool:
 
 
 def _faulthandler_rotate_if_needed() -> bool:
-    """致命檔與週期檔各自 ≥ MAX → 各自輪替; 回傳是否有任一輪替。"""
-    fatal = _faulthandler_rotate_one(
+    """致命檔 ≥ MAX → 輪替; 回傳是否輪替。
+
+    CRASH-F1-FIX: 週期檔已移除 → 只管致命檔 (data/faulthandler.log)。
+    """
+    return _faulthandler_rotate_one(
         _FAULTHANDLER_PATH, _FAULTHANDLER_FILE, _faulthandler_open, "faulthandler"
     )
-    periodic = _faulthandler_rotate_one(
-        _FAULTHANDLER_PERIODIC_PATH,
-        _FAULTHANDLER_PERIODIC_FILE,
-        _faulthandler_periodic_open,
-        "faulthandler_periodic",
-    )
-    return fatal or periodic
 
 
 # 啟動即檢查: 上次殘留 ≥ 32MB → 立刻輪替 (每次重啟都重置大小上限)
 _faulthandler_rotate_if_needed()
 
 
-def _faulthandler_marker_tick() -> None:
-    """單次 marker tick (供 marker loop 與離線驗證呼叫):
-    1) 寫時間戳標記行; 2) 重註冊 1s 後的一次性 dump (標記後 ~1s 寫出);
-    3) 大小檢查輪替 (兩檔)。任何例外由呼叫方吞掉。
-    CRASH-OBS-2: 目標一律是週期檔; 週期檔不可用 → 本次不寫,
-    絕不退回致命檔 (否則崩潰現場又會被週期快照污染)。"""
-    iso = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-    target = _faulthandler_periodic_handle()
-    if target is None:
-        return
-    target.write(f"\n===== periodic dump @ {iso} =====\n")
-    target.flush()
-    faulthandler.dump_traceback_later(timeout=1, repeat=False, file=target)
-    _faulthandler_rotate_if_needed()
-
-
-def _faulthandler_marker_loop() -> None:
-    """faulthandler 週期 dump 的時間戳對齊 + 大小輪替 (純 daemon thread)。
-
-    每 60s: marker tick; 失敗 → 退回 repeat=True 保險 (C-level 保險永不移除)。
-    所有例外吞掉: 觀測層絕不影響主服務。
-    CRASH-OBS-2: tick 與 fail-safe 保險的目標都是**週期檔** (絕不寫致命檔)。
-    """
-    while True:
-        time.sleep(_FAULTHANDLER_MARKER_INTERVAL_SECS)
-        try:
-            _faulthandler_marker_tick()
-        except Exception:
-            try:
-                target = _faulthandler_periodic_handle()
-                if target is not None:
-                    faulthandler.dump_traceback_later(timeout=60, repeat=True, file=target)
-            except Exception:
-                pass
+# CRASH-F1-FIX: _faulthandler_marker_tick() / _faulthandler_marker_loop() 已移除。
+# 它們的唯一用途是「先寫 `===== periodic dump @ <ISO> =====` 標記行, 再重新註冊
+# 一次性 dump_traceback_later(timeout=1)」給週期 dump 加時間戳; 週期 dump 既已
+# 移除 (它是 244/245 次崩潰的成因), marker 機制即無存在意義。
+# 守門測試: tests/test_crash_f1_fix_no_periodic_dump.py 以 AST 掃描斷言本檔
+# 0 處 dump_traceback_later 呼叫/屬性引用、0 處 all_threads=True、
+# 且 _faulthandler_marker_tick / _faulthandler_marker_loop 兩個函式不存在。
 
 
 # === Heartbeat trace 快照 (CRASH-OBS-1, 盲區 ii 修正) ===
@@ -1669,9 +1607,13 @@ async def lifespan(app: FastAPI):
     logger.info("[Server] 所有模組啟動完成")
 
     # === Async heartbeat dumper (Lesson 38) ===
-    # 跟上面 faulthandler.dump_traceback_later 互補：asyncio-based，
-    # 每次 dump 覆寫 heartbeat_trace.log（只留最新一份）,可讀性高
-    # 如果 event loop 死了,這條會停;faulthandler 的 thread-based dump 還是會繼續
+    # asyncio-based，每次 dump 覆寫 heartbeat_trace.log（只留最新一份）,可讀性高。
+    # CRASH-F1-FIX: 原本 all_threads=True 會走訪**全部執行緒** → 與其他執行緒
+    # 正在執行/釋放 frame 競態 → 已證實的 c0000005 @ 0xA0 崩潰路徑
+    # (見 docs/CRASH-F1-SYMBOLS-1.md)。改 all_threads=False 後只傾印**呼叫者
+    # 自己**那一條執行緒 (event loop 自己, 此刻正阻塞在這個呼叫中)
+    # → 不可能與其他執行緒競態; 仍保留「event loop 還活著且在動」的 liveness 觀測。
+    # 60s 節奏 / 覆寫語意 / _snapshot_heartbeat_trace 快照 / KEEP=10 一律不變。
     async def _heartbeat_dumper():
         # P0.5 (Bry 派工 2026-08-09 19:48): use data_root() for test isolation
         _dumper_path = data_root() / "heartbeat_trace.log"
@@ -1687,7 +1629,7 @@ async def lifespan(app: FastAPI):
                     _first = False
                 with open(_dumper_path, "w", encoding="utf-8") as f:
                     f.write(f"=== {time.strftime('%Y-%m-%d %H:%M:%S')} (overwrite, every 60s) ===\n")
-                    faulthandler.dump_traceback(file=f, all_threads=True)
+                    faulthandler.dump_traceback(file=f, all_threads=False)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -1700,14 +1642,9 @@ async def lifespan(app: FastAPI):
     app.state._dumper_task = asyncio.create_task(_heartbeat_dumper())
     logger.info("[Server] heartbeat dumper 啟動 (60s/次, 寫 data/heartbeat_trace.log)")
 
-    # CRASH-OBS-1: 啟動 faulthandler marker thread (時間戳對齊 + 大小輪替)
-    # 純 daemon thread, 不依賴 asyncio; 崩潰/例外全部吞掉, 0 主服務影響
-    _fh_marker_thread = threading.Thread(
-        target=_faulthandler_marker_loop, name="faulthandler-marker", daemon=True
-    )
-    _fh_marker_thread.start()
-    app.state._faulthandler_marker_thread = _fh_marker_thread
-    logger.info("[Server] faulthandler marker thread 啟動 (60s/次, dump 加時間戳 + 大小輪替)")
+    # CRASH-F1-FIX: 原本此處啟動 faulthandler marker daemon thread
+    # (name="faulthandler-marker", 60s/次 加時間戳 + 大小輪替) — **已整段移除**。
+    # 週期全執行緒 dump 是本票移除的崩潰根因, marker 只為它服務。
 
     # ── Event loop self-check (Bry 拍板 2026-08-03 13:40) ───────
     # 跟 Lesson 38 dumper 互補:
