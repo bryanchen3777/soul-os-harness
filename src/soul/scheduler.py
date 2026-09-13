@@ -450,6 +450,17 @@ class SoulScheduler:
                     f"[Goal] 状态同步异常 (fail-closed): "
                     f"{type(goal_err).__name__}: {goal_err}"
                 )
+            # P1-A-1 (2026-09-12, ADDITIVE OBSERVABILITY): 四元決策標籤落盤。
+            #   純觀測 sidecar: 只讀 result / motive 的既有欄位, 0 判定語意變更。
+            #   與 goal_provider.on_decision 並列的獨立 best-effort 區塊——
+            #   寫入失敗只 warning, 絕不中斷 gate (分支結構 / 回傳值完全不變)。
+            try:
+                from src.soul.decision_trace import DecisionTraceStore
+                DecisionTraceStore().append(
+                    agent_id=agent_id, motive=motive, result=result
+                )
+            except Exception as trace_err:
+                logger.warning(f"[DecisionTrace] append failed: {trace_err}")
             if result.transmit:
                 engine.mark_transmitted(motive.motive_id)
                 # C-3.1 (契约 §2.3 #1): 记录 transmit 目标, 供 _publish_agency_trigger
@@ -457,7 +468,7 @@ class SoulScheduler:
                 self._last_transmit_target = getattr(motive, "target", None)
                 logger.info(
                     f"[SM-3 Decision] {agent_id} transmit motive={motive.motive_id} "
-                    f"reason={result.reason!r}"
+                    f"decision={result.decision} reason={result.reason!r}"
                 )
                 return True
             # TS-2.1 (2026-09-04): observe/reflect 决策 → Actuator 单次执行 + 结果回流。
@@ -467,7 +478,7 @@ class SoulScheduler:
             engine.mark_rejected(motive.motive_id)
             logger.info(
                 f"[SM-3 Decision] {agent_id} not_transmit motive={motive.motive_id} "
-                f"reason={result.reason!r}"
+                f"decision={result.decision} reason={result.reason!r}"
             )
             return False
         except Exception as e:
