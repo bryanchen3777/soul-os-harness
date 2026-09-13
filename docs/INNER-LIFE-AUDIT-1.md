@@ -50,7 +50,7 @@
 
 **矩陣裁決（實測）**
 - **10/10 角色的日記管道都活著**：全體在 2026-09-12 12:00Z（本地 08:00）都產出了 morning 日記 → **不存在「完全失活的沉默死角角色」**。
-- **10/10 角色的關係帶全部凍結在 `stranger`**（100/100 條），100/100 `band_updated_at = null`（從未發生過任何升帶/降帶）。→ 見 §4.2。
+- **10/10 角色的關係帶全部凍結在 `stranger`**（100/100 條），`band_updated_at` 欄位從未寫入（實測 0 次出現，該欄位不存在於檔案中），即從未發生過任何升帶/降帶。→ 見 §4.2。
 - **7/10 角色從未產出任何自主目標候選**（`goal_provider.json` 的 `rotation` 為空、`last_candidate_at = 0.0`）：Anna、Aoi、Mahiru、Mai、Ram、Rem、Miku。
 - **夢境分佈極不均**：13 天內 Rem 2 次、Mai 3 次 vs Yua 10 次 — 差距 5 倍。**Aoi 已 4 天無夢**（09-08 後）。
 - **`rem` 是唯一的多重異常體**：dream 最少（2）＋ 動機最多（39）＋ 日記 night 觸發暴衝（見 §4.1）。
@@ -302,7 +302,7 @@
 **已驗證事實（可直接複驗）**
 1. 10/10 生產角色的日記管道在審計當日活著；近 7 天 morning 缺 09-05/09-08/09-11（全體同步）。
 2. 09-05、09-11 缺 morning 對應 `08:03` watchdog restart；09-08 對應 `CAP REACHED` + 02:33~19:18 服務停擺（watchdog.log 15,558 行完整）。
-3. 100/100 關係條目 band=`stranger`、`band_updated_at=null`；`reply_exchanges` 全 0；`user_bryan.impression` 10/10 為空。
+3. 100/100 關係條目 band=`stranger`、`band_updated_at` 欄位從未寫入（實測 0 次出現，該欄位不存在於檔案中）；`reply_exchanges` 全 0；`user_bryan.impression` 10/10 為空。
 4. 2,528 個升華節點：`confidence` 全 0.5；`stability` ∈ {0.0, 0.3}；`essence` 0；`superseded_by` 非空 0；**生產 agent 513/513 節點 content 為觸發標籤 stub**。
 5. 語料內 `[elevate] skip` 1,693 / `[elevate] ✓` 34；生產 agent 82 個週期內成功 **1** 次（`agent_ruka/value`）；現行世代 20:33、21:03 兩週期 agent 全 skip。
 6. 四元決策標籤**未被任何生產落盤或日誌記錄**；`[SM-3 Decision]` 語料內 **2** 次，皆 `not_transmit`。
