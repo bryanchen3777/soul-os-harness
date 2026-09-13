@@ -87,6 +87,38 @@ def _faulthandler_open() -> None:
     faulthandler.enable(file=_FAULTHANDLER_FILE)
 
 
+def _faulthandler_install_fatal_handler() -> bool:
+    """CRASH-OBS-3: 啟動時**無條件**安裝致命傾印處理器 (不可依賴輪替)。
+
+    回歸背景: CRASH-OBS-1 (d20d9f2) 重構把原本模組層級 (d49c75d) 的
+    `faulthandler.enable(file=...)` 收進 `_faulthandler_open()`, 而該函式只在
+    輪替路徑 (由 `_faulthandler_rotate_if_needed` 傳 reopen=_faulthandler_open,
+    檔案 ≥ _FAULTHANDLER_MAX_BYTES 才走) 被呼叫 → 檔案未達上限的啟動等於
+    「執行中進程完全沒有致命傾印處理器」(實測 data/faulthandler.log 6.0MB < 32MB)。
+
+    冪等: `faulthandler.enable()` 可重複呼叫 (等價於替換目標檔); 只要 handle
+    仍有效就**絕不重開、絕不關閉**正在使用的 handle (僅 None / 已關時才重開)。
+    失敗 (open 或 enable 拋例外) → 吞掉 + logger.warning, 回 False:
+    觀測層絕不影響主服務。回傳是否安裝成功。
+    """
+    global _FAULTHANDLER_FILE
+    try:
+        handle = _FAULTHANDLER_FILE
+        if handle is None or getattr(handle, "closed", True):
+            handle = open(_FAULTHANDLER_PATH, "a", encoding="utf-8", buffering=1)
+            _FAULTHANDLER_FILE = handle
+        faulthandler.enable(file=handle)
+    except Exception as e:  # 觀測層絕不影響主服務
+        logging.getLogger("soul_os.server").warning(
+            "[Server] faulthandler 致命傾印安裝失敗 (非致命, 服務照常啟動): %s", e
+        )
+        return False
+    logging.getLogger("soul_os.server").info(
+        "[Server] faulthandler 致命傾印已安裝 -> %s", _FAULTHANDLER_PATH
+    )
+    return True
+
+
 def _faulthandler_periodic_open() -> bool:
     """(re)open faulthandler_periodic.log (append) 並把週期 dump 重指到它。
 
@@ -262,6 +294,14 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
+
+# ── CRASH-OBS-3: 啟動時無條件安裝致命傾印處理器 (不可依賴輪替) ──────────
+# 回歸: CRASH-OBS-1 把 enable() 收進 _faulthandler_open(), 而它只在輪替
+# (檔案 ≥ 32MB) 時被呼叫 → 未達上限的啟動 = 執行中進程沒有致命傾印處理器。
+# 位置刻意放在 logging 設定之後: 「已安裝」那行 log 是重啟後唯一憑據,
+# 必須確保它真的落盤 (basicConfig 之前發出的 INFO 會被丟棄)。
+# 內部所有例外吞掉 (只記 warning), 觀測層絕不影響主服務; 可重複呼叫 (冪等)。
+_faulthandler_install_fatal_handler()
 
 # Phase 5b：load .env（讓 TELEGRAM_BOT_* / MINIMAX_API_KEY 等生效）
 # 沒 .env 也不報錯
