@@ -156,18 +156,21 @@ class TestSchema42:
         s.apply_relation_evaluation("agent_rem", ref="w2", now_iso="2026-09-07T10:00:00+00:00")
         assert s.get("agent_rem")["relational_band"] == BAND_FAMILIAR
 
-    def test_demote_after_30_days_no_signal(self, tmp_path):
+    def test_demote_after_90_days_no_signal(self, tmp_path):
         s = _store(tmp_path)
-        s.apply_relation_evaluation("agent_rem", reply_exchanges_delta=10,
-                                    co_presence_sessions_delta=15,
+        s.apply_relation_evaluation("agent_rem", reply_exchanges_delta=2,
+                                    co_presence_sessions_delta=2,
                                     ref="w1", now_iso="2026-08-01T10:00:00+00:00")
         e = s.get("agent_rem")
         assert e["relational_band"] == BAND_KNOWN  # 每评估窗口至多升 1 级: stranger→known
-        # 第二轮慢爬: 计数满足 familiar 门槛 → known→familiar
+        # 第二轮慢爬: 计数满足 familiar 门槛（SG-3 §5.1: co≥2 且 reply≥2）→ known→familiar
         s.apply_relation_evaluation("agent_rem", ref="w2", now_iso="2026-08-02T10:00:00+00:00")
         assert s.get("agent_rem")["relational_band"] == BAND_FAMILIAR
-        # 45 天后无信号 → 降 1 带 → known
-        s.apply_relation_evaluation("agent_rem", ref="w3", now_iso="2026-09-16T10:00:00+00:00")
+        # SG-3 §5.2: DEMOTE_DAYS 30 → 90 → 45 天不再降带（仍在 90 天窗内）
+        s.apply_relation_evaluation("agent_rem", ref="w2b", now_iso="2026-09-16T10:00:00+00:00")
+        assert s.get("agent_rem")["relational_band"] == BAND_FAMILIAR
+        # 91 天无信号 → 降 1 带 → known
+        s.apply_relation_evaluation("agent_rem", ref="w3", now_iso="2026-10-31T10:00:00+00:00")
         assert s.get("agent_rem")["relational_band"] == BAND_KNOWN
 
     def test_negative_delta_rejected(self, tmp_path):
@@ -231,8 +234,8 @@ class TestSG21SlowClimbRequiresSignal:
     """SG-2.1 修复 (TL-9 呈报主大脑拍板): 无信号时底带 stranger 不允许凭历史
     计数慢爬回升 (离散遗忘语义); 有信号时正常升级路径与带≥known 慢爬不变。"""
 
-    # 时间链: 2026-08-01 有信号 → 2026-09-03 (33d)/10-05 (65d)/11-06 (97d)
-    # 无信号结算各降 1 带, 11-07 新信号恢复
+    # 时间链: 2026-08-01 有信号 → 2026-10-31 (91d)/2027-01-30 (182d) 无信号结算
+    # 各降 1 带, 2027-01-31 新信号恢复（SG-3 §5.2: DEMOTE_DAYS 30 → 90）
     BASE = "2026-08-01T10:00:00+00:00"
 
     def _demote_to_stranger(self, s: RelationshipsStore) -> None:
@@ -247,13 +250,13 @@ class TestSG21SlowClimbRequiresSignal:
             "agent_rem", ref="w2", now_iso="2026-08-02T10:00:00+00:00",
         )
         assert s.get("agent_rem")["relational_band"] == BAND_FAMILIAR
-        # w3/w4: 33 天 / 65 天无信号 → 各降 1 带 → stranger
+        # w3/w4: 91 天 / 182 天无信号 → 各降 1 带 → stranger
         s.apply_relation_evaluation(
-            "agent_rem", ref="w3", now_iso="2026-09-03T10:00:00+00:00",
+            "agent_rem", ref="w3", now_iso="2026-10-31T10:00:00+00:00",
         )
         assert s.get("agent_rem")["relational_band"] == BAND_KNOWN
         s.apply_relation_evaluation(
-            "agent_rem", ref="w4", now_iso="2026-10-05T10:00:00+00:00",
+            "agent_rem", ref="w4", now_iso="2027-01-30T10:00:00+00:00",
         )
         assert s.get("agent_rem")["relational_band"] == BAND_STRANGER
 
@@ -261,9 +264,9 @@ class TestSG21SlowClimbRequiresSignal:
         """无信号 + 底带 stranger + 累计计数非零 → 保持 stranger (振荡消除)。"""
         s = _store(tmp_path)
         self._demote_to_stranger(s)
-        # w5: 降带后再 30+ 天无信号 → 底带不降且不慢爬回升
+        # w5: 降带后再 90+ 天无信号 → 底带不降且不慢爬回升
         e = s.apply_relation_evaluation(
-            "agent_rem", ref="w5", now_iso="2026-11-06T10:00:00+00:00",
+            "agent_rem", ref="w5", now_iso="2027-05-01T10:00:00+00:00",
         )
         assert e["relational_band"] == BAND_STRANGER
         # 计数保留 (不清零), last_signal_at 不更新 (无新信号)
@@ -277,14 +280,14 @@ class TestSG21SlowClimbRequiresSignal:
         self._demote_to_stranger(s)
         e = s.apply_relation_evaluation(
             "agent_rem", reply_exchanges_delta=1, ref="w6",
-            now_iso="2026-11-07T10:00:00+00:00",
+            now_iso="2027-01-31T10:00:00+00:00",
         )
         # 有信号 → 正常升级路径 (每窗至多升 1 级)
         assert e["relational_band"] == BAND_KNOWN
         # 计数累计 (不清零): 5+1=6; last_signal_at 刷新
         assert e["objective"]["reply_exchanges"] == 6
         assert e["objective"]["co_presence_sessions"] == 6
-        assert e["objective"]["last_signal_at"] == "2026-11-07T10:00:00+00:00"
+        assert e["objective"]["last_signal_at"] == "2027-01-31T10:00:00+00:00"
 
 
 # ───────────────────────────────────────────────────────────

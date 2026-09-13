@@ -96,20 +96,23 @@ class TestScenario1RelationUp:
         # 轨迹: stranger→known(首窗计数已满 familiar 门槛仍只升 1 级)→familiar→close
         trajectory = [r.band_after for r in recs]
         assert trajectory == ["known", "known", "familiar", "familiar", "close"]
-        # 硬断言 1: 单次 24h 结算至多升 1 级 (step1 计数 reply=3/co=5 已够
-        # familiar 门槛, 结算后仍只到 known)
+        # 硬断言 1: 单次 24h 结算至多升 1 级 (step1 累计计数 reply=3/co=3 已够
+        # familiar 门槛 (2,2), 结算后仍只到 known)
+        # SG-3 §5.1: 结算端单窗增量上限 = 1 → 每窗 +1（co/reply 同源折抵）
         r1 = recs[0]
         assert r1.band_before == "stranger"
         assert r1.band_after == "known"
         assert r1.reply_exchanges == 3
-        assert r1.co_presence_sessions == 5
+        assert r1.co_presence_sessions == 3
         # 硬断言 2: 24h 窗口节流生效 (窗口内重复信号不重复结算)
         r2 = recs[1]
         assert r2.settle_skipped == "throttle"
         assert r2.reply_exchanges == 3  # 计数不变 (重复信号被吞)
-        # close 门槛: reply=10 且 co=15
-        assert recs[-1].reply_exchanges == 10
-        assert recs[-1].co_presence_sessions == 15
+        # close 门槛 (SG-3 §5.1): reply≥4 且 co≥4。
+        # 累計: seed 2/2 + 窗 1 (+1/+1) + 節流窗重複信號落入窗 3 (+1 reply)
+        #      + 窗 5 (+1/+1) → reply=5, co=4
+        assert recs[-1].reply_exchanges == 5
+        assert recs[-1].co_presence_sessions == 4
         # 0 降带 / 0 浮点 (band_updated_at 只写带迁移时刻)
         assert all(r.settle_demoted == 0 for r in recs)
         assert all(r.band_updated_at for r in recs if r.band_after != r.band_before)
@@ -176,33 +179,34 @@ class TestScenario3NaturalCooling:
         d = out["derived"]
         assert d.passed, f"剧本 3 硬断言失败: {d.checks}"
         recs = out["records"]
-        # 30 天整不降 (>30 天才降, 契约已落地语义)
+        # SG-3 §5.2: 降帶窗 30 → 90 天（天數常數換算; 劇本語意不變）
+        # 90 天整不降 (>90 天才降, 契约已落地语义)
         assert recs[0].band_after == "familiar"
         assert recs[0].settle_demoted == 0
-        # 31 天 → 降 1 级 familiar→known, band_updated_at 更新
+        # 91 天 → 降 1 级 familiar→known, band_updated_at 更新
         assert recs[1].band_before == "familiar"
         assert recs[1].band_after == "known"
         assert recs[1].settle_demoted == 1
         assert recs[1].band_updated_at == recs[1].sim_ts
-        # 62 天 → known→stranger
+        # 182 天 → known→stranger
         assert recs[2].band_after == "stranger"
-        # 93 天 → 底带不跌穿 (不再执行降带, demoted==0) 且无信号不慢爬回升
+        # 183 天 → 底带不跌穿 (不再执行降带, demoted==0) 且无信号不慢爬回升
         # (SG-2.1 修复: 原来会因累计计数非零被补升回 known 的确定性振荡)
         assert recs[3].band_after == "stranger"
         assert recs[3].settle_demoted == 0
         assert d.checks["no_slow_climb_rebound"] is True
-        # 123 天 → 降带后继续无信号 30 天, 仍保持 stranger (不再回升)
+        # 213 天 → 降带后继续无信号 90 天, 仍保持 stranger (不再回升)
         assert recs[4].band_after == "stranger"
         assert recs[4].settle_demoted == 0
         assert d.checks["stranger_held_no_rebound"] is True
         # 计数冻结 (0 增量; 历史计数保留不清零)
-        assert recs[4].reply_exchanges == 5
-        assert recs[4].co_presence_sessions == 6
-        # 124 天 → 窗口出现新 reply 信号 → 正常升级路径升回 known (门槛照旧)
+        assert recs[4].reply_exchanges == 2
+        assert recs[4].co_presence_sessions == 2
+        # 214 天 → 窗口出现新 reply 信号 → 正常升级路径升回 known (门槛照旧)
         assert recs[5].band_before == "stranger"
         assert recs[5].band_after == "known"
         assert recs[5].settle_updated >= 1
-        assert recs[5].reply_exchanges == 6  # 计数累计 (不清零)
+        assert recs[5].reply_exchanges == 3  # 计数累计 (不清零: 2 + 1)
         assert d.checks["new_signal_recovers_known"] is True
 
 

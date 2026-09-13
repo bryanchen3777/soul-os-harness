@@ -8,14 +8,31 @@ src/social/relation_settlement.py — SG-2 关系演化沉淀层（D3, 24h/agent
 RelationshipsStore.apply_relation_evaluation（唯一写入口, 带状态机 + 幂等 ref）。
 
 信号口径（契约 §3.2/§4.1, 既有载体 0 新事件类型）:
-  - reply_exchanges    : perception_trace.jsonl 窗口内 event_type="reply" 事件
-    成对折抵 = min(对方 reply 事件数, 我方 reply 事件数) — 无 source_event_id
-    持久化的 v1 近似（诚实标注, 契约歧义见报告）
+  - reply_exchanges    : **SG-3 §4.3 读侧折抵**——perception_trace.jsonl 中
+    event_type="reply" 实测 **0 行**（该 key 完全不存在, SG-3 §2 E3）, 故 reply
+    动力改以既有 cross_chat / shared_event 共在记录的**读侧折抵**实现:
+    **每个既有的共在 session 折抵 1 个 reply_exchange**（0 新增 LLM 调用 /
+    0 新增 SOCIAL_WORLD_EVENT 生产端 / 0 改 producer_gate、submission_gate、
+    identity_firewall）。真正的 reply 事件若未来出现, 与折抵值相加后同受
+    单窗上限约束。
   - co_presence_sessions: interactions.jsonl 窗口内 agents 同时含 agent & other
     的 session 记录数（同客厅共在, 既有 cross_chat/shared_event 载体）
   - dream_exchanges    : v1 无方向性持久载体（diary dream entry 不含 target,
-    on_dream 只有 legacy touch）→ 生产计数恒 0, 状态机 dream 门保留
-    （契约 §4.2.2 评估输入只列 reply/co-presence, 与契约字面一致）
+    on_dream 只有 legacy touch）→ 生产计数恒 0, 状态机已按 OQ-4 删除 dream 门
+    （SG-3 §5.1; 未来接口注释保留, 见 relational_bands._CLOSE_THRESHOLDS）
+
+单窗增量上限 = 1（SG-3 §5.1「≥2 个不同 24h 窗（累计制）」的实作机制,
+幕僚长拍板）:
+  - 同一 pair 在同一结算窗内, co_presence_sessions 与 reply_exchanges 的
+    增量各**至多 1** → 「累计计数 ≥2」在结构上必然跨 ≥2 个不同结算窗
+    → 无需新增任何 schema 字段即满足契约语义。
+  - dream 增量不在此限（恒 0, 且已无门）。
+  - ⚠️ 已明示的后果（SG-3 §4.3 的设计, 非本实作偷懒）: 因 co 与 reply 读侧同源
+    （reply 折抵 = 共在数 + reply 事件数, 而 reply 事件实测 0）, 在现行产率 R 下
+    reply 与 co **逐窗恒等** → relational_bands 的 known→familiar 中
+    「且 reply_exchanges ≥ 2」目前与「co_presence_sessions ≥ 2」等价,
+    **该 `and` 目前不具约束力**。这是契约明示的读侧聚合口径, 不是遗漏;
+    若未来 SI-3 补上真实 reply 生产端, 该 `and` 会自动恢复约束力。
 
 节流与幂等（契约 §4.2）:
   - 24h/agent 窗口: GoalProviderState.last_relation_update_at（复用
@@ -154,6 +171,53 @@ def collect_window_signals(
     return out
 
 
+def _log_band_migration(
+    *,
+    agent_id: str,
+    other_id: str,
+    from_band: str,
+    to_band: str,
+    direction: str,
+    window_deltas: Dict[str, int],
+    entry: Dict[str, Any],
+    ts: str,
+) -> None:
+    """OQ-3（Owner 裁定 2026-09-13）: 带迁移发生时写**一行**结构化 log。
+
+    裁定内容 = 「不建历史层」: **0 新文件 / 0 新 sqlite 表 / 0 新 schema 字段 /
+    0 新定时器** —— 只在既有 logger 上加一行可事后追溯的结构化记录。
+
+    字段（工单指定, 全为既有数据, 0 编造）:
+      agent_id / other / from_band / to_band / direction /
+      counts（本窗判定所读的累计计数器）/ window_deltas（本窗增量）/
+      ref / ts
+    """
+    obj = entry.get("objective") if isinstance(entry, dict) else None
+    obj = obj if isinstance(obj, dict) else {}
+    payload = {
+        "agent_id": agent_id,
+        "other": other_id,
+        "from_band": from_band,
+        "to_band": to_band,
+        "direction": direction,
+        "counts": {
+            "reply_exchanges": int(obj.get("reply_exchanges", 0)),
+            "co_presence_sessions": int(obj.get("co_presence_sessions", 0)),
+            "dream_exchanges": int(obj.get("dream_exchanges", 0)),
+        },
+        "window_deltas": {
+            "reply_exchanges": int(window_deltas.get("reply_exchanges", 0)),
+            "co_presence_sessions": int(window_deltas.get("co_presence_sessions", 0)),
+            "dream_exchanges": int(window_deltas.get("dream_exchanges", 0)),
+        },
+        "ref": entry.get("last_relation_update_ref") if isinstance(entry, dict) else None,
+        "ts": ts,
+    }
+    logger.info(
+        f"[RelSettle][BAND_MIGRATION] {json.dumps(payload, ensure_ascii=False, sort_keys=True)}"
+    )
+
+
 def settle_relations(
     agent_id: str,
     now: Optional[datetime] = None,
@@ -168,7 +232,7 @@ def settle_relations(
       2. 只读现查窗口信号（collect_window_signals）
       3. 对每个有信号 / 需要降带检查的 entry 调
          RelationshipsStore.apply_relation_evaluation（唯一写入口, 幂等 ref）
-      4. 无信号的 entry 也过降带检查（30 天 stale → 降 1 带）
+      4. 无信号的 entry 也过降带检查（90 天 stale → 降 1 带, SG-3 §5.2）
 
     Returns:
         {"skipped": str|None, "updated": int, "demoted": int}
@@ -232,11 +296,18 @@ def settle_relations(
     }
     for other_id in others:
         counts = signals.get(other_id, {})
-        reply = int(counts.get("reply", 0))
-        co = int(counts.get("co_presence", 0))
+        co_raw = int(counts.get("co_presence", 0))
+        # SG-3 §4.3 reply 动力读侧折抵: 每个既有的共在 session 折抵
+        # 1 个 reply_exchange（0 新增 LLM 调用 / 0 新生产端, 见模块 docstring）。
+        reply_raw = int(counts.get("reply", 0)) + co_raw
+        # SG-3 §5.1 单窗增量上限 = 1（co / reply 皆同, 见模块 docstring）:
+        # 「累计计数 ≥2」因此必然跨 ≥2 个不同结算窗。
+        reply = min(reply_raw, 1)
+        co = min(co_raw, 1)
+        # dream: v1 无方向性持久载体 → 恒 0; 不设窗上限（无门可命中）
         dream = int(counts.get("dream", 0))
         # 每个对子都过评估: 有信号 → 增量 + 升带; 无信号 → 0 增量, apply 内部
-        # 走 30 天降带检查（stale → 降 1 带）与慢爬评估（幂等）
+        # 走 90 天降带检查（stale → 降 1 带）与慢爬评估（幂等）
         before = store.get(other_id)
         band_before = (
             before.get("relational_band", "stranger") if before else "stranger"
@@ -250,15 +321,30 @@ def settle_relations(
             now_iso=now_iso,
         )
         band_after = entry.get("relational_band", "stranger")
+        window_deltas = {
+            "reply_exchanges": reply,
+            "co_presence_sessions": co,
+            "dream_exchanges": dream,
+        }
         if band_order.get(band_after, 0) < band_order.get(band_before, 0):
             demoted += 1
             logger.info(
                 f"[RelSettle] {agent_id}→{other_id} 降带: {band_before}→{band_after} "
-                f"(30 天无新信号)"
+                f"(90 天无新信号)"
+            )
+            _log_band_migration(
+                agent_id=agent_id, other_id=other_id,
+                from_band=band_before, to_band=band_after, direction="demote",
+                window_deltas=window_deltas, entry=entry, ts=now_iso,
             )
         elif band_after != band_before:
             logger.info(
                 f"[RelSettle] {agent_id}→{other_id} 升带: {band_before}→{band_after}"
+            )
+            _log_band_migration(
+                agent_id=agent_id, other_id=other_id,
+                from_band=band_before, to_band=band_after, direction="promote",
+                window_deltas=window_deltas, entry=entry, ts=now_iso,
             )
         if reply or co or dream:
             updated += 1

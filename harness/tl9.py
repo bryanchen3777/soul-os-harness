@@ -126,11 +126,20 @@ BAND_CLOSE = "close"
 DECISION_ACTIONS = ("transmit", "observe", "reflect", "do_nothing")
 
 # 剧本 1 信号量 (整数, 对照契约门槛)
-S1_INIT_REPLY_PAIRS = 3      # 首窗 reply 对 (min 折抵后 = 3)
-S1_INIT_CO_SESSIONS = 5      # 首窗 co-presence
-S1_DUPE_REPLY_PAIRS = 1      # 节流窗内重复信号 (被 24h 节流吞掉; 计入 D2 慢爬窗)
-S1_CLOSE_REPLY_EXTRA = 6     # close 门槛: 3 + 1(重复) + 6 = 10
-S1_CLOSE_CO_EXTRA = 10       # close 门槛: 5 + 10 = 15
+# ── SG-3 §5.1 重標定後的劇本 1 參數（**門檻數值改了, 劇本語意 0 變更**）──
+#   SG-3 後: stranger→known = co≥1 或 reply≥1; known→familiar = co≥2 且 reply≥2;
+#            familiar→close = co≥4 且 reply≥4; 且結算端**單窗增量上限 = 1**
+#            （co / reply 同源折抵 → 每窗各 +1）。
+#   故「每窗至多升 1 級」的硬斷言改以 **seed 計數 (2,2)** 承載:
+#   seed 已達 familiar 門檻 → 窗 1 後仍只到 known（不跳級）。
+S1_SEED_REPLY = 2               # fixture 既有累計 reply 計數（恰達 familiar 門檻）
+S1_SEED_CO = 2                  # fixture 既有累計 co 計數
+S1_WINDOW_SIGNALS = 1           # 每個有訊號窗的訊號筆數（單窗上限 = 1 → 增量必為 1）
+S1_INIT_REPLY_PAIRS = S1_SEED_REPLY + S1_WINDOW_SIGNALS   # 窗 1 後累計 = 3
+S1_INIT_CO_SESSIONS = S1_SEED_CO + S1_WINDOW_SIGNALS      # 窗 1 後累計 = 3
+S1_DUPE_REPLY_PAIRS = 1         # 节流窗内重复信号 (被 24h 节流吞掉; 计入 D2 慢爬窗)
+S1_CLOSE_REPLY_EXTRA = S1_WINDOW_SIGNALS   # close 門檻: 3 + 1 = 4
+S1_CLOSE_CO_EXTRA = S1_WINDOW_SIGNALS      # close 門檻: 3 + 1 = 4
 
 
 # ───────────────────────────────────────────────────────────
@@ -451,9 +460,16 @@ class TL9Runner:
         """stranger → known → familiar → close (整数门槛, 每窗至多升 1 级)。"""
         a, b = TL9_AGENT_A, TL9_AGENT_B
         # fixture: agent_a 认识 agent_akane (stranger 底档 entry; 沉淀层只评估
-        # 既有对子 — 对子创建属采集层 on_agent_speak, 不在本次结算范围)
+        # 既有对子 — 对子创建属采集层 on_agent_speak, 不在本次结算范围)。
+        # SG-3 §5.1 重標定: seed 累計計數 (2,2) 恰達 familiar 門檻（< close 4/4）
+        # → 承載「首窗計數已滿 familiar 門檻仍只升 1 級」硬斷言。
         _make_relationships_file(root, a, {
-            b: _rel_entry(BAND_STRANGER, []),
+            b: _rel_entry(BAND_STRANGER, [], objective={
+                "reply_exchanges": S1_SEED_REPLY,
+                "co_presence_sessions": S1_SEED_CO,
+                "dream_exchanges": 0,
+                "last_signal_at": None,
+            }),
         })
         _make_relationships_file(root, b, {})
 
@@ -489,13 +505,15 @@ class TL9Runner:
                 "band_updated_at"
             )
 
-        # D0: 公开互动 + 双向 reply 累计 (首窗直接给满 known 与 familiar 门槛计数;
-        # 信号 ts 必须在 D1 12:00 结算窗口 (D0 12:00~D1 12:00) 内)
-        _write_perception_reply(root, b, clock.sim_ts(0, 13), S1_INIT_REPLY_PAIRS)
-        _write_perception_reply(root, a, clock.sim_ts(0, 13), S1_INIT_REPLY_PAIRS)
-        _write_co_presence(root, [a, b], clock.sim_ts(0, 14), S1_INIT_CO_SESSIONS)
+        # fixture: SG-3 §5.1 重標定後 — seed 累計計數 (reply=2, co=2) 恰達
+        # familiar 門檻（未達 close 4/4）, 承載「每窗至多升 1 級」硬斷言。
+        # D0: 公开互动 + 双向 reply（單窗）; 信号 ts 必须在 D1 12:00 结算窗口
+        # (D0 12:00~D1 12:00) 内。單窗增量上限 = 1 → 本窗 delta = (1, 1)。
+        _write_perception_reply(root, b, clock.sim_ts(0, 13), S1_WINDOW_SIGNALS)
+        _write_perception_reply(root, a, clock.sim_ts(0, 13), S1_WINDOW_SIGNALS)
+        _write_co_presence(root, [a, b], clock.sim_ts(0, 14), S1_WINDOW_SIGNALS)
 
-        # D1 12:00 结算 #1: reply_delta=3, co_delta=5 → 计数已达 familiar 门槛,
+        # D1 12:00 结算 #1: 累計计数 (3,3) 已达 familiar 门槛 (2,2),
         # 但单次结算至多升 1 级 → 只到 known (硬断言: 不跳级)
         _, band1, _ = settle("S1-1", 1, 12, "首窗结算: 计数满 familiar 门槛仍只升 1 级")
         checks["step1_known_not_jump"] = band1 == BAND_KNOWN
@@ -507,7 +525,7 @@ class TL9Runner:
 
         # 窗口内重复信号 → 24h 节流: 不重复结算、计数不变 (硬断言)。
         # 重复信号 ts=D1 12:30 落在 settle#2 (D1 13:00) 窗口内 — 若节流失效
-        # 该信号将被计入 (reply→4), step2_counts_unchanged 即捕获此回归。
+        # 该信号将被计入 (reply/co 各 +1), step2_counts_unchanged 即捕获此回归。
         _dupe_ts = (_ts_to_dt(clock.sim_ts(1, 12)) + timedelta(minutes=30)).isoformat()
         _write_perception_reply(root, b, _dupe_ts, S1_DUPE_REPLY_PAIRS)
         _write_perception_reply(root, a, _dupe_ts, S1_DUPE_REPLY_PAIRS)
@@ -727,13 +745,15 @@ class TL9Runner:
     def _run_natural_cooling(
         self, run_id: str, root: Path, clock: SimulationClock
     ) -> tuple[List[TL9BandRecord], TL9ScenarioDerived]:
-        """快进 30 天无新信号 → 降 1 带; 不跌穿 stranger; SG-2.1 无信号不回升,
-        新窗口信号正常恢复 known; band_updated_at 更新。"""
+        """快进 90 天无新信号 → 降 1 带; 不跌穿 stranger; SG-2.1 无信号不回升,
+        新窗口信号正常恢复 known; band_updated_at 更新。
+        SG-3 §5.2 重標定: 降帶窗 30 → **90 天**（劇本語意 0 變更, 只換天數常數;
+        fixture 計數改 (2,2) 以免無訊號窗被慢爬順帶推到 close）。"""
         a, b = TL9_AGENT_A, TL9_AGENT_B
         signal_ts = clock.sim_ts(0, 12)
         _make_relationships_file(root, a, {
             b: _rel_entry(BAND_FAMILIAR, ["warm"], objective={
-                "reply_exchanges": 5, "co_presence_sessions": 6,
+                "reply_exchanges": 2, "co_presence_sessions": 2,
                 "dream_exchanges": 0, "last_signal_at": signal_ts,
             }),
         })
@@ -769,55 +789,55 @@ class TL9Runner:
                 "band_updated_at"
             )
 
-        # D30: 恰好 30 天整 → 不降 (契约: 连续 >30 天才降, 已落地语义)
-        res30, band30, _ = settle("S3-30", 30, "恰好 30 天整 → 不降")
-        checks["day30_no_demote"] = (
-            band30 == BAND_FAMILIAR and res30.get("demoted", 0) == 0
+        # D90: 恰好 90 天整 → 不降 (契约: 连续 >90 天才降, SG-3 §5.2 已落地语义)
+        res90, band90, _ = settle("S3-90", 90, "恰好 90 天整 → 不降")
+        checks["day90_no_demote"] = (
+            band90 == BAND_FAMILIAR and res90.get("demoted", 0) == 0
         )
 
-        # D31: 超过 30 天 → 降 1 级 familiar→known, band_updated_at 更新
-        res31, band31, updated31 = settle("S3-31", 31, "31 天无信号 → 降 1 级")
-        checks["day31_demote_one_step"] = (
-            band31 == BAND_KNOWN and res31.get("demoted", 0) == 1
+        # D91: 超过 90 天 → 降 1 级 familiar→known, band_updated_at 更新
+        res91, band91, updated91 = settle("S3-91", 91, "91 天无信号 → 降 1 级")
+        checks["day91_demote_one_step"] = (
+            band91 == BAND_KNOWN and res91.get("demoted", 0) == 1
         )
         checks["band_updated_at_refreshed"] = (
-            updated31 == clock.sim_ts(31, 12)
+            updated91 == clock.sim_ts(91, 12)
         )
 
-        # D62: 再降 1 级 known→stranger
-        res62, band62, _ = settle("S3-62", 62, "62 天无信号 → known→stranger")
-        checks["day62_demote_floor"] = (
-            band62 == BAND_STRANGER and res62.get("demoted", 0) == 1
+        # D182: 再降 1 级 known→stranger
+        res182, band182, _ = settle("S3-182", 182, "182 天无信号 → known→stranger")
+        checks["day182_demote_floor"] = (
+            band182 == BAND_STRANGER and res182.get("demoted", 0) == 1
         )
 
-        # D93: 底带不跌穿 (stranger 不再执行降带, demoted==0)。
+        # D183: 底带不跌穿 (stranger 不再执行降带, demoted==0)。
         # SG-2.1 (TL-9 呈报主大脑拍板): 无信号底带不慢爬回升 — stranger 保持。
         # 修复前: 无信号不降带时慢爬评估会把底带 stranger (累计计数非零
-        # reply=5/co=6) 补升回 known — 降带后计数不清零的确定性振荡; 已修。
-        res93, band93, _ = settle("S3-93", 93, "底带不再降; 无信号不慢爬回升")
-        checks["floor_not_breached"] = res93.get("demoted", 0) == 0
-        checks["no_slow_climb_rebound"] = band93 == BAND_STRANGER
+        # reply=2/co=2) 补升回 known — 降带后计数不清零的确定性振荡; 已修。
+        res183, band183, _ = settle("S3-183", 183, "底带不再降; 无信号不慢爬回升")
+        checks["floor_not_breached"] = res183.get("demoted", 0) == 0
+        checks["no_slow_climb_rebound"] = band183 == BAND_STRANGER
 
-        # D123: 降带到 stranger 后继续无信号 30 天 → 仍保持 stranger (不再回升)
-        res123, band123, _ = settle("S3-123", 123, "继续无信号 30 天 → 保持 stranger")
+        # D213: 降带到 stranger 后继续无信号 90 天 → 仍保持 stranger (不再回升)
+        res213, band213, _ = settle("S3-213", 213, "继续无信号 90 天 → 保持 stranger")
         checks["stranger_held_no_rebound"] = (
-            band123 == BAND_STRANGER and res123.get("demoted", 0) == 0
+            band213 == BAND_STRANGER and res213.get("demoted", 0) == 0
         )
 
         # 无新信号: 计数 0 增量 (全窗口无信号, 不写 last_signal_at)
         checks["counts_frozen"] = (
-            records[-1].reply_exchanges == 5
-            and records[-1].co_presence_sessions == 6
+            records[-1].reply_exchanges == 2
+            and records[-1].co_presence_sessions == 2
         )
 
-        # D124: 窗口出现新 reply 信号 (双向成对, 真实载体; ts 落在 D124 12:00
+        # D214: 窗口出现新 reply 信号 (双向成对, 真实载体; ts 落在 D214 12:00
         # 结算的 24h 窗口内) → 正常升级路径升回 known (stranger→known 门槛
-        # reply≥1 照旧; 计数累计不清零: 5+1=6)
-        _write_perception_reply(root, b, clock.sim_ts(124, 10), 1)
-        _write_perception_reply(root, a, clock.sim_ts(124, 10), 1)
-        res124, band124, _ = settle("S3-124", 124, "新窗口 reply 信号 → 正常恢复 known")
+        # reply≥1 照旧; 计数累计不清零: 2+1=3)
+        _write_perception_reply(root, b, clock.sim_ts(214, 10), 1)
+        _write_perception_reply(root, a, clock.sim_ts(214, 10), 1)
+        res214, band214, _ = settle("S3-214", 214, "新窗口 reply 信号 → 正常恢复 known")
         checks["new_signal_recovers_known"] = (
-            band124 == BAND_KNOWN and res124.get("updated", 0) >= 1
+            band214 == BAND_KNOWN and res214.get("updated", 0) >= 1
         )
 
         trajectory = [r.band_after for r in records]
@@ -828,12 +848,12 @@ class TL9Runner:
             checks=checks,
             key_numbers={
                 "trajectory": trajectory,
-                "demote_days": 31,
+                "demote_days": 91,
                 "final_band": trajectory[-1],
             },
             summary=(
                 f"冷却轨迹: familiar → {' → '.join(trajectory)}; "
-                f"降 1 级/窗={'PASS' if checks['day31_demote_one_step'] else 'FAIL'}; "
+                f"降 1 级/窗={'PASS' if checks['day91_demote_one_step'] else 'FAIL'}; "
                 f"底带不再降={'PASS' if checks['floor_not_breached'] else 'FAIL'} "
                 f"(无信号不回升={checks['no_slow_climb_rebound']}, "
                 f"新信号恢复={checks['new_signal_recovers_known']})"

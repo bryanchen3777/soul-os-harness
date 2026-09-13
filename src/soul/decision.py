@@ -395,6 +395,14 @@ def _build_relationship_summary(agent_id: str) -> Optional[str]:
     relationship 子块: 读 relationships.json 的 user_bryan entry。
 
     规则 (SM-2 §2.3): 通常有 (对象是人)。无 entry → None (省略), 禁止编造。
+
+    OQ-5(i)（Owner 裁定, 2026-09-13）: 退役栏位 `confidence` 的渲染
+    （原「信任度：0.00」, 生产恒 0.00）**已移除**, 改为 D4 真值源的
+    **离散表达**: 显示 `relational_band`（离带字符串）, 若有 `impression_tags`
+    则附上; **band 缺失时整行省略**（fail-silent, 不编造）。
+
+    红線（No-Scoring 不可破）: 本函式**不得**引入任何数值分数 / 強度 /
+    中间值 —— 只渲染離散帶枚举 + 质性标签（SG-1 §6 / SG-3 INV-1）。
     """
     from src.paths import data_root
     path = data_root() / "soul" / agent_id / "relationships.json"
@@ -413,8 +421,17 @@ def _build_relationship_summary(agent_id: str) -> Optional[str]:
         parts.append(f"印象：{entry['impression']}")
     if entry.get("feeling"):
         parts.append(f"感觉：{entry['feeling']}")
-    if isinstance(entry.get("confidence"), (int, float)):
-        parts.append(f"信任度：{entry['confidence']:.2f}")
+    # OQ-5(i): D4 真值源（relational_band + impression_tags）的离散表达。
+    # band 缺失 / 非字符串 → 整行省略（fail-silent）; 0 数值 / 0 分数。
+    band = entry.get("relational_band")
+    if isinstance(band, str) and band.strip():
+        band_line = f"关系带：{band.strip()}"
+        tags = entry.get("impression_tags")
+        if isinstance(tags, list):
+            clean_tags = [str(t).strip() for t in tags if str(t).strip()]
+            if clean_tags:
+                band_line += f"（印象标签：{'、'.join(clean_tags)}）"
+        parts.append(band_line)
     if isinstance(entry.get("interaction_count"), int):
         parts.append(f"互动次数：{entry['interaction_count']}")
     if entry.get("last_interaction_at"):

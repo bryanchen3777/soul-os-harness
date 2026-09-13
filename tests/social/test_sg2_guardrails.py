@@ -410,9 +410,11 @@ class TestSettlementBehavior:
         path = tmp / "soul" / AGENT / "relationships.json"
         data = json.loads(path.read_text(encoding="utf-8"))
         entry = data["others"]["agent_rem"]
-        # reply 成对折抵: min(对方 1, 我方 0) = 0; co=1
-        assert entry["objective"]["co_presence_sessions"] == 5  # 4 + 1
-        assert entry["objective"]["reply_exchanges"] == 1  # 窗口无我方 reply → 无折抵
+        # SG-3 §4.3 reply 动力读侧折抵: 每个既有共在 session 折抵 1 个
+        # reply_exchange → 本窗 co=1 折抵 reply=1（单窗增量上限 1）
+        # 窗口内我方 0 reply → 真 reply 事件折抵 0; 合计 reply delta = 1
+        assert entry["objective"]["co_presence_sessions"] == 5  # 4 + 1（单窗上限 1）
+        assert entry["objective"]["reply_exchanges"] == 2  # 1 + 1（折抵）
         assert entry["objective"]["last_signal_at"] == "2026-09-06T10:00:00+00:00"
         assert entry["last_relation_update_ref"] == "rel:agent_rem:2026-09-06T10:00:00+00:00"
         assert entry["interaction_count"] == 3  # legacy 字段 0 变更

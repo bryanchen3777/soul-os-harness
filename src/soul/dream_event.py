@@ -73,6 +73,131 @@ DREAM_EVENT_MAX_CLEAN_CHARS = 80
 # （clamp 只抬升不縮減, max_tokens 已 ≥ 400 者維持原值）。
 REASONING_SAFE_MIN_TOKENS = 400
 
+# ───────────────────────────────────────────────────────────
+# SG-3 §7.2 W1 / §7.4: impression_tags 规范（0 新 schema 字段）
+#
+# 唯一合法写入管道（白名单, SG-3 §7.2）:
+#   W1 = agent 对 peer 的梦境印象（本档 write_dream → on_dream 路径）
+#        → 必须实际把 impression_tags 传入 update_impression
+#   W2（A2A 公开互动）/ W3（Bryan 轴公开频道 + Owner 授权）**不在本轮**,
+#   仅留接口注释 —— 见 `_impression_tags_allowed` 的 channel/mode 形参。
+#
+# 规范（SG-3 §7.4, 与读侧 proxy.py 的 C-3.1 §4.2 上限一致）:
+#   open set / 单项 ≤ 12 字符 / ≤ 5 项 / 去重保留首次出现序 /
+#   空值（空串、纯空白、非 str）丢弃且全空不覆写 / 0 数值权重
+#   ⚠️ 不新增 impression_tags 独立时间戳字段（OQ-6 Owner 裁定: 维持 schema 4.2）
+# ───────────────────────────────────────────────────────────
+_MAX_IMPRESSION_TAG_CHARS = 12
+_MAX_IMPRESSION_TAGS = 5
+
+# tag 抽取分隔符（确定性抽取, 0 新增 LLM 调用）
+_IMPRESSION_TAG_DELIMITER_PATTERN = r"[、,，;；:：/／|｜・\u3000\s]+"
+
+# INV-9 / SG-3 §7.3: 判定为 1:1 私聊（= 拒绝产生 tag）的来源标记
+_PRIVATE_SOURCE_MODES = frozenset({"private", "dm", "1:1", "1on1", "tg_dm", "tg_1on1"})
+
+
+def _normalize_impression_tags(raw) -> List[str]:
+    """impression_tags 写侧规范化（SG-3 §7.4, 纯函数 / 0 数值）。
+
+    - 非 list/tuple → []（非 str 项丢弃）
+    - 逐项 strip + 剝引号/标点; 空串 / 纯空白 / 非 str → 丢弃该项
+    - 单项 > 12 字符 → 截断到 12（与读侧 _MAX_IMPRESSION_TAG_CHARS 一致）
+    - 去重保留**首次出现序**（顺序即语义, C-3.1 §4.1）
+    - 上限 5 项（超出即截断）
+    - 全空 → []（呼叫端据此**不覆写**既有 tags, 0 假资料）
+    """
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: List[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        text = item.strip().strip("「」『』\"' \n。、，,.")
+        if not text:
+            continue
+        if len(text) > _MAX_IMPRESSION_TAG_CHARS:
+            text = text[:_MAX_IMPRESSION_TAG_CHARS]
+        if text in out:  # 去重保留首次出现序（dict.fromkeys 语义）
+            continue
+        out.append(text)
+        if len(out) >= _MAX_IMPRESSION_TAGS:
+            break
+    return out
+
+
+def _extract_impression_tags(text: Optional[str]) -> List[str]:
+    """由 impression 回传文本**确定性**抽取 tags（SG-3 §7.2 W1）。
+
+    与 `_extract_impression` 同一次 LLM 调用的**回传文本**（0 新增 LLM 调用 /
+    0 新增 prompt / 0 新增成本）: 以既有分隔符切分后交给
+    `_normalize_impression_tags`（≤12 字符 / ≤5 项 / 去重保序 / 空值丢弃）。
+    open set: 不做大小写转换或词形还原（No-Scoring 精神, SG-3 §7.4）。
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+    import re
+
+    pieces = [
+        p for p in re.split(_IMPRESSION_TAG_DELIMITER_PATTERN, text) if p and p.strip()
+    ]
+    return _normalize_impression_tags(pieces)
+
+
+def _impression_tags_allowed(
+    *,
+    source_mode: Optional[str] = None,
+    is_private: bool = False,
+    channel: Optional[str] = None,
+) -> bool:
+    """INV-9（SG-3 §7.3）Privacy Gate 消费端对称: tag 产生输入端的 fail-closed 判定。
+
+    拒绝（return False）—— 任何一项命中即拒:
+      - `is_private is True`
+      - `source_mode` 判定为 1:1 私聊（private / dm / 1:1 / tg_dm …）
+      - `channel` 判定为 1:1 私聊 TG 通道（同上标记）
+
+    设计说明（SG-3 §7.3 边界表）: tag 的产生输入**必须**可追溯到「公开可观测事实」
+    或「agent 自身内在活动（梦境）」。W1 的输入是 agent 自己的梦（内在活动,
+    明列合法）→ 未带私聊标记时不拒绝; W2/W3（未来）**必须**显式传入其 channel mode,
+    不得依赖缺省值放行。跨 agent 可观测栏位（impression_tags）绝不可承接
+    1:1 私聊内容 —— 本判定即该红线的 fail-closed 闸门。
+    """
+    if is_private is True:
+        return False
+    mode = (source_mode or "").strip().lower()
+    if mode and mode in _PRIVATE_SOURCE_MODES:
+        return False
+    chan = (channel or "").strip().lower()
+    if chan and any(token in chan for token in _PRIVATE_SOURCE_MODES):
+        return False
+    return True
+
+
+def _is_w1_tag_target(target_id: str) -> bool:
+    """W1 可写 target 白名单（SG-3 §7.2）: `other_id ∈ AGENT_IDS` 且排 `user_bryan`。
+
+    硬红線: **排除 `user_bryan`**（Bryan 轴的 tag 写入只允许走 W3 公开频道 +
+    Owner 授权, 不在本轮）。注册表可用时同时要求 target 在册; 注册表为空
+    （无 roll call 可比对）时仍套用明文红線（排 Bryan）, 不阻断 W1。
+    """
+    if not isinstance(target_id, str) or not target_id.strip():
+        return False
+    from src.soul.relationships import BRYAN_ENTITY_ID
+
+    if target_id == BRYAN_ENTITY_ID or target_id == "bryan":
+        return False
+    try:
+        from src.soul.motive import get_agent_ids
+
+        ids = get_agent_ids()
+        if ids and target_id not in ids:
+            return False
+    except Exception:
+        # 注册表不可用 → 只套用明文红線（排 Bryan）, 不阻断梦境印象主路径
+        pass
+    return True
+
 # 場景池 (夢境 / 事件共用)
 SCENE_POOL = [
     "走廊的盡頭",
@@ -394,6 +519,11 @@ class DreamEventWriter:
         # M5.4-5.4 (Bry 派工 2026-08-09 21:29): canonical Inner Life event reference
         # for this dream entry. Optional passthrough to _write_entry.
         inner_life_event_id: Optional[str] = None,
+        # SG-3 §7.3（INV-9）: 来源通道标记（additive, 缺省 None = 梦境内在活动）。
+        # 任何一项判定为 1:1 私聊 → fail-closed 不产生 impression_tags。
+        source_mode: Optional[str] = None,
+        is_private: bool = False,
+        channel: Optional[str] = None,
     ) -> Optional[Path]:
         """
         生成夢境並寫入 diary.
@@ -405,6 +535,14 @@ class DreamEventWriter:
 
         M5.4-5.4 (Bry 派工 2026-08-09 21:29):
         - inner_life_event_id: M5.4-5.4 — 對應 canonical InnerLifeEvent.event_id
+
+        SG-3 §7.2 W1 (本輪新增): 同一 LLM 調用的回傳文本**確定性**抽出
+        `impression_tags` 並實際傳入 `update_impression`（唯一寫入口, 0 簽名變更）。
+        - 排除 `user_bryan`（§7.2）
+        - INV-9: `source_mode=="private"` / `is_private=True` / TG 1:1 channel
+          → fail-closed 不產生 tag（§7.3）
+        - 0 新增 LLM 調用 / 0 新增 schema 欄位 / 0 新時間戳欄位（OQ-6）
+        - W2（A2A 公開互動）/ W3（Bryan 軸公開頻道 + Owner 授權）不在本輪
         """
         today = datetime.now().strftime("%Y-%m-%d")
         scene = random.choice(SCENE_POOL)
@@ -480,8 +618,23 @@ class DreamEventWriter:
                 impression = await self._extract_impression(agent_id, target_agent_id, content, kind="dream")
                 if impression:
                     from src.soul.relationships import get_relationships_manager
+                    # SG-3 §7.2 W1: 同一 LLM 調用的回傳文本 → 確定性抽 tags
+                    # （0 新增 LLM 調用 / 0 新增成本）, 並實際傳入唯一寫入口。
+                    # 兩道閘門: ① W1 target 白名單（排 user_bryan）
+                    #           ② INV-9 Privacy Gate（私聊來源 fail-closed）
+                    tags = (
+                        _extract_impression_tags(impression)
+                        if _is_w1_tag_target(target_agent_id)
+                        and _impression_tags_allowed(
+                            source_mode=source_mode,
+                            is_private=is_private,
+                            channel=channel,
+                        )
+                        else []
+                    )
+                    # 空 tags → 傳 None（**不覆寫**既有 impression_tags, §7.4 空值規範）
                     get_relationships_manager().get_store(agent_id).update_impression(
-                        target_agent_id, impression
+                        target_agent_id, impression, impression_tags=(tags or None)
                     )
             except Exception as e:
                 logger.warning(f"[DreamEvent] impression 抽取失敗 ({agent_id}→{target_agent_id}): {e}")
@@ -729,6 +882,9 @@ class DreamEventWriter:
           clamp 決定 (50 → 400, 見 DREAM-MAXTOKENS-1; 低於下限會靜默空回)
         - 失敗留空 (「拒絕問, 強制讀」)
         - 不 call get_relationships_manager, 只回傳 impression 文字
+        - SG-3 §7.2 W1: 本函式回傳的文本同時是 tags 的**唯一來源**
+          （呼叫端以 `_extract_impression_tags` 確定性抽 tags, 同一次 LLM 調用,
+          0 新增呼叫 / 0 新增成本）
         """
         kind_jp = "夢境" if kind == "dream" else "事件"
         system = (
