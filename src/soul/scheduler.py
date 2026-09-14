@@ -51,6 +51,18 @@ except ImportError:
 
 logger = logging.getLogger("soul_os.soul.scheduler")
 
+# OBSERVABILITY-COMPLETENESS-1 (票 3, 【C】四個「阻擋但不留痕」的閘門):
+#   有界落盤鐵律 —— 本票新增的每一行 log 都不得整段 dump 物件,
+#   且單行長度一律 <= _LOG_LINE_LIMIT (短訊息 identity 回傳, 既有 log 逐字不變)。
+_LOG_LINE_LIMIT = 200
+
+
+def _bounded_log(text: str, limit: int = _LOG_LINE_LIMIT) -> str:
+    """有界落盤: log 行長度上限 (短訊息原樣回傳, 0 行為變更)。"""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
 # ───────────────────────────────────────────────────────────
 # 常數 (Bry 拍板 2026-07-18 18:24+ + 19:35+)
 # ───────────────────────────────────────────────────────────
@@ -483,9 +495,16 @@ class SoulScheduler:
             return False
         except Exception as e:
             # fail-closed: 任何异常 → 不发 (不 auto-send)
+            # OBSERVABILITY-COMPLETENESS-1 (票 3, 【D】+ 有界落盤鐵律):
+            #   原行把例外字串整段 dump（實測可達 3,082 字元）→ 既違反有界落盤鐵律,
+            #   也讓這一行（本票要求釘死的四行之一）失去可讀性。
+            #   此處只截斷落盤文字 (<=120 字元); 例外型別與 fail-closed 判定完全不變
+            #   (仍回傳 False, 0 判定語意變更)。
             logger.warning(
-                f"[SM-3 Decision] {agent_id} exception (fail-closed = skip): "
-                f"{type(e).__name__}: {e}"
+                _bounded_log(
+                    f"[SM-3 Decision] {agent_id} exception (fail-closed = skip): "
+                    f"{type(e).__name__}: {str(e)[:120]}"
+                )
             )
             return False
 
@@ -1210,6 +1229,16 @@ class SoulScheduler:
         today = datetime.now().strftime("%Y-%m-%d")
         path = data_root() / "soul" / agent_id / "diary" / f"{today}.jsonl"
         if not path.is_file():
+            # OBSERVABILITY-COMPLETENESS-1 (票 3, 【C】G9′):
+            #   原本靜默 return None (map §2 白盒 #1 第 2 點) → 「擋了但不留痕」,
+            #   使 `[M7-2]` 0 命中時無法區分「今天沒活動」與「有活動但被 G9 去重擋掉」。
+            #   補一行有界 log (agent + 原因 + 檔名), 0 行為變更 (回傳值不變)。
+            logger.info(
+                _bounded_log(
+                    f"[M7-2] 活動 enrichment 略過: {agent_id} "
+                    f"reason=no_diary_file path={path.name} (gate=G9')"
+                )
+            )
             return None
         latest: Optional[Dict[str, Any]] = None
         try:
@@ -1235,6 +1264,16 @@ class SoulScheduler:
             logger.warning(f"[M7-2] 讀 diary 失敗 ({agent_id}): {e}")
             return None
         if latest is None:
+            # OBSERVABILITY-COMPLETENESS-1 (票 3, 【C】G9′):
+            #   第二個靜默 return None。今日檔存在但無合格 entry
+            #   (slot=="event" ∧ shareable is True ∧ source=="llm" ∧ activity 非空)
+            #   → 補一行有界 log, 使 G9′ 的三條 return None 全部可歸因。
+            logger.info(
+                _bounded_log(
+                    f"[M7-2] 活動 enrichment 略過: {agent_id} "
+                    f"reason=no_qualifying_entry path={path.name} (gate=G9')"
+                )
+            )
             return None
         return {
             "activity": latest.get("activity", ""),
@@ -1371,8 +1410,16 @@ class SoulScheduler:
             elapsed = (now_local() - self._last_proactive_dm_time).total_seconds()
             if elapsed < self.proactive_dm_cooldown_seconds:
                 remaining = int(self.proactive_dm_cooldown_seconds - elapsed)
-                logger.debug(
-                    f"[Scheduler] 💬 proactive_dm 冷卻中 (剩 {remaining}s), 跳過"
+                # OBSERVABILITY-COMPLETENESS-1 (票 3, 【C】G3):
+                #   原本是 logger.debug → 生產日誌為 INFO 級, 完全不落盤
+                #   (map §7 ND-2) → 「擋了但不留痕」。提升為 INFO (純 log 級別變更,
+                #   0 判定語意變更): 讓 G3 每一次阻擋都可歸因 (哪個閘門/剩餘秒數)。
+                logger.info(
+                    _bounded_log(
+                        f"[Scheduler] 💬 proactive_dm 不可送達: G3 冷卻窗未滿 "
+                        f"(剩 {remaining}s / {self.proactive_dm_cooldown_seconds}s), "
+                        f"skip (gate=G3)"
+                    )
                 )
                 # 排下次但不要立刻再試
                 mins = random.randint(
@@ -1385,8 +1432,15 @@ class SoulScheduler:
         # 2. 靜音時段檢查
         now = now_local()
         if self._is_quiet_hours(now):
-            logger.debug(
-                f"[Scheduler] 💬 proactive_dm 靜音時段 ({now.hour}:xx), 跳過"
+            # OBSERVABILITY-COMPLETENESS-1 (票 3, 【C】G4):
+            #   原本是 logger.debug → 生產日誌為 INFO 級, 完全不落盤
+            #   (map §7 ND-2) → 「擋了但不留痕」。提升為 INFO (純 log 級別變更,
+            #   0 判定語意變更): 讓 G4 每一次阻擋都可歸因 (閘門 + 當地小時)。
+            logger.info(
+                _bounded_log(
+                    f"[Scheduler] 💬 proactive_dm 不可送達: G4 靜音時段 "
+                    f"({now.hour}:xx, 23:00-08:00), skip (gate=G4)"
+                )
             )
             # 30 分鐘後再試 (會自然落到 8:00 之後)
             self._next_proactive_dm_time = now + timedelta(minutes=30)
@@ -1466,6 +1520,17 @@ class SoulScheduler:
             logger.info(
                 f"[M7-2] proactive_dm 帶活動: {agent_id} "
                 f"activity={activity.get('activity')} ts={activity.get('ts')}"
+            )
+        else:
+            # OBSERVABILITY-COMPLETENESS-1 (票 3, 【C】G9):
+            #   原本「沒帶活動」完全無 log → 無法區分「今天真的沒 shareable 活動」
+            #   與「有活動但被 G9 一次性去重擋掉」(map §2 白盒 #1 第 2 點)。
+            #   補一行有界 log, 純觀測, 0 行為變更 (extra 內容 / 後續流程完全不變)。
+            logger.info(
+                _bounded_log(
+                    f"[M7-2] proactive_dm 未帶活動: {agent_id} "
+                    f"reason={'dedup_same_ts' if activity else 'no_activity'} (gate=G9)"
+                )
             )
         await self._publish_agency_trigger(agent_id, trigger_type="proactive_dm", extra=extra)
         # 記錄 last_proactive_dm_time (scheduler-level rate limit 不變)

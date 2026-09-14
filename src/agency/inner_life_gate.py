@@ -75,6 +75,39 @@ from typing import Optional
 
 logger = logging.getLogger("soul_os.agency.inner_life_gate")
 
+# OBSERVABILITY-COMPLETENESS-1 (票 3, 【B】G10 假宣告):
+#   本模組原本定義 logger 但全檔 0 次 logger.* 呼叫 → gate 是整條鏈上唯一
+#   「擋了但完全不留痕跡」的閘門 (map §2 白盒 #3 / ND-5)。
+#   本票在判定點補上有界 log: 含 agent、結果 (4 態)、阻擋理由。
+#   硬性邊界: 不加全量物件 dump、不改變任何判定 (GateResult 逐位元不變)。
+_LOG_LINE_LIMIT = 200
+_REASON_MAX = 110
+
+
+def _bounded_line(text: str, limit: int = _LOG_LINE_LIMIT) -> str:
+    """有界落盤: log 行長度上限 (短訊息 identity 回傳, 0 行為變更)。"""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def _log_gate_decision(agent_id: str, result: "GateResult") -> None:
+    """M5.8-4 gate 的可觀測性: 在判定點記錄 agent / 結果 / 理由 (有界, 不 dump 物件)。
+
+    OBSERVABILITY-COMPLETENESS-1: 純觀測 —— 不讀寫任何狀態、不改變 result。
+    """
+    _reason = str(result.reason or "")[:_REASON_MAX]
+    line = _bounded_line(
+        f"[M5.8-4 Inner Life Gate] decision={result.decision.value} "
+        f"agent={agent_id} reason={_reason}"
+    )
+    if result.decision == GateDecision.FAILURE:
+        logger.warning(line)
+    else:
+        # EMITTED / GATED / UNAVAILABLE 一律 INFO:
+        #   UNAVAILABLE 若留 debug 則生產 INFO 級日誌不落盤 → gate 仍不可觀測 (ND-5 未解)。
+        logger.info(line)
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Constants (deterministic v1 rule)
@@ -150,7 +183,7 @@ class GateResult:
 # Pure gate function (READ-ONLY, no side effects)
 # ─────────────────────────────────────────────────────────────────────
 
-def gate_proactive_dm(
+def _gate_proactive_dm_impl(
     agent_id: str,
     now: datetime,
     trace_reader: Optional["NarrativeTraceReader"] = None,
@@ -159,6 +192,10 @@ def gate_proactive_dm(
 ) -> GateResult:
     """
     M5.8-4: Producer-side gate for proactive_dm AGENCY_TRIGGER.
+
+    ⚠️ OBSERVABILITY-COMPLETENESS-1: 本函式是判定本體 (逐位元不變, 0 log)。
+    公開入口 `gate_proactive_dm()` 是同簽名的薄 wrapper, 只多做「判定點補 log」
+    這一件純觀測的事 —— 回傳值一律原樣透傳。
 
     Pure function (READ-ONLY, no side effects, no InnerLifeEvent creation).
     Called by scheduler._publish_agency_trigger() BEFORE bus.publish().
@@ -333,3 +370,37 @@ def gate_proactive_dm(
         last_event_ts=last_event_ts,
         elapsed_minutes=elapsed,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Public entry point (thin observability wrapper — OBSERVABILITY-COMPLETENESS-1)
+# ─────────────────────────────────────────────────────────────────────
+
+def gate_proactive_dm(
+    agent_id: str,
+    now: datetime,
+    trace_reader: Optional["NarrativeTraceReader"] = None,
+    min_interval_minutes: int = GATE_PROACTIVE_DM_MIN_INTERVAL_MINUTES,
+    query_window_hours: int = GATE_QUERY_WINDOW_HOURS,
+) -> GateResult:
+    """M5.8-4 producer-side gate 的公開入口 (見 `_gate_proactive_dm_impl` 的完整契約)。
+
+    OBSERVABILITY-COMPLETENESS-1 (票 3, 【B】G10 假宣告):
+      `scheduler.py` 的呼叫端註解宣稱 "Gate already logged observability",
+      但本模組全檔 0 次 logger.* 呼叫 → 該宣稱為假。
+      本 wrapper 讓那句話變成真的: 判定完成後補一行有界 log
+      (agent / 4 態結果 / 阻擋理由), 使 G10 不再「擋了但完全不留痕跡」。
+
+    0 行為變更: 判定本體 `_gate_proactive_dm_impl` 逐字未動,
+    wrapper 只做「呼叫 → 記 log → 原樣回傳」, 回傳物件 identity 不變。
+    """
+    result = _gate_proactive_dm_impl(
+        agent_id=agent_id,
+        now=now,
+        trace_reader=trace_reader,
+        min_interval_minutes=min_interval_minutes,
+        query_window_hours=query_window_hours,
+    )
+    _log_gate_decision(agent_id, result)
+    return result
+

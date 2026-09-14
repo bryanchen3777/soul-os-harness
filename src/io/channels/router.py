@@ -89,6 +89,24 @@ _OUTBOX_FILE = _STATE_DIR / "outbox.json"
 # (proactive_dm 2-4h + heartbeat 30-60min + event 4-8h = 24h 約 12-20 條主動)
 OUTBOX_FLUSH_THRESHOLD = 10
 
+# OBSERVABILITY-COMPLETENESS-1 (票 3, 【A】送達歸因): 有界落盤鐵律。
+#   本票新增的每一行 log 都不得整段 dump 物件, 且單行長度一律 <= _LOG_LINE_LIMIT。
+#   純觀測: 對短訊息 _bounded_log() 回傳原字串 (identity), 既有 log 逐字不變。
+_LOG_LINE_LIMIT = 200
+# reason 是 LLMProxy 唯一發布點寫入的既有 payload 欄位 (proxy.py "reason": reason),
+#   值域為短標記 (proactive_dm / user_message / night / ...)。截斷上限只是防禦性邊界。
+_DELIVERY_REASON_MAX = 40
+
+
+def _bounded_log(text: str, limit: int = _LOG_LINE_LIMIT) -> str:
+    """OBSERVABILITY-COMPLETENESS-1: 有界落盤 —— log 行長度上限。
+
+    短訊息逐字原樣回傳 (identity, 0 行為變更); 超過 limit 才截斷並加省略號。
+    """
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
 
 class ChannelRouter:
     """Phase 5b：把 AGENT_SPEAK 依 target_channel 分發到對應 ChannelAdapter。"""
@@ -287,6 +305,12 @@ class ChannelRouter:
             return
 
         text = event.payload.get("text", "")
+        # OBSERVABILITY-COMPLETENESS-1 (票 3, 【A】送達歸因):
+        #   送達主判據 (D1, router.py "sent to") 與送達失敗行 (D2, "send failed")
+        #   都帶上 payload 既有的 reason 欄位, 讓「有沒有主動訊息被送達 / 是哪一則 /
+        #   屬於哪個 agent」只靠 log 就能回答, 不再需要「LLM 意圖行 + 時間窗配對」的
+        #   間接推論 (map §6.3 ND-4)。純 log 欄位擴充, 0 判定語意 / 0 送達行為變更。
+        _dlv_reason = str(event.payload.get("reason") or "")[:_DELIVERY_REASON_MAX]
 
         if target_user_id is None:
             logger.warning(
@@ -318,8 +342,11 @@ class ChannelRouter:
             )
             if success:
                 logger.info(
-                    f"[ChannelRouter:{target_channel}] sent to "
-                    f"{target_user_id} from {adapter_agent_id}: {text[:50]!r}"
+                    _bounded_log(
+                        f"[ChannelRouter:{target_channel}] sent to "
+                        f"{target_user_id} from {adapter_agent_id}: {text[:50]!r} "
+                        f"reason={_dlv_reason}"
+                    )
                 )
                 # Phase 5+ (2026-07-15 Bry 拍板): text 成功送到 telegram 後,
                 # 暫存 (user_id, ts, message_id),等 AGENT_AUDIO_READY 把 mp3 也推過去
@@ -352,8 +379,11 @@ class ChannelRouter:
                         )
             else:
                 logger.warning(
-                    f"[ChannelRouter:{target_channel}] send failed "
-                    f"agent={adapter_agent_id} user={target_user_id}"
+                    _bounded_log(
+                        f"[ChannelRouter:{target_channel}] send failed "
+                        f"agent={adapter_agent_id} user={target_user_id} "
+                        f"reason={_dlv_reason}"
+                    )
                 )
         except Exception as e:
             logger.exception(
