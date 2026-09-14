@@ -117,14 +117,32 @@ def test_s2_1_encoding_utf8_no_bom_lf_ensure_ascii_false(soul_env):
 
 
 def test_s2_1_module_not_imported_by_production_paths():
-    """M1 是獨立落地（§10.2 / 紅線 4）：0 既有模組介接。
+    """M1 是獨立落地（§10.2 / 紅線 4）：0 既有**生產模組**介接。
 
-    以 AST 掃描 `src/**` + `scripts/**`，任何 import 本模組者必須是 0。
+    以 AST 掃描 `src/**` + `scripts/**`，除「生活線頭引擎自身、尚未接線的模組」外，
+    任何 import 本模組者必須是 0。
+
+    ⚠️ 例外更正（LIFE-THREAD-M4-1，2026-09-14）：本測試原先把不變量寫成「**任何**
+    importer 皆為 0」，那比契約更嚴且與契約**直接互斥**——
+    `docs/LIFE-THREAD-ENGINE-CONTRACT.md` §10.1 `:701-720` 的依賴圖逐字指定
+    「**M4 起源注入 (寫 M1)**」，`:722-726` 再明列 **M5 依賴 M1+M4**
+    ⇒「M4 → 寫 M1」是**契約欽定的方向**；契約要防的是**生產路徑拉線**（M5 接線），
+    不是 M4 import M1。故掃描排除「生活線頭引擎自身、尚未接線的模組」
+    （M1 自身 ＋ M4 `src/soul/life_thread_origins.py`）。
+
+    🔒 不變量**未被放寬**：排除後，其餘 `src/**` ＋ `scripts/**` 對本模組的 importer
+    仍必須 ＝ **0**；且 M4 自身另有測試釘死
+    `git grep life_thread_origins -- src scripts configs` ＝ **0 命中**
+    （即「**M4 沒有任何生產路徑 import**」照樣成立）。
     """
+    engine_own_unwired = {
+        MODULE_PATH,
+        _REPO_ROOT / "src" / "soul" / "life_thread_origins.py",  # M4：§10.1 允許寫 M1
+    }
     offenders = []
     for root in (_REPO_ROOT / "src", _REPO_ROOT / "scripts"):
         for py in root.rglob("*.py"):
-            if py == MODULE_PATH:
+            if py in engine_own_unwired:
                 continue
             try:
                 tree = ast.parse(py.read_text(encoding="utf-8"))
@@ -141,7 +159,10 @@ def test_s2_1_module_not_imported_by_production_paths():
                         a.name == "life_threads" for a in node.names
                     ):
                         offenders.append(str(py))
-    assert offenders == [], f"life_threads 被既有生產路徑 import：{offenders}"
+    assert offenders == [], (
+        "life_threads 被「生活線頭引擎自身」以外的模組 import"
+        f"（§10.1 只允許 M4 寫 M1）：{offenders}"
+    )
 
 
 def test_s2_1_configs_default_yaml_has_no_capacity_key():
