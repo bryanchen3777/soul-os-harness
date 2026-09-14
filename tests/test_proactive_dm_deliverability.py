@@ -3,8 +3,12 @@ test_proactive_dm_deliverability.py
 Proactive DM 三件修復 (Bry 拍板 2026-08-29) 驗證:
 
 #1 可送達檢查提前: scheduler._fire_proactive_dm 在 publish AGENCY_TRIGGER 之前
-   檢查 bryan_last_seen (統一信號源 bryan_last_seen.json), > 4h 就 skip,
-   不觸發 LLM (router M0.5 throttle 保留作兜底)。
+   檢查 bryan_last_seen (統一信號源 bryan_last_seen.json)。
+   🔴 DELIVERABILITY-RELEASE-1 (Owner 裁定 B, 2026-09-13): 該檢查已由
+      「> 4h 就 skip, 不觸發 LLM」改為「量測 + 留一行 gate=G5 痕跡後照常放行」。
+      本檔對應的斷言已依裁定改為釘死**新語意**（見
+      `test_g5_passes_when_bryan_inactive_5h` 的 docstring）。
+      router M0.5 throttle 仍保留（但其自 2026-08-29 起為不可達兜底）。
 #2 統一信號源: web inbound (gateway) 也更新 bryan_last_seen。
 #3 雙實例: server_ops.ps1 Stop-SoulOsServer 殺進程樹 (port listener + taskkill /T)。
 """
@@ -57,8 +61,25 @@ def _make_scheduler(monkeypatch, data_dir):
 class TestDeliverabilityGate:
     """#1: 可送達檢查提前到 scheduler (LLM 之前)。"""
 
-    def test_skips_when_bryan_inactive_5h(self, tmp_path, monkeypatch):
-        """bryan_last_seen 5h 前 → skip, 不 publish AGENCY_TRIGGER (不觸發 LLM)。"""
+    def test_g5_passes_when_bryan_inactive_5h(self, tmp_path, monkeypatch):
+        """🔴 合法變更（DELIVERABILITY-RELEASE-1, Owner 裁定 B, 2026-09-13）。
+
+        本測試原名 `test_skips_when_bryan_inactive_5h`，斷言「bryan_last_seen 5h 前
+        → skip, 不 publish AGENCY_TRIGGER」。該斷言是「4h 硬阻斷」的行為釘子。
+
+        Owner 已明確裁定 **B —— 放寬 4h 硬阻斷**，並已知悉這會改變「主動」的語意
+        （不再是「趁你在場時接話」）。裁定原文含：
+          「放寬 4h 硬阻斷 ＋ (a) 先唯讀量測 longing 曲線 (b) 單調遞增則加每角色
+            每日上限 1 則 (c) 不變量 `daily_proactive_cap(silence=3d) ==
+            daily_proactive_cap(silence=3h)` 測試釘死 (d) TA-2 措辭逐字不動、
+            TA-2 狀態不得參與發起判定」
+
+        因此本測試**依 Owner 裁定理當改變**（屬「經授權的語意變更」，非放寬斷言）：
+        現在釘死的是**新語意** —— 5h 前仍**必須**留一行 `gate=G5` 放行痕跡、
+        **必須**繼續 publish（不再中斷）。舊語意的回歸防護已由
+        `tests/test_deliverability_release_1.py::TestStep1_G5NoLongerBlocks`
+        以 AST 級斷言接手（G5 區塊內不得有任何 return）。
+        """
         _write_bryan_last_seen(tmp_path, hours_ago=5)
         sched = _make_scheduler(monkeypatch, tmp_path)
         published = []
@@ -69,8 +90,36 @@ class TestDeliverabilityGate:
         monkeypatch.setattr(sched, "_publish_agency_trigger", fake_publish)
         try:
             asyncio.run(sched._fire_proactive_dm())
-            assert published == [], f"不可送達應 skip, 實際 {published}"
-            assert sched._next_proactive_dm_time is not None, "skip 後應排下次"
+            assert ("agent_yua", "proactive_dm") in published, (
+                f"G5 放寬後（Owner 裁定 B）應照常 publish, 實際 {published}"
+            )
+            assert sched._next_proactive_dm_time is not None, "仍應排下次"
+        finally:
+            del os.environ["SOUL_OS_DATA_DIR"]
+            reset_data_root()
+
+    def test_g5_passthrough_trace_logged_when_bryan_inactive_5h(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """G5 放行必須留可觀測痕跡（含 inactivity 小時數 + gate=G5）。"""
+        import logging
+
+        _write_bryan_last_seen(tmp_path, hours_ago=5)
+        sched = _make_scheduler(monkeypatch, tmp_path)
+        published = []
+
+        async def fake_publish(agent_id, trigger_type, extra=None):
+            published.append((agent_id, trigger_type))
+
+        monkeypatch.setattr(sched, "_publish_agency_trigger", fake_publish)
+        try:
+            with caplog.at_level(logging.INFO, logger="soul_os.soul.scheduler"):
+                asyncio.run(sched._fire_proactive_dm())
+            msgs = [r.getMessage() for r in caplog.records]
+            hit = [m for m in msgs if "gate=G5" in m]
+            assert len(hit) == 1, f"G5 必須留一行放行痕跡: {msgs}"
+            assert "5.0h" in hit[0]
+            assert len(hit[0]) <= 200
         finally:
             del os.environ["SOUL_OS_DATA_DIR"]
             reset_data_root()

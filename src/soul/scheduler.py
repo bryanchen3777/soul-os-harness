@@ -236,6 +236,13 @@ class SoulScheduler:
         # （契约 §2.3 #1）: _decision_check transmit 分支记录 → _publish_agency_trigger
         # payload 组装时写入 extra（既有透传通道），单次消费后清空。
         self._last_transmit_target: Optional[str] = None
+        # DELIVERABILITY-RELEASE-1 (票 5, Owner 裁定 (b), 2026-09-13):
+        #   每角色每日主動 DM 上限（G7b）的記憶體計數。
+        #   {agent_id: (本地日期 "YYYY-MM-DD", 當日已用發起次數)}。
+        #   跟既有 _last_trigger_date 同 pattern（純記憶體，0 檔案 I/O）→
+        #   **0 `data/**` 寫入**（本票紅線）。已知限制：程序重啟即歸零，
+        #   已於 ENGINEERING_STATE 明示登記。
+        self._proactive_dm_daily: Dict[str, Any] = {}
 
     # ───────────────────────────────────────────────────────────
     # M1.1: Event Bus 發布層
@@ -1380,6 +1387,41 @@ class SoulScheduler:
         from src.agent.emotion import compute_longing
         return compute_longing(intimacy, effective)
 
+    def _proactive_daily_cap_allows(self, agent_id: str) -> bool:
+        """DELIVERABILITY-RELEASE-1 (Owner 裁定 (b)/(c), 2026-09-13): G7b 每日上限檢查。
+
+        純讀，0 side effect（不改計數、不寫檔、不呼叫 LLM）。
+
+        Returns:
+            True  = 今日該角色的主動 DM 配額**尚未用盡**，可繼續後續流程。
+            False = 今日已達上限 → 呼叫端 skip（不 publish AGENCY_TRIGGER）。
+
+        - 日期鍵 = 本地日期（`now_local()`，與 G4 靜音時段同一個時鐘）。
+        - 上限值 = `proactive_policy.daily_proactive_cap()`，**與沉默時長無關**。
+          這是不變量 `cap(silence=3d) == cap(silence=3h)` 的落地點：
+          本函式**從不**把沉默時長傳進去當調整依據。
+        """
+        from src.soul.proactive_policy import daily_proactive_cap
+        today = now_local().date().isoformat()
+        day_key, used = self._proactive_dm_daily.get(agent_id, ("", 0))
+        if day_key != today:
+            return True  # 跨日 → 配額重置
+        return used < daily_proactive_cap()
+
+    def _proactive_daily_cap_record(self, agent_id: str) -> int:
+        """DELIVERABILITY-RELEASE-1: 記一次「本日已用掉一次發起機會」，回傳今日累計。
+
+        只在**真的走到 publish 之後**呼叫（見 `_fire_proactive_dm` 尾端）。
+        語意刻意訂為「發起次數」而非「送達次數」：publish 內部仍可能被
+        G10（Inner Life gate）或 G11（Decision fail-closed）擋下 ——
+        在該情況下配額**照樣消耗**，方向永遠是「少發」而非「多發」（fail-safe）。
+        """
+        today = now_local().date().isoformat()
+        day_key, used = self._proactive_dm_daily.get(agent_id, ("", 0))
+        used = used + 1 if day_key == today else 1
+        self._proactive_dm_daily[agent_id] = (today, used)
+        return used
+
     async def _fire_proactive_dm(self) -> None:
         """
         Lesson 39: 觸發 1 隻角色的 proactive DM (透過 TG DM 找 Bryan).
@@ -1388,6 +1430,14 @@ class SoulScheduler:
           1. 冷卻窗: 上次 DM 到現在 < cooldown_seconds → 跳過
           2. 靜音時段: 23:00-08:00 → 跳過 (會自動排到 8:00 之後)
           3. semaphore: callback 內部用 LLM_CONCURRENCY_LIMIT (在 run_server.py)
+
+        DELIVERABILITY-RELEASE-1 (票 5, Owner 裁定 B, 2026-09-13): G5 (4h 可送達)
+        已由「硬阻斷」改為「量測 + 留一行 INFO 痕跡後照常放行」; 並新增
+        G7b (每角色每日主動 DM 上限 = 1 則)。改動後的閘門順序:
+          G2 白名單 → G3 冷卻窗 → G4 靜音時段 → G5 放行痕跡 (不再中斷) →
+          G6 選角防呆 → G7 想念門檻 → G7b 每日上限 → G9/G9′ 活動 enrichment →
+          publish AGENCY_TRIGGER → G10 inner-life gate → G11 Decision fail-closed
+          → router (通道 / 分級 / M0.5)
 
         修法 11 (Bry 拍板 2026-08-06 16:xx): 加第 0 道防護 — proactive whitelist
         whitelist 決定「誰有資格觸發」, whitelist 外的角色 (即使 random 命中) 也 silent skip
@@ -1446,27 +1496,44 @@ class SoulScheduler:
             self._next_proactive_dm_time = now + timedelta(minutes=30)
             return
 
-        # 2.5 可送達檢查 (Proactive DM 三件修復 #1, Bry 拍板 2026-08-29):
-        # Bry 最後看見時間 > PROACTIVE_DM_BRYAN_INACTIVE_HOURS (4h) → skip,
-        # 不 publish AGENCY_TRIGGER、不觸發 LLM (省 token)。
-        # 背景: 8/19-8/29 共 23 次 proactive_dm 觸發, 每次 = 真實 LLM 調用
-        # (~14k tokens) + 創建 InnerLifeEvent, 然後被 router M0.5 THROTTLED 丟棄。
-        # 修法: 把 router 的 throttle 邏輯提前到 scheduler 層 (router 的 throttle
-        # 保留作兜底)。統一信號源 = bryan_last_seen.json (TG + web inbound 都更新)。
-        # 冷啟動 (bryan_last_seen 不存在) → 不 skip (跟 router M0.5 一致)。
+        # 2.5 可送達檢查 (Proactive DM 三件修復 #1, Bry 拍板 2026-08-29) —— G5。
+        #
+        # 🔴 DELIVERABILITY-RELEASE-1 (票 5, Owner 裁定 B, 2026-09-13):
+        #    **放寬 4h 硬阻斷 —— 本檢查不再中斷流程。**
+        #
+        #    舊行為: Bry 最後看見 > PROACTIVE_DM_BRYAN_INACTIVE_HOURS (4h)
+        #      → skip (不 publish AGENCY_TRIGGER、不觸發 LLM)。
+        #    病灶 (票 3 本輪已證, map §3.4 直接採信): 本檢查位於
+        #      `_publish_agency_trigger(...)` 呼叫 **之前**, 而後者是
+        #      `_inner_life_gate_check` 與 `_decision_check` 的**唯一呼叫點**
+        #      → 只要 Bry 超過 4h 沒出現, **整條決策鏈一次都不會跑**
+        #      (這就是 `[SM-3 Decision]` 四行 0 筆的根因; G5 是當時唯一的
+        #       binding constraint)。
+        #
+        #    新行為: 仍**量測** inactivity 時數, 但只補一行有界 INFO log 記錄
+        #      「觀察到的 inactivity 小時數 + gate=G5 + 已放行」, 然後**照原流程
+        #      繼續往下跑** → 把一個靜默閘門換成可觀測的放行痕跡。
+        #      Owner **已知悉**這會改變「主動」的語意 (不再是「趁你在場時接話」)。
+        #
+        #    ⚠️ 「頻率與關係分寸的節制」並未取消 —— 仍逐項有效:
+        #      G3 冷卻窗 (2h) / G4 靜音時段 (23:00-08:00) / G7 想念門檻 (0.3)
+        #      / G7b 每角色每日上限 (本票新增, 1 則) / G10 inner-life gate
+        #      / G11 Decision fail-closed / router 端既有通道與分級邏輯。
+        #
+        #    🔒 本票**不碰**: 常數 `PROACTIVE_DM_BRYAN_INACTIVE_HOURS` 本身、
+        #      `read_bryan_last_seen()` 的語意、`data/state/bryan_last_seen.json`
+        #      的讀取語意 (仍被 router M0.5、goals/motive_provider.py、
+        #      goals/seed_provider.py 各自使用)。
         from src.io.channels.bryan_state import PROACTIVE_DM_BRYAN_INACTIVE_HOURS
         bry_minutes = self._bryan_last_seen_minutes()
         if bry_minutes is not None and bry_minutes > PROACTIVE_DM_BRYAN_INACTIVE_HOURS * 60:
             logger.info(
-                f"[Scheduler] 💬 proactive_dm 不可送達: Bry 最後看見 "
-                f"{bry_minutes / 60.0:.1f}h 前 > {PROACTIVE_DM_BRYAN_INACTIVE_HOURS}h, "
-                f"skip (不 publish AGENCY_TRIGGER、不觸發 LLM)"
+                _bounded_log(
+                    f"[Scheduler] 💬 proactive_dm G5 放行: Bry 最後看見 "
+                    f"{bry_minutes / 60.0:.1f}h 前 > {PROACTIVE_DM_BRYAN_INACTIVE_HOURS}h, "
+                    f"gate=G5, 不再阻斷 (Owner 裁定 B)"
+                )
             )
-            # 排 30 min 後再查 (Bry 可能隨時上線, 跟 longing gate 同節奏)
-            self._next_proactive_dm_time = now_local() + timedelta(
-                minutes=LONGING_CHECK_INTERVAL_MINUTES
-            )
-            return
 
         # 3. 觸發 (whitelist 過濾後)
         raw_choice = random.choice(candidates)
@@ -1507,6 +1574,30 @@ class SoulScheduler:
         logger.info(
             f"[M7-longing] {agent_id} 想念 {longing:.2f} >= {LONGING_THRESHOLD}, 觸發主動傳訊"
         )
+        # G7b (DELIVERABILITY-RELEASE-1, Owner 裁定 (b)/(c), 2026-09-13):
+        #   每角色每日主動 DM 上限 = 1 則。
+        #
+        #   為什麼需要這道閘門: G5 放寬後, 唯一還「與沉默時長連動」的上游就是 G7,
+        #   而 longing 對沉默時長**單調不減**（實測曲線見 src/soul/proactive_policy.py），
+        #   長沉默不再被任何上游擋下 → 必須補一道**與沉默時長無關**的頻率護欄,
+        #   否則「沉默越久 → 越可能發訊」會直接變成騷擾許可證。
+        #
+        #   上限值不隨沉默時長變動 —— 不變量 `cap(silence=3d) == cap(silence=3h)`
+        #   由 tests/test_deliverability_release_1.py 釘死。
+        from src.soul.proactive_policy import daily_proactive_cap
+        cap = daily_proactive_cap()
+        if not self._proactive_daily_cap_allows(agent_id):
+            logger.info(
+                _bounded_log(
+                    f"[Scheduler] 💬 proactive_dm 每日上限已達: {agent_id} "
+                    f"gate=G7b, 今日已用 {cap}/{cap} 則, skip (不 publish AGENCY_TRIGGER)"
+                )
+            )
+            # 排下一次檢查（避免 30 min 一次的無效重試；隔天配額重置後才會再放行）
+            self._next_proactive_dm_time = now_local() + timedelta(
+                minutes=self.proactive_dm_min_interval_minutes
+            )
+            return
         # M5.2-G (Bry 拍板 2026-08-08): publish AGENCY_TRIGGER
         # M5.2-I Phase 6: 移除 callback invocation. 真實 LLM
         # 由 AgencyTriggerHandler 訂閱 AGENCY_TRIGGER 觸發.
@@ -1533,6 +1624,17 @@ class SoulScheduler:
                 )
             )
         await self._publish_agency_trigger(agent_id, trigger_type="proactive_dm", extra=extra)
+        # G7b (DELIVERABILITY-RELEASE-1): 記一次本日配額。
+        #   語意 = 「本日已用掉一次發起機會」, 記在 publish **之後**且**不區分**
+        #   publish 內部是否被 G10/G11 擋下 → 配額只會讓當天**少發**, 絕不會多發
+        #   (fail-safe 方向; 已於 ENGINEERING_STATE 明示登記此語意)。
+        used_today = self._proactive_daily_cap_record(agent_id)
+        logger.info(
+            _bounded_log(
+                f"[Scheduler] 💬 proactive_dm 每日配額使用: {agent_id} "
+                f"gate=G7b, {used_today}/{cap} (本地日)"
+            )
+        )
         # 記錄 last_proactive_dm_time (scheduler-level rate limit 不變)
         self._last_proactive_dm_time = now_local()
         # 排下次 (隨機 2-4 小時)

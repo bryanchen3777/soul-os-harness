@@ -688,21 +688,52 @@ class TestDSM3DecisionLines:
             assert "logger.debug" not in window, f"{needle} 不得為 debug 級"
 
     def test_d6_root_cause_g5_precedes_publish(self):
-        """根因釘死：G5（4h 可送達檢查）在 _fire_proactive_dm 內 **先於** publish。
+        """🔴 合法變更（DELIVERABILITY-RELEASE-1, Owner 裁定 B, 2026-09-13）。
 
-        故 G5 阻擋時 `_publish_agency_trigger`（含 _inner_life_gate_check 與
-        _decision_check）根本不會被執行 → [SM-3 Decision] 在該窗口 0 筆是
-        「路徑未走到」，不是 logging 配置故障。
+        本測試原本釘死「根因：G5（4h 可送達檢查）在 _fire_proactive_dm 內先於
+        publish，故 G5 阻擋時 `_publish_agency_trigger`（含 `_inner_life_gate_check`
+        與 `_decision_check`）根本不會被執行 → `[SM-3 Decision]` 該窗口 0 筆是
+        『路徑未走到』而非 logging 配置故障」。
+
+        Owner 已裁定放寬 4h 硬阻斷 → **該根因已消失**（G5 不再 early-return），
+        因此本測試依裁定**改釘新不變量**（不是放寬斷言，是把釘子移到新的真相上）：
+
+          1. G5 仍**先於** publish（量測與放行痕跡的位置不變），
+             但**區塊內不得有任何 return**（新語意的核心）。
+          2. G3／G4 的阻擋痕跡仍先於 publish（頻率閘門未被連帶放寬）。
+          3. publish 之前仍不得出現任何 `[SM-3 Decision]`（SM-3 只在 publish 內部）。
         """
         src = (ROOT / "src/soul/scheduler.py").read_text(encoding="utf-8")
-        start = src.index("async def _fire_proactive_dm(")
-        end = src.index("async def _run_loop(")
-        body = src[start:end]
-        g5 = body.index("proactive_dm 不可送達")
-        publish = body.index("await self._publish_agency_trigger(")
-        assert g5 < publish, "G5 必須在 publish 之前（否則鎖 A 不再是 binding constraint）"
+        import ast as _ast
+
+        tree = _ast.parse(src)
+        fn = next(
+            n
+            for n in _ast.walk(tree)
+            if isinstance(n, _ast.AsyncFunctionDef) and n.name == "_fire_proactive_dm"
+        )
+        # 以 ast.unparse 取得「無註解」的函式本體 —— 字串索引在含註解的原文上
+        # 會誤命中註解裡提到的 gate 名稱（本票已在註解中記載 G3/G4/G5/G7b）。
+        body = _ast.unparse(fn)
+        g5_trace = body.index("gate=G5")
+        publish = body.index("_publish_agency_trigger")
+        assert g5_trace < publish, "G5 放行痕跡必須在 publish 之前（量測位置不變）"
+        # G3／G4 仍先於 publish（既有阻擋語意未被本票連帶放寬）
+        assert body.index("gate=G3") < publish
+        assert body.index("gate=G4") < publish
         # publish 之前不得有任何 [SM-3 Decision] 行（SM-3 只在 publish 內部）
         assert "[SM-3 Decision]" not in body[:publish]
+        # 🔴 新語意（AST 級）：G5 的 if 區塊內不得有任何 return（否則又變回硬阻斷）
+        g5_ifs = [
+            n
+            for n in _ast.walk(fn)
+            if isinstance(n, _ast.If)
+            and "PROACTIVE_DM_BRYAN_INACTIVE_HOURS" in (_ast.get_source_segment(src, n) or "")
+        ]
+        assert len(g5_ifs) == 1, f"G5 的 if 區塊應恰好 1 個, 實際 {len(g5_ifs)}"
+        assert not any(isinstance(n, _ast.Return) for n in _ast.walk(g5_ifs[0])), (
+            "G5 不得再 early-return（DELIVERABILITY-RELEASE-1 已放寬 4h 硬阻斷）"
+        )
 
 
 # ────────────────────────────────────────────────────────────────────
