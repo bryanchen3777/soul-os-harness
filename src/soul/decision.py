@@ -362,18 +362,38 @@ def parse_decision_output(raw: Optional[str]) -> dict:
       F4: 缺 decision / 非法值 → do_nothing
       F5: 禁止预设 YES (唯一默认是 do_nothing)
       F6: reason 缺失 → decision 照常生效, log warning (不 gate)
+
+    Observability (DECISION-OBSERVABILITY-1, 纯 additive):
+      三个 fail-closed 分支 (F2/F3/F4) 各留一行 WARNING, 内含:
+        ① 分支代号 (F2 = raw is None / F3 = 非 JSON 解析失败 /
+           F4 = decision 缺失或非法值), 使三種成因事后可判别;
+        ② 原始回覆的**截断**节录 `repr(raw[:200])` (F2 明确标示 `raw=None`);
+           原始回覆一律截断, 不得整段落盘;
+        ③ 既有诊断变数: `_extract_json` 返回型别 / 非法 decision 值 / dict keys 前 10 个;
+      只加 log — 0 判定语意变更、0 新增 LLM 呼叫、0 Frozen Contract 触碰。
     """
     if raw is None:
-        logger.warning("[Decision] LLM 调用失败/无输出 (fail-closed = do_nothing)")
+        # DECISION-OBSERVABILITY-1 (F2): 分支代号 + raw=None 明确标示 (只加 log, 0 判定语意变更)
+        logger.warning(
+            "[Decision][F2] LLM 调用失败/无输出 (fail-closed = do_nothing) raw=None"
+        )
         return {"decision": "do_nothing", "reason": FAIL_CLOSED_REASON}
     data = _extract_json(raw)
     if data is None:
-        logger.warning("[Decision] 输出非 JSON (fail-closed = do_nothing)")
+        # DECISION-OBSERVABILITY-1 (F3): 分支代号 + _extract_json 返回型别 + 截断节录
+        logger.warning(
+            f"[Decision][F3] 输出非 JSON (fail-closed = do_nothing) "
+            f"extract_type={type(data).__name__} raw[:200]={raw[:200]!r}"
+        )
         return {"decision": "do_nothing", "reason": FAIL_CLOSED_REASON}
     decision = data.get("decision")
     if decision not in DECISION_ACTIONS:
+        # DECISION-OBSERVABILITY-1 (F4): 分支代号 + 非法值/keys + 截断节录
+        # (取代原 `{data!r}` 全量 dump — 原始回覆一律截断, 不得整段落盘)
         logger.warning(
-            f"[Decision] 缺 decision / 非法值 (fail-closed = do_nothing): {data!r}"
+            f"[Decision][F4] 缺 decision / 非法值 (fail-closed = do_nothing) "
+            f"decision={repr(decision)[:80]} "
+            f"keys={sorted(data.keys())[:10]!r} raw[:200]={raw[:200]!r}"
         )
         return {"decision": "do_nothing", "reason": FAIL_CLOSED_REASON}
     reason = data.get("reason")
