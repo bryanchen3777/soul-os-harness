@@ -475,6 +475,11 @@ class ElevationObserver:
 #   - **不重复消化**（anti-runaway）：已被 soul node 证据边引用的
 #     (source_id, event_identity) 键不再计票——同一批证据不能支持第二颗
 #     灵魂结构。
+#     **消化范围局部化（ELEVATION-FIX-A-1／契约 §3 方案 A、OQ-1 裁定）**：
+#     该「已消化」判定以 **（候选维度, agent）** 为范围——同一批证据在
+#     **同一候选维度 + 同一 agent** 内仍不得重复计票（INV-2 不变），
+#     但**不再跨候选维度吃掉别的维度的可见证据**（旧行为：agent 全域键
+#     集合，任一维度消化即全局剔除）。这是**缩小**消化范围，不是取消去重。
 #   - **agent 隔离**：只聚合同一 agent（灵魂本体）的 pattern 计票；
 #     ``world`` 事件（agent_id="default"）自成一局，不影响具体灵魂计票。
 # ─────────────────────────────────────────────────────────────────────
@@ -511,6 +516,18 @@ def _load_edges(store_dir: Path) -> List[dict]:
     return edges
 
 
+def _node_candidate_dimension(node: dict) -> str:
+    """节点的候选维度（候选维度分组的键，与 ``engine.elevate`` 的内部一致）。
+
+    - ``pattern`` 节点：``candidate_node_type``（LLM 后验候选）。
+    - soul 节点（belief/value/trait/essence）：``engine.elevate`` 的
+      ``resolved_type = node_type or candidate``，故 soul 节点的
+      ``candidate_node_type`` 常为 null → 退回 ``node_type``。
+    - 两者皆缺（legacy 节点）→ 返回空字串（**不猜测**，由调用方保守处理）。
+    """
+    return node.get("candidate_node_type") or node.get("node_type") or ""
+
+
 def _rebuild_engine_for(
     store_dir: Path,
     nodes: Sequence[dict],
@@ -523,10 +540,12 @@ def _rebuild_engine_for(
 
     - **节点**：该 agent 的全部节点都加载（含已被消化的 pattern），保证
       lineage 完整性（``check_invariants`` 要求 ``parent_node_id`` 在注册表内）。
-    - **证据边**：只加载「未被 soul node 证据边覆盖的 (source_id, event_identity)
-      键」的 active pattern 边——已被 elevate 消化的证据不再计票（同一批证据
-      不能支持第二颗灵魂结构，anti-runaway）。soul node 自身的边不加载
-      （elevate 只聚合 pattern 证据，无需）。
+    - **证据边**：只加载「未被**同候选维度**的 soul node 证据边覆盖的
+      (source_id, event_identity) 键」的 active pattern 边——同一候选维度内，
+      已被 elevate 消化的证据不再计票（同一批证据不能支持第二颗同维度灵魂
+      结构，anti-runaway／INV-2）；**跨候选维度不互相吃证据**
+      （ELEVATION-FIX-A-1／契约 §3 方案 A、OQ-1 裁定）。soul node 自身的边
+      不加载（elevate 只聚合 pattern 证据，无需）。
     """
     engine = InternalizingEngine(
         llm=llm,
@@ -536,15 +555,35 @@ def _rebuild_engine_for(
     soul_node_ids = {
         n["node_id"] for n in nodes if n.get("node_type") in SOUL_NODE_TYPES
     }
-    consumed_keys = {
-        (e["source_id"], e.get("inner_life_event_id"))
-        for e in edges
-        if e.get("node_id") in soul_node_ids and e.get("agent_id") == agent_id
+    soul_node_dimensions = {
+        n["node_id"]: _node_candidate_dimension(n)
+        for n in nodes
+        if n.get("node_type") in SOUL_NODE_TYPES
     }
+    pattern_node_dimensions = {
+        n["node_id"]: _node_candidate_dimension(n)
+        for n in nodes
+        if n.get("node_type") == "pattern"
+    }
+    # 已消化键，按 (候选维度, agent) 局部化：agent 已由本函式参数限定，
+    # 故只需再按候选维度分桶。``consumed_any_dimension`` 保留 agent 全域
+    # 视图，仅用于「pattern 维度不可判定」时的保守回退（绝不放宽去重）。
+    consumed_by_dimension: dict = {}
+    consumed_any_dimension: set = set()
+    for e in edges:
+        if e.get("agent_id") != agent_id:
+            continue
+        dimension = soul_node_dimensions.get(e.get("node_id"))
+        if dimension is None:
+            continue
+        key = (e["source_id"], e.get("inner_life_event_id"))
+        consumed_any_dimension.add(key)
+        consumed_by_dimension.setdefault(dimension, set()).add(key)
     for n in nodes:
         if n.get("agent_id") != agent_id:
             continue
         engine._nodes[n["node_id"]] = ElevationNode(**n)
+    loaded_by_dimension: dict = {}
     for e in edges:
         if e.get("agent_id") != agent_id:
             continue
@@ -552,9 +591,25 @@ def _rebuild_engine_for(
             continue
         if e.get("valid_until_ts") is not None:  # superseded 留痕不计票
             continue
-        if (e.get("source_id"), e.get("inner_life_event_id")) in consumed_keys:
+        pattern_dimension = pattern_node_dimensions.get(e.get("node_id"))
+        if pattern_dimension is None:
+            consumed = consumed_any_dimension  # 维度不可判定 → 保守沿用全域语义
+        else:
+            consumed = consumed_by_dimension.get(pattern_dimension, ())
+        if (e.get("source_id"), e.get("inner_life_event_id")) in consumed:
             continue
         engine._edges.append(EvidenceEdge(**e))
+        if pattern_dimension is not None:
+            loaded_by_dimension[pattern_dimension] = (
+                loaded_by_dimension.get(pattern_dimension, 0) + 1
+            )
+    logger.debug(
+        "[elevate] evidence scope agent=%s consumed_by_dimension=%s "
+        "loaded_by_dimension=%s",
+        agent_id,
+        {k: len(v) for k, v in sorted(consumed_by_dimension.items())},
+        dict(sorted(loaded_by_dimension.items())),
+    )
     return engine
 
 
