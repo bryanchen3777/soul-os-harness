@@ -821,7 +821,7 @@ crosses_resistance(thread) -> bool
 | 帶確認寫入 | `src/memory/sage/writer.py:175-178` | `write_with_confirmation` → `WriteResult` |
 | graph store 層 `add_fact` | `src/memory/sage/graph_store.py:382` | 實際落庫點（**不改**） |
 | turn-based 寫入（**不得用於溶解**） | `src/memory/sage/provider.py:586-601` | `post_reply_commit(session_id,last_user_msg,agent_reply,source_pair,inner_life_event_id)` |
-| `Fact` 模型全欄 | `src/memory/sage/models.py:7-56` | 19 欄；`source` 值域 `{user,inference,correction}` `:16` |
+| `Fact` 模型全欄 | `src/memory/sage/models.py:7-56` | 20 欄（`@dataclass` 欄位 20 個；`to_dict()` `:59-80` 同為 20 鍵）；`source` 值域 `{user,inference,correction}` `:16` |
 | `Fact.origin` 5 值 | `src/memory/sage/models.py:45-56` | `native_commons`/`native_episode`/`lived_experience`/`assimilated`/`external_world`；僅後二者走三態 |
 | merge／去重痕跡欄 | `src/memory/sage/models.py:20-21` | `merged_from` / `merge_reason` |
 
