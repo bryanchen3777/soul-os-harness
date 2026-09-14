@@ -83,6 +83,39 @@ DEFAULT_PERCEPTION_BUDGET = 3
 # 平行於 DEFAULT_PERCEPTION_BUDGET, 不佔用世界事件的名額。
 DEFAULT_SOCIAL_PERCEPTION_BUDGET = 2
 
+# WORLD-FACT-TEXT-PERSIST-1 (2026-09-14): fact text（世界事實文字）落點與上限。
+# 契約 `docs/LIFE-THREAD-ENGINE-CONTRACT.md` §5.2.4／A.4（修訂 1）：生活線頭引擎的
+# `world_collision` 種子文字取自**既有**感知 trace 的 `extra["summary"]`。
+# 規則（本票決策已定）：僅 `accepted is True` 才寫（被拒事件不增加資料量；消費者
+# 只要 accepted）、寫入值截斷 <= FACT_SUMMARY_MAX_CHARS 字元、空字串／純空白 ⇒
+# **不寫該鍵**（缺欄 ＝ 無 fact text）。
+# 0 新檔 / 0 新 artifact / 0 新 schema 版本 / 0 新儲存面。
+# 上限與讀取端 `src/soul/life_thread_origins.py:103` `MAX_FACT_CHARS`（＝200）一致。
+FACT_SUMMARY_MAX_CHARS = 200
+
+
+def _fact_summary_extra(accepted: bool, summary: Any) -> Dict[str, Any]:
+    """回傳要併入**既有** `extra` dict 的 fact text 片段（WORLD-FACT-TEXT-PERSIST-1）。
+
+    規則（契約 §5.2.4／A.4 修訂 1）:
+    - **僅** `accepted is True` 才回內容；其餘（含 False）⇒ `{}`（不寫該鍵）。
+    - 非字串／空字串／純空白 ⇒ `{}`（**不寫該鍵**；缺欄表示無 fact text）。
+    - 寫入值一律 <= `FACT_SUMMARY_MAX_CHARS` 字元（保護 trace 檔成長）。
+    - **不得**以 `event_type`／`novelty_id`／`reason` 頂替：本函式只接受事實文字。
+
+    本函式**不影響任何判定**——acceptance／scoring／novelty／`context_injected`／
+    `memory_written` 全在呼叫端先算完；這裡只多做一個 dict 鍵（0 讀取、0 改寫、
+    0 副作用），故既有判定逐位元不變。
+    """
+    if accepted is not True:
+        return {}
+    if not isinstance(summary, str):
+        return {}
+    text = summary.strip()
+    if not text:
+        return {}
+    return {"summary": text[:FACT_SUMMARY_MAX_CHARS]}
+
 
 def _extract_user_context_keywords(agent_intent_payload: Dict[str, Any]) -> List[str]:
     """
@@ -567,6 +600,9 @@ class WorldPerceptionMiddleware:
                     "user_keyword_count": len(user_keywords),
                     # M3.2-A (Bry 拍板 2026-08-08 11:36): priority 進 trace observability
                     "world_event_priority": world_event.priority,
+                    # WORLD-FACT-TEXT-PERSIST-1 (2026-09-14): 事實文字副本
+                    # （僅 accepted == True；<= 200 字元；空白 ⇒ 不寫鍵）
+                    **_fact_summary_extra(decision.accepted, world_event.summary),
                 },
             ))
 
@@ -760,6 +796,9 @@ class WorldPerceptionMiddleware:
                     "actor_id": ev.actor_id,
                     "space_id": ev.space_id,
                     "visibility": ev.visibility,
+                    # WORLD-FACT-TEXT-PERSIST-1 (2026-09-14): 事實文字副本
+                    # （僅 accepted == True；<= 200 字元；空白 ⇒ 不寫鍵）
+                    **_fact_summary_extra(accepted, ev.summary),
                 },
             ))
 
