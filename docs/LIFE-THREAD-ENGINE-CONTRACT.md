@@ -7,6 +7,7 @@
 - **入口依據（上游理念，本契約不得自行發明方向）**：`INNER-LIFE-REDESIGN-VISION-1（內在生活與主動傳訊重構理念）`，2026-09-13 定稿，Owner（Bryan）與主大腦對話收斂。**該文件為 Notion 頁，非 repo 檔案**（見 §0.1 L1）。
 - **Owner 戰略裁定（2026-09-14，直接採信）**：下游微調全面停止；主戰場轉進上游造血器官（本引擎）。12:18 首個通過想念門檻的主動傳訊被決策層正確拒送，**定性為正確且健康的拒絕（決策層心智健全），不是故障**。
 - **性質**：**設計契約，非施工授權。** 本契約不自行生效；實作需另開工單，且須先經 Owner 核准。canonical 狀態以 `logs/ENGINEERING_STATE.md` 為準。
+- **修訂 1（WORLD-FACT-TEXT-PERSIST-1, 2026-09-14）：§5.2.4 之 fact text 來源定為 `extra.summary`；A.4 schema 同步。** 已知限制：本變更**需重啟才生效**，且**既有歷史列仍無此欄**（2026-09-14 唯讀實測：生產 `data/world/perception_trace.jsonl` 既有 14,655 筆中 `extra["summary"]` 命中 ＝ **0**），因此只有「**下次重啟之後新感知到的事實**」才帶 fact text。本契約不重啟服務。
 
 ---
 
@@ -480,10 +481,13 @@ should_wake := check_points_due(agent_id) OR world_collision_detected(agent_id)
 
 | 項目 | 規格 |
 |---|---|
-| 種子來源 | `world_collision_detected == True` 所依據的那批 `accepted == True` 記錄之 `summary`／`event_type`／`source`，從 `data/world/perception_trace.jsonl` 取得 |
+| 種子來源 | `world_collision_detected == True` 所依據的那批 `accepted == True` 記錄之 **fact text ＝ `extra["summary"]`**（`event_type`／`source` 只作**標籤／來源過濾**用，**不得當文字用**），從 `data/world/perception_trace.jsonl` 取得（欄位定義見附錄 A.4；來源修訂見「修訂 1」） |
+| **fact text 取得規則** | **僅**取 `accepted == True` **且** `extra["summary"]` **存在、為字串、去空白後非空** 的記錄。**缺欄／空字串／純空白 ⇒ 跳過該事件**（只累計有界計數後**繼續**，0 raise）；**絕不以 `event_type`／`novelty_id`／`reason` 頂替、絕不捏造**。若命中記錄**全部**無 fact text ⇒ **本次不產生 `world_collision` 線頭**（寧可留白，不得編造） |
 | 必填上下文 | §4.2 判定 2 命中的**具體事實文字**（不得只給「有新事件」）；當前時間；`soul_context` |
-| 禁止事項 | **不得**在無命中的情況下捏造天氣／新聞／日程（此為 VISION §4.3「杜絕純腦內單機幻覺」的執行點）；**不得**把世界事實寫成「Bryan 對我說的話」（世界事件不是對話）；**不得**跨 agent 洩漏（見 INV-4） |
+| 禁止事項 | **不得**在無命中的情況下捏造天氣／新聞／日程（此為 VISION §4.3「杜絕純腦內單機幻覺」的執行點）；**不得**把世界事實寫成「Bryan 對我說的話」（世界事件不是對話）；**不得**跨 agent 洩漏（見 INV-4）；**不得**以 `event_type`／`novelty_id`／`reason` 頂替 fact text（它們分別是標籤／去重鍵／判定理由，**不是**事實文字） |
 | 模板 | 「剛剛世界發生了這件事：{fact_summary}。它跟你**自己的生活**有什麼關係？你**當下**因此改變了什麼動作？」 |
+
+> **界線說明（WORLD-FACT-TEXT-PERSIST-1, 2026-09-14；即「修訂 1」）**：世界層**仍不持久化 world state、也不回讀**。`src/world/state.py:7-8`, `:16-21` 的 `EPHEMERAL`／`NO PERSISTENCE`／`NOT a memory system` 不變量**範圍不變**——它講的是 **world state**（in-memory deque，重啟即清空），**不是**感知 trace。本變更只是讓**既有**感知 trace（`WorldPerceptionTrace`，既有 artifact）的**既有** `extra` dict 帶一份**事實文字副本**（僅 `accepted == True`、截斷 ≤ 200 字元、空／純空白不寫鍵），供本引擎取用。**0 新檔、0 新 artifact、0 新 schema 版本、0 新儲存面**；且 `accepted`／`scores`／`novelty_count_in_window`／`context_injected`／`memory_written` 的判定語意**逐位元不變**（實作落在 `src/world/middleware.py:97-117`，兩個既有寫入點見附錄 A.4）。
 
 ### 5.3 「立體節奏」的可測條件
 
@@ -850,7 +854,9 @@ crosses_resistance(thread) -> bool
 | 介接點 | 檔案:行 | 現況一句話 |
 |---|---|---|
 | **世界感知唯一落盤產物** | `src/world/trace.py:36-38`, `:52-53` | `data_root()/world/perception_trace.jsonl`，append |
-| `WorldPerceptionTrace` schema | `src/world/perception.py:297-334` | `event_id`/`timestamp`/`source`/`event_type`/`scores`/`accepted`/`context_injected`/`memory_written`/`novelty_id`/`selection_reason`/`extra` |
+| `WorldPerceptionTrace` schema | `src/world/perception.py:297-334` | `event_id`/`timestamp`/`source`/`event_type`/`scores`/`accepted`/`context_injected`/`memory_written`/`novelty_id`/`selection_reason`/`extra`／**`extra.summary`**（**修訂 1**：僅 `accepted == True`、≤ 200 字元、空／純空白不寫鍵；**缺欄表示無 fact text**） |
+| **fact text 落點**（既有 artifact，**加法**） | `src/world/middleware.py:581-607`（外部事件 `phase=evaluated`）、`:776-803`（社交事件 `phase=social_evaluated`） | 寫進**既有** `extra` 的 `summary` 鍵；僅 `accepted == True`，值經 `strip()` 後截斷 ≤ 200 字元；空／純空白 ⇒ **不寫該鍵**（實作 `_fact_summary_extra()`，`src/world/middleware.py:97-117`） |
+| fact text 上限常數 | `src/world/middleware.py:94` | `FACT_SUMMARY_MAX_CHARS = 200`（與讀取端 `src/soul/life_thread_origins.py:103` `MAX_FACT_CHARS` 同值） |
 | **原始 WorldEvent 不落盤** | `src/world/state.py:7-8`, `:16-21`, `:86` | 不變量 `EPHEMERAL`／`NO PERSISTENCE`；deque in-memory |
 | 既有 novelty 視窗 24h | `src/world/state.py:73`（執行 `:171`）；`src/world/middleware.py:218` | `timedelta(hours=24)` |
 | 新聞 lookback 2h | `src/world/source/news_rss.py:167`（用於 `:606`） | `DEFAULT_LOOKBACK_HOURS = 2` |
@@ -863,6 +869,8 @@ crosses_resistance(thread) -> bool
 | 感知門檻 | `src/world/perception.py:578` | `DEFAULT_ACCEPT_THRESHOLD = 0.35` |
 | 感知 top-N 預算 | `src/world/middleware.py:80` | `DEFAULT_PERCEPTION_BUDGET = 3` |
 | 世界事件白名單 | `src/world/inner_life_adapter.py:121-128` | `WORLD_QUALIFYING_TYPES` |
+
+> **界線說明（A.4／修訂 1, WORLD-FACT-TEXT-PERSIST-1, 2026-09-14）**：本表「**原始 WorldEvent 不落盤**」一列**仍然成立**——落盤的**只有** `WorldPerceptionTrace`（**既有** schema；本次僅 `extra` 多一個鍵）。`src/world/state.py:7-8`, `:16-21` 的 `EPHEMERAL`／`NO PERSISTENCE`／`NOT a memory system` 不變量**範圍不變**（它規範 **world state**，不規範 trace）；世界層**仍不持久化 world state、也不回讀**。fact text 是**事實文字副本**，不是世界狀態的復原依據。
 
 ### A.5 交付鏈與錨 A（模組 5）
 
