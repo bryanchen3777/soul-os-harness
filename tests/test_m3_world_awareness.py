@@ -563,15 +563,32 @@ class TestM3ExistingSystemCompat(unittest.TestCase):
         透過 sub-process 跑既有 M2.0 / M1.7 / M1.6 測試, 確認沒 regression
         (這些是 integration smoke test, 不是 M3 自己)
         """
+        import os
         import subprocess
+
+        # TEST-INFRA-TEMP-FIX-1: 子行程必須跑在「乾淨環境」。
+        # 父 session 的 autouse 隔離 fixture (tests/conftest.py) 會把
+        # SOUL_OS_DATA_DIR 指向它自己的 tmp 無菌室; 子行程若繼承, 則
+        # src/llm/proxy.py:134 `INNER_LIFE_DATA_DIR = str(data_root() / "soul")`
+        # 會在 import 期把該 tmp 路徑凍結成常數 (reset_data_root() 救不回),
+        # 使子行程的 test_e (ruka diary E2E) 讀不到真 diary → exit 1。
+        # 故顯式剝除該變數: 子行程等同「不帶任何父層 pytest 隔離狀態」啟動。
+        child_env = {k: v for k, v in os.environ.items()
+                     if k != "SOUL_OS_DATA_DIR"}
+
         result = subprocess.run(
             [sys.executable, "-m", "pytest",
              "tests/test_m2_0_inner_life_v2.py",
              "tests/test_m1_7_event_whitelist_v2.py",
              "tests/test_m1_6_audio_action_fix.py",
-             "-v", "--tb=short"],
+             "-v", "--tb=short",
+             # TEST-INFRA-TEMP-FIX-1: 子行程一律指定「全新 basetemp」,
+             # 避免它使用共用的 %TEMP%\\pytest-of-<user> root 而在 sessionfinish
+             # 踩到壞掉的 pytest-current reparse point (PermissionError WinError 5)。
+             f"--basetemp={tempfile.mkdtemp(prefix='pytest-m3-baseline-')}"],
             capture_output=True, text=True,
             cwd=Path(__file__).parent.parent,
+            env=child_env,
         )
         # 期望: 36 passed
         self.assertEqual(result.returncode, 0,
