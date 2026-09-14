@@ -497,6 +497,33 @@ async def lifespan(app: FastAPI):
             trace_reader=NarrativeTraceReader(),
         )
 
+        # ── OQ5-SI21-WIRING-1: SI-2.1 防線 3（Identity Firewall）生產接線 ──
+        # 缺口（LIFE-THREAD-ENGINE-CONTRACT §11 OQ-5 已登記）: 上面這顆 gate 未注入
+        # identity_firewall → src/inner_life/submission_gate.py:333 的
+        # `if self._identity_firewall is not None:` 恆跳過（**靜默放行**, fail-open）。
+        # 修法: 以 per-agent 防火牆分派器包裝 —— **不能用單一 firewall**:
+        #   生產只有一顆 gate 卻服務全部靈魂（DreamHandler / DiaryHandler /
+        #   EventHandler 三處 submit 各自傳 agent_id=<該靈魂>），而
+        #   IdentityFirewall.current_agent_id 是單一值；若注入單一
+        #   current_agent_id="agent_X"，其餘靈魂的自我事件會被判他者 →
+        #   9/10 靈魂的昇華鏈整體誤擋。故每個靈魂一顆 firewalled gate
+        #   （current_agent_id = 該靈魂本身），系統／世界事件路徑（actor_id=None
+        #   → SYSTEM_ACTION）沿用上面這顆 base gate（與接線前行為逐位元一致）。
+        # 只補接線: identity_firewall.py / submission_gate.py 一字未改（判定語意
+        # 0 變更）；fail-closed: 建不出 firewall 的 agent → 拒絕（不 consume）。
+        from src.inner_life.firewall_wiring import FirewalledSubmissionGate
+
+        submission_gate = FirewalledSubmissionGate(
+            base_gate=submission_gate,
+            writer=inner_life_writer,
+            trace_reader=NarrativeTraceReader(),
+        )
+        logger.info(
+            "[OQ5-SI21-WIRING-1] 防線 3 Identity Firewall 已接線 ✓ "
+            "(per-agent firewalled gate; 系統/世界事件路徑沿用 base gate; "
+            "fail-closed = 建不出 firewall 即拒絕)"
+        )
+
         def _elevate_check() -> None:
             """consume 之后证据驱动 elevate（独立于 Submission Gate）。
 
@@ -610,6 +637,58 @@ async def lifespan(app: FastAPI):
         token_mgr = SpeakerTokenManager(bus, token_timeout_secs=120.0)
         logger.warning("[Server] M3 WorldPerception 關閉 (legacy mode, SOULOS_WORLD_PERCEPTION_ENABLED=0)")
     token_mgr.register()
+
+    # ── OQ5-SI21-WIRING-1: SI-2.1 防線 2（Privacy Visibility Gate）＋
+    # SOCIAL_WORLD_EVENT 生產端接線 ──
+    # 缺口（LIFE-THREAD-ENGINE-CONTRACT §11 OQ-5 已登記）: SocialEventProducerGate
+    # （src/social/producer_gate.py:65）在 scripts/ 0 次實例化；SOCIAL_WORLD_EVENT
+    # 有消費端（src/world/middleware.py:352）但 0 生產端。
+    # 契約指定生產點（逐條引用）:
+    #   - SI-2.1 §5.1「位置: SocialWorldEvent 發布端（Producer 側），在
+    #     bus.publish() 之前」
+    #   - SI-2.1 §7 端到端資料流第 1~3 步: [Agent 在公共頻道發言] → [防線 2]
+    #     ProducerGate.evaluate → [Producer] 發布 SOCIAL_WORLD_EVENT
+    #   - src/eventbus/schema.py:337-355（SOCIAL_WORLD_EVENT payload 契約）
+    # 生產端唯一同時持有「最終文本 ＋ 既有頻道信號（mode / target_channel /
+    # target_user_id）」的點 = AGENT_SPEAK（唯一生產發布點 src/llm/proxy.py:4019）。
+    # 只補接線: SocialEventProducerGate 判定語意一字未改；SOCIAL_WORLD_EVENT 是
+    # SI-2.2 既有枚舉（src/eventbus/schema.py:61）→ **0 新事件類型 / 0 新定時器 /
+    # 0 新網路監聽**。
+    # Fail-closed: 1:1 私聊（mode=private）／mode 缺失／group 卻定向 telegram
+    # 收件人（矛盾訊號）／payload 驗證失敗 → 一律 gate BLOCK, 不 publish。
+    social_diffusion_enabled = os.getenv("SOULOS_SOCIAL_DIFFUSION_ENABLED", "1") == "1"
+    social_world_producer = None
+    if social_diffusion_enabled:
+        try:
+            from src.social import SocialEventProducerGate
+            from src.social.producer import SocialWorldEventProducer
+
+            social_world_producer = SocialWorldEventProducer(
+                bus=bus,
+                gate=SocialEventProducerGate(),
+            )
+            bus.subscribe(
+                subscriber_id="social_world_event_producer",
+                handler=social_world_producer.on_agent_speak,
+                event_filter={EventType.AGENT_SPEAK},
+            )
+            app.state._social_world_producer = social_world_producer
+            logger.info(
+                "[OQ5-SI21-WIRING-1] 防線 2 SocialEventProducerGate 已接線 ✓ "
+                "(SOCIAL_WORLD_EVENT 生產端訂閱 AGENT_SPEAK; 只發 public; "
+                "private/未知/矛盾訊號 → BLOCK, fail-closed)"
+            )
+        except Exception as exc:  # noqa: BLE001 — 接線失敗絕不阻斷啟動
+            social_world_producer = None
+            logger.warning(
+                f"[OQ5-SI21-WIRING-1] 防線 2 接線失敗 (不阻斷啟動, 生產端停用): "
+                f"{type(exc).__name__}: {exc}"
+            )
+    else:
+        logger.warning(
+            "[OQ5-SI21-WIRING-1] 防線 2 停用 "
+            "(SOULOS_SOCIAL_DIFFUSION_ENABLED=0), SOCIAL_WORLD_EVENT 0 生產端"
+        )
 
     # ── M5.9-3.1 (Bry 派工 2026-08-10): World → Inner Life Adapter production wiring ──
     # M5.9-3 實作了 WorldInnerLifeAdapter (type whitelist + dedup + InnerLifeWriter sole
