@@ -498,3 +498,61 @@ grep "想念" data/server_nohup.err
 - **log**：0 清理、0 輪替。
 
 **已知限制**：`data/logs/` 有覆蓋缺口（09-09/10/11/13 無有效 app log、僅 tiny nohup stub）；故 §4.2 的「生產 0 次」僅對**已掃描檔案**成立。但 `SUSPENDED` 掛起路徑「程式碼層就無 logger」是**原始碼事實**，不依賴 log，因此「全體 SUSPENDED 卻查無痕跡」的解釋成立。
+
+---
+
+## 附錄：協調者複核修正
+
+> **性質**：本節為**追加**。**上列原文（含 TL;DR 的「🔴 決定性答案」、§6 全閘門預測表、§8 結論摘要）全部保留、一字未刪。**
+> **誰做的**：協調者（幕僚長），於本報告交付後獨立複核。
+> **依據**：對 `interpret_new_events` 實際過濾條件的逐字重讀 ＋ 對 `data/inner_life/trace.jsonl` 與 `MotiveTraceStore.known_provenance_refs()` 的**唯讀**實測。
+
+### 修正 1（推翻本報告的決定性結論）：TTL 殺不死「新解讀出的動機」
+
+報告 TL;DR 與 §6 給的「**12:40 ruka 會有 pending motive 嗎？→ No**」為**決定性 No**，其 **gate A 只涵蓋既存的那一筆**（`agent_ruka` `2026-09-10T19:52:03-04:00`，`age 88.8h > MOTIVE_TTL_HOURS=24`）。
+
+**但漏看了一個順序**：
+
+```
+_decision_check (:300)
+  → interpret_new_events (:430)   ← 先執行：讀新事件 → 產生新動機
+  → assemble_candidate (:449)
+  → resolve_pending (:456)        ← 才做 TTL 過期判定
+      → 空則 :459 F1
+```
+
+⇒ **`interpret_new_events`（`:430`）在 `resolve_pending`（`:456`）之前執行**，**新解讀出的動機不受 TTL 影響**（TTL 只對「已存在池中」的舊動機生效）。因此 gate A 的「池中唯一 pending 已過期」**推不出**「12:40 無 pending motive」。
+
+### 修正 2（實測）：inner-life 供給路徑**完好**，且有**新鮮輸入**
+
+依 `interpret_new_events` 的**實際過濾條件**（`provenance.actor_id == agent_id` 且 `event_id not in store.known_provenance_refs()`）唯讀實測 ⇒ **`agent_ruka` 在 24h 窗口內有 3 筆尚未被解讀的事件**：
+
+| # | `event_id` | 時間 | 類型 |
+|---|---|---|---|
+| 1 | `374e25e5a623` | `2026-09-13T17:27:35Z` | `dream:event` |
+| 2 | `78b29a8796d7` | `2026-09-14T02:00:33Z` | `diary:night` |
+| 3 | `6b749c27fd44` | `2026-09-14T12:00:17Z` | `diary:morning` |
+
+⇒ 這三筆**未被任何既存動機引用**（不在 `known_provenance_refs()` 中），會在 `:430` 被解讀成**新動機**。**gate A 殺不掉它**（TTL 不適用於新解讀之物）、**gate B 殺不掉它**（信號 5 只碰 goal，不碰 inner-life）。
+
+### 修正 3：修正後的預測（取代 TL;DR 的「決定性 No」）
+
+| 項目 | 原報告 | **修正後** |
+|---|---|---|
+| 12:40 有 pending motive 嗎？ | **No（決定性）** | **很可能 Yes** —— 由 `:430` 新解讀供給，**與 TTL 無關** |
+| 會停在哪？ | `:459` F1 | **F1 很可能通過**；真正變數是**決策層判斷**（`decide_motive` / Decision LLM） |
+| 決策層歷史勝率 | （未列） | 歷史 **24 筆**動機中 **19 筆 `rejected`**、**僅 1 筆 `transmitted`**；被拒者多為 `motive_type=reflect`（例：「夜深了，想翻翻以前的回憶。」） |
+
+⇒ **F1 不是 12:40 的 binding constraint；決策層的拒絕率才是。**
+
+### ⚠️ 證據等級聲明（必讀）
+
+本節為**靜態證據推論**（程式碼路徑順序 ＋ 唯讀資料實測），**尚未觀測 12:40 的實際結果**。
+**最終判定以 `2026-09-14 12:40` 的生產實測為準**；若與本節預測不符，**以實測為準**並回頭更正本節。
+
+### 本節不改變的結論（原報告仍成立）
+
+- **供給鏈拓撲（報告 §1）**：`data/soul/motive_trace.jsonl` 為唯一池、`_publish_agency_trigger`（`scheduler.py:1626`）為全 `src` 唯一呼叫點 ⇒ **不變**。
+- **gate A 的算術**（池中 1 筆 pending 已過 TTL 88.8h）⇒ **不變**，只是**不足以推出決定性 No**。
+- **gate B 的程式碼事實**（信號 5 把該 agent 全部 `ACTIVE`/`IN_PROGRESS` goal 轉 `SUSPENDED`，且該區塊 **0 logger**）⇒ **不變**。
+- **報告 §4 的 bang-bang 振盪判定與「進度層互斥死鎖」根因** ⇒ **不變**（本節只修 TL;DR／§6／§8 的**預測**，不修其**根因分析**）。

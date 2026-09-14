@@ -604,3 +604,44 @@ for q in sorted(glob.glob("data/memory/agent_*/graph.sqlite")):
 ---
 
 **End of ANCHOR-A-SUPPLY-INVESTIGATION（READ-ONLY，實作前置調查完成）。**
+
+---
+
+## 更正（2026-09-14，MOTIVE-SUPPLY-INVESTIGATION-1）
+
+> **性質**：**純追加更正**。本檔**原文（含 §2.1 A-5 列、§3.5 第 5 點、§4 ND-3、§7.2 第 ⑥ 條、附錄 B 第 3 列）全部保留、一字未刪**；本節只把其中「goals 54 筆 100% `SUSPENDED`」的結論**正名為相位快照**，並指向真正的機制。
+> **依據**：`docs/MOTIVE-SUPPLY-INVESTIGATION.md`（commit `24fb2bf`，**READ-ONLY 調查**）。
+> **授權**：本更正由協調者依實測要求登記；**觸發條件已在本檔 §4 ND-3 被明確預告**（「本票為單次快照……需連續多窗」），本節即該預告的兌現。
+
+### C1. 「goals 54 筆 100% `SUSPENDED`」＝ **相位快照**，不是恆定狀態
+
+本檔 §2.1（A-5 goals 列）、§3.5 第 5 點、§4 ND-3、§7.2 第 ⑥ 條與附錄 B 第 3 列記「**54 筆 100% `SUSPENDED`**（`ACTIVE`=0）」——**該記述在其量測時點為真，但不能讀成「goal 引擎只進不出／永久掛死」**。
+
+真正的機制是**同一支信號以相反極性驅動的 bang-bang 振盪**：
+
+| 事件 | 動作 | 痕跡 |
+|---|---|---|
+| Bry 沉默 ≥ 4h（`last_seen_hours > PROACTIVE_DM_BRYAN_INACTIVE_HOURS`） | 該 agent **所有 `ACTIVE` / `IN_PROGRESS` goal → `SUSPENDED`**，**一次全部** | 🔴 **完全靜默**：`src/goals/motive_provider.py:577-593`（信號 5）**區塊內 0 個 logger 呼叫** |
+| Bry 一開口（last-seen 歸零） | **下一 30s tick 全部喚醒** | 生產 log `[Goal] 唤醒` **134 條 / 3 波** |
+
+- ⇒ **出口有接線，且生產確實被呼叫過**；「只進不出（dead code）」的假設**已被排除**。
+- **協調者實測（`2026-09-14 09:0x`）**：`ACTIVE 54 / SUSPENDED 0 / IN_PROGRESS 0` —— 與本檔量測時點（`2026-09-13T12:52`，54 筆全 `SUSPENDED`）恰好是振盪的**兩個極端**。
+- **🔴 量測陷阱（本更正的方法論要點）**：因為「掛起」這條腿**一行 log 都不留**，任何只憑 log 或**單一時點 DB 快照**的判讀，都會把**相位**誤讀成**恆定狀態**。本更正不推翻本檔其他量測，只推翻「100% 是恆定」這一層推論。
+
+### C2. 與「SE-5 生命週期家族 0 次生產呼叫」的關係：**無關，不得併單**
+
+- goal 的 `SUSPENDED` **不是** SE-5 lifecycle 家族未被呼叫所致；兩者**不同模組、不同根因**，只是同屬「分支實質不可達」的**缺陷類別**。
+- **明文：不得把本節 C1 的更正與 SE-5 家族的既有工單合併為同一張單。**
+
+### C3. 真正的病灶（供後續工單引用）
+
+`SUSPENDED` 振盪只是**表象**；真病灶在**進度層的互斥死鎖** —— 唯一推進 goal 的入口 `assemble_candidate`（`src/soul/scheduler.py:449`）**只**被 `_decision_check`（`:300`）呼叫，而後者**只**由 `_publish_agency_trigger("proactive_dm")`（`:1626`）觸達；該路徑同時被 **G2 白名單**（生產僅 `agent_ruka`）＋ **G7 想念門檻**（需沉默夠久）＋ **「沉默 >4h 即掛起 goal」** 三方互斥鎖死 ⇒ 生產 9 天僅 **2 次**裝配且**皆為 ruka**，**另外 9 個 agent 的 47 筆 goal 構造上永遠無法推進**。詳見 `docs/MOTIVE-SUPPLY-INVESTIGATION.md` §4 與 §7。
+
+### C4. 原文保留與閱讀指引
+
+- 本節為**追加**；上列各處的原始記述**逐字仍在**。
+- 讀者遇到本檔任何「100% `SUSPENDED`」「`ACTIVE`=0」字樣，應以本節 **C1** 為其**語意修正**（＝當時相位），不得據以推論「goal 引擎只進不出」。
+
+---
+
+**更正節結束（本節純追加；原檔內容與其結論除 C1 所正名者外均不變）。**
