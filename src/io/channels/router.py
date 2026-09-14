@@ -67,12 +67,11 @@ _PUSH_PROB_STALE = 1.0/10.0     # last_interaction > 7 天 → 1/10 推
 _STALE_DAYS_THRESHOLD = 7.0
 _BRYAN_ENTITY_ID = "user_bryan"
 
-# M0.5 (2026-08-02 10:35 Bry 派工): 「Bry 沒回應 N 小時」proactive_dm throttle
-# 修法: 距離 Bry 最後一條 user 訊息超過這個小時數 → skip proactive_dm
-# 4h 是 Bry 派工時的初始值, 之後觀察期可調 (太小會誤殺, 太大會堆積)
-# Proactive DM 三件修復 #2 (Bry 拍板 2026-08-29): 統一信號源 —
-# 常數改從 bryan_state import (單一事實來源), scheduler 可送達檢查共用同一值
-from src.io.channels.bryan_state import PROACTIVE_DM_BRYAN_INACTIVE_HOURS
+# 🔴 ROUTER-LOCKB-RELEASE-1 (Owner 裁定, 2026-09-14):
+#   原本此處 import 的「bryan_state 4h 在場常數」已**移除**。
+#   理由: 它只被下面的「在場鎖 B」使用, 而該鎖已整段移除 (見 _on_agent_speak 內
+#   「在場鎖 B 已移除」段落)。移除後本檔對該常數的引用數 = 0 (程式碼與註解皆 0)。
+#   常數本身與 `read_bryan_last_seen()` 語意**未動** (scheduler G5 與 goals 仍在用)。
 
 # M0.5: 兩個 state file 路徑 (跟 P0-2 watchdog counter 同目錄, 設計一致)
 # P0.5 (Bry 派工 2026-08-09 19:48): use data_root() for test isolation
@@ -258,30 +257,37 @@ class ChannelRouter:
         if target_channel == "web":
             return
 
-        # ── M0.5 (Bry 8/1 10:35 派工): 「Bry 沒回應 N 小時」proactive_dm throttle ──
-        # 解決 Bry 8/1 報「anna 8/2 4:21-5:37 累積 6 條沒頭沒尾訊息」的成因:
-        # scheduler 每 2-4h 觸發 proactive_dm, 不管 Bry 上一條有沒有讀, 一直堆
-        # 修法: 距離 Bry 最後一條 user 訊息 > 4h 就 skip proactive_dm
-        # 只 throttle proactive_dm (Bry 派工字面), 不影響 dream/event/heartbeat
-        # (夢境/事件豁免保留「角色世界活著」的 Bry 觀察意圖, heartbeat 留 M2 候選)
-        # 冷啟動: Bry 從沒發過訊息 (self._bryan_last_seen is None) 不 throttle
-        if target_channel == "telegram":
+        # ── 🔴 ROUTER-LOCKB-RELEASE-1: 「在場鎖 B」已整段移除 ──────────────
+        # 病灶 (承接 DELIVERABILITY-RELEASE-1 票 5): 本區塊原本與 scheduler 的 G5
+        #   **逐字同源** —— 同一個 4h 常數 (bryan_state 的單一事實來源)、同信號源
+        #   `data/state/bryan_last_seen.json`、同 4h 門檻。它自 2026-08-29 起因
+        #   G5 先擋而成為不可達死碼; 票 5 放寬 G5 後**重新可達且必然命中**:
+        #   Bry 離開 > 4h ⇒ web WS 連線數 0 ⇒ 上面的 fallback 把 target_channel
+        #   改成 telegram ⇒ 舊條件成立 ⇒ 舊行為是直接中斷送出 (訊息靜默丟棄)。
+        #   最壞組合 = 付了 LLM 成本, 訊息卻消失。
+        # 處置 (Owner 已裁定「放寬 4h 在場要求」, 本鎖是同一條規則的實作):
+        #   **移除整個 early-return 阻擋**, 只留下一行**有界觀測痕跡**。
+        #   4h 政策至此只存在於單一位置 (scheduler 側的 `gate=G5` 放行痕跡),
+        #   送達端到端可達。
+        # 未動 (本票不碰): G3 冷卻窗 / G4 靜音時段 / G7b 每日上限
+        #   / `read_bryan_last_seen()` 語意 / 任何 SI-2.1 防線
+        #   / `AGENT_SPEAK` payload 既有欄位 / 夢境與事件豁免。
+        # 冷啟動 (self._bryan_last_seen is None) 不記痕跡 (無小時數可報)。
+        if target_channel == "telegram" and self._bryan_last_seen is not None:
             event_reason = event.payload.get("reason", "")
-            if event_reason == "proactive_dm" and self._bryan_last_seen is not None:
-                now_utc = datetime.now(timezone.utc)
+            if event_reason == "proactive_dm":
                 hours_since = (
-                    (now_utc - self._bryan_last_seen).total_seconds() / 3600.0
+                    (datetime.now(timezone.utc) - self._bryan_last_seen).total_seconds()
+                    / 3600.0
                 )
-                if hours_since > PROACTIVE_DM_BRYAN_INACTIVE_HOURS:
-                    logger.info(
-                        f"[ChannelRouter] proactive_dm THROTTLED | "
-                        f"agent={agent_id} "
-                        f"bryan_last_seen={self._bryan_last_seen.isoformat()} "
-                        f"hours_since={hours_since:.1f} > "
-                        f"{PROACTIVE_DM_BRYAN_INACTIVE_HOURS}h"
+                logger.info(
+                    _bounded_log(
+                        f"[ChannelRouter] proactive_dm 放行: telegram 通道 "
+                        f"(含 web→telegram fallback), Bry 最後看見 "
+                        f"{hours_since:.1f}h 前, 在場鎖 B 已移除, agent={agent_id}"
                     )
-                    return
-        # ── M0.5 throttle end ──────────────────────────
+                )
+        # ── 🔴 在場鎖 B 移除 end ──────────────────────────
 
         # ── Stage 4.3 (Mavis 拍板 2026-07-21 16:35): TG 推播過濾 ──
         # 3 層分級: active (100%) / cold start (1/3) / stale (1/10)

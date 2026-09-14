@@ -9,7 +9,7 @@ tests/test_deliverability_release_1.py — DELIVERABILITY-RELEASE-1（票 5：�
 > (c) 不變量 `daily_proactive_cap(silence=3d) == daily_proactive_cap(silence=3h)` 測試釘死
 > (d) TA-2 措辭逐字不動、TA-2 狀態不得參與發起判定
 
-對應本檔的四組斷言：
+對應本檔的五組斷言：
 
   【Step 1】G5（4h 鎖 A）**不再中斷流程**，只留一行有界 INFO 放行痕跡；
             且在 `last_recv_ts = 16h 前`（舊版必被 G5 擋下的情境）下，
@@ -18,6 +18,9 @@ tests/test_deliverability_release_1.py — DELIVERABILITY-RELEASE-1（票 5：�
   【Step 2】(a) longing 曲線唯讀量測 ＋ 單調性判定；(b) 每角色每日上限 = 1 則；
             (c) 不變量 `cap(3d) == cap(3h)` 釘死（含 AST 級「上限不看沉默」）。
   【Step 4】(d) TA-2 措辭**逐字**不動 ＋ 發起判定路徑**不讀取** TA-2 狀態。
+  【Step 5】原為「G20（router 4h 鎖 B）在 G5 放寬後重新可達」的現況刻畫。
+            🔴 ROUTER-LOCKB-RELEASE-1（票 6）已移除 G20 → 本類別依其原 docstring
+            的預告**一起改**，改釘「鎖 B 已不存在、端到端可達」（經授權語意變更）。
   【邊界】 0 服務重啟 / 0 `data/**` 生產寫入（全部落在 conftest 的 tmp 無菌室）。
 """
 from __future__ import annotations
@@ -271,7 +274,7 @@ class TestStep1_G5NoLongerBlocks:
         )
 
     def test_s1e_g5_constants_and_reader_untouched(self):
-        """常數與讀取語意**不得**改動（仍被 router M0.5 / goals 兩處使用）。"""
+        """常數與讀取語意**不得**改動（仍被 goals 兩處使用）。"""
         from src.io.channels.bryan_state import PROACTIVE_DM_BRYAN_INACTIVE_HOURS
 
         assert PROACTIVE_DM_BRYAN_INACTIVE_HOURS == 4.0
@@ -279,9 +282,10 @@ class TestStep1_G5NoLongerBlocks:
         # G5 仍讀同一個常數（只把「中斷」拿掉，量測與讀取語意不變）
         assert "from src.io.channels.bryan_state import PROACTIVE_DM_BRYAN_INACTIVE_HOURS" in sched_src
         assert "read_bryan_last_seen" in sched_src
-        # router 的 M0.5 鎖 B（死碼）**本票不動**
+        # 🔴 ROUTER-LOCKB-RELEASE-1（票 6）合法變更：router 端的同源鎖 B 已移除，
+        #    故該檔對此常數的引用改為 0（原斷言為 `in router_src`）。
         router_src = (ROOT / "src" / "io" / "channels" / "router.py").read_text(encoding="utf-8")
-        assert "PROACTIVE_DM_BRYAN_INACTIVE_HOURS" in router_src
+        assert "PROACTIVE_DM_BRYAN_INACTIVE_HOURS" not in router_src
 
     def test_s1f_g3_g4_still_block(self, caplog):
         """G3 冷卻窗與 G4 靜音時段**不得**被本票放寬（只放寬 G5）。"""
@@ -643,38 +647,51 @@ class TestStep4_TA2Boundary:
 
 
 # ────────────────────────────────────────────────────────────────────
-# 【Step 5】新 binding constraint 的觀測證據（本票**不動** router）
+# 【Step 5】G20（router 4h 鎖 B）—— 票 6 已放寬，本類別改釘「已不存在、端到端可達」
 # ────────────────────────────────────────────────────────────────────
+#
+# ⚠️ 合法變更（ROUTER-LOCKB-RELEASE-1，票 6）：
+#   本類別原 docstring 逐字預告過 ——「後續票若放寬 G20，**本類別理當一起改**
+#   （屬該票的合法變更）」。票 6 依 Owner 已授權的裁定移除了 G20 的 early-return，
+#   故本類別由「刻畫鎖 B 仍在阻擋」改為「釘死鎖 B 已不存在且訊息真的送出」。
+#   這是**經授權的語意變更**，不是為了變綠而放寬斷言。
 
-class TestStep5_NewBindingConstraintEvidence:
-    """Step 5 預測的證據。
+class TestStep5_LockBReleasedByTicket6:
+    """票 5 時本類別刻畫「G5 放寬後鎖 B 重新可達且會丟棄訊息」（史實，見 git 歷史）。
 
-    ⚠️ 本類別是 **characterization test（現況刻畫）**，**不是**對 router 鎖 B 的背書。
-    本票依工單明文「不得改動 `router.py:250-265` 的死碼鎖 B」而**未動它**；
-    這些測試只用來證明「G5 放寬後鎖 B 重新變得可達」這個事實，供 Owner 決定後續票。
-    後續票若放寬 G20，**本類別理當一起改**（屬該票的合法變更）。
+    票 6（ROUTER-LOCKB-RELEASE-1）已移除鎖 B，故同一情境（Bry 離開 16h）
+    現在**真的送出**；4h 政策只存在於單一位置（scheduler 側的 `gate=G5` 放行痕跡）。
     """
 
-    def test_s5a_g20_source_unchanged_and_still_4h_hard(self):
-        """鎖 B（G20）原始碼未被本票改動，仍是 4h 硬阻斷。"""
+    def test_s5a_g20_source_has_no_hard_block_left(self):
+        """鎖 B（G20）原始碼已無 4h 硬阻斷（票 6 處置）。"""
         src = (ROOT / "src" / "io" / "channels" / "router.py").read_text(encoding="utf-8")
+        # 量測痕跡仍在（不是整段刪掉，而是不再中斷）
         assert 'event_reason == "proactive_dm"' in src
-        assert "hours_since > PROACTIVE_DM_BRYAN_INACTIVE_HOURS" in src
-        assert "proactive_dm THROTTLED" in src
-        # 本票未新增／移除任何 return（鎖 B 仍會在超時後丟棄訊息）
+        # 硬阻斷與舊字樣已消失；對該常數的引用 = 0
+        assert "hours_since > PROACTIVE_DM_BRYAN_INACTIVE_HOURS" not in src
+        assert "proactive_dm THROTTLED" not in src
+        assert src.count("PROACTIVE_DM_BRYAN_INACTIVE_HOURS") == 0
+        # 通道分支本身仍在（G22 分級 / G24 adapter 檢查掛在它底下）
         assert 'if target_channel == "telegram":' in src
 
-    def test_s5b_g20_drops_proactive_dm_when_bryan_away_16h(self):
-        """🔴 事實：Bry 離開 16h 時，送到 router 的 proactive_dm **會被 G20 丟棄**。
+    def test_s5b_g20_no_longer_drops_proactive_dm_when_bryan_away_16h(self):
+        """🔴 事實（票 6 後）：Bry 離開 16h 的 proactive_dm **會被送出**。
 
-        這正是本票要放行的情境（Bry 離開 > 4h）。故結論：
-        **scheduler 側的放寬是「必要但不充分」** —— 端到端送達還需處理 G20。
+        票 5 時此處斷言 `sent == []`（訊息被鎖 B 丟棄，0 送達）；
+        票 6 移除鎖 B 後，同一情境 `adapter.send` 必須被呼叫**恰好一次**。
+
+        ⚠️ 需要固定 `_should_push_to_bry`（Stage 4.3 G22 分級）：舊版被鎖 B 先擋，
+        該閘門不會被執行；移除鎖 B 後它成為下一個閘門，且對「無 relationships.json」
+        的隔離環境是 **1/3 機率**的 cold start → 不固定會讓本測試變成 flaky。
+        G22 與「Bry 在場與否」無關，且在生產中對 `agent_ruka` 恆真（count>=1 → 1.0）。
         """
         from src.eventbus.schema import EventPriority, EventType, SoulEvent
         from src.io.channels.router import ChannelRouter
 
         router = ChannelRouter(bus=MagicMock())
         router._bryan_last_seen = datetime.now(timezone.utc) - timedelta(hours=16)
+        router._should_push_to_bry = lambda agent_id: True  # type: ignore[method-assign]
         sent: List[Any] = []
 
         class _Adapter:
@@ -698,19 +715,23 @@ class TestStep5_NewBindingConstraintEvidence:
             },
         )
         asyncio.run(router._on_agent_speak(event))
-        assert sent == [], (
-            "現況（未動鎖 B）：Bry 離開 > 4h 的 proactive_dm 仍被 G20 丟棄 → "
-            "scheduler 側放寬是必要但不充分"
+        assert len(sent) == 1, (
+            "票 6 後：Bry 離開 > 4h 的 proactive_dm **必須送達**（舊版此處為 0 送達）"
         )
+        assert sent[0]["user_id"] == 12345
+        assert sent[0]["agent_id"] == "ruka"
 
-    def test_s5c_g5_source_and_g20_source_share_the_same_constant(self):
-        """兩個 4h 鎖嚴格同源（同常數 `PROACTIVE_DM_BRYAN_INACTIVE_HOURS`）。"""
+    def test_s5c_four_hour_policy_now_lives_in_a_single_place(self):
+        """兩個 4h 鎖原本嚴格同源；票 6 後只剩 scheduler 側一處，router 內 0 處。"""
         from src.io.channels.bryan_state import PROACTIVE_DM_BRYAN_INACTIVE_HOURS
 
         sched_src = SCHEDULER_SRC_PATH.read_text(encoding="utf-8")
         router_src = (ROOT / "src" / "io" / "channels" / "router.py").read_text(encoding="utf-8")
-        for src in (sched_src, router_src):
-            assert "PROACTIVE_DM_BRYAN_INACTIVE_HOURS" in src
+        # scheduler 側：仍在（觀測痕跡；量測與讀取語意不變）
+        assert "PROACTIVE_DM_BRYAN_INACTIVE_HOURS" in sched_src
+        # router 側：0（票 6 移除）
+        assert "PROACTIVE_DM_BRYAN_INACTIVE_HOURS" not in router_src
+        # 常數本身不得改動（scheduler G5 與 goals 仍在用）
         assert PROACTIVE_DM_BRYAN_INACTIVE_HOURS == 4.0
 
 
@@ -720,21 +741,35 @@ class TestStep5_NewBindingConstraintEvidence:
 
 class TestRedLines:
     def test_no_frozen_contract_file_touched_by_this_ticket(self):
-        """本票改動檔不得落在 frozen contract 清單內。"""
+        """票 5 改動檔不得落在 frozen contract 清單內。
+
+        ⚠️ ROUTER-LOCKB-RELEASE-1（票 6）合法變更：`src/io/channels/router.py`
+        原本列在本集合中，用意是記錄「**票 5** 未觸碰 router」（當時鎖 B 是該票
+        明文的不動項）。票 6 依 Owner 已授權的裁定**必須**修改 router.py，
+        故把 router.py 從 `frozen` 移出、改列入 `touched`。
+
+        `router.py` **從來不是**專案列舉的 Frozen Contract（見工單紅線 3 的清單：
+        Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers /
+        SAGE 寫入邏輯 / SubmissionGate / SI-2.1 三防線 / TA-2 措辭 /
+        `DecisionResult` 與 `DECISION_ACTIONS`）—— 它是可變的通道分發器。
+        斷言本身（`not (touched & frozen)`）未被放寬。
+        """
         frozen = {
             "src/agency/trigger_handler.py",
             "src/agency/inner_life_gate.py",
             "src/soul/decision.py",
             "src/soul/decision_trace.py",
             "src/inner_life/elevation_adapter.py",
-            "src/io/channels/router.py",
         }
         touched = {
             "src/soul/scheduler.py",
             "src/soul/proactive_policy.py",
+            # 🔴 ROUTER-LOCKB-RELEASE-1（票 6）新增改動檔
+            "src/io/channels/router.py",
             "tests/test_deliverability_release_1.py",
             "tests/test_proactive_dm_deliverability.py",
             "tests/test_observability_completeness_1.py",
+            "tests/test_router_lockb_release_1.py",
             "logs/ENGINEERING_STATE.md",
         }
         assert not (touched & frozen), f"觸碰 frozen contract: {touched & frozen}"
