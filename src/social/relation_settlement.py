@@ -17,6 +17,19 @@ RelationshipsStore.apply_relation_evaluation（唯一写入口, 带状态机 + �
     单窗上限约束。
   - co_presence_sessions: interactions.jsonl 窗口内 agents 同时含 agent & other
     的 session 记录数（同客厅共在, 既有 cross_chat/shared_event 载体）
+  - co_presence_sessions（**Bry 軸讀側折抵**, SG-4 §2 / RELATIONAL-BAND-FIX-1）:
+    对象为 Owner 实体 user_bryan 时, interactions.jsonl 结构上恒 0 笔
+    （实测量: 26 行 0 次 user_bryan; perception_trace.jsonl 13,490 行亦 0 次）
+    → 该轴的 `stranger→known` 在结构上永不可达。修法 = **只改信号源定义**
+    （PD-1 不变: 0 新 LLM / 0 新事件类型 / 0 新定时器 / 0 新写入路径）:
+    以**既有** relationships.json 的 others.user_bryan.last_interaction_at
+    （由采集层 touch() 维护, 实测 ruka interaction_count=243）落在**同一 24h
+    窗口内**折抵 **1 次** co_presence_sessions（单窗上限 1, 与 SG-3 折抵同口径;
+    reply 由既有 SG-3 折抵自动带起）。
+    **幂等**: 判准 = 该 entry 的 objective.last_signal_at 是否已落在本窗内
+    （严格 > window_start）→ 同一窗口重复 settle 不得累加超过 1。
+    **peer 轴（agent↔agent）逐位元不变**: 折抵对 user_bryan 之外的 other_id
+    一个字节都不动。
   - dream_exchanges    : v1 无方向性持久载体（diary dream entry 不含 target,
     on_dream 只有 legacy touch）→ 生产计数恒 0, 状态机已按 OQ-4 删除 dream 门
     （SG-3 §5.1; 未来接口注释保留, 见 relational_bands._CLOSE_THRESHOLDS）
@@ -105,6 +118,61 @@ def _ts_to_dt(ts: Any) -> Optional[datetime]:
     return dt
 
 
+def _bry_axis_credit(
+    root: Path,
+    agent_id: str,
+    window_start: datetime,
+    now_utc: datetime,
+) -> int:
+    """Bry 軸（Owner 通道）讀側折抵 — SG-4 §2，回傳 0 / 1。
+
+    只读 relationships.json（**0 写**: 不走 RelationshipsStore, 不触发
+    `_load_or_init` / `_flush_locked` 的任何落盘副作用 —— 纯 `json.load`）。
+
+    判定（三个条件全中才折抵 1，任一不中 → 0）:
+      1. `others[user_bryan]` 存在;
+      2. `last_interaction_at` 落在**同一 24h 窗口内**（window_start ≤ ts ≤ now）;
+      3. **幂等**: `objective.last_signal_at` **未**落在本窗内
+         （严格 `> window_start` 判「已折抵」; 恰好等于窗起点者视为上一窗的戳,
+          使 24h 节流边界上的下一窗仍能正常折抵）。
+
+    口径来源（工单 RELATIONAL-BAND-FIX-1 §②）: Bry 确实有互动紀錄, 载体是既有
+    4.1 字段 `last_interaction_at`（采集层 touch() 维护, 0 新增字段 / 0 新增写入
+    路径）。折抵值**恒为 1 或 0**, 不像计数聚合那样随窗口内笔数增长 —— 单窗上限 1
+    因此是折抵本身的性质, 不依赖 settle_relations 的 `min(..., 1)` 兜底。
+
+    fail-closed: 文件缺失 / 坏 JSON / 坏时间戳 → 0（不 crash 主循环）。
+    """
+    from src.soul.relationships import BRYAN_ENTITY_ID
+
+    path = root / "soul" / agent_id / "relationships.json"
+    if not path.is_file():
+        return 0
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning(f"[RelSettle] Bry 軸 relationships 讀取失敗 (fail-closed): {e}")
+        return 0
+    if not isinstance(data, dict):
+        return 0
+    others = data.get("others")
+    if not isinstance(others, dict):
+        return 0
+    entry = others.get(BRYAN_ENTITY_ID)
+    if not isinstance(entry, dict):
+        return 0
+
+    last = _ts_to_dt(entry.get("last_interaction_at"))
+    if last is None or last < window_start or last > now_utc:
+        return 0
+    obj = entry.get("objective")
+    already = _ts_to_dt((obj or {}).get("last_signal_at") if isinstance(obj, dict) else None)
+    if already is not None and already > window_start:
+        return 0  # 本窗已折抵過 → 冪等
+    return 1
+
+
 def collect_window_signals(
     agent_id: str,
     now: datetime,
@@ -113,6 +181,10 @@ def collect_window_signals(
     base_dir: Optional[Path] = None,
 ) -> Dict[str, Dict[str, int]]:
     """只读现查 24h 窗口信号计数（确定性聚合, 0 写）。
+
+    Bry 軸（other == user_bryan）额外走**讀側折抵**（SG-4 §2, 见模块 docstring
+    与 `_bry_axis_credit`）: 仅读 relationships.json, 窗内折抵 1 次 co_presence,
+    幂等（单窗上限 1）。peer 轴计数与既有实现逐位元一致。
 
     Returns:
         {other_id: {"reply": int, "co_presence": int, "dream": int}}
@@ -166,6 +238,16 @@ def collect_window_signals(
             co_by_other[other] = co_by_other.get(other, 0) + 1
     for other, n in co_by_other.items():
         out.setdefault(other, {})["co_presence"] = n
+
+    # ── Bry 軸讀側折抵（SG-4 §2 / RELATIONAL-BAND-FIX-1）──
+    # 既有互動載體 last_interaction_at 在窗內 → 折抵 1 次 co_presence_sessions
+    # （**加法**折入: 若未來 interactions.jsonl 真出現 user_bryan, 兩源相加後
+    #  仍受 settle_relations 的單窗上限 1 約束; peer 軸的 co_by_other 0 變更）。
+    bry_credit = _bry_axis_credit(root, agent_id, window_start, now_utc)
+    if bry_credit:
+        from src.soul.relationships import BRYAN_ENTITY_ID
+        slot = out.setdefault(BRYAN_ENTITY_ID, {})
+        slot["co_presence"] = int(slot.get("co_presence", 0)) + bry_credit
 
     # dream: v1 无方向性持久载体 → 恒 0（契约 §4.2.2 评估输入不含 dream）
     return out
