@@ -454,17 +454,25 @@ class TestQ7TransmissionChain:
             def mark_rejected(self, motive_id):
                 return None
 
-        scheduler = SoulScheduler(bus=MagicMock())
+        # TEST-ISOLATION-FIX-1: _decision_check 會走到
+        # src/soul/scheduler.py:459 DecisionTraceStore().append(...) 落盤；
+        # 不隔離資料根就會寫進生產 data/soul/decision_trace.jsonl。
+        # 照抄同檔 :644-664 既有寫法（沿用既有工具，0 新機制）。
+        _isolated_data_root(tmp_path)
+        try:
+            scheduler = SoulScheduler(bus=MagicMock())
 
-        async def _scenario():
-            with patch("src.soul.motive.MotiveEngine", return_value=_FakeEngine()), \
-                 patch("src.goals.motive_provider.GoalMotiveProvider") as mock_goal:
-                mock_goal.for_agent.return_value = MagicMock()
-                return await scheduler._decision_check("agent_rem")
+            async def _scenario():
+                with patch("src.soul.motive.MotiveEngine", return_value=_FakeEngine()), \
+                     patch("src.goals.motive_provider.GoalMotiveProvider") as mock_goal:
+                    mock_goal.for_agent.return_value = MagicMock()
+                    return await scheduler._decision_check("agent_rem")
 
-        ok = _run(_scenario())
-        assert ok is True
-        assert scheduler._last_transmit_target == "agent_rem"
+            ok = _run(_scenario())
+            assert ok is True
+            assert scheduler._last_transmit_target == "agent_rem"
+        finally:
+            _restore_data_root()
 
     def test_decision_check_not_transmit_keeps_none(self, tmp_path):
         from src.soul.scheduler import SoulScheduler
@@ -482,18 +490,24 @@ class TestQ7TransmissionChain:
             def mark_rejected(self, motive_id):
                 return None
 
-        scheduler = SoulScheduler(bus=MagicMock(), actuator=None)
-        scheduler._last_transmit_target = None
+        # TEST-ISOLATION-FIX-1: 同上一支——決策標籤落盤（scheduler.py:459）
+        # 會寫進生產 data/soul/decision_trace.jsonl，必須先隔離資料根。
+        _isolated_data_root(tmp_path)
+        try:
+            scheduler = SoulScheduler(bus=MagicMock(), actuator=None)
+            scheduler._last_transmit_target = None
 
-        async def _scenario():
-            with patch("src.soul.motive.MotiveEngine", return_value=_FakeEngine()), \
-                 patch("src.goals.motive_provider.GoalMotiveProvider") as mock_goal:
-                mock_goal.for_agent.return_value = MagicMock()
-                return await scheduler._decision_check("agent_rem")
+            async def _scenario():
+                with patch("src.soul.motive.MotiveEngine", return_value=_FakeEngine()), \
+                     patch("src.goals.motive_provider.GoalMotiveProvider") as mock_goal:
+                    mock_goal.for_agent.return_value = MagicMock()
+                    return await scheduler._decision_check("agent_rem")
 
-        ok = _run(_scenario())
-        assert ok is False
-        assert scheduler._last_transmit_target is None  # 非 transmit 不记录
+            ok = _run(_scenario())
+            assert ok is False
+            assert scheduler._last_transmit_target is None  # 非 transmit 不记录
+        finally:
+            _restore_data_root()
 
     # ── 跳 2: _publish_agency_trigger payload.extra 写入 + 单次消费 ──
     # 注: proactive_dm publish 前会跑真实 gate/Decision, 这里 stub 两个 gate
