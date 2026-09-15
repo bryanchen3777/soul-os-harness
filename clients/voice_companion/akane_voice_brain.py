@@ -33,6 +33,26 @@ except ImportError:  # 直接以檔案執行（非套件）時
 logger = logging.getLogger("soul_os.vc_brain")
 
 # ─────────────────────────────────────────────────────────────
+# VC-PERF-OPT-1 具名常數（推論參數收斂 / 連線池 / Persona 預算）
+# ─────────────────────────────────────────────────────────────
+
+# LLM 推論參數（顯式帶入 payload；此前完全沒帶 → 供應商預設值不可控）
+VC_LLM_MAX_TOKENS = 60
+VC_LLM_TEMPERATURE = 0.7
+
+# HTTP 連線重用（Session Pool）：connect / read 分離，避免連線階段吃掉 read 預算
+VC_LLM_TIMEOUT = (5, 60)
+VC_HTTP_POOL_CONNECTIONS = 4
+VC_HTTP_POOL_MAXSIZE = 8
+
+# Persona 預算（字元）：原為硬編碼 6000，收緊以壓縮每回合 system prompt 長度。
+# 壓縮角色人設厚度是 Owner 已知並核准的取捨（不得改動此數值補償）。
+MAX_PERSONA_CHARS = 2500
+
+# 空內容守門日誌標記（唯一可 grep）
+VC_LLM_EMPTY_MARKER = "[VC-LLM-EMPTY]"
+
+# ─────────────────────────────────────────────────────────────
 # Layer 3（現役）Persona 內嵌常數
 # ─────────────────────────────────────────────────────────────
 
@@ -184,13 +204,16 @@ def sanitize_voice_output(text: str) -> str:
 # ─────────────────────────────────────────────────────────────
 
 def build_system_prompt(persona_file: Optional[str] = None) -> str:
-    """守門規則 + Persona 摘要。persona_file 給定且可讀時以其內容為 Persona 主體。"""
+    """守門規則 + Persona 摘要。persona_file 給定且可讀時以其內容為 Persona 主體。
+
+    Persona 以**字元**為單位截斷至 MAX_PERSONA_CHARS（VC-PERF-OPT-1：原值 6000 已收緊）。
+    """
     excerpt = AKANE_LAYER3_PERSONA
     if persona_file:
         try:
             text = Path(persona_file).read_text(encoding="utf-8")
             if text.strip():
-                excerpt = text[:6000]  # 控制 token 量
+                excerpt = text[:MAX_PERSONA_CHARS]  # 控制 token 量（VC-PERF-OPT-1 預算）
         except OSError:
             pass
     return AKANE_VOICE_INVARIANTS + "\n\n" + excerpt
@@ -257,8 +280,35 @@ class ClauseSplitter:
 # LLM 串流通道（生產選配；測試注入 Mock）
 # ─────────────────────────────────────────────────────────────
 
-def build_llm_stream(llm_cfg: dict) -> Optional[Callable[[List[dict]], Iterable[str]]]:
-    """依 config `llm` 小節建立 OpenAI 相容串流通道；endpoint 缺省 → None（離線降級）。"""
+def _build_http_session() -> "requests.Session":
+    """建立 VC 專用 HTTP Session：連線池 + keep-alive（requests Session 預設帶 keep-alive）。"""
+    import requests  # 懶載入
+    from requests.adapters import HTTPAdapter
+
+    session = requests.Session()
+    adapter = HTTPAdapter(
+        pool_connections=VC_HTTP_POOL_CONNECTIONS,
+        pool_maxsize=VC_HTTP_POOL_MAXSIZE,
+    )
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+def build_llm_stream(
+    llm_cfg: dict,
+    session: Optional[object] = None,
+) -> Optional[Callable[[List[dict]], Iterable[str]]]:
+    """依 config `llm` 小節建立 OpenAI 相容串流通道；endpoint 缺省 → None（離線降級）。
+
+    VC-PERF-OPT-1 連線重用：所有請求走**同一個** requests.Session（連線池4／上限8，keep-alive），
+    不再每回合裸 `requests.post`（每回合一次 TLS 握手）。
+
+    Session 生命週期＝進程生命週期：本模組無關閉鉤子（`_DEFAULT_BRAIN` 為模組級常駐實例，
+    web_server/akane_live 亦無 shutdown 呼叫點），故不為關閉而發明新鉤子；lazy 建立且由
+    threading.Lock 保護（LLM 呼叫跑在 `asyncio.to_thread` 內 ⇒ Session 必須可跨執行緒共享）。
+    `session` 參數僅供測試注入（None ⇒ 首次呼叫時 lazy 建立）。
+    """
     from .env_config import normalize_chat_endpoint  # 正規化：缺 /chat/completions 自動補
 
     endpoint = normalize_chat_endpoint((llm_cfg or {}).get("endpoint") or "")
@@ -267,10 +317,18 @@ def build_llm_stream(llm_cfg: dict) -> Optional[Callable[[List[dict]], Iterable[
     model = (llm_cfg or {}).get("model") or "qwen2.5-7b-instruct"
     api_key = (llm_cfg or {}).get("api_key") or ""
 
+    # 執行緒安全的 lazy Session（單一實例，跨 to_thread 執行緒共享）
+    _session_lock = threading.Lock()
+    _session_holder: List[object] = [session]
+
+    def _get_session() -> object:
+        with _session_lock:
+            if _session_holder[0] is None:
+                _session_holder[0] = _build_http_session()
+            return _session_holder[0]
+
     def stream(messages: List[dict]) -> Iterable[str]:
         import json
-
-        import requests  # 懶載入
 
         # VC-TURN-OBS-1：同步 LLM 呼叫全生命週期可見化（requests+SSE 會被 to_thread 包住，
         # 60s timeout 內不可取消；每筆 log 都帶 elapsed_ms 供判讀）
@@ -279,16 +337,37 @@ def build_llm_stream(llm_cfg: dict) -> Optional[Callable[[List[dict]], Iterable[
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+        # VC-PERF-OPT-1 顯式推論參數（此前完全沒帶 ⇒ 供應商預設值不可控）
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "max_tokens": VC_LLM_MAX_TOKENS,
+            "temperature": VC_LLM_TEMPERATURE,
+        }
         logger.info(
             "[LLM-STREAM] request-start endpoint=%s model=%s elapsed_ms=%.0f",
             endpoint, model, (time.perf_counter() - _t0) * 1000.0,
         )
+        # VC-PERF-OPT-1 空內容守門用的回合計數器（reasoning 模型：思考 token 亦計入 max_tokens）
+        _chunks = 0
+        _reasoning_chunks = 0
+        _content_pieces = 0
+        _finish_reason = None
+        _diag: dict = {
+            "content_pieces": 0,
+            "reasoning_seen": False,
+            "reasoning_chunks": 0,
+            "chunks": 0,
+            "finish_reason": None,
+        }
         try:
-            resp = requests.post(
+            resp = _get_session().post(
                 endpoint,
-                json={"model": model, "messages": messages, "stream": True},
+                json=payload,
                 headers=headers,
-                timeout=60,
+                timeout=VC_LLM_TIMEOUT,
+                stream=True,
             )
             resp.raise_for_status()
             # SSE（text/event-stream）常無 charset：requests 預設 ISO-8859-1 會把 UTF-8 中文解成亂碼 → 強制 UTF-8
@@ -304,13 +383,22 @@ def build_llm_stream(llm_cfg: dict) -> Optional[Callable[[List[dict]], Iterable[
                 if not line.startswith("data:"):
                     continue
                 try:
-                    payload = json.loads(line[len("data:"):])
+                    event = json.loads(line[len("data:"):])
                 except (ValueError, TypeError):
                     continue
-                delta = (payload.get("choices") or [{}])[0].get("delta") or {}
+                _chunks += 1
+                _choice = (event.get("choices") or [{}])[0]
+                if _choice.get("finish_reason"):
+                    _finish_reason = _choice.get("finish_reason")
+                delta = _choice.get("delta") or {}
+                # VC-PERF-OPT-1：reasoning 內容只計數（本票不改變既有取用行為——仍丟棄不 yield）
+                _reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+                if _reasoning:
+                    _reasoning_chunks += 1
                 piece = delta.get("content")
                 if piece:
                     _tokens += 1
+                    _content_pieces += 1
                     if _first_token:
                         _first_token = False
                         logger.info(
@@ -318,6 +406,24 @@ def build_llm_stream(llm_cfg: dict) -> Optional[Callable[[List[dict]], Iterable[
                             (time.perf_counter() - _t0) * 1000.0,
                         )
                     yield piece
+            if _content_pieces == 0:
+                # VC-PERF-OPT-1 空內容守門：可見 content piece 為 0 ⇒ 本回合不會有任何可播內容。
+                # 對 reasoning 模型（deepseek-v4.1-flash），思考 token 通常也計入 max_tokens，
+                # 上限被思考吃光時即為此形狀 ⇒ 這條 WARNING 是唯一可一眼判定的證據（唯一可 grep 標記）。
+                logger.warning(
+                    "%s content_pieces=0 max_tokens=%d reasoning_seen=%s "
+                    "reasoning_chunks=%d chunks=%d finish_reason=%r elapsed_ms=%.0f",
+                    VC_LLM_EMPTY_MARKER, VC_LLM_MAX_TOKENS,
+                    _reasoning_chunks > 0, _reasoning_chunks, _chunks,
+                    _finish_reason, (time.perf_counter() - _t0) * 1000.0,
+                )
+            _diag = {
+                "content_pieces": _content_pieces,
+                "reasoning_seen": _reasoning_chunks > 0,
+                "reasoning_chunks": _reasoning_chunks,
+                "chunks": _chunks,
+                "finish_reason": _finish_reason,
+            }
             logger.info(
                 "[LLM-STREAM] done tokens=%d elapsed_ms=%.0f",
                 _tokens, (time.perf_counter() - _t0) * 1000.0,
@@ -328,7 +434,11 @@ def build_llm_stream(llm_cfg: dict) -> Optional[Callable[[List[dict]], Iterable[
                 type(exc).__name__, exc, (time.perf_counter() - _t0) * 1000.0,
             )
             raise
+        finally:
+            # VC-NOREPLY-1 回合級診斷（既有空內容路徑 web_server `empty_llm_output` 取用同一份）
+            stream.last_diag = _diag
 
+    stream.last_diag = {}
     return stream
 
 
@@ -489,6 +599,17 @@ class AkaneVoiceBrain:
 
     def system_prompt(self) -> str:
         return self.persona
+
+    @property
+    def last_llm_diag(self) -> Optional[dict]:
+        """最近一次 LLM 回合的診斷（VC-PERF-OPT-1 空內容守門）。
+
+        由 `build_llm_stream` 產生的 stream 於回合結束時寫入 `stream.last_diag`；
+        web_server 既有 `empty_llm_output` 失敗路徑讀取本屬性，使「max_tokens 被
+        reasoning 吃光 ⇒ 0 可見 content」在第一次實測即可一眼判定（無第二條錯誤路徑）。
+        注入自訂 llm_stream（測試／離線）時無此資訊 → None。
+        """
+        return getattr(self.llm_stream, "last_diag", None)
 
     def _build_messages(self, user_text: str, history=None) -> List[dict]:
         """組裝對話歷史、時序現象學（TA-2）與 SAGE 記憶檢索，注入 system prompt。"""

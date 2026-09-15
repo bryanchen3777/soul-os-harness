@@ -1178,7 +1178,13 @@ class TestEnvConfig:
         assert "ensurePlayback();" in HTML_PAGE                               # 手勢/送文字/binary 皆觸發
 
     def test_llm_stream_sse_utf8_decode(self, monkeypatch):
-        """SSE 回應無 charset 時強制 UTF-8 解碼（防 ISO-8859-1 亂碼）；端點正規化同時生效"""
+        """SSE 回應無 charset 時強制 UTF-8 解碼（防 ISO-8859-1 亂碼）；端點正規化同時生效。
+
+        VC-PERF-OPT-1：LLM 通道改走共用 requests.Session（連線重用）⇒ 攔截點隨之改為
+        ``requests.Session.post``；並加守門斷言裸 ``requests.post`` 已不再被呼叫（0 網路）。
+        """
+        import requests as _requests
+
         from clients.voice_companion import akane_voice_brain as brain
 
         class FakeResp:
@@ -1198,11 +1204,15 @@ class TestEnvConfig:
 
         captured = {}
 
-        def fake_post(url, **kwargs):
+        def fake_session_post(self, url, **kwargs):
             captured["url"] = url
             return FakeResp()
 
-        monkeypatch.setattr("requests.post", fake_post)
+        def _boom_post(*_a, **_kw):  # 裸 requests.post 已被移除（VC-PERF-OPT-1）
+            raise AssertionError("裸 requests.post 不得再被呼叫（連線重用）")
+
+        monkeypatch.setattr("requests.Session.post", fake_session_post)
+        monkeypatch.setattr(_requests, "post", _boom_post)
         stream = brain.build_llm_stream({"endpoint": "https://ollama.com/v1", "model": "m", "api_key": "k"})
         tokens = list(stream([{"role": "user", "content": "hi"}]))
         assert "".join(tokens) == "你"                       # UTF-8 正確解碼，非 "ä½ "

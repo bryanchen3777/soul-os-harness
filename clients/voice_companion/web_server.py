@@ -688,11 +688,14 @@ class WebSession:
                     # VC-NOREPLY-1：LLM 回傳空值而無法產生回覆 → 失敗可見化（不得靜默）
                     # （此分支已通過 drain 前後的世代守衛，task_gen == self._generation）
                     _elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+                    # VC-PERF-OPT-1：沿用既有空內容失敗路徑，補上 reasoning 診斷
+                    # （max_tokens 被 reasoning 吃光 ⇒ content 0 piece 時，這裡是唯一一眼可判定的地方）
                     log.error(
                         "[VC-TURN-FAIL] agent_id=%s gen=%d elapsed_ms=%.0f "
-                        "exc_type=empty_llm_output last_error=%r",
+                        "exc_type=empty_llm_output last_error=%r llm_diag=%r",
                         self._agent_id, task_gen, _elapsed_ms,
                         getattr(self._streamer, "last_error", None),
+                        getattr(self._brain, "last_llm_diag", None),
                     )
                     await self._send_json({"type": "error", "message": TURN_FAILURE_HINT})
                 if reply:
