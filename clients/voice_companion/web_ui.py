@@ -134,6 +134,19 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   var THINKING_SLOW_MS = 8000, THINKING_SLOW_TEXT = "🟡 上游較慢，還在處理…（請稍候，不用再按）", thinkingSlowTimer = null;
   var $ = function (id) { return document.getElementById(id); };
 
+  // ── VC-BARGE-PREPLAY-1：barge-in armed 判定（唯一門檻，抽出為純函式）──
+  // 病根：舊判定只看 state === "SPEAKING"。伺服器在 _run_reply 開頭（LLM 首字之前）就宣告
+  // SPEAKING，而首個 PCM 幀要 ~3.0s 後才到 ⇒ TTFT 沉默窗內 barge 已被 armed，
+  // 麥克風能量（環境噪音/AEC 殘響）誤觸 ⇒ interrupt ⇒ reply-cancelled（回覆自我取消）。
+  // 修正：複用 VC-VAD-TIMING-1（552f84b）已建好且已測試的「音訊時鐘」playbackDrained ——
+  //   queuePlaybackSamples()（僅由「收到 binary PCM 幀」呼叫）設 false；
+  //   onPlaybackDrained() + TAIL_BUFFER_MS(400) 設回 true；worklet 與 ScriptProcessor 兩條路徑皆有排空偵測。
+  // 故 drained === false ⇔ 本回合真的有音訊在緩衝/播放中。不另造平行旗標（避免第二份判準漂移）。
+  // 注意：PTT 打斷不走此判定（client 送 ptt_start → 伺服器 on_ptt_start 直接 _barge），任何時候都立即生效。
+  function isBargeArmed(st, drained) {
+    return st === "SPEAKING" && drained === false;
+  }
+
   function setState(s) {
     var leavingSpeaking = (state === "SPEAKING") && s !== "SPEAKING";
     state = s;
@@ -202,7 +215,14 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     // 常駐錯誤（VC-1.5）：不自動清除，直到點擊 ✕ 或重新載入
     setError(m, true);
   }
-  function send(obj) { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(obj)); } }
+  // VC-BARGE-PREPLAY-1 可觀測性：interrupt 一律附 origin，伺服器端記成 barge reason=interrupt:<origin>。
+  // 掛在 send() 這個唯一出口（呼叫點仍維持既有的 send({ type: "interrupt" }) 形式），
+  // 兩個發送點（autoBargeIn / manualBargeIn）於呼叫前設定 interruptOrigin。
+  var interruptOrigin = "unknown";
+  function send(obj) {
+    if (obj && obj.type === "interrupt") { obj.origin = interruptOrigin; }
+    if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(obj)); }
+  }
   function sendPttStart() {
     if (pttActive) { return; }
     if (!micStream) {
@@ -650,7 +670,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
           if (autoMuted && !autoSpeaking) { autoVoiceMs = 0; }
           if (autoMuted && autoSpeaking && !barging) { autoSpeaking = false; autoSilenceMs = 0; sendPttStop(); }
 
-          if (state === "SPEAKING") {
+          // VC-BARGE-PREPLAY-1：armed 條件改由純函式判定（SPEAKING 且本回合音訊確實在緩衝）。
+          // 沉默窗（尚未有 PCM 幀）期間不 armed ⇒ 不自我取消；播放中 drained === false ⇒ 插話照常可用。
+          if (isBargeArmed(state, playbackDrained)) {
             if (auto) {
               // VC-2.2 Auto-VAD Barge-in：提升門檻（0.04）防喇叭回授，連續發音 ≥ BARGE_AUTO_MS (200ms) 打斷
               speakEnergyMs = rms > BARGE_AUTO_THRESHOLD ? speakEnergyMs + durMs : 0;
@@ -658,6 +680,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
                 speakEnergyMs = 0;
                 barging = true;
                 flushPlayback("autoBargeIn");
+                interruptOrigin = "autoBargeIn";  // VC-BARGE-PREPLAY-1：log 可分辨 barge 分支
                 send({ type: "interrupt" });
                 autoSpeaking = true;
                 autoVoiceMs = 0;
@@ -671,6 +694,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
               if (speakEnergyMs >= BARGE_MS) {
                 speakEnergyMs = 0;
                 flushPlayback("manualBargeIn");
+                interruptOrigin = "manualBargeIn";  // VC-BARGE-PREPLAY-1：log 可分辨 barge 分支
                 send({ type: "interrupt" });
               }
             }

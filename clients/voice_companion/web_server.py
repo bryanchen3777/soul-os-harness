@@ -429,10 +429,29 @@ class WebSession:
                 self._utterance_task.cancel()
             self._utterance_task = asyncio.create_task(self._handle_utterance())
 
-    async def on_interrupt(self) -> None:
-        """瀏覽器打斷（Bryan 在茜說話時開口）：立即中斷合成/播放，回 IDLE（瀏覽器靜音）。"""
+    async def on_interrupt(self, origin: Optional[str] = None) -> None:
+        """瀏覽器打斷（Bryan 在茜說話時開口）：立即中斷合成/播放，回 IDLE（瀏覽器靜音）。
+
+        VC-BARGE-PREPLAY-1 可觀測性：origin 由 client 帶入（autoBargeIn / manualBargeIn），
+        伺服器把 barge reason 記成可分辨的 interrupt:<origin> ⇒ 下次同類事故讀 log 即可定案分支。
+        origin 缺席（舊 client / 測試直接呼叫）→ 維持既有 reason=interrupt，行為不變。
+        """
         print("[WS] interrupt")  # VC-1.5 診斷日誌
-        self._barge("interrupt")
+        # 只允許 ASCII 英數與 _-:（防 log 注入）；超長截斷
+        safe_origin = "".join(
+            c for c in str(origin)[:32] if c.isascii() and (c.isalnum() or c in "_-:")
+        ) if origin else ""
+        # VC-BARGE-PREPLAY-1 (b)：只做偵測、不改行為。
+        # first_chunk_time 由 _run_reply 於本回合開始時重置為 None，sink 寫入首個 PCM chunk 時設時間戳
+        # ⇒ 此刻為 None ＝「本回合零音訊就被打斷」，正是沉默窗自我取消的病徵（可一次讀 log 定案）。
+        # 取消行為完全不變：ptt_start / interrupt 任何時候都必須立即生效，不得 gate 在此訊號上。
+        if getattr(self._sink, "first_chunk_time", None) is None:
+            log.warning(
+                "[BARGE-PREAUDIO] turn=%d origin=%s audio_written=0",
+                self._generation,
+                safe_origin or "none",
+            )
+        self._barge(f"interrupt:{safe_origin}" if safe_origin else "interrupt")
         await self._set_state(self.STATE_IDLE)
 
     async def on_text(self, text: str) -> None:
@@ -787,6 +806,9 @@ class WebSession:
         if state == self.state:
             return
         self.state = state
+        # VC-BARGE-PREPLAY-1 可觀測性：此前 _set_state 完全不寫 log ⇒「伺服器到底送了哪個 state 給
+        # client、在什麼時刻送」在磁碟上零紀錄（VC-BARGE-PREPLAY-1 鑑識唯一無法閉環的缺口）。
+        log.info("[STATE] %s", state)
         await self._send_json({"type": "state", "state": state})
 
     async def _send_json(self, obj: dict) -> None:
@@ -807,7 +829,17 @@ async def index_handler(request: web.Request) -> web.Response:
     display_name = companion.get("display_name", "黑川茜")
     short_name = companion.get("short_name", "茜")
     content = render_html_page(display_name=display_name, short_name=short_name)
-    return web.Response(text=content, content_type="text/html", charset="utf-8")
+    # VC-BARGE-PREPLAY-1：頁面每次請求即時渲染，但原本不送任何 cache 標頭 ⇒ 瀏覽器/邊緣快取
+    # 可能仍供應舊頁（「改了、重載了、卻還是舊行為」）。明確禁止快取，確保重載即取現行版本。
+    return web.Response(
+        text=content,
+        content_type="text/html",
+        charset="utf-8",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 def is_loopback_host(host: str) -> bool:
@@ -901,7 +933,7 @@ async def websocket_handler(request: web.Request) -> web.StreamResponse:
                 elif mtype == "ptt_stop":
                     await session.on_ptt_stop()
                 elif mtype == "interrupt":
-                    await session.on_interrupt()
+                    await session.on_interrupt(data.get("origin"))
                 elif mtype == "text":
                     await session.on_text(data.get("text", ""))
                 elif mtype == "ping":
