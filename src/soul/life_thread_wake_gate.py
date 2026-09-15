@@ -8,6 +8,17 @@
 `ACTIVE_POOL_SATURATED`（來源＝ LIFE-THREAD-M3-1 工單 §3）：活躍池已滿一律 SLEEP。
 未決張力**僅在到期時**才喚醒（due-based，契約 §4.2 為準）；未帶到期時間者不喚醒。
 本模組為 pure function：**0 I/O、0 LLM、0 定時器、0 `src.*` import**，所有輸入一律由參數傳入。
+
+**偏離宣告（逐條補登；以下每條即「本模組 vs 契約 §4.2」的差異）**：
+  1. `extra["summary"]` 為碰撞判定的**必要條件** —— 此條件出自契約 **§5.2.4 fact-text 規則**，
+     §4.2 判定式本身沒有；效果**更嚴**（無 fact text 的世界事件不喚醒，寧可留白、不得捏造）。
+  2. `consumed_by_wake is True` ⇒ 跳過該筆 —— 來自 LIFE-THREAD-M3-1 工單 §3「未消費」；
+     該欄位**不在** `WorldPerceptionTrace` schema，屬本模組**自訂**的選用旗標（缺欄 ⇒ 視為未消費）。
+  3. 第三個喚醒訊號 `unresolved_tensions` 的存在本身 —— 契約 §4.2 只定義兩個布林
+     （`check_points_due` / `world_collision_detected`），本模組**額外**接受此訊號，且**只有到期者**
+     （`check_after_ts` / `due_at` 且 `<= current_time`）才喚醒；接線（M5）時必須確保它與線頭來源**不重複計數**。
+  另：`due.sort()` 僅為「最早到期優先」的**決定性排序**，**不是 salience 評分排序**
+  （契約 §4.2「不排序」指的是後者）。
 """
 from __future__ import annotations
 
@@ -38,6 +49,10 @@ ORIGIN_TYPES: Tuple[str, ...] = (
     "whim_driven",
     "world_collision",
 )
+
+#: 契約 §2.6.3 的計數口徑：**只有** `status == "active"` 的線頭佔活躍額度
+#: （`dormant` 不佔額度；`completed` / `abandoned` 為終態，亦不佔額度）。
+ACTIVE_THREAD_STATUS = "active"
 
 #: 契約 §4.2 具名常數：世界碰撞視窗（小時）。**不得**寫裸字面量 `4`。
 WORLD_COLLISION_WINDOW_HOURS = 4
@@ -72,12 +87,26 @@ REASON_DAYTIME_WHITESPACE = "DAYTIME_WHITESPACE"
 #: §7 觀測行前綴。
 _LOG_PREFIX = "[LifeThreadGate] agent="
 
+#: §7 組行失敗時的固定兜底骨架行（**永不 raise**、保證含 `decision=` / `reason=`）。
+_FALLBACK_LOG_LINE = (
+    "[LifeThreadGate] agent=<unprintable> slot=<unprintable>"
+    " decision=SLEEP reason=FAIL_CLOSED_DEFAULT_SLEEP"
+)
+
+#: §7 有界截斷：`agent=` / `slot=` 各自保底的最少字元數（確保不會被整段吃掉）。
+_LOG_AGENT_MIN_CHARS = 1
+_LOG_SLOT_MIN_CHARS = 1
+
+#: §7 有界截斷：`origin=` 尾綴可用的額度佔比分母（`budget // 4`，整數運算）。
+_LOG_ORIGIN_BUDGET_DIVISOR = 4
+
 __all__ = [
     "WakeDecision",
     "evaluate_wake_gate",
     "VALID_TIMESLOTS",
     "REFLECTION_SLOTS",
     "ORIGIN_TYPES",
+    "ACTIVE_THREAD_STATUS",
     "WORLD_COLLISION_WINDOW_HOURS",
     "QUALIFYING_WORLD_SOURCES",
     "SEED_HINT_MAX_ITEMS",
@@ -222,8 +251,18 @@ def _inputs_valid(
 # ──────────────────────────────────────────────────────────────
 
 def _pool_saturated(active_threads: List[Any], capacity_limit: int) -> bool:
-    """`active_count ＝ 在 active_threads 中「是 mapping」的元素個數`。"""
-    active_count = sum(1 for t in active_threads if isinstance(t, Mapping))
+    """`active_count` ＝ 在 `active_threads` 中「是 Mapping」**且** `status == "active"` 的元素個數。
+
+    契約 §2.6.3 計數口徑：`dormant`（及終態 `completed` / `abandoned`）**不佔額度**；
+    `status` 缺欄、非字串、或非 `"active"`（含 `None`）⇒ **不計**。
+    比較式不變：`active_count >= capacity_limit` ⇒ SLEEP / `ACTIVE_POOL_SATURATED`。
+    """
+    active_count = sum(
+        1
+        for t in active_threads
+        if isinstance(t, Mapping)
+        and str(t.get("status", "")).strip() == ACTIVE_THREAD_STATUS
+    )
     return active_count >= capacity_limit
 
 
@@ -289,7 +328,7 @@ def _scan_threads_due(
     for index, thread in enumerate(active_threads):
         if not isinstance(thread, Mapping):
             continue
-        if thread.get("status") != "active":  # dormant 與終態不計
+        if thread.get("status") != ACTIVE_THREAD_STATUS:  # dormant 與終態不計
             continue
         raw = thread.get("check_after_ts")
         if raw is None:
@@ -430,34 +469,63 @@ def _sanitize(value: Any, max_chars: int) -> str:
 
 
 def _emit_log(agent_id: Any, timeslot: Any, decision: WakeDecision) -> None:
-    """§9 精神：每次呼叫恰好一行 INFO，fail-closed 路徑也留這一行。"""
+    """§9 精神：每次呼叫**恰好**一行 INFO，fail-closed 路徑也留這一行。
+
+    骨架：`[LifeThreadGate] agent=<...> slot=<...> decision=WAKE|SLEEP reason=<REASON>`
+    （WAKE 再補 ` origin=<origin_type>`）。
+
+    保證（任何輸入下）：
+      - `agent_id` / `slot` **先各自有界截斷**，才組骨架；最後才對整行截斷；
+      - 該行**必含** `decision=` 與 `reason=` 子字串、≤ `LOG_MAX_CHARS`、不含換行；
+      - 組行過程若拋例外，改發固定的兜底骨架行 ⇒ **永遠恰好一行**、永不 raise。
+    """
     try:
         label = "WAKE" if decision.should_wake else "SLEEP"
-        slot_text = _sanitize(timeslot, LOG_MAX_CHARS)
-        reason_text = _sanitize(decision.reason, LOG_MAX_CHARS)
-        origin_tail = (
-            " origin=" + _sanitize(decision.origin_type, LOG_MAX_CHARS)
-            if decision.origin_type is not None
-            else ""
-        )
+        have_origin = decision.origin_type is not None
+        # 骨架固定段（`decision=` / `reason=` 的標籤本身永不被截斷）。
         fixed_chars = (
             len(_LOG_PREFIX)
             + len(" slot=")
-            + len(slot_text)
             + len(" decision=")
             + len(label)
             + len(" reason=")
-            + len(reason_text)
-            + len(origin_tail)
         )
-        agent_text = _sanitize(agent_id, LOG_MAX_CHARS - fixed_chars)
+        budget = LOG_MAX_CHARS - fixed_chars
+        if budget < 0:
+            budget = 0
+
+        # 1) origin 尾綴先有界（不得吃光額度）。
+        origin_tail = ""
+        if have_origin:
+            origin_room = budget // _LOG_ORIGIN_BUDGET_DIVISOR
+            origin_tail = " origin=" + _sanitize(decision.origin_type, origin_room)
+            if len(origin_tail) > budget:
+                origin_tail = origin_tail[:budget]
+
+        # 2) reason 內文有界，且先替 slot / agent 留下保底額度。
+        reason_room = max(
+            0, budget - len(origin_tail) - _LOG_SLOT_MIN_CHARS - _LOG_AGENT_MIN_CHARS
+        )
+        reason_text = _sanitize(decision.reason, reason_room)
+
+        # 3) 剩下的額度對半分給 slot 與 agent（短值不截斷）。
+        remaining = budget - len(origin_tail) - len(reason_text)
+        if remaining < 0:
+            remaining = 0
+        slot_room = max(_LOG_SLOT_MIN_CHARS, remaining // 2)
+        slot_text = _sanitize(timeslot, min(slot_room, remaining))
+        agent_text = _sanitize(agent_id, max(0, remaining - len(slot_text)))
+
         line = (
             f"{_LOG_PREFIX}{agent_text} slot={slot_text} decision={label}"
             f" reason={reason_text}{origin_tail}"
         )
         logger.info(_sanitize(line, LOG_MAX_CHARS))
-    except Exception:  # 觀測失敗不得影響判定（永不 raise）
-        return
+    except Exception:  # 觀測失敗不得影響判定（永不 raise）；但仍必須恰好一行
+        try:
+            logger.info(_FALLBACK_LOG_LINE)
+        except Exception:
+            return
 
 
 # ──────────────────────────────────────────────────────────────
