@@ -25,6 +25,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from src.soul.life_thread_wake_gate import (  # noqa: E402
+    ACTIVE_THREAD_STATUS,
     LOG_MAX_CHARS,
     ORIGIN_TYPES,
     QUALIFYING_WORLD_SOURCES,
@@ -41,6 +42,7 @@ from src.soul.life_thread_wake_gate import (  # noqa: E402
     VALID_TIMESLOTS,
     WORLD_COLLISION_WINDOW_HOURS,
     WakeDecision,
+    _emit_log,
     _json_safe_scalar,
     evaluate_wake_gate,
 )
@@ -189,11 +191,34 @@ def test_t1_capacity_threshold_is_inclusive_equality():
     assert decision.reason == "ACTIVE_POOL_SATURATED"
 
 
-def test_t1_dormant_mapping_still_counts_toward_capacity():
-    """T1：容量只數「mapping 元素個數」，dormant 的 mapping 一樣佔位。"""
-    decision = _call(active_threads=[_thread("th-1", status="dormant")], capacity_limit=1)
-    assert decision.should_wake is False
-    assert decision.reason == "ACTIVE_POOL_SATURATED"
+def test_t1_dormant_mapping_does_not_count_toward_capacity():
+    """T1：容量只數 `status == "active"` 的 mapping；dormant **不**佔位（契約 §2.6.3）。
+
+    語意更新（LIFE-THREAD-M3-1 審計後修正）：舊版把「mapping 元素個數」當容量，
+    現行口徑為「是 Mapping **且** `str(status).strip() == "active"`」。
+    故 1 筆 dormant ＋ `cap=2`（甚至 `cap=1`）皆**不**飽和，閘門落到留白語意。
+    """
+    dormant = [_thread("th-1", status="dormant")]
+
+    daytime = _call(active_threads=dormant, capacity_limit=2)
+    assert daytime.should_wake is False
+    assert daytime.reason == "DAYTIME_WHITESPACE"
+    assert daytime.reason == REASON_DAYTIME_WHITESPACE
+    assert daytime.origin_type is None
+    assert daytime.seed_hint is None
+
+    night = _call(timeslot="night", active_threads=dormant, capacity_limit=2)
+    assert night.should_wake is False
+    assert night.reason == "REFLECTION_SLOT_CLEAR"
+    assert night.reason == REASON_REFLECTION_SLOT_CLEAR
+    assert night.origin_type is None
+    assert night.seed_hint is None
+
+    # 更嚴：即使 `cap=1`，1 筆 dormant 也不足以觸發容量防線
+    tight = _call(active_threads=dormant, capacity_limit=1)
+    assert tight.should_wake is False
+    assert tight.reason == "DAYTIME_WHITESPACE"
+    assert tight.reason != "ACTIVE_POOL_SATURATED"
 
 
 def test_t1_non_mapping_elements_do_not_count_toward_capacity():
@@ -1435,3 +1460,449 @@ def test_t11_e2e_naive_datetime_and_iso_agree_on_same_instant():
     assert (naive_decision.seed_hint["due_check_after_ts"]
             == iso_decision.seed_hint["due_check_after_ts"]
             == _DUE_NAIVE.isoformat())
+
+
+# ══════════════════════════════════════════════════════════════
+# T12 容量計數語意矩陣（契約 §2.6.3：只有 `status == "active"` 佔活躍額度）
+# ══════════════════════════════════════════════════════════════
+#
+# 受測口徑（唯讀 `src/soul/life_thread_wake_gate.py::_pool_saturated`）：
+#   `active_count = Σ 1 for t in active_threads
+#                   if isinstance(t, Mapping) and str(t.get("status", "")).strip() == "active"`
+# 即：`dormant` / 終態（`completed` / `abandoned`）/ `status` 缺欄 / 非字串狀態
+# 一律**不計**；非 Mapping 元素一律**不計**；`" active "`（前後空白）**算**。
+# 界線仍為 `active_count >= capacity_limit`（`>=`，含等號）。
+
+_PADDED_ACTIVE_STATUS = "  active  "
+
+#: (id, 單一元素, 是否佔 1 個容量額度)
+_CAPACITY_ELEMENT_CASES = (
+    ("mapping-status-active", _thread("th-1", status="active"), True),
+    ("mapping-status-active-padded", _thread("th-1", status=_PADDED_ACTIVE_STATUS), True),
+    ("mapping-status-dormant", _thread("th-1", status="dormant"), False),
+    ("mapping-status-completed", _thread("th-1", status="completed"), False),
+    ("mapping-status-abandoned", _thread("th-1", status="abandoned"), False),
+    ("mapping-status-none", _thread("th-1", status=None), False),
+    ("mapping-status-int", _thread("th-1", status=123), False),
+    ("mapping-status-missing", {"thread_id": "th-1"}, False),
+    ("non-mapping-none", None, False),
+    ("non-mapping-string", "th-1", False),
+    ("non-mapping-list", ["th-1"], False),
+)
+
+
+@pytest.mark.parametrize("case_id,element,occupies", _CAPACITY_ELEMENT_CASES,
+                         ids=[case[0] for case in _CAPACITY_ELEMENT_CASES])
+def test_t12_capacity_counts_only_active_mappings(case_id, element, occupies):
+    """T12：`cap=1` 下，只有「Mapping 且 `status` 去空白後 == `"active"`」觸發飽和。"""
+    if case_id == "mapping-status-active-padded":
+        # 釘死「去空白才比較」這件事：原始字串**不**等於常數，去空白後才等於
+        assert _PADDED_ACTIVE_STATUS != ACTIVE_THREAD_STATUS
+        assert _PADDED_ACTIVE_STATUS.strip() == ACTIVE_THREAD_STATUS
+
+    decision = _call(active_threads=[element], capacity_limit=1)
+
+    assert decision.should_wake is False, case_id
+    expected = "ACTIVE_POOL_SATURATED" if occupies else "DAYTIME_WHITESPACE"
+    assert decision.reason == expected, case_id
+    assert decision.origin_type is None, case_id
+    assert decision.seed_hint is None, case_id
+
+
+def test_t12_active_thread_status_literal_is_active():
+    """T12：計數口徑的唯一鑰匙 `ACTIVE_THREAD_STATUS` 逐字為 `"active"`。"""
+    assert ACTIVE_THREAD_STATUS == "active"
+    assert type(ACTIVE_THREAD_STATUS) is str
+    assert ACTIVE_THREAD_STATUS.strip() == ACTIVE_THREAD_STATUS
+    assert ACTIVE_THREAD_STATUS not in VALID_TIMESLOTS
+    assert ACTIVE_THREAD_STATUS not in ORIGIN_TYPES
+
+
+def test_t12_active_thread_status_is_exported_in_dunder_all():
+    """T12：`ACTIVE_THREAD_STATUS` 必須已登錄 `__all__`（公開契約面）。"""
+    module = sys.modules[evaluate_wake_gate.__module__]
+    assert "ACTIVE_THREAD_STATUS" in module.__all__
+    assert module.ACTIVE_THREAD_STATUS == ACTIVE_THREAD_STATUS
+
+
+#: (id, 3 筆「不佔額度」狀態)
+_MIXED_NON_ACTIVE_STATUSES = (
+    ("dormant-x3", ["dormant", "dormant", "dormant"]),
+    ("terminal-mixed", ["dormant", "completed", "abandoned"]),
+)
+
+
+@pytest.mark.parametrize("case_id,statuses", _MIXED_NON_ACTIVE_STATUSES,
+                         ids=[case[0] for case in _MIXED_NON_ACTIVE_STATUSES])
+def test_t12_mixed_one_active_plus_three_non_active_is_not_saturated(case_id, statuses):
+    """T12：1 active ＋ 3 筆不佔額度、`cap=2` ⇒ **不**飽和（4 筆元素 ≠ 4 筆容量）。
+
+    同時釘死：飽和判定看的是「active 計數」而非「元素總數」。
+    """
+    threads = [_thread("th-a1", status="active")]
+    threads += [_thread(f"th-x{i}", status=status) for i, status in enumerate(statuses)]
+
+    decision = _call(active_threads=threads, capacity_limit=2)
+
+    assert len(threads) == 4, case_id
+    assert len(threads) > 2, case_id
+    assert decision.should_wake is False, case_id
+    assert decision.reason != "ACTIVE_POOL_SATURATED", case_id
+    assert decision.reason == "DAYTIME_WHITESPACE", case_id
+    assert decision.reason == REASON_DAYTIME_WHITESPACE, case_id
+
+
+def test_t12_mixed_two_active_plus_three_dormant_is_saturated():
+    """T12：2 active ＋ 3 dormant、`cap=2` ⇒ `ACTIVE_POOL_SATURATED`（容量壓過一切擾動）。"""
+    threads = [
+        _thread("th-a1", status="active"),
+        _thread("th-a2", status="active"),
+        _thread("th-d1", status="dormant"),
+        _thread("th-d2", status="dormant"),
+        _thread("th-d3", status="dormant"),
+    ]
+
+    decision = _call(
+        active_threads=threads,
+        capacity_limit=2,
+        recent_perceptions=list(_COLLISION),        # 世界碰撞擾動
+        unresolved_tensions=list(_DUE_TENSION),     # 到期張力擾動
+    )
+
+    assert len(threads) == 5
+    assert decision.should_wake is False
+    assert decision.reason == "ACTIVE_POOL_SATURATED"
+    assert decision.reason == REASON_ACTIVE_POOL_SATURATED
+    assert decision.origin_type is None
+    assert decision.seed_hint is None
+
+
+def test_t12_one_active_plus_three_dormant_still_lets_due_thread_wake():
+    """T12：不飽和 ⇒ 閘門繼續往下判；該唯一 active 線頭到期即 WAKE（不是被容量擋掉）。"""
+    threads = [
+        _thread("th-due", status="active", check_after_ts=_iso(NOW - 60),
+                origin_type="goal_driven"),
+        _thread("th-d1", status="dormant"),
+        _thread("th-d2", status="dormant"),
+        _thread("th-d3", status="dormant"),
+    ]
+
+    decision = _call(timeslot="morning", active_threads=threads, capacity_limit=2)
+
+    assert decision.should_wake is True
+    assert decision.reason == "CHECKPOINT_DUE_WAKE"
+    assert decision.reason == REASON_CHECKPOINT_DUE_WAKE
+    assert decision.seed_hint["due_thread_ids"] == ["th-due"]
+
+
+def test_t12_second_active_flips_same_list_to_saturated():
+    """T12：同一份清單再補 1 筆 active（總計 2、`cap=2`）⇒ 立刻翻成飽和。"""
+    dormant = [_thread(f"th-d{i}", status="dormant") for i in range(1, 4)]
+    due_active = _thread("th-due", status="active", check_after_ts=_iso(NOW - 60),
+                         origin_type="goal_driven")
+
+    one_active = _call(timeslot="morning", active_threads=[due_active] + dormant,
+                       capacity_limit=2)
+    two_active = _call(timeslot="morning",
+                       active_threads=[due_active] + dormant + [_thread("th-a2")],
+                       capacity_limit=2)
+
+    assert one_active.reason == "CHECKPOINT_DUE_WAKE"
+    assert two_active.should_wake is False
+    assert two_active.reason == "ACTIVE_POOL_SATURATED"
+
+
+# ── T12-F1 常數字面值釘死（不得再用常數自身推導位移）───────────────
+
+#: (常數名, 執行期值, 契約明令的字面值)
+_CONSTANT_LITERAL_CASES = (
+    ("WORLD_COLLISION_WINDOW_HOURS", WORLD_COLLISION_WINDOW_HOURS, 4),
+    ("SEED_HINT_MAX_ITEMS", SEED_HINT_MAX_ITEMS, 5),
+    ("SEED_HINT_MAX_TEXT_CHARS", SEED_HINT_MAX_TEXT_CHARS, 200),
+    ("LOG_MAX_CHARS", LOG_MAX_CHARS, 200),
+    ("ACTIVE_THREAD_STATUS", ACTIVE_THREAD_STATUS, "active"),
+    ("REFLECTION_SLOTS", REFLECTION_SLOTS, ("morning", "night")),
+    ("VALID_TIMESLOTS", VALID_TIMESLOTS, ("morning", "daytime", "evening", "night")),
+    ("QUALIFYING_WORLD_SOURCES", QUALIFYING_WORLD_SOURCES,
+     frozenset({"weather", "news", "news_event", "calendar", "calendar_event"})),
+    ("REASON_ACTIVE_POOL_SATURATED", REASON_ACTIVE_POOL_SATURATED, "ACTIVE_POOL_SATURATED"),
+    ("REASON_FAIL_CLOSED_DEFAULT_SLEEP", REASON_FAIL_CLOSED_DEFAULT_SLEEP,
+     "FAIL_CLOSED_DEFAULT_SLEEP"),
+    ("REASON_WORLD_COLLISION_WAKE", REASON_WORLD_COLLISION_WAKE, "WORLD_COLLISION_WAKE"),
+    ("REASON_CHECKPOINT_DUE_WAKE", REASON_CHECKPOINT_DUE_WAKE, "CHECKPOINT_DUE_WAKE"),
+    ("REASON_TENSION_DUE_WAKE", REASON_TENSION_DUE_WAKE, "UNRESOLVED_TENSION_DUE_WAKE"),
+    ("REASON_REFLECTION_SLOT_CLEAR", REASON_REFLECTION_SLOT_CLEAR, "REFLECTION_SLOT_CLEAR"),
+    ("REASON_DAYTIME_WHITESPACE", REASON_DAYTIME_WHITESPACE, "DAYTIME_WHITESPACE"),
+)
+
+
+@pytest.mark.parametrize("name,value,literal", _CONSTANT_LITERAL_CASES,
+                         ids=[case[0] for case in _CONSTANT_LITERAL_CASES])
+def test_t12_f1_constant_literal_is_pinned(name, value, literal):
+    """F1：常數的**字面值**逐字釘死（改值即紅燈；不使用常數自身推導期望值）。"""
+    assert value == literal, name
+    assert type(value) is type(literal), name
+    if isinstance(literal, (str, tuple)):
+        assert len(value) == len(literal), name  # 逐元素、含順序與長度
+    if isinstance(literal, tuple):
+        assert all(value[i] == literal[i] for i in range(len(literal))), name
+    if isinstance(literal, frozenset):
+        assert value == frozenset({"weather", "news", "news_event", "calendar",
+                                  "calendar_event"}), name
+        assert "synthetic" not in value, name
+
+
+def test_t12_f1_collision_window_seconds_are_hardcoded_14400():
+    """F1：視窗秒數以**獨立算式** 4*3600 釘死為 14400 秒（3 項皆不得位移）。"""
+    assert 4 * 3600 == 14400
+    assert WORLD_COLLISION_WINDOW_HOURS * 3600 == 4 * 3600
+    assert WORLD_COLLISION_WINDOW_HOURS == 4
+
+
+@pytest.mark.parametrize("encode", ["epoch_seconds", "iso_string"])
+def test_t12_f1_e2e_exactly_four_hours_wakes_and_one_more_second_sleeps(encode):
+    """F1 端到端（硬寫死 14400 秒，不引用常數）：恰 4h ⇒ WAKE；4h＋1s ⇒ SLEEP / 留白。"""
+    def _record(offset_seconds: int) -> dict:
+        stamp = NOW - offset_seconds
+        return _world_record(timestamp=stamp if encode == "epoch_seconds" else _iso(stamp))
+
+    at_edge = _call(timeslot="daytime", recent_perceptions=[_record(14400)])
+    assert at_edge.should_wake is True, encode
+    assert at_edge.reason == "WORLD_COLLISION_WAKE", encode
+    assert at_edge.origin_type == "world_collision", encode
+
+    past_edge = _call(timeslot="daytime", recent_perceptions=[_record(14401)])
+    assert past_edge.should_wake is False, encode
+    assert past_edge.reason == "DAYTIME_WHITESPACE", encode
+    assert past_edge.origin_type is None, encode
+
+
+# ══════════════════════════════════════════════════════════════
+# T13-F6 日誌骨架不變量（任何長度下必含 `decision=` 與 `reason=`）
+# ══════════════════════════════════════════════════════════════
+#
+# 契約骨架：`[LifeThreadGate] agent=<...> slot=<...> decision=WAKE|SLEEP reason=<REASON>`
+# 不變量：恰好 1 行、≤ `LOG_MAX_CHARS`(200)、不含換行、**必含** `decision=` 與 `reason=`。
+# `timeslot` 只能取 4 個合法值 ⇒ 超長 slot 無法經 `evaluate_wake_gate` 構造，
+# 故另以 monkeypatch 級手段直接呼叫內部 `_emit_log` 測超長 slot。
+
+_LONG_SLOT = "n" * 5000
+
+
+def _assert_log_skeleton(lines: list[str], where: str) -> None:
+    """骨架斷言共用體（私有 helper，pytest 不收集）。"""
+    assert len(lines) == 1, f"{where}: 行數={len(lines)} {lines}"
+    line = lines[0]
+    assert "\n" not in line and "\r" not in line, f"{where}: 出現換行"
+    assert len(line) <= 200, f"{where}: 長度={len(line)}"
+    assert len(line) <= LOG_MAX_CHARS, f"{where}: 長度={len(line)}"
+    assert "decision=" in line, f"{where}: 缺 decision= ⇒ {line}"
+    assert "reason=" in line, f"{where}: 缺 reason= ⇒ {line}"
+    assert line.index("decision=") < line.index("reason="), f"{where}: 骨架順序錯誤"
+    assert line.startswith("[LifeThreadGate] agent="), f"{where}: 前綴錯誤"
+
+
+@pytest.mark.parametrize("length", [200, 201, 1000, 5000, 20000])
+def test_t13_f6_long_agent_id_keeps_log_skeleton(gate_logs, length):
+    """F6：`agent_id` 長度 200/201/1k/5k/20k ⇒ 仍恰好 1 行、≤200、含雙標籤。"""
+    gate_logs.clear()
+    decision = _call(agent_id="a" * length)
+
+    assert decision.should_wake is False, length
+    _assert_log_skeleton(_gate_lines(gate_logs), f"agent_id len={length}")
+
+
+def test_t13_f6_long_agent_id_on_wake_path_keeps_log_skeleton(gate_logs):
+    """F6：WAKE 路徑（含 ` origin=` 尾綴）配 5,000 字元 `agent_id` ⇒ 骨架仍在。"""
+    gate_logs.clear()
+    _call(agent_id="b" * 5000, timeslot="night", unresolved_tensions=list(_DUE_TENSION))
+
+    lines = _gate_lines(gate_logs)
+    _assert_log_skeleton(lines, "wake-path long agent_id")
+    assert " origin=necessity_driven" in lines[0]
+
+
+def test_t13_f6_extreme_slot_via_emit_log_keeps_log_skeleton(gate_logs):
+    """F6：直接餵 `_emit_log` 5,000 字元 slot ⇒ 骨架仍在（≤200、含雙標籤、不 raise）。"""
+    gate_logs.clear()
+    decision = WakeDecision(should_wake=False, origin_type=None,
+                            reason=REASON_DAYTIME_WHITESPACE, seed_hint=None)
+    _emit_log(AGENT, _LONG_SLOT, decision)
+
+    lines = _gate_lines(gate_logs)
+    _assert_log_skeleton(lines, "long slot")
+    assert " slot=" in lines[0]
+
+
+def test_t13_f6_extreme_slot_and_agent_via_emit_log_keeps_log_skeleton(gate_logs):
+    """F6：超長 slot ＋ 超長 agent 同時出現 ⇒ 仍恰好 1 行且雙標籤俱在。"""
+    gate_logs.clear()
+    decision = WakeDecision(should_wake=True, origin_type="goal_driven",
+                            reason=REASON_CHECKPOINT_DUE_WAKE, seed_hint=None)
+    _emit_log("c" * 5000, _LONG_SLOT, decision)
+
+    _assert_log_skeleton(_gate_lines(gate_logs), "long slot + long agent")
+
+
+def test_t13_f6_extreme_reason_via_emit_log_keeps_log_skeleton(gate_logs):
+    """F6：`reason` 逾長（5,000 字元）⇒ 內文可截斷，但 `reason=` 標籤**永不**被吃掉。"""
+    gate_logs.clear()
+    decision = WakeDecision(should_wake=True, origin_type="goal_driven",
+                            reason="R" * 5000, seed_hint=None)
+    _emit_log(AGENT, "daytime", decision)
+
+    lines = _gate_lines(gate_logs)
+    _assert_log_skeleton(lines, "long reason")
+    assert " decision=WAKE" in lines[0]
+    assert " origin=goal_driven" in lines[0]
+
+
+def test_t13_f6_repeated_long_calls_emit_one_line_each(gate_logs):
+    """F6：超長輸入連續 3 次 ⇒ 恰好 3 行（無漏記、無重複、無多行外洩）。"""
+    gate_logs.clear()
+    for _ in range(3):
+        _call(agent_id="d" * 5000)
+    lines = _gate_lines(gate_logs)
+
+    assert len(lines) == 3
+    for line in lines:
+        assert "\n" not in line and len(line) <= LOG_MAX_CHARS
+        assert "decision=" in line and "reason=" in line
+
+
+# ══════════════════════════════════════════════════════════════
+# T14-F7 例外兜底（`__str__` raise ⇒ 恰好一行固定骨架、永不 raise）
+# ══════════════════════════════════════════════════════════════
+#
+# 契約：組行過程若拋例外，改發**固定的**兜底骨架行 ⇒ 永遠恰好一行、永不 raise。
+# 生產路徑（`evaluate_wake_gate`）觸發兜底時，輸入必然已 fail-closed
+# （`agent_id` 非 str / `timeslot` 非合法值），故兜底行的
+# `decision=SLEEP reason=FAIL_CLOSED_DEFAULT_SLEEP` 與判定本身一致。
+
+_FALLBACK_LINE = (
+    "[LifeThreadGate] agent=<unprintable> slot=<unprintable>"
+    " decision=SLEEP reason=FAIL_CLOSED_DEFAULT_SLEEP"
+)
+
+
+@pytest.mark.parametrize("bad_field", ["agent_id", "timeslot", "both"])
+def test_t14_f7_unprintable_input_never_raises_and_emits_one_skeleton_line(gate_logs, bad_field):
+    """F7：`__str__` 會 raise 的物件當 `agent_id` / `timeslot` ⇒ 不拋例外、恰好 1 行。"""
+    gate_logs.clear()
+    agent_id = _RaisingStrObject() if bad_field in ("agent_id", "both") else AGENT
+    timeslot = _RaisingStrObject() if bad_field in ("timeslot", "both") else "daytime"
+
+    try:
+        decision = evaluate_wake_gate(agent_id, NOW, timeslot, [], CAP, None, None)
+    except BaseException as exc:  # pragma: no cover - 只有回歸時才會到此
+        pytest.fail(f"{bad_field}: evaluate_wake_gate raised {type(exc).__name__}: {exc}")
+
+    lines = _gate_lines(gate_logs)
+    _assert_log_skeleton(lines, f"unprintable {bad_field}")
+
+    # 非 str 的 `agent_id` / 非法的 `timeslot` 一律 fail-closed
+    assert decision.should_wake is False, bad_field
+    assert decision.reason == "FAIL_CLOSED_DEFAULT_SLEEP", bad_field
+    assert decision.reason == REASON_FAIL_CLOSED_DEFAULT_SLEEP, bad_field
+    assert lines[0].endswith("decision=SLEEP reason=FAIL_CLOSED_DEFAULT_SLEEP"), bad_field
+
+
+@pytest.mark.parametrize("bad_field", ["agent_id", "timeslot"])
+def test_t14_f7_fallback_line_is_exact_fixed_skeleton(gate_logs, bad_field):
+    """F7：兜底行逐字等於固定骨架（不得 0 行、不得改寫、不得多行）。"""
+    gate_logs.clear()
+    _call(**{bad_field: _RaisingStrObject()})
+
+    lines = _gate_lines(gate_logs)
+    assert len(lines) == 1, f"{bad_field}: {lines}"
+    assert lines[0] == _FALLBACK_LINE, bad_field
+    assert "<unprintable>" in lines[0], bad_field
+
+
+def test_t14_f7_emit_log_fallback_for_unprintable_slot_and_agent(gate_logs):
+    """F7：直接呼叫 `_emit_log`，slot 與 agent 皆不可列印 ⇒ 仍恰好一行固定骨架。"""
+    gate_logs.clear()
+    decision = WakeDecision(should_wake=True, origin_type="goal_driven",
+                            reason=REASON_CHECKPOINT_DUE_WAKE, seed_hint=None)
+
+    _emit_log(_RaisingStrObject(), _RaisingStrObject(), decision)
+
+    lines = _gate_lines(gate_logs)
+    assert len(lines) == 1, lines
+    assert lines[0] == _FALLBACK_LINE
+    assert "decision=" in lines[0] and "reason=" in lines[0]
+
+
+def test_t14_f7_repeated_unprintable_calls_emit_one_line_each(gate_logs):
+    """F7：不可列印輸入連續 3 次 ⇒ 恰好 3 行（每次呼叫各 1 行，無 0 行情形）。"""
+    gate_logs.clear()
+    for _ in range(3):
+        _call(agent_id=_RaisingStrObject())
+
+    lines = _gate_lines(gate_logs)
+    assert len(lines) == 3, lines
+    for line in lines:
+        assert line == _FALLBACK_LINE
+        assert "decision=" in line and "reason=" in line
+
+
+# ══════════════════════════════════════════════════════════════
+# T15 偏離宣告釘死（module docstring 三關鍵字不得被後人刪掉）
+# ══════════════════════════════════════════════════════════════
+
+_DEVIATION_KEYWORDS = ("§5.2.4", "consumed_by_wake", "unresolved_tensions")
+
+
+def _module_docstring(gate_source: str) -> str:
+    doc = ast.get_docstring(ast.parse(gate_source))
+    assert doc is not None and doc.strip(), "module docstring 遺失"
+    return doc
+
+
+def test_t15_docstring_pins_all_three_deviation_keywords(gate_source):
+    """T15：docstring **同時**含 `§5.2.4`、`consumed_by_wake`、`unresolved_tensions`。"""
+    doc = _module_docstring(gate_source)
+
+    for keyword in _DEVIATION_KEYWORDS:
+        assert keyword in doc, f"偏離宣告關鍵字遺失：{keyword}"
+
+
+@pytest.mark.parametrize("keyword", _DEVIATION_KEYWORDS)
+def test_t15_each_deviation_keyword_survives_individually(gate_source, keyword):
+    """T15：三個關鍵字各自獨立釘死（任一被刪即紅燈，並附 `summary` 實質內容檢查）。"""
+    doc = _module_docstring(gate_source)
+
+    assert keyword in doc, keyword
+
+    if keyword == "§5.2.4":
+        # §5.2.4 條款的實質內容＝fact text 必須有 summary
+        assert "summary" in doc, "§5.2.4 條款的 summary 說明遺失"
+        assert "偏離宣告" in doc, "偏離宣告區塊標題遺失"
+
+
+def test_t15_docstring_declares_deviation_section_with_three_items(gate_source):
+    """T15：偏離宣告區塊存在，且編號 1/2/3 三條齊備（不得只留標題）。"""
+    doc = _module_docstring(gate_source)
+
+    assert "偏離宣告" in doc
+    for ordinal in ("1.", "2.", "3."):
+        assert ordinal in doc, f"偏離宣告第 {ordinal} 條遺失"
+
+
+def test_t15_docstring_is_module_first_statement_and_substantial(gate_source):
+    """T15：docstring 為模組第一個敘述（`ast.get_docstring` 可取得）且非空殼。"""
+    tree = ast.parse(gate_source)
+    first = tree.body[0]
+
+    assert isinstance(first, ast.Expr), "第一個敘述不是 Expr"
+    assert isinstance(first.value, ast.Constant), "第一個敘述不是字串常數"
+    assert isinstance(first.value.value, str)
+
+    doc = ast.get_docstring(tree)
+    # `ast.get_docstring` 會 `inspect.cleandoc`（去尾端空白／空行）；逐字比對去尾後內容
+    assert doc is not None
+    assert doc.rstrip() == first.value.value.rstrip()
+    assert first.value.value.strip() in gate_source
+    assert len(doc) > 200
+    for keyword in _DEVIATION_KEYWORDS:
+        assert keyword in first.value.value, keyword
