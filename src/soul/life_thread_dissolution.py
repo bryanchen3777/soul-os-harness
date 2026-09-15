@@ -22,13 +22,13 @@
    用不完整資料套配額會往「多溶解」的吵方向錯。故本模組**不得因配額抑制任何 `should_mutate`**。
 5. **邊界一律嚴格大於（`>`）**：`age == timedelta(days=14)`、`idle == timedelta(days=7)`
    **不算**超限；各 `+1` 秒才算（改成 `>=` 即錯）。
-   🔴 **宣告的第七處衝突修正（`updated_at == created_at` 時不獨立判定 `STALE_NO_PROGRESS`）**：
-   工單步驟 4 的兩軸在「線頭從未被更新過」時是**同一段時距**（`idle == age`），
-   若兩軸都判，工單指定的邊界 smoke（`created_at == updated_at == T0`，
-   `current_time = T0 + 14 天` ⇒ 期望 `advisory is False`）將無法成立。
-   故本模組裁定：**只有 `updated_at > created_at`（存在「最後更新」這一獨立事實）時，
-   `idle` 才是獨立的無進展訊號**；`updated_at == created_at` ⇒ 該段時距只由 `age` 軸代表
-   （同一事實不重複判兩次）。此規則**不放寬**任何嚴格大於的邊界。
+   🔴 **兩個時距軸互相獨立、不做時距去重**：`age = current_time - created_at` 是**存活軸**
+   （線頭活了多久），`idle = current_time - updated_at` 是**無進展軸**（最後互動後停了多久）；
+   兩軸各自照自己的門檻判定，**任一軸命中即成立**，模組**不得**因「兩軸可能指涉同一段時距」
+   而抑制其中任一軸。兩軸**同時**超限時，一次裁決只輸出**一個** `reason`
+   （優先序：`TIME_HORIZON_EXCEEDED` > `STALE_NO_PROGRESS`），故**不會**出現重複判定。
+   建立後**從未更新**的線頭其 `updated_at == created_at`（此時 `idle` 與 `age` 數值相等），
+   兩軸**仍各自照自己的門檻判定**：7 天後先由 stale 軸給出諮詢訊號，14 天後才由 horizon 軸接手。
 6. **決策序短路**：步驟 0（驗證）→ 1（冪等）→ 2（終態溶解）→ 3（呼叫端宣告檢驗點耗盡）
    → 4（諮詢訊號）→ 5（其餘保持活躍）；任一階段命中即回傳。
 
@@ -391,15 +391,15 @@ def evaluate_thread_dissolution(
        `checkpoints_exhausted is True` ⇒ `COMPLETED / CHECKPOINTS_EXHAUSTED / True`。
        非真 bool 一律視為 `False`（只 WARNING，不寫 `invalid`）。
     4. **諮詢訊號（預設不變更任何狀態）**：僅 `status == "active"`。
+       兩軸**無條件獨立評估、不做時距去重**：
        `age = current_time - created_at > timedelta(days=max_active_duration_days)`
        ⇒ `TIME_HORIZON_EXCEEDED`（`extra["age_days"] = age.days`）；
-       否則當 `updated_at > created_at`（存在獨立的「最後更新」事實）時，
-       `idle = current_time - updated_at > timedelta(days=stale_check_threshold_days)`
+       否則 `idle = current_time - updated_at > timedelta(days=stale_check_threshold_days)`
        ⇒ `STALE_NO_PROGRESS`（`extra["idle_days"] = idle.days`）。
        **邊界嚴格大於**：14 天整、7 天整**不算**超限，`+1` 秒才算。
-       `updated_at == created_at` ⇒ `idle` 與 `age` 同源（線頭自建立後從未更新），
-       不獨立判定 `STALE_NO_PROGRESS`（同一段時距只由 `age` 軸代表）。
-       順序：`TIME_HORIZON_EXCEEDED` 優先於 `STALE_NO_PROGRESS`。
+       `updated_at == created_at`（線頭自建立後從未更新）**不構成任何抑制理由**：
+       `idle` 軸照樣獨立判定，7 天後即成立；兩軸同時超限時只輸出一個 `reason`
+       （優先序：`TIME_HORIZON_EXCEEDED` 優先於 `STALE_NO_PROGRESS`）。
        `allow_soft_archive is True`（opt-in，M5 政策）⇒ `target_status=DORMANT`、
        `should_mutate=True`、產生 prompt 與沉澱輸入（`terminal_status="dormant"`）；
        否則 ⇒ `target_status=ACTIVE`、`should_mutate=False`、`reflection_prompt=None`。
@@ -495,16 +495,16 @@ def evaluate_thread_dissolution(
             "skipped": None,
         }
         age = now - created_at
+        idle = now - updated_at
+        idle_is_stale = idle > timedelta(days=stale_check_threshold_days)
         if age > timedelta(days=max_active_duration_days):
             reason = DissolutionReason.TIME_HORIZON_EXCEEDED
             extra["age_days"] = age.days
-        elif updated_at > created_at:
-            # `updated_at > created_at`：存在獨立的「最後更新」事實，idle 才是獨立訊號。
-            # 兩者相等時 idle 與 age 同源（自建立後從未更新），只由 age 軸代表。
-            idle = now - updated_at
-            if idle > timedelta(days=stale_check_threshold_days):
-                reason = DissolutionReason.STALE_NO_PROGRESS
-                extra["idle_days"] = idle.days
+        elif idle_is_stale:
+            # 無進展軸：**無條件獨立評估**，不做時距去重。
+            # `updated_at == created_at`（自建立後從未更新）不構成抑制理由。
+            reason = DissolutionReason.STALE_NO_PROGRESS
+            extra["idle_days"] = idle.days
 
         if reason is not DissolutionReason.NONE:
             if allow_soft_archive is True:

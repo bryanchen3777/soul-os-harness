@@ -387,8 +387,11 @@ _TIME_REPRESENTATIONS = [
 )
 def test_time_parsing_accepts_each_representation(case_id, builder) -> None:
     evaluation = evaluate_thread_dissolution(_thread(), builder())
+    # 回改後語意：`_thread()` 的 `updated_at == created_at`，idle 軸獨立評估，
+    # 故 14 天整（≈ T0+14d 各表示法）由 stale 軸給訊號，不再只可能是 horizon / none。
     assert evaluation.reason in (
         DissolutionReason.TIME_HORIZON_EXCEEDED,
+        DissolutionReason.STALE_NO_PROGRESS,
         DissolutionReason.NONE,
     )
     assert evaluation.extra_metadata is not None
@@ -625,10 +628,12 @@ def test_step3_non_bool_flag_warns(caplog) -> None:
 
 _BOUNDARY_CASES = [
     # (id, created_delta, updated_delta, now_delta, kwargs, reason, extra_key, extra_value)
-    ("age_minus_1s", timedelta(0), timedelta(0), timedelta(days=14, seconds=-1),
-     {}, DissolutionReason.NONE, None, None),
+    # 回改後語意：兩軸無條件獨立評估（`updated_at == created_at` 不再抑制 idle 軸），
+    # 故 `created == updated` 且 `< 14 天` 的列，7 天後即由 stale 軸給訊號。
+    ("age_minus_1s_stale_axis", timedelta(0), timedelta(0), timedelta(days=14, seconds=-1),
+     {}, DissolutionReason.STALE_NO_PROGRESS, "idle_days", 13),
     ("age_exact_14d", timedelta(0), timedelta(0), timedelta(days=14),
-     {}, DissolutionReason.NONE, None, None),
+     {}, DissolutionReason.STALE_NO_PROGRESS, "idle_days", 14),
     ("age_plus_1s", timedelta(0), timedelta(0), timedelta(days=14, seconds=1),
      {}, DissolutionReason.TIME_HORIZON_EXCEEDED, "age_days", 14),
     ("age_plus_2d", timedelta(0), timedelta(0), timedelta(days=16),
@@ -641,8 +646,8 @@ _BOUNDARY_CASES = [
      {}, DissolutionReason.STALE_NO_PROGRESS, "idle_days", 7),
     ("idle_plus_3d", timedelta(0), timedelta(seconds=1), timedelta(days=10, seconds=1),
      {}, DissolutionReason.STALE_NO_PROGRESS, "idle_days", 10),
-    ("idle_not_evaluated_when_never_updated", timedelta(0), timedelta(0),
-     timedelta(days=10), {}, DissolutionReason.NONE, None, None),
+    ("never_updated_10d_stale_axis", timedelta(0), timedelta(0),
+     timedelta(days=10), {}, DissolutionReason.STALE_NO_PROGRESS, "idle_days", 10),
     ("custom_max_zero_exact", timedelta(0), timedelta(0), timedelta(0),
      {"max_active_duration_days": 0}, DissolutionReason.NONE, None, None),
     ("custom_max_zero_plus_1s", timedelta(0), timedelta(0), timedelta(seconds=1),
@@ -678,12 +683,17 @@ def test_step4_boundaries_are_strictly_greater(
 
 
 def test_step4_exact_fourteen_days_is_not_exceeded_smoke() -> None:
-    """工單指定的邊界 smoke：14 天整不算超限、+1s 才算。"""
+    """工單指定的邊界 smoke：14 天整**不算**超限（`>` 非 `>=`），`+1s` 才算 horizon。
+
+    🔴 回改後語意：`updated_at == created_at`（從未更新）**不再**抑制 idle 軸，
+    故 14 天整的 `reason` 由 stale 軸給出（14d > 7d），**不是** `NONE`；
+    `advisory` 仍必須是 `False`（`NONE` 才算「無訊號」）。
+    """
     thread = _thread()
     at_exact = evaluate_thread_dissolution(thread, T0 + timedelta(days=14))
     at_plus = evaluate_thread_dissolution(thread, T0 + timedelta(days=14, seconds=1))
-    assert at_exact.extra_metadata["advisory"] is False
-    assert at_exact.reason is DissolutionReason.NONE
+    assert at_exact.reason is DissolutionReason.STALE_NO_PROGRESS
+    assert at_exact.extra_metadata["advisory"] is True
     assert at_plus.reason is DissolutionReason.TIME_HORIZON_EXCEEDED
     assert at_plus.extra_metadata["advisory"] is True
 
@@ -695,6 +705,76 @@ def test_step4_days_are_integer_truncated_not_rounded() -> None:
     assert evaluation.extra_metadata["age_days"] == 14
     evaluation2 = evaluate_thread_dissolution(_thread(), T0 + timedelta(days=15))
     assert evaluation2.extra_metadata["age_days"] == 15
+
+
+# ──────────────────────────────────────────────────────────────
+# T7b 回改裁定：`updated_at == created_at`（建立後從未更新）
+#     ⇒ idle 軸**無條件獨立評估**，不得有任何抑制／時距去重
+# ──────────────────────────────────────────────────────────────
+
+
+def test_never_updated_7d_plus_1s_yields_stale_advisory() -> None:
+    """(a) 從未更新 ＋ 7 天 **+1 秒** ⇒ stale 軸成立、僅諮詢（預設 `allow_soft_archive=False`）。"""
+    thread = _thread(created_at=T0.isoformat(), updated_at=T0.isoformat())
+    evaluation = evaluate_thread_dissolution(thread, T0 + timedelta(days=7, seconds=1))
+    assert evaluation.reason is DissolutionReason.STALE_NO_PROGRESS
+    assert evaluation.extra_metadata["advisory"] is True
+    assert evaluation.should_mutate is False
+    assert evaluation.target_status is ThreadStatus.ACTIVE
+    assert evaluation.extra_metadata["idle_days"] == 7
+    assert "age_days" not in evaluation.extra_metadata
+
+
+def test_never_updated_7d_exact_is_not_stale() -> None:
+    """(b) 同前但 **7 天整** ⇒ 不算超限（`>` 非 `>=`）。
+
+    🔴 本筆同時是「`>` 改 `>=`」的突變哨兵：門檻一旦放寬，`reason` 立刻變 stale。
+    """
+    thread = _thread(created_at=T0.isoformat(), updated_at=T0.isoformat())
+    evaluation = evaluate_thread_dissolution(thread, T0 + timedelta(days=7))
+    assert evaluation.reason is DissolutionReason.NONE
+    assert evaluation.extra_metadata["advisory"] is False
+    assert evaluation.should_mutate is False
+    assert evaluation.target_status is ThreadStatus.ACTIVE
+
+
+def test_never_updated_14d_exact_is_stale_not_horizon() -> None:
+    """(c) 同前但 **14 天整** ⇒ 14d 不大於 14d ⇒ horizon 不成立；14d > 7d ⇒ stale 成立。"""
+    thread = _thread(created_at=T0.isoformat(), updated_at=T0.isoformat())
+    evaluation = evaluate_thread_dissolution(thread, T0 + timedelta(days=14))
+    assert evaluation.reason is DissolutionReason.STALE_NO_PROGRESS
+    assert evaluation.extra_metadata["advisory"] is True
+    assert evaluation.should_mutate is False
+    assert evaluation.target_status is ThreadStatus.ACTIVE
+    assert evaluation.extra_metadata["idle_days"] == 14
+    assert "age_days" not in evaluation.extra_metadata
+
+
+def test_never_updated_14d_plus_1s_yields_horizon_only() -> None:
+    """(d) 同前但 **14 天 +1 秒** ⇒ 優先序：horizon 勝出，**不得**同時是 stale。
+
+    「一次裁決只輸出一個 `reason`」是本回改取代時距去重的正解。
+    """
+    thread = _thread(created_at=T0.isoformat(), updated_at=T0.isoformat())
+    evaluation = evaluate_thread_dissolution(thread, T0 + timedelta(days=14, seconds=1))
+    assert evaluation.reason is DissolutionReason.TIME_HORIZON_EXCEEDED
+    assert evaluation.reason is not DissolutionReason.STALE_NO_PROGRESS
+    assert evaluation.extra_metadata["advisory"] is True
+    assert evaluation.extra_metadata["age_days"] == 14
+    assert "idle_days" not in evaluation.extra_metadata
+
+
+def test_never_updated_8d_with_soft_archive_maps_to_dormant() -> None:
+    """(e) 同前但 8 天 ＋ `allow_soft_archive=True`（嚴格 `is True`）⇒ 擱置。"""
+    thread = _thread(created_at=T0.isoformat(), updated_at=T0.isoformat())
+    evaluation = evaluate_thread_dissolution(
+        thread, T0 + timedelta(days=8), allow_soft_archive=True
+    )
+    assert evaluation.reason is DissolutionReason.STALE_NO_PROGRESS
+    assert evaluation.target_status is ThreadStatus.DORMANT
+    assert evaluation.should_mutate is True
+    assert evaluation.extra_metadata["idle_days"] == 8
+    assert evaluation.extra_metadata["sedimentation_context"]["terminal_status"] == "dormant"
 
 
 # ──────────────────────────────────────────────────────────────
