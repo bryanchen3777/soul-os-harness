@@ -37,7 +37,7 @@ logger = logging.getLogger("soul_os.vc_brain")
 # ─────────────────────────────────────────────────────────────
 
 # LLM 推論參數（顯式帶入 payload；此前完全沒帶 → 供應商預設值不可控）
-VC_LLM_MAX_TOKENS = 60
+VC_LLM_MAX_TOKENS = 1024
 VC_LLM_TEMPERATURE = 0.7
 
 # HTTP 連線重用（Session Pool）：connect / read 分離，避免連線階段吃掉 read 預算

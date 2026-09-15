@@ -240,7 +240,7 @@ class TestPayloadAndTimeout:
 
         call = session.calls[0]
         payload = call["json"]
-        assert payload["max_tokens"] == VC_LLM_MAX_TOKENS == 60, "max_tokens 必須為具名常數 60"
+        assert payload["max_tokens"] == VC_LLM_MAX_TOKENS == 1024, "max_tokens 必須為具名常數 1024"
         assert payload["temperature"] == VC_LLM_TEMPERATURE == 0.7
         assert payload["stream"] is True
         assert payload["model"] == "deepseek-v4.1-flash"
@@ -413,7 +413,7 @@ class TestEmptyContentGuard:
         assert len(warns) == 1, f"必須恰好一筆 {VC_LLM_EMPTY_MARKER} WARNING，實得 {warns!r}"
         msg = warns[0]
         assert VC_LLM_EMPTY_MARKER in msg and VC_LLM_EMPTY_MARKER == "[VC-LLM-EMPTY]"
-        assert "max_tokens=60" in msg, "必須含 max_tokens 值"
+        assert "max_tokens=1024" in msg, "必須含 max_tokens 值"
         assert "reasoning_seen=True" in msg, "必須標示是否曾收到 delta.reasoning"
         assert "chunks=5" in msg, "必須含收到的 chunk 總數（4 reasoning + 1 finish）"
         assert "finish_reason='length'" in msg, "必須含 finish_reason（length ⇒ 被上限截斷）"
