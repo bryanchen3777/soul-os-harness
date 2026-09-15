@@ -119,21 +119,30 @@ def test_s2_1_encoding_utf8_no_bom_lf_ensure_ascii_false(soul_env):
 def test_s2_1_module_not_imported_by_production_paths():
     """M1 是獨立落地（§10.2 / 紅線 4）：0 既有**生產模組**介接。
 
-    以 AST 掃描 `src/**` + `scripts/**`，除「生活線頭引擎自身、尚未接線的模組」外，
-    任何 import 本模組者必須是 0。
+    以 AST 掃描 `src/**` + `scripts/**`，除「生活線頭引擎自身（M1 本體 ＋ M4 起源注入
+    模組）」外，任何 import 本模組者必須是 0。
 
     ⚠️ 例外更正（LIFE-THREAD-M4-1，2026-09-14）：本測試原先把不變量寫成「**任何**
     importer 皆為 0」，那比契約更嚴且與契約**直接互斥**——
     `docs/LIFE-THREAD-ENGINE-CONTRACT.md` §10.1 `:701-720` 的依賴圖逐字指定
     「**M4 起源注入 (寫 M1)**」，`:722-726` 再明列 **M5 依賴 M1+M4**
     ⇒「M4 → 寫 M1」是**契約欽定的方向**；契約要防的是**生產路徑拉線**（M5 接線），
-    不是 M4 import M1。故掃描排除「生活線頭引擎自身、尚未接線的模組」
+    不是 M4 import M1。故掃描排除「生活線頭引擎自身」
     （M1 自身 ＋ M4 `src/soul/life_thread_origins.py`）。
 
     🔒 不變量**未被放寬**：排除後，其餘 `src/**` ＋ `scripts/**` 對本模組的 importer
-    仍必須 ＝ **0**；且 M4 自身另有測試釘死
-    `git grep life_thread_origins -- src scripts configs` ＝ **0 命中**
-    （即「**M4 沒有任何生產路徑 import**」照樣成立）。
+    仍必須 ＝ **0**（本測試的斷言本身**未動**）。
+
+    ⚠️ 敘述更正（LIFE-THREAD-M5-FIX，2026-09-14）：此處原寫「M4 自身另有測試釘死
+    `git grep life_thread_origins -- src scripts configs` ＝ **0 命中**」。該敘述在 M5
+    接線後**已不成立**（實測為 2 筆白名單命中），故同步更正（**只改說明文字、
+    不放寬任何斷言**）：M4 的生產 importer 不變量現為**精確清單等值** ——
+    `scripts/run_server.py`（僅 `set_llm_proxy` 注入行）＋
+    `src/soul/life_thread_orchestrator.py`（唯一生產 caller），**多一個就紅**；
+    並另有「`ast.parse` 無法解析的檔案」顯式白名單（實際集合 == 白名單）。
+    見 `tests/soul/test_life_thread_origins_m4.py` 的
+    `test_module_is_not_wired_into_production_paths` 與
+    `test_m4_unparsable_py_files_match_explicit_whitelist`。
 
     ⚠️ 例外追加（LIFE-THREAD-M5，2026-09-14）：M5 的職責**就是**把生活線頭引擎
     接進生產路徑，其介接層 `src/soul/life_thread_orchestrator.py` 必然 import M1

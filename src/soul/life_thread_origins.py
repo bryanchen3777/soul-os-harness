@@ -1,7 +1,9 @@
 # 模組 4 — 起源 Prompt 注入範式（Origin Prompt Injection）｜票號 LIFE-THREAD-M4-1
 #
-# 註：本模組**刻意不在原始碼內容中留下自身檔名字面**——§10.1 的「未接線」驗收
-#     以 `git grep <本模組檔名根> -- src scripts configs` ＝ **0 命中** 為準；
+# 註：本模組**刻意不在原始碼內容中留下自身檔名字面**——§10.1 的孤立性驗收
+#     以 `git grep <本模組檔名根> -- src scripts configs` 的命中集合為準
+#     （LIFE-THREAD-M5 接線後＝白名單 `scripts/run_server.py`（僅 `set_llm_proxy` 注入）
+#     ＋ `src/soul/life_thread_orchestrator.py`（唯一生產 caller），外加既有的一行註解引用）；
 #     任何自指的字面（含標頭註解、logger 名）都會讓該斷言偽陽性。
 """
 Soul OS — 生活線頭引擎 **模組 4（起源 Prompt 注入範式）**。
@@ -16,8 +18,12 @@ Soul OS — 生活線頭引擎 **模組 4（起源 Prompt 注入範式）**。
   - **§10.1**（`:699-726`）M4 **只依賴 M1**；M4 只提供「可被呼叫的入口」
   - **§12**（`:761-781`）0 Frozen Contract 變更
 
-🔴 **本模組是「未接線零件」（§10.1）**：**不得**被任何既有生產路徑 import。
-   落地即 0 生產行為改變；「何時喚醒」是 M3 的職責，不是本模組的職責。
+🔴 **本模組已接線（LIFE-THREAD-M5）**：生產呼叫端**恰為**
+   `src/soul/life_thread_orchestrator.py` —— 該介接層於既有 wake 的 `morning` / `night`
+   slot 觸發窗內**生產呼叫**本模組；**唯一**喚醒動作 ＝ `run_origin_round(...)`；
+   `scripts/run_server.py` 只做 `set_llm_proxy` 注入（0 新 provider／0 新通道）。
+   **仍不得**被白名單外的任何生產路徑 import；「何時喚醒」是 M3 的職責，
+   不是本模組的職責（§10.1）。
 
 🔴 **資料寫入一律經 M1**（`src/soul/life_threads.py`）的公開 API：
    `create_thread()` / `append_updated()` / `append_transition()`。
@@ -60,7 +66,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tup
 from src.llm.rate_limiter import LLM_CONCURRENCY_LIMIT
 from src.soul import life_threads as lt
 
-# logger 名以 `__name__` 取得（**不在原始碼留下自身檔名字面** ⇒ §10.1 未接線 grep 0 命中）。
+# logger 名以 `__name__` 取得（**不在原始碼留下自身檔名字面** ⇒ §10.1 孤立性掃描不受污染）。
 logger = logging.getLogger(__name__)
 
 
@@ -1014,7 +1020,9 @@ async def run_origin_round(
 ) -> Dict[str, Any]:
     """**M4 的對外入口**：一輪「生活推進詮釋」（§5.1）。
 
-    🔴 這是**未接線零件**（§10.1）：本函式**不被任何既有生產路徑呼叫**。
+    🔴 **已接線（LIFE-THREAD-M5）**：本函式由 `src/soul/life_thread_orchestrator.py`
+    於 `morning` / `night` slot 觸發窗內**生產呼叫**（**唯一**喚醒動作）；
+    白名單外的任何其他生產路徑**不得**呼叫本函式（§10.1）。
 
     行為：
       1. 依 `origin_type` 蒐集種子 → 組 prompt（§5.1 骨架 ＋ §5.2 模板）。

@@ -820,7 +820,7 @@ def test_t6_zero_open_calls(gate_tree):
 
 
 # ══════════════════════════════════════════════════════════════
-# T7 孤立性（未接線）：生產路徑 0 命中
+# T7 孤立性（M5 接線後）：生產路徑的 importer **恰為白名單**
 # ══════════════════════════════════════════════════════════════
 
 _SCAN_SUFFIXES = frozenset({
@@ -853,6 +853,17 @@ def _scan_hits(base: Path) -> list[str]:
 #: 並以 AST 掃描 import 語句（註解／字串不算），比原始文字比對更嚴。
 _M3_IMPORTER_WHITELIST = ("src/soul/life_thread_orchestrator.py",)
 
+#: 🔴 F5：`ast.parse` **無法解析**的 `.py`（相對 repo 根、排序）。
+#: 舊版 `_scan_importers_in` 是 `except Exception: continue` ⇒ 這些檔案的 import
+#: **完全隱形**（fail-open）。改為「實際無法解析的集合**精確等於**本白名單」。
+_M3_UNPARSABLE_WHITELIST = (
+    # 檔首 UTF-8 BOM（U+FEFF）⇒ `ast.parse` 直接 SyntaxError（非生產檔）。
+    "scripts/test_full_system.py",
+    # 第 171 行用了 **PEP 701**（Python 3.12+）嵌套同引號 f-string；
+    # 本 repo `.venv` 是 **3.11.15** ⇒ SyntaxError（非生產檔）。
+    "scripts/test_proactive_bugs.py",
+)
+
 #: M3 的真正消費點必須**掛在 scheduler 的 slot 觸發窗**上（比對掛載函式名）。
 _M3_SCHEDULER_MOUNT = "_fire_life_thread_slot"
 
@@ -884,29 +895,46 @@ def _imports_m3(tree: ast.AST) -> bool:
     return False
 
 
-def _scan_importers_in(root: Path) -> list[str]:
-    """在**任意**目錄樹內掃「真正 import M3」的 `.py`（可餵 `tmp_path` 做牙齒證明）。"""
+def _scan_importers_in(root: Path) -> tuple[list[str], list[str]]:
+    """在**任意**目錄樹內掃「真正 import M3」的 `.py`（可餵 `tmp_path` 做牙齒證明）。
+
+    回 `(hits, unparsable)`，兩者都是**相對 `root`** 的排序路徑清單。
+
+    🔴 F5：無法解析的檔案**不得靜默跳過**。舊版是 `except Exception: continue`
+    ⇒ 該檔的 import **完全隱形**（fail-open，連舊的 `git grep` 都還抓得到）。
+    現在一律收集進第二個回傳值，由 `_m3_production_scan()` 的呼叫端以
+    「實際集合 == `_M3_UNPARSABLE_WHITELIST`」精確等值斷言釘死：新壞檔 ⇒ 紅。
+    """
     hits: list[str] = []
+    unparsable: list[str] = []
     if not root.exists():
-        return hits
+        return hits, unparsable
     for path in sorted(root.rglob("*.py")):
+        rel = str(path.relative_to(root)).replace("\\", "/")
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception:  # noqa: BLE001 - 原因不是重點，重點是**不得吞掉**
+            unparsable.append(rel)
             continue
         if _imports_m3(tree):
-            hits.append(str(path.relative_to(root)).replace("\\", "/"))
-    return hits
+            hits.append(rel)
+    return hits, unparsable
+
+
+def _m3_production_scan() -> tuple[list[str], list[str]]:
+    """`src/**` ＋ `scripts/**`：回 `(真 import M3 的檔, 無法解析的檔)`（repo 相對、排序）。"""
+    hits: list[str] = []
+    unparsable: list[str] = []
+    for base in ("src", "scripts"):
+        h, u = _scan_importers_in(_REPO_ROOT / base)
+        hits += [f"{base}/{rel}" for rel in h]
+        unparsable += [f"{base}/{rel}" for rel in u]
+    return sorted(hits), sorted(unparsable)
 
 
 def _m3_production_importers() -> list[str]:
     """`src/**` ＋ `scripts/**` 內**真正 import** M3 的檔案（相對路徑、排序）。"""
-    hits: list[str] = []
-    for base in ("src", "scripts"):
-        hits += [
-            f"{base}/{rel}" for rel in _scan_importers_in(_REPO_ROOT / base)
-        ]
-    return sorted(hits)
+    return _m3_production_scan()[0]
 
 
 def test_t7_m3_importer_whitelist_is_exactly_orchestrator():
@@ -917,6 +945,25 @@ def test_t7_m3_importer_whitelist_is_exactly_orchestrator():
     連「多加一行提到模組名的註解」都不算命中，反之真 import 一定命中。
     """
     assert _m3_production_importers() == list(_M3_IMPORTER_WHITELIST)
+
+
+def test_t7_unparsable_py_files_are_explicitly_whitelisted():
+    """🔴 F5：無法解析的檔案集合必須**精確等於**白名單（不得靜默跳過）。
+
+    舊版 `except Exception: continue` ⇒ 壞檔內的真 import **完全隱形**（fail-open）；
+    一旦 repo 出現新的無法解析檔（或白名單內檔案被修好），本斷言即紅。
+    """
+    _hits, unparsable = _m3_production_scan()
+    assert unparsable == list(_M3_UNPARSABLE_WHITELIST)
+
+
+def test_t7_unparsable_scan_has_teeth(tmp_path):
+    """牙齒證明：語法壞檔 ⇒ 落到 `unparsable`（舊版是被 `continue` 吞掉的）。"""
+    (tmp_path / "good.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "bad.py").write_text("def f(:\n", encoding="utf-8")
+    hits, unparsable = _scan_importers_in(tmp_path)
+    assert hits == []
+    assert unparsable == ["bad.py"], unparsable
 
 
 def test_t7_m3_importer_scan_has_teeth(tmp_path):
@@ -942,7 +989,7 @@ def test_t7_m3_importer_scan_has_teeth(tmp_path):
         f'DOC = "src/soul/{MODULE_QUALNAME}.py"\n', encoding="utf-8"
     )
 
-    detected = _scan_importers_in(tmp_path)
+    detected, _unparsable = _scan_importers_in(tmp_path)
     assert detected == ["real_deep.py", "real_from.py", "real_import.py"], detected
     # 註解／字串檔**不得**被計入（否則不變量會被一行註解打穿）
     assert "only_comment.py" not in detected

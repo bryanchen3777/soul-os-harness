@@ -139,6 +139,32 @@ def _lt_bytes(agent_id: str = AGENT) -> bytes:
     return p.read_bytes() if p.exists() else b""
 
 
+def _seed_thread(agent_id: str = AGENT, *, title: str, check_after: datetime) -> str:
+    """建一條 active 線頭，`check_after_ts` 由呼叫端指定（測 due 邊界／未到期用）。"""
+    tid = lt.create_thread(
+        agent_id, title, _NARRATIVE, "whim_driven",
+        check_after_ts=check_after.astimezone(timezone.utc).isoformat(),
+    )
+    assert tid, "fixture 建線頭失敗"
+    return tid
+
+
+def _widen_capacity(monkeypatch, value: int = 5) -> None:
+    """放寬活躍池上限。
+
+    ⚠️ `life_threads.capacity()` 缺鍵 fail-closed 回 **2** ⇒ 兩條 active 就飽和，
+    M3（`enforce_strict_capacity=True`）會直接 `SLEEP/ACTIVE_POOL_SATURATED`，
+    管線根本走不到 M4 prompt —— 凡「需要 ≥2 條 active 又必須 WAKE」的測試都要先放寬。
+    """
+    monkeypatch.setattr(lt, "capacity", lambda aid, config_path=None: value)
+
+
+def _due_block(user_text: str) -> str:
+    """取 prompt 的 `[到期線頭]` 區塊（M4 `build_origin_prompt` 把它放在 user 第 1 段）。"""
+    assert user_text.startswith("[到期線頭]"), user_text[:80]
+    return user_text.split("\n\n[", 1)[0]
+
+
 def _lt_lines(agent_id: str = AGENT) -> List[Dict[str, Any]]:
     raw = _lt_bytes(agent_id)
     if not raw:
@@ -331,6 +357,78 @@ def test_24_duplicate_is_per_agent(iso_env, monkeypatch):
     assert len(spy.calls) == 2
 
 
+def test_25_failure_still_stamps_slot_and_never_retries(iso_env, monkeypatch):
+    """🔴 F1：at-most-once 的關鍵在**先蓋章再執行**（`_run_agent` 的「先蓋章」）。
+
+    第 1 輪讓 agent 的 `fold` raise ⇒ 該 agent 記 `error`（但**章已蓋**）；
+    第 2 輪**同一** `(agent, slot, date)` ⇒ 必須回 `{"skipped": "duplicate_slot"}`，
+    且 `fold` 對該 agent 的呼叫次數**不得增加**（總計仍為 1）。
+
+    這是**刻意的 fail-quiet、不是 bug**：`run_slot_pipeline` docstring 明文
+    「該輪若失敗（LLM 失敗／例外）**不重試**（fail-quiet）—— 寧可漏一次，不可重複花費；
+    下一輪（下一個 slot 或隔日）自然補上」。
+
+    牙齒：把 `_LAST_PROCESSED[key] = 1` 移到 `fold` **之後** ⇒ 本測試紅
+    （第 1 輪還沒蓋章就炸 ⇒ 第 2 輪會重跑 fold 並再次回 `error`，而不是 `duplicate_slot`）。
+    """
+    folds: List[str] = []
+    real_fold = lt.fold
+
+    def flaky(agent_id):
+        folds.append(agent_id)
+        raise RuntimeError("boom (simulated fold failure)")
+
+    monkeypatch.setattr(lt, "fold", flaky)
+    first = _run([AGENT], MORNING, "morning", llm_caller=_SpyLLM(_json_response([])))
+    assert "error" in first[AGENT] and "boom" in first[AGENT]["error"], first
+    assert folds == [AGENT], "第 1 輪 fold 恰 1 次"
+
+    second = _run([AGENT], MORNING, "morning", llm_caller=_SpyLLM(_json_response([])))
+    assert second == {AGENT: {"skipped": "duplicate_slot"}}, (
+        "🔴 先蓋章 ⇒ 失敗那一輪**不得重試**（刻意的 fail-quiet）"
+    )
+    assert folds == [AGENT], f"🔴 fold 呼叫次數不得增加（總計仍為 1）：{folds}"
+
+
+def test_26_stamp_statement_precedes_fold_call_in_source_order():
+    """🔴 F1（結構面）：`_LAST_PROCESSED[key] = 1` 必須**早於** `lt.fold(...)`。
+
+    以 **AST 行號**判定（不用文字包含比對）：這是「先蓋章再執行」唯一可靜態釘死的形態，
+    補上 `test_25` 的行為面牙齒。並斷言「不重試」是**已宣告**的刻意設計（docstring 為證）。
+    """
+    tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_run_agent"
+    )
+    stamp_lines: List[int] = []
+    fold_lines: List[int] = []
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "_LAST_PROCESSED"
+                ):
+                    stamp_lines.append(node.lineno)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "fold"
+        ):
+            fold_lines.append(node.lineno)
+    assert stamp_lines, "找不到 `_LAST_PROCESSED[key] = 1` 蓋章語句"
+    assert fold_lines, "找不到 `lt.fold(...)` 呼叫"
+    assert min(stamp_lines) < min(fold_lines), (
+        f"🔴 蓋章（line {stamp_lines}）必須早於 fold（line {fold_lines}）："
+        "否則失敗輪不會被蓋章 ⇒ 同一 slot 窗會重試並重複花費"
+    )
+    doc = m5.run_slot_pipeline.__doc__ or ""
+    assert "先蓋章" in doc, "docstring 必須宣告 at-most-once 的「先蓋章」語意"
+    assert "不重試" in doc, "docstring 必須宣告失敗不重試是刻意的（fail-quiet）"
+
+
 # ══════════════════════════════════════════════════════════════
 # 4. 完整走通（morning / night 各一）
 # ══════════════════════════════════════════════════════════════
@@ -389,7 +487,7 @@ def test_31_full_round_night_writes_life_thread_event(iso_env, monkeypatch):
 
 
 def test_32_full_round_prompt_carries_soul_context_and_due_thread(iso_env, monkeypatch):
-    """顯式傳入的 `soul_context` / `due_threads` 真的進到 prompt（非二次 I/O）。"""
+    """顯式傳入的 `soul_context` 真的進到 prompt；due 線頭由 M4 自己的 predicate 撈出。"""
     tid = _seed_due_thread(now=MORNING)
     _patch_soul(monkeypatch)
     spy = _SpyLLM(_json_response([]))
@@ -398,6 +496,82 @@ def test_32_full_round_prompt_carries_soul_context_and_due_thread(iso_env, monke
     user_msg = spy.calls[0]["messages"][1]["content"]
     assert tid in user_msg
     assert _TITLE in user_msg
+
+
+# ══════════════════════════════════════════════════════════════
+# 4b. F2：due 集合交還 M4 自己的 predicate（不得 over-include）
+# ══════════════════════════════════════════════════════════════
+
+
+def test_33_prompt_excludes_not_yet_due_threads(iso_env, monkeypatch):
+    """🔴 F2：未到期（`check_after_ts` 在 30 天後）的 active 線頭**不得**出現在 `[到期線頭]`。
+
+    前身寫法（`due_threads=active_threads`）走的是 `_render_due_threads` 的
+    `due_threads is not None` 分支，該分支**完全不做** due 過濾 ⇒ 未到期線頭被
+    **over-include** 進 prompt（與 renderer docstring 及契約 §4.2「`status == active`
+    且 `check_after_ts <= now`」互斥）。F2 裁定改傳 `due_threads=None`，
+    交給 M4 自己那條已被既有測試覆蓋的過濾路徑。
+    """
+    due_tid = _seed_due_thread(now=MORNING)
+    future_tid = _seed_thread(
+        title="三十天後才要檢視的線頭", check_after=MORNING + timedelta(days=30)
+    )
+    _widen_capacity(monkeypatch)
+    _patch_soul(monkeypatch)
+    spy = _SpyLLM(_json_response([]))
+    out = _run([AGENT], MORNING, "morning", llm_caller=spy)
+
+    assert out[AGENT]["woke"] is True, out[AGENT]
+    assert len(spy.calls) == 1
+    block = _due_block(spy.calls[0]["messages"][1]["content"])
+    assert due_tid in block, "已到期線頭必須進 `[到期線頭]`"
+    assert future_tid not in block, "🔴 未到期線頭不得被 over-include 進 `[到期線頭]`"
+
+
+def test_34_wake_path_calls_list_active_exactly_once(iso_env, monkeypatch):
+    """🔴 F2：`due_threads=None` ⇒ M4 fallback **恰**呼叫 1 次 `lt.list_active()`。
+
+    代價已由協調者拍板（WAKE 時多 1 次整檔讀、≤2 次/日/agent）；本測試把它釘死，
+    避免日後有人「順手」在 orchestrator 再撈一次。
+    """
+    _seed_due_thread(now=MORNING)
+    _seed_thread(
+        title="三十天後才要檢視的線頭", check_after=MORNING + timedelta(days=30)
+    )
+    _widen_capacity(monkeypatch)
+    _patch_soul(monkeypatch)
+    calls: List[str] = []
+    real = lt.list_active
+
+    def spy(agent_id):
+        calls.append(agent_id)
+        return real(agent_id)
+
+    monkeypatch.setattr(lt, "list_active", spy)
+    out = _run([AGENT], MORNING, "morning", llm_caller=_SpyLLM(_json_response([])))
+    assert out[AGENT]["woke"] is True, out[AGENT]
+    assert calls == [AGENT], f"WAKE 路徑下 list_active 恰 1 次：{calls}"
+
+
+def test_35_due_boundary_is_inclusive_and_future_is_excluded(iso_env, monkeypatch):
+    """🔴 F2 邊界：`check_after_ts == now`（`<=` 含等於）進 due；`now + 1h` 不進。
+
+    交還 M4 predicate 後仍必須與 §4.2 判定 1 **同口徑**，本測試是該口徑的可測形態。
+    """
+    boundary_tid = _seed_thread(title="恰好在這一刻到期", check_after=MORNING)
+    future_tid = _seed_thread(
+        title="一小時後才到期", check_after=MORNING + timedelta(hours=1)
+    )
+    _widen_capacity(monkeypatch)
+    _patch_soul(monkeypatch)
+    spy = _SpyLLM(_json_response([]))
+    out = _run([AGENT], MORNING, "morning", llm_caller=spy)
+
+    assert out[AGENT]["woke"] is True, out[AGENT]
+    assert len(spy.calls) == 1
+    block = _due_block(spy.calls[0]["messages"][1]["content"])
+    assert boundary_tid in block, "`check_after_ts <= now` 含等於 ⇒ 必須進 due"
+    assert future_tid not in block, "未到期（`now + 1h`）不得進 due"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -590,32 +764,61 @@ def test_61_m3_still_receives_only_active_threads(iso_env, monkeypatch):
     assert terminal not in ids
 
 
-def test_62_fold_called_once_per_agent_and_never_list_active(iso_env, monkeypatch):
-    """每 agent **只 fold 一次**（1 次整檔讀）派生兩份視圖；**不得**呼叫 `list_active()`。
+def test_62_fold_called_once_per_agent(iso_env, monkeypatch):
+    """每 agent **只 fold 一次**（1 次整檔讀）派生兩份視圖。
 
     場景刻意選「兩隻 agent 都沒有線頭」（無 WAKE）⇒ 管線內唯一會碰 M1 讀取的就是
     orchestrator 自己，計數因此是決定性的。
+
+    🔴 F6 拆分（b）：原版在同一個測試裡另寫 `assert list_active_calls == []`，但其註解
+    理由是「**M2 的輸入**不得用 `list_active()`」—— 斷言範圍比理由寬（把 M4 的 due
+    fallback 也一起封殺）。F2 已拍板 M4 改走 `due_threads=None` ⇒ WAKE 時 **必然**
+    呼叫 1 次 `lt.list_active()`（見 `test_34`），故該封殺移除。
+    「M2 的輸入不得用 list_active()」這條**真正的不變量**改由 `test_60`（全庫）
+    與 `test_63`（本檔案、M2 專屬）承擔，強度未減。
     """
     folds: List[str] = []
-    list_active_calls: List[str] = []
     real_fold = lt.fold
-    real_list_active = lt.list_active
 
     def spy_fold(agent_id):
         folds.append(agent_id)
         return real_fold(agent_id)
 
-    def spy_list_active(agent_id):
-        list_active_calls.append(agent_id)
-        return real_list_active(agent_id)
-
     monkeypatch.setattr(lt, "fold", spy_fold)
-    monkeypatch.setattr(lt, "list_active", spy_list_active)
     _patch_soul(monkeypatch)
     _run([AGENT, OTHER], MORNING, "morning", llm_caller=_SpyLLM(_json_response([])))
 
     assert folds == [AGENT, OTHER], f"每 agent 恰 1 次 fold：{folds}"
-    assert list_active_calls == [], "🔴 不得用 list_active()（修正 5：會讓 M2 永遠 no-op）"
+
+
+def test_63_m2_input_carries_terminal_threads_not_list_active(iso_env, monkeypatch):
+    """🔴 F6 拆分（a）：M2 專屬不變量 —— `evaluate_batch_dissolution` 的輸入**含終態線頭**。
+
+    原 `test_62` 想表達的就是這件事，但用 `list_active_calls == []` 間接表達。
+    這裡改成**直接**斷言 M2 收到的清單裡有 `status == "completed"` 的線頭：
+    `lt.list_active()` **永不含終態** ⇒ M2 一旦改用 `list_active()` 當輸入，本斷言必紅
+    （與 `test_60` 形成兩道獨立的閘）。
+    """
+    terminal = _terminal_undissolved()
+    captured: List[List[Dict[str, Any]]] = []
+    real = lt_diss.evaluate_batch_dissolution
+
+    def spy(threads, *a, **k):
+        captured.append([dict(t) for t in threads])
+        return real(threads, *a, **k)
+
+    monkeypatch.setattr(lt_diss, "evaluate_batch_dissolution", spy)
+    _patch_soul(monkeypatch)
+    _run([AGENT], MORNING, "morning", llm_caller=_SpyLLM(_json_response([])))
+
+    assert len(captured) == 1
+    statuses = {t["thread_id"]: t["status"] for t in captured[0]}
+    assert terminal in statuses and statuses[terminal] == "completed", (
+        "🔴 M2 的輸入必須是**全部**線頭（含終態）；只給 active 會讓 M2 永遠 no-op"
+    )
+    assert lt.list_active(AGENT) == [], (
+        "對照：`list_active()` 永不含終態 ⇒ M2 的輸入不可能來自它"
+    )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -687,9 +890,11 @@ def test_80_run_origin_round_receives_dissolve_hook_none(iso_env, monkeypatch):
     assert captured[0]["kwargs"]["dissolve_hook"] is None
 
 
-def test_81_run_origin_round_receives_due_threads_and_build_kwargs(iso_env, monkeypatch):
-    """`due_threads` ＝ active fold state 清單；`build_kwargs` 顯式帶 soul_context／world_records。"""
-    tid = _seed_due_thread(now=MORNING)
+def test_81_run_origin_round_receives_due_threads_none_and_build_kwargs(iso_env, monkeypatch):
+    """🔴 F2：`due_threads` 必須**顯式為 `None`**（due 過濾交還 M4 自己的 predicate）；
+    `build_kwargs` 仍顯式帶 `soul_context`／`world_records`（避免 M4 二次 I/O）。
+    """
+    _seed_due_thread(now=MORNING)
     _patch_soul(monkeypatch)
     captured: List[Dict[str, Any]] = []
     real = lt_origins.run_origin_round
@@ -702,12 +907,11 @@ def test_81_run_origin_round_receives_due_threads_and_build_kwargs(iso_env, monk
     _run([AGENT], MORNING, "morning", llm_caller=_SpyLLM(_json_response([])))
 
     kw = captured[0]["kwargs"]
-    due = kw["due_threads"]
-    assert isinstance(due, list) and len(due) == 1
-    # due_threads 形狀 ＝ M1 fold state（`_render_due_threads` 逐字使用的欄位）
-    for field in ("thread_id", "title", "status", "check_after_ts", "narrative_content"):
-        assert field in due[0], field
-    assert due[0]["thread_id"] == tid
+    assert "due_threads" in kw, "必須**顯式**傳 due_threads（不得靠預設值靜默漂移）"
+    assert kw["due_threads"] is None, (
+        "F2 裁定：傳 None ⇒ M4 `_render_due_threads` 走自己的 "
+        "`lt.list_active()` ＋ `check_after_ts <= now`（與 §4.2 判定 1 同口徑）"
+    )
     assert kw["build_kwargs"]["soul_context"] == _SOUL
     assert "world_records" in kw["build_kwargs"]
 

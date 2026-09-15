@@ -762,8 +762,29 @@ def test_module_never_touches_life_threads_file_directly(soul_env):
 
 
 # ══════════════════════════════════════════════════════════════
-# 6. 未接線證明（§10.1）
+# 6. 接線後孤立性證明（§10.1 ＋ M5）
 # ══════════════════════════════════════════════════════════════
+
+#: M4 護欄的**掃描基底**（F4）：恰為這四個目錄，與 M3 的
+#: `test_t7_non_python_dirs_still_zero_reference` 覆蓋面**對齊**。
+#: ⚠️ M5 重寫時曾把基底縮成 `("src", "scripts")`，而被它取代的
+#: `git grep -- src scripts configs` 原本**含 `configs`** ⇒ 覆蓋變窄且無替代測試；
+#: 這裡以精確清單等值釘死（見 `test_m4_guard_scan_covers_configs_and_clients`）。
+_M4_SCAN_BASES = ("src", "scripts", "configs", "clients")
+
+#: 🔴 F5：`ast.parse` **無法解析**的 `.py`（相對 repo 根、排序）。
+#: 舊版掃描器是 `except Exception: continue` ⇒ 這些檔案的 import **完全隱形**
+#: （反而 `git grep` 還抓得到），是典型的 fail-open。改為「實際無法解析的集合
+#: **精確等於**本白名單」的顯式斷言：新增一個無法解析的檔 ⇒ 紅。
+_M4_UNPARSABLE_WHITELIST = (
+    # 檔首 UTF-8 BOM（U+FEFF）⇒ `ast.parse` 直接 SyntaxError。
+    # 可接受：該檔不在生產路徑、且它自己的 import 已由 `git grep` 層面的人工審視覆蓋。
+    "scripts/test_full_system.py",
+    # 第 171 行用了 **PEP 701**（Python 3.12+）的嵌套同引號 f-string；
+    # 本 repo 的 `.venv` 是 **3.11.15** ⇒ SyntaxError。
+    # 可接受：同上（非生產檔；升到 3.12 後本行白名單會自動失效並轉紅，屬預期訊號）。
+    "scripts/test_proactive_bugs.py",
+)
 
 #: LIFE-THREAD-M5 接線後：M4 的**生產 importer 白名單恰為**這兩處。
 #: ⚠️ 不變量未被放寬：原斷言是「M4 沒有任何生產路徑 import」；M5 的職責**就是**
@@ -775,24 +796,64 @@ _M4_IMPORTER_WHITELIST = (
 )
 
 
-def _m4_importers() -> list[str]:
-    """AST 掃描 `src/**` ＋ `scripts/**`：只認真正 import M4 的檔案。
+def _parse_py(path: Path):
+    """回 `(tree, None)`；無法解析回 `(None, "ExcType: msg")` —— **不吞、不跳過**（F5）。"""
+    try:
+        return ast.parse(path.read_text(encoding="utf-8")), None
+    except Exception as e:  # noqa: BLE001 - 原因字串要進斷言訊息
+        return None, f"{type(e).__name__}: {e}"
 
-    以 **AST import 語句**判定，而非原始文字比對 —— 否則一行**註解**引用模組路徑
-    就能讓不變量失效（`src/world/middleware.py:93` 正是這種註解）。
+
+def _scan_py_sources():
+    """掃 `_M4_SCAN_BASES/**/*.py`，回 `({相對路徑: AST}, [無法解析的相對路徑])`。
+
+    🔴 F5：無法解析的檔案一律**顯式收集**（不再 `continue` 靜默跳過），
+    由 `test_m4_unparsable_py_files_match_explicit_whitelist` 以精確等值斷言釘死。
     """
-    hits: list[str] = []
-    for base in ("src", "scripts"):
+    trees: dict = {}
+    unparsable: list[str] = []
+    for base in _M4_SCAN_BASES:
         root = _REPO_ROOT / base
         if not root.exists():
             continue
         for path in sorted(root.rglob("*.py")):
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except Exception:
+            rel = str(path.relative_to(_REPO_ROOT)).replace("\\", "/")
+            tree, _err = _parse_py(path)
+            if tree is None:
+                unparsable.append(rel)
+            else:
+                trees[rel] = tree
+    return trees, sorted(unparsable)
+
+
+def _m4_importers() -> list[str]:
+    """AST 掃描 `_M4_SCAN_BASES`：只認真正 import M4 的檔案。
+
+    以 **AST import 語句**判定，而非原始文字比對 —— 否則一行**註解**引用模組路徑
+    就能讓不變量失效（`src/world/middleware.py:93` 正是這種註解）。
+    """
+    trees, _unparsable = _scan_py_sources()
+    return sorted(rel for rel, tree in trees.items() if _module_imports_m4(tree))
+
+
+def _m4_entry_callers() -> list[str]:
+    """AST 掃描 `_M4_SCAN_BASES`：真正**呼叫** M4 入口 `run_origin_round(...)` 的檔案。
+
+    以 `ast.Call` 的被呼叫名判定（`run_origin_round(...)` / `x.run_origin_round(...)`）；
+    註解與**文件字串不算** —— 否則本模組自己的 docstring 會被誤計為 caller。
+    """
+    trees, _unparsable = _scan_py_sources()
+    hits: list[str] = []
+    for rel, tree in trees.items():
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
                 continue
-            if _module_imports_m4(tree):
-                hits.append(str(path.relative_to(_REPO_ROOT)).replace("\\", "/"))
+            func = node.func
+            if (isinstance(func, ast.Name) and func.id == "run_origin_round") or (
+                isinstance(func, ast.Attribute) and func.attr == "run_origin_round"
+            ):
+                hits.append(rel)
+                break
     return sorted(hits)
 
 
@@ -858,6 +919,42 @@ def test_m4_importer_scan_has_teeth(tmp_path):
     assert "only_string.py" not in detected
     # 對照：文字比對**會**把註解檔誤判為命中 ⇒ 證明放棄文字比對是必要的收緊
     assert MODULE_STEM in (tmp_path / "only_comment.py").read_text(encoding="utf-8")
+
+
+def test_m4_guard_scan_covers_configs_and_clients():
+    """🔴 F4：護欄掃描基底**精確等於** `("src","scripts","configs","clients")`。
+
+    M5 重寫把基底縮成 `("src","scripts")`，而被取代的
+    `git grep <MODULE_STEM> -- src scripts configs` 原本**含 `configs`**
+    ⇒ 覆蓋變窄且**無替代測試**（M3 有 `test_t7_non_python_dirs_still_zero_reference`）。
+    這裡以精確清單等值把覆蓋面釘死（AST 掃描、非子字串比對）。
+    """
+    assert _M4_SCAN_BASES == ("src", "scripts", "configs", "clients")
+
+
+def test_m4_unparsable_py_files_match_explicit_whitelist():
+    """🔴 F5：`ast.parse` 無法解析的檔案集合必須**精確等於**白名單（不得靜默跳過）。
+
+    舊版 `except Exception: continue` ⇒ 壞檔內的真 import **完全隱形**（fail-open）；
+    新出現的無法解析檔 ⇒ 本斷言紅，逼人回來補白名單與一行理由。
+    """
+    _trees, unparsable = _scan_py_sources()
+    assert unparsable == list(_M4_UNPARSABLE_WHITELIST)
+
+
+def test_unparsable_detection_has_teeth(tmp_path):
+    """牙齒證明：語法壞檔 ⇒ 落到「無法解析」那一側（舊版是被 `continue` 吞掉的）。"""
+    good = tmp_path / "good.py"
+    good.write_text("x = 1\n", encoding="utf-8")
+    bad = tmp_path / "bad.py"
+    bad.write_text("def f(:\n", encoding="utf-8")
+
+    tree_ok, err_ok = _parse_py(good)
+    assert tree_ok is not None and err_ok is None
+
+    tree_bad, err_bad = _parse_py(bad)
+    assert tree_bad is None, "壞檔不得回 AST"
+    assert err_bad and "SyntaxError" in err_bad, err_bad
 
 
 @pytest.mark.filterwarnings(
@@ -1005,14 +1102,48 @@ def test_timer_scan_has_teeth(tmp_path):
     assert _timer_calls_in(doc) == []
 
 
-def test_module_declares_unwired_and_reuses_existing_channel(soul_env):
-    """文件紀律：須自我聲明「未接線零件」與「0 新 provider／通道」。"""
+def test_module_declares_m5_wiring_and_reuses_existing_channel(soul_env):
+    """文件紀律 ＋ **接線後**結構不變量（F3 改寫）。
+
+    前身是 `test_module_declares_unwired_and_reuses_existing_channel`，它靠
+    `assert "未接線零件" in src` 維護 M4 docstring 的「未接線」自我聲明 —— M5 接線後
+    那句話已成**事實錯誤**，而該斷言反而**強制保留假話**（修文件 → 變紅，逆向誘因）。
+
+    改為斷言**接線後為真**的四件事：
+
+    1. `src/soul/life_thread_orchestrator.py` 是 M4 入口 `run_origin_round(...)` 的
+       **唯一**生產 caller（AST 判定被呼叫名，文件字串不算）；
+    2. `scripts/run_server.py` 對 M4 的唯一用法 ＝ `set_llm_proxy` 注入
+       （不得直接呼叫入口）；
+    3. 0 新 provider／0 新網路通道（沿用既有 `generate_text`）；
+    4. docstring 必須自我聲明**已接線／被生產呼叫**，且**不得**再殘留「未接線」字樣
+       —— 新增這一則是為了防止過時文字再次靜默殘留（本測試原版的病根）。
+    """
     src = MODULE_PATH.read_text(encoding="utf-8")
-    assert "未接線零件" in src
+
+    # ── 1. 唯一生產 caller ───────────────────────────────────
+    assert _m4_entry_callers() == ["src/soul/life_thread_orchestrator.py"]
+
+    # ── 2. run_server 只做 set_llm_proxy 注入 ─────────────────
+    run_server = (_REPO_ROOT / "scripts" / "run_server.py").read_text(encoding="utf-8")
+    assert "_lt_origins.set_llm_proxy(llm)" in run_server, "run_server 必須注入 LLM proxy"
+    assert "_lt_origins.run_origin_round" not in run_server, "run_server 不得呼叫 M4 入口"
+
+    # ── 3. 0 新 provider／0 新通道 ────────────────────────────
     assert "0 新 provider" in src
     assert "generate_text" in src, "必須沿用既有 LLM 通道（§8.1）"
     for net in ("httpx", "requests", "urllib.request", "aiohttp", "socket"):
         assert f"import {net}" not in src, f"不得新增網路通道：{net}"
+
+    # ── 4. 文件必須與接線後的事實一致 ─────────────────────────
+    doc = m4.__doc__ or ""
+    assert "life_thread_orchestrator" in doc, (
+        "docstring 必須寫出**接線後**的唯一生產呼叫端"
+    )
+    assert "生產呼叫" in doc, "docstring 必須聲明本模組已被生產呼叫"
+    assert "未接線" not in doc, (
+        "🔴 M5 接線後不得再自我聲明『未接線』（已成事實錯誤；此斷言防過時文字殘留）"
+    )
 
 
 def test_module_does_not_import_scheduler_or_production_paths(soul_env):

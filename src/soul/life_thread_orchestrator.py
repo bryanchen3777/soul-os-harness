@@ -23,6 +23,14 @@
   `check_points_due OR world_collision_detected` 兩項；張力是 M3 的**已宣告偏離**
   第三訊號，且 M4↔M3 的張力形狀對齊尚未做 ⇒ 本模組傳 `unresolved_tensions=None`
   （契約純淨），**張力供給為後續票**。附帶好處：「張力與線頭不得重複計數」自動成立。
+- **due 集合交還 M4（單一 predicate 來源）**：WAKE 時傳 `due_threads=None`，讓 M4
+  `_render_due_threads` 走它**自己**那條 `lt.list_active()` ＋ `check_after_ts <= now`
+  的 due 過濾（與契約 §4.2 判定 1 同口徑，且該路徑已被 M4 既有測試覆蓋）。理由：
+  **單一 predicate 來源 > 省一次整檔讀** —— 若在 orchestrator 內自行先過濾再傳入，
+  等於在本層再造**第三份** due predicate（M1 契約 §4.2／M3 判定 1／本層），語意漂移
+  風險大於省下的 I/O。代價：WAKE 時多 1 次 `lt.list_active()` 整檔讀
+  （≤ 2 次/日/agent，可接受）。故本模組對 §4.2 的 **due 集合不再有偏離**；
+  唯一的**已宣告偏離**仍是張力訊號未供給（見上）。
 - **0 LLM 直接呼叫**：所有 LLM 一律經 `run_origin_round`（§8.1 路徑 A）。
 - **寫入面＝0 檔案寫入**：唯一 I/O 是每輪 1 次感知檔（`perception_trace.jsonl`）唯讀；
   M1 讀取一律經 `life_threads` 的公開 API。
@@ -84,7 +92,7 @@ def reset_state() -> None:
     """清空行程內冪等鍵 `_LAST_PROCESSED`。
 
     ⚠️ **僅供測試呼叫**。生產路徑**不得**呼叫本函式：清空會使 at-most-once 失效，
-    同一 slot 觸發窗（`scheduler.py:813` 的 `0 <= diff < 60`）在 30s tick 下會命中
+    同一 slot 觸發窗（`scheduler._slot_for_time` 的 `0 <= diff < 60`）在 30s tick 下會命中
     兩次，導致重複喚醒與重複 LLM 花費（突破「每日 2 評估點」）。
     """
     _LAST_PROCESSED.clear()
@@ -160,8 +168,9 @@ async def run_slot_pipeline(
     - `{"error": "..."}` —— 該 agent fail-closed（不影響其他 agent）。
 
     **at-most-once（先蓋章再執行）**：LLM 花費與喚醒副作用**不可重複**。30s tick
-    （`scheduler.py:1696` 的 `sleep(30)`）對上 60s slot 觸發窗
-    （`scheduler.py:813` 的 `0 <= diff < 60`）必然命中**兩次**；若不做 at-most-once
+    （`src/soul/scheduler.py` 的 `_run_loop`：`await asyncio.sleep(30)`；**以函式＋呼叫
+    原文引用，不寫行號**以免再次漂移）對上 60s slot 觸發窗
+    （同檔 `_slot_for_time` 的 `0 <= diff < 60`）必然命中**兩次**；若不做 at-most-once
     就會在同一評估點重複喚醒、突破「每日 2 評估點」的契約上限。故在**執行之前**
     就寫入 `_LAST_PROCESSED[key]`。權衡：該輪若失敗（LLM 失敗／例外）**不重試**
     （fail-quiet）—— 寧可漏一次，不可重複花費；下一輪（下一個 slot 或隔日）自然補上。
@@ -288,13 +297,18 @@ async def _run_agent(
     # `dissolve_hook=None` **必須**：M2 執行層 out of scope ⇒ 天然 0 SAGE。
     # `soul_context` / `world_records` **顯式傳**：否則 `build_origin_prompt`
     # 會自己再讀一次 persona、`collect_world_seeds` 會二次讀同一檔（重複 I/O）。
-    # `due_threads` 形狀 ＝ M1 fold state 清單（`_render_due_threads` 逐字使用
-    # `thread_id` / `title` / `status` / `check_after_ts` / `narrative_content`）。
+    # 🔴 `due_threads=None`（F2 裁定）：due 過濾**交還 M4 自己**的 `_render_due_threads`
+    # （`lt.list_active()` ＋ `check_after_ts <= now`，與契約 §4.2 判定 1 **同口徑**，
+    # 且該路徑已被 M4 既有測試覆蓋）。**不得**改傳 `active_threads` ——
+    # `life_thread_origins._render_due_threads`（`due_threads is not None` 分支）
+    # **完全不做** due 過濾，未到期的 active 線頭會被 over-include 進 prompt。
+    # 取捨（見模組 docstring）：**單一 predicate 來源 > 省一次整檔讀**；
+    # 代價 ＝ WAKE 時多 1 次 `lt.list_active()`（≤2 次/日/agent）。
     result = await lt_origins.run_origin_round(
         agent_id,
         decision.origin_type,
         now=now,
-        due_threads=active_threads,
+        due_threads=None,
         llm_caller=llm_caller,
         dissolve_hook=None,
         build_kwargs={"soul_context": soul_context, "world_records": list(perceptions)},
