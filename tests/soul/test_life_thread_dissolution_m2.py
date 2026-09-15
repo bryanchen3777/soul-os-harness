@@ -138,12 +138,14 @@ def test_signature_defaults_exact() -> None:
     assert params["terminal_reason"].default is None
 
 
-def test_allow_soft_archive_default_is_false() -> None:
-    """🔴 工單修正 #1：`allow_soft_archive` **預設 False**（active→dormant 是生產存活性政策）。"""
-    default = inspect.signature(evaluate_thread_dissolution).parameters[
-        "allow_soft_archive"
-    ].default
-    assert default is False
+def test_allow_soft_archive_opt_in_is_strictly_true_in_source() -> None:
+    """🔴 工單修正 #1：`allow_soft_archive` **預設 False**（active→dormant 是生產存活性政策）。
+
+    預設值本身已由 `test_signature_defaults_exact` 釘死（此處不再重複），
+    本測試改驗**不同的面**：opt-in 在模組原始碼中必須是嚴格 `is True`
+    （fail-safe：`1` / `"yes"` / `None` 等真值一律不得放行，一律往「不變更狀態」方向錯）。
+    """
+    assert "if allow_soft_archive is True:" in MODULE_SOURCE
 
 
 def test_keyword_only_tail_parameters() -> None:
@@ -373,28 +375,44 @@ def test_step0_extra_metadata_exact_keys() -> None:
 
 _EPOCH = int(T0.timestamp())
 _TIME_REPRESENTATIONS = [
-    ("aware_datetime", lambda: datetime(2026, 1, 15, tzinfo=timezone.utc)),
-    ("naive_datetime", lambda: datetime(2026, 1, 15)),
-    ("epoch_int", lambda: _EPOCH + 14 * SECONDS_PER_DAY),
-    ("epoch_float", lambda: float(_EPOCH + 14 * SECONDS_PER_DAY + 1)),
-    ("iso_offset", lambda: (T0 + timedelta(days=14, seconds=1)).isoformat()),
-    ("iso_z", lambda: (T0 + timedelta(days=14, seconds=1)).isoformat().replace("+00:00", "Z")),
+    # (case_id, builder, expected_reason)
+    # 邊界嚴格大於（`>`）：`current_time == created_at + 14d` ⇒ age 軸**不成立**，
+    # 但 `updated_at == created_at` ⇒ `idle == 14d > 7d` ⇒ stale 軸成立；
+    # `+1s` ⇒ age 軸成立，且優先序高於 stale 軸 ⇒ horizon。
+    ("aware_datetime", lambda: datetime(2026, 1, 15, tzinfo=timezone.utc),
+     DissolutionReason.STALE_NO_PROGRESS),
+    ("naive_datetime", lambda: datetime(2026, 1, 15),
+     DissolutionReason.STALE_NO_PROGRESS),
+    ("epoch_int", lambda: _EPOCH + 14 * SECONDS_PER_DAY,
+     DissolutionReason.STALE_NO_PROGRESS),
+    ("epoch_float", lambda: float(_EPOCH + 14 * SECONDS_PER_DAY + 1),
+     DissolutionReason.TIME_HORIZON_EXCEEDED),
+    ("iso_offset", lambda: (T0 + timedelta(days=14, seconds=1)).isoformat(),
+     DissolutionReason.TIME_HORIZON_EXCEEDED),
+    ("iso_z",
+     lambda: (T0 + timedelta(days=14, seconds=1)).isoformat().replace("+00:00", "Z"),
+     DissolutionReason.TIME_HORIZON_EXCEEDED),
 ]
 
 
 @pytest.mark.parametrize(
-    "case_id,builder", _TIME_REPRESENTATIONS, ids=[case[0] for case in _TIME_REPRESENTATIONS]
+    "case_id,builder,expected_reason",
+    _TIME_REPRESENTATIONS,
+    ids=[case[0] for case in _TIME_REPRESENTATIONS],
 )
-def test_time_parsing_accepts_each_representation(case_id, builder) -> None:
+def test_time_parsing_accepts_each_representation(case_id, builder, expected_reason) -> None:
+    """多表示法各自釘死**精確** `reason`（**不得**用「屬於某集合」的寬鬆斷言）。
+
+    回改前的舊行為一律回 `NONE`；任何含 `NONE` 的允許集合都會讓本測試對
+    「idle 軸被 `updated_at == created_at` 抑制」的退化完全無感（仍通過），
+    故必須逐項精確斷言，並同時釘死諮詢語意的伴隨欄位。
+    """
     evaluation = evaluate_thread_dissolution(_thread(), builder())
-    # 回改後語意：`_thread()` 的 `updated_at == created_at`，idle 軸獨立評估，
-    # 故 14 天整（≈ T0+14d 各表示法）由 stale 軸給訊號，不再只可能是 horizon / none。
-    assert evaluation.reason in (
-        DissolutionReason.TIME_HORIZON_EXCEEDED,
-        DissolutionReason.STALE_NO_PROGRESS,
-        DissolutionReason.NONE,
-    )
+    assert evaluation.reason is expected_reason
     assert evaluation.extra_metadata is not None
+    assert evaluation.extra_metadata["advisory"] is True
+    assert evaluation.should_mutate is False
+    assert evaluation.target_status is ThreadStatus.ACTIVE
     assert "invalid" not in evaluation.extra_metadata
 
 
@@ -676,7 +694,10 @@ def test_step4_boundaries_are_strictly_greater(
     assert evaluation.target_status is ThreadStatus.ACTIVE
     if reason is DissolutionReason.NONE:
         assert evaluation.extra_metadata["advisory"] is False
-        assert extra_key is None
+        # 無訊號列：兩軸的診斷鍵**皆不得**出現（改為對模組行為的真斷言，
+        # 原本的 `assert extra_key is None` 只是回頭斷言本測試自帶的表格欄位，恆真）。
+        assert "age_days" not in evaluation.extra_metadata
+        assert "idle_days" not in evaluation.extra_metadata
     else:
         assert evaluation.extra_metadata["advisory"] is True
         assert evaluation.extra_metadata[extra_key] == extra_value
@@ -686,8 +707,10 @@ def test_step4_exact_fourteen_days_is_not_exceeded_smoke() -> None:
     """工單指定的邊界 smoke：14 天整**不算**超限（`>` 非 `>=`），`+1s` 才算 horizon。
 
     🔴 回改後語意：`updated_at == created_at`（從未更新）**不再**抑制 idle 軸，
-    故 14 天整的 `reason` 由 stale 軸給出（14d > 7d），**不是** `NONE`；
-    `advisory` 仍必須是 `False`（`NONE` 才算「無訊號」）。
+    故 14 天整的 `reason` 由 stale 軸給出（14d > 7d）、`+1s` 由 horizon 軸給出，
+    **兩者都不是** `NONE`。`advisory` 只要 `reason is not NONE` 即為 `True`
+    （`advisory is False` 只保留給 `reason is NONE` 的「無訊號」情境），
+    故此處兩種情境都必須斷言 `advisory is True`。
     """
     thread = _thread()
     at_exact = evaluate_thread_dissolution(thread, T0 + timedelta(days=14))
@@ -1490,7 +1513,13 @@ def test_module_file_is_lf_only_without_bom() -> None:
 
 
 def test_module_declares_all_and_docstring() -> None:
-    assert MODULE_TREE.body[0].value is not None  # module docstring
+    docstring = ast.get_docstring(MODULE_TREE)
+    assert docstring is not None
+    assert docstring.strip() != ""
+    # 模組 docstring 必須逐字宣告本模組的關鍵裁定（`ast.Expr.value` 恆非 None，
+    # 原本的 `MODULE_TREE.body[0].value is not None` 是恆真斷言、0 資訊量）。
+    for token in ("互相獨立", "不做時距去重", "checkpoints_exhausted", "allow_soft_archive"):
+        assert token in docstring
     assert any(
         isinstance(node, ast.Assign)
         and any(isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets)
@@ -1508,14 +1537,41 @@ def test_module_source_has_no_nonexistent_ticket_fields() -> None:
         assert token not in MODULE_SOURCE
 
 
+#: M1 不存在的三個幻影狀態值（票面有、M1 沒有）。
+_PHANTOM_STATUS_TOKENS = frozenset({"dissolved", "archived", "suspended"})
+
+#: 合法脈絡：這兩個常數**以幻影值為子字串**，但不是狀態值本身
+#: （`already_dissolved` 是 §3.3 的冪等哨兵、`dissolved_at` 是 M1 欄位名）。
+_PHANTOM_NEAR_MISS_CONSTANTS = frozenset({"already_dissolved", "dissolved_at"})
+
+
+def _string_constant_values(tree: ast.AST) -> set:
+    """模組中所有字串常數的**值**（與單／雙引號風格無關）。"""
+    return {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+
+
 def test_module_source_has_no_phantom_status_values() -> None:
-    for token in ('"dissolved"', '"archived"', '"suspended"'):
-        assert token not in MODULE_SOURCE
+    """幻影狀態檢查：以 **AST 掃描字串常數值**判定，不靠引號風格。
+
+    舊寫法 `'"dissolved"' in MODULE_SOURCE` 只認**雙引號**字面，模組 enum 用單引號
+    （`DISSOLVED = 'dissolved'`）即可穿透；掃 `ast.Constant` 的**值**則單／雙引號皆命中。
+    """
+    constants = _string_constant_values(MODULE_TREE)
+    # 反空洞：先確認掃描確實抓到字串常數，否則「掃不到任何東西 ⇒ 假綠」。
+    assert _PHANTOM_NEAR_MISS_CONSTANTS <= constants
+    assert not (_PHANTOM_STATUS_TOKENS & constants)
 
 
 def test_enum_values_exclude_phantom_statuses() -> None:
     phantom = {"dissolved", "archived", "suspended"}
-    assert not phantom & {member.value for member in ThreadStatus}
+    status_values = {member.value for member in ThreadStatus}
+    # 合法值域以 M1 為準（`ThreadStatus` 恰為 M1 四值），再驗幻影值不在其中。
+    assert status_values == set(M1_STATUS_VALUES)
+    assert not phantom & status_values
     assert not phantom & {member.value for member in DissolutionReason}
 
 
