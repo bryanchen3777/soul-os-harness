@@ -1061,6 +1061,14 @@ async def lifespan(app: FastAPI):
     set_motive_llm_proxy(llm)
     logger.info("[Server] LLMProxy wired into motive (SM-3, v4-flash unified)")
 
+    # LIFE-THREAD-M5 (2026-09-14): 生活線頭引擎 M4 起源注入接縫 —
+    # 沿用同一顆 LLMProxy（與 diary/dream_event/motive 同物件, 0 新 provider）。
+    # 🔴 不注入 ⇒ `life_thread_origins._find_llm_proxy()` 恆 None ⇒
+    #    `run_origin_round` 直接 return（僅 1 行 warning）⇒ 管線看似活著但**永不產線頭**。
+    from src.soul import life_thread_origins as _lt_origins
+    _lt_origins.set_llm_proxy(llm)
+    logger.info("[Server] LLMProxy wired into life_thread_origins (LIFE-THREAD-M5)")
+
     # Bry §11 shadow mode (2026-07-02): 對每一筆真實訊息 v6 並行 observation
     # 7 天自動到期, 不影響 prod 路徑結果
     from src.memory.shadow import init_shadow_observer

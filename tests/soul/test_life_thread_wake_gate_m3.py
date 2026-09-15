@@ -848,10 +848,134 @@ def _scan_hits(base: Path) -> list[str]:
     return sorted(hits)
 
 
-@pytest.mark.parametrize("subdir", ["src", "scripts", "configs", "clients"])
-def test_t7_no_production_reference(subdir):
-    """T7：`src/**`（排除自身）／`scripts/**`／`configs/**`／`clients/**` 0 命中。"""
-    assert _scan_hits(_REPO_ROOT / subdir) == []
+#: LIFE-THREAD-M5 接線後：M3 的**生產 importer 白名單恰為** orchestrator 一個。
+#: 不變量未被放寬 —— 由「0 命中」升級成「**恰好** 1 個、且只能是它」，
+#: 並以 AST 掃描 import 語句（註解／字串不算），比原始文字比對更嚴。
+_M3_IMPORTER_WHITELIST = ("src/soul/life_thread_orchestrator.py",)
+
+#: M3 的真正消費點必須**掛在 scheduler 的 slot 觸發窗**上（比對掛載函式名）。
+_M3_SCHEDULER_MOUNT = "_fire_life_thread_slot"
+
+
+def _imports_m3(tree: ast.AST) -> bool:
+    """AST：該模組是否**真正 import** 了 `life_thread_wake_gate`。
+
+    只認 `ast.Import` / `ast.ImportFrom` 的模組名與 alias 名 ——
+    一行註解或字串提及**不算**。三種寫法都要 DETECT：
+
+    - `import src.soul.life_thread_wake_gate`
+    - `from src.soul import life_thread_wake_gate`
+    - `from src.soul.life_thread_wake_gate import evaluate_wake_gate`
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == MODULE_QUALNAME or alias.name.endswith(
+                    "." + MODULE_QUALNAME
+                ):
+                    return True
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod == MODULE_QUALNAME or mod.endswith("." + MODULE_QUALNAME):
+                return True
+            for alias in node.names:
+                if alias.name == MODULE_QUALNAME:
+                    return True
+    return False
+
+
+def _scan_importers_in(root: Path) -> list[str]:
+    """在**任意**目錄樹內掃「真正 import M3」的 `.py`（可餵 `tmp_path` 做牙齒證明）。"""
+    hits: list[str] = []
+    if not root.exists():
+        return hits
+    for path in sorted(root.rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if _imports_m3(tree):
+            hits.append(str(path.relative_to(root)).replace("\\", "/"))
+    return hits
+
+
+def _m3_production_importers() -> list[str]:
+    """`src/**` ＋ `scripts/**` 內**真正 import** M3 的檔案（相對路徑、排序）。"""
+    hits: list[str] = []
+    for base in ("src", "scripts"):
+        hits += [
+            f"{base}/{rel}" for rel in _scan_importers_in(_REPO_ROOT / base)
+        ]
+    return sorted(hits)
+
+
+def test_t7_m3_importer_whitelist_is_exactly_orchestrator():
+    """T7（M5 改寫）：M3 的生產 importer **白名單恰為** orchestrator。
+
+    不變量強度：原「0 命中」在 M5 接線後無法成立（orchestrator 必須 import M3），
+    故改寫成**恰好等於白名單**（多一個、少一個都紅），並且只認 AST import 語句 ——
+    連「多加一行提到模組名的註解」都不算命中，反之真 import 一定命中。
+    """
+    assert _m3_production_importers() == list(_M3_IMPORTER_WHITELIST)
+
+
+def test_t7_m3_importer_scan_has_teeth(tmp_path):
+    """T7 牙齒證明（反例構造）：真 import ⇒ DETECT；純註解／字串 ⇒ MISS。
+
+    在臨時目錄造 5 個反例檔，證明「新檢查」不是靠文字比對虛應故事：
+    文字比對會被**註解**騙（這裡 `middleware.py:93` 就是活生生的例子）。
+    """
+    (tmp_path / "real_from.py").write_text(
+        f"from src.soul import {MODULE_QUALNAME}\n", encoding="utf-8"
+    )
+    (tmp_path / "real_import.py").write_text(
+        f"import src.soul.{MODULE_QUALNAME}\n", encoding="utf-8"
+    )
+    (tmp_path / "real_deep.py").write_text(
+        f"from src.soul.{MODULE_QUALNAME} import evaluate_wake_gate\n", encoding="utf-8"
+    )
+    (tmp_path / "only_comment.py").write_text(
+        f"# 上限與讀取端 `src/soul/{MODULE_QUALNAME}.py:103` 一致。\nx = 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "only_string.py").write_text(
+        f'DOC = "src/soul/{MODULE_QUALNAME}.py"\n', encoding="utf-8"
+    )
+
+    detected = _scan_importers_in(tmp_path)
+    assert detected == ["real_deep.py", "real_from.py", "real_import.py"], detected
+    # 註解／字串檔**不得**被計入（否則不變量會被一行註解打穿）
+    assert "only_comment.py" not in detected
+    assert "only_string.py" not in detected
+    # 對照：純文字比對**會**把註解檔誤判為命中 ⇒ 證明改用 AST 是必要的收緊
+    comment_text = (tmp_path / "only_comment.py").read_text(encoding="utf-8")
+    assert MODULE_QUALNAME in comment_text, "文字比對會假陽性（AST 版本才有牙）"
+
+
+def test_t7_orchestrator_is_mounted_in_scheduler_exactly_once():
+    """T7（M5 新增）：orchestrator 在 `scheduler.py` 內被**掛載恰一次**且落在 slot 窗。
+
+    以「掛載函式名」比對（不用模組名，避免被註解提及誤導）。
+    """
+    src = (_REPO_ROOT / "src" / "soul" / "scheduler.py").read_text(encoding="utf-8")
+    assert src.count(f"self.{_M3_SCHEDULER_MOUNT}(") == 1, "scheduler 掛載點必須恰 1 處"
+    assert f"async def {_M3_SCHEDULER_MOUNT}(" in src
+    # 掛載點必須在既有 slot 判據上（沿用 _slot_for_time，不新增定時器）
+    assert "_slot_for_time" in src
+    assert "life_thread_orchestrator" in src, "orchestrator 必須被 lazy import 進 scheduler"
+
+
+@pytest.mark.parametrize("relative", ["src/llm/proxy.py", "configs/default.yaml"])
+def test_t7_key_files_still_zero_m3_import(relative):
+    """T7：LLM proxy 與設定檔對 M3 **0 import**（接線不經這兩處）。"""
+    path = _REPO_ROOT / relative
+    assert path.is_file(), relative
+    if path.suffix == ".py":
+        assert _imports_m3(ast.parse(path.read_text(encoding="utf-8"))) is False, relative
+    else:
+        assert MODULE_QUALNAME not in path.read_text(encoding="utf-8", errors="ignore"), (
+            relative
+        )
 
 
 def test_t7_module_itself_exists_and_is_scanned_target():
@@ -860,13 +984,14 @@ def test_t7_module_itself_exists_and_is_scanned_target():
     assert MODULE_QUALNAME in MODULE_PATH.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("relative", ["src/soul/scheduler.py", "src/llm/proxy.py"])
-def test_t7_key_files_zero_hits(relative):
-    """T7：排程器與 LLM proxy 各 0 命中（未接線鐵證）。"""
-    path = _REPO_ROOT / relative
-    assert path.is_file(), relative
-    text = path.read_text(encoding="utf-8", errors="ignore")
-    assert text.count(MODULE_QUALNAME) == 0, relative
+@pytest.mark.parametrize("subdir", ["configs", "clients"])
+def test_t7_non_python_dirs_still_zero_reference(subdir):
+    """T7（保留原覆蓋）：`configs/**`／`clients/**` 仍為 **0 命中**（涵蓋非 .py 檔）。
+
+    M5 的接線只允許發生在 `src/soul/life_thread_orchestrator.py`（＋scheduler 掛載），
+    設定檔與其他 client 一律不得引用 M3。
+    """
+    assert _scan_hits(_REPO_ROOT / subdir) == []
 
 
 # ══════════════════════════════════════════════════════════════

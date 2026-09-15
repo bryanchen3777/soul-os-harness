@@ -134,10 +134,17 @@ def test_s2_1_module_not_imported_by_production_paths():
     仍必須 ＝ **0**；且 M4 自身另有測試釘死
     `git grep life_thread_origins -- src scripts configs` ＝ **0 命中**
     （即「**M4 沒有任何生產路徑 import**」照樣成立）。
+
+    ⚠️ 例外追加（LIFE-THREAD-M5，2026-09-14）：M5 的職責**就是**把生活線頭引擎
+    接進生產路徑，其介接層 `src/soul/life_thread_orchestrator.py` 必然 import M1
+    （依賴圖 §10.1 `:722-726`「M5 依賴 M1+M4」）。故白名單加入 orchestrator，
+    **其餘排除集不變** —— 排除後仍有任何其他 importer ⇒ 紅。
     """
     engine_own_unwired = {
         MODULE_PATH,
         _REPO_ROOT / "src" / "soul" / "life_thread_origins.py",  # M4：§10.1 允許寫 M1
+        # M5：§10.1 的介接層，唯一合法的生產接線點
+        _REPO_ROOT / "src" / "soul" / "life_thread_orchestrator.py",
     }
     offenders = []
     for root in (_REPO_ROOT / "src", _REPO_ROOT / "scripts"):

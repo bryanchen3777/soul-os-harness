@@ -1685,6 +1685,13 @@ class SoulScheduler:
                 #     冪等鍵 periodic:{key} trace 判重為主要閘門（週記 1 次/週、
                 #     紀念日 1 次/日）— 檢查窗偶發重入亦擋二次沉澱（契約 §5.6 雙保險）。
                 await self._fire_periodic_narrative()
+                # 5.7 LIFE-THREAD-M5 (2026-09-14): 生活線頭引擎介接 — 沿用既有
+                #     morning/night slot 觸發窗（判據 = _slot_for_time, ±60s），把
+                #     M1/M2/M3/M4 串成管線；0 新定時器 / 0 新事件型別 / 0 進入
+                #     Agency 觸發鏈（契約 §12 F1）。at-most-once 冪等鍵
+                #     (agent:slot:date) 落在 orchestrator 內（30s tick 重入同一
+                #     slot 窗不會重複喚醒／重複花費 LLM）；fail-closed 只 log。
+                await self._fire_life_thread_slot(now)
                 # 健康檢查 log
                 if (now.timestamp() - last_health_log) > HEALTH_CHECK_INTERVAL_SECS:
                     next_slot, next_time = self._compute_next_slot(now)
@@ -1764,6 +1771,29 @@ class SoulScheduler:
                 f"[PeriodicNarrative] 週期敘事檢查異常 (fail-closed): "
                 f"{type(e).__name__}: {e}"
             )
+
+    async def _fire_life_thread_slot(self, now: datetime) -> None:
+        """
+        LIFE-THREAD-M5 (2026-09-14): 生活線頭引擎介接 — 既有 slot 觸發窗內 additive 分支。
+
+        掛點 (契約 docs/LIFE-THREAD-ENGINE-CONTRACT.md §4.1/§10.1, §12 F1):
+          - 主循環 30s wake 內、`_fire_periodic_narrative` 之後，沿用既有
+            morning/night slot 判據 (`_slot_for_time`, ±60s 觸發窗);
+            0 新定時器 / 0 新事件型別 / 0 進入 Agency 觸發鏈。
+          - at-most-once 冪等鍵 (agent:slot:date) 落在 orchestrator 內，
+            30s tick 重入同一 slot 窗不會重複喚醒／重複花費 LLM。
+        fail-closed: 任何異常只 log warning, 不阻断主循环 (与 _goal_scan_all 同级)。
+        """
+        if not self._all_agents:
+            return
+        slot = self._slot_for_time(now)
+        if slot not in ("morning", "night"):
+            return
+        try:
+            from src.soul import life_thread_orchestrator as _lt_orchestrator
+            await _lt_orchestrator.run_slot_pipeline(list(self._all_agents), now, slot)
+        except Exception as e:
+            logger.warning(f"[Scheduler] life_thread slot pipeline failed: {e}")
 
     def _compute_next_slot(self, now: datetime) -> tuple[str, datetime]:
         candidates = []

@@ -13,9 +13,11 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import locale
 import logging
 import subprocess
 import sys
+import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -763,24 +765,195 @@ def test_module_never_touches_life_threads_file_directly(soul_env):
 # 6. 未接線證明（§10.1）
 # ══════════════════════════════════════════════════════════════
 
-def test_module_is_not_wired_into_production_paths(soul_env):
-    """§10.1：`git grep <模組檔名根> -- src scripts configs` 應為 **0 命中**。
+#: LIFE-THREAD-M5 接線後：M4 的**生產 importer 白名單恰為**這兩處。
+#: ⚠️ 不變量未被放寬：原斷言是「M4 沒有任何生產路徑 import」；M5 的職責**就是**
+#: 把 M4 接上生產路徑，故改寫成「**恰好**這兩個、且各自只能是那一種用法」——
+#: 比原本的「0 命中」更精確（多一個 importer 就紅）。
+_M4_IMPORTER_WHITELIST = (
+    "scripts/run_server.py",              # 僅允許 set_llm_proxy 注入行
+    "src/soul/life_thread_orchestrator.py",  # 唯一的呼叫端
+)
 
-    註：本模組原始碼刻意不含自身檔名字面（含標頭註解與 logger 名），
-    故本斷言在 commit 後仍為**字面 0 命中**，而非「排除自己」的近似。
+
+def _m4_importers() -> list[str]:
+    """AST 掃描 `src/**` ＋ `scripts/**`：只認真正 import M4 的檔案。
+
+    以 **AST import 語句**判定，而非原始文字比對 —— 否則一行**註解**引用模組路徑
+    就能讓不變量失效（`src/world/middleware.py:93` 正是這種註解）。
     """
-    for paths in (["src"], ["scripts"], ["configs"], ["src", "scripts", "configs"]):
-        proc = subprocess.run(
-            ["git", "grep", "-n", MODULE_STEM, "--"] + paths,
-            cwd=str(_REPO_ROOT), capture_output=True, text=True,
+    hits: list[str] = []
+    for base in ("src", "scripts"):
+        root = _REPO_ROOT / base
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if _module_imports_m4(tree):
+                hits.append(str(path.relative_to(_REPO_ROOT)).replace("\\", "/"))
+    return sorted(hits)
+
+
+def _module_imports_m4(tree) -> bool:
+    """該 AST 是否**真正 import** M4（`ast.Import` / `ast.ImportFrom` 的模組名與 alias 名）。
+
+    三種寫法都要 DETECT：`import src.soul.life_thread_origins`、
+    `from src.soul import life_thread_origins`、
+    `from src.soul.life_thread_origins import run_origin_round`。
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == MODULE_STEM or alias.name.endswith("." + MODULE_STEM):
+                    return True
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod == MODULE_STEM or mod.endswith("." + MODULE_STEM):
+                return True
+            for alias in node.names:
+                if alias.name == MODULE_STEM:
+                    return True
+    return False
+
+
+def test_module_is_not_wired_into_production_paths(soul_env):
+    """§10.1（M5 改寫）：M4 的生產 importer **白名單恰為** orchestrator ＋ run_server。
+
+    前身是本檔 `:766-778` 的 `git grep <MODULE_STEM>` 文字比對，那支有**兩個**缺陷：
+
+    1. **假綠**：`subprocess.run(..., text=True)` 未指定 `encoding`，本機 locale＝cp950
+       ⇒ reader thread `UnicodeDecodeError` ⇒ `proc.stdout is None` ⇒
+       `(proc.stdout or "")` 為 `""` ⇒ 斷言**空轉通過**。以 `encoding="utf-8"` 重跑，
+       真實輸出**非空**（`src/world/middleware.py:93` 一行**註解**引用了模組路徑）。
+    2. **假陽性**：文字比對會被「一行註解」打穿（同上），也會被字串誤觸。
+
+    故改為 **AST import 掃描**（只認 import 語句）＋ **恰好等於白名單**。
+    """
+    assert _m4_importers() == list(_M4_IMPORTER_WHITELIST)
+
+
+def test_m4_importer_scan_has_teeth(tmp_path):
+    """牙齒證明（反例構造）：真 import ⇒ DETECT；純註解／字串 ⇒ MISS。"""
+    (tmp_path / "real_from.py").write_text(
+        f"from src.soul import {MODULE_STEM}\n", encoding="utf-8"
+    )
+    (tmp_path / "real_import.py").write_text(
+        f"import src.soul.{MODULE_STEM}\n", encoding="utf-8"
+    )
+    (tmp_path / "only_comment.py").write_text(
+        f"# 上限與讀取端 `src/soul/{MODULE_STEM}.py:103` 一致。\nx = 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "only_string.py").write_text(
+        f'DOC = "src/soul/{MODULE_STEM}.py"\n', encoding="utf-8"
+    )
+    detected = []
+    for path in sorted(tmp_path.rglob("*.py")):
+        if _module_imports_m4(ast.parse(path.read_text(encoding="utf-8"))):
+            detected.append(path.name)
+    assert detected == ["real_from.py", "real_import.py"], detected
+    assert "only_comment.py" not in detected
+    assert "only_string.py" not in detected
+    # 對照：文字比對**會**把註解檔誤判為命中 ⇒ 證明放棄文字比對是必要的收緊
+    assert MODULE_STEM in (tmp_path / "only_comment.py").read_text(encoding="utf-8")
+
+
+@pytest.mark.filterwarnings(
+    "ignore::pytest.PytestUnhandledThreadExceptionWarning"
+)  # legacy 寫法**刻意**重現解碼崩潰 ⇒ 靜音該 thread 例外警告
+def test_legacy_git_grep_false_green_is_fixed(soul_env):
+    """🔴 假綠→真紅的前後對比（本測試存在的理由，不是為了變綠）。
+
+    `:766-778` 舊版用 `subprocess.run(..., text=True)`（**未指定 `encoding`**）跑
+    `git grep`：本機 locale＝cp950 ⇒ reader thread `UnicodeDecodeError` ⇒
+    `proc.stdout is None` ⇒ `(proc.stdout or "") == ""` ⇒ 斷言**空轉通過**（假綠）。
+
+    本測試以兩條互相獨立的證據把「假綠」釘死：
+
+    (a) **機制證據（決定性，與 locale 無關）**：先取 raw bytes（永不解碼崩潰），
+        再分別用 `cp950` 與 `utf-8` 解碼同一份輸出 —— 前者**必須 raise**、
+        後者**必須成功且非空**。這正是 legacy 寫法空轉的成因。
+    (b) **實測證據**：真的用 legacy 寫法呼叫一次（cp950 locale 下 stdout 必為 None），
+        再用 `encoding="utf-8"` 呼叫一次（必讀到非空真實輸出）。
+    """
+    cmd = ["git", "grep", "-n", MODULE_STEM, "--", "src", "scripts", "configs"]
+
+    # ── (a) 機制證據：同一份 bytes，cp950 崩、utf-8 通 ──────────
+    raw = subprocess.run(cmd, cwd=str(_REPO_ROOT), capture_output=True)
+    assert raw.stdout, "git grep 必須有輸出（否則後續對比無意義）"
+    with pytest.raises(UnicodeDecodeError):
+        raw.stdout.decode("cp950")  # ← legacy text=True 的解碼路徑在這裡崩
+    real_out = raw.stdout.decode("utf-8")
+    assert MODULE_STEM in real_out
+    assert "middleware.py" in real_out, "註解引用是文字比對的假陽性來源"
+
+    # ── (b) 實測證據：legacy 空轉 vs utf-8 真紅 ──────────────
+    legacy_enc = locale.getpreferredencoding(False)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        legacy = subprocess.run(cmd, cwd=str(_REPO_ROOT), capture_output=True, text=True)
+    fixed = subprocess.run(
+        cmd, cwd=str(_REPO_ROOT), capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
+    )
+    fixed_out = (fixed.stdout or "").strip()
+    assert fixed_out != "", "以 utf-8 重跑必須讀到真實輸出（證明舊版 0 命中是假的）"
+
+    if legacy_enc.lower().replace("-", "").replace("_", "") not in ("utf8", "cp65001"):
+        # cp950 locale：legacy 讀不到任何東西 ⇒ `(stdout or "") == ""` ⇒ 假綠
+        assert legacy.stdout is None, (
+            f"locale={legacy_enc} 應使 legacy text=True 讀不到 stdout（假綠的成因）"
         )
-        out = (proc.stdout or "").strip()
-        assert out == "", f"{paths} 不得有 {MODULE_STEM} 命中，實得：\n{out}"
+
+    # 🔴 明文邊界：不得為了讓本測試變綠去改 `src/world/middleware.py`
+    for line in fixed_out.splitlines():
+        rel = line.split(":", 1)[0].replace("\\", "/")
+        assert rel in _M4_IMPORTER_WHITELIST or rel == "src/world/middleware.py", (
+            f"出現白名單外的 M4 引用：{line}"
+        )
+
+
+def test_orchestrator_is_the_m4_call_site(soul_env):
+    """M5 職責：orchestrator 是 M4 的**唯一呼叫端**，且必須經 `run_origin_round`。"""
+    src = (
+        _REPO_ROOT / "src" / "soul" / "life_thread_orchestrator.py"
+    ).read_text(encoding="utf-8")
+    assert "life_thread_origins" in src
+    assert "run_origin_round(" in src
+    assert "set_llm_proxy(" not in src, "orchestrator 不得自行注入 LLM proxy"
+    assert "load_soul_context(" in src
+
+
+def test_run_server_injection_is_set_llm_proxy_only(soul_env):
+    """M5：`scripts/run_server.py` 對 M4 的**唯一**用法是 `set_llm_proxy` 注入行。
+
+    🔴 不注入的後果：`_find_llm_proxy()` 恆 None ⇒ `run_origin_round` 直接 return
+    （僅 1 行 warning）⇒ 管線看似活著但**永不產線頭**。
+    """
+    src = (_REPO_ROOT / "scripts" / "run_server.py").read_text(encoding="utf-8")
+    assert "life_thread_origins" in src
+    assert "set_llm_proxy(llm)" in src
+    # 精確到「對注入物件的屬性呼叫」，故註解／文件字串提及不會誤觸
+    assert "_lt_origins.run_origin_round" not in src, "run_server 不得直接呼叫 M4 入口"
+    assert "_lt_origins.build_origin_prompt" not in src
+    assert "_lt_origins.apply_actions" not in src
 
 
 def test_no_scheduler_or_timer_wiring(soul_env):
-    """§10.1／INV-2：不得動 scheduler、不得新增定時器。"""
-    for rel in ("src/soul/scheduler.py", "configs/default.yaml", "src/soul/life_threads.py"):
+    """§10.1／INV-2：scheduler 內**不得**出現 M4 模組名（M5 經 lazy import orchestrator）。
+
+    可測量的不變量：接線一律經過 `life_thread_orchestrator`（M5 介接層），
+    scheduler 自己**不得**認識 M4；且 orchestrator 不得引入任何定時器。
+    """
+    # scheduler 只認識 orchestrator，不認識 M4 本體
+    sched = (_REPO_ROOT / "src" / "soul" / "scheduler.py").read_text(encoding="utf-8")
+    assert MODULE_STEM not in sched, "scheduler 不得直接引用 M4（必須經 orchestrator）"
+    assert "life_thread_orchestrator" in sched, "scheduler 必須掛載 orchestrator"
+
+    # 設定檔與 M1 本體不得被 M5 改動
+    for rel in ("configs/default.yaml", "src/soul/life_threads.py"):
         assert MODULE_STEM not in (_REPO_ROOT / rel).read_text(encoding="utf-8"), \
             f"{rel} 不得被改動接線"
 
@@ -788,6 +961,48 @@ def test_no_scheduler_or_timer_wiring(soul_env):
     for banned in ("asyncio.create_task", "threading.Timer", "call_later",
                    "APScheduler", "setInterval", "asyncio.sleep"):
         assert banned not in src, f"不得引入 {banned}"
+
+    # orchestrator 也不得引入定時器（0 新定時器鐵律延伸到介接層）。
+    # ⚠️ 以 **AST 呼叫**判定，不用原始文字 —— 否則文件字串裡「不新增 asyncio.sleep」
+    #    這句自我聲明反而會讓護欄偽紅（文字比對的典型陷阱）。
+    orch = _REPO_ROOT / "src" / "soul" / "life_thread_orchestrator.py"
+    offenders = _timer_calls_in(orch)
+    assert offenders == [], f"orchestrator 不得引入定時器／排程呼叫：{offenders}"
+
+
+#: 排程／定時相關的**呼叫**屬性名（AST 層判定）。
+_BANNED_TIMER_ATTRS = frozenset({
+    "sleep", "create_task", "call_later", "call_at", "call_soon", "wait_for", "Timer",
+})
+
+
+def _timer_calls_in(path: Path) -> list[str]:
+    """AST：找出真正的定時器**呼叫**（`x.sleep(...)` / `x.call_later(...)` …）。
+
+    只認 `ast.Call` 的屬性名 ⇒ 註解與文件字串**不會**誤判，真呼叫**一定**命中。
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in _BANNED_TIMER_ATTRS:
+                found.append(node.func.attr)
+    return sorted(set(found))
+
+
+def test_timer_scan_has_teeth(tmp_path):
+    """牙齒證明：真 `asyncio.sleep(...)` ⇒ DETECT；文件字串提及 ⇒ MISS。"""
+    real = tmp_path / "real.py"
+    real.write_text("import asyncio\n\nasync def f():\n    await asyncio.sleep(30)\n",
+                    encoding="utf-8")
+    doc = tmp_path / "doc.py"
+    doc.write_text('"""本模組 0 新定時器：不用 asyncio.sleep / call_later。"""\nx = 1\n',
+                   encoding="utf-8")
+    assert _timer_calls_in(real) == ["sleep"]
+    assert _timer_calls_in(doc) == []
 
 
 def test_module_declares_unwired_and_reuses_existing_channel(soul_env):
