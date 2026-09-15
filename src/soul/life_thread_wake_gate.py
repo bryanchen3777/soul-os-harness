@@ -15,7 +15,7 @@ import logging
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("soul_os.soul.life_thread_wake_gate")
@@ -145,6 +145,31 @@ def _parse_ts(value: Any) -> Optional[float]:
                 moment = moment.replace(tzinfo=timezone.utc)
             return moment.timestamp()
         return None
+    except Exception:
+        return None
+
+
+def _json_safe_scalar(value: Any) -> Any:
+    """把輸入值正規化為 JSON 可序列化的純量。永不 raise。
+
+    - `str` ⇒ 原樣回傳（**不截斷**，避免改變既有 ISO 字串行為）。
+    - `int` / `float`（非 `bool`）⇒ 原樣回傳。
+    - `datetime` / `date` ⇒ `.isoformat()`。
+    - 其他（含 `None`、`bool`、list、dict）⇒ `None` 保持 `None`，
+      其餘 `str(value)` 後截斷至 `SEED_HINT_MAX_TEXT_CHARS`。
+    """
+    try:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, bool):
+            return str(value)[:SEED_HINT_MAX_TEXT_CHARS]
+        if isinstance(value, (int, float)):
+            return value
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        if value is None:
+            return None
+        return str(value)[:SEED_HINT_MAX_TEXT_CHARS]
     except Exception:
         return None
 
@@ -297,7 +322,7 @@ def _scan_threads_due(
     return {
         "origin_type": origin,
         "due_thread_ids": due_thread_ids,
-        "due_check_after_ts": first.get("check_after_ts"),
+        "due_check_after_ts": _json_safe_scalar(first.get("check_after_ts")),
     }
 
 
