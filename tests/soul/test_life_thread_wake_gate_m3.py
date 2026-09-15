@@ -15,7 +15,7 @@ import logging
 import re
 import sys
 from dataclasses import FrozenInstanceError, fields, is_dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -41,6 +41,7 @@ from src.soul.life_thread_wake_gate import (  # noqa: E402
     VALID_TIMESLOTS,
     WORLD_COLLISION_WINDOW_HOURS,
     WakeDecision,
+    _json_safe_scalar,
     evaluate_wake_gate,
 )
 
@@ -1121,3 +1122,316 @@ def test_t10_same_input_same_answer_across_different_caller_prefixes():
     assert wake_first.should_wake is True
     assert sleep_after.should_wake is False
     assert sleep_after.reason == "REFLECTION_SLOT_CLEAR"
+
+
+# ══════════════════════════════════════════════════════════════
+# T11 seed_hint JSON-safe 正規化（`_json_safe_scalar`）— LIFE-THREAD-M3-1
+# ══════════════════════════════════════════════════════════════
+#
+# helper 契約（唯讀 `src/soul/life_thread_wake_gate.py`，本檔不改 `src/**`）：
+#   str                ⇒ 原樣回傳（**不截斷**，含超長字串）
+#   bool               ⇒ `str(value)` 後截斷至 SEED_HINT_MAX_TEXT_CHARS
+#   int / float（非 bool）⇒ 原樣回傳
+#   datetime / date    ⇒ `.isoformat()`
+#   None               ⇒ None
+#   其他（list / dict / 自訂物件…）⇒ `str(value)` 後截斷至上限
+# 且**永不 raise**（內部 `except Exception` ⇒ None）。
+# 生產路徑：`CHECKPOINT_DUE_WAKE` 的 `seed_hint["due_check_after_ts"]` 會經過它。
+
+_TZ_PLUS8 = timezone(timedelta(hours=8))
+_DT_NAIVE = datetime(2026, 9, 14, 19, 28, 7, 851959)
+_DT_AWARE = datetime(2026, 9, 14, 19, 28, 7, 851959, tzinfo=_TZ_PLUS8)
+_DATE_ONLY = date(2026, 9, 14)
+
+_LONG_STR = "長" * 500  # 遠超 SEED_HINT_MAX_TEXT_CHARS，且是 str ⇒ 必須原樣
+_LONG_ISO = "2026-09-14T19:28:07+00:00" + " " * 250  # 同為 str ⇒ seed_hint 內不截斷
+
+_DUE_AWARE = datetime.fromtimestamp(NOW - 30, tz=timezone.utc)
+_DUE_NAIVE = _DUE_AWARE.replace(tzinfo=None)
+
+
+class _LongStrObject:
+    """自訂物件：`str()` 遠超上限 ⇒ 必須截斷至 SEED_HINT_MAX_TEXT_CHARS。"""
+
+    def __str__(self) -> str:
+        return "x" * 500
+
+
+class _RaisingStrObject:
+    """自訂物件：`str()` 直接 raise ⇒ helper 仍**不得**拋例外。"""
+
+    def __str__(self) -> str:
+        raise RuntimeError("boom-in-__str__")
+
+
+_LONG_STR_OBJECT = _LongStrObject()
+
+#: (id, 輸入, 期望回傳值, 期望回傳型別)
+_HELPER_CASES = (
+    ("str-ascii", "plain-text", "plain-text", str),
+    ("str-chinese", "外頭颳起大風，線頭醒了", "外頭颳起大風，線頭醒了", str),
+    ("str-empty", "", "", str),
+    ("str-500", _LONG_STR, _LONG_STR, str),
+    ("bool-true", True, "True", str),
+    ("bool-false", False, "False", str),
+    ("int", 42, 42, int),
+    ("int-negative", -7, -7, int),
+    ("float", 3.5, 3.5, float),
+    ("float-zero", 0.0, 0.0, float),
+    ("datetime-naive", _DT_NAIVE, _DT_NAIVE.isoformat(), str),
+    ("datetime-aware", _DT_AWARE, _DT_AWARE.isoformat(), str),
+    ("date", _DATE_ONLY, _DATE_ONLY.isoformat(), str),
+    ("none", None, None, type(None)),
+    ("list", [1, 2], "[1, 2]", str),
+    ("dict", {"a": 1}, "{'a': 1}", str),
+    ("tuple", (1, 2), "(1, 2)", str),
+    ("bytes", b"bytes", "b'bytes'", str),
+    ("frozenset-single", frozenset({"a"}), "frozenset({'a'})", str),
+    ("object-long-str", _LONG_STR_OBJECT, "x" * SEED_HINT_MAX_TEXT_CHARS, str),
+)
+
+
+@pytest.mark.parametrize(
+    "case_id,value,expected,expected_type",
+    _HELPER_CASES,
+    ids=[case[0] for case in _HELPER_CASES],
+)
+def test_t11_json_safe_scalar_branch_matrix(case_id, value, expected, expected_type):
+    """T11：helper 每個分支的回傳值與型別；結果一律可 `json.dumps`。"""
+    result = _json_safe_scalar(value)
+
+    assert result == expected, case_id
+    assert type(result) is expected_type, case_id
+
+    # str 分支：原樣、零截斷（長度逐字相等）
+    if isinstance(value, str):
+        assert len(result) == len(value), case_id
+
+    # 非純量字串化分支：一律 ≤ 上限
+    if case_id in ("object-long-str", "bool-true", "bool-false"):
+        assert len(result) <= SEED_HINT_MAX_TEXT_CHARS, case_id
+
+    dumped = json.dumps(result, ensure_ascii=False)  # 不拋例外即通過
+    assert isinstance(dumped, str), case_id
+    assert json.loads(dumped) == result, case_id
+
+
+def test_t11_json_safe_scalar_str_is_never_truncated_far_above_cap():
+    """T11：500 字元 str ⇒ 原樣回傳，`len` 不被截到 200。"""
+    assert len(_LONG_STR) == 500
+    assert len(_LONG_STR) > SEED_HINT_MAX_TEXT_CHARS
+
+    result = _json_safe_scalar(_LONG_STR)
+
+    assert result == _LONG_STR
+    assert len(result) == 500
+    assert result[:20] == _LONG_STR[:20]
+    assert result[-20:] == _LONG_STR[-20:]
+    json.dumps(result, ensure_ascii=False)
+
+
+def test_t11_json_safe_scalar_bool_is_string_not_int():
+    """T11：bool 走字串化分支（`"True"`/`"False"`），不因 `bool ⊂ int` 放行為整數。"""
+    result_true = _json_safe_scalar(True)
+    result_false = _json_safe_scalar(False)
+
+    assert result_true == "True"
+    assert result_false == "False"
+    assert result_true != 1 and result_false != 0
+    assert type(result_true) is str and type(result_false) is str
+    assert json.dumps([result_true, result_false]) == '["True", "False"]'
+
+
+def test_t11_json_safe_scalar_int_float_are_not_stringified():
+    """T11：int / float 原樣回傳（保持數值型別，不被字串化）。"""
+    for value in (42, -7, 0, 3.5, 0.0, 1e300):
+        result = _json_safe_scalar(value)
+        assert result == value
+        assert type(result) is type(value)
+        json.dumps(result)
+
+
+def test_t11_json_safe_scalar_datetime_and_date_use_isoformat():
+    """T11：datetime（naive／帶 tz）與 date 一律 `.isoformat()`。"""
+    for value in (_DT_NAIVE, _DT_AWARE, _DATE_ONLY):
+        result = _json_safe_scalar(value)
+        assert result == value.isoformat()
+        assert type(result) is str
+        json.dumps(result)
+
+    assert _json_safe_scalar(_DATE_ONLY) == "2026-09-14"
+    assert _json_safe_scalar(_DT_NAIVE).endswith("851959")  # 微秒保留
+    assert _json_safe_scalar(_DT_AWARE).endswith("+08:00")  # tz 保留
+
+
+def test_t11_json_safe_scalar_none_stays_none():
+    """T11：`None` ⇒ `None`（不是字串 `"None"`）。"""
+    result = _json_safe_scalar(None)
+
+    assert result is None
+    assert json.dumps(result) == "null"
+
+
+@pytest.mark.parametrize("value", [[1, 2], {"a": 1}, (1, 2), [1, [2, [3]]]],
+                         ids=["list", "dict", "tuple", "nested-list"])
+def test_t11_json_safe_scalar_containers_are_stringified(value):
+    """T11：容器一律 `str(value)` 字串化（投影為純量後才可 JSON 化）。"""
+    result = _json_safe_scalar(value)
+
+    assert type(result) is str
+    assert result == str(value)
+    assert len(result) <= SEED_HINT_MAX_TEXT_CHARS
+    json.dumps(result)
+
+
+def test_t11_json_safe_scalar_long_object_string_is_truncated_to_cap():
+    """T11：自訂物件 `str()` 逾長 ⇒ 截斷至 200（`len <= 200`）。"""
+    result = _json_safe_scalar(_LONG_STR_OBJECT)
+
+    assert result == "x" * 200
+    assert len(result) == SEED_HINT_MAX_TEXT_CHARS == 200
+    assert len(result) <= 200
+    json.dumps(result)
+
+
+_WEIRD_INPUTS = (
+    ("object", object()),
+    ("bytes", b"bytes"),
+    ("dict", {"a": 1}),
+    ("list", [1, 2]),
+    ("set", {1, 2}),
+    ("complex", complex(1, 2)),
+    ("lambda", lambda: None),
+    ("raising-str", _RaisingStrObject()),
+    ("nan", float("nan")),
+    ("inf", float("inf")),
+    ("bytes-long", b"y" * 500),
+    ("list-long", list(range(500))),
+)
+
+
+@pytest.mark.parametrize("value", [item[1] for item in _WEIRD_INPUTS],
+                         ids=[item[0] for item in _WEIRD_INPUTS])
+def test_t11_json_safe_scalar_never_raises_on_weird_inputs(value):
+    """T11：怪異輸入（含 `__str__` 會 raise 的物件）⇒ 不拋例外且結果可序列化。"""
+    try:
+        result = _json_safe_scalar(value)
+    except BaseException as exc:  # pragma: no cover - 只在本測試失敗時走到
+        pytest.fail(f"_json_safe_scalar raised {type(exc).__name__}: {exc}")
+
+    json.dumps(result, ensure_ascii=False)
+
+
+def test_t11_json_safe_scalar_weird_inputs_exact_values():
+    """T11：工單指定怪異輸入的逐字結果。"""
+    assert _json_safe_scalar(b"bytes") == "b'bytes'"
+    assert _json_safe_scalar({"a": 1}) == "{'a': 1}"
+
+    text = _json_safe_scalar(object())
+    assert isinstance(text, str)
+    assert text.startswith("<object object at")
+    assert text.endswith(">")
+    json.dumps(text)
+
+
+def test_t11_json_safe_scalar_raising_str_returns_none():
+    """T11：`__str__` raise ⇒ 吞掉例外回 `None`（fail-soft，不往上拋）。"""
+    result = _json_safe_scalar(_RaisingStrObject())
+
+    assert result is None
+    json.dumps(result)
+
+
+# ── 端到端：CHECKPOINT_DUE_WAKE 的 `due_check_after_ts` ────────────
+
+@pytest.mark.parametrize("due_ts", [_DUE_AWARE, _DUE_NAIVE], ids=["aware", "naive"])
+def test_t11_e2e_datetime_check_after_ts_wakes_with_isoformat(due_ts):
+    """T11：`check_after_ts` 為 `datetime` 且到期 ⇒ WAKE 且 seed_hint 存 `.isoformat()`。"""
+    decision = _call(
+        timeslot="morning",
+        active_threads=[_thread("th-due", check_after_ts=due_ts, origin_type="goal_driven")],
+    )
+
+    assert decision.should_wake is True
+    assert decision.reason == REASON_CHECKPOINT_DUE_WAKE
+    assert decision.seed_hint["due_thread_ids"] == ["th-due"]
+
+    dumped = json.dumps(decision.seed_hint, ensure_ascii=False)  # 不拋例外即通過
+    assert isinstance(dumped, str)
+    assert json.loads(dumped) == decision.seed_hint
+
+    assert decision.seed_hint["due_check_after_ts"] == due_ts.isoformat()
+
+
+def test_t11_e2e_datetime_seed_hint_value_is_plain_string():
+    """T11：`datetime` 不落進 seed_hint（必須先正規化為 ISO 字串）。"""
+    decision = _call(
+        timeslot="morning",
+        active_threads=[_thread("th-due", check_after_ts=_DUE_AWARE, origin_type="goal_driven")],
+    )
+
+    value = decision.seed_hint["due_check_after_ts"]
+    assert not isinstance(value, datetime)
+    assert type(value) is str
+    assert value == _DUE_AWARE.isoformat()
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [_iso(NOW - 30), "2026-09-14T19:28:07.851959+08:00", "2026-09-14T19:28:07Z",
+     "  2026-09-14T19:28:07+00:00  "],
+    ids=["z-suffix", "offset", "second-precision", "padded"],
+)
+def test_t11_e2e_iso_string_check_after_ts_is_verbatim(stamp):
+    """T11：ISO 字串 `check_after_ts` ⇒ seed_hint 內**逐字**等於原字串（不截斷／不改寫）。"""
+    decision = _call(
+        timeslot="morning",
+        active_threads=[_thread("th-due", check_after_ts=stamp, origin_type="goal_driven")],
+    )
+
+    assert decision.should_wake is True, stamp
+    assert decision.reason == REASON_CHECKPOINT_DUE_WAKE, stamp
+
+    value = decision.seed_hint["due_check_after_ts"]
+    assert value == stamp
+    assert len(value) == len(stamp)
+    assert type(value) is str
+    json.dumps(decision.seed_hint, ensure_ascii=False)
+
+
+def test_t11_e2e_iso_string_above_cap_is_not_truncated():
+    """T11：ISO 字串長於 200 字元 ⇒ seed_hint 內仍逐字完整（str 分支不截斷）。"""
+    assert len(_LONG_ISO) > SEED_HINT_MAX_TEXT_CHARS
+
+    decision = _call(
+        timeslot="morning",
+        active_threads=[_thread("th-due", check_after_ts=_LONG_ISO, origin_type="goal_driven")],
+    )
+
+    assert decision.should_wake is True
+    assert decision.reason == REASON_CHECKPOINT_DUE_WAKE
+
+    value = decision.seed_hint["due_check_after_ts"]
+    assert value == _LONG_ISO
+    assert len(value) == len(_LONG_ISO)
+    assert len(value) > SEED_HINT_MAX_TEXT_CHARS
+    json.dumps(decision.seed_hint, ensure_ascii=False)
+
+
+def test_t11_e2e_naive_datetime_and_iso_agree_on_same_instant():
+    """T11：同一瞬間的 naive datetime 與其 ISO 字串 ⇒ 同一 WAKE 判定與同一 ISO 值。"""
+    naive_decision = _call(
+        timeslot="morning",
+        active_threads=[_thread("th-naive", check_after_ts=_DUE_NAIVE, origin_type="goal_driven")],
+    )
+    iso_decision = _call(
+        timeslot="morning",
+        active_threads=[_thread("th-iso", check_after_ts=_DUE_NAIVE.isoformat(),
+                                origin_type="goal_driven")],
+    )
+
+    assert naive_decision.should_wake is iso_decision.should_wake is True
+    assert naive_decision.reason == iso_decision.reason == REASON_CHECKPOINT_DUE_WAKE
+    assert (naive_decision.seed_hint["due_check_after_ts"]
+            == iso_decision.seed_hint["due_check_after_ts"]
+            == _DUE_NAIVE.isoformat())
