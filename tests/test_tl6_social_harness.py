@@ -119,7 +119,11 @@ def test_tl6_privacy_gate_interception():
 
 def test_tl6_runner_single_run_and_invariants(tmp_path):
     """驗證 TL6Runner 單次執行: 跑通劇本並通過四大核心不變量。"""
-    runner = TL6Runner(repo_root=REPO_ROOT, seed=42)
+    # TEST-INFRA-ISOLATION-1: harness 寫入根顯式指向 tmp，
+    # 否則會改寫生產 `data/time_lapse/**`（全庫跑實測 56 檔被改寫）。
+    runner = TL6Runner(
+        repo_root=REPO_ROOT, seed=42, harness_root=tmp_path / "tl6_harness"
+    )
     result = runner.run_once(run_id="test_run_single")
 
     assert result["run_id"] == "test_run_single"
@@ -139,9 +143,13 @@ def test_tl6_runner_single_run_and_invariants(tmp_path):
     assert (run_dir / "derived.json").exists()
 
 
-def test_tl6_runner_series_determinism_and_zero_mutation():
+def test_tl6_runner_series_determinism_and_zero_mutation(tmp_path):
     """驗證 TL6Runner 系列多跑 (3 runs): 決定性與零生產污染。"""
-    runner = TL6Runner(repo_root=REPO_ROOT, seed=42)
+    # TEST-INFRA-ISOLATION-1: harness 寫入根顯式指向 tmp，
+    # 否則會改寫生產 `data/time_lapse/**`（全庫跑實測 56 檔被改寫）。
+    runner = TL6Runner(
+        repo_root=REPO_ROOT, seed=42, harness_root=tmp_path / "tl6_harness"
+    )
     result = runner.run_series(n_runs=3)
 
     assert result["all_passed"] is True

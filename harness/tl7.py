@@ -245,20 +245,31 @@ class TL7Runner:
         seed: int = TL7_SEED,
         experiment_id: str = TL7_EXPERIMENT_ID,
         decision_llm: Optional[Callable[..., Any]] = None,
+        harness_root: Optional[Path] = None,
     ) -> None:
         self._repo_root = Path(repo_root)
         self._seed = seed
         self._experiment_id = experiment_id
         self._decision_llm = decision_llm or _StubDecisionLLM(decision="do_nothing")
+        # TEST-INFRA-ISOLATION-1（2026-09-14）: harness 写入根可注入。
+        # 默认 None ⇒ 逐位元沿用既有 `repo_root / "data" / "time_lapse"`
+        # （harness/run_tl7.py CLI 与任何既有调用端行为不变）；
+        # 测试调用端必须显式传 tmp 路径，否则全库跑会改写生产
+        # `data/time_lapse/**`（实测一次全库跑改写 72 档）。
+        self._harness_root = (
+            Path(harness_root)
+            if harness_root is not None
+            else self._repo_root / "data" / "time_lapse"
+        )
 
     # ── 单 run ───────────────────────────────────────────
 
     def run_once(self, run_id: Optional[str] = None) -> Dict[str, Any]:
         """执行一次完整的 TL-7 社交机会生命周期模拟 (Phase A→D)。"""
         run_id = run_id or _new_run_id()
-        harness_root = (
-            self._repo_root / "data" / "time_lapse" / self._experiment_id
-        )
+        # TEST-INFRA-ISOLATION-1: 写入根改用可注入的 self._harness_root
+        # （其默认值 == 既有 `repo_root/data/time_lapse`，逐位元不变）。
+        harness_root = self._harness_root / self._experiment_id
         run_dir = harness_root / run_id
 
         # 1. 隔离 data_root
@@ -538,6 +549,10 @@ class TL7Runner:
 
     def run_series(self, n_runs: int = 3) -> Dict[str, Any]:
         """多 Run 系列执行 (含 D2 决定性比对与零生产污染验证)。"""
+        # TEST-INFRA-ISOLATION-1: 零变更比对范围**刻意维持** `repo_root/data`
+        # （生产数据根）——这正是本断言的原意，且因为 harness 的写入根已改为
+        # 可注入的 `self._harness_root`（测试传 tmp），写入不再落在本范围内，
+        # 故断言范围与强度逐位元不变（不改本行）。
         before_hashes = snapshot_data_root_hashes(self._repo_root / "data")
 
         runs_output = []

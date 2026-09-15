@@ -67,7 +67,11 @@ def clean_environment():
 
 def test_tl7_runner_single_run_invariants(tmp_path):
     """TL7Runner 單次執行: 4 階段跑通, 3 大不變量全綠。"""
-    runner = TL7Runner(repo_root=REPO_ROOT, seed=42)
+    # TEST-INFRA-ISOLATION-1: harness 寫入根顯式指向 tmp，
+    # 否則會改寫生產 `data/time_lapse/**`（全庫跑實測 72 檔被改寫）。
+    runner = TL7Runner(
+        repo_root=REPO_ROOT, seed=42, harness_root=tmp_path / "tl7_harness"
+    )
     result = runner.run_once(run_id="test_run_single")
 
     assert result["run_id"] == "test_run_single"
@@ -90,9 +94,13 @@ def test_tl7_runner_single_run_invariants(tmp_path):
 # 2. Phase A — 話題湧現
 # ─────────────────────────────────────────────────────────────
 
-def test_tl7_phase_a_topic_emergence():
+def test_tl7_phase_a_topic_emergence(tmp_path):
     """Phase A: Ruka 在客廳發布 share, 事件成功進入感知 state。"""
-    runner = TL7Runner(repo_root=REPO_ROOT, seed=42)
+    # TEST-INFRA-ISOLATION-1: harness 寫入根顯式指向 tmp，
+    # 否則會改寫生產 `data/time_lapse/**`（全庫跑實測 72 檔被改寫）。
+    runner = TL7Runner(
+        repo_root=REPO_ROOT, seed=42, harness_root=tmp_path / "tl7_harness"
+    )
     result = runner.run_once(run_id="test_phase_a")
     rec = next(r for r in result["records"] if r.phase == PHASE_A)
 
@@ -104,9 +112,13 @@ def test_tl7_phase_a_topic_emergence():
 # 3. Phase B — 緊湊感知與機會生成
 # ─────────────────────────────────────────────────────────────
 
-def test_tl7_phase_b_compact_perception_and_opportunity():
+def test_tl7_phase_b_compact_perception_and_opportunity(tmp_path):
     """Phase B: Akane 緊湊感知產出 [客廳現況] (含反框架警語) + 1 筆機會 (TTL=300s)。"""
-    runner = TL7Runner(repo_root=REPO_ROOT, seed=42)
+    # TEST-INFRA-ISOLATION-1: harness 寫入根顯式指向 tmp，
+    # 否則會改寫生產 `data/time_lapse/**`（全庫跑實測 72 檔被改寫）。
+    runner = TL7Runner(
+        repo_root=REPO_ROOT, seed=42, harness_root=tmp_path / "tl7_harness"
+    )
     result = runner.run_once(run_id="test_phase_b")
     rec = next(r for r in result["records"] if r.phase == PHASE_B)
 
@@ -122,9 +134,13 @@ def test_tl7_phase_b_compact_perception_and_opportunity():
 # 4. Phase C — 意志選擇與無連鎖不變量
 # ─────────────────────────────────────────────────────────────
 
-def test_tl7_phase_c_volition_quad_and_no_cascade():
+def test_tl7_phase_c_volition_quad_and_no_cascade(tmp_path):
     """Phase C: Akane 生成 Motive, 走入 SM-4 四元單選, 0 連鎖搶話。"""
-    runner = TL7Runner(repo_root=REPO_ROOT, seed=42)
+    # TEST-INFRA-ISOLATION-1: harness 寫入根顯式指向 tmp，
+    # 否則會改寫生產 `data/time_lapse/**`（全庫跑實測 72 檔被改寫）。
+    runner = TL7Runner(
+        repo_root=REPO_ROOT, seed=42, harness_root=tmp_path / "tl7_harness"
+    )
     result = runner.run_once(run_id="test_phase_c")
     rec = next(r for r in result["records"] if r.phase == PHASE_C)
 
@@ -139,9 +155,13 @@ def test_tl7_phase_c_volition_quad_and_no_cascade():
 # 5. Phase D — 300s TTL 自然蒸發 + 0 殭屍回覆
 # ─────────────────────────────────────────────────────────────
 
-def test_tl7_phase_d_ttl_evaporation_zero_zombie():
+def test_tl7_phase_d_ttl_evaporation_zero_zombie(tmp_path):
     """Phase D: 時鐘前進 301s, 機會 TTL 自然蒸發, 渲染恢復留白, 0 殭屍回覆。"""
-    runner = TL7Runner(repo_root=REPO_ROOT, seed=42)
+    # TEST-INFRA-ISOLATION-1: harness 寫入根顯式指向 tmp，
+    # 否則會改寫生產 `data/time_lapse/**`（全庫跑實測 72 檔被改寫）。
+    runner = TL7Runner(
+        repo_root=REPO_ROOT, seed=42, harness_root=tmp_path / "tl7_harness"
+    )
     result = runner.run_once(run_id="test_phase_d")
     rec = next(r for r in result["records"] if r.phase == PHASE_D)
 
@@ -159,9 +179,13 @@ def test_tl7_phase_d_ttl_evaporation_zero_zombie():
 # 6. 3-run 確定性 + 0 生產污染
 # ─────────────────────────────────────────────────────────────
 
-def test_tl7_runner_series_determinism_and_zero_mutation():
+def test_tl7_runner_series_determinism_and_zero_mutation(tmp_path):
     """TL7Runner 系列多跑 (3 runs): D2 決定性與零生產污染。"""
-    runner = TL7Runner(repo_root=REPO_ROOT, seed=42)
+    # TEST-INFRA-ISOLATION-1: harness 寫入根顯式指向 tmp，
+    # 否則會改寫生產 `data/time_lapse/**`（全庫跑實測 72 檔被改寫）。
+    runner = TL7Runner(
+        repo_root=REPO_ROOT, seed=42, harness_root=tmp_path / "tl7_harness"
+    )
     result = runner.run_series(n_runs=3)
 
     assert result["all_passed"] is True

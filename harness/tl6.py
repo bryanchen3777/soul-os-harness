@@ -310,18 +310,29 @@ class TL6Runner:
         seed: int = TL6_SEED,
         experiment_id: str = TL6_EXPERIMENT_ID,
         script: Optional[List[TL6Tick]] = None,
+        harness_root: Optional[Path] = None,
     ) -> None:
         self._repo_root = Path(repo_root)
         self._seed = seed
         self._experiment_id = experiment_id
         self._script = script if script is not None else build_tl6_script(seed=seed)
+        # TEST-INFRA-ISOLATION-1（2026-09-14）: harness 寫入根可注入。
+        # 預設 None ⇒ 逐位元沿用既有 `repo_root / "data" / "time_lapse"`
+        # （harness/run_tl6.py CLI 與任何既有呼叫端行為不變）；
+        # 測試呼叫端必須顯式傳 tmp 路徑，否則全庫跑會改寫生產
+        # `data/time_lapse/**`（實測一次全庫跑改寫 56 檔）。
+        self._harness_root = (
+            Path(harness_root)
+            if harness_root is not None
+            else self._repo_root / "data" / "time_lapse"
+        )
 
     def run_once(self, run_id: Optional[str] = None) -> Dict[str, Any]:
         """執行一次完整的 TL-6 客廳社交情境模擬。"""
         run_id = run_id or _new_run_id()
-        harness_root = (
-            self._repo_root / "data" / "time_lapse" / self._experiment_id
-        )
+        # TEST-INFRA-ISOLATION-1: 寫入根改用可注入的 self._harness_root
+        # （其預設值 == 既有 `repo_root/data/time_lapse`，逐位元不變）。
+        harness_root = self._harness_root / self._experiment_id
         run_dir = harness_root / run_id
 
         # 1. 隔離 data_root
@@ -534,6 +545,11 @@ class TL6Runner:
 
     def run_series(self, n_runs: int = 3) -> Dict[str, Any]:
         """多 Run 系列執行 (含 D2 決定性比對與零生產污染驗證)。"""
+        # TEST-INFRA-ISOLATION-1: 零變更比對範圍**刻意維持** `repo_root/data`
+        # （生產資料根）——這正是本斷言的原意，且因為 harness 的寫入根已改為
+        # 可注入的 `self._harness_root`（測試傳 tmp），寫入不再落在本範圍內，
+        # 故 `data/time_lapse/` 既有的 `_MUTATION_SKIP_DIRS` 排除之外亦不會命中。
+        # 不改此處 = 斷言範圍與強度逐位元不變。
         before_hashes = snapshot_data_root_hashes(self._repo_root / "data")
 
         runs_output = []
