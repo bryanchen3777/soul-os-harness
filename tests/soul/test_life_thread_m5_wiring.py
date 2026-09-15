@@ -1442,6 +1442,48 @@ _FORBIDDEN_RUN_SERVER_CALLS = (
 #: （AST 的 `Name`／`Attribute`／`arg` 判定；`bus.publish` ⇒ attr `publish`）。
 _FORBIDDEN_TRIGGER_IDENTS = ("trigger_type", "publish")
 
+#: 🔴 N-02（LIFE-THREAD-M5-GUARD-FIX-2）：`_fire_life_thread_slot` 內**允許**的
+#: import 完整模組名 **精確集合**（`==` 比對，多一個、少一個都紅）。
+#:
+#: 這是**白名單**而非黑名單：舊版的 `_FORBIDDEN_MODULE_PREFIXES` 只套用在
+#: orchestrator 的 `_audit_source`，scheduler 這個新方法**沒有任何護欄** ——
+#: 實測在 `_fire_life_thread_slot` 內插入 `from src.agency import bus`，
+#: 整個 `tests/soul` 859 筆**全綠**。白名單讓「該方法內任何新 import」一律紅。
+_ALLOWED_SLOT_IMPORTS = ("src.soul.life_thread_orchestrator",)
+
+#: 🔴 N-02 雙保險（負面斷言）：`_fire_life_thread_slot` 內**不得**出現這些前綴的
+#: import。與 `_ALLOWED_SLOT_IMPORTS` 的關係：白名單是**正向精確集合等值**
+#: （任何新 import 都紅），這條是**負向前綴黑名單**（就算有人把白名單放寬，
+#: Agency／SAGE 這些「0 進入觸發鏈／0 落盤」的核心禁令仍獨立成立）。
+#: 兩者互補：白名單防漂移，黑名單防放寬，任一單獨存在都有缺口。
+_FORBIDDEN_SLOT_IMPORT_PREFIXES = ("src.agency", "src.memory.sage")
+
+
+def _slot_import_targets(tree: ast.AST) -> List[str]:
+    """`tree` 內所有 import 的**完整模組名**（含別名解析後的路徑、排序、含重複）。
+
+    - `import a.b as c` ⇒ `a.b`
+    - `import a.b`      ⇒ `a.b`
+    - `from a.b import c` ⇒ `a.b.c`
+    - `from a.b import c as d` ⇒ `a.b.c`
+    - 相對 import（`level > 0`）⇒ 跳過（無絕對模組名可比對）
+    """
+    out: List[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            out += [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                continue
+            mod = node.module or ""
+            out += [f"{mod}.{a.name}" if mod else a.name for a in node.names]
+    return sorted(out)
+
+
+def _slot_imports() -> List[str]:
+    """`_fire_life_thread_slot` **方法節點內**所有 import 的完整模組名（N-02）。"""
+    return _slot_import_targets(_scheduler_slot_tree())
+
 
 def _scheduler_tree() -> ast.AST:
     """`scheduler.py` 的 AST（F-03：所有排程器護欄的唯一輸入）。"""
@@ -1669,6 +1711,84 @@ def test_b4b_trigger_type_as_keyword_argument_is_detected():
         ident for ident in _code_only_idents(published)
         if ident in _FORBIDDEN_TRIGGER_IDENTS
     ] == ["publish"]
+
+
+def test_b7_scheduler_slot_imports_are_exact_set():
+    """🔴 N-02：`_fire_life_thread_slot` 內 import 的模組名**精確集合等值**。
+
+    證據（GUARD-FIX-2）：在該方法內插入 `from src.agency import bus`，
+    **整個 `tests/soul` 859 筆全綠** —— 因為 `_FORBIDDEN_MODULE_PREFIXES`
+    只套用在 orchestrator 的 `_audit_source`，這個 M5 新方法沒被任何護欄守到。
+
+    判準改為**白名單精確等值**（比黑名單嚴）：該方法目前只准有一個 lazy
+    import，任何新增（`src.agency`／`src.memory.sage`／甚至多餘的 `src.soul.*`）
+    都會讓 `==` 失敗。原本的 `test_b2` 只在「刪掉既有 lazy import」時紅，
+    這條補上「**多**一個 import」的缺口。
+    """
+    got = _slot_imports()
+    assert got == list(_ALLOWED_SLOT_IMPORTS), (
+        f"{_SCHEDULER_SLOT_FN} 的 import 必須是精確集合 {list(_ALLOWED_SLOT_IMPORTS)}，"
+        f"實得 {got}"
+    )
+    assert len(got) == 1, f"恰 1 個 import（currently {got}）"
+
+
+def test_b8_scheduler_slot_has_no_forbidden_module_imports():
+    """🔴 N-02 雙保險：`_fire_life_thread_slot` 內不得出現 Agency／SAGE 的 import。
+
+    與 `test_b7_scheduler_slot_imports_are_exact_set` 的關係：
+    `test_b7` 是**正向白名單精確集合等值**（防漂移）；
+    本測試是**負向前綴黑名單**（防白名單被後人放寬）。
+    兩者互補，任一單獨存在都有缺口 —— 故刻意**同時**保留。
+
+    判準一律 **AST**（`ImportFrom.module`／`Import.names`），
+    不吃文字：docstring／註解裡寫 `src.agency` 不會假紅。
+    """
+    got = _slot_imports()
+    bad = [
+        leaf for leaf in got
+        if leaf.startswith(_FORBIDDEN_SLOT_IMPORT_PREFIXES)
+    ]
+    assert bad == [], f"{_SCHEDULER_SLOT_FN} 不得 import 觸發鏈／落盤模組：{bad}"
+
+    # 判準自身的能力證明：這些**真 import** 必須被判準抓到（AST 路徑）
+    for src, expected in (
+        ("def f():\n    from src.agency import bus\n", ["src.agency.bus"]),
+        ("def f():\n    import src.memory.sage.writer\n", ["src.memory.sage.writer"]),
+        ("def f():\n    from src.agency.bus import publish\n", ["src.agency.bus.publish"]),
+        ("def f():\n    from src.agency import bus as b\n", ["src.agency.bus"]),
+    ):
+        targets = _slot_import_targets(ast.parse(src))
+        assert targets == expected, (src, targets)
+        assert [t for t in targets if t.startswith(_FORBIDDEN_SLOT_IMPORT_PREFIXES)], (
+            f"黑名單必須命中：{targets}"
+        )
+
+    # 反向：不相關的 import 不得被黑名單誤判（避免假紅）
+    #   注意 `from src.memory import sage` **會**命中（點名展開後 == `src.memory.sage`）
+    #   —— 那是正確行為，不是假紅，故對照組刻意選真正不相關的路徑。
+    for src in (
+        "def f():\n    from src.soul import life_thread_orchestrator\n",
+        "def f():\n    import json\n",
+        "def f():\n    from src.memory import recall\n",
+        "def f():\n    from src.agencies import bus\n",
+    ):
+        targets = _slot_import_targets(ast.parse(src))
+        assert [t for t in targets if t.startswith(_FORBIDDEN_SLOT_IMPORT_PREFIXES)] == [], (
+            f"不得假紅：{targets}"
+        )
+
+    # 散文不算：docstring／註解／字串常數裡的 `src.agency` 不得命中
+    prose = ast.parse(
+        'def f():\n'
+        '    """本方法不 import src.agency，也不碰 src.memory.sage。"""\n'
+        '    # from src.agency import bus  <- 只是註解\n'
+        '    s = "src.agency.bus"\n'
+        '    return s\n'
+    )
+    assert _slot_import_targets(prose) == [], (
+        f"散文不得算成 import：{_slot_import_targets(prose)}"
+    )
 
 
 def test_b5_run_server_injects_llm_proxy_with_existing_object():

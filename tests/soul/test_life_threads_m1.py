@@ -223,10 +223,14 @@ def _non_docstring_strings(tree: ast.AST) -> list[str]:
 
 
 def _identifiers_in(tree: ast.AST) -> list[str]:
-    """樹內所有**識別字**（`Name`／`Attribute`／`arg`／def・class 名）。
+    """樹內所有**識別字**（`Name`／`Attribute`／`arg`／keyword 引數名／def・class 名／import 名）。
 
     F-03：`0 命中`型護欄的 AST 判準 —— 只認**真的引用**，
     註解與 docstring 的散文不算（舊式文字比對兩者都會誤判）。
+
+    🔴 N-01（GUARD-FIX-2）：補收 `ast.alias`（`import X`／`from Y import X` 的
+    `name` 與 `asname`）。`alias.name` **是**識別字，但它是 `Import`／`ImportFrom`
+    的子節點而非 `Name` ⇒ 舊走訪**完全看不到** `from ... import IdentityFirewall`。
     """
     out: list[str] = []
     for node in ast.walk(tree):
@@ -236,9 +240,79 @@ def _identifiers_in(tree: ast.AST) -> list[str]:
             out.append(node.attr)
         elif isinstance(node, ast.arg):
             out.append(node.arg)
+        elif isinstance(node, ast.keyword) and node.arg:
+            out.append(node.arg)
+        elif isinstance(node, ast.alias):
+            out.append(node.name)
+            if node.asname:
+                out.append(node.asname)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             out.append(node.name)
     return out
+
+
+#: 🔴 N-01（LIFE-THREAD-M5-GUARD-FIX-2）：`IdentityFirewall` 的**正規化比對鍵**。
+#: 舊判準是 `name.lower() in ("identityfirewall",)` —— `.lower()` **不會移除底線**，
+#: 於是 `identity_firewall`／`IDENTITY_FIREWALL` 這兩種等價拼法全部**漏檢**
+#: （實測：在 `src/soul/life_threads.py` 植入 `identity_firewall` 真引用後，
+#: 整個 `tests/soul` 859 筆**全綠**）。正規化＝`lower()` ＋ 移除所有 `_`。
+_NORMALIZED_IDENTITY_FIREWALL = "identityfirewall"
+
+
+def _normalize_ident(name: str) -> str:
+    """識別字正規化：`lower()` ＋ 移除**所有**底線（N-01 的核心修正）。
+
+    目的：`IdentityFirewall`／`identity_firewall`／`IDENTITY_FIREWALL`／
+    `IDENTITYFIREWALL` 四種拼法在 Python 裡都是同一個物件的等價寫法，
+    護欄必須**全部**視為同一件事，否則就是「判準被弱化」。
+    """
+    return name.lower().replace("_", "")
+
+
+def _identity_firewall_hits(tree: ast.AST) -> list[str]:
+    """樹內**真的引用** `IdentityFirewall` 的識別字（已正規化比對，回原文、排序）。
+
+    收斂成單一判準函式（`_normalize_ident`）的理由：牙齒測試可以**直接餵字串**給它，
+    不必先捏一棵 AST —— 見 `test_inv4_identity_firewall_detector_has_teeth`。
+
+    ⚠️ 覆蓋面的**已知邊界**：`from src.agency.identity_firewall import IdentityFirewall`
+    的**模組路徑**在 AST 裡是 `ImportFrom.module` 的**字串**（`alias` 節點只存
+    imported 名），識別字走訪看不到它。那條路由 `_identity_firewall_path_hits`
+    以**模組點名**（另一套 AST 機制）承擔 —— 兩者互補，缺一不可。
+    """
+    return sorted({
+        name for name in _identifiers_in(tree)
+        if _normalize_ident(name) == _NORMALIZED_IDENTITY_FIREWALL
+    })
+
+
+def _identity_firewall_path_hits(tree: ast.AST) -> list[str]:
+    """樹內**模組點名**含 `identity_firewall` 的引用（AST 取的點名，非文字比對）。
+
+    補上 `_identity_firewall_hits` 的已知邊界：`from src.agency.identity_firewall
+    import IdentityFirewall` —— 就算只 import 了別的符號（甚至 `import
+    src.agency.identity_firewall` 之後只用別名），模組路徑本身就是真引用。
+    `ast.alias` 的 `asname` 也一併收（別名在同一條 import 上）。
+    """
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            out.add(node.module)
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                out.add(a.name)
+        elif isinstance(node, ast.Attribute):
+            parts: list[str] = []
+            cur: ast.AST = node
+            while isinstance(cur, ast.Attribute):
+                parts.append(cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name):
+                parts.append(cur.id)
+                out.add(".".join(reversed(parts)))
+    return sorted(
+        p for p in out if _normalize_ident(p).find(_NORMALIZED_IDENTITY_FIREWALL) >= 0
+    )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1054,17 +1128,111 @@ def test_inv4_api_requires_single_agent_id_and_blocks_traversal(soul_env):
 def test_inv4_isolation_not_delegated_to_identity_firewall():
     """§2.1：per-agent 隔離**不得依賴** `IdentityFirewall`。
 
-    🔴 F-03：改為 **AST 識別字判定**（`Name`／`Attribute`／`arg`／def・class 名）。
-    舊版的 `assert "IdentityFirewall" not in src` 是文字比對 ——
+    🔴 F-03：改為 **AST 識別字判定**（`Name`／`Attribute`／`arg`／keyword 引數名／
+    def・class 名）。舊版的 `assert "IdentityFirewall" not in src` 是文字比對 ——
     一行註解、一句 docstring、甚至一個同名字串都會讓它**假紅**；
     反過來說，只要不是**真的引用**該物件，隔離就沒有被委外。
+
+    🔴 N-01（GUARD-FIX-2）：判準由 `name.lower()` 改為 **`_normalize_ident`**
+    （`lower()` ＋ 移除所有 `_`）。舊判準漏檢 `identity_firewall`／
+    `IDENTITY_FIREWALL` 這兩種等價拼法 —— 那是一個**真漏洞**，不是理論問題。
+    牙齒見 `test_inv4_identity_firewall_detector_has_teeth`。
     """
     tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
-    hits = sorted({
-        name for name in _identifiers_in(tree)
-        if name.lower() in ("identityfirewall",)
-    })
+    hits = _identity_firewall_hits(tree)
     assert hits == [], f"隔離不得委外給 IdentityFirewall：{hits}"
+    # 模組路徑（`from src.agency.identity_firewall import ...`）由另一套 AST 機制承擔
+    path_hits = _identity_firewall_path_hits(tree)
+    assert path_hits == [], f"隔離不得委外給 identity_firewall 模組：{path_hits}"
+
+
+def test_inv4_identity_firewall_detector_has_teeth():
+    """🔴 N-01 牙齒證明：判準對**四種拼法**的分辨力（直接餵字串給判準）。
+
+    本輪修的**核心漏洞**是第 3、4 筆 —— 舊判準 `name.lower() in ("identityfirewall",)`
+    對 `identity_firewall`／`IDENTITY_FIREWALL` 一律 **MISS**。
+    最後兩筆是**反向對照組**：避免為了補漏而把判準放寬成「看到 firewall 就紅」
+    （那會變成假紅，護欄一樣失去意義）。
+    """
+    # ── DETECT：四種等價拼法（第 3、4 筆是本輪修的核心漏洞）────────────────
+    for spelling in (
+        "IdentityFirewall",   # CamelCase（舊判準已能抓）
+        "identityfirewall",   # 全小寫無底線（舊判準已能抓）
+        "identity_firewall",  # snake_case（舊判準 **MISS** ⇒ 真漏洞）
+        "IDENTITY_FIREWALL",  # 全大寫（舊判準 **MISS** ⇒ 真漏洞）
+        "IDENTITYFIREWALL",   # 全大寫無底線（等價拼法，一併釘死）
+    ):
+        assert _normalize_ident(spelling) == _NORMALIZED_IDENTITY_FIREWALL, spelling
+
+    # ── 反向對照組：不相關識別字一律 **MISS**（不得過度寬鬆變成假紅）────────
+    for other in (
+        "firewall_notes", "my_identity", "firewall", "identity",
+        "Identity", "Firewall", "wake_gate", "isolation",
+    ):
+        assert _normalize_ident(other) != _NORMALIZED_IDENTITY_FIREWALL, other
+
+    # ── 逐拼法端到端（餵真 AST）：每種拼法都必須被判準抓到 ────────────────
+    for spelling, expected in (
+        ("IdentityFirewall", ["IdentityFirewall"]),
+        ("identity_firewall", ["identity_firewall"]),
+        ("IDENTITY_FIREWALL", ["IDENTITY_FIREWALL"]),
+    ):
+        src = f"def f():\n    x = {spelling}\n    return x\n"
+        assert _identity_firewall_hits(ast.parse(src)) == expected, spelling
+
+    # `from src.agency.identity_firewall import IdentityFirewall`：
+    #   imported 名 ⇒ 識別字判準抓到；模組路徑 ⇒ 點名判準抓到（兩套機制互補）
+    imported = ast.parse(
+        "from src.agency.identity_firewall import IdentityFirewall as IF\n"
+        "def f():\n    return IF\n"
+    )
+    assert _identity_firewall_hits(imported) == ["IdentityFirewall"], (
+        _identity_firewall_hits(imported)
+    )
+    assert _identity_firewall_path_hits(imported) == ["src.agency.identity_firewall"], (
+        _identity_firewall_path_hits(imported)
+    )
+    # 只 import 模組、別名成別的符號，識別字判準看不到 ⇒ 點名判準必須獨立抓到
+    mod_only = ast.parse(
+        "def f():\n"
+        "    import src.agency.identity_firewall as fw\n"
+        "    return fw\n"
+    )
+    assert _identity_firewall_hits(mod_only) == [], _identity_firewall_hits(mod_only)
+    assert _identity_firewall_path_hits(mod_only) == ["src.agency.identity_firewall"], (
+        _identity_firewall_path_hits(mod_only)
+    )
+    # 屬性引用鏈：`agency.identity_firewall.check(...)`
+    #   （走訪 Attribute 鏈時，沿途每個前綴點名都算候選 ⇒ 用包含式斷言）
+    dotted = ast.parse("def f():\n    return agency.identity_firewall.check(1)\n")
+    assert "agency.identity_firewall" in _identity_firewall_path_hits(dotted), (
+        _identity_firewall_path_hits(dotted)
+    )
+
+    # ── 反向對照組：無關的模組路徑不得假紅 ──────────────────────────────
+    for unrelated in (
+        "src.agency.bus",
+        "src.memory.sage.writer",
+        "src.soul.life_threads",
+        "firewall_notes",
+        "identity",
+    ):
+        src = f"import {unrelated}\n"
+        assert _identity_firewall_path_hits(ast.parse(src)) == [], (
+            f"{unrelated} 不得被判準命中"
+        )
+
+    # ── 散文不算命中（AST 判準相對文字比對的**核心能力**，不得回退）─────────
+    prose = ast.parse(
+        'def f():\n'
+        '    """本模組不委外給 identity_firewall。"""\n'
+        '    # identity_firewall 只是註解\n'
+        '    s = "identity_firewall"\n'
+        '    return s\n'
+    )
+    assert _identity_firewall_hits(prose) == [], (
+        f"docstring／註解／字串常數不得算成引用：{_identity_firewall_hits(prose)}"
+    )
 
 
 def test_inv4_no_cross_agent_file_touch(soul_env):

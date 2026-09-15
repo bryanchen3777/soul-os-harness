@@ -829,36 +829,18 @@ _SCAN_SUFFIXES = frozenset({
 })
 
 
-def _scan_hits(base: Path) -> list[str]:
-    """純 Python 文字掃描（不用 shell grep），排除受測模組自身。
-
-    ⚠️ F-03.5：本函式只准用於**非 `.py` 檔**（見 `_scan_non_py_hits`）。
-    `.py` 檔的引用一律由 AST 護欄（`_scan_importers_in`）負責 ——
-    兩者**不可互相替代**：文字掃描會被註解／字串假陽性，AST 則看不到非 Python 檔。
-    """
-    hits: list[str] = []
-    if not base.exists():
-        return hits
-    self_path = MODULE_PATH.resolve()
-    for path in base.rglob("*"):
-        if not path.is_file():
-            continue
-        if path.suffix.lower() not in _SCAN_SUFFIXES:
-            continue
-        if path.resolve() == self_path:
-            continue
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        if MODULE_QUALNAME in text:
-            hits.append(str(path.relative_to(_REPO_ROOT)).replace("\\", "/"))
-    return sorted(hits)
-
-
 def _scan_non_py_hits(base: Path) -> tuple[list[str], list[str]]:
     """只掃**非 `.py`** 檔的文字引用，回 `(命中檔, 被掃描檔)`（皆 repo 相對、排序）。
 
     🔴 F-03.5：`.py` 檔**不得**走這條路（AST 才是正確判準）；這裡把「被掃描的
     非 `.py` 檔清單」一併回傳，讓呼叫端能以**具名常數**釘死覆蓋面 ——
     否則護欄會隨目錄內容漂移而靜默失去覆蓋（fail-open）。
+
+    🔴 N-03（GUARD-FIX-2）：原本並存的 `_scan_hits()`（連 `.py` 一起文字掃描的
+    舊版本）已 **0 呼叫者**，為避免後人誤讀成「仍生效的護欄」而**刪除**。
+    它的能力由本函式（非 `.py` 文字掃描）＋ `_scan_importers_in`（`.py` 的 AST
+    掃描）**完整承接**，覆蓋面未縮減。本檔**不新增**任何對 `.py` 的
+    「0 命中文字比對」型護欄（負例必 AST）。
     """
     hits: list[str] = []
     scanned: list[str] = []
