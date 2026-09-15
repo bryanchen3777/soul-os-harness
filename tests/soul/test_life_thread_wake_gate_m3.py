@@ -830,7 +830,12 @@ _SCAN_SUFFIXES = frozenset({
 
 
 def _scan_hits(base: Path) -> list[str]:
-    """純 Python 文字掃描（不用 shell grep），排除受測模組自身。"""
+    """純 Python 文字掃描（不用 shell grep），排除受測模組自身。
+
+    ⚠️ F-03.5：本函式只准用於**非 `.py` 檔**（見 `_scan_non_py_hits`）。
+    `.py` 檔的引用一律由 AST 護欄（`_scan_importers_in`）負責 ——
+    兩者**不可互相替代**：文字掃描會被註解／字串假陽性，AST 則看不到非 Python 檔。
+    """
     hits: list[str] = []
     if not base.exists():
         return hits
@@ -848,10 +853,55 @@ def _scan_hits(base: Path) -> list[str]:
     return sorted(hits)
 
 
+def _scan_non_py_hits(base: Path) -> tuple[list[str], list[str]]:
+    """只掃**非 `.py`** 檔的文字引用，回 `(命中檔, 被掃描檔)`（皆 repo 相對、排序）。
+
+    🔴 F-03.5：`.py` 檔**不得**走這條路（AST 才是正確判準）；這裡把「被掃描的
+    非 `.py` 檔清單」一併回傳，讓呼叫端能以**具名常數**釘死覆蓋面 ——
+    否則護欄會隨目錄內容漂移而靜默失去覆蓋（fail-open）。
+    """
+    hits: list[str] = []
+    scanned: list[str] = []
+    if not base.exists():
+        return hits, scanned
+    self_path = MODULE_PATH.resolve()
+    for path in sorted(base.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in _SCAN_SUFFIXES:
+            continue
+        if path.suffix.lower() == ".py":
+            continue  # ← 由 AST importer 護欄負責
+        if path.resolve() == self_path:
+            continue
+        rel = str(path.relative_to(_REPO_ROOT)).replace("\\", "/")
+        scanned.append(rel)
+        if MODULE_QUALNAME in path.read_text(encoding="utf-8", errors="ignore"):
+            hits.append(rel)
+    return sorted(hits), sorted(scanned)
+
+
+#: M3 護欄的**掃描基底**（F-03.4）：恰為這四個目錄。
+#: ⚠️ 原本 `_m3_production_scan()` 把基底**寫死**成 `("src","scripts")`（`:928`），
+#: 而被它取代的 `git grep <MODULE> -- src scripts configs` 原本**含 `configs`**
+#: ⇒ 覆蓋變窄且無替代測試。現以 tuple 精確等值釘死
+#: （見 `test_t7_guard_scan_bases_are_pinned`），與 M1／M4 的護欄覆蓋面對齊。
+_M3_SCAN_BASES = ("src", "scripts", "configs", "clients")
+
 #: LIFE-THREAD-M5 接線後：M3 的**生產 importer 白名單恰為** orchestrator 一個。
 #: 不變量未被放寬 —— 由「0 命中」升級成「**恰好** 1 個、且只能是它」，
 #: 並以 AST 掃描 import 語句（註解／字串不算），比原始文字比對更嚴。
 _M3_IMPORTER_WHITELIST = ("src/soul/life_thread_orchestrator.py",)
+
+#: 🔴 F-03.5：`configs/**`／`clients/**` 內**非 `.py`** 檔的實測數量（把覆蓋面寫死）。
+#: 這兩個目錄的 `.py` 檔改由 AST importer 護欄（`_M3_SCAN_BASES`）負責；
+#: 本表的非 `.py` 檔（yaml/json/txt…）**無法** AST 化，故保留文字掃描，
+#: 但以「被掃描檔案數 == 實測值」釘死 ⇒ 覆蓋面**無法靜默縮小**
+#: （新增一個檔案就會紅，逼人回來確認它是否引用了 M3）。
+_M3_NON_PY_SCANNED_COUNTS = {
+    "configs": 2,
+    "clients": 4,
+}
 
 #: 🔴 F5：`ast.parse` **無法解析**的 `.py`（相對 repo 根、排序）。
 #: 舊版 `_scan_importers_in` 是 `except Exception: continue` ⇒ 這些檔案的 import
@@ -866,6 +916,14 @@ _M3_UNPARSABLE_WHITELIST = (
 
 #: M3 的真正消費點必須**掛在 scheduler 的 slot 觸發窗**上（比對掛載函式名）。
 _M3_SCHEDULER_MOUNT = "_fire_life_thread_slot"
+
+
+def _find_fn(tree: ast.AST, name: str) -> ast.AST:
+    """找 `name` 的函式節點（同步／非同步皆可）；找不到 ⇒ 直接紅（F-03.6）。"""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return node
+    raise AssertionError(f"找不到函式 {name}()（護欄的比對基準消失了）")
 
 
 def _imports_m3(tree: ast.AST) -> bool:
@@ -922,10 +980,14 @@ def _scan_importers_in(root: Path) -> tuple[list[str], list[str]]:
 
 
 def _m3_production_scan() -> tuple[list[str], list[str]]:
-    """`src/**` ＋ `scripts/**`：回 `(真 import M3 的檔, 無法解析的檔)`（repo 相對、排序）。"""
+    """`_M3_SCAN_BASES`（4 目錄）：回 `(真 import M3 的檔, 無法解析的檔)`（repo 相對、排序）。
+
+    🔴 F-03.4：基底由寫死的 `("src","scripts")` 改為 `_M3_SCAN_BASES`
+    （`("src","scripts","configs","clients")`），覆蓋面回復到與舊 `git grep` 同等。
+    """
     hits: list[str] = []
     unparsable: list[str] = []
-    for base in ("src", "scripts"):
+    for base in _M3_SCAN_BASES:
         h, u = _scan_importers_in(_REPO_ROOT / base)
         hits += [f"{base}/{rel}" for rel in h]
         unparsable += [f"{base}/{rel}" for rel in u]
@@ -933,7 +995,7 @@ def _m3_production_scan() -> tuple[list[str], list[str]]:
 
 
 def _m3_production_importers() -> list[str]:
-    """`src/**` ＋ `scripts/**` 內**真正 import** M3 的檔案（相對路徑、排序）。"""
+    """`_M3_SCAN_BASES` 內**真正 import** M3 的檔案（相對路徑、排序）。"""
     return _m3_production_scan()[0]
 
 
@@ -945,6 +1007,16 @@ def test_t7_m3_importer_whitelist_is_exactly_orchestrator():
     連「多加一行提到模組名的註解」都不算命中，反之真 import 一定命中。
     """
     assert _m3_production_importers() == list(_M3_IMPORTER_WHITELIST)
+
+
+def test_t7_guard_scan_bases_are_pinned():
+    """🔴 F-03.4：M3 AST importer 掃描基底**精確等於**四目錄（不得靜默縮小）。
+
+    舊版把基底**寫死**在 `_m3_production_scan()` 內（`("src","scripts")`），
+    沒有任何斷言釘死它 ⇒ 覆蓋面可以靜默縮小。現在以 tuple 精確等值釘死。
+    """
+    assert _M3_SCAN_BASES == ("src", "scripts", "configs", "clients")
+
 
 
 def test_t7_unparsable_py_files_are_explicitly_whitelisted():
@@ -1002,14 +1074,29 @@ def test_t7_m3_importer_scan_has_teeth(tmp_path):
 def test_t7_orchestrator_is_mounted_in_scheduler_exactly_once():
     """T7（M5 新增）：orchestrator 在 `scheduler.py` 內被**掛載恰一次**且落在 slot 窗。
 
-    以「掛載函式名」比對（不用模組名，避免被註解提及誤導）。
+    🔴 F-03.6：舊版是 `src.count("self._fire_life_thread_slot(") == 1` 的**文字計數**，
+    字串／註解都能讓它失真。現在改為 **AST 節點計數**：
+    `_run_loop` 內對 `self._fire_life_thread_slot` 的 `ast.Call` 恰 1 個；
+    並確認掛載判據仍是既有的 `_slot_for_time`（走訪節點，不新增定時器）。
     """
-    src = (_REPO_ROOT / "src" / "soul" / "scheduler.py").read_text(encoding="utf-8")
-    assert src.count(f"self.{_M3_SCHEDULER_MOUNT}(") == 1, "scheduler 掛載點必須恰 1 處"
-    assert f"async def {_M3_SCHEDULER_MOUNT}(" in src
-    # 掛載點必須在既有 slot 判據上（沿用 _slot_for_time，不新增定時器）
-    assert "_slot_for_time" in src
-    assert "life_thread_orchestrator" in src, "orchestrator 必須被 lazy import 進 scheduler"
+    tree = ast.parse((_REPO_ROOT / "src" / "soul" / "scheduler.py").read_text(
+        encoding="utf-8"
+    ))
+    loop = _find_fn(tree, "_run_loop")
+    mounts = [
+        node for node in ast.walk(loop)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == _M3_SCHEDULER_MOUNT
+    ]
+    assert len(mounts) == 1, f"scheduler 掛載點必須恰 1 處：{[m.lineno for m in mounts]}"
+
+    slot_defs = [
+        node for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "_slot_for_time"
+    ]
+    assert len(slot_defs) == 1, f"_slot_for_time 必須恰 1 個：{len(slot_defs)}"
 
 
 @pytest.mark.parametrize("relative", ["src/llm/proxy.py", "configs/default.yaml"])
@@ -1033,12 +1120,28 @@ def test_t7_module_itself_exists_and_is_scanned_target():
 
 @pytest.mark.parametrize("subdir", ["configs", "clients"])
 def test_t7_non_python_dirs_still_zero_reference(subdir):
-    """T7（保留原覆蓋）：`configs/**`／`clients/**` 仍為 **0 命中**（涵蓋非 .py 檔）。
+    """T7（保留原覆蓋）：`configs/**`／`clients/**` 的**非 `.py`** 檔仍為 0 命中。
 
-    M5 的接線只允許發生在 `src/soul/life_thread_orchestrator.py`（＋scheduler 掛載），
-    設定檔與其他 client 一律不得引用 M3。
+    🔴 F-03.5 的必要說明：**本測試僅涵蓋非 `.py` 檔**（yaml／json／txt…）。
+    AST 對非 Python 檔**不可能**成立，故這裡保留文字掃描；反過來說，
+    這兩個目錄的 `.py` 檔引用**由 AST importer 護欄負責**
+    （`test_t7_m3_importer_whitelist_is_exactly_orchestrator` ＋
+    `test_t7_guard_scan_bases_are_pinned`，基底含 configs／clients）。
+    ⇒ **兩者不可互相替代**：拿掉任一邊都會留下真實的覆蓋缺口。
+
+    🔴 覆蓋面釘死：被掃描的非 `.py` 檔數必須**等於**具名常數
+    `_M3_NON_PY_SCANNED_COUNTS[subdir]`（實測值）——否則目錄內容漂移時，
+    護欄會靜默失去覆蓋（舊版就是這樣：整體覆蓋由 4 目錄縮成 configs/clients 卻無人察覺）。
     """
-    assert _scan_hits(_REPO_ROOT / subdir) == []
+    base = _REPO_ROOT / subdir
+    hits, scanned = _scan_non_py_hits(base)
+    assert len(scanned) == _M3_NON_PY_SCANNED_COUNTS[subdir], (
+        f"{subdir} 被掃描的非 .py 檔數變了（{len(scanned)} != "
+        f"{_M3_NON_PY_SCANNED_COUNTS[subdir]}）⇒ 覆蓋面已漂移，請確認新檔案是否引用 M3："
+        f"{scanned}"
+    )
+    assert scanned, f"{subdir} 不得為空（空掃描 = 假綠）"
+    assert hits == [], hits
 
 
 # ══════════════════════════════════════════════════════════════

@@ -1019,11 +1019,27 @@ def test_95_cancelled_error_propagates(iso_env, monkeypatch):
 
 
 def test_96_cancelled_error_source_is_explicit_reraise():
-    """原始碼層：orchestrator 必須顯式 `except asyncio.CancelledError: raise`。"""
-    src = MODULE_PATH.read_text(encoding="utf-8")
-    assert "except asyncio.CancelledError:" in src
-    idx = src.index("except asyncio.CancelledError:")
-    assert "raise" in src[idx:idx + 120]
+    """原始碼層：orchestrator 必須顯式 `except asyncio.CancelledError: raise`。
+
+    🔴 F-04：舊版用 `src[idx:idx + 120]` 的**固定字元窗**找 `raise` —— 窗內多幾行
+    註解就會滑出窗外而**靜默空轉**。改以 AST 判定：存在一個 `except` 處理器，
+    其型別為 `asyncio.CancelledError`，且**處理器體內有 `raise`**。
+    """
+    tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
+    handlers = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.ExceptHandler) and node.type is not None
+    ]
+    cancelling = [
+        h for h in handlers
+        if _dotted_name(h.type) in ("asyncio.CancelledError", "CancelledError")
+    ]
+    assert cancelling, "必須顯式攔 `asyncio.CancelledError`（不得只靠 except Exception）"
+    assert any(
+        isinstance(stmt, ast.Raise) for h in cancelling for stmt in h.body
+    ), "攔到 CancelledError 後必須顯式 re-raise"
+    # `asyncio.CancelledError` 必須真的可解析（不得是字串／註解）
+    assert "asyncio" in _leaf_imports(tree), _leaf_imports(tree)
 
 
 def test_97_cancelled_error_not_swallowed_in_pipeline(iso_env, monkeypatch):
@@ -1140,6 +1156,39 @@ def _non_docstring_strings(tree: ast.AST) -> List[str]:
     return out
 
 
+def _code_only_idents(tree: ast.AST) -> List[str]:
+    """收集**非 docstring**（＝真的 code）區域的識別字。
+
+    F-03.1 的「code-only 命中為 0」判準：`_identifiers_and_dotted` 會把
+    文件字串裡的散文字（`ast.Constant`）也當成 `Name`／`Attribute` 節點走訪到，
+    故先標記 docstring 的位置，再只收非 docstring 子樹。
+    """
+    doc_positions = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            body = getattr(node, "body", None)
+            if body and isinstance(body[0], ast.Expr) and isinstance(
+                body[0].value, ast.Constant
+            ) and isinstance(body[0].value.value, str):
+                doc_positions.add(id(body[0].value))
+    out: List[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and id(node) in doc_positions:
+            continue
+        if isinstance(node, ast.Name):
+            out.append(node.id)
+        elif isinstance(node, ast.Attribute):
+            out.append(node.attr)
+        elif isinstance(node, ast.arg):
+            out.append(node.arg)
+        elif isinstance(node, ast.keyword) and node.arg is not None:
+            out.append(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.append(node.name)
+    return out
+
+
 def _calls_named(tree: ast.AST) -> List[str]:
     """所有被呼叫的函式／屬性名（含 `f()` 與 `x.f()` 兩種形態）。"""
     names: List[str] = []
@@ -1151,6 +1200,114 @@ def _calls_named(tree: ast.AST) -> List[str]:
             elif isinstance(func, ast.Name):
                 names.append(func.id)
     return names
+
+
+# ──────────────────────────────────────────────────────────────
+# AST 定位輔助（LIFE-THREAD-M5-GUARD-FIX F-03／F-04）
+# ──────────────────────────────────────────────────────────────
+
+
+def _find_function(tree: ast.AST, name: str) -> ast.AST:
+    """找 `name` 的函式節點（同步／非同步皆可，**含類別方法**）；找不到 ⇒ 直接紅。
+
+    F-04：取代「`src.index(...)` ＋ 固定字元窗切片」—— 後者函式一長就滑出窗外，
+    護欄變成**靜默空轉**（fail-open）。AST 節點自帶 `lineno`／`end_lineno`，
+    範圍由 Python 剖析器決定，與函式長度無關。
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return node
+    raise AssertionError(f"找不到函式 {name}()（護欄的比對基準消失了）")
+
+
+def _find_module_level_function(tree: ast.AST, name: str) -> ast.AST:
+    """只找**模組層**（含類別內的直屬方法）的 `name`；重複 ⇒ 紅。"""
+    hits = []
+    for node in getattr(tree, "body", []):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            hits.append(node)
+        elif isinstance(node, ast.ClassDef):
+            for sub in node.body:
+                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)) and sub.name == name:
+                    hits.append(sub)
+    assert len(hits) == 1, f"{name}() 必須恰 1 個定義：{len(hits)}"
+    return hits[0]
+
+
+def _function_source(src: str, tree: ast.AST, name: str) -> str:
+    """以 AST 的 `lineno`／`end_lineno` 切出 `name()` 的**確切原始碼範圍**（F-04）。"""
+    node = _find_function(tree, name)
+    return "\n".join(src.splitlines()[node.lineno - 1:node.end_lineno])
+
+
+def _dotted_name(node: ast.AST) -> str:
+    """把 `Attribute`／`Name` 鏈攤平成點名（`bus.publish` ⇒ `"bus.publish"`）。"""
+    parts: List[str] = []
+    cur = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        parts.append(cur.id)
+    else:
+        return ""
+    return ".".join(reversed(parts))
+
+
+def _identifiers_and_dotted(tree: ast.AST) -> List[str]:
+    """收集樹內所有**識別字**（`Name` id、`Attribute` attr、`arg` arg、def/class 名，
+    以及**關鍵字引數名** `ast.keyword.arg`）。
+
+    ⚠️ 關鍵字引數名**必須**納入：`logger.debug(trigger_type='x')` 的
+    `trigger_type` 只存在於 `ast.keyword.arg`，不算 `Name`／`Attribute`
+    ⇒ 漏掉它就是一个真實的**假陰性**縫（本票實測抓到，已補並加牙齒測試）。
+    """
+    out: List[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            out.append(node.id)
+        elif isinstance(node, ast.Attribute):
+            out.append(node.attr)
+        elif isinstance(node, ast.arg):
+            out.append(node.arg)
+        elif isinstance(node, ast.keyword) and node.arg is not None:
+            out.append(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.append(node.name)
+    return out
+
+
+def _module_aliases(tree: ast.AST) -> Dict[str, str]:
+    """`import ... as` / `from ... import ... as` 的別名表（別名 ⇒ 原始模組路徑）。
+
+    用來讓護欄**認人而非認字**：被注入的模組若改了別名，具名斷言不該假紅／假綠。
+    """
+    aliases: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                aliases[a.asname or a.name.split(".")[0]] = a.name
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            for a in node.names:
+                aliases[a.asname or a.name] = f"{mod}.{a.name}" if mod else a.name
+    return aliases
+
+
+def _resolve_alias(aliases: Dict[str, str], dotted: str) -> str:
+    """把點名的**根**換成原始模組路徑（`_lt_origins.set_llm_proxy` ⇒ 全名）。"""
+    root, _, rest = dotted.partition(".")
+    full = aliases.get(root)
+    if full is None:
+        return dotted
+    return f"{full}.{rest}" if rest else full
+
+
+def _walk_calls(tree: ast.AST):
+    """產生 `(被呼叫者的點名, ast.Call)` —— `f()`／`x.f()`／`a.b.c()` 都攤平。"""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            yield _dotted_name(node.func), node
 
 
 def test_a0_orchestrator_has_zero_forbidden_constructs():
@@ -1242,7 +1399,10 @@ def test_a5_orchestrator_does_not_touch_life_threads_file_path():
     tree = ast.parse(src)
     assert "life_threads_path" not in _calls_named(tree)
     assert "LIFE_THREADS_FILENAME" not in _calls_named(tree)
-    assert "LIFE_THREADS_FILENAME" not in src
+    # 🔴 F-03：「0 命中」改為 **AST 識別字**判定（舊版是 `not in src` 的全文文字比對）
+    assert "LIFE_THREADS_FILENAME" not in _identifiers_and_dotted(tree), (
+        "M1 的檔名常數不得被 orchestrator 引用（寫入一律經 M1 公開 API）"
+    )
     for text in _non_docstring_strings(tree):
         assert "life_threads.jsonl" not in text, text
         assert "life_threads_path" not in text, text
@@ -1261,81 +1421,328 @@ def test_a6_orchestrator_reads_only_perception_trace():
 # ══════════════════════════════════════════════════════════════
 
 
-def _run_loop_body() -> str:
-    src = SCHEDULER_PATH.read_text(encoding="utf-8")
-    start = src.find("async def _run_loop")
-    end = src.find("async def _goal_scan_all")
-    assert start != -1 and end > start
-    return src[start:end]
+#: 🔴 F-03：`.py` 檔的護欄一律用 **AST 節點判定**；字元層的 `in text`／`str.count`
+#: 只准用在**非 `.py` 檔**（見 §F-03.5 的說明）。
+_SCHEDULER_SLOT_FN = "_fire_life_thread_slot"
+_RUN_LOOP_FN = "_run_loop"
+
+#: `run_server.py` 對 M4 唯一**允許**的呼叫；集合精確等值（多一個呼叫就紅）。
+_ALLOWED_RUN_SERVER_ORIGINS_CALLS = ("set_llm_proxy",)
+
+#: `run_server.py` 不得出現的 M4／M5 入口呼叫（0 個 `ast.Call` 節點）。
+_FORBIDDEN_RUN_SERVER_CALLS = (
+    "run_origin_round",
+    "build_origin_prompt",
+    "apply_actions",
+    "run_slot_pipeline",
+    "life_thread_orchestrator",
+)
+
+#: 🔴 F-03.1：`_fire_life_thread_slot` 不得洩漏的**觸發鏈識別字**
+#: （AST 的 `Name`／`Attribute`／`arg` 判定；`bus.publish` ⇒ attr `publish`）。
+_FORBIDDEN_TRIGGER_IDENTS = ("trigger_type", "publish")
+
+
+def _scheduler_tree() -> ast.AST:
+    """`scheduler.py` 的 AST（F-03：所有排程器護欄的唯一輸入）。"""
+    return ast.parse(SCHEDULER_PATH.read_text(encoding="utf-8"))
+
+
+def _scheduler_slot_tree() -> ast.AST:
+    """`_fire_life_thread_slot` 的**函式節點**（AST 取範圍，非固定字元窗）。"""
+    return _find_function(_scheduler_tree(), _SCHEDULER_SLOT_FN)
+
+
+def _run_loop_tree() -> ast.AST:
+    """`_run_loop` 的**函式節點**（F-04：取代 `src.find(...)` 的字元切片）。"""
+    return _find_function(_scheduler_tree(), _RUN_LOOP_FN)
+
+
+def _count_sleep_calls(tree: ast.AST, seconds: int) -> int:
+    """AST 計數：`*.sleep(<seconds>)` 的呼叫節點數（引數須為字面整數）。"""
+    n = 0
+    for dotted, call in _walk_calls(tree):
+        if not dotted.endswith("sleep") or len(call.args) != 1:
+            continue
+        arg = call.args[0]
+        if isinstance(arg, ast.Constant) and arg.value == seconds:
+            n += 1
+    return n
+
+
+def _count_while_nodes(tree: ast.AST) -> int:
+    """AST 計數：`ast.While` 節點數。"""
+    return sum(1 for node in ast.walk(tree) if isinstance(node, ast.While))
 
 
 def test_b0_scheduler_sleep_and_while_counts_unchanged():
-    """`asyncio.sleep(30)` 恰 2 處；`_run_loop` 內 `while` 恰 1 處（0 新定時器）。"""
-    src = SCHEDULER_PATH.read_text(encoding="utf-8")
-    assert src.count("asyncio.sleep(30)") == 2, "0 新定時器：主循環 + except 恢復各一"
-    assert _run_loop_body().count("while ") == 1
+    """`asyncio.sleep(30)` 恰 2 處；`_run_loop` 內 `while` 恰 1 處（0 新定時器）。
+
+    🔴 F-03.3：改用 **AST 節點計數**（`Call(Attribute(attr='sleep'))` 且引數為 `30`；
+    `ast.While` 節點數）。舊版的 `src.count("asyncio.sleep(30)")` 是**文字比對**：
+    註解／字串裡的同字串會假陽性，而 `await asyncio.sleep(30)` 一旦改寫成
+    `asyncio.sleep(SLEEP_SECS)`（語意完全相同）就**假陰性** —— 兩種都讓「0 新定時器」
+    這個不變量量測失真。
+    """
+    tree = _scheduler_tree()
+    assert _count_sleep_calls(tree, 30) == 2, "0 新定時器：主循環 + except 恢復各一"
+    assert _count_while_nodes(_run_loop_tree()) == 1
 
 
 def test_b1_scheduler_mounts_slot_pipeline_exactly_once():
-    """`_fire_life_thread_slot` 被呼叫**恰 1 處**，且**在** `_fire_periodic_narrative` **之後**。"""
-    src = SCHEDULER_PATH.read_text(encoding="utf-8")
-    assert src.count("self._fire_life_thread_slot(") == 1
-    assert "async def _fire_life_thread_slot(self, now" in src
-    mount = src.index("self._fire_life_thread_slot(now)")
-    narrative = src.index("await self._fire_periodic_narrative()")
-    health = src.index("if (now.timestamp() - last_health_log)")
-    assert narrative < mount < health, "掛載點必須在 period narrative 之後、健康 log 之前"
+    """`_fire_life_thread_slot` 被呼叫**恰 1 處**，且**在** `_fire_periodic_narrative` **之後**。
+
+    🔴 F-03.6：改為 AST —— 掛載點是 `_run_loop` 內的 `ast.Call` 節點，順序以
+    `lineno` 判定（而非 `src.index` 的字元位移，後者會被註解與字串位移欺騙）。
+    """
+    loop = _run_loop_tree()
+    mounts = [c for d, c in _walk_calls(loop) if d.endswith(f"self.{_SCHEDULER_SLOT_FN}")]
+    assert len(mounts) == 1, f"掛載點必須恰 1 處：{[m.lineno for m in mounts]}"
+    mount = mounts[0]
+
+    _slot_fn = _scheduler_slot_tree()  # 方法本體必須存在且簽名帶 now
+    args = _slot_fn.args.args
+    assert [a.arg for a in args][1:] == ["now"], [a.arg for a in args]
+
+    narrative = [
+        c for d, c in _walk_calls(loop) if d.endswith("_fire_periodic_narrative")
+    ]
+    assert len(narrative) == 1, [c.lineno for c in narrative]
+
+    # 健康 log：`_run_loop` 內讀寫 `last_health_log` 的**比較**語句
+    health = [
+        node for node in ast.walk(loop)
+        if isinstance(node, ast.Compare)
+        and any(
+            isinstance(x, ast.Name) and x.id == "last_health_log"
+            for x in ast.walk(node)
+        )
+    ]
+    assert len(health) == 1, [h.lineno for h in health]
+
+    assert narrative[0].lineno < mount.lineno < health[0].lineno, (
+        "掛載點必須在 period narrative 之後、健康 log 之前："
+        f"narrative@{narrative[0].lineno} mount@{mount.lineno} health@{health[0].lineno}"
+    )
 
 
 def test_b2_scheduler_slot_method_skeleton_is_protocol_matched():
-    """新方法逐字照抄 `_fire_periodic_narrative` 骨架：lazy import 在 try 內 + fail-closed。"""
+    """新方法逐字照抄 `_fire_periodic_narrative` 骨架：lazy import 在 try 內 + fail-closed。
+
+    🔴 F-04：不再用 `src[idx:idx + 1400]` 的**固定字元窗**（實測函式 1045 字元、
+    餘裕僅 355 字元 ⇒ 一長就滑出窗外、護欄靜默空轉）。改以 AST 節點範圍切出
+    確切的函式原始碼；「lazy import 在 try 內」也由**節點範圍從屬關係**判定
+    （`ImportFrom` 的 `lineno` 落在 `Try` 的 `lineno..end_lineno` 之間）。
+    """
     src = SCHEDULER_PATH.read_text(encoding="utf-8")
-    idx = src.index("async def _fire_life_thread_slot")
-    body = src[idx:idx + 1400]
-    assert "if not self._all_agents:" in body
-    assert 'if slot not in ("morning", "night"):' in body
-    assert "try:" in body
-    assert "from src.soul import life_thread_orchestrator" in body
-    assert "await _lt_orchestrator.run_slot_pipeline(list(self._all_agents), now, slot)" in body
-    assert "except Exception as e:" in body
-    assert "logger.warning" in body
-    # lazy import 必須在 try 內（與 _fire_periodic_narrative 同構）
-    assert body.index("try:") < body.index("from src.soul import life_thread_orchestrator")
+    tree = _scheduler_tree()
+    fn = _find_function(tree, _SCHEDULER_SLOT_FN)
+    body_src = _function_source(src, tree, _SCHEDULER_SLOT_FN)
+
+    assert "if not self._all_agents:" in body_src
+    assert 'if slot not in ("morning", "night"):' in body_src
+    assert "except Exception as e:" in body_src
+    assert "logger.warning" in body_src
+
+    lazy = [
+        node for node in ast.walk(fn)
+        if isinstance(node, ast.ImportFrom)
+        and (node.module or "") == "src.soul"
+        and any(a.name == "life_thread_orchestrator" for a in node.names)
+    ]
+    assert len(lazy) == 1, f"lazy import 恰 1 處：{[n.lineno for n in lazy]}"
+
+    tries = [node for node in ast.walk(fn) if isinstance(node, ast.Try)]
+    assert tries, "必須有 try（fail-closed 骨架）"
+    inside = [
+        t for t in tries
+        if t.lineno <= lazy[0].lineno <= (t.end_lineno or t.lineno)
+    ]
+    assert inside, "lazy import 必須在 try 內（與 _fire_periodic_narrative 同構）"
+
+    pipeline = [
+        c for d, c in _walk_calls(fn) if d.endswith("run_slot_pipeline")
+    ]
+    assert len(pipeline) == 1, [c.lineno for c in pipeline]
+    assert "".join(ast.unparse(a) for a in pipeline[0].args)
 
 
 def test_b3_scheduler_slot_criteria_unchanged():
-    """`_slot_for_time` 判據不動（±60s 窗、morning/night 兩點）。"""
-    src = SCHEDULER_PATH.read_text(encoding="utf-8")
-    assert "if 0 <= diff < 60:" in src
-    assert 'for slot, t in [("morning", self.morning_time), ("night", self.night_time)]' in src
-    assert src.count("def _slot_for_time") == 1
+    """`_slot_for_time` 判據不動（±60s 窗、morning/night 兩點）。
+
+    🔴 F-03.6：改為 AST —— `def _slot_for_time` 恰 1 個節點、比較式為
+    `0 <= diff < 60`、迴圈走訪的是 `[("morning", morning_time), ("night", night_time)]`。
+    """
+    tree = _scheduler_tree()
+    fn = _find_module_level_function(tree, "_slot_for_time")
+    defs = [fn]
+    assert len(defs) == 1, f"_slot_for_time 必須恰 1 個：{len(defs)}"
+
+    compares = [
+        ast.unparse(node) for node in ast.walk(defs[0])
+        if isinstance(node, ast.Compare)
+        and any(isinstance(op, ast.Lt) for op in node.ops)
+    ]
+    assert "0 <= diff < 60" in compares, compares
+
+    slots = [
+        node for node in ast.walk(defs[0])
+        if isinstance(node, ast.For) and isinstance(node.iter, (ast.List, ast.Tuple))
+    ]
+    assert len(slots) == 1, [n.lineno for n in slots]
+    literal = ast.unparse(slots[0].iter)
+    assert "'morning'" in literal and "'night'" in literal, literal
+    assert "self.morning_time" in literal and "self.night_time" in literal, literal
 
 
 def test_b4_scheduler_does_not_leak_new_event_types():
-    """排程器不得新增 `trigger_type`／`bus.publish`（0 進入 Agency 觸發鏈）。"""
-    src = SCHEDULER_PATH.read_text(encoding="utf-8")
-    idx = src.index("async def _fire_life_thread_slot")
-    body = src[idx:idx + 1400]
-    assert "trigger_type" not in body
-    assert "publish" not in body
+    """排程器不得新增 `trigger_type`／`bus.publish`（0 進入 Agency 觸發鏈）。
+
+    🔴 F-03.1：舊版是 `assert "trigger_type" not in body` 的**文字比對**（0 命中型），
+    且 `body` 還是固定 1400 字元窗（F-04）。現在改為對
+    `_fire_life_thread_slot` 的 **AST 子樹**掃 `Name`／`Attribute`／`arg` 識別字，
+    並斷言 **code-only 命中為 0**：
+    `bus.publish` ⇒ `Attribute(value=Name('bus'), attr='publish')` 會被抓到，
+    而**文件字串／註解裡的同名散文不算**（舊版反而會被註解假陽性）。
+    """
+    fn = _scheduler_slot_tree()
+    hits = sorted({
+        ident for ident in _identifiers_and_dotted(fn)
+        if ident in _FORBIDDEN_TRIGGER_IDENTS
+    })
+    assert hits == [], f"{_SCHEDULER_SLOT_FN} 不得出現觸發鏈識別字：{hits}"
+
+    dotted = sorted({d for d, _c in _walk_calls(fn) if d})
+    assert not any(d.endswith(".publish") for d in dotted), dotted
+
+    # code-only 證明：docstring 的散文不得被算進去（舊版文字比對會誤抓）
+    prose = ast.parse(
+        'def f():\n'
+        '    """本方法不 publish、不新增 trigger_type。"""\n'
+        '    return 1\n'
+    )
+    doc = prose.body[0].body[0].value.value
+    assert _FORBIDDEN_TRIGGER_IDENTS[0] in doc, (
+        "docstring 內確實含禁用詞（用來證明判準有區分能力）"
+    )
+    prose_hits = [
+        ident for ident in _code_only_idents(prose)
+        if ident in _FORBIDDEN_TRIGGER_IDENTS
+    ]
+    assert prose_hits == [], f"docstring 散文不得被算成 code 命中：{prose_hits}"
+    # 對照：docstring 的**散文**（非 docstring 物件）若被文字比對掃到就會假陽性
+    assert any(b in doc for b in _FORBIDDEN_TRIGGER_IDENTS), doc
+
+
+def test_b4b_trigger_type_as_keyword_argument_is_detected():
+    """牙齒證明（🔴 變異測試抓到的真實假陰性）：`trigger_type=` **關鍵字引數**必須被 DETECT。
+
+    本票的變異測試在 `_fire_life_thread_slot` 內插入
+    `logger.debug(trigger_type='life_thread')`，舊判準（只掃 `Name`／`Attribute`）
+    **完全看不到** —— 因為關鍵字引數名只存在於 `ast.keyword.arg`。
+    這裡把「真關鍵字引數 ⇒ 命中」與「docstring 散文明講 ⇒ 不命中」釘死成兩筆斷言。
+    """
+    leaked = ast.parse(
+        "def f():\n"
+        "    logger.debug(trigger_type='life_thread')\n"
+        "    return 1\n"
+    )
+    hits = sorted({
+        ident for ident in _code_only_idents(leaked)
+        if ident in _FORBIDDEN_TRIGGER_IDENTS
+    })
+    assert hits == ["trigger_type"], hits
+
+    prose = ast.parse(
+        'def f():\n'
+        '    """不新增 trigger_type。"""\n'
+        '    return 1\n'
+    )
+    assert [
+        ident for ident in _code_only_idents(prose)
+        if ident in _FORBIDDEN_TRIGGER_IDENTS
+    ] == []
+
+    # 真 `bus.publish` 也要命中（Attribute 路徑）
+    published = ast.parse("def f():\n    bus.publish(x)\n")
+    assert [
+        ident for ident in _code_only_idents(published)
+        if ident in _FORBIDDEN_TRIGGER_IDENTS
+    ] == ["publish"]
 
 
 def test_b5_run_server_injects_llm_proxy_with_existing_object():
-    """C 節：`scripts/run_server.py` 用**既有** LLM proxy 物件注入 M4 接縫。"""
+    """C 節：`scripts/run_server.py` 用**既有** LLM proxy 物件注入 M4 接縫。
+
+    🔴 F-03.2／F-03.6：改為 AST。斷言的是**節點事實**而非字串：
+    `from src.soul import life_thread_origins as <alias>` 恰 1 筆（別名不拘，靠
+    `_module_aliases()` 解析），且該別名上的 `set_llm_proxy(llm)` 恰 1 次、
+    引數是既有的 `llm` 物件；注入順序以 `lineno` 判定。
+    """
     src = RUN_SERVER_PATH.read_text(encoding="utf-8")
-    assert "from src.soul import life_thread_origins as _lt_origins" in src
-    assert "_lt_origins.set_llm_proxy(llm)" in src
-    # 注入點必須在既有注入區（motive 之後），且用同一顆 llm 物件
-    assert src.index("set_motive_llm_proxy(llm)") < src.index("_lt_origins.set_llm_proxy(llm)")
-    assert src.count("_lt_origins.set_llm_proxy(") == 1
+    tree = ast.parse(src)
+    aliases = _module_aliases(tree)
+
+    origins_roots = {
+        alias for alias, full in aliases.items()
+        if full == "src.soul.life_thread_origins"
+        or full.endswith(".life_thread_origins")
+    }
+    assert len(origins_roots) == 1, f"life_thread_origins 的別名恰 1 個：{aliases}"
+
+    imports = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and (node.module or "") == "src.soul"
+        and any(a.name == "life_thread_origins" for a in node.names)
+    ]
+    assert len(imports) == 1, [n.lineno for n in imports]
+
+    injected = [
+        call for dotted, call in _walk_calls(tree)
+        if _resolve_alias(aliases, dotted).endswith("life_thread_origins.set_llm_proxy")
+    ]
+    assert len(injected) == 1, f"set_llm_proxy 注入恰 1 次：{[c.lineno for c in injected]}"
+    assert [ast.unparse(a) for a in injected[0].args] == ["llm"], ast.unparse(injected[0])
+
+    motive = [
+        call for dotted, call in _walk_calls(tree)
+        if _resolve_alias(aliases, dotted).endswith("src.soul.motive.set_llm_proxy")
+        or dotted == "set_motive_llm_proxy"
+    ]
+    assert motive, "run_server 內應有既有的 motive 注入點"
+    assert motive[0].lineno < injected[0].lineno, (
+        "M4 注入點必須在既有注入區（motive 之後）："
+        f"motive@{motive[0].lineno} origins@{injected[0].lineno}"
+    )
 
 
 def test_b6_run_server_has_no_extra_life_thread_wiring():
-    """除注入行外，run_server 不得認得 M4/M5 的其他入口。"""
-    src = RUN_SERVER_PATH.read_text(encoding="utf-8")
-    for banned in ("run_origin_round(", "build_origin_prompt(", "apply_actions(",
-                   "run_slot_pipeline", "life_thread_orchestrator"):
-        assert banned not in src, f"run_server 不得出現：{banned}"
+    """除注入行外，run_server 不得認得 M4/M5 的其他入口。
+
+    🔴 F-03.2：舊版是 `for banned in (...): assert banned not in src` 的**文字比對
+    整個 `run_server.py`** —— 一行註解、一個字串、甚至同名的無關變數都能讓它假紅／
+    假綠。現在改為 **AST 精確集合等值**：
+    `run_origin_round` 的呼叫數 ＝ **0**，而 `life_thread_origins` 相關的呼叫集合
+    **恰為** `{"set_llm_proxy"}`（多一個就紅，不是「字串不在」）。
+    """
+    tree = ast.parse(RUN_SERVER_PATH.read_text(encoding="utf-8"))
+    aliases = _module_aliases(tree)
+
+    calls = sorted({d for d, _c in _walk_calls(tree) if d})
+    resolved = sorted({_resolve_alias(aliases, d) for d in calls})
+
+    forbidden = [
+        d for d in calls
+        if any(d == f or d.endswith("." + f) for f in _FORBIDDEN_RUN_SERVER_CALLS)
+    ]
+    assert forbidden == [], f"run_server 不得呼叫 M4/M5 入口：{forbidden}"
+
+    origins_calls = sorted({
+        r.rsplit(".", 1)[-1] for r in resolved
+        if r.startswith("src.soul.life_thread_origins.")
+    })
+    assert origins_calls == list(_ALLOWED_RUN_SERVER_ORIGINS_CALLS), origins_calls
 
 
 # ══════════════════════════════════════════════════════════════

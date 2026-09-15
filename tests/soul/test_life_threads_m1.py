@@ -31,6 +31,51 @@ AGENT_B = "agent_yua"
 _NARRATIVE = "早上開窗發現風變涼了，想起陽台那盆枯掉的薄荷，決定今天把它救回來。"
 
 
+# ══════════════════════════════════════════════════════════════
+# 護欄常數（F-02，LIFE-THREAD-M5-GUARD-FIX，2026-09-14）
+# ══════════════════════════════════════════════════════════════
+
+#: M1 受測模組的 stem（AST import 判定的比對基準）。
+_M1_MODULE_STEM = MODULE_PATH.stem
+
+#: M1 護欄的**掃描基底**：恰為這四個目錄，與 M3/M4 的護欄覆蓋面**對齊**。
+#: 舊版只掃 `("src","scripts")`，而被它取代的
+#: `git grep life_threads -- src scripts configs` 原本**含 `configs`**
+#: ⇒ 覆蓋變窄且無替代測試。以 tuple 精確等值釘死（見
+#: `test_s2_1_guard_scan_covers_configs_and_clients`）。
+_M1_SCAN_BASES = ("src", "scripts", "configs", "clients")
+
+#: 🔴 F-02.3：`ast.parse` **無法解析**的 `.py`（相對 repo 根、排序）。
+#: 舊版掃描器是 `except Exception: continue` ⇒ 這些檔案的 import **完全隱形**
+#: （反而 `git grep` 還抓得到），是典型的 fail-open。改為「實際無法解析的集合
+#: **精確等於**本白名單」的顯式斷言：新增一個無法解析的檔 ⇒ 紅。
+#: 內容與 M3/M4 的 `_M*_UNPARSABLE_WHITELIST` **逐字一致**（同一組檔案）。
+_M1_UNPARSABLE_WHITELIST = (
+    # 檔首 UTF-8 BOM（U+FEFF）⇒ `ast.parse` 直接 SyntaxError
+    # （`utf-8` 讀取 ⇒ `invalid non-printable character U+FEFF`）。
+    # 可接受：該檔不在生產路徑。
+    "scripts/test_full_system.py",
+    # 第 171 行用了 **PEP 701**（Python 3.12+）的嵌套同引號 f-string；
+    # 本 repo 的 `.venv` 是 **3.11.15** ⇒ SyntaxError。
+    # 可接受：同上（非生產檔；升到 3.12 後本行白名單會自動失效並轉紅，屬預期訊號）。
+    "scripts/test_proactive_bugs.py",
+)
+
+#: M1 的**生產 importer 白名單恰為**這兩處（實測掃出，非推測；順序＝排序後）。
+#:
+#: 契約依據：`docs/LIFE-THREAD-ENGINE-CONTRACT.md` §10.1 的依賴圖逐字指定
+#: 「**M4 起源注入 (寫 M1)**」與「**M5 依賴 M1+M4**」 ⇒ 只有這兩處
+#: （M4 `life_thread_origins.py` ＋ M5 `life_thread_orchestrator.py`）**被允許**寫 M1。
+#: ⚠️ **M1 自身不算 importer**（它不 import 自己），故不在本清單內。
+#:
+#: 不變量未被放寬：舊斷言是「排除集 ＋ `offenders == []`」；現在改成
+#: **完整清單精確等值** —— 多一個（生產路徑偷拉線）或少一個（接線斷了）都紅。
+_M1_IMPORTER_WHITELIST = (
+    "src/soul/life_thread_orchestrator.py",  # M5：§10.1 的介接層，唯一合法的生產接線點
+    "src/soul/life_thread_origins.py",       # M4：§10.1 欽定的「寫 M1」方向
+)
+
+
 # ──────────────────────────────────────────────────────────────
 # fixtures
 # ──────────────────────────────────────────────────────────────
@@ -88,6 +133,114 @@ def _mk(agent_id: str = AGENT_A, **kw) -> str:
     return tid
 
 
+# ──────────────────────────────────────────────────────────────
+# 護欄掃描器（AST；F-02）
+# ──────────────────────────────────────────────────────────────
+
+def _parse_py(path: Path):
+    """回 `(tree, None)`；無法解析回 `(None, "ExcType: msg")` —— **不吞、不跳過**（F-02.3）。"""
+    try:
+        return ast.parse(path.read_text(encoding="utf-8")), None
+    except Exception as e:  # noqa: BLE001 - 原因字串要進斷言訊息
+        return None, f"{type(e).__name__}: {e}"
+
+
+def _scan_py_sources():
+    """掃 `_M1_SCAN_BASES/**/*.py`，回 `({相對路徑: AST}, [無法解析的相對路徑])`。
+
+    🔴 F-02.3：無法解析的檔案一律**顯式收集**（不再 `continue` 靜默跳過），
+    由 `test_s2_1_unparsable_py_files_match_explicit_whitelist` 以精確等值斷言釘死。
+    """
+    trees: dict = {}
+    unparsable: list[str] = []
+    for base in _M1_SCAN_BASES:
+        root = _REPO_ROOT / base
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            rel = str(path.relative_to(_REPO_ROOT)).replace("\\", "/")
+            tree, _err = _parse_py(path)
+            if tree is None:
+                unparsable.append(rel)
+            else:
+                trees[rel] = tree
+    return trees, sorted(unparsable)
+
+
+def _module_imports_m1(tree: ast.AST) -> bool:
+    """該 AST 是否**真正 import** M1（`ast.Import`／`ast.ImportFrom` 的模組名與 alias 名）。
+
+    以 **AST import 語句**判定，而非原始文字比對 —— 否則一行**註解**引用模組路徑
+    就能讓不變量失效。三種寫法都要 DETECT：
+    `import src.soul.life_threads`、
+    `from src.soul import life_threads`、
+    `from src.soul.life_threads import create_thread`。
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == _M1_MODULE_STEM or alias.name.endswith(
+                    "." + _M1_MODULE_STEM
+                ):
+                    return True
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod == _M1_MODULE_STEM or mod.endswith("." + _M1_MODULE_STEM):
+                return True
+            for alias in node.names:
+                if alias.name == _M1_MODULE_STEM:
+                    return True
+    return False
+
+
+def _m1_importers() -> list[str]:
+    """AST 掃描 `_M1_SCAN_BASES`：**真正 import M1** 的檔案（相對路徑、排序）。"""
+    trees, _unparsable = _scan_py_sources()
+    return sorted(rel for rel, tree in trees.items() if _module_imports_m1(tree))
+
+
+def _non_docstring_strings(tree: ast.AST) -> list[str]:
+    """收集**非 docstring** 的字串常數（docstring 是散文，不構成落盤 key）。
+
+    F-03.6：`src.count(f'"{bad}"')` 的字元計數改以此判定 ——
+    只有**真的會被當 dict key 用**的字串常數才算命中，註解與 docstring 不算。
+    """
+    doc_positions = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            body = getattr(node, "body", None)
+            if body and isinstance(body[0], ast.Expr) and isinstance(
+                body[0].value, ast.Constant
+            ) and isinstance(body[0].value.value, str):
+                doc_positions.add(id(body[0].value))
+    return [
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in doc_positions
+    ]
+
+
+def _identifiers_in(tree: ast.AST) -> list[str]:
+    """樹內所有**識別字**（`Name`／`Attribute`／`arg`／def・class 名）。
+
+    F-03：`0 命中`型護欄的 AST 判準 —— 只認**真的引用**，
+    註解與 docstring 的散文不算（舊式文字比對兩者都會誤判）。
+    """
+    out: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            out.append(node.id)
+        elif isinstance(node, ast.Attribute):
+            out.append(node.attr)
+        elif isinstance(node, ast.arg):
+            out.append(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.append(node.name)
+    return out
+
+
 # ══════════════════════════════════════════════════════════════
 # §2.1 落盤 / 隔離 / 編碼
 # ══════════════════════════════════════════════════════════════
@@ -119,8 +272,9 @@ def test_s2_1_encoding_utf8_no_bom_lf_ensure_ascii_false(soul_env):
 def test_s2_1_module_not_imported_by_production_paths():
     """M1 是獨立落地（§10.2 / 紅線 4）：0 既有**生產模組**介接。
 
-    以 AST 掃描 `src/**` + `scripts/**`，除「生活線頭引擎自身（M1 本體 ＋ M4 起源注入
-    模組）」外，任何 import 本模組者必須是 0。
+    以 AST 掃描 `_M1_SCAN_BASES/**`（`src` ＋ `scripts` ＋ `configs` ＋ `clients`），
+    importer 集合必須**恰好等於** `_M1_IMPORTER_WHITELIST`
+    （M4「寫 M1」＋ M5 介接層；M1 自身不算 importer）。
 
     ⚠️ 例外更正（LIFE-THREAD-M4-1，2026-09-14）：本測試原先把不變量寫成「**任何**
     importer 皆為 0」，那比契約更嚴且與契約**直接互斥**——
@@ -148,37 +302,93 @@ def test_s2_1_module_not_imported_by_production_paths():
     接進生產路徑，其介接層 `src/soul/life_thread_orchestrator.py` 必然 import M1
     （依賴圖 §10.1 `:722-726`「M5 依賴 M1+M4」）。故白名單加入 orchestrator，
     **其餘排除集不變** —— 排除後仍有任何其他 importer ⇒ 紅。
+
+    🔴 升級（LIFE-THREAD-M5-GUARD-FIX F-02.2，2026-09-14）：**排除集 ＋
+    `offenders == []`** 的形式已移除，改為 **完整清單精確等值**
+    `_m1_importers() == list(_M1_IMPORTER_WHITELIST)`，且掃描基底由
+    `("src","scripts")` 擴為 `_M1_SCAN_BASES`
+    （`("src","scripts","configs","clients")`）。
+    「排除集」形式有兩個 fail-open 縫：①排除集本身是新鮮文字、與白名單可能漂移；
+    ②**覆蓋面（基底目錄）無任何斷言釘死**，悄悄縮小也全綠。現在兩者都精確等值。
     """
-    engine_own_unwired = {
-        MODULE_PATH,
-        _REPO_ROOT / "src" / "soul" / "life_thread_origins.py",  # M4：§10.1 允許寫 M1
-        # M5：§10.1 的介接層，唯一合法的生產接線點
-        _REPO_ROOT / "src" / "soul" / "life_thread_orchestrator.py",
-    }
-    offenders = []
-    for root in (_REPO_ROOT / "src", _REPO_ROOT / "scripts"):
-        for py in root.rglob("*.py"):
-            if py in engine_own_unwired:
-                continue
-            try:
-                tree = ast.parse(py.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        if alias.name.endswith("life_threads"):
-                            offenders.append(str(py))
-                elif isinstance(node, ast.ImportFrom):
-                    mod = node.module or ""
-                    if mod.endswith("life_threads") or any(
-                        a.name == "life_threads" for a in node.names
-                    ):
-                        offenders.append(str(py))
-    assert offenders == [], (
-        "life_threads 被「生活線頭引擎自身」以外的模組 import"
-        f"（§10.1 只允許 M4 寫 M1）：{offenders}"
+    assert _m1_importers() == list(_M1_IMPORTER_WHITELIST), (
+        "M1 的生產 importer 必須**恰好**等於白名單"
+        f"（§10.1 只允許 M4 寫 M1、M5 介接）：{_m1_importers()}"
     )
+
+
+def test_s2_1_guard_scan_covers_configs_and_clients():
+    """🔴 F-02.1：M1 護欄掃描基底**精確等於** `("src","scripts","configs","clients")`。
+
+    舊版基底寫死成 `("src","scripts")`（`:159`），而被它取代的
+    `git grep life_threads -- src scripts configs` 原本**含 `configs`**
+    ⇒ 覆蓋變窄且**無替代測試**（M3/M4 已各自補上等值斷言）。
+    這裡以 tuple 精確等值把覆蓋面釘死。
+    """
+    assert _M1_SCAN_BASES == ("src", "scripts", "configs", "clients")
+
+
+def test_s2_1_unparsable_py_files_match_explicit_whitelist():
+    """🔴 F-02.3：`ast.parse` 無法解析的檔案集合必須**精確等於**白名單（不得靜默跳過）。
+
+    舊版 `except Exception: continue` ⇒ 壞檔內的真 import **完全隱形**（fail-open）；
+    新出現的無法解析檔 ⇒ 本斷言紅，逼人回來補白名單與一行理由。
+    雙向等值：**多一個或刪一個都紅**。
+    """
+    _trees, unparsable = _scan_py_sources()
+    assert unparsable == list(_M1_UNPARSABLE_WHITELIST), unparsable
+
+
+def test_s2_1_unparsable_detection_has_teeth(tmp_path):
+    """牙齒測試(a)：語法壞檔 ⇒ 必須落進 `unparsable`（舊版是被 `continue` 吞掉的）。"""
+    good = tmp_path / "good.py"
+    good.write_text("x = 1\n", encoding="utf-8")
+    bad = tmp_path / "bad.py"
+    bad.write_text("def f(:\n", encoding="utf-8")
+
+    tree_ok, err_ok = _parse_py(good)
+    assert tree_ok is not None and err_ok is None
+
+    tree_bad, err_bad = _parse_py(bad)
+    assert tree_bad is None, "壞檔不得回 AST（否則 fail-open 依舊）"
+    assert err_bad and "SyntaxError" in err_bad, err_bad
+
+
+def test_s2_1_importer_scan_has_teeth(tmp_path):
+    """牙齒測試(b)：真 import M1 ⇒ 必須被 DETECT；純註解／字串 ⇒ 不得誤判。
+
+    證明新檢查不是靠文字比對虛應故事：文字比對會被**一行註解**打穿。
+    """
+    (tmp_path / "real_from.py").write_text(
+        f"from src.soul import {_M1_MODULE_STEM}\n", encoding="utf-8"
+    )
+    (tmp_path / "real_import.py").write_text(
+        f"import src.soul.{_M1_MODULE_STEM}\n", encoding="utf-8"
+    )
+    (tmp_path / "real_deep.py").write_text(
+        f"from src.soul.{_M1_MODULE_STEM} import create_thread\n", encoding="utf-8"
+    )
+    (tmp_path / "only_comment.py").write_text(
+        f"# 上限與讀取端 `src/soul/{_M1_MODULE_STEM}.py:103` 一致。\nx = 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "only_string.py").write_text(
+        f'DOC = "src/soul/{_M1_MODULE_STEM}.py"\n', encoding="utf-8"
+    )
+
+    detected = []
+    for path in sorted(tmp_path.rglob("*.py")):
+        tree, _err = _parse_py(path)
+        assert tree is not None, path
+        if _module_imports_m1(tree):
+            detected.append(path.name)
+    assert detected == ["real_deep.py", "real_from.py", "real_import.py"], detected
+    # 註解／字串檔**不得**被計入（否則不變量會被一行註解打穿）
+    assert "only_comment.py" not in detected
+    assert "only_string.py" not in detected
+    # 對照：純文字比對**會**把註解檔誤判為命中 ⇒ 證明改用 AST 是必要的收緊
+    comment_text = (tmp_path / "only_comment.py").read_text(encoding="utf-8")
+    assert _M1_MODULE_STEM in comment_text, "文字比對會假陽性（AST 版本才有牙）"
 
 
 def test_s2_1_configs_default_yaml_has_no_capacity_key():
@@ -224,10 +434,15 @@ def test_s2_2_forbidden_fields_absent_in_written_rows(soul_env):
         "score", "weight", "intensity", "urgency", "priority", "longing", "confidence"
     }
     # 模組原始碼層面：0 個 float 評分欄位寫入
-    src = MODULE_PATH.read_text(encoding="utf-8")
+    # 🔴 F-03.6：改為 **AST 字串常數**判定 —— 舊版 `src.count(f'"{bad}"')` 是
+    # **字元計數**：只認雙引號寫法（改單引號就假陰性）、且註解／docstring 內的
+    # 同名文字也會被計入（假陽性）。這裡只數**非 docstring 的字串常數**
+    # （＝真的會被當 dict key 落盤的東西）。
+    tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
+    literals = _non_docstring_strings(tree)
     for bad in lt.FORBIDDEN_FIELDS:
         # 模組只允許在 `FORBIDDEN_FIELDS` 常數本身出現這些鍵名（＝斷言用，非寫入用）
-        occurrences = src.count(f'"{bad}"')
+        occurrences = literals.count(bad)
         assert occurrences <= 1, f"禁用鍵 {bad} 出現 {occurrences} 次（應只作為斷言常數）"
 
 
@@ -837,10 +1052,19 @@ def test_inv4_api_requires_single_agent_id_and_blocks_traversal(soul_env):
 
 
 def test_inv4_isolation_not_delegated_to_identity_firewall():
-    """§2.1：per-agent 隔離**不得依賴** `IdentityFirewall`。"""
-    src = MODULE_PATH.read_text(encoding="utf-8")
-    assert "IdentityFirewall" not in src
-    assert "identity_firewall" not in src
+    """§2.1：per-agent 隔離**不得依賴** `IdentityFirewall`。
+
+    🔴 F-03：改為 **AST 識別字判定**（`Name`／`Attribute`／`arg`／def・class 名）。
+    舊版的 `assert "IdentityFirewall" not in src` 是文字比對 ——
+    一行註解、一句 docstring、甚至一個同名字串都會讓它**假紅**；
+    反過來說，只要不是**真的引用**該物件，隔離就沒有被委外。
+    """
+    tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
+    hits = sorted({
+        name for name in _identifiers_in(tree)
+        if name.lower() in ("identityfirewall",)
+    })
+    assert hits == [], f"隔離不得委外給 IdentityFirewall：{hits}"
 
 
 def test_inv4_no_cross_agent_file_touch(soul_env):
