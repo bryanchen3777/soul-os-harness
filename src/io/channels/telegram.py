@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import traceback
 from typing import Callable, Awaitable, Optional
 
 from telegram import Update
@@ -61,6 +62,31 @@ def _append_session_turn(agent_id: str, role: str, text: str, user_id) -> None:
         pass
 
 logger = logging.getLogger("soul_os.channels.telegram")
+
+# ============================================================================
+# TG-STABILITY-1 (2026-09-15): polling 存活監督常數
+#
+# 事故背景: 2026-09-15 16:51-16:54 TG 入站輪詢靜默死亡 (日誌零 traceback),
+# Telegram 端累積 4 則 update 無人領取, 停服 1h40m, pid 對 149.154.166.110:443
+# 留下 8 條 CLOSE_WAIT (socket 洩漏)。根因不是「錯誤沒印」, 而是「沒有任何
+# 監督層在觀察 poller 的死」。本區常數定義監督/重建參數。
+# ============================================================================
+
+#: 監督層輪詢週期（秒）。預設 5 秒；__init__ 的 supervise_interval 可覆寫
+#: （測試注入短週期, 不讓測試真的等 5 秒）。
+SUPERVISE_INTERVAL_SECONDS = 5.0
+
+#: 指數退避序列（秒）; idx = min(rebuild_count, len-1) ⇒ 上限 60 秒。
+REBUILD_BACKOFF_SECONDS = (1, 2, 4, 8, 16, 32, 60)
+
+#: 連續重建上限。超過 ⇒ logger.critical 後停止監督該 bot（fail-loud, 不再重試）。
+MAX_CONSECUTIVE_REBUILDS = 5
+
+#: 連續健康達此秒數 ⇒ 歸零 _rebuild_counts（「連續」的定義）。
+HEALTHY_RESET_SECONDS = 600.0
+
+#: 每 bot 只保留最近 N 筆錯誤（有界, 不得無限成長）。
+MAX_LAST_ERRORS = 5
 
 
 # 環境變數名稱常數（方便測試時 mock）
@@ -119,15 +145,34 @@ def _load_tokens() -> dict[str, str]:
 class TelegramAdapter(ChannelAdapter):
     channel_id = "telegram"
 
-    def __init__(self, tokens: Optional[dict[str, str]] = None):
+    def __init__(self, tokens: Optional[dict[str, str]] = None,
+                 supervise_interval: float = SUPERVISE_INTERVAL_SECONDS):
         """Args:
             tokens: 測試用覆寫；正式環境省略 → 從 env 讀
+            supervise_interval: 存活監督檢查週期（秒）。預設 5 秒；測試注入短週期。
         """
         self._tokens = tokens or _load_tokens()
         self._apps: dict[str, Application] = {}
         self._on_message: Optional[OnMessageCallback] = None
         # 方案 C (2026-09-08): 409 Conflict 重試計數, ≥3 次 fail-closed 停止該 bot polling
         self._conflict_counts: dict[str, int] = {}
+
+        # --- TG-STABILITY-1 (2026-09-15): 輪詢存活監督與異常重建 ---
+        self._supervise_interval = float(supervise_interval)
+        #: 每 bot 一個存活監督 task
+        self._supervisors: dict[str, asyncio.Task] = {}
+        #: 關閉中旗標 ⇒ 監督層直接 return, 永不重建（關機時無限重建 = 關不掉服務）
+        self._closing: bool = False
+        #: 每 bot 連續重建次數（重建上限 / 退避 index 都用它）
+        self._rebuild_counts: dict[str, int] = {}
+        #: 每 bot 開始連續健康的 monotonic 時間戳（None = 目前不健康）
+        self._healthy_since: dict[str, Optional[float]] = {}
+        #: 每 bot 一把鎖 ⇒ 防止同 bot 併發重建 ⇒ 避免雙實例 ⇒ 避免 409 風暴
+        self._locks: dict[str, asyncio.Lock] = {}
+        #: 每 bot 最近 N 筆 TelegramError（含完整 traceback），有界
+        self._last_errors: dict[str, list[str]] = {}
+        #: 上一次 409 fail-closed 停止的 bot 集合 ⇒ 重建直接從最大退避（60s）起
+        self._conflict_failclosed: set[str] = set()
 
     def _make_handler(self, agent_id: str):
         """每個 bot 一個 handler，closure 帶 agent_id。"""
@@ -205,43 +250,73 @@ class TelegramAdapter(ChannelAdapter):
                 logger.error(f"[TG:{agent_id}] /tts reply error: {e}")
         return handler
 
-    async def start(self, on_message: OnMessageCallback) -> None:
-        """啟動十個 bot 開始 polling（AGENT_ENV_MAP 列出多少就多少）。"""
-        self._on_message = on_message
-        for agent_id, token in self._tokens.items():
-            # 方案 D (2026-09-08): 限制 get_updates 連接池大小, 防極端並發下
-            # httpx/httpcore 連接池過載損壞 Windows IOCP (crash root cause 2026-09-08)
-            app = (
-                ApplicationBuilder()
-                .token(token)
-                .get_updates_request(
-                    HTTPXRequest(connection_pool_size=5, pool_timeout=1.0)
-                )
-                .build()
+    # ------------------------------------------------------------------
+    # 單一建構路徑 (TG-STABILITY-1 §1): 初始啟動與重建都必須走這裡,
+    # 確保 get_updates_request(HTTPXRequest(connection_pool_size=5, pool_timeout=1.0))
+    # 只存在於這一處。
+    # ------------------------------------------------------------------
+    def _build_app(self, agent_id: str, token: str) -> Application:
+        """建構單一 bot 的 Application（唯一的建構路徑）。"""
+        # 方案 D (2026-09-08): 限制 get_updates 連接池大小, 防極端並發下
+        # httpx/httpcore 連接池過載損壞 Windows IOCP (crash root cause 2026-09-08)
+        app = (
+            ApplicationBuilder()
+            .token(token)
+            .get_updates_request(
+                HTTPXRequest(connection_pool_size=5, pool_timeout=1.0)
             )
-            # TTS 開關指令（Bry 派工 2026-08-15）：/tts on|off
-            app.add_handler(
-                CommandHandler("tts", self._make_tts_command_handler(agent_id))
+            .build()
+        )
+        # TTS 開關指令（Bry 派工 2026-08-15）：/tts on|off
+        app.add_handler(
+            CommandHandler("tts", self._make_tts_command_handler(agent_id))
+        )
+        app.add_handler(
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                self._make_handler(agent_id),
             )
-            app.add_handler(
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    self._make_handler(agent_id),
-                )
-            )
-            self._apps[agent_id] = app
+        )
+        return app
 
-            await app.initialize()
-            await app.start()
-            # 方案 C (2026-09-08): 409 Conflict 重試限制 — error_callback 檢測
-            # Conflict 計數, ≥3 次 fail-closed 停止該 bot polling, 避免 ptb
-            # network_retry_loop (max_retries=-1 無限重試) 重試風暴打崩 IOCP
-            await app.updater.start_polling(
-                error_callback=self._make_error_callback(agent_id)
-            )
-            logger.info(
-                f"[TG:{agent_id}] polling started "
-                f"(token={token[:8]}...)"
+    async def start(self, on_message: OnMessageCallback) -> None:
+        """啟動十個 bot 開始 polling（AGENT_ENV_MAP 列出多少就多少）。
+
+        TG-STABILITY-1 §4: 每個 bot 的初始啟動各自包 try/except Exception —
+        單一 bot 失敗不得中止其他 bot, 且 start() 本身不得因 Telegram 不可用
+        而拋出（通道層崩潰一律在通道層吸收自癒, 嚴禁外拋至主事件迴圈）。
+        """
+        self._on_message = on_message
+        self._closing = False
+        for agent_id, token in self._tokens.items():
+            try:
+                app = self._build_app(agent_id, token)
+                self._apps[agent_id] = app
+
+                await app.initialize()
+                await app.start()
+                # 方案 C (2026-09-08): 409 Conflict 重試限制 — error_callback 檢測
+                # Conflict 計數, ≥3 次 fail-closed 停止該 bot polling, 避免 ptb
+                # network_retry_loop (max_retries=-1 無限重試) 重試風暴打崩 IOCP
+                await app.updater.start_polling(
+                    error_callback=self._make_error_callback(agent_id)
+                )
+                self._healthy_since[agent_id] = asyncio.get_running_loop().time()
+                logger.info(
+                    f"[TG:{agent_id}] polling started "
+                    f"(token={token[:8]}...)"
+                )
+            except Exception:
+                # 單一 bot 失敗不得中止其他 bot
+                logger.exception(
+                    f"[TG:{agent_id}] initial start failed — "
+                    f"continuing with remaining bots"
+                )
+                continue
+
+            # 初始啟動完成後才掛上存活監督 task
+            self._supervisors[agent_id] = asyncio.create_task(
+                self._supervise(agent_id)
             )
 
     def _make_error_callback(self, agent_id: str):
@@ -252,8 +327,26 @@ class TelegramAdapter(ChannelAdapter):
         重試風暴 → httpx 連接池過載 → Windows IOCP 損壞 → access violation。
         此 callback 檢測 Conflict(409) 計數, ≥3 次 fail-closed 停止該 bot polling。
         error_callback 必須是同步函數 (ptb 文檔明確), 內部用 create_task 調度 stop。
+
+        TG-STABILITY-1 §2: 409 語意逐字不變（既有測試在守）；新增「任何
+        TelegramError 都寫入 _last_errors[agent_id]（含完整 traceback，每 bot
+        只留最近 5 筆）」—— 這是「例外透出」的資料來源。
         """
         def _on_error(exc: TelegramError) -> None:
+            # TG-STABILITY-1 §2: 記錄所有例外（不只 409），含完整 traceback。
+            # 有界: 每 bot 只留最近 MAX_LAST_ERRORS 筆。
+            try:
+                entry = "".join(
+                    traceback.format_exception(type(exc), exc, exc.__traceback__)
+                )
+                bucket = self._last_errors.setdefault(agent_id, [])
+                bucket.append(entry)
+                del bucket[:-MAX_LAST_ERRORS]
+            except Exception:
+                logger.exception(
+                    f"[TG:{agent_id}] failed to record error in _last_errors"
+                )
+
             if not isinstance(exc, Conflict):
                 return
             count = self._conflict_counts.get(agent_id, 0) + 1
@@ -263,16 +356,197 @@ class TelegramAdapter(ChannelAdapter):
                     f"[TG:{agent_id}] 409 Conflict x{count} — fail-closed stopping "
                     f"polling to prevent retry storm (crash root cause 2026-09-08)"
                 )
-                app = self._apps.get(agent_id)
-                if app is not None:
-                    asyncio.create_task(app.updater.stop())
+                self._stop_updater_for(agent_id)
                 self._conflict_counts[agent_id] = 0
+                # TG-STABILITY-1 §3: 讓監督層知道「上一次失敗是 409 fail-closed」
+                # ⇒ 重建直接從最大退避值 (60s) 開始, 不從 1s 爬。
+                self._conflict_failclosed.add(agent_id)
             else:
                 logger.warning(
                     f"[TG:{agent_id}] 409 Conflict x{count}/3 — will stop polling "
                     f"if conflict persists"
                 )
         return _on_error
+
+    def _stop_updater_for(self, agent_id: str) -> None:
+        """排程當前 app 的 updater.stop()（同步 context 內用, 保持 409 既有語意）。"""
+        app = self._apps.get(agent_id)
+        if app is not None:
+            asyncio.create_task(app.updater.stop())
+
+    async def _teardown_app(self, agent_id: str, app) -> None:
+        """徹底拆除舊 app：關閉 HTTPX session, 杜絕 CLOSE_WAIT 洩漏。
+
+        TG-STABILITY-1 §3: 三步各自包 try/except 且可重複呼叫（idempotent）。
+        """
+        for step, fn in (
+            ("updater.stop", lambda: app.updater.stop()),
+            ("stop", lambda: app.stop()),
+            ("shutdown", lambda: app.shutdown()),
+        ):
+            try:
+                await fn()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(
+                    f"[TG:{agent_id}] teardown {step} failed (idempotent, "
+                    f"continuing): {e!r}"
+                )
+
+    async def _supervise(self, agent_id: str) -> None:
+        """每 bot 一個存活監督任務（TG-STABILITY-1 §3）。
+
+        每 supervise_interval 秒檢查一次 updater.running:
+          - _closing 為真 ⇒ 直接 return, 永不重建。
+          - running 為真 ⇒ 連續健康 ≥600s 就把 _rebuild_counts 歸 0。
+          - running 為假 ⇒ 判定輪詢已死, 進 _rebuild_poller。
+        任何錯誤都不得向外拋出（通道層自癒, 嚴禁外拋至主事件迴圈）。
+        """
+        while True:
+            try:
+                await asyncio.sleep(self._supervise_interval)
+
+                if self._closing:
+                    logger.debug(f"[TG:{agent_id}] supervisor exiting (closing)")
+                    return
+
+                app = self._apps.get(agent_id)
+                updater = getattr(app, "updater", None) if app is not None else None
+                running = bool(getattr(updater, "running", False))
+
+                if running:
+                    # 連續健康累計 ⟶ 歸零重建計數
+                    since = self._healthy_since.get(agent_id)
+                    if since is None:
+                        self._healthy_since[agent_id] = (
+                            asyncio.get_running_loop().time()
+                        )
+                    elif (
+                        asyncio.get_running_loop().time() - since
+                        >= HEALTHY_RESET_SECONDS
+                    ):
+                        if self._rebuild_counts.get(agent_id):
+                            logger.info(
+                                f"[TG:{agent_id}] healthy for "
+                                f">={HEALTHY_RESET_SECONDS:.0f}s — resetting "
+                                f"rebuild counter"
+                            )
+                        self._rebuild_counts[agent_id] = 0
+                    continue
+
+                # --- 輪詢已死 ---
+                self._healthy_since[agent_id] = None
+                recent = self._last_errors.get(agent_id) or []
+                last_error = recent[-1] if recent else "<no error recorded>"
+                logger.error(
+                    f"[TG:{agent_id}] poller not running "
+                    f"(updater.running=False) — rebuilding ... "
+                    f"rebuild_count={self._rebuild_counts.get(agent_id, 0)} "
+                    f"recent_errors={len(recent)} last_error={last_error}"
+                )
+
+                await self._rebuild_poller(agent_id)
+            except asyncio.CancelledError:
+                # 關機語意: 收到 cancel 絕不觸發重建 ⇒ 直接往外拋
+                logger.debug(f"[TG:{agent_id}] supervisor cancelled")
+                raise
+            except Exception:
+                logger.exception(
+                    f"[TG:{agent_id}] supervisor iteration error (absorbed)"
+                )
+
+    def _rebuild_backoff(self, agent_id: str) -> float:
+        """指數退避: 1,2,4,8,16,32,60,60…
+
+        409 fail-closed 觸發的重建 ⇒ 直接從最大退避值 (60s) 開始。
+        """
+        if agent_id in self._conflict_failclosed:
+            return float(REBUILD_BACKOFF_SECONDS[-1])
+        idx = min(
+            self._rebuild_counts.get(agent_id, 0),
+            len(REBUILD_BACKOFF_SECONDS) - 1,
+        )
+        return float(REBUILD_BACKOFF_SECONDS[idx])
+
+    async def _rebuild_poller(self, agent_id: str) -> None:
+        """重建單一 bot 的 polling。任何錯誤都不得向外拋出。"""
+        lock = self._locks.setdefault(agent_id, asyncio.Lock())
+        try:
+            async with lock:
+                # 鎖內再確認: 可能在等鎖期間被 stop() 關掉, 或已被其他路徑救回
+                if self._closing:
+                    return
+                app = self._apps.get(agent_id)
+                if app is not None and bool(
+                    getattr(getattr(app, "updater", None), "running", False)
+                ):
+                    return
+
+                # 1. 先徹底拆除舊的（關閉舊 HTTPX session ⇒ 杜絕 CLOSE_WAIT 洩漏）
+                if app is not None:
+                    await self._teardown_app(agent_id, app)
+
+                # 2. 重建上限（連續、未經 600s 健康期）: >=5 ⇒ fail-loud 停止監督
+                count = self._rebuild_counts.get(agent_id, 0)
+                if count >= MAX_CONSECUTIVE_REBUILDS:
+                    logger.critical(
+                        f"[TG:{agent_id}] {count} consecutive rebuilds without "
+                        f"{HEALTHY_RESET_SECONDS:.0f}s healthy window — giving up "
+                        f"(fail-loud, supervisor stopping; no further retries)"
+                    )
+                    self._stop_supervisor(agent_id)
+                    return
+
+                # 3. 指數退避等待（上限 60s）; 409 fail-closed ⇒ 直接 60s
+                delay = self._rebuild_backoff(agent_id)
+                self._rebuild_counts[agent_id] = count + 1
+                logger.warning(
+                    f"[TG:{agent_id}] rebuilding poller in {delay:.0f}s "
+                    f"(attempt {count + 1}/{MAX_CONSECUTIVE_REBUILDS})"
+                )
+                await asyncio.sleep(delay)
+
+                # 再次確認（退避期間可能被關機）
+                if self._closing:
+                    return
+
+                # 4. 走單一建構路徑重建
+                token = self._tokens.get(agent_id, "")
+                try:
+                    new_app = self._build_app(agent_id, token)
+                    await new_app.initialize()
+                    await new_app.start()
+                    await new_app.updater.start_polling(
+                        error_callback=self._make_error_callback(agent_id)
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        f"[TG:{agent_id}] rebuild attempt "
+                        f"{count + 1}/{MAX_CONSECUTIVE_REBUILDS} failed"
+                    )
+                    return
+
+                self._apps[agent_id] = new_app
+                self._conflict_failclosed.discard(agent_id)
+                self._healthy_since[agent_id] = asyncio.get_running_loop().time()
+                logger.info(
+                    f"[TG:{agent_id}] poller rebuilt OK "
+                    f"(attempt {count + 1}/{MAX_CONSECUTIVE_REBUILDS})"
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # 任何錯誤都不得向外拋出（通道層自癒）
+            logger.exception(f"[TG:{agent_id}] rebuild error (absorbed)")
+
+    def _stop_supervisor(self, agent_id: str) -> None:
+        """取消並移除某 bot 的監督 task（fail-loud 停止重試用）。"""
+        task = self._supervisors.pop(agent_id, None)
+        if task is not None and not task.done():
+            task.cancel()
 
     async def send(self, agent_id: str, text: str,
                    user_id: "int | str") -> bool:
@@ -359,12 +633,30 @@ class TelegramAdapter(ChannelAdapter):
             raise
 
     async def stop(self) -> None:
-        """停止所有 bot。"""
-        for agent_id, app in self._apps.items():
+        """停止所有 bot（TG-STABILITY-1 §5）。
+
+        順序: 設 _closing ⇒ 取消所有 supervisor task ⇒ 再停 updater/app。
+        idempotent, 且不得吞掉 CancelledError。
+        """
+        # 1. 關閉語意: 先關旗標, 監督層看到就不再重建（關機時無限重建 = 關不掉服務）
+        self._closing = True
+
+        # 2. 取消所有監督 task（CancelledError 必須往外拋, 不得吞掉）
+        tasks = list(self._supervisors.values())
+        self._supervisors.clear()
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
             try:
-                await app.updater.stop()
-                await app.stop()
-                await app.shutdown()
-                logger.info(f"[TG:{agent_id}] stopped")
+                await task
+            except asyncio.CancelledError:
+                pass
             except Exception as e:
-                logger.error(f"[TG:{agent_id}] stop error: {e}")
+                logger.error(f"[TG] supervisor join error: {e}")
+
+        # 3. 再停 updater / app（idempotent 拆除, 關閉 HTTPX session）
+        apps = list(self._apps.items())
+        self._apps.clear()
+        for agent_id, app in apps:
+            await self._teardown_app(agent_id, app)
+            logger.info(f"[TG:{agent_id}] stopped")
