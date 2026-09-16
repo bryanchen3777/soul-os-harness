@@ -31,6 +31,7 @@ import logging
 import os
 import sys
 import time
+from collections import deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -65,6 +66,14 @@ log = logging.getLogger("vc.web_server")
 
 VAD_SAMPLE_RATE = 16000   # 瀏覽器收音分片率（Int16 PCM mono）
 OUT_SAMPLE_RATE = 44100   # 播放分片率（Int16 PCM mono）
+
+# VC-ASR-ONSET-FIX-1：收音前置緩衝（capture pre-roll）。
+# 病根：on_pcm 在 state != LISTENING 時整幀靜默丟棄（起音前 1–3 幀 = 93ms/幀 × N），
+# 且 LISTENING 但 VAD 尚未跨門檻期間的低能量起音也進不了 _frames ⇒ 使用者聽到「砍掉開頭 1–2 個字」。
+# 這裡在伺服器端保留最近 PRE_ROLL_MS 的音訊，於首次 in_speech 累積時接回句子開頭。
+# 注意：這與 web_ui.py 的 PREBUFFER_SAMPLES（播放側抖動緩衝）無關，勿混用。
+PRE_ROLL_MS = 500
+PRE_ROLL_SAMPLES = VAD_SAMPLE_RATE * PRE_ROLL_MS // 1000  # 8000 samples @16kHz
 
 # VC-NOREPLY-1：回合 LLM 最終失敗時對使用者的提示
 # （沿用既有 WS error 訊息型別；詳細例外/耗時只進 ERROR 日誌，不裸露給使用者）
@@ -392,6 +401,9 @@ class WebSession:
         self._sink = sink
         self.state = self.STATE_IDLE
         self._frames: List[float] = []
+        # VC-ASR-ONSET-FIX-1（D1）：per-session 收音前置緩衝（**不得**模組級/跨 session 共享）。
+        # deque(maxlen=...) 自動淘汰最舊樣本 ⇒ 永遠只留最近 PRE_ROLL_SAMPLES 個樣本。
+        self._pre_roll: deque = deque(maxlen=PRE_ROLL_SAMPLES)
         self._generation = 0  # 回合世代：打斷後遞增，舊回合收尾不得覆蓋狀態
         self._history: List[dict] = []  # 每連線對話歷史（role user/assistant，供 LLM 承接前文）
         self._utterance_task: Optional[asyncio.Task] = None
@@ -403,6 +415,9 @@ class WebSession:
     async def on_ptt_start(self) -> None:
         """PTT 按下 / Auto-VAD 語音開始：若進行中 → 先 interrupt 再開新回合。"""
         print("[WS] ptt_start")  # VC-1.5 診斷日誌
+        # VC-ASR-ONSET-FIX-1（D4）：**不得**在此清空 self._pre_roll。
+        # 被丟棄的正是「ptt_start 抵達伺服器**之前**」那一批幀（狀態翻轉與起音的競速）；
+        # 若在此清空，就等於把它們再丟一次，本修法直接失效。pre-roll 只在收割點（D3）清空。
         if self.state in (self.STATE_THINKING, self.STATE_SPEAKING):
             self._barge("ptt_start")
         if self.state != self.STATE_LISTENING:
@@ -422,15 +437,36 @@ class WebSession:
         self._utterance_task = asyncio.create_task(self._handle_utterance())
 
     async def on_pcm(self, chunk: bytes) -> None:
-        """瀏覽器收音分片（Int16 PCM 16k mono）：餵能量 VAD；0.8s 靜音 → 斷句。"""
-        if self.state != self.STATE_LISTENING:
-            return
+        """瀏覽器收音分片（Int16 PCM 16k mono）：餵能量 VAD；0.8s 靜音 → 斷句。
+
+        VC-ASR-ONSET-FIX-1：非 LISTENING 幀與「LISTENING 但尚未跨 VAD 門檻」的幀，
+        不再整幀丟棄，而是併入 per-session 的 self._pre_roll（capture pre-roll），
+        於本句首次 in_speech 累積時接回 _frames 開頭 ⇒ 起音不再被砍。
+        """
+        # ── D2-1：超長幀檢查**移到狀態閘門之前** ⇒ 任何狀態下畸形幀都不會被緩衝 ──
         if len(chunk) > self.MAX_FRAME_BYTES:
             print(f"[WS] pcm frame exceeded {self.MAX_FRAME_BYTES} bytes ({len(chunk)}), dropped")
             return
+        # ── D2-2：解碼（範圍不變）──
         samples = np.frombuffer(chunk, dtype="<i2").astype(np.float32) / 32768.0
+        # ── D2-3：非 LISTENING ⇒ 只做 pre-roll 暫存後 return ──
+        # 不變量：這些樣本**不得**餵給 VAD（它們從前就沒進 VAD，語意逐字保持）。
+        if self.state != self.STATE_LISTENING:
+            self._pre_roll.extend(samples.tolist())
+            return
         events = self._vad.feed(samples.tolist())
         if self._vad.in_speech:
+            # ── D2-4a：首次累積 ⇒ 先把 pre-roll 以「最舊→最新」順序前置進 _frames ──
+            # 非首次累積（_frames 已非空）什麼都不做，不得重複前置（此時 _pre_roll 應為空）。
+            if not self._frames:
+                pre = list(self._pre_roll)
+                self._pre_roll.clear()
+                if pre:
+                    n = len(pre)
+                    ms = n / VAD_SAMPLE_RATE * 1000
+                    print(f"[UTT] pre-roll samples={n} ({ms:.0f}ms)")
+                    log.info("[UTT] pre-roll samples=%d (%.0fms)", n, ms)
+                self._frames.extend(pre)
             self._frames.extend(samples.tolist())
             if len(self._frames) >= self.MAX_UTTERANCE_SAMPLES:
                 print(f"[UTT] max utterance limit reached ({len(self._frames)} samples / 30s), forcing speech_end")
@@ -438,6 +474,9 @@ class WebSession:
                     self._utterance_task.cancel()
                 self._utterance_task = asyncio.create_task(self._handle_utterance())
                 return
+        else:
+            # ── D2-4b：LISTENING 但尚未跨門檻 ⇒ 低能量起音（鼻音/濁音開頭）併入 pre-roll ──
+            self._pre_roll.extend(samples.tolist())
         if "speech_end" in events:
             if self._utterance_task and not self._utterance_task.done():
                 self._utterance_task.cancel()
@@ -502,6 +541,8 @@ class WebSession:
         await self._set_state(self.STATE_THINKING)
         captured = self._frames
         self._frames = []
+        # VC-ASR-ONSET-FIX-1（D3）：收割點清空 pre-roll ⇒ 上一回合的音訊不得被前置到下一句。
+        self._pre_roll.clear()
         self._vad.reset()
         if not captured:
             print("[UTT] start frames=0 (skip)")  # VC-1.5 診斷日誌
