@@ -14,6 +14,7 @@ asr_refiner.py — ASR 語意淨化層（VC-1 模組 1）。
 
 from __future__ import annotations
 
+import atexit
 import re
 from typing import Callable, Optional
 
@@ -199,6 +200,73 @@ def build_refine_prompt(raw_stt_text: str) -> str:
     )
 
 
+# ─────────────────────────────────────────────────────────────
+# VC-ASR-REUSE：LLM 呼叫的 HTTP 連線池重用
+# ─────────────────────────────────────────────────────────────
+
+# 連線池參數。數值沿用同套件既有慣例（clients/voice_companion/akane_voice_brain.py
+# 的 VC_HTTP_POOL_CONNECTIONS=4 / VC_HTTP_POOL_MAXSIZE=8），此處以同名語意的模組
+# 常數各自宣告——刻意**不**跨模組 import 那些常數，避免兩個模組互相耦合。
+ASR_HTTP_POOL_CONNECTIONS = 4
+ASR_HTTP_POOL_MAXSIZE = 8
+
+# 行程級共用 Session（lazy singleton）。
+# 為什麼是模組層級而非 per-instance：build_llm_call() 的呼叫時機（是否
+# per-request）不由本模組決定；只有行程級 singleton 才能**保證**跨回合重用
+# 同一條連線，免去每回合一次 TLS 握手（約 18–20ms）。Session 預設帶
+# keep-alive，故不手動塞連線相關 header。
+_LLM_SESSION: Optional[object] = None
+
+
+def _build_llm_session() -> "requests.Session":
+    """建立 ASR Refiner 專用 HTTP Session：連線池 + keep-alive。"""
+    import requests  # 懶載入：測試環境不需安裝（維持既有契約，不得移到模組頂層）
+    from requests.adapters import HTTPAdapter
+
+    session = requests.Session()
+    adapter = HTTPAdapter(
+        pool_connections=ASR_HTTP_POOL_CONNECTIONS,
+        pool_maxsize=ASR_HTTP_POOL_MAXSIZE,
+    )
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+def _get_llm_session() -> "requests.Session":
+    """取得行程級共用 Session（首次呼叫才建立，之後跨回合重用同一物件）。
+
+    建構失敗（例如環境沒裝 requests）時讓例外照原語意往上拋——**不**靜默吞成
+    None，否則呼叫端會拿到不明錯誤；此時 `_LLM_SESSION` 維持 None，下次重試。
+    """
+    global _LLM_SESSION
+    if _LLM_SESSION is None:
+        _LLM_SESSION = _build_llm_session()
+    return _LLM_SESSION
+
+
+def close_llm_session() -> None:
+    """關閉並丟棄行程級共用 Session（冪等）。
+
+    重複呼叫安全；關閉時的例外一律吞掉；呼叫後把 `_LLM_SESSION` 設回 None，
+    使得下次 `_get_llm_session()` 會重建——**不得**重用已關閉的 session。
+    """
+    global _LLM_SESSION
+    session = _LLM_SESSION
+    _LLM_SESSION = None
+    if session is None:
+        return
+    try:
+        session.close()
+    except Exception:
+        pass
+
+
+# 冪等：模組只載入一次，故本註冊只發生一次；close_llm_session() 本身冪等且吞例外，
+# 直譯器結束時（含未建立過 session 的情況）不會拋錯。
+atexit.register(close_llm_session)
+
+
 def build_llm_call(llm_cfg: dict) -> Callable[[str], Optional[str]]:
     """依 config `llm` 小節建立 OpenAI 相容 chat/completions 呼叫（requests 懶載入）。"""
     from .env_config import normalize_chat_endpoint  # 正規化：缺 /chat/completions 自動補
@@ -208,12 +276,12 @@ def build_llm_call(llm_cfg: dict) -> Callable[[str], Optional[str]]:
     api_key = (llm_cfg or {}).get("api_key") or ""
 
     def call(prompt: str) -> Optional[str]:
-        import requests  # 懶載入：測試環境不需安裝
+        session = _get_llm_session()  # VC-ASR-REUSE：行程級共用連線池（跨回合重用）
 
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        resp = requests.post(
+        resp = session.post(
             endpoint,
             json={"model": model, "messages": [{"role": "user", "content": prompt}], "stream": False},
             headers=headers,
