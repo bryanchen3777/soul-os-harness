@@ -33,14 +33,128 @@ $lastLaunchFile = Join-Path $stateDir 'watchdog_last_launch.txt'
 
 # === Logging (放最前面,讓其他 function 可以呼叫) ===
 
-function Log-Watch([string]$msg) {
+# INFRA-WATCHDOG-TG-HEALTH (2026-09-16): 新增**可選**第二參數 $level（向後相容）。
+#   既有呼叫端（單參數）行為逐字不變: $level 預設空字串 ⇒ 產生的行與以前完全相同。
+#   加它的理由: 本票要求告警以 `Log-Watch "<msg>" "CRITICAL"` 這個形式落地。
+#   PowerShell 5.1 的**簡單函式**（沒有 [CmdletBinding()]）對多出來的位置參數
+#   **不會報錯**, 而是默默塞進 $args ⇒ "CRITICAL" 會被丟掉、永遠不會出現在
+#   watchdog.log（實測驗證過）。補上這個可選參數後, 該呼叫形式才會真的把
+#   CRITICAL 等級寫進日誌行。
+function Log-Watch([string]$msg, [string]$level = '') {
     $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    $line = "[$ts] $msg"
+    if ([string]::IsNullOrEmpty($level)) {
+        $line = "[$ts] $msg"
+    } else {
+        $line = "[$ts] $level  $msg"
+    }
     Write-Host $line
     try {
         Out-File -Append -FilePath $logFile -InputObject $line -Encoding utf8 -ErrorAction SilentlyContinue
     } catch {}
 }
+
+# >>> TG-HEALTH-BEGIN
+# INFRA-WATCHDOG-TG-HEALTH (2026-09-16) — Telegram 真活性心跳的「唯讀讀取 + 告警」端。
+#   * 寫入端: src/io/channels/telegram.py（每 30s 原子寫 data\heartbeats\telegram_channel.json）
+#   * 本區塊只讀檔 + 只記 log, **永不動作**: 不重啟、不拉 Plan A、不碰既有重啟計數器。
+#   * 位置在主流程任何「提前結束分支」之前 ⇒ 每一 tick 都執行（主服務健康與否都跑）。
+#   * 時鐘: 全程數值 epoch 減法（[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()）,
+#     不做 PowerShell 字串日期解析（字串解析會因 locale 產生偽告警）。
+#   * 容錯: 心跳檔不存在 ⇒ 正常冷啟動期（不告警）; 被鎖定或 JSON 損毀 ⇒ 安全跳過。
+#   * 變數: 區塊內所有變數一律 tgHb 前綴, 絕不覆寫既有變數
+#     （port 健康旗標、listener pid、tick 時間、重啟計數器等一律不碰）。
+#   * 可測性: 下面的函式自足（接受 heartbeat 路徑 / now epoch / threshold /
+#     logger scriptblock）, 測試以區塊標記抽出函式文字單獨載入, **絕不執行本檔**。
+function Test-TgHeartbeatHealth {
+    param(
+        [string]$HeartbeatPath,
+        [double]$NowEpoch,
+        [double]$ThresholdSeconds = 180,
+        [scriptblock]$Logger = $null
+    )
+    $alerts = @()
+    try {
+        if ([string]::IsNullOrEmpty($HeartbeatPath)) { return @() }
+        if (-not (Test-Path -LiteralPath $HeartbeatPath)) {
+            # 冷啟動期: 寫入端還沒產生第一筆心跳 ⇒ 正常, 不告警
+            return @()
+        }
+        $raw = $null
+        try {
+            $raw = [System.IO.File]::ReadAllText($HeartbeatPath, [System.Text.Encoding]::UTF8)
+        } catch {
+            # 檔案被鎖定 / 無法讀取 ⇒ 安全跳過（不告警、不拋）
+            return @()
+        }
+        if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
+        $data = $null
+        try {
+            $data = $raw | ConvertFrom-Json
+        } catch {
+            # JSON 損毀 ⇒ 安全跳過（不告警、不拋）
+            return @()
+        }
+        if ($null -eq $data) { return @() }
+
+        $threshold = [double]$ThresholdSeconds
+        $thresholdInt = [int]$threshold
+
+        # (a) 全域: 寫入端整體還活著嗎（涵蓋「寫入者已死」）
+        $updatedAt = $null
+        if ($null -ne $data.updated_at) {
+            try { $updatedAt = [double]$data.updated_at } catch { $updatedAt = $null }
+        }
+        if ($null -ne $updatedAt) {
+            $globalAge = [double]$NowEpoch - $updatedAt
+            if ($globalAge -gt $threshold) {
+                $globalAgeInt = [int][Math]::Floor($globalAge)
+                $alerts += "[WATCHDOG-TG-ALERT] heartbeat file stale: writer may be dead, age=${globalAgeInt}s (threshold ${thresholdInt}s)"
+            }
+        }
+
+        # (b) 逐 bot: **指名**停滯的 bot（不得只報「有人停滯」）
+        $bots = $data.bots
+        if ($null -ne $bots) {
+            foreach ($prop in $bots.PSObject.Properties) {
+                $botName = [string]$prop.Name
+                $entry = $prop.Value
+                if ($null -eq $entry) { continue }
+                if ($null -eq $entry.last_success_ts) { continue }
+                $botTs = $null
+                try { $botTs = [double]$entry.last_success_ts } catch { $botTs = $null }
+                if ($null -eq $botTs) { continue }
+                $botAge = [double]$NowEpoch - $botTs
+                if ($botAge -gt $threshold) {
+                    $botAgeInt = [int][Math]::Floor($botAge)
+                    $alerts += "[WATCHDOG-TG-ALERT] Bot $botName heartbeat stale: ${botAgeInt}s (threshold ${thresholdInt}s)"
+                }
+            }
+        }
+
+        foreach ($alert in $alerts) {
+            if ($null -ne $Logger) {
+                [void](& $Logger $alert 'CRITICAL')
+            }
+        }
+        return $alerts
+    } catch {
+        # 自身任何異常都不得中斷主巡檢, 也不得假告警
+        if ($null -ne $Logger) {
+            try { [void](& $Logger "  [WATCHDOG-TG-ALERT] tg-health check error (absorbed): $_" 'WARN') } catch {}
+        }
+        return @()
+    }
+}
+
+# 呼叫點: 任何異常都被下面這層吸收, 主巡檢一律繼續。
+try {
+    $tgHbPath = Join-Path $harness 'data\heartbeats\telegram_channel.json'
+    $tgHbNowEpoch = [double][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $tgHbAlerts = Test-TgHeartbeatHealth -HeartbeatPath $tgHbPath -NowEpoch $tgHbNowEpoch -ThresholdSeconds 180 -Logger { param($tgHbMsg, $tgHbLevel) Log-Watch $tgHbMsg $tgHbLevel }
+} catch {
+    Log-Watch "[WATCHDOG-TG-ALERT] tg-health block error (absorbed, main sweep continues): $_" 'CRITICAL'
+}
+# <<< TG-HEALTH-END
 
 # === P0-2: git HEAD hash 查詢 ===
 

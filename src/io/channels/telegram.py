@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
 import os
 import time
@@ -112,6 +113,43 @@ MAX_LAST_ERRORS = 5
 STALL_THRESHOLD_SECONDS = 120.0
 
 
+# ============================================================================
+# INFRA-WATCHDOG-TG-HEALTH (2026-09-16): 心跳落盤 —— 真活性訊號的「唯讀外部形式」
+#
+# 事故背景: 2026-09-15 TG 入站輪詢靜默死亡 1h40m, 進程內偵測（前一票的
+# STALL_THRESHOLD_SECONDS）只在進程還活著時有效; 進程整個死掉 / 事件迴圈卡死時
+# **沒有任何外部信號**。本票把「實質成功 getUpdates 的時間戳」落成一個唯讀心跳檔
+# （data/heartbeats/telegram_channel.json）, 由 scripts/_watchdog.ps1 每一 tick
+# 讀取並告警（**只告警, 永不動作**）。
+#
+# 資料源鐵則: 一律以「實質成功 getUpdates 的時間戳」為準（snapshot_health() 體系）。
+# **嚴禁**回退 `updater.running` —— 它只是純旗標, 判不出「卡住但沒死」。
+#
+# 🔑 時鐘語意（本票最容易做錯的地方）:
+#   既有 per-bot `last_poll_success` 是 **time.monotonic() 秒**
+#   （None = 當前 app 從未成功）; 而 watchdog 端要用 **Unix epoch** 做
+#   `$nowEpoch - $ts` 減法。**兩者混用會產生偽 CRITICAL 風暴**（monotonic
+#   起點是開機時間, 通常遠小於 epoch ⇒ age 天文數字）。
+#   ⇒ 另記 per-bot `last_success_epoch`（time.time() 的 float epoch）, 供落盤用。
+# ============================================================================
+
+#: 心跳停滯門檻（秒）。watchdog 讀取端用**同一個數值**判定 stale / CRITICAL。
+HEARTBEAT_STALE_SECONDS = 180.0
+
+#: 心跳寫入週期（秒）。start() 完成後會**立即同步先寫一次**（不等這個週期）,
+#: 之後才由週期協程每 HEARTBEAT_INTERVAL_SECONDS 秒重寫。
+HEARTBEAT_INTERVAL_SECONDS = 30.0
+
+#: 心跳週期的睡眠原語。**刻意在模組載入時捕獲**, 不走 `asyncio.sleep` 的動態查找。
+#: 理由: 既有的 telegram 測試（`fast_sleep` / `gated_sleep`）會把
+#: `tg_module.asyncio.sleep` 換成「記錄延遲 + 立即讓出」的假版本, 用來斷言
+#: 重建退避數列（1,2,4,8,16,32,60）。心跳的 30 秒週期若共用同一個 patch 點,
+#: 會 (a) 把 30.0 混進那些退避斷言 ⇒ 既有測試由綠轉紅,
+#: (b) 讓心跳在測試中退化成熱迴圈（假 sleep 立即返回）。
+#: 心跳與重建退避是**兩條互不相干的週期**, 不得互相干擾。
+_HEARTBEAT_SLEEP = asyncio.sleep
+
+
 # 環境變數名稱常數（方便測試時 mock）
 ENV_TOKEN_YUA = "TELEGRAM_BOT_YUA"
 ENV_TOKEN_RUKA = "TELEGRAM_BOT_RUKA"
@@ -170,12 +208,20 @@ class TelegramAdapter(ChannelAdapter):
 
     def __init__(self, tokens: Optional[dict[str, str]] = None,
                  supervise_interval: float = SUPERVISE_INTERVAL_SECONDS,
-                 monotonic_clock: Optional[Callable[[], float]] = None):
+                 monotonic_clock: Optional[Callable[[], float]] = None,
+                 wall_clock: Optional[Callable[[], float]] = None,
+                 heartbeat_path: Optional[str] = None):
         """Args:
             tokens: 測試用覆寫；正式環境省略 → 從 env 讀
             supervise_interval: 存活監督檢查週期（秒）。預設 5 秒；測試注入短週期。
             monotonic_clock: 時間來源（秒）。預設 time.monotonic；測試注入假時鐘
                 （沿用 supervise_interval 的注入風格, 生產路徑不留需要真等待的後門）。
+            wall_clock: **牆鐘**來源（Unix epoch 秒）。預設 time.time；測試注入假時鐘。
+                （INFRA-WATCHDOG-TG-HEALTH：心跳檔一律用 epoch, 與 monotonic 分開兩條。）
+            heartbeat_path: 心跳檔路徑。None ⇒ 預設
+                `data_root()/heartbeats/telegram_channel.json`（生產 = repo
+                `data/heartbeats/telegram_channel.json`）。**必須可注入**:
+                測試一律走注入的臨時路徑, 絕不寫生產 data/**。
         """
         self._tokens = tokens or _load_tokens()
         self._apps: dict[str, Application] = {}
@@ -212,6 +258,149 @@ class TelegramAdapter(ChannelAdapter):
         self._poll_failure_counts: dict[str, int] = {}
         #: 每 bot 當前 app 建構完成時間（last_poll_success is None 時的起算點）
         self._app_built_at: dict[str, float] = {}
+
+        # --- INFRA-WATCHDOG-TG-HEALTH (2026-09-16): 心跳落盤（寫給 watchdog 讀）---
+        #: 牆鐘來源（Unix epoch 秒）。預設 time.time；測試注入假時鐘。
+        #: 與 `self._now`（monotonic）是**兩條獨立的時鐘**, 不得互相替代。
+        self._wall_clock: Callable[[], float] = wall_clock or time.time
+        #: 進程啟動 epoch（adapter 建構時取一次, **永不再改**）。
+        #: 冷啟動（本進程尚無任何成功 getUpdates）時, 心跳導出值用它當起算點 ⇒
+        #: watchdog 拿到的是「永不為 null」的數值, 且 180 秒內不告警。
+        self._process_start_epoch: float = float(self._wall_clock())
+        #: 每 bot 最近一次 getUpdates 成功的 **epoch** 秒（None = 本進程從未成功）。
+        #: ⚠ **絕不被 `_build_app()` 歸零** —— 跨 app 重建存活。理由見
+        #: `_derive_last_success_ts()` 的 docstring（拿 _app_built_at 當退回值
+        #: 會讓 180 秒告警永遠不響 = 把告警閹割）。
+        self._last_success_epoch: dict[str, Optional[float]] = {}
+        #: 心跳週期協程（start() 內建立, stop() 內取消, 不得阻塞關機）
+        self._heartbeat_task: Optional[asyncio.Task] = None
+        #: 心跳檔路徑覆寫（None ⇒ 走 `_heartbeat_path()` 的預設解析）
+        self._heartbeat_path_override: Optional[str] = (
+            str(heartbeat_path) if heartbeat_path is not None else None
+        )
+
+    # ------------------------------------------------------------------
+    # INFRA-WATCHDOG-TG-HEALTH: 心跳落盤（寫入端）
+    # ------------------------------------------------------------------
+    def _heartbeat_path(self) -> str:
+        """心跳檔路徑（可注入；預設 `data_root()/heartbeats/telegram_channel.json`）。
+
+        走 `src.paths.data_root()`（P0.5 canonical resolver）而**不是**硬寫
+        `"data/..."` 字面值:
+          - 生產（`SOUL_OS_DATA_DIR` 未設）解析結果就是 repo 的
+            `data/heartbeats/telegram_channel.json` —— 與工單指定的預設路徑一致。
+          - 測試環境（`tests/conftest.py` 的 autouse 隔離 fixture 會把
+            `SOUL_OS_DATA_DIR` 指向 tmp）**自動被隔離** ⇒ 既有測試呼叫 `start()`
+            不會污染生產 `data/**`（站規: 團隊不得寫生產 data/）。
+        """
+        if self._heartbeat_path_override is not None:
+            return self._heartbeat_path_override
+        try:
+            from src.paths import data_root
+            return str(data_root() / "heartbeats" / "telegram_channel.json")
+        except Exception:
+            # 極端情況下（src.paths 不可用）仍要有路徑, 不得讓心跳整體失效
+            return os.path.join("data", "heartbeats", "telegram_channel.json")
+
+    def _derive_last_success_ts(self, agent_id: str) -> float:
+        """導出值: `last_success_epoch` 有值就用它, 否則用 `process_start_epoch`。
+
+        ⇒ **永不為 None** ⇒ watchdog 端可以純數值運算（`$nowEpoch - $ts`）,
+        不需要處理 null。
+
+        ⚠ **為什麼退回值不能用 `_app_built_at`**: `_build_app()` 每一次（初始啟動
+        與每一次重建）都會把 `_app_built_at[agent_id]` 重設成「現在」⇒ 若拿它當
+        退回值, **每次重建都把時鐘歸零** ⇒ watchdog 的 180 秒停滯告警**永遠不會響**
+        （真停滯反而看不到）—— 等於把告警閹割。這是本決策的核心理由。
+        `process_start_epoch` 只在 adapter 建構時取一次、永不再改 ⇒
+          - 冷啟動（本進程尚無成功）: 時鐘自進程啟動起算, 180 秒內不告警 ✓
+          - 真停滯: 上一次真實成功的 epoch 一直留著 ⇒ 一定會超過門檻而告警 ✓
+        """
+        epoch = self._last_success_epoch.get(agent_id)
+        if epoch is None:
+            return float(self._process_start_epoch)
+        return float(epoch)
+
+    def _heartbeat_snapshot(self, now_epoch: Optional[float] = None) -> dict:
+        """組出心跳檔內容（純資料, **絕不含 token**）。
+
+        格式（`updated_at` / `last_success_ts` 皆為 epoch 浮點數）::
+
+            {"updated_at": 1758026400.0, "pid": 10444,
+             "bots": {"mai": {"last_success_ts": 1758026398.0,
+                              "age_s": 2.0, "status": "ok"}}}
+
+        `age_s` 是我方加值欄位（供人眼與測試）; watchdog 仍以 epoch 減法為準。
+        """
+        if now_epoch is None:
+            now_epoch = float(self._wall_clock())
+        now_epoch = float(now_epoch)
+        agent_ids = sorted(set(self._tokens) | set(self._apps))
+        bots: dict = {}
+        for agent_id in agent_ids:
+            last_success_ts = self._derive_last_success_ts(agent_id)
+            age_s = now_epoch - last_success_ts
+            bots[agent_id] = {
+                "last_success_ts": last_success_ts,
+                "age_s": age_s,
+                "status": (
+                    "ok" if age_s <= HEARTBEAT_STALE_SECONDS else "stale"
+                ),
+            }
+        return {
+            "updated_at": now_epoch,
+            "pid": os.getpid(),
+            "bots": bots,
+        }
+
+    def _write_heartbeat(self) -> bool:
+        """原子落盤心跳檔。**失敗一律不得影響輪詢**。
+
+        手法: 先寫同目錄 `telegram_channel.json.tmp.<pid>`, 再 `os.replace()`
+        原子替換（同目錄 rename ⇒ 讀者永不看到半截檔）。
+
+        整個寫入包在 try/except Exception 內, 失敗只記 WARNING 後吞掉:
+        `os.replace` 在 Windows 上可能因讀者佔用而 `PermissionError`
+        ⇒ 下一 tick 重試即可, **絕不拋出**（拋出會往上打到輪詢/監督路徑）。
+        """
+        try:
+            now_epoch = float(self._wall_clock())
+            payload = self._heartbeat_snapshot(now_epoch)
+            path = self._heartbeat_path()
+            directory = os.path.dirname(os.path.abspath(path))
+            os.makedirs(directory, exist_ok=True)
+            tmp_path = f"{path}.tmp.{os.getpid()}"
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_path, path)
+            return True
+        except Exception as e:
+            logger.warning(
+                f"[TG] heartbeat write failed (ignored, retried next tick): {e!r}"
+            )
+            return False
+
+    async def _heartbeat_loop(self) -> None:
+        """週期寫心跳（HEARTBEAT_INTERVAL_SECONDS）。任何錯誤都不得外拋。
+
+        第一筆由 `start()` 同步寫入（冷啟動首寫）; 這裡只補後續週期筆。
+        必須在 `stop()` 內被取消, 不得阻塞關機。
+
+        睡眠走 `_HEARTBEAT_SLEEP`（模組載入時捕獲的真 `asyncio.sleep`）,
+        刻意避開測試對 `tg_module.asyncio.sleep` 的 monkeypatch, 理由見該常數註解。
+        """
+        while True:
+            try:
+                await _HEARTBEAT_SLEEP(HEARTBEAT_INTERVAL_SECONDS)
+                self._write_heartbeat()
+            except asyncio.CancelledError:
+                logger.debug("[TG] heartbeat task cancelled")
+                raise
+            except Exception:
+                # 通道層自癒: 單次迭代失敗不得讓心跳週期永久停擺
+                logger.exception("[TG] heartbeat iteration error (absorbed)")
 
     def _make_handler(self, agent_id: str):
         """每個 bot 一個 handler，closure 帶 agent_id。"""
@@ -323,6 +512,11 @@ class TelegramAdapter(ChannelAdapter):
         # 不得沿用舊 app 的成功時間, 否則重建完會立刻再被判停滯 ⇒ 重建風暴。
         self._last_poll_success[agent_id] = None
         self._app_built_at[agent_id] = self._now()
+        # ⚠ INFRA-WATCHDOG-TG-HEALTH: 這裡**只**歸零 monotonic 的
+        # `_last_poll_success`（上一票的語意, 逐字不變）。
+        # `_last_success_epoch` **絕不在這裡歸零** —— 它是跨重建存活的真活性
+        # epoch, 心跳導出值靠它才能在「重建完但還沒成功」時仍指回上一次真實成功,
+        # 而不是被歸零成現在（那會讓 180 秒停滯告警永遠不響）。
         return app
 
     def _install_poll_heartbeat(self, agent_id: str, app) -> None:
@@ -401,11 +595,24 @@ class TelegramAdapter(ChannelAdapter):
             )
 
     def _record_poll_success(self, agent_id: str) -> None:
-        """真活性訊號: 一次 getUpdates 成功（含回傳空 list）。"""
+        """真活性訊號: 一次 getUpdates 成功（含回傳空 list）。
+
+        INFRA-WATCHDOG-TG-HEALTH: 同時記 **epoch** 版的成功時間
+        （`_last_success_epoch`）—— 這是心跳檔與 watchdog 唯一可用的時鐘語意。
+        既有 monotonic 欄位（`_last_poll_success`）語意逐字不變。
+        """
         self._poll_success_counts[agent_id] = (
             self._poll_success_counts.get(agent_id, 0) + 1
         )
         self._last_poll_success[agent_id] = self._now()
+        try:
+            self._last_success_epoch[agent_id] = float(self._wall_clock())
+        except Exception as e:
+            # 牆鐘讀取失敗不得影響輪詢（心跳退化為 process_start_epoch 起算）
+            logger.warning(
+                f"[TG:{agent_id}] wall clock read failed — heartbeat epoch "
+                f"not updated: {e!r}"
+            )
 
     def _record_poll_failure(self, agent_id: str, exc: BaseException) -> None:
         """一次 getUpdates 失敗（例外原樣重拋之前先記錄）。"""
@@ -520,6 +727,14 @@ class TelegramAdapter(ChannelAdapter):
             )
         else:
             logger.info("[TG] start summary: %d/%d bots polling", ok, total)
+
+        # --- INFRA-WATCHDOG-TG-HEALTH: 冷啟動首寫 + 週期協程 ---
+        # 1. **立即同步寫一次**（不得等 30 秒）。目的: 杜絕重啟後頭 30 秒 watchdog
+        #    讀到「前一進程遺留的舊心跳檔」而觸發偽 CRITICAL。
+        self._write_heartbeat()
+        # 2. 再啟動週期協程（stop() 內取消, 不得阻塞關機）。
+        if self._heartbeat_task is None or self._heartbeat_task.done():
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
     def _make_error_callback(self, agent_id: str):
         """方案 C (2026-09-08): 409 Conflict 重試限制。
@@ -888,7 +1103,20 @@ class TelegramAdapter(ChannelAdapter):
             except Exception as e:
                 logger.error(f"[TG] supervisor join error: {e}")
 
-        # 3. 再停 updater / app（idempotent 拆除, 關閉 HTTPX session）
+        # 3. INFRA-WATCHDOG-TG-HEALTH: 取消心跳週期協程（不得阻塞關機）。
+        #    先清欄位再 await ⇒ 重複呼叫 stop() 仍 idempotent。
+        heartbeat_task = self._heartbeat_task
+        self._heartbeat_task = None
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(f"[TG] heartbeat join error: {e}")
+
+        # 4. 再停 updater / app（idempotent 拆除, 關閉 HTTPX session）
         apps = list(self._apps.items())
         self._apps.clear()
         for agent_id, app in apps:
@@ -896,27 +1124,46 @@ class TelegramAdapter(ChannelAdapter):
             logger.info(f"[TG:{agent_id}] stopped")
 
     def snapshot_health(self) -> dict:
-        """TG-STALL-DETECTION-1 §3: per-agent 輪詢健康快照（給下一張心跳票用）。
+        """per-agent 輪詢健康快照。
 
-        每筆包含:
+        TG-STALL-DETECTION-1 §3 既有欄位（**語意逐字不變**）:
           - `last_poll_success`: 最近一次 getUpdates 成功的 monotonic 秒
             （None = 當前 app 從未成功過）
           - `poll_success_count` / `poll_failure_count`: 跨重建累計次數
           - `running`: ptb updater 旗標（**不可單獨當健康判據**）
           - `rebuild_count`: 連續重建次數（既有計數器）
 
-        **本票不寫任何磁碟心跳檔**（落檔是下一張票）。
+        INFRA-WATCHDOG-TG-HEALTH 擴充欄位（純新增, 無既有消費者）:
+          - `last_success_epoch`: 最近一次成功的 **epoch** 秒（None = 本進程從未成功）
+          - `last_success_ts`: 導出值（epoch, **永不為 None**）—— 有成功用它,
+            否則用進程啟動 epoch（見 `_derive_last_success_ts()`）
+          - `process_start_epoch`: 本 adapter 建構時的 epoch
+          - `age_s`: 距 `last_success_ts` 幾秒
+          - `status`: `"ok"` / `"stale"`（門檻 `HEARTBEAT_STALE_SECONDS`）
+
+        心跳檔落盤（`data/heartbeats/telegram_channel.json`）由 `_write_heartbeat()`
+        負責; 本方法只回傳記憶體內狀態。
         """
         agent_ids = sorted(set(self._tokens) | set(self._apps))
+        now_epoch = float(self._wall_clock())
         snapshot: dict = {}
         for agent_id in agent_ids:
             app = self._apps.get(agent_id)
             updater = getattr(app, "updater", None) if app is not None else None
+            last_success_ts = self._derive_last_success_ts(agent_id)
+            age_s = now_epoch - last_success_ts
             snapshot[agent_id] = {
                 "last_poll_success": self._last_poll_success.get(agent_id),
                 "poll_success_count": self._poll_success_counts.get(agent_id, 0),
                 "poll_failure_count": self._poll_failure_counts.get(agent_id, 0),
                 "running": bool(getattr(updater, "running", False)),
                 "rebuild_count": self._rebuild_counts.get(agent_id, 0),
+                "last_success_epoch": self._last_success_epoch.get(agent_id),
+                "last_success_ts": last_success_ts,
+                "process_start_epoch": self._process_start_epoch,
+                "age_s": age_s,
+                "status": (
+                    "ok" if age_s <= HEARTBEAT_STALE_SECONDS else "stale"
+                ),
             }
         return snapshot
