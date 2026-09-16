@@ -288,9 +288,25 @@ async def test_writer_failure_does_not_disturb_polling(monkeypatch, tmp_path):
         await cleanup(adapter)
 
 
+def _read_updated_at(path: Path, default: float) -> float:
+    """單次讀取 `updated_at`; 讀不到（極少數並行競態）就沿用上一次的值。"""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))["updated_at"]
+    except Exception:
+        return default
+
+
 @pytest.mark.asyncio
 async def test_heartbeat_loop_periodically_rewrites(monkeypatch, tmp_path):
-    """A1b: 週期協程確實每 HEARTBEAT_INTERVAL_SECONDS 重寫（不阻塞、不卡死）。"""
+    """A1b: 週期協程確實每 HEARTBEAT_INTERVAL_SECONDS 重寫（不阻塞、不卡死）。
+
+    手法: 縮短週期後**安靜等待**再單次讀取比對。
+
+    ⚠ 不得改成「緊密輪詢讀檔」: Windows 上 `os.replace` 遇到並行讀者會
+    `PermissionError`（這正是寫入端「失敗只記 WARNING、下一 tick 重試」的
+    設計前提）。若測試端也高頻開檔, 就會把 writer 持續頂掉 ⇒ 測試變成
+    不穩定的競態（實測 3 次跑 1 次紅）。
+    """
     monkeypatch.setattr(tg_module, "HEARTBEAT_INTERVAL_SECONDS", 0.02)
     clock = FakeClock()
     adapter = make_adapter(tmp_path, {"mai": FAKE_TOKEN_MAI}, wall=clock)
@@ -299,16 +315,20 @@ async def test_heartbeat_loop_periodically_rewrites(monkeypatch, tmp_path):
 
     await adapter.start(on_message=lambda *a: None)
     try:
-        first = json.loads(hb_path.read_text(encoding="utf-8"))["updated_at"]
+        first = _read_updated_at(hb_path, -1.0)
+        assert first == clock.value, "首寫必須是當下牆鐘"
         clock.advance(30.0)
-        rewritten = False
-        for _ in range(200):
-            await asyncio.sleep(0.01)
-            now = json.loads(hb_path.read_text(encoding="utf-8"))["updated_at"]
-            if now != first:
-                rewritten = True
+        second = first
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.2)   # 安靜等待: 週期協程約有 10 次寫入機會
+            second = _read_updated_at(hb_path, first)
+            if second != first:
                 break
-        assert rewritten, "週期協程沒有重寫心跳檔"
+        assert second != first, (
+            f"週期協程沒有重寫心跳檔（updated_at 仍為 {first}）"
+        )
+        assert second == clock.value
     finally:
         await cleanup(adapter)
 
