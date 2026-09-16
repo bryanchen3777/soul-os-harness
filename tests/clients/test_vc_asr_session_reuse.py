@@ -21,6 +21,7 @@ VC-ASR-REUSE — ASR Refiner LLM 呼叫改用「行程級共用連線池 Session
  10. `test_module_has_no_top_level_requests_attribute`       — 懶載入契約：模組頂層無 `requests`
  11. `test_module_executes_and_raises_without_requests`      — 沒有 requests 時 import 不炸；建 session 時 ImportError 上拋（不靜默 None）
  12. `test_atexit_registration_is_idempotent_and_safe`       — atexit 註冊一次且回呼不炸（可重複呼叫）
+ 13. `test_concurrent_first_use_creates_exactly_one_session` — FUP-1 Part A：4 執行緒同時首次呼叫 ⇒ 只建 1 個 session、全部同一物件
 
 全離線：所有 HTTP 一律在 `requests.Session.post` / `requests.post` 層被 mock，
 endpoint 用 loopback 假位址，0 真實外呼、0 寫生產 `data/**`。
@@ -31,6 +32,7 @@ from __future__ import annotations
 import atexit
 import importlib.util
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import MagicMock
@@ -344,3 +346,66 @@ def test_atexit_registration_is_idempotent_and_safe(monkeypatch):
     callback()
     callback()
     assert probe._LLM_SESSION is None
+
+
+# ─────────────────────────────────────────────────────────────
+# FUP-1 Part A：lazy 建立必須執行緒安全
+# （比照姊妹模組 akane_voice_brain.py:320-328 的 threading.Lock 保護）
+# ─────────────────────────────────────────────────────────────
+
+def test_concurrent_first_use_creates_exactly_one_session(monkeypatch):
+    """N=4 執行緒**同時**首次呼叫 `_get_llm_session()` ⇒ 只建 1 個 Session、全部同一物件。
+
+    為什麼是安全關鍵：真實呼叫路徑是 `web_server.py:557` 的
+    `await asyncio.to_thread(self._refiner.refine_speech_text, text)` ⇒ 精煉跑在
+    執行緒池工作執行緒。無鎖時兩個執行緒可能各建一個 Session，其中一個成為**孤兒**
+    （`close_llm_session()` 只關存活那個 ⇒ 孤兒永不關閉）。
+
+    同步**一律用 `threading.Barrier`**（N 個執行緒同時衝入首次呼叫），不使用 sleep。
+    額外把 `sys.setswitchinterval` 調到 1µs：CPython 預設 5ms 的 GIL 切片比
+    「檢查→建構→賦值」整段還長，不切換執行緒的話無鎖版本也會「碰巧」只建一次
+    ⇒ 競態視窗會被藏起來。縮小切片只是**放大競態視窗**（純排程器旋鈕、非時序同步），
+    讓「缺鎖」這件事在測試裡可觀測；測試結束必還原原值。
+    """
+    n_threads = 4
+    barrier = threading.Barrier(n_threads)
+    build_calls: list[int] = []
+    build_calls_lock = threading.Lock()
+    real_build = asr_refiner_mod._build_llm_session
+
+    def _counting_build():
+        with build_calls_lock:
+            build_calls.append(1)
+        return real_build()
+
+    monkeypatch.setattr(asr_refiner_mod, "_build_llm_session", _counting_build)
+
+    results: list[object] = []
+    errors: list[BaseException] = []
+
+    def _worker():
+        try:
+            barrier.wait(timeout=10)  # 保證 4 個執行緒同時進入首次呼叫
+            results.append(asr_refiner_mod._get_llm_session())
+        except BaseException as exc:  # noqa: BLE001 - 收集後統一座斷言，讓失敗訊息可讀
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker) for _ in range(n_threads)]
+    prev_switch_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)  # 放大競態視窗（見 docstring）
+    try:
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+    finally:
+        sys.setswitchinterval(prev_switch_interval)
+    assert all(not t.is_alive() for t in threads), "worker 執行緒未在時限內結束"
+
+    assert not errors, f"worker 執行緒發生例外：{errors}"
+    assert len(results) == n_threads, f"應有 {n_threads} 筆結果，實得 {len(results)}"
+    assert len(build_calls) == 1, (
+        f"Session 只應建 1 次，實測 {len(build_calls)} 次 ⇒ lazy 建立競態（缺鎖保護）"
+    )
+    assert all(s is results[0] for s in results), "所有執行緒必須拿到同一個 Session 物件"
+    assert asr_refiner_mod._LLM_SESSION is results[0]

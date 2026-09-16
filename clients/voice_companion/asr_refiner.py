@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import atexit
 import re
+import threading
 from typing import Callable, Optional
 
 # ─────────────────────────────────────────────────────────────
@@ -217,6 +218,14 @@ ASR_HTTP_POOL_MAXSIZE = 8
 # keep-alive，故不手動塞連線相關 header。
 _LLM_SESSION: Optional[object] = None
 
+# FUP-1 Part A：lazy 建立必須由 threading.Lock 保護。
+# 比照姊妹模組 akane_voice_brain.py:320-328（明文：「LLM 呼叫跑在 asyncio.to_thread
+# 內 ⇒ Session 必須可跨執行緒共享」，以 threading.Lock 保護 lazy 建立）——本模組的
+# 真實呼叫路徑亦然：web_server.py:557 以 `await asyncio.to_thread(...refine_speech_text,
+# text)` 呼叫，精煉跑在 to_thread 的工作執行緒。無鎖時 2 個執行緒可能各建一個 Session，
+# 其中一個成為孤兒（close_llm_session() 只關存活的那個 ⇒ 孤兒永不關閉）。
+_LLM_SESSION_LOCK = threading.Lock()
+
 
 def _build_llm_session() -> "requests.Session":
     """建立 ASR Refiner 專用 HTTP Session：連線池 + keep-alive。"""
@@ -238,11 +247,15 @@ def _get_llm_session() -> "requests.Session":
 
     建構失敗（例如環境沒裝 requests）時讓例外照原語意往上拋——**不**靜默吞成
     None，否則呼叫端會拿到不明錯誤；此時 `_LLM_SESSION` 維持 None，下次重試。
+
+    鎖內做「檢查 → 建構 → 賦值」：兩個執行緒同時首次呼叫時只會建出一個物件
+    （無鎖版本會各建一個，其中一個成孤兒）。鎖內只建 Session 物件、**無網路 I/O**。
     """
     global _LLM_SESSION
-    if _LLM_SESSION is None:
-        _LLM_SESSION = _build_llm_session()
-    return _LLM_SESSION
+    with _LLM_SESSION_LOCK:
+        if _LLM_SESSION is None:
+            _LLM_SESSION = _build_llm_session()
+        return _LLM_SESSION
 
 
 def close_llm_session() -> None:
@@ -250,10 +263,14 @@ def close_llm_session() -> None:
 
     重複呼叫安全；關閉時的例外一律吞掉；呼叫後把 `_LLM_SESSION` 設回 None，
     使得下次 `_get_llm_session()` 會重建——**不得**重用已關閉的 session。
+
+    與 lazy 建立共用同一把鎖做狀態切換（擷取＋歸零在鎖內），避免與 `_get_llm_session()`
+    交錯而把別的执行緒剛建好的 Session 丟掉；實際 `close()` 在鎖外執行（不在鎖內做 I/O）。
     """
     global _LLM_SESSION
-    session = _LLM_SESSION
-    _LLM_SESSION = None
+    with _LLM_SESSION_LOCK:
+        session = _LLM_SESSION
+        _LLM_SESSION = None
     if session is None:
         return
     try:
