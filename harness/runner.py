@@ -17,6 +17,7 @@ TL-0 规格 §6.7 / §7 (D7, 已拍板):
 """
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import logging
@@ -60,7 +61,17 @@ logger = logging.getLogger("soul_os.harness.runner")
 TIME_LAPSE_DIR_NAME = "time_lapse"
 
 # 0 mutation 验证时跳过的 harness 写区 (data/time_lapse/)
-_MUTATION_SKIP_DIRS = {TIME_LAPSE_DIR_NAME}
+_MUTATION_SKIP_DIRS = {
+    TIME_LAPSE_DIR_NAME,
+    # FUP-1 Part B：以下两个目录**整个**由「活的生產服務」運行時寫入，harness/測試不寫。
+    #   heartbeats/ — Telegram 通道心跳，**每 30 秒一寫**（實測 15:32:54 寫入
+    #     data/heartbeats/telegram_channel.json；TG-HEALTH 寫入端 14:18 上線）。
+    #     它落在守門約 6–10 秒的快照窗內 ⇒ 修前 ≈20%/次偽紅（已實測重現）。
+    #   tts/        — TTS 音檔輸出（歷史偽紅
+    #     data/tts/agent_mai/20260916T022755_624898.mp3）。
+    "heartbeats",
+    "tts",
+}
 
 # 0 mutation 验证时跳过的 production server 运行时文件 (并发活动, 非 harness 写入):
 # *.log / *.err / *.pid / *.txt / *.bak / *.old / *.tmp — production server
@@ -71,13 +82,63 @@ _MUTATION_SKIP_EXTS = {
     ".sqlite-shm", ".sqlite-wal", "-shm", "-wal",
 }
 
+# FUP-1 Part B：由「活的生產服務運行時實際寫入」推導出的**精確**路徑／窄樣式 allowlist。
+# 全部有實證：以 mtime 列舉近 6 小時內被服務寫入、且未被 _MUTATION_SKIP_EXTS 涵蓋的
+# data/** 檔案（2026-09-16 15:33 掃描）。逐條註明「此為服務自身運行時寫入，非測試洩漏」。
+# 刻意**不**整目錄略過：能用精確路徑就不用 glob —— 每放寬一分，就少一分偵測力。
+# ⚠ 代價：列在這裡的路徑**不再受此守門保護**（見 FUP-1 報告 §D5）；根因修法是後續票
+# `TEST-INFRA-DATA-ROOT-GUARD-1`（以測試隔離根取代 allowlist）。
+_MUTATION_SKIP_PATTERNS = (
+    # 15:32:14 — 服務每回合寫入的對話 session 檔
+    "sessions/agent_*_user_*.json",
+    # 15:10:54 — 服務群聊對話記錄
+    "conversations/group_chat.json",
+    # 15:14:45 — 服務主記憶庫（sqlite；-shm/-wal 已由 ext 清單涵蓋）
+    "memory.db",
+    # 12:41:16 — 服務匯出的 agent 記憶
+    "memory/agent_*/memories.jsonl",
+    # 15:29:51 — 服務事件迴圈活性心跳
+    "state/event_loop_alive.json",
+    # 15:33:04／15:28:04／14:23:04 — watchdog 逐 commit 的計數檔，
+    # 樣式 post_<commit-ish>_counter.json（審計窗內亦見 post_3061769_counter.json）
+    "state/post_*_counter.json",
+    # 15:18:47 — 服務自身 flush（同一秒成批寫入）
+    "elevation/elevation_edges.jsonl",
+    "elevation/elevation_nodes.jsonl",
+    "elevation/elevation_trace.jsonl",
+    "inner_life/trace.jsonl",
+    # 15:18:47 — perception trace（工單明列的歷史偽紅來源）
+    "world/perception_trace.jsonl",
+    # 14:49:01 — 服務 30s wake 的決策／動機 trace
+    "soul/decision_trace.jsonl",
+    "soul/motive_trace.jsonl",
+    # 10:26:16／09:55:13 — 服務自身寫入的互動、日記與關係檔
+    "soul/interactions.jsonl",
+    "soul/agent_*/relationships.json",
+    "soul/agent_*/diary/*.jsonl",
+)
+
+
+def _is_mutation_skipped(rel: Path) -> bool:
+    """`rel`（相對 production data_root）是否屬 0 mutation 驗證的排除範圍。
+
+    排除三類：harness 寫區／服務運行時寫入路徑（見上面註解）／server 日誌類副檔名。
+    集中在一處，讓「未來新增只需改一處」。
+    """
+    if rel.parts and rel.parts[0] in _MUTATION_SKIP_DIRS:
+        return True
+    posix = rel.as_posix()
+    if any(fnmatch.fnmatch(posix, pattern) for pattern in _MUTATION_SKIP_PATTERNS):
+        return True
+    return Path(posix).suffix.lower() in _MUTATION_SKIP_EXTS
+
 
 # ───────────────────────────────────────────────────────────
 # 0 mutation 验证 (§7.2 规则 3)
 # ───────────────────────────────────────────────────────────
 
 def snapshot_data_root_hashes(data_root_dir: Path) -> Dict[str, str]:
-    """对 production data_root 列出逐档 byte hash (跳过 harness 写区)。
+    """对 production data_root 列出逐档 byte hash (跳过 harness 写区与活服务运行时路径)。
 
     Returns:
         {相对路径: sha256 hex} — 只含 run 前已存在的文件。
@@ -90,9 +151,7 @@ def snapshot_data_root_hashes(data_root_dir: Path) -> Dict[str, str]:
         if not path.is_file():
             continue
         rel = path.relative_to(data_root_dir)
-        if rel.parts and rel.parts[0] in _MUTATION_SKIP_DIRS:
-            continue
-        if path.suffix.lower() in _MUTATION_SKIP_EXTS:
+        if _is_mutation_skipped(rel):
             continue
         try:
             snapshot[rel.as_posix()] = _sha256_file(path)
