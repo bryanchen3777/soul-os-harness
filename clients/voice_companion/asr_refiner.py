@@ -324,6 +324,9 @@ class AsrRefiner:
     def __init__(self, llm_call: Optional[Callable[[str], Optional[str]]] = None, config: Optional[dict] = None):
         self.config = config or {}
         self.llm_call = llm_call
+        # 診斷用唯讀欄位；不得影響回傳值（VC-ASR-DIAG-1）。
+        # None = 尚未呼叫過 refine_speech_text()；呼叫後值域僅 "llm" / "local" / "drop"。
+        self.last_refine_path: Optional[str] = None
         if self.llm_call is None:
             llm_cfg = self.config.get("llm") or {}
             if llm_cfg.get("endpoint"):
@@ -334,19 +337,37 @@ class AsrRefiner:
         return cls(config=config)
 
     def refine_speech_text(self, raw_text: str) -> Optional[str]:
-        """回傳修復後的純淨文字；若為雜音或空白則回傳 None（觸發 DROP）。"""
+        """回傳修復後的純淨文字；若為雜音或空白則回傳 None（觸發 DROP）。
+
+        診斷欄位（VC-ASR-DIAG-1，唯讀；不得影響回傳值）：
+          `self.last_refine_path` 記錄「本次回傳值由哪條路徑產出」，值域僅三種：
+            - "llm"   — LLM 精煉成功且採用了它的輸出（含模型回覆經 strip 後非空）
+            - "local" — 走規則式 local_refine() 產出（含 LLM 失敗／空回覆後落地）
+            - "drop"  — 最終結果為 None（雜音/無內容，呼叫端會 DROP）
+          進入點先**重設為本次的悲觀預設 "drop"**（本次若無 llm/local 產出即為 drop），
+          因此任何路徑都不可能殘留上一次呼叫的值；`__init__` 的 None 則專指
+          「尚未呼叫過」。**此重設是本欄位正確性的關鍵，不得移除。**
+        """
+        # 診斷用唯讀欄位；不得影響回傳值。
+        # 每次呼叫先重設（悲觀預設 drop）——drop 路徑靠這行取得正確值，絕不殘留上一次的值。
+        self.last_refine_path = "drop"
         if is_noise(raw_text):
-            return None
+            return None  # 純雜音：維持本次預設 "drop"
         if self.llm_call is not None:
             try:
                 result = (self.llm_call(build_refine_prompt(raw_text)) or "").strip()
             except Exception:
                 result = ""
             if result:
-                if result.upper() == "EMPTY":  # 模型判定雜音 → 熔斷
+                if result.upper() == "EMPTY":  # 模型判定雜音 → 熔斷（維持 "drop"）
                     return None
+                self.last_refine_path = "llm"
                 return result
-        return local_refine(raw_text)
+        # LLM 未注入／呼叫失敗／回覆空白 → 落到規則式路徑（如實標 local）
+        refined = local_refine(raw_text)
+        if refined is not None:
+            self.last_refine_path = "local"
+        return refined  # None ⇒ 維持本次預設 "drop"
 
 
 # 模組級預設實例：離線確定性模式（極速），供無狀態呼叫與驗收測試使用

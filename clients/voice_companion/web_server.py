@@ -132,6 +132,20 @@ def setup_logging(agent_id: str) -> str:
     return str(log_path)
 
 
+# VC-ASR-DIAG-1：日誌截斷上限（只作用在日誌字串；送往大腦的文字一律不截斷）
+ASR_LOG_TEXT_LIMIT = 80
+
+
+def _truncate_for_log(text: str, limit: int = ASR_LOG_TEXT_LIMIT) -> str:
+    """把字串截到 `limit` 字元供日誌使用（超出時尾端加省略號 '…'）。
+
+    **只**用於組日誌字串：呼叫端送給大腦／TTS 的文字必須維持原文（VC-ASR-DIAG-1）。
+    非字串或 None 以 str() 正規化，避免日誌組裝本身拋錯。
+    """
+    s = text if isinstance(text, str) else str(text)
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
 def _on_async_exception(loop, context) -> None:
     """asyncio 迴圈例外 handler（task 內未捕捉例外 / loop 錯誤 → 落檔）。"""
     exc = context.get("exception")
@@ -551,8 +565,6 @@ class WebSession:
         chars = len(text)
         elapsed_ms = round(((t_asr_done or t_start) - t_start) * 1000)  # ASR 轉錄耗時
         if run_refiner:
-            print(f"[ASR-REFINE] decision=run reason={reason} chars={chars} conf=none elapsed_ms={elapsed_ms}")
-            log.info("[ASR-REFINE] decision=run reason=%s chars=%d conf=none elapsed_ms=%d", reason, chars, elapsed_ms)
             try:
                 clean = await asyncio.to_thread(self._refiner.refine_speech_text, text)
             except asyncio.CancelledError:
@@ -561,6 +573,28 @@ class WebSession:
                 clean = ""
                 print(f"[UTT] refiner-exception {exc}")
                 log.exception("[UTT] refiner-exception %s", exc)
+
+            # ── VC-ASR-DIAG-1：原始 → 淨化後 的可觀測性（與決策同一則訊息，不另開行）──
+            # 「這句是哪條路徑產出的」（llm / local / drop）取自 Refiner 的唯讀診斷欄位
+            # last_refine_path；最終結果為空（含 Refiner 拋例外、無觀測欄位的注入 mock）
+            # 一律如實標 drop。raw/refined 只截斷**日誌字串**，送往大腦的 clean 不截斷。
+            path = getattr(self._refiner, "last_refine_path", None)
+            if not clean:
+                path = "drop"
+            elif path not in ("llm", "local"):
+                # 注入的 refiner 未提供觀測欄位（既有測試 mock）；生產路徑恆為 AsrRefiner
+                path = "local"
+            raw_log = _truncate_for_log(text)
+            refined_log = f"'{_truncate_for_log(clean)}'" if clean else "None"
+            print(
+                f"[ASR-REFINE] decision=run reason={reason} chars={chars} conf=none "
+                f"elapsed_ms={elapsed_ms} path={path} raw='{raw_log}' -> refined={refined_log}"
+            )
+            log.info(
+                "[ASR-REFINE] decision=run reason=%s chars=%d conf=none elapsed_ms=%d "
+                "path=%s raw='%s' -> refined=%s",
+                reason, chars, elapsed_ms, path, raw_log, refined_log,
+            )
 
             if gen != self._generation:
                 print(f"[UTT] refiner-cancelled gen={gen} curr={self._generation}")
