@@ -79,8 +79,12 @@ SUPERVISE_INTERVAL_SECONDS = 5.0
 #: 指數退避序列（秒）; idx = min(rebuild_count, len-1) ⇒ 上限 60 秒。
 REBUILD_BACKOFF_SECONDS = (1, 2, 4, 8, 16, 32, 60)
 
-#: 連續重建上限。超過 ⇒ logger.critical 後停止監督該 bot（fail-loud, 不再重試）。
+#: 連續重建門檻。達到此值 ⇒ 進入「慢速續試期」（D-3: 永不停止監督、永不放棄）。
 MAX_CONSECUTIVE_REBUILDS = 5
+
+#: 慢速續試間隔（秒）。連續重建達 MAX_CONSECUTIVE_REBUILDS 之後, 每次重試固定
+#: 等這麼久, 且每次都記 logger.critical（持續可見, 不得只剩一行 log 就永久躺平）。
+SLOW_RETRY_SECONDS = 300.0
 
 #: 連續健康達此秒數 ⇒ 歸零 _rebuild_counts（「連續」的定義）。
 HEALTHY_RESET_SECONDS = 600.0
@@ -288,7 +292,9 @@ class TelegramAdapter(ChannelAdapter):
         """
         self._on_message = on_message
         self._closing = False
+        failed: list[str] = []
         for agent_id, token in self._tokens.items():
+            app = None
             try:
                 app = self._build_app(agent_id, token)
                 self._apps[agent_id] = app
@@ -310,14 +316,33 @@ class TelegramAdapter(ChannelAdapter):
                 # 單一 bot 失敗不得中止其他 bot
                 logger.exception(
                     f"[TG:{agent_id}] initial start failed — "
-                    f"continuing with remaining bots"
+                    f"tearing down partial app and supervising for rebuild"
                 )
-                continue
+                failed.append(agent_id)
+                # D-1 (TG-STABILITY-1-HOTFIX): 失敗路徑必須清場, 不得 continue。
+                # (a) 拆掉半成品 app（initialize 已建 HTTPX client）⇒ 杜絕 CLOSE_WAIT;
+                # (b) 從 _apps 移除 ⇒ 監督層看到 app is None ⇒ running=False ⇒
+                #     走 _rebuild_poller 重建（否則該 bot 永久無聲死亡）。
+                if app is not None:
+                    await self._teardown_app(agent_id, app)
+                    self._apps.pop(agent_id, None)
 
-            # 初始啟動完成後才掛上存活監督 task
+            # D-1: 任何 bot 都必須有 supervisor —— 初始啟動成功或失敗都一樣。
             self._supervisors[agent_id] = asyncio.create_task(
                 self._supervise(agent_id)
             )
+
+        # D-1: 頻道層啟動摘要（唯一可 grep 格式: "[TG] start summary: "）。
+        # 消除「0 個 bot 起來卻被下游印成 10 bots polling」的誤導。
+        total = len(self._tokens)
+        ok = total - len(failed)
+        if failed:
+            logger.warning(
+                "[TG] start summary: %d/%d bots polling (failed: %s)",
+                ok, total, ", ".join(failed),
+            )
+        else:
+            logger.info("[TG] start summary: %d/%d bots polling", ok, total)
 
     def _make_error_callback(self, agent_id: str):
         """方案 C (2026-09-08): 409 Conflict 重試限制。
@@ -487,19 +512,30 @@ class TelegramAdapter(ChannelAdapter):
                 if app is not None:
                     await self._teardown_app(agent_id, app)
 
-                # 2. 重建上限（連續、未經 600s 健康期）: >=5 ⇒ fail-loud 停止監督
+                # 2. D-3 (TG-STABILITY-1-HOTFIX): 連續重建達門檻後 **不再永久放棄**。
+                #    舊行為（logger.critical + _stop_supervisor）會讓該 bot 一直躺到
+                #    下次人工重啟, 主觀體驗等同「無聲死亡」⇒ 改為進入慢速續試期:
+                #    每次重試前記 CRITICAL（持續可見）, 間隔固定 SLOW_RETRY_SECONDS。
+                #    supervisor 永續存活; 外部恢復 ⇒ 重建成功 ⇒ poller 跑起來 ⇒
+                #    既有 HEALTHY_RESET_SECONDS 健康歸零邏輯把 count 歸 0 ⇒ 自動
+                #    回到快速退避期。
                 count = self._rebuild_counts.get(agent_id, 0)
-                if count >= MAX_CONSECUTIVE_REBUILDS:
+                slow_mode = count >= MAX_CONSECUTIVE_REBUILDS
+                if slow_mode:
                     logger.critical(
                         f"[TG:{agent_id}] {count} consecutive rebuilds without "
-                        f"{HEALTHY_RESET_SECONDS:.0f}s healthy window — giving up "
-                        f"(fail-loud, supervisor stopping; no further retries)"
+                        f"{HEALTHY_RESET_SECONDS:.0f}s healthy window — slow retry "
+                        f"mode: retrying every {SLOW_RETRY_SECONDS:.0f}s "
+                        f"(never gives up; supervisor stays alive)"
                     )
-                    self._stop_supervisor(agent_id)
-                    return
 
-                # 3. 指數退避等待（上限 60s）; 409 fail-closed ⇒ 直接 60s
-                delay = self._rebuild_backoff(agent_id)
+                # 3. 快速期: 指數退避（上限 60s）; 409 fail-closed ⇒ 直接 60s。
+                #    慢速期: 固定 SLOW_RETRY_SECONDS。
+                delay = (
+                    SLOW_RETRY_SECONDS
+                    if slow_mode
+                    else self._rebuild_backoff(agent_id)
+                )
                 self._rebuild_counts[agent_id] = count + 1
                 logger.warning(
                     f"[TG:{agent_id}] rebuilding poller in {delay:.0f}s "
@@ -513,6 +549,7 @@ class TelegramAdapter(ChannelAdapter):
 
                 # 4. 走單一建構路徑重建
                 token = self._tokens.get(agent_id, "")
+                new_app = None
                 try:
                     new_app = self._build_app(agent_id, token)
                     await new_app.initialize()
@@ -521,12 +558,20 @@ class TelegramAdapter(ChannelAdapter):
                         error_callback=self._make_error_callback(agent_id)
                     )
                 except asyncio.CancelledError:
+                    # D-2: 關機語意不變（重拋）, 但半成品 app 必須先拆掉
+                    if new_app is not None:
+                        await self._teardown_app(agent_id, new_app)
                     raise
                 except Exception:
                     logger.exception(
                         f"[TG:{agent_id}] rebuild attempt "
                         f"{count + 1}/{MAX_CONSECUTIVE_REBUILDS} failed"
                     )
+                    # D-2: 失敗的 new_app 從未寫入 _apps ⇒ stop() 永遠清不到它。
+                    # 這裡必須主動拆（initialize/start 可能已建 keep-alive 連線）
+                    # ⇒ 否則每次失敗都遺棄一個孤兒 app（session / CLOSE_WAIT 洩漏）。
+                    if new_app is not None:
+                        await self._teardown_app(agent_id, new_app)
                     return
 
                 self._apps[agent_id] = new_app
@@ -541,12 +586,6 @@ class TelegramAdapter(ChannelAdapter):
         except Exception:
             # 任何錯誤都不得向外拋出（通道層自癒）
             logger.exception(f"[TG:{agent_id}] rebuild error (absorbed)")
-
-    def _stop_supervisor(self, agent_id: str) -> None:
-        """取消並移除某 bot 的監督 task（fail-loud 停止重試用）。"""
-        task = self._supervisors.pop(agent_id, None)
-        if task is not None and not task.done():
-            task.cancel()
 
     async def send(self, agent_id: str, text: str,
                    user_id: "int | str") -> bool:
