@@ -19,8 +19,10 @@ Bot token 從環境變數讀（.env），不寫死 source code。
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
+import time
 import traceback
 from typing import Callable, Awaitable, Optional
 
@@ -93,6 +95,23 @@ HEALTHY_RESET_SECONDS = 600.0
 MAX_LAST_ERRORS = 5
 
 
+# ============================================================================
+# TG-STALL-DETECTION-1 (2026-09-16): 「卡住但沒死」的停滯偵測
+#
+# 事故背景: TG 入站無聲停止約 1h40m, 指紋是 pid 對 149.154.166.110:443 留下多條
+# CLOSE_WAIT、零 ERROR、零 traceback、getUpdates 不再成功。
+# 獨立審計讀 ptb 22.8 原始碼證明: Updater.running 只是純旗標, start_polling 的
+# 輪詢任務沒有 done-callback, network_retry_loop(max_retries=-1) 遇錯永不中止也
+# 不清旗標 ⇒ 「running=True 但 getUpdates 再也沒成功」不會被判死。
+# 鐵則: 健康判據必須是「最近一次真實成功」, 不是任務狀態旗標。
+# ============================================================================
+
+#: 停滯門檻（秒）。ptb 長輪詢預設約 10s 一輪 —— 即使沒有任何新訊息, getUpdates
+#: 也會「成功回傳空 list」。因此連續這麼久沒有任何一次成功 ⇒ 判定停滯
+#: （卡住但沒死: updater.running 仍為 True, 但連線已卡死 / 網路已斷）。
+STALL_THRESHOLD_SECONDS = 120.0
+
+
 # 環境變數名稱常數（方便測試時 mock）
 ENV_TOKEN_YUA = "TELEGRAM_BOT_YUA"
 ENV_TOKEN_RUKA = "TELEGRAM_BOT_RUKA"
@@ -150,10 +169,13 @@ class TelegramAdapter(ChannelAdapter):
     channel_id = "telegram"
 
     def __init__(self, tokens: Optional[dict[str, str]] = None,
-                 supervise_interval: float = SUPERVISE_INTERVAL_SECONDS):
+                 supervise_interval: float = SUPERVISE_INTERVAL_SECONDS,
+                 monotonic_clock: Optional[Callable[[], float]] = None):
         """Args:
             tokens: 測試用覆寫；正式環境省略 → 從 env 讀
             supervise_interval: 存活監督檢查週期（秒）。預設 5 秒；測試注入短週期。
+            monotonic_clock: 時間來源（秒）。預設 time.monotonic；測試注入假時鐘
+                （沿用 supervise_interval 的注入風格, 生產路徑不留需要真等待的後門）。
         """
         self._tokens = tokens or _load_tokens()
         self._apps: dict[str, Application] = {}
@@ -177,6 +199,19 @@ class TelegramAdapter(ChannelAdapter):
         self._last_errors: dict[str, list[str]] = {}
         #: 上一次 409 fail-closed 停止的 bot 集合 ⇒ 重建直接從最大退避（60s）起
         self._conflict_failclosed: set[str] = set()
+
+        # --- TG-STALL-DETECTION-1 (2026-09-16): 真活性訊號 ---
+        #: 時間來源（秒）。預設 time.monotonic（== asyncio loop.time()）; 測試可注入。
+        self._now: Callable[[], float] = monotonic_clock or time.monotonic
+        #: 每 bot 最近一次 getUpdates 成功回傳的 monotonic 時間
+        #: （None = 當前 app 從未成功過 ⇒ 以 _app_built_at 起算, 不得當成永遠健康）
+        self._last_poll_success: dict[str, Optional[float]] = {}
+        #: 每 bot 累計成功的 getUpdates 次數（跨重建累計, 供事故一眼診斷）
+        self._poll_success_counts: dict[str, int] = {}
+        #: 每 bot 累計失敗的 getUpdates 次數（跨重建累計）
+        self._poll_failure_counts: dict[str, int] = {}
+        #: 每 bot 當前 app 建構完成時間（last_poll_success is None 時的起算點）
+        self._app_built_at: dict[str, float] = {}
 
     def _make_handler(self, agent_id: str):
         """每個 bot 一個 handler，closure 帶 agent_id。"""
@@ -281,7 +316,149 @@ class TelegramAdapter(ChannelAdapter):
                 self._make_handler(agent_id),
             )
         )
+        # TG-STALL-DETECTION-1 §1: 真活性訊號。單一建構路徑 ⇒ 初始啟動與重建
+        # 都會裝上心跳 wrapper。
+        self._install_poll_heartbeat(agent_id, app)
+        # 新 app 的活性從零起算: 重建 ⇒ 新的 STALL_THRESHOLD_SECONDS 觀測窗。
+        # 不得沿用舊 app 的成功時間, 否則重建完會立刻再被判停滯 ⇒ 重建風暴。
+        self._last_poll_success[agent_id] = None
+        self._app_built_at[agent_id] = self._now()
         return app
+
+    def _install_poll_heartbeat(self, agent_id: str, app) -> None:
+        """TG-STALL-DETECTION-1 §1: 包一層 `app.bot.get_updates`, 取得真活性訊號。
+
+        ptb 的輪詢路徑（`telegram/ext/_updater.py` 的 `polling_action_cb`）是
+        `await self.bot.get_updates(...)`, 每次輪詢都重新取屬性 ⇒ 實例屬性會命中
+        這裡的 wrapper。wrapper:
+          - 成功回傳 ⇒ 記錄 `last_poll_success` + 累計 `poll_success_count`
+            （成功但沒有新訊息 = 回傳空 list 也算成功）。
+          - 拋例外 ⇒ 累計 `poll_failure_count` + 把完整 traceback 寫進**既有**的
+            有界 `_last_errors`（不另造第二套），然後**原樣重拋**
+            （絕不吞掉例外、絕不改變 ptb `network_retry_loop` 的重試語意）。
+          - 透明: 參數/回傳值/例外型別/時序語意都不變。
+
+        ⚠ 這裡**必須**用 `object.__setattr__`, 不得改回普通賦值
+        （`app.bot.get_updates = wrapper`）:
+        ptb 22.8 的 `TelegramObject.__setattr__` 在 `_frozen=True` 時對非底線屬性
+        直接 raise, 而 `Bot.__init__` 尾端會呼叫 `self._freeze()`
+        ⇒ 普通賦值在生產路徑**必定**失敗:
+        `AttributeError: Attribute 'get_updates' of class 'ExtBot' can't be set!`
+        `object.__setattr__` 直接寫入實例 `__dict__`（實例屬性遮蔽類別方法）,
+        且**不動 `_frozen`**（不解除 ptb 的不可變保護）。
+        """
+        bot = getattr(app, "bot", None)
+        if bot is None:
+            logger.error(
+                f"[TG:{agent_id}] poll heartbeat NOT installed (app has no .bot) — "
+                f"stall detection degraded to app-built-at only"
+            )
+            return
+
+        original = getattr(bot, "get_updates", None)
+        if original is None:
+            logger.error(
+                f"[TG:{agent_id}] poll heartbeat NOT installed "
+                f"(bot has no get_updates) — stall detection degraded"
+            )
+            return
+
+        async def _heartbeat_get_updates(*args, **kwargs):
+            try:
+                result = await original(*args, **kwargs)
+            except asyncio.CancelledError:
+                # 關機語意: 取消不是「輪詢失敗」, 不計數; 仍必須原樣重拋
+                raise
+            except BaseException as exc:
+                # 記錄後原樣重拋: 不得吞掉例外、不得改變 ptb 的重試語意
+                self._record_poll_failure(agent_id, exc)
+                raise
+            self._record_poll_success(agent_id)
+            return result
+
+        try:
+            # 只為可讀性/可除錯性保留原函式 metadata（不影響行為）
+            functools.update_wrapper(_heartbeat_get_updates, original)
+        except Exception:
+            logger.debug(
+                f"[TG:{agent_id}] heartbeat wrapper metadata copy skipped"
+            )
+
+        try:
+            object.__setattr__(bot, "get_updates", _heartbeat_get_updates)
+        except Exception:
+            logger.exception(
+                f"[TG:{agent_id}] poll heartbeat install FAILED — stall detection "
+                f"degraded to app-built-at only"
+            )
+            return
+
+        if getattr(bot, "get_updates", None) is not _heartbeat_get_updates:
+            # 遮蔽沒生效 ⇒ 活性訊號永遠是 None ⇒ 一定要吵（絕不靜默回到只看 running）
+            logger.error(
+                f"[TG:{agent_id}] poll heartbeat install did not take effect "
+                f"(instance attribute shadowing failed) — stall detection degraded"
+            )
+
+    def _record_poll_success(self, agent_id: str) -> None:
+        """真活性訊號: 一次 getUpdates 成功（含回傳空 list）。"""
+        self._poll_success_counts[agent_id] = (
+            self._poll_success_counts.get(agent_id, 0) + 1
+        )
+        self._last_poll_success[agent_id] = self._now()
+
+    def _record_poll_failure(self, agent_id: str, exc: BaseException) -> None:
+        """一次 getUpdates 失敗（例外原樣重拋之前先記錄）。"""
+        self._poll_failure_counts[agent_id] = (
+            self._poll_failure_counts.get(agent_id, 0) + 1
+        )
+        self._record_last_error(agent_id, exc)
+
+    def _record_last_error(self, agent_id: str, exc: BaseException) -> None:
+        """把例外（含完整 traceback）寫進既有有界 `_last_errors` 機制。
+
+        TG-STALL-DETECTION-1 §1: 輪詢心跳 wrapper 與 ptb error_callback 共用
+        這一個儲存（不得另造第二套）。有界: 每 bot 只留最近 MAX_LAST_ERRORS 筆。
+        """
+        try:
+            entry = "".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)
+            )
+            bucket = self._last_errors.setdefault(agent_id, [])
+            bucket.append(entry)
+            del bucket[:-MAX_LAST_ERRORS]
+        except Exception:
+            logger.exception(
+                f"[TG:{agent_id}] failed to record error in _last_errors"
+            )
+
+    def _poller_health(self, agent_id: str, app) -> tuple[bool, float, bool]:
+        """TG-STALL-DETECTION-1 §2: 健康判據 = 「最近一次真實成功」, 不是任務旗標。
+
+        回傳 `(healthy, 距最近一次成功幾秒, 是否曾經成功過)`:
+          - `running=False` ⇒ 不健康（既有語意不變）。
+          - `running=True` 但距最近一次成功 >= `STALL_THRESHOLD_SECONDS`
+            ⇒ 停滯（卡住但沒死）。
+          - `last_poll_success is None`（當前 app 從未成功）⇒ 以 **app 建構完成
+            時間**起算, 超過門檻即視為停滯 —— 不得讓 None 被當成「永遠健康」。
+        """
+        updater = getattr(app, "updater", None) if app is not None else None
+        running = bool(getattr(updater, "running", False))
+
+        last_success = self._last_poll_success.get(agent_id)
+        ever_succeeded = last_success is not None
+        if last_success is not None:
+            reference = last_success
+        else:
+            reference = self._app_built_at.get(agent_id)
+            if reference is None:
+                # 未經 _build_app 建構的 app（例如測試直接注入）⇒ 以首次觀測起算
+                reference = self._now()
+                self._app_built_at[agent_id] = reference
+
+        elapsed = self._now() - reference
+        healthy = running and elapsed < STALL_THRESHOLD_SECONDS
+        return healthy, elapsed, ever_succeeded
 
     async def start(self, on_message: OnMessageCallback) -> None:
         """啟動十個 bot 開始 polling（AGENT_ENV_MAP 列出多少就多少）。
@@ -307,7 +484,7 @@ class TelegramAdapter(ChannelAdapter):
                 await app.updater.start_polling(
                     error_callback=self._make_error_callback(agent_id)
                 )
-                self._healthy_since[agent_id] = asyncio.get_running_loop().time()
+                self._healthy_since[agent_id] = self._now()
                 logger.info(
                     f"[TG:{agent_id}] polling started "
                     f"(token={token[:8]}...)"
@@ -360,17 +537,8 @@ class TelegramAdapter(ChannelAdapter):
         def _on_error(exc: TelegramError) -> None:
             # TG-STABILITY-1 §2: 記錄所有例外（不只 409），含完整 traceback。
             # 有界: 每 bot 只留最近 MAX_LAST_ERRORS 筆。
-            try:
-                entry = "".join(
-                    traceback.format_exception(type(exc), exc, exc.__traceback__)
-                )
-                bucket = self._last_errors.setdefault(agent_id, [])
-                bucket.append(entry)
-                del bucket[:-MAX_LAST_ERRORS]
-            except Exception:
-                logger.exception(
-                    f"[TG:{agent_id}] failed to record error in _last_errors"
-                )
+            # TG-STALL-DETECTION-1: 與輪詢心跳 wrapper 共用同一機制。
+            self._record_last_error(agent_id, exc)
 
             if not isinstance(exc, Conflict):
                 return
@@ -420,12 +588,14 @@ class TelegramAdapter(ChannelAdapter):
                 )
 
     async def _supervise(self, agent_id: str) -> None:
-        """每 bot 一個存活監督任務（TG-STABILITY-1 §3）。
+        """每 bot 一個存活監督任務（TG-STABILITY-1 §3 + TG-STALL-DETECTION-1 §2）。
 
-        每 supervise_interval 秒檢查一次 updater.running:
+        每 supervise_interval 秒檢查一次:
           - _closing 為真 ⇒ 直接 return, 永不重建。
-          - running 為真 ⇒ 連續健康 ≥600s 就把 _rebuild_counts 歸 0。
-          - running 為假 ⇒ 判定輪詢已死, 進 _rebuild_poller。
+          - 健康（running 且「最近一次真實成功」仍在 STALL_THRESHOLD_SECONDS 內）
+            ⇒ 連續健康 >=HEALTHY_RESET_SECONDS 就把 _rebuild_counts 歸 0。
+          - 不健康（running=False 或 停滯）⇒ 進 _rebuild_poller（唯一重建路徑,
+            同一連續失敗計數器 / 同一退避 / 同一慢速期語意, 有界非熱迴圈）。
         任何錯誤都不得向外拋出（通道層自癒, 嚴禁外拋至主事件迴圈）。
         """
         while True:
@@ -439,16 +609,18 @@ class TelegramAdapter(ChannelAdapter):
                 app = self._apps.get(agent_id)
                 updater = getattr(app, "updater", None) if app is not None else None
                 running = bool(getattr(updater, "running", False))
+                # TG-STALL-DETECTION-1 §2: 健康判據 = running 且「最近一次真實成功」
+                healthy, seconds_since_success, ever_succeeded = self._poller_health(
+                    agent_id, app
+                )
 
-                if running:
+                if healthy:
                     # 連續健康累計 ⟶ 歸零重建計數
                     since = self._healthy_since.get(agent_id)
                     if since is None:
-                        self._healthy_since[agent_id] = (
-                            asyncio.get_running_loop().time()
-                        )
+                        self._healthy_since[agent_id] = self._now()
                     elif (
-                        asyncio.get_running_loop().time() - since
+                        self._now() - since
                         >= HEALTHY_RESET_SECONDS
                     ):
                         if self._rebuild_counts.get(agent_id):
@@ -460,16 +632,38 @@ class TelegramAdapter(ChannelAdapter):
                         self._rebuild_counts[agent_id] = 0
                     continue
 
-                # --- 輪詢已死 ---
                 self._healthy_since[agent_id] = None
                 recent = self._last_errors.get(agent_id) or []
-                last_error = recent[-1] if recent else "<no error recorded>"
-                logger.error(
-                    f"[TG:{agent_id}] poller not running "
-                    f"(updater.running=False) — rebuilding ... "
-                    f"rebuild_count={self._rebuild_counts.get(agent_id, 0)} "
-                    f"recent_errors={len(recent)} last_error={last_error}"
-                )
+
+                if not running:
+                    # --- 輪詢已死（旗標已被清）---
+                    last_error = recent[-1] if recent else "<no error recorded>"
+                    logger.error(
+                        f"[TG:{agent_id}] poller not running "
+                        f"(updater.running=False) — rebuilding ... "
+                        f"rebuild_count={self._rebuild_counts.get(agent_id, 0)} "
+                        f"recent_errors={len(recent)} last_error={last_error}"
+                    )
+                else:
+                    # --- 停滯: 卡住但沒死（running 仍為 True, getUpdates 再也不成功）---
+                    # 舊判據（只看 updater.running）完全看不到這個失效模式;
+                    # 2026-09-15 事故指紋正是它: CLOSE_WAIT + 零 traceback +
+                    # getUpdates 不再成功 + running 仍為 True。
+                    logger.error(
+                        f"[TG:{agent_id}] poller STALLED: updater.running=True but "
+                        f"no successful getUpdates — "
+                        f"seconds_since_last_poll_success="
+                        f"{seconds_since_success:.1f} "
+                        f"(threshold {STALL_THRESHOLD_SECONDS:.0f}s) "
+                        f"poll_success_count="
+                        f"{self._poll_success_counts.get(agent_id, 0)} "
+                        f"poll_failure_count="
+                        f"{self._poll_failure_counts.get(agent_id, 0)} "
+                        f"last_poll_success="
+                        f"{'never' if not ever_succeeded else 'recorded'} "
+                        f"rebuild_count={self._rebuild_counts.get(agent_id, 0)} "
+                        f"recent_errors={len(recent)} — rebuilding ..."
+                    )
 
                 await self._rebuild_poller(agent_id)
             except asyncio.CancelledError:
@@ -503,9 +697,10 @@ class TelegramAdapter(ChannelAdapter):
                 if self._closing:
                     return
                 app = self._apps.get(agent_id)
-                if app is not None and bool(
-                    getattr(getattr(app, "updater", None), "running", False)
-                ):
+                # TG-STALL-DETECTION-1 §2: 鎖內複查必須用同一個健康判據 ——
+                # 只看 updater.running 會讓「卡住但沒死」的重建在鎖內被自己擋掉
+                # （running 仍為 True ⇒ 直接 return ⇒ 永遠重建不了）。
+                if app is not None and self._poller_health(agent_id, app)[0]:
                     return
 
                 # 1. 先徹底拆除舊的（關閉舊 HTTPX session ⇒ 杜絕 CLOSE_WAIT 洩漏）
@@ -576,7 +771,7 @@ class TelegramAdapter(ChannelAdapter):
 
                 self._apps[agent_id] = new_app
                 self._conflict_failclosed.discard(agent_id)
-                self._healthy_since[agent_id] = asyncio.get_running_loop().time()
+                self._healthy_since[agent_id] = self._now()
                 logger.info(
                     f"[TG:{agent_id}] poller rebuilt OK "
                     f"(attempt {count + 1}/{MAX_CONSECUTIVE_REBUILDS})"
@@ -699,3 +894,29 @@ class TelegramAdapter(ChannelAdapter):
         for agent_id, app in apps:
             await self._teardown_app(agent_id, app)
             logger.info(f"[TG:{agent_id}] stopped")
+
+    def snapshot_health(self) -> dict:
+        """TG-STALL-DETECTION-1 §3: per-agent 輪詢健康快照（給下一張心跳票用）。
+
+        每筆包含:
+          - `last_poll_success`: 最近一次 getUpdates 成功的 monotonic 秒
+            （None = 當前 app 從未成功過）
+          - `poll_success_count` / `poll_failure_count`: 跨重建累計次數
+          - `running`: ptb updater 旗標（**不可單獨當健康判據**）
+          - `rebuild_count`: 連續重建次數（既有計數器）
+
+        **本票不寫任何磁碟心跳檔**（落檔是下一張票）。
+        """
+        agent_ids = sorted(set(self._tokens) | set(self._apps))
+        snapshot: dict = {}
+        for agent_id in agent_ids:
+            app = self._apps.get(agent_id)
+            updater = getattr(app, "updater", None) if app is not None else None
+            snapshot[agent_id] = {
+                "last_poll_success": self._last_poll_success.get(agent_id),
+                "poll_success_count": self._poll_success_counts.get(agent_id, 0),
+                "poll_failure_count": self._poll_failure_counts.get(agent_id, 0),
+                "running": bool(getattr(updater, "running", False)),
+                "rebuild_count": self._rebuild_counts.get(agent_id, 0),
+            }
+        return snapshot
