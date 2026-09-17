@@ -1,0 +1,177 @@
+"""修法 7 靜態分析: miku 14:22 EDT 觸發時, Bry 47.4 小時前訊息有沒有被過濾
+
+Bry 派工 8/4 17:12: miku 2:22 EDT 訊息「……在。」明顯是回應 Bry 47.4 小時前「……在。」的風格
+- 修法 7 (a571ae2, 13:33 EDT commit) 應該過濾 Bry 47.4 小時前 user 訊息
+- 觸發時間 14:22:20 EDT = ts 1785867740
+- Bry 最後 user 訊息: 8/2 14:59:09 EDT = ts 1785697149 (47.4 小時前)
+- 差距 170591 秒 = 2843 分鐘, 過 STALE_THRESHOLD_SEC=1800 → Bry 不在線 → 應該過濾
+
+Mock 場景:
+- memory.get_recent_with_meta 回傳 miku 私訊 session 最近 20 條 (含 Bry 47.4h 前「……在。」)
+- memory.get_recent 不回傳 (因為修法後用 get_recent_with_meta)
+- patch time.time 回傳 1785867740
+- 呼叫 _build_messages_private, 驗證 Bry user 訊息「……在。」有沒有被過濾掉
+"""
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import patch, MagicMock
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.llm import proxy
+
+# miku 14:22 EDT 觸發時間
+NOW = 1785867740
+# Bry 最後 user 訊息 8/2 14:59:09 EDT
+BRY_LAST_USER_TS = 1785697149
+
+# miku 私訊 session_bryan_agent_miku 最近 20 條 (簡化版, 含 Bry 47.4h 前訊息)
+def _make_miku_private_history():
+    history = []
+    # 1. Bry 47.4 小時前最後一條 user 訊息「……在。」
+    history.append({
+        "role": "user", "content": "……在。", "timestamp": BRY_LAST_USER_TS,
+        "speaker": "bryan", "is_private": True,
+    })
+    # 2-5. miku assistant 訊息 (Bry 47.4h 前)
+    for i, ts in enumerate([1785727384, 1785787850, 1785799555, 1785804695]):
+        history.append({
+            "role": "assistant", "content": f"miku reply {i}", "timestamp": ts,
+            "speaker": "agent_miku", "is_private": True,
+        })
+    # 6. miku 15.2h 前 觸發「……還在喔」
+    history.append({
+        "role": "assistant", "content": "……還在喔。三玖也還在。", "timestamp": 1785821174,
+        "speaker": "agent_miku", "is_private": True,
+    })
+    # 7. miku 11.8h 前 觸發「……嗯。在的」
+    history.append({
+        "role": "assistant", "content": "……嗯。在的。B也在。辛苦了。", "timestamp": 1785833423,
+        "speaker": "agent_miku", "is_private": True,
+    })
+    # 8. miku 8.7h 前 觸發「……嗯。在的。」
+    history.append({
+        "role": "assistant", "content": "……嗯。在的。", "timestamp": 1785844368,
+        "speaker": "agent_miku", "is_private": True,
+    })
+    # 9-15. 其他 miku 訊息 (更早)
+    for i, ts in enumerate([1785850000 + i * 1000 for i in range(7)]):
+        history.append({
+            "role": "assistant", "content": f"miku older msg {i}", "timestamp": ts,
+            "speaker": "agent_miku", "is_private": True,
+        })
+    # 補滿 20 條
+    for i in range(4):
+        history.append({
+            "role": "user", "content": f"old bry msg {i}", "timestamp": 1785500000 - i * 1000,
+            "speaker": "bryan", "is_private": True,
+        })
+    return history
+
+
+class TestMiku222Filter(unittest.TestCase):
+    """修法 7 在 miku 14:22 EDT 觸發時, Bry 47.4h 前訊息應該被過濾"""
+
+    def setUp(self):
+        self.fake_private_history = _make_miku_private_history()
+        self.soul_text = "你是 Miku。... (三玖的人格設定) ..."
+
+    def test_a_static_bry_is_online_false(self):
+        """靜態分析: _is_bry_online 在 NOW=14:22 EDT 觸發時判斷 Bry 不在線
+        Bry 最後 user 訊息 timestamp = 1785697149 (47.4h 前)
+        差距 = 170591 秒 > 1800 (STALE_THRESHOLD_SEC)
+        → Bry 不在線 (_is_bry_online 回 False)
+        """
+        result = proxy._is_bry_online(self.fake_private_history, NOW)
+        delta_sec = NOW - BRY_LAST_USER_TS
+        delta_min = delta_sec // 60
+        delta_h = delta_sec / 3600
+        print(f"  Bry 最後 user 訊息: ts={BRY_LAST_USER_TS} (8/2 14:59:09 EDT)")
+        print(f"  觸發時間: ts={NOW} (8/4 14:22:20 EDT)")
+        print(f"  差距: {delta_sec} 秒 = {delta_min} 分鐘 = {delta_h:.1f} 小時")
+        print(f"  STALE_THRESHOLD_SEC: {proxy.STALE_THRESHOLD_SEC} ({proxy.STALE_THRESHOLD_SEC // 60} 分鐘)")
+        print(f"  _is_bry_online 判斷: {result} (預期 False = Bry 不在線)")
+        self.assertFalse(
+            result,
+            f"_is_bry_online 應該回 False (Bry 不在線, 47.4h > 30min), 實際: {result}"
+        )
+
+    def test_b_build_messages_private_filters_bry_47h(self):
+        """模擬 miku 14:22 EDT 觸發: _build_messages_private 應該過濾 Bry 47.4h 前「……在。」
+        """
+        with patch("time.time", return_value=NOW):
+            fake_memory = MagicMock()
+            fake_memory.get_recent_with_meta.return_value = self.fake_private_history
+
+            messages = proxy._build_messages_private(
+                agent_id="agent_miku",
+                soul=self.soul_text,
+                current_input="",  # proactive 觸發
+                memory_context="",
+                memory=fake_memory,
+                mood=0.0,
+                user_id="bryan",
+                current_time="2026-08-04 14:22 (EDT)",
+            )
+
+            # 找 user role 訊息
+            user_msgs = [m for m in messages if m["role"] == "user"]
+            # Bry 47.4h 前「……在。」應該被過濾
+            stale_bry_in = any("……在。" in m.get("content", "") for m in user_msgs)
+            # 4 條更早的 old bry msg 應該也被過濾
+            old_bry_in = any("old bry msg" in m.get("content", "") for m in user_msgs)
+            # miku 自己 assistant 訊息應該保留
+            miku_msg_in = any("miku" in m.get("content", "").lower() for m in messages)
+
+            print(f"  user msgs 數: {len(user_msgs)} (預期 0, Bry 不在線全部過濾)")
+            for m in user_msgs:
+                print(f"    user msg: {m.get('content', '')[:60]!r}")
+            print(f"  Bry 47.4h 前「……在。」被過濾: {not stale_bry_in}")
+            print(f"  old bry msg 被過濾: {not old_bry_in}")
+            print(f"  miku 訊息保留: {miku_msg_in}")
+
+            self.assertFalse(
+                stale_bry_in,
+                "Bry 47.4h 前「……在。」應該被修法 7 過濾"
+            )
+            self.assertFalse(
+                old_bry_in,
+                "更早的 old bry msg 應該被修法 7 過濾"
+            )
+            self.assertTrue(
+                miku_msg_in,
+                "miku 自己的訊息應該保留 (過濾只對 Bry user 訊息生效)"
+            )
+
+    def test_c_simulation_summary(self):
+        """總結: miku 14:22 EDT 觸發時 Bry 訊息有沒有被過濾
+        若過濾 → miku 訊息純屬 persona 慣性, 併入修法 8 解決
+        若沒過濾 → 修法 7 有 bug, 要查 B
+        """
+        with patch("time.time", return_value=NOW):
+            fake_memory = MagicMock()
+            fake_memory.get_recent_with_meta.return_value = self.fake_private_history
+            messages = proxy._build_messages_private(
+                agent_id="agent_miku",
+                soul=self.soul_text,
+                current_input="",
+                memory_context="",
+                memory=fake_memory,
+                mood=0.0,
+                user_id="bryan",
+                current_time="2026-08-04 14:22 (EDT)",
+            )
+        user_msgs = [m for m in messages if m["role"] == "user"]
+        print(f"\n=== 結論 ===")
+        print(f"修法 7 邏輯: Bry 47.4h 前 user 訊息 = 過濾 ({len(user_msgs)} 條 user msg in messages)")
+        if len(user_msgs) == 0:
+            print(f"→ 修法 7 正確過濾, miku 14:22 EDT 訊息『……在。』純屬 persona 慣性, 併入修法 8 解決")
+        else:
+            print(f"→ 修法 7 沒過濾 (有 bug), 要查 B (觸發路徑 log)")
+        # 這個 case 純結論, 不 assert
+        self.assertTrue(True)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
