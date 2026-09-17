@@ -71,6 +71,11 @@ STILL_PROTECTED_PATHS = (
     "sessions/agent_rem.json",           # 不符合 sessions/agent_*_user_*.json
     "state/other_counter.json",          # 不符合 state/post_*_counter.json
     "conversations/agent_mai_user_bryan.json",
+    # D1 收窄後新增保護路徑（證明收窄生效）：
+    "heartbeats/other_service.json",     # 不符合 heartbeats/telegram_channel.json
+    "tts/agent_mai/audio.wav",           # 不符合 tts/**/*.mp3
+    "state/post_backup_counter.json",    # 不符合 state/post_*[0-9a-f]_counter.json
+    "soul/agent_yua/diary/test.jsonl",   # 不符合 soul/agent_*/diary/????-??-??.jsonl
 )
 
 
@@ -124,11 +129,13 @@ def test_service_never_written_paths_remain_protected():
 
 
 def test_skip_sets_shape_locked():
-    """既有排除集合不得被悄悄放寬：dir 集合只多 heartbeats/tts，ext 集合逐值不變。"""
-    assert _MUTATION_SKIP_DIRS == {"time_lapse", "heartbeats", "tts"}
+    """既有排除集合不得被悄悄放寬：dir 集合收窄至 time_lapse，ext 集合修補完整 sqlite wal/shm 變體。"""
+    assert _MUTATION_SKIP_DIRS == {"time_lapse"}
     assert _MUTATION_SKIP_EXTS == {
         ".log", ".err", ".pid", ".txt", ".bak", ".old", ".tmp",
-        ".sqlite-shm", ".sqlite-wal", "-shm", "-wal",
+        ".db-wal", ".db-shm",
+        ".sqlite-wal", ".sqlite-shm",
+        ".sqlite3-wal", ".sqlite3-shm",
     }
 
 

@@ -63,32 +63,31 @@ TIME_LAPSE_DIR_NAME = "time_lapse"
 # 0 mutation 验证时跳过的 harness 写区 (data/time_lapse/)
 _MUTATION_SKIP_DIRS = {
     TIME_LAPSE_DIR_NAME,
-    # FUP-1 Part B：以下两个目录**整个**由「活的生產服務」運行時寫入，harness/測試不寫。
-    #   heartbeats/ — Telegram 通道心跳，**每 30 秒一寫**（實測 15:32:54 寫入
-    #     data/heartbeats/telegram_channel.json；TG-HEALTH 寫入端 14:18 上線）。
-    #     它落在守門約 6–10 秒的快照窗內 ⇒ 修前 ≈20%/次偽紅（已實測重現）。
-    #   tts/        — TTS 音檔輸出（歷史偽紅
-    #     data/tts/agent_mai/20260916T022755_624898.mp3）。
-    "heartbeats",
-    "tts",
 }
 
 # 0 mutation 验证时跳过的 production server 运行时文件 (并发活动, 非 harness 写入):
 # *.log / *.err / *.pid / *.txt / *.bak / *.old / *.tmp — production server
 # (heartbeat_trace.log / faulthandler.log 等) 在 harness 实验期间可能并发写入。
 # harness 的 0 mutation 契约只约束「production 数据文件」, 不约束 server 日志。
+# P4-2: 修正 SQLite 暫存檔副檔名比對缺口，涵蓋 .db-wal/.db-shm/.sqlite-wal/.sqlite-shm/.sqlite3-wal/.sqlite3-shm 等變體。
 _MUTATION_SKIP_EXTS = {
     ".log", ".err", ".pid", ".txt", ".bak", ".old", ".tmp",
-    ".sqlite-shm", ".sqlite-wal", "-shm", "-wal",
+    ".db-wal", ".db-shm",
+    ".sqlite-wal", ".sqlite-shm",
+    ".sqlite3-wal", ".sqlite3-shm",
 }
 
-# FUP-1 Part B：由「活的生產服務運行時實際寫入」推導出的**精確**路徑／窄樣式 allowlist。
-# 全部有實證：以 mtime 列舉近 6 小時內被服務寫入、且未被 _MUTATION_SKIP_EXTS 涵蓋的
-# data/** 檔案（2026-09-16 15:33 掃描）。逐條註明「此為服務自身運行時寫入，非測試洩漏」。
-# 刻意**不**整目錄略過：能用精確路徑就不用 glob —— 每放寬一分，就少一分偵測力。
-# ⚠ 代價：列在這裡的路徑**不再受此守門保護**（見 FUP-1 報告 §D5）；根因修法是後續票
-# `TEST-INFRA-DATA-ROOT-GUARD-1`（以測試隔離根取代 allowlist）。
+# FUP-1 Part B + TEST-INFRA-DATA-ROOT-GUARD-1：由「活的生產服務運行時實際寫入」推導出的精確路徑／窄樣式 allowlist。
+# 收窄 4 條過寬樣式（恢復檢測力）：
+#   1. heartbeats 整目錄 → heartbeats/telegram_channel.json
+#   2. tts 整目錄 → tts/**/*.mp3
+#   3. state/post_*_counter.json → state/post_*[0-9a-f]_counter.json
+#   4. soul/agent_*/diary/*.jsonl → soul/agent_*/diary/????-??-??.jsonl
 _MUTATION_SKIP_PATTERNS = (
+    # 精確收窄 (D1-1)：Telegram 通道心跳，每 30 秒一寫（src/io/channels/telegram.py:300）
+    "heartbeats/telegram_channel.json",
+    # 精確收窄 (D1-2)：TTS 音檔輸出（src/voice/tts_service.py:69, src/llm/fish_tts_handler.py:408）
+    "tts/**/*.mp3",
     # 15:32:14 — 服務每回合寫入的對話 session 檔
     "sessions/agent_*_user_*.json",
     # 15:10:54 — 服務群聊對話記錄
@@ -99,9 +98,8 @@ _MUTATION_SKIP_PATTERNS = (
     "memory/agent_*/memories.jsonl",
     # 15:29:51 — 服務事件迴圈活性心跳
     "state/event_loop_alive.json",
-    # 15:33:04／15:28:04／14:23:04 — watchdog 逐 commit 的計數檔，
-    # 樣式 post_<commit-ish>_counter.json（審計窗內亦見 post_3061769_counter.json）
-    "state/post_*_counter.json",
+    # 精確收窄 (D1-3)：watchdog 逐 commit 的計數檔，commit hash 為十六進位字元（scripts/_watchdog.ps1:181）
+    "state/post_*[0-9a-f]_counter.json",
     # 15:18:47 — 服務自身 flush（同一秒成批寫入）
     "elevation/elevation_edges.jsonl",
     "elevation/elevation_nodes.jsonl",
@@ -115,20 +113,37 @@ _MUTATION_SKIP_PATTERNS = (
     # 10:26:16／09:55:13 — 服務自身寫入的互動、日記與關係檔
     "soul/interactions.jsonl",
     "soul/agent_*/relationships.json",
-    "soul/agent_*/diary/*.jsonl",
+    # 精確收窄 (D1-4)：服務自身寫入的日記檔（YYYY-MM-DD.jsonl, src/soul/diary.py:257, dream_event.py:480）
+    "soul/agent_*/diary/????-??-??.jsonl",
 )
+
+
+def is_sqlite_temp_file(path: Path | str) -> bool:
+    """判斷檔名是否為 SQLite 暫存檔 (-wal / -shm)。
+
+    涵蓋 .db-wal / .db-shm / .sqlite-wal / .sqlite-shm / .sqlite3-wal / .sqlite3-shm 等變體。
+    對照組（如 x.db、x.db-backup、y-wal.txt）回傳 False。
+    """
+    name = Path(path).name.lower()
+    return any(name.endswith(ext) for ext in (
+        ".db-wal", ".db-shm",
+        ".sqlite-wal", ".sqlite-shm",
+        ".sqlite3-wal", ".sqlite3-shm",
+    ))
 
 
 def _is_mutation_skipped(rel: Path) -> bool:
     """`rel`（相對 production data_root）是否屬 0 mutation 驗證的排除範圍。
 
-    排除三類：harness 寫區／服務運行時寫入路徑（見上面註解）／server 日誌類副檔名。
+    排除三類：harness 寫區／服務運行時寫入路徑（見上面註解）／server 日誌與 sqlite wal/shm 類副檔名。
     集中在一處，讓「未來新增只需改一處」。
     """
     if rel.parts and rel.parts[0] in _MUTATION_SKIP_DIRS:
         return True
     posix = rel.as_posix()
     if any(fnmatch.fnmatch(posix, pattern) for pattern in _MUTATION_SKIP_PATTERNS):
+        return True
+    if is_sqlite_temp_file(rel):
         return True
     return Path(posix).suffix.lower() in _MUTATION_SKIP_EXTS
 
