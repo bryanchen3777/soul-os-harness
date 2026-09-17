@@ -564,6 +564,21 @@ def test_t14_object_key_is_a_tolerated_alias() -> None:
     assert (result.fact or {})["object"] == "換個欄位名也收。"
 
 
+def test_narrative_prefers_dissolution_over_object_alias() -> None:
+    """敘述欄位優先權：兩鍵同時存在時必須採納 `dissolution`，不得誤用退化別名 `object`。
+
+    T14 只證明「`dissolution` 缺席時 `object` 可退化接受」；本測試補上審計指出的盲區：
+    把 `NARRATIVE_KEYS` 的優先序寫反（`("object", "dissolution")`）時必須變紅。
+    """
+    payload = json.dumps(
+        {"dissolution": "PRIMARY_VALUE", "object": "ALIAS_VALUE"}, ensure_ascii=False
+    )
+    result = _exec(llm_call=FakeLLM(payload), fact_writer=FakeWriter())
+    assert result.status == ex.STATUS_CONSOLIDATED
+    assert (result.fact or {})["object"] == "PRIMARY_VALUE"
+    assert (result.fact or {})["object"] != "ALIAS_VALUE"
+
+
 def test_t15_async_llm_and_async_writer_are_awaited() -> None:
     """T15：注入 awaitable ⇒ await（同步 fake 與 async fake 皆支援）。"""
     llm = AsyncFakeLLM(delay=0.0)
