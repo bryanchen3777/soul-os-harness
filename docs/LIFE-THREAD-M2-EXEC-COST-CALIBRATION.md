@@ -176,7 +176,9 @@ src/soul/motive.py:469     → _default_llm_call(...) → proxy.generate_text(..
    ⇒ 約 1690 tokens 屬**未顯示的推理（reasoning）token**，仍計費。
    **結論：300 token 不是成本上界**，只是一廂情願的參數。
 2. **生產預設逾時 20 s 比實測延遲短**：
-   `CONSOLIDATION_TIMEOUT_SECONDS = 20`（`life_thread_dissolution_exec.py:103`），
+   量測當下 `CONSOLIDATION_TIMEOUT_SECONDS = 20`（當時 `life_thread_dissolution_exec.py:103`）；
+   **已於 `19f8e62`（`LIFE-THREAD-M2-EXEC-HARDEN-1`）修正為 120 秒**
+   （本節其餘內容保留量測當下的歷史事實，不改寫）：
    而實測單次 **26.34 s** ⇒ 若照生產預設，這次呼叫會在 20 s 被
    `asyncio.wait_for` **客戶端 abort**，但**付費請求已送出**（推理成本已發生），
    且結果被丟棄 ⇒ `llm_failed` + 白花錢 + 下一輪重試再花一次。
