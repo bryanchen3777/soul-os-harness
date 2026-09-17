@@ -85,3 +85,5 @@
      Where-Object { $_.Message -match 'python|taskkill|Stop-Process' }
    ```
    已實測：任意子行程（含其命令列）在一秒內即被記錄。此為**事後歸因**能力，不取代「不得殺行程」的鐵律。
+
+10. **測試數字的口徑：一律以 repo 內 `.venv` 的直譯器為準**（`.venv\Scripts\python.exe -m pytest …`）。PATH 上的**全域** pytest（Python 3.12）是**另一個世界**——實測同一棵樹給出 `4964 collected／17 collection errors`，而 `.venv` 為 `5330 collected／0 errors`。引用「收集數／失敗數／新增數」時**必須同時聲明解釋器**，否則兩個執行者的數字會對不上，回歸差分會被誤判為真差異。此為 2026-09-17 `LIFE-THREAD-M2-EXEC-FUP-1` 實測發現。
