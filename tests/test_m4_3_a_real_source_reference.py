@@ -285,9 +285,9 @@ def test_m4_3_a_8_middleware_process_world_event_direct_strips_priority():
 
             # DORMANT GAP 確認
             assert event.priority == 8, "Original event has priority=8"
-            assert stored_event.priority == 0, (
-                f"WIRE DORMANT GAP CONFIRMED: source emit priority=8 but "
-                f"stored event priority={stored_event.priority} (priority lost in "
+            assert stored_event.priority == 8, (
+                f"POST-daf0f78 CONTRACT: source emit priority=8 and "
+                f"stored event priority={stored_event.priority} (priority preserved in "
                 f"to_payload round-trip in middleware.process_world_event_direct)"
             )
         finally:
@@ -369,8 +369,9 @@ def test_m4_3_a_10_wire_gap_magnitude_quantification():
 
             # ASSERTION 1: Bus path 全 dormant (priority=0)
             bus_priorities = [p for _, p in bus_results]
-            assert all(p == 0 for p in bus_priorities), (
-                f"Bus path should be dormant (all 0), got {bus_priorities}"
+            assert sorted(bus_priorities, reverse=True) == sorted(expected_priorities, reverse=True), (
+                f"Bus path should preserve vocabulary priorities {expected_priorities}, "
+                f"got {bus_priorities}"
             )
             # ASSERTION 2: Direct path 全部 match vocabulary
             direct_priorities = [p for _, p in direct_results]
