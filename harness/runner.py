@@ -83,6 +83,9 @@ _MUTATION_SKIP_EXTS = {
 #   2. tts 整目錄 → tts/**/*.mp3
 #   3. state/post_*_counter.json → state/post_*[0-9a-f]_counter.json
 #   4. soul/agent_*/diary/*.jsonl → soul/agent_*/diary/????-??-??.jsonl
+# TEST-INFRA-GUARD-LIVE-WRITER-COVERAGE-1：再補 8 條**事件驅動**線上寫入者（見下方 D1-1..D1-8）。
+# 鐵律：只准加精確路徑／窄樣式；不得加整目錄 skip（`agents` / `state` / `conversations` 等
+# 一律不得進 `_MUTATION_SKIP_DIRS`），否則守門會被鈍化。
 _MUTATION_SKIP_PATTERNS = (
     # 精確收窄 (D1-1)：Telegram 通道心跳，每 30 秒一寫（src/io/channels/telegram.py:300）
     "heartbeats/telegram_channel.json",
@@ -115,6 +118,42 @@ _MUTATION_SKIP_PATTERNS = (
     "soul/agent_*/relationships.json",
     # 精確收窄 (D1-4)：服務自身寫入的日記檔（YYYY-MM-DD.jsonl, src/soul/diary.py:257, dream_event.py:480）
     "soul/agent_*/diary/????-??-??.jsonl",
+
+    # ── TEST-INFRA-GUARD-LIVE-WRITER-COVERAGE-1：補齊「事件驅動」的線上寫入者 ──
+    # 上面的樣式已 100% 覆蓋所有**週期性**線上寫入（TG 心跳 30s、event_loop_alive 30s、
+    # watchdog counter 5m、perception/decision/motive trace、日誌輪替…）。
+    # 以下為**事件驅動**寫入者：只要 Bryan 在守門執行期間剛好發訊／用語音／下指令就會落
+    # 進快照窗內 ⇒ 偽紅。逐條皆為精確路徑／窄樣式，**不得**改成整目錄 skip。
+    #
+    # (D1-1) touch_bryan_last_seen — src/io/channels/bryan_state.py:60
+    #   呼叫端：TG 入站 src/io/channels/router.py:646、Web WS 入站 src/io/gateway.py:882、
+    #   語音入站 src/voice/input_router.py:224。節奏：事件驅動（每次 Bryan 發話）。
+    "state/bryan_last_seen.json",
+    # (D1-2) _save_last_tg_user_global — src/io/channels/router.py:618
+    #   節奏：事件驅動（Bryan 自任一通道入站時更新全域 last_tg_user）。
+    "state/last_tg_user.json",
+    # (D1-3) set_tts_enabled — src/llm/tts_toggle.py:57
+    #   呼叫端：/tts 指令 src/io/channels/telegram.py:44。節奏：事件驅動（Bryan 打 /tts）。
+    "state/tts_toggle.json",
+    # (D1-4) 離線主動訊息積壓 — src/io/channels/router.py:672
+    #   節奏：事件驅動（Bry 不在 web 且無 last_tg_user 時，角色主動觸發訊息 append）。
+    "state/outbox.json",
+    # (D1-5) 私聊對話 — src/llm/proxy.py:3489 (_save_private_instance)
+    #   實際檔名：{user_id}_{agent_id}_private.json / bryan_{agent_id}_private.json。
+    #   節奏：事件驅動（每一輪私聊），窄樣式只涵蓋 *_private.json。
+    "conversations/*_private.json",
+    # (D1-6) 情感狀態 — src/agent/consciousness.py:77 (save), :498 (session 結束)
+    #   節奏：事件驅動（主動意圖 / session 結束）。
+    "agents/*/emotional-state.json",
+    # (D1-7) SESSION_END carryover — src/agent/consciousness.py:411
+    #   節奏：事件驅動（SESSION_END）。
+    "agents/*/carryover.json",
+    # (D1-8) 修正 fnmatch 語意缺口：本專案用 fnmatch，`**` **不是遞迴**，
+    #   故 `tts/**/*.mp3` 命中不了直接放在 data/tts/ **根層**的 mp3。
+    #   data/tts/ 本來就是 TTS 產物目錄（src/voice/tts_service.py:69,
+    #   src/llm/fish_tts_handler.py:408），同類檔案不該因深度不同而有不同待遇
+    #   ⇒ **同時保留** `tts/**/*.mp3` 並新增本條。
+    "tts/*.mp3",
 )
 
 

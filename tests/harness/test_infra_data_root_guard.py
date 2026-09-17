@@ -17,10 +17,16 @@ TEST-INFRA-DATA-ROOT-GUARD-1 (P2) — 測試資料目錄隔離與變異守門收
        對照組: x.db / x.db-backup / y-wal.txt / y-wal.json (not skip)
      - _is_mutation_skipped: 對照組 x.db / x.db-backup / y-wal.json 不得被 skip
   4. 隔離性與守門語意在 tmp 根驗證。
+  5. TEST-INFRA-GUARD-LIVE-WRITER-COVERAGE-1：事件驅動線上寫入者樣式邊界（雙向）。
+     - 正向：8 條新樣式各至少 1 個真實檔名 ⇒ skip=True（含 tts/ 根層 mp3，驗證新增的
+       `tts/*.mp3`；以及嵌套 mp3，驗證舊 `tts/**/*.mp3` 仍有效）。
+     - 負向：同目錄未知檔 ⇒ skip=False（牙齒仍在咬），含 `conversations/xxx_private.yaml`、
+       `state/bryan_last_seen.bak2.json`、`agents/agent_x/mood.json`、`tts/chime.wav` 等。
 """
 
 from __future__ import annotations
 
+import fnmatch
 import json
 from pathlib import Path
 
@@ -222,3 +228,96 @@ def test_guard_semantics_on_temp_data_root(tmp_path):
     after_unexpected = verify_zero_mutation(root, before)
     assert after_unexpected["pass"] is False
     assert "world/unexpected.json" in after_unexpected["added"]
+
+
+# ─────────────────────────────────────────────────────────────
+# 5. TEST-INFRA-GUARD-LIVE-WRITER-COVERAGE-1：事件驅動線上寫入者的
+#    跳過樣式邊界（正向覆蓋 + 負向對照，雙向鎖定牙齒）
+# ─────────────────────────────────────────────────────────────
+
+#: D3-1 正向：本票新增的 8 條樣式，每條至少一個**真實**檔名 ⇒ 必須 skip=True。
+#: 逐條對應 runner.py::_MUTATION_SKIP_PATTERNS 的 D1-1..D1-8 註解。
+EVENT_DRIVEN_WRITER_PATHS = (
+    # D1-1 touch_bryan_last_seen (src/io/channels/bryan_state.py:60)
+    ("state/bryan_last_seen.json", "TG/Web/語音入站更新 Bry 最後發話時間"),
+    # D1-2 _save_last_tg_user_global (src/io/channels/router.py:618)
+    ("state/last_tg_user.json", "任一通道入站更新全域 last_tg_user"),
+    # D1-3 set_tts_enabled (src/llm/tts_toggle.py:57 ← telegram.py:44 /tts 指令)
+    ("state/tts_toggle.json", "/tts 指令切換 TTS 開關"),
+    # D1-4 outbox (src/io/channels/router.py:672)
+    ("state/outbox.json", "Bry 離線時主動訊息積壓"),
+    # D1-5 _save_private_instance (src/llm/proxy.py:3489)
+    ("conversations/1696287850_agent_akane_private.json", "真實私聊對話檔（新格式 user_id_agent_id）"),
+    ("conversations/bryan_agent_mai_private.json", "真實私聊對話檔（legacy bryan_ 前綴）"),
+    # D1-6 AgentConsciousness.save (src/agent/consciousness.py:77, :498)
+    ("agents/agent_akane/emotional-state.json", "真實情感狀態檔（主動意圖／session 結束）"),
+    # D1-7 carryover (src/agent/consciousness.py:411)
+    ("agents/agent_akane/carryover.json", "SESSION_END carryover"),
+    # D1-8 修正 fnmatch `**` 非遞迴的缺口：根層 mp3 必須被涵蓋
+    ("tts/foo.mp3", "data/tts/ **根層** mp3（新樣式 tts/*.mp3 的唯一目的）"),
+    ("tts/agent_mai/20260916T022755_624898.mp3", "嵌套 mp3（舊樣式 tts/**/*.mp3 仍須有效）"),
+)
+
+#: D3-2 負向對照（牙齒必須還在咬）：與上面**同目錄**、但服務不會寫的路徑 ⇒ 必須 skip=False。
+NEGATIVE_CONTROL_PATHS = (
+    ("state/unknown_state.json", "state/ 下的未知檔不得被 skip"),
+    ("state/bryan_last_seen.bak2.json", "不是精確檔名 bryan_last_seen.json（.bak2.json 尾綴不在 ext 清單）"),
+    ("conversations/other.json", "conversations/ 下的非私聊檔不得被 skip"),
+    ("conversations/xxx_private.yaml", "同樣 *_private 但非 .json ⇒ 樣式不得命中"),
+    ("agents/agent_x/mood.json", "agents/<id>/ 下的其他 json 不得被 skip"),
+    ("tts/chime.wav", "tts/ 根層非 mp3 不得被 skip"),
+    ("tts/root_audio.ogg", "tts/ 根層非 mp3 不得被 skip"),
+)
+
+
+@pytest.mark.parametrize(
+    "rel_path, reason",
+    EVENT_DRIVEN_WRITER_PATHS,
+    ids=[p for p, _ in EVENT_DRIVEN_WRITER_PATHS],
+)
+def test_event_driven_live_writer_paths_are_skipped(rel_path: str, reason: str):
+    """正向：事件驅動寫入者路徑必須被 skip（否則 Bryan 一發訊就偽紅）。"""
+    assert _is_mutation_skipped(Path(rel_path)) is True, (
+        f"{reason}：路徑 '{rel_path}' 應被 skip 但未被 skip ⇒ 守門會偽紅"
+    )
+
+
+@pytest.mark.parametrize(
+    "rel_path, reason",
+    NEGATIVE_CONTROL_PATHS,
+    ids=[p for p, _ in NEGATIVE_CONTROL_PATHS],
+)
+def test_event_driven_writer_sibling_paths_stay_protected(rel_path: str, reason: str):
+    """負向：同目錄未知檔必須仍受保護 ⇒ 證明沒有整目錄 glob 放寬、牙齒還在咬。"""
+    assert _is_mutation_skipped(Path(rel_path)) is False, (
+        f"{reason}：路徑 '{rel_path}' 竟被 skip ⇒ 牙齒被鈍化（過度放寬）"
+    )
+
+
+def _matched_skip_patterns(posix: str) -> list[str]:
+    """回傳 `posix` 命中的 path pattern（比對語意與 `_is_mutation_skipped` 完全一致）。"""
+    return [p for p in _MUTATION_SKIP_PATTERNS if fnmatch.fnmatch(posix, p)]
+
+
+def test_emotional_state_json_dot_bak_is_not_matched_by_new_pattern():
+    """工單 D3-2 列出的 `agents/agent_x/emotional-state.json.bak` — 誠實拆解其真實語意。
+
+    牙齒本體（本票要鎖的東西）：新樣式 `agents/*/emotional-state.json` **不得**命中
+    `emotional-state.json.bak`（否則任何 backup 檔都會被一起放行）。
+
+    已知交互作用（**非**本票新增的放寬）：該檔尾綴 `.bak` 落在**既有的**
+    `_MUTATION_SKIP_EXTS`（早於本票存在、且由 `test_skip_sets_shape_locked` 精確鎖定），
+    故 `_is_mutation_skipped` 整體仍回 True。本測試把兩件事分開斷言，避免把「既有語意」
+    誤記成「本票把樣式放寬到 .bak」。
+    """
+    rel = "agents/agent_x/emotional-state.json.bak"
+    assert _matched_skip_patterns(rel) == [], (
+        f"新樣式不得命中 backup 檔：命中={_matched_skip_patterns(rel)}"
+    )
+    # 兩條 agents 樣式都必須精確拒絕 .bak
+    assert "agents/*/emotional-state.json" in _MUTATION_SKIP_PATTERNS
+    assert "agents/*/carryover.json" in _MUTATION_SKIP_PATTERNS
+    # 明確記錄跳過來源是 ext 清單（既有語意），不是 path pattern
+    assert Path(rel).suffix.lower() == ".bak"
+    assert ".bak" in _MUTATION_SKIP_EXTS
+    assert _is_mutation_skipped(Path(rel)) is True

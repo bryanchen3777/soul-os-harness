@@ -29,6 +29,7 @@ from pathlib import Path
 from harness.runner import (
     _MUTATION_SKIP_DIRS,
     _MUTATION_SKIP_EXTS,
+    _MUTATION_SKIP_PATTERNS,
     _is_mutation_skipped,
     snapshot_data_root_hashes,
     verify_zero_mutation,
@@ -129,7 +130,14 @@ def test_service_never_written_paths_remain_protected():
 
 
 def test_skip_sets_shape_locked():
-    """既有排除集合不得被悄悄放寬：dir 集合收窄至 time_lapse，ext 集合修補完整 sqlite wal/shm 變體。"""
+    """既有排除集合不得被悄悄放寬，且 path pattern 集合必須**精確相等**鎖定。
+
+    TEST-INFRA-GUARD-LIVE-WRITER-COVERAGE-1：本票追加 8 條事件驅動寫入者樣式後同步更新本鎖；
+    鎖定性質**維持精確相等**（tuple `==`），不得退化成 `in` / `>=` / 長度檢查 —— 否則
+    「往後有人再加一條過寬樣式」就不再被本測試攔下。
+    dir 集合仍收窄至 time_lapse（**未**放進 agents / state / conversations 整目錄），
+    ext 集合維持修補完整 sqlite wal/shm 變體。
+    """
     assert _MUTATION_SKIP_DIRS == {"time_lapse"}
     assert _MUTATION_SKIP_EXTS == {
         ".log", ".err", ".pid", ".txt", ".bak", ".old", ".tmp",
@@ -137,6 +145,36 @@ def test_skip_sets_shape_locked():
         ".sqlite-wal", ".sqlite-shm",
         ".sqlite3-wal", ".sqlite3-shm",
     }
+    # 精確相等（含順序）：任何新增／刪除／改名都會紅，逼迫改動者顯式面對本鎖。
+    assert _MUTATION_SKIP_PATTERNS == (
+        "heartbeats/telegram_channel.json",
+        "tts/**/*.mp3",
+        "sessions/agent_*_user_*.json",
+        "conversations/group_chat.json",
+        "memory.db",
+        "memory/agent_*/memories.jsonl",
+        "state/event_loop_alive.json",
+        "state/post_*[0-9a-f]_counter.json",
+        "elevation/elevation_edges.jsonl",
+        "elevation/elevation_nodes.jsonl",
+        "elevation/elevation_trace.jsonl",
+        "inner_life/trace.jsonl",
+        "world/perception_trace.jsonl",
+        "soul/decision_trace.jsonl",
+        "soul/motive_trace.jsonl",
+        "soul/interactions.jsonl",
+        "soul/agent_*/relationships.json",
+        "soul/agent_*/diary/????-??-??.jsonl",
+        # TEST-INFRA-GUARD-LIVE-WRITER-COVERAGE-1（事件驅動寫入者）:
+        "state/bryan_last_seen.json",
+        "state/last_tg_user.json",
+        "state/tts_toggle.json",
+        "state/outbox.json",
+        "conversations/*_private.json",
+        "agents/*/emotional-state.json",
+        "agents/*/carryover.json",
+        "tts/*.mp3",
+    )
 
 
 # ─────────────────────────────────────────────────────────────
