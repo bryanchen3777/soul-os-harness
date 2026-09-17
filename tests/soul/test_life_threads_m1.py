@@ -61,16 +61,21 @@ _M1_UNPARSABLE_WHITELIST = (
     "scripts/manual_proactive_bugs.py",
 )
 
-#: M1 的**生產 importer 白名單恰為**這兩處（實測掃出，非推測；順序＝排序後）。
+#: M1 的**生產 importer 白名單恰為**這三處（實測掃出，非推測；順序＝排序後）。
 #:
 #: 契約依據：`docs/LIFE-THREAD-ENGINE-CONTRACT.md` §10.1 的依賴圖逐字指定
-#: 「**M4 起源注入 (寫 M1)**」與「**M5 依賴 M1+M4**」 ⇒ 只有這兩處
-#: （M4 `life_thread_origins.py` ＋ M5 `life_thread_orchestrator.py`）**被允許**寫 M1。
+#: 「**M4 起源注入 (寫 M1)**」與「**M5 依賴 M1+M4**」 ⇒ M4 `life_thread_origins.py`
+#: ＋ M5 `life_thread_orchestrator.py` 被允許寫 M1。
+#: LIFE-THREAD-M2-WIRING-1 追加第三處：`life_thread_consolidation_wiring.py` ——
+#: 契約 §3.5 把「`dissolved_at`／`sage_fact_id` 回填」明訂為**呼叫端責任**，
+#: 而唯一的呼叫端就是沉澱執行層的接線層（它**只**呼叫 `lt.get_state` /
+#: `lt.append_dissolved`；`append_dissolved` 依 M1 自身語意拒絕非終態線頭）。
 #: ⚠️ **M1 自身不算 importer**（它不 import 自己），故不在本清單內。
 #:
 #: 不變量未被放寬：舊斷言是「排除集 ＋ `offenders == []`」；現在改成
 #: **完整清單精確等值** —— 多一個（生產路徑偷拉線）或少一個（接線斷了）都紅。
 _M1_IMPORTER_WHITELIST = (
+    "src/soul/life_thread_consolidation_wiring.py",  # M2 執行層接線：§3.5 的 sage_fact_id 回填
     "src/soul/life_thread_orchestrator.py",  # M5：§10.1 的介接層，唯一合法的生產接線點
     "src/soul/life_thread_origins.py",       # M4：§10.1 欽定的「寫 M1」方向
 )
@@ -366,7 +371,9 @@ def test_s2_1_module_not_imported_by_production_paths():
     接線後**已不成立**（實測為 2 筆白名單命中），故同步更正（**只改說明文字、
     不放寬任何斷言**）：M4 的生產 importer 不變量現為**精確清單等值** ——
     `scripts/run_server.py`（僅 `set_llm_proxy` 注入行）＋
-    `src/soul/life_thread_orchestrator.py`（唯一生產 caller），**多一個就紅**；
+    `src/soul/life_thread_orchestrator.py`（唯一生產 caller）＋
+    `src/soul/life_thread_consolidation_wiring.py`（LIFE-THREAD-M2-WIRING-1 追加；
+    僅讀 `_find_llm_proxy()` 與 `_goal_db_path()` 兩個接縫），**多一個就紅**；
     並另有「`ast.parse` 無法解析的檔案」顯式白名單（實際集合 == 白名單）。
     見 `tests/soul/test_life_thread_origins_m4.py` 的
     `test_module_is_not_wired_into_production_paths` 與

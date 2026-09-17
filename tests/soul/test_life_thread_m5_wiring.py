@@ -29,6 +29,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from src.paths import reset_data_root  # noqa: E402
+from src.soul import life_thread_consolidation_wiring as lt_wiring  # noqa: E402
 from src.soul import life_thread_dissolution as lt_diss  # noqa: E402
 from src.soul import life_thread_orchestrator as m5  # noqa: E402
 from src.soul import life_thread_origins as lt_origins  # noqa: E402
@@ -47,11 +48,13 @@ SCHEDULER_PATH = _REPO_ROOT / "src" / "soul" / "scheduler.py"
 RUN_SERVER_PATH = _REPO_ROOT / "scripts" / "run_server.py"
 
 #: orchestrator 允許的 `src.*` import 白名單（§D 靜態鐵律）。
+#: LIFE-THREAD-M2-WIRING-1 新增第 5 個：沉澱接線模組（**預設關**旗標）。
 ALLOWED_SRC_IMPORTS = frozenset({
     "src.soul.life_threads",
     "src.soul.life_thread_wake_gate",
     "src.soul.life_thread_dissolution",
     "src.soul.life_thread_origins",
+    "src.soul.life_thread_consolidation_wiring",
 })
 
 
@@ -458,7 +461,7 @@ def test_30_full_round_morning_writes_life_thread_event(iso_env, monkeypatch):
     assert round_result["llm_calls"] == 1
     assert round_result["advanced"] == [tid]
     assert round_result["created"] == []
-    assert round_result["dissolved"] == []  # dissolve_hook=None ⇒ 0 SAGE
+    assert round_result["dissolved"] == []  # 旗標 OFF（預設）⇒ hook 立刻 return ⇒ 0 SAGE
 
     after = _lt_lines(AGENT)
     assert len(after) == 2
@@ -869,12 +872,21 @@ def test_72_empty_soul_context_does_not_consume_other_agents(iso_env, monkeypatc
 
 
 # ══════════════════════════════════════════════════════════════
-# 9. dissolve_hook is None（⇒ 0 SAGE）
+# 9. dissolve_hook 已接線（**預設關** ⇒ 0 SAGE）
 # ══════════════════════════════════════════════════════════════
 
 
-def test_80_run_origin_round_receives_dissolve_hook_none(iso_env, monkeypatch):
-    """攔 `run_origin_round`：`dissolve_hook` 必須是 `None`（M2 執行層 out of scope）。"""
+def test_80_run_origin_round_receives_wired_default_off_dissolve_hook(iso_env, monkeypatch):
+    """🔴 LIFE-THREAD-M2-WIRING-1 **取代**舊斷言「`dissolve_hook is None`」。
+
+    舊斷言的理由（「M2 執行層 out of scope」）已失效：執行層已驗收並接線。新不變量
+    **不弱化**、且更精確：
+
+    1. `dissolve_hook` **不是 `None`**（＝已接線），且**必須**是接線模組的 hook
+       （`hook.__module__` 逐字指名）⇒ 若把它改回 `None`、或注入別人的 hook，本測試紅。
+    2. 旗標**預設關** ⇒ 呼叫它是**可證明的 0 成本**：0 背景任務、0 M1 寫入（0 SAGE）。
+       ⇒ 若旗標預設被改成 ON，`pending_task_count()` 必為 1 ⇒ 本測試紅。
+    """
     _seed_due_thread(now=MORNING)
     _patch_soul(monkeypatch)
     captured: List[Dict[str, Any]] = []
@@ -886,8 +898,18 @@ def test_80_run_origin_round_receives_dissolve_hook_none(iso_env, monkeypatch):
 
     monkeypatch.setattr(lt_origins, "run_origin_round", spy)
     _run([AGENT], MORNING, "morning", llm_caller=_SpyLLM(_json_response([])))
+
     assert len(captured) == 1
-    assert captured[0]["kwargs"]["dissolve_hook"] is None
+    hook = captured[0]["kwargs"]["dissolve_hook"]
+    assert hook is not None, "M2 執行層已接線 ⇒ dissolve_hook 不得再是 None"
+    assert hook.__module__ == "src.soul.life_thread_consolidation_wiring", hook.__module__
+
+    # 旗標預設關（缺席）⇒ 呼叫 hook 是可證明的 0 成本
+    assert lt_wiring.consolidation_enabled() is False
+    before = _lt_lines(AGENT)
+    hook(AGENT, "th-m5-wiring-default-off", "completed")
+    assert lt_wiring.pending_task_count() == 0, "旗標 OFF ⇒ 不得建立背景任務"
+    assert _lt_lines(AGENT) == before, "旗標 OFF ⇒ 0 M1 寫入（0 SAGE）"
 
 
 def test_81_run_origin_round_receives_due_threads_none_and_build_kwargs(iso_env, monkeypatch):
@@ -1317,7 +1339,10 @@ def test_a0_orchestrator_has_zero_forbidden_constructs():
 
 
 def test_a1_orchestrator_import_whitelist_only():
-    """orchestrator 的 `src.*` import 白名單**恰為** 4 個模組。"""
+    """orchestrator 的 `src.*` import 白名單**恰為** 5 個模組。
+
+    （LIFE-THREAD-M2-WIRING-1：4 → 5，新增沉澱接線模組；多一個或少一個都紅。）
+    """
     leaves = _leaf_imports(ast.parse(MODULE_PATH.read_text(encoding="utf-8")))
     src_leaves = [x for x in leaves if x.startswith("src.")]
     allowed_ok = all(
@@ -1325,7 +1350,7 @@ def test_a1_orchestrator_import_whitelist_only():
         for x in src_leaves
     )
     assert allowed_ok, f"白名單外 import：{src_leaves}"
-    assert len(src_leaves) == 4, src_leaves
+    assert len(src_leaves) == 5, src_leaves
 
 
 def test_a2_forbidden_scanner_has_teeth(tmp_path):

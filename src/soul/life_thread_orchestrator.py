@@ -19,6 +19,10 @@
   `dissolved_at`，等 M2 執行層日後上線時這些線頭會被 L1 永久跳過 ⇒ **沉澱永遠不會
   發生**。故本模組對 M2 **只做評估與記錄，0 M1 寫入**：`should_mutate` 只計數與記 log，
   絕不呼叫 `append_dissolved` / `append_transition`。
+  🔴 **後續票更新（LIFE-THREAD-M2-WIRING-1）**：M2 執行層**已落地並已接線**，但
+  **預設關**（旗標 `LIFE_THREAD_CONSOLIDATION_ENABLED`）。本模組仍然 **0 M1 寫入**
+  ——寫入（`append_dissolved` ＋ SAGE fact）全部發生在
+  `life_thread_consolidation_wiring` 的背景任務內，且唯有旗標 ON 才會建立該任務。
 - **張力訊號未供給**：契約 §4.2 的 `should_wake` **只有**
   `check_points_due OR world_collision_detected` 兩項；張力是 M3 的**已宣告偏離**
   第三訊號，且 M4↔M3 的張力形狀對齊尚未做 ⇒ 本模組傳 `unresolved_tensions=None`
@@ -47,6 +51,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from src.soul import life_thread_consolidation_wiring as lt_wiring
 from src.soul import life_thread_dissolution as lt_diss
 from src.soul import life_thread_origins as lt_origins
 from src.soul import life_thread_wake_gate as lt_gate
@@ -294,7 +299,13 @@ async def _run_agent(
         }
 
     # ── M4：唯一喚醒動作（§5 注入範式）───────────────────────
-    # `dissolve_hook=None` **必須**：M2 執行層 out of scope ⇒ 天然 0 SAGE。
+    # 🔴 `dissolve_hook` **已接線（LIFE-THREAD-M2-WIRING-1）但預設關**：注入
+    # `life_thread_consolidation_wiring.build_dissolve_hook()`（同步 hook；內部以
+    # `loop.create_task` 跑背景沉澱，**不在本 tick inline await**）。旗標
+    # `LIFE_THREAD_CONSOLIDATION_ENABLED` **缺席或非真值 ⇒ hook 立刻 return**
+    # ⇒ 0 讀檔／0 任務／0 LLM／0 SAGE，生產行為與接線前逐位元相同。
+    # （舊註解「M2 執行層 out of scope ⇒ 天然 0 SAGE」已失真，見 ENGINEERING_STATE
+    #  的 LIFE-THREAD-M2-WIRING-1 列。）
     # `soul_context` / `world_records` **顯式傳**：否則 `build_origin_prompt`
     # 會自己再讀一次 persona、`collect_world_seeds` 會二次讀同一檔（重複 I/O）。
     # 🔴 `due_threads=None`（F2 裁定）：due 過濾**交還 M4 自己**的 `_render_due_threads`
@@ -310,7 +321,7 @@ async def _run_agent(
         now=now,
         due_threads=None,
         llm_caller=llm_caller,
-        dissolve_hook=None,
+        dissolve_hook=lt_wiring.build_dissolve_hook(),
         build_kwargs={"soul_context": soul_context, "world_records": list(perceptions)},
     )
     return {

@@ -1559,9 +1559,18 @@ class OpenAIBackend(LLMBackend):
         temperature: float = 0.85,
         frequency_penalty: Optional[float] = None,
         presence_penalty: Optional[float] = None,
+        reasoning_effort: Optional[str] = None,
         **kwargs,
     ) -> str:
         """
+        2026-09-17 LIFE-THREAD-M2-WIRING-1 (Owner 核准 B1): 支援 reasoning_effort 具名參數。
+          - `reasoning_effort` 是 **OpenAI 標準欄位**, 本端點 (Ollama Cloud) 是
+            `/v1/chat/completions` OpenAI-compat ⇒ 會被辨識。
+          - 🔴 **只在非 `None` 時**放進 `json_body` ⇒ 未傳此參數的既有呼叫路徑
+            其請求 body 與改動前**逐位元相同**（共用通道零行為變更）。
+          - 實測依據: `docs/LIFE-THREAD-M2-EXEC-COST-CALIBRATION.md` §A2 —
+            `"none"` ⇒ completion 1790→75、延遲 26.34s→1.18s。
+
         階段 5.5 (Bry 拍板 2026-07-14): 支援 response_format 參數
 
         - response_format 從 kwargs 抽出,放進 request body 強制 LLM 走 JSON mode
@@ -1628,6 +1637,11 @@ class OpenAIBackend(LLMBackend):
         # 2026-08-05 拍板 Lesson 32 (Bry 拍板 revert D 1): 只用 response_format 純一路
         if response_format:
             json_body["response_format"] = response_format
+        # 2026-09-17 LIFE-THREAD-M2-WIRING-1 (Owner 核准 B1): W-3 json_body 白名單加值。
+        # 🔴 條件式（僅非 None）⇒ 未傳時 body 的鍵集合與值與改動前**逐位元相同**。
+        # 觀測錨點: 既有 pre-request log 會印 `request body keys=[...]`（見下方 C1 log）。
+        if reasoning_effort is not None:
+            json_body["reasoning_effort"] = reasoning_effort
 
         # 2026-07-25 拍板 D 2: retry-with-backoff 機制
         # 觸發: HTTP 5xx / 429 / 529 (provider 端 cluster 過載)
@@ -1829,6 +1843,10 @@ class ClaudeBackend(LLMBackend):
         # 角色訊息生成路徑傳入時 pop 掉 ignore (跟 response_format 同模式)
         kwargs.pop("frequency_penalty", None)
         kwargs.pop("presence_penalty", None)
+        # 2026-09-17 LIFE-THREAD-M2-WIRING-1: **跨後端隔離** — `reasoning_effort` 是
+        # OpenAI 欄位, Claude 走自己的 `thinking`。這裡顯式 pop 消費掉, 保證
+        # `request_body` **永不**含 `reasoning_effort`（即使呼叫端誤傳）。
+        kwargs.pop("reasoning_effort", None)
         # Claude API 將 system message 獨立出來
         system_msg = ""
         user_messages = []
@@ -4326,6 +4344,8 @@ class LLMProxy:
         agent_id: str = "system",
         max_tokens: int = 200,
         temperature: float = 0.7,
+        reasoning_effort: Optional[str] = None,
+        max_retries: Optional[int] = None,
     ) -> Optional[str]:
         """
         通用短文本 LLM call（diary / dream / event / impression 共用）。
@@ -4341,16 +4361,41 @@ class LLMProxy:
         - 1 retry on 5xx/429/timeout（attempt 0 + attempt 1 = 最多 2 次）
         - 失敗回 None, 不 raise（沿用「拒絕問, 強制讀」）
 
+        2026-09-17 LIFE-THREAD-M2-WIRING-1 (Owner 核准 B1) 新增兩個**可選**參數：
+        - `reasoning_effort`: 僅非 `None` 時透傳給 backend（⇒ 進入 OpenAI 相容 body）。
+        - `max_retries`: 「**恰好 1 次 HTTP 嘗試**」的開關。
+            * `None`（**預設**）⇒ 本層 2 次嘗試（既有行為，**逐位元不變**）。
+            * `0`          ⇒ 本層 1 次嘗試 **且** 透傳 backend `max_retries=0`
+              （`OpenAIBackend` 為 `range(max_retries + 1)` ⇒ `range(1)` = 1 次），
+              避開「`range(2)` × backend `max_retries=3` ＝ 最壞 8 次」的放大路徑。
+        - 兩個參數皆未傳時，`backend.complete(...)` 的引數集與改動前**完全相同**。
+
         Args:
             messages: system + user prompt
             agent_id: 觸發角色（僅 log 用）
             max_tokens: 輸出 token 上限
             temperature: 採樣溫度（推理型模型建議 0.3-0.5, 純生活片段 0.7-0.8 可）
+            reasoning_effort: OpenAI 標準推理預算欄位（`None` ⇒ 不送, 維持原行為）
+            max_retries: 本層重試次數（`None` ⇒ 既有 1 次重試；`0` ⇒ 恰好 1 次嘗試）
 
         Returns:
             純文字內容（已 strip）, 失敗回 None
         """
-        for attempt in range(2):
+        # 嘗試次數：預設 2（＝既有行為）；明確給 0 ⇒ 恰 1 次。
+        attempts = 2
+        extra_kwargs: Dict[str, Any] = {}
+        if reasoning_effort is not None:
+            extra_kwargs["reasoning_effort"] = reasoning_effort
+        if max_retries is not None:
+            if isinstance(max_retries, bool) or not isinstance(max_retries, int):
+                logger.warning(
+                    f"[LLMProxy] generate_text max_retries 非整數（{max_retries!r}）"
+                    f"⇒ 維持既有 2 次嘗試 | agent={agent_id}"
+                )
+            else:
+                attempts = max(1, max_retries + 1)
+                extra_kwargs["max_retries"] = max_retries
+        for attempt in range(attempts):
             try:
                 result = await self.backend.complete(
                     messages=messages,
@@ -4358,6 +4403,7 @@ class LLMProxy:
                     max_tokens=max_tokens,
                     temperature=temperature,
                     thinking=None,  # 短文字生成不需要 thinking
+                    **extra_kwargs,
                 )
                 if result and result.strip():
                     logger.info(

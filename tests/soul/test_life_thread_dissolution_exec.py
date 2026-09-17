@@ -2,7 +2,9 @@
 # LIFE-THREAD-M2-EXEC — 沉澱執行層（Dissolution Execution）測試矩陣 T1~T40。
 #
 # 受測模組（唯讀）：`src/soul/life_thread_dissolution_exec.py`
-#   - pure stdlib、0 `src.*` import、0 接線、0 真實 LLM、0 網路。
+#   - pure stdlib、0 `src.*` import、0 真實 LLM、0 網路。
+#   - 接線（LIFE-THREAD-M2-WIRING-1 起）：**生產 importer 恰 1 個** ＝
+#     `src/soul/life_thread_consolidation_wiring.py`（**預設關**）；不變量見 T53／T54。
 #   - 所有外部依賴（LLM / SAGE 寫入 / 時鐘 / 預算）**一律注入 fake**。
 #
 # 本檔紅線自證：
@@ -46,6 +48,10 @@ from src.soul.life_thread_dissolution import (  # noqa: E402
 MODULE_PATH = _REPO_ROOT / "src" / "soul" / "life_thread_dissolution_exec.py"
 MODULE_NAME = "life_thread_dissolution_exec"
 TEST_FILE_NAME = Path(__file__).name
+#: LIFE-THREAD-M2-WIRING-1：**唯一允許** import 執行層的生產檔（逐檔指名）。
+WIRING_MODULE_RELPATH = "src/soul/life_thread_consolidation_wiring.py"
+#: 新增的接線測試檔（它引用執行層常數 ⇒ 也是 importer）。
+WIRING_TEST_FILE_NAME = "test_life_thread_consolidation_wiring.py"
 
 AGENT = "agent_m2exec"
 AGENT_LONG = "agent_" + ("x" * 300)
@@ -1333,29 +1339,53 @@ def test_t52_data_root_is_isolated_to_tmp() -> None:
 
 
 # ──────────────────────────────────────────────────────────────
-# §J 護欄：0 接線／隱私／離線
+# §J 護欄：接線（恰 1 檔）／隱私／離線
 # ──────────────────────────────────────────────────────────────
 
 
-def test_t53_no_production_wiring_in_src_or_scripts() -> None:
-    """T53（0 接線護欄）：`src/**` 與 `scripts/**` **沒有任何檔案 import** 本模組。"""
+def test_t53_production_importer_is_exactly_the_wiring_module() -> None:
+    """T53（接線不變量，LIFE-THREAD-M2-WIRING-1 取代「0 接線」）：
+
+    `src/**` 與 `scripts/**` 中 import 執行層的檔案**恰好 1 個**，且**必須**是
+    `src/soul/life_thread_consolidation_wiring.py`（**逐檔指名**；多一個或少一個都紅）。
+
+    理由：M2 執行層原設計為 0 接線零件（0 外部成本）。本票刻意打破該不變量以接上
+    生產，但**接線面必須收斂到單一檔案** —— 否則「誰在生產呼叫付費沉澱路徑」會失控。
+    """
     roots = [_REPO_ROOT / "src", _REPO_ROOT / "scripts"]
     scanned = sum(1 for root in roots if root.exists() for _ in _iter_py_files(root))
     assert scanned > 100, f"掃描覆蓋率過低（只掃到 {scanned} 檔）"
-    offenders = _importers_of(MODULE_NAME, roots)
-    assert offenders == [], f"本模組不得被生產路徑 import：{offenders}"
+    offenders = sorted(
+        p.relative_to(_REPO_ROOT).as_posix() for p in _importers_of(MODULE_NAME, roots)
+    )
+    assert offenders == [WIRING_MODULE_RELPATH], (
+        f"生產 import 執行層的檔案必須恰為 ['{WIRING_MODULE_RELPATH}']：{offenders}"
+    )
 
 
-def test_t54_only_the_test_file_imports_the_module() -> None:
-    """T54：全庫（src/scripts/tests/clients）唯一引用者是本測試檔。"""
+def test_t54_importers_are_the_wiring_module_and_its_two_test_files() -> None:
+    """T54：全庫（src/scripts/tests/clients）import 執行層的檔案＝**精確集合等值**。
+
+    1 個生產檔（`WIRING_MODULE_RELPATH`）＋ 2 個測試檔（本檔 ＋
+    `WIRING_TEST_FILE_NAME`）。多一個或少一個都紅。
+    """
     roots = [
         _REPO_ROOT / "src",
         _REPO_ROOT / "scripts",
         _REPO_ROOT / "tests",
         _REPO_ROOT / "clients",
     ]
-    importers = [p.name for p in _importers_of(MODULE_NAME, roots)]
-    assert importers == [TEST_FILE_NAME], importers
+    importers = sorted(
+        p.relative_to(_REPO_ROOT).as_posix() for p in _importers_of(MODULE_NAME, roots)
+    )
+    expected = sorted(
+        [
+            WIRING_MODULE_RELPATH,
+            f"tests/soul/{TEST_FILE_NAME}",
+            f"tests/soul/{WIRING_TEST_FILE_NAME}",
+        ]
+    )
+    assert importers == expected, importers
 
 
 def test_t55_logs_never_leak_prompt_or_narrative(caplog: pytest.LogCaptureFixture) -> None:

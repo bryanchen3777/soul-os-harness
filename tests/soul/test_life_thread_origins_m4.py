@@ -786,12 +786,12 @@ _M4_UNPARSABLE_WHITELIST = (
     "scripts/manual_proactive_bugs.py",
 )
 
-#: LIFE-THREAD-M5 接線後：M4 的**生產 importer 白名單恰為**這兩處。
-#: ⚠️ 不變量未被放寬：原斷言是「M4 沒有任何生產路徑 import」；M5 的職責**就是**
-#: 把 M4 接上生產路徑，故改寫成「**恰好**這兩個、且各自只能是那一種用法」——
-#: 比原本的「0 命中」更精確（多一個 importer 就紅）。
+#: LIFE-THREAD-M5 接線後：M4 的生產 importer 白名單**恰為**這三處（第 3 者＝M2-WIRING-1
+#: 的沉澱接線層，**只讀** `_find_llm_proxy()`／`_goal_db_path()`，不呼叫 origin round）。
+#: ⚠️ 不變量未被放寬：原「0 生產 import」改寫成「**恰好**這些、各自只能是那一種用法」。
 _M4_IMPORTER_WHITELIST = (
     "scripts/run_server.py",              # 僅允許 set_llm_proxy 注入行
+    "src/soul/life_thread_consolidation_wiring.py",  # 僅讀 llm proxy／graph 路徑接縫
     "src/soul/life_thread_orchestrator.py",  # 唯一的呼叫端
 )
 
