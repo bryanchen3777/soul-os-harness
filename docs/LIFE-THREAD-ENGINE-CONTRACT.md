@@ -315,6 +315,8 @@ VISION §4.1 逐字：**「線頭是『未解決的心理張力』的在場暫�
 > **修訂 2（LIFE-THREAD-CONTRACT-BOOTSTRAP-1，2026-09-17）：新增 §4.4 冷啟動引導；§4.2 追加 D4 量測登記。**
 >
 > **修訂 3（LIFE-THREAD-CONTRACT-BOOTSTRAP-FUP-1，2026-09-17）：§7 INV-3／§8.1／§8 約束第 2 條同步 §4.4 例外條款；§4.4 成本上界 agent 數 11 → 10；§4.4 新增「空種子與標記消耗」已知限制。**
+>
+> **修訂 4（`LIFE-THREAD-BOOTSTRAP-1`，2026-09-17）：§4.4 標記落點改為「經 M1 `life_threads_path()` 導出 per-agent 目錄（該函式內含 `data_root()` 慣例與 agent_id 安全路徑段驗證）」＋護欄 `test_a5` 恰等值演化（0 ⇒ 恰 1 次、且僅作 `bootstrap_marker_path(...)` 直接引數）；§4.4 已知限制① 改為與 M4 實況一致（無 diary ⇒ 退回 `WHIM_NEUTRAL_ANCHOR`，仍 bootstrap 但不宣稱具體外部事件）。**
 
 VISION §4.2 逐字：**「復用既有時段 checkpoint（0 新定時器）。系統只做二元『存在性判定』（有未決線頭到期、或外部記憶/事件有新輸入），絕不做擾動程度評分。未滿足條件時系統保持安靜，不給 LLM 頻繁編造瑣事。」**
 
@@ -478,7 +480,7 @@ should_wake := check_points_due(agent_id) OR world_collision_detected(agent_id)
 |---|---|
 | 次數上界 | 每 agent **每 epoch 恰 1 次**（**不是**每日、**不是**每 slot） |
 | 蓋章時序 | **先蓋章再執行**——與既有 slot 章同一紀律（`_LAST_PROCESSED`，`src/soul/life_thread_orchestrator.py:231-239`）：**寧可漏一次，不可重複花費** |
-| 標記落點 | `data/soul/<agent_id>/life_thread_bootstrap.json`（**新增檔**）。路徑必須經 `src/paths.py` 的 `data_root()` 組出（§2.1）；**不得**改動任何**既有**狀態檔（`life_threads.jsonl` 等）的**格式** |
+| 標記落點 | `data/soul/<agent_id>/life_thread_bootstrap.json`（**新增檔**）。路徑**由 M1 的 `life_threads_path(agent_id)` 導出其 per-agent 目錄**（`src/soul/life_threads.py:236-242`：該函式內部即 `src/paths.py` 的 `data_root()` 慣例，§2.1，**並含 `_validate_agent_id` 的安全路徑段驗證**）⇒ orchestrator 對 `life_threads_path` 的呼叫**恰 1 次、且僅作為 `bootstrap_marker_path(...)` 的直接引數**（護欄 `test_a5` **恰等值演化**，非放寬）；**不得**硬編碼 `data/`、**不得**自行拼接 agent_id 路徑段（那會繞過路徑段驗證）；**不得**改動任何**既有**狀態檔（`life_threads.jsonl` 等）的**格式** |
 | 標記內容（至少） | `bootstrapped_at`（**ISO-8601**，帶時區）＋ `count`（**整數 `1`**） |
 | 讀／寫失敗 | **⇒ 不 bootstrap**（fail-quiet）：讀不到 ⇒ 無法確認條件②，**不執行**；寫不進去 ⇒ 無法保證 at-most-once，**不執行**。**永不重試放大**、**永不 raise** |
 | 「epoch」的定義 | 由**標記檔的生命週期**界定：標記**存在 ⇒ 該 epoch 已用罄**。本機制**不自動重置**（不按日、不按 slot、不按重啟）。清除標記 ＝ **Owner／維護票**的明示動作，不是例行行為 |
@@ -508,7 +510,7 @@ should_wake := check_points_due(agent_id) OR world_collision_detected(agent_id)
 - `src/soul/life_thread_wake_gate.py`（**凍結**）、`src/soul/life_thread_dissolution_exec.py`（**凍結**）。
 - §2.3 的 4 值、§4.1／§4.2 的判定式與常數、§3／§5 的任何內容、§11 OQ-4 的裁定（**皆不在本節範圍**）。
 
-**已知限制（誠實登記）**：①若 origins 的必填種子源為空（例如該 agent 完全無 diary 史）⇒ 不 bootstrap、不捏造種子；由於 diary 的 _fire_all（src/soul/scheduler.py:1658-1660）在同一 tick 內早於 _fire_life_thread_slot（:1694）執行，同日即可滿足。②標記的蓋章時點在「§4.4 觸發條件全部成立」且「M4 的 soul_context 非空（避免 0 成本的空轉被消耗）」之後、**origins 輪之前**；若該輪因 prompt_available == False 或 LLM 失敗而未能產出線頭，該 agent 的一次性 bootstrap 即被消耗（**fail-quiet、不重試**）。③重新武裝的唯一方式＝刪除該 agent 的 data/soul/<agent_id>/life_thread_bootstrap.json（**由 Owner 執行**，agent 不得自行刪改生產 data/**）。
+**已知限制（誠實登記）**：①若 origins 的必填種子源為空（例如該 agent 完全無 diary 史）⇒ M4 現行的 `collect_necessity_seeds` 會**退回中立錨點** `WHIM_NEUTRAL_ANCHOR`（`src/soul/life_thread_origins.py:411-412`）⇒ `prompt_available` 仍為 True、**仍會 bootstrap**，但**不得宣稱任何具體外部事件**（＝不捏造事實；此為**唯一**允許的退化，由 M4 現行行為保證，本引擎**不**為此改動 M4）。由於 diary 的 `_fire_all`（`src/soul/scheduler.py:1658-1660`）在同一 tick 內早於 `_fire_life_thread_slot`（:1694）執行，**正常路徑**下同一 tick 即可取得真實處境。②標記的蓋章時點在「§4.4 觸發條件全部成立」且「M4 的 soul_context 非空（避免 0 成本的空轉被消耗）」之後、**origins 輪之前**；若該輪因 prompt_available == False 或 LLM 失敗而未能產出線頭，該 agent 的一次性 bootstrap 即被消耗（**fail-quiet、不重試**）。③重新武裝的唯一方式＝刪除該 agent 的 data/soul/<agent_id>/life_thread_bootstrap.json（**由 Owner 執行**，agent 不得自行刪改生產 data/**）。
 
 #### 與既有條文的邊界（**本節未修改任何既有條文**）
 

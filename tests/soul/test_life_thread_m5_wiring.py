@@ -49,12 +49,14 @@ RUN_SERVER_PATH = _REPO_ROOT / "scripts" / "run_server.py"
 
 #: orchestrator 允許的 `src.*` import 白名單（§D 靜態鐵律）。
 #: LIFE-THREAD-M2-WIRING-1 新增第 5 個：沉澱接線模組（**預設關**旗標）。
+#: LIFE-THREAD-BOOTSTRAP-1 新增第 6 個：冷啟動引導模組（**預設關**旗標，契約 §4.4）。
 ALLOWED_SRC_IMPORTS = frozenset({
     "src.soul.life_threads",
     "src.soul.life_thread_wake_gate",
     "src.soul.life_thread_dissolution",
     "src.soul.life_thread_origins",
     "src.soul.life_thread_consolidation_wiring",
+    "src.soul.life_thread_bootstrap",
 })
 
 
@@ -1339,9 +1341,10 @@ def test_a0_orchestrator_has_zero_forbidden_constructs():
 
 
 def test_a1_orchestrator_import_whitelist_only():
-    """orchestrator 的 `src.*` import 白名單**恰為** 5 個模組。
+    """orchestrator 的 `src.*` import 白名單**恰為** 6 個模組。
 
-    （LIFE-THREAD-M2-WIRING-1：4 → 5，新增沉澱接線模組；多一個或少一個都紅。）
+    （LIFE-THREAD-M2-WIRING-1：4 → 5，新增沉澱接線模組；
+      LIFE-THREAD-BOOTSTRAP-1：5 → 6，新增冷啟動引導模組。多一個或少一個都紅。）
     """
     leaves = _leaf_imports(ast.parse(MODULE_PATH.read_text(encoding="utf-8")))
     src_leaves = [x for x in leaves if x.startswith("src.")]
@@ -1350,7 +1353,7 @@ def test_a1_orchestrator_import_whitelist_only():
         for x in src_leaves
     )
     assert allowed_ok, f"白名單外 import：{src_leaves}"
-    assert len(src_leaves) == 5, src_leaves
+    assert len(src_leaves) == 6, src_leaves
 
 
 def test_a2_forbidden_scanner_has_teeth(tmp_path):

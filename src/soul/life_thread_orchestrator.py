@@ -36,8 +36,16 @@
   （≤ 2 次/日/agent，可接受）。故本模組對 §4.2 的 **due 集合不再有偏離**；
   唯一的**已宣告偏離**仍是張力訊號未供給（見上）。
 - **0 LLM 直接呼叫**：所有 LLM 一律經 `run_origin_round`（§8.1 路徑 A）。
+- **第三條喚醒路徑（契約 §4.4，`LIFE-THREAD-BOOTSTRAP-1`）**：M3 判 SLEEP
+  **且非容量理由**、且該 agent **零 active 線頭**、`capacity > 0`、bootstrap 標記
+  **未設**時，本層可**恰一次**改以 `bootstrap` 路徑喚醒（`origin_type`
+  ＝ `necessity_driven`，§2.3 四值之一，**非第五個**）。M3 閘門**0 改動**；
+  旗標 `LIFE_THREAD_BOOTSTRAP_ENABLED` **預設關**（缺席 ⇒ 本分支整段不執行）；
+  at-most-once 由 `life_thread_bootstrap.json` 標記界定（**先蓋章再執行**）。
+  判定與標記全在 `src/soul/life_thread_bootstrap.py`（純標準庫、永不 raise）。
 - **寫入面＝0 檔案寫入**：唯一 I/O 是每輪 1 次感知檔（`perception_trace.jsonl`）唯讀；
-  M1 讀取一律經 `life_threads` 的公開 API。
+  M1 讀取一律經 `life_threads` 的公開 API。（bootstrap 標記檔是本層**唯一**的寫入，
+  且**僅在旗標 ON 且全條件成立**時發生。）
 
 at-most-once 冪等：見 `run_slot_pipeline` 與 `_run_agent` 的說明。
 """
@@ -51,6 +59,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from src.soul import life_thread_bootstrap as lt_boot
 from src.soul import life_thread_consolidation_wiring as lt_wiring
 from src.soul import life_thread_dissolution as lt_diss
 from src.soul import life_thread_origins as lt_origins
@@ -166,7 +175,12 @@ async def run_slot_pipeline(
     回傳 `{agent_id: summary}`；`summary` 依路徑可能是：
 
     - `{"skipped": "duplicate_slot"}` —— 同 `(agent, slot, date)` 已處理過。
-    - `{"woke": False, "reason": ..., "dissolved_candidates": N}` —— M3 判 SLEEP。
+    - `{"woke": False, "reason": ..., "dissolved_candidates": N}` —— M3 判 SLEEP
+      （含 bootstrap 不成立／不該觸發時的**逐字相同**返回）。
+    - `{"woke": True, "reason": ..., "origin_type": "necessity_driven",
+       "bootstrap": True, "origin_round": {...}, "dissolved_candidates": N}` ——
+      **契約 §4.4 第三條喚醒路徑**（冷啟動引導；旗標 `LIFE_THREAD_BOOTSTRAP_ENABLED`
+      **預設關**、每 agent 一次性）。
     - `{"woke": True, "wake_blocked": "empty_soul_context", "reason": ...}` ——
       人格上下文為空 ⇒ 提前跳過（`build_origin_prompt` 對 falsy 回 `None` ⇒ 0 LLM）。
     - `{"woke": True, "reason": ..., "origin_type": ..., "origin_round": {...}}` —— 真喚醒。
@@ -274,18 +288,43 @@ async def _run_agent(
         enforce_strict_capacity=POLICY_ENFORCE_STRICT_CAPACITY,
     )
 
+    # ── 契約 §4.4：第三條喚醒路徑（bootstrap wake）───────────
+    # 🔴 順序**逐字固定**：M3 判定之後、既有 SLEEP 返回之前。M3 閘門 0 改動
+    # （呼叫參數／回傳／語意／日誌逐位元不變；本分支只在 `should_wake is False`
+    #  之後接手）。**旗標缺席／OFF（預設）⇒ 整段不執行** ⇒ 生產行為與本節引入前相同。
+    # `bootstrap_mode` 只在**蓋章成功**時為 `True`（at-most-once；先蓋章再執行）。
+    bootstrap_mode = False
     if not decision.should_wake:
-        return {
-            "woke": False,
-            "reason": decision.reason,
-            "dissolved_candidates": dissolved_candidates,
-        }
+        boot_marker = lt_boot.bootstrap_marker_path(lt.life_threads_path(agent_id))
+        if lt_boot.bootstrap_should_fire(
+            enabled=lt_boot.bootstrap_enabled(),
+            m3_should_wake=decision.should_wake,
+            m3_reason=decision.reason,
+            active_count=len(active_threads),
+            capacity=cap,
+            marker_path=boot_marker,
+        ):
+            soul_context = lt_origins.load_soul_context(agent_id)      # 既有 0-LLM 前置檢查
+            if soul_context:
+                if lt_boot.claim_bootstrap(boot_marker, now_iso=now.isoformat()):
+                    logger.info(f"[LifeThreadOrchestrator] agent={_clip(agent_id)} slot={_clip(slot)} "
+                                f"bootstrap wake（第三條路徑 §4.4；reason={_clip(decision.reason)}；一次為限）")
+                    bootstrap_mode = True
+        if not bootstrap_mode:
+            return {
+                "woke": False,
+                "reason": decision.reason,
+                "dissolved_candidates": dissolved_candidates,
+            }
 
     # ── M4 前置：人格上下文（空 ⇒ 0 LLM 花費，提前跳過）────
     # 用 M4 的 `load_soul_context`（失敗回 `""`、**永不回 None**、已套上限、
     # 且避開 germ/seeded 分歧 —— 直接呼叫 `proxy.load_persona()` 預設 `seeded`，
     # 對 germ agent 會取錯人格）。
-    soul_context = lt_origins.load_soul_context(agent_id)
+    # 🔴 bootstrap 模式**重用**上面已載入的值（同一輪同一 agent，且該值必為非空，
+    #    否則蓋不了章）；**非** bootstrap 路徑的呼叫次數與行為**逐字不變**。
+    if not bootstrap_mode:
+        soul_context = lt_origins.load_soul_context(agent_id)
     if not soul_context:
         logger.warning(
             f"[LifeThreadOrchestrator] agent={_clip(agent_id)} slot={_clip(slot)} "
@@ -315,19 +354,35 @@ async def _run_agent(
     # **完全不做** due 過濾，未到期的 active 線頭會被 over-include 進 prompt。
     # 取捨（見模組 docstring）：**單一 predicate 來源 > 省一次整檔讀**；
     # 代價 ＝ WAKE 時多 1 次 `lt.list_active()`（≤2 次/日/agent）。
+    # 契約 §4.4「`origin_type` 的選定」：bootstrap 模式**改以**
+    # `lt_boot.BOOTSTRAP_ORIGIN_TYPE`（`"necessity_driven"`，§2.3 四值之一，
+    # **不發明第五個**）呼叫；非 bootstrap 模式**逐字沿用** `decision.origin_type`
+    # （M3 的判定值，行為不變）。§5.2.2 的模板與語意仍全部屬 M4。
+    wake_origin_type = (
+        lt_boot.BOOTSTRAP_ORIGIN_TYPE if bootstrap_mode else decision.origin_type
+    )
     result = await lt_origins.run_origin_round(
         agent_id,
-        decision.origin_type,
+        wake_origin_type,
         now=now,
         due_threads=None,
         llm_caller=llm_caller,
         dissolve_hook=lt_wiring.build_dissolve_hook(),
         build_kwargs={"soul_context": soul_context, "world_records": list(perceptions)},
     )
-    return {
+    if bootstrap_mode:
+        logger.info(
+            f"[LifeThreadOrchestrator] agent={_clip(agent_id)} slot={_clip(slot)} "
+            f"bootstrap wake 完成（origin_type={_clip(wake_origin_type)}）"
+        )
+    summary: Dict[str, Any] = {
         "woke": True,
         "reason": decision.reason,
-        "origin_type": decision.origin_type,
+        "origin_type": wake_origin_type,
         "origin_round": result,
         "dissolved_candidates": dissolved_candidates,
     }
+    if bootstrap_mode:
+        # 契約 §4.4：bootstrap 模式成功喚醒時可觀測（非 bootstrap 路徑鍵集合不變）。
+        summary["bootstrap"] = True
+    return summary
