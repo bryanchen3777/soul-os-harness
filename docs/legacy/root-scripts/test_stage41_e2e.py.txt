@@ -1,0 +1,119 @@
+"""
+test_stage41_e2e.py — Stage 4.1 端到端測試
+
+透過 WebSocket 跟真實 server 對話, 確認:
+1. USER_MESSAGE 觸發 relationships.json 寫入
+2. AGENT_SPEAK 觸發 session_agents tracking + relationships touch
+3. 不對稱不完整 by design
+"""
+import asyncio
+import json
+import os
+import sys
+import time
+import websockets
+from pathlib import Path
+
+WS_URL = "ws://127.0.0.1:8000/ws"
+SOUL_DIR = Path("C:/Users/bbfcc/.local/bin/soul-os-harness/data/soul")
+
+
+async def send_and_collect(ws, content, target_agent, session_id, timeout=30):
+    """送 USER_MESSAGE, 收 agent_speak, 回傳文字 + session_agents。"""
+    msg = {
+        "type": "USER_MESSAGE",
+        "content": content,
+        "user_id": "1696287850",
+        "mode": "private",
+        "target_agent": target_agent,
+        "session_id": session_id,
+    }
+    await ws.send(json.dumps(msg, ensure_ascii=False))
+    received = []
+    deadline = time.time() + timeout
+    while time.time() < deadline and len(received) < 2:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=2)
+            data = json.loads(raw)
+            if data.get("type") == "agent_speak":
+                received.append(data)
+                if data.get("agent_id") == target_agent:
+                    break
+        except asyncio.TimeoutError:
+            break
+    return received
+
+
+async def main():
+    print("\n=== Stage 4.1 端到端測試 ===\n")
+
+    # 場景 1: Bry 跟 Mahiru 私訊 → Mahiru 對 Bry touch
+    print("場景 1: Bry 跟 Mahiru 私訊")
+    async with websockets.connect(WS_URL) as ws:
+        received = await send_and_collect(
+            ws, content="真昼", target_agent="agent_mahiru", session_id="e2e_test_1"
+        )
+        print(f"  Mahiru 回應: {received[-1].get('text', '')[:50] if received else '(無)'}...")
+
+    # 等 server 寫檔
+    await asyncio.sleep(2)
+
+    # 檢查 Mahiru 對 Bry 的 relationships
+    mahiru_file = SOUL_DIR / "agent_mahiru" / "relationships.json"
+    if not mahiru_file.exists():
+        print(f"  FAIL: {mahiru_file} 不存在")
+        return False
+    data = json.loads(mahiru_file.read_text(encoding="utf-8"))
+    print(f"  Mahiru relationships: {json.dumps(data, ensure_ascii=False, indent=2)}")
+    assert "user_bryan" in data["others"], "user_bryan 應該在 Mahiru.others"
+    bry = data["others"]["user_bryan"]
+    assert bry["confidence"] > 0.3, f"Bry confidence 應該 > 0.3 (default + 0.05), got {bry['confidence']}"
+    assert bry["interaction_count"] >= 1, f"interaction_count 應該 >= 1, got {bry['interaction_count']}"
+    print(f"  ✓ Mahiru 對 Bry: conf={bry['confidence']:.3f}, count={bry['interaction_count']}")
+
+    # 場景 2: Bry 跟 Yua 私訊 → Yua 對 Bry touch
+    print("\n場景 2: Bry 跟 Yua 私訊")
+    async with websockets.connect(WS_URL) as ws:
+        received = await send_and_collect(
+            ws, content="Yua~", target_agent="agent_yua", session_id="e2e_test_2"
+        )
+        print(f"  Yua 回應: {received[-1].get('text', '')[:50] if received else '(無)'}...")
+
+    await asyncio.sleep(2)
+
+    yua_file = SOUL_DIR / "agent_yua" / "relationships.json"
+    if not yua_file.exists():
+        print(f"  FAIL: {yua_file} 不存在")
+        return False
+    data = json.loads(yua_file.read_text(encoding="utf-8"))
+    assert "user_bryan" in data["others"]
+    bry = data["others"]["user_bryan"]
+    assert bry["confidence"] > 0.3
+    print(f"  ✓ Yua 對 Bry: conf={bry['confidence']:.3f}, count={bry['interaction_count']}")
+
+    # 場景 3: 不對稱驗證 — Mahiru 跟 Yua 互相獨立
+    print("\n場景 3: 不對稱驗證")
+    mahiru_bry = json.loads(mahiru_file.read_text(encoding="utf-8"))["others"]["user_bryan"]
+    yua_bry = json.loads(yua_file.read_text(encoding="utf-8"))["others"]["user_bryan"]
+    # 各自管理 (即使都從 default + 0.05, 不會共享狀態)
+    print(f"  Mahiru→Bry conf={mahiru_bry['confidence']:.3f}, count={mahiru_bry['interaction_count']}")
+    print(f"  Yua→Bry conf={yua_bry['confidence']:.3f}, count={yua_bry['interaction_count']}")
+    assert mahiru_bry is not yua_bry  # 不同 store 不同實例
+    print(f"  ✓ 兩個 agent 各自獨立管理 (不對稱 by design)")
+
+    # 場景 4: 場景 1 跟 2 各自有 session_agents tracking
+    print("\n場景 4: session_agents tracking")
+    # Mahiru 跟 Yua 兩個檔案的 last_interaction_at 應該都被更新
+    mahiru_data = json.loads(mahiru_file.read_text(encoding="utf-8"))
+    yua_data = json.loads(yua_file.read_text(encoding="utf-8"))
+    assert mahiru_data["others"]["user_bryan"]["last_interaction_at"] is not None
+    assert yua_data["others"]["user_bryan"]["last_interaction_at"] is not None
+    print(f"  ✓ last_interaction_at 都正確寫入")
+
+    print("\n=== ALL E2E PASSED ===\n")
+    return True
+
+
+if __name__ == "__main__":
+    ok = asyncio.run(main())
+    sys.exit(0 if ok else 1)

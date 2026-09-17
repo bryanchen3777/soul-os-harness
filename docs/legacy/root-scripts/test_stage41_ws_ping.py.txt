@@ -1,0 +1,32 @@
+"""stage 4.1 ws ping test"""
+import asyncio
+import json
+import websockets
+
+async def main():
+    async with websockets.connect('ws://127.0.0.1:8000/ws') as ws:
+        msg = {
+            'type': 'USER_MESSAGE',
+            'content': 'mahiru',
+            'user_id': '1696287850',
+            'mode': 'private',
+            'target_agent': 'agent_mahiru',
+        }
+        await ws.send(json.dumps(msg, ensure_ascii=False))
+        print('sent')
+        for i in range(8):
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=10)
+                data = json.loads(raw)
+                t = data.get('type', '?')
+                aid = data.get('agent_id', '')
+                txt = data.get('text', '')[:60]
+                print(f'recv #{i}: type={t} agent={aid} text={txt}')
+                if t == 'agent_speak' and aid == 'agent_mahiru':
+                    print('got Mahiru!')
+                    return
+            except asyncio.TimeoutError:
+                print(f'recv #{i}: timeout')
+                return
+
+asyncio.run(main())

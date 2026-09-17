@@ -1,0 +1,35 @@
+"""stage 4.1 ws ping test v2 - 處理 server ping"""
+import asyncio
+import json
+import websockets
+
+async def main():
+    async with websockets.connect('ws://127.0.0.1:8000/ws', open_timeout=5) as ws:
+        # 送 user message
+        msg = {
+            'type': 'USER_MESSAGE',
+            'content': 'mahiru test',
+            'user_id': '1696287850',
+            'mode': 'private',
+            'target_agent': 'agent_mahiru',
+        }
+        await ws.send(json.dumps(msg, ensure_ascii=False))
+        print('sent USER_MESSAGE')
+
+        # 收 8 個 message (含 server 送來的 ping + agent_speak 等)
+        for i in range(15):
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=15)
+                data = json.loads(raw)
+                t = data.get('type', '?')
+                aid = data.get('agent_id', '')
+                txt = data.get('text', '')[:80] if data.get('text') else ''
+                print(f'recv #{i}: type={t} agent={aid} text={txt!r}')
+                if t == 'agent_speak' and aid == 'agent_mahiru':
+                    print('GOT MAHIRU!')
+                    return
+            except asyncio.TimeoutError:
+                print(f'recv #{i}: timeout 15s')
+                return
+
+asyncio.run(main())

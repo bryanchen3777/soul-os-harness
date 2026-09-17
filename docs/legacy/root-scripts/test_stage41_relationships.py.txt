@@ -1,0 +1,349 @@
+"""
+test_stage41_relationships.py — Stage 4.1 單元測試
+
+測試目標:
+1. RelationshipsStore 讀寫 + 衰減
+2. MultiAgentRelationshipsManager batch API
+3. 跟 MemoryMiddleware 整合 (mock event bus)
+4. 不對稱不完整驗證 (Bry 拍板: 故意不完整不對稱)
+"""
+import asyncio
+import json
+import os
+import shutil
+import sys
+import tempfile
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+# 確保 src 可 import
+sys.path.insert(0, str(Path(__file__).parent))
+
+from src.soul.relationships import (
+    RelationshipsStore,
+    MultiAgentRelationshipsManager,
+    get_relationships_manager,
+    CONFIDENCE_DEFAULT_STRANGER,
+    CONFIDENCE_BIAS_SIBLINGS,
+    CONFIDENCE_DECAY_PER_DAY,
+    CONFIDENCE_DELTA_POSITIVE_LOW,
+    BRYAN_ENTITY_ID,
+)
+
+
+def test_1_relationships_store_basic():
+    """Test 1: RelationshipsStore 基本讀寫 + 衰減"""
+    with tempfile.TemporaryDirectory() as tmp:
+        agent_dir = Path(tmp) / "agent_mahiru"
+        store = RelationshipsStore("agent_mahiru", agent_dir)
+
+        # 初始空
+        assert store.get("nobody") is None
+        assert store.get_all() == {}
+
+        # 第一次 touch
+        entry = store.touch(BRYAN_ENTITY_ID)
+        assert entry["confidence"] == CONFIDENCE_DEFAULT_STRANGER + CONFIDENCE_DELTA_POSITIVE_LOW
+        assert entry["interaction_count"] == 1
+        assert entry["last_interaction_at"] is not None
+        print(f"  Test 1.1: touch Bry conf={entry['confidence']:.2f} count={entry['interaction_count']} ✓")
+
+        # 再次 touch (confidence 累積)
+        entry = store.touch(BRYAN_ENTITY_ID)
+        assert entry["confidence"] > CONFIDENCE_DEFAULT_STRANGER + CONFIDENCE_DELTA_POSITIVE_LOW
+        assert entry["interaction_count"] == 2
+        print(f"  Test 1.2: 二次 touch conf={entry['confidence']:.2f} count={entry['interaction_count']} ✓")
+
+        # 寫檔
+        file_path = agent_dir / "relationships.json"
+        assert file_path.exists()
+        data = json.loads(file_path.read_text(encoding="utf-8"))
+        assert data["agent_id"] == "agent_mahiru"
+        assert BRYAN_ENTITY_ID in data["others"]
+        print(f"  Test 1.3: 寫檔 + reload 正確 ✓")
+
+        print("  Test 1: PASS")
+
+
+def test_2_relationships_decay():
+    """Test 2: 自然衰減 (沒互動就疏遠)"""
+    with tempfile.TemporaryDirectory() as tmp:
+        agent_dir = Path(tmp) / "agent_rem"
+        store = RelationshipsStore("agent_rem", agent_dir)
+
+        # 強 trust 到 0.9
+        for _ in range(10):
+            store.touch(BRYAN_ENTITY_ID, confidence_delta=0.06)  # +0.06 each, 10次 = +0.6 from 0.3 = 0.9
+        entry = store.get(BRYAN_ENTITY_ID)
+        assert entry["confidence"] > 0.85, f"expected > 0.85 got {entry['confidence']}"
+        print(f"  Test 2.1: 強 trust conf={entry['confidence']:.2f} ✓")
+
+        # 模擬過去 5 天沒互動
+        file_path = agent_dir / "relationships.json"
+        data = json.loads(file_path.read_text(encoding="utf-8"))
+        old_decay = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+        data["last_decay_at"] = old_decay
+        for entry in data["others"].values():
+            entry["last_updated"] = old_decay
+        file_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        # 重新 load → 應該跑 decay, 5天 * 0.02/天 = -0.10
+        store2 = RelationshipsStore("agent_rem", agent_dir)
+        entry = store2.get(BRYAN_ENTITY_ID)
+        # 之前 ~0.9 - 0.10 ≈ 0.8
+        assert 0.75 < entry["confidence"] < 0.85, f"expected ~0.80 got {entry['confidence']}"
+        print(f"  Test 2.2: 5天後重 load conf={entry['confidence']:.2f} (應衰減 ~0.10) ✓")
+
+        print("  Test 2: PASS")
+
+
+def test_3_relationships_initial_bias():
+    """Test 3: 初始 bias (Rem+Ram 姐妹 0.7, 陌生人 0.3)"""
+    with tempfile.TemporaryDirectory() as tmp:
+        agent_dir = Path(tmp) / "agent_rem"
+        store = RelationshipsStore("agent_rem", agent_dir)
+
+        # 陌生人 (default)
+        e1 = store.ensure_relationship("agent_yua")
+        assert e1["confidence"] == CONFIDENCE_DEFAULT_STRANGER
+        print(f"  Test 3.1: 陌生人 default={e1['confidence']} ✓")
+
+        # 姐妹 (initial bias 0.7)
+        e2 = store.ensure_relationship("agent_ram", initial_confidence=CONFIDENCE_BIAS_SIBLINGS)
+        assert e2["confidence"] == CONFIDENCE_BIAS_SIBLINGS
+        print(f"  Test 3.2: 姐妹 initial={e2['confidence']} ✓")
+
+        # 重新 load, 確保 bias 持久 (浮點容差)
+        store2 = RelationshipsStore("agent_rem", agent_dir)
+        e1b = store2.get("agent_yua")
+        e2b = store2.get("agent_ram")
+        assert abs(e1b["confidence"] - CONFIDENCE_DEFAULT_STRANGER) < 0.001
+        assert abs(e2b["confidence"] - CONFIDENCE_BIAS_SIBLINGS) < 0.001
+        print(f"  Test 3.3: reload 後 bias 持久 (浮點容差) ✓")
+
+        print("  Test 3: PASS")
+
+
+def test_4_relationships_clamp():
+    """Test 4: confidence clamp [0.0, 1.0]"""
+    with tempfile.TemporaryDirectory() as tmp:
+        agent_dir = Path(tmp) / "agent_mai"
+        store = RelationshipsStore("agent_mai", agent_dir)
+
+        # 大量正向, 不應超過 1.0
+        for _ in range(100):
+            store.touch(BRYAN_ENTITY_ID, confidence_delta=0.5)
+        entry = store.get(BRYAN_ENTITY_ID)
+        assert entry["confidence"] <= 1.0
+        assert entry["confidence"] > 0.99
+        print(f"  Test 4.1: 大量正向 conf={entry['confidence']:.6f} clamp 到 1.0 ✓")
+
+        # 大量負向, 不應低於 0.0
+        for _ in range(100):
+            store.touch("agent_aoi", confidence_delta=-0.5)
+        entry = store.get("agent_aoi")
+        assert entry["confidence"] >= 0.0
+        assert entry["confidence"] < 0.01
+        print(f"  Test 4.2: 大量負向 conf={entry['confidence']:.6f} clamp 到 0.0 ✓")
+
+        print("  Test 4: PASS")
+
+
+def test_5_relationships_corrupted_file():
+    """Test 5: 壞檔備份 + 重建 (拒絕問, 強制讀)"""
+    with tempfile.TemporaryDirectory() as tmp:
+        agent_dir = Path(tmp) / "agent_akane"
+        agent_dir.mkdir(parents=True)
+        file_path = agent_dir / "relationships.json"
+        file_path.write_text("{壞 JSON", encoding="utf-8")
+
+        # 應該備份 + 重建
+        store = RelationshipsStore("agent_akane", agent_dir)
+        assert store.get("nobody") is None
+        # 寫入後檔案應該是合法 JSON
+        data = json.loads(file_path.read_text(encoding="utf-8"))
+        assert data["schema_version"] == "4.1"
+        # 應該有 corrupted 備份
+        corrupted_files = list(agent_dir.glob("*.corrupted.*.json"))
+        assert len(corrupted_files) == 1
+        print(f"  Test 5.1: 壞檔備份 {corrupted_files[0].name} ✓")
+
+        print("  Test 5: PASS")
+
+
+def test_6_manager_on_user_message():
+    """Test 6: MultiAgentRelationshipsManager.on_user_message"""
+    with tempfile.TemporaryDirectory() as tmp:
+        data_dir = Path(tmp) / "soul"
+        manager = MultiAgentRelationshipsManager(data_dir=str(data_dir))
+
+        # 觸發 Mahiru 對 Bry touch
+        manager.on_user_message("agent_mahiru")
+        store = manager.get_store("agent_mahiru")
+        entry = store.get(BRYAN_ENTITY_ID)
+        # 浮點容差 (decay 可能跑過)
+        expected = CONFIDENCE_DEFAULT_STRANGER + CONFIDENCE_DELTA_POSITIVE_LOW
+        assert abs(entry["confidence"] - expected) < 0.001
+        print(f"  Test 6.1: on_user_message agent_mahiru Bry conf={entry['confidence']:.2f} ✓")
+
+        # 觸發 Yua
+        manager.on_user_message("agent_yua")
+        store_yua = manager.get_store("agent_yua")
+        assert store_yua.get(BRYAN_ENTITY_ID)["confidence"] > CONFIDENCE_DEFAULT_STRANGER
+        # 兩個 agent 各自獨立 (不對稱)
+        # (在這個簡單 case 兩邊都是 default+0.05, 會對稱, 但分開管理 OK)
+        assert store.get(BRYAN_ENTITY_ID)["confidence"] > CONFIDENCE_DEFAULT_STRANGER
+        assert store_yua.get(BRYAN_ENTITY_ID)["confidence"] > CONFIDENCE_DEFAULT_STRANGER
+        print(f"  Test 6.2: 兩個 agent 各自 touch 成功 ✓")
+
+        # 檔案路徑
+        assert (data_dir / "agent_mahiru" / "relationships.json").exists()
+        assert (data_dir / "agent_yua" / "relationships.json").exists()
+        print(f"  Test 6.3: 檔案寫入正確路徑 ✓")
+
+        print("  Test 6: PASS")
+
+
+def test_7_manager_on_agent_speak():
+    """Test 7: MultiAgentRelationshipsManager.on_agent_speak (角色之間共現)"""
+    with tempfile.TemporaryDirectory() as tmp:
+        data_dir = Path(tmp) / "soul"
+        manager = MultiAgentRelationshipsManager(data_dir=str(data_dir))
+
+        # 場景: Mahiru 在 session 跟 Bry 對話, 同 session 還有 Yua
+        # Mahiru 對 Bry: touch (USER_MESSAGE 觸發)
+        # Mahiru 對 Yua: speaker 對 session 內其他 agent touch
+        manager.on_user_message("agent_mahiru")
+        manager.on_agent_speak("agent_mahiru", ["agent_mahiru", "agent_yua"])
+
+        store = manager.get_store("agent_mahiru")
+        # Mahiru 對 Bry (USER_MESSAGE)
+        bry = store.get(BRYAN_ENTITY_ID)
+        assert bry["interaction_count"] == 1
+        assert abs(bry["confidence"] - (CONFIDENCE_DEFAULT_STRANGER + CONFIDENCE_DELTA_POSITIVE_LOW)) < 0.001
+        # Mahiru 對 Yua (AGENT_SPEAK)
+        yua = store.get("agent_yua")
+        assert yua["interaction_count"] == 1
+        assert abs(yua["confidence"] - (CONFIDENCE_DEFAULT_STRANGER + CONFIDENCE_DELTA_POSITIVE_LOW * 0.4)) < 0.001
+        print(f"  Test 7.1: Mahiru 對 Bry {bry['confidence']:.3f}, 對 Yua {yua['confidence']:.3f} (不同 delta) ✓")
+
+        # 場景 2: 群組 session (多人同時發言)
+        manager.on_agent_speak("agent_yua", ["agent_mahiru", "agent_yua", "agent_anna"])
+        store_yua = manager.get_store("agent_yua")
+        # Yua 對 Mahiru + Anna 都 touch
+        assert store_yua.get("agent_mahiru")["interaction_count"] == 1
+        assert store_yua.get("agent_anna")["interaction_count"] == 1
+        # Yua 不對自己 touch
+        assert store_yua.get("agent_yua") is None
+        print(f"  Test 7.2: 群組 session Yua 對 Mahiru+Anna touch 正確 ✓")
+
+        print("  Test 7: PASS")
+
+
+def test_8_asymmetric_incomplete():
+    """Test 8: 不對稱不完整驗證 (Bry 拍板: 故意不對稱不完整)"""
+    with tempfile.TemporaryDirectory() as tmp:
+        data_dir = Path(tmp) / "soul"
+        manager = MultiAgentRelationshipsManager(data_dir=str(data_dir))
+
+        # 場景: A 跟 B 對話過, B 跟 C 對話過, A 沒跟 C 對話過
+        # 應該: A.others 含 B 但不含 C, B.others 含 A+C, C.others 含 B 但不含 A
+        manager.on_user_message("agent_a")  # A 對 Bry
+        manager.on_agent_speak("agent_a", ["agent_a", "agent_b"])  # A 對 B
+        manager.on_user_message("agent_c")  # C 對 Bry
+        manager.on_agent_speak("agent_c", ["agent_c", "agent_b"])  # C 對 B
+
+        # A.others: 含 Bry, B
+        a_others = manager.get_store("agent_a").get_all()
+        assert BRYAN_ENTITY_ID in a_others
+        assert "agent_b" in a_others
+        assert "agent_c" not in a_others  # 不對稱 - A 沒跟 C 接觸
+        print(f"  Test 8.1: A.others 不含 C (不對稱) ✓ A keys: {list(a_others.keys())}")
+
+        # B.others: 4.1 第一刀只動 speaker 的 store, B 沒主動講所以空
+        # 這是「不對稱不完整」的 by design 結果, 證明系統不寫死雙向
+        b_others = manager.get_store("agent_b").get_all()
+        # B 可能空 (沒主動講), 也可能後續 stage 加互動時補
+        # 接受空, 接受不對稱
+        print(f"  Test 8.2: B.others 不對稱 (B 沒主動講所以空) ✓ B keys: {list(b_others.keys())}")
+
+        # C.others: 含 Bry, B, 不含 A
+        c_others = manager.get_store("agent_c").get_all()
+        assert BRYAN_ENTITY_ID in c_others
+        assert "agent_b" in c_others
+        assert "agent_a" not in c_others  # 不對稱
+        print(f"  Test 8.3: C.others 不含 A (不對稱) ✓ C keys: {list(c_others.keys())}")
+
+        # 整體驗證不對稱: 同一個 pair 在不同 store 的 confidence 不要求對稱
+        a_to_b = a_others["agent_b"]["confidence"]
+        print(f"  Test 8.4: A→B conf={a_to_b:.3f} (B 沒主動, 所以 B→A 為 0)")
+        # Bry 拍板: 不對稱是 by design
+
+        print("  Test 8: PASS")
+
+
+def test_9_middleware_integration():
+    """Test 9: 跟 MemoryMiddleware 整合 (mock event bus)"""
+    import logging
+    logging.basicConfig(level=logging.INFO)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        soul_dir = Path(tmp) / "soul"
+        memory_dir = Path(tmp) / "memory"
+
+        # 確保 src.soul.relationships 的 singleton 用我們的 tmp 目錄
+        from src.soul import relationships as rel_module
+        rel_module._manager_singleton = None
+        manager = rel_module.get_relationships_manager(data_dir=str(soul_dir))
+
+        # Mock SoulEvent
+        from src.eventbus.schema import SoulEvent, EventType, EventPriority
+
+        # 直接測 on_user_message / on_agent_speak 路徑
+        # 模擬 USER_MESSAGE for agent_mahiru
+        user_event = SoulEvent(
+            event_type=EventType.USER_MESSAGE,
+            source="user_bryan",
+            target="broadcast",
+            priority=EventPriority.HIGH,
+            payload={"text": "今天好嗎", "target_agent": "agent_mahiru"},
+            session_id="test_session_1",
+        )
+        manager.on_user_message("agent_mahiru")
+        entry = manager.get_store("agent_mahiru").get(BRYAN_ENTITY_ID)
+        assert entry["confidence"] > CONFIDENCE_DEFAULT_STRANGER
+        print(f"  Test 9.1: 整合 Mahiru 對 Bry conf={entry['confidence']:.3f} ✓")
+
+        # 模擬 AGENT_SPEAK from agent_mahiru, session 含 mahiru+yua
+        manager.on_agent_speak("agent_mahiru", ["agent_mahiru", "agent_yua"])
+        entry_yua = manager.get_store("agent_mahiru").get("agent_yua")
+        assert entry_yua["confidence"] > CONFIDENCE_DEFAULT_STRANGER
+        print(f"  Test 9.2: 整合 Mahiru 對 Yua conf={entry_yua['confidence']:.3f} ✓")
+
+        # 確認檔案在 tmp
+        assert (soul_dir / "agent_mahiru" / "relationships.json").exists()
+        print(f"  Test 9.3: 整合後寫檔正確 ✓")
+
+        print("  Test 9: PASS")
+
+
+if __name__ == "__main__":
+    print("\n=== Stage 4.1 Relationships Unit Tests ===\n")
+    test_1_relationships_store_basic()
+    print()
+    test_2_relationships_decay()
+    print()
+    test_3_relationships_initial_bias()
+    print()
+    test_4_relationships_clamp()
+    print()
+    test_5_relationships_corrupted_file()
+    print()
+    test_6_manager_on_user_message()
+    print()
+    test_7_manager_on_agent_speak()
+    print()
+    test_8_asymmetric_incomplete()
+    print()
+    test_9_middleware_integration()
+    print("\n=== ALL TESTS PASSED ===\n")
