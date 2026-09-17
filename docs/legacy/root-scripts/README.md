@@ -48,3 +48,73 @@ Guardrail: `tests/infra/test_no_production_spawn_guard.py` now fails if any
 `test_*.py` reappears at the repo root, or if `subprocess`/`os.system` code in
 the scanned tree mentions `run_server`, `pkill`, `taskkill`, `Stop-Process` or
 hard-codes the service address `:8000`.
+
+---
+
+## `scripts/test_*.py` → `scripts/manual_*.py`（原地改名）
+
+Ticket: `TEST-INFRA-COLLECTION-LEAK-1` (P1, safety de-mining)。
+改名日：**2026-09-16**。改名基線 commit：`ea3f95e`。
+**內容一字未改**：10 支已追蹤檔在 git 中是 `R100`（逐位元等同），15 支的 sha256 前後相同。
+
+### 為什麼是改名，而不是刪除
+
+pytest 預設 `python_files = test_*.py`。這些腳本住在 `scripts/`，`pytest -q tests`
+從來不會收集它們 —— 但**在 repo 根目錄裸跑 `pytest`** 會，因為根目錄的
+collection 會往下走進 `scripts/`。而**被收集 ＝ 被 import ＝ module body 被執行**：
+
+* 標 ⚠️ 的三支在 module body 就會有真實副作用（付費 API 呼叫／對執行中的服務開
+  真實 WebSocket／寫真實 `data/`）。
+* 最嚴重的是 `manual_disable_thinking.py`：module body 的 `for m in methods:` 迴圈
+  直接對 `https://api.minimax.io/v1/chat/completions` 發 **6 次** POST（金鑰取自
+  `.env` 的 `MINIMAX_API_KEY`）。**本票的存在理由就是它** —— 已實測：光是「被收集」
+  就吃到 `HTTP 429 Token Plan usage limit`，即**收集本身在花錢**。
+
+改名為 `manual_*.py` 後，這些腳本仍可**手動**直接執行（保留開發用途），但
+`manual_*.py` 永遠不符 `python_files`，因此**永久不會被任何 pytest 收集**。
+
+> ⚠️ **這些是手動開發腳本，部分會打真實外部 API（用你的金鑰）或需要一個已經在
+> 運行的服務。勿在生產機隨意執行。** 其中 12 支會連 `ws://localhost:8000/ws`
+> （對生產服務發真實訊息、寫真實對話紀錄）。
+
+| 原名（`scripts/`） | 新名（`scripts/`） | git 追蹤 | 被收集時會執行 module body？ | 它是什麼／為何原本是地雷 |
+|---|---|---|---|---|
+| `test_disable_thinking.py` | `manual_disable_thinking.py` | 否（untracked） | ⚠️ **會** | minimax M2.7 的 5 種「關閉 thinking」探測。**module body 的 `for m in methods:` 迴圈直接對 `api.minimax.io` 發 6 次真實 POST** ⇒ 收集即花錢（實測 429 Token Plan usage limit）。 |
+| `test_dream_event.py` | `manual_dream_event.py` | 否 | 否（`__main__` 守衛 L111） | Dream event／日記寫入驗證；載入 `.env`、透過真實 LLM 產生內容、寫真實 `data/` 日記 jsonl。 |
+| `test_e2e_stage3.py` | `manual_e2e_stage3.py` | 否 | 否（`__main__` 守衛 L276） | Stage 3 e2e（`MockLLMBackend`，製程內管線，不碰伺服器）。 |
+| `test_e2e_stage4.py` | `manual_e2e_stage4.py` | 否 | 否（`__main__` 守衛 L635） | Stage 4 `FishTTSHandler` e2e；`_load_api_key` 已 mock，不會真的打 TTS API。 |
+| `test_full_flow.py` | `manual_full_flow.py` | 是 | 否（`__main__` 守衛 L71） | 製程內 eventbus 全流程追蹤（USER_MESSAGE → AGENT_SPEAK）。 |
+| `test_full_system.py` | `manual_full_system.py` | 是 | ⚠️ **會** | **module body 尾端裸 `asyncio.run(run_tests())`（L106）**：連 `ws://localhost:8000/ws`，並開真實 `data/memory.db`。 |
+| `test_group_chat.py` | `manual_group_chat.py` | 是 | 否（`__main__` 守衛 L98） | 群聊 smoke；對執行中的 `:8000` 發真實訊息。 |
+| `test_group_memory.py` | `manual_group_memory.py` | 是 | 否（`__main__` 守衛 L137） | 群組記憶驗證；連 `ws://localhost:8000/ws` 與 `http://localhost:8000`。 |
+| `test_m3_disable_thinking.py` | `manual_m3_disable_thinking.py` | 否 | 否（`__main__` 守衛） | minimax M3 的 4 種 thinking-disable 語法探測；`requests.post` 打 `api.minimax.io`（OpenAI 相容 ＋ `/anthropic`）。 |
+| `test_memory_integrity.py` | `manual_memory_integrity.py` | 是 | 否（`__main__` 守衛 L155） | 記憶寫入／讀取完整性；對執行中的 `:8000` 開真實 WebSocket。 |
+| `test_memory_persist.py` | `manual_memory_persist.py` | 是 | 否（`__main__` 守衛 L79） | `MemoryStore` 持久化 ＋ 對執行中的 `:8000` 探測。 |
+| `test_memory_split.py` | `manual_memory_split.py` | 是 | 否（`__main__` 守衛 L104） | 公開／私密記憶分流驗證；對執行中的 `:8000` 開真實 WebSocket。 |
+| `test_private_chat.py` | `manual_private_chat.py` | 是 | 否（`__main__` 守衛 L182） | 互動式私聊驅動器；連 `:8000`、寫真實 `data/conversations/*.json`。 |
+| `test_proactive_bugs.py` | `manual_proactive_bugs.py` | 是 | 否（`__main__` 守衛 L192） | 主動訊息 bug 探測（身分混淆／空草稿／無窮迴圈）；連 `:8000`。 |
+| `test_proactive_quick.py` | `manual_proactive_quick.py` | 是 | ⚠️ **會** | **module body 尾端裸 `asyncio.run(main())`（L97）**：直接對執行中的 `:8000` 開真實 WebSocket。 |
+
+> 註：`test_public_chat*` 之類的同名歷史檔不在本次 15 支之列；上表即本次改名的完整清單。
+> 未追蹤的 5 支（`manual_disable_thinking.py`／`manual_dream_event.py`／
+> `manual_e2e_stage3.py`／`manual_e2e_stage4.py`／`manual_m3_disable_thinking.py`）
+> 是用 `Rename-Item` 改的，其餘 10 支用 `git mv`。
+
+### 同一張票補上的護欄
+
+* **`pytest.ini`（`testpaths = tests`）** —— 之後在 repo 根目錄裸跑 `pytest`，
+  只會收集 `tests/`，**永遠不會**走進 `scripts/` 或其他散落腳本。
+* **`tests/infra/test_no_production_spawn_guard.py` 新增 R5** —— 掃描範圍內
+  （根目錄 `*.py` ＋ `tests/**/*.py`）出現**任何**未列管的
+  `subprocess.{Popen,run,call,check_call,check_output,getoutput,getstatusoutput}`／
+  `os.system`／`os.popen`／`os.spawn*` 呼叫即紅，並以
+  `EXPECTED_SUBPROCESS_ALLOWLIST_SIZE` 鎖定白名單。這封死了 R1 字面量比對抓不到的
+  「變數中介」與「拆分 token」繞過面。
+* **同一模組新增 `scripts/` 不得存在 `test_*.py` 的斷言** —— 本節所述的改名
+  一旦被還原，護欄立刻變紅。
+
+### `tests/_verify_*.py`（一次性 live driver）一併歸檔
+
+26 支未追蹤的一次性 driver 已原文歸檔到本目錄（`_verify_*.py.txt`，**`.txt` 確保
+永遠不會被收集**）並自 `tests/` 移除；只為它們而存在的 `:8000` 位址 allowlist 條目
+同時被刪除（allowlist 由 28 筆縮到 9 筆，計數鎖定同步更新）。

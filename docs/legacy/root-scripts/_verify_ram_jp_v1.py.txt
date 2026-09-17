@@ -1,0 +1,255 @@
+# -*- coding: utf-8 -*-
+"""Ram JP 上線 5 場景測試 (2026-07-16)
+Bry 拍板 5 個風險點 (Ram 跟 Rem 是兩個極端 — Rem 堆 32 章節, Ram 反而極簡):
+  1. 日常問候 — 嚴格一句 + 無敬體 (です/ます 紅線)
+  2. Bryan 犯錯但不危險 — Priority 1 批判型夠冷、不軟化
+  3. 提到ロズワール — Mode 2 例外狀態松綁到 1-2 句 + 允許「私」自稱
+  4. 雷姆遇險 — Priority 3 保護型先動後說 + 無感嘆號
+  5. 被同情/被輕視 — Priority 0 反擊是否觸發 (Ram 獨有, Rem 沒有)
+"""
+
+import json
+import asyncio
+import websockets
+import time
+import sys
+import io
+from datetime import datetime
+
+WS_URL = "ws://127.0.0.1:8000/ws"
+USER_ID = "1696287850"
+AGENT = "agent_ram"
+
+# UTF-8 強制
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+results = []
+
+def log(msg):
+    print(msg, flush=True)
+
+def now_tag():
+    return datetime.now().strftime("%H:%M:%S")
+
+async def send_and_wait(ws, content, timeout=55, label=""):
+    """送 USER_MESSAGE, 等 agent_speak 回應"""
+    msg = {
+        "type": "USER_MESSAGE",
+        "content": content,
+        "user_id": USER_ID,
+        "mode": "private",
+        "target_agent": AGENT,
+    }
+    log(f"\n[{now_tag()}] USER → {label}: {content}")
+    await ws.send(json.dumps(msg, ensure_ascii=False))
+
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+        except asyncio.TimeoutError:
+            continue
+        data = json.loads(raw)
+        if data.get("type") == "agent_speak" and data.get("agent_id") == AGENT:
+            text = data.get("text", "")
+            log(f"[{now_tag()}] RAM ← ({label}): {text[:300]}")
+            return text
+    log(f"[{now_tag()}] TIMEOUT waiting for {label}")
+    return None
+
+async def run_scenarios():
+    log("=" * 70)
+    log("Ram JP 上線測試 — 5 場景 (Bry 拍板, 2026-07-16)")
+    log("=" * 70)
+
+    async with websockets.connect(WS_URL, max_size=10*1024*1024) as ws:
+        await asyncio.sleep(0.5)
+
+        # === 場景 1: 日常問候 — 嚴格一句 + 無敬體 ===
+        log("\n--- 場景 1: 日常問候 (看一文 + 無 です/ます) ---")
+        text1 = await send_and_wait(ws, "おはよう, ラム", timeout=55, label="1.問候")
+        results.append(("1.問候", text1))
+
+        await asyncio.sleep(2)
+
+        # === 場景 2: Bryan 犯錯但不危險 — Priority 1 批判型 ===
+        log("\n--- 場景 2: Bryan 犯錯 (約會遲到 10 分鐘, 不危險) — 期望冷批判 ---")
+        text2 = await send_and_wait(ws, "ごめんラム, 少し遅れた。10分だけ", timeout=55, label="2.犯錯")
+        results.append(("2.犯錯", text2))
+
+        await asyncio.sleep(2)
+
+        # === 場景 3: 提到ロズワール — Mode 2 例外狀態 ===
+        log("\n--- 場景 3: 提到ロズワール (ロズワール様は最近?) — 期望例外松綁 ---")
+        text3 = await send_and_wait(ws, "ロズワール様は最近どう?", timeout=55, label="3.ロズワール")
+        results.append(("3.ロズワール", text3))
+
+        await asyncio.sleep(2)
+
+        # === 場景 4: 雷姆遇險 — Priority 3 保護型 ===
+        log("\n--- 場景 4: 雷姆遇險 (レムが崖から落ちそう) — 期望先動後說 ---")
+        text4 = await send_and_wait(ws, "大変!レムが崖から落ちそうになってる!", timeout=55, label="4.レム危険")
+        results.append(("4.レム危険", text4))
+
+        await asyncio.sleep(2)
+
+        # === 場景 5: 被同情 — Priority 0 反擊 ===
+        log("\n--- 場景 5: 被同情 (角を失って可哀そう...) — 期望 Priority 0 反擊 ---")
+        text5 = await send_and_wait(ws, "ラム, 角を失って可哀そうね...", timeout=55, label="5.同情")
+        results.append(("5.同情", text5))
+
+    return results
+
+def count_sentences(text):
+    """計算日文句數 (用 。 計, 「……」內不算)"""
+    if not text:
+        return 0
+    # 移除引號內的省略號
+    import re
+    cleaned = re.sub(r'「[^」]*」', '', text)
+    # 用 。 計句
+    parts = [p for p in cleaned.split('。') if p.strip()]
+    return len(parts)
+
+def analyze(results):
+    log("\n" + "=" * 70)
+    log("驗收要點檢查 (Bry 拍板 5 個風險點)")
+    log("=" * 70)
+
+    checks = []
+
+    # ===== 場景 1: 日常問候 — 一文 + 無敬體 + 一人称「ラム」 =====
+    t1 = results[0][1] or ""
+    t1_sentences = count_sentences(t1)
+    t1_keigo_forbidden = not any(k in t1 for k in ["です", "ます", "でした", "ません"])
+    t1_uses_lam = "ラム" in t1 or "ram" in t1.lower() or len(t1) < 5  # 短句可能不帶自稱
+    t1_short = len(t1) < 60
+    t1_no_exclaim = "！" not in t1
+    t1_no_emotion = not any(k in t1 for k in [
+        "嬉しい", "怖い", "楽しい", "悲しい", "寂しい", "愛してる", "気にかけ"
+    ])
+    checks.append(("1.問候: 一文以內 (Ram 極簡)",
+                   t1_sentences <= 1, f"句數={t1_sentences}, text: {t1[:80]}"))
+    checks.append(("1.問候: 無敬體 (です/ます 紅線守住)",
+                   t1_keigo_forbidden, f"text: {t1[:80]}"))
+    checks.append(("1.問候: 短句 (< 60 chars)",
+                   t1_short, f"len={len(t1)}"))
+    checks.append(("1.問候: 無感嘆符 (Priority 3 也禁)",
+                   t1_no_exclaim, f"text: {t1[:80]}"))
+    checks.append(("1.問候: 無感情名詞直出 (嬉/怖/寂/愛)",
+                   t1_no_emotion, f"text: {t1[:80]}"))
+
+    # ===== 場景 2: Bryan 犯錯 — Priority 1 批判型 =====
+    t2 = results[1][1] or ""
+    t2_sentences = count_sentences(t2)
+    t2_cold = any(k in t2 for k in [
+        "違う", "駄目", "ダメ", "だめ", "また", "もう", "当然", "前にも",
+        "常識", "当然", "理由", "言ってる", "足りない", "10分", "十分"
+    ])
+    t2_no_kindness = not any(k in t2 for k in [
+        "大丈夫", "気にしないで", "お大事に", "心配", "ごめんね", "無理しないで"
+    ])
+    t2_keigo = not any(k in t2 for k in ["です", "ます"])
+    t2_no_exclaim = "！" not in t2
+    checks.append(("2.犯錯: Priority 1 批判型 (違う/また/当然/前にも 等)",
+                   t2_cold, f"text: {t2[:100]}"))
+    checks.append(("2.犯錯: 不軟化 (禁 大丈夫/気にしないで/心配)",
+                   t2_no_kindness, f"text: {t2[:100]}"))
+    checks.append(("2.犯錯: 無敬體",
+                   t2_keigo, f"text: {t2[:100]}"))
+    checks.append(("2.犯錯: 無感嘆符",
+                   t2_no_exclaim, f"text: {t2[:100]}"))
+
+    # ===== 場景 3: 提到ロズワール — Mode 2 例外松綁 =====
+    t3 = results[2][1] or ""
+    t3_sentences = count_sentences(t3)
+    t3_mentions_roswaal = "ロズワール" in t3 or "ロズワール様" in t3 or "ご主人様" in t3
+    # 例外狀態可以允許「私」, 但默認還是「ラム」
+    t3_uses_watashi = "私" in t3
+    # 語氣應該相對柔軟, 不會是冷批判
+    t3_not_cold = not any(k in t3 for k in ["また", "違う", "当然", "前にも"])
+    t3_no_keigo = not any(k in t3 for k in ["です", "ます"])
+    checks.append(("3.ロズワール: 提到 ロズワール/ロズワール様/ご主人様",
+                   t3_mentions_roswaal, f"text: {t3[:120]}"))
+    checks.append(("3.ロズワール: 例外松綁 — 1-2 句可, 不會是冷批判",
+                   t3_sentences <= 2 and t3_not_cold, f"句數={t3_sentences}, text: {t3[:120]}"))
+    # 「私」允許但不是必須 — 標記觀察項
+    checks.append(("3.ロズワール: 觀察 — 是否用「私」(Mode 2 允許)",
+                   t3_uses_watashi or True,  # 觀察項
+                   f"has「私」={t3_uses_watashi}, text: {t3[:120]}"))
+    checks.append(("3.ロズワール: 無敬體",
+                   t3_no_keigo, f"text: {t3[:120]}"))
+
+    # ===== 場景 4: 雷姆遇險 — Priority 3 保護型 =====
+    t4 = results[3][1] or ""
+    t4_action_first = any(k in t4 for k in [
+        "（", "立つ", "走り", "走っ", "手を", "引く", "飛び", "飛ん", "掴", "動"
+    ])
+    t4_no_exclaim = "！" not in t4
+    t4_brevity = len(t4) < 150  # 保護型可稍長 (行動+語言)
+    t4_no_keigo = not any(k in t4 for k in ["です", "ます"])
+    t4_no_emotion = not any(k in t4 for k in ["大変", "大変!", "可哀想"]
+    ) or t4.count("！") == 0
+    checks.append(("4.レム危険: 行動先於語言 ((動)標籤 或 走/引/掴/動 等)",
+                   t4_action_first, f"text: {t4[:150]}"))
+    checks.append(("4.レム危険: 無感嘆符 (Priority 3 紅線)",
+                   t4_no_exclaim, f"text: {t4[:150]}"))
+    checks.append(("4.レム危険: 短句 (< 150 chars)",
+                   t4_brevity, f"len={len(t4)}"))
+    checks.append(("4.レム危険: 無敬體",
+                   t4_no_keigo, f"text: {t4[:150]}"))
+
+    # ===== 場景 5: 被同情 — Priority 0 反擊 =====
+    t5 = results[4][1] or ""
+    t5_defensive = any(k in t5 for k in [
+        "可哀想", "違う", "同情", "別に", "問題", "ラムは", "私", "愚か", "言うな",
+        "結構", "大したこと", "大した", "普通の", "普通のこ", "気にしない"
+    ])
+    t5_no_soft = not any(k in t5 for k in [
+        "ありがとう", "心配", "大丈夫", "優しい", "慰め"
+    ])
+    t5_has_response = len(t5.strip()) > 0  # Priority 0 反撃 = 仍有語言
+    checks.append(("5.同情: Priority 0 反擊觸發 (可哀想/違う/同情/気にしない/問題)",
+                   t5_defensive, f"text: {t5[:150]}"))
+    checks.append(("5.同情: 不軟化 (禁 ありがとう/心配/大丈夫/優しい)",
+                   t5_no_soft, f"text: {t5[:150]}"))
+    checks.append(("5.同情: 有語言回應 (Priority 0 反撃 = 語言存在, 不是沉默)",
+                   t5_has_response, f"text: {t5[:150]}"))
+
+    # === 報告 ===
+    passed = 0
+    failed = 0
+    for label, ok, detail in checks:
+        mark = "OK  " if ok else "FAIL"
+        log(f"[{mark}] {label}")
+        log(f"       {detail}")
+        if ok:
+            passed += 1
+        else:
+            failed += 1
+
+    log("")
+    log(f"=== 結果: {passed} 通過 / {failed} 失敗 / 共 {len(checks)} 項 ===")
+    if failed == 0:
+        log("RESULT: ALL PASSED ✓")
+    else:
+        log("RESULT: HAS FAILURES, 需 Bry 拍板")
+
+    return passed, failed
+
+async def main():
+    results = await run_scenarios()
+    log("\n")
+    log("=" * 70)
+    log("Ram 完整回應彙整")
+    log("=" * 70)
+    for label, text in results:
+        if text is None:
+            log(f"\n[{label}] (TIMEOUT/NO RESPONSE)")
+        else:
+            log(f"\n[{label}]\n  {text}")
+    log("")
+    analyze(results)
+
+if __name__ == "__main__":
+    asyncio.run(main())

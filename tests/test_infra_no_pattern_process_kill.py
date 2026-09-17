@@ -73,7 +73,12 @@ SPAWN_ATTRS: Dict[str, frozenset] = {
 
 #: Minimum number of files the scanner must see. A scan that silently walks nothing is
 #: exactly the "fake guardrail" failure mode; this floor makes it fail loudly instead.
-MIN_SCANNED_FILES = 300
+#: Lowered 300 → 280 by TEST-INFRA-COLLECTION-LEAK-1 (D4): that ticket archived and
+#: removed the 26 untracked one-off ``tests/_verify_*.py`` drivers, so the scanned
+#: inventory legitimately shrank from 317 to 291 files. The floor remains a
+#: "the scan walked nothing" tripwire (a broken scan yields ~0, not 280) rather than
+#: a tripwire on ordinary file-count changes.
+MIN_SCANNED_FILES = 280
 
 
 class Hit(NamedTuple):
@@ -319,10 +324,37 @@ def test_no_pattern_process_kill_in_test_infrastructure(capsys):
 
 
 def test_scanner_inventory_covers_root_level_test_scripts():
-    """The scan scope must include the root scripts — that is where the precedent lived."""
+    """The scan scope must cover the repo root — and the root must stay collect-free.
+
+    TEST-INFRA-COLLECTION-LEAK-1 (D3): this assertion used to *require* the incident's
+    own address, a root-level ``test_ui.py``, to be present in the scan list. That
+    inverted the safety property — it encoded the landmine as a requirement, so the
+    ticket that removed the root-level ``test_*.py`` files necessarily turned this
+    node-id red. It is restored to its real meaning here (the root level must contain
+    **zero** ``test_*.py``) while the scope contract ("the scanner still walks the
+    root level") is kept as an explicit equality against the scanner's inventory.
+    """
     files = {p.relative_to(REPO_ROOT).as_posix() for p in scanned_test_files()}
     assert "tests/test_infra_no_pattern_process_kill.py" in files
-    assert "test_ui.py" in files, "根目錄 test_*.py 必須在掃描範圍內（本次事故的實際位置）"
+
+    # (a) the safety property: the root level holds no collectable test script.
+    at_root_on_disk = sorted(p.name for p in REPO_ROOT.glob("test_*.py") if p.is_file())
+    assert at_root_on_disk == [], (
+        f"repo 根目錄不得存在 test_*.py（裸跑 pytest 會收集並可能在 import 時執行）: "
+        f"{at_root_on_disk}"
+    )
+
+    # (b) the scope contract: the inventory is still `tests/**/*.py ∪ 根目錄 test_*.py`.
+    #     The root glob must stay wired in — it is the only route by which a
+    #     reappearing root-level test script could ever be surfaced by this scanner.
+    expected = {p.relative_to(REPO_ROOT).as_posix()
+                for p in TESTS_DIR.rglob("*.py") if p.is_file()}
+    expected |= {p.relative_to(REPO_ROOT).as_posix()
+                 for p in REPO_ROOT.glob("test_*.py") if p.is_file()}
+    assert files == expected, (
+        "掃描範圍必須維持 `tests/**/*.py ∪ 根目錄 test_*.py`（本次事故的實際位置）"
+    )
+
     assert len(files) >= MIN_SCANNED_FILES, f"掃描檔數 {len(files)} < {MIN_SCANNED_FILES}"
 
 

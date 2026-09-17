@@ -1,0 +1,102 @@
+"""
+驗證 hotfix (2026-07-16 Bry 拍板):
+  1. translate.py timeout 5s → 20s
+  2. proxy.py Layer 3 E 兜底不再加「(中文翻譯生成失敗,僅有語音版)」註解
+  3. proxy.py 純中文 LLM 救不回時 text silent (空字串)
+"""
+import sys
+import os
+import asyncio
+import re
+from pathlib import Path
+
+# 設環境變數避免外部依賴
+os.environ["MINIMAX_API_KEY"] = "test_key_for_verify_only"
+
+HARNESS = Path(r"C:\Users\bbfcc\.local\bin\soul-os-harness")
+sys.path.insert(0, str(HARNESS))
+
+# ── Test 1: translate.py timeout ──
+print("=" * 60)
+print("Test 1: translate.py TRANSLATE_TIMEOUT_SECS == 20.0")
+print("=" * 60)
+from src.llm.translate import TRANSLATE_TIMEOUT_SECS
+assert TRANSLATE_TIMEOUT_SECS == 20.0, f"Expected 20.0, got {TRANSLATE_TIMEOUT_SECS}"
+print(f"  ✓ TRANSLATE_TIMEOUT_SECS = {TRANSLATE_TIMEOUT_SECS}")
+
+# 驗證 docstring 也更新了
+translate_source = (HARNESS / "src" / "llm" / "translate.py").read_text(encoding="utf-8")
+assert "timeout 20s" in translate_source, "docstring 沒更新到 20s"
+print("  ✓ docstring 已更新到 20s")
+
+# ── Test 2: proxy.py Layer 3 E 兜底 — 不再加失敗註解 ──
+print()
+print("=" * 60)
+print("Test 2: proxy.py Layer 3 E 兜底 — 不加失敗註解")
+print("=" * 60)
+proxy_source = (HARNESS / "src" / "llm" / "proxy.py").read_text(encoding="utf-8")
+# 找原 cleaned_text 賦值, 確認已不再加後綴
+assert "cleaned_text = f\"{extracted_ja}\\n(中文翻譯生成失敗" not in proxy_source, \
+    "Layer 3 E 兜底還在加失敗註解"
+print("  ✓ Layer 3 E 兜底不再加「(中文翻譯生成失敗,僅有語音版)」")
+
+# 確認新邏輯是 cleaned_text = extracted_ja
+assert "cleaned_text = extracted_ja" in proxy_source, \
+    "Layer 3 E 兜底沒改用 cleaned_text = extracted_ja"
+print("  ✓ Layer 3 E 兜底 cleaned_text = extracted_ja (純日文)")
+
+# ── Test 3: proxy.py 純中文 LLM 救不回 — silent failure ──
+print()
+print("=" * 60)
+print("Test 3: proxy.py 純中文 LLM 救不回 — silent failure")
+print("=" * 60)
+assert '"(LLM 回應解析失敗,請重試)"' not in proxy_source, \
+    "純中文 LLM 救不回還在吐「(LLM 回應解析失敗,請重試)」"
+print("  ✓ 純中文 LLM 救不回已不再吐「(LLM 回應解析失敗,請重試)」")
+
+# 找 else 分支, 確認 text 是空字串
+# 找最近的 _parse_failed 區塊
+fallback_block = re.search(
+    r"else:\s*\n\s*# 純中文 LLM 救不回.*?_parse_failed.*?\}",
+    proxy_source,
+    re.DOTALL,
+)
+assert fallback_block, "找不到純中文 LLM 救不回的 else 分支"
+block_text = fallback_block.group(0)
+assert '"text": ""' in block_text, "純中文 silent failure 沒用空字串"
+print("  ✓ 純中文 silent failure text 是空字串")
+
+# ── Test 4: 確認 should_translate 仍正常 ──
+print()
+print("=" * 60)
+print("Test 4: should_translate 回歸測試 (Plan A 核心)")
+print("=" * 60)
+from src.llm.translate import should_translate
+
+cases = [
+    ("你好", True, "純中文"),
+    ("今天天氣真好", True, "中文"),
+    ("こんにちは", False, "純日文 (假名)"),
+    ("你好,今日は", True, "中日混合 (假名 < 30%)"),
+    ("hello", False, "純英文"),
+    ("", False, "空字串"),
+    ("😀", False, "純表情"),
+    ("12345", False, "純數字"),
+    ("お元気ですか", False, "純日文 (假名多)"),
+    ("喜歡你", True, "中文短"),
+]
+for text, expected, label in cases:
+    got = should_translate(text)
+    status = "✓" if got == expected else "✗"
+    print(f"  {status} should_translate({text!r:20s}) = {got} (expected {expected}) [{label}]")
+    assert got == expected, f"FAIL: {text!r} expected {expected} got {got}"
+
+print()
+print("=" * 60)
+print("ALL TESTS PASS ✓")
+print("=" * 60)
+print()
+print("總結 Bry 拍板的 3 件事:")
+print("  1. translate.py timeout 5s → 20s         ✓")
+print("  2. proxy.py Layer 3 E 兜底不加失敗註解     ✓")
+print("  3. proxy.py 純中文 silent failure (text 空) ✓")

@@ -1,0 +1,118 @@
+# -*- coding: utf-8 -*-
+"""
+Akane 日文版 5 次測試 v2: 共用連線 + 60s timeout
+"""
+import asyncio
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, r"C:\Users\bbfcc\.local\bin\soul-os-harness")
+
+import websockets
+
+TEST_CASES = [
+    {
+        "id": 1,
+        "label": "日常招呼 (基準線)",
+        "content": "最近怎麼樣?",
+        "expect": "observing"
+    },
+    {
+        "id": 2,
+        "label": "否定判斷 (L2C 防御)",
+        "content": "我覺得你想太多了,其實根本沒人注意到那些細節。",
+        "expect": "compressing 或 cracking (L2C 觸發)"
+    },
+    {
+        "id": 3,
+        "label": "問 Aqua (Canon Memory)",
+        "content": "你跟 Aqua 怎麼認識的?",
+        "expect": "提到 LoveNow 或 Canon 內容"
+    },
+    {
+        "id": 4,
+        "label": "提到 アイ (TIER 7 殘影)",
+        "content": "我看見你之前在雨裡站著,看起來像在等什麼人。",
+        "expect": "壓縮回應,不直接承認"
+    },
+    {
+        "id": 5,
+        "label": "再 L2C 試探 (大丈夫轉折)",
+        "content": "你真的沒事嗎?你是不是在勉強自己?",
+        "expect": "「大丈夫」台詞"
+    },
+]
+
+async def main():
+    uri = "ws://127.0.0.1:8000/ws"
+    async with websockets.connect(uri) as ws:
+        print(f"=== Akane 日文版 5 次測試 (共用連線) ===\n")
+        results = []
+        for case in TEST_CASES:
+            print(f"--- Test {case['id']}: {case['label']} ---")
+            print(f"  user: {case['content']!r}")
+            msg = {
+                "type": "USER_MESSAGE",
+                "content": case["content"],
+                "user_id": "1696287850",
+                "mode": "private",
+                "target_agent": "agent_akane"
+            }
+            await ws.send(json.dumps(msg, ensure_ascii=False))
+
+            # 收集 events 直到 agent_speak 或 60s timeout
+            speak = None
+            start = asyncio.get_event_loop().time()
+            try:
+                while asyncio.get_event_loop().time() - start < 60:
+                    try:
+                        resp_raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        continue
+                    resp = json.loads(resp_raw)
+                    if resp.get("type") == "agent_speak":
+                        speak = resp
+                        break
+            except Exception as e:
+                print(f"  [error] {e}")
+
+            if not speak:
+                print(f"  ✗ 60s 內沒收到 agent_speak")
+                continue
+
+            text = speak.get("text", "")
+            audio_text = speak.get("audio_text", "")
+            emotion = speak.get("emotion", "")
+            print(f"  text: {text!r}")
+            print(f"  audio_text: {audio_text!r}")
+            print(f"  emotion: {emotion!r}")
+            print(f"  預期: {case['expect']}")
+
+            new_tags = ["observing", "compressing", "cracking"]
+            if emotion in new_tags:
+                print(f"  ✓ emotion 落在 Akane 新白名單")
+            else:
+                print(f"  [!] emotion 不在新白名單 (fallback)")
+
+            if "大丈夫" in text or "大丈夫" in audio_text:
+                print(f"  💡 檢測到「大丈夫」台詞")
+
+            has_kana = any('\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff' for c in text)
+            if has_kana:
+                print(f"  ✓ text 是日文")
+            else:
+                print(f"  [!] text 不是日文")
+
+            results.append((case, {"text": text, "audio_text": audio_text, "emotion": emotion}))
+            print()
+            await asyncio.sleep(1)
+
+        # 總結
+        print(f"\n=== 總結 ===")
+        for i, (case, r) in enumerate(results, 1):
+            print(f"  {i}. [{case['label']}] emotion={r['emotion']!r} | text_len={len(r['text'])}")
+        new_tag_count = sum(1 for _, r in results if r["emotion"] in ["observing", "compressing", "cracking"])
+        print(f"\n  emotion 落在 Akane 新白名單: {new_tag_count}/{len(results)}")
+
+asyncio.run(main())

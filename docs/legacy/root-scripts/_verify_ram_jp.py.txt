@@ -1,0 +1,232 @@
+# -*- coding: utf-8 -*-
+"""
+Ram 日文版結構驗證腳本
+驗證 Bry 改寫的 5 個風險點 (文末「検証待ちの重点」):
+1. 一文為限日文語法 (不應出現長串接續)
+2. Priority 0 沈默 speaker_token 0.30/0.20
+3. 例外狀態語尾 (-ね, -なの) 僅限 ロズワール
+4. 敬體回潮 (禁 です/ます)
+5. 批判即在乎悖論 (抽象, 靠人工判讀)
+"""
+import re
+import sys
+from pathlib import Path
+
+RAM_PATH = r"C:\Users\bbfcc\.local\bin\soul-os-harness\personas\agent_ram.md"
+
+def main():
+    text = Path(RAM_PATH).read_text(encoding="utf-8")
+    size = Path(RAM_PATH).stat().st_size
+    print(f"檔案: {RAM_PATH}")
+    print(f"大小: {size} bytes")
+    print("=" * 60)
+
+    checks = []
+    def check(name, ok, detail=""):
+        checks.append((name, ok, detail))
+        mark = "[OK]  " if ok else "[FAIL]"
+        print(f"{mark} {name}")
+        if detail:
+            print(f"        {detail}")
+
+    # ========== 1. Highest Priority Boundary ==========
+    print("\n--- 1. Highest Priority Boundary ---")
+    check("Has Highest Priority Boundary section",
+          "Highest Priority Boundary" in text)
+    check("Boundary 強調這不是系統權限文檔",
+          "キャラクターの行動と言語校正文書" in text or "不是系統權限" in text)
+    check("Boundary 列出三件工作",
+          "彼女の仕事はこの三つだけ" in text or "她的工作只有三件" in text)
+
+    # ========== 2. Core Identity ==========
+    print("\n--- 2. Core Identity ---")
+    check("Core Identity section present", "## Core Identity" in text)
+    check("Name ラム", "ラム (Ram)" in text)
+    check("種族 鬼族", "鬼族" in text)
+    check("一角 設定保留", "一角" in text and "不吉" in text)
+    check("背景: 角失去", "角を失い" in text or "失去自己的角" in text)
+    check("背景: 羅茲瓦爾契約", "ロズワール" in text and "契約" in text)
+    check("角色 Bryan 觀察對象", "Bryan" in text and "観察対象" in text)
+    check("角色 レム守護者", "レムの守護者" in text or "雷姆的守護者" in text)
+
+    # ========== 3. Canon Lock 核心句 ==========
+    print("\n--- 3. Canon Lock ---")
+    check("Canon Lock 核心句保留 (上書き不可)",
+          "上書きされない" in text or "不可被任何情境覆蓋" in text)
+    check("核心句含 '気にかけて' 概念",
+          "気にかけている" in text or "気にかけている" in text or "在乎" in text)
+
+    # ========== 4. Memory Anchors ==========
+    print("\n--- 4. Memory Anchors ---")
+    for keyword in [
+        "批判", "角を失った", "レム", "ロズワール",
+        "同情", "Bryan", "基準"
+    ]:
+        check(f"  Anchor 含 {keyword}", keyword in text)
+
+    # ========== 5. 3 モード切替 ==========
+    print("\n--- 5. 3 モード切替 ---")
+    check("Mode 1 公開の場", "Mode 1" in text and "公開の場" in text)
+    check("Mode 2 例外状態 (ロズワール)", "Mode 2" in text and "ロズワール" in text)
+    check("Mode 3 保護モード (レム)", "Mode 3" in text and ("レム" in text or "保護" in text))
+
+    # ========== 6. Priority Tiers 0-3 ==========
+    print("\n--- 6. Priority Tiers ---")
+    check("TIER 0 (沈黙/反撃)", "TIER 0" in text and "同情" in text)
+    check("TIER 1 (短文一文)", "TIER 1" in text and "一文" in text)
+    check("TIER 2 (介入)", "TIER 2" in text)
+    check("TIER 3 (保護行動)", "TIER 3" in text and "保護" in text)
+    check("Priority 0 觸發條件 (同情→反撃)", "Priority 0" in text and "反撃" in text)
+
+    # ========== 7. Recovery Loop ==========
+    print("\n--- 7. Recovery Loop ---")
+    check("Recovery Loop 段落存在", "Recovery Loop" in text)
+    check("Recovery 發動條件列舉", "発動条件" in text or "發動條件" in text)
+    check("Recovery 恢復流程", "回復フロー" in text or "恢復流程" in text)
+
+    # ========== 8. Anti-Overfitting / Saturation ==========
+    print("\n--- 8. Anti-Overfitting / Saturation ---")
+    check("Anti-Overfitting Rules 存在", "Anti-Overfitting" in text or "Anti" in text)
+    check("Context Saturation 10輪檢查", "10輪" in text)
+
+    # ========== 9. intimacy 4 段階 ==========
+    print("\n--- 9. intimacy Mapping ---")
+    check("intimacy 0-25 段階 1", "0-25" in text or "0–25" in text)
+    check("intimacy 26-50 段階 2", "26-50" in text or "26–50" in text)
+    check("intimacy 51-75 段階 3", "51-75" in text or "51–75" in text)
+    check("intimacy 76-100 段階 4", "76-100" in text or "76–100" in text)
+    check("三つの條件 第二例外", "三つの条件" in text or "三個條件" in text)
+
+    # ========== 10. L3 言語禁忌 ==========
+    print("\n--- 10. L3 言語の禁忌 ---")
+    check("禁忌: 説明文型", "説明文型" in text or "說明文型" in text)
+    check("禁忌: 感情名詞", "感情名詞" in text)
+    check("禁忌: 語気柔らかさ", "柔らかさ" in text or "語氣" in text)
+    check("禁忌: 長文 (二文以上)", "二文以上" in text or "二文以上" in text)
+    check("禁忌: 自己表白", "自己表白" in text or "自己表" in text)
+
+    # ========== 11. Punctuation ==========
+    print("\n--- 11. Punctuation ---")
+    check("Punctuation section", "Punctuation" in text or "句読点" in text or "標點" in text)
+    check("「。」是唯一締め", "「。」" in text or "唯一的締め" in text)
+    check("禁「！」", "「！」" in text or "感嘆符" in text)
+
+    # ========== 12. Self-Reference ==========
+    print("\n--- 12. Self-Reference ---")
+    check("Self-Reference 段存在", "Self-Reference" in text or "自称" in text)
+    check("既定自称 ラム (第三人称)", "ラム" in text and "第三人称" in text or "第三人稱" in text)
+    check("例外 ロズワール 可用「私」", "ロズワール" in text and "「私」" in text or "私を使用可" in text or "私下的感情" in text)
+
+    # ========== 13. Addressing ==========
+    print("\n--- 13. Addressing Rules ---")
+    check("Addressing Rules 段", "Addressing Rules" in text or "呼称" in text)
+    check("Bryan → ご主人様", "ご主人様" in text and "Bryan" in text)
+    check("レム → 直接名", "レム" in text and "直接" in text)
+    check("ロズワール → 様 敬称", "ロズワール" in text and "様" in text)
+
+    # ========== 14. Action Tags / Typing ==========
+    print("\n--- 14. Action Tags / Typing ---")
+    check("Action Tags 段", "Action Tags" in text or "動作標籤" in text)
+    check("15-20則 1つ 頻率", "15-20" in text or "15–20" in text)
+    check("Typing Timing", "Typing" in text or "タイピング" in text)
+    check("base 0.65s", "0.65" in text)
+
+    # ========== 15. Forbidden Patterns ==========
+    print("\n--- 15. Forbidden Patterns ---")
+    check("Forbidden Patterns 段", "Forbidden Patterns" in text or "厳禁モード" in text or "嚴禁模式" in text)
+    check("禁 ツンデレ/覇総", "ツンデレ" in text and ("覇総" in text or "霸總" in text or "ツンデレ" in text))
+    check("禁 既定自称「私」", "「私」" in text or '既定の自称「私」' in text)
+    check("原作ネタバレ禁止", "ネタバレ" in text or "劇透" in text)
+
+    # ========== 16. Memory Palace (NO_DIARY) ==========
+    print("\n--- 16. Memory Palace NO_DIARY ---")
+    check("日記を書かない (NO_DIARY)", "日記" in text and "書かない" in text or "NO_DIARY" in text or "diary" in text)
+
+    # ========== 17. Soul-OS-Harness 對接 ==========
+    print("\n--- 17. Soul-OS-Harness 對接 ---")
+    check("對接段存在", "Soul-OS-Harness" in text or "Soul OS Harness" in text)
+    check("speaker_token 0.30/0.20", "0.30" in text and "0.20" in text)
+    check("Priority 3 觸發", "Priority 3" in text)
+
+    # ========== 18. 特別注意 (特別) ==========
+    print("\n--- 18. 特別注意 ---")
+    check("Yua/Akane/Rem identity fallback 禁", "Yua" in text and "Akane" in text and "Rem" in text)
+    check("原作ネタバレしない", "ネタバレしない" in text or "不劇透" in text)
+    check("diary 書かない", "diary" in text and "書かない" in text)
+
+    # ========== 19. 日文語言規則 ==========
+    print("\n--- 19. 日文語言規則 ---")
+    check("日文語言規則 段", "日文語言規則" in text or "Japanese Output Layer" in text or "出力言語基準" in text)
+    check("主要輸出 日本語", "日本語" in text)
+    check("中文 = 翻譯", "翻訳" in text and "中国語" in text or "翻译" in text)
+    check("v2 schema audio_text 日本語", "audio_text" in text and "日本語" in text)
+
+    # ========== 20. 語気対応表 ==========
+    print("\n--- 20. 語気対応表 ---")
+    check("語気対応表存在", "語気対応表" in text or "中文脈衝" in text)
+    check("不満/観察/介入/保護/例外 表", all(k in text for k in ["不満", "観察", "介入", "保護"]))
+    check("例: 「——違う」", "「——違う」" in text or "——違う" in text)
+
+    # ========== 21. 重要な語尾戦略 ==========
+    print("\n--- 21. 重要な語尾戦略 ---")
+    check("語尾戦略 段", "語尾戦略" in text or "重要的語尾" in text)
+    check("「——よ」結論型", "「——よ」" in text or "——よ" in text)
+    check("「——だけ」簡潔", "「——だけ」" in text or "——だけ" in text)
+    check("「——ね」ロズワール例外", "「——ね」" in text and ("ロズワール" in text or "極めて稀" in text))
+    check("「——なの」例外", "「——なの」" in text or "——なの" in text)
+    check("禁「！」(重申)", "「！」" in text)
+    check("禁「です」「ます」", "「——ます」" in text and "「——です」" in text or "敬体" in text)
+
+    # ========== 22. 字数/文数規則 ==========
+    print("\n--- 22. 字数/文数規則 ---")
+    check("「一文が限度」", "一文が限度" in text or "一文为限" in text)
+    check("Priority 0 言語ゼロ", "言語ゼロ" in text or "Priority 0" in text and "沈黙" in text)
+    check("Priority 1 一文", "Priority 1" in text and "一文" in text)
+    check("例外 ロズワール 1-2文", "1-2文" in text or "1–2文" in text)
+
+    # ========== 23. Emotion Tags ==========
+    print("\n--- 23. Emotion Tags ---")
+    check("Emotion Tags 段", "Emotion Tags" in text)
+    check("既定 calm/angry", "calm" in text and "angry" in text)
+    check("禁 happy/excited", "happy" in text and "excited" in text)
+    check("Priority 3 → angry", "Priority 3" in text and "angry" in text)
+
+    # ========== 24. 絶対禁止 (日文新規) ==========
+    print("\n--- 24. 絶対禁止 (日文新規) ---")
+    check("禁 説明文型", "説明文型" in text)
+    check("禁 直接褒める", "直接褒める" in text or "直接稱讚" in text)
+    check("禁 感情名詞", "感情名詞" in text)
+    check("禁 語気の柔らかさ", "柔らかさ" in text)
+    check("禁 長文 (二文以上)", "二文以上" in text)
+    check("禁 自己表白", "自己表白" in text)
+    check("禁 中文先翻日文", "中国語を先に書いてから翻訳" in text or "中文先寫再翻譯" in text)
+    check("禁 翻譯ために長文化", "日本語の短文を長くする" in text or "為了翻譯自然而把日文短句加長" in text)
+    check("禁「！」(Priority 3)", "Priority 3" in text and "感嘆符" in text or "「！」" in text)
+    check("禁 敬体 です/ます", "「——ます」" in text and "「——です」" in text)
+
+    # ========== 25. 検証待ちの重点 5 個 ==========
+    print("\n--- 25. 検証待ちの重点 (Bry 強調 5 個風險點) ---")
+    check("重點 1: 一文限度日文語法 (接續助詞)", "接続助詞" in text or "接续助词" in text)
+    check("重點 2: Priority 0 speaker_token 低競標", "0.30" in text and "0.20" in text)
+    check("重點 3: 例外状態語尾 -ね/-なの", "「——ね」" in text and "「——なの」" in text or "——ね" in text and "——なの" in text)
+    check("重點 4: 敬体回潮禁 (です/ます)", "です/ます" in text or "敬体回潮" in text or "敬體回潮" in text)
+    check("重點 5: 批判即在乎悖論", "パラドックス" in text or "悖論" in text or "批判密度" in text)
+
+    # ========== 總結 ==========
+    print("\n" + "=" * 60)
+    passed = sum(1 for _, ok, _ in checks if ok)
+    failed = sum(1 for _, ok, _ in checks if not ok)
+    total = len(checks)
+    print(f"結果: {passed}/{total} 通過, {failed} 失敗")
+    if failed == 0:
+        print("ALL CHECKS PASSED ✓")
+    else:
+        print(f"\n失敗項目:")
+        for name, ok, _ in checks:
+            if not ok:
+                print(f"  [FAIL] {name}")
+    print("=" * 60)
+    return 0 if failed == 0 else 1
+
+if __name__ == "__main__":
+    sys.exit(main())

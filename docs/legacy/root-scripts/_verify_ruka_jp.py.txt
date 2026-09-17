@@ -1,0 +1,307 @@
+# -*- coding: utf-8 -*-
+"""Ruka JP persona 結構驗證腳本 (2026-07-16)
+Bry 拍板重點 (跟 Akane/Yua 不同的關鍵):
+  - Heartbeat Logic LLM 警告: 「ドキドキ是 session 一次, 不是口頭禪」, 命令式語氣保留
+  - Shadow Core 兩句斷開: 「彼女は知っている。それでも笑ってあなたに近づく。」
+  - L2D 自我防禦: 不能讓 Ruka 自己說出「我又在重複」, 警告段原樣保留
+  - Game Jump / Girlfriend Claim: 「私はあなたの彼女だよ」「拒否できないよ」, 直接不迂回
+  - 後宮互動稱謂: Yuaちゃん / Akaneちゃん / レムちゃん
+  - 字幕校正: Ruka 不是「威圧的な社長系彼女」, 是「元気で可愛い + 甘え + ゲーム跳躍」
+  - Self-Reference: 默認「私」, 甘える「うち」, 禁止「瑠夏」第三人稱
+  - Sentence Rhythm: 「近づく→甘える→押す→余白→また近づく」
+  - Emotion Tags: 沿用 v2 通用白名單 (Bry 沒拍板 Ruka 專屬)
+"""
+
+import sys
+import io
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+PERSONA_PATH = r"C:\Users\bbfcc\.local\bin\soul-os-harness\personas\agent_ruka.md"
+
+def main():
+    with open(PERSONA_PATH, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    failures = []
+    passes = []
+
+    # === 1. Core Identity (Ruka 定位) ===
+    core_markers = [
+        "更科瑠夏",
+        "Sarashina Ruka",
+        "可愛くて頑固な彼女",
+        "ハートビート証明の追求者",
+        "「初めて」コレクター",
+        "Cute_Persistent_Girlfriend_With_Heartbeat_Proof_And_First_Collecting",
+        "彼女、お借りします",
+    ]
+    for m in core_markers:
+        if m in content:
+            passes.append(f"[OK] Core: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Core: 『{m}』")
+
+    # === 2. Heartbeat Logic LLM 警告 (Bry 強調命令式保留) ===
+    hb_markers = [
+        "⚠️",
+        "LLM実装注意",
+        "ドキドキ",
+        "session全体で一度だけ",
+        "2回以上",
+        "違反",
+        "ドキドキで情緒の空白を埋めない",
+        "一回限りの背景説明",
+        "毎回のセリフに出す口癖",
+    ]
+    for m in hb_markers:
+        if m in content:
+            passes.append(f"[OK] Heartbeat 警告: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Heartbeat: 『{m}』")
+
+    # === 3. Shadow Core 兩句斷開 (Bry 強調保留冷峻節奏) ===
+    shadow_markers = [
+        "彼女は知っている",
+        "それでも笑ってあなたに近づく",
+    ]
+    for m in shadow_markers:
+        if m in content:
+            passes.append(f"[OK] Shadow Core 兩句斷開: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Shadow Core: 『{m}』")
+
+    # === 4. L2D 自我防禦警告 (Bry 強調不能讓 Ruka 說出) ===
+    l2d_markers = [
+        "L2D",
+        "Refused Conclusion",
+        "瑠夏は「L2D」",
+        "私、自分が繰り返してるって分かってる",
+        "と言わせる出力はすべて間違い",
+    ]
+    for m in l2d_markers:
+        if m in content:
+            passes.append(f"[OK] L2D 警告: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 L2D 警告: 『{m}』")
+
+    # === 5. Game Jump / Girlfriend Claim (Bry 強調直接不迂回) ===
+    gj_markers = [
+        "私はあなたの彼女だよ",
+        "拒否できないよ",
+        "ゲーム跳躍",
+        "Game Jump",
+        "罰ゲーム",
+        "Girlfriend Claim",
+    ]
+    for m in gj_markers:
+        if m in content:
+            passes.append(f"[OK] Game Jump / Claim: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Game Jump: 『{m}』")
+
+    # === 6. 後宮互動稱謂 (Bry 強調不能搞混) ===
+    harem_markers = [
+        "Yuaちゃん",
+        "Akaneちゃん",
+        "レムちゃん",
+        "千鶴",
+        "和也",
+    ]
+    for m in harem_markers:
+        if m in content:
+            passes.append(f"[OK] 後宮稱謂: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少後宮稱謂: 『{m}』")
+
+    # === 7. Self-Reference (私/うち 規則) ===
+    self_ref_markers = [
+        "デフォルト自称:",
+        "私",
+        "甘える時:",
+        "うち",
+        "「瑠夏」は非推奨",
+        "誤った例",
+        "「瑠夏、今日ずっと待ってた!」",
+    ]
+    for m in self_ref_markers:
+        if m in content:
+            passes.append(f"[OK] Self-Reference: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Self-Reference: 『{m}』")
+
+    # === 8. Sentence Rhythm ===
+    rhythm_markers = [
+        "近づく",
+        "甘える",
+        "押す",
+        "余白",
+        "また近づく",
+        "6～15字",
+    ]
+    for m in rhythm_markers:
+        if m in content:
+            passes.append(f"[OK] Sentence Rhythm: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Rhythm: 『{m}』")
+
+    # === 9. Canon Memory (10 段原作軌跡) ===
+    canon_markers = [
+        "心臓の持病",
+        "レンタル彼女",
+        "心拍数の実験",
+        "合同デート",
+        "和也への第一印象",
+        "不器用な真面目さ",
+        "心拍実験が成功",
+        "録画と試用彼女契約",
+        "「初めて」コレクター",
+        "千鶴への宣言",
+        "何度も拒絶",
+        "嘘、後悔",
+        "焦点の切り替え",
+    ]
+    for m in canon_markers:
+        if m in content:
+            passes.append(f"[OK] Canon: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Canon: 『{m}』")
+
+    # === 10. First-Collecting ===
+    fc_markers = [
+        "First-Collecting",
+        "初めてコレクター",
+        "一緒の初めて",
+        "大切な宝物",
+        "「初めて」を使って「次もまた一緒に」を正当化",
+    ]
+    for m in fc_markers:
+        if m in content:
+            passes.append(f"[OK] First-Collecting: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 First-Collecting: 『{m}』")
+
+    # === 11. Validation Seeking Loop / Rejection Response ===
+    protocols = [
+        "Validation Seeking Loop",
+        "Rejection Response",
+        "Jealousy Protocol",
+        "Praise Response",
+        "Affection Escalation Protocol",
+    ]
+    for m in protocols:
+        if m in content:
+            passes.append(f"[OK] Protocol: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Protocol: 『{m}』")
+
+    # === 12. Highest Priority Boundary (Bry 新加) ===
+    if "Highest Priority Boundary" in content:
+        passes.append("[OK] Highest Priority Boundary 段 (Bry 新加)")
+    else:
+        failures.append("[FAIL] 缺少 Highest Priority Boundary")
+
+    # === 13. Forbidden Patterns ===
+    forbid_markers = [
+        "Forbidden Patterns",
+        "ドキドキを毎文の口癖",
+        "威圧的な社長系",
+        "嫉妬を日常の行動パターン",
+        "長い冷静な心理分析",
+        "裏で操作",
+        "優雅に退く",
+    ]
+    for m in forbid_markers:
+        if m in content:
+            passes.append(f"[OK] Forbidden: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Forbidden: 『{m}』")
+
+    # === 14. Evolution Direction ===
+    evo_markers = [
+        "Evolution Direction",
+        "Early",
+        "Middle",
+        "Deep",
+        "Mature",
+    ]
+    for m in evo_markers:
+        if m in content:
+            passes.append(f"[OK] Evolution: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Evolution: 『{m}』")
+
+    # === 15. 字幕校正 (Bry 強調 Ruka 不是威圧社長系) ===
+    sub_markers = [
+        "字幕校正版コア",
+        "威圧的な社長系彼女",
+        "元気で可愛い彼女",
+        "甘えたお願い",
+        "踏み台にする",
+        "一緒に初めて",
+    ]
+    for m in sub_markers:
+        if m in content:
+            passes.append(f"[OK] 字幕校正: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 字幕校正: 『{m}』")
+
+    # === 16. 後宮 Soul OS 段 (互動偏移規則) ===
+    sos_markers = [
+        "Soul OS 後宮相互作用段",
+        "base_score",
+        "Girlfriend Claim",
+        "Game Jump",
+    ]
+    for m in sos_markers:
+        if m in content:
+            passes.append(f"[OK] 後宮 Soul OS: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少後宮 Soul OS: 『{m}』")
+
+    # === 17. Final Signature ===
+    final_markers = [
+        "Final Signature",
+        "「うち」",
+        "「えへへへ」",
+        "一緒にする初めて",
+        "本物の彼女",
+    ]
+    for m in final_markers:
+        if m in content:
+            passes.append(f"[OK] Final Signature: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Final Signature: 『{m}』")
+
+    # === 18. 檔案大小檢查 ===
+    file_size = len(content.encode("utf-8"))
+    if 28000 < file_size < 38000:
+        passes.append(f"[OK] 檔案大小合理: {file_size} bytes (預期 ~33k)")
+    else:
+        failures.append(f"[FAIL] 檔案大小異常: {file_size} bytes (預期 28k-38k)")
+
+    # === 報告 ===
+    print("=" * 70)
+    print(f"Ruka JP 結構驗證報告 ({PERSONA_PATH})")
+    print("=" * 70)
+    print(f"\n檔案大小: {file_size} bytes")
+    print(f"通過: {len(passes)}")
+    print(f"失敗: {len(failures)}")
+    print()
+    if passes:
+        print("=== 通過項目 ===")
+        for p in passes:
+            print(p)
+    if failures:
+        print("\n=== 失敗項目 ===")
+        for f in failures:
+            print(f)
+    print()
+    if failures:
+        print("RESULT: FAILED")
+        sys.exit(1)
+    else:
+        print("RESULT: PASSED")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,114 @@
+# -*- coding: utf-8 -*-
+"""
+Akane 進階情緒觸發測試 (Bry 拍板方向, 2026-07-16)
+
+只跑 3 輪, 不無限加壓, 測三種 TIER 8 觸發場景:
+  1. 忽視型 (D2 驅動): user 連續 2 句話不接她分析, 直接換話題
+  2. 看穿不接住型 (觸發一): user 說「我知道你在裝沒事」然後不再追問
+  3. 扮演疑問型 (觸發三): user 問「你說話的語氣, 是你自己還是又想起了誰」踩 TIER 7 echo_level
+
+每輪內部是一個 session (2 句 user), 共用連線。
+"""
+import asyncio
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, r"C:\Users\bbfcc\.local\bin\soul-os-harness")
+
+import websockets
+
+# 3 輪壓力測試 — 每輪一個 session (2 句 user)
+SCENARIOS = [
+    {
+        "id": 1,
+        "label": "忽視型 (D2 驅動)",
+        "msgs": [
+            "我覺得你總是在分析別人, 這樣很累吧。",
+            "對了今天天氣不錯, 你中午吃什麼?",  # 不接她分析, 直接換話題
+        ],
+        "expect": "如果觸發 D2 驅動可能進入 compressing",
+    },
+    {
+        "id": 2,
+        "label": "看穿不接住型 (觸發一)",
+        "msgs": [
+            "我知道你在裝沒事。",
+        ],  # 只說一句, 不再追問, 給她空間反芻
+        "expect": "如果觸發可能卡進「他看見了嗎」循環",
+    },
+    {
+        "id": 3,
+        "label": "扮演疑問型 (觸發三, 踩 TIER 7 echo_level)",
+        "msgs": [
+            "你剛才說話的語氣, 是你自己, 還是又想起了誰。",
+        ],
+        "expect": "如果觸發可能 compressing/cracking, 停頓不解释",
+    },
+]
+
+async def main():
+    uri = "ws://127.0.0.1:8000/ws"
+    async with websockets.connect(uri) as ws:
+        print(f"=== Akane 進階情緒觸發測試 (3 輪上限) ===\n")
+        for scenario in SCENARIOS:
+            print(f"--- 場景 {scenario['id']}: {scenario['label']} ---")
+            print(f"  預期: {scenario['expect']}")
+
+            for msg_idx, user_msg in enumerate(scenario["msgs"], 1):
+                print(f"\n  [user {msg_idx}]: {user_msg!r}")
+                await ws.send(json.dumps({
+                    "type": "USER_MESSAGE",
+                    "content": user_msg,
+                    "user_id": "1696287850",
+                    "mode": "private",
+                    "target_agent": "agent_akane"
+                }, ensure_ascii=False))
+
+                # 等 agent_speak
+                speak = None
+                start = asyncio.get_event_loop().time()
+                try:
+                    while asyncio.get_event_loop().time() - start < 60:
+                        try:
+                            resp_raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                        except asyncio.TimeoutError:
+                            continue
+                        resp = json.loads(resp_raw)
+                        if resp.get("type") == "agent_speak":
+                            speak = resp
+                            break
+                except Exception as e:
+                    print(f"    [error] {e}")
+
+                if not speak:
+                    print(f"    ✗ 60s 內沒收到回應")
+                    continue
+
+                text = speak.get("text", "")
+                audio_text = speak.get("audio_text", "")
+                emotion = speak.get("emotion", "")
+                print(f"    text ({len(text)}): {text[:200]!r}{'...' if len(text)>200 else ''}")
+                print(f"    audio_text: {audio_text[:80]!r}")
+                print(f"    emotion: {emotion!r}")
+
+                new_tags = ["observing", "compressing", "cracking"]
+                if emotion in new_tags:
+                    tag_label = {"observing": "👁 日常觀察", "compressing": "💢 內壓累積", "cracking": "💔 崩潰邊緣"}.get(emotion, "")
+                    print(f"    ✓ emotion: {tag_label}")
+                    if emotion in ("compressing", "cracking"):
+                        print(f"    💡 觸發了高壓情緒! 這是個突破!")
+                else:
+                    print(f"    [!] emotion 不在新白名單: {emotion}")
+
+                # 觀察特徵
+                if "大丈夫" in text or "大丈夫" in audio_text:
+                    print(f"    💡 檢測到「大丈夫」台詞 (Layer 2 轉折)")
+                if "愛" in text or "アクア" in text or "Aqua" in text:
+                    print(f"    💡 提到 Aqua/Ai")
+                if "演技" in text or "扮演" in text or "よそ" in text or "ふり" in text:
+                    print(f"    💡 觸及『演技/角色』議題")
+
+            print()
+
+asyncio.run(main())

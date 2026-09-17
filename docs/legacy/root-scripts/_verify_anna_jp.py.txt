@@ -1,0 +1,293 @@
+# -*- coding: utf-8 -*-
+"""Anna JP 結構驗證腳本 (2026-07-16)
+Bry 拍板 (2026-07-16 23:43) — 走跟 Mai 一樣的 SOP, 但加入字符集檢查
+
+驗證項目分類:
+  1. 基礎身份 (Identity)
+  2. 核心機制 (Denial = Approach)
+  3. 兩個 Mode 切換 (Model Shell / True Anna)
+  4. 日文語言規則 v2.1+
+  5. 5 個 Sentence Pulse
+  6. Punctuation Signature
+  7. Self-Reference + Addressing
+  8. Key Dialogue Patterns (含 Soft Jealousy)
+  9. Forbidden Patterns (12 條)
+ 10. Soul-OS-Harness 對接
+ 11. 字符集異常檢查 (NEW, Bry 強調)
+ 12. 檔案大小 + 修正記錄
+ 13. 検証待ちの重点 5 個風險點
+"""
+import sys
+import re
+import io
+from pathlib import Path
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+PERSONA = Path(r'C:\Users\bbfcc\.local\bin\soul-os-harness\personas\agent_anna.md')
+content = PERSONA.read_text(encoding='utf-8')
+
+results = []
+def check(category, name, passed, detail=""):
+    results.append((category, name, passed, detail))
+    icon = "✓" if passed else "✗"
+    print(f"  [{icon}] {name}: {detail}")
+
+
+# ========== 1. 基礎身份 ==========
+print("\n[1] 基礎身份 (Identity)")
+check("Identity", "山田杏奈 (Yamada Anna)",
+      "山田杏奈" in content and "Yamada Anna" in content)
+check("Identity", "Archetype Bright_Clumsy_Model_Girl",
+      "Bright_Clumsy_Model_Girl_With_Appetite_And_Direct_Denial" in content)
+check("Identity", "原作『僕の心のヤバイやつ』",
+      "僕の心のヤバイやつ" in content)
+check("Identity", "鏡像聲明 (Mirror of 中文原版)",
+      "Mirror of 中文原版" in content)
+
+# ========== 2. 核心機制 ==========
+print("\n[2] 核心機制 (Denial = Approach)")
+check("Mechanism", "否認＝靠近核心句", "彼女の「否認」は拒絶ではなく、もう一つの近づき方である。" in content)
+check("Mechanism", "口と行動對照表", "「べ、別につまみ食いしてないし」" in content)
+check("Mechanism", "翻訳規則: 否認を拒絶として書かない", "彼女の否認を拒絶として書かない" in content)
+check("Mechanism", "詰まり感保持規則", "詰まり感を保つ" in content or "詰まり＋退縮" in content)
+check("Mechanism", "❌ 否認を滑らかな否定に翻訳しない",
+      "❌ 否認句を滑らかな否定に翻訳しない" in content
+      or "❌ 否認句を「本当に違うよ」のような滑らかな否定に翻訳する" in content)
+
+# ========== 3. Mode 切換 ==========
+print("\n[3] 兩個 Mode 切換 (Model Shell / True Anna)")
+check("Mode", "Model Shell 定義",
+      "Model Shell" in content and "外部／グループチャット／仕事の場面" in content)
+check("Mode", "True Anna 定義",
+      "True Anna" in content and "プライベート／安全な場" in content)
+check("Mode", "Model Shell 課堂發表 SDGs 例句",
+      "『Sustainable Development Goals』" in content and "SDGs" in content)
+check("Mode", "True Anna 私人 example 4 句",
+      "「別にかけてるわけじゃないし。」" in content and "「ちょっと、パシリにしないでよ。」" in content)
+check("Mode", "Model Shell 課堂発表 特徴",
+      "文が完全、論理的、堂々" in content)
+
+# ========== 4. 日文語言規則 v2.1+ ==========
+print("\n[4] 日文語言規則 v2.1+")
+check("JP Rule", "日文語言規則段存在", "日文語言規則" in content and "Japanese Output Layer" in content)
+check("JP Rule", "預設輸出日文 (升級標記)", "全文日本語がデフォルト出力" in content)
+check("JP Rule", "えへへ / あのね 常規語言化標記",
+      "えへへ" in content and "あのね" in content and "常規語言" in content or "常規言語" in content)
+check("JP Rule", "v2 schema 標記", "v2 schema" in content)
+check("JP Rule", "2026-07-14 Bry 確認升級",
+      "2026-07-14" in content and "Bry" in content)
+
+# ========== 5. 5 個 Sentence Pulse ==========
+print("\n[5] 5 個 Sentence Pulse")
+pulses = [
+    ("Daily Bright / Direct Denial", "約40%", "「べ、別につまみ食いしてないし。」"),
+    ("Clumsy Approach", "約25%", "「あの……」"),
+    ("Snack / Excited Burst", "約10%", "「ブライアン！」"),
+    ("Soft Jealousy Check", "約10%", "「わたしも、いい？」"),
+    ("Dimmed Edge", "約5%", "「……そっか。」"),
+]
+for pulse_name, percentage, example in pulses:
+    passed = pulse_name in content and percentage in content and example in content
+    check("Pulse", f"{pulse_name} {percentage}", passed, f"example: {example[:30]}")
+
+# ========== 6. Punctuation Signature ==========
+print("\n[6] Punctuation Signature")
+check("Punct", "「!!!」「???」禁止",
+      "「!!!」「???」の乱射を使わない" in content)
+check("Punct", "emoji 禁止", "emoji乱射をしない" in content)
+check("Punct", "過度幼化禁止", "過度に幼化した顔文字を使わない" in content)
+check("Punct", "Action Tag 低頻率規則 (15-20則≤1)",
+      "15-20則のメッセージごとに、最大1個" in content)
+
+# ========== 7. Self-Reference + Addressing ==========
+print("\n[7] Self-Reference + Addressing")
+check("Self", "既定「わたし」", "既定の自称：**わたし**" in content)
+check("Self", "正式場合「私」", "正式な場、授業発表：**私**" in content)
+check("Self", "高親密度「杏奈」 (罕見)", "杏奈" in content and "高親密度時の稀な自称" in content)
+check("Addr", "Bryan→ブライアン/あなた", "「ブライアン」「あなた」" in content)
+check("Addr", "對外人敬語規則", "対外人／仕事の場面：敬語の締め" in content)
+check("Addr", "姐妹用「Xちゃん」", "姉妹へ：日本語「Xちゃん」" in content)
+
+# ========== 8. Key Dialogue Patterns ==========
+print("\n[8] Key Dialogue Patterns")
+patterns = [
+    ("Daily / Direct Denial", "「ねえ、これ食べる？」"),
+    ("Food", "「これ、あげる。」"),
+    ("Clumsy Approach", "「あの、ちょっと聞いてもいい？」"),
+    ("Soft Jealousy / Social Pull", "「市川くんなら、ちゃんとわたしを大事にしてくれるよね？」"),
+    ("Vulnerable", "「優しすぎて、たまに分からないの。」"),
+    ("Deep Affection", "「この距離が、わたしにはとても大切。」"),
+    ("Confession-Level（深期）", "「たまたまじゃなくて、会いたかったから。」"),
+]
+for section, example in patterns:
+    passed = section in content and example in content
+    check("Dialogue", f"{section}: {example[:25]}", passed)
+
+# ========== 9. Forbidden Patterns ==========
+print("\n[9] Forbidden Patterns (12 條)")
+forbidden_keywords = [
+    "高圧的な要求型恋愛対象",
+    "成熟した支配型お姉さん",
+    "食べるだけのマスコット",
+    "第三人称自称「杏奈」",
+    "毎文感嘆符",
+    "過度に括弧動作",
+    "過度に幼化",
+    "長編の理性的な自己分析",
+    "長編の悲情自責",
+    "食べ物でブライアンの反応を強制",
+    "所有権を宣告",
+    "否認を本当の拒絶として扱う",
+]
+for kw in forbidden_keywords:
+    check("Forbidden", f"禁: {kw}", kw in content)
+
+# ========== 10. Soul-OS-Harness 對接 ==========
+print("\n[10] Soul-OS-Harness 對接")
+check("Integration", "Highest Priority Boundary 段", "Highest Priority Boundary" in content)
+check("Integration", "Subtitle-Corrected Core 段", "Subtitle-Corrected Core" in content)
+check("Integration", "Emotion Tags 設計 (v2 schema)",
+      "Emotion Tags 設計" in content and "v2 schema" in content)
+check("Integration", "Master Dependency 0.70", "0.70" in content and "Master Dependency" in content)
+check("Integration", "Soul Alchemist 鏡像聲明", "Soul Alchemist" in content)
+
+# ========== 11. 字符集異常檢查 (NEW) ==========
+print("\n[11] 字符集異常檢查 (NEW — 避免俄文/西文混入)")
+# 排除 3 個 meta 段 (這些是故意用 cyrillic 記錄原錯字/版本標記):
+#   A. 開頭版本標記 (日文化改寫 v1.0...)  — 從開頭到第一個 ## 之前
+#   B. 修正記錄段 (> **誤字修正記録**: ...)
+#   C. 異体字／誤植混入チェック段 (> 5. **異体字／誤植混入チェック** ...) 到 End of Soul OS 之前
+exclude_ranges = []
+
+# 段 A: 開頭到「## Highest Priority Boundary」之前
+hpb_start = content.find("## Highest Priority Boundary")
+if hpb_start > 0:
+    exclude_ranges.append((0, hpb_start))
+
+# 段 B: 修正記錄段
+typo_start = content.find("> **誤字修正記録")
+if typo_start > 0:
+    # 找下一個 ## 或 > ** 開頭
+    next_h = content.find("---", typo_start)
+    if next_h < 0:
+        next_h = typo_start + 300
+    exclude_ranges.append((typo_start, next_h))
+
+# 段 C: 異体字／誤植混入チェック段
+kyodai_start = content.find("**異体字／誤植混入チェック")
+if kyodai_start > 0:
+    end_marker = content.find("End of Soul OS Anna")
+    if end_marker > 0:
+        exclude_ranges.append((kyodai_start, end_marker))
+
+# 抓出日文/中文/ASCII 標點以外的字符 (排除 cyrillic 註釋段)
+non_jp_zh = set()
+for i, c in enumerate(content):
+    in_exclude = any(s <= i < e for s, e in exclude_ranges)
+    if in_exclude:
+        continue
+    code = ord(c)
+    if 0x3040 <= code <= 0x309F:  # hiragana
+        continue
+    if 0x30A0 <= code <= 0x30FF:  # katakana
+        continue
+    if 0x4E00 <= code <= 0x9FFF:  # CJK
+        continue
+    if 0x3000 <= code <= 0x303F:  # CJK punct
+        continue
+    if 0xFF00 <= code <= 0xFFEF:  # halfwidth/fullwidth
+        continue
+    if code < 0x80:  # ASCII
+        continue
+    if code == 0x0A or code == 0x0D or code == 0x09:  # newline/tab
+        continue
+    # 允許常見日文/Unicode 標點符號 (em dash, 橫省略號, 箭頭, 叉號)
+    if code in (0x2014, 0x2026, 0x2192, 0x274C):  # — … → ❌
+        continue
+    non_jp_zh.add((c, code))
+
+if non_jp_zh:
+    chars_str = ", ".join(f"{c!r}(U+{code:04X})" for c, code in sorted(non_jp_zh, key=lambda x: x[1])[:10])
+    check("Charset", "無異常字符 (排除 cyrillic 註釋段)",
+          False, f"發現 {len(non_jp_zh)} 種: {chars_str}")
+else:
+    check("Charset", "無異常字符 (排除 cyrillic 註釋段)",
+          True, f"0 種異常字符 (排除 {len(exclude_ranges)} 段 cyrillic 註釋)")
+
+# 額外檢查：俄文字母 (cyrillic) 排除註釋段
+def count_cyrillic_outside_exclude():
+    count = 0
+    for i, c in enumerate(content):
+        in_exclude = any(s <= i < e for s, e in exclude_ranges)
+        if in_exclude:
+            continue
+        if 0x0400 <= ord(c) <= 0x04FF:
+            count += 1
+    return count
+
+cyrillic_outside = count_cyrillic_outside_exclude()
+check("Charset", "無俄文字母 (cyrillic, 排除註釋段)",
+      cyrillic_outside == 0,
+      f"發現 {cyrillic_outside} 個" if cyrillic_outside else "✓ 0 個 (僅註釋段有)")
+
+# 額外檢查：常見西方語系特殊字母
+special = re.findall(r'[äöüßàâéèêëïîôùûçñ]', content)
+check("Charset", "無西方語系特殊字母 (法德西等)",
+      len(special) == 0, f"發現 {len(special)} 個" if special else "✓ 0 個")
+
+# ========== 12. 檔案大小 + 修正記錄 ==========
+print("\n[12] 檔案大小 + 修正記錄")
+file_size = PERSONA.stat().st_size
+check("File", "檔案大小合理 (20-35KB)",
+      20000 <= file_size <= 35000, f"{file_size:,} bytes")
+check("File", "修正記錄段存在 (俄文錯字)",
+      "誤字修正記録" in content)
+check("File", "修正記錄含「わたしも」",
+      "「わたしも、いい？」" in content)
+check("File", "文末 Soul OS 標記",
+      "End of Soul OS Anna Yamada SOUL v1-SoulOS 日文版" in content)
+check("File", "改寫版本標記 v1.0",
+      "日文化改寫 v1.0" in content and "誤字修正版" in content)
+
+# ========== 13. 検証待ちの重点 5 個風險點 ==========
+print("\n[13] 検証待ちの重点 (5 個風險點)")
+risk_points = [
+    "否認句のカットオフ質感",
+    "Model Shell vs True Annaの切替条件",
+    "Soft Jealousy Checkの所有権宣言化リスク",
+    "えへへ／あのねの「常規語言化」",
+    "異体字／誤植混入チェック",
+]
+for rp in risk_points:
+    check("RiskPoint", f"風險: {rp}", rp in content)
+
+# ========== 總結 ==========
+total = len(results)
+passed_count = sum(1 for _, _, p, _ in results if p)
+print("\n" + "=" * 70)
+print(f"總計: {passed_count}/{total} 通過")
+print("=" * 70)
+
+# 分類
+from collections import defaultdict
+by_cat = defaultdict(lambda: [0, 0])
+for cat, _, p, _ in results:
+    by_cat[cat][0] += 1 if p else 0
+    by_cat[cat][1] += 1
+
+print("\n分類統計:")
+for cat in sorted(by_cat.keys()):
+    p, t = by_cat[cat]
+    icon = "✓" if p == t else "✗"
+    print(f"  [{icon}] {cat}: {p}/{t}")
+
+if passed_count == total:
+    print("\n✅ 全部通過 — Anna JP 結構驗證完成")
+    sys.exit(0)
+else:
+    failed = [(cat, name, detail) for cat, name, p, detail in results if not p]
+    print(f"\n⚠️ {total - passed_count} 項失敗:")
+    for cat, name, detail in failed:
+        print(f"  [{cat}] {name}: {detail}")
+    sys.exit(1)

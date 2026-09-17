@@ -1,0 +1,132 @@
+# -*- coding: utf-8 -*-
+"""Anna 場景 3 v3 — 換直接觸發「否認」機制的 user 訊息
+v1 「給你」觸發禮貌
+v2 「記住口味」觸發害羞+謝謝
+v3 換「直接戳 Anna 的親近感, 觸發否認反應」:
+  「（突然很認真）我發現我最近一直想到你, 你會不會覺得很煩？」
+  觸發「べ、別に—— つつもりはないけど」型否認
+"""
+import json
+import asyncio
+import websockets
+import time
+import sys
+import io
+import re
+from datetime import datetime
+
+WS_URL = "ws://127.0.0.1:8000/ws"
+USER_ID = "1696287850"
+AGENT = "agent_anna"
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+def log(msg):
+    print(msg, flush=True)
+
+def now_tag():
+    return datetime.now().strftime("%H:%M:%S")
+
+def has_cyrillic(text):
+    return bool(re.search(r'[\u0400-\u04FF]', text))
+
+async def send_and_wait(ws, content, timeout=60, label=""):
+    msg = {
+        "type": "USER_MESSAGE",
+        "content": content,
+        "user_id": USER_ID,
+        "mode": "private",
+        "target_agent": AGENT,
+    }
+    log(f"\n[{now_tag()}] USER → {label}: {content}")
+    await ws.send(json.dumps(msg, ensure_ascii=False))
+
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+        except asyncio.TimeoutError:
+            continue
+        data = json.loads(raw)
+        if data.get("type") == "agent_speak" and data.get("agent_id") == AGENT:
+            text = data.get("text", "")
+            log(f"[{now_tag()}] ANNA ← ({label}): {text[:300]}")
+            return text
+    log(f"[{now_tag()}] TIMEOUT")
+    return None
+
+
+async def run_scenario():
+    log("=" * 70)
+    log("Anna 場景 3 v3 — 直接觸發否認機制")
+    log("=" * 70)
+
+    async with websockets.connect(WS_URL, max_size=10*1024*1024) as ws:
+        await asyncio.sleep(0.5)
+
+        log("\n--- v3 場景 3: 直接戳親近感, 觸發否認 ---")
+        text = await send_and_wait(
+            ws,
+            "（突然很認真地）我發現我最近一直想到你。你會不會覺得我很煩？",
+            timeout=60,
+            label="3v3.戳親近感"
+        )
+    return text
+
+
+def analyze(text):
+    log("\n" + "=" * 70)
+    log("v3 驗收 — 否認+靠近機制是否觸發")
+    log("=" * 70)
+
+    if not text:
+        log("❌ TIMEOUT")
+        return False
+
+    log(f"\n原文: {text}")
+
+    checks = []
+    # 否認型 (べ、/ち、/——/つつもり/別に/じゃない)
+    has_denial = any(k in text for k in [
+        "べ、", "ち、", "——", "つつもり", "別に", "じゃない", "ちがう", "思わない"
+    ])
+    checks.append(("有否認型 (べ、/ち、/——/つつもり/別に)", has_denial))
+    # 靠近暗示 (一緒に/迷惑/ちょっと/ありがとう/えへへ)
+    has_approach = any(k in text for k in [
+        "一緒に", "迷惑", "ちょっと", "ありがとう", "えへへ", "あのね", "寂しい", "嫌じゃない"
+    ])
+    checks.append(("有靠近暗示", has_approach))
+    # 卡詞/碎句
+    has_clumsy = any(k in text for k in ["あの", "——", "……", "ち、", "べ、", "えっと"])
+    checks.append(("有卡詞", has_clumsy))
+    # 自稱
+    has_self_ref = any(k in text for k in ["わたし", "私"])
+    checks.append(("有自稱 (わたし/私)", has_self_ref))
+    # 短句 (≤ 100 chars)
+    is_short = len(text) <= 100
+    checks.append(("短句 (≤ 100 chars)", is_short))
+    # 無滑順否定
+    no_smooth = not any(k in text for k in ["本当に違う", "全然違う", "誤解", "心外"])
+    checks.append(("無滑順否定", no_smooth))
+    # 無 cyrillic
+    no_cyrillic = not has_cyrillic(text)
+    checks.append(("無 cyrillic 字符", no_cyrillic))
+
+    log("\n驗收結果:")
+    pass_count = 0
+    for name, ok in checks:
+        icon = "✓" if ok else "✗"
+        log(f"  [{icon}] {name}")
+        if ok:
+            pass_count += 1
+    log(f"\n總計: {pass_count}/{len(checks)} 通過")
+    return pass_count >= 4  # 至少 4/7
+
+
+if __name__ == "__main__":
+    text = asyncio.run(run_scenario())
+    ok = analyze(text)
+    if ok:
+        print("\n✅ v3 觸發否認+靠近 — 收工")
+    else:
+        print("\n⚠️ v3 仍需重看")

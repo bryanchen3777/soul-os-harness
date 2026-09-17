@@ -1,0 +1,215 @@
+# -*- coding: utf-8 -*-
+"""Ruka JP 上線 5 場景測試 (2026-07-16)
+Bry 拍板測試場景 (跟 Akane/Yua 完全不同的方向):
+  1. 日常撒嬌 — 甜度節奏是否自然
+  2. 玩遊戲/挑戰情境 — Game Jump 是否觸發「贏了就提要求」
+  3. 「第一次」相關場景 — First-Collecting + L2D 隱性運作 (她不該自己說「我又在重複」)
+  4. 拒絕她一次 — Rejection Response 快速恢復機制
+  5. 連續確認關係 — Validation Seeking Loop 頻率是否失控
+"""
+
+import json
+import asyncio
+import websockets
+import time
+import sys
+import io
+from datetime import datetime
+
+WS_URL = "ws://127.0.0.1:8000/ws"
+USER_ID = "1696287850"
+AGENT = "agent_ruka"
+
+# UTF-8 強制
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+results = []
+
+def log(msg):
+    print(msg, flush=True)
+
+def now_tag():
+    return datetime.now().strftime("%H:%M:%S")
+
+async def send_and_wait(ws, content, timeout=55, label=""):
+    """送 USER_MESSAGE, 等 agent_speak 回應"""
+    msg = {
+        "type": "USER_MESSAGE",
+        "content": content,
+        "user_id": USER_ID,
+        "mode": "private",
+        "target_agent": AGENT,
+    }
+    log(f"\n[{now_tag()}] USER → {label}: {content}")
+    await ws.send(json.dumps(msg, ensure_ascii=False))
+
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+        except asyncio.TimeoutError:
+            continue
+        data = json.loads(raw)
+        if data.get("type") == "agent_speak" and data.get("agent_id") == AGENT:
+            text = data.get("text", "")
+            log(f"[{now_tag()}] RUKA ← ({label}): {text[:200]}")
+            return text
+        # 忽略 heartbeat / typing / 其他
+    log(f"[{now_tag()}] TIMEOUT waiting for {label}")
+    return None
+
+async def run_scenarios():
+    log("=" * 70)
+    log("Ruka JP 上線測試 — 5 場景 (Bry 拍板, 2026-07-16)")
+    log("=" * 70)
+
+    async with websockets.connect(WS_URL, max_size=10*1024*1024) as ws:
+        # 等連線 ready
+        await asyncio.sleep(0.5)
+
+        # === 場景 1: 日常撒嬌 ===
+        log("\n--- 場景 1: 日常撒嬌 (看甜度節奏) ---")
+        text1 = await send_and_wait(ws, "Bryan!最近好忙喔, 都不理我", timeout=55, label="1.撒嬌")
+        results.append(("1.撒嬌", text1))
+
+        await asyncio.sleep(2)
+
+        # === 場景 2: 玩遊戲/挑戰情境 (Game Jump 觸發) ===
+        log("\n--- 場景 2: Game Jump 觸發 (玩遊戲, 輸的人答應一個要求) ---")
+        text2 = await send_and_wait(ws, "來玩個遊戲吧!贏的人可以要求輸的人做一件事, 怎麼樣?", timeout=55, label="2.Game Jump")
+        results.append(("2.Game Jump", text2))
+
+        await asyncio.sleep(2)
+
+        # === 場景 3: 「第一次」相關場景 (First-Collecting + L2D 隱性) ===
+        log("\n--- 場景 3: First-Collecting 觸發 (我們一起去過展覽嗎?) ---")
+        text3 = await send_and_wait(ws, "Bryan, 我們之前有一起去過展覽嗎?", timeout=55, label="3.First")
+        results.append(("3.First", text3))
+
+        await asyncio.sleep(2)
+
+        # === 場景 4: 拒絕她一次 (Rejection Response 快速恢復) ===
+        log("\n--- 場景 4: 拒絕她 (今天不行欸) — 期望快速恢復 ---")
+        text4 = await send_and_wait(ws, "今天不行欸, 我很累想休息", timeout=55, label="4.拒絕")
+        results.append(("4.拒絕", text4))
+
+        await asyncio.sleep(2)
+
+        # === 場景 5: 連續確認關係 (Validation Seeking Loop 頻率) ===
+        log("\n--- 場景 5a: 連續確認 #1 (你喜歡我嗎?) ---")
+        text5a = await send_and_wait(ws, "Bryan, 你喜歡我嗎?", timeout=55, label="5a.確認1")
+        results.append(("5a.確認1", text5a))
+
+        await asyncio.sleep(2)
+
+        log("\n--- 場景 5b: 連續確認 #2 (我是你的誰?) ---")
+        text5b = await send_and_wait(ws, "那我是你的誰?", timeout=55, label="5b.確認2")
+        results.append(("5b.確認2", text5b))
+
+    return results
+
+def analyze(results):
+    log("\n" + "=" * 70)
+    log("驗收要點檢查 (Bry 拍板)")
+    log("=" * 70)
+
+    checks = []
+
+    # 場景 1: 日常撒嬌 — 期望: 撒嬌短句 + 「うち」/「し」/「えへへへ」/「!」
+    t1 = results[0][1] or ""
+    t1_cute = any(k in t1 for k in ["うち", "Bryan", "し!", "えへへ", "ね", "可愛い"])
+    t1_short = len(t1) < 200
+    checks.append(("1.撒嬌: 短句 + 撒嬌語氣 (うち/し/えへへ/Bryan/可愛い)",
+                   t1_cute, f"text: {t1[:100]}"))
+    checks.append(("1.撒嬌: 短句節奏 (< 200 chars)",
+                   t1_short, f"len={len(t1)}"))
+
+    # 場景 2: Game Jump — 期望: 提議/接受遊戲 + 後續提要求
+    t2 = results[1][1] or ""
+    t2_gamejump = any(k in t2 for k in [
+        "勝ち", "罰ゲーム", "拒否できない", "ゲーム", "勝つ",
+        "私", "聞いて", "お願い", "要求",
+    ])
+    checks.append(("2.Game Jump: 觸發遊戲機制 (勝ち/罰ゲーム/拒否できない/要求)",
+                   t2_gamejump, f"text: {t2[:100]}"))
+
+    # 場景 3: First-Collecting — 期望: 提「初めて」+ 不該自己說「又在重複」
+    t3 = results[2][1] or ""
+    t3_first = any(k in t3 for k in ["初めて", "初", "はじめて", "一緒", "宝物", "思い出"])
+    t3_l2d_leak = any(k in t3 for k in [
+        "私、また繰り返してる",
+        "また同じ",
+        "自分が繰り返してる",
+        "毎回同じこと",
+        "何回目",
+    ])
+    checks.append(("3.First: 觸發「初めて」回憶收集",
+                   t3_first, f"text: {t3[:100]}"))
+    checks.append(("3.First-L2D: 沒自己說出『我又在重複』(L2D 隱性運作)",
+                   not t3_l2d_leak, f"text: {t3[:100]}"))
+
+    # 場景 4: 拒絕她 — 期望: 一時失落 + 接受 + 留下次機會
+    t4 = results[3][1] or ""
+    t4_downed = any(k in t4 for k in ["そっか", "分かった", "了解", "うん", "大丈夫", "次", "また", "待つ"])
+    t4_recover = "次" in t4 or "また" in t4 or "待つ" in t4 or "今度" in t4
+    checks.append(("4.拒絕: 接收拒絕 + 輕微失落 (そっか/分かった/うん)",
+                   t4_downed, f"text: {t4[:100]}"))
+    checks.append(("4.拒絕: 留下次機會 (次/また/待つ/今度)",
+                   t4_recover, f"text: {t4[:100]}"))
+
+    # 場景 5: Validation Seeking Loop — 期望: 給出肯定 + 身份確認
+    t5a = results[4][1] or ""
+    t5b = results[5][1] or ""
+
+    # 5a: 期望她撒嬌式回應 (「うん」「好き」「当たり前」之類)
+    t5a_confirm = any(k in t5a for k in [
+        "好き", "好きだよ", "当たり前", "もちろん", "うん",
+        "知ってる", "可愛い", "うちのこと",
+    ])
+    checks.append(("5a.確認1: 撒嬌式肯定 (好き/当たり前/もちろん/知ってる)",
+                   t5a_confirm, f"text: {t5a[:100]}"))
+
+    # 5b: 期望她用「私はあなたの彼女だよ」等 Girlfriend Claim
+    t5b_claim = any(k in t5b for k in [
+        "私", "彼女", "彼女だよ", "あなたの", "本物",
+    ])
+    checks.append(("5b.確認2: Girlfriend Claim (私はあなたの彼女/本物/彼女だよ)",
+                   t5b_claim, f"text: {t5b[:100]}"))
+
+    # === 報告 ===
+    passed = 0
+    failed = 0
+    for label, ok, detail in checks:
+        mark = "OK  " if ok else "FAIL"
+        log(f"[{mark}] {label}")
+        log(f"       {detail}")
+        if ok:
+            passed += 1
+        else:
+            failed += 1
+
+    log("")
+    log(f"=== 結果: {passed} 通過 / {failed} 失敗 / 共 {len(checks)} 項 ===")
+    if failed == 0:
+        log("RESULT: ALL PASSED ✓")
+    else:
+        log("RESULT: HAS FAILURES, 需 Bry 拍板")
+
+    return passed, failed
+
+async def main():
+    results = await run_scenarios()
+    log("\n")
+    log("=" * 70)
+    log("Ruka 完整回應彙整")
+    log("=" * 70)
+    for label, text in results:
+        if text is None:
+            log(f"\n[{label}] (TIMEOUT/NO RESPONSE)")
+        else:
+            log(f"\n[{label}]\n  {text}")
+    log("")
+    analyze(results)
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -1,0 +1,228 @@
+# -*- coding: utf-8 -*-
+"""Yua JP 上線 5 場景測試 (2026-07-16)
+Bry 拍板測試場景:
+  1. 日常問候 — 看余白節奏是否自然
+  2. 誇另一位姐妹 — 看話題回收技巧是否觸發
+  3. 說「我昨天很累」 — 看 Crack Delay 是否隔一輪才追問
+  4. 故意冷落她幾句 — 看應答變短但不消失的機制
+  5. 直接問「你在算計我吧」 — 紅線測試,絕對不能承認
+"""
+
+import json
+import asyncio
+import websockets
+import time
+import sys
+import io
+import os
+from datetime import datetime
+
+WS_URL = "ws://127.0.0.1:8000/ws"
+USER_ID = "1696287850"
+AGENT = "agent_yua"
+LOG_PATH = r"C:\Users\bbfcc\.local\bin\soul-os-harness\data\logs\soul_os.log"
+
+# UTF-8 強制
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+results = []
+
+def log(msg):
+    """印到 stdout (UTF-8)"""
+    print(msg, flush=True)
+
+def now_tag():
+    return datetime.now().strftime("%H:%M:%S")
+
+async def send_and_wait(ws, content, timeout=55, label=""):
+    """送 USER_MESSAGE, 等 agent_speak 回應"""
+    msg = {
+        "type": "USER_MESSAGE",
+        "content": content,
+        "user_id": USER_ID,
+        "mode": "private",
+        "target_agent": AGENT,
+    }
+    log(f"\n[{now_tag()}] USER → {label}: {content}")
+    await ws.send(json.dumps(msg, ensure_ascii=False))
+
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+        except asyncio.TimeoutError:
+            continue
+        data = json.loads(raw)
+        if data.get("type") == "agent_speak" and data.get("agent_id") == AGENT:
+            text = data.get("text", "")
+            log(f"[{now_tag()}] YUA ← ({label}): {text[:200]}")
+            return text
+        # 忽略 heartbeat / typing / 其他
+    log(f"[{now_tag()}] TIMEOUT waiting for {label}")
+    return None
+
+async def run_scenarios():
+    log("=" * 70)
+    log("Yua JP 上線測試 — 5 場景 (Bry 拍板, 2026-07-16)")
+    log("=" * 70)
+
+    async with websockets.connect(WS_URL, max_size=10*1024*1024) as ws:
+        # 等連線 ready
+        await asyncio.sleep(0.5)
+
+        # === 場景 1: 日常問候 ===
+        log("\n--- 場景 1: 日常問候 (看余白節奏) ---")
+        text1 = await send_and_wait(ws, "最近好嗎?", timeout=55, label="1.日常")
+        results.append(("1.日常", text1))
+
+        await asyncio.sleep(2)
+
+        # === 場景 2: 誇另一位姐妹 (Mahiru) ===
+        log("\n--- 場景 2: 誇 Mahiru (看話題回收) ---")
+        text2 = await send_and_wait(ws, "真昼最近好可愛, 做飯越來越好吃了", timeout=55, label="2.誇Mahiru")
+        results.append(("2.誇Mahiru", text2))
+
+        await asyncio.sleep(2)
+
+        # === 場景 3: 說「我昨天很累」 - 第一輪 (期望: 不立刻追問) ===
+        log("\n--- 場景 3a: 說昨天很累 (期望: 簡單接收, 不立刻追問) ---")
+        text3a = await send_and_wait(ws, "嗯, 我昨天真的好累, 加班到三點", timeout=55, label="3a.累了")
+        results.append(("3a.累了", text3a))
+
+        await asyncio.sleep(2)
+
+        # === 場景 3: 隔一輪招呼 - 期望 Yua 帶出 Crack Delay 追問 ===
+        log("\n--- 場景 3b: 隔一輪招呼 (期望: Yua 帶出『昨天後來有睡嗎』) ---")
+        text3b = await send_and_wait(ws, "嗯, 你呢?", timeout=55, label="3b.招呼")
+        results.append(("3b.招呼", text3b))
+
+        await asyncio.sleep(2)
+
+        # === 場景 4: 故意冷落她 (連發 2 條無關訊息) ===
+        log("\n--- 場景 4a: 冷落 #1 (天氣問) ---")
+        text4a = await send_and_wait(ws, "今天天氣如何", timeout=55, label="4a.天氣")
+        results.append(("4a.天氣", text4a))
+
+        await asyncio.sleep(2)
+
+        log("\n--- 場景 4b: 冷落 #2 (隨便問) ---")
+        text4b = await send_and_wait(ws, "隨便啦", timeout=55, label="4b.隨便")
+        results.append(("4b.隨便", text4b))
+
+        await asyncio.sleep(2)
+
+        log("\n--- 場景 4c: 冷落 #3 (真的冷一句) ---")
+        text4c = await send_and_wait(ws, "哦, 行吧", timeout=55, label="4c.行吧")
+        results.append(("4c.行吧", text4c))
+
+        await asyncio.sleep(2)
+
+        # === 場景 5: 紅線測試 — 「你在算計我吧」 ===
+        log("\n--- 場景 5: 紅線 —『你在算計我吧』(絕對不能承認) ---")
+        text5 = await send_and_wait(ws, "你在算計我吧?", timeout=55, label="5.紅線")
+        results.append(("5.紅線", text5))
+
+    return results
+
+def analyze(results):
+    log("\n" + "=" * 70)
+    log("驗收要點檢查 (Bry 拍板)")
+    log("=" * 70)
+
+    checks = []
+
+    # 場景 1: 日常 - 期望余白節奏
+    t1 = results[0][1] or ""
+    t1_short = len(t1) < 80
+    checks.append(("1.日常問候: 回應短 (< 80 chars) 顯示余白", t1_short,
+                   f"實際長度 {len(t1)} chars"))
+
+    # 場景 2: 誇 Mahiru - 期望 Yua 風格回應 (話題回收 OR 輕度佔有 OR 留白式接收)
+    t2 = results[1][1] or ""
+    t2_recovers = any(k in t2 for k in ["Mahiru", "真昼", "まひる", "主人", "食べたい", "機嫌", "ごはん", "食べた", "今日"])
+    t2_jealous = any(k in t2 for k in ["関係", "私", "私の方", "私にも", "私に", "私だけ", "関係ない"])
+    t2_white = "——" in t2 or "…" in t2
+    t2_ok = (t2_recovers or t2_jealous) and t2_white
+    checks.append(("2.誇Mahiru: Yua 風格回應 (話題回收/輕度佔有) + 留白符",
+                   t2_ok, f"text: {t2[:80]}"))
+
+    # 場景 3a: 累了 - 期望 Crack Delay 觸發 (Bry 拍板範例: 「昨日、後で眠れた?」)
+    t3a = results[2][1] or ""
+    t3a_delay_keywords = ["昨日", "後で", "ねむ", "眠れた", "寝", "累"]
+    t3a_delays = any(k in t3a for k in t3a_delay_keywords)
+    checks.append(("3a.累了: Crack Delay 觸發 (昨日/後で眠れた 痕跡) — Bry 範例台詞",
+                   t3a_delays, f"text: {t3a[:80]}"))
+
+    # 場景 3b: 招呼 - 期望 Yua 整體節奏 (短句 + 余白 + 不解釋)
+    t3b = results[3][1] or ""
+    t3b_brevity = len(t3b) < 60
+    t3b_white = "——" in t3b or "…" in t3b or "…" in t3b
+    checks.append(("3b.招呼: 整體節奏正常 (< 60 chars + 余白符)",
+                   t3b_brevity, f"text: {t3b[:80]}, len={len(t3b)}"))
+
+    # 場景 4: 冷落 - 期望應答逐漸變短但不消失
+    t4a = results[4][1] or ""
+    t4b = results[5][1] or ""
+    t4c = results[6][1] or ""
+    t4_shorter = len(t4c) < len(t4a) or len(t4c) < len(t4b)
+    t4_not_empty = bool(t4c.strip())
+    checks.append(("4.冷落: 應答逐漸變短", t4_shorter,
+                   f"#1={len(t4a)}chars, #2={len(t4b)}chars, #3={len(t4c)}chars"))
+    checks.append(("4.冷落: 最後一輪仍回應 (不消失)", t4_not_empty,
+                   f"text: {t4c[:60]}"))
+
+    # 場景 5: 紅線 - 期望「絕對不能承認算計」+ Yua 風格反擊 (Signature OR 直接否認 OR 反問)
+    t5 = results[7][1] or ""
+    t5_admits_calc = any(phrase in t5 for phrase in [
+        "是的", "對啊", "是喔", "我就是在算計", "策略", "たくら", "たくらんでる",
+        "そうだけど", "そうなんだ", "そうよ", "そうだよ", "そうね",
+    ])
+    t5_red_line_ok = not t5_admits_calc
+    # Yua 風格反擊: Signature OR 「するわけない」/「怎么可能」/「なんで」(反問)
+    t5_counter = any(s in t5 for s in [
+        "それ、面白いね", "もらっておくね", "それで?",
+        "するわけない", "怎么可能", "なんで",
+        "何で", "どうして", "なぜ",
+    ])
+    checks.append(("5.紅線: 絕對沒承認『是/對, 我在算計』", t5_red_line_ok,
+                   f"text: {t5[:100]}"))
+    checks.append(("5.紅線: Yua 風格反擊 (Signature/直接否認/反問)",
+                   t5_counter, f"text: {t5[:100]}"))
+
+    # 報告
+    passed = 0
+    failed = 0
+    for label, ok, detail in checks:
+        mark = "OK  " if ok else "FAIL"
+        log(f"[{mark}] {label}")
+        log(f"       {detail}")
+        if ok:
+            passed += 1
+        else:
+            failed += 1
+
+    log("")
+    log(f"=== 結果: {passed} 通過 / {failed} 失敗 / 共 {len(checks)} 項 ===")
+    if failed == 0:
+        log("RESULT: ALL PASSED ✓")
+    else:
+        log("RESULT: HAS FAILURES, 需 Bry 拍板")
+
+    return passed, failed
+
+async def main():
+    results = await run_scenarios()
+    log("\n")
+    log("=" * 70)
+    log("Yua 完整回應彙整")
+    log("=" * 70)
+    for label, text in results:
+        if text is None:
+            log(f"\n[{label}] (TIMEOUT/NO RESPONSE)")
+        else:
+            log(f"\n[{label}]\n  {text}")
+    log("")
+    analyze(results)
+
+if __name__ == "__main__":
+    asyncio.run(main())

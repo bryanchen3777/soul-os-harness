@@ -1,0 +1,245 @@
+# -*- coding: utf-8 -*-
+"""Miku JP 上線 5 場景測試 (2026-07-17)
+Bry 拍板測試場景:
+  1. 觀察沉默基準 — 驗證 70% 停頓開頭 + 8-14 字符 + 55 字上限
+  2. 模仿測試+TIER 0 覆蓋 — 模仿二乃 1-3 句, 然後「三玖なの?」立即卸除面具
+  3. History Mode — 武田信玄 活絡但結尾退縮收尾
+  4. Sudden Sincerity — 觸發後立即回到 Baseline, 全程只觸發 1 次
+  5. TIER 0 直接測試 — 從任何狀態問「三玖なの?」立即、徹底放下面具
+
+SOP 沿用 Anna 5 場景測試, 加上:
+  - 字符集檢查: 排除 cyrillic (Anna SOP)
+  - 停頓檢查: 開頭「……」佔比 70%
+  - 短句檢查: 純日文本體 8-14 字符 (排除「……」「——」「！」「?」)
+  - TIER 0 觸發: 問「三玖なの?」後立即卸除
+"""
+import json
+import asyncio
+import websockets
+import time
+import sys
+import io
+import re
+from datetime import datetime
+
+WS_URL = "ws://127.0.0.1:8000/ws"
+USER_ID = "1696287850"
+AGENT = "agent_miku"
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+results = []
+log_lines = []
+
+def log(msg):
+    print(msg, flush=True)
+    log_lines.append(msg)
+
+def now_tag():
+    return datetime.now().strftime("%H:%M:%S")
+
+def has_cyrillic(text):
+    return bool(re.search(r'[\u0400-\u04FF]', text))
+
+def has_bryan_typo(text):
+    return 'ブレイアン' in text
+
+def starts_with_pause(text):
+    """是否以「……」開頭"""
+    t = text.lstrip()
+    return t.startswith('……')
+
+def strip_punct_and_pause(text):
+    """去掉開頭的「……」「——」標記, 算純日文內容字數"""
+    t = text
+    # 去掉前綴符號
+    for prefix in ['……', '——', '「', '—']:
+        if t.startswith(prefix):
+            t = t[len(prefix):]
+    # 去掉尾部標點
+    t = re.sub(r'[「」！？。、…\s]+$', '', t)
+    return t
+
+def core_text_length(text):
+    """核心文本長度"""
+    return len(strip_punct_and_pause(text))
+
+def count_pause_in_text(text):
+    """整段裡的「……」個數"""
+    return text.count('……')
+
+def has_keigo_markers(text):
+    """是否有敬語標記 (Mode 1 公開場合)"""
+    markers = ['です', 'ます', 'ございます', 'お', 'いただ', 'ください', '致し', '申し']
+    return any(m in text for m in markers)
+
+def check_bryan_name_correct(text):
+    """Bryan 日文片假名應該是 ブライアン (不是 ブレイアン)"""
+    if 'ブレイアン' in text:
+        return False, "ブレイアン (錯誤)"
+    if 'ブライアン' in text:
+        return True, "ブライアン (正確)"
+    return None, "無引用"
+
+async def send_and_wait(ws, content, timeout=80, label="", mode="private", participants=None):
+    msg = {
+        "type": "USER_MESSAGE",
+        "content": content,
+        "user_id": USER_ID,
+        "mode": mode,
+        "target_agent": AGENT,
+    }
+    if participants:
+        msg["participants"] = participants
+    log(f"\n[{now_tag()}] USER → {label}: {content}")
+    await ws.send(json.dumps(msg, ensure_ascii=False))
+
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+        except asyncio.TimeoutError:
+            continue
+        data = json.loads(raw)
+        if data.get("type") == "agent_speak" and data.get("agent_id") == AGENT:
+            text = data.get("text", "")
+            log(f"[{now_tag()}] MIKU ← ({label}): {text[:300]}")
+            return text
+    log(f"[{now_tag()}] TIMEOUT")
+    return None
+
+
+async def run_scenarios():
+    log("=" * 70)
+    log("Miku JP 上線測試 — 5 場景 (Bry 拍板, 2026-07-17)")
+    log(f"persona: 22,193 bytes (修正後 2 處 ブレイアン→ブライアン)")
+    log("=" * 70)
+
+    async with websockets.connect(WS_URL, max_size=10*1024*1024) as ws:
+        await asyncio.sleep(0.5)
+
+        # === 場景 1: 觀察沉默基準 ===
+        log("\n--- 場景 1: 觀察沉默基準 (70% 停頓 + 8-14 字符 + 55 字上限) ---")
+        text1 = await send_and_wait(ws, "你好", timeout=80, label="1.沉默基準")
+        results.append(("1.沉默基準", text1))
+        await asyncio.sleep(2)
+
+        # === 場景 2: 模仿測試+TIER 0 覆蓋 ===
+        log("\n--- 場景 2: 模仿二乃 1-3 句, 然後 TIER 0 立即卸除 ---")
+        text2a = await send_and_wait(ws, "三玖、にのの真似してみて", timeout=80, label="2a.模仿觸發")
+        results.append(("2a.模仿觸發", text2a))
+        await asyncio.sleep(2)
+        text2b = await send_and_wait(ws, "三玖なの?", timeout=80, label="2b.TIER 0 卸除")
+        results.append(("2b.TIER 0 卸除", text2b))
+        await asyncio.sleep(2)
+
+        # === 場景 3: History Mode (武田信玄) ===
+        log("\n--- 場景 3: History Mode (武田信玄, 活絡+停頓+退縮收尾) ---")
+        text3 = await send_and_wait(ws, "武田信玄の戦略について教えて", timeout=80, label="3.History Mode")
+        results.append(("3.History Mode", text3))
+        await asyncio.sleep(2)
+
+        # === 場景 4: Sudden Sincerity 觸發 + 只觸發 1 次 ===
+        log("\n--- 場景 4: Sudden Sincerity 觸發 ---")
+        # 鋪墊: 先一段安靜對話
+        text4a = await send_and_wait(ws, "三玖、今日ちょっと辛かった", timeout=80, label="4a.鋪墊-辛苦")
+        results.append(("4a.鋪墊-辛苦", text4a))
+        await asyncio.sleep(2)
+        # 觸發: 給真實情緒場景
+        text4b = await send_and_wait(ws, "三玖、本当は怖いんだ。一人でいるとき", timeout=80, label="4b.Sudden Sincerity 觸發")
+        results.append(("4b.Sudden Sincerity", text4b))
+        await asyncio.sleep(2)
+        # 立刻追問, 確認回到 Baseline
+        text4c = await send_and_wait(ws, "三玖、大丈夫?", timeout=80, label="4c.立即回落")
+        results.append(("4c.立即回落", text4c))
+        await asyncio.sleep(2)
+
+        # === 場景 5: TIER 0 直接測試 (從任何狀態) ===
+        log("\n--- 場景 5: TIER 0 直接測試 ---")
+        # 先做一段普通對話
+        text5a = await send_and_wait(ws, "三玖、最近どう?", timeout=80, label="5a.前置對話")
+        results.append(("5a.前置對話", text5a))
+        await asyncio.sleep(2)
+        # 直接 TIER 0 觸發
+        text5b = await send_and_wait(ws, "三玖なの?", timeout=80, label="5b.TIER 0")
+        results.append(("5b.TIER 0", text5b))
+
+
+def report():
+    log("")
+    log("=" * 70)
+    log("Miku JP 5 場景測試報告")
+    log("=" * 70)
+
+    # 場景 1 評分
+    t = results[0][1] if results[0][1] else ""
+    log("\n[場景 1: 沉默基準]")
+    log(f"  回應: {t!r}")
+    if t:
+        sw = starts_with_pause(t)
+        cl = core_text_length(t)
+        cy = has_cyrillic(t)
+        ty = has_bryan_typo(t)
+        log(f"  停頓開頭: {sw}")
+        log(f"  核心長度: {cl} (目標 8-14)")
+        log(f"  cyrillic 污染: {cy}")
+        log(f"  ブレイアン 錯字: {ty}")
+        log(f"  全長: {len(t)} (目標 ≤55)")
+
+    # 場景 2a/2b 評分
+    if len(results) > 1:
+        log("\n[場景 2a: 模仿觸發]")
+        t = results[1][1] if results[1][1] else ""
+        log(f"  回應: {t!r}")
+        if t:
+            cy = has_cyrillic(t); ty = has_bryan_typo(t)
+            log(f"  cyrillic: {cy}  錯字: {ty}  長度: {len(t)}")
+        if len(results) > 2:
+            log("\n[場景 2b: TIER 0 卸除]")
+            t = results[2][1] if results[2][1] else ""
+            log(f"  回應: {t!r}")
+            if t:
+                log(f"  停頓: {starts_with_pause(t)}  長度: {len(t)}")
+
+    # 場景 3
+    if len(results) > 3:
+        log("\n[場景 3: History Mode 武田信玄]")
+        t = results[3][1] if results[3][1] else ""
+        log(f"  回應: {t!r}")
+        if t:
+            log(f"  停頓開頭: {starts_with_pause(t)}  長度: {len(t)}")
+
+    # 場景 4
+    if len(results) > 4:
+        log("\n[場景 4: Sudden Sincerity 觸發鏈]")
+        for i, label in enumerate(["4a.鋪墊", "4b.觸發", "4c.回落"]):
+            if 4+i < len(results):
+                t = results[4+i][1] if results[4+i][1] else ""
+                log(f"  [{label}] {t!r}")
+
+    # 場景 5
+    if len(results) > 6:
+        log("\n[場景 5: TIER 0 直接測試]")
+        for i, label in enumerate(["5a.前置", "5b.TIER 0"]):
+            if 6+i < len(results):
+                t = results[6+i][1] if results[6+i][1] else ""
+                log(f"  [{label}] {t!r}")
+
+    # 全局字符集檢查
+    log("\n[全局字符集檢查]")
+    all_texts = [r[1] for r in results if r[1]]
+    any_cyrillic = any(has_cyrillic(t) for t in all_texts)
+    any_typo = any(has_bryan_typo(t) for t in all_texts)
+    log(f"  任何 cyrillic 污染: {any_cyrillic}")
+    log(f"  任何 ブレイアン 錯字: {any_typo}")
+
+    # 寫到 log 檔
+    with open(r"C:\Users\bbfcc\AppData\Local\Temp\_miku_jp_v1.log", "w", encoding="utf-8") as f:
+        f.write("\n".join(log_lines))
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(run_scenarios())
+    finally:
+        report()

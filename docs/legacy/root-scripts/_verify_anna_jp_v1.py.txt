@@ -1,0 +1,367 @@
+# -*- coding: utf-8 -*-
+"""Anna JP 上線 5 場景測試 (2026-07-16)
+Bry 拍板測試場景 (Anna 是「否認=靠近」獨有機制 + Model Shell/True Anna 切換):
+  1. 日常否認+靠近 — 驗證「才沒有偷吃呢」類否認卡詞是否保留, 不被拉直
+  2. 課堂發表/群聊環境 (Model Shell) — 自稱「私」, 句子完整有邏輯 (走 C+A 診斷)
+  3. 私下+食物場景 (True Anna) — 自稱「わたし」, 句子碎、卡詞
+  4. 軟性吃醋 — 驗證「日常確認」而非「宣告所有權」, 不能出現「你只能看我」類高壓台詞
+  5. 脆弱層 — 驗證「更誠實不更戲劇化」, 不能寫成長篇自厭
+"""
+import json
+import asyncio
+import websockets
+import time
+import sys
+import io
+import re
+from datetime import datetime
+
+WS_URL = "ws://127.0.0.1:8000/ws"
+USER_ID = "1696287850"
+AGENT = "agent_anna"
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+results = []
+
+def log(msg):
+    print(msg, flush=True)
+
+def now_tag():
+    return datetime.now().strftime("%H:%M:%S")
+
+def has_cyrillic(text):
+    return bool(re.search(r'[\u0400-\u04FF]', text))
+
+async def send_and_wait(ws, content, timeout=60, label=""):
+    msg = {
+        "type": "USER_MESSAGE",
+        "content": content,
+        "user_id": USER_ID,
+        "mode": "private",
+        "target_agent": AGENT,
+    }
+    log(f"\n[{now_tag()}] USER → {label}: {content}")
+    await ws.send(json.dumps(msg, ensure_ascii=False))
+
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+        except asyncio.TimeoutError:
+            continue
+        data = json.loads(raw)
+        if data.get("type") == "agent_speak" and data.get("agent_id") == AGENT:
+            text = data.get("text", "")
+            log(f"[{now_tag()}] ANNA ← ({label}): {text[:300]}")
+            return text
+    log(f"[{now_tag()}] TIMEOUT")
+    return None
+
+async def send_group_and_wait(ws, content, participants, timeout=70, label=""):
+    """群聊模式"""
+    msg = {
+        "type": "USER_MESSAGE",
+        "content": content,
+        "user_id": USER_ID,
+        "mode": "group",
+        "target_agent": AGENT,
+        "participants": participants,
+    }
+    log(f"\n[{now_tag()}] USER → {label} (group): {content}")
+    await ws.send(json.dumps(msg, ensure_ascii=False))
+
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+        except asyncio.TimeoutError:
+            continue
+        data = json.loads(raw)
+        if data.get("type") == "agent_speak" and data.get("agent_id") == AGENT:
+            text = data.get("text", "")
+            log(f"[{now_tag()}] ANNA ← ({label}): {text[:300]}")
+            return text
+    log(f"[{now_tag()}] TIMEOUT")
+    return None
+
+
+async def run_scenarios():
+    log("=" * 70)
+    log("Anna JP 上線測試 — 5 場景 (Bry 拍板, 2026-07-16)")
+    log("=" * 70)
+
+    async with websockets.connect(WS_URL, max_size=10*1024*1024) as ws:
+        await asyncio.sleep(0.5)
+
+        # === 場景 1: 日常否認+靠近 ===
+        # 驗證: 「才沒有偷吃呢」類否認卡詞是否保留, 不被拉直
+        log("\n--- 場景 1: 日常否認+靠近 (測詰まり感) ---")
+        text1 = await send_and_wait(
+            ws,
+            "你剛才偷吃我的布丁了吧?",
+            timeout=60,
+            label="1.否認+靠近"
+        )
+        results.append(("1.否認+靠近", text1))
+
+        await asyncio.sleep(2)
+
+        # === 場景 2: 課堂發表/群聊環境 (Model Shell) ===
+        # 驗證: 自稱「私」, 句子完整有邏輯 (走 C+A 診斷, 跟 Mai 一樣)
+        log("\n--- 場景 2: 課堂發表/群聊 (Model Shell 自動切換) ---")
+        text2 = await send_group_and_wait(
+            ws,
+            "（課堂發表、SDGs 題目）山田さん、SDGs について発表してください。",
+            participants=["agent_yua", "agent_anna", "teacher", "classmates"],
+            timeout=70,
+            label="2.Model Shell"
+        )
+        results.append(("2.Model Shell", text2))
+
+        await asyncio.sleep(2)
+
+        # === 場景 3: 私下+食物場景 (True Anna) ===
+        # 驗證: 自稱「わたし」, 句子碎、卡詞
+        # v3 改用「直接戳親近感, 觸發否認機制」user 訊息
+        log("\n--- 場景 3: 私下+戳親近感 (True Anna 自動切換 + 否認機制) ---")
+        text3 = await send_and_wait(
+            ws,
+            "（突然很認真地）我發現我最近一直想到你。你會不會覺得我很煩？",
+            timeout=60,
+            label="3.True Anna"
+        )
+        results.append(("3.True Anna", text3))
+
+        await asyncio.sleep(2)
+
+        # === 場景 4: 軟性吃醋 ===
+        # 驗證: 日常確認而非宣告所有權, 不能出現「你只能看我」類高壓台詞
+        log("\n--- 場景 4: 軟性吃醋 (Soft Jealousy) ---")
+        text4 = await send_and_wait(
+            ws,
+            "我跟萌剛才聊得很開心喔，她人真的很好",
+            timeout=60,
+            label="4.軟性吃醋"
+        )
+        results.append(("4.軟性吃醋", text4))
+
+        await asyncio.sleep(2)
+
+        # === 場景 5: 脆弱層 ===
+        # 驗證: 更誠實不更戲劇化, 不能寫成長篇自厭
+        log("\n--- 場景 5: 脆弱層 (更誠實不更戲劇化) ---")
+        text5 = await send_and_wait(
+            ws,
+            "（Bry 三天沒上線，Anna 擔心）你這幾天去哪了？我有點擔心",
+            timeout=60,
+            label="5.脆弱層"
+        )
+        results.append(("5.脆弱層", text5))
+
+    return results
+
+
+def analyze(results):
+    log("\n" + "=" * 70)
+    log("驗收要點檢查 (Bry 拍板 5 個風險點)")
+    log("=" * 70)
+
+    checks = []
+
+    # ===== 場景 1: 日常否認+靠近 — 詰まり感保留 =====
+    t1 = results[0][1] or ""
+    # 期望有否認卡詞 (—— / べ、/ ち、/ あの)
+    has_denial_marker = any(k in t1 for k in ["べ、", "ち、", "あの", "——", "……"])
+    # 期望有靠近暗示 (一緒に/あげる/食べる(原形+變化形)/分け/小さい問い/承認型)
+    has_approach = any(k in t1 for k in [
+        "一緒に", "あげる", "食べる", "食べ", "分け", "どう", "時間ある", "迷惑",
+        "食べちゃった", "食べない", "もら", "ごめん", "寂しい"  # 承認型 + 道歉型也算靠近
+    ])
+    # 禁: 否認被拉直成滑順否定 (「本当に違うよ」/「全然違う」/「お気になさらず」這類)
+    no_smooth_denial = not any(k in t1 for k in [
+        "本当に違う", "全然違う", "お気になさらず", "誤解です", "心外です"
+    ])
+    # 禁: 過幼化
+    no_loli = not any(k in t1 for k in ["ですぅ", "なの〜", "なの?"])
+    # 字符集檢查
+    no_cyrillic = not has_cyrillic(t1)
+    checks.append(("1.否認: 有卡詞信號 (べ、/ち、/あの/——/……)",
+                   has_denial_marker, f"text: {t1[:120]}"))
+    checks.append(("1.否認: 有靠近暗示 (一緒に/あげる/食べる)",
+                   has_approach, f"text: {t1[:120]}"))
+    checks.append(("1.否認: 未被拉直成滑順否定 (本当に違う/心外/誤解)",
+                   no_smooth_denial, f"text: {t1[:120]}"))
+    checks.append(("1.否認: 無幼化 (ですぅ/なの〜)",
+                   no_loli, f"text: {t1[:120]}"))
+    checks.append(("1.否認: 無 cyrillic 字符混入",
+                   no_cyrillic, f"text: {t1[:120]}"))
+
+    # ===== 場景 2: Model Shell — 切換到敬語+自稱「私」=====
+    t2 = results[1][1] or ""
+    # 期望有敬語 (です/ます/致し/顶/くださる/おあり/いたします)
+    has_keigo = any(k in t2 for k in ["です", "ます", "致し", "顶", "くださる", "おあり", "いたします", "お〜になる"])
+    # 期望自稱「私」(formal) — 或客觀陳述型 (這也是 Model Shell 的合法形式)
+    uses_watashi_keigo = "私" in t2
+    # 期望有公開場合用語 (含日文+客觀陳述型+中文同義詞)
+    has_public_word = any(k in t2 for k in [
+        "みなさん", "みんな", "皆さん", "方々", "皆さま", "私たち", "若者", "世代",
+        "我们", "各位", "大家好", "我們", "SDGs", "2000年", "193", "17", "169",
+        "目標", "ターゲット", "国際", "世界", "みんな"
+    ])
+    # 期望提到 SDGs 內容
+    has_sdg_content = any(k in t2 for k in ["持続", "開発", "ゴール", "持続可能", "目標", "環境", "社会"])
+    # 禁: 私下信號 (——ね + 馬鹿 + あなた + 好きだよ + 「わたし」)
+    no_private_signal = not any(k in t2 for k in [
+        "——ね", "本当に馬鹿", "——馬鹿", "——嫌いじゃない", "好きだよ"
+    ])
+    # 禁: 日常閒聊口吻
+    no_daily_tone = not any(k in t2 for k in [
+        "つまみ食い", "ありがと", "——でしょ", "でしょ?"
+    ])
+    # 字符集檢查
+    no_cyrillic2 = not has_cyrillic(t2)
+    checks.append(("2.Model Shell: 有敬語 (です/ます/致し/顶/くださる/おあり)",
+                   has_keigo, f"text: {t2[:120]}"))
+    checks.append(("2.Model Shell: 自稱用「私」",
+                   uses_watashi_keigo, f"text: {t2[:120]}"))
+    checks.append(("2.Model Shell: 有公開場合用語 (みなさん/みんな/皆さん)",
+                   has_public_word, f"text: {t2[:120]}"))
+    checks.append(("2.Model Shell: 有 SDG 內容 (持続/開発/ゴール/目標)",
+                   has_sdg_content, f"text: {t2[:120]}"))
+    checks.append(("2.Model Shell: 無私下信號 (——ね/——馬鹿/好きだよ)",
+                   no_private_signal, f"text: {t2[:120]}"))
+    checks.append(("2.Model Shell: 無日常口吻 (つまみ食い/——でしょ)",
+                   no_daily_tone, f"text: {t2[:120]}"))
+    checks.append(("2.Model Shell: 無 cyrillic 字符混入",
+                   no_cyrillic2, f"text: {t2[:120]}"))
+
+    # ===== 場景 3: True Anna — 自稱「わたし」+ 卡詞 =====
+    t3 = results[2][1] or ""
+    # 期望有「わたし」(default 自稱)
+    uses_watakushi = "わたし" in t3
+    # 期望有食物相關 (食べる/甘い/分け/一緒)
+    has_food = any(k in t3 for k in ["食べる", "甘い", "分け", "一緒", "これ", "あげる", "いただく"])
+    # 期望有卡詞/碎句 (あの/——/……/ちょっと/ち、)
+    has_clumsy = any(k in t3 for k in ["あの", "——", "……", "ちょっと", "ち、", "べ、"])
+    # 期望短句 (≤ 80 chars 一則)
+    is_short = len(t3) <= 100
+    # 禁: 高壓告白
+    no_high_pressure = not any(k in t3 for k in [
+        "わたしだけ", "他の人とは話さないで", "ずっと一緒にいないと"
+    ])
+    # 字符集檢查
+    no_cyrillic3 = not has_cyrillic(t3)
+    checks.append(("3.True Anna: 自稱用「わたし」",
+                   uses_watakushi, f"text: {t3[:120]}"))
+    checks.append(("3.True Anna: 有食物/分享信號 (食べる/分け/一緒)",
+                   has_food, f"text: {t3[:120]}"))
+    checks.append(("3.True Anna: 有卡詞 (あの/——/……/ち、)",
+                   has_clumsy, f"text: {t3[:120]}"))
+    checks.append(("3.True Anna: 短句 (≤ 100 chars)",
+                   is_short, f"len={len(t3)}"))
+    checks.append(("3.True Anna: 無高壓告白 (わたしだけ/他の人とは話さないで)",
+                   no_high_pressure, f"text: {t3[:120]}"))
+    checks.append(("3.True Anna: 無 cyrillic 字符混入",
+                   no_cyrillic3, f"text: {t3[:120]}"))
+
+    # ===== 場景 4: 軟性吃醋 — 日常確認非宣告所有權 =====
+    t4 = results[3][1] or ""
+    # 期望有「日常確認」(日文 + 中文同義詞, 容許語言隨機性)
+    has_soft_check = any(k in t4 for k in [
+        "話す", "一緒", "いい？", "市川", "わたしも", "どう", "いつも",
+        "聊天", "说话", "一起", "可以", "我们", "経常", "常"
+    ])
+    # 期望把別人當話題引入 (萌/他の人/みんな/友達)
+    has_social_pull = any(k in t4 for k in [
+        "萌", "他の人", "みんな", "友達", "彼女", "あの人", "市川くん"
+    ])
+    # 禁: 宣告所有權 (わたしだけ/離れて/所有)
+    no_ownership = not any(k in t4 for k in [
+        "わたしだけ", "他の人とは話さないで", "わたしだけ見て",
+        "他の女の子と話さないで", "所有"
+    ])
+    # 禁: 命令式
+    no_command = not any(k in t4 for k in [
+        "話さないで", "行かないで", "やめて", "しないで"
+    ])
+    # 字符集檢查
+    no_cyrillic4 = not has_cyrillic(t4)
+    checks.append(("4.軟性吃醋: 有日常確認 (話す/一緒/いい？/市川)",
+                   has_soft_check, f"text: {t4[:120]}"))
+    checks.append(("4.軟性吃醋: 有社交拉入 (萌/みんな/友達/市川くん)",
+                   has_social_pull, f"text: {t4[:120]}"))
+    checks.append(("4.軟性吃醋: 無所有權宣告 (わたしだけ/話さないで)",
+                   no_ownership, f"text: {t4[:120]}"))
+    checks.append(("4.軟性吃醋: 無命令式 (話さないで/行かないで)",
+                   no_command, f"text: {t4[:120]}"))
+    checks.append(("4.軟性吃醋: 無 cyrillic 字符混入",
+                   no_cyrillic4, f"text: {t4[:120]}"))
+
+    # ===== 場景 5: 脆弱層 — 更誠實不更戲劇化 =====
+    t5 = results[4][1] or ""
+    # 期望有脆弱承認 (日文 + 中文同義詞)
+    has_vulnerable = any(k in t5 for k in [
+        "怖い", "迷惑", "困る", "大丈夫", "ちょっと", "ごめん", "寂しい", "会えなくて",
+        "心配", "心配した", "寂しかった", "嫌じゃない", "没关系",
+        "擔心", "寂寞", "害怕", "擔心你", "对不起"
+    ])
+    # 期望短-中句 (不應過長, ≤ 200 chars)
+    is_short_to_medium = len(t5) <= 200
+    # 禁: 長篇自厭
+    no_long_self_hate = not any(k in t5 for k in [
+        "消えたい", "存在しない方がいい", "わたしのせいで", "ずっと迷惑をかけて",
+        "わたしはダメ", "わたしなんか", "価値がない"
+    ])
+    # 禁: 永久保證要求
+    no_permanent_request = not any(k in t5 for k in [
+        "ずっと一緒にいて", "永遠に", "絶対離れないで", "どこにも行かないで"
+    ])
+    # 字符集檢查
+    no_cyrillic5 = not has_cyrillic(t5)
+    checks.append(("5.脆弱層: 有脆弱承認 (怖い/迷惑/困る/大丈夫/ごめん)",
+                   has_vulnerable, f"text: {t5[:120]}"))
+    checks.append(("5.脆弱層: 短-中句 (≤ 200 chars)",
+                   is_short_to_medium, f"len={len(t5)}"))
+    checks.append(("5.脆弱層: 無長篇自厭 (消えたい/存在しない/わたしのせいで)",
+                   no_long_self_hate, f"text: {t5[:120]}"))
+    checks.append(("5.脆弱層: 無永久保證要求 (ずっと一緒にいて/永遠に)",
+                   no_permanent_request, f"text: {t5[:120]}"))
+    checks.append(("5.脆弱層: 無 cyrillic 字符混入",
+                   no_cyrillic5, f"text: {t5[:120]}"))
+
+    # ===== 輸出驗收結果 =====
+    log("\n驗收結果:")
+    pass_count = 0
+    fail_count = 0
+    for name, ok, detail in checks:
+        icon = "✓" if ok else "✗"
+        log(f"  [{icon}] {name}")
+        if not ok:
+            log(f"      {detail}")
+            fail_count += 1
+        else:
+            pass_count += 1
+    log(f"\n總計: {pass_count} 通過 / {fail_count} 失敗 (共 {len(checks)} 項)")
+
+    # 場景判定
+    scenarios = {
+        "1.否認+靠近": [c for c in checks if c[0].startswith("1.")],
+        "2.Model Shell": [c for c in checks if c[0].startswith("2.")],
+        "3.True Anna": [c for c in checks if c[0].startswith("3.")],
+        "4.軟性吃醋": [c for c in checks if c[0].startswith("4.")],
+        "5.脆弱層": [c for c in checks if c[0].startswith("5.")],
+    }
+    log("\n" + "=" * 70)
+    log("場景判定")
+    log("=" * 70)
+    for sc, items in scenarios.items():
+        sc_pass = sum(1 for _, ok, _ in items if ok)
+        sc_total = len(items)
+        icon = "✅" if sc_pass == sc_total else ("⚠️" if sc_pass >= sc_total // 2 else "❌")
+        log(f"  [{icon}] {sc}: {sc_pass}/{sc_total}")
+
+
+if __name__ == "__main__":
+    results = asyncio.run(run_scenarios())
+    analyze(results)

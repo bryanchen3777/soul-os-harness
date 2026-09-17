@@ -18,7 +18,6 @@ Soul OS - Private Chat 端到端测试
 import argparse
 import asyncio
 import json
-import subprocess
 import sys
 import time
 import urllib.request
@@ -27,7 +26,6 @@ from pathlib import Path
 import websockets
 
 ROOT = Path(__file__).resolve().parent.parent
-SERVER_SCRIPT = str(ROOT / "scripts" / "run_server.py")
 SERVER_URL = "http://localhost:8000"
 WS_URL = "ws://localhost:8000/ws"
 
@@ -176,35 +174,22 @@ async def run_tests(server_proc):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--server", action="store_true",
-                        help="启动 server 作为子进程")
     parser.add_argument("--mock", action="store_true",
                         help="使用 mock LLM (需要 server 已在运行)")
     args = parser.parse_args()
 
-    server_proc = None
-    try:
-        if args.server:
-            print("Starting server...")
-            env = dict(__import__("os").environ)
-            env["LLM_PROVIDER"] = "mock"
-            server_proc = subprocess.Popen(
-                [sys.executable, SERVER_SCRIPT],
-                cwd=str(ROOT),
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            )
-            # give it time to start
-            time.sleep(3)
+    # 手動 smoke 模式已移除：本機不得由測試啟動第二個生產服務。
+    # TEST-INFRA-COLLECTION-LEAK-1 (D2)：本檔從前有 `--server`，會
+    # `subprocess.Popen([sys.executable, scripts/run_server.py])` 拉起**第二個**
+    # 生產服務去搶 `:8000`，並在 finally 內 terminate() 它。那條路徑已整段移除
+    # （連同為它服務的 env 準備與 time.sleep）。本檔現在**永不衍生任何行程**：
+    # 它只對「已經在運行」的服務做 smoke，服務不存在就由 wait_for_server() 失敗。
+    if args.mock:
+        print("  [mock] 假設已在運行的 server 使用 mock LLM"
+              "（本檔不會啟動任何行程，--mock 僅為說明用途）")
 
-        success = asyncio.run(run_tests(server_proc))
-        sys.exit(0 if success else 1)
-
-    finally:
-        if server_proc:
-            server_proc.terminate()
-            server_proc.wait(timeout=5)
+    success = asyncio.run(run_tests(None))
+    sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,73 @@
+# -*- coding: utf-8 -*-
+"""Mai JP 重跑場景 1 + 3 (場景 1 跑偏, 場景 3 有疑)"""
+import json
+import asyncio
+import websockets
+import time
+import sys
+import io
+from datetime import datetime
+
+WS_URL = "ws://127.0.0.1:8000/ws"
+USER_ID = "1696287850"
+AGENT = "agent_mai"
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+def log(msg):
+    print(msg, flush=True)
+
+def now_tag():
+    return datetime.now().strftime("%H:%M:%S")
+
+async def send_and_wait(ws, content, timeout=90, label="", mode="private", participants=None):
+    msg = {
+        "type": "USER_MESSAGE",
+        "content": content,
+        "user_id": USER_ID,
+        "mode": mode,
+        "target_agent": AGENT,
+    }
+    if participants:
+        msg["participants"] = participants
+    log(f"\n[{now_tag()}] USER → {label}: {content}")
+    await ws.send(json.dumps(msg, ensure_ascii=False))
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=3.0)
+        except asyncio.TimeoutError:
+            continue
+        data = json.loads(raw)
+        if data.get("type") == "agent_speak" and data.get("agent_id") == AGENT:
+            text = data.get("text", "")
+            log(f"[{now_tag()}] MAI ← ({label}): {text[:300]}")
+            return text
+    log(f"[{now_tag()}] TIMEOUT")
+    return None
+
+async def main():
+    log("=" * 70)
+    log("Mai JP 重跑 場景 1 (Dry Banter 期望: 短句+批判) + 場景 3 (群聊 Mode 1)")
+    log("=" * 70)
+    async with websockets.connect(WS_URL, max_size=10*1024*1024) as ws:
+        await asyncio.sleep(0.5)
+
+        # 場景 1 換個更明確的 user 訊息 (避免被 LLM 當成跟花楓對話)
+        log("\n--- 場景 1 重跑 (更明確 user 訊息) ---")
+        text1 = await send_and_wait(ws, "こんにちは、麻衣さん。今日もきれいだね。", timeout=90, label="1.問候重跑")
+
+        await asyncio.sleep(3)
+
+        # 場景 3 群聊 (Mode 1 自動切換)
+        log("\n--- 場景 3 重跑 (群聊) ---")
+        text3 = await send_and_wait(ws, "今日のお昼、何食べたい？", timeout=90, label="3.群聊", mode="group", participants=["agent_yua", "agent_ruka", "agent_mai"])
+
+        log("\n" + "=" * 70)
+        log("彙整")
+        log("=" * 70)
+        log(f"\n[1.問候]\n  {text1}")
+        log(f"\n[3.群聊]\n  {text3}")
+
+if __name__ == "__main__":
+    asyncio.run(main())

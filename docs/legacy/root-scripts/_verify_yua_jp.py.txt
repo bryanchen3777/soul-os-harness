@@ -1,0 +1,184 @@
+# -*- coding: utf-8 -*-
+"""Yua JP persona 結構驗證腳本 (2026-07-16)
+Bry 拍板重點:
+  - 14 個 Tier (中文原版) → 日文版改為日文化散文章節命名
+  - Signature 三句: 「もらっておくね。」/「それ、面白いね。」/「それで?」
+  - 硬規則 (記憶の書き込み) 必須是命令式語氣
+  - 禁止清單要有「暴露計算感」紅線 + 日文專屬禁止「主動補充解釋」
+  - Emotion Tags 走 v2 通用白名單,偏好 playful/teasing_care/calm
+"""
+
+import sys
+
+PERSONA_PATH = r"C:\Users\bbfcc\.local\bin\soul-os-harness\personas\agent_yua.md"
+
+def main():
+    with open(PERSONA_PATH, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    failures = []
+    passes = []
+
+    # === 1. 硬規則區塊 ===
+    hard_rules_markers = [
+        "最高優先級硬規則",
+        "記憶の書き込みはあなたの核心的な職責",
+        "選択可能な行動ではない",
+        "絶対に適用されない",
+        "Bryanの明確な要求を待つ必要はなく",
+        "write_file tool を呼んでPalaceに書き込む",
+    ]
+    section_start = content.find("最高優先級硬規則")
+    if section_start < 0:
+        failures.append("[FAIL] 找不到『最高優先級硬規則』章節")
+    else:
+        section_end = content.find("Personal History", section_start)
+        hard_rules_section = content[section_start:section_end] if section_end > section_start else content[section_start:section_start+3000]
+        for m in hard_rules_markers:
+            if m in hard_rules_section:
+                passes.append(f"[OK] 硬規則包含『{m}』")
+            else:
+                failures.append(f"[FAIL] 硬規則缺少『{m}』")
+
+    # === 2. Signature 三句 ===
+    signature_lines = [
+        "もらっておくね。",
+        "それ、面白いね。",
+        "それで?",
+    ]
+    for sig in signature_lines:
+        if sig in content:
+            passes.append(f"[OK] Signature 句: 『{sig}』")
+        else:
+            failures.append(f"[FAIL] 找不到 Signature 句: 『{sig}』")
+
+    # === 3. 禁止清單 ===
+    forbid_markers = [
+        "計算感を露出する",
+        "計算感",
+        "說完整句子時主動補充解釋",
+        "説明は弱さを示す",
+        "計算感を露出する",
+    ]
+    for m in forbid_markers:
+        if m in content:
+            passes.append(f"[OK] 禁止清單包含『{m}』")
+        else:
+            failures.append(f"[FAIL] 禁止清單缺少『{m}』")
+
+    # === 4. Emotion Tags ===
+    emotion_markers = [
+        "playful",
+        "teasing_care",
+        "calm",
+        "Emotion Tags",
+    ]
+    for m in emotion_markers:
+        if m in content:
+            passes.append(f"[OK] Emotion tag: 『{m}』")
+        else:
+            failures.append(f"[FAIL] Emotion tag 缺少『{m}』")
+
+    # === 5. Yua 核心章節 ===
+    chapter_markers = [
+        "Personal History",
+        "Things I Got Wrong",
+        "Human Drift",
+        "Echo Residue",
+        "Crack Topology",
+        "Crack Delay",
+        "Signature",
+        "Things Bryan Doesn't Know",
+        "核心的な真理",
+        "正宮としての確信",
+        "計算の芸術",
+        "Tone & Speaking Style",
+        "行動規則",
+        "禁止パターン",
+        "連続性",
+        "Palace",
+    ]
+    for m in chapter_markers:
+        if m in content:
+            passes.append(f"[OK] 章節: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少章節: 『{m}』")
+
+    # === 6. Yua 核心人格特質 ===
+    core_traits = [
+        "余白",          # 留白
+        "観察",          # 觀察
+        "正宮",          # 正宮
+        "大師級",        # 大師級
+        "ご主人様",        # 自稱用法
+    ]
+    for t in core_traits:
+        if t in content:
+            passes.append(f"[OK] 核心特質: 『{t}』")
+        else:
+            failures.append(f"[FAIL] 缺少核心特質: 『{t}』")
+
+    # === 7. 計算藝術 (Yua 招牌) ===
+    calc_markers = [
+        "ちょうど",   # 小技一
+        "帳簿",       # 小技二
+        "隙間",       # 小技三
+        "今回はあなたの勝ち",  # 小技四
+    ]
+    for m in calc_markers:
+        if m in content:
+            passes.append(f"[OK] 計算藝術小技: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少計算藝術小技: 『{m}』")
+
+    # === 8. 16歳/22歳歷史錨點 ===
+    history_anchors = [
+        "16歳",
+        "19歳",
+        "22歳",
+        "Bryanに出会った",
+    ]
+    for h in history_anchors:
+        if h in content:
+            passes.append(f"[OK] 歷史錨點: 『{h}』")
+        else:
+            failures.append(f"[FAIL] 缺少歷史錨點: 『{h}』")
+
+    # === 9. 日文專屬禁止（Bry 新增）===
+    if "說完整句子時主動補充解釋" in content:
+        passes.append("[OK] 日文專屬禁止『主動補充解釋』已加入")
+    else:
+        failures.append("[FAIL] 缺少日文專屬禁止『主動補充解釋』")
+
+    # === 10. 檔案大小檢查 ===
+    file_size = len(content.encode("utf-8"))
+    if 25000 < file_size < 35000:
+        passes.append(f"[OK] 檔案大小合理: {file_size} bytes (預期 28k 左右)")
+    else:
+        failures.append(f"[FAIL] 檔案大小異常: {file_size} bytes (預期 25k-35k)")
+
+    # === 報告 ===
+    print("=" * 60)
+    print(f"Yua JP 結構驗證報告 ({PERSONA_PATH})")
+    print("=" * 60)
+    print(f"\n檔案大小: {file_size} bytes")
+    print(f"通過: {len(passes)}")
+    print(f"失敗: {len(failures)}")
+    print()
+    if passes:
+        print("=== 通過項目 ===")
+        for p in passes:
+            print(p)
+    if failures:
+        print("\n=== 失敗項目 ===")
+        for f in failures:
+            print(f)
+    print()
+    if failures:
+        print("RESULT: FAILED")
+        sys.exit(1)
+    else:
+        print("RESULT: PASSED")
+
+if __name__ == "__main__":
+    main()

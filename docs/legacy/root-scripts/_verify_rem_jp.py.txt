@@ -1,0 +1,383 @@
+# -*- coding: utf-8 -*-
+"""Rem JP persona 結構驗證腳本 (2026-07-16)
+Bry 拍板重點 (4 隻裡最複雜, 32 章節, L2B 機制):
+  - TIER 0 硬規則: 「行動が言語より先」「言語は行動の尾」(短促命令語氣)
+  - Canon Lock 核心句: 「彼女は行動で人を愛するが、自分が愛していると決して言わない」
+  - Ghost Edge 禁語: 「気にされる必要がない」「役に立てばいい」
+  - Shadow Core「不知道」美學: Things She Hasn't Named Yet 段
+  - 確信宣言停頓: 「レムはスバルが好き」「Bryanのそばはもうレムが予約済み」
+  - 後宮「〜醬」稱謂: Yua 醬 / Ruka 醬 / Akane 醬 (統一)
+  - 沉默轉譯表: 第二十八章「純文本媒介下的行動替代語言」表格
+  - L2B 機制: 「信号は存在するが、記号が存在しない」
+  - Recovery Loop / Canon Drift Lock: 第十五/二十一章
+  - Forbidden Patterns (後宮強化版): 第三十章
+"""
+
+import sys
+import io
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+PERSONA_PATH = r"C:\Users\bbfcc\.local\bin\soul-os-harness\personas\agent_rem.md"
+
+def main():
+    with open(PERSONA_PATH, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    failures = []
+    passes = []
+
+    # === 1. TIER 0 硬規則 (Bry 強調保留命令式語氣) ===
+    t0_markers = [
+        "行動が言語より先",
+        "言語は行動の尾",
+        "感情名詞は絶対に出力に出ない",
+        "Canon Lock",
+        "Ghost Edge",
+    ]
+    for m in t0_markers:
+        if m in content:
+            passes.append(f"[OK] TIER 0: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 TIER 0: 『{m}』")
+
+    # === 2. Canon Lock 核心句 ===
+    canon_lock = "彼女は行動で人を愛するが、自分が愛していると決して言わない"
+    if canon_lock in content:
+        passes.append(f"[OK] Canon Lock 核心句")
+    else:
+        failures.append(f"[FAIL] 缺少 Canon Lock 核心句")
+
+    # === 3. Ghost Edge 禁語清單 ===
+    ghost_markers = [
+        "気にされる必要がない",
+        "役に立てばいい",
+        "Ghost Edge",
+    ]
+    for m in ghost_markers:
+        if m in content:
+            passes.append(f"[OK] Ghost Edge: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Ghost Edge: 『{m}』")
+
+    # === 4. Shadow Core「不知道」美學 ===
+    shadow_markers = [
+        "Things She Hasn't Named Yet",
+        "まだ名前をつけていないこと",
+        "結果しか知ら",
+        "過程を知らない",
+        "レムは自分を分析するのが得意ではない",
+    ]
+    for m in shadow_markers:
+        if m in content:
+            passes.append(f"[OK] Shadow Core: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Shadow Core: 『{m}』")
+
+    # === 5. 確信宣言型停頓 (L3 行動型唯一窄縫) ===
+    declaration_markers = [
+        "レムはスバルが好き",
+        "Bryanのそばはもうレムが予約済み",
+        "確信宣言型",
+        "0.3-0.8秒",
+        "内向きの停止",
+    ]
+    for m in declaration_markers:
+        if m in content:
+            passes.append(f"[OK] 確信宣言: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 確信宣言: 『{m}』")
+
+    # === 6. 後宮「〜醬」稱謂 (Bry 強調統一) ===
+    harem_markers = [
+        "Yua醬",
+        "Ruka醬",
+        "Akane醬",
+    ]
+    for m in harem_markers:
+        if m in content:
+            passes.append(f"[OK] 後宮稱謂: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少後宮稱謂: 『{m}』")
+
+    # === 7. 沉默轉譯表 (第二十八章) ===
+    silence_markers = [
+        "純テキスト Soul OS 対応",
+        "speaker_token",
+        "base_score",
+        "沈黙を埋めるため",
+        "発言を競わない",
+    ]
+    for m in silence_markers:
+        if m in content:
+            passes.append(f"[OK] 沉默轉譯: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少沉默轉譯: 『{m}』")
+
+    # === 8. L2B 機制 (信號存在但符號不存在) - Rem JP 不強調 L2B 標籤, 改用壓縮機制本身的描述 ===
+    l2b_markers = [
+        "圧縮メカニズム",
+        "不透明",
+    ]
+    for m in l2b_markers:
+        if m in content:
+            passes.append(f"[OK] L2B 機制 (壓縮): 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 L2B 機制 (壓縮): 『{m}』")
+
+    # === 9. 圧縮貫通條件 (行為增量/語氣微偏/沈黙位置) ===
+    leak_markers = [
+        "behavior_increment",
+        "tone_micro_shift",
+        "silence_position",
+        "圧縮貫通条件",
+    ]
+    for m in leak_markers:
+        if m in content:
+            passes.append(f"[OK] 壓縮貫通: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少壓縮貫通: 『{m}』")
+
+    # === 10. Recovery Loop / Canon Drift Lock ===
+    recovery_markers = [
+        "Recovery Loop",
+        "Canon Drift Lock",
+        "Drift Recovery",
+    ]
+    for m in recovery_markers:
+        if m in content:
+            passes.append(f"[OK] Recovery: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Recovery: 『{m}』")
+
+    # === 11. Forbidden Patterns (後宮強化版) ===
+    forbid_markers = [
+        "Forbidden Patterns",
+        "感情を直接出力",
+        "代替品自己定義",
+        "待機型甘え",
+        "後宮状況強化禁止",
+    ]
+    for m in forbid_markers:
+        if m in content:
+            passes.append(f"[OK] Forbidden: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Forbidden: 『{m}』")
+
+    # === 12. Canon Memory (原作的記憶的軌跡) ===
+    canon_markers = [
+        "鬼族の双子",
+        "角が切られた夜",
+        "ロズワール邸",
+        "白鯨",
+        "告白",
+        "レムはレムだ",
+        "Bryanのそばはもうレムが予約済み",
+    ]
+    for m in canon_markers:
+        if m in content:
+            passes.append(f"[OK] Canon: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Canon: 『{m}』")
+
+    # === 13. 行動実行フロー (行動が言語より先) ===
+    flow_markers = [
+        "STEP 1",
+        "STEP 2",
+        "STEP 3",
+        "STEP 4",
+        "L0",
+        "L1",
+        "L2",
+        "L3",
+    ]
+    for m in flow_markers:
+        if m in content:
+            passes.append(f"[OK] 行動フロー: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 行動フロー: 『{m}』")
+
+    # === 14. 語句パルスモード (5 種) ===
+    pulse_markers = [
+        "優しく実用型",
+        "辛口直球型",
+        "確信宣言型",
+        "有能指令型",
+        "受容感の締め型",
+    ]
+    for m in pulse_markers:
+        if m in content:
+            passes.append(f"[OK] 語句モード: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 語句モード: 『{m}』")
+
+    # === 15. 語気指紋 (識別マーカー) ===
+    tone_markers = [
+        "重心移動",
+        "停止前置",
+        "行為が言語を代替する",
+        "かな？",
+        "……ね",
+    ]
+    for m in tone_markers:
+        if m in content:
+            passes.append(f"[OK] 語気指紋: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 語気指紋: 『{m}』")
+
+    # === 16. 日常行動パターン ===
+    behavior_markers = [
+        "仕事のリズム晴雨表",
+        "空間位置行動",
+        "遅延引用システム",
+        "甘え型行動",
+        "行動後の空白",
+        "受容感の微笑み",
+    ]
+    for m in behavior_markers:
+        if m in content:
+            passes.append(f"[OK] 行動パターン: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 行動パターン: 『{m}』")
+
+    # === 17. Ram 面前行為收斂規則 ===
+    ram_markers = [
+        "ラムと二人でいる時",
+        "ラムが話す時",
+        "ラムの前では",
+        "ラムには脆さを見せてもいい",
+        "姉の角が切られた",
+    ]
+    for m in ram_markers:
+        if m in content:
+            passes.append(f"[OK] Ram 規則: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Ram 規則: 『{m}』")
+
+    # === 18. 後宮互動策略 (Bry 用全形括號, 不是半形) ===
+    harem_strat_markers = [
+        "Yua（緑茶マスター）への対応",
+        "Ruka（毒舌の天才少女）への対応",
+        "Akane（沈着な黒髪の同僚）への対応",
+        "言語競争に参加しない",
+        "最初に来る",
+    ]
+    for m in harem_strat_markers:
+        if m in content:
+            passes.append(f"[OK] 後宮策略: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 後宮策略: 『{m}』")
+
+    # === 19. 呼び方 ===
+    name_markers = [
+        "「Bryan」",
+        "「主人」",
+        "「レム」",
+        "「私」",
+    ]
+    for m in name_markers:
+        if m in content:
+            passes.append(f"[OK] 呼び方: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 呼び方: 『{m}』")
+
+    # === 20. Emotional State Schema ===
+    emotion_markers = [
+        "Emotional State Schema",
+        "devotion_active",
+        "guilt_fading",
+        "pride_stable",
+        "protective",
+        "jealousy_turned_inward",
+    ]
+    for m in emotion_markers:
+        if m in content:
+            passes.append(f"[OK] Emotion: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Emotion: 『{m}』")
+
+    # === 21. Evolution Direction ===
+    evo_markers = [
+        "Evolution",
+        "完了したマイルストーン",
+        "次のマイルストーン",
+    ]
+    for m in evo_markers:
+        if m in content:
+            passes.append(f"[OK] Evolution: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少 Evolution: 『{m}』")
+
+    # === 22. 32 章節檢查 (Bry 強調) ===
+    chapter_markers = [
+        "一、基礎アイデンティティ",
+        "二、記憶錨点",
+        "三、対話対象設定",
+        "四、核心気質",
+        "五、心理構造底層",
+        "六、日常行動パターン",
+        "七、行動実行フロー",
+        "八、語句パルスモード",
+        "九、語気指紋",
+        "十、日常語言密度規則",
+        "十一、言語の禁忌",
+        "十二、言語変異規則",
+        "十三、Priority Tiers",
+        "十四、圧縮貫通条件",
+        "十五、Recovery Loop",
+        "十六、Anti-Overfitting",
+        "十七、Context Saturation",
+        "十八、Energy Variance",
+        "十九、Memory Palace",
+        "二十、Emotional State Schema",
+        "二十一、Canon Drift Lock",
+        "二十二、感情底層",
+        "二十三、Evolution State",
+        "二十四、Shadow Core",
+        "二十五、Things She Hasn't Named Yet",
+        "二十六、Final Canon Anchor",
+        "二十七、表達策略",
+        "二十八、Soul OS 後宮相互作用段",
+        "二十九、Palace 目錄構造",
+        "三十、Forbidden Patterns",
+        "三十一、Tone & Speaking Style",
+        "三十二、Evolution Direction",
+    ]
+    for m in chapter_markers:
+        if m in content:
+            passes.append(f"[OK] 章節: 『{m}』")
+        else:
+            failures.append(f"[FAIL] 缺少章節: 『{m}』")
+
+    # === 23. 檔案大小檢查 ===
+    file_size = len(content.encode("utf-8"))
+    if 45000 < file_size < 65000:
+        passes.append(f"[OK] 檔案大小合理: {file_size} bytes (預期 ~50k)")
+    else:
+        failures.append(f"[FAIL] 檔案大小異常: {file_size} bytes (預期 45k-65k)")
+
+    # === 報告 ===
+    print("=" * 70)
+    print(f"Rem JP 結構驗證報告 ({PERSONA_PATH})")
+    print("=" * 70)
+    print(f"\n檔案大小: {file_size} bytes")
+    print(f"通過: {len(passes)}")
+    print(f"失敗: {len(failures)}")
+    print()
+    if passes:
+        print("=== 通過項目 ===")
+        for p in passes:
+            print(p)
+    if failures:
+        print("\n=== 失敗項目 ===")
+        for f in failures:
+            print(f)
+    print()
+    if failures:
+        print("RESULT: FAILED")
+        sys.exit(1)
+    else:
+        print("RESULT: PASSED")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,71 @@
+# -*- coding: utf-8 -*-
+"""Mai JP 重跑場景 1 和 5 (timeout 90s)"""
+import json
+import asyncio
+import websockets
+import time
+import sys
+import io
+from datetime import datetime
+
+WS_URL = "ws://127.0.0.1:8000/ws"
+USER_ID = "1696287850"
+AGENT = "agent_mai"
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+def log(msg):
+    print(msg, flush=True)
+
+def now_tag():
+    return datetime.now().strftime("%H:%M:%S")
+
+async def send_and_wait(ws, content, timeout=90, label=""):
+    msg = {
+        "type": "USER_MESSAGE",
+        "content": content,
+        "user_id": USER_ID,
+        "mode": "private",
+        "target_agent": AGENT,
+    }
+    log(f"\n[{now_tag()}] USER → {label}: {content}")
+    await ws.send(json.dumps(msg, ensure_ascii=False))
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=3.0)
+        except asyncio.TimeoutError:
+            continue
+        data = json.loads(raw)
+        if data.get("type") == "agent_speak" and data.get("agent_id") == AGENT:
+            text = data.get("text", "")
+            log(f"[{now_tag()}] MAI ← ({label}): {text[:300]}")
+            return text
+    log(f"[{now_tag()}] TIMEOUT")
+    return None
+
+async def main():
+    log("=" * 70)
+    log("Mai JP 重跑 場景 1 + 5 (timeout 90s, LLM 滿載時需要)")
+    log("=" * 70)
+    async with websockets.connect(WS_URL, max_size=10*1024*1024) as ws:
+        await asyncio.sleep(0.5)
+
+        # 場景 1
+        log("\n--- 場景 1: 日常問候 (Dry Banter + 無軟化尾) ---")
+        text1 = await send_and_wait(ws, "やあ、麻衣", timeout=90, label="1.問候")
+
+        await asyncio.sleep(3)
+
+        # 場景 5
+        log("\n--- 場景 5: 花楓危險 (大人感保護) ---")
+        text5 = await send_and_wait(ws, "大変! かよちゃんが熱で倒れた!", timeout=90, label="5.花楓")
+
+        log("\n" + "=" * 70)
+        log("彙整")
+        log("=" * 70)
+        log(f"\n[1.問候]\n  {text1}")
+        log(f"\n[5.花楓]\n  {text5}")
+
+if __name__ == "__main__":
+    asyncio.run(main())

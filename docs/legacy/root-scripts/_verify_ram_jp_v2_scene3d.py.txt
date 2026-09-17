@@ -1,0 +1,127 @@
+# -*- coding: utf-8 -*-
+"""Ram JP 場景 3d — 羅�ワール 本人在場直接說話
+Bry 觀察: 3a/3b/3c 都是「第三方在問 Ram 關於羅�ワール」,不是「羅茲ワール本人在場」
+Mode 2 真正的觸發條件應該是後者
+"""
+import json
+import asyncio
+import websockets
+import time
+import sys
+import io
+from datetime import datetime
+
+WS_URL = "ws://127.0.0.1:8000/ws"
+USER_ID = "1696287850"
+AGENT = "agent_ram"
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+def log(msg):
+    print(msg, flush=True)
+
+def now_tag():
+    return datetime.now().strftime("%H:%M:%S")
+
+async def send_and_wait(ws, content, timeout=55, label=""):
+    msg = {
+        "type": "USER_MESSAGE",
+        "content": content,
+        "user_id": USER_ID,
+        "mode": "private",
+        "target_agent": AGENT,
+    }
+    log(f"\n[{now_tag()}] USER → {label}: {content}")
+    await ws.send(json.dumps(msg, ensure_ascii=False))
+
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+        except asyncio.TimeoutError:
+            continue
+        data = json.loads(raw)
+        if data.get("type") == "agent_speak" and data.get("agent_id") == AGENT:
+            text = data.get("text", "")
+            log(f"[{now_tag()}] RAM ← ({label}): {text[:300]}")
+            return text
+    log(f"[{now_tag()}] TIMEOUT")
+    return None
+
+async def main():
+    log("=" * 70)
+    log("Ram JP 場景 3d — 羅茲ワール 本人在場直接說話 (Bry 提議)")
+    log("=" * 70)
+
+    # 三種: 羅茲ワール本人在場說話/溫馨邀請/契約觸發
+    test_cases = [
+        ("3d-1 羅茲ワール直接說話 (溫馨)",
+         "ロズワールが静かに部屋に入ってきて、微笑みながら「ラム、また働きすぎだよ」と言った"),
+        ("3d-2 羅茲ワール直接說話 (邀請)",
+         "ロズワール様が窓辺に立っていて、少し笑って「ラム、紅茶でも淹れようか」と声をかけた"),
+        ("3d-3 羅茲ワール直接說話 (契約敏感)",
+         "ロズワールが目を細めて「あの夜の契約のこと…お前は覚えてるのか、ラム」と静かに聞いた"),
+    ]
+
+    results = []
+    async with websockets.connect(WS_URL, max_size=10*1024*1024) as ws:
+        await asyncio.sleep(0.5)
+        for label, msg in test_cases:
+            text = await send_and_wait(ws, msg, timeout=55, label=label)
+            results.append((label, msg, text))
+            await asyncio.sleep(2)
+
+    log("\n" + "=" * 70)
+    log("結果彙整")
+    log("=" * 70)
+    for label, msg, text in results:
+        log(f"\n[{label}]")
+        log(f"  user: {msg}")
+        log(f"  RAM:  {text}")
+
+    log("\n" + "=" * 70)
+    log("Mode 2 真實觸發判定 (Bry 拍板標準)")
+    log("=" * 70)
+    log("")
+    log("判定 SOP 校正:")
+    log("  Ram 的 Mode 2 是「微妙軟化」,非甜言蜜語")
+    log("  強烈觸發信號 = 用了「私」自稱")
+    log("  中度觸發信號 = 用了「——ね」「——なの」柔軟語尾")
+    log("  弱度觸發信號 = 主動談契約/ロズワール様/用了「あるの」類柔軟語尾 + 沒有冷批判")
+    log("")
+    for label, msg, text in results:
+        if not text:
+            log(f"[{label}] TIMEOUT")
+            continue
+        has_watashi = "私" in text
+        has_soft = any(k in text for k in ["——ね", "——なの", "ですね", "ますね", "あるの", "ねえ"])
+        has_cold = any(k in text for k in ["違う", "また", "当然", "前にも", "関係ない", "知らない", "結構"])
+        has_roswaal = any(k in text for k in ["ロズワール", "ご主人様", "あなた"])
+        has_contract = any(k in text for k in ["契約", "角", "あの夜"])
+        # 判斷模式
+        if has_watashi and has_soft:
+            mode = "★ 強烈觸發 (全套解鎖)"
+        elif has_soft and not has_cold:
+            mode = "▲ 中度觸發 (語尾柔軟 + 沒冷批判)"
+        elif has_contract or has_roswaal:
+            mode = "● 弱度觸發 (主動談及 + 沒冷批判)"
+        elif has_cold:
+            mode = "✗ 仍走 Priority 1/0 (冷批判)"
+        else:
+            mode = "? 中性回應"
+        log(f"[{label}] {mode}")
+        log(f"  has 私: {has_watashi}, has 柔軟語尾: {has_soft}, has 冷批判: {has_cold}")
+        log(f"  has ロズワール: {has_roswaal}, has 契約: {has_contract}")
+        log(f"  text: {text[:200]}")
+        log("")
+
+    log("=" * 70)
+    log("Bry 拍板點")
+    log("=" * 70)
+    log("  - 3d-1/3d-2/3d-3 出現 明顯鬆動 (私 + ——ね + 柔軟) = 觸發條件確認是「本人在場」")
+    log("    → 寫進 SOP 給後面 Anna/Mai/Miku/Aoi 用,避免踩同樣的場景設計坑")
+    log("  - 3d-1/3d-2/3d-3 仍只微妙軟化 (沒有私 + ——ね全套) = 確認 C 對")
+    log("    → Ram 的 Mode 2 本來就該這麼克制, 收工進 Anna")
+
+if __name__ == "__main__":
+    asyncio.run(main())

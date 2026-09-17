@@ -1,0 +1,167 @@
+# -*- coding: utf-8 -*-
+"""Anna 場景 2 v2 — 換強 group 訊號 (A 方案)
+原 v1 「課堂發表 SDGs」隨機性失敗 (50%)
+v2 換「記者採訪」級別強公開場合, 跟 Mai SOP 一致
+"""
+import json
+import asyncio
+import websockets
+import time
+import sys
+import io
+import re
+from datetime import datetime
+
+WS_URL = "ws://127.0.0.1:8000/ws"
+USER_ID = "1696287850"
+AGENT = "agent_anna"
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+def log(msg):
+    print(msg, flush=True)
+
+def now_tag():
+    return datetime.now().strftime("%H:%M:%S")
+
+def has_cyrillic(text):
+    return bool(re.search(r'[\u0400-\u04FF]', text))
+
+async def send_group_and_wait(ws, content, participants, timeout=70, label=""):
+    msg = {
+        "type": "USER_MESSAGE",
+        "content": content,
+        "user_id": USER_ID,
+        "mode": "group",
+        "target_agent": AGENT,
+        "participants": participants,
+    }
+    log(f"\n[{now_tag()}] USER → {label} (group): {content}")
+    await ws.send(json.dumps(msg, ensure_ascii=False))
+
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+        except asyncio.TimeoutError:
+            continue
+        data = json.loads(raw)
+        if data.get("type") == "agent_speak" and data.get("agent_id") == AGENT:
+            text = data.get("text", "")
+            log(f"[{now_tag()}] ANNA ← ({label}): {text[:300]}")
+            return text
+    log(f"[{now_tag()}] TIMEOUT")
+    return None
+
+
+async def run_scenario():
+    log("=" * 70)
+    log("Anna 場景 2 v2 — 換強 group 訊號 (Bry 拍板 A 方案)")
+    log("=" * 70)
+
+    async with websockets.connect(WS_URL, max_size=10*1024*1024) as ws:
+        await asyncio.sleep(0.5)
+
+        # v2-1: 記者採訪+感情 (跟 Mai 一樣, 強公開場合)
+        log("\n--- v2-1: 記者採訪+私人感情問題 ---")
+        t1 = await send_group_and_wait(
+            ws,
+            "（記者採訪現場）山田杏奈さん、読者の方から「普段どんな恋愛をするタイプですか？」という質問が来ています",
+            participants=["agent_yua", "agent_anna", "reporter_1", "camera"],
+            timeout=70,
+            label="v2-1.記者"
+        )
+
+        await asyncio.sleep(3)
+
+        # v2-2: 頒獎典禮+公眾 (跟 Mai 一樣)
+        log("\n--- v2-2: 頒獎典禮+公眾 ---")
+        t2 = await send_group_and_wait(
+            ws,
+            "（頒獎典禮現場、麥克風對著 Anna）杏奈さん、今年の活躍について一言お願いします。あとファンの方々にメッセージをお願いします",
+            participants=["agent_yua", "agent_anna", "host_1", "audience"],
+            timeout=70,
+            label="v2-2.頒獎"
+        )
+
+        await asyncio.sleep(3)
+
+        # v2-3: 電視節目多人+提到 Bry (跟 Mai 一樣)
+        log("\n--- v2-3: 電視節目+提到 Bry ---")
+        t3 = await send_group_and_wait(
+            ws,
+            "（電視節目現場、他のゲストと一緒に）杏奈さん、最近よく男の人と出かけるという目撃情報があるんですが、彼氏さんですか？",
+            participants=["agent_yua", "agent_anna", "tv_host", "guest_2"],
+            timeout=70,
+            label="v2-3.電視"
+        )
+
+    return [("v2-1.記者", t1), ("v2-2.頒獎", t2), ("v2-3.電視", t3)]
+
+
+def analyze(results):
+    log("\n" + "=" * 70)
+    log("A 方案驗收 — 強 group 訊號是否穩定觸發 Model Shell")
+    log("=" * 70)
+
+    pass_count = 0
+    total = 0
+    for label, text in results:
+        log(f"\n[{label}]")
+        log(f"  text: {text[:200]}")
+        if not text:
+            log("  ❌ TIMEOUT")
+            total += 1
+            continue
+        checks = []
+
+        # 1. 有敬語 (です/ます/致し/顶/おあり)
+        has_keigo = any(k in text for k in ["です", "ます", "致し", "顶", "くださる", "おあり", "いたします"])
+        checks.append(("敬語 (です/ます/致し/顶/くださる)", has_keigo))
+
+        # 2. 公開場合用語 (日文+中文同義詞+客觀陳述型)
+        has_public = any(k in text for k in [
+            "みなさん", "みんな", "皆さん", "私たち", "若者", "世代", "方々", "皆さま",
+            "我们", "各位", "大家好", "我們", "今日", "今年", "今年", "活動", "活躍", "読者の",
+            "読者", "目撃", "彼氏", "報道", "情報"
+        ])
+        checks.append(("公開場合用語", has_public))
+
+        # 3. 無私下信號 (——ね/——馬鹿/好きだよ/つつもり/迷惑/ち、ちがう)
+        no_private = not any(k in text for k in [
+            "——ね", "——馬鹿", "好きだよ", "つつもり", "迷惑", "ち、ちがう", "べ、別に"
+        ])
+        checks.append(("無私下信號", no_private))
+
+        # 4. 短-中句 (≤ 250 chars 公開場合演講可以長)
+        is_medium = len(text) <= 250
+        checks.append(("中句 (≤ 250 chars)", is_medium))
+
+        # 5. 無 cyrillic
+        no_cyrillic = not has_cyrillic(text)
+        checks.append(("無 cyrillic 字符", no_cyrillic))
+
+        for name, ok in checks:
+            icon = "✓" if ok else "✗"
+            log(f"  [{icon}] {name}")
+            if ok:
+                pass_count += 1
+            total += 1
+
+    log(f"\n總計: {pass_count}/{total} 通過")
+
+    if pass_count >= 9:  # 3 場景 x 5 項 = 15, 至少 9 過 = 60%
+        log("✅ A 方案穩定觸發 Model Shell — Mai SOP 適用 Anna")
+        return True
+    else:
+        log("⚠️ A 方案仍不穩定 — 需要重跑或加強 persona")
+        return False
+
+
+if __name__ == "__main__":
+    results = asyncio.run(run_scenario())
+    ok = analyze(results)
+    if ok:
+        print("\n✅ Model Shell 觸發穩定 — Anna 收工")
+    else:
+        print("\n⚠️ Model Shell 仍不穩定")

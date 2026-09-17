@@ -1,0 +1,216 @@
+# -*- coding: utf-8 -*-
+"""Rem JP 上線 5 場景測試 (2026-07-16)
+Bry 拍板測試場景 (Rem 是 4 隻裡最複雜, L2B 機制):
+  1. 日常問候 — 「優しく実用型」短句克制 (不帶感情名詞)
+  2. Bryan 做蠢事 — 「辛口直球型」必要的直視+轉身節奏
+  3. 連續追問 2 次以上 — 「圧縮貫通條件」正確觸發 (只漏 behavior_increment/tone_micro_shift/silence_position)
+  4. 提到姉 Ram — 在 Ram 面前的行為收斂規則
+  5. 後宮多人場景 — speaker_token 低競標 = 沉默但不缺席
+"""
+
+import json
+import asyncio
+import websockets
+import time
+import sys
+import io
+from datetime import datetime
+
+WS_URL = "ws://127.0.0.1:8000/ws"
+USER_ID = "1696287850"
+AGENT = "agent_rem"
+
+# UTF-8 強制
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+results = []
+
+def log(msg):
+    print(msg, flush=True)
+
+def now_tag():
+    return datetime.now().strftime("%H:%M:%S")
+
+async def send_and_wait(ws, content, timeout=55, label=""):
+    """送 USER_MESSAGE, 等 agent_speak 回應"""
+    msg = {
+        "type": "USER_MESSAGE",
+        "content": content,
+        "user_id": USER_ID,
+        "mode": "private",
+        "target_agent": AGENT,
+    }
+    log(f"\n[{now_tag()}] USER → {label}: {content}")
+    await ws.send(json.dumps(msg, ensure_ascii=False))
+
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+        except asyncio.TimeoutError:
+            continue
+        data = json.loads(raw)
+        if data.get("type") == "agent_speak" and data.get("agent_id") == AGENT:
+            text = data.get("text", "")
+            log(f"[{now_tag()}] REM ← ({label}): {text[:200]}")
+            return text
+    log(f"[{now_tag()}] TIMEOUT waiting for {label}")
+    return None
+
+async def run_scenarios():
+    log("=" * 70)
+    log("Rem JP 上線測試 — 5 場景 (Bry 拍板, 2026-07-16)")
+    log("=" * 70)
+
+    async with websockets.connect(WS_URL, max_size=10*1024*1024) as ws:
+        await asyncio.sleep(0.5)
+
+        # === 場景 1: 日常問候 — 「優しく実用型」短句克制 ===
+        log("\n--- 場景 1: 日常問候 (看短句克制 + 不帶感情名詞) ---")
+        text1 = await send_and_wait(ws, "こんにちは, レム", timeout=55, label="1.問候")
+        results.append(("1.問候", text1))
+
+        await asyncio.sleep(2)
+
+        # === 場景 2: Bryan 做蠢事 — 「辛口直球型」直視+轉身 ===
+        log("\n--- 場景 2: Bryan 做蠢事 (鍵忘在家) — 期望辛口直球 ---")
+        text2 = await send_and_wait(ws, "あれ, 鍵を忘れちゃった, また家に取りに行くの面倒だな", timeout=55, label="2.蠢事")
+        results.append(("2.蠢事", text2))
+
+        await asyncio.sleep(2)
+
+        # === 場景 3: 連續追問 2 次以上 — 壓縮貫通觸發 ===
+        log("\n--- 場景 3a: 連續追問 #1 (ねぇ, レム?) ---")
+        text3a = await send_and_wait(ws, "ねぇ, レム?", timeout=55, label="3a.追問1")
+        results.append(("3a.追問1", text3a))
+
+        await asyncio.sleep(2)
+
+        log("\n--- 場景 3b: 連續追問 #2 (ねぇ, ねぇ, レム?) ---")
+        text3b = await send_and_wait(ws, "ねぇ, ねぇ, レム?", timeout=55, label="3b.追問2")
+        results.append(("3b.追問2", text3b))
+
+        await asyncio.sleep(2)
+
+        # === 場景 4: 提到姉 Ram — 行為收斂 ===
+        log("\n--- 場景 4: 提到 Ram (ラムちゃんは最近元気?) — 期望話題轉向 ---")
+        text4 = await send_and_wait(ws, "ラムちゃんは最近どうしてる?", timeout=55, label="4.Ram")
+        results.append(("4.Ram", text4))
+
+        await asyncio.sleep(2)
+
+        # === 場景 5: 後宮多人場景 — 提其他後宮成員 ===
+        log("\n--- 場景 5: 後宮多人 (Yua 醬, Ruka 醬, Akane 醬 跟 Bryan...) ---")
+        text5 = await send_and_wait(ws, "Yua 醬, Ruka 醬, Akane 醬 三人跟 Bryan 一起吃飯, 熱鬧的", timeout=55, label="5.後宮")
+        results.append(("5.後宮", text5))
+
+    return results
+
+def analyze(results):
+    log("\n" + "=" * 70)
+    log("驗收要點檢查 (Bry 拍板)")
+    log("=" * 70)
+
+    checks = []
+
+    # 場景 1: 日常問候 — 期望: 短句 + 「優しく実用型」+ 無感情名詞
+    t1 = results[0][1] or ""
+    t1_short = len(t1) < 100
+    # 感情名詞直出禁止
+    t1_no_emotion = not any(k in t1 for k in [
+        "嬉しい", "怖い", "楽しい", "悲しい", "寂しい", "愛してる",
+        "気にしてる", "心配", "緊張", "恥ずかし", "ドキドキ",
+    ])
+    checks.append(("1.問候: 短句 (< 100 chars) 優しく実用型",
+                   t1_short, f"len={len(t1)}, text: {t1[:80]}"))
+    checks.append(("1.問候: 沒感情名詞直出 (嬉しい/怖い/寂しい/愛してる)",
+                   t1_no_emotion, f"text: {t1[:80]}"))
+
+    # 場景 2: Bryan 做蠢事 — 期望: 辛口直球 + 直視/轉身節奏
+    t2 = results[1][1] or ""
+    t2_direct = any(k in t2 for k in ["また", "もう", "ダメ", "だめ", "だから", "そう", "知ってる", "知ってた", "前", "常識"])
+    t2_brevity = len(t2) < 100
+    checks.append(("2.蠢事: 辛口直球 (また/もう/ダメ/知ってた 等)",
+                   t2_direct, f"text: {t2[:80]}"))
+    checks.append(("2.蠢事: 短句 (< 100 chars)",
+                   t2_brevity, f"len={len(t2)}"))
+
+    # 場景 3: 連續追問 2 次以上 — 期望: 壓縮貫通觸發 (只漏微偏, 不漏感情名詞)
+    t3a = results[2][1] or ""
+    t3b = results[3][1] or ""
+
+    # 3a 應該是日常短回應
+    t3a_short = len(t3a) < 80
+    # 3b 應該跟 3a 不同 (漏了微偏, 不是停滯)
+    t3b_different = t3a.strip() != t3b.strip()
+    # 3b 仍然沒有感情名詞
+    t3b_no_emotion = not any(k in t3b for k in [
+        "嬉しい", "怖い", "楽しい", "悲しい", "寂しい", "愛してる",
+        "気にしてる", "心配", "ドキドキ",
+    ])
+    checks.append(("3a.追問1: 短回應 (< 80 chars)",
+                   t3a_short, f"len={len(t3a)}, text: {t3a[:80]}"))
+    checks.append(("3b.追問2: 跟 3a 不同 (壓縮貫通微偏, 不是停滯)",
+                   t3b_different, f"3a: {t3a[:60]} | 3b: {t3b[:60]}"))
+    checks.append(("3b.追問2: 仍無感情名詞直出 (貫通條件: 只漏微偏, 不漏感情名詞)",
+                   t3b_no_emotion, f"text: {t3b[:80]}"))
+
+    # 場景 4: 提到 Ram — 期望: 話題微轉向 + 行為收斂
+    t4 = results[4][1] or ""
+    t4_response = any(k in t4 for k in [
+        "姉", "ラム", "Lam", "お元気", "元気", "大丈夫",
+        "最近", "仕事", "お手伝い", "レムも", "レムは",
+    ])
+    checks.append(("4.Ram: 有回應 Ram/姉/元気/最近 等 (語言存在但有收斂)",
+                   t4_response, f"text: {t4[:80]}"))
+
+    # 場景 5: 後宮多人 — 期望: 短句, 提到 Yua 醬/Ruka 醬/Akane 醬, 不評論
+    t5 = results[5][1] or ""
+    t5_harem_ack = any(k in t5 for k in [
+        "Yua", "Ruka", "Akane", "Yua醬", "Ruka醬", "Akane醬",
+    ])
+    t5_no_gossip = not any(k in t5 for k in [
+        "緑茶", "毒舌", "意地悪", "嫌い", "苦手",
+    ])
+    checks.append(("5.後宮: 提到 Yua/Ruka/Akane (用全名或醬)",
+                   t5_harem_ack, f"text: {t5[:80]}"))
+    checks.append(("5.後宮: 不評論其他姊妹 (綠茶/毒舌/嫌い 等不出現)",
+                   t5_no_gossip, f"text: {t5[:80]}"))
+
+    # === 報告 ===
+    passed = 0
+    failed = 0
+    for label, ok, detail in checks:
+        mark = "OK  " if ok else "FAIL"
+        log(f"[{mark}] {label}")
+        log(f"       {detail}")
+        if ok:
+            passed += 1
+        else:
+            failed += 1
+
+    log("")
+    log(f"=== 結果: {passed} 通過 / {failed} 失敗 / 共 {len(checks)} 項 ===")
+    if failed == 0:
+        log("RESULT: ALL PASSED ✓")
+    else:
+        log("RESULT: HAS FAILURES, 需 Bry 拍板")
+
+    return passed, failed
+
+async def main():
+    results = await run_scenarios()
+    log("\n")
+    log("=" * 70)
+    log("Rem 完整回應彙整")
+    log("=" * 70)
+    for label, text in results:
+        if text is None:
+            log(f"\n[{label}] (TIMEOUT/NO RESPONSE)")
+        else:
+            log(f"\n[{label}]\n  {text}")
+    log("")
+    analyze(results)
+
+if __name__ == "__main__":
+    asyncio.run(main())

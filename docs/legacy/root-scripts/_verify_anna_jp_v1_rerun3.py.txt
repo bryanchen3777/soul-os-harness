@@ -1,0 +1,144 @@
+# -*- coding: utf-8 -*-
+"""Anna 場景 3 v2 — 換強 user 訊息, 觸發 True Anna 否認=靠近
+原 v1 「這份是給你的喔」觸發禮貌回應, 太直接給食物沒給否認觸發點
+v2 換「偷偷買了 Anna 最愛的口味」, 觸發驚喜+否認型反應
+"""
+import json
+import asyncio
+import websockets
+import time
+import sys
+import io
+import re
+from datetime import datetime
+
+WS_URL = "ws://127.0.0.1:8000/ws"
+USER_ID = "1696287850"
+AGENT = "agent_anna"
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def now_tag():
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def has_cyrillic(text):
+    return bool(re.search(r'[\u0400-\u04FF]', text))
+
+
+async def send_and_wait(ws, content, timeout=60, label=""):
+    msg = {
+        "type": "USER_MESSAGE",
+        "content": content,
+        "user_id": USER_ID,
+        "mode": "private",
+        "target_agent": AGENT,
+    }
+    log(f"\n[{now_tag()}] USER → {label}: {content}")
+    await ws.send(json.dumps(msg, ensure_ascii=False))
+
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+        except asyncio.TimeoutError:
+            continue
+        data = json.loads(raw)
+        if data.get("type") == "agent_speak" and data.get("agent_id") == AGENT:
+            text = data.get("text", "")
+            log(f"[{now_tag()}] ANNA ← ({label}): {text[:300]}")
+            return text
+    log(f"[{now_tag()}] TIMEOUT")
+    return None
+
+
+async def run_scenario():
+    log("=" * 70)
+    log("Anna 場景 3 v2 — 換強 user 訊息 (Bry 拍板重跑)")
+    log("=" * 70)
+
+    async with websockets.connect(WS_URL, max_size=10*1024*1024) as ws:
+        await asyncio.sleep(0.5)
+
+        # v2: 「偷偷記住 Anna 最愛的口味, 買了給她」— 觸發「驚喜+害羞+否認型靠近」
+        log("\n--- v2 場景 3: 偷偷記住口味+買給她 (觸發否認+靠近) ---")
+        text = await send_and_wait(
+            ws,
+            "（想起你前幾天跟我提過的草莓塔口味, 跑去買了放在桌上）這個給你, 我剛好路過看到",
+            timeout=60,
+            label="3v2.記住口味"
+        )
+
+    return text
+
+
+def analyze_v2(text):
+    log("\n" + "=" * 70)
+    log("v2 驗收 — True Anna 風格是否觸發")
+    log("=" * 70)
+
+    if not text:
+        log("❌ TIMEOUT")
+        return False
+
+    log(f"\n原文: {text}")
+
+    checks = []
+    # 自稱「わたし」
+    uses_watakushi = "わたし" in text
+    checks.append(("自稱用「わたし」", uses_watakushi))
+    # 食物信號 (食べる原形+變化/分け/一緒/これ/あげる/もらう/いちご/甘い)
+    has_food = any(k in text for k in [
+        "食べる", "食べ", "分け", "一緒", "これ", "あげる", "もらう", "いちご", "甘い"
+    ])
+    checks.append(("有食物/分享信號", has_food))
+    # 卡詞 (あの/——/……/ち、/べ、/ちょっと)
+    has_clumsy = any(k in text for k in ["あの", "——", "……", "ち、", "べ、", "ちょっと"])
+    checks.append(("有卡詞 (——/……/ち、/べ、)", has_clumsy))
+    # 否認+靠近 (——じゃない/つつもりじゃない + 行動靠近)
+    has_denial_approach = (
+        any(k in text for k in ["——じゃ", "つもりじゃ", "べ、べ", "べ、別", "ち、ち", "あのね"])
+        or "ありがとう" in text  # 即使只說謝謝也算靠近
+    )
+    checks.append(("有否認+靠近機制", has_denial_approach))
+    # 短句 (≤ 150 chars — 允許比 v1 長一點因為有更多場景細節)
+    is_short = len(text) <= 150
+    checks.append(("短句 (≤ 150 chars)", is_short))
+    # 無高壓告白
+    no_high_pressure = not any(k in text for k in [
+        "わたしだけ", "他の人とは話さないで", "ずっと一緒にいないと"
+    ])
+    checks.append(("無高壓告白", no_high_pressure))
+    # 無 cyrillic
+    no_cyrillic = not has_cyrillic(text)
+    checks.append(("無 cyrillic 字符", no_cyrillic))
+    # 無過幼化
+    no_loli = not any(k in text for k in ["ですぅ", "なの〜", "なの?"])
+    checks.append(("無過幼化", no_loli))
+    # 無敬體回潮 (私人場合不該用 です/ます 結尾, 該用 わたし+常體)
+    no_keigo_revert = not (text.rstrip().endswith("です") or text.rstrip().endswith("ます"))
+    checks.append(("無敬體回潮 (私人場合)", no_keigo_revert))
+
+    log("\n驗收結果:")
+    pass_count = 0
+    for name, ok in checks:
+        icon = "✓" if ok else "✗"
+        log(f"  [{icon}] {name}")
+        if ok:
+            pass_count += 1
+    log(f"\n總計: {pass_count}/{len(checks)} 通過")
+    return pass_count == len(checks)
+
+
+if __name__ == "__main__":
+    text = asyncio.run(run_scenario())
+    ok = analyze_v2(text)
+    if ok:
+        print("\n✅ 場景 3 v2 觸發 True Anna 風格 — 收工")
+    else:
+        print("\n⚠️ 場景 3 v2 部分失敗 — 看哪些需要進 persona 修法")

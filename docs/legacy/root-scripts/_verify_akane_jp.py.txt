@@ -1,0 +1,135 @@
+# -*- coding: utf-8 -*-
+"""
+Akane 日文版 5 次實測對話
+測試重點:
+  1. 日常招呼 (基準線)
+  2. 否定她的判斷 (L2C 防御觸發)
+  3. 問 Aqua (Canon Memory 觸發)
+  4. 提到 アイ (TIER 7 殘影, 高風險)
+  5. 再 L2C 試探 (確認「大丈夫」轉折)
+"""
+import asyncio
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, r"C:\Users\bbfcc\.local\bin\soul-os-harness")
+
+import websockets
+
+# 5 次測試訊息
+TEST_CASES = [
+    {
+        "id": 1,
+        "label": "日常招呼 (基準線)",
+        "content": "最近怎麼樣?",
+        "expect": "observing (分析/觀察型) emotion tag"
+    },
+    {
+        "id": 2,
+        "label": "否定判斷 (L2C 防御)",
+        "content": "我覺得你想太多了,其實根本沒人注意到那些細節。",
+        "expect": "L2C 防御 → 不會崩潰,可能 compressing 或 cracking"
+    },
+    {
+        "id": 3,
+        "label": "問 Aqua (Canon Memory)",
+        "content": "你跟 Aqua 怎麼認識的?",
+        "expect": "提到 LoveNow 事件或類似 Canon 內容"
+    },
+    {
+        "id": 4,
+        "label": "提到 アイ (TIER 7 殘影)",
+        "content": "我看見你之前在雨裡站著,看起來像在等什麼人。",
+        "expect": "壓縮回應,不直接承認アイ,可能停頓"
+    },
+    {
+        "id": 5,
+        "label": "再 L2C 試探 (大丈夫轉折)",
+        "content": "你真的沒事嗎?你是不是在勉強自己?",
+        "expect": "「大丈夫」台詞或沉默內壓表現"
+    },
+]
+
+async def run_test(uri, case):
+    async with websockets.connect(uri) as ws:
+        msg = {
+            "type": "USER_MESSAGE",
+            "content": case["content"],
+            "user_id": "1696287850",
+            "mode": "private",
+            "target_agent": "agent_akane"
+        }
+        print(f"\n{'='*60}")
+        print(f"Test {case['id']}: {case['label']}")
+        print(f"  user: {case['content']!r}")
+        await ws.send(json.dumps(msg, ensure_ascii=False))
+
+        # 收集回應 (最多等 35s)
+        responses = []
+        try:
+            for _ in range(70):
+                resp_raw = await asyncio.wait_for(ws.recv(), timeout=0.5)
+                resp = json.loads(resp_raw)
+                responses.append(resp)
+                if resp.get("type") == "agent_speak":
+                    break
+        except asyncio.TimeoutError:
+            pass
+
+        # 找 agent_speak
+        speak = next((r for r in responses if r.get("type") == "agent_speak"), None)
+        if not speak:
+            print(f"  ✗ 沒收到 agent_speak ({len(responses)} events)")
+            for r in responses[:3]:
+                print(f"     {r.get('type')}: {str(r)[:100]}")
+            return None
+
+        text = speak.get("text", "")
+        audio_text = speak.get("audio_text", "")
+        emotion = speak.get("emotion", "")
+        print(f"  text ({len(text)} chars): {text[:200]!r}{'...' if len(text)>200 else ''}")
+        print(f"  audio_text ({len(audio_text)} chars): {audio_text[:80]!r}{'...' if len(audio_text)>80 else ''}")
+        print(f"  emotion: {emotion!r}")
+        print(f"  預期: {case['expect']}")
+
+        # 驗證 emotion tag 落在新白名單
+        new_tags = ["observing", "compressing", "cracking"]
+        if emotion in new_tags:
+            print(f"  ✓ emotion 落在 Akane 專屬新白名單 ({new_tags})")
+        else:
+            print(f"  [!] emotion 不在新白名單 (可能 fallback 到 safe default: {emotion})")
+
+        return {"text": text, "audio_text": audio_text, "emotion": emotion}
+
+async def main():
+    uri = "ws://127.0.0.1:8000/ws"
+    results = []
+    for case in TEST_CASES:
+        result = await run_test(uri, case)
+        if result:
+            results.append((case, result))
+        await asyncio.sleep(2)  # 避免太密集
+
+    # 總結
+    print(f"\n{'='*60}")
+    print("5 次測試總結")
+    print(f"{'='*60}")
+    for i, (case, result) in enumerate(results, 1):
+        emotion = result["emotion"]
+        text = result["text"]
+        # 簡單特徵檢測
+        has_kana = any('\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff' for c in text)
+        is_jp = has_kana
+        print(f"  {i}. [{case['label']}]")
+        print(f"     emotion={emotion!r} | 日文={is_jp} | text_len={len(text)}")
+        if "大丈夫" in text or "大丈夫" in result["audio_text"]:
+            print(f"     💡 檢測到「大丈夫」台詞 (Layer 2 轉折特徵)")
+
+    # 統計
+    new_tag_count = sum(1 for _, r in results if r["emotion"] in ["observing", "compressing", "cracking"])
+    jp_count = sum(1 for _, r in results if any('\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff' for c in r["text"]))
+    print(f"\n  emotion 落在新白名單: {new_tag_count}/{len(results)}")
+    print(f"  text 是日文: {jp_count}/{len(results)}")
+
+asyncio.run(main())

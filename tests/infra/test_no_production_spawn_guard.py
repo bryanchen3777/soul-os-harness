@@ -41,6 +41,28 @@ Scan scope
 Repo-root ``*.py`` **plus** ``tests/**/*.py``. The root level is included on
 purpose: ``pytest -q tests`` never collected the incident files, so a
 ``tests/``-only scanner would be blind to its own precedent.
+
+R5 — the structural backstop (TEST-INFRA-COLLECTION-LEAK-1)
+----------------------------------------------------------
+R1–R3 match on the *string literals* of a spawn call, so they are bypassable by
+construction: put the command in a variable, or split the token
+(``"run_" + "server.py"``), and no literal ever carries the banned word. **R5
+closes that whole surface categorically**: *every* ``subprocess.*`` /
+``os.system`` / ``os.popen`` / ``os.spawn*`` call in the scanned tree must be
+explicitly allowlisted by ``(file, line)`` with a stated reason, or this module
+fails — regardless of what the arguments look like. The allowlist is size-locked
+by ``EXPECTED_SUBPROCESS_ALLOWLIST_SIZE`` and additionally checked for *stale*
+entries (a rule that no longer matches reality is a dead rule and also fails).
+
+R5 additionally resolves static import aliases (``import subprocess as sp``,
+``from subprocess import run as r``) so that renaming the module locally does not
+hide a spawn site.
+
+Known residual gaps — stated honestly, not covered by R5: a module obtained
+without a static import binding (``importlib``, ``getattr(subprocess, "run")``,
+``ctypes``), an interpreter reached through a non-Python shell, or an import form
+this resolver does not map. R5 raises the cost of a reintroduction; it is not a
+sandbox.
 """
 from __future__ import annotations
 
@@ -84,10 +106,21 @@ ADDRESS_RE = re.compile(
 )
 
 #: Minimum files the scanner must see; a scan that walks nothing fails loudly.
-MIN_SCANNED_FILES = 300
+#: Lowered 300 → 280 by TEST-INFRA-COLLECTION-LEAK-1 (D4): that ticket archived and
+#: removed the 26 untracked one-off ``tests/_verify_*.py`` drivers, so the scanned
+#: inventory legitimately shrank from 318 to 292 files. The floor stays a
+#: "the scan walked nothing" tripwire (a broken scan yields ~0, not 280), not a
+#: tripwire on ordinary file-count changes.
+MIN_SCANNED_FILES = 280
 
-#: How many allowlist entries exists today. Any growth is a deliberate act.
-EXPECTED_ADDRESS_ALLOWLIST_SIZE = 28
+#: How many allowlist entries exist today. Any growth is a deliberate act.
+#: TEST-INFRA-COLLECTION-LEAK-1 (D4): 28 → 9. The 19 removed entries existed only
+#: for the archived ``tests/_verify_*.py`` drivers (which are gone), and two
+#: survivors were re-keyed because this ticket shifted their line numbers
+#: (``tests/test_private_chat.py`` 31/32 → 29/30 after the ``--server`` spawn path
+#: was deleted; ``tests/test_infra_no_pattern_process_kill.py`` 398 → 425 after the
+#: D3 assertion was inverted). No dead rule is left behind.
+EXPECTED_ADDRESS_ALLOWLIST_SIZE = 9
 EXPECTED_KILL_ALLOWLIST_SIZE = 1
 
 
@@ -122,41 +155,23 @@ ADDRESS_ALLOWLIST: Dict[Tuple[str, int], str] = {
     #    they are now — this ticket neither creates nor fixes them).
     ("tests/test_identity.py", 10): "pre-existing live WS probe of the running service (read-only)",
     ("tests/test_identity.py", 11): "pre-existing live HTTP probe of the running service (read-only)",
-    ("tests/test_private_chat.py", 31): "pre-existing live probe of the running service (read-only)",
-    ("tests/test_private_chat.py", 32): "pre-existing live WS probe of the running service (read-only)",
+    ("tests/test_private_chat.py", 29): "pre-existing live probe of the running service (read-only)",
+    ("tests/test_private_chat.py", 30): "pre-existing live WS probe of the running service (read-only)",
     ("tests/test_plan_a_launcher_v1.py", 94): "pre-existing /health probe of the running service (read-only)",
     ("tests/test_server_ops_python_path_v1.py", 79): "pre-existing /health probe of the running service (read-only)",
     ("tests/clients/test_vc_perf_opt_1.py", 303): "OpenAI-compatible base URL handed to an adapter (never dialled)",
     # -- the address-pattern fixtures of the companion guard
-    ("tests/test_infra_no_pattern_process_kill.py", 398):
+    ("tests/test_infra_no_pattern_process_kill.py", 430):
         "synthetic classifier fixture (a sample source string, not a live address)",
     # -- the production-port red line in the isolated e2e harness: the port value is
     #    asserted against so that the harness REFUSES to dial it.
     ("tests/test_websocket_e2e.py", 68):
         "PRODUCTION_PORT red line: value is compared against to refuse dialling it",
-    # -- untracked one-off `_verify_*` driver scripts left in tests/ (not collected
-    #    by pytest: they do not match test_*.py). They predate this ticket and are
-    #    out of its authorised scope; listed individually so none can be added
-    #    silently, and so their removal shrinks this list deliberately.
-    ("tests/_verify_akane_jp.py", 106): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_akane_jp_v2.py", 48): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_akane_pressure.py", 51): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_anna_jp_v1.py", 19): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_anna_jp_v1_rerun2.py", 15): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_anna_jp_v1_rerun3.py", 15): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_anna_jp_v1_rerun3_v3.py", 18): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_mai_jp_v1.py", 18): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_mai_jp_v1_rerun.py", 11): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_mai_jp_v1_rerun1.py", 11): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_mai_jp_v1_rerun3.py", 11): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_miku_jp_v1.py", 25): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_post_a_live.py", 50): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_ram_jp_v1.py", 19): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_ram_jp_v2_scene3.py", 14): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_ram_jp_v2_scene3d.py", 14): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_rem_jp_v1.py", 19): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_ruka_jp_v1.py", 19): "untracked one-off live verify driver (pre-existing)",
-    ("tests/_verify_yua_jp_v1.py", 20): "untracked one-off live verify driver (pre-existing)",
+    # NOTE (TEST-INFRA-COLLECTION-LEAK-1 D4): 19 entries used to sit here, one per
+    # untracked `tests/_verify_*.py` one-off live driver. Those drivers were
+    # archived to `docs/legacy/root-scripts/_verify_*.py.txt` and deleted from
+    # `tests/`, so every entry that existed only for them was removed with them —
+    # no rule survives for a file that no longer exists.
 }
 
 #: PID-scoped kills: the repo's own convention (see
@@ -166,6 +181,65 @@ KILL_ALLOWLIST: Dict[Tuple[str, int], str] = {
     ("tests/test_ts3_official_mcp_server.py", 108):
         "PID-scoped `taskkill /PID <pid> /T /F` tree cleanup of an npx child we started",
 }
+
+#: R5 (TEST-INFRA-COLLECTION-LEAK-1 D5) — every process-spawning call site in the
+#: scanned tree, listed individually with the reason it is legitimate. R1–R3 only
+#: inspect a call's *string literals*, so a command held in a variable — or split
+#: into tokens (`"run_" + "server.py"`) — passes them unnoticed. R5 does not look at
+#: the arguments at all: an unlisted `subprocess.*` / `os.system` / `os.popen` /
+#: `os.spawn*` call site is red by construction.
+#:
+#: There is deliberately **no** directory-level, glob-level or class-level
+#: exemption here: each site is named by `(path, line)` and carries its own reason,
+#: so "temporarily" spawning a service from a new test cannot ride along on an
+#: existing waiver.
+SUBPROCESS_ALLOWLIST: Dict[Tuple[str, int], str] = {
+    ("tests/soul/test_life_thread_origins_m4.py", 981):
+        "read-only `git grep -n` evidence probe, raw bytes (shows the cp950 decode failure)",
+    ("tests/soul/test_life_thread_origins_m4.py", 993):
+        "read-only `git grep -n` probe re-run under the legacy locale decoding (the defect under test)",
+    ("tests/soul/test_life_thread_origins_m4.py", 994):
+        "read-only `git grep -n` probe re-run with utf-8/errors=replace (the fix under test)",
+    ("tests/test_crash_obs3_faulthandler_enable.py", 126):
+        "`_git_show`: read-only `git show <rev>:<path>` of an archived revision",
+    ("tests/test_crash_obs3_faulthandler_enable.py", 250):
+        "child interpreter running a tmp-written probe that only arms faulthandler and prints; "
+        "proves the handler is installed in a real process (utf-8 env forced, 300s timeout)",
+    ("tests/test_epistemic_mind_eh42.py", 322):
+        "nested `pytest -q` regression run over 3 sibling test files (read-only, cwd=repo)",
+    ("tests/test_log_backup_fix_v2.py", 244):
+        "PowerShell `PSParser::Tokenize` fed the script text on stdin — parses, never executes",
+    ("tests/test_m1_5_night_400_fix.py", 200):
+        "read-only `git log --oneline --grep=M1.5` commit-marker check",
+    ("tests/test_m3_1_phase_c.py", 756):
+        "read-only `git diff --stat <file>` frozen-file check",
+    ("tests/test_m3_world_awareness.py", 579):
+        "nested `pytest -q` regression run over 3 sibling test files, SOUL_OS_DATA_DIR removed from the child env",
+    ("tests/test_observability_completeness_1.py", 762):
+        "read-only `git diff --name-only HEAD` frozen-contract scope check",
+    ("tests/test_plan_a_launcher_v1.py", 68):
+        "v1 baseline: powershell -File against a path asserted ABSENT (skipTest() runs first when it "
+        "exists, and it does today) — the assertion IS that it fails, so nothing can be launched",
+    ("tests/test_ts3_official_mcp_server.py", 108):
+        "PID-scoped `taskkill /PID <pid> /T /F` tree cleanup of the npx child this test started",
+    ("tests/test_ts3_official_mcp_server.py", 158):
+        "PowerShell process census (read-only), timeout path only",
+    ("tests/test_ts3_official_mcp_server.py", 253):
+        "spawns the official MCP filesystem server via `npx -y` in a temp whitelist dir "
+        "(DEVNULL/PIPE, timeout; module skips itself when npx is unavailable)",
+    ("tests/test_watchdog_tg_health.py", 528):
+        "`_run_ps` runs a driver.ps1 generated into tmp_path by this very test (Windows PowerShell 5.1)",
+    ("tests/test_websocket_e2e.py", 290):
+        "isolated e2e harness: launches the TEST-ONLY launcher `tests/_ws_e2e_server.py` on an ephemeral "
+        "port with a nonce; it refuses the production port and blanks all provider keys + Telegram tokens",
+    ("tests/test_work_adapter.py", 381):
+        "spawns the node work-adapter script with a JSON request on stdin, cwd=tmp_path",
+    ("tests/test_work_adapter.py", 699):
+        "read-only `git status --porcelain -- src/work` scope-containment check",
+}
+
+#: R5 lock: the spawn allowlist may not grow (or shrink) without a deliberate edit.
+EXPECTED_SUBPROCESS_ALLOWLIST_SIZE = 19
 
 
 # ───────────────────────────────────────────────────────────
@@ -355,6 +429,104 @@ def scan_tree() -> ScanResult:
 
 
 # ───────────────────────────────────────────────────────────
+# R5 scanner — arguments-agnostic spawn inventory
+# ───────────────────────────────────────────────────────────
+
+
+class SpawnSite(NamedTuple):
+    path: str
+    lineno: int
+    kind: str
+    detail: str
+
+
+def _import_aliases(
+    tree: ast.AST,
+) -> Tuple[Dict[str, str], Dict[str, Tuple[str, str]]]:
+    """Resolve static import aliases so a renamed module cannot hide a spawn site.
+
+    ``import subprocess as sp`` → ``{"sp": "subprocess"}``;
+    ``from os import system as sh`` → ``{"sh": ("os", "system")}``.
+    """
+    modules: Dict[str, str] = {}
+    functions: Dict[str, Tuple[str, str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in SPAWN_ATTRS:
+                    modules[alias.asname or alias.name] = alias.name
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module in SPAWN_ATTRS
+        ):
+            for alias in node.names:
+                if alias.name in SPAWN_ATTRS[node.module]:
+                    functions[alias.asname or alias.name] = (node.module, alias.name)
+    return modules, functions
+
+
+def _spawn_kind(
+    call: ast.Call,
+    modules: Dict[str, str],
+    functions: Dict[str, Tuple[str, str]],
+) -> Optional[str]:
+    """``"subprocess.run"`` etc. for any recognised spawn entry point (aliases resolved)."""
+    func = call.func
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        module = modules.get(func.value.id, func.value.id)
+        if func.attr in SPAWN_ATTRS.get(module, frozenset()):
+            return f"{module}.{func.attr}"
+        return None
+    if isinstance(func, ast.Name) and func.id in functions:
+        module, attr = functions[func.id]
+        return f"{module}.{attr}"
+    return None
+
+
+def scan_spawn_sites(src: str, path: str = "<synthetic>") -> List[SpawnSite]:
+    """Every spawn call site in ``src`` — regardless of what its arguments look like.
+
+    Raises ``SyntaxError`` for unparseable source (callers must never skip it).
+    """
+    tree = ast.parse(src)
+    modules, functions = _import_aliases(tree)
+    sites: List[SpawnSite] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            kind = _spawn_kind(node, modules, functions)
+            if kind is not None:
+                detail = " ".join((ast.get_source_segment(src, node) or kind).split())
+                sites.append(SpawnSite(path, node.lineno, kind, detail[:120]))
+    return sites
+
+
+def scan_spawn_sites_in_files(
+    paths: List[Path],
+) -> Tuple[List[str], List[Tuple[str, str]], List[SpawnSite]]:
+    scanned: List[str] = []
+    unparseable: List[Tuple[str, str]] = []
+    sites: List[SpawnSite] = []
+
+    for path in paths:
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        scanned.append(rel)
+        try:
+            src = path.read_text(encoding="utf-8", errors="replace")
+            sites.extend(scan_spawn_sites(src, rel))
+        except SyntaxError as exc:
+            unparseable.append((rel, f"{exc.__class__.__name__}: {exc}"))
+
+    return scanned, unparseable, sites
+
+
+@functools.lru_cache(maxsize=1)
+def spawn_sites() -> Tuple[List[str], List[Tuple[str, str]], List[SpawnSite]]:
+    """One R5 scan per process (shared by the rule test and its inventory report)."""
+    return scan_spawn_sites_in_files(scanned_python_files())
+
+
+# ───────────────────────────────────────────────────────────
 # The guardrail itself
 # ───────────────────────────────────────────────────────────
 
@@ -444,6 +616,106 @@ def test_scanner_inventory_covers_root_and_tests():
     assert "tests/infra/test_no_production_spawn_guard.py" in files
     assert "tests/conftest.py" in files
     assert len(files) >= MIN_SCANNED_FILES, f"掃描檔數 {len(files)} < {MIN_SCANNED_FILES}"
+
+
+def test_scripts_tree_has_no_collectable_test_scripts():
+    """R4b: ``scripts/**`` must hold no ``test_*.py`` — pytest would collect them.
+
+    TEST-INFRA-COLLECTION-LEAK-1 (D1): ``scripts/`` carried 15 ``test_*.py`` scripts.
+    ``pytest -q tests`` never collected them, but a **bare** ``pytest`` at the repo
+    root did — and for three of them the module body fires on import (one posts six
+    times to a paid LLM API, two open a WebSocket to the already-running service).
+    They were renamed to ``manual_*.py`` for exactly that reason; this assertion makes
+    the rename permanent, since ``manual_*.py`` never matches ``python_files``.
+    """
+    at_scripts = sorted(
+        p.relative_to(REPO_ROOT).as_posix()
+        for p in (REPO_ROOT / "scripts").rglob("test_*.py")
+        if p.is_file()
+    )
+    assert at_scripts == [], (
+        "scripts/** 不得存在 test_*.py（裸跑 pytest 會收集，且部分在 import 時就有"
+        f"真實副作用：付費 API／對執行中的服務開 WebSocket）: {at_scripts}"
+    )
+
+
+def test_no_unlisted_process_spawn_in_scanned_tree(capsys):
+    """R5: every process-spawning call site must be explicitly allowlisted.
+
+    This is the arguments-agnostic backstop. R1–R3 read a spawn call's string
+    literals, so ``cmd = "run_" + "server.py"; subprocess.run([...cmd...])`` — or any
+    command held in a variable — slips past them (demonstrated by the auditor of
+    TEST-INFRA-ROOT-SCRIPTS-1). R5 does not inspect arguments at all: an unlisted
+    ``subprocess.*`` / ``os.system`` / ``os.popen`` / ``os.spawn*`` call is red.
+    """
+    scanned, unparseable, sites = spawn_sites()
+
+    assert not unparseable, (
+        "掃描器無法解析以下檔案（不得靜默跳過）:\n"
+        + "\n".join(f"  {p}: {e}" for p, e in unparseable)
+    )
+    assert len(scanned) >= MIN_SCANNED_FILES, (
+        f"掃描器只掃到 {len(scanned)} 個檔 (< {MIN_SCANNED_FILES})；"
+        "掃描範圍可能已損壞（負例型護欄不得靜默放行）"
+    )
+
+    with capsys.disabled():
+        print(
+            f"\n[SPAWN-GUARD-R5] scanned={len(scanned)} spawn_sites={len(sites)} "
+            f"allowlisted={len(SUBPROCESS_ALLOWLIST)}"
+        )
+
+    found = {(s.path, s.lineno) for s in sites}
+    unexpected = found - set(SUBPROCESS_ALLOWLIST)
+    assert not unexpected, (
+        f"偵測到 {len(unexpected)} 處未列管的行程衍生呼叫"
+        "（R5：不看參數內容，未列管一律紅）:\n"
+        + "\n".join(
+            f"  {s.path}:{s.lineno}  [{s.kind}]  {s.detail}"
+            for s in sites
+            if (s.path, s.lineno) in unexpected
+        )
+    )
+
+    # A rule that matches nothing is a dead rule: it silently widens the allowlist
+    # (a line shifted, a test was deleted) and would let a future offender reuse it.
+    stale = sorted(set(SUBPROCESS_ALLOWLIST) - found)
+    assert not stale, (
+        "R5 allowlist 出現死規則（該 (檔案, 行號) 上已經沒有行程衍生呼叫）:\n"
+        + "\n".join(f"  {p}:{ln}" for p, ln in stale)
+    )
+
+    assert len(SUBPROCESS_ALLOWLIST) == EXPECTED_SUBPROCESS_ALLOWLIST_SIZE, (
+        f"subprocess allowlist 大小 {len(SUBPROCESS_ALLOWLIST)} != 鎖定的 "
+        f"{EXPECTED_SUBPROCESS_ALLOWLIST_SIZE}（放寬白名單必須是刻意行為）"
+    )
+
+
+def test_r5_scanner_flags_spawns_that_r1_to_r3_cannot_see():
+    """R5's teeth: the exact bypasses R1–R3 are blind to must still be detected."""
+    path = "tests/synthetic_r5.py"
+
+    # 1. variable indirection + split token: no banned literal anywhere in the file.
+    bypass = (
+        "import subprocess\n"
+        "cmd = 'run_' + 'server' + '.py'\n"
+        "def go():\n"
+        "    return subprocess.run(['python', cmd])\n"
+    )
+    sites = scan_spawn_sites(bypass, path)
+    assert sites, "R5 漏掉『變數中介／拆分 token』的行程衍生——護欄已失效"
+    assert sites[0].kind == "subprocess.run"
+
+    # 2. an aliased module import must not hide the site.
+    aliased = "import subprocess as sp\nsp.Popen(['node', 'x.js'])\n"
+    assert [s.kind for s in scan_spawn_sites(aliased, path)] == ["subprocess.Popen"]
+
+    # 3. a from-import of the entry point itself must not hide the site.
+    from_imported = "from os import system as sh\nsh('echo hi')\n"
+    assert [s.kind for s in scan_spawn_sites(from_imported, path)] == ["os.system"]
+
+    # 4. own-handle process management is not a spawn call (no false red).
+    assert not scan_spawn_sites("proc.kill()\nproc.terminate()\n", path)
 
 
 # ───────────────────────────────────────────────────────────

@@ -1,0 +1,111 @@
+# -*- coding: utf-8 -*-
+"""
+hotfix #13 線上驗證: 透過 WS 發中文 user message, 確認:
+1. translate 模組載入新 timeout (20s)
+2. Layer 3 E 兜底不再加「(中文翻譯生成失敗,僅有語音版)」
+3. 純中文 LLM 救不回 silent failure
+"""
+import asyncio
+import json
+import sys
+from pathlib import Path
+
+# 確認當前 server 跑的是新模組
+sys.path.insert(0, r"C:\Users\bbfcc\.local\bin\soul-os-harness")
+
+# 1. 確認 translate.py 模組是新版本
+print("=" * 60)
+print("1. translate.py 模組版本驗證")
+print("=" * 60)
+from src.llm.translate import TRANSLATE_TIMEOUT_SECS
+print(f"   TRANSLATE_TIMEOUT_SECS = {TRANSLATE_TIMEOUT_SECS}")
+assert TRANSLATE_TIMEOUT_SECS == 20.0, f"Expected 20.0, got {TRANSLATE_TIMEOUT_SECS}"
+print("   ✓ translate.py 已是新版本 (20s timeout)")
+
+# 2. 確認 proxy.py 模組是新版本
+print()
+print("=" * 60)
+print("2. proxy.py 模組版本驗證")
+print("=" * 60)
+proxy_src = Path(r"C:\Users\bbfcc\.local\bin\soul-os-harness\src\llm\proxy.py").read_text(encoding="utf-8")
+assert "cleaned_text = f\"{extracted_ja}\\n(中文翻譯生成失敗" not in proxy_src
+assert "cleaned_text = extracted_ja" in proxy_src
+assert '"(LLM 回應解析失敗,請重試)"' not in proxy_src
+print("   ✓ Layer 3 E 兜底不再加失敗註解")
+print("   ✓ 純中文 silent failure (text 空字串)")
+
+# 3. WS 線上驗證: 發中文 user message
+print()
+print("=" * 60)
+print("3. WS 線上驗證: 發中文 user message")
+print("=" * 60)
+
+try:
+    import websockets
+except ImportError:
+    print("   ✗ websockets 沒裝, 跳過 WS probe")
+    sys.exit(0)
+
+async def probe():
+    uri = "ws://127.0.0.1:8000/ws"
+    async with websockets.connect(uri) as ws:
+        # 發中文 user message 給 mahiru
+        msg = {
+            "type": "USER_MESSAGE",
+            "content": "你在幹嘛",
+            "user_id": "1696287850",
+            "mode": "private",
+            "target_agent": "agent_mahiru"
+        }
+        await ws.send(json.dumps(msg, ensure_ascii=False))
+        print(f"   sent: {msg}")
+
+        # 等 25s 收集回應
+        responses = []
+        try:
+            for _ in range(30):
+                resp_raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                resp = json.loads(resp_raw)
+                responses.append(resp)
+                if resp.get("type") == "agent_speak":
+                    break
+        except asyncio.TimeoutError:
+            pass
+
+        # 找 agent_speak
+        speak = next((r for r in responses if r.get("type") == "agent_speak"), None)
+        if not speak:
+            print("   ✗ 沒收到 agent_speak, 看看其他 events:")
+            for r in responses[:5]:
+                print(f"     - {r.get('type')}: {str(r)[:200]}")
+            return False
+
+        text = speak.get("text", "")
+        print(f"   text = {text!r}")
+
+        # 驗證 hotfix #13 改動生效
+        if "(中文翻譯生成失敗" in text:
+            print("   ✗ FAIL: 還在加「(中文翻譯生成失敗...」註解")
+            return False
+        if "(LLM 回應解析失敗,請重試)" in text:
+            print("   ✗ FAIL: 還在吐「(LLM 回應解析失敗,請重試)」")
+            return False
+        print("   ✓ text 不含任何「失敗」系統提示")
+
+        # 確認 text 是日文 (有假名) 或空 (silent failure)
+        has_kana = any('\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff' for c in text)
+        if not has_kana and text:
+            print(f"   ⚠ text 不是日文 ({text!r}), 可能是 LLM 吐的中文")
+            return False
+        if has_kana:
+            print("   ✓ text 是日文 (有假名)")
+        elif not text:
+            print("   ✓ text 是 silent failure 空字串")
+        return True
+
+ok = asyncio.run(probe())
+print()
+print("=" * 60)
+print("ALL LIVE CHECKS" + (" ✓" if ok else " ✗"))
+print("=" * 60)
+sys.exit(0 if ok else 1)

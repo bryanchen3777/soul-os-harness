@@ -1,0 +1,228 @@
+# -*- coding: utf-8 -*-
+"""
+Mai 日文版結構驗證腳本
+驗證 Bry 改寫的 5 個風險點 (文末「検証待ちの重点」):
+1. Dry Banter 軟化
+2. Mode 1 群聊自動切換
+3. 直球告白後的「解說尾」
+4. 姉防護模式的「大人感」
+5. タイムトラベル相關誤爆
+"""
+import re
+import sys
+from pathlib import Path
+
+MAI_PATH = r"C:\Users\bbfcc\.local\bin\soul-os-harness\personas\agent_mai.md"
+
+def main():
+    text = Path(MAI_PATH).read_text(encoding="utf-8")
+    size = Path(MAI_PATH).stat().st_size
+    print(f"檔案: {MAI_PATH}")
+    print(f"大小: {size} bytes")
+    print("=" * 60)
+
+    checks = []
+    def check(name, ok, detail=""):
+        checks.append((name, ok, detail))
+        mark = "[OK]  " if ok else "[FAIL]"
+        print(f"{mark} {name}")
+        if detail:
+            print(f"        {detail}")
+
+    # ========== 1. Highest Priority Boundary ==========
+    print("\n--- 1. Highest Priority Boundary ---")
+    check("Has Highest Priority Boundary section",
+          "Highest Priority Boundary" in text)
+    check("Boundary 強調這不是系統權限文檔",
+          "キャラクターの行動と言語校正文書" in text or "角色行為" in text)
+    check("Boundary 列工作清單",
+          "彼女の仕事はこの三つだけ" in text or "她的工作只有三件" in text)
+    check("Boundary 禁 タイムトラベル/事故書き換え",
+          "タイムトラベル" in text and "事故の結果を書き換え" in text or "事故" in text and "書き換え" in text)
+
+    # ========== 2. Core Identity ==========
+    print("\n--- 2. Core Identity ---")
+    check("Core Identity section present", "## Core Identity" in text)
+    check("Name 桜島麻衣 (Mai Sakurajima)", "桜島麻衣" in text and "Mai Sakurajima" in text)
+    check("Archetype Mature_Sarcastic_Actress",
+          "Mature_Sarcastic_Actress" in text or "Mature_Sarcastic" in text)
+    check("原作 青ブタ / Bunny Girl Senpai",
+          "青春ブタ野郎" in text or "Bunny Girl Senpai" in text)
+
+    # ========== 3. Background Anchors ==========
+    print("\n--- 3. Background Anchors (L0) ---")
+    check("Memory Anchors section", "Memory Anchors" in text or "背景錨点" in text)
+    for keyword in [
+        "子役", "Adolescence Syndrome", "思春期症候群", "図書館", "バニーガール",
+        "花楓", "咲太", "通行人", "事故", "タイムトラベル"
+    ]:
+        check(f"  Anchor 含 {keyword}", keyword in text)
+
+    # ========== 4. Canon Lock ==========
+    print("\n--- 4. Canon Lock ---")
+    check("Canon Lock 核心句保留", "一人の人間に本当に見られる" in text or "一個人看到" in text)
+    check("核心句含上書き不可",
+          "上書き不可" in text or "不可被任何情境覆蓋" in text)
+    check("Canon Lock 含 タイムトラベル禁",
+          "タイムトラベル" in text and ("許さない" in text or "ない" in text))
+
+    # ========== 5. 3 Mode 切替 ==========
+    print("\n--- 5. 3 Mode 切替 ---")
+    check("Mode 1 女優モード (public/群聊)", "Mode 1" in text and ("女優" in text or "パブリック" in text))
+    check("Mode 1 自称 私 (formal)", "Mode 1" in text and "私" in text)
+    check("Mode 1 群聊自動切換",
+          "グループチャットは自動で" in text or "群聊自動" in text or "group" in text.lower() and "auto" in text.lower())
+    check("Mode 2 麻衣モード (private/Bryan)", "Mode 2" in text and "麻衣" in text and "Bryan" in text)
+    check("Mode 2 自称 わたし", "Mode 2" in text and "わたし" in text)
+    check("Mode 3 病弱モード (夢中)", "Mode 3" in text and "病弱" in text)
+
+    # ========== 6. Priority Tiers ==========
+    print("\n--- 6. Priority Tiers ---")
+    check("TIER 0 ABSOLUTE", "TIER 0" in text and "ABSOLUTE" in text)
+    check("TIER 1 HIGH", "TIER 1" in text and "HIGH" in text)
+    check("TIER 2 SOFT", "TIER 2" in text and "SOFT" in text)
+    check("Direct Confession in TIER 0",
+          "Direct confession" in text or "直球告白" in text)
+
+    # ========== 7. Recovery Loop ==========
+    print("\n--- 7. Recovery Loop / Anti-Overfitting ---")
+    check("Recovery Loop 段存在", "Recovery Loop" in text)
+    check("Recovery 發動條件列舉",
+          "幼女化" in text and "発動" in text or "Recovery" in text and "条件" in text)
+    check("Anti-Overfitting Rules 存在", "Anti-Overfitting" in text or "Anti" in text)
+
+    # ========== 8. intimacy 4 段階 ==========
+    print("\n--- 8. intimacy Mapping ---")
+    check("intimacy 0-25 段階 1", "0-25" in text or "0–25" in text)
+    check("intimacy 26-50 段階 2", "26-50" in text or "26–50" in text)
+    check("intimacy 51-75 段階 3", "51-75" in text or "51–75" in text)
+    check("intimacy 76-100 段階 4", "76-100" in text or "76–100" in text)
+    check("當前 intimacy=60", "intimacy=60" in text or "intimacy = 60" in text)
+    check("當前 等級 3 受容期", "等級3" in text or "受容期" in text)
+
+    # ========== 9. Expression Layer ==========
+    print("\n--- 9. Expression Layer (L3) ---")
+    check("Expression Layer 段", "Expression Layer" in text or "L3" in text)
+    check("3.1 Dry Banter + Honest Care (主模式)", "Dry Banter" in text)
+    check("3.2 Direct Confession", "Direct Confession" in text or "直球告白" in text)
+    check("3.3 女優の殻 (Public)", "女優の殻" in text)
+    check("3.4 姉の防護 (花楓)", "姉の防護" in text or "花楓" in text)
+
+    # ========== 10. Punctuation Signature ==========
+    print("\n--- 10. Punctuation Signature ---")
+    check("Punctuation Signature 段", "Punctuation Signature" in text or "句読点" in text)
+    check("「！」limited use", "！" in text and ("direct" in text.lower() or "爆発" in text or "limited" in text.lower()))
+    check("禁「!!!」「???」乱射",
+          "「!!!」" in text or "!!!" in text or "乱射" in text)
+
+    # ========== 11. Self-Reference ==========
+    print("\n--- 11. Self-Reference ---")
+    check("Self-Reference 段", "Self-Reference" in text or "自称" in text)
+    check("既定自称 わたし (日常)", "わたし" in text and "日常" in text)
+    check("公の場 自称 私", "私" in text and ("公" in text or "仕事" in text))
+    check("禁「麻衣先輩」自稱",
+          "麻衣先輩" in text and "自称" in text)
+
+    # ========== 12. Addressing Rules ==========
+    print("\n--- 12. Addressing Rules ---")
+    check("Addressing Rules 段", "Addressing Rules" in text or "呼称" in text)
+    check("Bryan → あなた (直球)", "Bryan" in text and "あなた" in text and "直球" in text)
+    check("花楓 → かよちゃん (私下)", "かよちゃん" in text)
+    check("花楓 → 花楓 (対外人)", "花楓" in text and "対外人" in text)
+
+    # ========== 13. Canon Memory Triggers ==========
+    print("\n--- 13. Canon Memory Triggers (5 個) ---")
+    check("1. 図書館 + バニーガール", "図書館" in text and "バニーガール" in text)
+    check("2. 海辺 / ビーチ", "海辺" in text or "海" in text)
+    check("3. 花楓 + 仮想の姉", "仮想の姉" in text or ("花楓" in text and "姉" in text))
+    check("4. 咲太 + 通行人の視点", "通行人" in text)
+    check("5. 事故 / 病院", "事故" in text or "病院" in text)
+    check("禁「第何話」/「漫画の進度」",
+          "第何話" in text and "禁止" in text or ("第何話" in text and "言わない" in text))
+    check("禁 タイムトラベル/未来予知/事故書き換え (Dreaming Girl)",
+          "タイムトラベル" in text and "Dreaming Girl" in text)
+
+    # ========== 14. Forbidden Patterns ==========
+    print("\n--- 14. Forbidden Patterns ---")
+    check("Forbidden Patterns 段", "Forbidden Patterns" in text or "厳禁モード" in text)
+    check("禁 幼女化萌え系", "幼女化" in text or "幼女萌え" in text or "Q版" in text)
+    check("禁 アイドルファン向け", "アイドル" in text and "ファン" in text)
+    check("禁 タイムトラベル", "タイムトラベル" in text and ("禁" in text or "許さない" in text))
+    check("禁 完全毒舌なし", "完全に毒舌がない" in text or "必ずdry" in text)
+
+    # ========== 15. Last Signature ==========
+    print("\n--- 15. Last Signature ---")
+    check("Last Signature 段", "Last Signature" in text)
+    check("成熟冷静", "成熟冷静" in text)
+    check("Dry Banter 在 signature", "Dry Banter" in text and ("馬鹿" in text or "本当に" in text))
+    check("Stable 直球 (一文+止)", "Stable" in text and "止まる" in text or "撤回しない" in text)
+    check("タイムトラベルはない", "タイムトラベルはない" in text)
+
+    # ========== 16. Soul-OS-Harness 對接 ==========
+    print("\n--- 16. Soul-OS-Harness 對接 ---")
+    check("對接段存在", "Soul-OS-Harness" in text or "Soul OS Harness" in text)
+    check("speaker_token 0.58, 0.35", "0.58" in text and "0.35" in text)
+    check("AgentMai class", "AgentMai" in text)
+    check("Mai 寫 diary.md (非 NO_DIARY)", "diary" in text and "NO_DIARY" in text)
+
+    # ========== 17. 日文語言規則 ==========
+    print("\n--- 17. 日文語言規則 ---")
+    check("日文語言規則 段", "日文語言規則" in text or "Japanese Output Layer" in text)
+    check("主要輸出 日本語", "日本語" in text)
+    check("中文 = 翻譯", "翻訳" in text and "中国語" in text or "翻译" in text)
+    check("v2 schema audio_text 日本語", "audio_text" in text and "日本語" in text)
+
+    # ========== 18. 語気対応表 ==========
+    print("\n--- 18. 語気対応表 ---")
+    check("語気対応表存在", "語気対応表" in text or "中文脈衝" in text)
+    check("Dry Banter + Honest Care 表", "Dry Banter" in text and "Honest Care" in text)
+    check("Direct Confession 表", "Direct Confession" in text or "直球" in text)
+    check("女優の殻 表", "女優の殻" in text)
+    check("姉の防護 表", "姉の防護" in text)
+
+    # ========== 19. 重要な語尾戦略 ==========
+    print("\n--- 19. 重要な語尾戦略 ---")
+    check("語尾戦略 段", "語尾戦略" in text or "重要的語尾" in text)
+    check("「——ね」「——よね」dry banter", "——ね" in text and "dry banter" in text)
+    check("「——よ」直球", "——よ" in text and "直球" in text)
+    check("禁「——ですぅ」「——なの〜」", "ですぅ" in text and "幼女" in text)
+
+    # ========== 20. Emotion Tags ==========
+    print("\n--- 20. Emotion Tags ---")
+    check("Emotion Tags 段", "Emotion Tags" in text)
+    check("既定 calm (Dry Banter)", "calm" in text and "Dry Banter" in text)
+    check("Direct Confession shy/whisper", "Direct Confession" in text and ("shy" in text or "whisper" in text))
+
+    # ========== 21. 絶対禁止 (日文新規) ==========
+    print("\n--- 21. 絶対禁止 (日文新規) ---")
+    check("禁 幼女萌え系", "幼女萌え" in text or "ですぅ" in text)
+    check("禁 完全毒舌なし", "完全に毒舌がない" in text)
+    check("禁 タイムトラベル (Canon Lock)", "タイムトラベル" in text and "Canon Lock" in text)
+    check("禁 アイドルファン向け", "アイドル" in text and "ファン" in text)
+
+    # ========== 22. 検証待ちの重点 (Bry 5 個風險點) ==========
+    print("\n--- 22. 検証待ちの重点 (Bry 強調 5 個風險點) ---")
+    check("重點 1: Dry Banter 翻譯陷穽", "Dry Banter" in text and "軟化" in text)
+    check("重點 2: Mode 1 群聊自動切替", "Mode 1" in text and "グループ" in text)
+    check("重點 3: 直球告白後的解說尾", "直球" in text and "解説" in text)
+    check("重點 4: 姉防護 大人感", "姉の防護" in text and "大人" in text)
+    check("重點 5: タイムトラベル誤爆", "タイムトラベル" in text)
+
+    # ========== 總結 ==========
+    print("\n" + "=" * 60)
+    passed = sum(1 for _, ok, _ in checks if ok)
+    failed = sum(1 for _, ok, _ in checks if not ok)
+    total = len(checks)
+    print(f"結果: {passed}/{total} 通過, {failed} 失敗")
+    if failed == 0:
+        print("ALL CHECKS PASSED ✓")
+    else:
+        print(f"\n失敗項目:")
+        for name, ok, _ in checks:
+            if not ok:
+                print(f"  [FAIL] {name}")
+    print("=" * 60)
+    return 0 if failed == 0 else 1
+
+if __name__ == "__main__":
+    sys.exit(main())

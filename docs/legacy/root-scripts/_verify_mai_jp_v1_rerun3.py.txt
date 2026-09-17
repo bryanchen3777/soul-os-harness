@@ -1,0 +1,65 @@
+# -*- coding: utf-8 -*-
+"""Mai JP 重跑場景 3 (群聊 Mode 1) 兩次看隨機性"""
+import json
+import asyncio
+import websockets
+import time
+import sys
+import io
+from datetime import datetime
+
+WS_URL = "ws://127.0.0.1:8000/ws"
+USER_ID = "1696287850"
+AGENT = "agent_mai"
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+def log(msg):
+    print(msg, flush=True)
+
+def now_tag():
+    return datetime.now().strftime("%H:%M:%S")
+
+async def send_and_wait(ws, content, timeout=90, label="", mode="private", participants=None):
+    msg = {
+        "type": "USER_MESSAGE",
+        "content": content,
+        "user_id": USER_ID,
+        "mode": mode,
+        "target_agent": AGENT,
+    }
+    if participants:
+        msg["participants"] = participants
+    log(f"\n[{now_tag()}] USER → {label}: {content}")
+    await ws.send(json.dumps(msg, ensure_ascii=False))
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=3.0)
+        except asyncio.TimeoutError:
+            continue
+        data = json.loads(raw)
+        if data.get("type") == "agent_speak" and data.get("agent_id") == AGENT:
+            text = data.get("text", "")
+            log(f"[{now_tag()}] MAI ← ({label}): {text[:300]}")
+            return text
+    log(f"[{now_tag()}] TIMEOUT")
+    return None
+
+async def main():
+    log("=" * 70)
+    log("Mai JP 重跑 場景 3 (群聊 Mode 1) x 3 次,看隨機性")
+    log("=" * 70)
+    async with websockets.connect(WS_URL, max_size=10*1024*1024) as ws:
+        await asyncio.sleep(0.5)
+        for i in range(1, 4):
+            text = await send_and_wait(
+                ws, "今日のお昼、何食べたい？", timeout=90,
+                label=f"3-{i}.群聊",
+                mode="group", participants=["agent_yua", "agent_ruka", "agent_mai"]
+            )
+            log(f"  → text: {text[:200] if text else 'TIMEOUT'}")
+            await asyncio.sleep(3)
+
+if __name__ == "__main__":
+    asyncio.run(main())

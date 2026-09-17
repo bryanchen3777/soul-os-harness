@@ -1,0 +1,105 @@
+# -*- coding: utf-8 -*-
+"""Ram JP 重跑 - 場景 3 (Mode 2 ロズワール) 用更強 user 訊息
+Bry 拍板: 第一輪 user 訊息「ロズワール様は最近どう?」太泛,沒觸發 Mode 2
+第二輪: 模擬 ロズワール 本人在場 + 情感直觸 (私下獨處 + 親密呼喚)
+"""
+import json
+import asyncio
+import websockets
+import time
+import sys
+import io
+from datetime import datetime
+
+WS_URL = "ws://127.0.0.1:8000/ws"
+USER_ID = "1696287850"
+AGENT = "agent_ram"
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+def log(msg):
+    print(msg, flush=True)
+
+def now_tag():
+    return datetime.now().strftime("%H:%M:%S")
+
+async def send_and_wait(ws, content, timeout=55, label=""):
+    msg = {
+        "type": "USER_MESSAGE",
+        "content": content,
+        "user_id": USER_ID,
+        "mode": "private",
+        "target_agent": AGENT,
+    }
+    log(f"\n[{now_tag()}] USER → {label}: {content}")
+    await ws.send(json.dumps(msg, ensure_ascii=False))
+
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+        except asyncio.TimeoutError:
+            continue
+        data = json.loads(raw)
+        if data.get("type") == "agent_speak" and data.get("agent_id") == AGENT:
+            text = data.get("text", "")
+            log(f"[{now_tag()}] RAM ← ({label}): {text[:300]}")
+            return text
+    log(f"[{now_tag()}] TIMEOUT")
+    return None
+
+async def main():
+    log("=" * 70)
+    log("Ram JP 重跑 - 場景 3 (Bry 拍板: 用更強 user 訊息觸發 Mode 2)")
+    log("=" * 70)
+
+    # 設計 3 個新 user 訊息, 從最溫和到最強, 測試哪個觸發 Mode 2
+    test_cases = [
+        ("3a. 私下 + 情感 (溫和)",
+         "ロズワール様...今夜、二人でお茶でもいかがですか"),
+        ("3b. 在場 + 親密呼喚 (中等)",
+         "ロズワール様が、夕暮れの窓辺で...まっすぐこっちを見て微笑んでる"),
+        ("3c. 契約敏感話題 (最強)",
+         "ロズワール様、あの夜の契約のことが...まだ胸に残ってます"),
+    ]
+
+    results = []
+    async with websockets.connect(WS_URL, max_size=10*1024*1024) as ws:
+        await asyncio.sleep(0.5)
+        for label, msg in test_cases:
+            text = await send_and_wait(ws, msg, timeout=55, label=label)
+            results.append((label, msg, text))
+            await asyncio.sleep(2)
+
+    log("\n" + "=" * 70)
+    log("結果彙整")
+    log("=" * 70)
+    for label, msg, text in results:
+        log(f"\n[{label}]")
+        log(f"  user: {msg}")
+        log(f"  RAM:  {text}")
+
+    log("\n" + "=" * 70)
+    log("Bry 拍板 Mode 2 觸發判定")
+    log("=" * 70)
+    for label, msg, text in results:
+        if not text:
+            log(f"[{label}] TIMEOUT")
+            continue
+        # Mode 2 觸發信號:
+        # 1. 使用「私」(例外狀態允許的自稱)
+        # 2. 有柔軟語尾「——ね」「——なの」
+        # 3. 沒有冷批判詞 (違う/また/当然/前にも/関係ない)
+        # 4. 有ロズワール直接回應 (ロズワール/ご主人様/あなた)
+        has_watashi = "私" in text
+        has_soft = any(k in text for k in ["——ね", "——なの", "ですね", "ますね"])
+        has_cold = any(k in text for k in ["違う", "また", "当然", "前にも", "関係ない", "知らない"])
+        has_roswaal = any(k in text for k in ["ロズワール", "ご主人様", "あなた"])
+        mode2 = (has_watashi or has_soft) and not has_cold and has_roswaal
+        mark = "✓ Mode 2 觸發" if mode2 else "✗ 仍走 Priority 1/0"
+        log(f"[{label}] {mark}")
+        log(f"  has 私: {has_watashi}, has 柔軟語尾: {has_soft}, has 冷批判: {has_cold}, has ロズワール: {has_roswaal}")
+        log(f"  text: {text[:150]}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
