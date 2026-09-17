@@ -1420,12 +1420,65 @@ def test_a4b_direct_llm_call_is_detected(tmp_path):
 def test_a5_orchestrator_does_not_touch_life_threads_file_path():
     """寫入一律經 M1 公開 API ⇒ 不得自行組 life_threads 檔路徑。
 
-    以 AST 判定：不得呼叫 `life_threads_path`／`LIFE_THREADS_FILENAME`，且**非 docstring**
-    的字串常數不得出現 `life_threads.jsonl`（文件字串裡說明副作用位置不算違規）。
+    🔴 **恰等值演化（LIFE-THREAD-BOOTSTRAP-1，2026-09-17）**：本測試原先斷言
+    「`life_threads_path` 呼叫數 **＝ 0**」；契約 §4.4 的 bootstrap 標記落點
+    （`data/soul/<agent_id>/life_thread_bootstrap.json`）必須經 `data_root()` 慣例組出
+    （§2.1／§4.4），而**唯一同時**滿足「經 `data_root()`」與「`agent_id` 必須是
+    **安全路徑段**」的來源就是 M1 的 `life_threads_path()`（其內部即
+    `_validate_agent_id` ＋ `_SAFE_AGENT_SEGMENT` ＋ `data_root()/soul/<agent>/…`）。
+    故本測試由 **0 ⇒ 恰 1 次 ＋ 位置唯一** 演化。
+
+    **這不是放寬**（三條原斷言逐字保留）：
+      1. 仍禁 `LIFE_THREADS_FILENAME` 被**呼叫**；
+      2. 仍禁 `LIFE_THREADS_FILENAME` 作為**識別字**被引用；
+      3. 仍禁**非 docstring** 字串出現 `life_threads.jsonl`／`life_threads_path`
+         （後者亦封死 `getattr(lt, "life_threads_path")` 這類別名繞道）。
+    新增的兩條**比「恰 1 次」更強**：**先數全檔呼叫總數須恰 1**（多插一次裸呼叫即紅），
+    且**那唯一一次必須是 `bootstrap_marker_path(...)` 的 `node.args` 直接引數**
+    （先存變數再傳、或移出引數位置 ⇒ 紅）。仍禁硬編碼 `data/`（§2.1；本檔
+    `test_a6`／`test_d0` 另把守路徑來源），也仍禁對 threads 檔做任何 I/O。
     """
+    def _life_threads_path_issues(source: str) -> List[str]:
+        """回違規清單（空 ＝ 通過）。**純 AST 層** ⇒ 可餵假來源做牙齒自證。"""
+        issues: List[str] = []
+        source_tree = ast.parse(source)
+
+        # ① **先數總數**：`life_threads_path` 的「呼叫」在全檔須恰 1。
+        call_nodes = [
+            n
+            for n in ast.walk(source_tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "life_threads_path"
+        ]
+        if len(call_nodes) != 1:
+            issues.append(
+                f"`life_threads_path` 呼叫總數須恰 1（實得 {len(call_nodes)}）"
+            )
+            return issues
+
+        # ② 那唯一一次必須是 `bootstrap_marker_path(...)` 的**直接引數**
+        #    （不得先存變數再傳、不得經 getattr／別名）。
+        node = call_nodes[0]
+        is_direct_arg = False
+        for outer in ast.walk(source_tree):
+            if not isinstance(outer, ast.Call):
+                continue
+            outer_name = getattr(outer.func, "attr", getattr(outer.func, "id", ""))
+            if outer_name != "bootstrap_marker_path":
+                continue
+            if any(arg is node for arg in outer.args):
+                is_direct_arg = True
+                break
+        if not is_direct_arg:
+            issues.append(
+                "`life_threads_path` 的唯一呼叫必須是 `bootstrap_marker_path(...)` "
+                "的直接引數（不得先存變數、不得移出引數位置、不得經 getattr／別名）"
+            )
+        return issues
+
     src = MODULE_PATH.read_text(encoding="utf-8")
     tree = ast.parse(src)
-    assert "life_threads_path" not in _calls_named(tree)
     assert "LIFE_THREADS_FILENAME" not in _calls_named(tree)
     # 🔴 F-03：「0 命中」改為 **AST 識別字**判定（舊版是 `not in src` 的全文文字比對）
     assert "LIFE_THREADS_FILENAME" not in _identifiers_and_dotted(tree), (
@@ -1434,6 +1487,39 @@ def test_a5_orchestrator_does_not_touch_life_threads_file_path():
     for text in _non_docstring_strings(tree):
         assert "life_threads.jsonl" not in text, text
         assert "life_threads_path" not in text, text
+
+    # ── 恰等值演化：恰 1 次，且只能是 bootstrap 標記路徑的直接引數 ──
+    assert _life_threads_path_issues(src) == [], _life_threads_path_issues(src)
+
+    # ── 牙齒自證（三種假來源**必須逐一變紅**；合格樣式 ⇒ 綠）────
+    teeth = {
+        "合格樣式（bootstrap_marker_path 的直接引數）": (
+            "boot = lt_boot.bootstrap_marker_path(lt.life_threads_path(agent_id))\n"
+        ),
+        "假來源(i)：移出引數位置（先存變數再傳）": (
+            "p = lt.life_threads_path(agent_id)\n"
+            "boot = lt_boot.bootstrap_marker_path(p)\n"
+        ),
+        "假來源(ii)：出現第二次呼叫": (
+            "boot = lt_boot.bootstrap_marker_path(lt.life_threads_path(agent_id))\n"
+            "other = lt.life_threads_path(agent_id)\n"
+        ),
+        "假來源(iii)：裸呼叫出現在別處": (
+            "result = await lt_origins.run_origin_round(agent_id, decision.origin_type)\n"
+            "p = lt.life_threads_path(agent_id)\n"
+        ),
+    }
+    ok_label = "合格樣式（bootstrap_marker_path 的直接引數）"
+    assert _life_threads_path_issues(teeth[ok_label]) == [], (
+        "合格樣式必須綠："
+        + repr(_life_threads_path_issues(teeth[ok_label]))
+    )
+    for label, fake in teeth.items():
+        if label == ok_label:
+            continue
+        red = _life_threads_path_issues(fake)
+        print(f"[A5-TEETH-RED] {label} ⇒ {red}")
+        assert red, f"牙齒失效：{label} 應變紅但未紅"
 
 
 def test_a6_orchestrator_reads_only_perception_trace():
