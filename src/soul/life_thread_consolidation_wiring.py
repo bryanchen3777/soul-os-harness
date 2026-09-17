@@ -16,6 +16,18 @@
   `apply_origin_actions` **同步**呼叫、位於排程器 30s tick 的同一條呼叫鏈上
   （`scheduler._fire_life_thread_slot` → `run_slot_pipeline` → `_run_agent` →
   `run_origin_round`）⇒ **必須**用 `loop.create_task` 丟到背景，**絕不可** await。
+- **逾時單一事實來源（LIFE-THREAD-M2-WIRING-1-FUP）**：本模組**不對執行層呼叫施加任何
+  自帶的外層逾時**——0 個 `asyncio.wait_for`／`asyncio.timeout` 包裹、0 個自帶逾時常數
+  ⇒ 逾時**唯一**由執行層的內層常數
+  `life_thread_dissolution_exec.CONSOLIDATION_TIMEOUT_SECONDS` 治理。
+  🔴 **外層不得短於內層**：內層 **120 s** 的依據是**實測單次 26,335.6 ms**
+  （`docs/LIFE-THREAD-M2-EXEC-COST-CALIBRATION.md`；**20 s 曾被判定為「付了錢才 abort」的
+  錯誤值**，見 `19f8e62`）。一旦在此外掛較短的包裹（例如 10 s），provider 一變慢、或
+  `reasoning_effort` 未被端點支援而回到 ~26 s，就會出現：**HTTP 已送出、成本已發生，
+  任務卻被外層砍掉並丟棄結果**——正是 `19f8e62` 修掉的失效模式（雙重浪費）。
+  日後若**必須**加外層護欄（例如防任務無限懸掛），其值**必須 ≥ 執行層的
+  `CONSOLIDATION_TIMEOUT_SECONDS`**，且**必須自執行層常數讀取**（不得寫死較小數值），
+  並同步更新 `tests/soul/test_life_thread_consolidation_wiring.py` 的 §E 護欄測試。
 - **hook 本身永不拋例外**：整支函式包在 try/except（含 `asyncio.get_running_loop()`
   取不到 loop 的情形）⇒ 只寫 warning。M4 的接縫本身也是 fail-silent，本模組是**第二層**。
 - **本檔是唯一允許 import 執行層的生產檔**：0 接線不變量已由
@@ -308,6 +320,10 @@ async def _consolidate_once(agent_id: str, thread_id: str) -> Any:
                 )
         return fact_id
 
+    # 🔴 逾時：**不在此處包裹**（LIFE-THREAD-M2-WIRING-1-FUP）。單一事實來源＝執行層內層
+    #    `lt_exec.CONSOLIDATION_TIMEOUT_SECONDS`（120 s，依據實測單次 26,335.6 ms）。
+    #    外層若短於內層（例如 10 s），付費請求已送出、成本已發生，結果卻被外層丟棄
+    #    ⇒ 見模組 docstring「逾時單一事實來源」；護欄由測試 §E 釘死。
     result = await lt_exec.consolidate_terminal_thread(
         agent_id=agent_id,
         thread=thread,

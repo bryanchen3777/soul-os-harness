@@ -10,14 +10,20 @@
 #     `SOUL_OS_DATA_DIR` 指向 pytest tmp；唯一真實 SAGE 寫入落在 tmp 的 `graph.sqlite`。
 #   * 不啟停任何服務、不綁任何埠（本檔**不含**生產服務位址字面量）、0 行程命令。
 #   * 背景任務一律在測試結束前被 `await`（autouse fixture 斷言 0 殘留）。
+#   * §E 額外釘死**逾時單一事實來源**：接線模組**不得**對執行層呼叫施加短於執行層內層
+#     逾時（`life_thread_dissolution_exec.CONSOLIDATION_TIMEOUT_SECONDS` ＝ 120 s）的
+#     包裹（外層短於內層 ⇒ 錢花了、結果被丟棄；見模組 docstring
+#     「逾時單一事實來源（LIFE-THREAD-M2-WIRING-1-FUP）」）。
 #
 # 慣例對齊 `tests/soul/test_life_thread_dissolution_exec.py`（`tests/soul/` 無
 # `__init__.py`，本檔自行 `sys.path.insert(0, REPO_ROOT)`）。
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -663,3 +669,161 @@ def test_d5_empty_llm_text_is_an_error(monkeypatch: pytest.MonkeyPatch):
     llm_call = w._make_llm_call(AGENT)
     with pytest.raises(RuntimeError, match="consolidation_llm_returned_no_text"):
         asyncio.run(llm_call(PROMPT, max_tokens=300))
+
+
+# ══════════════════════════════════════════════════════════════
+# §E 逾時治理：外層**不得**短於執行層內層（LIFE-THREAD-M2-WIRING-1-FUP）
+# ══════════════════════════════════════════════════════════════
+#
+# 背景：執行層內層逾時 `life_thread_dissolution_exec.CONSOLIDATION_TIMEOUT_SECONDS = 120`
+# 的依據是**實測單次 26,335.6 ms**（`docs/LIFE-THREAD-M2-EXEC-COST-CALIBRATION.md`；
+# **20 s 曾被判定為「付了錢才 abort」的錯誤值**，見 `19f8e62`）。**外層若短於內層**
+# （例如 10 s），一旦 provider 變慢或 `reasoning_effort` 未被端點支援而回到 ~26 s：
+# HTTP 已送出、成本已發生，任務卻被外層砍掉並**丟棄結果**（雙重浪費）。
+#
+# 本節採**選項 (a)**：接線模組**不自帶**逾時 ⇒ 逾時由執行層**單一治理**。
+# 若日後**必須**加外層護欄（例如防任務無限懸掛），其值**必須 ≥** 執行層的
+# `CONSOLIDATION_TIMEOUT_SECONDS` 且**自該常數讀取**；屆時**必須改寫本節測試**
+# （改成斷言「值 ≥ 執行層逾時」），**不得**直接刪除本節。
+
+#: 受測模組原始碼路徑（AST 掃描；**只讀**，不執行）。
+_WIRING_SRC = Path(w.__file__).resolve()
+
+#: 名稱含 timeout（不分大小寫）者視為逾時常數。
+_TIMEOUT_NAME_RE = re.compile(r"timeout", re.IGNORECASE)
+
+#: 執行層呼叫點（AST 點狀名）。
+_EXEC_CALL_DOTTED = "lt_exec.consolidate_terminal_thread"
+
+#: 會把 awaitable 包上一層逾時的 asyncio API（點狀名）。
+_TIMEOUT_WRAPPERS = frozenset({"asyncio.wait_for", "asyncio.timeout"})
+
+
+def _dotted_name(node: ast.AST) -> str:
+    """`lt_exec.consolidate_terminal_thread` 形式的點狀名；非此形狀 ⇒ `""`。"""
+    parts: List[str] = []
+    cur: ast.AST = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        parts.append(cur.id)
+        return ".".join(reversed(parts))
+    return ""
+
+
+def _parent_map(tree: ast.AST) -> Dict[ast.AST, ast.AST]:
+    """子節點 → 父節點（AST 包裹關係斷言用）。"""
+    return {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+
+
+def test_e1_wiring_module_imposes_no_own_timeout_on_exec_call():
+    """(a) 接線模組**不得**對執行層呼叫施加自帶逾時（含短包裹）。
+
+    三條硬斷言（皆為**結構性**，不依賴執行時序）：
+
+    1. 執行層呼叫點恰 1 個（呼叫形式未被改寫）。
+    2. 它是**裸的** `await lt_exec.consolidate_terminal_thread(...)`：父節點是
+       `ast.Await`，且該 `Await` **不得**再被任何 `Call` 包住。
+       變異：`await asyncio.wait_for(lt_exec.consolidate_terminal_thread(...), timeout=10.0)`
+       ⇒ 斷言 2 紅。
+    3. 全模組**不得**出現 `asyncio.wait_for` ／ `asyncio.timeout` 呼叫 ⇒ 變異紅。
+    """
+    tree = ast.parse(_WIRING_SRC.read_text(encoding="utf-8"))
+    parents = _parent_map(tree)
+
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _dotted_name(node.func) == _EXEC_CALL_DOTTED
+    ]
+    assert len(calls) == 1, f"執行層呼叫點應恰 1 個，實得 {len(calls)}"
+    call = calls[0]
+
+    await_node = parents.get(call)
+    assert isinstance(await_node, ast.Await), (
+        "執行層呼叫必須直接 `await`（不得被任何 wrapper 包住）："
+        f"父節點＝{type(await_node).__name__}"
+    )
+    outer = parents.get(await_node)
+    assert not isinstance(outer, ast.Call), (
+        "執行層呼叫的 `await` 不得再被任何呼叫包住（例如外層逾時包裹）："
+        f"外層＝{_dotted_name(outer.func) if isinstance(outer, ast.Call) else type(outer).__name__}"
+    )
+
+    wrappers = [
+        _dotted_name(node.func)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _dotted_name(node.func) in _TIMEOUT_WRAPPERS
+    ]
+    assert wrappers == [], (
+        "接線模組不得自帶逾時包裹（逾時單一事實來源＝執行層內層 "
+        f"CONSOLIDATION_TIMEOUT_SECONDS={ex.CONSOLIDATION_TIMEOUT_SECONDS}s）；實得 {wrappers}。"
+        "若日後必須加外層護欄，其值必須 ≥ 執行層常數且自該常數讀取（並改寫本節測試）"
+    )
+
+
+def test_e2_no_wiring_timeout_constant_shorter_than_exec_layer():
+    """(a) 模組層**不得**存在任何數值型逾時常數 < 執行層內層逾時。
+
+    變異：在接線模組寫回 `_CONSOLIDATION_TIMEOUT_SECONDS = 10.0` ⇒ 本測試紅
+    （以 `vars(w)` 掃描**實際載入的模組**，不依賴原始碼字面量）。
+    """
+    offenders = [
+        (name, value)
+        for name, value in vars(w).items()
+        if _TIMEOUT_NAME_RE.search(name)
+        and not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and value < ex.CONSOLIDATION_TIMEOUT_SECONDS
+    ]
+    assert offenders == [], (
+        "接線模組自帶逾時常數短於執行層內層逾時"
+        f"（{ex.CONSOLIDATION_TIMEOUT_SECONDS}s）：{offenders}"
+    )
+    # 對照：單一事實來源本身（執行層，本票凍結）——必須容得下實測 26,335.6 ms。
+    assert ex.CONSOLIDATION_TIMEOUT_SECONDS >= 26.34
+
+
+class _NoWaitForAsyncio:
+    """`asyncio` 的**侷限替身**：轉發一切，但 `wait_for`／`timeout` 一被呼叫即 raise。
+
+    只注入**本模組的命名空間**（`monkeypatch.setattr(w, "asyncio", ...)`）⇒ 不影響
+    執行層／pytest 自身；且 raise 發生在真的等待之前 ⇒ 測試 0 延遲、0 網路、0 真實請求。
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        if name in ("wait_for", "timeout"):
+
+            def _boom(*_a: Any, **_k: Any) -> Any:
+                raise AssertionError(
+                    f"接線模組不得用 asyncio.{name} 包裹執行層呼叫"
+                    "（外層逾時會短於執行層內層逾時 ⇒ 錢花了、結果被丟棄）"
+                )
+
+            return _boom
+        return getattr(asyncio, name)
+
+
+def test_e3_exec_path_never_calls_asyncio_wait_for(monkeypatch: pytest.MonkeyPatch):
+    """(a) **執行期牙齒**：flag ON 走完整沉澱路徑時，0 次 `asyncio.wait_for`／`timeout`。
+
+    變異（把外層逾時改回 10 s ⇒ 以 `asyncio.wait_for` 包裹執行層呼叫）⇒ tripwire 觸發
+    ⇒ 例外物件成為任務結果 ⇒ 本測試紅。正常路徑（無包裹）⇒ 綠。
+    """
+    monkeypatch.setenv(w.CONSOLIDATION_ENABLED_ENV, "1")
+    monkeypatch.setattr(w, "_read_thread_state", lambda a, t: _terminal_thread(t))
+    monkeypatch.setattr(w, "_resolve_llm_proxy", lambda: _RecordingProxy())
+    monkeypatch.setattr(w, "_write_fact", lambda fact, agent_id: FACT_ID)
+    monkeypatch.setattr(w, "_append_dissolved", lambda a, t, fid: True)
+    monkeypatch.setattr(w, "asyncio", _NoWaitForAsyncio())
+
+    out = _drive()
+    result = _result_of(out)
+    assert not isinstance(result, BaseException), f"逾時包裹使沉澱路徑失敗：{result!r}"
+    assert result.status == ex.STATUS_CONSOLIDATED
+    assert result.llm_calls == 1
