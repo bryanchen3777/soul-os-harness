@@ -31,8 +31,8 @@ else:
     print("  ⚠️  server 未就緒，繼續嘗試...")
 
 try:
-    import test_memory_split
-    asyncio.run(test_memory_split.run_test())
+    import manual_memory_split
+    asyncio.run(manual_memory_split.run_test())
 finally:
     server.terminate()
     try:

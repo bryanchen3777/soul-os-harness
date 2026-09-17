@@ -36,7 +36,7 @@ def main():
 
     try:
         print("\n開始測試...\n")
-        from test_group_chat import run_test
+        from manual_group_chat import run_test
         result = asyncio.run(run_test())
 
         yua_count = result.get("agent_yua", 0)

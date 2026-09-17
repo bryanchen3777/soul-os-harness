@@ -67,6 +67,7 @@ sandbox.
 from __future__ import annotations
 
 import ast
+import fnmatch
 import functools
 import re
 from pathlib import Path
@@ -112,6 +113,18 @@ ADDRESS_RE = re.compile(
 #: "the scan walked nothing" tripwire (a broken scan yields ~0, not 280), not a
 #: tripwire on ordinary file-count changes.
 MIN_SCANNED_FILES = 280
+
+#: pytest's default ``python_files`` (pytest docs, "Conventions for Python test
+#: discovery"). A file matching **either** pattern is collected by a bare ``pytest``
+#: run, so both are landmine patterns.
+#:
+#: TEST-INFRA-COLLECTION-PATTERN-GAP-1 (D3): round 1 of this cleanup only knew about
+#: ``test_*.py`` and therefore left two ``*_test.py`` scripts collectable in
+#: ``scripts/`` (``run_memory_test.py``, ``smoke_test.py``). An auditor proved that
+#: gap by temporarily removing ``testpaths``: collecting ``run_memory_test.py`` died
+#: with ``ModuleNotFoundError: No module named 'test_memory_split'``. Both patterns
+#: are now enforced together.
+PYTEST_DEFAULT_PYTHON_FILES: Tuple[str, ...] = ("test_*.py", "*_test.py")
 
 #: How many allowlist entries exist today. Any growth is a deliberate act.
 #: TEST-INFRA-COLLECTION-LEAK-1 (D4): 28 → 9. The 19 removed entries existed only
@@ -252,6 +265,34 @@ def scanned_python_files() -> List[Path]:
     root_py = sorted(p for p in REPO_ROOT.glob("*.py") if p.is_file())
     under_tests = sorted(p for p in TESTS_DIR.rglob("*.py") if p.is_file())
     return sorted(set(root_py) | set(under_tests))
+
+
+def matches_python_files(name: str) -> bool:
+    """True iff ``name`` matches pytest's default ``python_files`` — either pattern.
+
+    ``fnmatch`` is the same glob dialect pytest uses for ``python_files``, so this is
+    the semantics under test rather than a hand-rolled prefix/suffix test that could
+    drift from it.
+    """
+    return any(fnmatch.fnmatch(name, pat) for pat in PYTEST_DEFAULT_PYTHON_FILES)
+
+
+def collectable_script_files() -> List[str]:
+    """Collectable-by-name files under the repo root and ``scripts/**`` (recursive).
+
+    The root walk is deliberately **non-recursive**: recursing would also swallow
+    ``tests/`` (which has its own rules) and ``.venv/``. ``scripts/`` is walked
+    recursively on purpose — a landmine in a subdirectory is collected just the same.
+    """
+    candidates = [p for p in REPO_ROOT.glob("*.py") if p.is_file()]
+    scripts_dir = REPO_ROOT / "scripts"
+    if scripts_dir.is_dir():
+        candidates += [p for p in scripts_dir.rglob("*.py") if p.is_file()]
+    return sorted(
+        p.relative_to(REPO_ROOT).as_posix()
+        for p in candidates
+        if matches_python_files(p.name)
+    )
 
 
 def _docstring_nodes(tree: ast.AST) -> Set[int]:
@@ -619,23 +660,44 @@ def test_scanner_inventory_covers_root_and_tests():
 
 
 def test_scripts_tree_has_no_collectable_test_scripts():
-    """R4b: ``scripts/**`` must hold no ``test_*.py`` — pytest would collect them.
+    """R4b: no collectable-by-name script under ``scripts/**`` or the repo root.
 
     TEST-INFRA-COLLECTION-LEAK-1 (D1): ``scripts/`` carried 15 ``test_*.py`` scripts.
     ``pytest -q tests`` never collected them, but a **bare** ``pytest`` at the repo
     root did — and for three of them the module body fires on import (one posts six
     times to a paid LLM API, two open a WebSocket to the already-running service).
-    They were renamed to ``manual_*.py`` for exactly that reason; this assertion makes
-    the rename permanent, since ``manual_*.py`` never matches ``python_files``.
+    They were renamed to ``manual_*.py`` for exactly that reason.
+
+    TEST-INFRA-COLLECTION-PATTERN-GAP-1 (D3) widened the rule, because round 1 only
+    matched pytest's **first** default pattern and so left two ``*_test.py`` scripts
+    collectable: ``scripts/run_memory_test.py`` and ``scripts/smoke_test.py`` (both
+    since renamed to ``manual_run_memory.py`` / ``manual_smoke.py``). The rule now
+    matches **both** entries of ``python_files`` by ``fnmatch``, over the repo root
+    *and* ``scripts/**`` recursively, so neither pattern can return anywhere on that
+    surface — ``manual_*.py`` matches neither, which is what makes the rename stick.
     """
-    at_scripts = sorted(
-        p.relative_to(REPO_ROOT).as_posix()
-        for p in (REPO_ROOT / "scripts").rglob("test_*.py")
-        if p.is_file()
-    )
-    assert at_scripts == [], (
-        "scripts/** 不得存在 test_*.py（裸跑 pytest 會收集，且部分在 import 時就有"
-        f"真實副作用：付費 API／對執行中的服務開 WebSocket）: {at_scripts}"
+    found = collectable_script_files()
+
+    # Teeth: a neutered matcher (one pattern dropped, the tuple emptied) would make
+    # the negative assertion below pass silently, so both directions are self-checked.
+    for must_match in (
+        "test_probe.py", "zz_probe_test.py", "run_memory_test.py", "smoke_test.py",
+    ):
+        assert matches_python_files(must_match), (
+            f"收集模式比對器漏掉 {must_match!r}——護欄的比對器已被削弱（漏放行）"
+        )
+    for must_not_match in (
+        "manual_run_memory.py", "manual_smoke.py", "manual_memory_split.py",
+        "run_test_auto.py", "_test_docstring.py", "run_server.py",
+    ):
+        assert not matches_python_files(must_not_match), (
+            f"收集模式比對器誤判 {must_not_match!r}（pytest 不會收集它）"
+        )
+
+    assert found == [], (
+        "repo 根目錄與 scripts/**（遞迴）不得存在符合 pytest 預設 python_files "
+        f"{PYTEST_DEFAULT_PYTHON_FILES} 的檔案——裸跑 pytest 會收集，且部分在 import "
+        f"時就有真實副作用（付費 API／對執行中的服務開 WebSocket）: {found}"
     )
 
 
