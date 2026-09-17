@@ -292,8 +292,11 @@ def _importers_of(target: str, roots) -> list:
 def test_t01_module_declares_contract_constants() -> None:
     """T1：四個票面常數逐字落地（成本與逾時的單一真相來源）。"""
     assert ex.CONSOLIDATION_MAX_TOKENS == 300
-    assert ex.CONSOLIDATION_TIMEOUT_SECONDS == 20
-    assert ex.MAX_CONSOLIDATION_CALLS_PER_AGENT_PER_DAY == 24
+    # 逾時依據：校準實測單次沉澱 26,335.6 ms（`docs/LIFE-THREAD-M2-EXEC-COST-CALIBRATION.md`）
+    # ⇒ 舊值 20 秒會在**付費請求已送出後** abort（錢花了、結果丟了）。下限護欄見 T59。
+    assert ex.CONSOLIDATION_TIMEOUT_SECONDS == 120
+    # per-agent 上限＝契約 §3.6 `DISSOLVE_MAX_PER_DAY = 3`（執行層不得比契約寬鬆）。
+    assert ex.MAX_CONSOLIDATION_CALLS_PER_AGENT_PER_DAY == 3
     assert ex.MAX_CONSOLIDATION_CALLS_GLOBAL_PER_DAY == 200
     assert ex.FACT_CONFIDENCE == 1.0
     assert ex.FACT_PREDICATE == "life_thread_dissolved"
@@ -302,6 +305,19 @@ def test_t01_module_declares_contract_constants() -> None:
     # D-1：終態值域以 M1/M2 實際 `TERMINAL_STATUSES` 為準（`dissolved` 不是狀態值）。
     assert ex.TERMINAL_TARGET_STATUSES == ("completed", "abandoned")
     assert "dissolved" not in ex.TERMINAL_TARGET_STATUSES
+
+
+def test_t59_timeout_never_drops_below_measured_latency_floor() -> None:
+    """T59（逾時下限護欄）：`CONSOLIDATION_TIMEOUT_SECONDS` **不得低於 60 秒**。
+
+    依據：成本校準實測單次沉澱 **26,335.6 ms**（completion_tokens=1790、
+    `finish_reason=stop`，2026-09-17，模型 `deepseek-v4.1-flash`，
+    `docs/LIFE-THREAD-M2-EXEC-COST-CALIBRATION.md`）。逾時一旦短於實測延遲，
+    `asyncio.wait_for` 會在**付費請求已送出後**才 abort ⇒ 錢照樣花掉、結果被丟棄。
+    此處把下限釘死，防止有人改回 20（在該變異下**本筆必紅**）。
+    """
+    assert ex.CONSOLIDATION_TIMEOUT_SECONDS >= 60, "逾時下限 60s（防改回 20）"
+    assert ex.CONSOLIDATION_TIMEOUT_SECONDS >= 26.34, "逾時必須容得下實測延遲 26.34 s"
 
 
 def test_t02_signature_is_keyword_only_and_frozen_result() -> None:
@@ -639,7 +655,14 @@ def test_t18_terminal_gate_requires_strict_should_mutate() -> None:
 
 
 def test_t19_terminal_gate_accepts_enum_and_case_insensitive_status() -> None:
-    """T19：容忍 `Enum` 與大小寫（真實 M2 是 `ThreadStatus.COMPLETED`）。"""
+    """T19：容忍 `Enum` 與大小寫（真實 M2 是 `ThreadStatus.COMPLETED`）。
+
+    本迴圈 4 次迭代 > 生產 per-agent 上限（契約 §3.6 的 3）⇒ **顯式注入預算**，
+    使本筆只驗「終態閘門的值域容忍」，不被每日上限干擾（上限邊界另由 T60 釘死）。
+    """
+    budget = ex.ConsolidationBudget(
+        now=lambda: NOW, per_agent_limit=10, global_limit=100
+    )
     for index, status in enumerate((ThreadStatus.COMPLETED, "completed", "COMPLETED", " Completed ")):
         tid = f"th-t19-{index}"
         llm, writer = FakeLLM(), FakeWriter()
@@ -650,6 +673,7 @@ def test_t19_terminal_gate_accepts_enum_and_case_insensitive_status() -> None:
             },
             llm_call=llm,
             fact_writer=writer,
+            budget=budget,
         )
         assert result.status == ex.STATUS_CONSOLIDATED, status
         assert llm.count == 1
@@ -1026,7 +1050,11 @@ def _run_n(n: int, budget: ex.ConsolidationBudget, llm: FakeLLM, writer: FakeWri
 
 
 def test_t41_per_agent_budget_refuses_the_25th_call() -> None:
-    """T41：per-agent 上限 24 ⇒ 第 25 次 `skipped_budget`（0 呼叫），前 24 次全成功。"""
+    """T41：per-agent 預算**機制**（注入任意尺度 24 ⇒ 第 25 次 `skipped_budget`／0 呼叫）。
+
+    此處的 24 是**測試自帶的注入尺度**，與模組常數脫鉤；生產上限的邊界值（契約 §3.6 的 3）
+    由 T60 以**行程級預設預算**釘死。
+    """
     budget = ex.ConsolidationBudget(
         now=lambda: NOW, per_agent_limit=24, global_limit=1000
     )
@@ -1112,7 +1140,7 @@ def test_t45_budget_unit_semantics() -> None:
 
     # 畸形上限回預設；畸形 agent_id 收斂為空字串鍵（不 raise）。
     weird = ex.ConsolidationBudget(now=lambda: NOW, per_agent_limit=None, global_limit="200")
-    assert weird.per_agent_limit == 24
+    assert weird.per_agent_limit == 3
     assert weird.global_limit == 200
     assert weird.try_consume(123) is True  # type: ignore[arg-type]
     assert weird.count_for("") == 1
@@ -1133,6 +1161,62 @@ def test_t46_budget_exhaustion_warns_without_raising(caplog: pytest.LogCaptureFi
     assert "budget exhausted" in caplog.text
     assert "WARNING" in caplog.text or "skipped_budget" in caplog.text
     assert PROMPT_MARKER not in caplog.text
+
+
+def test_t60_per_agent_daily_cap_is_contract_three_and_isolated_per_agent() -> None:
+    """T60（每日上限邊界；契約 §3.6）：同一 agent 當日第 4 次 ⇒ `skipped_budget`／**0 次
+    LLM 呼叫**；而**同日另一個 agent 仍可正常沉澱**（證明此處綁定的是 per-agent 3，
+    **不是**全域 200）。
+
+    刻意用**行程級預設預算**（`budget=None`）⇒ 直接釘死模組常數
+    `MAX_CONSOLIDATION_CALLS_PER_AGENT_PER_DAY`；把它改回寬鬆的 24 時**本筆必紅**。
+    """
+    llm, writer = FakeLLM(), FakeWriter()
+    first_three = [
+        _exec(
+            thread={**THREAD, "thread_id": f"th-cap-{index}"},
+            evaluation=_evaluation(thread_id=f"th-cap-{index}"),
+            llm_call=llm,
+            fact_writer=writer,
+        )
+        for index in range(3)
+    ]
+    assert [r.status for r in first_three] == [ex.STATUS_CONSOLIDATED] * 3
+    assert llm.count == 3
+    assert writer.count == 3
+
+    budget = ex._default_budget()
+    assert budget.per_agent_limit == ex.MAX_CONSOLIDATION_CALLS_PER_AGENT_PER_DAY
+    assert budget.count_for(AGENT) == 3
+
+    # 同日、同 agent 的第 4 次（不同線頭 ⇒ 不觸發冪等）：per-agent 上限擋下，0 呼叫。
+    fourth = _exec(
+        thread={**THREAD, "thread_id": "th-cap-4"},
+        evaluation=_evaluation(thread_id="th-cap-4"),
+        llm_call=llm,
+        fact_writer=writer,
+    )
+    assert fourth.status == ex.STATUS_SKIPPED_BUDGET
+    assert fourth.reason == "budget_exhausted"
+    assert fourth.llm_calls == 0
+    assert fourth.fact is None
+    assert llm.count == 3, "被上限擋下者不得發出任何 LLM 呼叫"
+    assert writer.count == 3
+    assert budget.count_for(AGENT) == 3, "被拒的嘗試不得計數"
+
+    # 全域額度（200）遠未用盡 ⇒ 同日**另一個 agent** 照常沉澱（全域不在此綁定）。
+    assert budget.global_count == 3
+    other = _exec(
+        agent_id="agent_m2exec_other",
+        thread={**THREAD, "thread_id": "th-cap-other"},
+        evaluation=_evaluation(thread_id="th-cap-other"),
+        llm_call=llm,
+        fact_writer=writer,
+    )
+    assert other.status == ex.STATUS_CONSOLIDATED
+    assert llm.count == 4
+    assert budget.count_for("agent_m2exec_other") == 1
+    assert budget.global_count == 4
 
 
 # ──────────────────────────────────────────────────────────────

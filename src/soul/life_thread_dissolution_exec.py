@@ -48,6 +48,8 @@
    （`_invoke_llm_once`），呼叫形式固定 `llm_call(prompt, max_tokens=CONSOLIDATION_MAX_TOKENS)`；
    以 `asyncio.wait_for` 施加 `CONSOLIDATION_TIMEOUT_SECONDS`。回傳 awaitable ⇒ await；
    否則直接取用其值（讓測試能注入同步 fake）。**無重試、無迴圈、無第二次呼叫。**
+   **呼叫端不得在排程 tick 內 inline await**：實測單次延遲可達 ~26 秒
+   （2026-09-17 校準：26,335.6 ms）且未來可能更長 ⇒ 必須以**背景任務**執行。
 7. **降級隔離**：任何例外一律 `logger.warning` ＋ 回對應 status，**不得向上拋出**；唯一例外是
    `asyncio.CancelledError`（`BaseException`，不屬 `Exception`）——**取消必須照常傳播**，
    本模組不吞取消訊號。
@@ -100,10 +102,21 @@ logger = logging.getLogger("soul_os.soul.life_thread_dissolution_exec")
 CONSOLIDATION_MAX_TOKENS = 300
 
 #: 單次 LLM 呼叫的逾時秒數（`asyncio.wait_for`）。
-CONSOLIDATION_TIMEOUT_SECONDS = 20
+#:
+#: 120 秒的依據（`docs/LIFE-THREAD-M2-EXEC-COST-CALIBRATION.md`；2026-09-17 實測 n=1，
+#: 模型 `deepseek-v4.1-flash`）：單次沉澱 **實測 26,335.6 ms**（completion_tokens=1790、
+#: finish_reason=stop）⇒ 舊值 20 秒會在**付費請求已送出後**才 abort：錢照樣花掉、
+#: 結果卻被丟棄（雙重浪費）。120 秒 ≈ 實測值的 4.6 倍，留給更長敘述與模型降速的餘裕。
+#: **此值不得改回 20**（下游有 `>= 60` 的護欄測試釘死）。
+CONSOLIDATION_TIMEOUT_SECONDS = 120
 
 #: 每 agent 每日沉澱呼叫上限（整數計數，**非評分**）。
-MAX_CONSOLIDATION_CALLS_PER_AGENT_PER_DAY = 24
+#:
+#: 3 ＝ 契約 §3.6 `DISSOLVE_MAX_PER_DAY = 3`（`docs/LIFE-THREAD-ENGINE-CONTRACT.md:309`
+#: ＝ M1 `LIFE_THREAD_ACTIVE_CAP_HARD_MAX`），與決策層
+#: `src/soul/life_thread_dissolution.py:77` **逐字對齊**。**執行層不得比契約寬鬆**：
+#: 舊值 24 是契約的 8 倍，屬「寬鬆防線」＝每日最多白花 8 倍推理成本。
+MAX_CONSOLIDATION_CALLS_PER_AGENT_PER_DAY = 3
 
 #: 全行程每日沉澱呼叫上限（同上）。
 MAX_CONSOLIDATION_CALLS_GLOBAL_PER_DAY = 200
