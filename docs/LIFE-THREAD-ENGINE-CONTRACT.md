@@ -312,6 +312,8 @@ VISION §4.1 逐字：**「線頭是『未解決的心理張力』的在場暫�
 
 ## §4 模組 3：二元存在性心智喚醒閘門（Salience Gate）
 
+> **修訂 2（LIFE-THREAD-CONTRACT-BOOTSTRAP-1，2026-09-17）：新增 §4.4 冷啟動引導；§4.2 追加 D4 量測登記。**
+
 VISION §4.2 逐字：**「復用既有時段 checkpoint（0 新定時器）。系統只做二元『存在性判定』（有未決線頭到期、或外部記憶/事件有新輸入），絕不做擾動程度評分。未滿足條件時系統保持安靜，不給 LLM 頻繁編造瑣事。」**
 
 ### 4.1 排程時點（**複用既有 wake，0 新增定時器**）＋ 一項前提更正
@@ -379,6 +381,9 @@ check_points_due(agent_id) -> bool
 
 > ⚠️ **與既有視窗的張力（誠實記載）**：既有感知狀態的 novelty 視窗是 **24 小時**（`src/world/state.py:73` `novelty_window: timedelta = timedelta(hours=24)`，於 `:171` `if age > self.novelty_window:` 執行；`src/world/middleware.py:218` 同值），新聞來源另有 2 小時 lookback（`src/world/source/news_rss.py:167` `DEFAULT_LOOKBACK_HOURS = 2`）。本契約的 **4 小時是新常數**（工單指定），**不改動**既有 24h/2h 常數。兩者關係列入 §11 OQ-4。
 
+> 📌 **D4 量測登記（LIFE-THREAD-CONTRACT-BOOTSTRAP-1，2026-09-17；幕僚長複核，非本票重跑）**：把上面那段「張力」放進生產數字看，張力是**可量化**的——`4h 窗 ∩ 每日 2 個 slot ⇒ 有效視窗僅 8h/天（33.3%）`；實測**合格紀錄 70/70 落在窗外**（唯一次合格史：70 筆、`2026-09-15T20:47:07–20:50:39Z`，離 night 閘門 4h 地板 `22:00Z` 差 **69–73 分鐘**）；**41 天內僅 15 天**出現過閘門可見的機會 ⇒ **自然喚醒期望值 ≈63h（mean）／48h（median）、範圍 1–6 天**。
+> 🔴 **本段是量測事實的登記，不是裁定**：**不改變**本節（§4.2）的判定式、**不改變** `WORLD_COLLISION_WINDOW_HOURS = 4` 常數、**不改變** `SOURCES_QUALIFYING`。是否調整視窗（含 §11 **OQ-4** 所問的 4h vs 24h）**仍為未決，不在本票裁定**。（把這個死結解掉的第三條喚醒路徑見 §4.4。）
+
 #### 放行邏輯（二元，無第三態）
 
 ```
@@ -410,6 +415,112 @@ should_wake := check_points_due(agent_id) OR world_collision_detected(agent_id)
 | `_inner_life_gate_check` | `src/soul/scheduler.py:340`；**唯一呼叫點** `:291-292`（在 `_publish_agency_trigger` 內，**僅 `proactive_dm`**） | 判斷「距上次內在生活事件是否 ≥ 30 分鐘」 | **正交**。它管「發訊前的最小間隔」，本閘門管「這一時段有沒有生活要推進」。**本閘門不得呼叫它、不得改它** |
 | `SubmissionGate` | `src/inner_life/submission_gate.py:180` | 身份／來源完整性 accept-reject（**無數值門檻**） | **正交**。本引擎的線頭落盤**不經** SubmissionGate（線頭不是 `InnerLifeEvent`） |
 | `SocialEventProducerGate` | `src/social/producer_gate.py:65` | 公開廣播隱私判定 | **正交**（且生產未接線，§11 OQ-5） |
+
+### 4.4 冷啟動引導（bootstrap wake）——**第三條喚醒路徑（設計）**
+
+> **一句話**：當一個 agent **零 `active` 線頭**時，讓它在**既有 slot 評估點**內、**恰一次**地主動醒來，以打破「無線頭 ⇒ 不醒 ⇒ 永無第一條線頭」的閉環。**本路徑是唯一不依賴外部世界事件的喚醒路徑。**
+
+#### 問題（動機）：既有兩條路徑對「零線頭 agent」構成**閉環死結**
+
+§4.2 的放行邏輯只有兩條輸入：判定 1（線頭到期檢查點）與判定 2（世界碰撞）。兩者對**零線頭的新 agent** 與**長期留白後的 agent** 都無能為力：
+
+| # | 事實（**D4 量測登記**，幕僚長複核；非本票重跑） | 對零線頭 agent 的後果 |
+|---|---|---|
+| B1 | **判定 1 需要「已存在的 active 線頭」**：`∃ t ∈ fold(...): t.status == "active" ∧ t.check_after_ts <= now`（§4.2 判定 1） | 零 active ⇒ **恆 `False`**；該 agent **永無到期檢查點** |
+| B2 | **兩個高流量來源恆不可通過**：`src/world/perception.py:365` 的 `TYPE_BASELINE_RELEVANCE` **無 `news_event` 鍵** ⇒ 落 default `0.10`（`:378`）⇒ `news_event` 分數 **0.3450 < 0.35**（門檻 `src/world/perception.py:578`）；`weather_temp_change`（同表基線 `0.05`）＝ **0.3300**。唯一常態可過者 `rain_started` ＝ **0.3750** | 常態**無合格世界碰撞** |
+| B3 | **有效視窗僅 8h/天（33.3%）**：閘門每日只有 2 個 slot（`08:00`／`22:00`，`src/soul/scheduler.py:71-72`；時區 `America/New_York`，`configs/default.yaml:154`；`.env` 無 `SOULOS_TIMEZONE` ⇒ **12:00Z／02:00Z**）∩ `WORLD_COLLISION_WINDOW_HOURS = 4` | 一天有 **2/3** 時間的合格碰撞**閘門看不見** |
+| B4 | **史上唯一一次合格紀錄 100% 落在窗外**：70 筆、`2026-09-15T20:47:07–20:50:39Z`，離 night 閘門 4h 地板（`22:00Z`）差 **69–73 分鐘** | 實測 **70/70 落窗外** |
+| B5 | **41 天內僅 15 天**出現過閘門可見的機會 | **自然喚醒期望值 ≈63h（mean）／48h（median）、範圍 1–6 天** |
+| B6 | `extra["summary"]`（合格紀錄的必要欄位）自 commit `9e79f2c`（2026-09-14T22:55Z）才開始寫 | 合格史僅 ~72h ⇒ **不足以等待自然發生**（修訂 1 的已知限制） |
+
+**⇒ 閉環死結（本節存在的唯一理由）**：無線頭 ⇒ 無到期檢查點（B1）；無合格世界碰撞 ⇒ 不醒（B2–B5）；**不醒 ⇒ 永不產生第一條線頭**。而「第一條線頭」本身**才是**判定 1 的啟動條件。因此瓶頸不是「慢」（期望值 63h／48h），而是**對零線頭 agent 而言，既有機制在數學上不會自己動起來**。
+
+#### 定位（**不得誤讀**）
+
+| 本路徑**是** | 本路徑**不是** |
+|---|---|
+| **第三條喚醒路徑**（前兩條 ＝ §4.2 判定 1／判定 2） | **不是**新型 `origin_type`：值域仍**恰 4 值**（§2.3、§11 OQ-1），**不發明第五個** |
+| **唯一不依賴外部世界事件**的喚醒路徑（只依「零線頭」這一個**內部狀態** ＋ **既有時段**） | **不是**新定時器／新 tick／新 sleep（INV-2）；**不是**新觸發類型／新事件型別／新排程面 |
+| **orchestrator 層**的路由決策（在 M3 判定**之後**、M4 喚醒**之前**） | **不是** M3 的第三態：§4.2「放行邏輯（二元，無第三態）」**不被修改**——M3 仍只回 `True/False`，其 log 逐字不變 |
+
+#### 觸發條件（**四項全部成立**才可 bootstrap）
+
+| # | 條件 | 判定口徑／`path:line` |
+|---|---|---|
+| ① | 該 agent 的 **`active` 線頭數 == 0** | 以 M1 `fold()`（`src/soul/life_threads.py:324`）後 `status == "active"` 計。**不得**把 `dormant`／終態（`completed`/`abandoned`）計入（與 §2.6.3 計數口徑同一條；`dormant` 是「擱置」不是「不存在」） |
+| ② | 該 agent 的 **bootstrap 標記未設**（見下「有界性」） | `data/soul/<agent_id>/life_thread_bootstrap.json` **不存在** ⇒ 未設；**存在** ⇒ 已用罄（永不重複） |
+| ③ | **容量上限 `capacity(agent_id) > 0`** | §2.6.2 的 `capacity()`（讀 `configs/default.yaml` 的 `life_thread_capacity`，fail-closed 回 2；恆 ∈ [1,3]） |
+| ④ | 在**既有 slot 評估點**（`morning`／`night`）之內 | 只在既有 2 個評估點被評估；**不新增任何計時器／評估點**（INV-2；§4.1 的「評估點數 = 2/日/agent」不變） |
+
+#### 落點（實作位置；本票只寫契約，**0 程式碼**）
+
+**落點在 orchestrator 層**（`src/soul/life_thread_orchestrator.py` 的 `_run_agent`），**不在** `life_thread_wake_gate.py`：
+
+1. **先**照常呼叫 M3 `evaluate_wake_gate(...)`（`src/soul/life_thread_wake_gate.py:583`；既有呼叫點 `src/soul/life_thread_orchestrator.py:266`）並**照常記錄其二元判定**。**M3 閘門模組 0 改動**：其呼叫參數、回傳、語意與日誌**逐位元不變**。
+2. **僅當**下列**全部**成立時，orchestrator 才**改以 bootstrap 路徑喚醒**（取代原本的「SLEEP 即 return」，既有 early-return 落點 `src/soul/life_thread_orchestrator.py:277-282`）：
+   - M3 判定 **`should_wake is False`**；**且**
+   - 其 `reason` **不是容量相關**（`REASON_ACTIVE_POOL_SATURATED`，`src/soul/life_thread_wake_gate.py:85`）；**且**
+   - 條件 ①②③成立。
+3. **不得**為了 bootstrap 去改 M3 的輸入或常數：`src/soul/life_thread_wake_gate.py` 為**凍結面**（本節 **0 改動**）；`WORLD_COLLISION_WINDOW_HOURS`（4h）、`TYPE_BASELINE_RELEVANCE`、門檻 `0.35` **皆不動**。
+4. bootstrap 喚醒**沿用既有 M4 喚醒路徑**（同一個 `run_origin_round`），以 **§5.2.2 的既有模板**注入。
+
+#### `origin_type` 的選定（**已拍板：`necessity_driven`**）
+
+- **選定值**：**`necessity_driven`**（§2.3 四值之一）。
+- **理由（逐字）**：其**種子來源為「時段 ＋ 角色當下處境」**（§2.3 表）——**零外部種子**，而 bootstrap 時**這兩者皆可得**（時段來自 slot，處境來自 `soul_context`）；其**語意為「生活瑣事／需求」**，正是「在沒有外部事件時，一個人仍會被自己的日常需求推著動」。
+- **明文禁止**：**不得**使用或發明**第 5 個** `origin_type`。§2.3 逐字「本契約**不發明第五個**」，§11 OQ-1 已裁定不新增第五源。bootstrap 只是**既有第 2 個起源**的一條**新觸發路徑**，**不是**新起源。
+
+#### 有界性（at-most-once，**每 agent 每 epoch 恰一次**）
+
+| 項目 | 規格 |
+|---|---|
+| 次數上界 | 每 agent **每 epoch 恰 1 次**（**不是**每日、**不是**每 slot） |
+| 蓋章時序 | **先蓋章再執行**——與既有 slot 章同一紀律（`_LAST_PROCESSED`，`src/soul/life_thread_orchestrator.py:231-239`）：**寧可漏一次，不可重複花費** |
+| 標記落點 | `data/soul/<agent_id>/life_thread_bootstrap.json`（**新增檔**）。路徑必須經 `src/paths.py` 的 `data_root()` 組出（§2.1）；**不得**改動任何**既有**狀態檔（`life_threads.jsonl` 等）的**格式** |
+| 標記內容（至少） | `bootstrapped_at`（**ISO-8601**，帶時區）＋ `count`（**整數 `1`**） |
+| 讀／寫失敗 | **⇒ 不 bootstrap**（fail-quiet）：讀不到 ⇒ 無法確認條件②，**不執行**；寫不進去 ⇒ 無法保證 at-most-once，**不執行**。**永不重試放大**、**永不 raise** |
+| 「epoch」的定義 | 由**標記檔的生命週期**界定：標記**存在 ⇒ 該 epoch 已用罄**。本機制**不自動重置**（不按日、不按 slot、不按重啟）。清除標記 ＝ **Owner／維護票**的明示動作，不是例行行為 |
+
+#### 旗標（**預設關**）
+
+| 項目 | 規格 |
+|---|---|
+| 名稱 | **`LIFE_THREAD_BOOTSTRAP_ENABLED`** |
+| 讀取時機 | **呼叫時讀取**（每次呼叫重新讀 `os.environ`，**非**匯入時快取）——沿用既有同型先例 `consolidation_enabled()`（`src/soul/life_thread_consolidation_wiring.py:152-164` 逐字「每次呼叫都重新讀 `os.environ`」） |
+| 真值集合 | `{"1","true","yes","on"}`（**不分大小寫**，去首尾空白後比較；同 `TRUTHY_VALUES`） |
+| 缺席／非真值／讀取失敗 | **⇒ OFF**（fail-safe 方向 ＝ 不花錢） |
+| `.env`／`configs/**` | **不得**寫入此變數（落地後**預設休眠**） |
+| 啟用 | 屬 **Owner 決定**：設 env ＋ **一次重啟**（同「修訂 1」的「需重啟才生效」性質） |
+
+#### 成本上界（**必須可反證**）
+
+- bootstrap **每 agent 恰 1 次** ⇒ 全機（**11** 個 agent）一次性 **≤ 11 次** origins 輪。
+  ※ **上界的取法（可查核）**：本契約 §8.3 引 `configs/default.yaml:11-92` 的**啟用**清單為 **10** 個 agent；生產註冊表 `_all_agents`（`src/soul/scheduler.py:1794` 以 `list(self._all_agents)` 進管線）量測為 **11**。**取大者 11 作為上界**。實際上界**只會更小**——只有同時滿足條件 ①②③ 的 agent 才 bootstrap。
+- 以 `reasoning_effort:"none"` 實測 **≈170 tokens／輪**估 ⇒ **一次性 ≈1,900 tokens**（11 × 170 ＝ 1,870），**之後回到正常節奏**（§8.2／§8.3 的成本表不變）。
+- **不得**因此新增任何**重試**：該輪失敗即失敗（fail-quiet），標記已蓋 ⇒ **不補**。
+
+#### 不得觸碰（凍結與範圍界線）
+
+- `WORLD_COLLISION_WINDOW_HOURS`（**4h 不動**）。
+- `TYPE_BASELINE_RELEVANCE`／門檻 `0.35`（**感知顯著性校準不在本節範圍**）。
+- `src/soul/life_thread_wake_gate.py`（**凍結**）、`src/soul/life_thread_dissolution_exec.py`（**凍結**）。
+- §2.3 的 4 值、§4.1／§4.2 的判定式與常數、§3／§5 的任何內容、§11 OQ-4 的裁定（**皆不在本節範圍**）。
+
+#### 與既有條文的邊界（**本節未修改任何既有條文**）
+
+1. **§7 INV-3**（逐字：「當 `check_points_due == False` 且 `world_collision_detected == False` 時，該時段**LLM 呼叫數 == 0**」）與 **§8.1**（逐字：「本引擎唯一會呼叫 LLM 的**兩條路徑**」／「除此之外本引擎 **0 條** LLM 路徑」）：在旗標**缺席／OFF（＝預設）**時，兩者**逐字仍真**——bootstrap 完全不執行，生產行為與本節引入前相同。旗標**啟用**後，bootstrap 會成為**第 3 條**、且**每 agent 一次性 ≤1 次**的 LLM 路徑，此即該兩處既有文字的**例外**。**本節不修改 §7／§8 任何字**；是否同步修訂該兩節，**待主大腦裁定**（本票範圍外）。
+2. **§4.2「放行邏輯（二元，無第三態）」**：**不被修改**。M3 仍只回 `True/False`、log 逐字不變；bootstrap 是 **orchestrator 層**在 `should_wake is False` **之後**的分支，**不改** M3 判定式、**不改**其輸入、**不改**其常數。
+3. **§5.2.2 必填上下文的可得性（L2 實證）**：`_fire_all`（diary 落盤，`src/soul/scheduler.py:1658-1660`）在 `_fire_life_thread_slot`（`src/soul/scheduler.py:1694`）**之前**執行 ⇒ bootstrap 評估的同一 tick 內，**當前時段的 diary 已落盤**，故「近 3 日 `source=="llm"` 條目」在**正常路徑可得**。**殘餘邊界**：若某 agent **完全無 diary 史**（例如註冊後首輪即 bootstrap），§5.2.2 的必填上下文不完整——該情形之處置**不在本票範圍**，列**待裁定**。
+
+#### 可測斷言（設計，供後續實作票驗收）
+
+| # | 斷言 | 形式 |
+|---|---|---|
+| BS-1 | 旗標 OFF（含缺席）⇒ 本節**完全不執行** | mock LLM 計數 == 0；`life_thread_bootstrap.json` **不被建立** |
+| BS-2 | 旗標 ON ＋ 條件①②③成立 ＋ 在 slot 內 ＋ `should_wake is False`（reason ≠ 容量）⇒ **恰 1 次** | 第 1 次評估 ⇒ 1 輪 origins；**第 2 次評估（同日／隔日／跨重啟）⇒ 0**（標記已蓋） |
+| BS-3 | 條件②（標記）為**唯一的持久防重** | 標記檔存在 ⇒ 恆不 bootstrap（跨重啟亦然） |
+| BS-4 | 標記讀／寫失敗 ⇒ **不 bootstrap** | 注入 IO 例外 ⇒ 0 LLM、0 新標記、**不 raise** |
+| BS-5 | **M3 逐位元不變** | `evaluate_wake_gate` 的呼叫參數、回傳與 log 與本節引入前相同（`should_wake is False` 時其 `reason` 仍照原樣產生與記錄） |
 
 ---
 
