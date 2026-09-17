@@ -29,6 +29,15 @@ ROOT = Path(__file__).resolve().parent.parent
 SERVER_URL = "http://localhost:8000"
 WS_URL = "ws://localhost:8000/ws"
 
+# NOTE (TEST-INFRA-RENAME-PROPAGATION-1, D2): `os` and `pytest` are imported here,
+# *below* the two address constants, and deliberately not in the import block above.
+# `tests/infra/test_no_production_spawn_guard.py` (R3) allowlists those two literals by
+# (file, **line number**) — inserting any line above them shifts them and turns that
+# guard red, while its allowlist is size-locked and `tests/infra/**` is out of scope for
+# this ticket.  Importing here keeps every line above byte-identical to HEAD.
+import os  # noqa: E402
+import pytest  # noqa: E402
+
 
 def wait_for_server(timeout=25):
     deadline = time.time() + timeout
@@ -87,6 +96,11 @@ async def send_and_wait(text, agent_id, mode, participants=None, timeout=15):
     return results
 
 
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not os.environ.get("SOUL_OS_LIVE_PRIVATE_CHAT"),
+    reason="需要一個已在運行的服務；預設 skip，避免測試打生產 :8000",
+)
 async def test_private_yua():
     print("\n  [Test 1] Yua 私聊响应...")
     results = await send_and_wait("你好呀 Yua，今天怎么样？", "agent_yua", "private")
@@ -96,6 +110,11 @@ async def test_private_yua():
     return results
 
 
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not os.environ.get("SOUL_OS_LIVE_PRIVATE_CHAT"),
+    reason="需要一個已在運行的服務；預設 skip，避免測試打生產 :8000",
+)
 async def test_private_ruka():
     print("\n  [Test 2] Ruka 私聊响应...")
     results = await send_and_wait("Ruka 在吗？", "agent_ruka", "private")
@@ -105,6 +124,11 @@ async def test_private_ruka():
     return results
 
 
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not os.environ.get("SOUL_OS_LIVE_PRIVATE_CHAT"),
+    reason="需要一個已在運行的服務；預設 skip，避免測試打生產 :8000",
+)
 async def test_private_akane():
     print("\n  [Test 3] Akane 私聊响应...")
     results = await send_and_wait("Akane，今天有空吗？", "agent_akane", "private")
@@ -114,6 +138,11 @@ async def test_private_akane():
     return results
 
 
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not os.environ.get("SOUL_OS_LIVE_PRIVATE_CHAT"),
+    reason="需要一個已在運行的服務；預設 skip，避免測試打生產 :8000",
+)
 async def test_history_isolation():
     print("\n  [Test 4] 历史隔离验证...")
     # Yua 的历史文件

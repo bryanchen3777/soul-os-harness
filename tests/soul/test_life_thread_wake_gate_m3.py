@@ -890,10 +890,10 @@ _M3_NON_PY_SCANNED_COUNTS = {
 #: **完全隱形**（fail-open）。改為「實際無法解析的集合**精確等於**本白名單」。
 _M3_UNPARSABLE_WHITELIST = (
     # 檔首 UTF-8 BOM（U+FEFF）⇒ `ast.parse` 直接 SyntaxError（非生產檔）。
-    "scripts/test_full_system.py",
+    "scripts/manual_full_system.py",
     # 第 171 行用了 **PEP 701**（Python 3.12+）嵌套同引號 f-string；
     # 本 repo `.venv` 是 **3.11.15** ⇒ SyntaxError（非生產檔）。
-    "scripts/test_proactive_bugs.py",
+    "scripts/manual_proactive_bugs.py",
 )
 
 #: M3 的真正消費點必須**掛在 scheduler 的 slot 觸發窗**上（比對掛載函式名）。

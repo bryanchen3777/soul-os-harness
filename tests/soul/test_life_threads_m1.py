@@ -54,11 +54,11 @@ _M1_UNPARSABLE_WHITELIST = (
     # 檔首 UTF-8 BOM（U+FEFF）⇒ `ast.parse` 直接 SyntaxError
     # （`utf-8` 讀取 ⇒ `invalid non-printable character U+FEFF`）。
     # 可接受：該檔不在生產路徑。
-    "scripts/test_full_system.py",
+    "scripts/manual_full_system.py",
     # 第 171 行用了 **PEP 701**（Python 3.12+）的嵌套同引號 f-string；
     # 本 repo 的 `.venv` 是 **3.11.15** ⇒ SyntaxError。
     # 可接受：同上（非生產檔；升到 3.12 後本行白名單會自動失效並轉紅，屬預期訊號）。
-    "scripts/test_proactive_bugs.py",
+    "scripts/manual_proactive_bugs.py",
 )
 
 #: M1 的**生產 importer 白名單恰為**這兩處（實測掃出，非推測；順序＝排序後）。
