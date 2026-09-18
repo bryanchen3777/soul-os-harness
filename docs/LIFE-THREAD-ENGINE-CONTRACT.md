@@ -516,7 +516,7 @@ should_wake := check_points_due(agent_id) OR world_collision_detected(agent_id)
 
 1. **§7 INV-3**（逐字：「當 `check_points_due == False` 且 `world_collision_detected == False` 時，該時段**LLM 呼叫數 == 0**」）與 **§8.1**（逐字：「本引擎唯一會呼叫 LLM 的**兩條路徑**」／「除此之外本引擎 **0 條** LLM 路徑」）：在旗標**缺席／OFF（＝預設）**時，兩者**逐字仍真**——bootstrap 完全不執行，生產行為與本節引入前相同。旗標**啟用**後，bootstrap 會成為**第 3 條**、且**每 agent 一次性 ≤1 次**的 LLM 路徑，此即該兩處既有文字的**例外**。**本節未修改 §7／§8 任何字**；該兩節其後已由 **修訂 3（`LIFE-THREAD-CONTRACT-BOOTSTRAP-FUP-1`，2026-09-17）同步為「旗標條件式例外」**（詳見 §4 開頭修訂註記）——即本項例外**已正式入約**，不再待裁定。
 2. **§4.2「放行邏輯（二元，無第三態）」**：**不被修改**。M3 仍只回 `True/False`、log 逐字不變；bootstrap 是 **orchestrator 層**在 `should_wake is False` **之後**的分支，**不改** M3 判定式、**不改**其輸入、**不改**其常數。
-3. **§5.2.2 必填上下文的可得性（L2 實證）**：`_fire_all`（diary 落盤，`src/soul/scheduler.py:1658-1660`）在 `_fire_life_thread_slot`（`src/soul/scheduler.py:1694`）**之前**執行 ⇒ bootstrap 評估的同一 tick 內，**當前時段的 diary 已落盤**，故「近 3 日 `source=="llm"` 條目」在**正常路徑可得**。**殘餘邊界**：若某 agent **完全無 diary 史**（例如註冊後首輪即 bootstrap），§5.2.2 的必填上下文不完整——該情形之處置已由 **修訂 3 定案**：**fail-quiet（不 bootstrap、不捏造種子）**，並登記於上方「已知限制（誠實登記）」①。
+3. **§5.2.2 必填上下文的可得性（L2 實證）**：`_fire_all`（diary 落盤，`src/soul/scheduler.py:1658-1660`）在 `_fire_life_thread_slot`（`src/soul/scheduler.py:1694`）**之前**執行 ⇒ bootstrap 評估的同一 tick 內，**當前時段的 diary 已落盤**，故「近 3 日 `source=="llm"` 條目」在**正常路徑可得**。**殘餘邊界**：若某 agent **完全無 diary 史**（例如註冊後首輪即 bootstrap），§5.2.2 的必填上下文不完整——該情形之處置已由 **修訂 4 定案並與 M4 實況對齊**：M4 現行的 `collect_necessity_seeds` 會退回中立錨點 `WHIM_NEUTRAL_ANCHOR` ⇒ `prompt_available` 仍為 True、**仍會 bootstrap**，但**不得宣稱任何具體外部事件**（＝不捏造事實）。詳見上方「已知限制（誠實登記）」①。
 
 #### 可測斷言（設計，供後續實作票驗收）
 
