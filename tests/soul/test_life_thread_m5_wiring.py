@@ -1437,11 +1437,62 @@ def test_a5_orchestrator_does_not_touch_life_threads_file_path():
     且**那唯一一次必須是 `bootstrap_marker_path(...)` 的 `node.args` 直接引數**
     （先存變數再傳、或移出引數位置 ⇒ 紅）。仍禁硬編碼 `data/`（§2.1；本檔
     `test_a6`／`test_d0` 另把守路徑來源），也仍禁對 threads 檔做任何 I/O。
+
+    🔴 **FUP-1 加固（LIFE-THREAD-BOOTSTRAP-FUP-1，2026-09-17）**：獨立審計證實原檢查器
+    以 `n.func.attr == "life_threads_path"` 認人 ⇒ 有**三個可逃逸漏洞**（皆能騙過檢查器
+    回綠）：① `from src.soul.life_threads import life_threads_path as ltp` 別名匯入；
+    ② `getattr(lt, "life_threads_" + "path")(agent_id)` 字串拼接；③
+    `eval("lt.life_threads_" + "path")(agent_id)`。加固為兩條**新規則**：
+      (A) **禁任何 `ImportFrom` 匯入 `life_threads_path`**（無論 `asname`）；但
+          `from src.soul import life_threads as lt` 這類**模組**匯入**仍合法**
+          （其 `alias.name == "life_threads"` ⇒ 不得誤判）。
+      (B) **禁動態繞道**：`getattr`／`eval`／`exec` 呼叫的**引數子樹**中，任何字串常數
+          （`ast.walk` 天然覆蓋 `JoinedStr` 的 Literal 片段、以及 `"a" + "b"` 的相鄰
+          `Constant`）**含子字串 `life_threads`** ⇒ 紅。
+    原本三條斷言與既有一切檢查**逐字保留**；三種漏洞各有**指名牙齒**（紅在該條規則上）。
     """
     def _life_threads_path_issues(source: str) -> List[str]:
         """回違規清單（空 ＝ 通過）。**純 AST 層** ⇒ 可餵假來源做牙齒自證。"""
         issues: List[str] = []
         source_tree = ast.parse(source)
+
+        # ── 🔴 FUP-1 加固 (A)：禁**別名／具名 import** `life_threads_path` ──
+        # 原檢查器只認 `n.func.attr == "life_threads_path"`（屬性呼叫形態），
+        # `from src.soul.life_threads import life_threads_path as ltp` ＋ `ltp(agent_id)`
+        # 即可整條繞過（`n.func` 是 `Name` 而非 `Attribute`）。
+        # ⚠️ `from src.soul import life_threads as lt` 是**模組**匯入
+        # （`alias.name == "life_threads"`）⇒ **仍合法**，不得誤判。
+        for _n in ast.walk(source_tree):
+            if not isinstance(_n, ast.ImportFrom):
+                continue
+            for _a in _n.names:
+                if _a.name == "life_threads_path":
+                    issues.append(
+                        "不得 import `life_threads_path`"
+                        f"（`from {_n.module or ''} import life_threads_path"
+                        f"{' as ' + _a.asname if _a.asname else ''}`）"
+                        "：路徑一律經 M1 模組屬性呼叫，禁以此繞過位置護欄"
+                    )
+
+        # ── 🔴 FUP-1 加固 (B)：禁**動態繞道**（`getattr`／`eval`／`exec`）──
+        # 若引數子樹中的**字串常數**含子字串 `life_threads` ⇒ 紅。
+        # `ast.walk` 會走進 `BinOp` 的兩個相鄰 `Constant`（`"life_threads_" + "path"`）
+        # 與 `JoinedStr` 的 Literal 片段（`f"life_threads_{x}"`）⇒ 三種寫法一網打盡。
+        for _n in ast.walk(source_tree):
+            if not isinstance(_n, ast.Call):
+                continue
+            _fname = getattr(_n.func, "id", None) or getattr(_n.func, "attr", None)
+            if _fname not in ("getattr", "eval", "exec"):
+                continue
+            _lits: List[str] = []
+            for _arg in list(_n.args) + [_k.value for _k in _n.keywords]:
+                for _sub in ast.walk(_arg):
+                    if isinstance(_sub, ast.Constant) and isinstance(_sub.value, str):
+                        _lits.append(_sub.value)
+            if any("life_threads" in _s for _s in _lits):
+                issues.append(
+                    f"不得以動態呼叫 `{_fname}(...)` 繞道取得 life_threads 路徑：{_lits}"
+                )
 
         # ① **先數總數**：`life_threads_path` 的「呼叫」在全檔須恰 1。
         call_nodes = [
@@ -1520,6 +1571,85 @@ def test_a5_orchestrator_does_not_touch_life_threads_file_path():
         red = _life_threads_path_issues(fake)
         print(f"[A5-TEETH-RED] {label} ⇒ {red}")
         assert red, f"牙齒失效：{label} 應變紅但未紅"
+
+    # ── 🔴 FUP-1 牙齒（指名）：三種逃逸手法逐一**紅在該條規則上**（不靠別條順帶變紅）──
+    #    並確認**模組**匯入（`from src.soul import life_threads as lt`）**仍綠**（不得誤判）。
+    legit_module_import = (
+        "from src.soul import life_threads as lt\n"
+        "boot = lt_boot.bootstrap_marker_path(lt.life_threads_path(agent_id))\n"
+    )
+    assert _life_threads_path_issues(legit_module_import) == [], (
+        "模組匯入 `life_threads as lt` 必須**仍然合法**（不得誤判）："
+        + repr(_life_threads_path_issues(legit_module_import))
+    )
+
+    fup1_teeth = {
+        "(i) 別名 import ＋ 別名呼叫": (
+            "from src.soul.life_threads import life_threads_path as ltp\n"
+            "boot = lt_boot.bootstrap_marker_path(ltp(agent_id))\n",
+            "不得 import `life_threads_path`",
+        ),
+        "(ii) getattr ＋ 字串拼接": (
+            'boot = lt_boot.bootstrap_marker_path('
+            'getattr(lt, "life_threads_" + "path")(agent_id))\n',
+            "動態呼叫",
+        ),
+        "(iii) eval ＋ 字串拼接": (
+            'boot = lt_boot.bootstrap_marker_path('
+            'eval("lt.life_threads_" + "path")(agent_id))\n',
+            "動態呼叫",
+        ),
+    }
+    for label, (fake_src, needle) in fup1_teeth.items():
+        red = _life_threads_path_issues(fake_src)
+        print(f"[A5-TEETH-RED] 假來源(FUP-1 {label}) ⇒ {red}")
+        assert red, f"牙齒失效：FUP-1 {label} 應變紅但未紅"
+        assert any(needle in x for x in red), (
+            f"牙齒失效：FUP-1 {label} 必須紅在「{needle}」這條規則上，實得 {red}"
+        )
+
+    # ── 🔴 FUP-1 逃逸**實證**：留下「合規的第一次呼叫」＋「隱形的第二次呼叫」──
+    # 舊檢查器**唯一**的認人方式 ＝ 數 `func.attr == "life_threads_path"` 的呼叫數；
+    # 下列變體在舊檢查器下**是綠的**（計數仍為 1、且那唯一一次仍是直接引數），
+    # 卻偷偷多導了一次路徑 ⇒ 這正是審計員所稱的「可逃逸漏洞」。加固後逐一必紅。
+    _LEGIT = "boot = lt_boot.bootstrap_marker_path(lt.life_threads_path(agent_id))\n"
+
+    def _old_checker_call_count(src: str) -> int:
+        """加固前檢查器唯一的認人方式（屬性呼叫計數）—— 用來證明逃逸**真的存在**。"""
+        return len([
+            n
+            for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "life_threads_path"
+        ])
+
+    stealth_teeth = {
+        "(i) 別名 import ＋ 隱形別名呼叫": (
+            "from src.soul.life_threads import life_threads_path as ltp\n"
+            + _LEGIT
+            + "p2 = ltp(agent_id)\n",
+            "不得 import `life_threads_path`",
+        ),
+        "(ii) getattr ＋ 隱形動態呼叫": (
+            _LEGIT + 'p2 = getattr(lt, "life_threads_" + "path")(agent_id)\n',
+            "動態呼叫",
+        ),
+        "(iii) eval ＋ 隱形動態呼叫": (
+            _LEGIT + 'p2 = eval("lt.life_threads_" + "path")(agent_id)\n',
+            "動態呼叫",
+        ),
+    }
+    for label, (fake_src, needle) in stealth_teeth.items():
+        assert _old_checker_call_count(fake_src) == 1, (
+            f"前提失效：FUP-1 {label} 的隱形變體必須讓舊計數仍為 1（否則不是逃逸）"
+        )
+        red = _life_threads_path_issues(fake_src)
+        print(f"[A5-TEETH-RED] 假來源(FUP-1 逃逸實證 {label}) ⇒ {red}")
+        assert red, f"牙齒失效：FUP-1 逃逸實證 {label} 應變紅但未紅"
+        assert any(needle in x for x in red), (
+            f"牙齒失效：FUP-1 逃逸實證 {label} 必須紅在「{needle}」，實得 {red}"
+        )
 
 
 def test_a6_orchestrator_reads_only_perception_trace():

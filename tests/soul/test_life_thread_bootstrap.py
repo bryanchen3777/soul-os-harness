@@ -1059,3 +1059,146 @@ def test_e5_bootstrap_branch_inside_sleep_guard():
     assert -1 < i_fire < i_claim < i_round < i_return, (
         "順序必須是：閘門 → 蓋章 → 大回合（先蓋章再執行）"
     )
+
+
+# ══════════════════════════════════════════════════════════════
+# 9. LIFE-THREAD-BOOTSTRAP-FUP-1：不安全 `agent_id` 的 fail-quiet
+#    （獨立審計抓到的確鑿缺陷：`life_threads_path()` 對不安全 agent_id 會
+#      `raise ValueError`，而該呼叫原本落在**旗標檢查之前** ⇒ 旗標 OFF（預設）
+#      時也會拋例外，於 `run_slot_pipeline` 被收斂成 `{"error": ...}`
+#      —— 這是本票**新增**的失效模式，違反「旗標 OFF ⇒ 本節完全不執行」
+#      與「fail-closed／永不 raise」。修法＝把推導整段關進旗標之內並 fail-quiet。）
+# ══════════════════════════════════════════════════════════════
+
+#: 不安全 agent_id（含 `..`，違反 M1 `_validate_agent_id`）。
+UNSAFE_AGENT = "../unsafe_agent"
+
+#: 既有 SLEEP 返回的**逐字三鍵**（契約 §4.4 引入 bootstrap 之前即為此形）。
+_SLEEP_KEYS = {"woke", "reason", "dissolved_candidates"}
+
+
+def _markers_under(root) -> List[Path]:
+    """tmp 資料根底下所有 bootstrap 標記檔（0 檔 ＝ 從未蓋章）。"""
+    return list(Path(root).rglob(lt_boot.BOOTSTRAP_MARKER_FILENAME))
+
+
+def test_f1_unsafe_agent_id_flag_off_is_quiet(iso_env, monkeypatch):
+    """🔴 缺陷 1 迴歸：旗標**未設**（預設 OFF）＋ 不安全 `agent_id`
+    ⇒ **平靜返回**既有三鍵 SLEEP dict（0 `"error"` 鍵、0 raise、0 LLM、無標記檔）。
+
+    「旗標 OFF ⇒ 本節完全不執行」是契約 §4.4 的硬性邊界：舊版（bootstrap 引入前）
+    在此輸入下是平靜的 SLEEP；本票不得讓它變成 `{"error": ...}`。
+    """
+    monkeypatch.delenv(lt_boot.BOOTSTRAP_ENABLED_ENV, raising=False)
+    _patch_soul(monkeypatch)
+    rounds = _spy_round(monkeypatch)
+    spy = _SpyLLM(_json_response([]))
+
+    out = _run([UNSAFE_AGENT], MORNING, "morning", llm_caller=spy)
+    assert UNSAFE_AGENT in out, out
+    summary = out[UNSAFE_AGENT]
+
+    # ① 鍵集合**恰為**三鍵；`"error"` 鍵不得存在（這正是缺陷 1 的紅燈形狀）
+    assert set(summary) == _SLEEP_KEYS, summary
+    assert "error" not in summary, summary
+    # ② `woke is False`（不是 falsy，是**真 False**）
+    assert summary["woke"] is False, summary
+    # ③ 既有三鍵的語意逐字不變（reason 為非空字串、dissolved_candidates 為 0）
+    assert isinstance(summary["reason"], str) and summary["reason"], summary
+    assert summary["dissolved_candidates"] == 0, summary
+    # ④ 0 LLM、0 大回合
+    assert len(spy.calls) == 0, spy.calls
+    assert rounds == [], rounds
+    # ⑤ 標記檔**未被建立**（整棵 tmp 資料根 0 命中）
+    assert _markers_under(iso_env) == [], _markers_under(iso_env)
+
+
+def test_f2_unsafe_agent_id_flag_on_is_quiet(iso_env, monkeypatch):
+    """🔴 缺陷 1 迴歸（旗標 **ON**）：不安全 `agent_id` ⇒ 推導標記路徑時
+    `ValueError` 必須被 **fail-quiet** 吞掉 ⇒ 平靜返回三鍵 SLEEP dict
+    （0 `"error"`、0 LLM、0 蓋章、無標記檔、**0 raise**）。
+    """
+    _set_flag(monkeypatch)
+    _patch_soul(monkeypatch)
+    claims = _spy_claim(monkeypatch)
+    rounds = _spy_round(monkeypatch)
+    spy = _SpyLLM(_json_response([]))
+
+    out = _run([UNSAFE_AGENT], MORNING, "morning", llm_caller=spy)
+    summary = out[UNSAFE_AGENT]
+
+    assert set(summary) == _SLEEP_KEYS, summary
+    assert "error" not in summary, summary
+    assert summary["woke"] is False, summary
+    assert summary["dissolved_candidates"] == 0, summary
+    assert len(spy.calls) == 0, spy.calls
+    assert rounds == [], rounds
+    assert claims == [], "不安全 agent_id ⇒ 不得嘗試蓋章"
+    assert _markers_under(iso_env) == [], _markers_under(iso_env)
+
+
+def test_f3_flag_off_derives_no_marker_path(iso_env, monkeypatch):
+    """🔴 釘死「旗標 OFF ⇒ 本節**完全**不執行」：對 **orchestrator 實際引用的命名空間**
+    （`m5.lt`，即 orchestrator 內 `lt.life_threads_path` 的解析面）掛計數 spy。
+
+    - 旗標未設 ⇒ 推導次數 **== 0**（本節一步都不跑）。
+    - 旗標 `"1"` ＋ 正常 agent ⇒ 次數 **≥ 1**（證明 spy 真的掛上了 ⇒ 不是假綠）。
+
+    ⚠️ 為何要 shim `m5.lt` 而不是 `monkeypatch.setattr(lt, "life_threads_path", spy)`：
+    M1 自己（`read_entries`）也走**同一個模組全域** `life_threads_path`，整模組替換會把
+    M1 內部的呼叫一併計入 ⇒ 就算 orchestrator 0 次推導，計數也會 ≥ 1，本測試將永遠
+    無法變紅。只替換 orchestrator 視角的 `m5.lt` 才精準量到「**本節**是否執行」。
+    """
+    _patch_soul(monkeypatch)
+    real = lt.life_threads_path
+    calls: List[str] = []
+
+    def spy(agent_id):
+        calls.append(agent_id)
+        return real(agent_id)
+
+    class _CountingLt:
+        """orchestrator 視角的 `lt`：只把 `life_threads_path` 換成計數器，其餘轉真模組。"""
+
+        def __init__(self, real_mod, counter):
+            self._real = real_mod
+            self.life_threads_path = counter
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(m5, "lt", _CountingLt(lt, spy))
+
+    # (a) 旗標 OFF（未設）⇒ 0 次推導
+    monkeypatch.delenv(lt_boot.BOOTSTRAP_ENABLED_ENV, raising=False)
+    out = _run([AGENT], MORNING, "morning", llm_caller=_SpyLLM(_json_response([])))
+    assert out[AGENT]["woke"] is False, out[AGENT]
+    assert calls == [], f"旗標 OFF ⇒ 不得推導標記路徑（實得 {calls}）"
+
+    # (b) 旗標 ON ＋ 正常 agent ⇒ ≥ 1 次推導（spy 有效性自證：反事實）
+    m5.reset_state()
+    _set_flag(monkeypatch)
+    out2 = _run([AGENT], NIGHT, "night", llm_caller=_SpyLLM(_json_response([])))
+    assert len(calls) >= 1, f"旗標 ON ⇒ 必須推導標記路徑（實得 {calls}）"
+    assert out2[AGENT]["bootstrap"] is True, out2[AGENT]
+
+
+def test_f4_flag_on_normal_agent_still_bootstraps_no_regression(iso_env, monkeypatch):
+    """正常路徑**未回歸**：旗標 ON ＋ 正常 agent（0 線頭）仍**會** bootstrap 喚醒。
+
+    指名既有測試 `test_i1_flag_on_zero_threads_bootstraps_exactly_once`（同一斷言面，
+    該測試必須仍綠）；此處再以**獨立斷言**就地釘死（避免只靠別處的綠燈轉述）。
+    """
+    _set_flag(monkeypatch)
+    _patch_soul(monkeypatch)
+    rounds = _spy_round(monkeypatch)
+    spy = _SpyLLM(_json_response([]))
+
+    out = _run([AGENT], MORNING, "morning", llm_caller=spy)
+    summary = out[AGENT]
+    assert summary["woke"] is True, summary
+    assert summary["bootstrap"] is True, summary
+    assert summary["origin_type"] == lt_boot.BOOTSTRAP_ORIGIN_TYPE, summary
+    assert len(spy.calls) == 1, spy.calls
+    assert len(rounds) == 1, rounds
+    assert _marker_path(AGENT).is_file(), "正常路徑仍須留下 at-most-once 標記"

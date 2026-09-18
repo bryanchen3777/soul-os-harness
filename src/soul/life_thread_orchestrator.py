@@ -295,8 +295,13 @@ async def _run_agent(
     # `bootstrap_mode` 只在**蓋章成功**時為 `True`（at-most-once；先蓋章再執行）。
     bootstrap_mode = False
     if not decision.should_wake:
-        boot_marker = lt_boot.bootstrap_marker_path(lt.life_threads_path(agent_id))
-        if lt_boot.bootstrap_should_fire(
+        boot_marker = None
+        if lt_boot.bootstrap_enabled():
+            try:
+                boot_marker = lt_boot.bootstrap_marker_path(lt.life_threads_path(agent_id))
+            except Exception:
+                boot_marker = None  # fail-quiet：不安全 agent_id ⇒ 不 bootstrap、不 raise、不改變既有行為
+        if boot_marker is not None and lt_boot.bootstrap_should_fire(
             enabled=lt_boot.bootstrap_enabled(),
             m3_should_wake=decision.should_wake,
             m3_reason=decision.reason,
