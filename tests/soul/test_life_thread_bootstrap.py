@@ -889,7 +889,7 @@ def test_i10_m3_call_arguments_unchanged(iso_env, monkeypatch):
     """BS-5：**M3 逐位元不變** —— bootstrap 分支不得改動 M3 的呼叫參數。
 
     （bootstrap 在 M3 判定**之後**才接手；M3 仍收到完全相同的 5 位置參數
-      ＋ 3 個關鍵字參數，`unresolved_tensions` 仍為 `None`。）
+      ＋ 2 個關鍵字參數，且**不含**任何第三訊號參數。）
     """
     _set_flag(monkeypatch)
     _patch_soul(monkeypatch)
@@ -906,11 +906,9 @@ def test_i10_m3_call_arguments_unchanged(iso_env, monkeypatch):
     assert call["args"][4] == lt.capacity(AGENT)
     assert set(call["kwargs"]) == {
         "recent_perceptions",
-        "unresolved_tensions",
         "enforce_strict_capacity",
     }, call["kwargs"]
     assert call["kwargs"]["recent_perceptions"] == []
-    assert call["kwargs"]["unresolved_tensions"] is None
     assert call["kwargs"]["enforce_strict_capacity"] is True
 
 

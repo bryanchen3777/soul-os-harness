@@ -37,7 +37,6 @@ from src.soul.life_thread_wake_gate import (  # noqa: E402
     REASON_DAYTIME_WHITESPACE,
     REASON_FAIL_CLOSED_DEFAULT_SLEEP,
     REASON_REFLECTION_SLOT_CLEAR,
-    REASON_TENSION_DUE_WAKE,
     REASON_WORLD_COLLISION_WAKE,
     REFLECTION_SLOTS,
     SEED_HINT_MAX_ITEMS,
@@ -81,13 +80,6 @@ def _thread(thread_id: str = "th-1", status: str = "active",
     }
 
 
-def _tension(tension_id: str = "tn-1", **overrides) -> dict:
-    """未決張力列（到期欄位為 `check_after_ts` 或別名 `due_at`）。"""
-    row = {"tension_id": tension_id, "check_after_ts": _iso(NOW - 60)}
-    row.update(overrides)
-    return row
-
-
 def _world_record(**overrides) -> dict:
     """合格的 perception_trace 記錄；`overrides` 用 `_DROP` 可整欄刪除。"""
     record = {
@@ -113,7 +105,6 @@ def _call(**overrides) -> WakeDecision:
         "active_threads": [],
         "capacity_limit": CAP,
         "recent_perceptions": None,
-        "unresolved_tensions": None,
     }
     params.update(overrides)
     return evaluate_wake_gate(**params)
@@ -141,28 +132,24 @@ def gate_logs(caplog):
 
 _COLLISION = [_world_record()]
 _DUE_THREAD = [_thread("th-due", check_after_ts=_iso(NOW - 300), origin_type="goal_driven")]
-_DUE_TENSION = [_tension("tn-due")]
 
 
 def _saturated_case(capacity: int, disturbance: str) -> dict:
     """活躍 mapping 數恰好等於 `capacity`，再依情境疊加擾動。"""
     if disturbance == "quiet":
         threads = [_thread(f"th-{i}", check_after_ts=None) for i in range(capacity)]
-        perceptions, tensions = None, None
+        perceptions = None
     elif disturbance == "world_collision":
         threads = [_thread(f"th-{i}", check_after_ts=None) for i in range(capacity)]
-        perceptions, tensions = list(_COLLISION), None
+        perceptions = list(_COLLISION)
     elif disturbance == "thread_due":
         threads = [_thread(f"th-{i}", check_after_ts=None) for i in range(capacity)]
         threads[-1] = _thread("th-due", check_after_ts=_iso(NOW - 300), origin_type="goal_driven")
-        perceptions, tensions = None, None
-    elif disturbance == "tension_due":
-        threads = [_thread(f"th-{i}", check_after_ts=None) for i in range(capacity)]
-        perceptions, tensions = None, list(_DUE_TENSION)
+        perceptions = None
     elif disturbance == "all_at_once":
         threads = [_thread(f"th-{i}", check_after_ts=None) for i in range(capacity)]
         threads[-1] = _thread("th-due", check_after_ts=_iso(NOW - 300), origin_type="goal_driven")
-        perceptions, tensions = list(_COLLISION), list(_DUE_TENSION)
+        perceptions = list(_COLLISION)
     else:  # pragma: no cover - 參數表錯字才能到此
         raise AssertionError(f"unknown disturbance: {disturbance}")
     return {
@@ -170,21 +157,32 @@ def _saturated_case(capacity: int, disturbance: str) -> dict:
         "active_threads": threads,
         "capacity_limit": capacity,
         "recent_perceptions": perceptions,
-        "unresolved_tensions": tensions,
     }
 
 
-@pytest.mark.parametrize("disturbance",
-                         ["quiet", "world_collision", "thread_due", "tension_due", "all_at_once"])
 @pytest.mark.parametrize("capacity", [1, 2, 3])
-def test_t1_active_pool_saturated_always_sleeps(capacity, disturbance):
-    """T1：容量防線最高優先，即使同時有碰撞／到期線頭／到期張力也一律 SLEEP。"""
-    decision = _call(**_saturated_case(capacity, disturbance))
+def test_t1_active_pool_saturated_quiet_still_sleeps(capacity):
+    """T1 (Owner A): saturated + no due/collision => SLEEP ACTIVE_POOL_SATURATED."""
+    decision = _call(**_saturated_case(capacity, "quiet"))
     assert decision.should_wake is False
     assert decision.reason == "ACTIVE_POOL_SATURATED"
     assert decision.reason == REASON_ACTIVE_POOL_SATURATED
     assert decision.origin_type is None
     assert decision.seed_hint is None
+
+
+@pytest.mark.parametrize("disturbance,reason,origin", [
+    ("world_collision", "WORLD_COLLISION_WAKE", "world_collision"),
+    ("thread_due", "CHECKPOINT_DUE_WAKE", "goal_driven"),
+    ("all_at_once", "WORLD_COLLISION_WAKE", "world_collision"),
+])
+@pytest.mark.parametrize("capacity", [1, 2, 3])
+def test_t1_saturated_wake_signals_outrank_capacity(capacity, disturbance, reason, origin):
+    """T1 (Owner A): saturation must not veto collision/due."""
+    decision = _call(**_saturated_case(capacity, disturbance))
+    assert decision.should_wake is True
+    assert decision.reason == reason
+    assert decision.origin_type == origin
 
 
 def test_t1_capacity_threshold_is_inclusive_equality():
@@ -251,17 +249,6 @@ def test_t2_reflection_slot_due_thread_wakes(timeslot):
 
 
 @pytest.mark.parametrize("timeslot", ["morning", "night"])
-def test_t2_reflection_slot_due_tension_wakes(timeslot):
-    """T2：槽點 + 到期張力 ⇒ WAKE / UNRESOLVED_TENSION_DUE_WAKE / necessity_driven。"""
-    decision = _call(timeslot=timeslot, unresolved_tensions=[_tension("tn-due")])
-    assert decision.should_wake is True
-    assert decision.reason == "UNRESOLVED_TENSION_DUE_WAKE"
-    assert decision.reason == REASON_TENSION_DUE_WAKE
-    assert decision.origin_type == "necessity_driven"
-    assert decision.seed_hint["tension_ids"] == ["tn-due"]
-
-
-@pytest.mark.parametrize("timeslot", ["morning", "night"])
 def test_t2_reflection_slot_clear_sleeps(timeslot):
     """T2：槽點無擾動無到期 ⇒ SLEEP / REFLECTION_SLOT_CLEAR。"""
     decision = _call(
@@ -315,15 +302,6 @@ def test_t3_whitespace_slot_due_thread_wakes(timeslot):
     assert decision.should_wake is True
     assert decision.reason == "CHECKPOINT_DUE_WAKE"
     assert decision.origin_type == "goal_driven"
-
-
-@pytest.mark.parametrize("timeslot", ["daytime", "evening"])
-def test_t3_whitespace_slot_due_tension_wakes(timeslot):
-    """T3：非槽點注入到期張力 ⇒ WAKE。"""
-    decision = _call(timeslot=timeslot, unresolved_tensions=list(_DUE_TENSION))
-    assert decision.should_wake is True
-    assert decision.reason == "UNRESOLVED_TENSION_DUE_WAKE"
-    assert decision.origin_type == "necessity_driven"
 
 
 def test_t3_earliest_due_thread_origin_wins():
@@ -395,68 +373,6 @@ def test_t3_thread_check_after_accepts_epoch_and_datetime():
     ])
     assert (numeric.should_wake, numeric.reason) == (True, "CHECKPOINT_DUE_WAKE")
     assert (moment.should_wake, moment.reason) == (True, "CHECKPOINT_DUE_WAKE")
-
-
-# ── T3b：張力到期語意（due-based）─────────────────────────────
-
-def test_t3_tension_due_at_alias_wakes():
-    """T3b：別名 `due_at` 到期 ⇒ WAKE。"""
-    decision = _call(unresolved_tensions=[
-        {"tension_id": "tn-alias", "due_at": _iso(NOW - 5)}
-    ])
-    assert decision.should_wake is True
-    assert decision.reason == "UNRESOLVED_TENSION_DUE_WAKE"
-    assert decision.origin_type == "necessity_driven"
-    assert decision.seed_hint["tension_ids"] == ["tn-alias"]
-
-
-def test_t3_tension_without_due_time_never_wakes():
-    """T3b：未帶到期時間的張力**不喚醒**（契約 §4.2 due-based）。"""
-    decision = _call(unresolved_tensions=[
-        {"tension_id": "tn-undated", "text": "還沒想清楚的事"}
-    ])
-    assert decision.should_wake is False
-    assert decision.reason == "DAYTIME_WHITESPACE"
-
-
-@pytest.mark.parametrize("raw", ["not-a-timestamp", "", 7.5e9, [], {}])
-def test_t3_tension_unusable_due_never_wakes(raw):
-    """T3b：張力到期時間不可解析／未到期 ⇒ 不喚醒、不 raise。"""
-    decision = _call(unresolved_tensions=[{"tension_id": "tn-x", "check_after_ts": raw}])
-    assert decision.should_wake is False
-    assert decision.reason == "DAYTIME_WHITESPACE"
-
-
-def test_t3_tension_due_boundary_is_inclusive():
-    """T3b：`due == current_time` 算到期（<= 為界）。"""
-    decision = _call(unresolved_tensions=[
-        {"tension_id": "tn-now", "check_after_ts": _iso(NOW)}
-    ])
-    assert decision.should_wake is True
-    assert decision.reason == "UNRESOLVED_TENSION_DUE_WAKE"
-
-
-@pytest.mark.parametrize("element", ["plain-string", 42, None])
-def test_t3_non_mapping_tension_is_skipped(element):
-    """T3b：張力列非 mapping ⇒ 跳過。"""
-    decision = _call(unresolved_tensions=[element])
-    assert decision.should_wake is False
-    assert decision.reason == "DAYTIME_WHITESPACE"
-
-
-def test_t3_due_tension_without_id_still_wakes():
-    """T3b：到期張力即使沒有可用 id 仍算命中（tension_ids 可為空清單）。"""
-    decision = _call(unresolved_tensions=[{"check_after_ts": _iso(NOW - 1)}])
-    assert decision.should_wake is True
-    assert decision.reason == "UNRESOLVED_TENSION_DUE_WAKE"
-    assert decision.seed_hint["tension_ids"] == []
-
-
-def test_t3_tension_id_falls_back_to_id_field():
-    """T3b：`tension_id` 缺失時回退讀 `id`。"""
-    decision = _call(unresolved_tensions=[{"id": "tn-fallback", "due_at": _iso(NOW - 1)}])
-    assert decision.should_wake is True
-    assert decision.seed_hint["tension_ids"] == ["tn-fallback"]
 
 
 # ══════════════════════════════════════════════════════════════
@@ -621,23 +537,15 @@ def test_t4_consumed_record_ignored_while_fresh_record_still_wakes():
     assert decision.seed_hint["facts"] == ["新的"]
 
 
-def test_t4_collision_precedes_due_thread_and_tension():
-    """T4：優先序 —— 世界碰撞排在到期線頭／到期張力之前。"""
+def test_t4_collision_precedes_due_thread():
+    """T4：優先序 —— 世界碰撞排在到期線頭之前。"""
     decision = _call(
         active_threads=list(_DUE_THREAD),
-        unresolved_tensions=list(_DUE_TENSION),
         recent_perceptions=list(_COLLISION),
     )
     assert decision.should_wake is True
     assert decision.reason == "WORLD_COLLISION_WAKE"
     assert decision.origin_type == "world_collision"
-
-
-def test_t4_due_thread_precedes_due_tension():
-    """T4：優先序 —— 線頭到期排在張力到期之前。"""
-    decision = _call(active_threads=list(_DUE_THREAD), unresolved_tensions=list(_DUE_TENSION))
-    assert decision.should_wake is True
-    assert decision.reason == "CHECKPOINT_DUE_WAKE"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -692,7 +600,6 @@ def test_t5_fail_closed_never_raises_and_sleeps(name, overrides):
         "active_threads": [],
         "capacity_limit": CAP,
         "recent_perceptions": None,
-        "unresolved_tensions": None,
     }
     params.update(overrides)
     try:
@@ -717,8 +624,8 @@ def test_t5_fail_closed_ignores_disturbances():
 @pytest.mark.parametrize("bad_optional", [None, {}, "x", 0, (), {"k": "v"}],
                          ids=["none", "dict", "str", "int", "tuple", "dict2"])
 def test_t5_optional_inputs_are_not_fail_closed(bad_optional):
-    """T5：`recent_perceptions` / `unresolved_tensions` 非 list ⇒ 視為 []，**不** fail-closed。"""
-    decision = _call(recent_perceptions=bad_optional, unresolved_tensions=bad_optional)
+    """T5：`recent_perceptions` 非 list ⇒ 視為 []，**不** fail-closed。"""
+    decision = _call(recent_perceptions=bad_optional)
     assert decision.should_wake is False
     assert decision.reason == "DAYTIME_WHITESPACE"
 
@@ -1135,7 +1042,6 @@ _WAKE_CASE_NAMES = (
     "checkpoint_due_iso",
     "checkpoint_due_epoch",
     "checkpoint_due_datetime",
-    "tension_due",
 )
 
 _SLEEP_CASE_NAMES = ("reflection_clear", "daytime_whitespace", "saturated", "fail_closed")
@@ -1158,8 +1064,6 @@ def _decision_for(name: str) -> WakeDecision:
                          "th-due",
                          check_after_ts=datetime.fromtimestamp(NOW - 30, tz=timezone.utc),
                          origin_type="goal_driven")])
-    if name == "tension_due":
-        return _call(timeslot="night", unresolved_tensions=list(_DUE_TENSION))
     if name == "reflection_clear":
         return _call(timeslot="morning")
     if name == "daytime_whitespace":
@@ -1205,7 +1109,6 @@ _SERIALIZABLE_WAKE_CASE_NAMES = (
     "world_collision",
     "checkpoint_due_iso",
     "checkpoint_due_epoch",
-    "tension_due",
 )
 # 註：`checkpoint_due_datetime` 不列入本矩陣 —— `datetime` 物件**不是** M1 JSONL
 # 的真實形狀（JSONL 讀出必為 ISO 字串），故不屬於工單 T8 指定的「M1 真實形狀」範圍。
@@ -1231,12 +1134,11 @@ def test_t8_sleep_seed_hint_and_origin_are_none(name):
 
 
 def test_t8_origin_types_value_set_pinned():
-    """T8：origin 值域與張力／碰撞的固定 origin 釘死。"""
+    """T8：origin 值域與碰撞的固定 origin 釘死。"""
     assert set(ORIGIN_TYPES) == {
         "goal_driven", "necessity_driven", "whim_driven", "world_collision",
     }
     assert _decision_for("world_collision").origin_type == "world_collision"
-    assert _decision_for("tension_due").origin_type == "necessity_driven"
 
 
 def test_t8_seed_hint_for_iso_check_after_ts_shape():
@@ -1259,7 +1161,6 @@ _LOG_LINE_RE = re.compile(
 _OBSERVABILITY_CASES = (
     ("world_collision", {"recent_perceptions": list(_COLLISION)}),
     ("checkpoint_due", {"timeslot": "morning", "active_threads": list(_DUE_THREAD)}),
-    ("tension_due", {"timeslot": "night", "unresolved_tensions": list(_DUE_TENSION)}),
     ("saturated", {"active_threads": [_thread("th-1")], "capacity_limit": 1}),
     ("reflection_clear", {"timeslot": "morning"}),
     ("daytime_whitespace", {}),
@@ -1332,7 +1233,9 @@ def test_t9_very_long_agent_id_still_within_limit(gate_logs):
 def test_t9_very_long_agent_id_on_wake_path_still_within_limit(gate_logs):
     """T9：WAKE 路徑（含 origin 尾綴）配超長 agent_id 仍 ≤200。"""
     gate_logs.clear()
-    _call(agent_id="b" * 5000, timeslot="night", unresolved_tensions=list(_DUE_TENSION))
+    _call(agent_id="b" * 5000, timeslot="night",
+          active_threads=[_thread("th-due", check_after_ts=_iso(NOW - 30),
+                                  origin_type="necessity_driven")])
     lines = _gate_lines(gate_logs)
     assert len(lines) == 1
     assert len(lines[0]) <= LOG_MAX_CHARS
@@ -1389,20 +1292,18 @@ def test_t10_repeated_calls_do_not_mutate_inputs():
         _thread("th-early", check_after_ts=_iso(NOW - 3000), origin_type="necessity_driven"),
     ]
     perceptions = [_world_record(event_id="evt-1")]
-    tensions = [_tension("tn-1")]
-    snapshot = json.dumps([threads, perceptions, tensions], sort_keys=True, ensure_ascii=False)
+    snapshot = json.dumps([threads, perceptions], sort_keys=True, ensure_ascii=False)
     for _ in range(3):
-        _call(active_threads=threads, recent_perceptions=perceptions,
-              unresolved_tensions=tensions)
-    assert json.dumps([threads, perceptions, tensions], sort_keys=True,
+        _call(active_threads=threads, recent_perceptions=perceptions)
+    assert json.dumps([threads, perceptions], sort_keys=True,
                       ensure_ascii=False) == snapshot
 
 
 def test_t10_same_input_same_answer_across_different_caller_prefixes():
     """T10：前一次呼叫的結果不影響下一次（無殘留狀態）。"""
-    wake_first = _call(timeslot="night", unresolved_tensions=list(_DUE_TENSION))
+    wake_first = _call(timeslot="night", recent_perceptions=list(_COLLISION))
     sleep_after = _call(timeslot="night")
-    wake_again = _call(timeslot="night", unresolved_tensions=list(_DUE_TENSION))
+    wake_again = _call(timeslot="night", recent_perceptions=list(_COLLISION))
     assert wake_first == wake_again
     assert wake_first.should_wake is True
     assert sleep_after.should_wake is False
@@ -1826,15 +1727,12 @@ def test_t12_mixed_two_active_plus_three_dormant_is_saturated():
         active_threads=threads,
         capacity_limit=2,
         recent_perceptions=list(_COLLISION),        # 世界碰撞擾動
-        unresolved_tensions=list(_DUE_TENSION),     # 到期張力擾動
     )
 
     assert len(threads) == 5
-    assert decision.should_wake is False
-    assert decision.reason == "ACTIVE_POOL_SATURATED"
-    assert decision.reason == REASON_ACTIVE_POOL_SATURATED
-    assert decision.origin_type is None
-    assert decision.seed_hint is None
+    assert decision.should_wake is True
+    assert decision.reason == "WORLD_COLLISION_WAKE"
+    assert decision.origin_type == "world_collision"
 
 
 def test_t12_one_active_plus_three_dormant_still_lets_due_thread_wake():
@@ -1868,8 +1766,8 @@ def test_t12_second_active_flips_same_list_to_saturated():
                        capacity_limit=2)
 
     assert one_active.reason == "CHECKPOINT_DUE_WAKE"
-    assert two_active.should_wake is False
-    assert two_active.reason == "ACTIVE_POOL_SATURATED"
+    assert two_active.should_wake is True
+    assert two_active.reason == "CHECKPOINT_DUE_WAKE"
 
 
 # ── T12-F1 常數字面值釘死（不得再用常數自身推導位移）───────────────
@@ -1890,7 +1788,6 @@ _CONSTANT_LITERAL_CASES = (
      "FAIL_CLOSED_DEFAULT_SLEEP"),
     ("REASON_WORLD_COLLISION_WAKE", REASON_WORLD_COLLISION_WAKE, "WORLD_COLLISION_WAKE"),
     ("REASON_CHECKPOINT_DUE_WAKE", REASON_CHECKPOINT_DUE_WAKE, "CHECKPOINT_DUE_WAKE"),
-    ("REASON_TENSION_DUE_WAKE", REASON_TENSION_DUE_WAKE, "UNRESOLVED_TENSION_DUE_WAKE"),
     ("REASON_REFLECTION_SLOT_CLEAR", REASON_REFLECTION_SLOT_CLEAR, "REFLECTION_SLOT_CLEAR"),
     ("REASON_DAYTIME_WHITESPACE", REASON_DAYTIME_WHITESPACE, "DAYTIME_WHITESPACE"),
 )
@@ -1975,7 +1872,9 @@ def test_t13_f6_long_agent_id_keeps_log_skeleton(gate_logs, length):
 def test_t13_f6_long_agent_id_on_wake_path_keeps_log_skeleton(gate_logs):
     """F6：WAKE 路徑（含 ` origin=` 尾綴）配 5,000 字元 `agent_id` ⇒ 骨架仍在。"""
     gate_logs.clear()
-    _call(agent_id="b" * 5000, timeslot="night", unresolved_tensions=list(_DUE_TENSION))
+    _call(agent_id="b" * 5000, timeslot="night",
+          active_threads=[_thread("th-due", check_after_ts=_iso(NOW - 30),
+                                  origin_type="necessity_driven")])
 
     lines = _gate_lines(gate_logs)
     _assert_log_skeleton(lines, "wake-path long agent_id")
@@ -2053,7 +1952,7 @@ def test_t14_f7_unprintable_input_never_raises_and_emits_one_skeleton_line(gate_
     timeslot = _RaisingStrObject() if bad_field in ("timeslot", "both") else "daytime"
 
     try:
-        decision = evaluate_wake_gate(agent_id, NOW, timeslot, [], CAP, None, None)
+        decision = evaluate_wake_gate(agent_id, NOW, timeslot, [], CAP, None)
     except BaseException as exc:  # pragma: no cover - 只有回歸時才會到此
         pytest.fail(f"{bad_field}: evaluate_wake_gate raised {type(exc).__name__}: {exc}")
 
@@ -2107,10 +2006,13 @@ def test_t14_f7_repeated_unprintable_calls_emit_one_line_each(gate_logs):
 
 
 # ══════════════════════════════════════════════════════════════
-# T15 偏離宣告釘死（module docstring 三關鍵字不得被後人刪掉）
+# T15 偏離宣告釘死（module docstring 關鍵字不得被後人刪掉）
 # ══════════════════════════════════════════════════════════════
+#
+# 🔴 FIX-A1-C9-1：原第三個關鍵字（第三個喚醒訊號的參數名）隨該訊號一併拔除 ——
+# 契約 §4.2 只定義兩個喚醒訊號，docstring **不得**再宣告任何第三訊號。
 
-_DEVIATION_KEYWORDS = ("§5.2.4", "consumed_by_wake", "unresolved_tensions")
+_DEVIATION_KEYWORDS = ("§5.2.4", "consumed_by_wake")
 
 
 def _module_docstring(gate_source: str) -> str:
@@ -2119,8 +2021,8 @@ def _module_docstring(gate_source: str) -> str:
     return doc
 
 
-def test_t15_docstring_pins_all_three_deviation_keywords(gate_source):
-    """T15：docstring **同時**含 `§5.2.4`、`consumed_by_wake`、`unresolved_tensions`。"""
+def test_t15_docstring_pins_all_deviation_keywords(gate_source):
+    """T15：docstring **同時**含全部偏離宣告關鍵字（`§5.2.4`、`consumed_by_wake`）。"""
     doc = _module_docstring(gate_source)
 
     for keyword in _DEVIATION_KEYWORDS:
@@ -2129,7 +2031,7 @@ def test_t15_docstring_pins_all_three_deviation_keywords(gate_source):
 
 @pytest.mark.parametrize("keyword", _DEVIATION_KEYWORDS)
 def test_t15_each_deviation_keyword_survives_individually(gate_source, keyword):
-    """T15：三個關鍵字各自獨立釘死（任一被刪即紅燈，並附 `summary` 實質內容檢查）。"""
+    """T15：每個偏離宣告關鍵字各自獨立釘死（任一被刪即紅燈，並附 `summary` 實質內容檢查）。"""
     doc = _module_docstring(gate_source)
 
     assert keyword in doc, keyword
@@ -2195,7 +2097,6 @@ def _case_call(case: dict, **overrides) -> WakeDecision:
         "active_threads": [],
         "capacity_limit": CAP,
         "recent_perceptions": None,
-        "unresolved_tensions": None,
     }
     params.update(case)
     params.update(overrides)
@@ -2213,15 +2114,16 @@ def _find_func(tree: ast.AST, name: str) -> ast.FunctionDef:
 # ── T16-A 介面釘死（inspect.signature）─────────────────────────
 
 def test_t16_a_signature_pins_flag_as_last_parameter_with_default_true():
-    """T16-A：參數順序逐字不變、最後多一個 `enforce_strict_capacity`，且**預設為 True**。
+    """T16-A：參數順序逐字不變、最後一個是 `enforce_strict_capacity`，且**預設為 True**。
 
-    既有呼叫端（7 個位置參數）的相容性即由此釘死；順序被動到就紅燈。
+    既有呼叫端（6 個位置參數）的相容性即由此釘死；順序被動到就紅燈。
+    契約 §4.2 的兩個喚醒訊號之外**不得**再出現任何訊號參數（FIX-A1-C9-1）。
     """
     params = inspect.signature(evaluate_wake_gate).parameters
 
     assert list(params) == [
         "agent_id", "current_time", "timeslot", "active_threads", "capacity_limit",
-        "recent_perceptions", "unresolved_tensions", _FLAG_PARAM,
+        "recent_perceptions", _FLAG_PARAM,
     ]
 
     flag = params[_FLAG_PARAM]
@@ -2230,22 +2132,22 @@ def test_t16_a_signature_pins_flag_as_last_parameter_with_default_true():
     assert flag.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD, "必須 keyword-or-positional"
 
 
-def test_t16_a_legacy_seven_argument_call_still_uses_strict_default():
-    """T16-A：舊式 7 位置參數呼叫 ⇒ 不傳旗標即走 `True`（飽和仍 SLEEP / ACTIVE_POOL_SATURATED）。"""
+def test_t16_a_legacy_six_argument_call_still_uses_strict_default():
+    """T16-A：舊式 6 位置參數呼叫 ⇒ 不傳旗標即走 `True`（飽和仍 SLEEP / ACTIVE_POOL_SATURATED）。"""
     decision = evaluate_wake_gate(AGENT, NOW, "morning",
                                   list(_SATURATED_COLLISION["active_threads"]), 2,
-                                  list(_COLLISION), None)
+                                  list(_COLLISION))
 
-    assert decision.should_wake is False
-    assert decision.reason == "ACTIVE_POOL_SATURATED"
+    assert decision.should_wake is True
+    assert decision.reason == "WORLD_COLLISION_WAKE"
 
 
-def test_t16_a_flag_is_accepted_positionally_as_eighth_argument():
-    """T16-A：旗標以**第 8 個位置參數**傳入 `False` ⇒ 與關鍵字傳入結果逐位元相同。"""
+def test_t16_a_flag_is_accepted_positionally_as_seventh_argument():
+    """T16-A：旗標以**第 7 個位置參數**傳入 `False` ⇒ 與關鍵字傳入結果逐位元相同。"""
     threads = list(_SATURATED_COLLISION["active_threads"])
     perceptions = list(_COLLISION)
 
-    positional = evaluate_wake_gate(AGENT, NOW, "morning", threads, 2, perceptions, None, False)
+    positional = evaluate_wake_gate(AGENT, NOW, "morning", threads, 2, perceptions, False)
     keyword = _case_call(_SATURATED_COLLISION, enforce_strict_capacity=False)
 
     assert positional == keyword
@@ -2282,19 +2184,6 @@ def test_t16_c_pure_mode_saturated_with_due_thread_wakes(capacity):
     assert decision.seed_hint["due_thread_ids"] == ["th-due"]
 
 
-@pytest.mark.parametrize("capacity", [1, 2, 3])
-def test_t16_d_pure_mode_saturated_with_due_tension_wakes(capacity):
-    """T16-D（純淨模式）：飽和 ＋ 到期張力 ⇒ WAKE / UNRESOLVED_TENSION_DUE_WAKE / necessity_driven。"""
-    decision = _case_call(_saturated_case(capacity, "tension_due"),
-                          enforce_strict_capacity=False)
-
-    assert decision.should_wake is True
-    assert decision.reason == "UNRESOLVED_TENSION_DUE_WAKE"
-    assert decision.reason == REASON_TENSION_DUE_WAKE
-    assert decision.origin_type == "necessity_driven"
-    assert decision.seed_hint["tension_ids"] == ["tn-due"]
-
-
 @pytest.mark.parametrize("timeslot", list(VALID_TIMESLOTS))
 def test_t16_e_pure_mode_saturated_without_other_signals_keeps_saturation_trace(gate_logs, timeslot):
     """T16-E（純淨模式）：飽和 ＋ 無其他訊號 ⇒ **保留觀測痕跡** SLEEP / ACTIVE_POOL_SATURATED。
@@ -2311,15 +2200,6 @@ def test_t16_e_pure_mode_saturated_without_other_signals_keeps_saturation_trace(
     assert decision.origin_type is None
     assert decision.seed_hint is None
     assert _gate_lines(gate_logs)[0].endswith("reason=ACTIVE_POOL_SATURATED")
-
-
-def test_t16_e_pure_mode_saturation_yields_to_due_tension():
-    """T16-E：飽和 ＋ 到期張力 ⇒ 張力先於飽和（純淨模式的飽和只在無外部訊號時留痕）。"""
-    decision = _case_call(_saturated_case(2, "tension_due"), timeslot="night",
-                          enforce_strict_capacity=False)
-
-    assert decision.reason == "UNRESOLVED_TENSION_DUE_WAKE"
-    assert decision.reason != "ACTIVE_POOL_SATURATED"
 
 
 @pytest.mark.parametrize("timeslot,expected", [("daytime", "DAYTIME_WHITESPACE"),
@@ -2351,47 +2231,31 @@ def test_t16_g_flag_contrast_strict_sleeps_pure_wakes(capacity):
     strict = _case_call(case, enforce_strict_capacity=True)
     pure = _case_call(case, enforce_strict_capacity=False)
 
-    assert strict.should_wake is False
-    assert strict.reason == "ACTIVE_POOL_SATURATED"
-    assert strict.origin_type is None
-    assert strict.seed_hint is None
-
-    assert pure.should_wake is True
-    assert pure.reason == "WORLD_COLLISION_WAKE"
-    assert pure.origin_type == "world_collision"
-
-    assert strict != pure
+    assert strict == pure
+    assert strict.should_wake is True
+    assert strict.reason == "WORLD_COLLISION_WAKE"
 
 
 @pytest.mark.parametrize("disturbance",
-                         ["quiet", "world_collision", "thread_due", "tension_due", "all_at_once"])
+                         ["quiet", "world_collision", "thread_due", "all_at_once"])
 def test_t16_g_strict_mode_ignores_every_kind_of_disturbance_when_saturated(disturbance):
     """T16-G：`True`（預設）下，任何擾動都無法穿透容量防線（回歸：現行行為不變）。"""
     decision = _case_call(_saturated_case(2, disturbance), enforce_strict_capacity=True)
-
-    assert decision.should_wake is False
-    assert decision.reason == "ACTIVE_POOL_SATURATED"
+    if disturbance == "quiet":
+        assert decision.should_wake is False
+        assert decision.reason == "ACTIVE_POOL_SATURATED"
+    else:
+        assert decision.should_wake is True
+        assert decision.reason != "ACTIVE_POOL_SATURATED"
 
 
 def test_t16_g_pure_mode_priority_order_collision_first():
-    """T16-G：純淨模式優先序 —— 世界碰撞壓過到期線頭與到期張力（兩者同時在場）。"""
+    """T16-G：純淨模式優先序 —— 世界碰撞壓過到期線頭（兩者同時在場）。"""
     decision = _case_call(_saturated_case(2, "all_at_once"), enforce_strict_capacity=False)
 
     assert decision.should_wake is True
     assert decision.reason == "WORLD_COLLISION_WAKE"
     assert decision.origin_type == "world_collision"
-
-
-def test_t16_g_pure_mode_priority_order_thread_before_tension():
-    """T16-G：純淨模式優先序 —— 到期線頭壓過到期張力。"""
-    threads = [_thread(f"th-{i}", check_after_ts=None) for i in range(2)]
-    threads[-1] = _thread("th-due", check_after_ts=_iso(NOW - 300), origin_type="goal_driven")
-
-    decision = _call(timeslot="night", enforce_strict_capacity=False, active_threads=threads,
-                     capacity_limit=2, unresolved_tensions=list(_DUE_TENSION))
-
-    assert decision.should_wake is True
-    assert decision.reason == "CHECKPOINT_DUE_WAKE"
 
 
 # ── T16-H 非 bool 旗標 ⇒ fail-closed（不 raise）────────────────
@@ -2486,22 +2350,27 @@ def test_t16_i_pool_saturated_docstring_matches_implementation(gate_source):
     assert '非字串、或非 `"active"`（含 `None`）⇒ **不計**' not in doc, "舊的誤導字面仍在"
 
 
-def test_t16_i_module_docstring_pins_the_three_settled_rulings(gate_source):
-    """T16-I（偏離 ①②③ 結清）：module docstring 明寫參數化容量政策、due-based 張力、
-    `consumed_by_wake` 嚴格 `is True` 語意，且載明 M5 需就預設值做最終裁定。"""
+def test_t16_i_module_docstring_pins_the_settled_rulings(gate_source):
+    """T16-I（偏離 ①② 結清）：module docstring 明寫參數化容量政策與
+    `consumed_by_wake` 嚴格 `is True` 語意，且載明 M5 需就預設值做最終裁定。
+
+    🔴 FIX-A1-C9-1：原第三條裁定（due-based 第三喚醒訊號）已隨該訊號拔除 ——
+    docstring 必須回到契約 §4.2 的**兩訊號**定義，不得再暗示第三訊號。
+    """
     doc = _module_docstring(gate_source)
 
     assert _FLAG_PARAM in doc
-    assert "參數化的刻意偏離" in doc
+    assert "Owner 2026-09-19" in doc
+    assert "不得" in doc
     assert "M5" in doc and "裁定" in doc
-
-    assert "due-based" in doc
-    assert "due_at" in doc and "check_after_ts" in doc and "tension_id" in doc
-    assert "未帶到期時間的張力永不喚醒" in doc
 
     assert "consumed_by_wake" in doc
     assert "is True" in doc
     assert "WorldPerceptionTrace" in doc
+
+    # 二元定義必須被明文寫出（否則 docstring 又回到隱含狀態）
+    assert "check_points_due" in doc and "world_collision_detected" in doc
+    assert "第三個喚醒訊號" in doc and "不得" in doc
 
 
 # ── T16-J `consumed_by_wake` 矩陣（嚴格 `is True` 才跳過）────────
@@ -2560,54 +2429,457 @@ def test_t16_j_consumed_matrix_is_flag_independent(flag):
     assert fresh.reason == "WORLD_COLLISION_WAKE"
 
 
-# ── T16-K due-based 張力收斂（無到期欄 ⇒ 永不喚醒）────────────────
+# ══════════════════════════════════════════════════════════════
+# OWNER-A 全稱護欄（FIX-A1-AUDIT-1：單點比較 → 全稱斷言）
+# ══════════════════════════════════════════════════════════════
+#
+# 審計缺口的形狀（本節要封死的**真回歸**）：原護欄只追蹤兩條具名掃描腿、且用
+# `min(sat_lines) > min(scan_lines)` 做單點比較 ⇒ 把飽和短路搬到**第二條
+# （線頭到期）掃描腿之前**不會變紅。但那是真回歸：同一輸入下真閘門回
+# `WAKE CHECKPOINT_DUE_WAKE`，變體回 `SLEEP ACTIVE_POOL_SATURATED`。
+#
+# 本節三條設計原則：
+#   1. **純 AST／純讀檔**：只讀 `MODULE_PATH` 的原始碼做語法分析；
+#      **不** import 生產模組來取結構、不執行閘門、不碰 `data/**`。
+#   2. **掃描集合動態推導**：凡 `_scan_` 前綴的函式定義即掃描腿
+#      （見 `_derived_scan_function_names`）⇒ 新增／移除掃描腿護欄**自動**涵蓋，
+#      **不得**在此硬編任何掃描腿名。
+#   3. **執行順序全稱比較**：所有本地函式呼叫**就地內聯**攤平成執行順序，要求
+#      「**每一個**飽和 return 都在**每一個**掃描呼叫之後」⇒ 巢狀 `if`、藏進
+#      helper、整批搬移都逃不掉。
 
-@pytest.mark.parametrize("timeslot", list(REFLECTION_SLOTS))
-@pytest.mark.parametrize("flag", [True, False])
-def test_t16_k_undated_tension_never_wakes(timeslot, flag):
-    """T16-K：未帶到期時間的張力**永不喚醒**（`morning`/`night` ⇒ REFLECTION_SLOT_CLEAR）。"""
-    decision = _call(
-        timeslot=timeslot,
-        enforce_strict_capacity=flag,
-        unresolved_tensions=[
-            {"tension_id": "tn-a", "text": "沒有到期時間"},
-            {"tension_id": "tn-b", "text": "也沒有", "urgency": "high"},
-            {"id": "tn-c", "status": "open"},
-        ],
+#: 被守護的**語意標記**：回傳此 reason 的 `return` 即「容量飽和短路點」。
+#: （掃描集合必須推導；此處固定的是「命題本身要守的那個 reason」。）
+_SATURATION_REASON_NAME = "REASON_ACTIVE_POOL_SATURATED"
+
+#: 訊號掃描的**推導規則**（不是清單）：模組內所有以此前綴命名的函式。
+_SCAN_FUNCTION_PREFIX = "_scan_"
+
+#: 內聯深度上限（防止遞迴函式造成無限展開；只用於靜態攤平）。
+_MAX_INLINE_DEPTH = 6
+
+
+def _defined_function_nodes(tree):
+    """模組內所有函式定義（含巢狀）→ `{name: node}`。"""
+    return {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _derived_scan_function_names(tree):
+    """**動態推導**訊號掃描腿集合：所有 `_scan_` 前綴的函式定義。
+
+    🔴 這是「不得硬編掃描名字」的落點：新增一條掃描腿、或移除既有掃描腿，
+    集合自動跟著變，測試**不需要**改（FIX-A1-C9-1 拔除第三訊號後即如此收斂）。
+    """
+    return frozenset(
+        name
+        for name in _defined_function_nodes(tree)
+        if name.startswith(_SCAN_FUNCTION_PREFIX)
     )
 
-    assert decision.should_wake is False, (timeslot, flag)
-    assert decision.reason == "REFLECTION_SLOT_CLEAR", (timeslot, flag)
-    assert decision.reason == REASON_REFLECTION_SLOT_CLEAR, (timeslot, flag)
+
+def _call_callee_name(node):
+    """呼叫目標名（`f(...)` / `obj.f(...)`）；其餘回 `None`。"""
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
 
 
-@pytest.mark.parametrize("shape", ["check_after_ts_null", "no_due_field_at_all"])
-def test_t16_k_tension_with_null_or_absent_due_never_wakes_in_daytime(shape):
-    """T16-K：`check_after_ts=None` 或缺欄 ⇒ 不喚醒（留白）。"""
-    row = ({"tension_id": "tn-1", "check_after_ts": None} if shape == "check_after_ts_null"
-           else {"tension_id": "tn-1"})
-
-    decision = _call(unresolved_tensions=[row])
-
-    assert decision.should_wake is False
-    assert decision.reason == "DAYTIME_WHITESPACE"
+def _references_saturation_reason(node):
+    """子樹是否引用飽和 reason 常數（`Name` 或 `obj.ATTR` 兩種寫法都算）。"""
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name) and sub.id == _SATURATION_REASON_NAME:
+            return True
+        if isinstance(sub, ast.Attribute) and sub.attr == _SATURATION_REASON_NAME:
+            return True
+    return False
 
 
-def test_t16_k_due_at_alias_wakes_in_pure_mode_too():
-    """T16-K：別名 `due_at` 到期 ⇒ 喚醒（純淨模式亦同，且張力先於容量飽和）。"""
-    tension = {"tension_id": "tn-alias", "due_at": _iso(NOW - 5)}
+def _expression_yields_saturation(value, aliases=frozenset()):
+    """此運算式是否「就是飽和判定」：直接引用常數，或別名變數（`x = ...` 後 `return x`）。"""
+    if value is None:
+        return False
+    if _references_saturation_reason(value):
+        return True
+    return isinstance(value, ast.Name) and value.id in aliases
 
-    pure = _call(timeslot="night", enforce_strict_capacity=False,
-                 active_threads=[_thread(f"th-{i}") for i in range(2)], capacity_limit=2,
-                 unresolved_tensions=[tension])
-    strict = _call(timeslot="night", enforce_strict_capacity=True,
-                   unresolved_tensions=[tension])
 
-    assert pure.should_wake is True
-    assert pure.reason == "UNRESOLVED_TENSION_DUE_WAKE"
-    assert pure.origin_type == "necessity_driven"
-    assert pure.seed_hint["tension_ids"] == ["tn-alias"]
+def _nested_executed_bodies(stmt):
+    """語句內**會執行的**巢狀語句區塊（依執行順序；保守：全部列出）。"""
+    if isinstance(stmt, (ast.If, ast.For, ast.AsyncFor, ast.While)):
+        return [stmt.body, stmt.orelse]
+    if isinstance(stmt, (ast.With, ast.AsyncWith)):
+        return [stmt.body]
+    try_star = getattr(ast, "TryStar", None)
+    if isinstance(stmt, ast.Try) or (try_star is not None and isinstance(stmt, try_star)):
+        return [stmt.body, *[h.body for h in stmt.handlers], stmt.orelse, stmt.finalbody]
+    match_type = getattr(ast, "Match", None)
+    if match_type is not None and isinstance(stmt, match_type):
+        return [case.body for case in stmt.cases]
+    return []
 
-    assert strict.should_wake is True
-    assert strict.reason == "UNRESOLVED_TENSION_DUE_WAKE"
-    assert strict.origin_type == "necessity_driven"
+
+def _statement_own_nodes(stmt):
+    """語句**自身**運算式內的節點（**不下潛**到巢狀語句區塊）。
+
+    巢狀語句區塊由 `_nested_executed_bodies` 另行遞迴走訪 ⇒ 每個呼叫點在
+    執行順序事件列中**恰好出現一次**（否則 `try` 這類複合語句會被重複展開，
+    製造「先 sat 後 scan」的假違規）。
+    """
+    pruned = set()
+    for nested_body in _nested_executed_bodies(stmt):
+        for nested_stmt in nested_body:
+            for node in ast.walk(nested_stmt):
+                pruned.add(id(node))
+    return [node for node in ast.walk(stmt) if id(node) not in pruned]
+
+
+def _safe_unparse(node):
+    try:
+        return ast.unparse(node)
+    except Exception:  # 只為了診斷訊息；失敗不得影響判定
+        return "<unparse failed>"
+
+
+def _linearized_events(body, functions, scan_names, depth=0, aliases=None):
+    """把語句序列攤平成**執行順序**的事件列：`("scan"|"sat", 標籤, 行號)`。
+
+    - 語句依序走訪；語句內呼叫先按原始碼位置（= 求值順序）處理，再處理 `return`。
+    - 對**本地函式**的呼叫就地內聯 ⇒ 掃描或飽和 return 藏進 helper 也逃不掉。
+    - `x = <飽和運算式>` 之後的 `return x` 亦計為飽和 return（別名追蹤）。
+    """
+    events = []
+    if aliases is None:
+        aliases = set()
+    for stmt in body:
+        if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            calls = [
+                node for node in _statement_own_nodes(stmt)
+                if isinstance(node, ast.Call)
+            ]
+            calls.sort(key=lambda n: (getattr(n, "lineno", -1), getattr(n, "col_offset", -1)))
+            for call in calls:
+                callee = _call_callee_name(call)
+                if callee in scan_names:
+                    events.append(("scan", callee, call.lineno))
+                elif callee in functions and depth < _MAX_INLINE_DEPTH:
+                    events.extend(
+                        _linearized_events(
+                            functions[callee].body, functions, scan_names,
+                            depth + 1, set(aliases),
+                        )
+                    )
+
+        if isinstance(stmt, ast.Return):
+            if _expression_yields_saturation(stmt.value, aliases):
+                events.append(("sat", _safe_unparse(stmt.value), stmt.lineno))
+        elif (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+        ):
+            target = stmt.targets[0].id
+            if _expression_yields_saturation(stmt.value, aliases):
+                aliases.add(target)
+            else:
+                aliases.discard(target)
+
+        for nested in _nested_executed_bodies(stmt):
+            events.extend(
+                _linearized_events(nested, functions, scan_names, depth, aliases)
+            )
+    return events
+
+
+def _gate_saturation_order_audit(source):
+    """對**原始碼字串**做全稱稽核（純 AST；不 import、不執行）。
+
+    回傳 `{"scan_names", "sat_return_sites", "checked_functions", "violations"}`：
+      - `scan_names`：由模組**推導**出的掃描腿名（`_scan_` 前綴）。
+      - `sat_return_sites`：`(函式名, 行號, 運算式)` —— 執行路徑上的飽和 return。
+      - `checked_functions`：同時含「掃描呼叫」與「飽和 return」的函式（非空才算有牙）。
+      - `violations`：空 = 護欄成立；否則逐條指出「哪個 return 早於哪個掃描」。
+    """
+    tree = ast.parse(source)
+    functions = _defined_function_nodes(tree)
+    scan_names = _derived_scan_function_names(tree)
+
+    sat_sites = []
+    violations = []
+    checked = []
+    for fname, fnode in functions.items():
+        events = _linearized_events(fnode.body, functions, scan_names)
+        scans = [(i, e) for i, e in enumerate(events) if e[0] == "scan"]
+        sats = [(i, e) for i, e in enumerate(events) if e[0] == "sat"]
+        if not scans or not sats:
+            continue
+        checked.append(fname)
+        sat_sites.extend((fname, e[2], e[1]) for _, e in sats)
+        for sat_index, sat in sats:
+            for scan_index, scan in scans:
+                if scan_index > sat_index:
+                    violations.append(
+                        f"`{fname}` 的飽和 return（line {sat[2]}：`return {sat[1]}`）"
+                        f"早於訊號掃描 `{scan[1]}` 的呼叫（line {scan[2]}）"
+                    )
+    return {
+        "scan_names": sorted(scan_names),
+        "sat_return_sites": sat_sites,
+        "checked_functions": sorted(set(checked)),
+        "violations": violations,
+    }
+
+
+def test_owner_a_capacity_sleep_cannot_precede_signal_scans(gate_source):
+    """Owner A（FIX-A1-AUDIT-1 全稱化）：**每一個**回傳 `ACTIVE_POOL_SATURATED` 的
+    `return` 都必須在**每一個**訊號掃描呼叫之後；掃描集合由 `_scan_` 前綴動態推導。
+
+    舊版只認兩條具名掃描 ＋ `min()` 單點比較 ⇒「飽和短路搬到張力掃描之前」不變紅，
+    但那是真回歸。本測試以**執行順序全稱比較**封死該盲區（含巢狀 `if`、
+    藏進 helper、整批搬移）。
+    """
+    audit = _gate_saturation_order_audit(gate_source)
+
+    assert audit["scan_names"], (
+        f"模組內找不到任何 `{_SCAN_FUNCTION_PREFIX}` 掃描腿 ⇒ 全稱斷言會退化成空話"
+    )
+    assert audit["sat_return_sites"], (
+        f"模組內找不到任何回傳 `{_SATURATION_REASON_NAME}` 的 return ⇒ 護欄失去對象"
+    )
+    assert audit["checked_functions"], (
+        "找不到任何同時含「掃描呼叫」與「飽和 return」的函式 ⇒ 護欄是空話"
+    )
+
+    assert audit["violations"] == [], (
+        "🔴 容量飽和短路不得早於任何訊號掃描（Owner A 2026-09-19）：\n  "
+        + "\n  ".join(audit["violations"])
+    )
+
+
+# ── 護欄的「掃描集合必須是推導的」自證（不得硬編名字）──────────
+
+#: 與生產檔無關的**最小模組**：掃描腿叫 `_scan_leg_alpha`（生產檔沒有的名字）。
+_SYNTHETIC_GATE_HEAD = '''
+def _scan_leg_alpha(rows):
+    return rows
+
+
+def _sleep(reason):
+    return reason
+
+
+def decide(active_threads, saturated):
+'''
+
+#: 飽和短路**在**掃描之前（⇒ 必須變紅）
+_SYNTHETIC_RED = _SYNTHETIC_GATE_HEAD + (
+    "    if saturated:\n"
+    "        return _sleep(REASON_ACTIVE_POOL_SATURATED)\n"
+    "    _scan_leg_alpha(active_threads)\n"
+)
+#: 飽和短路**在**掃描之後（⇒ 不得變紅）
+_SYNTHETIC_GREEN = _SYNTHETIC_GATE_HEAD + (
+    "    _scan_leg_alpha(active_threads)\n"
+    "    if saturated:\n"
+    "        return _sleep(REASON_ACTIVE_POOL_SATURATED)\n"
+)
+
+
+def test_owner_a_scan_set_is_derived_from_module_not_hardcoded():
+    """護欄的掃描集合是**推導**出來的（`_scan_` 前綴），不是硬編名單。
+
+    用一份與生產檔無關的最小模組（掃描腿名 `_scan_leg_alpha`）自證：
+      - 飽和短路提前 ⇒ 變紅（⇒ 新掃描腿**自動**被涵蓋）
+      - 飽和短路排在掃描之後 ⇒ 不紅
+    """
+    red = _gate_saturation_order_audit(_SYNTHETIC_RED)
+    green = _gate_saturation_order_audit(_SYNTHETIC_GREEN)
+
+    assert red["scan_names"] == ["_scan_leg_alpha"], red["scan_names"]
+    assert red["violations"], "未知名字的掃描腿必須被自動涵蓋（否則就是硬編清單）"
+    assert green["violations"] == [], green["violations"]
+
+
+# ── 護欄有牙的六個變體（(i)~(vi)）────────────────────────────
+#
+# 全部以 **AST 手術**對原始碼字串求值（不落地、不改 `src/**`、不執行突變碼）。
+
+def _mutation_context(source):
+    tree = ast.parse(source)
+    functions = _defined_function_nodes(tree)
+    scan_names = _derived_scan_function_names(tree)
+    decide = functions.get("_decide")
+    assert decide is not None, "變體實驗前提：模組內找不到 `_decide`"
+    return tree, functions, scan_names, decide
+
+
+def _saturation_block_indices(body):
+    """`_decide` 內「回傳飽和判定」的頂層 `if` 區塊索引。"""
+    return [
+        index
+        for index, stmt in enumerate(body)
+        if isinstance(stmt, ast.If)
+        and any(
+            isinstance(sub, ast.Return)
+            and _expression_yields_saturation(sub.value)
+            for sub in ast.walk(stmt)
+        )
+    ]
+
+
+def _scan_statement_indices(body, scan_names):
+    """含掃描呼叫的頂層語句索引。"""
+    return [
+        index
+        for index, stmt in enumerate(body)
+        if any(
+            isinstance(node, ast.Call) and _call_callee_name(node) in scan_names
+            for node in ast.walk(stmt)
+        )
+    ]
+
+
+def _pop(body, indices):
+    popped = [body[i] for i in indices]
+    for index in reversed(indices):
+        del body[index]
+    return popped
+
+
+def _mutant_source(tree):
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree)
+
+
+def _mutate_saturation_before_all_scans(source):
+    """(i) 把飽和短路區塊整批搬到函式最前（**所有**掃描之前）⇒ 必須變紅。"""
+    tree, _functions, _scan_names, decide = _mutation_context(source)
+    body = decide.body
+    blocks = _pop(body, _saturation_block_indices(body))
+    assert blocks, "變體 (i) 前提：`_decide` 內找不到飽和 return 區塊"
+    body[0:0] = blocks
+    return _mutant_source(tree)
+
+
+def _mutate_nested_if_saturation_return(source):
+    """(ii) 同上，但把提前的飽和 return 用**巢狀 `if`** 包起來 ⇒ 必須變紅。"""
+    tree, _functions, _scan_names, decide = _mutation_context(source)
+    body = decide.body
+    blocks = _pop(body, _saturation_block_indices(body))
+    assert blocks, "變體 (ii) 前提：找不到飽和 return 區塊"
+    body[0:0] = [ast.If(test=ast.Constant(value=True), body=blocks, orelse=[])]
+    return _mutant_source(tree)
+
+
+def _mutate_saturation_hidden_in_helper(source):
+    """(iii) 把飽和 return 藏進**定義在檔尾**的 helper，`_decide` 只留
+    `early = _helper(...)` ＋ `if early is not None: return early`（提前於所有掃描）
+    ⇒ 必須變紅（位置比較法看不到檔尾的 return）。"""
+    tree, _functions, _scan_names, decide = _mutation_context(source)
+    body = decide.body
+    blocks = _pop(body, _saturation_block_indices(body))
+    assert blocks, "變體 (iii) 前提：找不到飽和 return 區塊"
+
+    helper_body = ast.unparse(ast.Module(body=blocks, type_ignores=[]))
+    indented = "\n".join(
+        ("    " + line) if line.strip() else line for line in helper_body.splitlines()
+    )
+    helper_src = (
+        "def _early_saturated_sleep(saturated, enforce_strict_capacity):\n"
+        + indented
+        + "\n    return None"
+    )
+
+    body[0:0] = ast.parse(
+        "early = _early_saturated_sleep(saturated, enforce_strict_capacity)\n"
+        "if early is not None:\n"
+        "    return early"
+    ).body
+    tree.body.extend(ast.parse(helper_src).body)  # helper 定義在**檔尾**
+    return _mutant_source(tree)
+
+
+def _mutate_scans_after_saturation(source):
+    """(iv) 把掃描呼叫語句整批搬到**所有 return 之後** ⇒ 必須變紅。"""
+    tree, _functions, scan_names, decide = _mutation_context(source)
+    body = decide.body
+    scans = _pop(body, _scan_statement_indices(body, scan_names))
+    assert scans, "變體 (iv) 前提：找不到掃描呼叫語句"
+    body.extend(scans)
+    return _mutant_source(tree)
+
+
+def _mutate_equivalent_scan_hoist(source):
+    """(v) 語意等價重排：只把掃描呼叫整批**上提**，所有 return 的相對順序不動
+    ⇒ **不得**變紅。"""
+    tree, _functions, scan_names, decide = _mutation_context(source)
+    body = decide.body
+    scans = _pop(body, _scan_statement_indices(body, scan_names))
+    assert scans, "變體 (v) 前提：找不到掃描呼叫語句"
+    body[0:0] = scans
+    return _mutant_source(tree)
+
+
+def _mutate_before_thread_due_scan(source):
+    """(vi) **最小回歸建構器**：把飽和短路搬到「**線頭到期掃描**」之前 ⇒ **必須**變紅。
+
+    契約 §4.2 為二元（`check_points_due OR world_collision_detected`）⇒ 掃描腿
+    只剩兩條，執行序上**最後**一條即線頭到期掃描（`_scan_threads_due`）：
+      - 排在**首條**掃描腿（世界碰撞）之前 ＝ 變體 (i)；
+      - 排在**線頭到期掃描**之前（首條之後、最後一條之前）＝ 本變體 —— 這正是
+        原審計抓到的單點比較盲區（舊護欄用 `min()` 只比第一條，漏掉後面的掃描腿）。
+    目標掃描腿由 `_scan_` 前綴**推導**得出（不硬編名字）；只取「非首條」的最後一條。
+    """
+    tree, _functions, scan_names, decide = _mutation_context(source)
+    body = decide.body
+    blocks = _pop(body, _saturation_block_indices(body))
+    assert blocks, "變體 (vi) 前提：找不到飽和 return 區塊"
+    scan_indices = _scan_statement_indices(body, scan_names)
+    assert len(scan_indices) >= 2, (
+        f"變體 (vi) 前提：至少 2 條掃描腿（否則退化為變體 (i)）；實得 {scan_indices}"
+    )
+    target = scan_indices[-1]
+    body[target:target] = blocks
+    return _mutant_source(tree)
+
+
+#: `{變體 id: (builder, 預期必須變紅？)}`
+_MUTATION_VARIANTS = {
+    "i_saturation_before_all_scans": (_mutate_saturation_before_all_scans, True),
+    "ii_nested_if_saturation_return": (_mutate_nested_if_saturation_return, True),
+    "iii_saturation_hidden_in_helper": (_mutate_saturation_hidden_in_helper, True),
+    "iv_scans_moved_after_returns": (_mutate_scans_after_saturation, True),
+    "v_equivalent_scan_hoist": (_mutate_equivalent_scan_hoist, False),
+    "vi_saturation_before_thread_due_scan": (_mutate_before_thread_due_scan, True),
+}
+
+
+@pytest.mark.parametrize("variant", sorted(_MUTATION_VARIANTS))
+def test_owner_a_guard_has_teeth_on_mutation_variant(gate_source, variant):
+    """護欄對六個變體逐一有牙（AST 手術求值，不落地、不改 `src/**`）。
+
+    (i) 提前搬移／(ii) 巢狀 `if`／(iii) 藏進 helper／(iv) 掃描搬到 return 之後／
+    (vi) 只搬到**線頭到期掃描**之前 ⇒ **必須變紅**；
+    (v) 語意等價的純掃描上提 ⇒ **不得**變紅。
+    """
+    build, expect_red = _MUTATION_VARIANTS[variant]
+    mutant = build(gate_source)
+    assert mutant != gate_source, f"變體 {variant} 沒有真的改動原始碼"
+
+    audit = _gate_saturation_order_audit(mutant)
+    if expect_red:
+        assert audit["violations"], (
+            f"🔴 變體 {variant} 未被護欄攔下（護欄無牙）；"
+            f"掃描={audit['scan_names']} 飽和 return={audit['sat_return_sites']}"
+        )
+    else:
+        assert audit["violations"] == [], (
+            f"變體 {variant} 是語意等價重排，不得變紅：\n  "
+            + "\n  ".join(audit["violations"])
+        )

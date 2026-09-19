@@ -6,27 +6,22 @@
 兩者皆 fail-silent → False（一律往安靜方向錯），不給模型編造瑣事的機會。
 本模組**額外新增**且可**參數化控制**的容量防線 `ACTIVE_POOL_SATURATED`
 （來源＝ LIFE-THREAD-M3-1 工單 §3；旋鈕＝ `enforce_strict_capacity`，LIFE-THREAD-M3-2 落地）。
-未決張力**僅在到期時**才喚醒（due-based，契約 §4.2 為準）；未帶到期時間者不喚醒。
+喚醒訊號**恰為**契約 §4.2 的兩項（二元、**無第三態**）：`check_points_due` /
+`world_collision_detected`；本模組**不得**自行新增第三個喚醒訊號。
 本模組為 pure function：**0 I/O、0 LLM、0 定時器、0 `src.*` import**，所有輸入一律由參數傳入。
 
 **偏離宣告（逐條已結清 —— LIFE-THREAD-M3-2 把以下三處由「隱含行為」改寫為「明文裁定」；
 每條即「本模組 vs 契約 §4.2」的差異）**：
   1. `extra["summary"]` 為碰撞判定的**必要條件** —— 此條件出自契約 **§5.2.4 fact-text 規則**，
      §4.2 判定式本身沒有；效果**更嚴**（無 fact text 的世界事件不喚醒，寧可留白、不得捏造）。
-  2. **參數化的刻意偏離（容量防線）** —— `enforce_strict_capacity=True`（**預設**）時，容量防線
-     **壓過契約 §4.2 的世界碰撞與到期檢驗點**：活躍池飽和 ⇒ 恆 `SLEEP / ACTIVE_POOL_SATURATED`
-     （即使同時有世界碰撞或到期檢驗點）。`enforce_strict_capacity=False` 時退回契約純淨語意：
-     世界碰撞 → 到期檢驗點（線頭 → 張力）→ 容量飽和 → 留白。
-     **M5 接線票必須就這個預設值做最終政策裁定**（本票不定案，只把旋鈕做出來）。
+  2. **容量防線（Owner 2026-09-19 裁定 A）** —— `enforce_strict_capacity=True`（**預設**）與 `False`
+     對喚醒訊號的優先序相同：世界碰撞 → 到期檢驗點（線頭）→ 容量飽和 → 留白。
+     活躍池飽和**不得**否決契約 §4.2 的 `check_points_due` / `world_collision_detected`。
+     無喚醒訊號且飽和 ⇒ `SLEEP / ACTIVE_POOL_SATURATED`。容量壓縮新建在 `create_thread()`（§2.6.3），不在本閘門。
+     旋鈕預設的 M5 裁定仍為 True（API 相容）。
      旗標必須是**真 `bool`**（`isinstance(x, bool)`）；非 bool（`1` / `"yes"` / `None` …）
      ⇒ 步驟 0 fail-closed `SLEEP / FAIL_CLOSED_DEFAULT_SLEEP`（**不 raise**）。
-  3. **due-based 張力** —— 第三個喚醒訊號 `unresolved_tensions` 的存在本身即偏離
-     （契約 §4.2 只定義兩個布林 `check_points_due` / `world_collision_detected`）；
-     且**只有到期的**張力才喚醒：到期欄位 `check_after_ts`（或別名 `due_at`）且 `<= current_time`；
-     **未帶到期時間的張力永不喚醒**（此為對 LIFE-THREAD-M3-1 工單 §3 字面的刻意收緊，契約 §4.2 優先）。
-     張力欄位別名清單：到期時間＝`check_after_ts` / `due_at`；識別碼＝`tension_id` / `id`。
-     接線（M5）時必須確保它與線頭來源**不重複計數**。
-  4. `consumed_by_wake` —— **不存在於** `WorldPerceptionTrace` schema，屬本模組**自訂**的選用旗標；
+  3. `consumed_by_wake` —— **不存在於** `WorldPerceptionTrace` schema，屬本模組**自訂**的選用旗標；
      **缺欄 ⇒ 視為未消費（該筆仍可喚醒）**；**只有嚴格 `is True` 才跳過**
      （`1` / `"true"` / `"yes"` 等 truthy **不**跳過）。
   另：`due.sort()` 僅為「最早到期優先」的**決定性排序**，**不是 salience 評分排序**
@@ -89,8 +84,6 @@ REASON_FAIL_CLOSED_DEFAULT_SLEEP = "FAIL_CLOSED_DEFAULT_SLEEP"
 REASON_WORLD_COLLISION_WAKE = "WORLD_COLLISION_WAKE"
 #: 判定 1：線頭檢驗點到期（契約 §4.2）。
 REASON_CHECKPOINT_DUE_WAKE = "CHECKPOINT_DUE_WAKE"
-#: 判定 1 的張力面：未決張力**到期**才喚醒（due-based）。
-REASON_TENSION_DUE_WAKE = "UNRESOLVED_TENSION_DUE_WAKE"
 #: 留白：morning / night。
 REASON_REFLECTION_SLOT_CLEAR = "REFLECTION_SLOT_CLEAR"
 #: 留白：daytime / evening。
@@ -128,7 +121,6 @@ __all__ = [
     "REASON_FAIL_CLOSED_DEFAULT_SLEEP",
     "REASON_WORLD_COLLISION_WAKE",
     "REASON_CHECKPOINT_DUE_WAKE",
-    "REASON_TENSION_DUE_WAKE",
     "REASON_REFLECTION_SLOT_CLEAR",
     "REASON_DAYTIME_WHITESPACE",
 ]
@@ -267,7 +259,7 @@ def _inputs_valid(
 
 # ──────────────────────────────────────────────────────────────
 # 容量防線（單一私有判定：`enforce_strict_capacity` 兩條路徑共用）
-# 步驟 1（`True`：最高優先）／步驟 3c（`False`：排在外部訊號之後）
+# 步驟 3（`enforce_strict_capacity` 兩條路徑共用；排在外部訊號之後）
 # ──────────────────────────────────────────────────────────────
 
 def _pool_saturated(active_threads: List[Any], capacity_limit: int) -> bool:
@@ -304,7 +296,7 @@ def _pool_saturated(active_threads: List[Any], capacity_limit: int) -> bool:
 
 
 # ──────────────────────────────────────────────────────────────
-# 步驟 2：世界碰撞防線（契約 §4.2 判定 2）
+# 步驟 1：世界碰撞防線（契約 §4.2 判定 2）
 # ──────────────────────────────────────────────────────────────
 
 def _scan_world_collision(
@@ -354,7 +346,7 @@ def _scan_world_collision(
 
 
 # ──────────────────────────────────────────────────────────────
-# 步驟 3a：線頭檢驗點到期（契約 §4.2 判定 1）
+# 步驟 2：線頭檢驗點到期（契約 §4.2 判定 1）
 # ──────────────────────────────────────────────────────────────
 
 def _scan_threads_due(
@@ -403,46 +395,6 @@ def _scan_threads_due(
 
 
 # ──────────────────────────────────────────────────────────────
-# 步驟 3b：未決張力到期（due-based，契約 §4.2 為準）
-# ──────────────────────────────────────────────────────────────
-
-def _scan_tensions_due(
-    unresolved_tensions: List[Any], current_time: Any
-) -> Optional[List[str]]:
-    """回張力 id 清單（有到期張力，可能為空清單）或 `None`（無到期張力）。
-
-    **只有「到期的」張力才會喚醒**；未帶到期時間的張力不喚醒。
-    """
-    tension_ids: List[str] = []
-    any_due = False
-    for tension in unresolved_tensions:
-        if not isinstance(tension, Mapping):
-            continue
-        raw = tension.get("check_after_ts")
-        if raw is None:
-            raw = tension.get("due_at")
-        if raw is None:
-            continue
-        parsed_ts = _parse_ts(raw)
-        if parsed_ts is None:
-            continue
-        if parsed_ts > current_time:
-            continue
-        any_due = True
-        tension_id = tension.get("tension_id")
-        if not (isinstance(tension_id, str) and tension_id.strip()):
-            tension_id = tension.get("id")
-        if isinstance(tension_id, str) and tension_id.strip():
-            tension_ids.append(tension_id)
-        if len(tension_ids) >= SEED_HINT_MAX_ITEMS:
-            break
-
-    if not any_due:
-        return None  # 無到期張力 ⇒ 不貢獻（未帶到期時間者不喚醒）
-    return tension_ids  # 有到期張力（可能無可用 id，仍算命中）
-
-
-# ──────────────────────────────────────────────────────────────
 # 判定主體（步驟 0 → 4，順序即優先序）
 # ──────────────────────────────────────────────────────────────
 
@@ -453,7 +405,6 @@ def _decide(
     active_threads: Any,
     capacity_limit: Any,
     recent_perceptions: Any,
-    unresolved_tensions: Any,
     enforce_strict_capacity: Any,
 ) -> WakeDecision:
     # ── 步驟 0：Fail-Closed 驗證 ──────────────────────────────
@@ -463,38 +414,25 @@ def _decide(
 
     # 讀不到 ≠ 有碰撞（契約 §4.2）：非 list 一律視為空，**不** fail-closed。
     perceptions = recent_perceptions if isinstance(recent_perceptions, list) else []
-    tensions = unresolved_tensions if isinstance(unresolved_tensions, list) else []
 
     # 容量判定**只算一次**：`True` / `False` 兩條政策路徑共用同一份計數邏輯（避免日後漂移）。
     saturated = _pool_saturated(active_threads, capacity_limit)
 
-    # ── 步驟 1：容量防線（僅 `enforce_strict_capacity=True`；最高優先，壓過一切）──
-    if enforce_strict_capacity and saturated:
-        return _sleep(REASON_ACTIVE_POOL_SATURATED)
-
-    # ── 步驟 2：世界碰撞防線 ─────────────────────────────────
+    # Owner A 2026-09-19：訊號先於容量。
+    # ── 步驟 1：世界碰撞防線 ─────────────────────────────────
     collision_hint = _scan_world_collision(perceptions, current_time)
     if collision_hint is not None:
         return _wake("world_collision", REASON_WORLD_COLLISION_WAKE, collision_hint)
 
-    # ── 步驟 3a：線頭檢驗點到期 ───────────────────────────────
+    # ── 步驟 2：線頭檢驗點到期（契約 §4.2 判定 1）──────────────
     thread_hint = _scan_threads_due(active_threads, current_time)
     if thread_hint is not None:
         origin = thread_hint["origin_type"]
         return _wake(origin, REASON_CHECKPOINT_DUE_WAKE, thread_hint)
 
-    # ── 步驟 3b：未決張力到期 ────────────────────────────────
-    tension_ids = _scan_tensions_due(tensions, current_time)
-    if tension_ids is not None:
-        return _wake(
-            "necessity_driven",
-            REASON_TENSION_DUE_WAKE,
-            {"origin_type": "necessity_driven", "tension_ids": tension_ids},
-        )
-
-    # ── 步驟 3c：容量飽和（僅 `enforce_strict_capacity=False`）──────────
-    # 契約 §4.2 純淨模式：容量防線**不得否決**外部訊號，故排在世界碰撞／到期檢驗點之後；
-    # 但飽和仍須留下觀測痕跡（回 `ACTIVE_POOL_SATURATED`，不退化成 `DAYTIME_WHITESPACE`）。
+    # ── 步驟 3：容量飽和（訊號之後；True/False 同位置）──
+    if enforce_strict_capacity and saturated:
+        return _sleep(REASON_ACTIVE_POOL_SATURATED)
     if not enforce_strict_capacity and saturated:
         return _sleep(REASON_ACTIVE_POOL_SATURATED)
 
@@ -587,7 +525,6 @@ def evaluate_wake_gate(
     active_threads: list,
     capacity_limit: int,
     recent_perceptions: list = None,
-    unresolved_tensions: list = None,
     enforce_strict_capacity: bool = True,
 ) -> WakeDecision:
     """契約 §4 Salience Gate 的二元判定（**pure function、永不 raise**）。
@@ -597,19 +534,12 @@ def evaluate_wake_gate(
         欄位 `thread_id` / `status` / `check_after_ts` / `origin_type`。
       - `capacity_limit`：M1 `capacity(agent_id)` 的整數結果。
       - `recent_perceptions`：`perception_trace.jsonl` 的記錄列。
-      - `unresolved_tensions`：未決張力列（過期欄位 `check_after_ts` 或別名 `due_at`）。
-      - `enforce_strict_capacity`：**容量政策旋鈕**（LIFE-THREAD-M3-2；**預設 `True` ＝ 現行安全行為**）。
-        * `True` ⇒ 容量防線**最高優先**，活躍池飽和即 `SLEEP / ACTIVE_POOL_SATURATED`
-          （即使同時有世界碰撞或到期檢驗點）；
-          判定順序＝容量防線 → 世界碰撞 → 線頭到期 → 張力到期 → 留白。
-        * `False` ⇒ 契約 §4.2 **純淨模式**，容量防線**不得否決**外部訊號；
-          判定順序＝世界碰撞 → 線頭到期 → 張力到期 → 容量飽和 → 留白
-          （飽和仍回 `ACTIVE_POOL_SATURATED`，保留觀測痕跡）。
-        * 必須是**真 `bool`**（`isinstance(x, bool)`）；非 bool（`1` / `0` / `"yes"` / `None` / `[]`）
-          ⇒ `SLEEP / FAIL_CLOSED_DEFAULT_SLEEP`（**不 raise**）。
-        * 註：預設值的最終政策裁定屬 **M5 接線票**；本票只提供旋鈕，不定案。
+      - `enforce_strict_capacity`：**容量政策旋鈕**（預設 `True`；Owner 2026-09-19 裁定 A）。
+        * `True` 與 `False` 喚醒優先序相同：世界碰撞 → 線頭到期 → 容量飽和 → 留白。
+          飽和不得否決到期／世界碰撞；無訊號且飽和 ⇒ `SLEEP / ACTIVE_POOL_SATURATED`。
+        * 必須是**真 `bool`**（`isinstance(x, bool)`）；非 bool ⇒ `SLEEP / FAIL_CLOSED_DEFAULT_SLEEP`（**不 raise**）。
 
-    `recent_perceptions` / `unresolved_tensions` 為 `None` 或非 list 一律視為空
+    `recent_perceptions` 為 `None` 或非 list 一律視為空
     （讀不到 ≠ 有碰撞，不 fail-closed）。
     """
     try:
@@ -620,7 +550,6 @@ def evaluate_wake_gate(
             active_threads,
             capacity_limit,
             recent_perceptions,
-            unresolved_tensions,
             enforce_strict_capacity,
         )
     except Exception:  # 兜底 fail-closed（往安靜方向錯），永不 raise

@@ -23,10 +23,11 @@
   **預設關**（旗標 `LIFE_THREAD_CONSOLIDATION_ENABLED`）。本模組仍然 **0 M1 寫入**
   ——寫入（`append_dissolved` ＋ SAGE fact）全部發生在
   `life_thread_consolidation_wiring` 的背景任務內，且唯有旗標 ON 才會建立該任務。
-- **張力訊號未供給**：契約 §4.2 的 `should_wake` **只有**
-  `check_points_due OR world_collision_detected` 兩項；張力是 M3 的**已宣告偏離**
-  第三訊號，且 M4↔M3 的張力形狀對齊尚未做 ⇒ 本模組傳 `unresolved_tensions=None`
-  （契約純淨），**張力供給為後續票**。附帶好處：「張力與線頭不得重複計數」自動成立。
+- **喚醒訊號二元（契約 §4.2 純淨）**：契約 §4.2 的 `should_wake` **只有**
+  `check_points_due OR world_collision_detected` 兩項。本模組只供給這兩項
+  （`active_threads` ＋ `recent_perceptions`）；M3 閘門亦只實作這兩項
+  （FIX-A1-C9-1：第三個喚醒訊號已拔除），**無第三態**。
+  本模組只實作契約 §4.2 的兩個訊號；任何第三訊號須先修契約。
 - **due 集合交還 M4（單一 predicate 來源）**：WAKE 時傳 `due_threads=None`，讓 M4
   `_render_due_threads` 走它**自己**那條 `lt.list_active()` ＋ `check_after_ts <= now`
   的 due 過濾（與契約 §4.2 判定 1 同口徑，且該路徑已被 M4 既有測試覆蓋）。理由：
@@ -34,7 +35,7 @@
   等於在本層再造**第三份** due predicate（M1 契約 §4.2／M3 判定 1／本層），語意漂移
   風險大於省下的 I/O。代價：WAKE 時多 1 次 `lt.list_active()` 整檔讀
   （≤ 2 次/日/agent，可接受）。故本模組對 §4.2 的 **due 集合不再有偏離**；
-  唯一的**已宣告偏離**仍是張力訊號未供給（見上）。
+  本層對 §4.2 **無任何已宣告偏離**。
 - **0 LLM 直接呼叫**：所有 LLM 一律經 `run_origin_round`（§8.1 路徑 A）。
 - **第三條喚醒路徑（契約 §4.4，`LIFE-THREAD-BOOTSTRAP-1`）**：M3 判 SLEEP
   **且非容量理由**、且該 agent **零 active 線頭**、`capacity > 0`、bootstrap 標記
@@ -77,8 +78,8 @@ logger = logging.getLogger(__name__)
 #: **絕不接受 `daytime` / `evening`**。
 MODULE_SLOT_VALUES = ("morning", "night")
 
-#: 容量政策旋鈕（Owner 裁定 A）：`True` ⇒ 活躍池飽和即 `SLEEP /
-#: ACTIVE_POOL_SATURATED`（容量防線最高優先）。
+#: Capacity flag still True for M3. Owner 2026-09-19 A: due/world before capacity.
+#: Capacity still blocks create_thread only. Quiet+saturated still SLEEP SATURATED.
 POLICY_ENFORCE_STRICT_CAPACITY = True
 
 #: 軟性歸檔政策（Owner 裁定 B）：**不得**走軟性歸檔路徑。
@@ -284,7 +285,6 @@ async def _run_agent(
         active_threads,
         cap,
         recent_perceptions=list(perceptions),
-        unresolved_tensions=None,  # 張力供給為後續票（契約 §4.2 純淨）
         enforce_strict_capacity=POLICY_ENFORCE_STRICT_CAPACITY,
     )
 

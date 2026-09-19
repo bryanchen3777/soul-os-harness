@@ -223,12 +223,12 @@ def test_04_reset_state_is_callable_and_clears_keys():
 
 
 def test_05_docstring_declares_boundaries():
-    """模組 docstring 必寫三條邊界：0 新定時器／M2 僅評估／張力未供給。"""
+    """模組 docstring 必寫三條邊界：0 新定時器／M2 僅評估／喚醒訊號二元（契約 §4.2）。"""
     doc = m5.__doc__ or ""
     assert "0 新定時器" in doc
     assert "0 進入 Agency 觸發鏈" in doc
     assert "M2 僅評估不寫入" in doc
-    assert "張力" in doc and "後續票" in doc
+    assert "check_points_due OR world_collision_detected" in doc
 
 
 # ══════════════════════════════════════════════════════════════
@@ -628,7 +628,8 @@ def test_42_saturation_not_triggered_below_capacity(iso_env, monkeypatch):
     _run([AGENT], MORNING, "morning", llm_caller=_SpyLLM(_json_response([])))
     assert calls[0]["args"][4] == 2  # capacity_limit 位置參數
     # 無到期線頭、無碰撞 ⇒ 留白（morning 屬 REFLECTION_SLOTS）
-    assert calls[0]["kwargs"]["unresolved_tensions"] is None
+    # FIX-A1-C9-1：M3 閘門只有契約 §4.2 的兩個訊號 ⇒ 本層的關鍵字參數恰為這兩個
+    assert set(calls[0]["kwargs"]) == {"recent_perceptions", "enforce_strict_capacity"}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -2252,16 +2253,16 @@ def test_d6_world_collision_wake_path(iso_env, monkeypatch):
 
 
 # ══════════════════════════════════════════════════════════════
-# 16. 張力訊號未供給（契約 §4.2 純淨）
+# 16. 喚醒訊號二元（契約 §4.2 純淨；無第三訊號）
 # ══════════════════════════════════════════════════════════════
 
 
-def test_e0_unresolved_tensions_is_none(iso_env, monkeypatch):
-    """🔴 修正 3：本票傳 `unresolved_tensions=None`（張力供給為後續票）。"""
+def test_e0_gate_kwargs_carry_no_third_signal(iso_env, monkeypatch):
+    """🔴 FIX-A1-C9-1：契約 §4.2 只有兩個喚醒訊號 ⇒ 本層**不得**傳任何第三訊號參數。"""
     calls = _spy_gate(monkeypatch)
     _patch_soul(monkeypatch)
     _run([AGENT], MORNING, "morning", llm_caller=_SpyLLM(_json_response([])))
-    assert calls[0]["kwargs"]["unresolved_tensions"] is None
+    assert set(calls[0]["kwargs"]) == {"recent_perceptions", "enforce_strict_capacity"}
 
 
 def test_e1_gate_receives_float_epoch(iso_env, monkeypatch):
