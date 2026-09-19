@@ -83,9 +83,12 @@ def _isolate_soul_os_data_root(request, tmp_path_factory):
     env_patch = pytest.MonkeyPatch()
     env_patch.setenv("SOUL_OS_DATA_DIR", str(isolated_root))
     reset_data_root()
+    # Keep an explicit empty value so load_dotenv(..., override=False) cannot
+    # rehydrate a production feature flag into the pytest process.
+    env_patch.setenv("LIFE_THREAD_BOOTSTRAP_ENABLED", "")
     try:
         yield
     finally:
-        env_patch.undo()  # 還原 SOUL_OS_DATA_DIR 原值（多為「未設定」）
+        env_patch.undo()  # Restore SOUL_OS_DATA_DIR and host feature flags.
         # 清快取，避免 tmp 路徑殘留給下一個測試。
         reset_data_root()

@@ -73,8 +73,8 @@ def _clean_idempotency():
 
 @pytest.fixture(autouse=True)
 def _reset_flag(monkeypatch):
-    """旗標一律由測試顯式設定（缺席 ⇒ OFF，契約 §4.4「預設關」）。"""
-    monkeypatch.delenv(lt_boot.BOOTSTRAP_ENABLED_ENV, raising=False)
+    """旗標一律由測試顯式設定；空字串阻擋 dotenv 重新注入 production 的 ON。"""
+    monkeypatch.setenv(lt_boot.BOOTSTRAP_ENABLED_ENV, "")
     yield
 
 
@@ -318,19 +318,19 @@ def test_11_flag_falsy(monkeypatch, raw):
 
 def test_12_flag_absent_is_off(monkeypatch):
     """缺席（＝預設）⇒ `False`（契約 §4.4「落地即休眠」）。"""
-    monkeypatch.delenv(lt_boot.BOOTSTRAP_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(lt_boot.BOOTSTRAP_ENABLED_ENV, "")
     assert lt_boot.bootstrap_enabled() is False
 
 
 def test_13_flag_read_at_call_time_not_import_time(monkeypatch):
     """🔴 **呼叫時**讀取（非匯入時快取）：import 後才 setenv ⇒ **立即**反映。"""
-    monkeypatch.delenv(lt_boot.BOOTSTRAP_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(lt_boot.BOOTSTRAP_ENABLED_ENV, "")
     assert lt_boot.bootstrap_enabled() is False
     monkeypatch.setenv(lt_boot.BOOTSTRAP_ENABLED_ENV, "on")
     assert lt_boot.bootstrap_enabled() is True, "模組已 import 過 ⇒ 必須仍反映最新 env"
     monkeypatch.setenv(lt_boot.BOOTSTRAP_ENABLED_ENV, "off")
     assert lt_boot.bootstrap_enabled() is False, "反向亦須立即反映"
-    monkeypatch.delenv(lt_boot.BOOTSTRAP_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(lt_boot.BOOTSTRAP_ENABLED_ENV, "")
     assert lt_boot.bootstrap_enabled() is False
 
 
@@ -775,7 +775,7 @@ def test_i3_same_agent_second_slot_does_not_re_bootstrap(iso_env, monkeypatch):
 
 def test_i4_flag_off_zero_llm_zero_marker(iso_env, monkeypatch):
     """BS-1：旗標 OFF（缺席）⇒ 本節**完全不執行**：0 LLM、標記檔**不被建立**。"""
-    monkeypatch.delenv(lt_boot.BOOTSTRAP_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(lt_boot.BOOTSTRAP_ENABLED_ENV, "")
     _patch_soul(monkeypatch)
     claims = _spy_claim(monkeypatch)
     rounds = _spy_round(monkeypatch)
@@ -1087,7 +1087,7 @@ def test_f1_unsafe_agent_id_flag_off_is_quiet(iso_env, monkeypatch):
     「旗標 OFF ⇒ 本節完全不執行」是契約 §4.4 的硬性邊界：舊版（bootstrap 引入前）
     在此輸入下是平靜的 SLEEP；本票不得讓它變成 `{"error": ...}`。
     """
-    monkeypatch.delenv(lt_boot.BOOTSTRAP_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(lt_boot.BOOTSTRAP_ENABLED_ENV, "")
     _patch_soul(monkeypatch)
     rounds = _spy_round(monkeypatch)
     spy = _SpyLLM(_json_response([]))
@@ -1168,7 +1168,7 @@ def test_f3_flag_off_derives_no_marker_path(iso_env, monkeypatch):
     monkeypatch.setattr(m5, "lt", _CountingLt(lt, spy))
 
     # (a) 旗標 OFF（未設）⇒ 0 次推導
-    monkeypatch.delenv(lt_boot.BOOTSTRAP_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(lt_boot.BOOTSTRAP_ENABLED_ENV, "")
     out = _run([AGENT], MORNING, "morning", llm_caller=_SpyLLM(_json_response([])))
     assert out[AGENT]["woke"] is False, out[AGENT]
     assert calls == [], f"旗標 OFF ⇒ 不得推導標記路徑（實得 {calls}）"
