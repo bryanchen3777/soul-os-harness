@@ -448,6 +448,7 @@ Per Owner Decision A (2026-08-12, GOV-2-R1)，以下历史里程碑全部 CLOSED
 - **2026-09-17 22:00 生命線頭冷啟動引導首次實戰成功（Step 51）**：10/10 agent 一次性 bootstrap、**產出 17 條真實線頭**、`llm_calls`＝10（一次性 ≈1,700 tokens）、0 失敗、每 agent 恰一次；`check_after_ts` 指向次日 08:00 ⇒ **Zeigarnik 迴圈自此有真實到期檢查點**，閉環死結正式解開。啟用由 Owner 於獨立終端執行（`.env` 旗標＋`server_ops.ps1 restart`；agent 不得執行含 `taskkill` 的重啟）。
 - **2026-09-18 08:00 首輪常規喚醒觀測：到期喚醒未發生（10/10 SLEEP）**⇒ 確認 M3 閘門「容量飽和短路早於到期判定」缺陷（`life_thread_wake_gate.py:469→472→473`，早於 `:476`／`:481`）⇒ 引擎實際「只增不減」、7/10 agent 鎖死、9 條已到期線頭未被處理；契約 `:394`／`:211` 確認偏離。修法涉及常態 LLM 成本 ⇒ **待 Owner 裁定**；裁定前不動 code／配置。
 - **2026-09-19 生命線頭 M3 喚醒閘門生產缺陷修法落地（`AUDIT-LIFE-THREAD-WAKE-GATE-A-1` 審計 PASS）**：滿 cap 不再短路掉到期／碰撞判定（求值序＝**世界碰撞 → 線頭到期 → 容量飽和 → 留白**）；同步拔除未授權且生產不可達的第三喚醒訊號（`unresolved_tensions`／`UNRESOLVED_TENSION_DUE_WAKE`），M3 回到契約 §4.2 二元定義；AST 護欄**全稱化**（掃描腿動態推導）＋新增容量邊界整合測試（滿 cap＋到期 ⇒ `advanced>=1` ∧ `created==[]`）。全樹回歸**新增失敗 = 0**（唯一新增 `test_no_frozen_contract_file_touched` 為假陽性，commit 後實測轉綠）；**修法需重啟才生效（由 Owner 於獨立終端執行）**，`:8000`=18984 修法期間 0 重啟 0 kill。如實記載：開發者一度自報 focused 403 passed，兩次獨立實測皆 401（HEAD 400）⇒ **無法解釋、不予採信**。
+- Current HEAD: `cdb9f9e` (docs: register WAKE-GATE-A fix + audit PASS + third-signal removal)
 - Current HEAD: `dcdb67c` (docs: register 09/18 night-slot contrast observation + thread-count convention correction)
 - Current HEAD: `79bd76d` (docs: register 2026-09-18 gate-order defect finding — Step 52 first observation)
 - Current HEAD: `01bad07` (docs: register LIFE-THREAD-COLDSTART-ENABLE-1 — Step 51 enable + first-round observation)
