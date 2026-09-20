@@ -40,7 +40,7 @@ import numpy as np
 from aiohttp import WSMsgType, web
 
 try:  # pragma: no cover - 導入路徑相容
-    from .akane_voice_brain import AkaneVoiceBrain
+    from .akane_voice_brain import VC_ASR_SOURCE, AkaneVoiceBrain
     from .asr_refiner import AsrRefiner, needs_refiner
     from .env_config import resolve_config
     from .fish_tts_live import DEFAULT_LIVE_ENDPOINT, FishTTSLiveStreamer
@@ -48,7 +48,7 @@ try:  # pragma: no cover - 導入路徑相容
     from .vad_listener import VoiceActivityDetector
     from .web_ui import HTML_PAGE, render_html_page
 except ImportError:  # pragma: no cover
-    from akane_voice_brain import AkaneVoiceBrain
+    from akane_voice_brain import VC_ASR_SOURCE, AkaneVoiceBrain
     from asr_refiner import AsrRefiner, needs_refiner
     from env_config import resolve_config
     from fish_tts_live import DEFAULT_LIVE_ENDPOINT, FishTTSLiveStreamer
@@ -653,7 +653,10 @@ class WebSession:
             clean = text
             print(f"[ASR-REFINE] decision=bypass reason={reason} chars={chars} conf=none elapsed_ms={elapsed_ms}")
             log.info("[ASR-REFINE] decision=bypass reason=%s chars=%d conf=none elapsed_ms=%d", reason, chars, elapsed_ms)
-        await self._run_reply(clean, gen=gen, t_start=t_start, t_asr_done=t_asr_done)
+        # VC-ASR-CHANNEL-HINT-1：ASR 回合是**唯一**標記通道的呼叫端（打字 fallback 不標）
+        await self._run_reply(
+            clean, gen=gen, t_start=t_start, t_asr_done=t_asr_done, source=VC_ASR_SOURCE
+        )
 
     async def _run_reply(
         self,
@@ -661,11 +664,15 @@ class WebSession:
         gen: Optional[int] = None,
         t_start: Optional[float] = None,
         t_asr_done: Optional[float] = None,
+        *,
+        source: str = "",
     ) -> None:
         """THINKING 完成 → SPEAKING：LLM 串流 token → feed_text_piece → end_session。
 
         收尾以 create_task 並行執行（不阻塞 WS handler），interrupt 訊息可立即打斷；
         世代號確保被打斷的舊回合收尾不會覆蓋新回合狀態。
+
+        source: VC-ASR-CHANNEL-HINT-1——輸入通道，只透傳給大腦（`""` = 不標，逐位元不變）。
         """
         if gen is None:
             self._generation += 1
@@ -693,7 +700,7 @@ class WebSession:
             self._streamer.start()  # 釋放 interrupt 旗標（若有）
             hist = list(self._history)  # 對話快照：本回合結束前由 _finish 更新
             parts: list[str] = []
-            for token in self._brain.stream_respond(user_text, history=hist):
+            for token in self._brain.stream_respond(user_text, history=hist, source=source):
                 parts.append(token)
                 self._streamer.feed_text_piece(token)
             self._streamer.end_session()

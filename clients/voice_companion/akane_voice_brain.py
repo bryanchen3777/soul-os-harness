@@ -26,8 +26,10 @@ from pathlib import Path
 from typing import Callable, Iterable, Iterator, List, Optional
 
 try:
+    from .agent_roster import display_names
     from .session_store import SessionStore
 except ImportError:  # 直接以檔案執行（非套件）時
+    from agent_roster import display_names
     from session_store import SessionStore
 
 logger = logging.getLogger("soul_os.vc_brain")
@@ -51,6 +53,42 @@ MAX_PERSONA_CHARS = 2500
 
 # 空內容守門日誌標記（唯一可 grep）
 VC_LLM_EMPTY_MARKER = "[VC-LLM-EMPTY]"
+
+# ─────────────────────────────────────────────────────────────
+# VC-ASR-CHANNEL-HINT-1：語音通道提示（只標通道；不改辨識 / 不改 VAD / 不新增 LLM 呼叫）
+# ─────────────────────────────────────────────────────────────
+
+#: 通道標記值（唯一一份；web_server 的 ASR 回合以此傳入，不得散落字面值）
+VC_ASR_SOURCE = "voice_asr"
+
+#: ephemeral system 提示塊的第一行（通道標；獨立一行）
+_ASR_CHANNEL_MARK = "source=voice_asr"
+
+#: frozen contract 4.2 三段（逐字固定；三段各自獨立、可測，不得黏成一句）
+_ASR_CHANNEL_LINES = (
+    "【通道】這一句來自語音辨識，不是打字。用字與專有名詞可能錯。",
+    "不要糾正對方的拼寫，不要拿錯字當笑點或劇情。",
+    "若某詞接近名冊中的人，當成那個人；對不上就問一句，不要猜一段故事。",
+)
+
+
+def asr_channel_prefix() -> str:
+    """ASR 回合的 ephemeral system 提示塊：標 ＋ 4.2 三段 ＋（可選）名冊一行。
+
+    fail-closed（契約 4.3）：名冊讀不到／為空 ⇒ 只輸出標與三段，省略名冊行；
+    名冊讀取本身已 fail-closed，這裡再吞一次，確保**永不 raise 到呼叫端**。
+    名冊人名不得嵌進 4.2 三段（三段是逐字固定的常數，本函式只做串接）。
+    本函式**純**（無副作用、不寫任何狀態）；呼叫端只把它放進單次 messages 的 system 側。
+    """
+    parts = [_ASR_CHANNEL_MARK, *_ASR_CHANNEL_LINES]
+    try:
+        roster = display_names()
+    except Exception:  # noqa: BLE001 — 名冊失敗 ≠ 回合失敗
+        roster = []
+    if roster:
+        parts.append("【名冊】" + ", ".join(roster))
+    return "\n".join(parts)
+
 
 # ─────────────────────────────────────────────────────────────
 # Layer 3（現役）Persona 內嵌常數
@@ -611,8 +649,14 @@ class AkaneVoiceBrain:
         """
         return getattr(self.llm_stream, "last_diag", None)
 
-    def _build_messages(self, user_text: str, history=None) -> List[dict]:
-        """組裝對話歷史、時序現象學（TA-2）與 SAGE 記憶檢索，注入 system prompt。"""
+    def _build_messages(self, user_text: str, history=None, *, source: str = "") -> List[dict]:
+        """組裝對話歷史、時序現象學（TA-2）與 SAGE 記憶檢索，注入 system prompt。
+
+        VC-ASR-CHANNEL-HINT-1：`source == "voice_asr"`（本輪輸入來自 ASR）時，於 persona 的
+        system 訊息之後、user 訊息之前另加**一則 ephemeral system**（標 ＋ 4.2 三段 ＋ 名冊
+        一行）；persona 區塊與 **user content 逐位元＝轉寫本文**。其餘任何來源（打字 fallback /
+        未知 / 未傳）**完全不注入** ⇒ 整份 messages 與改動前逐位元相同（fail-closed）。
+        """
         sys_parts = [self.persona]
 
         # 0. VC-UNIFY-1：認知地平線（Persona 之後、即時對話之前；fail-silent 空字串跳過）
@@ -653,6 +697,12 @@ class AkaneVoiceBrain:
 
         full_system = "\n\n".join(sys_parts)
         messages = [{"role": "system", "content": full_system}]
+        # VC-ASR-CHANNEL-HINT-1（①C 拍板）：ASR 回合在 persona 的 system 訊息**之後**、
+        # user 訊息**之前**，另加**一則 ephemeral system**（只此一 call，不進 persona／不進
+        # 任何持久或跨回合狀態）。persona 區塊與 user content 皆**逐位元不變** ⇒ 提示不會被
+        # SAGE／session 記成「用戶說的話」。
+        if source == VC_ASR_SOURCE:
+            messages.append({"role": "system", "content": asr_channel_prefix()})
         if session_history is not None:
             messages += session_history
         else:
@@ -678,12 +728,16 @@ class AkaneVoiceBrain:
             text = "嗯。我在聽。"
         return self._guarded(text)
 
-    def stream_respond(self, user_text: str, history=None) -> Iterator[str]:
+    def stream_respond(
+        self, user_text: str, history=None, *, source: str = ""
+    ) -> Iterator[str]:
         """串流回應：token 邊收邊過守門，交由分句器即時切句（邊生邊播）。
 
         history: 選用——先前輪次訊息（role=user/assistant），依序插入 system 之後（對話連貫）。
+        source: VC-ASR-CHANNEL-HINT-1——輸入通道（`"voice_asr"` 才注入通道提示）；
+                缺省空字串 ⇒ 與改動前逐位元相同。
         """
-        messages = self._build_messages(user_text, history=history)
+        messages = self._build_messages(user_text, history=history, source=source)
         if self.llm_stream is None:
             yield "我在。說說看。"
             return
