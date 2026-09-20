@@ -13,16 +13,27 @@
   不新增 trigger_type」）。喚醒的唯一動作 ＝ `life_thread_origins.run_origin_round(...)`
   （§5 注入範式的實作），副作用僅 `data/soul/<agent>/life_threads.jsonl`（經 M1
   `apply_actions`）—— **0 TG、0 memory、0 SAGE、0 bus、0 InnerLifeEvent**。
-- **M2 僅評估不寫入**：M2 的 `append_dissolved()` 會寫入 `dissolved_at`，而該欄位是
-  §3.3 L1 的「**沉澱已完成**」哨兵（§3.2：LLM 失敗時 `dissolved_at` **不寫**，
+- **M2 僅評估不寫入**（**旗標 OFF（預設）時**；catch-up 旗標 ON 時的交棒例外見本條末）：
+  M2 的 `append_dissolved()` 會寫入 `dissolved_at`，而
+  該欄位是 §3.3 L1 的「**沉澱已完成**」哨兵（§3.2：LLM 失敗時 `dissolved_at` **不寫**，
   下一輪可重試）。M2 的**執行層尚未落地**（本票 out of scope），若在此先寫
   `dissolved_at`，等 M2 執行層日後上線時這些線頭會被 L1 永久跳過 ⇒ **沉澱永遠不會
-  發生**。故本模組對 M2 **只做評估與記錄，0 M1 寫入**：`should_mutate` 只計數與記 log，
-  絕不呼叫 `append_dissolved` / `append_transition`。
+  發生**。故本模組**永不直接**呼叫 `append_dissolved` / `append_transition`。
   🔴 **後續票更新（LIFE-THREAD-M2-WIRING-1）**：M2 執行層**已落地並已接線**，但
-  **預設關**（旗標 `LIFE_THREAD_CONSOLIDATION_ENABLED`）。本模組仍然 **0 M1 寫入**
-  ——寫入（`append_dissolved` ＋ SAGE fact）全部發生在
-  `life_thread_consolidation_wiring` 的背景任務內，且唯有旗標 ON 才會建立該任務。
+  **預設關**（旗標 `LIFE_THREAD_CONSOLIDATION_ENABLED`）。**旗標 OFF（預設）時**，本模組
+  對 M2 **只做評估與記錄，0 M1 寫入**：`should_mutate` 只計數與記 log。
+  🔴 **後續票更新（M2-CATCHUP-1）— 兩支旗標分工**：
+    - `LIFE_THREAD_CONSOLIDATION_ENABLED`（接線層）＝ **同輪轉入終態**的沉澱：
+      由 M4 `apply_actions` 在 `append_transition` **成功之後**觸發（`dissolve_hook` 接縫）。
+    - `LIFE_THREAD_CATCHUP_ENABLED`（本檔，見 `catchup_enabled()`）＝ **存量終態清掃**：
+      對「**已經**是終態」且 `dissolved_at is None` 的線頭交棒。這類線頭**永遠**不會由
+      M4 觸發（M1 終態不可再轉移）⇒ 只能由本旗標管。本檔在 M2 之後、M3 之前，對
+      `evals` 中 `should_mutate is True` 的每個候選呼叫**同一個** hook 實例
+      （`(agent_id, evaluation.thread_id, evaluation.target_status.value)`）。
+    - 兩支**獨立開關／獨立回滾**；**任一 OFF ⇒ 該路徑不做任何額外工作**。catch-up ON 時
+      **僅對 M2 候選做沉澱**，且 **at-most-once 與日預算（每 agent 3／全域 200／UTC 日）
+      仍全由執行層守**；寫入（`append_dissolved` ＋ SAGE fact）全部發生在
+      `life_thread_consolidation_wiring` 的背景任務內。
 - **喚醒訊號二元（契約 §4.2 純淨）**：契約 §4.2 的 `should_wake` **只有**
   `check_points_due OR world_collision_detected` 兩項。本模組只供給這兩項
   （`active_threads` ＋ `recent_perceptions`）；M3 閘門亦只實作這兩項
@@ -91,6 +102,17 @@ POLICY_MAX_ACTIVE_DURATION_DAYS = 14
 #: M2 判 `check_after_ts` 過期（stale）的天數門檻。
 POLICY_STALE_CHECK_THRESHOLD_DAYS = 7
 
+#: **存量終態 catch-up** 旗標的環境變數名（**呼叫時即時讀取，不得快取**）。
+#:
+#: 🔴 **兩支旗標分工**（M2-CATCHUP-1）：
+#:   - `LIFE_THREAD_CONSOLIDATION_ENABLED`（`life_thread_consolidation_wiring`）＝
+#:     **同輪轉入終態**的沉澱：由 M4 `apply_actions` 在 `append_transition` 成功後觸發。
+#:   - `LIFE_THREAD_CATCHUP_ENABLED`（本檔）＝ **存量終態清掃**：對「已經」是終態
+#:     （`status ∈ {completed, abandoned}` ∧ `dissolved_at is None`）的線頭交棒。
+#:     這類線頭**永遠**不會由 M4 觸發（M1 終態不可再轉移）⇒ 只能由本旗標管。
+#: 兩者**獨立開關／獨立回滾**；本旗標 OFF（預設）⇒ 本檔逐位元回到 catch-up 之前的行為。
+CATCHUP_ENABLED_ENV = "LIFE_THREAD_CATCHUP_ENABLED"
+
 #: 觀測行內文上限（避免日誌被單一長字串撐爆）。
 _LOG_MAX_CHARS = 200
 
@@ -111,6 +133,29 @@ def reset_state() -> None:
     兩次，導致重複喚醒與重複 LLM 花費（突破「每日 2 評估點」）。
     """
     _LAST_PROCESSED.clear()
+
+
+def catchup_enabled() -> bool:
+    """存量終態 catch-up 旗標是否開啟（**每次呼叫都重新讀 `os.environ`**，讓測試能 monkeypatch）。
+
+    真值語意**刻意與既有兩支旗標逐字相同**（`life_thread_bootstrap.bootstrap_enabled()`
+    與 `life_thread_consolidation_wiring.consolidation_enabled()`）：
+    去首尾空白、不分大小寫，落在真值集合 `{"1","true","yes","on"}` 才為 `True`；
+    **缺席**／非字串／其餘值（含 `""` / `"0"` / `"off"` / `"false"`）⇒ `False`
+    （fail-safe 方向 ＝ 不做額外工作、不花錢）。
+    真值集合**直接沿用**接線模組既有的 `TRUTHY_VALUES` 常數，不另立一份。
+
+    🔴 **0 新增 import**：本檔的 import 集合已被獨立審計釘住，故 `os` 取自**已匯入**的
+    接線模組所繫結的同一個行程環境物件（`lt_wiring.os.environ`）——與
+    `lt_wiring.consolidation_enabled()` 讀的是同一個環境、語意完全一致。
+    """
+    try:
+        raw = lt_wiring.os.environ.get(CATCHUP_ENABLED_ENV)
+    except Exception:  # pragma: no cover - defensive（fail-safe：不做額外工作）
+        return False
+    if not isinstance(raw, str):
+        return False
+    return raw.strip().lower() in lt_wiring.TRUTHY_VALUES
 
 
 def _clip(value: Any) -> str:
@@ -242,7 +287,7 @@ async def _run_agent(
     perceptions: Sequence[Any],
     llm_caller: Optional[Callable[..., Any]],
 ) -> Dict[str, Any]:
-    """單一 agent 的一輪：M1 fold → M2（唯讀評估）→ M3 →（WAKE 才）M4。"""
+    """單一 agent 的一輪：M1 fold → M2（評估；catch-up 旗標 ON 時交棒存量終態）→ M3 →（WAKE 才）M4。"""
     # ── at-most-once：**先蓋章再執行**（見 `run_slot_pipeline` docstring）──
     key = f"{agent_id}:{slot}:{now.date().isoformat()}"
     if key in _LAST_PROCESSED:
@@ -259,10 +304,14 @@ async def _run_agent(
     active_threads = [t for t in all_threads if t.get("status") == "active"]
     cap = lt.capacity(agent_id)
 
-    # ── M2（唯讀）：輸入必須是**全部線頭** ───────────────────
+    # ── M2（評估）：輸入必須是**全部線頭** ───────────────────
     # M2 的步驟 2（唯一觸發點 §3.1）只對**終態**線頭生效，故傳 `all_threads`
     # 而非 `active_threads`（後者會使 M2 在此管線中永遠是 no-op）。
-    # 🔴 只評估與記錄：**0 M1 寫入**（理由見模組 docstring）。
+    # 🔴 本層只評估與記錄；**catch-up 旗標 ON 時**才把 M2 候選交給接線層的 hook
+    #    （見下方 catch-up 區塊）。理由見模組 docstring。
+    # 🔴 本輪的**唯一** hook 實例：同時供下方 catch-up 與 M4 round（`dissolve_hook=`）
+    #    使用 ⇒ 同一輪同一 agent 的狀態一致。旗標 OFF 時它只是個立刻 return 的閉包。
+    dissolve_hook = lt_wiring.build_dissolve_hook()
     evals = lt_diss.evaluate_batch_dissolution(
         all_threads,
         now,
@@ -271,10 +320,40 @@ async def _run_agent(
         allow_soft_archive=POLICY_ALLOW_SOFT_ARCHIVE,
     )
     dissolved_candidates = sum(1 for e in evals if e.should_mutate)
+
+    # ── 契約新條款：**存量終態** catch-up（M2 候選 ⇒ 既有 hook）──────────
+    # M2 步驟 2 對 `status ∈ {completed, abandoned}` ∧ `dissolved_at is None` 的線頭回
+    # `should_mutate=True`。這類線頭**不會**再由 M4 觸發 hook（M1 終態不可再轉移 ⇒
+    # `apply_actions` 永遠拿不到 `transitioned`）⇒ 若不在這裡交棒，「存量終態」永遠不會
+    # 被沉澱。故在 M2 之後、M3 之前，對每個候選呼叫**同一個** hook 實例。
+    # 🔴 **整段只在 `LIFE_THREAD_CATCHUP_ENABLED` ON 時執行**：旗標 OFF（預設）⇒
+    #    **不迭代候選、不呼叫 hook、不建任務** ⇒ 本檔逐位元回到 catch-up 之前。
+    # 🔴 at-most-once 與日預算**都在執行層**（wiring `budget=None` ⇒ 行程級預設
+    #    每 agent 3／全域 200／UTC 日）＋ M2 步驟 1 的 `already_dissolved` 冪等
+    #    ⇒ 本層**不**自建預算或冪等，也不因配額抑制任何呼叫。
+    # 🔴 hook 是**同步**且內部 `loop.create_task`（不在本 tick inline await）⇒ 呼叫便宜。
+    # 🔴 fail-quiet：本模組「永不 raise」⇒ 單一候選失敗只記 warning，不影響 M3／M4。
+    catchup_on = catchup_enabled()
+    catchup_invoked = 0
+    if catchup_on:
+        for evaluation in evals:
+            if evaluation.should_mutate is not True:
+                continue
+            try:
+                dissolve_hook(
+                    agent_id, evaluation.thread_id, evaluation.target_status.value
+                )
+                catchup_invoked += 1
+            except Exception as exc:
+                logger.warning(
+                    f"[LifeThreadOrchestrator] agent={_clip(agent_id)} "
+                    f"catch-up hook 失敗 (fail-quiet): {type(exc).__name__}"
+                )
     logger.info(
         f"[LifeThreadOrchestrator] agent={_clip(agent_id)} slot={_clip(slot)} "
         f"threads={len(all_threads)} active={len(active_threads)} cap={_clip(cap)} "
-        f"dissolved_candidates={dissolved_candidates}（M2 唯讀，0 M1 寫入）"
+        f"dissolved_candidates={dissolved_candidates} "
+        f"catchup_enabled={catchup_on} catchup_invoked={catchup_invoked}"
     )
 
     # ── M3：Salience Gate（`current_time` 是 float epoch 秒）──
@@ -372,7 +451,7 @@ async def _run_agent(
         now=now,
         due_threads=None,
         llm_caller=llm_caller,
-        dissolve_hook=lt_wiring.build_dissolve_hook(),
+        dissolve_hook=dissolve_hook,
         build_kwargs={"soul_context": soul_context, "world_records": list(perceptions)},
     )
     if bootstrap_mode:

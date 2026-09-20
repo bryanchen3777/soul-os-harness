@@ -38,8 +38,8 @@
    （`w._WRITERS` 全程為空）；M1 回填（`w._append_dissolved`）走**真實**
    `lt.append_dissolved` —— 那正是本票要觀測的寫回路徑。
 
-四條斷言（本票唯一範圍）
-────────────────────────
+**hook 層四條（M2C-1..4；直接呼叫 `build_dissolve_hook()`）**
+──────────────────────────────────────────────────────────
 - **M2C-1 存量終態 → 恰一次寫回**：對金樣 B 內既有的終態線頭直接呼叫 hook ⇒ M1 檔內該線頭
   出現**恰好一次**非 null `dissolved_at` ＋ **非空** `sage_fact_id`、**恰一筆** `dissolved`
   事件；沉澱 LLM 恰 1 次、SAGE 恰 1 次。
@@ -50,6 +50,24 @@
   （`dissolved_at` 保持 null）；budget 3/3。
 - **M2C-4 軟封存預設關**：對**非終態**（`active`／`dormant`）線頭 ⇒ 不溶解（0 LLM／0 寫入）；
   `allow_soft_archive=True` **對照組**證明擋下它的正是「預設關」這個旗標。
+
+**pipeline e2e 四條（M2C-5..8；走真正的 `run_slot_pipeline`）**
+────────────────────────────────────────────────────────────
+兩支旗標分工（見 `life_thread_orchestrator.CATCHUP_ENABLED_ENV`）：
+`LIFE_THREAD_CONSOLIDATION_ENABLED`＝**同輪轉入終態**的沉澱（M4 `apply_actions` 觸發）；
+`LIFE_THREAD_CATCHUP_ENABLED`＝**存量終態清掃**（本票新增，M2 之後、M3 之前交棒）。
+e2e 一律注入**空動作** M4 stub ＋ 把既有 active 線頭推離到期 ⇒ 該輪 M3 判 SLEEP、
+**M4 不執行** ⇒ 觀測到的背景任務**只可能**來自 catch-up。
+- **M2C-5（a）兩旗標 ON ⇒ 存量終態恰一次寫回**：pipeline 一輪 ⇒ 恰 1 個背景任務、
+  `consolidated`、`dissolved_at` 非 null ＋ `sage_fact_id` 非空、恰 1 筆 `dissolved` 事件。
+- **M2C-6（b）catch-up OFF ＋ consolidation ON ⇒ 0 寫入／0 task（本票最重要的守門）**：
+  這正是甲票（M2-WRITEBACK-SIM-1）釘死的不變量 —— 候選仍在（M2 照常評估並計數），
+  只是**不交棒** ⇒ 甲票斷言一位元組不改且恆綠。
+- **M2C-7（c）下一 slot 再跑 ⇒ 不再溶、0 LLM、M1 檔逐位元不變**：
+  `dissolved_candidates == 0`（M2 步驟 1 冪等）、0 背景任務、stub 計數不變。
+- **M2C-8（d）同日第 4 個候選 ⇒ 執行層 `skipped_budget`**：4 個候選**都**被交棒
+  （擋下它的是執行層預算，不是本層）；恰 3 條被沉澱、恰 1 條保持 `dissolved_at is None`，
+  budget 3/3。
 
 🔴 兩處**已查證的票面校正**（不改 `src`，只登記）
 ──────────────────────────────────────────────────
@@ -105,6 +123,7 @@ from src.paths import reset_data_root  # noqa: E402
 from src.soul import life_thread_consolidation_wiring as w  # noqa: E402
 from src.soul import life_thread_dissolution as lt_diss  # noqa: E402
 from src.soul import life_thread_origins as lt_origins  # noqa: E402
+from src.soul import life_thread_orchestrator as m5  # noqa: E402
 from src.soul import life_threads as lt  # noqa: E402
 from src.timezone_utils import LOCAL_TZ  # noqa: E402
 
@@ -135,6 +154,9 @@ AKANE_ACTIVE_THREAD = "0ce7e589-eebc-4203-9c48-626f65819433"
 #: 假時鐘：09/20 08:00（morning）與同日的下一個 slot 09/20 22:00（night）。
 NOW_B = datetime(2026, 9, 20, 8, 0, 0, tzinfo=LOCAL_TZ)
 NOW_B_NEXT = datetime(2026, 9, 20, 22, 0, 0, tzinfo=LOCAL_TZ)
+#: 對應的 slot 名（契約 §4.1 只准這兩值；e2e 走 `run_slot_pipeline` 需要）。
+SLOT_B = "morning"
+SLOT_B_NEXT = "night"
 
 #: 執行層「日」預算鍵的釘死時刻（**假時鐘**；生產預設是 wall clock）。
 #: M2C-3 的四次請求必須落在**同一個預算日** ⇒ 釘死才具決定性（否則跨 UTC 午夜會 flake）。
@@ -150,6 +172,9 @@ DISSOLUTION_JSON = json.dumps(
 
 #: 日預算上限的**票面值**（M2C-3 逐字釘死：執行層與決策層必須同值）。
 DISSOLVE_MAX_PER_DAY = 3
+
+#: M4 的**空動作**預錄回應（e2e 用）：0 `transitioned` ⇒ M4 的 hook 接縫不被觸發。
+_EMPTY_ACTIONS_JSON = json.dumps({"actions": []}, ensure_ascii=False)
 
 #: 合成線頭的固定字串（逐字沿用 M2-WRITEBACK-SIM-1 已驗收的合法值）。
 _SYNTH_TITLE = "合成的待完成線頭"
@@ -311,12 +336,14 @@ def _isolate_process_state():
     ex._clear_consolidated_registry()
     ex._reset_default_budget()
     w._reset_writers()
+    m5.reset_state()
     yield
     assert w.pending_task_count() == 0, "測試結束仍有未清理的背景沉澱任務"
     w._BACKGROUND_TASKS.clear()
     ex._clear_consolidated_registry()
     ex._reset_default_budget()
     w._reset_writers()
+    m5.reset_state()
 
 
 class LiveLLMProbe:
@@ -341,6 +368,7 @@ def _sim_plane_guards(monkeypatch):
     monkeypatch.setattr(lt_origins, "_find_llm_proxy", probe, raising=True)
     monkeypatch.setattr(lt_origins, "load_soul_context", lambda agent_id, **kw: _SOUL_STUB)
     monkeypatch.setenv(w.CONSOLIDATION_ENABLED_ENV, "")
+    monkeypatch.setenv(m5.CATCHUP_ENABLED_ENV, "")
     monkeypatch.setenv("LIFE_THREAD_BOOTSTRAP_ENABLED", "")
 
     def _blocked_connect(*args, **kwargs):
@@ -492,6 +520,86 @@ def drive_hook(agent_id: str, thread_id: str, status: str) -> List[Any]:
     asyncio.run(_driver())
     assert w.pending_task_count() == 0, "背景沉澱任務未收斂"
     return results
+
+
+class ScriptedLLM:
+    """M4 的預錄 LLM stub（**0 真實 LLM／0 網路**）：回固定 JSON 並累計呼叫數。
+
+    e2e 測試一律注入**空動作**回應 ⇒ M4 不會產生任何 `transitioned` ⇒ **不會**觸發
+    M4 的 `dissolve_hook` 接縫；因此背景任務只可能來自 **catch-up**，觀測面乾淨。
+    """
+
+    def __init__(self, response: str = _EMPTY_ACTIONS_JSON) -> None:
+        self.response = response
+        self.calls: List[str] = []
+
+    def __call__(self, messages: Any, agent_id: str) -> Optional[str]:
+        self.calls.append(agent_id)
+        return self.response
+
+    @property
+    def call_count(self) -> int:
+        return len(self.calls)
+
+
+def run_slot(
+    agent_ids: Sequence[str],
+    now: datetime,
+    slot: str,
+    *,
+    llm_caller: Any,
+) -> Dict[str, Any]:
+    """**假時鐘**一輪：直接注入 `now` 走 `run_slot_pipeline` ＋ 收斂 hook 丟出的背景任務。
+
+    回傳 `{"summaries", "tasks", "results"}`；`results` 是背景沉澱任務的
+    `ConsolidationResult`（或例外物件）。連續 slot ＝ 直接換 `now` 再呼叫（**0 sleep**）。
+    """
+    out: Dict[str, Any] = {"summaries": {}, "tasks": [], "results": []}
+
+    async def _driver() -> None:
+        out["summaries"] = await m5.run_slot_pipeline(
+            agent_ids, now, slot, llm_caller=llm_caller
+        )
+        tasks = list(w._BACKGROUND_TASKS)
+        out["tasks"] = tasks
+        if tasks:
+            out["results"] = await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.sleep(0)  # 只讓 done-callback 跑完的 event-loop 讓渡（0 秒 wall-clock）
+
+    asyncio.run(_driver())
+    assert w.pending_task_count() == 0, "背景沉澱任務未收斂"
+    return out
+
+
+def enable_catchup_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """per-test 開啟「存量終態 catch-up」（`LIFE_THREAD_CATCHUP_ENABLED`）。"""
+    monkeypatch.setenv(m5.CATCHUP_ENABLED_ENV, "1")
+    assert m5.catchup_enabled() is True
+
+
+def make_thread_not_due(data_root: Path, thread_id: str, now: datetime, *, days: int = 365) -> None:
+    """把該 active 線頭的 `check_after_ts` 推到未來（**只動隔離副本**）。
+
+    用途：讓該輪 M3 判 **SLEEP**（無到期線頭）⇒ **M4 不執行**、其 `dissolve_hook` 接縫
+    不被觸發 ⇒ e2e 觀測到的背景任務**只可能**來自 catch-up（0 M4 混淆項）。
+    """
+    future = (now + timedelta(days=days)).astimezone(timezone.utc).isoformat()
+
+    rows = local_lines(data_root)
+    touched = 0
+    for row in rows:
+        if row.get("thread_id") != thread_id:
+            continue
+        row["check_after_ts"] = future
+        touched += 1
+    assert touched > 0, f"線頭不存在：{thread_id}"
+    _agent_file(data_root).write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8"
+    )
+    state = lt.get_state(AGENT, thread_id)
+    assert state["status"] == "active"
+    assert state["check_after_ts"] == future
+    assert datetime.fromisoformat(future) > now
 
 
 def _assert_in_sim_root(sim_root: Path) -> None:
@@ -840,4 +948,237 @@ def test_m2c4_soft_archive_default_off_keeps_non_terminal_undissolved(
         control_reason=control_result.reason,
         proxy_calls=proxy.call_count,
         sage_calls=sage.call_count,
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+# e2e（走真正的 `run_slot_pipeline`）：兩支旗標的分工
+# ══════════════════════════════════════════════════════════════
+#
+# 兩支旗標（見 `life_thread_orchestrator.CATCHUP_ENABLED_ENV` 的註解）：
+#   - `CONSOLIDATION`＝**同輪轉入終態**的沉澱（M4 `apply_actions` 觸發）。
+#   - `CATCHUP`＝**存量終態清掃**（本票新增；M2 之後、M3 之前交棒）。
+# e2e 一律注入**空動作** LLM stub 並把既有 active 線頭推離到期 ⇒ 該輪 M3 判 SLEEP、
+# **M4 完全不執行** ⇒ 觀測到的背景任務**只可能**來自 catch-up（0 混淆項）。
+
+
+def test_m2c5_pipeline_catchup_writes_existing_terminal_exactly_once(
+    sim_root, monkeypatch, writeback_seams, fake_clock
+):
+    """(a) 兩旗標 ON ＋ 金樣 B ⇒ 存量終態 `2917e901` 在 **pipeline 層**恰一次寫回。"""
+    enable_flag(monkeypatch)
+    enable_catchup_flag(monkeypatch)
+    proxy, sage = writeback_seams
+    materialize(load_fixture(), sim_root)
+    fake_clock.moment = NOW_B
+    _assert_in_sim_root(sim_root)
+    make_thread_not_due(sim_root, AKANE_ACTIVE_THREAD, NOW_B)  # ⇒ 本輪 SLEEP、0 M4
+
+    before = lt.get_state(AGENT, AKANE_TERMINAL_CANDIDATE)
+    assert before["status"] == "completed" and before["dissolved_at"] is None
+    rows_before = len(local_lines(sim_root))
+
+    stub = ScriptedLLM()
+    out = run_slot([AGENT], NOW_B, SLOT_B, llm_caller=stub)
+
+    summary = out["summaries"][AGENT]
+    assert summary["woke"] is False, summary
+    assert summary["reason"] == "REFLECTION_SLOT_CLEAR", summary["reason"]
+    assert summary["dissolved_candidates"] == 1, summary
+    assert stub.call_count == 0, "本輪 SLEEP ⇒ M4 不得執行（0 M4 LLM）"
+
+    assert len(out["tasks"]) == 1, out["tasks"]
+    result = out["results"][0]
+    assert isinstance(result, ex.ConsolidationResult), result
+    assert result.thread_id == AKANE_TERMINAL_CANDIDATE
+    assert result.status == ex.STATUS_CONSOLIDATED, result.reason
+    assert result.llm_calls == 1
+
+    assert proxy.call_count == 1 and sage.call_count == 1
+    assert sage.agents == [AGENT]
+    state = lt.get_state(AGENT, AKANE_TERMINAL_CANDIDATE)
+    assert state["status"] == "completed"
+    assert isinstance(state["dissolved_at"], str) and state["dissolved_at"].strip()
+    assert isinstance(state["sage_fact_id"], str) and state["sage_fact_id"].strip()
+    assert state["sage_fact_id"] == sage.fact_ids[0]
+    assert len(dissolved_rows(sim_root)) == 1
+    assert len(rows_with_dissolved_at(sim_root, AKANE_TERMINAL_CANDIDATE)) == 1
+    assert len(local_lines(sim_root)) == rows_before + 1
+
+    _obs(
+        "M2C-5(e2e-a)",
+        woke=summary["woke"],
+        candidates=summary["dissolved_candidates"],
+        tasks=len(out["tasks"]),
+        status=result.status,
+        llm_calls=result.llm_calls,
+        dissolved_at=state["dissolved_at"],
+        sage_fact_id=state["sage_fact_id"],
+        proxy_calls=proxy.call_count,
+        sage_calls=sage.call_count,
+    )
+
+
+def test_m2c6_pipeline_catchup_off_keeps_existing_terminal_untouched(
+    sim_root, monkeypatch, writeback_seams, fake_clock
+):
+    """(b) **catch-up OFF ＋ consolidation ON** ⇒ 0 catch-up 寫入／0 task（本票最重要的守門）。
+
+    這正是甲票（M2-WRITEBACK-SIM-1）釘死的不變量：開著 `CONSOLIDATION` 時，金樣內**既有**
+    終態在一輪 pipeline 中**不得**被沉澱、**不得**多出背景任務。候選仍在（M2 有評估、有計數），
+    只是**不交棒** ⇒ 甲票斷言一位元組不改且恆綠。
+    """
+    enable_flag(monkeypatch)  # CONSOLIDATION ON
+    assert m5.catchup_enabled() is False, "catch-up 必須維持 OFF（conftest 釘空）"
+    proxy, sage = writeback_seams
+    materialize(load_fixture(), sim_root)
+    fake_clock.moment = NOW_B
+    make_thread_not_due(sim_root, AKANE_ACTIVE_THREAD, NOW_B)
+    file_before = _read_text(sim_root)
+
+    stub = ScriptedLLM()
+    out = run_slot([AGENT], NOW_B, SLOT_B, llm_caller=stub)
+
+    summary = out["summaries"][AGENT]
+    assert summary["dissolved_candidates"] == 1, "候選仍在（M2 照常評估），只是不交棒"
+    assert out["tasks"] == [], "catch-up OFF ⇒ 0 背景沉澱任務"
+    assert proxy.call_count == 0, "catch-up OFF ⇒ 0 沉澱 LLM"
+    assert sage.call_count == 0
+    assert dissolved_rows(sim_root) == []
+    state = lt.get_state(AGENT, AKANE_TERMINAL_CANDIDATE)
+    assert state["dissolved_at"] is None
+    assert state["sage_fact_id"] is None
+    assert _read_text(sim_root) == file_before, "M1 檔逐位元不變（甲票不變量）"
+
+    _obs(
+        "M2C-6(e2e-b)",
+        catchup_enabled=m5.catchup_enabled(),
+        candidates=summary["dissolved_candidates"],
+        tasks=len(out["tasks"]),
+        dissolved_at=state["dissolved_at"],
+        proxy_calls=proxy.call_count,
+        sage_calls=sage.call_count,
+        file_byte_identical=(_read_text(sim_root) == file_before),
+    )
+
+
+def test_m2c7_pipeline_catchup_next_slot_is_idempotent(
+    sim_root, monkeypatch, writeback_seams, fake_clock
+):
+    """(c) catch-up ON ＋ **下一 slot** 再跑 ⇒ 該線頭不再溶、0 LLM、M1 檔逐位元不變。"""
+    enable_flag(monkeypatch)
+    enable_catchup_flag(monkeypatch)
+    proxy, sage = writeback_seams
+    materialize(load_fixture(), sim_root)
+    make_thread_not_due(sim_root, AKANE_ACTIVE_THREAD, NOW_B)  # 兩輪皆 SLEEP、0 M4
+
+    fake_clock.moment = NOW_B
+    first = run_slot([AGENT], NOW_B, SLOT_B, llm_caller=ScriptedLLM())
+    assert len(first["tasks"]) == 1
+    assert first["results"][0].status == ex.STATUS_CONSOLIDATED
+    after_first = lt.get_state(AGENT, AKANE_TERMINAL_CANDIDATE)
+    assert after_first["dissolved_at"] and after_first["sage_fact_id"]
+    file_after_first = _read_text(sim_root)
+    counts_before = (proxy.call_count, sage.call_count)  # (1, 1)
+
+    # ── 下一 slot：**直接換 `now`**（0 sleep）──
+    fake_clock.moment = NOW_B_NEXT
+    stub2 = ScriptedLLM()
+    second = run_slot([AGENT], NOW_B_NEXT, SLOT_B_NEXT, llm_caller=stub2)
+
+    summary2 = second["summaries"][AGENT]
+    assert summary2["woke"] is False and summary2["reason"] == "REFLECTION_SLOT_CLEAR"
+    assert summary2["dissolved_candidates"] == 0, "已溶解 ⇒ M2 步驟 1 冪等（不再候選）"
+    assert stub2.call_count == 0
+
+    assert second["tasks"] == [], "不得再建任何背景沉澱任務"
+    assert (proxy.call_count, sage.call_count) == counts_before == (1, 1)
+    assert _read_text(sim_root) == file_after_first, "M1 檔逐位元不變"
+    assert len(dissolved_rows(sim_root)) == 1
+    final = lt.get_state(AGENT, AKANE_TERMINAL_CANDIDATE)
+    assert final["dissolved_at"] == after_first["dissolved_at"]
+    assert final["sage_fact_id"] == after_first["sage_fact_id"]
+
+    _obs(
+        "M2C-7(e2e-c)",
+        second_candidates=summary2["dissolved_candidates"],
+        second_tasks=len(second["tasks"]),
+        proxy_calls=proxy.call_count,
+        sage_calls=sage.call_count,
+        dissolved_at=final["dissolved_at"],
+        sage_fact_id=final["sage_fact_id"],
+        file_byte_identical=(_read_text(sim_root) == file_after_first),
+    )
+
+
+def test_m2c8_pipeline_catchup_fourth_candidate_same_day_is_budget_blocked(
+    sim_root, monkeypatch, writeback_seams, fake_clock
+):
+    """(d) 日預算：同日第 4 個候選 ⇒ 執行層 `skipped_budget`、**0 LLM／0 寫入**。
+
+    四個候選**都**被交棒（擋下的是執行層預算，不是本層）；恰 3 條被沉澱、恰 1 條保持
+    `dissolved_at is None`。
+    """
+    enable_flag(monkeypatch)
+    enable_catchup_flag(monkeypatch)
+    proxy, sage = writeback_seams
+    materialize(load_fixture(), sim_root)
+    fake_clock.moment = NOW_B
+    make_thread_not_due(sim_root, AKANE_ACTIVE_THREAD, NOW_B)
+    monkeypatch.setattr(
+        ex, "_DEFAULT_BUDGET", ex.ConsolidationBudget(now=lambda: BUDGET_DAY_UTC)
+    )
+    assert ex.MAX_CONSOLIDATION_CALLS_PER_AGENT_PER_DAY == DISSOLVE_MAX_PER_DAY
+    assert lt_diss.DISSOLVE_MAX_PER_DAY == DISSOLVE_MAX_PER_DAY
+
+    # 金樣既有終態 ＋ 3 條同構的合成存量終態（真 M1 API）＝ 同日 4 個候選。
+    synth = [new_terminal_thread(NOW_B) for _ in range(3)]
+    candidates = [AKANE_TERMINAL_CANDIDATE] + synth
+
+    out = run_slot([AGENT], NOW_B, SLOT_B, llm_caller=ScriptedLLM())
+
+    summary = out["summaries"][AGENT]
+    assert summary["dissolved_candidates"] == 4, summary
+    assert len(out["tasks"]) == 4, "4 個候選都要交棒"
+
+    by_thread = {r.thread_id: r for r in out["results"]}
+    assert set(by_thread) == set(candidates)
+    statuses = sorted(by_thread[t].status for t in candidates)
+    assert statuses == [ex.STATUS_CONSOLIDATED] * 3 + [ex.STATUS_SKIPPED_BUDGET], statuses
+    blocked_ids = [t for t in candidates if by_thread[t].status == ex.STATUS_SKIPPED_BUDGET]
+    assert len(blocked_ids) == 1
+    blocked = blocked_ids[0]
+    assert by_thread[blocked].reason == "budget_exhausted"
+    assert by_thread[blocked].llm_calls == 0, "第 4 條必須 0 次 LLM"
+
+    assert proxy.call_count == 3 and sage.call_count == 3
+    assert ex._DEFAULT_BUDGET.count_for(AGENT) == 3
+    assert ex._DEFAULT_BUDGET.global_count == 3
+
+    assert len(dissolved_rows(sim_root)) == 3
+    assert blocked not in [r["thread_id"] for r in dissolved_rows(sim_root)]
+    blocked_state = lt.get_state(AGENT, blocked)
+    assert blocked_state["status"] == "completed"
+    assert blocked_state["dissolved_at"] is None
+    assert blocked_state["sage_fact_id"] is None
+    assert rows_with_dissolved_at(sim_root, blocked) == []
+    for thread_id in candidates:
+        if thread_id == blocked:
+            continue
+        state = lt.get_state(AGENT, thread_id)
+        assert state["dissolved_at"], thread_id
+        assert state["sage_fact_id"], thread_id
+
+    _obs(
+        "M2C-8(e2e-d)",
+        candidates=summary["dissolved_candidates"],
+        tasks=len(out["tasks"]),
+        statuses=statuses,
+        blocked=blocked[:8],
+        blocked_llm_calls=by_thread[blocked].llm_calls,
+        blocked_dissolved_at=blocked_state["dissolved_at"],
+        budget=f"{ex._DEFAULT_BUDGET.count_for(AGENT)}/{DISSOLVE_MAX_PER_DAY}",
+        proxy_calls=proxy.call_count,
+        sage_calls=sage.call_count,
+        dissolved_events=len(dissolved_rows(sim_root)),
     )

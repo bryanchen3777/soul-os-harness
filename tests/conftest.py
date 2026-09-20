@@ -87,6 +87,7 @@ def _isolate_soul_os_data_root(request, tmp_path_factory):
     # rehydrate a production feature flag into the pytest process.
     env_patch.setenv("LIFE_THREAD_BOOTSTRAP_ENABLED", "")
     env_patch.setenv("LIFE_THREAD_CONSOLIDATION_ENABLED", "")
+    env_patch.setenv("LIFE_THREAD_CATCHUP_ENABLED", "")
     try:
         yield
     finally:
