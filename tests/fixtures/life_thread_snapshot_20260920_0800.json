@@ -1,0 +1,546 @@
+{
+  "snapshot_id": "life_thread_snapshot_20260920_0800",
+  "provenance": {
+    "ticket": "SIM-TIME-001",
+    "plane": "simulation (fake clock + memory fork + zero LLM)",
+    "derivation": "time-truncation of the append-only production event log: keep events with updated_at <= cutoff_utc (file order preserved), project to fields_kept",
+    "source_glob": "data/soul/<agent>/life_threads.jsonl",
+    "source_sha256": {
+      "agent_akane": "bf7a3a61dcedf127998f9b3ff9ccf69ab5d11cad0a6165428f10261089b2d0f1",
+      "agent_anna": "44e87327be3c82f3670972ec48c9627012d1d728ffbfb22a21af1ae6439b0a03",
+      "agent_aoi": "0c3413561c2fb621ea8eb971e12d4a8d80f2ef3eb7cc3c6fd43ce7db31817cdf",
+      "agent_mahiru": "26b1bd835aceddde207b0b2f91c6cac0f93eb5e0aa51fab7d9373b39713595ce",
+      "agent_mai": "bc633dcd43bca58129e3e9258f9c785b22d370849b1a2138cf88a7f530afc0d2",
+      "agent_miku": "58276c93fe8893aa2198c4e783099944237f2be486dca1a4f0bedf7ef98a03f4",
+      "agent_ram": "4b65b67c2d37a314a1b39f1fd5191063c93310cd64b777be1594e97957b3de48",
+      "agent_rem": "b71fd9fa449b14696414b8b6dd0af32c642e568f5d3c120afdefb7d5d3f76aaf",
+      "agent_ruka": "e3ac58c381a23e2f81d95ea5b3571b64e732ebb30ba9c826b5cabe3d44fa692a",
+      "agent_yua": "fedbd8f95606b2d50b00435f6ae2809b917e4e581f9b2951ba6fbf7796137d99"
+    },
+    "cutoff_utc": "2026-09-20T12:00:00+00:00",
+    "cutoff_local": "2026-09-20T08:00:00-04:00",
+    "cutoff_rule": "updated_at <= cutoff_utc",
+    "boundary_note": "as-of 09/20 08:00（local）＝ 2026-09-20T12:00:00Z。邊界刻意取**整點**：09/20 08:00 槽自身的推進事件落盤於 08:00:19~08:00:29（local），其 updated_at 為 2026-09-20T12:00:1x~2xZ ⇒ 全部被截掉、不混進金樣。重放時 now 亦須用 08:00:00 整（生產該槽注入的 now 帶 .884004 微秒，而 anna/aoi/mahiru/ram 等線頭的 check_after_ts 恰落在 08:00:10.884004Z；若用 08:00:10.88 重放，它們會一併到期 ⇒ 與生產記錄（僅 ruka/rem 落盤）不符）。此邊界可在 09/20 08:00 重現 S2 期望值：到期集合恰 {agent_ruka, agent_rem}。",
+    "fields_kept": [
+      "thread_id",
+      "event_seq",
+      "event_type",
+      "origin_type",
+      "status",
+      "check_after_ts",
+      "created_at",
+      "updated_at",
+      "dissolved_at"
+    ],
+    "fields_dropped": [
+      "title",
+      "narrative_content",
+      "share_target",
+      "sage_fact_id"
+    ],
+    "fields_kept_rationale": {
+      "thread_id/event_seq/event_type/status/check_after_ts": "工單指定之決策相關欄位",
+      "updated_at": "M1 fold() 排序鍵（_is_usable_entry 亦要求其存在，缺則整列被丟棄）",
+      "created_at": "M2 evaluate_thread_dissolution 步驟 0 必填驗證欄位（缺則 invalid、0 候選）",
+      "origin_type": "M3 到期判定回傳 origin_type 的來源（非敘事欄位）",
+      "dissolved_at": "M2 步驟 1「已溶解」冪等哨兵；S5 唯讀斷言用（金樣內恆為 null）"
+    },
+    "agents": [
+      "agent_akane",
+      "agent_anna",
+      "agent_aoi",
+      "agent_mahiru",
+      "agent_mai",
+      "agent_miku",
+      "agent_ram",
+      "agent_rem",
+      "agent_ruka",
+      "agent_yua"
+    ],
+    "generated_by": "tests/soul/test_life_thread_sim_time.py::derive_snapshot（同一支推導函式）"
+  },
+  "agents": {
+    "agent_akane": [
+      {
+        "thread_id": "2917e901-757b-4d4c-9b2e-8188413e5449",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T10:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:01:19.852733+00:00",
+        "updated_at": "2026-09-18T02:01:19.852733+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "0ce7e589-eebc-4203-9c48-626f65819433",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T09:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:01:19.878263+00:00",
+        "updated_at": "2026-09-18T02:01:19.878263+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "2917e901-757b-4d4c-9b2e-8188413e5449",
+        "event_seq": 2,
+        "event_type": "transitioned",
+        "origin_type": "necessity_driven",
+        "status": "completed",
+        "check_after_ts": null,
+        "created_at": "2026-09-18T02:01:19.852733+00:00",
+        "updated_at": "2026-09-20T02:00:35.785790+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "0ce7e589-eebc-4203-9c48-626f65819433",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-20T16:00:10.884004+00:00",
+        "created_at": "2026-09-18T02:01:19.878263+00:00",
+        "updated_at": "2026-09-20T02:00:35.804880+00:00",
+        "dissolved_at": null
+      }
+    ],
+    "agent_anna": [
+      {
+        "thread_id": "661ae92d-daa6-4780-9800-19a7c163f4a4",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T18:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:03:07.119315+00:00",
+        "updated_at": "2026-09-18T02:03:07.119315+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "661ae92d-daa6-4780-9800-19a7c163f4a4",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-19T20:00:29.688463+00:00",
+        "created_at": "2026-09-18T02:03:07.119315+00:00",
+        "updated_at": "2026-09-19T02:01:05.238116+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "f2caf76c-c1d6-492b-88ad-97df74224caf",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-19T12:00:29.688463+00:00",
+        "created_at": "2026-09-19T02:01:05.255620+00:00",
+        "updated_at": "2026-09-19T02:01:05.255620+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "661ae92d-daa6-4780-9800-19a7c163f4a4",
+        "event_seq": 3,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-20T22:00:10.884004+00:00",
+        "created_at": "2026-09-18T02:03:07.119315+00:00",
+        "updated_at": "2026-09-20T02:01:12.574896+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "f2caf76c-c1d6-492b-88ad-97df74224caf",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-20T12:00:10.884004+00:00",
+        "created_at": "2026-09-19T02:01:05.255620+00:00",
+        "updated_at": "2026-09-20T02:01:12.590809+00:00",
+        "dissolved_at": null
+      }
+    ],
+    "agent_aoi": [
+      {
+        "thread_id": "1d9ae91b-0d1c-4b59-ad20-8717be7da950",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T11:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:04:08.859885+00:00",
+        "updated_at": "2026-09-18T02:04:08.859885+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "b93d6910-65e4-4a95-962f-7836226b113f",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T10:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:04:08.885295+00:00",
+        "updated_at": "2026-09-18T02:04:08.885295+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "1d9ae91b-0d1c-4b59-ad20-8717be7da950",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-20T22:00:10.884004+00:00",
+        "created_at": "2026-09-18T02:04:08.859885+00:00",
+        "updated_at": "2026-09-20T02:01:34.549584+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "b93d6910-65e4-4a95-962f-7836226b113f",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-20T12:00:10.884004+00:00",
+        "created_at": "2026-09-18T02:04:08.885295+00:00",
+        "updated_at": "2026-09-20T02:01:34.564059+00:00",
+        "dissolved_at": null
+      }
+    ],
+    "agent_mahiru": [
+      {
+        "thread_id": "90ed1b63-68a4-4373-a368-86057ad6c757",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T22:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:02:31.412695+00:00",
+        "updated_at": "2026-09-18T02:02:31.412695+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "90ed1b63-68a4-4373-a368-86057ad6c757",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-19T22:00:29.688463+00:00",
+        "created_at": "2026-09-18T02:02:31.412695+00:00",
+        "updated_at": "2026-09-19T02:00:46.134769+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "186bf403-de58-42db-bcab-1bf19438f548",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-21T02:00:29.688463+00:00",
+        "created_at": "2026-09-19T02:00:46.154006+00:00",
+        "updated_at": "2026-09-19T02:00:46.154006+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "90ed1b63-68a4-4373-a368-86057ad6c757",
+        "event_seq": 3,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-20T12:00:10.884004+00:00",
+        "created_at": "2026-09-18T02:02:31.412695+00:00",
+        "updated_at": "2026-09-20T02:01:01.078245+00:00",
+        "dissolved_at": null
+      }
+    ],
+    "agent_mai": [
+      {
+        "thread_id": "52cd7a34-2daa-43e5-adf2-00a353d39daa",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T22:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:03:37.992081+00:00",
+        "updated_at": "2026-09-18T02:03:37.992081+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "4c7c80f1-e956-421e-8735-3cc0a542b487",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T16:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:03:38.054947+00:00",
+        "updated_at": "2026-09-18T02:03:38.054947+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "52cd7a34-2daa-43e5-adf2-00a353d39daa",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-20T22:00:10.884004+00:00",
+        "created_at": "2026-09-18T02:03:37.992081+00:00",
+        "updated_at": "2026-09-20T02:01:23.433186+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "4c7c80f1-e956-421e-8735-3cc0a542b487",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-21T08:00:10.884004+00:00",
+        "created_at": "2026-09-18T02:03:38.054947+00:00",
+        "updated_at": "2026-09-20T02:01:23.452340+00:00",
+        "dissolved_at": null
+      }
+    ],
+    "agent_miku": [
+      {
+        "thread_id": "7c542bbc-b4a1-4bb8-b386-ba5b70a73d7a",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T20:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:03:52.509831+00:00",
+        "updated_at": "2026-09-18T02:03:52.509831+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "7c542bbc-b4a1-4bb8-b386-ba5b70a73d7a",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-19T13:00:29.688463+00:00",
+        "created_at": "2026-09-18T02:03:52.509831+00:00",
+        "updated_at": "2026-09-19T02:01:14.500088+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "2ebfff14-4bda-4d99-888b-cc8c041c932f",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-19T22:00:29.688463+00:00",
+        "created_at": "2026-09-19T02:01:14.519718+00:00",
+        "updated_at": "2026-09-19T02:01:14.519718+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "7c542bbc-b4a1-4bb8-b386-ba5b70a73d7a",
+        "event_seq": 3,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-20T14:00:10.884004+00:00",
+        "created_at": "2026-09-18T02:03:52.509831+00:00",
+        "updated_at": "2026-09-20T02:01:28.281341+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "2ebfff14-4bda-4d99-888b-cc8c041c932f",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-20T22:00:10.884004+00:00",
+        "created_at": "2026-09-19T02:01:14.519718+00:00",
+        "updated_at": "2026-09-20T02:01:28.299575+00:00",
+        "dissolved_at": null
+      }
+    ],
+    "agent_ram": [
+      {
+        "thread_id": "09599782-a7c8-4a4d-97e5-301742063781",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T12:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:02:05.405864+00:00",
+        "updated_at": "2026-09-18T02:02:05.405864+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "364b05d1-b40e-416a-bacf-477f4535b539",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T11:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:02:05.439782+00:00",
+        "updated_at": "2026-09-18T02:02:05.439782+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "09599782-a7c8-4a4d-97e5-301742063781",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-20T12:00:10.884004+00:00",
+        "created_at": "2026-09-18T02:02:05.405864+00:00",
+        "updated_at": "2026-09-20T02:00:49.859110+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "364b05d1-b40e-416a-bacf-477f4535b539",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-20T14:00:10.884004+00:00",
+        "created_at": "2026-09-18T02:02:05.439782+00:00",
+        "updated_at": "2026-09-20T02:00:49.879412+00:00",
+        "dissolved_at": null
+      }
+    ],
+    "agent_rem": [
+      {
+        "thread_id": "40d980e2-4c00-491f-a6ad-fc8715539cdd",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T12:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:01:46.081877+00:00",
+        "updated_at": "2026-09-18T02:01:46.081877+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "d532ae07-4455-4043-8727-f9ef8d04b1a3",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T14:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:01:46.117111+00:00",
+        "updated_at": "2026-09-18T02:01:46.117111+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "40d980e2-4c00-491f-a6ad-fc8715539cdd",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-20T10:00:10.884004+00:00",
+        "created_at": "2026-09-18T02:01:46.081877+00:00",
+        "updated_at": "2026-09-20T02:00:44.012074+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "d532ae07-4455-4043-8727-f9ef8d04b1a3",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-20T14:00:10.884004+00:00",
+        "created_at": "2026-09-18T02:01:46.117111+00:00",
+        "updated_at": "2026-09-20T02:00:44.031041+00:00",
+        "dissolved_at": null
+      }
+    ],
+    "agent_ruka": [
+      {
+        "thread_id": "39dd946f-8e9d-497d-8cd5-aaeb91789dd8",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T22:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:00:55.235164+00:00",
+        "updated_at": "2026-09-18T02:00:55.235164+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "57361d43-da92-4bfa-8077-1514682b2e9e",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T12:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:00:55.275314+00:00",
+        "updated_at": "2026-09-18T02:00:55.275314+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "39dd946f-8e9d-497d-8cd5-aaeb91789dd8",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-20T16:00:10.884004+00:00",
+        "created_at": "2026-09-18T02:00:55.235164+00:00",
+        "updated_at": "2026-09-20T02:00:26.914207+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "57361d43-da92-4bfa-8077-1514682b2e9e",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-20T08:00:10.884004+00:00",
+        "created_at": "2026-09-18T02:00:55.275314+00:00",
+        "updated_at": "2026-09-20T02:00:26.937559+00:00",
+        "dissolved_at": null
+      }
+    ],
+    "agent_yua": [
+      {
+        "thread_id": "e1c043e9-df24-469a-9563-05eb288b1c73",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T12:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:00:30.802955+00:00",
+        "updated_at": "2026-09-18T02:00:30.802955+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "90859767-fb96-475b-880d-50939ee15656",
+        "event_seq": 1,
+        "event_type": "created",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-18T15:00:01.674710+00:00",
+        "created_at": "2026-09-18T02:00:30.845687+00:00",
+        "updated_at": "2026-09-18T02:00:30.845687+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "e1c043e9-df24-469a-9563-05eb288b1c73",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-20T22:00:10.884004+00:00",
+        "created_at": "2026-09-18T02:00:30.802955+00:00",
+        "updated_at": "2026-09-20T02:00:19.773820+00:00",
+        "dissolved_at": null
+      },
+      {
+        "thread_id": "90859767-fb96-475b-880d-50939ee15656",
+        "event_seq": 2,
+        "event_type": "updated",
+        "origin_type": "necessity_driven",
+        "status": "active",
+        "check_after_ts": "2026-09-21T00:00:10.884004+00:00",
+        "created_at": "2026-09-18T02:00:30.845687+00:00",
+        "updated_at": "2026-09-20T02:00:19.789027+00:00",
+        "dissolved_at": null
+      }
+    ]
+  }
+}
