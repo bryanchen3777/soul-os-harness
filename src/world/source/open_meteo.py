@@ -118,6 +118,9 @@ from src.eventbus.schema import EventPriority, EventType, SoulEvent
 
 from ..base import WorldEventSource
 from ..perception import WorldEvent
+# World Log Phase A (Step 59/60): adapter-first append-only world fact ledger.
+# This is the adapter's ONLY World Log call site, and it happens BEFORE publish.
+from ..world_log import record_world_event
 
 logger = logging.getLogger("soul_os.world.source.weather")
 
@@ -618,7 +621,13 @@ class OpenMeteoWeatherSource(WorldEventSource):
 
         Returns:
             bool: True if emitted, False if bus is None or emit failed.
+
+        World Log Phase A (Step 59/60 — Owner-locked contract):
+          Adapter fact → World Log → Event Bus → Perception.
+          The already-built, already-validated, NOT-yet-published WorldEvent is
+          appended to the World Log FIRST (QueueFull evidence retention).
         """
+        record_world_event(world_event)
         if self._bus is None:
             logger.warning(
                 f"[OpenMeteoWeatherSource] bus is None, cannot emit: "

@@ -81,6 +81,9 @@ from src.eventbus.schema import EventPriority, EventType, SoulEvent
 
 from ..base import WorldEventSource
 from ..perception import WorldEvent
+# World Log Phase A (Step 59/60): adapter-first append-only world fact ledger.
+# This is the adapter's ONLY World Log call site, and it happens BEFORE publish.
+from ..world_log import record_world_event
 
 logger = logging.getLogger("soul_os.world.source.calendar")
 
@@ -559,7 +562,17 @@ class IcalCalendarSource(WorldEventSource):
         If self._bus is None, this is a configuration error (source should
         always be wired with bus in production). Log warning and return False
         (event not emitted, but no crash).
+
+        World Log Phase A (Step 59/60 — Owner-locked contract):
+          Adapter fact → World Log → Event Bus → Perception.
+          The already-built, already-validated, NOT-yet-published WorldEvent is
+          appended to the World Log FIRST. Rationale: on Event Bus QueueFull a
+          subscriber may never see the event, so the World Log is the only place
+          that can still prove the adapter received the fact. Never write the
+          World Log anywhere downstream (subscriber / middleware / trace writer /
+          wake gate / scheduler / Inner Life consumer).
         """
+        record_world_event(world_event)
         if self._bus is None:
             logger.warning(
                 f"[IcalCalendarSource] bus is None, cannot emit: "
