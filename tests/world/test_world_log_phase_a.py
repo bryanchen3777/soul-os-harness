@@ -32,6 +32,12 @@ World Log 的唯一合法 runtime 寫入點是三個 production adapter 的
      **writer 輸出位元組**上被 escape 成 ``\\u0085`` / ``\\u2028`` / ``\\u2029``
      ⇒ ``splitlines()`` 行數 == record 數、逐字 round-trip、CJK 仍為原字元、
      不含這三個字元的 record 逐位元不變。
+  H. LF-only shard bytes（Step 59.2 FUP）：shard 是 **LF-delimited** physical
+     JSONL —— ``b"\\n"`` 計數 == record 數、``b"\\r"`` 計數 == 0、每行
+     ``json.loads`` 成功；並以兩條**獨立**證據證明平台獨立性：
+     (a) 攔截 ``builtins.open`` 證明 writer 走 **binary mode**（不依賴 text-mode
+     newline translation）；(b) monkeypatch ``os.linesep``（``"\\r\\n"`` vs
+     ``"\\n"``）後輸出 shard bytes **逐位元 sha256 相同**。
 """
 from __future__ import annotations
 
@@ -1287,7 +1293,7 @@ def _prefix_dumps(we: WorldEvent, observed_at: datetime) -> str:
     """修補前 writer 對這個 event 的 ``dumps`` 輸出（**不含**行結尾），獨立重建。
 
     用來證明 R-1 對「不含三個行界字元」的 record 是**逐位元 no-op**。
-    行結尾由呼叫端補上（writer 走 text mode ⇒ 平台行結尾，見 G.4 註解）。
+    行結尾由呼叫端補上（Step 59.2 起固定為單一 LF，見 H 段落）。
     """
     record = {
         "world_event_id": f"world:{we.source}:{we.novelty_id}",
@@ -1325,15 +1331,19 @@ class TestSectionG_LineBoundarySafety:
             ["plain record before", summary, "plain record after"],
         )
         raw_bytes = path.read_bytes()
-        # 註：writer 走 text mode ⇒ 行結尾是平台行結尾（Windows 為 CRLF，
-        # pre-existing 行為，本票未改、也不得改）。此處先把行結尾正規化成 LF，
-        # 再分別用 LF 與 splitlines() 切行，確保比較的是「record 是否被拆開」。
+        # Step 59.2: shard 是 LF-only bytes 契約 —— writer 走 binary append，
+        # 不存在任何平台行結尾 translation。下面的 ``replace`` 只是為了讓
+        # 「本測試若真的收到 CRLF（RED）時」仍能走到後面的行數斷言，而不是
+        # 把它當成合法輸入。
         text = raw_bytes.decode("utf-8").replace("\r\n", "\n")
 
         lf_lines = _lf_lines(text)
         splitlines_lines = _splitlines(text)
 
         assert raw_bytes.count(b"\n") == 3, f"{label}: LF 位元組數必須 == record 數"
+        assert b"\r" not in raw_bytes, (
+            f"{label}: shard 不得含任何 raw CR byte（LF-only byte contract）"
+        )
         assert len(lf_lines) == 3, f"{label}: LF 行數必須 == record 數"
         assert len(splitlines_lines) == 3, (
             f"{label}: splitlines() 行數必須 == record 數"
@@ -1413,7 +1423,8 @@ class TestSectionG_LineBoundarySafety:
     def test_g4_records_without_boundary_chars_are_byte_identical(self, tmp_path):
         """G.4 (d) (mutation teeth M4): 零副作用 —— 逐位元等於修補前輸出。
 
-        (1) 硬編字面值：固定輸入完全推導出的 pre-fix bytes。
+        (1) 硬編字面值：固定輸入完全推導出的 pre-fix bytes（**LF-only**：
+            Step 59.2 起 delimiter 是單一 LF byte，不是 ``os.linesep``）。
         (2) 既有三個 adapter fixture：與**獨立重建**的 ``dumps`` 輸出逐位元比對。
         """
         # ── (1) 硬編字面值（不依賴任何 production helper）──────────────
@@ -1428,10 +1439,9 @@ class TestSectionG_LineBoundarySafety:
             ' "summary": "literal byte probe", "priority": 0,'
             ' "provenance": {"source": "calendar", "payload_reference": null}}'
         )
-        assert literal_path.read_bytes() == (
-            literal_line + os.linesep
-        ).encode("utf-8"), (
-            "不含行界字元的 record 必須與修補前逐位元相同（硬編 baseline）"
+        assert literal_path.read_bytes() == (literal_line + "\n").encode("utf-8"), (
+            "不含行界字元的 record 必須逐位元等於硬編 LF-only baseline"
+            "（Step 59.2：delimiter 是單一 LF byte，不得用 os.linesep）"
         )
 
         # ── (2) 三個 adapter fixture 事件（含 payload digest 路徑）────────
@@ -1452,13 +1462,17 @@ class TestSectionG_LineBoundarySafety:
         fixture_path = fixture_dir / "2026-03-05.jsonl"
         raw_bytes = fixture_path.read_bytes()
         expected_bytes = "".join(
-            _prefix_dumps(we, observed) + os.linesep for _, we in cases
+            _prefix_dumps(we, observed) + "\n" for _, we in cases
         ).encode("utf-8")
         assert raw_bytes == expected_bytes, (
-            "三個 adapter fixture 的輸出位元組必須與修補前（純 dumps）逐位元相同"
+            "三個 adapter fixture 的輸出位元組必須逐位元等於獨立重建的"
+            "純 dumps + 單一 LF（Step 59.2：不得是平台行結尾）"
+        )
+        assert b"\r" not in raw_bytes, (
+            "shard 不得含任何 raw CR byte（LF-only byte contract）"
         )
 
-        lines = _lf_lines(raw_bytes.decode("utf-8").replace("\r\n", "\n"))
+        lines = _lf_lines(raw_bytes.decode("utf-8"))
         assert len(lines) == 3, "三個 fixture 必須各為完整一行"
         for (label, we), line in zip(cases, lines):
             assert not any(char in line for char in _BOUNDARY_CHARS), label
@@ -1488,3 +1502,209 @@ class TestSectionG_LineBoundarySafety:
         assert wl.escape_line_boundary_chars(plain) == plain, (
             "不含三個行界字元的字串必須逐位元不變"
         )
+
+
+# ────────────────────────────────────────────────────────────────────
+# H. LF-only shard bytes + platform independence (Step 59.2 FUP)
+# ────────────────────────────────────────────────────────────────────
+#
+# 本票閉合的是「**單一 LF-delimited physical JSONL line**」這個已鎖定的驗收
+# 文字：shard 是 **byte-level** 契約，一個 record 恰以單一 LF byte(0x0A)
+# 結尾，整個 shard 不得含任何 raw CR byte(0x0D)。Step 59.1 只讓「行界碼位
+# 不會把一行拆成多行」在輸出位元組上成立；text mode 的 newline translation
+# （Windows 下 ``\n`` → ``\r\n``）仍是缺口 ⇒ writer 改走 **binary append**。
+#
+# 本段落所有斷言都讀 shard 的**原始位元組**，並刻意用兩條彼此獨立的證據
+# 證明「不是剛好在目前 OS 上通過」：
+#   H.2 (a) 攔截 ``builtins.open``，斷言 writer 對 shard 用的是 binary mode。
+#   H.3 (b) monkeypatch ``os.linesep``（``"\r\n"`` vs ``"\n"``）後輸出
+#           逐位元 sha256 相同。
+# 兩條都不經任何 reader helper ⇒ 「只改 reader」或「只改測試期待值」的假修補
+# 仍會在本段落變紅。
+
+
+def _write_lf_probe(directory: Path, summaries: List[str]) -> Path:
+    """把每個 summary 各寫一筆到 ``directory``（注入固定 now ⇒ 固定 shard）。
+
+    0 network / 0 LLM / 0 adapter poll / 0 server（直接建構 WorldEvent）。
+    """
+    writer = wl.WorldLogWriter(log_dir=directory)
+    for index, summary in enumerate(summaries):
+        event = _boundary_event(summary, novelty_id=f"lf_probe_{index}")
+        assert writer.write(event, now=_FIXED_NOW) is True, f"lf probe #{index} 寫入失敗"
+    path = directory / _FIXED_SHARD
+    assert path.is_file(), "lf probe 必須產生固定 shard"
+    return path
+
+
+def _json_lines_from_bytes(raw: bytes) -> List[Dict[str, Any]]:
+    """以 raw bytes 精確切行（``b"\\n"`` 是唯一 delimiter）並逐行 parse。"""
+    return [json.loads(chunk) for chunk in raw.split(b"\n") if chunk]
+
+
+class TestSectionH_LfOnlyShardBytes:
+    """H. LF-only shard bytes 與平台獨立性（Step 59.2）。"""
+
+    def test_h1_byte_level_lf_contract(self, tmp_path):
+        """H.1 (mutation teeth M1/M2): ``\\n`` 是唯一 delimiter、0 raw CR。
+
+        N 筆寫入後讀 shard **原始位元組**：
+          - ``raw.count(b"\\n") == N``
+          - ``b"\\r" not in raw``
+          - 每行 ``json.loads`` 成功，且 novelty_id 順序完全等於寫入順序
+        """
+        n_records = 7
+        summaries = [f"lf contract record {index}" for index in range(n_records)]
+        directory = tmp_path / "world_log_lf"
+        path = _write_lf_probe(directory, summaries)
+        raw = path.read_bytes()
+
+        lf_count = raw.count(b"\n")
+        cr_count = raw.count(b"\r")
+        assert lf_count == n_records, (
+            "LF byte 數必須恰等於 record 數（delimiter 只能是 LF）: "
+            f"{lf_count} != {n_records}"
+        )
+        assert b"\r" not in raw, (
+            "shard 不得含任何 raw CR byte(0x0D)：LF-only byte contract"
+        )
+        assert cr_count == 0, f"raw CR byte 計數必須為 0，實得 {cr_count}"
+
+        chunks = raw.split(b"\n")
+        assert chunks[-1] == b"", "檔案必須以 LF 結尾（最後一個 chunk 為空）"
+        lines = [chunk for chunk in chunks if chunk]
+        records = [json.loads(line) for line in lines]
+        assert [record["novelty_id"] for record in records] == [
+            f"lf_probe_{index}" for index in range(n_records)
+        ], "每一行都必須恰為一筆可 parse 的 record，且順序 == 寫入順序"
+
+    def test_h2_writer_opens_the_shard_in_binary_mode(self, tmp_path, monkeypatch):
+        """H.2 (a) (mutation teeth M1): writer **不依賴** text-mode newline translation。
+
+        攔截 ``builtins.open``，記錄 writer 對 shard 實際使用的 ``mode`` /
+        ``newline``，斷言是 **binary mode**（``"b" in mode``）。這條證據與目前
+        OS 的預設 newline 行為無關 ⇒ 就算本機「剛好」輸出 LF 也不算通過。
+        """
+        import builtins
+
+        directory = tmp_path / "world_log_open_capture"
+        shard = directory / _FIXED_SHARD
+        real_open = builtins.open
+        shard_calls: List[Tuple[str, Any]] = []
+
+        def recording_open(file, mode="r", *args, **kwargs):
+            fh = real_open(file, mode, *args, **kwargs)
+            try:
+                is_shard = Path(file) == shard
+            except TypeError:  # pragma: no cover - defensive (fd-based open)
+                is_shard = False
+            if is_shard:
+                shard_calls.append((mode, kwargs.get("newline")))
+            return fh
+
+        monkeypatch.setattr(builtins, "open", recording_open)
+        path = _write_lf_probe(directory, ["binary mode evidence"])
+        monkeypatch.undo()
+
+        assert path == shard
+        assert shard_calls, "writer 必須對 shard 呼叫 builtins.open（本攔截未命中）"
+        modes = [mode for mode, _ in shard_calls]
+        assert all("b" in mode for mode in modes), (
+            "writer 必須以 binary mode 開啟 shard（Step 59.2 拍板：binary append）"
+            f"，實得 modes={modes}"
+        )
+        assert all("a" in mode for mode in modes), (
+            f"append-only 契約：實得 modes={modes}"
+        )
+        # binary mode 下 newline 不生效（也不得被傳入），這是「不依賴
+        # text-mode newline translation」的結構性證據。
+        assert all(
+            newline is None for _, newline in shard_calls
+        ), f"binary append 不得傳 newline 參數：{shard_calls}"
+
+    def test_h3_output_bytes_are_independent_of_os_linesep(self, tmp_path, monkeypatch):
+        """H.3 (b) (mutation teeth M1): patch ``os.linesep`` ⇒ 輸出 sha256 不變。
+
+        同一個 writer 在 ``os.linesep == "\\r\\n"`` 與 ``os.linesep == "\\n"``
+        兩種環境下各寫一次（內容相同、shard 不同檔），斷言兩個 shard 的
+        **逐位元 sha256 相等**。text mode 的 writer 會因為 patch 而產生不同
+        位元組（Windows 上為 RED）；binary append 則完全不受影響。
+        """
+        summaries = [
+            "linesep independence record 0",
+            f"CJK 可讀性 {_NEL} mixed {_LS} payload {_PS} tail",
+            "linesep independence record 2",
+        ]
+
+        def write_with_linesep(root: Path, value: str) -> Tuple[Path, str]:
+            directory = tmp_path / root
+            monkeypatch.setattr(os, "linesep", value)
+            try:
+                path = _write_lf_probe(directory, summaries)
+            finally:
+                monkeypatch.undo()
+            raw = path.read_bytes()
+            assert b"\r" not in raw, f"os.linesep={value!r} 下仍不得出現 raw CR byte"
+            return path, hashlib.sha256(raw).hexdigest()
+
+        crlf_path, crlf_sha = write_with_linesep("world_log_linesep_crlf", "\r\n")
+        lf_path, lf_sha = write_with_linesep("world_log_linesep_lf", "\n")
+
+        assert crlf_path.read_bytes() == lf_path.read_bytes(), (
+            "shard bytes 必須與 os.linesep 無關（binary append ⇒ 不經 newline "
+            "translation）"
+        )
+        assert crlf_sha == lf_sha, (
+            f"逐位元 sha256 必須相等（os.linesep 獨立性）: {crlf_sha} != {lf_sha}"
+        )
+        assert crlf_path.read_bytes().count(b"\n") == len(summaries)
+
+    @pytest.mark.parametrize(
+        "label,summary", _LINE_BOUNDARY_VARIANTS, ids=_LINE_BOUNDARY_IDS
+    )
+    def test_h4_r1_closure_survives_the_lf_byte_contract(
+        self, tmp_path, label, summary
+    ):
+        """H.4 (mutation teeth M3): LF-only 契約不得放鬆 R-1（Step 59.1）。
+
+        對每個行界污染形態：``b"\\r"`` 不得出現、LF 行數 == record 數 ==
+        ``splitlines()`` 行數、每行 ``json.loads`` 成功且 summary 逐碼位還原。
+        """
+        directory = tmp_path / "world_log_r1"
+        path = _write_lf_probe(directory, ["before", summary, "after"])
+        raw = path.read_bytes()
+
+        assert b"\r" not in raw, f"{label}: LF-only 契約"
+        assert raw.count(b"\n") == 3, f"{label}: LF 行數必須 == record 數"
+        assert len(raw.decode("utf-8").splitlines()) == 3, (
+            f"{label}: splitlines() 行數必須 == record 數（R-1 必須仍閉合）"
+        )
+
+        records = _json_lines_from_bytes(raw)
+        assert len(records) == 3, f"{label}: 每行都必須是完整 record"
+        recovered = records[1]["summary"]
+        assert recovered == summary, f"{label}: 逐字 round-trip"
+        assert [ord(ch) for ch in recovered] == [ord(ch) for ch in summary], (
+            f"{label}: 逐碼位（含 U+0085/U+2028/U+2029）必須完全相同"
+        )
+
+    def test_h5_cjk_stays_literal_utf8_under_the_lf_byte_contract(self, tmp_path):
+        """H.5: 本票不得把 ``ensure_ascii=True`` 偷換回來。
+
+        CJK 仍為 UTF-8 **literal 原字元**（``b"\\xe4\\xb8\\x96"`` 在、
+        ``b"\\\\u4e16"`` 不在），且行界碼位仍是 escape 序列。
+        """
+        cjk = "世界日誌"
+        directory = tmp_path / "world_log_cjk_lf"
+        path = _write_lf_probe(directory, [f"{cjk}{_NEL}尾"])
+        raw = path.read_bytes()
+
+        assert b"\r" not in raw
+        assert cjk.encode("utf-8") in raw, "CJK 必須以原 UTF-8 位元組落盤"
+        assert b"\xe4\xb8\x96" in raw, "世 必須是 literal UTF-8 bytes"
+        assert b"\\u4e16" not in raw, "不得被 escape 成 \\u4e16（ensure_ascii 不得為 True）"
+        assert b"\xc2\x85" not in raw, "raw U+0085 不得出現（應為 \\u0085）"
+        assert b"\\u0085" in raw, "R-1 escape 序列必須仍在"
+
+        record = _json_lines_from_bytes(raw)[0]
+        assert record["summary"] == f"{cjk}{_NEL}尾", "逐字還原"

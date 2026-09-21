@@ -81,6 +81,16 @@ Append-only, forward-only:
     canonical ``world_event_id`` 不因重複而改。
   - 0 backfill / 0 historical rewrite。
 
+LF-only shard bytes (Step 59.2 — byte-level contract closure):
+  - shard 是 **LF-delimited physical JSONL**：每筆 record 恰以**單一 LF byte**
+    （``0x0A``）結尾，整個 shard **不得**含任何 raw ``CR`` byte（``0x0D``）。
+  - writer 以 **binary append**（``open(path, "ab")``）寫入
+    ``(line + RECORD_TERMINATOR).encode("utf-8")``，**在構造上**不依賴 text
+    mode 的 newline translation ⇒ 不因平台 / ``os.linesep`` 而改變輸出位元組。
+    （Windows text mode ``open(path, "a", encoding="utf-8")`` 會把 ``\n``
+    轉成 ``\r\n``，那就不是本契約指定的 bytes。）
+  - 唯一 delimiter 是 LF；**不得**改成 ``\r\n``、不得加任何其他行結尾。
+
 Retention (A2, 30 UTC 日曆日):
   - shard 名稱固定為 UTC ``YYYY-MM-DD.jsonl``；保留 30 個 UTC 日曆日
     （``cutoff = today_utc - (30 - 1) days``，keep ``shard_date >= cutoff``）。
@@ -153,6 +163,14 @@ LINE_BOUNDARY_ESCAPES: tuple = (
     ("\u2028", "\\u2028"),  # LINE SEPARATOR
     ("\u2029", "\\u2029"),  # PARAGRAPH SEPARATOR
 )
+
+#: JSONL record 的唯一 delimiter（Step 59.2 / LF-only byte contract）：
+#: 一個 record 恰以**單一 LF byte**（``0x0A``）結尾，**不得**出現任何 raw
+#: ``CR`` byte（``0x0D``）。shard 是 byte-level 契約 ⇒ writer 以 **binary
+#: append**（``open(path, "ab")``）寫入，**不**依賴 text mode 的 newline
+#: translation（Windows text mode 會把 ``\n`` 轉成 ``\r\n``，那就不是本契約
+#: 指定的 bytes）。詳見 ``WorldLogWriter.write``。
+RECORD_TERMINATOR = "\n"
 
 #: provenance.payload_reference 形式：固定長度、不可逆、有界。
 PAYLOAD_REFERENCE_PREFIX = "sha256:"
@@ -452,8 +470,12 @@ class WorldLogWriter:
             line = json.dumps(record, ensure_ascii=False, default=str)
             # R-1: 行界安全必須落在輸出位元組上（唯一呼叫點）。
             line = escape_line_boundary_chars(line)
-            with open(path, "a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
+            # LF-only byte contract (Step 59.2): shard 的 delimiter 是**單一 LF
+            # byte**。這裡刻意用 binary append，讓輸出「在構造上」不經過 text
+            # mode 的 newline translation ⇒ Windows 不會產生 ``\r\n``，且跨平台
+            # 逐位元相同（不依賴 os.linesep / newline 參數語意）。
+            with open(path, "ab") as fh:
+                fh.write((line + RECORD_TERMINATOR).encode("utf-8"))
         except Exception as exc:
             logger.warning(
                 f"[WorldLog] 寫入失敗 (不影響主路徑): "
