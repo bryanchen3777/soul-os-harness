@@ -23,8 +23,23 @@ subscriber 未必看到事件，World Log 必須保留 adapter 已接到事實�
 明確排除（runtime）: SyntheticWorldEventSource、
 ``SOULOS_WORLD_PERCEPTION_TEST_SOURCE``、synthetic / fixture-only source
 runtime route、test bootstrap / mock runtime source。這些路徑一律不得寫
-World Log（本模組另以 source discriminator 做 writer-level 防線，見
-``EXCLUDED_WORLD_LOG_SOURCES``）。
+World Log。真正的防線是**結構性**的：上述 runtime route / fixture factory
+都不經過三個 production adapter 的 ``_emit_via_bus()``（synthetic runtime
+route 直接走 ``WorldPerceptionMiddleware.process_world_event_direct()``），
+所以結構上就到不了 World Log。
+
+本模組的 writer-level 檢查（``is_world_log_eligible`` /
+``EXCLUDED_WORLD_LOG_SOURCES``）覆蓋範圍必須精確敘述（**不得擴張解讀**）:
+  - 只做 source **字面值** ``"synthetic"`` 比對，**不做任何正規化**
+    （不 casefold、不 strip）⇒ ``"SYNTHETIC"`` / ``" synthetic "`` 皆仍
+    eligible。
+  - ``SyntheticWorldEventSource`` 的 **fixture factory** 事件
+    （``build_rain_started()`` / ``build_celebrity_news()`` 等）source 是
+    ``weather`` / ``news`` / ``calendar`` / ``social`` ⇒ **不在**本檢查
+    覆蓋範圍（本 writer-level 檢查對它們回 eligible）。
+  - 因此本檢查只是**額外的 fail-closed 冗餘**（擋掉「source 字面 synthetic
+    且誤入 writer」這一種情境），**不是**「synthetic 永不污染 World Log」
+    的完整防線，也不得被當成防線敘述。
 
 落盤位置::
 
@@ -111,8 +126,33 @@ SHARD_SUFFIX = ".jsonl"
 WORLD_LOG_RETENTION_DAYS = 30
 
 #: Runtime 明確排除：這些 source 一律不得寫 World Log。
-#: （synthetic / fixture-only source runtime route；見模組 docstring）
+#:
+#: 精確覆蓋範圍（**不得擴張解讀**）：本集合只做 source **字面值**比對，
+#: **不正規化**（不做 casefold / strip）⇒ 只覆蓋 source 恰為 ``"synthetic"``
+#: 者；``"SYNTHETIC"`` / ``" synthetic "`` 仍被判為 eligible。
+#: ``SyntheticWorldEventSource`` 的 **fixture factory** 事件
+#: （``build_rain_started()`` / ``build_celebrity_news()``）source 是
+#: ``weather`` / ``news`` / ``calendar`` / ``social`` ⇒ **不在**本集合覆蓋
+#: 範圍。真正的 synthetic 防線是**結構性**的（synthetic runtime route 與
+#: fixture factory 都不經過三個 production adapter 的 ``_emit_via_bus()``）；
+#: 本集合只是額外的 fail-closed 冗餘，不構成「synthetic 永不污染」的保證。
+#: （詳見模組 docstring）
 EXCLUDED_WORLD_LOG_SOURCES = frozenset({"synthetic"})
+
+#: JSONL 行界安全（R-1）：``json.dumps(..., ensure_ascii=False)`` **不**逃逸
+#: 這三個 Unicode 行界碼位，而 Python ``str.splitlines()``（本 repo 讀 JSONL
+#: 的慣例，見 tests 的 ``read_text().splitlines()``）把它們當**換行** ⇒
+#: 一個 record 會被 naive 讀者看成多筆。writer 端在 dumps 之後、寫檔之前
+#: 逐字元把它們換成 JSON escape 序列，讓「一行 = 一 record」在**輸出位元組**
+#: 上成立（reader 不需改，``json.loads()`` 逐字還原）。
+#:
+#: 註：``\x0b`` / ``\x0c`` / ``\x1c``–``\x1e`` 等 <0x20 的邊界字元已被 JSON
+#: 強制逃逸（``json.dumps`` 本身處理），不在本機制範圍。
+LINE_BOUNDARY_ESCAPES: tuple = (
+    ("\u0085", "\\u0085"),  # NEL — NEXT LINE
+    ("\u2028", "\\u2028"),  # LINE SEPARATOR
+    ("\u2029", "\\u2029"),  # PARAGRAPH SEPARATOR
+)
 
 #: provenance.payload_reference 形式：固定長度、不可逆、有界。
 PAYLOAD_REFERENCE_PREFIX = "sha256:"
@@ -219,6 +259,31 @@ def build_record(world_event: Any, observed_at: datetime) -> Dict[str, Any]:
 
 
 # ───────────────────────────────────────────────────────────
+# JSONL line-boundary safety (R-1) — writer-side byte-level fix
+# ───────────────────────────────────────────────────────────
+
+def escape_line_boundary_chars(text: str) -> str:
+    """把 U+0085 / U+2028 / U+2029 換成 JSON escape 序列（``LINE_BOUNDARY_ESCAPES``）。
+
+    為什麼在 writer 端、dumps 之後做：``json.dumps(..., ensure_ascii=False)``
+    不逃逸這三個碼位，而 ``str.splitlines()`` 把它們當換行 ⇒ naive 讀者會把
+    一個 record 看成多筆。修補必須落在**輸出位元組**上；只改 reader
+    （例如改 ``split("\\n")``）不算修好。
+
+    語意保證:
+      - 只做**字面**替換，一次、不遞迴 ⇒ 不產生雙重轉義
+        （``ensure_ascii=False`` 下這三個字元是以原字元存在於輸出字串中）。
+      - ``json.loads()`` 逐字還原原碼位（round-trip）。
+      - 不含這三個字元的輸入 ⇒ 回傳**逐位元相同**的字串（零副作用）。
+      - 不動其他欄位語意、不做全域重編碼、不改任何非行界字元。
+    """
+    for char, escaped in LINE_BOUNDARY_ESCAPES:
+        if char in text:
+            text = text.replace(char, escaped)
+    return text
+
+
+# ───────────────────────────────────────────────────────────
 # Runtime exclusion (synthetic / fixture-only sources)
 # ───────────────────────────────────────────────────────────
 
@@ -229,11 +294,20 @@ def is_world_log_eligible(world_event: Any) -> bool:
     ``SOULOS_WORLD_PERCEPTION_TEST_SOURCE`` / synthetic / fixture-only
     source runtime route / test bootstrap / mock runtime source。
 
-    這道 writer-level 防線是**冗餘**的：synthetic runtime route 根本不經過
-    三個 production adapter 的 ``_emit_via_bus()``（它直接走
-    ``WorldPerceptionMiddleware.process_world_event_direct()``），所以結構上
-    就不會落到 World Log。這裡再擋一次，讓「synthetic 污染」不可能因為
-    未來接線錯誤而發生。
+    精確覆蓋範圍（**不得擴張解讀**）:
+      - 本檢查只做 source **字面值** ``"synthetic"`` 比對
+        （``EXCLUDED_WORLD_LOG_SOURCES``），**不正規化**大小寫或前後空白
+        ⇒ ``"SYNTHETIC"`` / ``" synthetic "`` 仍回 ``True``（eligible）。
+      - ``SyntheticWorldEventSource`` 的 **fixture factory** 事件
+        （``build_rain_started()`` / ``build_celebrity_news()``）source 是
+        ``weather`` / ``news`` / ``calendar`` / ``social`` ⇒ 本檢查對它們回
+        ``True``；它們**不在**本檢查覆蓋範圍。
+      - 真正的 synthetic 防線是**結構性**的：synthetic runtime route 與
+        fixture factory 都不經過三個 production adapter 的
+        ``_emit_via_bus()``，所以結構上就不會落到 World Log。
+      - 因此本檢查只是**額外的 fail-closed 冗餘**；它**不保證**「synthetic
+        永不污染 World Log」，也不得被敘述成能防「未來接線錯誤」的完整
+        防線。
     """
     source = getattr(world_event, "source", None)
     if not isinstance(source, str) or not source:
@@ -376,6 +450,8 @@ class WorldLogWriter:
             path = self.log_dir / shard_name(observed_at)
             path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(record, ensure_ascii=False, default=str)
+            # R-1: 行界安全必須落在輸出位元組上（唯一呼叫點）。
+            line = escape_line_boundary_chars(line)
             with open(path, "a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
         except Exception as exc:

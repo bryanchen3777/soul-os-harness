@@ -28,6 +28,10 @@ World Log 的唯一合法 runtime 寫入點是三個 production adapter 的
   E. retention（30 shard / 檔名日期 cutoff / 只碰 world_log 自己的 shard）
   F. 不變量（perception trace bytes、trace timestamp 語意、score/threshold/
      collision/wake 行為、World Fact Text 行為）
+  G. JSONL 行界安全（Step 59.1 FUP-1 / R-1）：U+0085 / U+2028 / U+2029 必須在
+     **writer 輸出位元組**上被 escape 成 ``\\u0085`` / ``\\u2028`` / ``\\u2029``
+     ⇒ ``splitlines()`` 行數 == record 數、逐字 round-trip、CJK 仍為原字元、
+     不含這三個字元的 record 逐位元不變。
 """
 from __future__ import annotations
 
@@ -1202,3 +1206,285 @@ class TestSectionF_Invariants:
             assert name == "world/perception_trace.jsonl" or name.startswith(
                 "world/world_log/"
             ), f"World Log 寫入不得在別處產生檔案：{name}"
+
+
+# ────────────────────────────────────────────────────────────────────
+# G. JSONL line-boundary safety (Step 59.1 FUP-1 / R-1)
+# ────────────────────────────────────────────────────────────────────
+#
+# 背景（已由獨立 auditor 實測）：``json.dumps(..., ensure_ascii=False)`` **不**
+# 逃逸 U+0085（NEL）/ U+2028（LS）/ U+2029（PS），而 ``str.splitlines()``（本
+# repo 讀 JSONL 的慣例）把它們當換行 ⇒ 一個 record 會被 naive 讀者看成多筆。
+# 修補必須落在 **writer 的輸出位元組**上（reader 保持原樣）。本段落所有斷言
+# 都直接讀 shard 的**原始位元組/文字**，不經任何可能被改寫的 reader helper
+# ——這樣「只改 reader」的假修補仍會在本段落變紅。
+
+_NEL = "\u0085"  # NEXT LINE
+_LS = "\u2028"   # LINE SEPARATOR
+_PS = "\u2029"   # PARAGRAPH SEPARATOR
+_BOUNDARY_CHARS = (_NEL, _LS, _PS)
+
+_FIXED_NOW = datetime(2026, 3, 4, 5, 6, 7, tzinfo=timezone.utc)
+_FIXED_SHARD = "2026-03-04.jsonl"
+
+#: 每種「行界污染」形態：單獨、混合、連續多個、只有行界字元、首尾相接。
+_LINE_BOUNDARY_VARIANTS: List[Tuple[str, str]] = [
+    ("single_nel", f"alpha{_NEL}beta"),
+    ("single_ls", f"alpha{_LS}beta"),
+    ("single_ps", f"alpha{_PS}beta"),
+    ("mixed", f"a{_NEL}b{_LS}c{_PS}d"),
+    ("consecutive_multi", f"head{_NEL}{_NEL}{_NEL}mid{_LS}{_LS}tail{_PS}{_PS}{_PS}"),
+    ("only_boundaries", f"{_NEL}{_LS}{_PS}"),
+    ("leading_trailing_plus_lf", f"{_NEL}lead\ntrail{_PS}"),
+]
+_LINE_BOUNDARY_IDS = [variant[0] for variant in _LINE_BOUNDARY_VARIANTS]
+
+
+def _boundary_event(summary: str, novelty_id: str) -> WorldEvent:
+    """固定輸入的 WorldEvent（不經 adapter，0 network / 0 fixture 外部依賴）。"""
+    return WorldEvent(
+        source="calendar",
+        type="calendar_event",
+        novelty_id=novelty_id,
+        ts="2026-09-20T00:00:00+00:00",
+        summary=summary,
+        data={},
+    )
+
+
+def _write_boundary_probe(directory: Path, summaries: List[str]) -> Path:
+    """把每個 summary 各寫一筆到 ``directory``（注入固定 now ⇒ 固定 shard）。"""
+    writer = wl.WorldLogWriter(log_dir=directory)
+    for index, summary in enumerate(summaries):
+        event = _boundary_event(summary, novelty_id=f"line_boundary_probe_{index}")
+        assert writer.write(event, now=_FIXED_NOW) is True, f"probe #{index} 寫入失敗"
+    path = directory / _FIXED_SHARD
+    assert path.is_file(), "probe 必須產生固定 shard"
+    return path
+
+
+def _lf_lines(text: str) -> List[str]:
+    """純 LF 切行（與 ``str.splitlines()`` 無關的對照組）。"""
+    return [line for line in text.split("\n") if line.strip()]
+
+
+def _splitlines(text: str) -> List[str]:
+    """本 repo 讀 JSONL 的慣例（``str.splitlines()``）。"""
+    return [line for line in text.splitlines() if line.strip()]
+
+
+def _local_payload_reference(data: Any) -> Optional[str]:
+    """**獨立重建** provenance digest（不呼叫 production helper）。"""
+    if not data:
+        return None
+    canonical = json.dumps(
+        data, sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":")
+    )
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _prefix_dumps(we: WorldEvent, observed_at: datetime) -> str:
+    """修補前 writer 對這個 event 的 ``dumps`` 輸出（**不含**行結尾），獨立重建。
+
+    用來證明 R-1 對「不含三個行界字元」的 record 是**逐位元 no-op**。
+    行結尾由呼叫端補上（writer 走 text mode ⇒ 平台行結尾，見 G.4 註解）。
+    """
+    record = {
+        "world_event_id": f"world:{we.source}:{we.novelty_id}",
+        "source": we.source,
+        "event_type": we.type,
+        "novelty_id": we.novelty_id,
+        "happened_at": we.ts,
+        "observed_at": observed_at.isoformat(),
+        "summary": we.summary,
+        "priority": we.priority,
+        "provenance": {
+            "source": we.source,
+            "payload_reference": _local_payload_reference(getattr(we, "data", None)),
+        },
+    }
+    return json.dumps(record, ensure_ascii=False, default=str)
+
+
+class TestSectionG_LineBoundarySafety:
+    """G. R-1：行界字元必須在 writer 輸出位元組上被 escape。"""
+
+    @pytest.mark.parametrize(
+        "label,summary", _LINE_BOUNDARY_VARIANTS, ids=_LINE_BOUNDARY_IDS
+    )
+    def test_g1_boundary_chars_never_split_a_record(self, tmp_path, label, summary):
+        """G.1 (a) (mutation teeth M1/M3): 一行 = 一 record，兩種 reader 都同意。
+
+        含 U+0085 / U+2028 / U+2029 的 summary（單獨、混合、連續多個）寫入後：
+        LF 行數 == record 數、``splitlines()`` 行數 == record 數、每行
+        ``json.loads`` 成功。斷言直接讀原始文字 ⇒ 「只改 reader」不算修好。
+        """
+        directory = tmp_path / "world_log"
+        path = _write_boundary_probe(
+            directory,
+            ["plain record before", summary, "plain record after"],
+        )
+        raw_bytes = path.read_bytes()
+        # 註：writer 走 text mode ⇒ 行結尾是平台行結尾（Windows 為 CRLF，
+        # pre-existing 行為，本票未改、也不得改）。此處先把行結尾正規化成 LF，
+        # 再分別用 LF 與 splitlines() 切行，確保比較的是「record 是否被拆開」。
+        text = raw_bytes.decode("utf-8").replace("\r\n", "\n")
+
+        lf_lines = _lf_lines(text)
+        splitlines_lines = _splitlines(text)
+
+        assert raw_bytes.count(b"\n") == 3, f"{label}: LF 位元組數必須 == record 數"
+        assert len(lf_lines) == 3, f"{label}: LF 行數必須 == record 數"
+        assert len(splitlines_lines) == 3, (
+            f"{label}: splitlines() 行數必須 == record 數"
+            "（行界字元必須已 escape 進輸出位元組，不得只改 reader）"
+        )
+        assert lf_lines == splitlines_lines, f"{label}: 兩種 reader 必須看到相同行"
+
+        records = [json.loads(line) for line in lf_lines]
+        assert [r["novelty_id"] for r in records] == [
+            "line_boundary_probe_0",
+            "line_boundary_probe_1",
+            "line_boundary_probe_2",
+        ], f"{label}: 每行都必須是完整且可 parse 的 record"
+
+        # 本 suite 既有的 reader 慣例（splitlines）也必須同意 —— 但它不是本
+        # 測試的證據來源（上面的原始文字斷言才是）。
+        assert len(_read_shard_dir(directory)) == 3, label
+
+    @pytest.mark.parametrize(
+        "label,summary", _LINE_BOUNDARY_VARIANTS, ids=_LINE_BOUNDARY_IDS
+    )
+    def test_g2_boundary_chars_round_trip_verbatim(self, tmp_path, label, summary):
+        """G.2 (b): ``json.loads(line)["summary"]`` 必須**逐字**等於原 summary。"""
+        directory = tmp_path / "world_log"
+        path = _write_boundary_probe(directory, [summary])
+        lines = _splitlines(path.read_text(encoding="utf-8"))
+        assert len(lines) == 1, f"{label}: 單筆 record 必須恰為一行"
+
+        record = json.loads(lines[0])
+        recovered = record["summary"]
+        assert recovered == summary, f"{label}: round-trip 必須逐字還原"
+        assert [ord(ch) for ch in recovered] == [ord(ch) for ch in summary], (
+            f"{label}: 逐碼位（含三個行界字元）必須完全相同"
+        )
+        for char in _BOUNDARY_CHARS:
+            if char in summary:
+                assert char in recovered, f"{label}: U+{ord(char):04X} 必須被還原"
+
+        # 其他欄位不受影響
+        assert record["world_event_id"] == "world:calendar:line_boundary_probe_0"
+        assert record["happened_at"] == "2026-09-20T00:00:00+00:00"
+        assert record["priority"] == 0
+
+    def test_g3_cjk_stays_readable_and_boundaries_are_escaped_bytes(self, tmp_path):
+        """G.3 (c) (mutation teeth M2): ensure_ascii=False 的可讀性 + 行界 escape。
+
+        - CJK 在檔案中仍是**原字元**（位元組檢查，不是 ``\\uXXXX``）
+        - 檔案中**不存在** raw U+0085 / U+2028 / U+2029 位元組
+        - 三個 escape 序列確實存在於檔案中
+        """
+        cjk = "世界日誌觀測：台北晴（日本語かな）"
+        summary = f"{cjk}{_NEL}mid{_LS}mid{_PS}tail"
+        directory = tmp_path / "world_log"
+        path = _write_boundary_probe(directory, [summary])
+        raw = path.read_bytes()
+
+        # 1) CJK 必須是可讀原字元（ensure_ascii=False 未被改成 True）
+        assert cjk.encode("utf-8") in raw, "CJK 必須以原 UTF-8 位元組落盤"
+        for cjk_char, escape in (("世", b"\\u4e16"), ("界", b"\\u754c"), ("日", b"\\u65e5")):
+            assert escape not in raw, f"{cjk_char} 不得被 escape 成 {escape!r}"
+
+        # 2) 檔案中不得有任何 raw 行界字元位元組
+        assert b"\xc2\x85" not in raw, "raw U+0085 不得出現（應為 \\u0085）"
+        assert b"\xe2\x80\xa8" not in raw, "raw U+2028 不得出現（應為 \\u2028）"
+        assert b"\xe2\x80\xa9" not in raw, "raw U+2029 不得出現（應為 \\u2029）"
+
+        # 3) escape 序列必須存在
+        assert b"\\u0085" in raw
+        assert b"\\u2028" in raw
+        assert b"\\u2029" in raw
+
+        # 4) 位元組層乾淨之後，reader 仍逐字還原
+        lines = _splitlines(raw.decode("utf-8"))
+        assert len(lines) == 1
+        assert json.loads(lines[0])["summary"] == summary
+
+    def test_g4_records_without_boundary_chars_are_byte_identical(self, tmp_path):
+        """G.4 (d) (mutation teeth M4): 零副作用 —— 逐位元等於修補前輸出。
+
+        (1) 硬編字面值：固定輸入完全推導出的 pre-fix bytes。
+        (2) 既有三個 adapter fixture：與**獨立重建**的 ``dumps`` 輸出逐位元比對。
+        """
+        # ── (1) 硬編字面值（不依賴任何 production helper）──────────────
+        literal_dir = tmp_path / "world_log_literal"
+        literal_path = _write_boundary_probe(literal_dir, ["literal byte probe"])
+        literal_line = (
+            '{"world_event_id": "world:calendar:line_boundary_probe_0",'
+            ' "source": "calendar", "event_type": "calendar_event",'
+            ' "novelty_id": "line_boundary_probe_0",'
+            ' "happened_at": "2026-09-20T00:00:00+00:00",'
+            ' "observed_at": "2026-03-04T05:06:07+00:00",'
+            ' "summary": "literal byte probe", "priority": 0,'
+            ' "provenance": {"source": "calendar", "payload_reference": null}}'
+        )
+        assert literal_path.read_bytes() == (
+            literal_line + os.linesep
+        ).encode("utf-8"), (
+            "不含行界字元的 record 必須與修補前逐位元相同（硬編 baseline）"
+        )
+
+        # ── (2) 三個 adapter fixture 事件（含 payload digest 路徑）────────
+        fixture_dir = tmp_path / "world_log_fixtures"
+        observed = datetime(2026, 3, 5, 7, 8, 9, tzinfo=timezone.utc)
+        writer = wl.WorldLogWriter(log_dir=fixture_dir)
+        cases = [
+            ("calendar", calendar_world_event()),
+            ("weather", weather_world_event()),
+            ("news", news_world_event()),
+        ]
+        for label, we in cases:
+            assert not any(char in we.summary for char in _BOUNDARY_CHARS), (
+                f"{label}: 本測試前提是 fixture 不含行界字元（anti-vacuity）"
+            )
+            assert writer.write(we, now=observed) is True, label
+
+        fixture_path = fixture_dir / "2026-03-05.jsonl"
+        raw_bytes = fixture_path.read_bytes()
+        expected_bytes = "".join(
+            _prefix_dumps(we, observed) + os.linesep for _, we in cases
+        ).encode("utf-8")
+        assert raw_bytes == expected_bytes, (
+            "三個 adapter fixture 的輸出位元組必須與修補前（純 dumps）逐位元相同"
+        )
+
+        lines = _lf_lines(raw_bytes.decode("utf-8").replace("\r\n", "\n"))
+        assert len(lines) == 3, "三個 fixture 必須各為完整一行"
+        for (label, we), line in zip(cases, lines):
+            assert not any(char in line for char in _BOUNDARY_CHARS), label
+            assert wl.escape_line_boundary_chars(line) == line, (
+                f"{label}: helper 對不含行界字元者必須是 no-op"
+            )
+
+    def test_g5_boundary_escape_helper_is_literal_single_pass_and_idempotent(self):
+        """G.5: helper 只做一次字面替換（不雙重轉義）、冪等、無關字串零改動。"""
+        assert len(wl.LINE_BOUNDARY_ESCAPES) == 3
+        covered = [char for char, _ in wl.LINE_BOUNDARY_ESCAPES]
+        assert covered == [_NEL, _LS, _PS], "常數必須精確覆蓋這三個碼位"
+
+        for char, replacement in wl.LINE_BOUNDARY_ESCAPES:
+            assert replacement == "\\u%04x" % ord(char), (
+                f"U+{ord(char):04X} 的 escape 必須是 JSON 標準形式"
+            )
+            assert wl.escape_line_boundary_chars(f"x{char}y") == f"x{replacement}y"
+
+        once = wl.escape_line_boundary_chars(f"a{_NEL}b{_LS}c{_PS}d")
+        assert once == "a\\u0085b\\u2028c\\u2029d"
+        assert wl.escape_line_boundary_chars(once) == once, (
+            "必須冪等：不得對已 escape 的輸出再轉義（不得雙重轉義）"
+        )
+
+        plain = '{"summary": "世界 plain 27.5C \\n \\t \\"q\\" \\u000b"}'
+        assert wl.escape_line_boundary_chars(plain) == plain, (
+            "不含三個行界字元的字串必須逐位元不變"
+        )
