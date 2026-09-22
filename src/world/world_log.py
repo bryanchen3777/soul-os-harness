@@ -149,6 +149,39 @@ WORLD_LOG_RETENTION_DAYS = 30
 #: （詳見模組 docstring）
 EXCLUDED_WORLD_LOG_SOURCES = frozenset({"synthetic"})
 
+#: Phase B 引用權威來源清單（Step 60）：**Phase A World Log 實際覆蓋**的三個
+#: production adapter 的 source。這三個 adapter（``IcalCalendarSource`` /
+#: ``OpenMeteoWeatherSource`` / ``RssNewsSource``，見本模組 docstring 的
+#: 「唯一合法 runtime 寫入點」）在 ``_emit_via_bus()`` 之內、``bus.publish()``
+#: 之前就已把 world fact 落盤成 World Log record，因此只有這些 source 的
+#: world fact **確定有** World Log record 可回指。
+#:
+#: 語意：perception trace 的 **evaluated** 列可以在 ``extra`` 內寫入
+#: ``world_event_id``（＝ ``build_world_event_id(source, novelty_id)``，逐字
+#: ``world:{source}:{novelty_id}``），讓 World Log record 與 perception trace
+#: **可回溯相連**。它是 observation / join evidence，**不是**行為信號：不得
+#: 成為任何 gate 的輸入，也不改任何 scoring / threshold / wake 行為。
+#:
+#: 🔴 本集合與 ``EXCLUDED_WORLD_LOG_SOURCES`` 是**兩個不同意義**的集合，刻意
+#: 並存（**禁止**以「一致性重構」把兩者合併或互相取代）：
+#:
+#:   - ``EXCLUDED_WORLD_LOG_SOURCES`` = Phase A **writer eligibility**
+#:     （哪些 source 不得落盤；只做 source 字面值比對、不正規化）。
+#:   - ``WORLD_LOG_BACKED_SOURCES``   = Phase B **引用權威**
+#:     （哪些 source 的 evaluated trace 可以寫 ``world_event_id``）。
+#:
+#: **禁止**把 ``is_world_log_eligible`` 改寫成
+#: ``source in WORLD_LOG_BACKED_SOURCES``：那會改變 Phase A 行為
+#: （``social`` 與未來新 source 會突然變成不可落盤）。
+#:
+#: 本集合**不**擴張 World Log Phase A 的 source universe、**不**加入 social
+#: source、**不**授權任何新的落盤路徑；它只是「已經會落盤者」的引用權威清單。
+#: 不在本集合的 source（``social`` / synthetic / 未來新 source / 未知 source）
+#: 一律**缺欄**：evaluated 列的 ``extra`` 內**不得**出現該鍵，也**不得**寫
+#: ``null`` —— ``null`` 保留給未來「有 world source 依據、但引用無法成立」的
+#: 顯式契約語意，本票不製造這種假語意。
+WORLD_LOG_BACKED_SOURCES = frozenset({"calendar", "weather", "news"})
+
 #: JSONL 行界安全（R-1）：``json.dumps(..., ensure_ascii=False)`` **不**逃逸
 #: 這三個 Unicode 行界碼位，而 Python ``str.splitlines()``（本 repo 讀 JSONL
 #: 的慣例，見 tests 的 ``read_text().splitlines()``）把它們當**換行** ⇒

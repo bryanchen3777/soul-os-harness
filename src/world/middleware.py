@@ -58,6 +58,10 @@ from .perception import (
 from .state import WorldPerceptionState
 from .trace import WorldPerceptionTraceWriter
 from .validation import WorldEventValidationError, validate_world_event
+# Step 60 (Phase B): 引用閉環 —— World Log 與 perception trace 可回溯相連。
+# 單一 identity authority：直接 import 常數與純函式（world_log.py 不 import
+# 本模組 ⇒ 無循環風險）。只新增 import，不改任何既有 import。
+from .world_log import WORLD_LOG_BACKED_SOURCES, build_world_event_id
 
 # SI-2.1 (Social Diffusion Contract, 2026-09-03): 防線 1 Ambient Perception Path —
 # SOCIAL_WORLD_EVENT 平行訂閱 (additive, 既有 WORLD_EVENT / AGENT_INTENT_ENRICHED
@@ -603,6 +607,21 @@ class WorldPerceptionMiddleware:
                     # WORLD-FACT-TEXT-PERSIST-1 (2026-09-14): 事實文字副本
                     # （僅 accepted == True；<= 200 字元；空白 ⇒ 不寫鍵）
                     **_fact_summary_extra(decision.accepted, world_event.summary),
+                    # Step 60 (Phase B, 引用閉環): 唯讀 observation / join
+                    # evidence —— 讓本筆 evaluated trace 可以回指 Phase A
+                    # World Log 的 canonical record id。**僅當** source 在
+                    # WORLD_LOG_BACKED_SOURCES 內才寫鍵；其他 source（social /
+                    # synthetic / 未知 / 未來新 source）**缺欄**（不寫 null）。
+                    # 它不是行為信號：不進任何 gate / scoring / prompt。
+                    **(
+                        {
+                            "world_event_id": build_world_event_id(
+                                world_event.source, world_event.novelty_id
+                            )
+                        }
+                        if world_event.source in WORLD_LOG_BACKED_SOURCES
+                        else {}
+                    ),
                 },
             ))
 

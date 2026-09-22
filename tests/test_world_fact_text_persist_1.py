@@ -284,7 +284,7 @@ def test_external_rejected_does_not_write_summary(tmp_path, iso_env):
     rec = evaluated[0]
     assert rec["accepted"] is False
     assert "summary" not in rec["extra"]
-    assert set(rec["extra"]) == GOLDEN_EVALUATED_EXTRA_BASE
+    assert set(rec["extra"]) == GOLDEN_EVALUATED_EXTRA_BASE | {"world_event_id"}
 
 
 def test_external_blank_summary_never_writes_key(tmp_path, iso_env):
@@ -452,7 +452,10 @@ def test_trace_schema_is_baseline_plus_one_extra_key(tmp_path, iso_env):
     rec = _records_of_phase(recs, "evaluated")[0]
     assert set(rec) == GOLDEN_TOP_LEVEL_KEYS
     assert set(rec["scores"]) == GOLDEN_SCORES_KEYS
-    assert set(rec["extra"]) == GOLDEN_EVALUATED_EXTRA_BASE | {"summary"}
+    assert set(rec["extra"]) == GOLDEN_EVALUATED_EXTRA_BASE | {
+        "summary",
+        "world_event_id",
+    }
 
 
 def test_no_new_artifact_written(tmp_path, iso_env):
