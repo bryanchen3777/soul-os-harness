@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.11+-blue.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
-  <img src="https://img.shields.io/badge/Architecture-Phase%20C--3.1-6f42c1.svg?style=flat-square" alt="Phase C-3.1">
+  <img src="https://img.shields.io/badge/Phase%201-Complete-success.svg?style=flat-square" alt="Phase 1 Complete">
   <img src="https://img.shields.io/badge/Runtime-Asynchronous%20OS-success.svg?style=flat-square" alt="Asynchronous OS">
   <img src="https://img.shields.io/badge/Status-Experimental-orange.svg?style=flat-square" alt="Experimental">
   <img src="https://img.shields.io/badge/Testing-Time--Lapse%20Harness-informational.svg?style=flat-square" alt="Time-Lapse Harness">
@@ -45,6 +45,7 @@ Soul OS 是一個為「持續存在的 AI 靈魂（Persistent AI Souls）」打�
 - [🏛️ 生命週期與成長迴圈（Life Cycle & Growth Loop）](#️-生命週期與成長迴圈soul-os-life-cycle--growth-loop)
 - [❤️ 核心哲學（Core Philosophy）](#️-核心哲學core-philosophy)
 - [🧭 活過的脈絡（Lived Context）](#-活過的脈絡lived-context)
+- [🔎 可稽核的世界與感知](#-可稽核的世界與感知)
 - [⏳ 時間是脈絡，不是指令（Time Is Context）](#-時間是脈絡不是指令time-is-context-not-a-command)
 - [❤️ 主體性與意志（Agency & Volition）](#️-主體性與意志agency--volition)
 - [🧠 記憶與內在生活（Memory & Inner Life）](#-記憶與內在生活memory--inner-life)
@@ -164,6 +165,16 @@ flowchart TD
 ```
 
 長期的架構目標是：物理 / 資訊 / 社交 / 個人訊號最終應該形成連貫的活過脈絡（coherent lived context）。因此，Lived Context 是「世界中存在的事物」與「那個世界對某個特定靈魂的意義」之間的邊界。
+
+## 🔎 可稽核的世界與感知
+
+Phase 1 明確區分世界事實發生、系統觀測、以及靈魂在脈絡中評估。production source 先記錄 append-only World Log；evaluated perception 可引用同一 canonical world-event identity。
+
+```text
+World Fact → World Log → Perception Evaluation → Soul Interpretation
+```
+
+該引用是 audit evidence，不直接控制 score、wake、collision、prompt 或 agency。
 
 ## ⏳ 時間是脈絡，不是指令（Time Is Context, Not a Command）
 
@@ -399,21 +410,13 @@ SOUL OS
 
 ## 🚦 當前發展方向（Current Development Direction）
 
-Soul OS 正朝向一個更連貫的 lived-context 迴圈：
-
-```
-Physical → Information → Social → Personal/Inner Life → Temporal
-  → Perception → Lived Context → Soul Interpretation → Agency
-  → Expression / Action / Silence → Experience → Memory / Growth → (Next Cycle)
-```
-
-目標不是永遠建立孤立的功能。目標是讓這些系統收斂成一個連貫的生活經驗。
+Phase 1 已完成可稽核的 World Fact → World Log → Perception → Lived Context → Soul Interpretation → Agency → Experience → Memory / Growth 地基，以及有邊界的 life-thread cycle。Phase 2 不自動啟動，將由 Owner 依 operational evidence、audit finding 與產品方向重新排序。
 
 ## 🧪 工程狀態（Engineering State）
 
-當前實作狀態、里程碑、進行中的發現與下一步工程步驟，請參閱 [logs/ENGINEERING_STATE.md](logs/ENGINEERING_STATE.md)。
+Notion 的 Soul OS Current State 是 operational baseline：目前階段、Owner 決策、每月 Soul Audit SOP 與下一步。repository 的 [logs/ENGINEERING_STATE.md](logs/ENGINEERING_STATE.md) 是 versioned Git evidence registry：commit、regression contract、implementation closeout 與歷史 finding。
 
-README 刻意是一張穩定的架構地圖。工程狀態文件記錄實作現實如何演進。這種分離有助於防止一個常見的失敗模式：**README 應該解釋這個系統想要成為什麼；工程狀態應該解釋這個系統現在是什麼。**
+README 是穩定架構地圖；Notion 記錄 operational state；Git 記錄可版本化工程證據。
 
 ## 🚀 快速開始（Quick Start）
 

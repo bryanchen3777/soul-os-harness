@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.11+-blue.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
-  <img src="https://img.shields.io/badge/Architecture-Phase%20C--3.1-6f42c1.svg?style=flat-square" alt="Phase C-3.1">
+  <img src="https://img.shields.io/badge/Phase%201-Complete-success.svg?style=flat-square" alt="Phase 1 Complete">
   <img src="https://img.shields.io/badge/Runtime-Asynchronous%20OS-success.svg?style=flat-square" alt="Asynchronous OS">
   <img src="https://img.shields.io/badge/Status-Experimental-orange.svg?style=flat-square" alt="Experimental">
   <img src="https://img.shields.io/badge/Testing-Time--Lapse%20Harness-informational.svg?style=flat-square" alt="Time-Lapse Harness">
@@ -45,6 +45,7 @@ It is designed to let AI Souls:
 - [🏛️ Soul OS Life Cycle & Growth Loop](#️-soul-os-life-cycle--growth-loop)
 - [❤️ Core Philosophy](#️-core-philosophy)
 - [🧭 Lived Context](#-lived-context)
+- [🔎 Auditable World & Perception](#-auditable-world--perception)
 - [⏳ Time Is Context, Not a Command](#-time-is-context-not-a-command)
 - [❤️ Agency & Volition](#️-agency--volition)
 - [🧠 Memory & Inner Life](#-memory--inner-life)
@@ -164,6 +165,16 @@ flowchart TD
 ```
 
 The long-term architectural goal is: Physical / Information / Social / Personal signals should eventually form coherent lived context. Lived Context is therefore a boundary between what exists in the world and what that world means to a particular Soul.
+
+## 🔎 Auditable World & Perception
+
+Phase 1 distinguishes a world fact occurring, system observation, and contextual Soul evaluation. Production sources record append-only World Log facts before perception; evaluated perception can reference the same canonical world-event identity.
+
+```text
+World Fact → World Log → Perception Evaluation → Soul Interpretation
+```
+
+That reference is audit evidence, not a controller for score, wake, collision, prompt, or agency.
 
 ## ⏳ Time Is Context, Not a Command
 
@@ -399,21 +410,13 @@ Changing the underlying model should not require redefining: identity, memory, r
 
 ## 🚦 Current Development Direction
 
-Soul OS is moving toward a more coherent lived-context loop:
-
-```
-Physical → Information → Social → Personal/Inner Life → Temporal
-  → Perception → Lived Context → Soul Interpretation → Agency
-  → Expression / Action / Silence → Experience → Memory / Growth → (Next Cycle)
-```
-
-The goal is not to build isolated features forever. The goal is to make these systems converge into a coherent lived experience.
+Phase 1 completed an auditable World Fact → World Log → Perception → Lived Context → Soul Interpretation → Agency → Experience → Memory / Growth foundation and a bounded life-thread cycle. Phase 2 is not auto-started; the Owner prioritizes it from operational evidence, audit findings, and product direction.
 
 ## 🧪 Engineering State
 
-For current implementation status, milestones, active findings, and next engineering steps, see [logs/ENGINEERING_STATE.md](logs/ENGINEERING_STATE.md).
+Notion Soul OS Current State is the operational baseline: current phase, Owner decisions, monthly Soul Audit SOP, and next steps. [logs/ENGINEERING_STATE.md](logs/ENGINEERING_STATE.md) is the versioned Git evidence registry: commits, regression contracts, closeouts, and historical findings.
 
-The README is intentionally a stable architectural map. The engineering state document is where implementation reality evolves. This separation helps prevent a common failure mode: **a README should explain what the system is trying to be; engineering state should explain what the system currently is.**
+README is the stable architecture map; Notion records operational state; Git records reproducible engineering evidence.
 
 ## 🚀 Quick Start
 
