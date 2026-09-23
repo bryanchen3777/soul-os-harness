@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
 from functools import partial
@@ -808,7 +809,23 @@ class SAGELiteProvider:
         呼叫端已限定為 EH-3.1 定義句閘門打標成功之實體；本方法維持在
         ``run_in_executor`` 的 worker 執行緒內（I3 SQLite thread-affinity）。
         Fail-silent（I5）：任何例外僅 warning，回 0。
+
+        [DIRECTION-A-RISK-MITIGATION] (Owner authorization: Bry, 2026-09-22 21:55 EDT, DEV / isolated tests only, NOT DEPLOYED):
+        短期風險圍堵：暫停新增 4 條 eh4_* 衍生列，防止中途失敗遺留 lived_experience 預設維度
+        與重試時重複列爆炸。EH-3.1 第一槽原始 Fact 萃取、Gate 打標、flush 及既有讀取均 100% 不變。
+        可撤銷入口：環境變數 SOUL_OS_PAUSE_EH4_WRITE_BACK 嚴格採 fail-closed 解析：
+        僅當顯式設為 "0" 或 "false" 時才回到舊有四槽寫入（注意："0" 仍有已知原子性風險，非生產授權）。
+        未設定、空值、"1"、"true" 或任何不明值一律 fail-closed 維持暫停。
         """
+        raw_val = os.getenv("SOUL_OS_PAUSE_EH4_WRITE_BACK")
+        unpaused = raw_val is not None and raw_val.strip().lower() in ("0", "false")
+        if not unpaused:
+            logger.info(
+                f"[SAGE] EH-4.2 four-slot concept write-back is paused (Direction A risk mitigation) | "
+                f"profile={self.profile_id} | entities={entities}"
+            )
+            return 0
+
         if self._store is None or not entities:
             return 0
         total = 0

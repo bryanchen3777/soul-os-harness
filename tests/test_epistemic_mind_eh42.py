@@ -70,9 +70,14 @@ def _isolated_env(tmp_path, monkeypatch):
 
     S3 已內化鎖定會讀 ``data_root()/memory/<agent>/graph.sqlite`` → 必須隔離，
     否則套件會隨生產資料庫狀態漂移；teardown 一律重置 data_root 快取。
+
+    [EH-4.2 回歸測試專用]: 本既有套件專門檢驗五元組寫回契約及其下游鎖定斷言；
+    因此僅在此測試隔離 fixture 內顯式設定 SOUL_OS_PAUSE_EH4_WRITE_BACK=0，
+    使既有 14 筆寫入/投影斷言能繼續檢查舊路徑與其原本斷言（注意：0 仍帶有已知原子性風險，非生產授權）。
     """
     monkeypatch.setenv("SOUL_OS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("USE_LLM_JUDGE", "false")
+    monkeypatch.setenv("SOUL_OS_PAUSE_EH4_WRITE_BACK", "0")
     clear_pack_cache()
     reset_data_root()
     yield
