@@ -238,6 +238,54 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     // 常駐錯誤（VC-1.5）：不自動清除，直到點擊 ✕ 或重新載入
     setError(m, true);
   }
+  // ── VC-AVATAR-3：情緒／動作分發（avatar_action）──────────────────────────────
+  // WS 只送意圖，播不播由 AvatarPlayer 決定（未知狀態走它自己的 fail-closed）。
+  // 此 IIFE 與 AvatarPlayer 所在的第二個 <script> 無共享作用域，故一律經 window.AvatarPlayer 取用；
+  // 訊息必在頁面載入後才到達，屆時 window.AvatarPlayer 已就緒。
+  var avatarActionTimer = null;
+
+  // 本 IIFE 取不到第二個 <script> 的 warn()，故自帶同名同格式的局部版本。
+  function warn(msg) {
+    if (window.console && console.warn) console.warn('[AvatarPlayer] ' + msg);
+  }
+
+  function onAvatarAction(msg) {
+    try {
+      // 1) 白名單：只認 "play"（缺 action 視為 play）。其餘只警告，永不拋出。
+      var action = (msg && msg.action !== undefined && msg.action !== null) ? msg.action : "play";
+      if (action !== "play") {
+        warn("未知 avatar_action：" + action + "（忽略，維持現狀）");
+        return;
+      }
+
+      // 2) 計時器衛生：任何新指令進來都先清掉上一個計時器，
+      //    確保殘留計時器不會把「較新的狀態」誤推回待機。
+      if (avatarActionTimer !== null) { clearTimeout(avatarActionTimer); avatarActionTimer = null; }
+
+      var AP = window.AvatarPlayer;
+      if (!AP || typeof AP.playState !== "function") {
+        warn("AvatarPlayer 尚未就緒，忽略 avatar_action");
+        return;
+      }
+
+      // 3) 交給 AvatarPlayer。回傳 false（未知狀態）時，它的 fail-closed 已處理完畢，這裡不再動作。
+      if (AP.playState(msg && msg.state) === false) { return; }
+
+      // 4) duration_ms：僅在「存在且為正的有限整數」時才設計時器；
+      //    其餘（缺 / 非數字 / ≤0 / NaN / Infinity）一律不設，交由影片 ended 事件回收。
+      var d = msg && msg.duration_ms;
+      if (typeof d === "number" && isFinite(d) && d > 0 && Math.floor(d) === d) {
+        avatarActionTimer = setTimeout(function () {
+          avatarActionTimer = null;
+          try { AP.resetToIdle(); } catch (e) { warn("resetToIdle 失敗：" + e); }
+        }, d);
+      }
+    } catch (e) {
+      // 任何畸形訊息都不得破壞 WS 迴圈或對話流程
+      warn("avatar_action 處理失敗：" + e);
+    }
+  }
+
   // VC-BARGE-PREPLAY-1 可觀測性：interrupt 一律附 origin，伺服器端記成 barge reason=interrupt:<origin>。
   // 掛在 send() 這個唯一出口（呼叫點仍維持既有的 send({ type: "interrupt" }) 形式），
   // 兩個發送點（autoBargeIn / manualBargeIn）於呼叫前設定 interruptOrigin。
@@ -372,6 +420,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
           addMsg("error", "⚠️ " + (msg.message || "錯誤"));
         }
         else if (msg.type === "pong") { /* 心跳正常回應 */ }
+        else if (msg.type === "avatar_action") { onAvatarAction(msg); }
       } else {
         // binary = Int16 PCM 44.1k mono 播放分片（server 固定 44100）
         ensurePlayback();
@@ -835,9 +884,20 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
   // 3a. Avatar registry
   var AVATAR_REGISTRY = {
-    rem:   { id:'rem',   name:'雷姆',    idle:'/static/avatars/rem.mp4',   states:{ idle:{ url:'/static/avatars/rem.mp4',   loop:true, fallbackToIdle:true } } },
-    akane: { id:'akane', name:'黑川茜',  idle:'/static/avatars/akane.mp4', states:{ idle:{ url:'/static/avatars/akane.mp4', loop:true, fallbackToIdle:true } } },
-    mai:   { id:'mai',   name:'櫻島麻衣', idle:'/static/avatars/mai.mp4',   states:{ idle:{ url:'/static/avatars/mai.mp4',   loop:true, fallbackToIdle:true } } }
+    rem:   { id:'rem',   name:'雷姆',    idle:'/static/avatars/rem.mp4',   states:{
+      idle:{ url:'/static/avatars/rem.mp4',   loop:true, fallbackToIdle:true },
+      // VC-AVATAR-3：speaking 目前指向既有 idle 檔（磁碟上僅 rem/akane/mai.mp4 三支）。
+      // 這是「接線驗證」狀態：未來有真實素材時只需換 url，不動其他邏輯。
+      speaking:{ url:'/static/avatars/rem.mp4', loop:false, fallbackToIdle:true }
+    } },
+    akane: { id:'akane', name:'黑川茜',  idle:'/static/avatars/akane.mp4', states:{
+      idle:{ url:'/static/avatars/akane.mp4', loop:true, fallbackToIdle:true },
+      speaking:{ url:'/static/avatars/akane.mp4', loop:false, fallbackToIdle:true }
+    } },
+    mai:   { id:'mai',   name:'櫻島麻衣', idle:'/static/avatars/mai.mp4',   states:{
+      idle:{ url:'/static/avatars/mai.mp4',   loop:true, fallbackToIdle:true },
+      speaking:{ url:'/static/avatars/mai.mp4', loop:false, fallbackToIdle:true }
+    } }
   };
   var DEFAULT_AVATAR_ID = 'akane';
 
