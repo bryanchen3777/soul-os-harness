@@ -176,7 +176,10 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     if (workletReady && workletNode) {
       workletNode.port.postMessage({ type: "state", state: s });
     }
-    if (s === "SPEAKING") { ensurePlayback(); } // 茜開始說話 → 確保播放圖存在（打字路徑也能出聲）
+    if (s === "SPEAKING") {
+      ensurePlayback(); // 茜開始說話 → 確保播放圖存在（打字路徑也能出聲）
+      safeAvatarCall("playState", "speaking");
+    }
     if (leavingSpeaking) {
       if (barging) {
         // 使用者主動開口打斷（VC-2.2 Barge-in）→ 豁免冷卻，直接解除自動收音冷卻（barge 0 倒退）
@@ -247,6 +250,18 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   // 本 IIFE 取不到第二個 <script> 的 warn()，故自帶同名同格式的局部版本。
   function warn(msg) {
     if (window.console && console.warn) console.warn('[AvatarPlayer] ' + msg);
+  }
+
+  // ── VC-AVATAR-4：語音生命週期 → AvatarPlayer（安全呼叫；player 未就緒時為 no-op）──
+  function safeAvatarCall(method, arg) {
+    try {
+      var AP = window.AvatarPlayer;
+      if (AP && typeof AP[method] === "function") {
+        AP[method](arg);
+      }
+    } catch (err) {
+      warn("safeAvatarCall " + method + " failed: " + (err && err.message));
+    }
   }
 
   function onAvatarAction(msg) {
@@ -675,6 +690,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   }
   // 打斷/新回合才清播放佇列（正常播放由 onaudioprocess 自然消耗，勿在 IDLE 清空）
   function flushPlayback(origin) {
+    // VC-AVATAR-4：清空播放緩衝＝聲音立即停止 → 視覺同步回待機。
+    // resetToIdle 具冪等性（已是 idle 時為安全 no-op），故對所有 origin 一律呼叫（Owner D2 = option a）。
+    safeAvatarCall("resetToIdle");
     // VC-VAD-TIMING-1 診斷：記錄 flush 的調用源頭（追蹤是否由真實打斷引起，而非回授自掐）
     console.log("[Playback] flushPlayback triggered by " + (origin || "unknown") + " at " + new Date().toISOString());
     isBuffering = true;
@@ -693,6 +711,10 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   function onPlaybackDrained() {
     // Worklet 環形緩衝 / fallback 緩衝「真正播完最後一個採樣點」（available == 0）→ 啟動殘響消化計時器
     playbackActive = false;
+    // VC-AVATAR-4：緩衝真實排空（available == 0）＝聲音已停 → 立刻回待機。
+    // 不掛 tailTimer 回呼：那 400ms 是給麥克風 VAD 防回音的冷卻，視覺不該等它，
+    // 否則會出現「聲音已停但動作還在動」的音畫不同步。
+    safeAvatarCall("resetToIdle");
     console.log("[Playback] playback drained (available == 0) at " + new Date().toISOString() +
       " (round played ~" + (roundQueuedSamples / 44100).toFixed(2) + "s)");
     cancelTailTimer();

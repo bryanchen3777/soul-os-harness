@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import ssl
 import sys
 import threading
@@ -1174,7 +1175,8 @@ class TestEnvConfig:
         from clients.voice_companion.web_ui import HTML_PAGE
         assert "function ensurePlayback()" in HTML_PAGE
         assert "if (audioCtx) { ensureAudioResume(); return; }" in HTML_PAGE  # 冪等守衛
-        assert 'if (s === "SPEAKING") { ensurePlayback(); }' in HTML_PAGE    # 收到 SPEAKING 即建播放
+        assert re.search(r'if \(s === "SPEAKING"\) \{[\s\S]{0,200}?ensurePlayback\(\);', HTML_PAGE), \
+            "SPEAKING 分支內必須呼叫 ensurePlayback（收到 SPEAKING 即建播放）"
         assert "ensurePlayback();" in HTML_PAGE                               # 手勢/送文字/binary 皆觸發
 
     def test_llm_stream_sse_utf8_decode(self, monkeypatch):
