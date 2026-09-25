@@ -510,6 +510,62 @@ class MemoryMiddleware:
                         f"[MemoryMiddleware] [SAGE-METRICS] 計數記錄失敗: "
                         f"{_metrics_err}"
                     )
+
+                # SAGE-INTIMACY-1B (2026-09-25): 質量加權親密度結算
+                # （回合結束、SAGE 沉澱後）。獨立 try/except：結算失敗絕不
+                # 中斷回合（fire-and-forget 維持）。
+                try:
+                    if not agent_id.startswith("agent_"):
+                        # C3 守衛：unknown:<source> fallback 是 UPSERT，
+                        # 會建出垃圾 row 且永不 fail。只跳過 intimacy 區塊，
+                        # 不影響 post_reply_commit / shadow observe。
+                        logger.warning(
+                            f"[SAGE-INTIMACY-1B] skip intimacy for non-agent id: "
+                            f"{agent_id!r}"
+                        )
+                    else:
+                        from src.agent.emotion import (
+                            emotion_engine,
+                            compute_effective_intimacy,
+                            calculate_intimacy_gain,
+                        )
+                        fact_count = (
+                            commit_result.get("fact_count", 0)
+                            if commit_result else 0
+                        )
+                        tagged_count = (
+                            commit_result.get("tagged_count", 0)
+                            if commit_result else 0
+                        )
+
+                        if tagged_count > 0:
+                            quality_multiplier = 2.0
+                        elif fact_count > 0:
+                            quality_multiplier = 1.5
+                        else:
+                            quality_multiplier = 1.0
+
+                        base_intimacy = self._get_base_intimacy(agent_id)
+                        current_delta = emotion_engine.get_delta(agent_id)
+                        effective = compute_effective_intimacy(
+                            base_intimacy, current_delta
+                        )
+
+                        base_step = 0.5 * quality_multiplier
+                        gain = calculate_intimacy_gain(
+                            effective, base_step=base_step
+                        )
+                        emotion_engine.update_delta(agent_id, gain)
+
+                        logger.info(
+                            "[INTIMACY-GROWTH] agent=%s q_mult=%.1f gain=%.4f "
+                            "effective=%.2f",
+                            agent_id, quality_multiplier, gain, effective,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"[SAGE-INTIMACY-1B] 親密度結算失敗（不中斷）: {e}"
+                    )
             except Exception as _commit_err:
                 logger.warning(
                     f"[MemoryMiddleware] post_reply_commit 失敗: {_commit_err}"
@@ -533,6 +589,31 @@ class MemoryMiddleware:
 
         # KI-007: fire-and-forget → 受管任務（保存強引用 + done 回調捕獲異常）
         create_managed_task(_commit_async())
+
+    def _get_base_intimacy(self, agent_id: str) -> float:
+        """SAGE-INTIMACY-1B: 讀取 agent 的 config 基礎親密度（lazy + 快取）。
+
+        權威樣板：src/soul/scheduler.py:1344-1366（已運行、逐字對齊）。
+        實際 config 路徑：configs.loader.load_config() → top-level "agents"
+        (list) → 每項 "id" / "intimacy_level"。
+        fail-safe：任何例外一律回 50.0，絕不中斷回合。
+        """
+        if not hasattr(self, "_base_intimacy_cache"):
+            self._base_intimacy_cache: Dict[str, float] = {}
+            try:
+                from configs.loader import load_config
+                cfg = load_config()
+                for agent_cfg in cfg.get("agents", []):
+                    aid = agent_cfg.get("id")
+                    if aid:
+                        self._base_intimacy_cache[aid] = float(
+                            agent_cfg.get("intimacy_level", 50)
+                        )
+            except Exception as e:
+                logger.warning(
+                    f"[SAGE-INTIMACY-1B] 讀 config intimacy 失敗: {e}"
+                )
+        return self._base_intimacy_cache.get(agent_id, 50.0)
 
     # ───────────────────────────────────────────────────────────
     # β2.1 (Bry 拍板 2026-08-02 21:48): 事件背景生成
