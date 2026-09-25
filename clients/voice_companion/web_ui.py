@@ -915,7 +915,10 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       // 目前沿用既有 idle mp4；有真實素材時只換 url。loop:true = 氛圍態、非一次性。
       happy:{ url:'/static/avatars/rem.mp4',     loop:true, fallbackToIdle:true },
       concerned:{ url:'/static/avatars/rem.mp4', loop:true, fallbackToIdle:true },
-      cold:{ url:'/static/avatars/rem.mp4',      loop:true, fallbackToIdle:true }
+      cold:{ url:'/static/avatars/rem.mp4',      loop:true, fallbackToIdle:true },
+      // VC-AVATAR-6：複合情緒底色（完全期）新增狀態；同為接線驗證，沿用既有 idle mp4，氛圍態 loop。
+      blush:{ url:'/static/avatars/rem.mp4',     loop:true, fallbackToIdle:true },
+      pout:{ url:'/static/avatars/rem.mp4',      loop:true, fallbackToIdle:true }
     } },
     akane: { id:'akane', name:'黑川茜',  idle:'/static/avatars/akane.mp4', states:{
       idle:{ url:'/static/avatars/akane.mp4', loop:true, fallbackToIdle:true },
@@ -923,7 +926,10 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       // VC-AVATAR-5：情緒底色狀態（沿用既有 idle mp4，氛圍態 loop）
       happy:{ url:'/static/avatars/akane.mp4',     loop:true, fallbackToIdle:true },
       concerned:{ url:'/static/avatars/akane.mp4', loop:true, fallbackToIdle:true },
-      cold:{ url:'/static/avatars/akane.mp4',      loop:true, fallbackToIdle:true }
+      cold:{ url:'/static/avatars/akane.mp4',      loop:true, fallbackToIdle:true },
+      // VC-AVATAR-6：複合情緒底色（完全期）新增狀態；沿用既有 idle mp4，氛圍態 loop。
+      blush:{ url:'/static/avatars/akane.mp4',     loop:true, fallbackToIdle:true },
+      pout:{ url:'/static/avatars/akane.mp4',      loop:true, fallbackToIdle:true }
     } },
     mai:   { id:'mai',   name:'櫻島麻衣', idle:'/static/avatars/mai.mp4',   states:{
       idle:{ url:'/static/avatars/mai.mp4',   loop:true, fallbackToIdle:true },
@@ -931,7 +937,10 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       // VC-AVATAR-5：情緒底色狀態（沿用既有 idle mp4，氛圍態 loop）
       happy:{ url:'/static/avatars/mai.mp4',     loop:true, fallbackToIdle:true },
       concerned:{ url:'/static/avatars/mai.mp4', loop:true, fallbackToIdle:true },
-      cold:{ url:'/static/avatars/mai.mp4',      loop:true, fallbackToIdle:true }
+      cold:{ url:'/static/avatars/mai.mp4',      loop:true, fallbackToIdle:true },
+      // VC-AVATAR-6：複合情緒底色（完全期）新增狀態；沿用既有 idle mp4，氛圍態 loop。
+      blush:{ url:'/static/avatars/mai.mp4',     loop:true, fallbackToIdle:true },
+      pout:{ url:'/static/avatars/mai.mp4',      loop:true, fallbackToIdle:true }
     } }
   };
   var DEFAULT_AVATAR_ID = 'akane';

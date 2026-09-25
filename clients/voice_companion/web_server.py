@@ -120,6 +120,79 @@ def map_mood_to_avatar_state(mood: float) -> str:
     return "idle"
 
 
+# VC-AVATAR-6：親密度四階段 —— 邊界刻意對齊 src/llm/proxy.py L2093 的 soul prompt 權威定義
+# (0-25 防衛期 / 26-50 建立期 / 51-75 接受期 / 76-100 完全期)，維持單一事實來源。
+INTIMACY_TIER_NAMES = ("defensive", "building", "accepting", "complete")
+
+
+def _intimacy_tier(intimacy: float) -> str:
+    """把 intimacy (0-100) 分為四階段代號。"""
+    if intimacy >= 76:
+        return "complete"
+    if intimacy >= 51:
+        return "accepting"
+    if intimacy >= 26:
+        return "building"
+    return "defensive"
+
+
+def map_emotion_to_avatar_state(mood: float, intimacy: float = 50.0) -> str:
+    """VC-AVATAR-6：Mood x Intimacy 二維複合映射。
+
+    親密度分期邊界沿用 proxy.py 的權威四階段；mood 分段沿用
+    EmotionEngine.mood_description() 的四段 (>0.5 / 0~0.5 / -0.5~0 / <-0.5)。
+    """
+    tier = _intimacy_tier(intimacy)
+
+    # (mood_band, tier) -> state ；mood_band: 0=high(>0.5) 1=base(0~0.5) 2=low(-0.5~0) 3=verylow(<-0.5)
+    if mood > 0.5:
+        band = 0
+    elif mood >= 0.0:
+        band = 1
+    elif mood >= -0.5:
+        band = 2
+    else:
+        band = 3
+
+    return {
+        ("complete",  0): "blush",
+        ("complete",  1): "happy",
+        ("complete",  2): "pout",
+        ("complete",  3): "concerned",
+        ("accepting", 0): "happy",
+        ("accepting", 1): "idle",
+        ("accepting", 2): "concerned",
+        ("accepting", 3): "cold",
+        ("building",  0): "happy",
+        ("building",  1): "idle",
+        ("building",  2): "concerned",
+        ("building",  3): "cold",
+        # defensive：一律壓抑外顯 —— 正向也只回 idle（保持禮貌），負向一律 cold
+        ("defensive", 0): "idle",
+        ("defensive", 1): "idle",
+        ("defensive", 2): "cold",
+        ("defensive", 3): "cold",
+    }[(tier, band)]
+
+
+def resolve_base_intimacy(agent_id: str) -> float:
+    """VC-AVATAR-6：讀 config 的 intimacy_level（角色天生基礎親密度）。
+
+    不用 emotion_engine.get() 的 intimacy：它隨互動累積、會漂到 100
+    （scheduler._get_base_intimacy() docstring 已明載此理由）。
+    fail-safe：任何例外或查不到 -> 50.0（建立期）。
+    """
+    try:
+        from configs.loader import load_config
+        cfg = load_config()
+        for agent_cfg in cfg.get("agents", []) or []:
+            if agent_cfg.get("id") == agent_id:
+                return float(agent_cfg.get("intimacy_level", 50) or 50)
+    except Exception as e:
+        log.warning("[AVATAR] base intimacy lookup failed: %s", e)
+    return 50.0
+
+
 # ─────────────────────────────────────────────────────────────
 # VC-LOG-1：檔案日誌（消除 pythonw 生產環境的觀測盲區）
 # ─────────────────────────────────────────────────────────────
@@ -799,13 +872,15 @@ class WebSession:
                     companion_id = (self._config.get("companion") or {}).get("id", "agent_akane")
                     role_name = companion_id.replace("agent_", "")
                     await self._send_json({"type": "transcript", "role": role_name, "text": reply})
-                    # VC-AVATAR-5：回合結束派發情緒底色（speaking 由客戶端生命週期自行處理，此處不重複送）
+                    # VC-AVATAR-6：回合結束派發 Mood x Intimacy 複合情緒底色
+                    # （speaking 由客戶端生命週期自行處理，此處不重複送）
                     try:
                         from src.agent.emotion import emotion_engine
                         mood, _ = emotion_engine.get(self._agent_id)
+                        intimacy = resolve_base_intimacy(self._agent_id)
                         await self._send_json({
                             "type": "avatar_action",
-                            "state": map_mood_to_avatar_state(mood),
+                            "state": map_emotion_to_avatar_state(mood, intimacy),
                         })
                     except Exception as e:  # 情緒引擎異常絕不可中斷 WebSocket 連線
                         log.warning("[AVATAR] emotion dispatch failed: %s", e)

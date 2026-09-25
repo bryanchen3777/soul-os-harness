@@ -1550,7 +1550,10 @@ class TestWebServer:
                 while len(events) < 4:
                     msg = await ws.receive(timeout=3)
                     if msg.type == WSMsgType.TEXT:
-                        events.append(json.loads(msg.data))
+                        ev = json.loads(msg.data)
+                        # VC-AVATAR-6：本測試斷言 error 事件（402 透通），故此迴圈需收 error。
+                        if ev.get("type") in ("state", "transcript", "error"):
+                            events.append(ev)
                     elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
                         break
                 await ws.close()
@@ -1590,7 +1593,9 @@ class TestWebServer:
                 while len(events) < 3:
                     msg = await ws.receive(timeout=3)
                     if msg.type == WSMsgType.TEXT:
-                        events.append(json.loads(msg.data))
+                        ev = json.loads(msg.data)
+                        if ev.get("type") in ("state", "transcript"):
+                            events.append(ev)
                     elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
                         break
                 await ws.close()
@@ -1716,7 +1721,9 @@ class TestHttpsAndDiagnostics:
             while len(events) < 6:
                 msg = await ws.receive(timeout=3)
                 if msg.type == WSMsgType.TEXT:
-                    events.append(json.loads(msg.data))
+                    ev = json.loads(msg.data)
+                    if ev.get("type") in ("state", "transcript"):
+                        events.append(ev)
                 elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
                     break
             await ws.send_json({"type": "interrupt"})
