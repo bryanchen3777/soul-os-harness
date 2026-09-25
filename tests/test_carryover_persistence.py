@@ -1,25 +1,44 @@
 """
 test_carryover_persistence.py
-Soul OS — Phase 4 carryover 持久化測試
+Soul OS — Phase 4 carryover 持久化測試（標準 pytest 測試）
 
 兩個場景：
   A：直接發 SESSION_END → Agent._on_session_end() 寫入 carryover.json
-      → 重啟後 apply_decay() → 值變小（約 -12%）
+      → apply_decay() → 值變小（約 -12%）
   B：elapsed < 30min → 不觸發 SESSION_END
 
 注意：SESSION_END 是 HeartbeatEngine._loop() 在 elapsed_mins >= 30 時自動廣播的，
 不需要也不應透過外部 SYSTEM_TICK 模擬（那個 tick 是給 Agent 用的，不是觸發 SESSION_END 的）。
 
-執行：
-  python tests/test_carryover_persistence.py
+本檔為**標準 pytest 測試**（`pytest tests/test_carryover_persistence.py`），
+不再是可手動執行的腳本；`main()` 與 `__main__` 入口已移除。
+
+TEST-INFRA-1 隔離防護（2026-09-25）
+-----------------------------------
+重構前本檔是手動腳本，含三處**字面相對生產路徑**並以 `shutil.rmtree` 刪除
+`data/agents/agent_yua`。在 pytest 下它收集 0 個測試（`rmtree` 永不觸發），
+但**手動執行時會真的刪掉生產目錄**。本檔已：
+
+  1. **刪除 `rmtree` 區塊**（tmp 每次全新，清除動作既多餘又是未來誤用的種子）。
+  2. **移除全部字面相對路徑**：改由 `data_root()` 推導。
+  3. **不傳 `base_path`** 給 `save()/load()`——`src/temporal/models.py`
+     的原生預設即走 `data_root() / "agents"`，直接尊重隔離機制。
+  4. 新增 `_assert_isolated()` 並在**每個測試第一行**呼叫：斷言
+     `data_root()` 不等於生產 `data/`，讓「隔離失效」立刻紅燈而非靜默污染。
+
+隔離由 `tests/conftest.py` 的 autouse fixture 提供（把 `SOUL_OS_DATA_DIR`
+指向 per-test tmp 並呼叫 `reset_data_root()`）。
+
+async 慣例：沿用 `@pytest.mark.asyncio`（`pytest-asyncio` 已安裝；
+`pytest.ini` 無 `asyncio_mode = auto`，故 strict 模式下必須顯式標記）。
 """
 import asyncio
 import logging
-import shutil
 import sys
-import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -27,6 +46,7 @@ from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
 from src.agent.consciousness import AgentYua
 from src.temporal.models import EmotionalCarryover
+from src.paths import data_root
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,12 +55,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger("soul_os.test.carryover")
 
+AGENT_ID = "agent_yua"
+
+
+def _assert_isolated() -> None:
+    """TEST-INFRA-1 防護：斷言 data_root() 不在生產路徑。
+
+    這是最後一道防線——若 conftest 的隔離 fixture 失效（或本檔被以
+    `SOUL_OS_DATA_DIR` 未設的方式執行），測試必須立刻失敗，而不是
+    靜默地把資料寫進／讀自生產 `data/`。
+    """
+    root = data_root().resolve()
+    prod = (Path(__file__).resolve().parent.parent / "data").resolve()
+    assert root != prod, f"data_root() 指向生產路徑 {prod}，測試未被隔離"
+
 
 # ─────────────────────────────────────────────
 # 場景 A：直接發 SESSION_END → carryover 寫入 → apply_decay
 # ─────────────────────────────────────────────
 
-async def scenario_session_end_writes_carryover() -> None:
+@pytest.mark.asyncio
+async def test_session_end_writes_carryover() -> None:
+    _assert_isolated()
+
     logger.info("\n" + "=" * 60)
     logger.info("  場景 A：SESSION_END → carryover 寫入 → apply_decay")
     logger.info("=" * 60)
@@ -48,14 +85,7 @@ async def scenario_session_end_writes_carryover() -> None:
     bus = SoulEventBus()
     await bus.start()
 
-    # carryover.json 預設寫入 data/agents/（EmotionalCarryover.save 的 default）
-    # 先清乾淨避免殘留
-    import shutil
-    carryover_dir = Path("data/agents/agent_yua")
-    if carryover_dir.exists():
-        shutil.rmtree(carryover_dir)
-
-    yua = AgentYua(agent_id="agent_yua", bus=bus)
+    yua = AgentYua(agent_id=AGENT_ID, bus=bus)
     yua.state.intimacy_level = 80
     yua.state.dependency = 0.7
     yua.state.mood = "lonely"
@@ -75,15 +105,15 @@ async def scenario_session_end_writes_carryover() -> None:
     await bus.publish(session_end)
     await asyncio.sleep(0.3)
 
-    # ── 斷言 A1：carryover.json 存在（寫入 data/agents/agent_yua/）──
-    carryover_path = Path("data/agents/agent_yua/carryover.json")
+    # ── 斷言 A1：carryover.json 存在（寫入 data_root()/agents/agent_yua/）──
+    carryover_path = data_root() / "agents" / AGENT_ID / "carryover.json"
     assert carryover_path.exists(), (
         f"carryover.json 不存在：{carryover_path}"
     )
     logger.info(f"  ✓ A1：carryover.json 存在 → {carryover_path}")
 
-    # ── 斷言 A2：carryover 值有意義 ──
-    raw = EmotionalCarryover.load("agent_yua", "data/agents")
+    # ── 斷言 A2：carryover 值有意義（不傳 base_path ⇒ 走 data_root() 預設）──
+    raw = EmotionalCarryover.load(AGENT_ID)
     assert raw.attachment_heat > 0, (
         f"attachment_heat 應 > 0，實際={raw.attachment_heat}"
     )
@@ -119,7 +149,10 @@ async def scenario_session_end_writes_carryover() -> None:
 # 場景 B：正常時段 elapsed=10m → _session_ended 保持 False
 # ─────────────────────────────────────────────
 
-async def scenario_short_elapsed_no_session_end() -> None:
+@pytest.mark.asyncio
+async def test_short_elapsed_no_session_end() -> None:
+    _assert_isolated()
+
     from src.heartbeat.engine import HeartbeatEngine  # import moved here to avoid UnboundLocalError
 
     logger.info("\n" + "=" * 60)
@@ -145,30 +178,3 @@ async def scenario_short_elapsed_no_session_end() -> None:
     logger.info(f"  ✓ B3：elapsed < 30min 不會廣播 SESSION_END（閾值在 HeartbeatEngine._loop 內）")
 
     await bus.stop()
-
-
-# ─────────────────────────────────────────────
-# 主程序
-# ─────────────────────────────────────────────
-
-async def main() -> None:
-    logger.info("=" * 60)
-    logger.info("  Soul OS — Phase 4 Carryover 持久化測試")
-    logger.info("=" * 60)
-
-    await scenario_session_end_writes_carryover()
-    await scenario_short_elapsed_no_session_end()
-
-    logger.info("\n" + "=" * 60)
-    logger.info("  ✓ Carryover 持久化測試全部通過")
-    logger.info("    ✅ A1：SESSION_END 觸發 → carryover.json 寫入")
-    logger.info("    ✅ A2：carryover 值有意義（heat > 0, afterglow > 0）")
-    logger.info("    ✅ A3：apply_decay(0.5h) → 值變小 12%")
-    logger.info("    ✅ B1：SESSION_END_THRESHOLD_MINS = 30.0")
-    logger.info("    ✅ B2：_session_ended 初始值 = False")
-    logger.info("    ✅ B3：elapsed < 30min 不會觸發（閾值在 _loop 內）")
-    logger.info("=" * 60)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
