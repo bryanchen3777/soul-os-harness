@@ -599,7 +599,7 @@ class SAGELiteProvider:
         # - proactive_dm 路徑 (M5.4-6.2): canonical event_id 從 executor 傳來
         # - USER_MESSAGE / heartbeat / 等路徑: None → MemoryWriter fallback synthetic UUID
         inner_life_event_id: Optional[str] = None,
-    ) -> None:
+    ) -> dict:
         """
         Async 寫入（內部已用 run_in_executor，不會阻塞 event loop）。
 
@@ -611,6 +611,11 @@ class SAGELiteProvider:
         理由: v1 mirror 是結構化備忘, 跟 diary (graph.sqlite) 是不同概念, Ram 不寫 diary
         仍可以有 v1 facts。
         """
+        # SAGE-INTIMACY-1A (C2 修正): 前置初始化 — 當 fact_ids 為空（純閒聊，最常見情境）
+        # 時 `if fact_ids:` 分支不進, tagged_entities 若在此才首次賦值會 NameError。
+        # 同時讓 no-diary 分支與主路徑共用同一組回傳變數。
+        fact_ids: list[str] = []
+        tagged_entities: list[str] = []
         # Phase 7 + Bry 拍板 Stage 2.1: NO_DIARY_AGENTS 跳 graph 寫入, 但仍 mirror
         if self.profile_id in NO_DIARY_AGENTS:
             logger.debug(
@@ -629,7 +634,13 @@ class SAGELiteProvider:
                 last_user_msg, agent_reply, session_id,
             )
             self._cache.invalidate()
-            return
+            # SAGE-INTIMACY-1A: 統一回傳結構化計數（no-diary 分支回 dict，不再回 None）
+            return {
+                "fact_count": len(fact_ids),
+                "tagged_count": len(tagged_entities),
+                "fact_ids": fact_ids,
+                "tagged_entities": tagged_entities,
+            }
         loop = asyncio.get_event_loop()
         # MEM-WIRING-1 (P0 BUGFIX): run_in_executor 只收位置參數, 直接位置傳遞會把
         # source_pair（第 5 位置參數）錯綁成 write_turn 的第 4 位置參數 skip_graph；
@@ -686,6 +697,13 @@ class SAGELiteProvider:
                 None, self._evolution.auto_resolve_conflicts
             )
         self._turn_count += 1
+        # SAGE-INTIMACY-1A: 統一回傳結構化計數
+        return {
+            "fact_count": len(fact_ids),
+            "tagged_count": len(tagged_entities),
+            "fact_ids": fact_ids,
+            "tagged_entities": tagged_entities,
+        }
 
     # ── EH-3.1: Write-Side Assimilation（寫側內化閉環, Fact-Level）────
 

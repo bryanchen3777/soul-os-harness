@@ -486,7 +486,7 @@ class MemoryMiddleware:
         #       只是不再擋住主路徑。例外隔離: task 內 try/except, 失敗只 log。
         async def _commit_async() -> None:
             try:
-                await provider.post_reply_commit(
+                commit_result = await provider.post_reply_commit(
                     session_id, user_text, agent_text,
                     source_pair=source_pair,
                     inner_life_event_id=canonical_event_id,
@@ -495,6 +495,21 @@ class MemoryMiddleware:
                     f"[MemoryMiddleware] 寫入 graph | agent={agent_id} | "
                     f"user_len={len(user_text)} | agent_len={len(agent_text)}"
                 )
+                # SAGE-INTIMACY-1A: 非同步觀測管線 — 記錄 SAGE 沉澱計數。
+                # 獨立 try/except：計數記錄異常絕不影響回覆流程（fire-and-forget 維持）。
+                try:
+                    if commit_result:
+                        logger.info(
+                            "[SAGE-METRICS] session=%s facts=%d tagged=%d",
+                            session_id,
+                            commit_result.get("fact_count", 0),
+                            commit_result.get("tagged_count", 0),
+                        )
+                except Exception as _metrics_err:
+                    logger.warning(
+                        f"[MemoryMiddleware] [SAGE-METRICS] 計數記錄失敗: "
+                        f"{_metrics_err}"
+                    )
             except Exception as _commit_err:
                 logger.warning(
                     f"[MemoryMiddleware] post_reply_commit 失敗: {_commit_err}"
