@@ -103,16 +103,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   }
   #avatar-video-a { opacity: 1; }
   #avatar-video-b { opacity: 0; }
-  #avatarControls {
-    width: min(640px, 96vw); display: flex; flex-wrap: wrap; gap: 8px;
-    align-items: center; justify-content: center;
-  }
-  #avatarControls button {
-    background: #24243a; color: #e8e6f0; border: 1px solid #3a3a56;
-    border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer;
-  }
-  #avatarControls button:hover { background: #2f2f4a; border-color: #4d4d70; }
-  #avatarControls .avatarLabel { font-size: 12px; color: #8a84a0; margin-right: 2px; }
 </style>
 </head>
 <body>
@@ -124,13 +114,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   <div id="avatarStage" data-initial-avatar="__INITIAL_AVATAR__">
     <video id="avatar-video-a" muted playsinline autoplay preload="auto"></video>
     <video id="avatar-video-b" muted playsinline autoplay preload="auto"></video>
-  </div>
-  <div id="avatarControls">
-    <span class="avatarLabel">Avatar</span>
-    <button id="avatarBtnRem"   type="button">雷姆</button>
-    <button id="avatarBtnAkane" type="button">黑川茜</button>
-    <button id="avatarBtnMai"   type="button">櫻島麻衣</button>
-    <button id="avatarBtnIdle"  type="button">回到待機</button>
   </div>
   <div id="statusBar">
     <span id="statusDot" class="dot idle"></span>
@@ -1026,15 +1009,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     bootstrap();
   }
 
-  // 3f. 手動驗收控制列
-  function bind(id, fn) {
-    var el = document.getElementById(id);
-    if (el) el.addEventListener('click', fn);
-  }
-  bind('avatarBtnRem',   function () { window.AvatarPlayer.setAvatar('rem'); });
-  bind('avatarBtnAkane', function () { window.AvatarPlayer.setAvatar('akane'); });
-  bind('avatarBtnMai',   function () { window.AvatarPlayer.setAvatar('mai'); });
-  bind('avatarBtnIdle',  function () { window.AvatarPlayer.resetToIdle(); });
 })();
 </script>
 </body>
