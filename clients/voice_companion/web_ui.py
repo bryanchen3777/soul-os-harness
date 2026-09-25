@@ -88,17 +88,17 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   }
   .hint { font-size: 12px; color: #8a84a0; margin-top: -8px; }
   /* VC-AVATAR-1：Avatar 影片舞台。雙 <video> 疊放，靠 opacity 交叉淡入。
-     底色純深色，讓 contain 產生的 letterbox 看起來是刻意的。 */
+     VC-AVATAR-2：舞台為 1:1 純白，與三支方形白底影片完全貼合，消除 letterbox 黑邊。 */
   #avatarStage {
     position: relative; width: min(640px, 96vw);
-    aspect-ratio: 9 / 16; max-height: 62vh;
-    background: #0b0b12; border: 1px solid #2a2a3c; border-radius: 12px;
+    aspect-ratio: 1 / 1; max-height: 62vh;
+    background: #ffffff; border: 1px solid #2a2a3c; border-radius: 12px;
     overflow: hidden; display: flex; align-items: center; justify-content: center;
   }
   #avatarStage video {
     position: absolute; inset: 0; width: 100%; height: 100%;
     object-fit: contain;            /* 絕不拉伸；三支來源長寬比不同也能共存 */
-    background: #0b0b12;
+    background: #ffffff;
     transition: opacity 180ms ease-in-out;
   }
   #avatar-video-a { opacity: 1; }
