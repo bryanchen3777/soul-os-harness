@@ -910,15 +910,28 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       idle:{ url:'/static/avatars/rem.mp4',   loop:true, fallbackToIdle:true },
       // VC-AVATAR-3：speaking 目前指向既有 idle 檔（磁碟上僅 rem/akane/mai.mp4 三支）。
       // 這是「接線驗證」狀態：未來有真實素材時只需換 url，不動其他邏輯。
-      speaking:{ url:'/static/avatars/rem.mp4', loop:false, fallbackToIdle:true }
+      speaking:{ url:'/static/avatars/rem.mp4', loop:false, fallbackToIdle:true },
+      // VC-AVATAR-5：情緒底色狀態（由伺服器 avatar_action 派發）。同樣是接線驗證，
+      // 目前沿用既有 idle mp4；有真實素材時只換 url。loop:true = 氛圍態、非一次性。
+      happy:{ url:'/static/avatars/rem.mp4',     loop:true, fallbackToIdle:true },
+      concerned:{ url:'/static/avatars/rem.mp4', loop:true, fallbackToIdle:true },
+      cold:{ url:'/static/avatars/rem.mp4',      loop:true, fallbackToIdle:true }
     } },
     akane: { id:'akane', name:'黑川茜',  idle:'/static/avatars/akane.mp4', states:{
       idle:{ url:'/static/avatars/akane.mp4', loop:true, fallbackToIdle:true },
-      speaking:{ url:'/static/avatars/akane.mp4', loop:false, fallbackToIdle:true }
+      speaking:{ url:'/static/avatars/akane.mp4', loop:false, fallbackToIdle:true },
+      // VC-AVATAR-5：情緒底色狀態（沿用既有 idle mp4，氛圍態 loop）
+      happy:{ url:'/static/avatars/akane.mp4',     loop:true, fallbackToIdle:true },
+      concerned:{ url:'/static/avatars/akane.mp4', loop:true, fallbackToIdle:true },
+      cold:{ url:'/static/avatars/akane.mp4',      loop:true, fallbackToIdle:true }
     } },
     mai:   { id:'mai',   name:'櫻島麻衣', idle:'/static/avatars/mai.mp4',   states:{
       idle:{ url:'/static/avatars/mai.mp4',   loop:true, fallbackToIdle:true },
-      speaking:{ url:'/static/avatars/mai.mp4', loop:false, fallbackToIdle:true }
+      speaking:{ url:'/static/avatars/mai.mp4', loop:false, fallbackToIdle:true },
+      // VC-AVATAR-5：情緒底色狀態（沿用既有 idle mp4，氛圍態 loop）
+      happy:{ url:'/static/avatars/mai.mp4',     loop:true, fallbackToIdle:true },
+      concerned:{ url:'/static/avatars/mai.mp4', loop:true, fallbackToIdle:true },
+      cold:{ url:'/static/avatars/mai.mp4',      loop:true, fallbackToIdle:true }
     } }
   };
   var DEFAULT_AVATAR_ID = 'akane';

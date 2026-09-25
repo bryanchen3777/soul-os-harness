@@ -105,6 +105,21 @@ def load_config(path: Optional[str] = None) -> dict:
         return json.load(f)
 
 
+def map_mood_to_avatar_state(mood: float) -> str:
+    """VC-AVATAR-5：把 EmotionEngine 的 mood 數值映射為 avatar 離散狀態。
+
+    閾值刻意與 src/agent/emotion.py 的 EmotionEngine.mood_description() 完全一致
+    （>0.5 很好 / 0~0.5 正常 / -0.5~0 有點悶 / <-0.5 很差），維持情緒語意的單一事實來源。
+    """
+    if mood > 0.5:
+        return "happy"
+    if mood < -0.5:
+        return "cold"
+    if mood < 0.0:
+        return "concerned"
+    return "idle"
+
+
 # ─────────────────────────────────────────────────────────────
 # VC-LOG-1：檔案日誌（消除 pythonw 生產環境的觀測盲區）
 # ─────────────────────────────────────────────────────────────
@@ -784,6 +799,16 @@ class WebSession:
                     companion_id = (self._config.get("companion") or {}).get("id", "agent_akane")
                     role_name = companion_id.replace("agent_", "")
                     await self._send_json({"type": "transcript", "role": role_name, "text": reply})
+                    # VC-AVATAR-5：回合結束派發情緒底色（speaking 由客戶端生命週期自行處理，此處不重複送）
+                    try:
+                        from src.agent.emotion import emotion_engine
+                        mood, _ = emotion_engine.get(self._agent_id)
+                        await self._send_json({
+                            "type": "avatar_action",
+                            "state": map_mood_to_avatar_state(mood),
+                        })
+                    except Exception as e:  # 情緒引擎異常絕不可中斷 WebSocket 連線
+                        log.warning("[AVATAR] emotion dispatch failed: %s", e)
                     if task_gen == self._generation:  # 本世代正常結束 → 寫入對話記憶（被 barge-in 打斷的半截回覆不入記憶）
                         self._history.append({"role": "user", "content": user_text})
                         self._history.append({"role": "assistant", "content": reply})

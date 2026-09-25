@@ -1330,11 +1330,15 @@ class TestWebServer:
             try:
                 ws = await client.ws_connect("/ws")
                 await ws.send_json({"type": "text", "text": "今天好累"})
+                # VC-AVATAR-5：avatar_action 是新增的下行訊息型別，與本測試要驗的行為無關；
+                # 只收 state/transcript 兩類，避免斷言被「訊息總數」綁死。
                 events = []
                 while len(events) < 4:
                     msg = await ws.receive(timeout=3)
                     if msg.type == WSMsgType.TEXT:
-                        events.append(json.loads(msg.data))
+                        ev = json.loads(msg.data)
+                        if ev.get("type") in ("state", "transcript"):
+                            events.append(ev)
                     elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
                         break
                 await ws.close()
@@ -1460,11 +1464,14 @@ class TestWebServer:
                 await ws.send_bytes(pcm)
                 await ws.send_bytes(pcm)
                 await ws.send_json({"type": "ptt_stop"})
+                # VC-AVATAR-5：同上，只收 state/transcript，避免訊息總數綁死斷言。
                 events = []
                 while len(events) < 6:
                     msg = await ws.receive(timeout=3)
                     if msg.type == WSMsgType.TEXT:
-                        events.append(json.loads(msg.data))
+                        ev = json.loads(msg.data)
+                        if ev.get("type") in ("state", "transcript"):
+                            events.append(ev)
                     elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
                         break
                 await ws.close()
