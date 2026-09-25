@@ -87,11 +87,51 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     transition: width 0.06s linear;
   }
   .hint { font-size: 12px; color: #8a84a0; margin-top: -8px; }
+  /* VC-AVATAR-1：Avatar 影片舞台。雙 <video> 疊放，靠 opacity 交叉淡入。
+     底色純深色，讓 contain 產生的 letterbox 看起來是刻意的。 */
+  #avatarStage {
+    position: relative; width: min(640px, 96vw);
+    aspect-ratio: 9 / 16; max-height: 62vh;
+    background: #0b0b12; border: 1px solid #2a2a3c; border-radius: 12px;
+    overflow: hidden; display: flex; align-items: center; justify-content: center;
+  }
+  #avatarStage video {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: contain;            /* 絕不拉伸；三支來源長寬比不同也能共存 */
+    background: #0b0b12;
+    transition: opacity 180ms ease-in-out;
+  }
+  #avatar-video-a { opacity: 1; }
+  #avatar-video-b { opacity: 0; }
+  #avatarControls {
+    width: min(640px, 96vw); display: flex; flex-wrap: wrap; gap: 8px;
+    align-items: center; justify-content: center;
+  }
+  #avatarControls button {
+    background: #24243a; color: #e8e6f0; border: 1px solid #3a3a56;
+    border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer;
+  }
+  #avatarControls button:hover { background: #2f2f4a; border-color: #4d4d70; }
+  #avatarControls .avatarLabel { font-size: 12px; color: #8a84a0; margin-right: 2px; }
 </style>
 </head>
 <body>
   <!-- 提示：若長時間無反應，請檢查 Fish API 額度（402：Insufficient API credit）。ASR 與 TTS 共用同一筆額度 -->
   <header>__COMPANION_DISPLAY_NAME__<small>Web 語音伴侶 · VC-2.4</small></header>
+  <!-- VC-AVATAR-1：Avatar 待機影片舞台（雙緩衝交叉淡入）。
+       兩個 <video> 同層絕對定位；切換狀態時先讓待播的那顆 opacity:0 播起來，
+       等到 playing 事件才交叉淡入，避免黑幀。 -->
+  <div id="avatarStage" data-initial-avatar="__INITIAL_AVATAR__">
+    <video id="avatar-video-a" muted playsinline autoplay preload="auto"></video>
+    <video id="avatar-video-b" muted playsinline autoplay preload="auto"></video>
+  </div>
+  <div id="avatarControls">
+    <span class="avatarLabel">Avatar</span>
+    <button id="avatarBtnRem"   type="button">雷姆</button>
+    <button id="avatarBtnAkane" type="button">黑川茜</button>
+    <button id="avatarBtnMai"   type="button">櫻島麻衣</button>
+    <button id="avatarBtnIdle"  type="button">回到待機</button>
+  </div>
   <div id="statusBar">
     <span id="statusDot" class="dot idle"></span>
     <span id="statusText">🟢 聆聽</span>
@@ -801,24 +841,242 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   }
 })();
 </script>
+<script>
+/* ─────────────────────────────────────────────────────────────
+   VC-AVATAR-1：Avatar 影片狀態控制器（雙緩衝交叉淡入）
+   與上方語音邏輯完全獨立；只透過 window.AvatarPlayer 對外暴露，
+   供未來 WebSocket / LLM 情緒標籤整合。
+   ───────────────────────────────────────────────────────────── */
+(function () {
+  "use strict";
+
+  // 3a. Avatar registry
+  var AVATAR_REGISTRY = {
+    rem:   { id:'rem',   name:'雷姆',    idle:'/static/avatars/rem.mp4',   states:{ idle:{ url:'/static/avatars/rem.mp4',   loop:true, fallbackToIdle:true } } },
+    akane: { id:'akane', name:'黑川茜',  idle:'/static/avatars/akane.mp4', states:{ idle:{ url:'/static/avatars/akane.mp4', loop:true, fallbackToIdle:true } } },
+    mai:   { id:'mai',   name:'櫻島麻衣', idle:'/static/avatars/mai.mp4',   states:{ idle:{ url:'/static/avatars/mai.mp4',   loop:true, fallbackToIdle:true } } }
+  };
+  var DEFAULT_AVATAR_ID = 'akane';
+
+  var stage = document.getElementById('avatarStage');
+  var videoA = document.getElementById('avatar-video-a');
+  var videoB = document.getElementById('avatar-video-b');
+  var buffers = [videoA, videoB];
+
+  // 讀取伺服器端依 profile 推導出的初始 avatar（data- 屬性）
+  var initialAvatar = (stage && stage.getAttribute('data-initial-avatar')) || '';
+  if (!AVATAR_REGISTRY[initialAvatar]) initialAvatar = DEFAULT_AVATAR_ID;
+
+  var currentAvatar = initialAvatar;
+  var currentState = 'idle';
+  var activeIndex = 0;
+  var switchToken = 0;        // 單調遞增；競態守衛
+  var switchTimer = null;
+
+  function warn(msg) {
+    if (window.console && console.warn) console.warn('[AvatarPlayer] ' + msg);
+  }
+
+  function resolveState(avatarId, stateName) {
+    var av = AVATAR_REGISTRY[avatarId];
+    if (!av) return null;
+    var st = av.states[stateName];
+    if (!st) return null;
+    return st;
+  }
+
+  function clearOldBuffer(el) {
+    // 釋放已解碼緩衝：暫停 + 清 src（影片記憶體不回收會累積）
+    try {
+      el.pause();
+    } catch (e) { /* noop */ }
+    el.removeAttribute('src');
+    try {
+      el.load();
+    } catch (e) { /* noop */ }
+  }
+
+  // 3b. 雙緩衝切換 —— 核心機制
+  function switchTo(config, isOneShot) {
+    var outgoing = buffers[activeIndex];
+    var incoming = buffers[1 - activeIndex];
+    var myToken = ++switchToken;   // 先取號，非同步等待後比對
+
+    if (switchTimer) { clearTimeout(switchTimer); switchTimer = null; }
+
+    // 1. 對「非活動」那顆設定新 src / loop，並壓成 opacity:0
+    incoming.style.opacity = '0';
+    incoming.loop = !!config.loop;
+    incoming.src = config.url;
+
+    var crossed = false;
+
+    function onPlaying() {
+      incoming.removeEventListener('playing', onPlaying);
+      if (myToken !== switchToken) {
+        // 競態：後續的切換已接手，本次放棄（不碰 opacity / activeIndex）
+        return;
+      }
+      // 3. 新影片真的在播了，才交叉淡入
+      incoming.style.opacity = '1';
+      outgoing.style.opacity = '0';
+      // 4. 等轉場結束再回收舊緩衝
+      switchTimer = setTimeout(function () {
+        switchTimer = null;
+        if (myToken !== switchToken) return;
+        if (outgoing !== buffers[activeIndex]) return; // 保險
+        clearOldBuffer(outgoing);
+      }, 200);
+      // 5. 翻轉 activeIndex
+      activeIndex = 1 - activeIndex;
+      crossed = true;
+    }
+
+    incoming.addEventListener('playing', onPlaying);
+
+    var p = incoming.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(function () {
+        // 自動播放被拒或載入失敗：退回該 avatar 的 idle，絕不留黑畫面
+        if (myToken !== switchToken) return;
+        incoming.removeEventListener('playing', onPlaying);
+        if (isOneShot) {
+          resetToIdle();
+        } else if (config.url !== AVATAR_REGISTRY[currentAvatar].idle) {
+          warn('play() 失敗，退回 idle：' + config.url);
+          resetToIdle();
+        } else {
+          warn('play() 失敗（idle）：' + config.url);
+        }
+      });
+    }
+
+    // 3c. 一次性動畫：播完自動回待機
+    if (isOneShot) {
+      var onEnded = function () {
+        incoming.removeEventListener('ended', onEnded);
+        if (myToken !== switchToken) return;
+        resetToIdle();
+      };
+      incoming.addEventListener('ended', onEnded);
+    }
+
+    return crossed;
+  }
+
+  function resetToIdle() {
+    var av = AVATAR_REGISTRY[currentAvatar];
+    if (!av) return;
+    currentState = 'idle';
+    switchTo({ url: av.idle, loop: true }, false);
+  }
+
+  // 3d. 公開 API
+  window.AvatarPlayer = {
+    setAvatar: function (avatarId) {
+      var av = AVATAR_REGISTRY[avatarId];
+      if (!av) {
+        warn('未知 avatar：' + avatarId + '（保持現狀，套用預設）');
+        av = AVATAR_REGISTRY[DEFAULT_AVATAR_ID];
+        avatarId = DEFAULT_AVATAR_ID;
+      }
+      currentAvatar = avatarId;
+      currentState = 'idle';
+      switchTo({ url: av.idle, loop: true }, false);
+      return avatarId;
+    },
+
+    playState: function (stateName) {
+      var st = resolveState(currentAvatar, stateName);
+      if (!st) {
+        // fail closed：未知狀態只警告，繼續播 idle，畫面絕不空白
+        warn('未知狀態 "' + stateName + '"（avatar=' + currentAvatar + '），維持待機');
+        return false;
+      }
+      currentState = stateName;
+      switchTo({ url: st.url, loop: !!st.loop }, !st.loop);
+      return true;
+    },
+
+    resetToIdle: resetToIdle,
+
+    getState: function () {
+      return { avatar: currentAvatar, state: currentState, activeIndex: activeIndex };
+    },
+
+    // 便利查詢（不屬於規格，但讓手動驗收與未來的標籤對照更好用）
+    registry: AVATAR_REGISTRY
+  };
+
+  // 初始載入：以 activeIndex=0 的 buffer 播該 avatar 的 idle。
+  // 先讓「非活動」的 B 成為 incoming，A 保持黑；這樣沿用同一條切換路徑。
+  function bootstrap() {
+    var av = AVATAR_REGISTRY[currentAvatar];
+    buffers[1].style.opacity = '0';
+    buffers[0].style.opacity = '0';
+    currentState = 'idle';
+    // 讓 index 0 當 incoming：暫時把 activeIndex 指到 1（不影響視覺，兩顆都透明）
+    activeIndex = 1;
+    switchTo({ url: av.idle, loop: true }, false);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootstrap);
+  } else {
+    bootstrap();
+  }
+
+  // 3f. 手動驗收控制列
+  function bind(id, fn) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('click', fn);
+  }
+  bind('avatarBtnRem',   function () { window.AvatarPlayer.setAvatar('rem'); });
+  bind('avatarBtnAkane', function () { window.AvatarPlayer.setAvatar('akane'); });
+  bind('avatarBtnMai',   function () { window.AvatarPlayer.setAvatar('mai'); });
+  bind('avatarBtnIdle',  function () { window.AvatarPlayer.resetToIdle(); });
+})();
+</script>
 </body>
 </html>
 """
 
 
-def render_html_page(display_name: str = "黑川茜", short_name: str = "茜") -> str:
+_AVATAR_ID_BY_COMPANION_ID = {
+    "agent_rem": "rem",
+    "agent_akane": "akane",
+    "agent_mai": "mai",
+}
+_DEFAULT_AVATAR_ID = "akane"
+
+
+def resolve_avatar_id(companion_id: str | None = None, display_name: str | None = None) -> str:
+    """VC-AVATAR-1：由 companion.id 推導 avatar id。
+
+    agent_rem → rem、agent_akane → akane、agent_mai → mai，其餘 → akane（安全預設）。
+    """
+    return _AVATAR_ID_BY_COMPANION_ID.get(str(companion_id or "").strip().lower(), _DEFAULT_AVATAR_ID)
+
+
+def render_html_page(
+    display_name: str = "黑川茜",
+    short_name: str = "茜",
+    companion_id: str | None = None,
+) -> str:
     """Render the web UI HTML with properly escaped companion display and short names."""
     esc_disp = html.escape(display_name)
     esc_short = html.escape(short_name)
     # JS 字串安全轉義：防止 </script> 提早閉合與 inline script 注入
     js_disp = json.dumps(display_name, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
     js_short = json.dumps(short_name, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
+    avatar_id = resolve_avatar_id(companion_id, display_name)
     return (
         _HTML_TEMPLATE
         .replace("__COMPANION_DISPLAY_NAME__", esc_disp)
         .replace("__COMPANION_SHORT_NAME__", esc_short)
         .replace("__COMPANION_DISPLAY_NAME_JS__", js_disp)
         .replace("__COMPANION_SHORT_NAME_JS__", js_short)
+        .replace("__INITIAL_AVATAR__", avatar_id)
     )
 
 

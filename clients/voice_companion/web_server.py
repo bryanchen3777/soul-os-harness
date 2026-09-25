@@ -913,7 +913,13 @@ async def index_handler(request: web.Request) -> web.Response:
     companion = cfg.get("companion") or {}
     display_name = companion.get("display_name", "黑川茜")
     short_name = companion.get("short_name", "茜")
-    content = render_html_page(display_name=display_name, short_name=short_name)
+    # VC-AVATAR-1：avatar id 由 companion.id 推導（agent_rem/akane/mai → rem/akane/mai）
+    companion_id = companion.get("id")
+    content = render_html_page(
+        display_name=display_name,
+        short_name=short_name,
+        companion_id=companion_id,
+    )
     # VC-BARGE-PREPLAY-1：頁面每次請求即時渲染，但原本不送任何 cache 標頭 ⇒ 瀏覽器/邊緣快取
     # 可能仍供應舊頁（「改了、重載了、卻還是舊行為」）。明確禁止快取，確保重載即取現行版本。
     return web.Response(
@@ -1209,6 +1215,14 @@ def build_app(
     app[VC_STREAMER_FACTORY_KEY] = streamer_factory
     app.router.add_get("/", index_handler)
     app.router.add_get("/ws", websocket_handler)
+    # VC-AVATAR-1：Avatar 待機影片等靜態資源。路徑一律由模組位置推導
+    # （Path(__file__).resolve().parent），不依賴行程 cwd —— 三隻 VC 服務可能以不同
+    # 工作目錄啟動（pythonw -m clients.voice_companion.web_server）。
+    app.router.add_static(
+        "/static/",
+        path=str(Path(__file__).resolve().parent / "static"),
+        name="static",
+    )
     return app
 
 
