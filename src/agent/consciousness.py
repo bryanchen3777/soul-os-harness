@@ -25,7 +25,12 @@ from typing import Any, Dict, Optional
 
 from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
-from src.agent.emotion import emotion_engine, SENSITIVITY
+from src.agent.emotion import (
+    emotion_engine,
+    SENSITIVITY,
+    compute_effective_intimacy,
+    calculate_intimacy_gain,
+)
 
 logger = logging.getLogger("soul_os.agent")
 
@@ -188,12 +193,29 @@ class AgentConsciousness(ABC):
         mode = event.payload.get("mode", "private")
 
         # Phase 3 情緒：使用者說話 → 心情上升 + 親密度微增
+        # （此呼叫結構維持原樣，intimacy_delta=0.3 為舊語義，另由下方動態模型承接）
         sens = SENSITIVITY.get(self.agent_id, {"response_boost": 0.08})
-        emotion_engine.update(
-            self.agent_id,
-            mood_delta=sens["response_boost"],
-            intimacy_delta=0.3,
-        )
+        try:
+            emotion_engine.update(
+                self.agent_id,
+                mood_delta=sens["response_boost"],
+                intimacy_delta=0.3,
+            )
+        except Exception as e:
+            logger.warning(f"[{self.agent_id}] 情緒更新失敗（不中斷流程）: {e}")
+
+        # INTIMACY-GROWTH-1：動態親密度演化（阻尼飽和）。
+        # 基礎值 = config 的 intimacy_level（agent 啟動時已載入 self.state）；
+        # 增量持久化在 agent_emotions.intimacy_delta，兩者分離。
+        # 任何例外不得中斷 USER_MESSAGE 處理流程。
+        try:
+            base_intimacy = float(self.state.intimacy_level)
+            delta = emotion_engine.get_delta(self.agent_id)
+            eff = compute_effective_intimacy(base_intimacy, delta)
+            gain = calculate_intimacy_gain(eff)
+            emotion_engine.update_delta(self.agent_id, gain)
+        except Exception as e:
+            logger.warning(f"[{self.agent_id}] 親密度演化失敗（不中斷流程）: {e}")
 
         # ── 私聊模式（方案 A）─────────────────────────────
         if mode == "private":

@@ -157,8 +157,8 @@ def map_emotion_to_avatar_state(mood: float, intimacy: float = 50.0) -> str:
     return {
         ("complete",  0): "blush",
         ("complete",  1): "happy",
-        ("complete",  2): "pout",
-        ("complete",  3): "concerned",
+        ("complete",  2): "concerned",
+        ("complete",  3): "pout",
         ("accepting", 0): "happy",
         ("accepting", 1): "idle",
         ("accepting", 2): "concerned",
@@ -877,10 +877,13 @@ class WebSession:
                     try:
                         from src.agent.emotion import emotion_engine
                         mood, _ = emotion_engine.get(self._agent_id)
-                        intimacy = resolve_base_intimacy(self._agent_id)
+                        base_intimacy = resolve_base_intimacy(self._agent_id)
+                        # INTIMACY-GROWTH-1：Avatar 讀「基礎值 + 動態增量」的複合親密度
+                        delta = emotion_engine.get_delta(self._agent_id)
+                        effective_intimacy = max(0.0, min(100.0, base_intimacy + delta))
                         await self._send_json({
                             "type": "avatar_action",
-                            "state": map_emotion_to_avatar_state(mood, intimacy),
+                            "state": map_emotion_to_avatar_state(mood, effective_intimacy),
                         })
                     except Exception as e:  # 情緒引擎異常絕不可中斷 WebSocket 連線
                         log.warning("[AVATAR] emotion dispatch failed: %s", e)

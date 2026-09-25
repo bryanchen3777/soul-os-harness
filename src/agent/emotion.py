@@ -71,6 +71,22 @@ class EmotionEngine:
                 updated_at TEXT
             )
         """)
+        # INTIMACY-GROWTH-1：惰性冪等遷移。
+        # 舊庫只有 4 欄；新增 intimacy_delta 承載「動態親密度增量」。
+        # 以 PRAGMA 檢查確保冪等（第二次呼叫不得重複 ALTER）。
+        # 絕不刪除 / 不 UPDATE 既有 intimacy 欄位 —— 舊值逐位元保留。
+        try:
+            cols = {
+                row[1]
+                for row in self.conn.execute("PRAGMA table_info(agent_emotions)")
+            }
+            if "intimacy_delta" not in cols:
+                self.conn.execute(
+                    "ALTER TABLE agent_emotions ADD COLUMN intimacy_delta REAL DEFAULT 0.0"
+                )
+        except sqlite3.OperationalError as e:
+            # 併發建立情境：另一連線搶先 ALTER 完成 -> 已是目標狀態，吞掉即可
+            logger.warning(f"[Emotion] intimacy_delta migration skipped: {e}")
         self.conn.commit()
 
     def get(self, agent_id: str) -> Tuple[float, float]:
@@ -120,6 +136,47 @@ class EmotionEngine:
         self.conn.commit()
         logger.info(f"[Emotion] {agent_id} reset to defaults")
 
+    # ── INTIMACY-GROWTH-1：動態親密度增量 API ──────────────────
+    # 注意：update_delta 只動 intimacy_delta 欄，永不寫入舊 intimacy 欄位。
+    # 舊 intimacy 欄位（config intimacy_level 的落腳處）維持唯讀。
+
+    def get_delta(self, agent_id: str) -> float:
+        """讀出動態親密度增量；無 row 或 NULL -> 0.0（fail-safe，不拋）。"""
+        try:
+            cur = self.conn.execute(
+                "SELECT intimacy_delta FROM agent_emotions WHERE agent_id = ?",
+                (agent_id,),
+            )
+            row = cur.fetchone()
+        except sqlite3.OperationalError:
+            # 極端情境（舊庫遷移競態）-> 視為尚未累積，不中斷呼叫端
+            return 0.0
+        if row is None or row[0] is None:
+            return 0.0
+        try:
+            return float(row[0])
+        except (TypeError, ValueError):
+            return 0.0
+
+    def update_delta(self, agent_id: str, delta_gain: float) -> float:
+        """累加 intimacy_delta（clamp -100.0 ~ 100.0），回傳累加後的值。
+
+        UPSERT 沿用 update() 的模式；intimacy / mood 欄位不在 UPSERT 目標內，
+        因此對既有 row 而言兩者維持原值（唯讀語義）。
+        """
+        current = self.get_delta(agent_id)
+        new_delta = max(-100.0, min(100.0, current + float(delta_gain)))
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute("""
+            INSERT INTO agent_emotions (agent_id, intimacy_delta, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(agent_id) DO UPDATE SET
+                intimacy_delta = excluded.intimacy_delta,
+                updated_at = excluded.updated_at
+        """, (agent_id, new_delta, now))
+        self.conn.commit()
+        return new_delta
+
     @staticmethod
     def mood_description(mood: float) -> str:
         """把 mood 數值翻成 LLM 看得到的中文描述"""
@@ -130,6 +187,30 @@ class EmotionEngine:
         if mood >= -0.5:
             return "你有點悶，話比平時少一點"
         return "你心情很差，話變得更短、更冷"
+
+
+# ── INTIMACY-GROWTH-1：親密度成長模型 ──────────────────────────
+# 每次 USER_MESSAGE 只累積「阻尼後的增量」到 intimacy_delta，
+# 有效親密度 = config 基礎值 + 動態增量（兩者分離，基礎值唯讀）。
+
+BASE_STEP = 0.5
+
+
+def compute_effective_intimacy(base_intimacy: float, delta: float) -> float:
+    """有效親密度 = 基礎值 + 動態增量，clamp 到 [0.0, 100.0]。"""
+    return max(0.0, min(100.0, float(base_intimacy) + float(delta)))
+
+
+def calculate_intimacy_gain(
+    current_effective: float, base_step: float = BASE_STEP
+) -> float:
+    """阻尼增量：越接近 100 成長越慢（飽和曲線）。
+
+    damping = 1 - (current_effective / 100)^2
+    下限 0.01 —— 保證親密度永遠仍可微量成長（不得歸零）。
+    """
+    damping = 1.0 - ((float(current_effective) / 100.0) ** 2)
+    return max(0.01, float(base_step) * damping)
 
 
 def compute_longing(intimacy: float, silence_minutes: float) -> float:
