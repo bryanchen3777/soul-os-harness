@@ -92,12 +92,33 @@ BUSY_TIMEOUT_MS = 5000
 #: 沒有人在 review 時會看到）；白名單則相反 —— 新角色預設**不合格**，
 #: 要取得資格必須顯式改本常數，是一個看得見的決策點。
 #:
+#: 🔴 **覆蓋範圍的判準（closeout 修正 A）**：本集合 ＝ 所有「**非 VC** 且
+#: **TG owner-whitelist 入口可達**」的角色。推導如下（機械確認，非推測）：
+#:
+#:   1. `.env` 有 10 個 TG bot token：yua / ruka / akane / rem / ram /
+#:      mahiru / anna / mai / miku / aoi。
+#:   2. `router.py` 的 owner whitelist（`TELEGRAM_OWNER_ID`）驗的是**發訊者
+#:      身分**，不是「哪個 bot」；它對所有 10 個 bot 的 inbound 一視同仁。
+#:   3. `router.py` `inbound()` 內 `_touch_intimacy_clock(full_agent_id, ...)`
+#:      的 `full_agent_id` 是**收到訊息的那個 bot 自己**。
+#:   ⇒ 10 個角色**全部**都可經 TG owner-whitelist 入口抵達 TOUCH 點。
+#:
+#:   本機 VC 服務恰好 3 個：`VC1_AkaneVoiceCompanion` / `VC1_MaiVoiceCompanion`
+#:   / `VC1_RemVoiceCompanion` ⇒ `agent_akane` / `agent_mai` / `agent_rem`。
+#:   ⇒ **10 − 3 = 7**。
+#:
 #: 🔴 **`agent_akane` / `agent_rem` / `agent_mai` 不得加入本集合**：
 #: 三者的 VC 語音尚未可靠 TOUCH，加入等於讓她們在語音互動未被計入的前提下被扣分。
+#: 此禁令由 `tests/test_intimacy_growth_2.py::TestPerAgentEligibilityConstant`
+#: 的集合等值斷言與 `isdisjoint` 斷言鎖住 —— 未來若有人把她們加回來會直接變紅。
 INTIMACY_DECAY_ELIGIBLE_AGENTS: frozenset = frozenset({
-    # 目前唯一具備完整 inbound 閉環的角色：TG owner whitelist 直接可比對，
-    # 且 `tests/test_intimacy_growth_2.py::TestChannelWiring` 已實測其 TOUCH 生效。
     "agent_yua",
+    "agent_ruka",
+    "agent_ram",
+    "agent_mahiru",
+    "agent_anna",
+    "agent_miku",
+    "agent_aoi",
 })
 
 #: 不合格角色的統一 reason（fail-safe：**不拋例外**，讓呼叫端零成本辨識）。

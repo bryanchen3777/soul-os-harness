@@ -2409,6 +2409,25 @@ class TestEmergencyDisableAfterRegistration(_ClientCleanupMixin):
 INELIGIBLE_AGENTS = ("agent_akane", "agent_rem", "agent_mai")
 INELIGIBLE_REASON = "NOT_ELIGIBLE"
 
+# 🔴 closeout 修正 A：白名單覆蓋範圍 ＝ 所有「非 VC 且 TG owner-whitelist
+#    入口可達」的角色。`.env` 的 10 個 TG bot token 減去 3 個本機 VC 服務
+#    （akane / mai / rem）＝ 下列 7 個。此清單是**期望值**，故意獨立於
+#    `emotion.INTIMACY_DECAY_ELIGIBLE_AGENTS` 書寫，這樣「常數被改動」與
+#    「測試跟著漂移」才不會互相掩護。
+ELIGIBLE_AGENTS = (
+    "agent_yua",
+    "agent_ruka",
+    "agent_ram",
+    "agent_mahiru",
+    "agent_anna",
+    "agent_miku",
+    "agent_aoi",
+)
+
+#: 本機 VC 服務恰好 3 個（`VC1_AkaneVoiceCompanion` / `VC1_MaiVoiceCompanion`
+#: / `VC1_RemVoiceCompanion`），其 agent_id 即為 `INELIGIBLE_AGENTS`。
+VC_AGENTS = INELIGIBLE_AGENTS
+
 
 def _ledger_count(engine: EmotionEngine, agent_id: str) -> int:
     """該 agent 在 ledger 中的筆數（0 ⇒ 從未結算過）。"""
@@ -2515,6 +2534,42 @@ class TestPerAgentEligibilityConstant:
                 f"{aid} 的資格被 env 影響了 —— 資格不得是 env 可切換的"
             )
 
+    # ── 第三組：覆蓋完整性（擋住「未來有人不小心把 VC 加回去」）──
+
+    def test_whitelist_membership_is_exactly_the_seven(self) -> None:
+        """🔴🔴 成員集合**恰好等於** 7 個合格角色。
+
+        用 **frozenset 等值**斷言（不是 subset）：subset 是 fail-open ——
+        多加了不該有的角色（例如 VC 之一）仍然會過關。
+        """
+        from src.agent.emotion import INTIMACY_DECAY_ELIGIBLE_AGENTS
+
+        assert INTIMACY_DECAY_ELIGIBLE_AGENTS == frozenset(ELIGIBLE_AGENTS), (
+            "白名單成員與期望的 7 個角色不一致："
+            f"實際={sorted(INTIMACY_DECAY_ELIGIBLE_AGENTS)}、"
+            f"期望={sorted(ELIGIBLE_AGENTS)}"
+        )
+        assert len(INTIMACY_DECAY_ELIGIBLE_AGENTS) == 7, (
+            "覆蓋範圍必須恰為 7（10 個 TG bot 減去 3 個 VC）"
+        )
+
+    def test_vc_agents_disjoint_from_whitelist(self) -> None:
+        """🔴🔴 三個 VC 角色與白名單**互斥**（`isdisjoint`）。
+
+        與等值斷言互為雙保險：等值斷言擋「偷偷加人」，本斷言直接以語意
+        命名 VC 禁令，讓「把 akane/rem/mai 加回去」在任何組合下都變紅。
+        """
+        from src.agent.emotion import INTIMACY_DECAY_ELIGIBLE_AGENTS
+
+        assert INTIMACY_DECAY_ELIGIBLE_AGENTS.isdisjoint(set(VC_AGENTS)), (
+            "VC 角色出現在白名單中 —— 語音未計入卻會被扣分："
+            f"{sorted(INTIMACY_DECAY_ELIGIBLE_AGENTS & set(VC_AGENTS))}"
+        )
+        for aid in VC_AGENTS:
+            assert aid not in INTIMACY_DECAY_ELIGIBLE_AGENTS, (
+                f"{aid} 是 VC 角色，不得具備扣減資格"
+            )
+
 
 class TestTouchInboundPerAgentEligibility:
     """🔴 Owner 指定的核心負例：全域 ON + 已逾期 + TG 形狀 inbound ⇒ 三人 0 扣減。
@@ -2613,6 +2668,127 @@ class TestTouchInboundPerAgentEligibility:
         assert _due_of(engine, aid) is not None
         assert _due_of(engine, aid) > due, "白名單角色的時鐘應被推進"
 
+    # ── 第二組：三名 VC 角色逐一參數化（`touch_inbound` 邊界，走真實 TG 路徑）──
+
+    @pytest.mark.parametrize("agent_id", VC_AGENTS)
+    def test_global_on_overdue_tg_inbound_vc_agent_not_decayed(
+        self, tmp_path, monkeypatch, agent_id
+    ) -> None:
+        """🔴🔴 **每個 VC 角色各自獨立**：全域 ON ＋ 已逾期 ＋ TG 發訊 ⇒ 仍不扣。
+
+        逐一參數化（而非一次迴圈測三人）是為了讓 mutation M-B「把某個 VC
+        加進白名單」能精準地只讓**該角色那一筆**變紅，證明每個案例都有牙。
+        """
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        monkeypatch.setenv("TELEGRAM_OWNER_ID", "1696287850")
+        db = tmp_path / "memory.db"
+        engine = EmotionEngine(db_path=db)
+        engine.ensure_decay_schema()
+        router = self._point_router_at(engine)
+
+        due = T0 - 3600.0
+        _seed_overdue(engine, agent_id, delta=10.0, due=due)
+
+        asyncio.run(
+            router.inbound(
+                agent_id.replace("agent_", ""),
+                "hello from TG",
+                1696287850,
+                channel="telegram",
+            )
+        )
+
+        assert _ledger_count(engine, agent_id) == 0, (
+            f"{agent_id} 竟然寫入了 ledger —— 每角色資格閘門沒有擋在扣減邊界"
+        )
+        assert _delta_of(engine, agent_id) == pytest.approx(10.0), (
+            f"{agent_id} 的 Delta 被扣減了 —— 語音未計入卻照樣扣分"
+        )
+        assert _due_of(engine, agent_id) == pytest.approx(due), (
+            f"{agent_id} 的時鐘被推進了 —— 不合格角色不得有任何持久寫入"
+        )
+
+
+class TestAllEligibleAgentsActuallyDecay:
+    """🔴🔴 **第一組**：7 名合格角色**逐一**證明確實可扣（不得只以 yua 作唯一正例）。
+
+    每一筆都走**真實路徑**：`router.inbound()` 的 TG 路徑 → `_touch_intimacy_clock`
+    → `emotion_engine.touch_inbound()`，DB 一律用 pytest `tmp_path`。
+    **不**用 `exec()` 抽取片段，也**不**自行計算期望值 —— 期望值來自常數
+    （`DECAY_STEP`）與事前鋪陳的 DB 狀態。
+
+    情境固定為「全域 ON ＋ 已逾期 ＋ 合法 TG owner inbound」，斷言四件事：
+      1. 確實扣減（Delta 10.0 → 10.0 − DECAY_STEP）
+      2. 確實寫 ledger（1 筆，金額 ＝ DECAY_STEP）
+      3. due 確實推進（> 原本的逾期值）
+      4. 回傳 `touched is True` 且 reason 為 `TOUCHED`
+    """
+
+    @staticmethod
+    def _point_router_at(engine):
+        import src.agent.emotion as emotion_mod
+        from src.eventbus import SoulEventBus
+        from src.io.channels.router import ChannelRouter
+
+        emotion_mod.emotion_engine = engine
+        return ChannelRouter(bus=SoulEventBus())
+
+    @pytest.mark.parametrize("agent_id", ELIGIBLE_AGENTS)
+    def test_each_eligible_agent_decays_via_tg_inbound(
+        self, tmp_path, monkeypatch, agent_id
+    ) -> None:
+        """🔴 每個合格角色**各自**被證明可扣（逐一參數化，非單一 yua 正例）。"""
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        monkeypatch.setenv("TELEGRAM_OWNER_ID", "1696287850")
+        db = tmp_path / f"memory_{agent_id}.db"
+        engine = EmotionEngine(db_path=db)
+        engine.ensure_decay_schema()
+        router = self._point_router_at(engine)
+
+        due = T0 - 3600.0  # 已逾期一小時
+        _seed_overdue(engine, agent_id, delta=10.0, due=due)
+
+        # 真實 TG 形狀 inbound（短碼 → router 補成 agent_ 前綴）
+        result = asyncio.run(
+            router.inbound(
+                agent_id.replace("agent_", ""),
+                "hello from TG",
+                1696287850,
+                channel="telegram",
+            )
+        )
+
+        # 1) 確實扣減
+        assert _delta_of(engine, agent_id) == pytest.approx(10.0 - DECAY_STEP), (
+            f"合格角色 {agent_id} 沒有被扣 —— 白名單覆蓋不足"
+        )
+        # 2) 確實寫 ledger
+        assert _ledger_count(engine, agent_id) == 1, (
+            f"合格角色 {agent_id} 沒有寫 ledger —— 扣減路徑未走完"
+        )
+        assert _ledger_total_amount(engine, agent_id) == pytest.approx(DECAY_STEP)
+        # 3) due 確實推進
+        due_after = _due_of(engine, agent_id)
+        assert due_after is not None, f"合格角色 {agent_id} 的 due 為 None"
+        assert due_after > due, (
+            f"合格角色 {agent_id} 的時鐘未被推進（{due} -> {due_after}）"
+        )
+        # 4) 直呼扣減邊界亦自證（router 的 TOUCH 是 fire-and-forget，無回傳物件）。
+        #    在**同一逾期狀態**下直呼：此時時鐘已被 router 推進，故只驗證
+        #    資格判定本身放行（reason 非 NOT_ELIGIBLE）。
+        direct = engine.touch_inbound(
+            agent_id=agent_id,
+            event_id=f"direct:{agent_id}",
+            channel="telegram",
+            now=T0,
+        )
+        assert direct.get("reason") != INELIGIBLE_REASON, (
+            f"合格角色 {agent_id} 直呼 touch_inbound 竟被判不合格：{direct}"
+        )
+        assert direct.get("touched") is True, (
+            f"合格角色 {agent_id} 直呼 touch_inbound 未 TOUCH：{direct}"
+        )
+
 
 class TestTouchInboundNotEligibleReturnsReason:
     """`touch_inbound()` 對不合格角色的**直接**回傳契約（不拋例外）。"""
@@ -2658,6 +2834,41 @@ class TestTouchInboundNotEligibleReturnsReason:
         assert result.get("reason") == "TOUCHED"
         assert _due_of(engine_on, "agent_yua") is not None
 
+    # ── 第二組（`touch_inbound` 邊界）：三 VC 逐一參數化、已逾期仍不扣 ──
+
+    @pytest.mark.parametrize("agent_id", VC_AGENTS)
+    def test_overdue_vc_agent_not_decayed_via_touch_inbound(
+        self, tmp_path, monkeypatch, agent_id
+    ) -> None:
+        """🔴🔴 每個 VC **已逾期** ⇒ `touch_inbound()` 不扣、不寫 ledger、不推進 due。
+
+        這是 `touch_inbound` 邊界的**獨立**參數化測例（與 router 走真實 TG
+        路徑的那組互為補強）：即使繞過 router 直接呼叫，閘門仍須擋住。
+        """
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=tmp_path / f"memory_{agent_id}.db")
+        due = T0 - 3600.0
+        _seed_overdue(engine, agent_id, delta=10.0, due=due)
+
+        result = engine.touch_inbound(
+            agent_id=agent_id, event_id="e1", channel="telegram", now=T0
+        )
+
+        assert result.get("reason") == INELIGIBLE_REASON, (
+            f"{agent_id} 未回 {INELIGIBLE_REASON}：{result}"
+        )
+        assert result.get("touched") is False
+        assert result.get("applied") is False
+        assert _ledger_count(engine, agent_id) == 0, (
+            f"{agent_id} 的 touch_inbound 寫入了 ledger"
+        )
+        assert _delta_of(engine, agent_id) == pytest.approx(10.0), (
+            f"{agent_id} 的 Delta 被 touch_inbound 扣減了"
+        )
+        assert _due_of(engine, agent_id) == pytest.approx(due), (
+            f"{agent_id} 的 due 被推進了 —— 不合格角色不得有任何持久寫入"
+        )
+
 
 class TestTryApplyDecayPerAgentEligibility:
     """🔴 `try_apply_decay()` 的資格閘門 —— **必須獨立測**，不能只測 touch_inbound。
@@ -2675,7 +2886,7 @@ class TestTryApplyDecayPerAgentEligibility:
             )
             assert result.get("applied") is False
 
-    @pytest.mark.parametrize("agent_id", INELIGIBLE_AGENTS)
+    @pytest.mark.parametrize("agent_id", VC_AGENTS)
     def test_overdue_ineligible_agent_not_decayed(
         self, engine_on, agent_id
     ) -> None:
