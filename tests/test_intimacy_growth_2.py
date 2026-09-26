@@ -39,6 +39,7 @@ import os
 import sqlite3
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -3838,14 +3839,21 @@ class TestPeriodicDecayWiring:
         assert getattr(cond.operand.func, "id", None) == "decay_enabled"
 
     def test_periodic_wiring_attached_to_existing_loop(self) -> None:
-        """🔴 靜態事實：接線掛在**既有**週期點上，**不得**新建定時器/task/loop。
+        """🔴 靜態事實：接線掛在**既有**週期點上，**不得**新建定時器/loop。
 
-        以原始碼證據鎖住三件事：
-          1. `scripts/run_server.py` 內確實呼叫了 `decay_evaluate_eligible_agents()`
-          2. 該呼叫位於既有 `_sage_flush_loop()` 函式體內
-          3. **沒有**為它新增 `asyncio.create_task` / `while True` /
-             `asyncio.sleep` 的任何新週期結構：`_sage_flush_loop` 仍只有
-             **一個** `asyncio.create_task` 掛載點與**一個** `while True`。
+        🔴 **本測試的前提已於「同票修執行邊界」更新**（Owner 裁定選項 A）。
+        舊前提是「`_sage_flush_loop()` 內**直接**呼叫
+        `decay_evaluate_eligible_agents()`」—— 那正是被裁定要移除的**阻塞**
+        寫法（同步 DB 評估凍結 event loop）。新契約是：
+
+          1. `_sage_flush_loop()` **只負責觸發**：內含**排入 worker** 的呼叫，
+             且**不得**同步呼叫 `decay_evaluate_eligible_agents()`、
+             **不得** `await asyncio.to_thread(...)` 等它結束。
+          2. worker 評估函式確實在同一檔內被呼叫（只是改在 worker 內）。
+          3. `_sage_flush_loop` 仍只有**一個** `asyncio.sleep` 與**一個**
+             `while True`（不新增 timer / loop）。
+
+        以原始碼證據鎖住這三件事。
         """
         import ast as _ast
 
@@ -3867,13 +3875,54 @@ class TestPeriodicDecayWiring:
                 break
         assert loop_fn is not None, "找不到既有 _sage_flush_loop()"
 
-        calls = [
+        # ── 1. loop 內必須**排入**worker ──────────────────────────
+        schedules = [
+            n
+            for n in _ast.walk(loop_fn)
+            if isinstance(n, _ast.Call)
+            and getattr(n.func, "id", None) == "_maybe_schedule_decay_worker"
+        ]
+        assert schedules, (
+            "既有 _sage_flush_loop() 內找不到 `_maybe_schedule_decay_worker()` "
+            "—— 週期觸發接線失效"
+        )
+
+        # ── 2. loop 內**不得**同步評估、**不得** await to_thread ────
+        direct = [
             n
             for n in _ast.walk(loop_fn)
             if isinstance(n, _ast.Call)
             and getattr(n.func, "id", None) == "decay_evaluate_eligible_agents"
         ]
-        assert calls, "既有 _sage_flush_loop() 內找不到週期接線呼叫"
+        assert not direct, (
+            "🔴 _sage_flush_loop() 內仍**同步**呼叫 decay_evaluate_eligible_agents() "
+            "—— 這會在 event loop 上阻塞數十秒（執行邊界修正的核心禁令）"
+        )
+        awaited_threads = [
+            n
+            for n in _ast.walk(loop_fn)
+            if isinstance(n, _ast.Await)
+            and isinstance(n.value, _ast.Call)
+            and (
+                getattr(n.value.func, "attr", None) == "to_thread"
+                or getattr(n.value.func, "attr", None) == "run_in_executor"
+            )
+        ]
+        assert not awaited_threads, (
+            "🔴 _sage_flush_loop() 內 `await asyncio.to_thread(...)` 仍會讓 "
+            "SAGE flush 週期等候數十秒（工單明文禁止）"
+        )
+
+        # ── 3. 評估函式仍在同一檔內被呼叫（改在 worker 內）──────────
+        worker_calls = [
+            n
+            for n in _ast.walk(tree)
+            if isinstance(n, _ast.Call)
+            and getattr(n.func, "id", None) == "decay_evaluate_eligible_agents"
+        ]
+        assert worker_calls, (
+            "run_server.py 內找不到任何 decay_evaluate_eligible_agents() 呼叫"
+        )
 
         # 不得在迴圈內新增週期結構
         sleeps = [
@@ -3905,3 +3954,846 @@ class TestPeriodicDecayWiring:
             for t in try_nodes
         )
         assert wrapped, "週期任務缺少 `except Exception` 保護"
+
+# ═════════════════════════════════════════════════════════════
+# INTIMACY-GROWTH-2 同票修：**執行邊界**
+# ═════════════════════════════════════════════════════════════
+# Owner 裁定選項 A。已量測的病灶（拋棄式 DB + 受控寫鎖競爭，旗標 ON，單角色）：
+#   - 無競爭：**8 ms**
+#   - schema 已建 + 鎖競爭：**5.19 s**（= 1.04× busy_timeout 5000ms）
+#   - schema 未建（首輪）+ 鎖競爭：**10.43 s**（= 2.09×）← 同一角色吃兩次 timeout
+# ⇒ 7 角色序列化最壞約 **73 秒**（推估上界），且**全部阻塞 event loop**。
+#
+# 本組測試的四條驗收（Owner 指定）：
+#   (a) event loop 仍能前進 —— 高頻協程在評估期間 tick 間隔有界
+#   (b) SAGE flush 節奏仍能前進 —— 同 loop 的 flush 探針不被拖住
+#   (c) 在途 worker 至多一個 —— 連續觸發多輪，併發數 ≤ 1
+#   (d) 失敗被如實回報 —— 全失敗時 reason **不是** EVALUATED
+#   (e) 旗標 OFF 零新寫入 —— OFF 時不排 worker、DB 無新列
+#
+# 隔離紀律（硬約束，逐條遵守）：
+#   - 全程 `tmp_path` 拋棄式 DB；**絕不**碰生產 `data/memory.db`
+#   - **不**綁任何埠、**不**啟動服務、**不**殺任何行程
+#   - 只用**真實公開 API**（`decay_evaluate_eligible_agents` /
+#     `try_apply_decay` / worker 入口 `_maybe_schedule_decay_worker`）
+#   - 需要旗標 ON 時用 `monkeypatch.setenv`，**不**改 repo 的 `.env`
+
+#: 受控寫鎖競爭的持鎖時間（秒）。刻意 > 一個「可接受的 event loop 凍結」
+#: 預算，讓「同步阻塞」實作必然被 (a)/(b) 抓到，而正確的執行緒化實作
+#: （評估在 thread 內、loop 自由）仍能輕鬆通過。
+_CONTENDED_LOCK_HOLD_SECS = 3.0
+
+
+class _ContendedWriteLock:
+    """受控鎖競爭：以**獨立** SQLite 連線 `BEGIN IMMEDIATE` 持寫鎖。
+
+    🔴 這是「另一條連線」的角色，**不是**被測程式碼 —— 被測程式碼全程只走
+    既有 `emotion_engine.conn`（C1 單寫者模型）。用獨立連線才能真實製造
+    `database is locked`，而不必 monkeypatch 任何私有 helper。
+
+    🔴 持鎖方式刻意用 `BEGIN IMMEDIATE` + 一筆**寫入既有 base 表**的語句：
+    - `BEGIN IMMEDIATE` 立即取得 RESERVED 鎖 ⇒ 其他連線的寫入與**任何 DDL**
+      都會在 busy_timeout 後拋 `database is locked`（已實測：`CREATE TABLE
+      IF NOT EXISTS` 同樣會拋 `SQLITE_BUSY`）。
+    - 寫入**不得**指向 `agent_emotions`：在「schema 未建」情境下該表尚無
+      `last_valid_inbound_at` 等欄，寫它會自己拋錯而使鎖沒真正佈下。
+      故持鎖連線只做 `PRAGMA table_info`（純讀，且不需要額外 schema）。
+    """
+
+    def __init__(self, db_path: Path, hold_secs: float = _CONTENDED_LOCK_HOLD_SECS):
+        self._db_path = str(db_path)
+        self._hold_secs = float(hold_secs)
+        self._stop = threading.Event()
+        self._held = threading.Event()
+        self._error: list = []
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self):
+        def _hold() -> None:
+            # 🔴 連線**必須在持鎖執行緒內建立**：Python sqlite3 預設禁止跨執行緒
+            #    使用連線（`SQLite objects created in a thread can only be used
+            #    in that same thread`）。在主執行緒建好再丟進來會直接 ProgrammingError。
+            conn = None
+            try:
+                conn = sqlite3.connect(self._db_path, timeout=0.0)
+                # busy_timeout=0 ⇒ 取不到鎖就**立刻**拋，不拖慢測試本身。
+                conn.execute("PRAGMA busy_timeout = 0")
+                conn.execute("BEGIN IMMEDIATE")
+                # 確認真的持有 RESERVED 鎖（純讀，不改 schema）。
+                conn.execute("PRAGMA table_info(agent_emotions)").fetchall()
+            except Exception as e:  # noqa: BLE001 — 失敗要能被測試看見
+                self._error.append(e)
+            self._held.set()
+            self._stop.wait(self._hold_secs)
+            try:
+                if conn is not None:
+                    conn.rollback()
+                    conn.close()
+            except Exception:
+                pass
+
+        self._thread = threading.Thread(target=_hold, daemon=True)
+        self._thread.start()
+        assert self._held.wait(10.0), "受控寫鎖未能在 10s 內取得"
+        assert not self._error, f"持鎖連線自身失敗（鎖未佈下）：{self._error!r}"
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(10.0)
+
+    # 讓同一個物件也能在 async 測試內以 `async with` 使用（語意完全相同）。
+    async def __aenter__(self):
+        return self.__enter__()
+
+    async def __aexit__(self, *exc) -> None:
+        self.__exit__(*exc)
+
+
+class _LoopProbe:
+    """同一個 event loop 內的高頻協程探針 + 既有 flush 節奏探針。
+
+    兩個探針共用同一個 loop，因此任何「在 loop 上同步阻塞」的實作都會
+    同時把兩者的 tick 間隔推高。
+    """
+
+    #: 高頻探針：每 5ms tick 一次。
+    FAST_INTERVAL = 0.005
+    #: 既有 SAGE flush 節奏的縮影：每 50ms tick 一次（真實值 15s，同構）。
+    FLUSH_INTERVAL = 0.05
+    #: 單一 tick 間隔的容忍上界（秒）。遠大於排程抖動，但遠小於
+    #: `_CONTENDED_LOCK_HOLD_SECS` ⇒ 「同步阻塞 3s」必然超標。
+    MAX_GAP = 1.2
+
+    def __init__(self) -> None:
+        self.fast_ticks = 0
+        self.flush_ticks = 0
+        self._fast_gaps: list = []
+        self._flush_gaps: list = []
+        self._tasks: list = []
+
+    async def _fast(self) -> None:
+        last = asyncio.get_running_loop().time()
+        while True:
+            await asyncio.sleep(self.FAST_INTERVAL)
+            now = asyncio.get_running_loop().time()
+            self._fast_gaps.append(now - last)
+            last = now
+            self.fast_ticks += 1
+
+    async def _flush(self) -> None:
+        last = asyncio.get_running_loop().time()
+        while True:
+            await asyncio.sleep(self.FLUSH_INTERVAL)
+            now = asyncio.get_running_loop().time()
+            self._flush_gaps.append(now - last)
+            last = now
+            self.flush_ticks += 1
+
+    async def __aenter__(self):
+        self._tasks = [
+            asyncio.create_task(self._fast()),
+            asyncio.create_task(self._flush()),
+        ]
+        await asyncio.sleep(0.05)  # 讓探針先跑起來
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        for t in self._tasks:
+            t.cancel()
+        for t in self._tasks:
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+
+    def mark(self) -> None:
+        """清空已累積的 tick 間隔 —— 之後只量「評估期間」的表現。"""
+        self._fast_gaps.clear()
+        self._flush_gaps.clear()
+
+    def max_fast_gap(self, floor: float = 0.0) -> float:
+        return max([g for g in self._fast_gaps if g >= floor] or [0.0])
+
+    def max_flush_gap(self, floor: float = 0.0) -> float:
+        return max([g for g in self._flush_gaps if g >= floor] or [0.0])
+
+
+def _import_run_server():
+    """以真實檔案路徑載入 `scripts/run_server.py`（**不**啟動服務、**不**綁埠）。
+
+    🔴 以 `importlib.util.spec_from_file_location` 載入：module 層級若真的
+    有副作用（啟動 task / 綁埠）本測試會立刻看得出來，而不是被 `sys.modules`
+    快取掩蓋。
+    """
+    import importlib.util
+
+    path = REPO_ROOT / "scripts" / "run_server.py"
+    spec = importlib.util.spec_from_file_location("_ig2_run_server_probe", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _reset_decay_worker(mod) -> None:
+    """把 worker 全域狀態歸零（測試間不得互相污染）。"""
+    task = getattr(mod, "_DECAY_WORKER_TASK", None)
+    if task is not None and not task.done():
+        task.cancel()
+    mod._DECAY_WORKER_TASK = None
+
+
+async def _drain_decay_worker(mod, timeout: float = 60.0) -> None:
+    """等到在途 worker 真的結束（或逾時放棄）。"""
+    task = getattr(mod, "_DECAY_WORKER_TASK", None)
+    if task is None or task.done():
+        return
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+    except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+        pass
+
+
+# ─────────────────────────────────────────────────────────────
+# (1) 正常情境：無競爭、schema 已建
+# ─────────────────────────────────────────────────────────────
+
+
+class TestExecutionBoundaryNormal:
+    """無競爭、schema 已建 ⇒ 評估不得凍結 event loop、不得排第二個 worker。"""
+
+    @pytest.mark.asyncio
+    async def test_normal_loop_progress_and_single_worker(
+        self, db_path, monkeypatch
+    ) -> None:
+        """(a)+(b)+(c) 正常情境：loop 前進、flush 節奏前進、在途 worker ≤ 1。"""
+        import src.agent.emotion as emotion_mod
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=db_path)
+        engine.ensure_decay_schema()  # schema **已建**
+        _seed_overdue(engine, "agent_yua", delta=5.0, due=T0 + DAY)
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
+
+        mod = _import_run_server()
+        _reset_decay_worker(mod)
+
+        async with _LoopProbe() as probe:
+            probe.mark()
+            assert mod._maybe_schedule_decay_worker() is True, "空閒時應排入 worker"
+
+            # (c) 連續觸發多輪：同時在途 worker 至多一個。
+            # 🔴 無競爭時評估僅 ~8ms，worker 可能**合法地**在兩次觸發之間結束
+            #    （結束 ⇒ 空閒 ⇒ 下一輪排入是**正確**行為）。故本段不斷言
+            #    「排入數 == 0」，而是斷言「同時在途 ≤ 1」—— 這才是 (c) 的真
+            #    語意。「前一輪未結束就略過本輪」由**鎖競爭**情境（worker 真的
+            #    在途數秒）與 `test_at_most_one_worker_in_flight` 證明。
+            for _ in range(12):
+                mod._maybe_schedule_decay_worker()
+                task = mod._DECAY_WORKER_TASK
+                assert task is not None, "排入後竟無 worker 參照"
+                await asyncio.sleep(0.01)
+
+            await _drain_decay_worker(mod)
+            probe.mark()
+            assert mod._DECAY_WORKER_TASK is not None
+
+        # (a) 高頻協程仍能前進
+        assert probe.fast_ticks > 0, "高頻探針完全沒跑 —— event loop 被凍結"
+        assert probe.max_fast_gap() < _LoopProbe.MAX_GAP, (
+            f"評估期間 event loop 被凍結：最大 tick 間隔 "
+            f"{probe.max_fast_gap():.3f}s ≥ {_LoopProbe.MAX_GAP}s"
+        )
+        # (b) flush 節奏仍能前進
+        assert probe.flush_ticks > 0, "flush 探針完全沒跑 —— loop 被拖住"
+        assert probe.max_flush_gap() < _LoopProbe.MAX_GAP, (
+            f"flush 節奏被拖住：最大 tick 間隔 "
+            f"{probe.max_flush_gap():.3f}s ≥ {_LoopProbe.MAX_GAP}s"
+        )
+        # 評估確實發生了
+        assert _ledger_count(engine, "agent_yua") == 1, "worker 未真的完成評估"
+        _reset_decay_worker(mod)
+
+    @pytest.mark.asyncio
+    async def test_normal_no_contention_result_is_evaluated(
+        self, db_path, monkeypatch
+    ) -> None:
+        """正常路徑 ⇒ `reason == "EVALUATED"`、`failed == 0`（三態不得誤判）。"""
+        import src.agent.emotion as emotion_mod
+        from src.agent.emotion import decay_evaluate_eligible_agents
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=db_path)
+        _seed_overdue(engine, "agent_yua", delta=5.0, due=T0 + DAY)
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
+
+        res = decay_evaluate_eligible_agents(now=T0 + 2 * DAY)
+        assert res["reason"] == "EVALUATED", f"正常路徑竟非 EVALUATED：{res}"
+        assert res["failed"] == 0, f"正常路徑竟計到失敗：{res}"
+        assert res["applied"] == 1, f"應恰扣 1 名角色：{res}"
+
+
+# ─────────────────────────────────────────────────────────────
+# (2) schema 已建 + 受控鎖競爭
+# ─────────────────────────────────────────────────────────────
+
+
+class TestExecutionBoundaryContendedSchemaReady:
+    """schema 已建 + 受控寫鎖競爭 ⇒ 評估在 thread 內等待，loop 必須自由。"""
+
+    @pytest.mark.asyncio
+    async def test_contended_schema_ready_loop_progress(
+        self, db_path, monkeypatch
+    ) -> None:
+        """(a)+(b)+(c) 鎖競爭 3s：loop 與 flush 節奏都不得被凍結。"""
+        import src.agent.emotion as emotion_mod
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=db_path)
+        engine.ensure_decay_schema()  # schema **已建**（只剩交易那一次 timeout）
+        for aid in ELIGIBLE_AGENTS:
+            _seed_overdue(engine, aid, delta=5.0, due=T0 + DAY)
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
+
+        mod = _import_run_server()
+        _reset_decay_worker(mod)
+
+        async with _ContendedWriteLock(db_path, _CONTENDED_LOCK_HOLD_SECS):
+            async with _LoopProbe() as probe:
+                probe.mark()
+                assert mod._maybe_schedule_decay_worker() is True
+
+                # (c) 持鎖期間連續觸發 ⇒ 仍不得排第二個
+                dup = 0
+                for _ in range(15):
+                    await asyncio.sleep(0.02)
+                    if mod._maybe_schedule_decay_worker():
+                        dup += 1
+                assert dup == 0, f"鎖競爭期間排入了 {dup} 個額外 worker（(c) 被破壞）"
+
+                await _drain_decay_worker(mod)
+
+        # (a) event loop 仍能前進（同步阻塞的實作在此必紅）
+        assert probe.fast_ticks > 0, "高頻探針完全沒跑 —— event loop 被凍結"
+        assert probe.max_fast_gap() < _LoopProbe.MAX_GAP, (
+            f"🔴 鎖競爭期間 event loop 被凍結：最大 tick 間隔 "
+            f"{probe.max_fast_gap():.3f}s ≥ {_LoopProbe.MAX_GAP}s "
+            f"（評估必須在 to_thread 內執行）"
+        )
+        # (b) SAGE flush 節奏仍能前進
+        assert probe.flush_ticks > 0, "flush 探針完全沒跑"
+        assert probe.max_flush_gap() < _LoopProbe.MAX_GAP, (
+            f"🔴 鎖競爭期間 flush 節奏被拖住：最大 tick 間隔 "
+            f"{probe.max_flush_gap():.3f}s ≥ {_LoopProbe.MAX_GAP}s"
+        )
+        _reset_decay_worker(mod)
+
+    @pytest.mark.asyncio
+    async def test_contended_schema_ready_reports_failure_not_evaluated(
+        self, db_path, monkeypatch
+    ) -> None:
+        """(d) 鎖競爭下的失敗**必須如實回報**，絕不可回 `EVALUATED`。
+
+        🔴 本測試原本斷言 `ALL_FAILED`，**實測後修正**：持鎖長度與 7 個角色的
+        `busy_timeout` 等待時間賽跑，只要持鎖在中途放掉，最後被評估的角色
+        （`sorted()` ⇒ `agent_yua` 排最後）就會正常成功 ⇒ 真實結果是
+        `PARTIAL`（`failed=6, applied=1`）。
+
+        這**正是**匯總邏輯正確的證據：失敗不被美化、成功不被抹掉。
+        故本測試改為斷言**不變量**而非脆弱的精確 reason：
+
+          - `reason` **絕不是** `EVALUATED`（(d) 的核心）
+          - `reason` ∈ {`PARTIAL`, `ALL_FAILED`}
+          - `failed ≥ 1`，且 `failed + 成功者數 == evaluated`
+          - 失敗者的 ledger 為 0、成功者的 ledger 為 1（逐角色準確，互不抹除）
+
+        `ALL_FAILED` 的**精確**語意由 `TestThreeStateReasonSemantics` 以
+        受控注入（不靠時間賽跑）釘死。
+        """
+        import src.agent.emotion as emotion_mod
+        from src.agent.emotion import (
+            BUSY_TIMEOUT_MS,
+            INTIMACY_DECAY_ELIGIBLE_AGENTS,
+            decay_evaluate_eligible_agents,
+        )
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=db_path)
+        engine.ensure_decay_schema()
+        for aid in ELIGIBLE_AGENTS:
+            _seed_overdue(engine, aid, delta=5.0, due=T0 + DAY)
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
+
+        n = len(INTIMACY_DECAY_ELIGIBLE_AGENTS)
+        hold = (BUSY_TIMEOUT_MS / 1000.0) * n + 2.0
+        with _ContendedWriteLock(db_path, hold):
+            res = decay_evaluate_eligible_agents(now=T0 + 2 * DAY)
+
+        # 🔴 (d) 的核心斷言：失敗不得被美化成成功
+        assert res["reason"] != "EVALUATED", (
+            f"🔴 有角色失敗竟回報成功語意：{res}"
+        )
+        assert res["reason"] in {"PARTIAL", "ALL_FAILED"}, (
+            f"有失敗時 reason 只能是 PARTIAL / ALL_FAILED：{res}"
+        )
+        assert res["failed"] >= 1, f"有角色失敗竟計 failed=0：{res}"
+
+        # 逐角色準確：失敗者零扣減、成功者恰一筆（互不抹除）
+        succeeded = [a for a, r in res["results"].items() if r.get("applied")]
+        failed = [
+            a
+            for a, r in res["results"].items()
+            if r.get("reason") in {"ERROR", "SETTLE_ABORTED", "SCHEMA_NOT_READY"}
+        ]
+        assert res["failed"] == len(failed), (
+            f"failed 計數與逐角色結果不一致：{res}"
+        )
+        assert len(succeeded) + len(failed) == res["evaluated"] == n, (
+            f"成功者 + 失敗者 ≠ 評估數（有人被抹掉）：{res}"
+        )
+        assert res["applied"] == len(succeeded), (
+            f"applied 竟不等於成功者數（成功被抹掉）：{res}"
+        )
+        for aid in failed:
+            assert _ledger_count(engine, aid) == 0, f"失敗者 {aid} 竟寫了 ledger"
+        for aid in succeeded:
+            assert _ledger_count(engine, aid) == 1, f"成功者 {aid} 未寫 ledger"
+
+        # 既有 4 個 key 必須保留
+        for key in ("evaluated", "applied", "reason", "results"):
+            assert key in res, f"既有 key {key!r} 被移除或改名：{res}"
+
+
+# ─────────────────────────────────────────────────────────────
+# (3) 首次建置（schema 未建）+ 受控鎖競爭
+# ─────────────────────────────────────────────────────────────
+
+
+class TestExecutionBoundaryColdSchemaContended:
+    """首輪（schema 未建）+ 鎖競爭：**同一角色不得吃兩次 timeout**。"""
+
+    @pytest.mark.asyncio
+    async def test_cold_schema_contended_loop_progress(
+        self, db_path, monkeypatch
+    ) -> None:
+        """(a)+(b)：首輪 DDL 遇鎖時，loop 仍不得被凍結。"""
+        import src.agent.emotion as emotion_mod
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=db_path)
+        # 🔴 刻意**不**呼叫 ensure_decay_schema()：本情境就是「首輪」。
+        assert "last_valid_inbound_at" not in _cols(engine), "本測試需 schema 未建"
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
+
+        mod = _import_run_server()
+        _reset_decay_worker(mod)
+
+        async with _ContendedWriteLock(db_path, _CONTENDED_LOCK_HOLD_SECS):
+            async with _LoopProbe() as probe:
+                probe.mark()
+                assert mod._maybe_schedule_decay_worker() is True
+                dup = 0
+                for _ in range(15):
+                    await asyncio.sleep(0.02)
+                    if mod._maybe_schedule_decay_worker():
+                        dup += 1
+                assert dup == 0, f"首輪鎖競爭期間排入了 {dup} 個額外 worker"
+                await _drain_decay_worker(mod)
+
+        assert probe.max_fast_gap() < _LoopProbe.MAX_GAP, (
+            f"🔴 首輪建置遇鎖期間 event loop 被凍結："
+            f"{probe.max_fast_gap():.3f}s ≥ {_LoopProbe.MAX_GAP}s"
+        )
+        assert probe.max_flush_gap() < _LoopProbe.MAX_GAP, (
+            f"🔴 首輪建置遇鎖期間 flush 節奏被拖住："
+            f"{probe.max_flush_gap():.3f}s ≥ {_LoopProbe.MAX_GAP}s"
+        )
+        _reset_decay_worker(mod)
+
+    def test_cold_schema_contended_single_character_does_not_double_timeout(
+        self, db_path, monkeypatch
+    ) -> None:
+        """🔴 **本票的核心斷言**：schema 未建 + 鎖競爭 ⇒ 單角色**只吃一次** timeout。
+
+        修正前：`ensure_decay_schema()` 吞掉遇鎖的 `OperationalError` ⇒
+        `try_apply_decay()` 接著在 L668 開交易，**再吃一次** busy_timeout
+        ⇒ 單角色 **2.09× = 10.43s**。
+        修正後：遇鎖 ⇒ 回 `SCHEMA_NOT_READY`、**不進入**交易 ⇒ **約 1.0×**。
+
+        以「一次 timeout 之上界」斷言：正確實作約 1.04×；病態實作 ≥ 2.0×。
+        """
+        import src.agent.emotion as emotion_mod
+        from src.agent.emotion import BUSY_TIMEOUT_MS, EmotionEngine as _EE
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = _EE(db_path=db_path)
+        assert "last_valid_inbound_at" not in _cols(engine), "本測試需 schema 未建"
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
+
+        # 持鎖時間略長於 busy_timeout，讓「第一次」timeout 必定發生。
+        hold = (BUSY_TIMEOUT_MS / 1000.0) + 0.5
+        with _ContendedWriteLock(db_path, hold):
+            t0 = time.monotonic()
+            res = engine.try_apply_decay("agent_yua", now=T0 + DAY)
+            elapsed = time.monotonic() - t0
+
+        # 語意：明確的非成功 reason，且**不進入**交易
+        assert res["applied"] is False, f"schema 未建竟回報 applied：{res}"
+        assert res["reason"] == engine.SCHEMA_NOT_READY_REASON, (
+            f"schema 未建遇鎖應回 {engine.SCHEMA_NOT_READY_REASON!r}，實得 {res!r}"
+        )
+        assert res["due_at"] is None, f"未進入交易竟回了 due_at：{res}"
+
+        one_timeout = BUSY_TIMEOUT_MS / 1000.0
+        assert elapsed < 1.7 * one_timeout, (
+            f"🔴 單角色吃了**兩次** busy_timeout：{elapsed:.2f}s "
+            f"≥ 1.7×{one_timeout:.1f}s（遇鎖後仍進入交易 —— 2.09× 病灶未除）"
+        )
+
+    def test_cold_schema_uncontended_still_builds_and_decays(
+        self, db_path, monkeypatch
+    ) -> None:
+        """反向對照：無競爭時，首輪惰性 DDL **仍必須成功**（不得修過頭）。
+
+        防止「遇鎖就永遠失敗」的過度修正 —— 無競爭 ⇒ schema 照建、照扣。
+        """
+        import src.agent.emotion as emotion_mod
+        from src.agent.emotion import decay_evaluate_eligible_agents
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=db_path)
+        assert "last_valid_inbound_at" not in _cols(engine)
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
+
+        # 先無競爭跑一輪：schema 應被建立（惰性 DDL 未被過度禁用）
+        assert engine.ensure_decay_schema() is True, "無競爭時首輪 DDL 竟失敗"
+        assert "last_valid_inbound_at" in _cols(engine), "首輪 DDL 未建立欄位"
+        assert "intimacy_decay_ledger" in _tables(engine), "首輪 DDL 未建 ledger 表"
+
+        _seed_overdue(engine, "agent_yua", delta=5.0, due=T0 + DAY)
+        res = decay_evaluate_eligible_agents(now=T0 + 2 * DAY)
+        assert res["reason"] == "EVALUATED", f"無競爭竟非 EVALUATED：{res}"
+        assert _delta_of(engine, "agent_yua") == pytest.approx(5.0 - DECAY_STEP)
+
+
+# ─────────────────────────────────────────────────────────────
+# (e) 旗標 OFF ⇒ 零新寫入、不排 worker
+# ─────────────────────────────────────────────────────────────
+
+
+class TestExecutionBoundaryFlagOff:
+    """旗標 OFF ⇒ **不排 worker**、DB 零新列、檔 mtime / sha256 不變。"""
+
+    @pytest.mark.asyncio
+    async def test_flag_off_does_not_schedule_worker(
+        self, db_path, monkeypatch
+    ) -> None:
+        """(e) OFF ⇒ worker 排入數 == 0，且 `_DECAY_WORKER_TASK` 維持 None。"""
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "")
+        engine = EmotionEngine(db_path=db_path)
+        _seed_overdue(engine, "agent_yua", delta=5.0, due=T0 + DAY)
+        import src.agent.emotion as emotion_mod
+
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
+
+        mod = _import_run_server()
+        _reset_decay_worker(mod)
+
+        # 15s 迴圈內的排入判斷：OFF ⇒ 必須**不排**
+        from src.agent.emotion import decay_enabled
+
+        assert decay_enabled() is False
+        scheduled = 0
+        for _ in range(5):
+            if decay_enabled():
+                if mod._maybe_schedule_decay_worker():
+                    scheduled += 1
+            await asyncio.sleep(0.01)
+        assert scheduled == 0, "旗標 OFF 竟排入了 worker"
+        assert getattr(mod, "_DECAY_WORKER_TASK", None) is None, (
+            "旗標 OFF 竟建立了 worker task"
+        )
+        # 即使有人硬呼叫 worker 本體，也必須是 FLAG_OFF 且零寫入
+        res = await mod._decay_worker_main()
+        assert res["reason"] == "FLAG_OFF", f"OFF 時 worker 竟做了事：{res}"
+        assert res["evaluated"] == 0
+        _reset_decay_worker(mod)
+
+    def test_flag_off_zero_new_rows_and_bytes_unchanged(
+        self, db_path, monkeypatch
+    ) -> None:
+        """(e) OFF ⇒ DB 無新列、ledger 空、檔案 sha256 與 mtime 逐位元不變。"""
+        import src.agent.emotion as emotion_mod
+        from src.agent.emotion import decay_evaluate_eligible_agents
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=db_path)
+        _seed_overdue(engine, "agent_yua", delta=5.0, due=T0 + DAY)
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
+
+        rows_before = engine.conn.execute(
+            "SELECT COUNT(*) FROM agent_emotions"
+        ).fetchone()[0]
+        delta_before = _delta_of(engine, "agent_yua")
+
+        # 🔴 轉 OFF（**不**改 repo 的 .env）
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "")
+        # flush + 收斂 WAL，讓「檔內容真的沒變」可被雜湊驗證
+        engine.conn.commit()
+        sha_before = _db_sha(db_path)
+        mtime_before = _db_mtime(db_path)
+
+        res = decay_evaluate_eligible_agents(now=T0 + 10 * DAY)
+        assert res["reason"] == "FLAG_OFF", f"OFF 竟非 FLAG_OFF：{res}"
+
+        rows_after = engine.conn.execute(
+            "SELECT COUNT(*) FROM agent_emotions"
+        ).fetchone()[0]
+        assert rows_after == rows_before, (
+            f"旗標 OFF 竟新增/刪除了列：{rows_before} -> {rows_after}"
+        )
+        assert _ledger_count(engine, "agent_yua") == 0, "旗標 OFF 竟寫了 ledger"
+        assert _delta_of(engine, "agent_yua") == pytest.approx(delta_before), (
+            "旗標 OFF 竟扣了 Delta"
+        )
+        assert _db_sha(db_path) == sha_before, "旗標 OFF 竟改動了 DB 檔內容"
+        assert _db_mtime(db_path) == mtime_before, "旗標 OFF 竟改動了 DB 檔 mtime"
+
+
+# ─────────────────────────────────────────────────────────────
+# 三態 reason 語意（修改 5）
+# ─────────────────────────────────────────────────────────────
+
+
+class _FailingDecayEngine:
+    """公開入口層的失敗注入：只覆寫 `try_apply_decay`（公開方法）。
+
+    🔴 走**真實** `decay_evaluate_eligible_agents()`，不 monkeypatch 它的
+    內部迴圈 —— 被測的是「匯總邏輯是否如實回報」，不是私有 helper。
+    """
+
+    SCHEMA_NOT_READY_REASON = "SCHEMA_NOT_READY"
+
+    def __init__(self, real, failing: set, reason: str = "SCHEMA_NOT_READY"):
+        self._real = real
+        self._failing = set(failing)
+        self._reason = reason
+        self.calls = 0
+
+    def try_apply_decay(self, agent_id, now=None):
+        self.calls += 1
+        if agent_id in self._failing:
+            return {"applied": False, "reason": self._reason, "due_at": None}
+        return self._real.try_apply_decay(agent_id, now=now)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class TestThreeStateReasonSemantics:
+    """`EVALUATED` / `PARTIAL` / `ALL_FAILED` 三態，逐條對應修改 5。"""
+
+    def test_all_failed_is_not_evaluated(self, db_path, monkeypatch) -> None:
+        """🔴 七個**全失敗** ⇒ `ALL_FAILED`（**絕不可** EVALUATED）。"""
+        import src.agent.emotion as emotion_mod
+        from src.agent.emotion import decay_evaluate_eligible_agents
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        real = EmotionEngine(db_path=db_path)
+        real.ensure_decay_schema()
+        wrapper = _FailingDecayEngine(real, failing=set(ELIGIBLE_AGENTS))
+        monkeypatch.setattr(emotion_mod, "emotion_engine", wrapper)
+
+        res = decay_evaluate_eligible_agents(now=T0 + 2 * DAY)
+
+        assert res["reason"] == "ALL_FAILED", (
+            f"🔴 全失敗竟回 {res['reason']!r} —— 失敗被美化成成功：{res}"
+        )
+        assert res["reason"] != "EVALUATED"
+        assert res["failed"] == len(ELIGIBLE_AGENTS)
+        assert res["evaluated"] == len(ELIGIBLE_AGENTS)
+        assert res["applied"] == 0
+
+    def test_partial_keeps_per_agent_accurate_results(
+        self, db_path, monkeypatch
+    ) -> None:
+        """🔴 部分成功 ⇒ `PARTIAL`，且**成功者的計數準確**、不被別人失敗抹掉。"""
+        import src.agent.emotion as emotion_mod
+        from src.agent.emotion import decay_evaluate_eligible_agents
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        real = EmotionEngine(db_path=db_path)
+        real.ensure_decay_schema()
+
+        ok = ("agent_yua", "agent_ruka")
+        bad = tuple(a for a in ELIGIBLE_AGENTS if a not in ok)
+        for aid in ok:
+            _seed_overdue(real, aid, delta=5.0, due=T0 + DAY)
+
+        wrapper = _FailingDecayEngine(real, failing=set(bad))
+        monkeypatch.setattr(emotion_mod, "emotion_engine", wrapper)
+
+        res = decay_evaluate_eligible_agents(now=T0 + 2 * DAY)
+
+        assert res["reason"] == "PARTIAL", f"部分成功應為 PARTIAL：{res}"
+        assert res["applied"] == len(ok), (
+            f"成功者計數不準（被失敗者抹掉）：{res}"
+        )
+        assert res["failed"] == len(bad), f"失敗計數不準：{res}"
+        # results 內每個角色的**準確**結果都在
+        for aid in ok:
+            assert res["results"][aid]["reason"] == "DECAYED", (
+                f"成功者 {aid} 的結果被抹掉：{res['results'][aid]}"
+            )
+            assert _ledger_count(real, aid) == 1, f"{aid} 成功卻沒寫 ledger"
+        for aid in bad:
+            assert res["results"][aid]["reason"] == "SCHEMA_NOT_READY"
+            assert _ledger_count(real, aid) == 0
+
+    def test_no_failure_is_evaluated(self, db_path, monkeypatch) -> None:
+        """🔴 零失敗 ⇒ `EVALUATED`（含 NOT_DUE / UNKNOWN 等正常非錯誤路徑）。"""
+        import src.agent.emotion as emotion_mod
+        from src.agent.emotion import decay_evaluate_eligible_agents
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        real = EmotionEngine(db_path=db_path)
+        real.ensure_decay_schema()  # 全部角色皆無 row ⇒ UNKNOWN（正常路徑）
+        monkeypatch.setattr(emotion_mod, "emotion_engine", real)
+
+        res = decay_evaluate_eligible_agents(now=T0)
+        assert res["reason"] == "EVALUATED", (
+            f"UNKNOWN 是正常非錯誤路徑，不應計為失敗：{res}"
+        )
+        assert res["failed"] == 0
+        assert all(
+            r["reason"] == "UNKNOWN" for r in res["results"].values()
+        ), f"UNKNOWN 語意被改動：{res['results']}"
+
+    def test_existing_keys_preserved_and_failed_key_added(
+        self, db_path, monkeypatch
+    ) -> None:
+        """既有 4 個 key 不得移除/改名；`failed` 為**新增**的鍵。"""
+        import src.agent.emotion as emotion_mod
+        from src.agent.emotion import decay_evaluate_eligible_agents
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        real = EmotionEngine(db_path=db_path)
+        real.ensure_decay_schema()
+        monkeypatch.setattr(emotion_mod, "emotion_engine", real)
+
+        res = decay_evaluate_eligible_agents(now=T0)
+        for key in ("evaluated", "applied", "reason", "results"):
+            assert key in res, f"既有 key {key!r} 被移除或改名：{sorted(res)}"
+        assert "failed" in res, "未新增 failed 計數鍵"
+        assert set(res) == {"evaluated", "applied", "reason", "results", "failed"}, (
+            f"回傳鍵集合非預期：{sorted(res)}"
+        )
+
+    def test_non_error_reasons_do_not_count_as_failure(
+        self, db_path, monkeypatch
+    ) -> None:
+        """🔴 `NOT_ELIGIBLE` / `NOT_DUE` / `DUPLICATE` / `UNKNOWN` **不得**算失敗。
+
+        這四個是正常路徑，語意不得被本票改動。
+        """
+        from src.agent.emotion import DECAY_FAILURE_REASONS
+
+        for reason in ("NOT_ELIGIBLE", "NOT_DUE", "DUPLICATE", "UNKNOWN", "FLAG_OFF"):
+            assert reason not in DECAY_FAILURE_REASONS, (
+                f"正常路徑 reason {reason!r} 被誤列為失敗"
+            )
+        for reason in ("ERROR", "SETTLE_ABORTED", "SCHEMA_NOT_READY"):
+            assert reason in DECAY_FAILURE_REASONS, (
+                f"真實失敗 reason {reason!r} 未被列為失敗"
+            )
+
+
+# ─────────────────────────────────────────────────────────────
+# worker 生命週期：例外不得殺死任務、shutdown 乾淨取消
+# ─────────────────────────────────────────────────────────────
+
+
+class TestDecayWorkerLifecycle:
+    """修改 2 的契約：單一 worker、例外只記 WARNING、shutdown 乾淨取消。"""
+
+    @pytest.mark.asyncio
+    async def test_worker_exception_does_not_kill_task(self, monkeypatch) -> None:
+        """worker 內拋例外 ⇒ 吞成 WARNING、task 正常結束（不得 re-raise）。"""
+        mod = _import_run_server()
+        _reset_decay_worker(mod)
+
+        def _boom() -> dict:
+            raise RuntimeError("injected worker failure")
+
+        monkeypatch.setattr(mod, "_run_decay_evaluation_sync", _boom)
+
+        task = asyncio.create_task(mod._decay_worker_main())
+        res = await task
+        assert res["reason"] == "ERROR", f"worker 例外未轉成結構化失敗：{res}"
+        assert task.done() and not task.cancelled(), "worker 被例外殺死"
+        assert task.exception() is None, "worker 竟把例外往外洩（會冒 never-retrieved）"
+
+    @pytest.mark.asyncio
+    async def test_shutdown_cancels_worker_cleanly(self, monkeypatch) -> None:
+        """shutdown ⇒ 乾淨取消 worker（與既有 `_sage_flush_task` 同型）。"""
+        mod = _import_run_server()
+        _reset_decay_worker(mod)
+
+        started = threading.Event()
+
+        def _block() -> dict:
+            started.set()
+            time.sleep(5.0)
+            return {"evaluated": 0, "applied": 0, "reason": "EVALUATED", "results": {}}
+
+        monkeypatch.setattr(mod, "_run_decay_evaluation_sync", _block)
+
+        assert mod._maybe_schedule_decay_worker() is True
+        task = mod._DECAY_WORKER_TASK
+        assert task is not None
+        # 等 worker 真的進到 thread
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if started.is_set():
+                break
+        assert started.is_set(), "worker 未進入評估函式"
+
+        await mod._shutdown_decay_worker()
+        assert mod._DECAY_WORKER_TASK is None, "shutdown 後仍留著 worker 參照"
+
+    @pytest.mark.asyncio
+    async def test_at_most_one_worker_in_flight(self, monkeypatch) -> None:
+        """(c) 直接以併發計數證明：連續觸發 50 輪，同時在途 worker ≤ 1。"""
+        mod = _import_run_server()
+        _reset_decay_worker(mod)
+
+        in_flight = 0
+        peak = 0
+        gate = threading.Event()
+
+        def _slow() -> dict:
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            gate.wait(5.0)
+            in_flight -= 1
+            return {"evaluated": 0, "applied": 0, "reason": "EVALUATED", "results": {}}
+
+        monkeypatch.setattr(mod, "_run_decay_evaluation_sync", _slow)
+
+        scheduled = 0
+        for _ in range(50):
+            if mod._maybe_schedule_decay_worker():
+                scheduled += 1
+            await asyncio.sleep(0.005)
+
+        assert scheduled == 1, f"應恰排入 1 個 worker，實得 {scheduled}"
+        assert peak <= 1, f"🔴 在途 worker 併發數 {peak} > 1（(c) 被破壞）"
+
+        gate.set()
+        await _drain_decay_worker(mod)
+        assert in_flight == 0, "worker 未收斂"
+        assert peak == 1
+        _reset_decay_worker(mod)

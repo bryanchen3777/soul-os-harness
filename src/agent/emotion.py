@@ -129,6 +129,18 @@ NOT_ELIGIBLE_REASON = "NOT_ELIGIBLE"
 #: 本代碼代表一次**真實的失敗**，呼叫端**不得**將其計為成功。
 SETTLE_ABORTED_REASON = "SETTLE_ABORTED"
 
+#: 🔴 INTIMACY-GROWTH-2 同票修（執行邊界）—— 逐角色結果中代表**真實失敗**的
+#: reason 集合。用於 `decay_evaluate_eligible_agents()` 匯總成
+#: `PARTIAL` / `ALL_FAILED`：**七個全失敗絕不可回看似成功的 `EVALUATED`**。
+#:
+#: 注意：`NOT_ELIGIBLE` / `FLAG_OFF` / `UNKNOWN` / `NOT_DUE` / `DUPLICATE`
+#: **不在**本集合 —— 它們是正常（非錯誤）路徑，語意完全不變。
+DECAY_FAILURE_REASONS: frozenset = frozenset({
+    "ERROR",                 # 逐角色例外（含 SettleAbortedError，見下）
+    SETTLE_ABORTED_REASON,   # ledger 寫入結果不可判定（fail-closed）
+    "SCHEMA_NOT_READY",      # 惰性 DDL 未完成（遇鎖）⇒ 未進入交易
+})
+
 
 class SettleAbortedError(RuntimeError):
     """ledger 寫入結果不可判定 ⇒ 結算中止（**失敗傳播**用的內部例外）。
@@ -208,7 +220,20 @@ def decay_evaluate_eligible_agents(now: Optional[float] = None) -> dict:
         本處的逐角色隔離只是第二層。
 
     Returns dict：`evaluated`（實際評估的角色數）/ `applied`（成功扣減的角色數）/
-    `reason` / `results`（逐角色結果，便於測試與觀測）。
+    `reason` / `results`（逐角色結果，便於測試與觀測）/ `failed`（失敗角色數）。
+
+    🔴 **執行邊界修正：`reason` 三態**（修正前無論成敗一律 `"EVALUATED"`，
+    等於把七個全失敗報成成功）：
+
+      - **`"EVALUATED"`**：**零失敗**（全部角色走正常路徑：成功扣減，或
+        `NOT_DUE` / `UNKNOWN` / `DUPLICATE` / `NOT_ELIGIBLE`）。
+      - **`"PARTIAL"`**：部分成功、部分失敗。`results` 內**每個角色的準確結果
+        原封不動**（成功者的計數不會因為別人失敗而被抹掉）。
+      - **`"ALL_FAILED"`**：**全部**角色失敗 ⇒ **絕不**回 `"EVALUATED"`。
+
+      「失敗」的判準是 `DECAY_FAILURE_REASONS`（`ERROR` / `SETTLE_ABORTED` /
+      `SCHEMA_NOT_READY`）—— 這三個代表**真實失敗**，與政策擋下
+      （`NOT_ELIGIBLE`）或正常未到期（`NOT_DUE`）語意不同。
     """
     # 🔴 C4 契約：旗標 OFF ⇒ **第一行**就返回，零工作、零持久寫入。
     if not decay_enabled():
@@ -217,10 +242,24 @@ def decay_evaluate_eligible_agents(now: Optional[float] = None) -> dict:
     now_ts = float(now) if now is not None else time.time()
     results: dict = {}
     applied_count = 0
+    failed_count = 0
 
     # `INTIMACY_DECAY_ELIGIBLE_AGENTS` 是 `frozenset` ⇒ 排序只為讓評估順序
     # 可重現（測試與 log 可對照），不影響語意。
+    #
+    # 🔴 **逐角色評估前再檢查一次旗標**（即時讀取 `os.environ`，非快取）：
+    #    關閉旗標後，本輪已展開的評估會在**下一個角色**的安全邊界停下。
+    #    **如實聲明**：這**不是**「瞬間取消」。若某角色已在途、其執行緒正等待
+    #    SQLite 寫鎖（`BEGIN IMMEDIATE` 最多等 `BUSY_TIMEOUT_MS` = 5s），
+    #    該次等待**無法**被旗標中止 —— **停用在下一安全邊界生效**。
     for agent_id in sorted(INTIMACY_DECAY_ELIGIBLE_AGENTS):
+        if not decay_enabled():
+            logger.info(
+                "[INTIMACY-DECAY] periodic evaluation halted at safe boundary "
+                "agent=%s —— 旗標已於本輪中途轉 OFF（在途交易不保證瞬間取消）",
+                agent_id,
+            )
+            break
         try:
             result = emotion_engine.try_apply_decay(agent_id, now=now_ts)
         except Exception as e:  # noqa: BLE001 — 單一角色失敗不得中斷整輪
@@ -229,16 +268,28 @@ def decay_evaluate_eligible_agents(now: Optional[float] = None) -> dict:
                 agent_id, e,
             )
             results[agent_id] = {"applied": False, "reason": "ERROR"}
+            failed_count += 1
             continue
         results[agent_id] = result
         if result.get("applied"):
             applied_count += 1
+        if result.get("reason") in DECAY_FAILURE_REASONS:
+            failed_count += 1
+
+    # 🔴 三態匯總：七個全失敗 ⇒ `ALL_FAILED`，**絕不可**回 `EVALUATED`。
+    if failed_count == 0:
+        reason = "EVALUATED"
+    elif len(results) > 0 and failed_count >= len(results):
+        reason = "ALL_FAILED"
+    else:
+        reason = "PARTIAL"
 
     return {
         "evaluated": len(results),
         "applied": applied_count,
-        "reason": "EVALUATED",
+        "reason": reason,
         "results": results,
+        "failed": failed_count,
     }
 
 
@@ -297,11 +348,51 @@ class EmotionEngine:
     #                          original_due_at, applied_amount)  ← 記**實扣量**
     #   以 PRAGMA table_info 檢查後才 ALTER ⇒ 重複執行不得報 duplicate column。
 
-    def ensure_decay_schema(self) -> None:
+    #: 🔴 schema 未完成的統一 reason（**執行邊界**修正）。
+    #: 語意 ＝「惰性 DDL 沒有完成 ⇒ 本角色**未進入**交易、未扣減、未寫 ledger」。
+    #: 呼叫端必須把 `try_apply_decay()` 的 `applied=False` +
+    #: 本 reason 視為**真實失敗**（見 `DECAY_FAILURE_REASONS`）。
+    SCHEMA_NOT_READY_REASON = "SCHEMA_NOT_READY"
+
+    @staticmethod
+    def _is_already_target_state_error(exc: sqlite3.OperationalError) -> bool:
+        """把 `OperationalError` 分成**兩種不同意義**（執行邊界修正）。
+
+        - `duplicate column name ...` / `table ... already exists`
+           ⇒ **已是目標狀態**（另一路徑搶先完成 DDL）⇒ 可吞。
+        - `database is locked`（busy_timeout 逾時）
+           ⇒ **什麼都沒完成** ⇒ 必須上報，不得吞。
+
+        只靠 SQLITE_BUSY 的 `sqlite_errorname` 不夠：部分直譯器/包裝路徑
+        `sqlite_errorname` 缺席，故同時以訊息文字辨識。
+        """
+        name = (getattr(exc, "sqlite_errorname", None) or "")
+        msg = str(exc).lower()
+        if name in {"SQLITE_BUSY", "SQLITE_LOCKED"}:
+            return False
+        if "database is locked" in msg or "database table is locked" in msg:
+            return False
+        if "already exists" in msg or "duplicate column name" in msg:
+            return True
+        # 無法判定 ⇒ fail-closed：當成**未完成**上報，不吞。
+        return False
+
+    def ensure_decay_schema(self) -> bool:
         """惰性建立 INTIMACY-GROWTH-2 的兩欄 + ledger 表（冪等）。
 
         **唯一** 允許建立本票 schema 的入口。呼叫端必須先確認旗標 ON ——
         旗標 OFF 時本函式**不得**被呼叫（C4：零 DDL）。
+
+        Returns:
+            `True`  ＝ schema 已達目標狀態（含「另一個路徑搶先完成」）。
+            `False` ＝ **未完成任何事**（遇 `database is locked` 等）。
+                      呼叫端**必須**把它當成失敗回報，**不得**接著開交易 ——
+                      否則同一角色會在交易再吃一次 busy_timeout
+                      （實測 2.09× 逾時 = 10.43s）。
+
+        🔴 修正前本函式回 `None` 且**吞掉所有** `OperationalError`，把
+        「搶先完成（可吞）」與「遇鎖（不可吞）」混為一談 —— 這是 7 角色序列化
+        最壞 ~73s 阻塞 event loop 的其中一半來源。**語意改變處僅限遇鎖路徑。**
         """
         try:
             with _WRITE_LOCK:
@@ -330,8 +421,17 @@ class EmotionEngine:
                 if self.conn.in_transaction:
                     self.conn.commit()
         except sqlite3.OperationalError as e:
-            # 併發建立情境：另一路徑搶先 ALTER/CREATE 完成 -> 已是目標狀態，吞掉即可
-            logger.warning(f"[Emotion] decay schema migration skipped: {e}")
+            if self._is_already_target_state_error(e):
+                # 併發建立情境：另一路徑搶先 ALTER/CREATE 完成 => 已是目標狀態，吞掉即可
+                logger.warning(f"[Emotion] decay schema migration skipped: {e}")
+                return True
+            # 🔴 遇鎖（或無法判定的 OperationalError）：**未完成任何事** ⇒ 上報。
+            logger.error(
+                "[Emotion] decay schema NOT ready —— 未完成任何 DDL，"
+                "呼叫端不得進入交易（避免同一角色二次 busy_timeout）: %s", e,
+            )
+            return False
+        return True
 
     def get(self, agent_id: str) -> Tuple[float, float]:
         """讀出 (mood, intimacy)；沒有就回預設值 (0.0, 50.0)"""
@@ -662,7 +762,19 @@ class EmotionEngine:
             )
             return {"applied": False, "reason": NOT_ELIGIBLE_REASON, "due_at": None}
 
-        self.ensure_decay_schema()  # 惰性 DDL（C3）
+        # 🔴 執行邊界修正：`ensure_decay_schema()` 現在**回報結果**。
+        #    遇鎖（`database is locked`，busy_timeout 逾時）⇒ 回 `False`
+        #    ⇒ **本角色到此為止**，回明確的非成功 reason，**不進入**下方交易。
+        #    修正前這裡吞掉逾時後照樣開交易，同一角色會再吃一次 5s
+        #    （實測 2.09× = 10.43s），7 角色序列化最壞 ~73s。
+        #    註：`duplicate column` / `already exists` 仍回 `True`（已是目標
+        #    狀態），語意與既有註解一致。
+        if not self.ensure_decay_schema():
+            return {
+                "applied": False,
+                "reason": self.SCHEMA_NOT_READY_REASON,
+                "due_at": None,
+            }
         now_ts = float(now) if now is not None else time.time()
 
         with self._write_tx():

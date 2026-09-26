@@ -420,6 +420,111 @@ async def event_loop_self_check(
                 pass
 
 
+# ══════════════════════════════════════════════════════════════
+# INTIMACY-GROWTH-2「同票修執行邊界」：**單一受管理背景 worker**
+# ══════════════════════════════════════════════════════════════
+# 🔴 為什麼需要它（已量測，非推測）：
+#   `_sage_flush_loop()` 原本在 **event loop 上同步**呼叫
+#   `decay_evaluate_eligible_agents()`，逐角色走 SQLite 寫鎖。拋棄式 DB +
+#   受控寫鎖競爭實測：無競爭 8ms；schema 已建 + 鎖競爭 **5.19s**（=1.04×
+#   busy_timeout 5000ms）；schema 未建（首輪）+ 鎖競爭 **10.43s**（=2.09×，
+#   同一角色吃**兩次** timeout）。7 角色序列化最壞約 **73s**（**推估上界**），
+#   期間 **event loop 全被凍結**。
+#
+# 🔴 設計邊界（Owner 明示核准的窄例外）：
+#   - **不新增 timer、不新增 loop**。既有 15s 迴圈仍是**唯一**節奏來源。
+#   - 只加**一個**受管理的背景 task（與既有 `_sage_flush_task` 同型：存到
+#     `app.state`、shutdown 時乾淨 cancel）。
+#   - **前一輪未結束就略過本輪**：不排第二個、**不建立無界佇列**。
+#   - worker 內以 `asyncio.to_thread(...)` 執行 DB 評估 ⇒ event loop 自由。
+#   - 例外**只記 WARNING、任務不得死**（沿用本檔既有慣例）。
+#
+# 🔴 旗標雙重（實為三重）檢查，全部**即時讀取**、不快取：
+#   1. 15s 迴圈內：OFF ⇒ **不排 worker**、什麼都不做。
+#   2. worker 開始時：OFF ⇒ 立即結束本輪。
+#   3. 逐角色評估前：OFF ⇒ 在**下一安全邊界**停下（見 emotion.py）。
+#   **如實聲明**：關閉旗標**無法**瞬間取消一個已在等待 SQLite 寫鎖的執行緒
+#   —— 停用在下一安全邊界生效。
+
+#: 15s 迴圈內判斷「worker 是否空閒」的依據。預設 `None` ＝ 從未排入，
+#: 即視為空閒。只在 **event loop 執行緒**上讀寫（loop body 與 done-callback），
+#: 故不需要額外鎖。
+_DECAY_WORKER_TASK = None
+
+
+def _run_decay_evaluation_sync() -> dict:
+    """在**執行緒**中執行（經 `asyncio.to_thread`），不阻塞 event loop。
+
+    只做兩件事：開始時再檢查一次旗標（即時讀取）、呼叫公開 API。
+    刻意**不**在此包 try/except —— 例外由呼叫端的 `_decay_worker_main()`
+    統一記 WARNING，避免同一條錯誤被記兩次。
+    """
+    from src.agent.emotion import decay_enabled, decay_evaluate_eligible_agents
+
+    if not decay_enabled():
+        # 🔴 雙重檢查 #2：排入與真正開始之間旗標被關掉 ⇒ 本輪直接放棄。
+        logger.info("[Server] intimacy decay worker 開始前旗標已 OFF，略過本輪")
+        return {"evaluated": 0, "applied": 0, "reason": "FLAG_OFF", "results": {}}
+    return decay_evaluate_eligible_agents()
+
+
+async def _decay_worker_main() -> dict:
+    """**單一**衰減 worker：把 DB 評估丟到執行緒，讓 event loop 自由。"""
+    try:
+        return await asyncio.to_thread(_run_decay_evaluation_sync)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001 — 例外只記 WARNING，任務不得死
+        logger.warning(f"[Server] intimacy decay worker 評估錯誤: {e}")
+        return {"evaluated": 0, "applied": 0, "reason": "ERROR", "results": {}}
+
+
+def _maybe_schedule_decay_worker() -> bool:
+    """空閒才排入下一個 worker；**前一輪未結束就略過本輪**。
+
+    Returns: `True` 代表本輪排入了 worker；`False` 代表略過（在途 / 無法排入）。
+    """
+    global _DECAY_WORKER_TASK
+    task = _DECAY_WORKER_TASK
+    if task is not None and not task.done():
+        # 🔴 不排第二個、不建立無界佇列 —— 本輪直接略過。
+        logger.debug("[Server] intimacy decay worker 仍在途，略過本輪")
+        return False
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    task = asyncio.create_task(_decay_worker_main())
+    _DECAY_WORKER_TASK = task
+    task.add_done_callback(_on_decay_worker_done)
+    return True
+
+
+def _on_decay_worker_done(task) -> None:
+    """done-callback：只做觀測，**絕不** re-raise（否則會冒出 "never retrieved"）。"""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning(f"[Server] intimacy decay worker 例外: {exc}")
+
+
+async def _shutdown_decay_worker() -> None:
+    """關閉時乾淨取消 worker（與既有 `_sage_flush_task` 的取消同型）。"""
+    global _DECAY_WORKER_TASK
+    task = _DECAY_WORKER_TASK
+    if task is None:
+        return
+    _DECAY_WORKER_TASK = None
+    if not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    logger.info("[Server] intimacy decay worker 停止 ✓")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """所有初始化在同一個 event loop 裡，避免跨 loop 問題。"""
@@ -1814,18 +1919,33 @@ async def lifespan(app: FastAPI):
                 # 只有「TG 被動 TOUCH」與 dormant VC 端點會扣，安靜滿 24h 當下
                 # 不會扣 ⇒ 衰減永遠不會自然發生。
                 #
-                # 🔴 刻意**沿用本既有 15s 週期任務**，不新建定時器 / 不新開
-                #    asyncio task / 不新增 background loop（不得自己發明排程）。
-                #    本迴圈已在 lifespan 內以 create_task 啟動、關閉時被 cancel。
+                # 🔴 刻意**沿用本既有 15s 週期任務**，不新建定時器 / 不新增
+                #    background loop（不得自己發明排程）。本迴圈已在 lifespan
+                #    內以 create_task 啟動、關閉時被 cancel。
                 #
-                # 🔴 旗標 OFF ⇒ `decay_evaluate_eligible_agents()` 第一行即
-                #    返回，零 DDL、零寫入（C4）。旗標為**呼叫時即時讀取**。
+                # 🔴 **執行邊界修正（同票）**：本迴圈**只負責觸發** —— 它在
+                #    event loop 上跑，故**不得**在此同步執行 DB 評估，
+                #    **也不得** `await asyncio.to_thread(...)` 等它結束
+                #    （那會讓 SAGE flush 週期整個等上數十秒）。
+                #    實際評估交給**一個**受管理的背景 worker（見
+                #    `_decay_worker_task`）。本處只做「空閒 → 排入；否則略過」。
+                #
+                # 🔴 旗標 OFF ⇒ 這裡**不排任何 worker**，零 DDL、零寫入（C4）。
+                #    旗標為**呼叫時即時讀取**（`decay_enabled()` 每次重讀 env）。
                 #
                 # 🔴 例外只記 WARNING：與本迴圈其餘部分同一慣例，任務不得死。
                 try:
-                    from src.agent.emotion import decay_evaluate_eligible_agents
+                    from src.agent.emotion import (
+                        decay_enabled,
+                        decay_evaluate_eligible_agents,
+                    )
 
-                    decay_evaluate_eligible_agents()
+                    if decay_enabled():
+                        _maybe_schedule_decay_worker()
+                    else:
+                        logger.debug(
+                            "[Server] intimacy decay worker 未排入（旗標 OFF）"
+                        )
                 except Exception as e:
                     logger.warning(f"[Server] intimacy decay 週期評估錯誤: {e}")
             except asyncio.CancelledError:
@@ -1867,6 +1987,9 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         logger.info("[Server] SAGE flush 定時任務停止 ✓")
+
+    # INTIMACY-GROWTH-2（執行邊界修正）：停掉衰減 worker（乾淨取消，不留 pending task）
+    await _shutdown_decay_worker()
 
     if channel_router is not None:
         await channel_router.stop()
