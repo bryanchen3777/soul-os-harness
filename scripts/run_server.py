@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 # 確保 configs/ 和 src/ 可以被找到
 _root = Path(__file__).resolve().parent.parent
@@ -1849,6 +1849,46 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
+# ══════════════════════════════════════════════════════════════
+# INTIMACY-GROWTH-2 closeout：OFF 時不列出 /internal/vc/inbound_touch
+# ══════════════════════════════════════════════════════════════
+# 問題：/internal/vc/inbound_touch 是在**模組層級**用 `@app.post(...)` 註冊的。
+# 旗標 OFF 時 handler 回 404，但路由**仍在 `app.routes`**，於是
+# `/openapi.json` 對未鑑權者可列舉到該路徑 —— 這與 docstring 宣稱的
+# 「等同不存在」不符。
+#
+# 決策（Owner 已拍板）：採「`openapi()` 過濾」而非「註冊時判斷」。
+#   理由：`_internal_vc_touch_enabled()` 是**每次請求重讀 env**。若改成
+#   在 import 時判斷是否註冊，語意會從「每次重讀」變成「只在啟動時讀」，
+#   那是行為變更。過濾 openapi 可同時保住「OFF 時不可列舉」與「旗標仍可
+#   動態重讀」兩者。
+#
+# 🔴 已知殘餘（誠實揭露，不得宣稱「等同不存在」）：
+#   本過濾**只**作用於 OpenAPI schema（`/openapi.json`、`/docs`、`/redoc`）。
+#   受 FastAPI 架構限制，路由**仍然註冊於 `app.routes`** —— 直接對該路徑發
+#   請求時，是由 handler 內的旗標檢查回 404，**不是** routing 層的 404。
+#   若需要「路由層真正不存在」，唯一辦法是註冊時判斷，但那會犧牲旗標的
+#   動態重讀語意，故本票不做。
+_openapi_original = app.openapi  # 先保存原始 FastAPI 產生的 schema 產生器
+
+
+def _openapi_hiding_disabled_internal_endpoints():
+    """包裝原始 `app.openapi`：旗標 OFF 時從 `paths` 移除本端點。
+
+    **不重寫**任何 schema 產生邏輯 —— 只呼叫原始產生器，再對結果做一次
+    路徑過濾。旗標 ON 時逐位元回傳原始 schema（零改動）。
+    """
+    schema = _openapi_original()
+    if not _internal_vc_touch_enabled():
+        paths = schema.get("paths")
+        if isinstance(paths, dict):
+            paths.pop("/internal/vc/inbound_touch", None)
+    return schema
+
+
+app.openapi = _openapi_hiding_disabled_internal_endpoints
+
+
 # ── Stage 4.3.1 cold 33% 推驗證 admin endpoint ─────────────────
 # Mavis 拍板 2026-07-21 17:20+:
 # Bry 要驗 cold start 33% 推過濾,但 USER_MESSAGE 觸發會在 agent_speak 之前
@@ -1901,6 +1941,97 @@ async def test_spawn_cold_intents():
         "results": results,
         "note": "5 隻 cold 角色 AGENT_INTENT 已灌, target_channel=telegram, 走 cold 33% 推路徑。預期 1-2 隻會從 TG 收到 (33% × 5 ≈ 1.65)",
     }
+
+
+# ══════════════════════════════════════════════════════════════
+# INTIMACY-GROWTH-2 (C5)：VC inbound TOUCH — 最小受鑑權端點
+# ══════════════════════════════════════════════════════════════
+# 🔴🔴 **NOT ENABLED**（Owner 已裁定，不得自行放寬）🔴🔴
+# 本端點**只交付程式**：預設 OFF、不部署、不啟用。
+#
+# 三道閘門（缺一不動作）：
+#   1. `INTIMACY_DECAY_ENABLED`（主服務側衰減旗標，缺席即 OFF）
+#   2. `INTERNAL_VC_TOUCH_ENABLED`（本端點自身旗標，缺席即 OFF）
+#   3. `INTERNAL_VC_TOUCH_TOKEN` 的 Bearer 比對（fail-closed：
+#      **未設 token ⇒ 一律 503 拒絕**，不允許匿名呼叫）
+#
+# 🔴 語意邊界（必須與 C5 逐字一致，不得誤讀）：
+#   - **token 只證明「請求來自我方授權的 VC 服務」**，**不證明說話的人是 Bry**。
+#   - VC 的 `asr-ok` / `gen == self._generation` 檢查**只證明「有一個有效語音
+#     進來」**，**不構成** Bry 的身分鑑別 ⇒ 它們**不得冒充**身分鑑別。
+#   - 因此本端點**不得**被當成「已驗證的真人 inbound」。它是一條**候選**路徑，
+#     不是閉環；在旗標打開、且 VC 實際收到 2xx ACK 之前，閉環**沒有**成立。
+#   - §10：本端點**不直接**寫 `agent_emotions`；它只呼叫
+#     `emotion_engine.touch_inbound()`（唯一寫入路徑）。
+INTERNAL_VC_TOUCH_ENABLED_ENV = "INTERNAL_VC_TOUCH_ENABLED"
+INTERNAL_VC_TOUCH_TOKEN_ENV = "INTERNAL_VC_TOUCH_TOKEN"
+
+
+def _internal_vc_touch_enabled() -> bool:
+    """本端點是否啟用（每次呼叫重讀 env）。**缺席即 OFF。**"""
+    raw = os.environ.get(INTERNAL_VC_TOUCH_ENABLED_ENV)
+    if not isinstance(raw, str):
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+@app.post("/internal/vc/inbound_touch")
+async def internal_vc_inbound_touch(request: Request, payload: Dict[str, Any]):
+    """VC → 主服務的 inbound TOUCH 通知（**預設 OFF，不部署**）。
+
+    Bearer token 最小受鑑權。fail-closed：
+      - 端點旗標 OFF ⇒ handler 回 404，且 `/openapi.json` **不列出**此路徑
+      - 未設 token ⇒ 503（**不得**匿名放行）
+      - token 不符 ⇒ 401
+      - 主服務衰減旗標 OFF ⇒ 200 + applied=false（冪等，不落帳）
+
+    🔴 誠實邊界（**不得**再宣稱「等同不存在」）：
+      旗標 OFF 時本端點**仍然註冊於 `app.routes`**（FastAPI 架構限制：
+      路由在模組 import 時就綁定，無法在請求期移除）。差別在於
+      OpenAPI schema 由 `app.openapi` 覆寫過濾掉此路徑，故不可列舉；
+      但直接發請求時，404 是**由本 handler 內**的旗標檢查產生，而非
+      routing 層的 404。此為已知殘餘，已在交付說明中揭露。
+    """
+    from fastapi import HTTPException
+    import secrets as _secrets
+
+    if not _internal_vc_touch_enabled():
+        raise HTTPException(status_code=404, detail="not found")
+
+    expected = (os.environ.get(INTERNAL_VC_TOUCH_TOKEN_ENV) or "").strip()
+    if not expected:
+        # fail-closed：沒有配置 token ⇒ 拒絕（絕不匿名放行）
+        raise HTTPException(status_code=503, detail="internal touch token not configured")
+
+    header = request.headers.get("authorization") or ""
+    prefix = "bearer "
+    presented = (
+        header[len(prefix):].strip() if header.lower().startswith(prefix) else ""
+    )
+    # 定時比較，避免 token 逐字元外洩
+    if not presented or not _secrets.compare_digest(presented, expected):
+        raise HTTPException(status_code=401, detail="invalid token")
+
+    agent_id = str(payload.get("agent_id") or "").strip()
+    event_id = str(payload.get("event_id") or "").strip()
+    channel = str(payload.get("channel") or "voice_companion").strip()
+    if not agent_id or not agent_id.startswith("agent_"):
+        return {"ok": False, "reason": "INVALID_AGENT_ID"}
+    if not event_id:
+        return {"ok": False, "reason": "MISSING_EVENT_ID"}
+
+    from src.agent.emotion import decay_enabled, emotion_engine
+
+    if not decay_enabled():
+        # 主服務旗標 OFF ⇒ 冪等的 no-op（零 DDL、零寫入）
+        return {"ok": True, "applied": False, "reason": "FLAG_OFF"}
+
+    # §10：唯一寫入路徑是 emotion_engine.touch_inbound()；
+    #      本端點**不直接**寫 agent_emotions。
+    result = emotion_engine.touch_inbound(
+        agent_id=agent_id, event_id=event_id, channel=channel
+    )
+    return {"ok": True, **result}
 
 
 @app.post("/api/test/spawn_intent")

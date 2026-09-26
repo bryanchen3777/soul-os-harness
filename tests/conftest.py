@@ -88,6 +88,17 @@ def _isolate_soul_os_data_root(request, tmp_path_factory):
     env_patch.setenv("LIFE_THREAD_BOOTSTRAP_ENABLED", "")
     env_patch.setenv("LIFE_THREAD_CONSOLIDATION_ENABLED", "")
     env_patch.setenv("LIFE_THREAD_CATCHUP_ENABLED", "")
+    # INTIMACY-GROWTH-2 (C6)：同一類地雷的第四次踩點預防。
+    # `src/agent/emotion.py` 的 `decay_enabled()` **缺席即 OFF**，而
+    # `load_dotenv(..., override=False)` 會在「變數不存在」時把生產
+    # `.env` 的值補回 pytest 行程 ⇒ 若只靠「沒設」來當 OFF，測試會在
+    # 開發機（有 .env）與 CI（無 .env）給出不同結果。
+    # 顯式釘成 `""`（空字串非真值 ⇒ OFF），讓 OFF 是**被寫下來的斷言**。
+    # 同理釘住 VC 通知客戶端與主服務端點的兩支旗標與 token。
+    env_patch.setenv("INTIMACY_DECAY_ENABLED", "")
+    env_patch.setenv("VC_INBOUND_TOUCH_ENABLED", "")
+    env_patch.setenv("INTERNAL_VC_TOUCH_ENABLED", "")
+    env_patch.setenv("INTERNAL_VC_TOUCH_TOKEN", "")
     try:
         yield
     finally:

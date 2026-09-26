@@ -48,6 +48,7 @@ import logging
 import os
 import random
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -646,6 +647,53 @@ class ChannelRouter:
         if touch_bryan_last_seen(full_agent_id, text):
             self._bryan_last_seen = datetime.now(timezone.utc)
 
+    # ── INTIMACY-GROWTH-2 (C5): TG inbound 的 TOUCH 點 ──
+    # 語意契約 §2：**只有通過驗證的真人 inbound** 才 TOUCH。
+    # 本 repo 唯一具備真實身分證據的入口就是本檔 L843-852 的 owner whitelist
+    # （比對 TELEGRAM_OWNER_ID）；Web 無 token / 無共享密鑰 / 無 origin 檢查，
+    # VC 的 asr-ok + generation 只證明「有一個有效語音進來」，皆**不構成**
+    # Bry 的身分鑑別 ⇒ 兩者都不得 TOUCH（見 gateway.py / voice_companion）。
+    #
+    # §3：後續回覆或 SAGE 失敗**不撤銷**已確認的真人 inbound —— 故 TOUCH 在
+    #      inbound 當下即完成且**不設補償路徑**（沒有「undo touch」這種東西）。
+    # §6：本 callsite 絕不新增對 agent_emotions 的直接寫入（VC 亦同，§10）。
+    # §10：唯一寫入路徑是 emotion_engine.touch_inbound()。
+    #
+    # 旗標 OFF（預設）⇒ touch_inbound 直接 early-return FLAG_OFF ⇒ 零 DDL、
+    # 零持久寫入（C4）。此處**不自行**判斷旗標，避免旗標判斷散落兩處。
+    def _touch_intimacy_clock(
+        self, full_agent_id: str, channel: str, text: str
+    ) -> None:
+        """把已驗證的 TG inbound 反映到該 agent 自己的親密度時鐘。
+
+        fail-safe：任何例外都只記一行 warning，**不得**中斷 inbound 流程
+        （inbound 已經在 `_save_bryan_last_seen` 之後，這裡是附加訊號）。
+        """
+        try:
+            # 空 / 純空白文字不構成一次真人發言（§2 空 ASR 不 TOUCH）。
+            if not (text or "").strip():
+                return
+            from src.agent.emotion import emotion_engine
+            emotion_engine.touch_inbound(
+                agent_id=full_agent_id,
+                event_id=f"{channel}:{full_agent_id}:{self._intimacy_event_seq()}",
+                channel=channel,
+            )
+        except Exception as e:
+            logger.warning(
+                f"[INTIMACY-DECAY] touch 失敗（不中斷 inbound）: {e}"
+            )
+
+    @staticmethod
+    def _intimacy_event_seq() -> str:
+        """每筆 inbound 的唯一序號（event_id 的可追溯部分）。
+
+        只為讓 event_id 逐筆可辨（**可追溯**）；**冪等**由 ledger 的
+        `(agent_id, 原到期點)` event key 保證，不依賴本序號。
+        用 `uuid4` 而非行程內計數器：跨行程 / 重啟都不撞號，且無共享可變狀態。
+        """
+        return uuid.uuid4().hex
+
     # ── M2 (2026-08-02 10:51 Perplexity 派工): 離線 outbox ──
     # 修法動機: Bry 8/1 報「角色突然全部消失」/「訊息雲裡霧裡」, 排查發現
     # Bry 完全離線 (不在 web + 沒 last_tg_user) 時, 角色主動觸發會:
@@ -867,6 +915,13 @@ class ChannelRouter:
             self._save_last_tg_user_global(user_id, full_agent_id)
             # M0.5: 記 Bry 最後一次訊息時間, throttle proactive_dm 用
             self._save_bryan_last_seen(full_agent_id, text)
+            # 🔴 INTIMACY-GROWTH-2 (C5)：**唯一** TOUCH 點。
+            # 只有走到這裡才代表「通過 owner whitelist 的已驗證真人 inbound」
+            # （L843-852 是唯一有真實身分證據的閘門：比對 TELEGRAM_OWNER_ID）。
+            # 以下一律**不** TOUCH：空 ASR、單純 interrupt、夢、日記、排程事件
+            # （它們根本不經過 ChannelRouter.inbound）。
+            # 失敗**不得**影響既有 inbound 流程（fire-and-forget，比照既有 hook）。
+            self._touch_intimacy_clock(full_agent_id, channel, text)
             # M2 (Bry 8/2 10:51 派工): Bry 上線了, 立即 flush outbox
             # Bry 重新上線是「過去累積的訊息要立刻摘要給 Bry 看」的信號
             if self._outbox:

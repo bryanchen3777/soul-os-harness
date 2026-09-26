@@ -19,10 +19,14 @@ Soul OS — Phase 3: 情緒引擎（SQLite 持久化）
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
+import threading
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 logger = logging.getLogger("soul_os.emotion")
 
@@ -54,12 +58,63 @@ SENSITIVITY: dict[str, dict[str, float]] = {
 }
 
 
+# ══════════════════════════════════════════════════════════════
+# INTIMACY-GROWTH-2：24 小時靜默衰減 — 常數與旗標
+# ══════════════════════════════════════════════════════════════
+
+#: 衰減旗標環境變數名（**呼叫時即時讀取，不得快取**）。
+#: 🔴 C4：**缺席即 OFF**。不是「預設 ON、值為 '0' 才 OFF」。
+DECAY_ENABLED_ENV = "INTIMACY_DECAY_ENABLED"
+
+#: 真值集合（與 LIFE_THREAD_* 三支旗標逐字同語意）。
+TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
+
+#: 固定步長：滿 24 小時扣 0.5 點（§4）。
+DECAY_STEP = 0.5
+
+#: 衰減窗口（小時）。24h。
+DECAY_WINDOW_HOURS = 24.0
+
+#: 連線層級 busy_timeout（毫秒）。C2：顯式設定，不倚賴 Python 預設 5.0s。
+BUSY_TIMEOUT_MS = 5000
+
+#: 🔴 寫入互斥鎖（C1 的配套）。
+#: `emotion_engine.conn` 是 `check_same_thread=False` 的**跨執行緒共享**連線
+#: （模組層級 singleton，全 process 共用）。Python sqlite3 的 `in_transaction`
+#: 是連線層級狀態，沒有這把鎖時「檢查 → BEGIN → commit」會與其他執行緒交錯，
+#: 實測會拋 SystemError / "cannot commit - no transaction is active" /
+#: "cannot start a transaction within a transaction"。
+#: 用 RLock（可重入）讓同一條連線上的顯式交易彼此互斥；
+#: 這**不是**第二條連線，仍是單寫者模型。
+_WRITE_LOCK = threading.RLock()
+
+
+def decay_enabled() -> bool:
+    """衰減旗標是否為 ON（**每次呼叫都重新讀 `os.environ`**，讓測試能 monkeypatch）。
+
+    真值語意（C4）：
+      - 去首尾空白、不分大小寫，落在真值集合 `{"1","true","yes","on"}` 才為 `True`
+      - **缺席**（`None`）／非字串／其餘值（含 `""` / `"0"` / `"off"` / `"false"`）
+        ⇒ `False`（fail-safe 方向 ＝ 零 DDL、零寫入、逐位元維持原行為）
+    """
+    raw = os.environ.get(DECAY_ENABLED_ENV)
+    if not isinstance(raw, str):
+        return False
+    return raw.strip().lower() in TRUTHY_VALUES
+
+
 class EmotionEngine:
     """情緒引擎：管理各 agent 的 mood / intimacy（SQLite 持久化）"""
 
     def __init__(self, db_path: Path = DB_PATH) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        # INTIMACY-GROWTH-2 (C2)：**顯式**設 busy_timeout。
+        # 這條連線是模組層級 singleton 的單一長生命週期連線（全 process 共用），
+        # 上面沒有 timeout= 引數 ⇒ Python 預設 5.0s。本工單要求在連線上顯式
+        # 發出 PRAGMA，讓「等待鎖」的預算是被寫下來的契約、而非直譯器預設值。
+        # 只在**寫**連線上做；不開第二條連線（C1：SQLite 單寫者模型）。
+        self.conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -88,6 +143,56 @@ class EmotionEngine:
             # 併發建立情境：另一連線搶先 ALTER 完成 -> 已是目標狀態，吞掉即可
             logger.warning(f"[Emotion] intimacy_delta migration skipped: {e}")
         self.conn.commit()
+
+    # ── INTIMACY-GROWTH-2：惰性冪等 DDL（C3）─────────────────────
+    # 🔴 硬性約束：**模組 import 時不得執行任何 DDL**。
+    #   本函式只在 `touch_inbound()` / `try_apply_decay()` **確實要動 DB 時**
+    #   才被呼叫（且 `ensure_decay_schema()` 是那兩條路徑唯一的 DDL 入口），
+    #   並且**絕不**在 `__init__` / `_init_schema()` 裡被呼叫。
+    #   測試 test_g2_no_ddl_at_import / test_g2_flag_off_zero_ddl 會把這條釘死。
+    #
+    # 兩欄 + 一張 ledger 表（冪等 event key 是「每次評估最多扣一次」的持久依據）：
+    #   last_valid_inbound_at REAL(epoch seconds) NULL = UNKNOWN（§9 不衰減）
+    #   next_decay_due_at     REAL(epoch seconds) NULL = UNKNOWN（§9 不衰減）
+    #   intimacy_decay_ledger (event_key PK, agent_id, applied_at,
+    #                          original_due_at, applied_amount)  ← 記**實扣量**
+    #   以 PRAGMA table_info 檢查後才 ALTER ⇒ 重複執行不得報 duplicate column。
+
+    def ensure_decay_schema(self) -> None:
+        """惰性建立 INTIMACY-GROWTH-2 的兩欄 + ledger 表（冪等）。
+
+        **唯一** 允許建立本票 schema 的入口。呼叫端必須先確認旗標 ON ——
+        旗標 OFF 時本函式**不得**被呼叫（C4：零 DDL）。
+        """
+        try:
+            with _WRITE_LOCK:
+                cols = {
+                    row[1]
+                    for row in self.conn.execute("PRAGMA table_info(agent_emotions)")
+                }
+                if "last_valid_inbound_at" not in cols:
+                    self.conn.execute(
+                        "ALTER TABLE agent_emotions "
+                        "ADD COLUMN last_valid_inbound_at REAL"
+                    )
+                if "next_decay_due_at" not in cols:
+                    self.conn.execute(
+                        "ALTER TABLE agent_emotions ADD COLUMN next_decay_due_at REAL"
+                    )
+                self.conn.execute("""
+                    CREATE TABLE IF NOT EXISTS intimacy_decay_ledger (
+                        event_key        TEXT PRIMARY KEY,
+                        agent_id         TEXT NOT NULL,
+                        applied_at       REAL NOT NULL,
+                        original_due_at  REAL,
+                        applied_amount   REAL NOT NULL
+                    )
+                """)
+                if self.conn.in_transaction:
+                    self.conn.commit()
+        except sqlite3.OperationalError as e:
+            # 併發建立情境：另一路徑搶先 ALTER/CREATE 完成 -> 已是目標狀態，吞掉即可
+            logger.warning(f"[Emotion] decay schema migration skipped: {e}")
 
     def get(self, agent_id: str) -> Tuple[float, float]:
         """讀出 (mood, intimacy)；沒有就回預設值 (0.0, 50.0)"""
@@ -163,19 +268,39 @@ class EmotionEngine:
 
         UPSERT 沿用 update() 的模式；intimacy / mood 欄位不在 UPSERT 目標內，
         因此對既有 row 而言兩者維持原值（唯讀語義）。
+
+        🔴 INTIMACY-GROWTH-2 closeout（C1）：整段 read-modify-write 必須與
+        `_write_tx()` 的顯式交易共用**同一把** `_WRITE_LOCK`。本連線是
+        `check_same_thread=False` 的**跨執行緒共享**長生命週期連線，而
+        `update_delta()` 是 1B 交付的既有成長路徑，未取鎖時會與
+        `touch_inbound()` / `try_apply_decay()` 的 `BEGIN IMMEDIATE` 交錯：
+
+          1B: get_delta() 讀 intimacy_delta  →（無鎖，另一執行緒插入顯式交易）
+          1B: conn.execute(INSERT..UPSERT)   ← 此時 in_transaction 已被推成 True
+          1B: conn.commit()                  ← 提交了**別人**的交易，
+                                                隨後對方 commit ⇒
+                                                "cannot commit - no transaction is active"
+          或 `SystemError: error return without exception set`（commit 回 NULL 無例外）
+
+        實測重現於 closeout 競態探針（4 執行緒 × 30 輪 ⇒ 5 次上述例外）。
+        取鎖後 `update_delta()` 仍是**同一個 UPSERT、同一個算式**：本函式
+        的成長語意（clamp 邊界、回傳值、只動 intimacy_delta 欄）逐位元不變，
+        改的只是「寫入邊界納入同一互斥」。RLock 可重入，故不會與呼叫端
+        既有的鎖持有互相死鎖。
         """
-        current = self.get_delta(agent_id)
-        new_delta = max(-100.0, min(100.0, current + float(delta_gain)))
-        now = datetime.now(timezone.utc).isoformat()
-        self.conn.execute("""
-            INSERT INTO agent_emotions (agent_id, intimacy_delta, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(agent_id) DO UPDATE SET
-                intimacy_delta = excluded.intimacy_delta,
-                updated_at = excluded.updated_at
-        """, (agent_id, new_delta, now))
-        self.conn.commit()
-        return new_delta
+        with _WRITE_LOCK:
+            current = self.get_delta(agent_id)
+            new_delta = max(-100.0, min(100.0, current + float(delta_gain)))
+            now = datetime.now(timezone.utc).isoformat()
+            self.conn.execute("""
+                INSERT INTO agent_emotions (agent_id, intimacy_delta, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                    intimacy_delta = excluded.intimacy_delta,
+                    updated_at = excluded.updated_at
+            """, (agent_id, new_delta, now))
+            self.conn.commit()
+            return new_delta
 
     @staticmethod
     def mood_description(mood: float) -> str:
@@ -187,6 +312,266 @@ class EmotionEngine:
         if mood >= -0.5:
             return "你有點悶，話比平時少一點"
         return "你心情很差，話變得更短、更冷"
+
+    # ── INTIMACY-GROWTH-2：24 小時靜默衰減 ────────────────────────
+    # 語意契約逐條落地（見模組尾註）。三個不變量先寫在前面：
+    #   §1 每角色獨立計時 —— 時鐘存在 agent_emotions 的**該 agent 自己的 row**，
+    #      沒有任何跨 agent 的共享時鐘；不存在的 row ⇒ 時鐘為 NULL（UNKNOWN）。
+    #   §6 只動 intimacy_delta 欄；mood / 舊 intimacy / 既有 Base 一律不碰。
+    #   §7 時鐘 / 下一次到期 / Delta 扣減 / ledger 事件紀錄 **同一交易**提交。
+
+    def touch_inbound(
+        self,
+        agent_id: str,
+        event_id: str,
+        channel: str,
+        now: Optional[float] = None,
+    ) -> dict:
+        """已驗證的真人 inbound 進來的 TOUCH 點。
+
+        流程（§8：**先結算最多一次，再推進 TOUCH**）：
+          1. 若時鐘已逾期 ⇒ 先 `_settle_once()` 結算**最多一步**
+             （並把 TOUCH 目標推到 due + 24h ⇒ 時鐘**永遠不倒退**）
+          2. 否則 TOUCH 目標 = max(last_valid_inbound_at, now)
+          3. next_decay_due_at = 目標 + 24h
+
+        逾期或重複 inbound 只會讓 due 由「now + 24h」往前推，永不倒退。
+
+        旗標 OFF ⇒ 原行為、零新持久寫入（C4）。
+        """
+        if not decay_enabled():
+            return {"applied": False, "touched": False, "reason": "FLAG_OFF"}
+
+        self.ensure_decay_schema()  # 惰性 DDL（C3）
+        now_ts = float(now) if now is not None else time.time()
+        window = DECAY_WINDOW_HOURS * 3600.0
+
+        with self._write_tx():
+            last_in, due, delta = self._read_clock_and_delta_locked(agent_id)
+            target = now_ts
+
+            if due is not None and now_ts >= due:
+                # §8：逾期 inbound ⇒ 先結算最多一次，再推進 TOUCH。
+                self._settle_once_locked(
+                    agent_id, now_ts, due, delta, origin="inbound_late"
+                )
+                # 結算已把 due 推到 due + 24h；TOUCH 從那個點再往上推，
+                # 保證「時鐘不倒退」（target = max(結算後 due, now)）。
+                target = max(now_ts, due + window)
+            elif last_in is not None:
+                target = max(float(last_in), now_ts)
+
+            self._upsert_clock_locked(agent_id, target, target + window)
+
+        logger.info(
+            "[INTIMACY-DECAY] touch agent=%s channel=%s event=%s due_at=%.0f",
+            agent_id, channel, event_id, target + window,
+        )
+        return {
+            "applied": False,
+            "touched": True,
+            "reason": "TOUCHED",
+            "last_valid_inbound_at": target,
+            "next_decay_due_at": target + window,
+        }
+
+    def try_apply_decay(
+        self, agent_id: str, now: Optional[float] = None
+    ) -> dict:
+        """評估一次衰減（heartbeat / 排程 tick 呼叫）。
+
+        §4 首次滿 24h 扣 0.5；**每次評估最多扣一次**；成功後 due = now + 24h。
+        §5 停服後恢復 **最多補扣一次**（bounded 1-step catch-up），不累積多步。
+        §6 Delta 保底 0.0，不得為負。
+        §9 時鐘 NULL（UNKNOWN 冷啟動）⇒ 不衰減、不清零既有 Delta。
+
+        Returns dict：`applied` / `reason` / `applied_amount` / `due_at`。
+        """
+        if not decay_enabled():
+            return {"applied": False, "reason": "FLAG_OFF"}
+
+        self.ensure_decay_schema()  # 惰性 DDL（C3）
+        now_ts = float(now) if now is not None else time.time()
+
+        with self._write_tx():
+            _last_in, due, delta = self._read_clock_and_delta_locked(agent_id)
+            if due is None:
+                # §9：無有效時鐘 ⇒ UNKNOWN ⇒ 不衰減、不清零既有 Delta。
+                return {"applied": False, "reason": "UNKNOWN", "due_at": None}
+            if now_ts < due:
+                # §4：未到期（含 23:59）⇒ 不扣。
+                return {"applied": False, "reason": "NOT_DUE", "due_at": due}
+
+            event_key = self._decay_event_key(agent_id, due)
+            if self._ledger_has_locked(event_key):
+                # 同一到期點已結算過（跨行程冪等）⇒ 只推進時鐘，不再扣。
+                self._upsert_clock_only_locked(agent_id, now_ts + DECAY_WINDOW_HOURS * 3600.0)
+                return {
+                    "applied": False,
+                    "reason": "DUPLICATE",
+                    "due_at": now_ts + DECAY_WINDOW_HOURS * 3600.0,
+                }
+
+            applied = self._settle_once_locked(
+                agent_id, now_ts, due, delta, origin="tick", event_key=event_key
+            )
+            return {
+                "applied": True,
+                "reason": "DECAYED",
+                "applied_amount": applied,
+                "due_at": now_ts + DECAY_WINDOW_HOURS * 3600.0,
+            }
+
+    # ── 內部：交易輔助（C1）─────────────────────────────────────
+    # 🔴 全部走 `self.conn`（模組層級 singleton 的**同一條**長生命週期連線）。
+    #    **禁止**對同一個 db 檔另開第二條 sqlite3.connect（單寫者模型）。
+    #    發 BEGIN IMMEDIATE 前必須確認 `in_transaction` 為 False —— Python 的
+    #    隱式交易管理下，在交易中再發 BEGIN 會撞
+    #    「cannot start a transaction within a transaction」。
+
+    @contextmanager
+    def _write_tx(self):
+        """`self.conn` 上的顯式交易邊界（C1）。
+
+        🔴 兩條硬規則：
+          1. **禁止**另開第二條連線：整個結算都在模組層級 singleton 的
+             `self.conn` 上完成（SQLite 單寫者模型）。
+          2. `BEGIN IMMEDIATE` 之前必須確認 `in_transaction` 為 False ——
+             Python sqlite3 預設 isolation_level 會隱式管理交易，在隱式交易
+             中再發 BEGIN 會撞 `cannot start a transaction within a transaction`。
+
+        本連線是 `check_same_thread=False` 的**跨執行緒共享**連線（模組層級
+        singleton，全 process 共用），所以「檢查 in_transaction → BEGIN →
+        ... → commit」這串必須對其他寫者互斥；否則 `in_transaction` 會在檢查
+        與 BEGIN 之間被另一個執行緒推成 True（實測：SystemError
+        "error return without exception set" / DatabaseError
+        "cannot commit - no transaction is active"）。用**同一把** RLock 串行化，
+        並重用既有隱式交易而非疊一層 BEGIN。
+        """
+        with _WRITE_LOCK:
+            conn = self.conn
+            opened = False
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+                opened = True
+            try:
+                yield conn
+            except BaseException:
+                try:
+                    if conn.in_transaction:
+                        conn.rollback()
+                except sqlite3.Error:
+                    pass
+                raise
+            else:
+                if conn.in_transaction:
+                    conn.commit()
+
+    def _read_clock_and_delta_locked(
+        self, agent_id: str
+    ) -> Tuple[Optional[float], Optional[float], float]:
+        """讀 (last_valid_inbound_at, next_decay_due_at, intimacy_delta)。
+
+        無 row ⇒ (None, None, 0.0)：時鐘 NULL ＝ UNKNOWN（§9）。
+        """
+        cur = self.conn.execute(
+            "SELECT last_valid_inbound_at, next_decay_due_at, intimacy_delta "
+            "FROM agent_emotions WHERE agent_id = ?",
+            (agent_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return (None, None, 0.0)
+        raw_last, raw_due, raw_delta = row
+
+        def _as_float(value):
+            if value is None:
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        delta = _as_float(raw_delta)
+        return (_as_float(raw_last), _as_float(raw_due), delta if delta is not None else 0.0)
+
+    @staticmethod
+    def _decay_event_key(agent_id: str, due: float) -> str:
+        """唯一 event key（冪等鍵）：agent ＋ **原到期點**。
+
+        以原到期點（而非 now）當鍵，是「同一到期點被評估多次只結算一次」的關鍵：
+        重複 tick / 重啟後重評都會算出同一個 key。
+        """
+        return f"decay:{agent_id}:{int(round(float(due)))}"
+
+    def _ledger_has_locked(self, event_key: str) -> bool:
+        cur = self.conn.execute(
+            "SELECT 1 FROM intimacy_decay_ledger WHERE event_key = ?", (event_key,)
+        )
+        return cur.fetchone() is not None
+
+    def _settle_once_locked(
+        self,
+        agent_id: str,
+        now_ts: float,
+        due: float,
+        delta: float,
+        *,
+        origin: str,
+        event_key: Optional[str] = None,
+    ) -> float:
+        """扣**一步** 0.5 並把 due 推到 now + 24h，全在同一交易內。
+
+        §6：intimacy_delta 保底 0.0（實扣量 = min(0.5, max(delta, 0.0))）。
+        §7：Delta 扣減 + ledger 事件 + 時鐘推進 同一交易提交。
+        """
+        window = DECAY_WINDOW_HOURS * 3600.0
+        applied = min(DECAY_STEP, max(0.0, float(delta)))  # §6 floor 0.0
+        new_delta = max(0.0, float(delta) - DECAY_STEP)
+        key = event_key or self._decay_event_key(agent_id, due)
+        new_due = now_ts + window
+
+        self.conn.execute(
+            "INSERT INTO intimacy_decay_ledger "
+            "(event_key, agent_id, applied_at, original_due_at, applied_amount) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(event_key) DO NOTHING",
+            (key, agent_id, now_ts, due, applied),
+        )
+        self.conn.execute(
+            "UPDATE agent_emotions SET intimacy_delta = ?, next_decay_due_at = ? "
+            "WHERE agent_id = ?",
+            (new_delta, new_due, agent_id),
+        )
+        logger.info(
+            "[INTIMACY-DECAY] settle agent=%s origin=%s applied=%.3f "
+            "delta=%.3f->%.3f original_due=%.0f next_due=%.0f key=%s",
+            agent_id, origin, applied, delta, new_delta, due, new_due, key,
+        )
+        return applied
+
+    def _upsert_clock_locked(
+        self, agent_id: str, last_inbound: float, due: float
+    ) -> None:
+        """UPSERT 時鐘；**不碰** mood / intimacy / intimacy_delta（§6）。"""
+        self.conn.execute(
+            """
+            INSERT INTO agent_emotions
+                (agent_id, last_valid_inbound_at, next_decay_due_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(agent_id) DO UPDATE SET
+                last_valid_inbound_at = excluded.last_valid_inbound_at,
+                next_decay_due_at     = excluded.next_decay_due_at,
+                updated_at            = excluded.updated_at
+            """,
+            (agent_id, last_inbound, due, datetime.now(timezone.utc).isoformat()),
+        )
+
+    def _upsert_clock_only_locked(self, agent_id: str, due: float) -> None:
+        self.conn.execute(
+            "UPDATE agent_emotions SET next_decay_due_at = ? WHERE agent_id = ?",
+            (due, agent_id),
+        )
 
 
 # ── INTIMACY-GROWTH-1：親密度成長模型 ──────────────────────────

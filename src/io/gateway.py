@@ -397,6 +397,26 @@ class IOGateway:
         # Live2D 已移除（Bry 拍板 2026-07-14）— 純文字 + STT 介面
         self._setup_routes()
 
+    # ── INTIMACY-GROWTH-2 (C5): Web inbound 的 fail-closed 閘門 ──
+    # 語意契約 §2：只有「通過驗證的真人 inbound」才 TOUCH。
+    # 本入口（`_setup_routes` 的 `/ws` → `receive_text` → `type == USER_MESSAGE`）
+    # **沒有 token、沒有共享密鑰、沒有 origin 檢查** ⇒ 任何能連上 :8000/ws 的
+    # 客戶端都能自稱 Bry。因此這裡**明文不 TOUCH**：閘門是 fail-closed 的
+    # 「拒絕」，不是「放行後補救」。
+    #
+    # 為什麼保留這個方法而不直接刪掉：它是**有界的可觀測痕跡** —— 未來若有人
+    # 想在此接上 TOUCH，會先撞到這道閘門與它的診斷行，而不是默默生效。
+    # 允許 `SKIPPED_NO_AUTH` 但**只作為有界診斷**：
+    #   - 不進 DB（§10：VC 亦不得直接寫 agent_emotions；此處同樣不寫）
+    #   - 不建新生產審計流（只有 logger 一行，無新檔案、無新表）
+    def _intimacy_decay_gate(self, full_agent_id: str) -> None:
+        """Web inbound 一律不 TOUCH（無身分鑑別）→ 只記一行有界診斷。"""
+        logger.info(
+            "[INTIMACY-DECAY] SKIPPED_NO_AUTH agent=%s channel=web "
+            "(no token/shared-secret/origin check)",
+            full_agent_id,
+        )
+
     def register(self):
         self.bus.subscribe(
             "io_gateway",
@@ -881,6 +901,13 @@ class IOGateway:
                             # 所以所有 web USER_MESSAGE 都算 Bry 活躍。
                             from src.io.channels.bryan_state import touch_bryan_last_seen
                             touch_bryan_last_seen(ws_full_agent, raw_content)
+                            # 🔴 INTIMACY-GROWTH-2 (C5 / §2)：Web **不 TOUCH**。
+                            # 本入口（:826 `ws.receive_text` → :835 USER_MESSAGE）
+                            # **無 token、無共享密鑰、無 origin 檢查** ⇒ 不構成
+                            # Bry 的身分鑑別，因此**不得**推進親密度時鐘。
+                            # 這裡只保留一個 **fail-closed 閘門 + 有界診斷**：
+                            # 不進 DB、不建新生產審計流，只是一行 INFO。
+                            self._intimacy_decay_gate(ws_full_agent)
                             await self.bus.publish(user_event)
                             content_preview = str(msg.get("content", ""))[:30]
                             logger.info(f"[Gateway] USER_MESSAGE mode={mode} participants={participants}: {content_preview}")
