@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -451,15 +452,43 @@ async def event_loop_self_check(
 #: 故不需要額外鎖。
 _DECAY_WORKER_TASK = None
 
+#: 🔴 **執行緒可見**的取消旗標（INTIMACY-GROWTH-2 執行邊界修正）。
+#:
+#: 為什麼需要它 —— 已證實的缺陷：`asyncio.to_thread()` 底層是
+#: `run_in_executor` ⇒ `concurrent.futures` 執行緒。`task.cancel()` **只能取消
+#: `await` 點**，**無法中斷已執行的同步函式**（Python 既有語意）。故只靠
+#: `task.cancel()`，`_shutdown_decay_worker()` 回傳後執行緒仍在跑、仍可 commit。
+#:
+#: 語意：`set()` ＝「請在下一個安全邊界停止」。
+#: 一旦 set，**本次 shutdown 內永不清除**（進程即將結束）；`_maybe_schedule_decay_worker()`
+#: 以它作為「關閉中，不得再排」的閘門 —— 這是必要的，因為 shutdown 後
+#: `_DECAY_WORKER_TASK` 指向的 task 已 `done()`，單靠 task 參照的 guard
+#: **不再成立**（會允許排入第二個 worker）。
+#:
+#: `threading.Event` 的 `is_set()` 在 CPython 內為原子讀取，且此旗標只做
+#: 單向 set（永不 clear），故 event loop 執行緒與 worker 執行緒併讀無競態。
+_DECAY_WORKER_CANCEL = threading.Event()
+
 
 def _run_decay_evaluation_sync() -> dict:
     """在**執行緒**中執行（經 `asyncio.to_thread`），不阻塞 event loop。
 
-    只做兩件事：開始時再檢查一次旗標（即時讀取）、呼叫公開 API。
+    只做三件事：開始時再檢查一次旗標（即時讀取）、檢查**取消旗標**、呼叫公開 API。
     刻意**不**在此包 try/except —— 例外由呼叫端的 `_decay_worker_main()`
     統一記 WARNING，避免同一條錯誤被記兩次。
+
+    🔴 取消旗標以**模組層級**讀取（`_DECAY_WORKER_CANCEL`），**不**走參數 ——
+    執行緒看見的必須是「當前」旗標，且既有測試以零參數 stub 替換本函式，
+    改簽名會讓那些 stub 收到未預期的引數（實測會直接拋
+    `takes 0 positional arguments but 1 was given`），使 worker 提前結束、
+    反而製造出假的併發。零參數是既有契約。
     """
     from src.agent.emotion import decay_enabled, decay_evaluate_eligible_agents
+
+    # 🔴 取消邊界 **先於** DB 評估：關閉中 ⇒ 這一輪不得再碰 DB。
+    if _DECAY_WORKER_CANCEL.is_set():
+        logger.info("[Server] intimacy decay worker 已收到取消訊號，略過本輪評估")
+        return {"evaluated": 0, "applied": 0, "reason": "CANCELLED", "results": {}}
 
     if not decay_enabled():
         # 🔴 雙重檢查 #2：排入與真正開始之間旗標被關掉 ⇒ 本輪直接放棄。
@@ -482,9 +511,15 @@ async def _decay_worker_main() -> dict:
 def _maybe_schedule_decay_worker() -> bool:
     """空閒才排入下一個 worker；**前一輪未結束就略過本輪**。
 
-    Returns: `True` 代表本輪排入了 worker；`False` 代表略過（在途 / 無法排入）。
+    Returns: `True` 代表本輪排入了 worker；`False` 代表略過（在途 / 關閉中 / 無法排入）。
     """
     global _DECAY_WORKER_TASK
+    # 🔴 關閉中 ⇒ 永不排入。 **必要**：shutdown 後 `_DECAY_WORKER_TASK` 的 task
+    #    已 `done()`，下方 `not task.done()` guard **不再成立**，只靠 task 參照
+    #    會允許排入第二個 worker（已實測：task2 is task1 = False，在途 = 2）。
+    if _DECAY_WORKER_CANCEL.is_set():
+        logger.debug("[Server] intimacy decay worker 關閉中，略過排入")
+        return False
     task = _DECAY_WORKER_TASK
     if task is not None and not task.done():
         # 🔴 不排第二個、不建立無界佇列 —— 本輪直接略過。
@@ -510,8 +545,28 @@ def _on_decay_worker_done(task) -> None:
 
 
 async def _shutdown_decay_worker() -> None:
-    """關閉時乾淨取消 worker（與既有 `_sage_flush_task` 的取消同型）。"""
+    """關閉時取消 worker —— **並讓取消意圖到達執行緒**，且**如實**記錄日誌。
+
+    🔴 修正的缺陷（auditor 實測，非推論）：修正前本函式只做 `task.cancel()`，
+    回傳後 —— (Q1) 執行緒仍在跑且與 `task.cancelled()` 同時成立；
+    (Q2) 該執行緒仍 commit（DB 0 → 20，首輪甚至 42）；
+    (Q3) `_maybe_schedule_decay_worker()` 仍回 `True` ⇒ 同時在途 worker = 2。
+
+    修正：
+      1. **先** `set()` 取消旗標 —— 執行緒在下一個安全邊界（進入 DB 評估前）
+         看得到，這才是「取消意圖可達執行緒」。
+      2. 保留既有「清空 `_DECAY_WORKER_TASK` 參照」行為（既有測試
+         `test_shutdown_cancels_worker_cleanly` 的契約）。**Q3 不依賴此參照** ——
+         task 已 `done()` ⇒ `not task.done()` guard 本就不成立，擋不住第二個
+         worker；真正擋住它的是第 1 點的旗標閘門（`_maybe_schedule_decay_worker`
+         的 `_DECAY_WORKER_CANCEL.is_set()` 分支）。
+      3. 日誌**不得**宣稱「停止 ✓」—— 只證明了 task 結束，未證明執行緒結束。
+
+    🔴 旗標一旦 set，**本次 shutdown 內永不清除**（進程即將結束）；不發明 reset 語意。
+    """
     global _DECAY_WORKER_TASK
+    # 1. 先傳遞取消意圖（對已進入同步評估的執行緒，於下一安全邊界生效）。
+    _DECAY_WORKER_CANCEL.set()
     task = _DECAY_WORKER_TASK
     if task is None:
         return
@@ -522,7 +577,10 @@ async def _shutdown_decay_worker() -> None:
             await task
         except asyncio.CancelledError:
             pass
-    logger.info("[Server] intimacy decay worker 停止 ✓")
+    logger.info(
+        "[Server] intimacy decay worker task 已取消；底層執行緒若已進入同步評估，"
+        "將於下一安全邊界停止"
+    )
 
 
 @asynccontextmanager

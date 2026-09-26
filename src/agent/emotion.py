@@ -377,6 +377,36 @@ class EmotionEngine:
         # 無法判定 ⇒ fail-closed：當成**未完成**上報，不吞。
         return False
 
+    def _decay_schema_is_complete(self) -> bool:
+        """**實查** schema 是否已達完整目標形狀（三個物件全在）。
+
+        目標形狀（缺一不可）：
+
+          - `agent_emotions.last_valid_inbound_at`
+          - `agent_emotions.next_decay_due_at`
+          - `intimacy_decay_ledger` 表
+
+        🔴 **回傳值由實際 schema 決定，不由錯誤字串決定**（執行邊界修正）。
+        `duplicate column name` / `already exists` 只說明「某一個」物件被搶先
+        建立，**不**說明另外兩個也在 —— DDL 順序是 col1 → col2 → ledger，
+        任一欄報 duplicate 都會在 ledger 被確認前短路。只憑錯誤字串回 `True`
+        會讓「1/3 就緒」被宣稱為就緒，呼叫端接著開交易 ⇒ 本票要消滅的
+        「同一角色二次 busy_timeout」在該分支依然存在。
+
+        fail-closed：查不到（含 peer 尚未提交、物件不存在）⇒ 一律回 `False`。
+        僅讀取、不寫入、不開啟交易。
+        """
+        cols = {
+            row[1]
+            for row in self.conn.execute("PRAGMA table_info(agent_emotions)")
+        }
+        if not {"last_valid_inbound_at", "next_decay_due_at"} <= cols:
+            return False
+        ledger = list(
+            self.conn.execute("PRAGMA table_info(intimacy_decay_ledger)")
+        )
+        return bool(ledger)
+
     def ensure_decay_schema(self) -> bool:
         """惰性建立 INTIMACY-GROWTH-2 的兩欄 + ledger 表（冪等）。
 
@@ -385,10 +415,14 @@ class EmotionEngine:
 
         Returns:
             `True`  ＝ schema 已達目標狀態（含「另一個路徑搶先完成」）。
-            `False` ＝ **未完成任何事**（遇 `database is locked` 等）。
-                      呼叫端**必須**把它當成失敗回報，**不得**接著開交易 ——
-                      否則同一角色會在交易再吃一次 busy_timeout
-                      （實測 2.09× 逾時 = 10.43s）。
+                      🔴 此 `True` **由實查 schema 形狀決定**（見
+                      `_decay_schema_is_complete`），**不**由錯誤字串決定 ——
+                      「搶先完成」只有在三個物件（兩欄 + ledger 表）**全在**
+                      時才成立；部分就緒一律回 `False`。
+            `False` ＝ **未完成**（遇 `database is locked`，或看似「已是目標狀態」
+                      但實查形狀不完整）。呼叫端**必須**把它當成失敗回報，
+                      **不得**接著開交易 —— 否則同一角色會在交易再吃一次
+                      busy_timeout（實測 2.09× 逾時 = 10.43s）。
 
         🔴 修正前本函式回 `None` 且**吞掉所有** `OperationalError`，把
         「搶先完成（可吞）」與「遇鎖（不可吞）」混為一談 —— 這是 7 角色序列化
@@ -422,9 +456,18 @@ class EmotionEngine:
                     self.conn.commit()
         except sqlite3.OperationalError as e:
             if self._is_already_target_state_error(e):
-                # 併發建立情境：另一路徑搶先 ALTER/CREATE 完成 => 已是目標狀態，吞掉即可
-                logger.warning(f"[Emotion] decay schema migration skipped: {e}")
-                return True
+                # 併發建立情境：另一路徑搶先 ALTER/CREATE 完成。
+                # 🔴 **不得**只憑錯誤字串回 True —— 必須實查三個物件是否全在。
+                if self._decay_schema_is_complete():
+                    logger.warning(f"[Emotion] decay schema migration skipped: {e}")
+                    return True
+                # 部分就緒（例如 peer 只搶先加了一欄）⇒ 不得視為就緒，
+                # 走既有 SCHEMA_NOT_READY 路徑：呼叫端不得進入交易。
+                logger.error(
+                    "[Emotion] decay schema **部分就緒**（error 看似 already-target "
+                    "但實查三物件未全在）⇒ 不得視為就緒、呼叫端不得進入交易: %s", e,
+                )
+                return False
             # 🔴 遇鎖（或無法判定的 OperationalError）：**未完成任何事** ⇒ 上報。
             logger.error(
                 "[Emotion] decay schema NOT ready —— 未完成任何 DDL，"

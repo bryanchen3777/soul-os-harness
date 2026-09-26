@@ -4797,3 +4797,498 @@ class TestDecayWorkerLifecycle:
         assert in_flight == 0, "worker 未收斂"
         assert peak == 1
         _reset_decay_worker(mod)
+
+
+# ═════════════════════════════════════════════════════════════
+# 缺陷 1：`ensure_decay_schema()` 未驗證後置條件就宣告就緒
+#        （auditor 對抗式審計證實；部分 schema 狀態）
+# ═════════════════════════════════════════════════════════════
+
+
+class _PeerPartialSchemaInterleave:
+    """受控交錯：在本方的 `PRAGMA table_info` **之後**、`ALTER` **之前**搶先加欄。
+
+    模擬 auditor 實測的情境 —— peer 只搶先建立
+    `last_valid_inbound_at`（**不**建 `next_decay_due_at`、**不**建 ledger），
+    使我方第一個 `ALTER` 拋 `duplicate column name: last_valid_inbound_at`。
+    該錯誤落入 `_is_already_target_state_error` 分支，而**修正前**該分支只憑
+    錯誤字串就 `return True` ⇒ 1/3 物件就緒竟被宣告就緒。
+
+    實作方式（🔴 三個已實測的坑，非顯而易見）：
+      1. `set_trace_callback` **攔不到 PRAGMA**（實測 trace 完全空白）⇒ 不能用。
+      2. `sqlite3.Connection.execute` 是 **read-only 屬性** ⇒ 不能 monkeypatch。
+      3. **另一條連線**做不到：`ensure_decay_schema()` 在 `_WRITE_LOCK` 內持著
+         一個**已開啟但讀取中的 PRAGMA cursor**（SHARED lock），peer 的 ALTER
+         即使 `busy_timeout=20s` 也一律 `database is locked`（實測）—— 反而把
+         schema 留在**全空**狀態，情境失真。
+
+    故改用**連線代理物件**，在 `execute` 的 Python 呼叫層攔截，並在交錯點以
+    **同一條連線**補上 peer 的那一欄（語意等價：等同 peer 剛剛 commit 完成）。
+    關鍵是攔截時機 —— 此刻 `ensure_decay_schema` 已把（過期的）`cols` 讀進
+    記憶體，接下來的 ALTER 必定撞 `duplicate column`。
+    """
+
+    def __init__(self, db_path: Path, add_ledger: bool = False):
+        self._db_path = str(db_path)
+        self._add_ledger = add_ledger
+        self._armed = False
+        self._fired = False
+        self._rounds = 0
+        self._saved = None
+        self._sticky = False
+
+    def _peer_commit(self, conn) -> None:
+        """peer 搶先建立**部分**目標形狀（用被測連線，避免 SHARED/寫鎖死結）。"""
+        conn.execute(
+            "ALTER TABLE agent_emotions ADD COLUMN last_valid_inbound_at REAL"
+        )
+        if self._add_ledger:
+            # 「peer 搶先完成全部」情境：兩欄 + ledger 全由 peer 建立。
+            conn.execute(
+                "ALTER TABLE agent_emotions ADD COLUMN next_decay_due_at REAL"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS intimacy_decay_ledger ("
+                "event_key TEXT PRIMARY KEY, agent_id TEXT NOT NULL, "
+                "applied_at REAL NOT NULL, original_due_at REAL, "
+                "applied_amount REAL NOT NULL)"
+            )
+        conn.commit()
+
+    def _keep_partial(self, conn) -> None:
+        """維持「部分就緒」不變量：把 peer 沒建的物件**移除**。
+
+        `ensure_decay_schema()` 被 `try_apply_decay()` **第二次**呼叫時，若放行
+        正常路徑就會把缺的物件補齊 ⇒ 狀態不再是「部分」，測試前提崩塌
+        （實測：會退回 `{'reason': 'UNKNOWN'}`）。
+
+        🔴 時序（實測）：本方法在 `real.execute(PRAGMA)` **回傳後**才執行，
+        而該次 `cols` 已被讀走。因此必須在**每一次** PRAGMA 後都把形狀壓回
+        「只剩 col1」，讓「我方 ALTER 撞 duplicate」在每一輪都重演。
+        """
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(agent_emotions)")}
+        if "next_decay_due_at" in cols:
+            conn.execute("ALTER TABLE agent_emotions DROP COLUMN next_decay_due_at")
+        conn.execute("DROP TABLE IF EXISTS intimacy_decay_ledger")
+        if "last_valid_inbound_at" not in cols:
+            conn.execute(
+                "ALTER TABLE agent_emotions ADD COLUMN last_valid_inbound_at REAL"
+            )
+        conn.commit()
+        # 重新武裝：下一輪 `ensure_decay_schema()` 必須再次撞 duplicate。
+        self._fired = False
+        self._rounds += 1
+
+    def attach(self, engine, sticky: bool = False) -> "_PeerPartialSchemaInterleave":
+        """把引擎的 `conn` 換成攔截代理。
+
+        Args:
+            sticky: `True` ⇒ 每次 PRAGMA 後都維持「部分就緒」形狀（供
+                `try_apply_decay()` 這種會**重複**呼叫 `ensure_decay_schema()`
+                的情境使用）。
+        """
+        real = engine.conn
+        outer = self
+        self._sticky = sticky
+        self._saved = real
+        self.entered_tx: list = []
+        self._spy_tx = False
+
+        class _Proxy:
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+            def execute(self, sql, *a, **kw):
+                if (
+                    outer._spy_tx
+                    and isinstance(sql, str)
+                    and "BEGIN IMMEDIATE" in sql.upper()
+                ):
+                    outer.entered_tx.append(sql)
+                cur = real.execute(sql, *a, **kw)
+                if (
+                    outer._armed
+                    and isinstance(sql, str)
+                    and "table_info" in sql.lower()
+                    and "agent_emotions" in sql.lower()
+                ):
+                    if not outer._fired:
+                        outer._fired = True
+                        # 🔴 交錯點：`cols` 已讀、ALTER 尚未發出。
+                        outer._peer_commit(real)
+                    elif outer._sticky:
+                        outer._keep_partial(real)
+                return cur
+
+        self._saved = real
+        engine.conn = _Proxy()
+        return self
+
+    def spy_transactions(self) -> "_PeerPartialSchemaInterleave":
+        """同時記錄「是否真的發出了 `BEGIN IMMEDIATE`」（＝進入交易）。"""
+        self._spy_tx = True
+        return self
+
+    def detach(self, engine=None) -> None:
+        try:
+            if engine is not None and self._saved is not None:
+                engine.conn = self._saved
+        except Exception:
+            pass
+
+    def arm(self) -> "_PeerPartialSchemaInterleave":
+        self._armed = True
+        return self
+
+    @property
+    def fired(self) -> bool:
+        """是否**至少**交錯過一次（sticky 模式會反覆重置 `_fired`，故另計）。"""
+        return self._fired or self._rounds > 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        pass
+
+
+class TestSchemaPostconditionVerification:
+    """🔴 缺陷 1：回傳值必須由**實際 schema 形狀**決定，不得由錯誤字串決定。"""
+
+    def test_partial_schema_must_not_report_ready(
+        self, db_path, monkeypatch
+    ) -> None:
+        """peer 只搶先加**一欄** ⇒ `ensure_decay_schema()` 必回 `False`。
+
+        修正前：`duplicate column name` ⇒ except 分支直接 `return True`
+        ⇒ 1/3 物件就緒被宣告就緒（實測 (cols_ok, ledger_ok) = ((True, False), False)）。
+        """
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=db_path)
+
+        interleave = _PeerPartialSchemaInterleave(db_path).attach(engine).arm()
+        result = engine.ensure_decay_schema()
+        interleave.detach(engine)
+
+        assert interleave.fired, "受控交錯未觸發（PRAGMA 未攔到）"
+        # 確認這真的是「部分」狀態，而不是全建好了
+        cols = {r[1] for r in engine.conn.execute("PRAGMA table_info(agent_emotions)")}
+        ledger = list(engine.conn.execute("PRAGMA table_info(intimacy_decay_ledger)"))
+        assert "last_valid_inbound_at" in cols, "前提交錯未生效（測試前提不成立）"
+        assert not ({"last_valid_inbound_at", "next_decay_due_at"} <= cols) or not ledger, (
+            "受控交錯後竟已是**完整**形狀 —— 本測試失去意義"
+        )
+
+        assert result is False, (
+            "🔴 部分 schema 狀態竟被宣告就緒（回 True）—— "
+            f"形狀 (cols={sorted(cols)}, ledger={bool(ledger)})"
+        )
+
+    def test_partial_schema_leads_to_schema_not_ready_without_transaction(
+        self, db_path, monkeypatch
+    ) -> None:
+        """部分就緒 ⇒ `try_apply_decay()` 必回 `SCHEMA_NOT_READY` 且**不進交易**。
+
+        這是本票的核心：修正前該分支會**進入交易**並回 `{'reason': 'UNKNOWN'}`
+        ⇒ 「同一角色二次 busy_timeout」病灶在此分支依然存在。
+
+        「是否進入交易」以 `conn.in_transaction` 的**真實翻轉**為證據，並在
+        `_write_tx` 的入口加一道計數器（`BEGIN IMMEDIATE` 一發即代表進交易）。
+        """
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=db_path)
+
+        interleave = (
+            _PeerPartialSchemaInterleave(db_path)
+            .attach(engine, sticky=True)
+            .arm()
+        )
+        engine.ensure_decay_schema()
+        assert interleave.fired, "受控交錯未觸發"
+
+        # 攔「進入交易」：`_write_tx` 一旦啟動就會 `BEGIN IMMEDIATE`。
+        # 🔴 直接掛在**同一個**代理上（不得再包一層，否則 sticky 攔截會被繞過）。
+        real_conn = engine.conn
+        interleave.spy_transactions()
+        try:
+            res = engine.try_apply_decay("agent_yua", now=T0 + DAY * 2)
+            in_tx = real_conn.in_transaction
+        finally:
+            engine.conn = interleave._saved
+
+        assert res["applied"] is False, f"schema 未就緒竟回報 applied：{res}"
+        assert res["reason"] == engine.SCHEMA_NOT_READY_REASON, (
+            f"應回 {engine.SCHEMA_NOT_READY_REASON!r}（契約），實得 {res!r}"
+        )
+        assert res.get("due_at") is None, f"未進入交易竟回了 due_at：{res}"
+        assert interleave.entered_tx == [], (
+            f"🔴 未就緒竟進入交易（BEGIN IMMEDIATE 被呼叫 "
+            f"{len(interleave.entered_tx)} 次）—— "
+            "同一角色二次 busy_timeout 病灶仍存在"
+        )
+        assert in_tx is False, "呼叫後連線仍在交易中（未回滾）"
+
+    def test_fully_complete_schema_still_reports_ready(
+        self, db_path, monkeypatch
+    ) -> None:
+        """控制組：正常路徑建好全部三個物件 ⇒ 仍必須回 `True`（不得修過頭）。
+
+        防止「一律回 False」的過度修正 —— 那會讓 decay 永遠不發生。
+        """
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=db_path)
+
+        assert engine.ensure_decay_schema() is True, "正常首輪 DDL 竟回 False"
+        cols = {r[1] for r in engine.conn.execute("PRAGMA table_info(agent_emotions)")}
+        assert {"last_valid_inbound_at", "next_decay_due_at"} <= cols
+        assert list(engine.conn.execute("PRAGMA table_info(intimacy_decay_ledger)"))
+        # 冪等：再跑一次仍 True
+        assert engine.ensure_decay_schema() is True, "冪等重跑竟回 False"
+
+    def test_peer_completes_all_objects_still_reports_ready(
+        self, db_path, monkeypatch
+    ) -> None:
+        """peer 搶先完成**全部**三物件 ⇒ 保留原「搶先完成」語意，仍回 `True`。
+
+        這釘住新語意**不是**「有 error 就 False」，而是「形狀不完整才 False」。
+        """
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=db_path)
+
+        interleave = (
+            _PeerPartialSchemaInterleave(db_path, add_ledger=True).attach(engine).arm()
+        )
+        result = engine.ensure_decay_schema()
+        interleave.detach(engine)
+        assert interleave.fired, "受控交錯未觸發"
+
+        cols = {r[1] for r in engine.conn.execute("PRAGMA table_info(agent_emotions)")}
+        ledger = list(engine.conn.execute("PRAGMA table_info(intimacy_decay_ledger)"))
+        assert {"last_valid_inbound_at", "next_decay_due_at"} <= cols, (
+            f"peer 未完成兩欄：{sorted(cols)}"
+        )
+        assert ledger, "peer 未完成 ledger 表"
+        assert result is True, (
+            "🔴 peer 已完成**全部**目標物件，竟回 False —— 過度修正（會讓 decay 永不做）"
+        )
+
+
+# ═════════════════════════════════════════════════════════════
+# 缺陷 2：`_shutdown_decay_worker()` 沒有真的停止 DB 執行緒
+#        （auditor 實測：Q1 執行緒仍在跑 / Q2 仍可寫入 / Q3 可排第二個）
+# ═════════════════════════════════════════════════════════════
+
+
+class TestShutdownBlocksFurtherWork:
+    """🔴 缺陷 2 的閘門契約：關閉後不得再排 worker、不得再執行 DB 評估。"""
+
+    @pytest.mark.asyncio
+    async def test_shutdown_blocks_second_worker(self, monkeypatch) -> None:
+        """(Q3) shutdown ⇒ `_maybe_schedule_decay_worker()` 之後必回 `False`。
+
+        修正前實測：回 `True`、`task2 is task1 = False`、**同時在途 worker = 2**。
+        """
+        mod = _import_run_server()
+        _reset_decay_worker(mod)
+        gate = threading.Event()
+        try:
+            started = threading.Event()
+
+            def _block() -> dict:
+                started.set()
+                gate.wait(5.0)
+                return {"evaluated": 0, "applied": 0, "reason": "EVALUATED", "results": {}}
+
+            monkeypatch.setattr(mod, "_run_decay_evaluation_sync", _block)
+
+            assert mod._maybe_schedule_decay_worker() is True, "空閒時應排入"
+            for _ in range(200):
+                await asyncio.sleep(0.01)
+                if started.is_set():
+                    break
+            assert started.is_set(), "worker 未進入評估函式"
+
+            await mod._shutdown_decay_worker()
+
+            # 🔴 核心斷言：關閉後不得再排入任何 worker。
+            assert mod._maybe_schedule_decay_worker() is False, (
+                "🔴 shutdown 後仍排入了第二個 worker（Q3 病灶未除）"
+            )
+            # 再連試數次（避免「剛好一次」的僥倖）
+            assert all(
+                mod._maybe_schedule_decay_worker() is False for _ in range(5)
+            ), "🔴 shutdown 後仍反覆允許排入 worker"
+        finally:
+            gate.set()
+            _reset_decay_worker(mod)
+
+    @pytest.mark.asyncio
+    async def test_shutdown_prevents_thread_from_entering_db_evaluation(
+        self, monkeypatch
+    ) -> None:
+        """(Q1/Q2) shutdown 後，**底層執行緒**不得再進入 DB 評估。
+
+        做法：直接以「真實的」`_run_decay_evaluation_sync` 為主體（不替換它），
+        只把**最內層**的 `decay_evaluate_eligible_agents` 換成受控 stub，
+        以計數器記錄它是否被呼叫。如此斷言的是**執行緒層**行為，而非
+        「task 參照為 None」這種代理訊號。
+
+        受控交錯：先讓一個 worker 進來並卡在 `decay_evaluate_eligible_agents`
+        入口之前（以 gate 控制），期間呼叫 shutdown，再放行 —— 該執行緒
+        必須在下一安全邊界（進入 DB 評估前）看到旗標並回 `CANCELLED`。
+        """
+        import src.agent.emotion as emotion_mod
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+
+        entered_db: list = []
+        release = threading.Event()
+        in_thread = threading.Event()
+
+        def _fake_evaluate(now=None) -> dict:
+            # 🔴 到這裡就代表「已經進入 DB 評估」—— shutdown 後不該再有。
+            entered_db.append(time.monotonic())
+            in_thread.set()
+            release.wait(5.0)
+            return {"evaluated": 0, "applied": 0, "reason": "EVALUATED", "results": {}}
+
+        monkeypatch.setattr(
+            emotion_mod, "decay_evaluate_eligible_agents", _fake_evaluate
+        )
+
+        mod = _import_run_server()
+        _reset_decay_worker(mod)
+        try:
+            # 讓執行緒有機會**先**看到未取消狀態並進入評估。
+            assert mod._maybe_schedule_decay_worker() is True
+            for _ in range(300):
+                await asyncio.sleep(0.01)
+                if in_thread.is_set():
+                    break
+            assert in_thread.is_set(), "首輪 worker 未進入 DB 評估（測試前提不成立）"
+            assert len(entered_db) == 1, f"首輪進入次數異常：{len(entered_db)}"
+
+            await mod._shutdown_decay_worker()
+            release.set()
+
+            # 再嘗試排入並等待：不得有第二次進入。
+            assert mod._maybe_schedule_decay_worker() is False
+            for _ in range(50):
+                await asyncio.sleep(0.01)
+
+            assert len(entered_db) == 1, (
+                f"🔴 shutdown 後底層執行緒仍進入 DB 評估（進入次數 {len(entered_db)} > 1）"
+            )
+        finally:
+            release.set()
+            _reset_decay_worker(mod)
+
+    def test_cancel_flag_makes_sync_runner_skip_db(self, monkeypatch) -> None:
+        """最強可證訊號：旗標 set ⇒ `_run_decay_evaluation_sync` 回 `CANCELLED` 且不碰 DB。
+
+        以旗標為唯一輸入，證明「取消意圖確實可達同步函式」—— 這是執行緒
+        看到的那段程式碼本身。
+        """
+        import src.agent.emotion as emotion_mod
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        called: list = []
+
+        def _fake_evaluate(now=None) -> dict:
+            called.append(1)
+            return {"evaluated": 0, "applied": 0, "reason": "EVALUATED", "results": {}}
+
+        monkeypatch.setattr(
+            emotion_mod, "decay_evaluate_eligible_agents", _fake_evaluate
+        )
+
+        mod = _import_run_server()
+        try:
+            mod._DECAY_WORKER_CANCEL.set()
+            res = mod._run_decay_evaluation_sync()
+            assert res["reason"] == "CANCELLED", f"旗標已 set 竟未回 CANCELLED：{res}"
+            assert res["evaluated"] == 0 and res["applied"] == 0
+            assert called == [], "🔴 旗標已 set 竟仍執行了 DB 評估"
+        finally:
+            mod._DECAY_WORKER_CANCEL.clear()
+
+    def test_sync_runner_without_cancel_still_evaluates(self, monkeypatch) -> None:
+        """控制組：旗標未 set ⇒ 同步函式**照常**執行 DB 評估（不得修過頭）。"""
+        import src.agent.emotion as emotion_mod
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        called: list = []
+
+        def _fake_evaluate(now=None) -> dict:
+            called.append(1)
+            return {"evaluated": 7, "applied": 1, "reason": "EVALUATED", "results": {}}
+
+        monkeypatch.setattr(
+            emotion_mod, "decay_evaluate_eligible_agents", _fake_evaluate
+        )
+
+        mod = _import_run_server()
+        try:
+            mod._DECAY_WORKER_CANCEL.clear()
+            res = mod._run_decay_evaluation_sync()
+            assert called == [1], "旗標未 set 竟未執行 DB 評估（過度修正）"
+            assert res["reason"] == "EVALUATED", f"未取消竟回非 EVALUATED：{res}"
+        finally:
+            mod._DECAY_WORKER_CANCEL.clear()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_log_does_not_claim_stopped(self, monkeypatch) -> None:
+        """日誌**不得**宣稱「停止 ✓」—— 只證明 task 結束，未證明執行緒結束。
+
+        🔴 本 repo 的 pytest 未啟用 `caplog` fixture（實測 `fixture 'caplog'
+        not found`）⇒ 直接掛一個 `logging.Handler` 到目標 logger 上。
+
+        🔴 另兩個已實測的坑：
+          - 別支測試可能把 logger 的 level 調高（或 `logging.disable()`），
+            使 handler 收不到 INFO ⇒ 這裡**顯式**設回 level 並在 finally 還原。
+          - `logger` 可能是 `propagate=False` 且 level 未定 ⇒ 一併處理。
+        """
+        import logging as _logging
+
+        mod = _import_run_server()
+        _reset_decay_worker(mod)
+
+        records: list = []
+
+        class _Sink(_logging.Handler):
+            def emit(self, record) -> None:
+                records.append(record.getMessage())
+
+        sink = _Sink()
+        # 直接掛在 `logging` root 的 manager 上不可靠；改掛具名 logger 並
+        # 同時降低其 level（還原於 finally）。
+        srv_logger = _logging.getLogger("soul_os.server")
+        old_level = srv_logger.level
+        old_disabled = _logging.root.manager.disable
+        srv_logger.setLevel(_logging.DEBUG)
+        _logging.disable(_logging.NOTSET)
+        srv_logger.addHandler(sink)
+        _reset_decay_worker(mod)
+        gate = threading.Event()
+        try:
+            def _block() -> dict:
+                gate.wait(5.0)
+                return {"evaluated": 0, "applied": 0, "reason": "EVALUATED", "results": {}}
+
+            monkeypatch.setattr(mod, "_run_decay_evaluation_sync", _block)
+            assert mod._maybe_schedule_decay_worker() is True
+
+            await mod._shutdown_decay_worker()
+
+            blob = "\n".join(records)
+            assert blob, "未攔到任何 shutdown 日誌（探針失效）"
+            assert "停止 ✓" not in blob, (
+                f"🔴 shutdown 日誌仍宣稱「停止 ✓」（未經證明的宣稱）：{blob!r}"
+            )
+            assert "取消" in blob, f"shutdown 日誌未如實描述取消語意：{blob!r}"
+        finally:
+            gate.set()
+            srv_logger.removeHandler(sink)
+            srv_logger.setLevel(old_level)
+            _logging.disable(old_disabled)
+            _reset_decay_worker(mod)
