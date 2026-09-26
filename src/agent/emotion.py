@@ -514,16 +514,23 @@ class EmotionEngine:
                 last_written = now_ts
                 if last_in is not None:
                     last_written = max(float(last_in), last_written)
-                # 下一次 due ＝ 該次到期所屬窗口的結束（`due + window`），
-                # **不是** now + window：逾期越久也只補一步（bounded 1-step，§5），
-                # 後續窗口由週期評估（`try_apply_decay`）逐窗推進。
-                # 單調性：due 只會被推進（new_due = now + window >= due + window）。
-                due_written = due + window
-                # 結算後的窗口若仍落在「真人到場時間」之前，該窗口即已作廢 ⇒
-                # 直接把窗口推進到真人到場後的下一個結束點，避免寫出
-                # due < last_written 的退化時鐘。
-                if last_written >= due_written:
-                    due_written = last_written + window
+                # 🔴 缺口 1（第二例）修正：下一次 due ＝ **本次有效互動所開的新窗口
+                #    結束點**（`last_written + window`），而**不是** `due + window`。
+                #
+                #    語意：**每次有效互動各自重新給滿 24 小時**（Owner 裁定）。
+                #    `due + window` 會違反這條：
+                #      準時 T+24h 到場 ⇒ due = T+48h（距本次互動 24h ✅）
+                #      延後 T+25h 到場 ⇒ due = T+48h（距本次互動只有 23h ❌）
+                #    延後者被偷走了 1 小時。舊 guard（`last_written >= due_written`
+                #    時改用 `last_written + window`）**打不到第二例** —— 因為
+                #    `T+25h < T+48h`，條件不成立。
+                #
+                #    逾期清算仍**最多一次**：`_settle_once_locked()` 的呼叫次數與
+                #    位置完全未動（bounded 1-step，§5），本次只是把它之後寫回的
+                #    下一次到期點改成「以真人實際到場時間為起點」。
+                #    單調性：`last_written` 本身單調不倒退（上方 `max`），
+                #    故 `due_written` 亦不倒退。
+                due_written = last_written + window
             elif last_in is not None:
                 # 非逾期分支行為**不變**：維持既有 `max(last_in, now)` 語意。
                 last_written = max(float(last_in), now_ts)
@@ -738,10 +745,27 @@ class EmotionEngine:
         )
         # 🔴 真實寫入結果（DB 層）才是閘門 —— 不是呼叫端的記憶。
         #    rowcount == 0 ⇒ 該到期點已結算過（ledger 不增）⇒ **零副作用**。
+        #
+        #    🔴 fail-closed（缺口 2 後續修正）：`rowcount` **不可判定**時
+        #    （AttributeError / TypeError / None）**絕不得假定寫入成功**。
+        #    舊實作 `except ...: inserted = 1` 是 fail-open：不可判定 ⇒ 當成
+        #    「已插入」⇒ 仍執行 UPDATE Delta 並推進 due ⇒ 可能**憑空再扣一次**。
+        #    正確行為：回滾該交易、記 ERROR、回 0.0（＝ 0 扣減）且**不推進 due**。
         try:
             inserted = cur.rowcount
-        except (AttributeError, TypeError):  # pragma: no cover - 防禦性
-            inserted = 1  # 無法判定時採「已插入」＝ 維持舊行為，不靜默漏扣
+        except (AttributeError, TypeError):
+            inserted = None
+        if inserted is None:
+            logger.error(
+                "[INTIMACY-DECAY] settle aborted (rowcount undeterminable) "
+                "agent=%s origin=%s original_due=%.0f key=%s —— fail-closed："
+                "回滾交易、回 0.0、不推進 due",
+                agent_id, origin, due, key,
+            )
+            # 回滾本身若拋錯，**不得**吞成「假成功」：讓它往上拋（交易邊界
+            # `_write_tx()` 亦會在例外路徑再嘗試一次 rollback）。
+            self.conn.rollback()
+            return 0.0
         if inserted == 0:
             logger.info(
                 "[INTIMACY-DECAY] settle skipped (duplicate) agent=%s origin=%s "

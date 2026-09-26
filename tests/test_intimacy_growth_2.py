@@ -419,6 +419,79 @@ class TestConcurrency:
 # ═════════════════════════════════════════════════════════════
 
 
+class _UndeterminableRowcountConn:
+    """Wrapper：讓 ledger INSERT 的 cursor `rowcount` **不可判定**（故障注入）。
+
+    工單明訂：**不可** monkeypatch `sqlite3.Connection.execute`（不可變型別 ⇒
+    TypeError）。故用 wrapper 物件注入故障 —— wrapper 只轉發，不改型別。
+
+    以 **SQL 語句內容**判定攔截點（理由同 `_FailOnLedgerInsertConn`）：必須是
+    `INSERT INTO intimacy_decay_ledger`，且排除 `CREATE TABLE`。
+
+    `rowcount` 讀取時拋 `AttributeError`（模擬不可判定）。**不**在此拋
+    OperationalError —— 本測試驗的是「不可判定 ⇒ fail-closed」，不是「DB 報錯」。
+    """
+
+    def __init__(
+        self,
+        real,
+        needle: str = "INSERT INTO intimacy_decay_ledger",
+        mode: str = "raise",
+    ) -> None:
+        self._real = real
+        self._needle = needle
+        self._mode = mode  # "raise" ⇒ AttributeError；"none" ⇒ 回 None
+        self.tripped = False
+
+    def execute(self, sql, *args, **kwargs):
+        cur = self._real.execute(sql, *args, **kwargs)
+        if (
+            (not self.tripped)
+            and isinstance(sql, str)
+            and self._needle in sql
+            and "CREATE TABLE" not in sql
+        ):
+            self.tripped = True
+            return _UndeterminableRowcountCursor(cur, self._mode)
+        return cur
+
+    def commit(self) -> None:
+        return self._real.commit()
+
+    def rollback(self) -> None:
+        return self._real.rollback()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    @property
+    def in_transaction(self) -> bool:
+        return self._real.in_transaction
+
+
+class _UndeterminableRowcountCursor:
+    """Cursor 代理：`rowcount` 讀取時拋 `AttributeError`（或回 `None`）。
+
+    🔴 **不得**用 `@property` 實作：Python 的屬性查找在 property 內拋出
+    `AttributeError` 時會**落到 `__getattr__`**，本類別的 `__getattr__` 會把
+    它轉發給真 cursor（`rowcount == 1`），故障於是被靜默吞掉（實測已驗證）。
+    故 `rowcount` 必須在 `__getattr__` 內**優先**判定。
+    """
+
+    def __init__(self, real, mode: str = "raise") -> None:
+        self._real = real
+        self._mode = mode
+
+    def __getattr__(self, name):
+        if name == "rowcount":
+            if self._mode == "none":
+                return None
+            raise AttributeError(
+                "injected: rowcount undeterminable (test-only)"
+            )
+        return getattr(self._real, name)
+
+
 class _FailOnLedgerInsertConn:
     """Wrapper：在 `intimacy_decay_ledger` 的 INSERT 上拋錯（故障注入）。
 
@@ -525,6 +598,95 @@ class TestTransactionRollback:
         assert real_conn.in_transaction is False
         result = engine_on.try_apply_decay("agent_yua", now=T0 + DAY)
         assert result["applied"] is True
+
+    @pytest.mark.parametrize("mode", ["raise", "none"])
+    def test_undeterminable_rowcount_is_fail_closed(
+        self, engine_on, mode: str
+    ) -> None:
+        """🔴 T3（缺口 2 後續）：`rowcount` **不可判定** ⇒ fail-closed。
+
+        `AttributeError`（mode="raise"）或 `None`（mode="none"）皆必須：
+          - 回傳 `applied == 0.0`（0 扣減）
+          - `get_delta()` **前後相同**（未扣減）
+          - `next_decay_due_at` **前後相同**（0 推進）
+          - ledger 列數**不變**
+          - 交易已回滾（後續寫入仍能成功作為旁證）
+
+        舊實作 `except ...: inserted = 1`（fail-open）⇒ 仍 UPDATE Delta 並推進
+        due ⇒ 本測試必紅。
+        """
+        engine_on.ensure_decay_schema()
+        engine_on.update_delta("agent_yua", 7.0)
+        engine_on.touch_inbound("agent_yua", "e0", "telegram", now=T0)
+
+        real_conn = engine_on.conn
+        delta_before = engine_on.get_delta("agent_yua")
+        _last_before, due_before, _d_before = (
+            engine_on._read_clock_and_delta_locked("agent_yua")
+        )
+        ledger_before = list(
+            real_conn.execute("SELECT event_key FROM intimacy_decay_ledger")
+        )
+        assert delta_before == pytest.approx(7.0), "前置：Delta 應為 7.0"
+        assert due_before == pytest.approx(T0 + DAY), "前置：due 應為 T+24h"
+        assert ledger_before == [], "前置：ledger 應為空"
+
+        wrapper = _UndeterminableRowcountConn(real_conn, mode=mode)
+        engine_on.conn = wrapper
+        try:
+            # 🔴 必須**不拋例外**：fail-closed ＝ 乾淨回 0.0（非崩潰）
+            applied = engine_on._settle_once_locked(
+                "agent_yua",
+                T0 + DAY,
+                T0 + DAY,
+                delta_before,
+                origin="inbound_late",
+            )
+        finally:
+            engine_on.conn = real_conn
+        assert wrapper.tripped, "故障注入未觸發（測試本身失效）"
+
+        # 1) 回傳 0.0（0 扣減）
+        assert applied == pytest.approx(0.0), (
+            f"rowcount 不可判定時必須回 0.0（0 扣減），實際 {applied}"
+            "（舊實作 fail-open 會回 0.5）"
+        )
+        # 2) Delta 前後相同（未扣減）
+        assert engine_on.get_delta("agent_yua") == pytest.approx(delta_before), (
+            "rowcount 不可判定時**不得**扣減 Delta"
+            f"（前 {delta_before} vs 後 {engine_on.get_delta('agent_yua')}）"
+        )
+        # 3) due 前後相同（0 推進）
+        _last_after, due_after, _d_after = (
+            engine_on._read_clock_and_delta_locked("agent_yua")
+        )
+        assert due_after == pytest.approx(due_before), (
+            f"rowcount 不可判定時**不得**推進 due（前 {due_before} vs 後 {due_after}）"
+        )
+        # 4) ledger 列數不變
+        ledger_after = list(
+            real_conn.execute("SELECT event_key FROM intimacy_decay_ledger")
+        )
+        assert ledger_after == ledger_before, (
+            "rowcount 不可判定時**不得**留下 ledger 列"
+        )
+        # 5) 交易已回滾：連線未殘留開啟的交易，且後續寫入仍能成功（旁證）
+        assert real_conn.in_transaction is False, (
+            "fail-closed 路徑必須回滾該交易，不得殘留開啟的交易"
+        )
+        # 旁證：同一條連線仍可正常寫入（回滾未把連線弄壞）。
+        #    🔴 用「未逾期」的 touch（now < due_before）以免順帶觸發真實結算，
+        #       否則本斷言會被另一次合法扣減污染（delta 就不會等於 delta_before）。
+        engine_on.touch_inbound(
+            "agent_yua", "e_after", "telegram", now=T0 + 60
+        )
+        assert real_conn.in_transaction is False, "回滾後連線不得殘留交易"
+        assert engine_on.get_delta("agent_yua") == pytest.approx(delta_before), (
+            "旁證路徑不得扣減 Delta —— fail-closed 後 Delta 應維持 0 扣減"
+        )
+        assert _ledger_count(engine_on, "agent_yua") == 0, (
+            "旁證路徑不得留下 ledger 列"
+        )
 
 
 # ═════════════════════════════════════════════════════════════
@@ -3056,32 +3218,88 @@ class TestInboundExactlyAtDue:
         )
 
     def test_at_due_does_not_grant_extra_silent_window(self, engine_on) -> None:
-        """🔴 語意後果：**準時到場者**不會比「延後到場者」多拿一個不衰減窗口。
+        """🔴 語意（修正後）：**每個有效互動各自重新給滿 24 小時**。
 
-        準時（T+24h）與延後（T+25h）到場，結算後的下一個到期點應**相當**
-        （同屬 `due + window = T+48h`），差別只在 last_valid_inbound_at。
-        舊實作下準時者會拿到 T+72h ⇒ 比延後者多白拿一天 ⇒ 必紅。
+        故準時（T+24h）到場者下一次到期為 **T+48h**、延後（T+25h）到場者為
+        **T+49h** —— 兩者不再相等，而是**相差恰好 1 小時**（＝兩次到場的時間差）。
+
+        舊實作 `due_written = due + window` 會讓兩者同為 T+48h：
+        延後者距其到場時間只剩 23h，被偷走 1 小時。本測試在**新實作**下必須綠、
+        在**舊實作**下必須紅。（不得只刪斷言 —— 下述斷言有牙。）
         """
         engine_on.update_delta("agent_yua", 5.0)
         engine_on.touch_inbound("agent_yua", "e1", "telegram", now=T0)
         _last0, due0, _d0 = engine_on._read_clock_and_delta_locked("agent_yua")
+        assert due0 == pytest.approx(T0 + DAY), "前置：首次到期點應為 T+24h"
 
         engine_on.touch_inbound("agent_yua", "e2", "telegram", now=T0 + DAY)
         _last1, due_exact, _d1 = engine_on._read_clock_and_delta_locked("agent_yua")
-        assert due_exact == pytest.approx(due0 + DAY)
+        # 準時者：下一次到期 ＝ 到場時間 + 24h ＝ T+48h
+        assert due_exact == pytest.approx(T0 + 2 * DAY)
 
-        # 對照組：另一角色延後 1 小時到場
+        # 對照組：**另一個角色**（避免互相污染）延後 1 小時到場
         engine_on.update_delta("agent_ruka", 5.0)
         engine_on.touch_inbound("agent_ruka", "r1", "telegram", now=T0)
         engine_on.touch_inbound(
             "agent_ruka", "r2", "telegram", now=T0 + DAY + 3600
         )
         _lr, due_late, _dr = engine_on._read_clock_and_delta_locked("agent_ruka")
+        # 延後者：下一次到期 ＝ 到場時間 + 24h ＝ T+49h
+        assert due_late == pytest.approx(T0 + DAY + 3600 + DAY)
 
-        assert due_exact == pytest.approx(due_late), (
-            "準時到場與延後到場應得到**同一個**下一次到期點"
-            f"（準時 {due_exact} vs 延後 {due_late}）—— 準時者不得白拿一天"
+        # 🔴 有牙的斷言：兩者**相差恰好 1 小時**（非相等）。
+        #    舊實作下 due_exact == due_late == T+48h ⇒ 差值 0 ⇒ 必紅。
+        assert due_late - due_exact == pytest.approx(3600), (
+            "每個有效互動應各自重新給滿 24 小時：延後 1 小時到場者，"
+            f"下一次到期也應晚 1 小時（準時 {due_exact} vs 延後 {due_late}）"
+            " —— 舊實作會讓兩者同為 T+48h，偷走延後者 1 小時"
         )
+        assert due_exact != pytest.approx(due_late), (
+            "準時與延後到場者**不得**得到同一個下一次到期點"
+            f"（準時 {due_exact} vs 延後 {due_late}）"
+        )
+
+    def test_overdue_late_inbound_regrants_full_24h_exactly(self, engine_on) -> None:
+        """🔴 T1 例二（鎖住精確數值）：`T+25h` 到場 ⇒ 下一次到期 = `T+49h`。
+
+        即 `next_decay_due_at = last_written + 24h`，而非 `due + 24h`。
+        以 `T0` 為首次 touch（`due0 = T0 + DAY`）。
+        """
+        # 例一：T+24h 到場 ⇒ 下一次到期 = T+48h
+        engine_on.touch_inbound("agent_yua", "e1", "telegram", now=T0)
+        r = engine_on.touch_inbound("agent_yua", "e2", "telegram", now=T0 + DAY)
+        assert r["last_valid_inbound_at"] == pytest.approx(T0 + DAY)
+        assert r["next_decay_due_at"] == pytest.approx(T0 + 2 * DAY)  # T+48h
+
+        # 例二（另一個角色，避免互相污染）：T+25h 到場 ⇒ 下一次到期 = T+49h
+        engine_on.touch_inbound("agent_ruka", "r1", "telegram", now=T0)
+        r2 = engine_on.touch_inbound(
+            "agent_ruka", "r2", "telegram", now=T0 + DAY + 3600
+        )
+        assert r2["last_valid_inbound_at"] == pytest.approx(T0 + DAY + 3600)
+        assert r2["next_decay_due_at"] == pytest.approx(
+            T0 + DAY + 3600 + DAY
+        ), "逾期分支的 next_decay_due_at 必須是 last_written + 24h（T+49h）"
+
+    def test_overdue_late_inbound_settles_at_most_once(self, engine_on) -> None:
+        """🔴 逾期清算仍**最多一次**（bounded 1-step 契約不得被本次修正破壞）。
+
+        `T+25h` 到場：ledger 恰增 1 筆、Delta 恰扣 0.5，**不是**補扣多步。
+        """
+        engine_on.update_delta("agent_ruka", 5.0)
+        engine_on.touch_inbound("agent_ruka", "r1", "telegram", now=T0)
+        assert _ledger_count(engine_on, "agent_ruka") == 0
+
+        engine_on.touch_inbound(
+            "agent_ruka", "r2", "telegram", now=T0 + DAY + 3600
+        )
+
+        assert _ledger_count(engine_on, "agent_ruka") == 1, (
+            "逾期到場應結算**恰好一次**（ledger 恰 1 筆）"
+        )
+        assert _delta_of(engine_on, "agent_ruka") == pytest.approx(
+            5.0 - DECAY_STEP
+        ), "逾期到場只扣**一步**（bounded 1-step），不得累積多步"
 
 
 # ═════════════════════════════════════════════════════════════
