@@ -661,6 +661,12 @@ class ChannelRouter:
     #
     # 旗標 OFF（預設）⇒ touch_inbound 直接 early-return FLAG_OFF ⇒ 零 DDL、
     # 零持久寫入（C4）。此處**不自行**判斷旗標，避免旗標判斷散落兩處。
+    #
+    # 🔴 closeout（每角色啟用資格）：除全輻旗標外，`touch_inbound()` 內另有一道
+    # **每角色**白名單閘門（`INTIMACY_DECAY_ELIGIBLE_AGENTS`）。資格判斷同樣
+    # **集中在 emotion.py**，本處不重複 —— 但語意不同於旗標：旗標是「機制是否
+    # 啟用」（執行期可切、每次重讀 env），資格是「此角色是否已有可靠 TOUCH 來源」
+    # （程式碼層決策，不受 env 影響）。不合格者回 NOT_ELIGIBLE，不 TOUCH、不拋例外。
     def _touch_intimacy_clock(
         self, full_agent_id: str, channel: str, text: str
     ) -> None:

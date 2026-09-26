@@ -433,6 +433,33 @@ async def lifespan(app: FastAPI):
 
     cfg = load_config()
 
+    # ── INTIMACY-GROWTH-2 closeout：**啟動時條件註冊** ──────────────
+    # 🔴 本端點在模組層級**不再**用 `@app.post(...)` 註冊（見下方 C5 段落）。
+    #    只有啟動時具備啟用條件（旗標 ON **且** token 非空）才在此註冊。
+    #    預設（旗標缺席）⇒ 完全不註冊 ⇒ `app.routes` 與 OpenAPI 皆不含。
+    #
+    #    註冊點選在 lifespan 的**最前面**（早於任何 await），因此：
+    #      - `TestClient(app)` 的 `with` 區塊內即可見到路由（實測已驗證）
+    #      - uvicorn 完成 lifespan 啟動後、開始 accept 連線前即已就緒
+    #    註冊的是下方定義的**模組層級** `internal_vc_inbound_touch`，不是
+    #    區域函式 —— 避免 `from __future__ import annotations` 下 FastAPI
+    #    對區域函式型別註解解析失敗（PydanticUserError）。
+    if _internal_vc_touch_registrable_at_startup():
+        app.add_api_route(
+            "/internal/vc/inbound_touch",
+            internal_vc_inbound_touch,
+            methods=["POST"],
+            name="internal_vc_inbound_touch",
+        )
+        logger.warning(
+            "[Server] ⚠️ INTIMACY-GROWTH-2 內部 VC TOUCH 端點已註冊 "
+            "(/internal/vc/inbound_touch) — 這是**非預設**狀態"
+        )
+    else:
+        logger.info(
+            "[Server] INTIMACY-GROWTH-2 內部 VC TOUCH 端點未註冊（預設 OFF）"
+        )
+
     # Live2D 已移除（Bry 拍板 2026-07-14）— 不再載入 live2d config
 
     bus = SoulEventBus()
@@ -1850,25 +1877,36 @@ app = FastAPI(lifespan=lifespan)
 
 
 # ══════════════════════════════════════════════════════════════
-# INTIMACY-GROWTH-2 closeout：OFF 時不列出 /internal/vc/inbound_touch
+# INTIMACY-GROWTH-2 closeout：OFF 時**不註冊** /internal/vc/inbound_touch
 # ══════════════════════════════════════════════════════════════
-# 問題：/internal/vc/inbound_touch 是在**模組層級**用 `@app.post(...)` 註冊的。
-# 旗標 OFF 時 handler 回 404，但路由**仍在 `app.routes`**，於是
-# `/openapi.json` 對未鑑權者可列舉到該路徑 —— 這與 docstring 宣稱的
-# 「等同不存在」不符。
+# 🔴 **本段為第二輪修正**。第一輪只覆寫 OpenAPI，路由仍在 `app.routes` 註冊，
+#    handler 回 404。Owner 裁定那不是 Gate 1 PASS：**採啟動時條件註冊**。
 #
-# 決策（Owner 已拍板）：採「`openapi()` 過濾」而非「註冊時判斷」。
-#   理由：`_internal_vc_touch_enabled()` 是**每次請求重讀 env**。若改成
-#   在 import 時判斷是否註冊，語意會從「每次重讀」變成「只在啟動時讀」，
-#   那是行為變更。過濾 openapi 可同時保住「OFF 時不可列舉」與「旗標仍可
-#   動態重讀」兩者。
+# 現行語意（三態，逐條如實）：
+#   1. **啟動時不具備啟用條件**（`_internal_vc_touch_enabled()` 為 False *或*
+#      `INTERNAL_VC_TOUCH_TOKEN` 為空）⇒ **根本不註冊**該路由。
+#      `INTERNAL_VC_TOUCH_ENABLED` 預設缺席 ⇒ 預設即為此態 ⇒
+#      `app.routes` **不含**該路由，OpenAPI 亦**不含**。
+#   2. **啟動時具備啟用條件**（旗標 ON **且** token 非空）⇒ 於 `lifespan`
+#      內註冊該路由。此後 `app.routes` 與 OpenAPI 皆含。
+#   3. **緊急停用**（已註冊後，執行期把 `INTERNAL_VC_TOUCH_ENABLED` 設為空）
+#      ⇒ handler **仍即時回 404**（handler 內的旗標檢查保留，見下），
+#      **但已註冊的路由要到下次重啟才會從 route table 消失**。
 #
-# 🔴 已知殘餘（誠實揭露，不得宣稱「等同不存在」）：
-#   本過濾**只**作用於 OpenAPI schema（`/openapi.json`、`/docs`、`/redoc`）。
-#   受 FastAPI 架構限制，路由**仍然註冊於 `app.routes`** —— 直接對該路徑發
-#   請求時，是由 handler 內的旗標檢查回 404，**不是** routing 層的 404。
-#   若需要「路由層真正不存在」，唯一辦法是註冊時判斷，但那會犧牲旗標的
-#   動態重讀語意，故本票不做。
+# 🔴 誠實邊界（**不得**再宣稱「動態 OFF 等於未註冊」）：
+#   `app.routes` 是否含本路由，取決於**啟動那一刻**的 env；執行期關旗標
+#   只影響 handler 的行為（404），**不會**把路由從 route table 移除 ——
+#   FastAPI/Starlette 沒有支援的「移除路由」執行期 API。因此：
+#     - 「預設 OFF ⇒ 未註冊」是**真**的（狀態 1）。
+#     - 「執行期 OFF ⇒ 未註冊」是**假**的；正確說法是「執行期 OFF ⇒
+#       handler 即時 404，路由仍在 route table，直到重啟」。
+#   本段**不再**描述任何「等同不存在」的宣稱。
+#
+# 🔴 為何保留 `app.openapi` 覆寫（雙保險）：狀態 3 之下路由仍在 route table，
+#   若只靠註冊時判斷，一個「啟動時 ON、之後緊急停用」的行程仍會把該路徑
+#   列在 `/openapi.json`。覆寫讓 OFF 時不可列舉 —— 兩道閘門語意不同、互不取代：
+#     - 註冊時判斷 ⇒ 決定「路由存不存在」（需重啟才改變）
+#     - openapi 覆寫 ⇒ 決定「可不可被列舉」（每次請求重讀 env，即時）
 _openapi_original = app.openapi  # 先保存原始 FastAPI 產生的 schema 產生器
 
 
@@ -1949,6 +1987,11 @@ async def test_spawn_cold_intents():
 # 🔴🔴 **NOT ENABLED**（Owner 已裁定，不得自行放寬）🔴🔴
 # 本端點**只交付程式**：預設 OFF、不部署、不啟用。
 #
+# 🔴 註冊方式（closeout 第二輪）：本 handler 在模組層級**只定義、不註冊**。
+#    註冊發生在 `lifespan` 內，且**只在啟動時具備啟用條件時**才做
+#    （`_internal_vc_touch_registrable_at_startup()`）。預設 OFF ⇒ 不註冊。
+#    handler 內保留即時旗標檢查以支援**緊急停用**（見 handler docstring）。
+#
 # 三道閘門（缺一不動作）：
 #   1. `INTIMACY_DECAY_ENABLED`（主服務側衰減旗標，缺席即 OFF）
 #   2. `INTERNAL_VC_TOUCH_ENABLED`（本端點自身旗標，缺席即 OFF）
@@ -1975,7 +2018,31 @@ def _internal_vc_touch_enabled() -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-@app.post("/internal/vc/inbound_touch")
+def _internal_vc_touch_token() -> str:
+    """本端點的 Bearer token（每次呼叫重讀 env）。未設 ⇒ 空字串。"""
+    return (os.environ.get(INTERNAL_VC_TOUCH_TOKEN_ENV) or "").strip()
+
+
+def _internal_vc_touch_registrable_at_startup() -> bool:
+    """**啟動時**是否具備「註冊該路由」的條件。
+
+    🔴 兩個條件**缺一即不註冊**：
+      1. `_internal_vc_touch_enabled()` 為 True
+      2. `INTERNAL_VC_TOUCH_TOKEN` 非空
+
+    條件 2 的理由：token 是唯一的鑑權手段，未設 token 時 handler 一律 503。
+    註冊一個「一定拒絕所有請求」的路由沒有意義，而且會讓一個**未設定完成**的
+    部署把 `/internal/vc/inbound_touch` 列進 OpenAPI（可列舉但不可用），
+    徒增攻擊面。因此未設 token ⇒ 視為「未啟用」⇒ 不註冊。
+
+    ⚠️ 本函式**只在 lifespan 內被呼叫一次**（啟動時快照）；handler 內的
+    `_internal_vc_touch_enabled()` 仍是**每次請求重讀**，兩者用途不同：
+      - 本函式 ⇒ 決定路由**存不存在**（要重啟才會變）
+      - handler 內 ⇒ 決定請求**被不被接受**（即時，緊急停用靠這條）
+    """
+    return _internal_vc_touch_enabled() and bool(_internal_vc_touch_token())
+
+
 async def internal_vc_inbound_touch(request: Request, payload: Dict[str, Any]):
     """VC → 主服務的 inbound TOUCH 通知（**預設 OFF，不部署**）。
 
@@ -1985,20 +2052,33 @@ async def internal_vc_inbound_touch(request: Request, payload: Dict[str, Any]):
       - token 不符 ⇒ 401
       - 主服務衰減旗標 OFF ⇒ 200 + applied=false（冪等，不落帳）
 
-    🔴 誠實邊界（**不得**再宣稱「等同不存在」）：
-      旗標 OFF 時本端點**仍然註冊於 `app.routes`**（FastAPI 架構限制：
-      路由在模組 import 時就綁定，無法在請求期移除）。差別在於
-      OpenAPI schema 由 `app.openapi` 覆寫過濾掉此路徑，故不可列舉；
-      但直接發請求時，404 是**由本 handler 內**的旗標檢查產生，而非
-      routing 層的 404。此為已知殘餘，已在交付說明中揭露。
+    🔴 誠實邊界（**三態如實，不得宣稱「動態 OFF 等於未註冊」**）：
+
+      1. **預設 OFF**（`INTERNAL_VC_TOUCH_ENABLED` 缺席，或 token 為空）
+         ⇒ 啟動時**不註冊**本路由。`app.routes` 與 `/openapi.json`
+         **皆不含**該路徑；此時的 404 來自 **routing 層**（路徑不存在）。
+
+      2. **啟動時具備啟用條件**（旗標 ON **且** token 非空）
+         ⇒ `lifespan` 內註冊本路由，`app.routes` 與 OpenAPI 皆含。
+
+      3. **緊急停用**（已註冊後，執行期把旗標設為空）
+         ⇒ 下面第一行的即時旗標檢查**仍回 404**（本檢查**不得移除**），
+         但該路由**仍在 route table 中，要到下次重啟才會消失**。
+         這是狀態 3 與狀態 1 的**唯一差別**，也是本端點誠實邊界的一部分：
+         兩個 404 的**來源不同**（routing 層 vs handler 內），對外碼相同。
+
+    🔴 本端點**不得**被當成「已驗證的真人 inbound」（見上方 C5 語意邊界）。
     """
     from fastapi import HTTPException
     import secrets as _secrets
 
+    # 🔴 即時旗標檢查（**緊急停用語意，不得移除**）：
+    #    已註冊的路由在執行期關旗標後，仍必須立刻拒絕請求 —— 否則「緊急停用」
+    #    就得等重啟才生效，那是不可接受的失效窗口。
     if not _internal_vc_touch_enabled():
         raise HTTPException(status_code=404, detail="not found")
 
-    expected = (os.environ.get(INTERNAL_VC_TOUCH_TOKEN_ENV) or "").strip()
+    expected = _internal_vc_touch_token()
     if not expected:
         # fail-closed：沒有配置 token ⇒ 拒絕（絕不匿名放行）
         raise HTTPException(status_code=503, detail="internal touch token not configured")

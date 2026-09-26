@@ -78,6 +78,43 @@ DECAY_WINDOW_HOURS = 24.0
 #: 連線層級 busy_timeout（毫秒）。C2：顯式設定，不倚賴 Python 預設 5.0s。
 BUSY_TIMEOUT_MS = 5000
 
+#: 🔴 INTIMACY-GROWTH-2 closeout（**每角色啟用資格**）：只有列在本集合的 agent
+#: 才會被 `touch_inbound()` / `try_apply_decay()` 實際扣減。
+#:
+#: **為何需要它**（Owner 裁定）：全域旗標 ON 只代表「衰減機制已啟用」，**不代表
+#: 每一個角色都已經有可靠的 TOUCH 來源**。§2 的語意是「只有**通過驗證的真人
+#: inbound** 才 TOUCH」；若某角色的語音互動（VC）尚未可靠地轉成 inbound TOUCH，
+#: 而 TG 恰好對她發訊，那麼 TOUCH 路徑內的到期清算就會**扣她的 Delta**，
+#: 形成「語音互動沒被計入、卻照樣被扣分」的不對稱。
+#:
+#: **為何用白名單**（frozenset）而非黑名單：與 `WORLD_LOG_BACKED_SOURCES` 同型。
+#: 黑名單會讓**未來新增的角色靜默取得扣減資格**（新角色一加入就自動可被扣分，
+#: 沒有人在 review 時會看到）；白名單則相反 —— 新角色預設**不合格**，
+#: 要取得資格必須顯式改本常數，是一個看得見的決策點。
+#:
+#: 🔴 **`agent_akane` / `agent_rem` / `agent_mai` 不得加入本集合**：
+#: 三者的 VC 語音尚未可靠 TOUCH，加入等於讓她們在語音互動未被計入的前提下被扣分。
+INTIMACY_DECAY_ELIGIBLE_AGENTS: frozenset = frozenset({
+    # 目前唯一具備完整 inbound 閉環的角色：TG owner whitelist 直接可比對，
+    # 且 `tests/test_intimacy_growth_2.py::TestChannelWiring` 已實測其 TOUCH 生效。
+    "agent_yua",
+})
+
+#: 不合格角色的統一 reason（fail-safe：**不拋例外**，讓呼叫端零成本辨識）。
+NOT_ELIGIBLE_REASON = "NOT_ELIGIBLE"
+
+
+def is_decay_eligible(agent_id: object) -> bool:
+    """該 agent 是否具備**每角色**的衰減扣減資格（白名單查詢）。
+
+    非字串 / 空字串 / 未列名者一律 `False`（fail-safe 方向 ＝ 不扣減）。
+    本函式**不讀 env**：資格是程式碼層級的決策，不是執行期可切換的旗標。
+    """
+    if not isinstance(agent_id, str):
+        return False
+    return agent_id in INTIMACY_DECAY_ELIGIBLE_AGENTS
+
+
 #: 🔴 寫入互斥鎖（C1 的配套）。
 #: `emotion_engine.conn` 是 `check_same_thread=False` 的**跨執行緒共享**連線
 #: （模組層級 singleton，全 process 共用）。Python sqlite3 的 `in_transaction`
@@ -338,9 +375,29 @@ class EmotionEngine:
         逾期或重複 inbound 只會讓 due 由「now + 24h」往前推，永不倒退。
 
         旗標 OFF ⇒ 原行為、零新持久寫入（C4）。
+
+        🔴 **每角色啟用資格**（closeout 修正 B）：`agent_id` 不在
+        `INTIMACY_DECAY_ELIGIBLE_AGENTS` ⇒ **完全不 TOUCH** —— 不寫時鐘、
+        不寫 ledger、不扣減，直接回 `NOT_ELIGIBLE`。此檢查必須在**扣減邊界**
+        （本函式內、任何 DB 寫入之前）而非只在呼叫端，因為本函式是 §10 的
+        唯一寫入路徑，呼叫端（TG / VC）無法保證已做過資格判斷。
+        **不得拋例外**：TG 路徑對本函式包了 try/except，拋例外會被吞成靜默失敗。
         """
         if not decay_enabled():
             return {"applied": False, "touched": False, "reason": "FLAG_OFF"}
+
+        # 🔴 扣減邊界閘門（必須在 ensure_decay_schema / 任何寫入之前）：
+        #    不合格 ⇒ 連 DDL 都不做，逐位元維持「該角色未被本票觸及」。
+        if not is_decay_eligible(agent_id):
+            logger.info(
+                "[INTIMACY-DECAY] touch skipped agent=%s channel=%s reason=%s",
+                agent_id, channel, NOT_ELIGIBLE_REASON,
+            )
+            return {
+                "applied": False,
+                "touched": False,
+                "reason": NOT_ELIGIBLE_REASON,
+            }
 
         self.ensure_decay_schema()  # 惰性 DDL（C3）
         now_ts = float(now) if now is not None else time.time()
@@ -385,10 +442,25 @@ class EmotionEngine:
         §6 Delta 保底 0.0，不得為負。
         §9 時鐘 NULL（UNKNOWN 冷啟動）⇒ 不衰減、不清零既有 Delta。
 
+        🔴 **每角色啟用資格**（closeout 修正 B）：`agent_id` 不在
+        `INTIMACY_DECAY_ELIGIBLE_AGENTS` ⇒ **不扣減、不寫 ledger、不推進 due**，
+        回 `NOT_ELIGIBLE`。此閘門與 `touch_inbound()` 內的是**同一道政策**，
+        但必須**各自實作** —— 兩者是獨立的扣減邊界，只擋其中一條會留下另一條
+        作為繞道（例如 heartbeat tick 直接呼叫本函式）。
+        檢查置於 `ensure_decay_schema()` 之前 ⇒ 不合格角色連 DDL 都不觸發。
+
         Returns dict：`applied` / `reason` / `applied_amount` / `due_at`。
         """
         if not decay_enabled():
             return {"applied": False, "reason": "FLAG_OFF"}
+
+        # 🔴 扣減邊界閘門（獨立於 touch_inbound 的那一道）。
+        if not is_decay_eligible(agent_id):
+            logger.info(
+                "[INTIMACY-DECAY] tick skipped agent=%s reason=%s",
+                agent_id, NOT_ELIGIBLE_REASON,
+            )
+            return {"applied": False, "reason": NOT_ELIGIBLE_REASON, "due_at": None}
 
         self.ensure_decay_schema()  # 惰性 DDL（C3）
         now_ts = float(now) if now is not None else time.time()

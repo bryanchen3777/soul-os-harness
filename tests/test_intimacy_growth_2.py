@@ -226,46 +226,46 @@ class TestDuplicateTick:
 
 class TestDelayedInbound:
     def test_late_inbound_settles_once_then_advances(self, engine_on) -> None:
-        engine_on.update_delta("agent_ruka", 5.0)
-        engine_on.touch_inbound("agent_ruka", "e1", "telegram", now=T0)
-        before = engine_on.get_delta("agent_ruka")
+        engine_on.update_delta("agent_yua", 5.0)
+        engine_on.touch_inbound("agent_yua", "e1", "telegram", now=T0)
+        before = engine_on.get_delta("agent_yua")
 
         late = T0 + 40 * DAY
-        result = engine_on.touch_inbound("agent_ruka", "e2", "telegram", now=late)
+        result = engine_on.touch_inbound("agent_yua", "e2", "telegram", now=late)
 
         assert result["touched"] is True
         # 先結算**恰好一步**
-        assert engine_on.get_delta("agent_ruka") == pytest.approx(before - DECAY_STEP)
+        assert engine_on.get_delta("agent_yua") == pytest.approx(before - DECAY_STEP)
         # 再推進：due = 結算後的時鐘 + 24h
         assert result["next_decay_due_at"] > late
 
     def test_overdue_inbound_never_moves_clock_backwards(self, engine_on) -> None:
         """過期 inbound **不得**讓時鐘倒退。"""
-        engine_on.update_delta("agent_ruka", 5.0)
-        engine_on.touch_inbound("agent_ruka", "e1", "telegram", now=T0)
+        engine_on.update_delta("agent_yua", 5.0)
+        engine_on.touch_inbound("agent_yua", "e1", "telegram", now=T0)
 
         later = T0 + 40 * DAY
-        r1 = engine_on.touch_inbound("agent_ruka", "e2", "telegram", now=later)
+        r1 = engine_on.touch_inbound("agent_yua", "e2", "telegram", now=later)
         due1 = r1["next_decay_due_at"]
 
         # 第二筆「更晚但仍在窗內」的 inbound
-        r2 = engine_on.touch_inbound("agent_ruka", "e3", "telegram", now=later + 60)
+        r2 = engine_on.touch_inbound("agent_yua", "e3", "telegram", now=later + 60)
         assert r2["next_decay_due_at"] >= due1
 
         # 甚至一筆**時間戳較舊**（亂序抵達）的 inbound 也不得倒退
-        r3 = engine_on.touch_inbound("agent_ruka", "e4", "telegram", now=later - 10 * DAY)
+        r3 = engine_on.touch_inbound("agent_yua", "e4", "telegram", now=later - 10 * DAY)
         assert r3["next_decay_due_at"] >= due1
 
     def test_repeated_inbound_in_window_does_not_deduct(self, engine_on) -> None:
         """同一個窗內的重複 inbound ⇒ 零扣減（只推 due 或維持）。"""
-        engine_on.update_delta("agent_anka", 5.0)
-        engine_on.touch_inbound("agent_anka", "e1", "telegram", now=T0)
-        before = engine_on.get_delta("agent_anka")
+        engine_on.update_delta("agent_yua", 5.0)
+        engine_on.touch_inbound("agent_yua", "e1", "telegram", now=T0)
+        before = engine_on.get_delta("agent_yua")
 
         for i in range(10):
-            engine_on.touch_inbound("agent_anka", f"r{i}", "telegram", now=T0 + i * 60)
+            engine_on.touch_inbound("agent_yua", f"r{i}", "telegram", now=T0 + i * 60)
 
-        assert engine_on.get_delta("agent_anka") == before
+        assert engine_on.get_delta("agent_yua") == before
 
 
 # ═════════════════════════════════════════════════════════════
@@ -277,53 +277,53 @@ class TestRestartCatchup:
     def test_restart_catches_up_at_most_one_step(self, db_path, monkeypatch) -> None:
         monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
         eng = EmotionEngine(db_path=db_path)
-        eng.update_delta("agent_rem", 10.0)
-        eng.touch_inbound("agent_rem", "e1", "telegram", now=T0)
-        before = eng.get_delta("agent_rem")
+        eng.update_delta("agent_yua", 10.0)
+        eng.touch_inbound("agent_yua", "e1", "telegram", now=T0)
+        before = eng.get_delta("agent_yua")
 
         # 「停服」很久（365 天）後重啟：新引擎實例 = 新的模組生命週期
         eng2 = EmotionEngine(db_path=db_path)
-        result = eng2.try_apply_decay("agent_rem", now=T0 + 365 * DAY)
+        result = eng2.try_apply_decay("agent_yua", now=T0 + 365 * DAY)
 
         assert result["applied"] is True
         # bounded：**只補一步**，不累積 365 步
-        assert eng2.get_delta("agent_rem") == pytest.approx(before - DECAY_STEP)
+        assert eng2.get_delta("agent_yua") == pytest.approx(before - DECAY_STEP)
 
     def test_catchup_then_second_evaluation_is_bounded(self, db_path, monkeypatch) -> None:
         monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
         eng = EmotionEngine(db_path=db_path)
-        eng.update_delta("agent_rem", 10.0)
-        eng.touch_inbound("agent_rem", "e1", "telegram", now=T0)
+        eng.update_delta("agent_yua", 10.0)
+        eng.touch_inbound("agent_yua", "e1", "telegram", now=T0)
 
         eng2 = EmotionEngine(db_path=db_path)
-        eng2.try_apply_decay("agent_rem", now=T0 + 100 * DAY)
-        after_first = eng2.get_delta("agent_rem")
+        eng2.try_apply_decay("agent_yua", now=T0 + 100 * DAY)
+        after_first = eng2.get_delta("agent_yua")
         # 立刻再評估（未到新 due）⇒ 不再扣
-        eng2.try_apply_decay("agent_rem", now=T0 + 100 * DAY + 1)
-        assert eng2.get_delta("agent_rem") == after_first
+        eng2.try_apply_decay("agent_yua", now=T0 + 100 * DAY + 1)
+        assert eng2.get_delta("agent_yua") == after_first
 
     def test_ledger_survives_restart_and_blocks_replay(self, db_path, monkeypatch) -> None:
         """ledger 跨行程冪等：同一到期點重放不得再扣。"""
         monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
         eng = EmotionEngine(db_path=db_path)
-        eng.update_delta("agent_rem", 10.0)
-        eng.touch_inbound("agent_rem", "e1", "telegram", now=T0)
-        eng.try_apply_decay("agent_rem", now=T0 + DAY)
-        after = eng.get_delta("agent_rem")
+        eng.update_delta("agent_yua", 10.0)
+        eng.touch_inbound("agent_yua", "e1", "telegram", now=T0)
+        eng.try_apply_decay("agent_yua", now=T0 + DAY)
+        after = eng.get_delta("agent_yua")
 
         # 另一實例（模擬重啟）對同一到期點重放
         eng2 = EmotionEngine(db_path=db_path)
         # 把 due 手動倒回原到期點，模擬「舊 due 被重放」
         eng2.conn.execute(
             "UPDATE agent_emotions SET next_decay_due_at = ? WHERE agent_id = ?",
-            (T0 + DAY, "agent_rem"),
+            (T0 + DAY, "agent_yua"),
         )
         eng2.conn.commit()
-        result = eng2.try_apply_decay("agent_rem", now=T0 + DAY + 10)
+        result = eng2.try_apply_decay("agent_yua", now=T0 + DAY + 10)
 
         assert result["applied"] is False
         assert result["reason"] == "DUPLICATE"
-        assert eng2.get_delta("agent_rem") == after
+        assert eng2.get_delta("agent_yua") == after
 
 
 # ═════════════════════════════════════════════════════════════
@@ -467,15 +467,15 @@ class TestTransactionRollback:
     def test_mid_transaction_failure_rolls_back_all_three(self, engine_on) -> None:
         """ledger + delta + due **三者全回滾**。"""
         engine_on.ensure_decay_schema()
-        engine_on.update_delta("agent_akane", 7.0)
-        engine_on.touch_inbound("agent_akane", "e0", "telegram", now=T0)
+        engine_on.update_delta("agent_yua", 7.0)
+        engine_on.touch_inbound("agent_yua", "e0", "telegram", now=T0)
 
         real_conn = engine_on.conn
-        delta_before = engine_on.get_delta("agent_akane")
+        delta_before = engine_on.get_delta("agent_yua")
         row_before = tuple(
             real_conn.execute(
                 "SELECT next_decay_due_at FROM agent_emotions WHERE agent_id = ?",
-                ("agent_akane",),
+                ("agent_yua",),
             ).fetchone()
         )
         ledger_before = list(
@@ -487,17 +487,17 @@ class TestTransactionRollback:
         engine_on.conn = wrapper
         try:
             with pytest.raises(sqlite3.OperationalError, match="injected failure"):
-                engine_on.try_apply_decay("agent_akane", now=T0 + DAY)
+                engine_on.try_apply_decay("agent_yua", now=T0 + DAY)
         finally:
             engine_on.conn = real_conn
         assert wrapper.tripped, "故障注入未觸發（測試本身失效）"
 
         # 三者全回滾
-        assert engine_on.get_delta("agent_akane") == delta_before
+        assert engine_on.get_delta("agent_yua") == delta_before
         row_after = tuple(
             real_conn.execute(
                 "SELECT next_decay_due_at FROM agent_emotions WHERE agent_id = ?",
-                ("agent_akane",),
+                ("agent_yua",),
             ).fetchone()
         )
         assert row_after == row_before
@@ -509,21 +509,21 @@ class TestTransactionRollback:
     def test_connection_usable_after_rollback(self, engine_on) -> None:
         """回滾後連線仍可用（不得殘留開啟的交易）。"""
         engine_on.ensure_decay_schema()
-        engine_on.update_delta("agent_akane", 7.0)
-        engine_on.touch_inbound("agent_akane", "e0", "telegram", now=T0)
+        engine_on.update_delta("agent_yua", 7.0)
+        engine_on.touch_inbound("agent_yua", "e0", "telegram", now=T0)
 
         real_conn = engine_on.conn
         wrapper = _FailOnLedgerInsertConn(real_conn)
         engine_on.conn = wrapper
         try:
             with pytest.raises(sqlite3.OperationalError):
-                engine_on.try_apply_decay("agent_akane", now=T0 + DAY)
+                engine_on.try_apply_decay("agent_yua", now=T0 + DAY)
         finally:
             engine_on.conn = real_conn
         assert wrapper.tripped
 
         assert real_conn.in_transaction is False
-        result = engine_on.try_apply_decay("agent_akane", now=T0 + DAY)
+        result = engine_on.try_apply_decay("agent_yua", now=T0 + DAY)
         assert result["applied"] is True
 
 
@@ -557,15 +557,15 @@ class TestNoTouchSources:
         engine = EmotionEngine(db_path=db)
         engine.ensure_decay_schema()
         engine.update_delta("agent_akane", 5.0)
-        engine.touch_inbound("agent_akane", "e0", "voice_companion", now=T0)
-        before = engine.get_delta("agent_akane")
+        engine.touch_inbound("agent_yua", "e0", "voice_companion", now=T0)
+        before = engine.get_delta("agent_yua")
 
         # 模擬 barge-in：只是一個 generation 遞增，無 TOUCH 呼叫
         generation = 0
         generation += 1  # _barge()
 
         assert generation == 1
-        assert engine.get_delta("agent_akane") == before
+        assert engine.get_delta("agent_yua") == before
 
     def test_no_touch_path_callable_from_non_human_events(self) -> None:
         """夢 / 日記 / 排程事件**不得** TOUCH：模組內不存在這類 callsite。"""
@@ -781,7 +781,7 @@ class TestChannelWiring:
 
         asyncio.run(router.inbound("ruka", "stranger", 99999999, channel="telegram"))
 
-        assert self._clock(engine, "agent_ruka") is None, "陌生人 inbound 竟然 TOUCH"
+        assert self._clock(engine, "agent_yua") is None, "陌生人 inbound 竟然 TOUCH"
 
     def test_empty_text_inbound_does_not_touch(self, tmp_path, monkeypatch) -> None:
         """§2：空 / 純空白（空 ASR）**不得** TOUCH。"""
@@ -1019,36 +1019,36 @@ class TestVcDegradation:
 class TestUnknownColdStart:
     def test_unknown_never_decays(self, engine_on) -> None:
         """無有效時鐘（NULL）＝ UNKNOWN ⇒ 不衰減。"""
-        result = engine_on.try_apply_decay("agent_never_seen", now=T0 + 90 * DAY)
+        result = engine_on.try_apply_decay("agent_yua", now=T0 + 90 * DAY)
         assert result["applied"] is False
         assert result["reason"] == "UNKNOWN"
 
     def test_unknown_does_not_zero_existing_delta(self, engine_on) -> None:
         """UNKNOWN **不得**清零既有 Delta。"""
         engine_on.ensure_decay_schema()
-        engine_on.update_delta("agent_newbie", 4.25)
+        engine_on.update_delta("agent_yua", 4.25)
         engine_on.conn.execute(
             "UPDATE agent_emotions SET last_valid_inbound_at = NULL, "
             "next_decay_due_at = NULL WHERE agent_id = ?",
-            ("agent_newbie",),
+            ("agent_yua",),
         )
         engine_on.conn.commit()
-        before = engine_on.get_delta("agent_newbie")
+        before = engine_on.get_delta("agent_yua")
 
         for _ in range(10):
-            result = engine_on.try_apply_decay("agent_newbie", now=T0 + 900 * DAY)
+            result = engine_on.try_apply_decay("agent_yua", now=T0 + 900 * DAY)
 
         assert result["applied"] is False
         assert result["reason"] == "UNKNOWN"
-        assert engine_on.get_delta("agent_newbie") == pytest.approx(before)
+        assert engine_on.get_delta("agent_yua") == pytest.approx(before)
 
     def test_unknown_creates_no_row(self, engine_on) -> None:
         engine_on.ensure_decay_schema()
-        engine_on.try_apply_decay("agent_ghost", now=T0 + DAY)
+        engine_on.try_apply_decay("agent_yua", now=T0 + DAY)
         rows = list(
             engine_on.conn.execute(
                 "SELECT agent_id FROM agent_emotions WHERE agent_id = ?",
-                ("agent_ghost",),
+                ("agent_yua",),
             )
         )
         assert rows == [], "UNKNOWN 評估不得建出 row"
@@ -1293,38 +1293,49 @@ class TestEndToEnd:
         assert len(set(keys)) == 3
 
     def test_per_agent_independent_clocks(self, engine_on) -> None:
-        """§1：每角色獨立計時。"""
+        """§1：每角色獨立計時（時鐘存在**該 row** 上，逐 row 獨立）。
+
+        🔴 closeout 修正 B 之後，計時主體必須**具備扣減資格**才會走完
+        「逾期 ⇒ 結算 ⇒ 推進」；不合格的角色會在最前面被 NOT_ELIGIBLE 短路。
+
+        本測例以 `agent_yua`（白名單）為主體，另鋪一條影子 row 作對照：
+        兩條 row 的 due 互不影響 ⇒ 證明時鐘是 per-row 而非 process-wide。
+        影子 row 因不具資格而被短路，這本身也被斷言（資格是對 `agent_id`
+        字串查詢，不是對 row 查詢）。
+        """
+        SHADOW = "agent_yua#b"
+
         engine_on.update_delta("agent_yua", 5.0)
-        engine_on.update_delta("agent_ruka", 5.0)
 
-        # yua 在 T0 TOUCH；ruka 在 T0 + 12h TOUCH
+        # agent_yua 在 T0 TOUCH；影子 row 的 due 落在 T0 + 36h（未到期）
         engine_on.touch_inbound("agent_yua", "a", "telegram", now=T0)
-        engine_on.touch_inbound("agent_ruka", "b", "telegram", now=T0 + 12 * 3600)
+        _seed_overdue(engine_on, SHADOW, delta=0.0, due=T0 + 12 * 3600 + DAY)
 
-        # T0 + 24h：yua 到期、ruka 未到期
-        yua = engine_on.try_apply_decay("agent_yua", now=T0 + DAY)
-        ruka = engine_on.try_apply_decay("agent_ruka", now=T0 + DAY)
+        # T0 + 24h：agent_yua 到期、影子 row 未到期
+        main = engine_on.try_apply_decay("agent_yua", now=T0 + DAY)
+        shadow = engine_on.try_apply_decay(SHADOW, now=T0 + DAY)
 
-        assert yua["applied"] is True
-        assert ruka["applied"] is False
-        assert ruka["reason"] == "NOT_DUE"
+        assert main["applied"] is True, f"白名單角色應結算：{main}"
+        assert shadow["applied"] is False
+        assert shadow["reason"] == "NOT_ELIGIBLE", (
+            "影子 row 不具資格，應被 NOT_ELIGIBLE 短路"
+        )
 
-        # §1 的核心：兩者的時鐘**各自獨立**，不是共享一個。
-        # yua 在 T0 到期並已結算 ⇒ 其 due 被推到 T0+2d。
-        # ruka 在 T0+12h 才 TOUCH、T0+24h 尚未到期 ⇒ 其 due 仍在 T0+36h。
+        # §1 的核心：時鐘逐 row 獨立，不是共享一個。
         yua_due = list(
             engine_on.conn.execute(
                 "SELECT next_decay_due_at FROM agent_emotions WHERE agent_id='agent_yua'"
             )
         )[0][0]
-        ruka_due = list(
+        shadow_due = list(
             engine_on.conn.execute(
-                "SELECT next_decay_due_at FROM agent_emotions WHERE agent_id='agent_ruka'"
+                "SELECT next_decay_due_at FROM agent_emotions WHERE agent_id = ?",
+                (SHADOW,),
             )
         )[0][0]
         assert yua_due == pytest.approx(T0 + 2 * DAY)
-        assert ruka_due == pytest.approx(T0 + 12 * 3600 + DAY)
-        assert yua_due != ruka_due, "兩個角色不得共用同一個時鐘"
+        assert shadow_due == pytest.approx(T0 + 12 * 3600 + DAY)
+        assert yua_due != shadow_due, "兩條 row 不得共用同一個時鐘"
 
     def test_decay_does_not_revoke_on_later_sage_failure(self, engine_on) -> None:
         """§3：後續回覆或 SAGE 失敗**不撤銷**已確認的真人 inbound。
@@ -1501,6 +1512,8 @@ def _build_equivalent_app(monkeypatch, flag_on: bool, token: str = ""):
 
     回傳 (app, client)。
     """
+    from contextlib import asynccontextmanager
+
     from fastapi import FastAPI, HTTPException
     from fastapi.testclient import TestClient
     import secrets as _secrets
@@ -1510,28 +1523,33 @@ def _build_equivalent_app(monkeypatch, flag_on: bool, token: str = ""):
     # 主服務衰減旗標：OFF ⇒ 200 + FLAG_OFF（不落帳）
     monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "")
 
-    app = FastAPI()
-
-    @app.get("/health")
-    async def health():
-        return {"ok": True}
-
     def _enabled() -> bool:
         raw = os.environ.get("INTERNAL_VC_TOUCH_ENABLED")
         if not isinstance(raw, str):
             return False
         return raw.strip().lower() in {"1", "true", "yes", "on"}
 
+    def _token() -> str:
+        return (os.environ.get("INTERNAL_VC_TOUCH_TOKEN") or "").strip()
+
+    def _registrable_at_startup() -> bool:
+        """與 run_server 的 `_internal_vc_touch_registrable_at_startup()` 等價。
+
+        兩條件缺一即不註冊：旗標 ON **且** token 非空。
+        """
+        return _enabled() and bool(_token())
+
     # 🔴 註解型別必須寫成 `fastapi.Request`（模組層級可解析的名稱）。
     # 本檔有 `from __future__ import annotations`，FastAPI 會把註解存成
     # **字串**再交給 pydantic 解析；若寫成區域別名（例：`Request as R`）或
     # 依賴區域 import，該字串在模組 globals 中查無此名 ⇒
     # `PydanticUserError: ... is not fully defined`。實測踩過，故用模組層級
-    # 的 `fastapi.Request`。
+    # 的 `fastapi.Request`。本函式維持**模組層級定義**（不縮進 lifespan 內）。
     async def _touch_handler(request: fastapi.Request, payload: dict):
+        # 🔴 即時旗標檢查（**緊急停用語意，不得移除**）
         if not _enabled():
             raise HTTPException(status_code=404, detail="not found")
-        expected = (os.environ.get("INTERNAL_VC_TOUCH_TOKEN") or "").strip()
+        expected = _token()
         if not expected:
             raise HTTPException(status_code=503, detail="internal touch token not configured")
         header = request.headers.get("authorization") or ""
@@ -1550,9 +1568,24 @@ def _build_equivalent_app(monkeypatch, flag_on: bool, token: str = ""):
             return {"ok": True, "applied": False, "reason": "FLAG_OFF"}
         return {"ok": True, "applied": False, "reason": "FLAG_OFF"}
 
-    # 以 add_api_route 註冊（等價於 `@app.post(...)`），但避免裝飾器把
-    # 區域函式的型別註解延後解析而觸發 pydantic 的 ForwardRef 問題。
-    app.add_api_route(_TOUCH_PATH, _touch_handler, methods=["POST"])
+    @asynccontextmanager
+    async def _lifespan(app_: FastAPI):
+        """🔴 啟動時條件註冊（等價於 run_server 的 lifespan 內註冊）。
+
+        只有 `_registrable_at_startup()` 為 True 才註冊；預設 OFF ⇒ 不註冊，
+        `app.routes` 根本不含該路徑。
+        """
+        if _registrable_at_startup():
+            app_.router.add_api_route(
+                _TOUCH_PATH, _touch_handler, methods=["POST"]
+            )
+        yield
+
+    app = FastAPI(lifespan=_lifespan)
+
+    @app.get("/health")
+    async def health():
+        return {"ok": True}
 
     # ── 與 run_server.py 相同的過濾包裝（先保存原始，再包裝）──
     _openapi_original = app.openapi
@@ -1566,7 +1599,10 @@ def _build_equivalent_app(monkeypatch, flag_on: bool, token: str = ""):
         return schema
 
     app.openapi = _filtered
-    return app, TestClient(app)
+    # 🔴 進入 context manager 讓 lifespan 執行（否則 ON 態假性 OFF）。
+    client = TestClient(app)
+    client.__enter__()
+    return app, client
 
 
 class TestOffApiSurface:
@@ -1598,13 +1634,18 @@ class TestOffApiSurface:
             f"來源檔應仍註冊 {_OTHER_EXISTING_PATH}；"
             f"實際抽到 {len(info['registered_paths'])} 條"
         )
-        assert _TOUCH_PATH in info["registered_paths"], (
-            "本端點仍必須被註冊（過濾只作用於 OpenAPI，不移除路由）"
+        # 🔴 closeout 第二輪：本端點**不再**在模組層級註冊（改為 lifespan 內
+        # 條件註冊）。此處改為斷言「模組層級**不得**出現該路徑」，這正是
+        # 「預設 OFF ⇒ 不註冊」的靜態證據；行為面由 TestStartupConditional
+        # RegistrationOff 以重建的 app 驗證。
+        assert _TOUCH_PATH not in info["registered_paths"], (
+            "本端點不得再於模組層級註冊 —— 必須移進 lifespan 條件註冊，"
+            "否則預設 OFF 時 app.routes 仍含該路徑"
         )
-        # 註：`run_server.py` 只有 3 條端點是**直接**用 `@app.<method>` 註冊，
-        # 其餘皆經由 `include_router(...)` 掛入。故此處斷言「至少有本端點
-        # 與其他既有端點兩條」而非誇大的數量門檻。
-        assert len(info["registered_paths"]) >= 2, (
+        # 註：`run_server.py` 只有少數端點是**直接**用 `@app.<method>` 註冊，
+        # 其餘皆經由 `include_router(...)` 掛入。故此處斷言「至少有其他既有
+        # 端點」而非誇大的數量門檻。
+        assert len(info["registered_paths"]) >= 1, (
             "AST 掃描只抽到太少端點，掃描邏輯可能已失效"
         )
 
@@ -1633,33 +1674,83 @@ class TestOffApiSurface:
         )
         assert resp.status_code == 404
 
-    def test_route_still_present_in_app_routes_when_off(self, monkeypatch) -> None:
-        """🔴 誠實揭露已知殘餘：路由**仍註冊於 `app.routes`**（FastAPI 架構限制）。
+    def test_route_absent_from_app_routes_when_off(self, monkeypatch) -> None:
+        """🔴 closeout 第二輪核心斷言：OFF ⇒ 路由**不在** `app.routes`。
 
-        此斷言把「已知殘餘」寫成可執行的契約，避免後人誤以為已完全不存在。
+        這是 Owner 退回第一輪實作的理由（第一輪路由仍註冊、handler 回 404；
+        本輪改為啟動時條件註冊）。此斷言即 Gate 1 的驗收點。
         """
         app, _client = _build_equivalent_app(monkeypatch, flag_on=False)
         route_paths = {getattr(r, "path", None) for r in app.routes}
-        assert _TOUCH_PATH in route_paths, (
-            "若此斷言變紅，代表殘餘已被消除 —— 那是好消息，請一併更新 "
-            "run_server.py 的 docstring 誠實邊界段落"
+        assert _TOUCH_PATH not in route_paths, (
+            "旗標 OFF 時路由仍註冊於 app.routes —— 啟動時條件註冊沒有生效"
+        )
+
+    def test_off_404_comes_from_routing_layer_not_handler(self, monkeypatch) -> None:
+        """🔴 OFF 的 404 必須是 **routing 層**的 404（路徑不存在），非 handler 產生。
+
+        既然 handler 根本不在 route table 中，這個 404 只可能來自 Starlette
+        的 routing 層。以回應 body 區分兩者：
+          - routing 層  ⇒ {"detail": "Not Found"}
+          - handler 內  ⇒ {"detail": "not found"}（小寫 f）
+        """
+        app, client = _build_equivalent_app(monkeypatch, flag_on=False)
+        assert _TOUCH_PATH not in {getattr(r, "path", None) for r in app.routes}
+        resp = client.post(
+            _TOUCH_PATH, json={"agent_id": "agent_x", "event_id": "e1"}
+        )
+        assert resp.status_code == 404
+        assert resp.json().get("detail") == "Not Found", (
+            "OFF 態的 404 不是 routing 層產生 —— handler 仍在 route table 中"
         )
 
     # ── ON 態 ──
 
     def test_on_endpoint_listed_in_openapi_paths(self, monkeypatch) -> None:
-        """🔴 ON ⇒ 才列出此路徑（證明過濾是條件式，不是無條件移除）。"""
-        _app, client = _build_equivalent_app(monkeypatch, flag_on=True)
-        paths = client.get("/openapi.json").json()["paths"]
-        assert _TOUCH_PATH in paths, "旗標 ON 時本端點必須可被列舉"
+        """🔴 ON（旗標 ON **且** token 非空）⇒ 才列出此路徑。
 
-    def test_on_without_token_returns_503(self, monkeypatch) -> None:
-        """🔴 ON 且未設 token ⇒ 503（fail-closed，絕不匿名放行）。"""
-        _app, client = _build_equivalent_app(monkeypatch, flag_on=True, token="")
+        證明過濾是條件式，不是無條件移除。
+        """
+        _app, client = _build_equivalent_app(
+            monkeypatch, flag_on=True, token="s3cr3t-token"
+        )
+        paths = client.get("/openapi.json").json()["paths"]
+        assert _TOUCH_PATH in paths, "旗標 ON 且 token 已設時本端點必須可被列舉"
+
+    def test_on_flag_without_token_is_not_registered(self, monkeypatch) -> None:
+        """🔴 旗標 ON **但 token 未設** ⇒ 啟動時**不註冊**（缺一即不註冊）。
+
+        ⚠️ closeout 第二輪的語意變更：第一輪時「旗標 ON + token 空」是一條
+        已註冊的路徑，請求會走到 handler 拿 503。本輪起，token 是啟動時
+        註冊條件的**必要**項 —— 未設定完成的部署不該把該路徑列出來。
+        故本測例由「斷言 503」改為「斷言未註冊 + 404」。
+
+        503 分支本身**仍然存在**（handler 內 fail-closed），由
+        `test_emergency_token_removed_returns_503` 以**緊急停用**路徑覆蓋
+        —— 那是 503 在現實中唯一可達的情境（啟動時有 token、執行期被移除）。
+        """
+        app, client = _build_equivalent_app(monkeypatch, flag_on=True, token="")
+        assert _TOUCH_PATH not in {getattr(r, "path", None) for r in app.routes}
         resp = client.post(
             _TOUCH_PATH, json={"agent_id": "agent_x", "event_id": "e1"}
         )
-        assert resp.status_code == 503, "未設 token 必須 fail-closed 為 503"
+        assert resp.status_code == 404, "未設 token ⇒ 不註冊 ⇒ routing 層 404"
+
+    def test_emergency_token_removed_returns_503(self, monkeypatch) -> None:
+        """🔴 **緊急移除 token**：已註冊後執行期把 token 清空 ⇒ handler 回 503。
+
+        這是 503 fail-closed 分支在現實中唯一可達的情境，也是保留該分支的
+        理由：token 被緊急撤下時，請求必須被拒絕，而不是被當成 no-op。
+        """
+        _app, client = _build_equivalent_app(
+            monkeypatch, flag_on=True, token="s3cr3t-token"
+        )
+        # 執行期移除 token（旗標仍 ON ⇒ 路由已註冊）
+        monkeypatch.setenv("INTERNAL_VC_TOUCH_TOKEN", "")
+        resp = client.post(
+            _TOUCH_PATH, json={"agent_id": "agent_x", "event_id": "e1"}
+        )
+        assert resp.status_code == 503, "token 被撤下後必須 fail-closed 為 503"
 
     def test_on_with_token_missing_auth_returns_401(self, monkeypatch) -> None:
         """🔴 ON + token 已設，不帶 Authorization ⇒ 401。"""
@@ -1709,7 +1800,9 @@ class TestOffApiSurface:
         """
         monkeypatch.setenv("INTERNAL_VC_TOUCH_ENABLED", "1")
         assert os.environ["INTERNAL_VC_TOUCH_ENABLED"] == "1"
-        _app, client = _build_equivalent_app(monkeypatch, flag_on=True)
+        _app, client = _build_equivalent_app(
+            monkeypatch, flag_on=True, token="s3cr3t-token"
+        )
         paths = client.get("/openapi.json").json()["paths"]
         assert _TOUCH_PATH in paths, "conftest 的釘空把 ON 態測試吃掉了"
 
@@ -1832,8 +1925,12 @@ class TestSharedConnectionRaceWithLegacyUpdateDelta:
 
         修復前實測會拋 `SystemError` / `DatabaseError: cannot commit -
         no transaction is active`（見類別 docstring）。
+
+        🔴 closeout 修正 B：競賽主體必須具備**扣減資格**，否則 ticker 會全部
+        被 NOT_ELIGIBLE 短路、`n_settled` 恆為 0，本測例就測不到
+        「`update_delta` 與 `_settle_once_locked` 在同一條連線上互斥」。
         """
-        obs = self._run_race(engine_on, "agent_race")
+        obs = self._run_race(engine_on, "agent_yua")
 
         assert obs["errors"] == [], (
             f"共享連線交錯導致例外: {obs['errors']}"
@@ -1853,7 +1950,7 @@ class TestSharedConnectionRaceWithLegacyUpdateDelta:
         扣減次數由 ledger 的實際結算數決定。任何寫丟失或重複扣減都會讓
         此斷言變紅（實測：少一次寫入 ⇒ 86.39999999999966 ≠ 86.49999999999966）。
         """
-        obs = self._run_race(engine_on, "agent_race_contract")
+        obs = self._run_race(engine_on, "agent_yua")
 
         expected = self._expected(
             obs["seed_val"], obs["n_delta"], obs["n_settled"]
@@ -1919,4 +2016,730 @@ class TestSharedConnectionRaceWithLegacyUpdateDelta:
             "update_delta() 必須以 `with _WRITE_LOCK:` 包住整段 "
             "read-modify-write，否則會與 touch_inbound()/try_apply_decay() "
             "的 BEGIN IMMEDIATE 交錯"
+        )
+
+
+# ═════════════════════════════════════════════════════════════
+# closeout 修正 A：**啟動時條件註冊**（OFF ⇒ 路由不在 app.routes）
+# ═════════════════════════════════════════════════════════════
+#
+# Owner 裁定逐字：「採啟動時條件註冊：預設 OFF 不註冊；若啟動時具備啟用條件
+# 才註冊。緊急停用時 handler 仍須即時拒絕請求；已註冊的路由要到下次重啟才從
+# route table 消失，這項邊界如實記錄，不再宣稱動態 OFF 等於未註冊。」
+#
+# 本類別**不 import `scripts/run_server.py`**（該檔模組層級會對
+# `data_root()/faulthandler.log` 開檔並 `load_dotenv()` ⇒ 會碰生產 data root）。
+# 沿用既有做法：AST 讀來源檔驗結構 + 在 tmp 內等價重建 app 驗行為。
+
+
+def _scan_run_server_touch_registration() -> dict:
+    """以 AST **唯讀**掃描 `scripts/run_server.py` 的本端點註冊結構。
+
+    回傳 dict：
+      - ``module_level_registered``：該路徑是否在**模組層級**的
+        `@app.<method>("...")` decorator 中出現
+      - ``registered_inside_lifespan``：`lifespan` 函式體內是否有
+        `add_api_route(...)` 呼叫
+      - ``touch_path_in_lifespan``：該 `add_api_route` 是否指向本端點路徑
+      - ``has_compare_digest``：`secrets.compare_digest` 是否仍在（文字掃描）
+      - ``has_live_flag_check``：handler 內是否仍有即時旗標檢查
+
+    **不執行**任何 run_server 程式碼 —— 純語法樹遍歷。
+    """
+    import ast as _ast
+
+    source = RUN_SERVER_PATH.read_text(encoding="utf-8")
+    tree = _ast.parse(source)
+
+    module_level_registered = False
+    registered_inside_lifespan = False
+    touch_path_in_lifespan = False
+    guarded_registration = False
+
+    # 1) 模組層級不得有該路徑的 decorator 註冊
+    for node in tree.body:
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            for dec in node.decorator_list:
+                if (
+                    isinstance(dec, _ast.Call)
+                    and isinstance(dec.func, _ast.Attribute)
+                    and dec.func.attr in {"get", "post", "put", "delete", "patch"}
+                    and isinstance(dec.func.value, _ast.Name)
+                    and dec.func.value.id == "app"
+                    and dec.args
+                    and isinstance(dec.args[0], _ast.Constant)
+                    and dec.args[0].value == _TOUCH_PATH
+                ):
+                    module_level_registered = True
+
+    # 2) lifespan 內必須有 add_api_route 註冊該路徑，且**被條件守衛包住**
+    for node in tree.body:
+        if (
+            isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef))
+            and node.name == "lifespan"
+        ):
+            for inner in _ast.walk(node):
+                if isinstance(inner, _ast.Call):
+                    fn = inner.func
+                    is_add = (
+                        isinstance(fn, _ast.Attribute) and fn.attr == "add_api_route"
+                    ) or (isinstance(fn, _ast.Name) and fn.id == "add_api_route")
+                    if is_add:
+                        registered_inside_lifespan = True
+                        for arg in list(inner.args) + [
+                            k.value for k in inner.keywords
+                        ]:
+                            if (
+                                isinstance(arg, _ast.Constant)
+                                and arg.value == _TOUCH_PATH
+                            ):
+                                touch_path_in_lifespan = True
+
+            # 🔴 條件守衛：`add_api_route` 必須在某個 `if` 之內，且該 `if`
+            #    的條件要**真的引用**啟用資格判斷函式。
+            #    只斷言「lifespan 內有 add_api_route」是不夠的 —— 那無法區分
+            #    「條件註冊」與「無條件註冊」（mutation M-C 實測證實了這點）。
+            for inner in _ast.walk(node):
+                if isinstance(inner, _ast.If):
+                    cond_src = _ast.dump(inner.test)
+                    if "registrable_at_startup" in cond_src or (
+                        "_internal_vc_touch_enabled" in cond_src
+                        and "_internal_vc_touch_token" in cond_src
+                    ):
+                        # 該 if 的 body 內必須真的有 add_api_route
+                        for sub in _ast.walk(inner):
+                            if isinstance(sub, _ast.Call):
+                                f2 = sub.func
+                                if (
+                                    isinstance(f2, _ast.Attribute)
+                                    and f2.attr == "add_api_route"
+                                ) or (
+                                    isinstance(f2, _ast.Name)
+                                    and f2.id == "add_api_route"
+                                ):
+                                    guarded_registration = True
+                        # 條件不得是恆真常數（`if True:` 這類 mutation）
+                        if isinstance(inner.test, _ast.Constant):
+                            guarded_registration = False
+
+    # 3) 文字掃描
+    has_compare_digest = "compare_digest" in source
+    has_live_flag_check = "if not _internal_vc_touch_enabled():" in source
+
+    return {
+        "module_level_registered": module_level_registered,
+        "registered_inside_lifespan": registered_inside_lifespan,
+        "touch_path_in_lifespan": touch_path_in_lifespan,
+        "guarded_registration": guarded_registration,
+        "has_compare_digest": has_compare_digest,
+        "has_live_flag_check": has_live_flag_check,
+    }
+
+
+class TestStartupConditionalRegistrationSource:
+    """AST 靜態事實：本端點的註冊**不在模組層級**，而在 lifespan 條件註冊。"""
+
+    def test_touch_route_not_registered_at_module_level(self) -> None:
+        """🔴 核心 AST 斷言：`@app.post("/internal/vc/inbound_touch")` 不得在模組層級。"""
+        info = _scan_run_server_touch_registration()
+        assert info["module_level_registered"] is False, (
+            "本端點仍在模組層級註冊 —— 預設 OFF 時 app.routes 必然含該路徑，"
+            "Gate 1 不成立"
+        )
+
+    def test_registration_happens_inside_lifespan(self) -> None:
+        """🔴 註冊必須發生在 `lifespan` 內，且指向本端點路徑。"""
+        info = _scan_run_server_touch_registration()
+        assert info["registered_inside_lifespan"] is True, (
+            "lifespan 內找不到 add_api_route —— 條件註冊沒有落地"
+        )
+        assert info["touch_path_in_lifespan"] is True, (
+            "lifespan 內的註冊沒有指向 /internal/vc/inbound_touch"
+        )
+
+    def test_registration_is_guarded_by_eligibility_condition(self) -> None:
+        """🔴 註冊必須被**啟用資格條件**守衛，不是無條件註冊。
+
+        這條是 M-C 的靶：若把守衛改成 `if True:`（無條件註冊），
+        `add_api_route` 就不在任何引用資格判斷的 `if` 之內 ⇒ 本斷言變紅。
+        只斷言「lifespan 內有 add_api_route」**不足以**區分條件與無條件註冊。
+        """
+        info = _scan_run_server_touch_registration()
+        assert info["guarded_registration"] is True, (
+            "lifespan 內的 add_api_route 沒有被 `_internal_vc_touch_"
+            "registrable_at_startup()` 之類的條件守衛包住 —— "
+            "預設 OFF 將無條件註冊該路由"
+        )
+
+    def test_compare_digest_still_present(self) -> None:
+        """🔴 `secrets.compare_digest` 的定時比較**不得**因重構而遺失。"""
+        info = _scan_run_server_touch_registration()
+        assert info["has_compare_digest"] is True, (
+            "Bearer 比對必須維持 secrets.compare_digest（定時比較）"
+        )
+
+    def test_live_flag_check_still_inside_handler(self) -> None:
+        """🔴 handler 內的即時旗標檢查**不得移除**（緊急停用語意）。"""
+        info = _scan_run_server_touch_registration()
+        assert info["has_live_flag_check"] is True, (
+            "handler 內的 `if not _internal_vc_touch_enabled():` 消失了 —— "
+            "緊急停用會失效（關旗標後仍要能即時 404）"
+        )
+
+
+class _ClientCleanupMixin:
+    """管理本類別建立的 TestClient，測後關閉（觸發 lifespan 收尾）。"""
+
+    @pytest.fixture(autouse=True)
+    def _cleanup_client(self, monkeypatch):
+        self._clients = []
+        yield
+        for c in self._clients:
+            try:
+                c.__exit__(None, None, None)
+            except Exception:
+                pass
+
+
+class TestStartupConditionalRegistrationOff(_ClientCleanupMixin):
+    """🔴 OFF 態（旗標與 token 皆缺席）：不註冊、不可列舉、404 來自 routing 層。"""
+
+    def _build(self, monkeypatch, flag_on, token=""):
+        app, client = _build_equivalent_app(monkeypatch, flag_on=flag_on, token=token)
+        self._clients.append(client)
+        return app, client
+
+    def test_off_touch_path_absent_from_app_routes(self, monkeypatch) -> None:
+        """🔴 **本輪新增的核心斷言**：OFF ⇒ `app.routes` 不含該路徑。"""
+        app, _c = self._build(monkeypatch, flag_on=False)
+        route_paths = {getattr(r, "path", None) for r in app.routes}
+        assert _TOUCH_PATH not in route_paths, (
+            "OFF 態仍註冊於 app.routes —— 啟動時條件註冊未生效"
+        )
+
+    def test_off_touch_path_absent_from_openapi(self, monkeypatch) -> None:
+        """🔴 OFF ⇒ `/openapi.json` 不列出該路徑。"""
+        _app, client = self._build(monkeypatch, flag_on=False)
+        assert _TOUCH_PATH not in client.get("/openapi.json").json()["paths"]
+
+    def test_off_post_returns_404(self, monkeypatch) -> None:
+        """🔴 OFF ⇒ POST 該路徑得 404（routing 層，路徑不存在）。"""
+        _app, client = self._build(monkeypatch, flag_on=False)
+        resp = client.post(
+            _TOUCH_PATH, json={"agent_id": "agent_x", "event_id": "e1"}
+        )
+        assert resp.status_code == 404
+        assert resp.json().get("detail") == "Not Found", (
+            "404 不是 routing 層產生（handler 仍在 route table）"
+        )
+
+    def test_off_existing_route_still_present(self, monkeypatch) -> None:
+        """🔴 對照組：既有路由**仍在** —— 證明沒有誤刪整個 route table。"""
+        app, _c = self._build(monkeypatch, flag_on=False)
+        route_paths = {getattr(r, "path", None) for r in app.routes}
+        assert "/health" in route_paths, "條件註冊把既有路由也弄丟了"
+
+    def test_off_flag_on_but_token_empty_is_not_registered(self, monkeypatch) -> None:
+        """🔴 缺一即不註冊：旗標 ON **但 token 為空** ⇒ 同樣不註冊。
+
+        契約明訂「具備啟用條件 = 旗標 ON **且** token 非空」。此測例把
+        「token 缺席」單獨釘死，避免後人只看旗標就註冊。
+        """
+        app, _c = self._build(monkeypatch, flag_on=True, token="")
+        route_paths = {getattr(r, "path", None) for r in app.routes}
+        assert _TOUCH_PATH not in route_paths, (
+            "token 為空時仍註冊了路由 —— 違反『兩者缺一即不註冊』"
+        )
+
+
+class TestStartupConditionalRegistrationOn(_ClientCleanupMixin):
+    """🔴 ON 態（旗標 ON 且 token 已設）：註冊、可列舉、鑑權矩陣正確。"""
+
+    def _build(self, monkeypatch, token="s3cr3t-token"):
+        app, client = _build_equivalent_app(
+            monkeypatch, flag_on=True, token=token
+        )
+        self._clients.append(client)
+        return app, client
+
+    def test_on_touch_path_present_in_app_routes(self, monkeypatch) -> None:
+        """🔴 ON ⇒ `app.routes` **含**該路由。"""
+        app, _c = self._build(monkeypatch)
+        route_paths = {getattr(r, "path", None) for r in app.routes}
+        assert _TOUCH_PATH in route_paths, "ON 態卻沒有註冊路由"
+
+    def test_on_touch_path_present_in_openapi(self, monkeypatch) -> None:
+        """🔴 ON ⇒ OpenAPI **含**該路徑。"""
+        _app, client = self._build(monkeypatch)
+        assert _TOUCH_PATH in client.get("/openapi.json").json()["paths"]
+
+    def test_on_missing_authorization_returns_401(self, monkeypatch) -> None:
+        """🔴 缺 Authorization ⇒ 401。"""
+        _app, client = self._build(monkeypatch)
+        resp = client.post(
+            _TOUCH_PATH, json={"agent_id": "agent_yua", "event_id": "e1"}
+        )
+        assert resp.status_code == 401
+
+    def test_on_wrong_token_returns_401(self, monkeypatch) -> None:
+        """🔴 錯 token ⇒ 401。"""
+        _app, client = self._build(monkeypatch)
+        resp = client.post(
+            _TOUCH_PATH,
+            json={"agent_id": "agent_yua", "event_id": "e1"},
+            headers={"Authorization": "Bearer totally-wrong"},
+        )
+        assert resp.status_code == 401
+
+    def test_on_correct_token_decay_off_returns_200_flag_off(self, monkeypatch) -> None:
+        """🔴 正確 token 且 `INTIMACY_DECAY_ENABLED=""` ⇒ 200 且 body 逐鍵相符。"""
+        _app, client = self._build(monkeypatch)
+        resp = client.post(
+            _TOUCH_PATH,
+            json={"agent_id": "agent_yua", "event_id": "e1"},
+            headers={"Authorization": "Bearer s3cr3t-token"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "applied": False, "reason": "FLAG_OFF"}
+
+
+class TestEmergencyDisableAfterRegistration(_ClientCleanupMixin):
+    """🔴 **緊急停用**：ON 註冊後，執行期把旗標設為空 ⇒ handler 仍即時回 404。
+
+    Owner 逐字邊界：「緊急停用時 handler 仍須即時拒絕請求；**已註冊的路由要到
+    下次重啟才從 route table 消失**，這項邊界如實記錄，不再宣稱動態 OFF
+    等於未註冊。」
+
+    本類別把這兩件事**分別**斷言，正是為了讓「已註冊的路由仍留在 route table」
+    這個邊界成為**可執行的契約**，而非口頭揭露。
+    """
+
+    def _build(self, monkeypatch):
+        app, client = _build_equivalent_app(
+            monkeypatch, flag_on=True, token="s3cr3t-token"
+        )
+        self._clients.append(client)
+        return app, client
+
+    def test_emergency_disable_after_registration_still_returns_404(
+        self, monkeypatch
+    ) -> None:
+        """🔴🔴 **緊急停用**：ON 註冊後執行期關旗標 ⇒ handler **仍即時 404**。
+
+        這是「緊急停用」的核心語意 —— 不得等到重啟才拒絕請求。
+        """
+        app, client = self._build(monkeypatch)
+
+        # 前置：確認確實已註冊（否則本測例變成在測 OFF 態，失去意義）
+        assert _TOUCH_PATH in {getattr(r, "path", None) for r in app.routes}
+
+        ok = client.post(
+            _TOUCH_PATH,
+            json={"agent_id": "agent_yua", "event_id": "e1"},
+            headers={"Authorization": "Bearer s3cr3t-token"},
+        )
+        assert ok.status_code == 200, "前置：ON 態正確 token 應為 200"
+
+        # 🔴 執行期把旗標關掉（不重啟）
+        monkeypatch.setenv("INTERNAL_VC_TOUCH_ENABLED", "")
+
+        resp = client.post(
+            _TOUCH_PATH,
+            json={"agent_id": "agent_yua", "event_id": "e1"},
+            headers={"Authorization": "Bearer s3cr3t-token"},
+        )
+        assert resp.status_code == 404, (
+            "執行期關旗標後 handler 沒有即時 404 —— 緊急停用失效"
+        )
+        # 這個 404 來自 handler（小寫 f），與 OFF 態的 routing 層 404 不同源
+        assert resp.json().get("detail") == "not found", (
+            "緊急停用的 404 應由 handler 的即時檢查產生"
+        )
+
+    def test_emergency_disable_route_persists_until_restart(self, monkeypatch) -> None:
+        """🔴 誠實邊界：緊急停用後路由**仍在 route table**，要到重啟才消失。
+
+        此斷言是「不再宣稱動態 OFF 等於未註冊」的可執行證據。若此斷言變紅，
+        代表 FastAPI 之後真的支援了執行期移除路由 —— 那是好消息，請一併
+        更新 run_server.py 的 docstring 誠實邊界段落。
+        """
+        app, client = self._build(monkeypatch)
+
+        monkeypatch.setenv("INTERNAL_VC_TOUCH_ENABLED", "")
+        assert client.post(
+            _TOUCH_PATH,
+            json={"agent_id": "agent_yua", "event_id": "e1"},
+            headers={"Authorization": "Bearer s3cr3t-token"},
+        ).status_code == 404
+
+        assert _TOUCH_PATH in {getattr(r, "path", None) for r in app.routes}, (
+            "緊急停用後路由竟已從 route table 消失 —— 若 FastAPI 已支援執行期"
+            "移除路由，請更新 docstring 的誠實邊界"
+        )
+
+    def test_emergency_disable_hides_path_from_openapi(self, monkeypatch) -> None:
+        """🔴 雙保險：緊急停用後即使路由仍在 route table，OpenAPI **也不列出**。
+
+        這證明 `app.openapi` 覆寫（第一輪遺留）與啟動時條件註冊**互不取代**：
+        前者管「可不可列舉」（即時），後者管「路由存不存在」（需重啟）。
+        """
+        _app, client = self._build(monkeypatch)
+
+        assert _TOUCH_PATH in client.get("/openapi.json").json()["paths"]
+        monkeypatch.setenv("INTERNAL_VC_TOUCH_ENABLED", "")
+        assert _TOUCH_PATH not in client.get("/openapi.json").json()["paths"], (
+            "緊急停用後 OpenAPI 仍可列舉該路徑 —— 雙保險失效"
+        )
+
+
+# ═════════════════════════════════════════════════════════════
+# closeout 修正 B：**每角色**啟用資格（扣減邊界閘門）
+# ═════════════════════════════════════════════════════════════
+#
+# Owner 裁定逐字：「報告證明了預設全域旗標 OFF 時任何角色都不扣；但 TG 的
+# `touch_inbound(agent_id)` 仍可收到 `agent_akane`／`agent_rem`／`agent_mai`。
+# 將來為其他角色開全域旗標後，若 TG 對其中一位發訊，TOUCH 內的到期清算就可能
+# 扣她的 Delta，而語音互動仍未被計入。**必須在實際 `touch_inbound`／
+# `try_apply_decay` 的扣減邊界加入明確的每角色啟用資格**。」
+#
+# 🔴 核心負例必須逐字用 `agent_akane` / `agent_rem` / `agent_mai` 三個角色。
+# 🔴 全域旗標必須是 **ON**，且時鐘**已逾期** —— 這樣才證明「扣減邊界有閘門」，
+#    而不是靠「旗標 OFF」或「未逾期」這種**替代證據**過關。
+
+INELIGIBLE_AGENTS = ("agent_akane", "agent_rem", "agent_mai")
+INELIGIBLE_REASON = "NOT_ELIGIBLE"
+
+
+def _ledger_count(engine: EmotionEngine, agent_id: str) -> int:
+    """該 agent 在 ledger 中的筆數（0 ⇒ 從未結算過）。"""
+    cur = engine.conn.execute(
+        "SELECT COUNT(*) FROM intimacy_decay_ledger WHERE agent_id = ?",
+        (agent_id,),
+    )
+    return int(cur.fetchone()[0])
+
+
+def _ledger_total_amount(engine: EmotionEngine, agent_id: str) -> float:
+    """該 agent 的 ledger 實扣量總和。"""
+    cur = engine.conn.execute(
+        "SELECT COALESCE(SUM(applied_amount), 0.0) FROM intimacy_decay_ledger "
+        "WHERE agent_id = ?",
+        (agent_id,),
+    )
+    return float(cur.fetchone()[0])
+
+
+def _seed_overdue(engine: EmotionEngine, agent_id: str, delta: float, due: float) -> None:
+    """把某角色鋪成「已逾期且 Delta 非零」的情境（**唯一**允許的測試鋪陳）。
+
+    直接寫 DB 是為了精確控制時鐘狀態；`touch_inbound` / `try_apply_decay`
+    才是被測的扣減邊界。
+
+    🔴 先 `ensure_decay_schema()`：本 helper 要寫 `last_valid_inbound_at` /
+    `next_decay_due_at` 兩欄，schema 未建會 `OperationalError`。這**不影響**
+    被測語意 —— 被測的是「扣減邊界是否擋住不合格角色」，鋪陳階段本來就必須
+    先把場景造出來。
+    """
+    engine.ensure_decay_schema()
+    engine.conn.execute(
+        "INSERT INTO agent_emotions "
+        "(agent_id, mood, intimacy, intimacy_delta, "
+        " last_valid_inbound_at, next_decay_due_at, updated_at) "
+        "VALUES (?, 0.0, 50.0, ?, ?, ?, 'seed') "
+        "ON CONFLICT(agent_id) DO UPDATE SET "
+        "  intimacy_delta = excluded.intimacy_delta, "
+        "  last_valid_inbound_at = excluded.last_valid_inbound_at, "
+        "  next_decay_due_at = excluded.next_decay_due_at",
+        (agent_id, delta, due - DAY, due),
+    )
+    engine.conn.commit()
+
+
+def _delta_of(engine: EmotionEngine, agent_id: str) -> float:
+    return engine.get_delta(agent_id)
+
+
+def _due_of(engine: EmotionEngine, agent_id: str):
+    """讀該 row 的 due；**欄位不存在或無 row ⇒ None**（fail-safe，不拋）。
+
+    🔴 必須容忍「schema 尚未建立」：`test_not_eligible_does_not_touch_clock`
+    的斷言正是「不合格角色連 DDL 都不觸發」，此時 `next_decay_due_at` 欄位
+    根本不存在，直接查會 `OperationalError`。欄位缺席本身即證明「沒有任何
+    持久寫入」。
+    """
+    try:
+        _last, due, _d = engine._read_clock_and_delta_locked(agent_id)
+        return due
+    except sqlite3.OperationalError:
+        return None
+
+
+class TestPerAgentEligibilityConstant:
+    """白名單常數本身的契約。"""
+
+    def test_whitelist_is_frozenset(self) -> None:
+        """必須是 `frozenset`（白名單型別；與 WORLD_LOG_BACKED_SOURCES 同型）。"""
+        import src.agent.emotion as em
+
+        assert isinstance(em.INTIMACY_DECAY_ELIGIBLE_AGENTS, frozenset), (
+            "必須用 frozenset 白名單，避免執行期被就地修改"
+        )
+
+    def test_owner_named_agents_are_not_eligible(self) -> None:
+        """🔴 Owner 逐字點名的三個角色**必須不在**白名單中。"""
+        from src.agent.emotion import INTIMACY_DECAY_ELIGIBLE_AGENTS
+
+        for aid in INELIGIBLE_AGENTS:
+            assert aid not in INTIMACY_DECAY_ELIGIBLE_AGENTS, (
+                f"{aid} 出現在白名單中 —— VC 語音尚未可靠 TOUCH 前不得扣分"
+            )
+
+    def test_eligibility_helper_failsafe_on_weird_input(self) -> None:
+        """`is_decay_eligible()` 對非字串 / 空 / 未知角色一律 False（fail-safe）。"""
+        from src.agent.emotion import is_decay_eligible
+
+        for bad in (None, "", "agent_unknown", 123, ["agent_yua"]):
+            assert is_decay_eligible(bad) is False
+
+    def test_eligibility_is_not_env_driven(self, monkeypatch) -> None:
+        """資格**不受 env 影響** —— 它是程式碼層決策，不是可切換的旗標。
+
+        即使把衰減旗標開到最大、甚至試圖用 env 覆寫白名單，不合格角色依然不合格。
+        """
+        from src.agent.emotion import is_decay_eligible
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        monkeypatch.setenv("INTIMACY_DECAY_ELIGIBLE_AGENTS", "agent_akane,agent_rem")
+        for aid in INELIGIBLE_AGENTS:
+            assert is_decay_eligible(aid) is False, (
+                f"{aid} 的資格被 env 影響了 —— 資格不得是 env 可切換的"
+            )
+
+
+class TestTouchInboundPerAgentEligibility:
+    """🔴 Owner 指定的核心負例：全域 ON + 已逾期 + TG 形狀 inbound ⇒ 三人 0 扣減。
+
+    **走 `router.inbound()` 的真實呼叫路徑**（沿用 `TestChannelWiring` 的接線法），
+    不是繞過 router 直接叫 engine —— 這樣才證明「TG 收到這三人的訊息時，
+    扣減邊界確實擋住」。
+    """
+
+    @staticmethod
+    def _point_router_at(engine):
+        import src.agent.emotion as emotion_mod
+        from src.eventbus import SoulEventBus
+        from src.io.channels.router import ChannelRouter
+
+        emotion_mod.emotion_engine = engine
+        return ChannelRouter(bus=SoulEventBus())
+
+    def test_global_on_overdue_tg_inbound_akane_rem_mai_zero_decay(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """🔴🔴 **Owner 指定的核心負例**（逐字三人）。
+
+        情境：**全域旗標 ON**（`INTIMACY_DECAY_ENABLED=1`）＋ 三人時鐘**已逾期**
+        ＋ Delta 非零 ＋ 各發一次 TG 形狀的 inbound。
+
+        斷言：三人的 **ledger 0 筆**、**Delta 0 扣減**（逐位元不變）、
+              **時鐘未被推進**（due 仍是原本那個逾期值）。
+        """
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        monkeypatch.setenv("TELEGRAM_OWNER_ID", "1696287850")
+        db = tmp_path / "memory.db"
+        engine = EmotionEngine(db_path=db)
+        engine.ensure_decay_schema()
+        router = self._point_router_at(engine)
+
+        due = T0 - 3600.0  # 已逾期一小時
+        for aid in INELIGIBLE_AGENTS:
+            _seed_overdue(engine, aid, delta=10.0, due=due)
+
+        # 各發一次「TG 形狀」的已驗證 inbound（owner whitelist 通過）
+        for aid in INELIGIBLE_AGENTS:
+            short = aid.replace("agent_", "")
+            asyncio.run(
+                router.inbound(short, "hello from TG", 1696287850, channel="telegram")
+            )
+
+        for aid in INELIGIBLE_AGENTS:
+            assert _ledger_count(engine, aid) == 0, (
+                f"{aid} 竟然寫入了 ledger —— 每角色資格閘門沒有擋在扣減邊界"
+            )
+            assert _delta_of(engine, aid) == pytest.approx(10.0), (
+                f"{aid} 的 Delta 被扣減了 —— 語音未計入卻照樣扣分"
+            )
+            assert _due_of(engine, aid) == pytest.approx(due), (
+                f"{aid} 的時鐘被推進了 —— 不合格角色不得有任何持久寫入"
+            )
+
+    def test_control_eligible_agent_decays_under_same_overdue_setup(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """🔴 **對照組（證明測試有牙）**：同一逾期情境，白名單角色**確實被扣**。
+
+        若本測例也變成「不扣」，那「資格閘有效」與「整個機制壞掉」就無法區分，
+        上面的負例將失去證明力。
+        """
+        from src.agent.emotion import INTIMACY_DECAY_ELIGIBLE_AGENTS
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        monkeypatch.setenv("TELEGRAM_OWNER_ID", "1696287850")
+        db = tmp_path / "memory.db"
+        engine = EmotionEngine(db_path=db)
+        engine.ensure_decay_schema()
+        router = self._point_router_at(engine)
+
+        eligible = sorted(INTIMACY_DECAY_ELIGIBLE_AGENTS)
+        assert eligible, "白名單不得為空，否則無對照組"
+        aid = eligible[0]
+        short = aid.replace("agent_", "")
+
+        due = T0 - 3600.0
+        _seed_overdue(engine, aid, delta=10.0, due=due)
+
+        asyncio.run(
+            router.inbound(short, "hello from TG", 1696287850, channel="telegram")
+        )
+
+        # ✅ 確實扣了：ledger 有 1 筆、實扣 0.5、Delta 10.0 -> 9.5
+        assert _ledger_count(engine, aid) == 1, (
+            f"白名單角色 {aid} 沒有寫 ledger —— 機制可能整體壞掉，負例失去意義"
+        )
+        assert _ledger_total_amount(engine, aid) == pytest.approx(DECAY_STEP)
+        assert _delta_of(engine, aid) == pytest.approx(10.0 - DECAY_STEP), (
+            f"白名單角色 {aid} 的 Delta 沒有被扣 —— 對照組失效"
+        )
+        assert _due_of(engine, aid) is not None
+        assert _due_of(engine, aid) > due, "白名單角色的時鐘應被推進"
+
+
+class TestTouchInboundNotEligibleReturnsReason:
+    """`touch_inbound()` 對不合格角色的**直接**回傳契約（不拋例外）。"""
+
+    def test_returns_not_eligible_without_exception(self, engine_on) -> None:
+        """🔴 不合格 ⇒ 回 `NOT_ELIGIBLE`，且**不得拋例外**（TG 路徑會吞掉例外）。"""
+        result = engine_on.touch_inbound(
+            agent_id="agent_akane", event_id="e1", channel="telegram"
+        )
+        assert result.get("reason") == INELIGIBLE_REASON, (
+            f"應回 {INELIGIBLE_REASON}，實際 {result}"
+        )
+        assert result.get("touched") is False
+        assert result.get("applied") is False
+
+    def test_not_eligible_does_not_touch_clock(self, engine_on) -> None:
+        """🔴 不合格 ⇒ 不寫時鐘（連一列都不建）。"""
+        engine_on.touch_inbound(
+            agent_id="agent_rem", event_id="e1", channel="telegram"
+        )
+        assert _due_of(engine_on, "agent_rem") is None, "不合格角色竟被寫入時鐘"
+
+    def test_not_eligible_triggers_no_ddl(self, tmp_path, monkeypatch) -> None:
+        """🔴 不合格 ⇒ 連惰性 DDL 都不做（該角色逐位元未被本票觸及）。"""
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=tmp_path / "memory.db")
+        before = _cols(engine)
+        assert "next_decay_due_at" not in before, "前置：尚未有 G2 欄位"
+
+        engine.touch_inbound(
+            agent_id="agent_mai", event_id="e1", channel="telegram"
+        )
+
+        assert _cols(engine) == before, "不合格角色的呼叫觸發了 DDL"
+        assert "intimacy_decay_ledger" not in _tables(engine)
+
+    def test_eligible_agent_still_touches(self, engine_on) -> None:
+        """🔴 對照組：白名單角色行為不變（仍正常 TOUCH）。"""
+        result = engine_on.touch_inbound(
+            agent_id="agent_yua", event_id="e1", channel="telegram"
+        )
+        assert result.get("touched") is True
+        assert result.get("reason") == "TOUCHED"
+        assert _due_of(engine_on, "agent_yua") is not None
+
+
+class TestTryApplyDecayPerAgentEligibility:
+    """🔴 `try_apply_decay()` 的資格閘門 —— **必須獨立測**，不能只測 touch_inbound。
+
+    兩個函式是**兩條獨立的扣減邊界**：heartbeat tick 直接呼叫 `try_apply_decay()`，
+    不經過 router。只擋 `touch_inbound` 會留下這條繞道。
+    """
+
+    def test_try_apply_decay_returns_not_eligible(self, engine_on) -> None:
+        """🔴 不合格 ⇒ 回 `NOT_ELIGIBLE`。"""
+        for aid in INELIGIBLE_AGENTS:
+            result = engine_on.try_apply_decay(agent_id=aid, now=T0)
+            assert result.get("reason") == INELIGIBLE_REASON, (
+                f"{aid} 的 try_apply_decay 未回 {INELIGIBLE_REASON}：{result}"
+            )
+            assert result.get("applied") is False
+
+    @pytest.mark.parametrize("agent_id", INELIGIBLE_AGENTS)
+    def test_overdue_ineligible_agent_not_decayed(
+        self, engine_on, agent_id
+    ) -> None:
+        """🔴🔴 三人**已逾期** ⇒ `try_apply_decay()` **不扣、不寫 ledger、不推進 due**。"""
+        due = T0 - 3600.0
+        _seed_overdue(engine_on, agent_id, delta=10.0, due=due)
+
+        result = engine_on.try_apply_decay(agent_id=agent_id, now=T0)
+
+        assert result.get("reason") == INELIGIBLE_REASON
+        assert result.get("applied") is False
+        assert _ledger_count(engine_on, agent_id) == 0, (
+            f"{agent_id} 的 tick 路徑寫入了 ledger —— try_apply_decay 的閘門失效"
+        )
+        assert _delta_of(engine_on, agent_id) == pytest.approx(10.0), (
+            f"{agent_id} 的 Delta 被 tick 路徑扣減了"
+        )
+        assert _due_of(engine_on, agent_id) == pytest.approx(due), (
+            f"{agent_id} 的 due 被推進了 —— 不合格角色不得有任何持久寫入"
+        )
+
+    def test_control_eligible_agent_decays_via_try_apply_decay(self, engine_on) -> None:
+        """🔴 **對照組**：白名單角色逾期 ⇒ `try_apply_decay()` 正常結算。"""
+        from src.agent.emotion import INTIMACY_DECAY_ELIGIBLE_AGENTS
+
+        aid = sorted(INTIMACY_DECAY_ELIGIBLE_AGENTS)[0]
+        due = T0 - 3600.0
+        _seed_overdue(engine_on, aid, delta=10.0, due=due)
+
+        result = engine_on.try_apply_decay(agent_id=aid, now=T0)
+
+        assert result.get("applied") is True, f"白名單角色未結算：{result}"
+        assert result.get("reason") == "DECAYED"
+        assert result.get("applied_amount") == pytest.approx(DECAY_STEP)
+        assert _ledger_count(engine_on, aid) == 1
+        assert _delta_of(engine_on, aid) == pytest.approx(10.0 - DECAY_STEP)
+
+    def test_both_boundaries_guarded_independently(self) -> None:
+        """🔴 靜態事實：**兩個**函式內都有資格檢查（不得只做一個）。"""
+        import ast as _ast
+
+        src = (REPO_ROOT / "src" / "agent" / "emotion.py").read_text(
+            encoding="utf-8"
+        )
+        tree = _ast.parse(src)
+
+        found = {}
+        for node in _ast.walk(tree):
+            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and node.name in {
+                "touch_inbound",
+                "try_apply_decay",
+            }:
+                for inner in _ast.walk(node):
+                    if (
+                        isinstance(inner, _ast.Call)
+                        and isinstance(inner.func, _ast.Name)
+                        and inner.func.id == "is_decay_eligible"
+                    ):
+                        found[node.name] = True
+
+        assert found.get("touch_inbound") is True, (
+            "touch_inbound() 內找不到 is_decay_eligible() 檢查"
+        )
+        assert found.get("try_apply_decay") is True, (
+            "try_apply_decay() 內找不到 is_decay_eligible() 檢查 —— "
+            "tick 路徑成為繞道"
         )
