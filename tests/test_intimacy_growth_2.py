@@ -734,7 +734,11 @@ class TestChannelWiring:
         from src.eventbus import SoulEventBus
         from src.io.channels.router import ChannelRouter
 
-        emotion_mod.emotion_engine = engine
+        # 🔴 `emotion_engine` 是 module-level singleton。**必須**用 monkeypatch
+        #    還原，否則本測試會把全域 singleton 永久指向拋棄式 DB，污染後續
+        #    測試順序（monkeypatch 於測試結束自動 undo）。語意不變：仍是在本
+        #    測試期間把 router 的 TOUCH 導向拋棄式 engine。
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
         bus = SoulEventBus()
         return ChannelRouter(bus=bus)
 
@@ -806,7 +810,9 @@ class TestChannelWiring:
 
         import src.agent.emotion as emotion_mod
 
-        emotion_mod.emotion_engine = engine
+        # 🔴 同 TestChannelWiring._point_router_at：改用 monkeypatch 還原全域
+        #    singleton（避免污染後續測試順序）。語意不變。
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
 
         from src.eventbus import SoulEventBus
         from src.io.gateway import IOGateway
@@ -2580,12 +2586,13 @@ class TestTouchInboundPerAgentEligibility:
     """
 
     @staticmethod
-    def _point_router_at(engine):
+    def _point_router_at(engine, monkeypatch):
         import src.agent.emotion as emotion_mod
         from src.eventbus import SoulEventBus
         from src.io.channels.router import ChannelRouter
 
-        emotion_mod.emotion_engine = engine
+        # 🔴 改用 monkeypatch 還原全域 singleton（見 TestChannelWiring 同註解）。
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
         return ChannelRouter(bus=SoulEventBus())
 
     def test_global_on_overdue_tg_inbound_akane_rem_mai_zero_decay(
@@ -2604,7 +2611,7 @@ class TestTouchInboundPerAgentEligibility:
         db = tmp_path / "memory.db"
         engine = EmotionEngine(db_path=db)
         engine.ensure_decay_schema()
-        router = self._point_router_at(engine)
+        router = self._point_router_at(engine, monkeypatch)
 
         due = T0 - 3600.0  # 已逾期一小時
         for aid in INELIGIBLE_AGENTS:
@@ -2643,7 +2650,7 @@ class TestTouchInboundPerAgentEligibility:
         db = tmp_path / "memory.db"
         engine = EmotionEngine(db_path=db)
         engine.ensure_decay_schema()
-        router = self._point_router_at(engine)
+        router = self._point_router_at(engine, monkeypatch)
 
         eligible = sorted(INTIMACY_DECAY_ELIGIBLE_AGENTS)
         assert eligible, "白名單不得為空，否則無對照組"
@@ -2684,7 +2691,7 @@ class TestTouchInboundPerAgentEligibility:
         db = tmp_path / "memory.db"
         engine = EmotionEngine(db_path=db)
         engine.ensure_decay_schema()
-        router = self._point_router_at(engine)
+        router = self._point_router_at(engine, monkeypatch)
 
         due = T0 - 3600.0
         _seed_overdue(engine, agent_id, delta=10.0, due=due)
@@ -2725,12 +2732,13 @@ class TestAllEligibleAgentsActuallyDecay:
     """
 
     @staticmethod
-    def _point_router_at(engine):
+    def _point_router_at(engine, monkeypatch):
         import src.agent.emotion as emotion_mod
         from src.eventbus import SoulEventBus
         from src.io.channels.router import ChannelRouter
 
-        emotion_mod.emotion_engine = engine
+        # 🔴 改用 monkeypatch 還原全域 singleton（見 TestChannelWiring 同註解）。
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
         return ChannelRouter(bus=SoulEventBus())
 
     @pytest.mark.parametrize("agent_id", ELIGIBLE_AGENTS)
@@ -2743,7 +2751,7 @@ class TestAllEligibleAgentsActuallyDecay:
         db = tmp_path / f"memory_{agent_id}.db"
         engine = EmotionEngine(db_path=db)
         engine.ensure_decay_schema()
-        router = self._point_router_at(engine)
+        router = self._point_router_at(engine, monkeypatch)
 
         due = T0 - 3600.0  # 已逾期一小時
         _seed_overdue(engine, agent_id, delta=10.0, due=due)
@@ -2954,3 +2962,508 @@ class TestTryApplyDecayPerAgentEligibility:
             "try_apply_decay() 內找不到 is_decay_eligible() 檢查 —— "
             "tick 路徑成為繞道"
         )
+
+
+# ═════════════════════════════════════════════════════════════
+# G14. 缺口 1 — 真人恰在到期點到場，時鐘不得被寫到未來
+# ═════════════════════════════════════════════════════════════
+
+
+class TestInboundExactlyAtDue:
+    """🔴🔴 缺口 1：`touch_inbound()` 逾期分支的時鐘語意。
+
+    舊實作 `target = max(now_ts, due + window)` 後又把 `target` 當
+    `last_valid_inbound_at` 並令 `due = target + window`：
+
+      真人恰在首次到期點 `T+24h` 到場 ⇒ `now_ts == due` ⇒ `target = T+48h`
+      ⇒ `last_valid_inbound_at = T+48h`、`next_decay_due_at = T+72h`。
+
+    真人明明準時在 T+24h 出現，卻**白拿一天**（多一整個 24h 窗口不衰減）。
+    本測試在**新實作**下必須綠、在**舊實作**下必須紅。
+    """
+
+    def test_inbound_exactly_at_due_advances_by_one_window(
+        self, engine_on
+    ) -> None:
+        """恰好 `T+24h` 到場：結算一次、扣 0.5、last=T+24h、due=T+48h。"""
+        engine_on.update_delta("agent_yua", 5.0)
+        # 鋪陳：last_valid_inbound_at = T，next_decay_due_at = T+24h
+        engine_on.touch_inbound("agent_yua", "e1", "telegram", now=T0)
+
+        assert _delta_of(engine_on, "agent_yua") == pytest.approx(5.0)
+        _last0, due0, _d0 = engine_on._read_clock_and_delta_locked("agent_yua")
+        assert due0 == pytest.approx(T0 + DAY), "前置：首次到期點應為 T+24h"
+        assert _ledger_count(engine_on, "agent_yua") == 0, "前置：ledger 應為空"
+
+        # 🔴 恰好落在到期點（不是提前、不是延後）
+        result = engine_on.touch_inbound(
+            "agent_yua", "e2", "telegram", now=T0 + DAY
+        )
+
+        last_after, due_after, _d_after = engine_on._read_clock_and_delta_locked(
+            "agent_yua"
+        )
+
+        # 1) 該次到期**仍只結算一次**：ledger 恰增 1 筆
+        assert _ledger_count(engine_on, "agent_yua") == 1, (
+            "恰好到場時應結算**一次**（ledger 恰 1 筆）"
+        )
+        # 2) delta 恰扣 0.5
+        assert _delta_of(engine_on, "agent_yua") == pytest.approx(5.0 - DECAY_STEP)
+        assert _ledger_total_amount(engine_on, "agent_yua") == pytest.approx(
+            DECAY_STEP
+        )
+        # 3) 🔴 last_valid_inbound_at == T+24h（真人**實際**到場時間）
+        #    舊實作：T+48h ⇒ 必紅
+        assert last_after == pytest.approx(T0 + DAY), (
+            f"last_valid_inbound_at 應為真人實際到場時間 T+24h，實際 {last_after}"
+            f"（舊實作會給 T+48h —— 白拿一天）"
+        )
+        # 4) 🔴 next_decay_due_at == T+48h（due + 一個窗口）
+        #    舊實作：T+72h ⇒ 必紅
+        assert due_after == pytest.approx(T0 + 2 * DAY), (
+            f"next_decay_due_at 應為 due + window = T+48h，實際 {due_after}"
+            f"（舊實作會給 T+72h —— 白拿一天）"
+        )
+        assert result["last_valid_inbound_at"] == pytest.approx(T0 + DAY)
+        assert result["next_decay_due_at"] == pytest.approx(T0 + 2 * DAY)
+
+    def test_inbound_exactly_at_due_clock_still_monotonic(
+        self, engine_on
+    ) -> None:
+        """🔴 既有契約不得破壞：時鐘仍**單調不倒退**（含亂序抵達）。"""
+        engine_on.update_delta("agent_yua", 5.0)
+        engine_on.touch_inbound("agent_yua", "e1", "telegram", now=T0)
+
+        # 恰好到期：due 推進到 T+48h
+        r1 = engine_on.touch_inbound("agent_yua", "e2", "telegram", now=T0 + DAY)
+        # 更晚但仍在窗內
+        r2 = engine_on.touch_inbound(
+            "agent_yua", "e3", "telegram", now=T0 + DAY + 60
+        )
+        # 亂序抵達的**更舊** timestamp
+        r3 = engine_on.touch_inbound(
+            "agent_yua", "e4", "telegram", now=T0 + DAY - 10 * DAY
+        )
+
+        assert r2["next_decay_due_at"] >= r1["next_decay_due_at"]
+        assert r2["last_valid_inbound_at"] >= r1["last_valid_inbound_at"]
+        assert r3["next_decay_due_at"] >= r2["next_decay_due_at"], (
+            "亂序抵達的舊 inbound 讓時鐘倒退了"
+        )
+        assert r3["last_valid_inbound_at"] >= r2["last_valid_inbound_at"], (
+            "亂序抵達的舊 inbound 讓 last_valid_inbound_at 倒退了"
+        )
+
+    def test_at_due_does_not_grant_extra_silent_window(self, engine_on) -> None:
+        """🔴 語意後果：**準時到場者**不會比「延後到場者」多拿一個不衰減窗口。
+
+        準時（T+24h）與延後（T+25h）到場，結算後的下一個到期點應**相當**
+        （同屬 `due + window = T+48h`），差別只在 last_valid_inbound_at。
+        舊實作下準時者會拿到 T+72h ⇒ 比延後者多白拿一天 ⇒ 必紅。
+        """
+        engine_on.update_delta("agent_yua", 5.0)
+        engine_on.touch_inbound("agent_yua", "e1", "telegram", now=T0)
+        _last0, due0, _d0 = engine_on._read_clock_and_delta_locked("agent_yua")
+
+        engine_on.touch_inbound("agent_yua", "e2", "telegram", now=T0 + DAY)
+        _last1, due_exact, _d1 = engine_on._read_clock_and_delta_locked("agent_yua")
+        assert due_exact == pytest.approx(due0 + DAY)
+
+        # 對照組：另一角色延後 1 小時到場
+        engine_on.update_delta("agent_ruka", 5.0)
+        engine_on.touch_inbound("agent_ruka", "r1", "telegram", now=T0)
+        engine_on.touch_inbound(
+            "agent_ruka", "r2", "telegram", now=T0 + DAY + 3600
+        )
+        _lr, due_late, _dr = engine_on._read_clock_and_delta_locked("agent_ruka")
+
+        assert due_exact == pytest.approx(due_late), (
+            "準時到場與延後到場應得到**同一個**下一次到期點"
+            f"（準時 {due_exact} vs 延後 {due_late}）—— 準時者不得白拿一天"
+        )
+
+
+# ═════════════════════════════════════════════════════════════
+# G15. 缺口 2 — 舊到期點重放不得在 inbound 路徑再次扣分
+# ═════════════════════════════════════════════════════════════
+
+
+class TestInboundReplayOfSettledDue:
+    """🔴🔴 缺口 2 負例：原到期點**已在 ledger**、due 被**重放**、再送真人 inbound。
+
+    `touch_inbound()` 的逾期分支**直接呼叫 `_settle_once_locked()`**，跳過
+    `try_apply_decay()` 的前置查 `_ledger_has_locked()`。舊實作的 ledger INSERT
+    是 `ON CONFLICT DO NOTHING` ⇒ ledger 不增，但**仍繼續 UPDATE Delta**
+    ⇒ 憑空再扣一次。
+
+    修正後 `_settle_once_locked()` 以 INSERT 的**實際寫入列數**（`rowcount`）
+    為閘門：`rowcount == 0` ⇒ 不 UPDATE Delta、不推進 due、回 `0.0`。
+    """
+
+    def test_replayed_due_via_inbound_does_not_double_deduct(
+        self, engine_on
+    ) -> None:
+        """斷言三件事：**0 再扣、ledger 不增、時鐘單調**。"""
+        engine_on.update_delta("agent_yua", 5.0)
+        engine_on.touch_inbound("agent_yua", "e1", "telegram", now=T0)
+
+        # 第一次結算（T+24h 到期）⇒ 扣 0.5、ledger 1 筆
+        engine_on.try_apply_decay("agent_yua", now=T0 + DAY)
+        assert _ledger_count(engine_on, "agent_yua") == 1, "前置：應恰 1 筆"
+        delta_after_first = _delta_of(engine_on, "agent_yua")
+        assert delta_after_first == pytest.approx(5.0 - DECAY_STEP)
+
+        # 🔴 把 due **重放**回已結算過的舊到期點（模擬 tick 與 inbound 交錯 /
+        #    跨行程重放）。ledger 內已有該 event_key。
+        engine_on.conn.execute(
+            "UPDATE agent_emotions SET next_decay_due_at = ? WHERE agent_id = ?",
+            (T0 + DAY, "agent_yua"),
+        )
+        engine_on.conn.commit()
+
+        # 此時「真人 inbound」抵達，且時間 >= 該重放的 due ⇒ 走逾期分支
+        result = engine_on.touch_inbound(
+            "agent_yua", "e2", "telegram", now=T0 + DAY + 10
+        )
+
+        # 1) 0 再扣（舊實作會在此再扣 0.5 ⇒ 必紅）
+        assert _delta_of(engine_on, "agent_yua") == pytest.approx(
+            delta_after_first
+        ), (
+            "舊到期點被重放時，inbound 路徑**再次扣分**了 —— "
+            f"{delta_after_first} -> {_delta_of(engine_on, 'agent_yua')}"
+        )
+        # 2) ledger 不增
+        assert _ledger_count(engine_on, "agent_yua") == 1, (
+            "重放的到期點不得寫入第二筆 ledger"
+        )
+        assert _ledger_total_amount(engine_on, "agent_yua") == pytest.approx(
+            DECAY_STEP
+        )
+        # 3) 時鐘單調（不得倒退）
+        last_after, due_after, _d = engine_on._read_clock_and_delta_locked(
+            "agent_yua"
+        )
+        assert due_after is not None and due_after >= T0 + DAY, (
+            f"重放後 due 倒退了：{due_after}"
+        )
+        assert last_after is not None and last_after >= T0, "last 倒退了"
+        assert due_after >= last_after, "due 不得早於 last_valid_inbound_at"
+
+        # 回傳物件仍誠實：TOUCH 成立（真人確實到場），但**沒有**扣減事實
+        assert result["touched"] is True
+
+    def test_replayed_due_settle_returns_zero_applied(self, engine_on) -> None:
+        """🔴 直呼內部結算閘門：已存在的 event_key ⇒ 回 `0.0` 且零 UPDATE。
+
+        這是與上一測例互補的**單元層**證明：閘門在 `_settle_once_locked()`
+        內部（DB 層真實寫入結果），不依賴呼叫端記得先查。
+        """
+        engine_on.update_delta("agent_yua", 5.0)
+        engine_on.touch_inbound("agent_yua", "e1", "telegram", now=T0)
+        engine_on.try_apply_decay("agent_yua", now=T0 + DAY)
+
+        delta_before = _delta_of(engine_on, "agent_yua")
+        key = engine_on._decay_event_key("agent_yua", T0 + DAY)
+
+        applied = engine_on._settle_once_locked(
+            "agent_yua",
+            T0 + DAY + 30,
+            T0 + DAY,
+            delta_before,
+            origin="test_replay",
+            event_key=key,
+        )
+
+        assert applied == pytest.approx(0.0), (
+            f"已結算過的到期點應回 0.0（未扣），實際 {applied}"
+        )
+        assert _delta_of(engine_on, "agent_yua") == pytest.approx(delta_before), (
+            "重放竟然 UPDATE 了 Delta"
+        )
+        assert _ledger_count(engine_on, "agent_yua") == 1
+
+    def test_fresh_due_still_settles_normally(self, engine_on) -> None:
+        """🔴 對照組：**全新**的到期點仍正常結算（閘門不得把正常路徑也擋掉）。"""
+        engine_on.update_delta("agent_yua", 5.0)
+        engine_on.touch_inbound("agent_yua", "e1", "telegram", now=T0)
+
+        first = engine_on.try_apply_decay("agent_yua", now=T0 + DAY)
+        assert first["applied"] is True
+        assert _ledger_count(engine_on, "agent_yua") == 1
+
+        # 走到下一個全新到期點
+        second = engine_on.try_apply_decay("agent_yua", now=T0 + 2 * DAY)
+        assert second["applied"] is True, f"全新到期點竟未結算：{second}"
+        assert _ledger_count(engine_on, "agent_yua") == 2
+        assert _delta_of(engine_on, "agent_yua") == pytest.approx(
+            5.0 - 2 * DECAY_STEP
+        )
+
+
+# ═════════════════════════════════════════════════════════════
+# G16. 缺口 3 — 週期接線：安靜滿 24h 當下自然發生衰減
+# ═════════════════════════════════════════════════════════════
+
+
+class TestPeriodicDecayWiring:
+    """🔴🔴 缺口 3：`try_apply_decay()` 必須有**執行接線**。
+
+    交付時 `try_apply_decay()` **零接線**（`scripts/run_server.py` /
+    `src/soul/scheduler.py` / `src/agent/consciousness.py` 全 0 命中）⇒
+    唯一走得到扣減的是 `touch_inbound()`（TG 被動）⇒ **安靜滿 24h 當下不會扣**。
+
+    本組測試驗的是**接線單元** `decay_evaluate_eligible_agents()` 的行為，
+    以及它被接在**既有**週期點上（`scripts/run_server.py` 的 SAGE flush 15s
+    迴圈）的原始碼事實。
+    """
+
+    def test_no_inbound_at_t_plus_24h_decays_exactly_once(
+        self, engine_on, monkeypatch
+    ) -> None:
+        """🔴 「沒有任何 inbound，T+24h 仍只扣一次」—— 舊實作零接線 ⇒ 必紅。
+
+        舊實作下 `decay_evaluate_eligible_agents` **不存在** ⇒ 本測試在
+        collection/attribute 階段即失敗（ImportError/AttributeError）⇒ 紅。
+        """
+        from src.agent.emotion import decay_evaluate_eligible_agents
+
+        # 🔴 週期評估走的是 module-level singleton ⇒ 必須把 singleton 指向
+        #    本測試的拋棄式 engine（monkeypatch 還原，不污染後續測試順序）。
+        import src.agent.emotion as emotion_mod
+
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine_on)
+
+        engine_on.update_delta("agent_yua", 5.0)
+        engine_on.touch_inbound("agent_yua", "e1", "telegram", now=T0)
+        assert _due_of(engine_on, "agent_yua") == pytest.approx(T0 + DAY)
+        assert _ledger_count(engine_on, "agent_yua") == 0
+
+        # 🔴 **沒有任何 inbound** —— 只有週期評估
+        first = decay_evaluate_eligible_agents(now=T0 + DAY)
+
+        # 1) delta 恰扣 0.5
+        assert _delta_of(engine_on, "agent_yua") == pytest.approx(5.0 - DECAY_STEP), (
+            "逾期後跑一輪週期評估，delta 未扣 —— 週期接線失效"
+        )
+        # 2) ledger 恰 1 筆
+        assert _ledger_count(engine_on, "agent_yua") == 1, "週期評估未寫 ledger"
+        # 3) due 推進到 T+48h
+        assert _due_of(engine_on, "agent_yua") == pytest.approx(T0 + 2 * DAY), (
+            "週期評估後 due 未推進到 T+48h"
+        )
+        assert first["applied"] == 1, f"應恰 1 名角色被扣：{first}"
+
+        # 🔴 再跑一輪**同一評估** ⇒ 不再扣
+        _delta_before_second = _delta_of(engine_on, "agent_yua")
+        second = decay_evaluate_eligible_agents(now=T0 + DAY + 1)
+
+        assert _ledger_count(engine_on, "agent_yua") == 1, (
+            "第二輪週期評估又寫了 ledger"
+        )
+        assert _delta_of(engine_on, "agent_yua") == pytest.approx(
+            _delta_before_second
+        ), "第二輪週期評估又扣了一次"
+        assert second["applied"] == 0, f"第二輪不應再扣：{second}"
+
+    def test_periodic_evaluation_bounded_to_one_step_per_agent(
+        self, engine_on, monkeypatch
+    ) -> None:
+        """🔴 有界：即使逾期極久，一輪也只對合格角色各評估**至多一步**。"""
+        from src.agent.emotion import decay_evaluate_eligible_agents
+
+        import src.agent.emotion as emotion_mod
+
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine_on)
+
+        engine_on.update_delta("agent_yua", 5.0)
+        engine_on.touch_inbound("agent_yua", "e1", "telegram", now=T0)
+
+        # 逾期 365 天 —— bounded 1-step catch-up（§5）
+        result = decay_evaluate_eligible_agents(now=T0 + 365 * DAY)
+
+        assert _delta_of(engine_on, "agent_yua") == pytest.approx(5.0 - DECAY_STEP), (
+            "一輪週期評估不得補扣多步"
+        )
+        assert _ledger_count(engine_on, "agent_yua") == 1
+        assert result["applied"] == 1
+
+    def test_periodic_evaluation_flag_off_is_zero_write(
+        self, db_path, monkeypatch
+    ) -> None:
+        """🔴 旗標 OFF ⇒ 該評估**零寫入**（delta / ledger / clock 全不變）。
+
+        這是 C4 契約：OFF ⇒ no-op、零 DDL、零持久寫入。
+        """
+        from src.agent.emotion import decay_evaluate_eligible_agents
+
+        # 先在 ON 下鋪好逾期場景，再轉 OFF（證明 OFF 是**當下**生效）
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=db_path)
+        _seed_overdue(engine, "agent_yua", delta=5.0, due=T0 + DAY)
+
+        # 把全域 singleton 指向本測試的 engine（monkeypatch 還原）
+        import src.agent.emotion as emotion_mod
+
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
+
+        delta_before = _delta_of(engine, "agent_yua")
+        last_before, due_before, _d = engine._read_clock_and_delta_locked(
+            "agent_yua"
+        )
+        ledger_before = _ledger_count(engine, "agent_yua")
+        assert ledger_before == 0
+
+        # 🔴 轉 OFF
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "")
+
+        result = decay_evaluate_eligible_agents(now=T0 + 10 * DAY)
+
+        assert result["evaluated"] == 0, f"旗標 OFF 竟仍評估：{result}"
+        assert result["reason"] == "FLAG_OFF"
+        assert result["applied"] == 0
+        # 零寫入：三者全不變
+        assert _delta_of(engine, "agent_yua") == pytest.approx(delta_before), (
+            "旗標 OFF 竟扣了 Delta"
+        )
+        assert _ledger_count(engine, "agent_yua") == ledger_before, (
+            "旗標 OFF 竟寫了 ledger"
+        )
+        last_after, due_after, _d2 = engine._read_clock_and_delta_locked(
+            "agent_yua"
+        )
+        assert last_after == last_before, "旗標 OFF 竟動了 last_valid_inbound_at"
+        assert due_after == due_before, "旗標 OFF 竟動了 next_decay_due_at"
+
+    def test_periodic_evaluation_skips_ineligible_agents(
+        self, db_path, monkeypatch
+    ) -> None:
+        """🔴 週期評估**不得**讓三個不合格角色被扣（白名單在週期路徑同樣有效）。"""
+        from src.agent.emotion import decay_evaluate_eligible_agents
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=db_path)
+        for aid in INELIGIBLE_AGENTS:
+            _seed_overdue(engine, aid, delta=10.0, due=T0 - 3600.0)
+
+        import src.agent.emotion as emotion_mod
+
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
+
+        decay_evaluate_eligible_agents(now=T0)
+
+        for aid in INELIGIBLE_AGENTS:
+            assert _delta_of(engine, aid) == pytest.approx(10.0), (
+                f"週期路徑扣了不合格角色 {aid}"
+            )
+            assert _ledger_count(engine, aid) == 0, (
+                f"週期路徑為不合格角色 {aid} 寫了 ledger"
+            )
+
+    def test_wiring_call_is_flag_gated_first_line(self) -> None:
+        """🔴 靜態事實：評估函式**第一行**就檢查旗標（OFF ⇒ 零工作）。"""
+        import ast as _ast
+
+        src = (REPO_ROOT / "src" / "agent" / "emotion.py").read_text(
+            encoding="utf-8"
+        )
+        tree = _ast.parse(src)
+
+        fn = None
+        for node in _ast.walk(tree):
+            if (
+                isinstance(node, _ast.FunctionDef)
+                and node.name == "decay_evaluate_eligible_agents"
+            ):
+                fn = node
+                break
+        assert fn is not None, "找不到 decay_evaluate_eligible_agents()"
+
+        first_stmt = fn.body[0]
+        # 略過 docstring：本函式的說明文字是**契約文件**，不是可執行語句。
+        # 「第一行」指的是**第一個可執行語句**。
+        if (
+            isinstance(first_stmt, _ast.Expr)
+            and isinstance(first_stmt.value, _ast.Constant)
+            and isinstance(first_stmt.value.value, str)
+        ):
+            first_stmt = fn.body[1]
+        assert isinstance(first_stmt, _ast.If), (
+            "評估函式第一行必須是旗標檢查（C4：OFF ⇒ 零工作）"
+        )
+        cond = first_stmt.test
+        assert isinstance(cond, _ast.UnaryOp) and isinstance(cond.op, _ast.Not), (
+            "第一行必須是 `if not decay_enabled():`"
+        )
+        assert isinstance(cond.operand, _ast.Call)
+        assert getattr(cond.operand.func, "id", None) == "decay_enabled"
+
+    def test_periodic_wiring_attached_to_existing_loop(self) -> None:
+        """🔴 靜態事實：接線掛在**既有**週期點上，**不得**新建定時器/task/loop。
+
+        以原始碼證據鎖住三件事：
+          1. `scripts/run_server.py` 內確實呼叫了 `decay_evaluate_eligible_agents()`
+          2. 該呼叫位於既有 `_sage_flush_loop()` 函式體內
+          3. **沒有**為它新增 `asyncio.create_task` / `while True` /
+             `asyncio.sleep` 的任何新週期結構：`_sage_flush_loop` 仍只有
+             **一個** `asyncio.create_task` 掛載點與**一個** `while True`。
+        """
+        import ast as _ast
+
+        src = (REPO_ROOT / "scripts" / "run_server.py").read_text(
+            encoding="utf-8"
+        )
+        assert "decay_evaluate_eligible_agents" in src, (
+            "run_server.py 找不到週期接線 —— try_apply_decay 仍零接線"
+        )
+        tree = _ast.parse(src)
+
+        loop_fn = None
+        for node in _ast.walk(tree):
+            if (
+                isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef))
+                and node.name == "_sage_flush_loop"
+            ):
+                loop_fn = node
+                break
+        assert loop_fn is not None, "找不到既有 _sage_flush_loop()"
+
+        calls = [
+            n
+            for n in _ast.walk(loop_fn)
+            if isinstance(n, _ast.Call)
+            and getattr(n.func, "id", None) == "decay_evaluate_eligible_agents"
+        ]
+        assert calls, "既有 _sage_flush_loop() 內找不到週期接線呼叫"
+
+        # 不得在迴圈內新增週期結構
+        sleeps = [
+            n
+            for n in _ast.walk(loop_fn)
+            if isinstance(n, _ast.Attribute) and n.attr == "sleep"
+        ]
+        whiles = [n for n in _ast.walk(loop_fn) if isinstance(n, _ast.While)]
+        creates = [
+            n
+            for n in _ast.walk(loop_fn)
+            if isinstance(n, _ast.Call)
+            and isinstance(n.func, _ast.Attribute)
+            and n.func.attr == "create_task"
+        ]
+        assert len(sleeps) == 1, f"不得新增 sleep 週期（found {len(sleeps)}）"
+        assert len(whiles) == 1, f"不得新增 background loop（found {len(whiles)}）"
+        assert not creates, "不得在既有週期任務內新建 asyncio task"
+
+        # 例外不得殺死任務：呼叫包在 try/except 內
+        try_nodes = [n for n in _ast.walk(loop_fn) if isinstance(n, _ast.Try)]
+        assert try_nodes, "週期任務本體必須包 try/except（慣例：例外只記 WARNING）"
+        wrapped = any(
+            any(
+                isinstance(h.type, _ast.Name) and h.type.id == "Exception"
+                for h in t.handlers
+                if h.type is not None
+            )
+            for t in try_nodes
+        )
+        assert wrapped, "週期任務缺少 `except Exception` 保護"

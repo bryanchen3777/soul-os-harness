@@ -1809,6 +1809,25 @@ async def lifespan(app: FastAPI):
                     logger.info(
                         f"[Server] SAGE flush: {n_flushed}/{n_live} 個 store 已提交 pending"
                     )
+                # ── INTIMACY-GROWTH-2 缺口 3：24h 靜默衰減的**週期接線** ──
+                # 動機：`try_apply_decay()` 本身正確，但交付時**零接線** ——
+                # 只有「TG 被動 TOUCH」與 dormant VC 端點會扣，安靜滿 24h 當下
+                # 不會扣 ⇒ 衰減永遠不會自然發生。
+                #
+                # 🔴 刻意**沿用本既有 15s 週期任務**，不新建定時器 / 不新開
+                #    asyncio task / 不新增 background loop（不得自己發明排程）。
+                #    本迴圈已在 lifespan 內以 create_task 啟動、關閉時被 cancel。
+                #
+                # 🔴 旗標 OFF ⇒ `decay_evaluate_eligible_agents()` 第一行即
+                #    返回，零 DDL、零寫入（C4）。旗標為**呼叫時即時讀取**。
+                #
+                # 🔴 例外只記 WARNING：與本迴圈其餘部分同一慣例，任務不得死。
+                try:
+                    from src.agent.emotion import decay_evaluate_eligible_agents
+
+                    decay_evaluate_eligible_agents()
+                except Exception as e:
+                    logger.warning(f"[Server] intimacy decay 週期評估錯誤: {e}")
             except asyncio.CancelledError:
                 break
             except Exception as e:

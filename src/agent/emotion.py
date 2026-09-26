@@ -161,6 +161,63 @@ def decay_enabled() -> bool:
     return raw.strip().lower() in TRUTHY_VALUES
 
 
+def decay_evaluate_eligible_agents(now: Optional[float] = None) -> dict:
+    """🔴 缺口 3 的接線點：對**所有合格角色**各評估**至多一次**衰減。
+
+    **為何需要它**：`try_apply_decay()` 本身正確，但交付時**沒有任何執行接線**
+    （`scripts/run_server.py` / `src/soul/scheduler.py` /
+    `src/agent/consciousness.py` 全數 0 命中）。唯一會走到扣減的路徑是
+    `touch_inbound()`（TG 被動）與 dormant VC 端點 ⇒ **安靜滿 24h 當下不會扣**，
+    「24 小時靜默衰減」在實務上永遠不會自然發生（只有真人再說話時才補扣一次）。
+
+    **本函式不發明排程**：它只是一個**有界的評估單元**，由呼叫端在**既有**的
+    週期點上逐輪呼叫（見 `scripts/run_server.py` 的 SAGE flush 15s 週期任務）。
+    不新建定時器、不新開 asyncio task、不新增 background loop。
+
+    契約：
+      - **旗標 OFF ⇒ no-op**（第一行就檢查）：回 `{"evaluated": 0,
+        "reason": "FLAG_OFF"}`，**零 DDL、零寫入**（C4）。
+      - **有界**：一輪只對合格角色各評估**至多一次**；`try_apply_decay()`
+        內部已保證「至多一步」（bounded 1-step catch-up）。
+      - **不得讓呼叫端的週期任務因本函式而死**：單一角色的例外被吞成 WARNING，
+        繼續評估其餘角色。呼叫端**仍應**自行包 try/except（repo 既有慣例），
+        本處的逐角色隔離只是第二層。
+
+    Returns dict：`evaluated`（實際評估的角色數）/ `applied`（成功扣減的角色數）/
+    `reason` / `results`（逐角色結果，便於測試與觀測）。
+    """
+    # 🔴 C4 契約：旗標 OFF ⇒ **第一行**就返回，零工作、零持久寫入。
+    if not decay_enabled():
+        return {"evaluated": 0, "applied": 0, "reason": "FLAG_OFF", "results": {}}
+
+    now_ts = float(now) if now is not None else time.time()
+    results: dict = {}
+    applied_count = 0
+
+    # `INTIMACY_DECAY_ELIGIBLE_AGENTS` 是 `frozenset` ⇒ 排序只為讓評估順序
+    # 可重現（測試與 log 可對照），不影響語意。
+    for agent_id in sorted(INTIMACY_DECAY_ELIGIBLE_AGENTS):
+        try:
+            result = emotion_engine.try_apply_decay(agent_id, now=now_ts)
+        except Exception as e:  # noqa: BLE001 — 單一角色失敗不得中斷整輪
+            logger.warning(
+                "[INTIMACY-DECAY] periodic evaluation failed agent=%s: %s",
+                agent_id, e,
+            )
+            results[agent_id] = {"applied": False, "reason": "ERROR"}
+            continue
+        results[agent_id] = result
+        if result.get("applied"):
+            applied_count += 1
+
+    return {
+        "evaluated": len(results),
+        "applied": applied_count,
+        "reason": "EVALUATED",
+        "results": results,
+    }
+
+
 class EmotionEngine:
     """情緒引擎：管理各 agent 的 mood / intimacy（SQLite 持久化）"""
 
@@ -426,31 +483,64 @@ class EmotionEngine:
 
         with self._write_tx():
             last_in, due, delta = self._read_clock_and_delta_locked(agent_id)
-            target = now_ts
+            # 兩個**各自獨立**的值 —— 這是缺口 1 的修正核心：
+            #   `last_written` = 寫回 last_valid_inbound_at 的值
+            #                    ＝ 真人**實際到場時間**（單調不倒退）
+            #   `due_written`  = 寫回 next_decay_due_at 的值
+            #                    ＝ 該到場時間所開的新窗口結束點
+            # 舊實作把兩者綁在同一個 `target` 上（`target = max(now, due+window)`
+            # 再 `due = target + window`），正是「真人準時到場卻白拿一天」的來源。
+            last_written = now_ts
+            due_written = now_ts + window
 
             if due is not None and now_ts >= due:
-                # §8：逾期 inbound ⇒ 先結算最多一次，再推進 TOUCH。
+                # §8：逾期 inbound ⇒ 先結算最多一次（扣 0.5、ledger 記一筆）。
                 self._settle_once_locked(
                     agent_id, now_ts, due, delta, origin="inbound_late"
                 )
-                # 結算已把 due 推到 due + 24h；TOUCH 從那個點再往上推，
-                # 保證「時鐘不倒退」（target = max(結算後 due, now)）。
-                target = max(now_ts, due + window)
+                # 🔴 缺口 1 修正：結算後 `last_valid_inbound_at` ＝ **真人實際
+                #    到場時間**，取「本次 now_ts」與「結算前的 last_valid_inbound_at」
+                #    的較大者 —— 這樣亂序抵達的舊 timestamp 不會讓時鐘倒退
+                #    （既有「時鐘單調不倒退」契約），而準時到場者也不會被
+                #    偽造成未來時刻。
+                #
+                #    反面教材（舊實作）：`target = max(now_ts, due + window)`
+                #    後又拿 `target` 當 last_valid_inbound_at。真人恰在首次到期點
+                #    `T+24h` 到場時 `now_ts == due`，該式給出 `target = T+48h`
+                #    ⇒ last_valid_inbound_at 被寫成 T+48h、due 成 T+72h。真人
+                #    明明準時出現，卻白拿一天（多一整個 24h 窗口不衰減）。
+                #
+                #    **不得**用結算後的 due 當 last_valid_inbound_at。
+                last_written = now_ts
+                if last_in is not None:
+                    last_written = max(float(last_in), last_written)
+                # 下一次 due ＝ 該次到期所屬窗口的結束（`due + window`），
+                # **不是** now + window：逾期越久也只補一步（bounded 1-step，§5），
+                # 後續窗口由週期評估（`try_apply_decay`）逐窗推進。
+                # 單調性：due 只會被推進（new_due = now + window >= due + window）。
+                due_written = due + window
+                # 結算後的窗口若仍落在「真人到場時間」之前，該窗口即已作廢 ⇒
+                # 直接把窗口推進到真人到場後的下一個結束點，避免寫出
+                # due < last_written 的退化時鐘。
+                if last_written >= due_written:
+                    due_written = last_written + window
             elif last_in is not None:
-                target = max(float(last_in), now_ts)
+                # 非逾期分支行為**不變**：維持既有 `max(last_in, now)` 語意。
+                last_written = max(float(last_in), now_ts)
+                due_written = last_written + window
 
-            self._upsert_clock_locked(agent_id, target, target + window)
+            self._upsert_clock_locked(agent_id, last_written, due_written)
 
         logger.info(
             "[INTIMACY-DECAY] touch agent=%s channel=%s event=%s due_at=%.0f",
-            agent_id, channel, event_id, target + window,
+            agent_id, channel, event_id, due_written,
         )
         return {
             "applied": False,
             "touched": True,
             "reason": "TOUCHED",
-            "last_valid_inbound_at": target,
-            "next_decay_due_at": target + window,
+            "last_valid_inbound_at": last_written,
+            "next_decay_due_at": due_written,
         }
 
     def try_apply_decay(
@@ -617,6 +707,21 @@ class EmotionEngine:
 
         §6：intimacy_delta 保底 0.0（實扣量 = min(0.5, max(delta, 0.0))）。
         §7：Delta 扣減 + ledger 事件 + 時鐘推進 同一交易提交。
+
+        🔴 **缺口 2 修正：以 ledger INSERT 的實際寫入列數為閘門。**
+        `INSERT ... ON CONFLICT(event_key) DO NOTHING` 的 `cursor.rowcount`：
+          - `== 1` ⇒ 本次是**首次**寫入該到期點的 ledger（真實結算）⇒ 扣減 + 推進。
+          - `== 0` ⇒ 該 event_key **已存在**（同一到期點被重放）⇒ 直接回
+            `applied=0.0`，**不 UPDATE Delta、不推進 due**。
+
+        為何要放在這裡（而非只靠呼叫端先查）：`try_apply_decay()` 有前置查
+        `_ledger_has_locked()`，但 `touch_inbound()` 的逾期分支**直接呼叫本函式**
+        並跳過該前置查。舊實作只有 INSERT 的 `DO NOTHING`，ledger 不增、卻仍
+        繼續 UPDATE Delta ⇒ 憑空再扣一次。把閘門下移到「DB 層的真實寫入結果」
+        後，兩條路徑共用同一道閘門，不依賴呼叫端記得先查。
+
+        `try_apply_decay()` 的既有前置查**保留**（雙保險：讓 DUPLICATE 這條
+        便宜路徑不必進到本函式）。
         """
         window = DECAY_WINDOW_HOURS * 3600.0
         applied = min(DECAY_STEP, max(0.0, float(delta)))  # §6 floor 0.0
@@ -624,13 +729,27 @@ class EmotionEngine:
         key = event_key or self._decay_event_key(agent_id, due)
         new_due = now_ts + window
 
-        self.conn.execute(
+        cur = self.conn.execute(
             "INSERT INTO intimacy_decay_ledger "
             "(event_key, agent_id, applied_at, original_due_at, applied_amount) "
             "VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT(event_key) DO NOTHING",
             (key, agent_id, now_ts, due, applied),
         )
+        # 🔴 真實寫入結果（DB 層）才是閘門 —— 不是呼叫端的記憶。
+        #    rowcount == 0 ⇒ 該到期點已結算過（ledger 不增）⇒ **零副作用**。
+        try:
+            inserted = cur.rowcount
+        except (AttributeError, TypeError):  # pragma: no cover - 防禦性
+            inserted = 1  # 無法判定時採「已插入」＝ 維持舊行為，不靜默漏扣
+        if inserted == 0:
+            logger.info(
+                "[INTIMACY-DECAY] settle skipped (duplicate) agent=%s origin=%s "
+                "original_due=%.0f key=%s",
+                agent_id, origin, due, key,
+            )
+            return 0.0
+
         self.conn.execute(
             "UPDATE agent_emotions SET intimacy_delta = ?, next_decay_due_at = ? "
             "WHERE agent_id = ?",
