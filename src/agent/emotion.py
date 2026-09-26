@@ -26,7 +26,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 logger = logging.getLogger("soul_os.emotion")
 
@@ -197,7 +197,10 @@ def decay_enabled() -> bool:
     return raw.strip().lower() in TRUTHY_VALUES
 
 
-def decay_evaluate_eligible_agents(now: Optional[float] = None) -> dict:
+def decay_evaluate_eligible_agents(
+    now: Optional[float] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> dict:
     """🔴 缺口 3 的接線點：對**所有合格角色**各評估**至多一次**衰減。
 
     **為何需要它**：`try_apply_decay()` 本身正確，但交付時**沒有任何執行接線**
@@ -234,6 +237,44 @@ def decay_evaluate_eligible_agents(now: Optional[float] = None) -> dict:
       「失敗」的判準是 `DECAY_FAILURE_REASONS`（`ERROR` / `SETTLE_ABORTED` /
       `SCHEMA_NOT_READY`）—— 這三個代表**真實失敗**，與政策擋下
       （`NOT_ELIGIBLE`）或正常未到期（`NOT_DUE`）語意不同。
+
+    🔴 **`should_stop`：外部取消意圖的注入點**（INTIMACY-GROWTH-2 執行邊界修正）。
+
+      - 語意：一個**無參數、回 `bool`** 的可呼叫物件；回 `True` ＝「請停手」。
+        呼叫端（`scripts/run_server.py`）傳入其模組層級取消旗標的
+        `_DECAY_WORKER_CANCEL.is_set`（`threading.Event`，CPython 下原子讀取）。
+        **刻意用回呼注入而非 import 旗標** —— `emotion.py` 不得反向依賴
+        `scripts/run_server.py`（不新增跨模組耦合）。
+      - **`None`（預設）⇒ 行為與未加入此參數前逐位元等價**：只檢查
+        `decay_enabled()`。**既有呼叫端不需改動**。
+      - **生效邊界＝「角色與角色之間」**：檢查點在逐角色迴圈開頭、
+        `try_apply_decay()` **之前** ⇒ 尚未開始的角色**完全不會被評估**。
+      - 🔴 **如實聲明（不得誇大）**：這**不是**「即時中斷」。
+        **已進入 SQLite C 函式內的交易無法被本回呼即時中止** —— 若某角色已在途、
+        其執行緒正阻塞於 `BEGIN IMMEDIATE` 等寫鎖（最多 `BUSY_TIMEOUT_MS` = 5s）
+        或已在不可中斷的 C 呼叫中，**取消意圖只能在該角色結束後的
+        下一個角色邊界生效**。故本輪**首名角色的結果可能已經成立**
+        （已扣分、已寫 ledger），這是既有語意，不在本函式可修正範圍。
+      - **`break` 語意**：已評估角色的結果**保留準確計數**（沿用既有 `results`
+        / `applied_count` / `failed_count`）；**尚未開始的角色不進 `results`**。
+
+    🔴 **取消狀態與第四態**（**回傳鍵集合不變**，維持既有 5 鍵）：
+
+      - **回傳鍵集合恰為 `evaluated` / `applied` / `reason` / `results` /
+        `failed` 五個**，與加入 `should_stop` 之前**逐位元等價**。
+        `cancelled` **僅為函式內部區域變數**，只驅動下方 `reason = "CANCELLED"`
+        分支，**不回傳**（既有契約
+        `test_existing_keys_preserved_and_failed_key_added` 明文凍結此鍵集合，
+        本函式不得擴張）。
+      - **因取消而中斷的輪次絕不標成 `"ALL_FAILED"`** —— 那不是失敗，是
+        「被叫停」。若**一個角色都還沒評估就取消**（`results` 為空），
+        三態匯總原本會因 `failed_count == 0` 而回 `"EVALUATED"`（**錯誤語意**，
+        等於把「什麼都沒做」報成「評估成功」）⇒ 此時回 **`"CANCELLED"`**
+        （與 `scripts/run_server.py` 的 `CANCELLED` 對齊）。
+        「零角色被評估」可由 `evaluated == 0` 與空的 `results` 直接觀測。
+      - **已評估部分角色後才被取消** ⇒ `reason` 沿用 `EVALUATED` / `PARTIAL` /
+        `ALL_FAILED` 三態（因為已有**真實**結果，不得被取消抹掉）；
+        「這輪沒跑完」可由 `results` 的鍵集合（只有已開始的角色）觀測。
     """
     # 🔴 C4 契約：旗標 OFF ⇒ **第一行**就返回，零工作、零持久寫入。
     if not decay_enabled():
@@ -243,6 +284,7 @@ def decay_evaluate_eligible_agents(now: Optional[float] = None) -> dict:
     results: dict = {}
     applied_count = 0
     failed_count = 0
+    cancelled = False
 
     # `INTIMACY_DECAY_ELIGIBLE_AGENTS` 是 `frozenset` ⇒ 排序只為讓評估順序
     # 可重現（測試與 log 可對照），不影響語意。
@@ -253,6 +295,18 @@ def decay_evaluate_eligible_agents(now: Optional[float] = None) -> dict:
     #    SQLite 寫鎖（`BEGIN IMMEDIATE` 最多等 `BUSY_TIMEOUT_MS` = 5s），
     #    該次等待**無法**被旗標中止 —— **停用在下一安全邊界生效**。
     for agent_id in sorted(INTIMACY_DECAY_ELIGIBLE_AGENTS):
+        # 🔴 第二道閘門：**逐角色**檢查取消意圖（`should_stop` 由呼叫端注入）。
+        #    位置在 `try_apply_decay()` **之前** ⇒ 尚未開始的角色完全不被評估。
+        #    **如實聲明**：若前一名角色已在 SQLite C 函式內阻塞，該次呼叫
+        #    **無法**被即時中止；取消只在**角色邊界**生效。
+        if should_stop is not None and should_stop():
+            logger.info(
+                "[INTIMACY-DECAY] periodic evaluation halted by cancellation "
+                "agent=%s —— 取消意圖於角色邊界生效（在途交易不保證瞬間取消）",
+                agent_id,
+            )
+            cancelled = True
+            break
         if not decay_enabled():
             logger.info(
                 "[INTIMACY-DECAY] periodic evaluation halted at safe boundary "
@@ -276,8 +330,17 @@ def decay_evaluate_eligible_agents(now: Optional[float] = None) -> dict:
         if result.get("reason") in DECAY_FAILURE_REASONS:
             failed_count += 1
 
+    # 🔴 第四態（放在三態之前）：**因取消而結束、且零角色被評估** ⇒ `CANCELLED`。
+    #    若不加這條，`failed_count == 0` 會讓它落到 `EVALUATED` —— 那是錯的語意
+    #    （把「什麼都沒做」報成「評估成功」）。
+    #    注意：已評估部分角色後才被取消 ⇒ **不**走此分支，沿用下方三態
+    #    （已有真實結果，不得被取消抹掉）；「沒跑完」可由 `results` 鍵集合觀測。
+    #    `cancelled` 僅為**內部**狀態，**不回傳**（既有 5 鍵契約凍結）。
+    cancelled = bool(cancelled)
+    if cancelled and len(results) == 0:
+        reason = "CANCELLED"
     # 🔴 三態匯總：七個全失敗 ⇒ `ALL_FAILED`，**絕不可**回 `EVALUATED`。
-    if failed_count == 0:
+    elif failed_count == 0:
         reason = "EVALUATED"
     elif len(results) > 0 and failed_count >= len(results):
         reason = "ALL_FAILED"

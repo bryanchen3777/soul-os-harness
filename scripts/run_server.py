@@ -494,7 +494,12 @@ def _run_decay_evaluation_sync() -> dict:
         # 🔴 雙重檢查 #2：排入與真正開始之間旗標被關掉 ⇒ 本輪直接放棄。
         logger.info("[Server] intimacy decay worker 開始前旗標已 OFF，略過本輪")
         return {"evaluated": 0, "applied": 0, "reason": "FLAG_OFF", "results": {}}
-    return decay_evaluate_eligible_agents()
+    # 🔴 第二道閘門（逐角色）：把取消意圖**注入**為回呼，讓它能在**每個角色
+    #    開始之前**生效。第一道（上方）只擋在整批評估之前 —— 實測缺陷：
+    #    首名角色已進 SQLite 等鎖時 set 旗標，該名可在不可中斷的 DB 操作完成後
+    #    繼續，但**第二至第七名仍會被評估、扣分**。
+    #    以回呼注入而非 import 旗標 ⇒ emotion.py 不新增跨模組耦合。
+    return decay_evaluate_eligible_agents(should_stop=_DECAY_WORKER_CANCEL.is_set)
 
 
 async def _decay_worker_main() -> dict:

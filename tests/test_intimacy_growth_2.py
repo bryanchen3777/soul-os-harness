@@ -5145,7 +5145,7 @@ class TestShutdownBlocksFurtherWork:
         release = threading.Event()
         in_thread = threading.Event()
 
-        def _fake_evaluate(now=None) -> dict:
+        def _fake_evaluate(now=None, should_stop=None) -> dict:
             # 🔴 到這裡就代表「已經進入 DB 評估」—— shutdown 後不該再有。
             entered_db.append(time.monotonic())
             in_thread.set()
@@ -5194,7 +5194,7 @@ class TestShutdownBlocksFurtherWork:
         monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
         called: list = []
 
-        def _fake_evaluate(now=None) -> dict:
+        def _fake_evaluate(now=None, should_stop=None) -> dict:
             called.append(1)
             return {"evaluated": 0, "applied": 0, "reason": "EVALUATED", "results": {}}
 
@@ -5219,7 +5219,7 @@ class TestShutdownBlocksFurtherWork:
         monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
         called: list = []
 
-        def _fake_evaluate(now=None) -> dict:
+        def _fake_evaluate(now=None, should_stop=None) -> dict:
             called.append(1)
             return {"evaluated": 7, "applied": 1, "reason": "EVALUATED", "results": {}}
 
@@ -5292,3 +5292,266 @@ class TestShutdownBlocksFurtherWork:
             srv_logger.setLevel(old_level)
             _logging.disable(old_disabled)
             _reset_decay_worker(mod)
+
+
+# ═════════════════════════════════════════════════════════════
+# IG2-EXEC-BOUNDARY：`should_stop` 於**角色邊界**生效（新增閘門）
+# ═════════════════════════════════════════════════════════════
+#
+# 被測契約（`src/agent/emotion.py::decay_evaluate_eligible_agents`）：
+#   - 逐角色迴圈的**第一個**檢查是
+#     `if should_stop is not None and should_stop(): … cancelled = True; break`
+#     —— 位置在 `try_apply_decay()` **之前**。
+#   - `should_stop is None`（預設）⇒ 與未加此參數前逐位元等價（只檢查旗標）。
+#   - **回傳鍵集合不變**（恰為 `evaluated` / `applied` / `reason` / `results` /
+#     `failed` 五個）—— `cancelled` 僅為**內部**區域變數，不回傳。
+#   - **零角色被評估就取消** ⇒ `reason == "CANCELLED"`（放在三態之前），
+#     且 `evaluated == 0`、`results == {}`；**已評估部分角色後才取消** ⇒
+#     沿用三態，由 `results` 鍵集合（只含已開始者）表達「沒跑完」。
+#
+# 🔴 如實聲明（不得誇大）：**已在途的角色無法被即時中止**。故 T1 中
+#    **首名角色（`agent_anna`）可能已經完成扣減**，本測試**只**斷言它
+#    出現在 `results` 內，**不**斷言它沒有 decay。真正的取消證據是
+#    「其餘六名角色完全沒進 `results`，且 ledger / delta 逐項未變」。
+#
+# 評估順序由 `sorted(INTIMACY_DECAY_ELIGIBLE_AGENTS)` 決定，實測為：
+#   agent_anna, agent_aoi, agent_mahiru, agent_miku, agent_ram, agent_ruka,
+#   agent_yua
+# ⇒ 首名 = `agent_anna`，其餘六名 = 上述清單去掉首位。
+
+
+class TestShouldStopAtAgentBoundary:
+    """`should_stop` 回呼的生效邊界 ＝ 角色與角色之間。"""
+
+    def test_cancel_during_first_agent_prevents_remaining_agents(
+        self, db_path, monkeypatch
+    ) -> None:
+        """🔴 本票核心：首名角色在途時才設取消 ⇒ 其餘六名**完全不被評估**。
+
+        受控交錯（不用 sleep，全靠 `threading.Event`）：
+
+          1. 主執行緒把 7 名角色全部鋪成「已逾期且 delta 非零」，
+             並記下每名的 **baseline ledger 筆數** 與 **baseline delta**。
+          2. `try_apply_decay` 被包成 wrapper：**第一名角色**先 `first_entered.set()`
+             再 `release_first.wait(timeout)` 卡住；其餘角色直接走真實實作。
+          3. `decay_evaluate_eligible_agents(should_stop=cancel_event.is_set)` 在
+             **背景執行緒**內跑（它是同步函式）。
+          4. 主執行緒等到 `first_entered` ⇒ `cancel_event.set()` ⇒ 放行第一名。
+          5. 第一名結束後回到迴圈頂端 ⇒ `should_stop()` 為真 ⇒ `break`，
+             其餘六名**連 `try_apply_decay` 都不會被呼叫**。
+
+        因此本測試的**主斷言**是「其餘六名零寫入且不在 results 內」，
+        而不是「首名沒扣分」—— 後者做不到（見上方如實聲明）。
+        """
+        import src.agent.emotion as emotion_mod
+        from src.agent.emotion import decay_evaluate_eligible_agents
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+
+        engine = EmotionEngine(db_path=db_path)
+        engine.ensure_decay_schema()
+
+        # 評估順序（`sorted()`）⇒ 首名必為 agent_anna。
+        order = sorted(ELIGIBLE_AGENTS)
+        first_agent, remaining = order[0], order[1:]
+        assert first_agent == "agent_anna", (
+            f"評估順序的假設已變動（首名 {first_agent!r}）—— 本測試需重新校準"
+        )
+        assert len(remaining) == 6, f"其餘角色數非預期：{remaining}"
+
+        base_delta = 5.0
+        for aid in order:
+            _seed_overdue(engine, aid, delta=base_delta, due=T0 + DAY)
+
+        # (1) baseline：逐角色 ledger 筆數 + delta（呼叫**之前**）
+        before_ledger = {aid: _ledger_count(engine, aid) for aid in order}
+        before_delta = {aid: _delta_of(engine, aid) for aid in order}
+        assert all(v == 0 for v in before_ledger.values()), (
+            f"前置不成立：應為全零 ledger，實得 {before_ledger}"
+        )
+        assert all(v == pytest.approx(base_delta) for v in before_delta.values()), (
+            f"前置不成立：應為 delta={base_delta}，實得 {before_delta}"
+        )
+
+        # (2) 受控交錯的兩道閘門
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        cancel_event = threading.Event()
+        entered: list = []
+        real_try = engine.try_apply_decay
+
+        def _wrapped_try(agent_id, now=None):
+            entered.append(agent_id)
+            if agent_id == first_agent:
+                # 🔴 只卡第一名：讓主執行緒有機會在「第二名之前」設取消旗標。
+                first_entered.set()
+                release_first.wait(10.0)
+            return real_try(agent_id, now=now)
+
+        monkeypatch.setattr(engine, "try_apply_decay", _wrapped_try)
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
+
+        box: dict = {}
+
+        def _run() -> None:
+            box["res"] = decay_evaluate_eligible_agents(
+                now=T0 + 2 * DAY,
+                should_stop=cancel_event.is_set,
+            )
+
+        worker = threading.Thread(target=_run, name="ig2-cancel-probe", daemon=True)
+        try:
+            worker.start()
+
+            # 3) 等到「首名已進入 try_apply_decay」為**成功**條件，否則明確失敗。
+            assert first_entered.wait(10.0), (
+                "首名角色未在 10s 內進入 try_apply_decay —— 測試前提不成立"
+            )
+            # 4) 此刻首名在途 ⇒ 設下取消意圖，再放行。
+            cancel_event.set()
+            release_first.set()
+
+            worker.join(timeout=30.0)
+            assert not worker.is_alive(), (
+                "背景評估執行緒未在 30s 內結束（取消未在角色邊界生效？）"
+            )
+        finally:
+            # 🔴 任何斷言失敗都不得讓測試吊死：無條件放行並 join。
+            release_first.set()
+            cancel_event.set()
+            worker.join(timeout=30.0)
+
+        res = box["res"]
+
+        # (5) 回傳鍵集合不變（既有 5 鍵契約，不得因本票擴張）。
+        assert set(res) == {"evaluated", "applied", "reason", "results", "failed"}, (
+            f"🔴 回傳鍵集合被擴張／改動：{sorted(res)}"
+        )
+
+        # (6) 首名 **可能已完成** —— 只斷言它出現在 results，不斷言它未 decay。
+        #     （如實聲明：首名在途時無法被即時中止，已扣分屬既有語意。）
+        assert first_agent in res["results"], (
+            f"首名 {first_agent} 應已在 results 內（它是在途那名）：{res}"
+        )
+
+        # (7) 其餘六名：**完全沒進 results**，且 ledger / delta 逐項未變。
+        for aid in remaining:
+            assert aid not in res["results"], (
+                f"🔴 取消後 {aid} 仍被評估（results 含 {aid}）—— "
+                f"取消未在角色邊界生效：{sorted(res['results'])}"
+            )
+            assert _ledger_count(engine, aid) == before_ledger[aid], (
+                f"🔴 取消後 {aid} 的 ledger 筆數改變："
+                f"{before_ledger[aid]} -> {_ledger_count(engine, aid)}"
+            )
+            assert _delta_of(engine, aid) == pytest.approx(before_delta[aid]), (
+                f"🔴 取消後 {aid} 的 delta 改變："
+                f"{before_delta[aid]} -> {_delta_of(engine, aid)}"
+            )
+
+        # (8) 只有首名可能被呼叫過（其餘六名連 try_apply_decay 都沒進）。
+        assert entered == [first_agent], (
+            f"🔴 有角色在取消後仍進入 try_apply_decay：{entered}"
+        )
+
+        # (9) 因取消而中斷的一輪**絕不**標成 ALL_FAILED。
+        #     精確值由實測決定（三態匯總未被取消抹掉）。
+        assert res["reason"] != "ALL_FAILED", (
+            f"🔴 因取消而中斷的輪次竟回 ALL_FAILED：{res}"
+        )
+        assert res["reason"] == "EVALUATED", (
+            f"實測：已評估部分角色後才取消 ⇒ 沿用三態。實得 {res['reason']!r}：{res}"
+        )
+        assert res["evaluated"] == 1, f"應恰評估 1 名角色：{res}"
+        assert res["failed"] == 0, f"首名為正常路徑，failed 應為 0：{res}"
+
+    def test_cancel_before_any_agent_yields_cancelled_reason(
+        self, db_path, monkeypatch
+    ) -> None:
+        """零角色被評估就取消 ⇒ `reason == "CANCELLED"`（第四態）。
+
+        沒有這條，`failed_count == 0` 會讓它落到 `EVALUATED`
+        —— 把「什麼都沒做」報成「評估成功」。
+        """
+        import src.agent.emotion as emotion_mod
+        from src.agent.emotion import decay_evaluate_eligible_agents
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=db_path)
+        engine.ensure_decay_schema()
+        for aid in ELIGIBLE_AGENTS:
+            _seed_overdue(engine, aid, delta=5.0, due=T0 + DAY)
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
+
+        res = decay_evaluate_eligible_agents(
+            now=T0 + 2 * DAY, should_stop=lambda: True
+        )
+
+        assert res["reason"] == "CANCELLED", (
+            f"🔴 一個角色都沒評估竟非 CANCELLED（被美化成評估成功）：{res}"
+        )
+        assert res["evaluated"] == 0, f"應零評估：{res}"
+        assert set(res) == {"evaluated", "applied", "reason", "results", "failed"}, (
+            f"🔴 回傳鍵集合被擴張／改動：{sorted(res)}"
+        )
+        assert res["results"] == {}, f"結果集應為空：{res}"
+        assert res["applied"] == 0, f"應零扣減：{res}"
+        # 零寫入：ledger 一筆都沒有、delta 未被動到。
+        for aid in ELIGIBLE_AGENTS:
+            assert _ledger_count(engine, aid) == 0, f"{aid} 竟寫了 ledger"
+            assert _delta_of(engine, aid) == pytest.approx(5.0), f"{aid} 的 delta 被動到"
+
+    def test_should_stop_none_is_control_all_seven_evaluated(
+        self, db_path, monkeypatch
+    ) -> None:
+        """控制組：`should_stop=None`（預設）⇒ 七名全數評估、鍵集合不變。"""
+        import src.agent.emotion as emotion_mod
+        from src.agent.emotion import decay_evaluate_eligible_agents
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=db_path)
+        engine.ensure_decay_schema()
+        for aid in ELIGIBLE_AGENTS:
+            _seed_overdue(engine, aid, delta=5.0, due=T0 + DAY)
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
+
+        res = decay_evaluate_eligible_agents(now=T0 + 2 * DAY)
+
+        assert res["evaluated"] == len(ELIGIBLE_AGENTS) == 7, (
+            f"應評估 7 名角色：{res}"
+        )
+        assert set(res) == {"evaluated", "applied", "reason", "results", "failed"}, (
+            f"🔴 回傳鍵集合被擴張／改動：{sorted(res)}"
+        )
+        assert res["reason"] in {"EVALUATED", "PARTIAL", "ALL_FAILED"}, (
+            f"未取消 ⇒ 必為三態之一：{res}"
+        )
+        # 七名全逾期且 delta 足夠 ⇒ 實測為 EVALUATED / 全數扣減。
+        assert res["reason"] == "EVALUATED", f"無競爭正常路徑應為 EVALUATED：{res}"
+        assert res["applied"] == 7, f"七名都應被扣減：{res}"
+        for aid in ELIGIBLE_AGENTS:
+            assert _ledger_count(engine, aid) == 1, f"{aid} 未寫 ledger"
+
+    def test_should_stop_always_false_is_control_all_seven_evaluated(
+        self, db_path, monkeypatch
+    ) -> None:
+        """控制組：`should_stop` 永遠回 False ⇒ 不得提早中斷（不得修過頭）。"""
+        import src.agent.emotion as emotion_mod
+        from src.agent.emotion import decay_evaluate_eligible_agents
+
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "1")
+        engine = EmotionEngine(db_path=db_path)
+        engine.ensure_decay_schema()
+        for aid in ELIGIBLE_AGENTS:
+            _seed_overdue(engine, aid, delta=5.0, due=T0 + DAY)
+        monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
+
+        res = decay_evaluate_eligible_agents(
+            now=T0 + 2 * DAY, should_stop=lambda: False
+        )
+
+        assert res["evaluated"] == 7, f"回呼永遠 False 竟提早中斷：{res}"
+        assert set(res) == {"evaluated", "applied", "reason", "results", "failed"}, (
+            f"🔴 回傳鍵集合被擴張／改動：{sorted(res)}"
+        )
+        assert res["applied"] == 7, f"七名都應被扣減：{res}"
