@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pytest
@@ -39,6 +40,11 @@ from src.world import (
 from src.world.dispatcher import WorldEventDispatcher
 from src.world.perception import WorldEvent
 from src.world.source.synthetic import SyntheticWorldEventSource
+
+
+#: repo 根（與 tests/conftest.py、tests/test_data_root_isolation.py 同型）。
+#: 供 scope guard 的 `git diff` 子行程指定 cwd，避免依賴 pytest 的 cwd。
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 # ───────────────────────────────────────────────────────────
@@ -756,6 +762,11 @@ def test_phase_a_b_files_unchanged_after_phase_c():
         r = subprocess.run(
             ["git", "diff", "--stat", f],
             capture_output=True,
+            cwd=_REPO_ROOT,
         )
         out = r.stdout.decode("utf-8", errors="replace").strip()
+        assert r.returncode == 0, (
+            f"git diff 失敗 (rc={r.returncode}): "
+            f"{r.stderr.decode('utf-8', errors='replace')}"
+        )
         assert not out, f"{f} 不應被改, 實際 diff: {out!r}"
