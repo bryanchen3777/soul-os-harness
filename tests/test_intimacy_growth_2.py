@@ -51,6 +51,8 @@ from src.agent.emotion import (  # noqa: E402
     DECAY_STEP,
     DECAY_WINDOW_HOURS,
     EmotionEngine,
+    SETTLE_ABORTED_REASON,
+    SettleAbortedError,
     TRUTHY_VALUES,
     decay_enabled,
 )
@@ -603,10 +605,10 @@ class TestTransactionRollback:
     def test_undeterminable_rowcount_is_fail_closed(
         self, engine_on, mode: str
     ) -> None:
-        """🔴 T3（缺口 2 後續）：`rowcount` **不可判定** ⇒ fail-closed。
+        """🔴 T3（缺口 2 後續）+ 失敗傳播：`rowcount` **不可判定** ⇒ fail-closed。
 
         `AttributeError`（mode="raise"）或 `None`（mode="none"）皆必須：
-          - 回傳 `applied == 0.0`（0 扣減）
+          - **拋 `SettleAbortedError`**（失敗傳播：讓 `_write_tx()` 回滾整筆交易）
           - `get_delta()` **前後相同**（未扣減）
           - `next_decay_due_at` **前後相同**（0 推進）
           - ledger 列數**不變**
@@ -614,6 +616,13 @@ class TestTransactionRollback:
 
         舊實作 `except ...: inserted = 1`（fail-open）⇒ 仍 UPDATE Delta 並推進
         due ⇒ 本測試必紅。
+
+        🔴 失敗傳播（本票）語意更新：本函式（私有）**不再**「回滾後回 0.0」。
+        `return 0.0` 只擋住本層的 Delta 推進，**公開入口**仍會接著
+        `_upsert_clock_locked()` 並 commit 新的時鐘 —— 那正是被退回的漏洞。
+        改為拋 `SettleAbortedError` 後，失敗才穿得過 `_write_tx()` 的例外路徑，
+        使**整筆交易**一起回滾。公開入口的行為由
+        `TestPublicApiFailurePropagation` 的兩條測試逐字覆蓋。
         """
         engine_on.ensure_decay_schema()
         engine_on.update_delta("agent_yua", 7.0)
@@ -634,23 +643,27 @@ class TestTransactionRollback:
         wrapper = _UndeterminableRowcountConn(real_conn, mode=mode)
         engine_on.conn = wrapper
         try:
-            # 🔴 必須**不拋例外**：fail-closed ＝ 乾淨回 0.0（非崩潰）
-            applied = engine_on._settle_once_locked(
-                "agent_yua",
-                T0 + DAY,
-                T0 + DAY,
-                delta_before,
-                origin="inbound_late",
-            )
+            # 🔴 失敗傳播：必須拋 `SettleAbortedError`（不是安靜回 0.0）——
+            #    只有拋出才能穿過 `_write_tx()` 的例外路徑回滾整筆交易。
+            #
+            #    私有 helper 在生產中**永遠**在 `_write_tx()` 內被呼叫
+            #    （`touch_inbound()` / `try_apply_decay()` 皆然），故本測試
+            #    也在同一交易邊界內呼叫 —— 回滾由邊界負責，helper 本身
+            #    **不再**自行 rollback（交易邊界是唯一回滾點）。
+            with pytest.raises(SettleAbortedError):
+                with engine_on._write_tx():
+                    engine_on._settle_once_locked(
+                        "agent_yua",
+                        T0 + DAY,
+                        T0 + DAY,
+                        delta_before,
+                        origin="inbound_late",
+                    )
         finally:
             engine_on.conn = real_conn
         assert wrapper.tripped, "故障注入未觸發（測試本身失效）"
 
-        # 1) 回傳 0.0（0 扣減）
-        assert applied == pytest.approx(0.0), (
-            f"rowcount 不可判定時必須回 0.0（0 扣減），實際 {applied}"
-            "（舊實作 fail-open 會回 0.5）"
-        )
+        # 1) 整筆交易已回滾（見下方 2~4 的實質不變量）
         # 2) Delta 前後相同（未扣減）
         assert engine_on.get_delta("agent_yua") == pytest.approx(delta_before), (
             "rowcount 不可判定時**不得**扣減 Delta"
@@ -686,6 +699,213 @@ class TestTransactionRollback:
         )
         assert _ledger_count(engine_on, "agent_yua") == 0, (
             "旁證路徑不得留下 ledger 列"
+        )
+
+
+# ═════════════════════════════════════════════════════════════
+# G6b. 失敗傳播（本票）：公開入口不得把失敗算成成功
+# ═════════════════════════════════════════════════════════════
+# Owner 逐字要求：**用同一種故障注入**（`_UndeterminableRowcountConn` /
+# `_UndeterminableRowcountCursor`，讓 ledger INSERT 的 `cursor.rowcount`
+# 不可判定），分別走 `touch_inbound()` 與 `try_apply_decay()` **兩個公開 API**
+# （不是私有 helper），各驗證四個不變量 ＋ 「呼叫端不把失敗算成成功」。
+#
+# 注入位置：包在**公開入口之外**（`engine_on.conn = wrapper` 後才呼叫公開 API），
+# 才能觀察到「整筆交易（含公開入口自己的時鐘 UPSERT）是否真的回滾」——
+# 這正是舊實作漏掉的一環。
+
+
+class TestPublicApiFailurePropagation:
+    """`touch_inbound()` / `try_apply_decay()` 的失敗傳播（公開 API）。"""
+
+    @staticmethod
+    def _snapshot(engine: EmotionEngine, real_conn, agent_id: str) -> dict:
+        """四項不變量的快照（Delta / ledger / last_valid_inbound_at / due）。"""
+        last_in, due, delta = engine._read_clock_and_delta_locked(agent_id)
+        return {
+            "delta": delta,
+            "ledger": list(
+                real_conn.execute(
+                    "SELECT event_key FROM intimacy_decay_ledger "
+                    "WHERE agent_id = ?",
+                    (agent_id,),
+                )
+            ),
+            "last_valid_inbound_at": last_in,
+            "next_decay_due_at": due,
+        }
+
+    @pytest.mark.parametrize("mode", ["raise", "none"])
+    def test_touch_inbound_does_not_touch_clock_on_settle_abort(
+        self, engine_on, mode: str
+    ) -> None:
+        """🔴 公開 API #1：`touch_inbound()` 逾期分支結算中止 ⇒ 整筆回滾。
+
+        故障注入：ledger INSERT 的 `rowcount` 不可判定（`AttributeError` /
+        `None`），注入點在**公開入口的交易邊界之外**（`engine_on.conn` 換成
+        wrapper 後才呼叫公開 API）。
+
+        四個不變量（皆為**逐位元不變**）：
+          1. Delta 不變
+          2. ledger 不變（不增）
+          3. last_valid_inbound_at 不變
+          4. next_decay_due_at 不變
+        外加：**呼叫端不把失敗算成成功** —— 不得回報 `TOUCHED`。
+
+        舊實作（公開入口不看失敗）：私有函式 rollback 後，外層仍執行
+        `_upsert_clock_locked()` 並回 `{"applied": False, "reason": "TOUCHED"}`，
+        且**提交**了一個新的時鐘 ⇒ 本測試的斷言 3/4 與 `TOUCHED` 斷言必紅。
+        """
+        agent = "agent_yua"
+        engine_on.ensure_decay_schema()
+        engine_on.update_delta(agent, 7.0)
+        # 鋪成「已逾期」：due = T0，last_valid_inbound_at = T0 - 24h。
+        engine_on.touch_inbound(agent, "e0", "telegram", now=T0)
+
+        real_conn = engine_on.conn
+        before = self._snapshot(engine_on, real_conn, agent)
+        assert before["delta"] == pytest.approx(7.0), "前置：Delta 應為 7.0"
+        assert before["next_decay_due_at"] == pytest.approx(T0 + DAY), (
+            "前置：due 應為 T+24h"
+        )
+        assert before["ledger"] == [], "前置：ledger 應為空"
+
+        wrapper = _UndeterminableRowcountConn(real_conn, mode=mode)
+        engine_on.conn = wrapper
+        try:
+            # 🔴 走**公開 API**，且必須在逾期點（now == due）呼叫 ⇒ 進入
+            #    `_settle_once_locked()` 分支，觸發故障注入。
+            result = engine_on.touch_inbound(
+                agent, "e_late", "telegram", now=T0 + DAY
+            )
+        finally:
+            engine_on.conn = real_conn
+        assert wrapper.tripped, "故障注入未觸發（測試本身失效）"
+
+        # ── 四個不變量 ──────────────────────────────────────────
+        after = self._snapshot(engine_on, real_conn, agent)
+        assert after["delta"] == pytest.approx(before["delta"]), (
+            f"Delta 不得改變（前 {before['delta']} vs 後 {after['delta']}）"
+        )
+        assert after["ledger"] == before["ledger"], (
+            f"ledger 不得增加（前 {before['ledger']} vs 後 {after['ledger']}）"
+        )
+        assert after["last_valid_inbound_at"] == pytest.approx(
+            before["last_valid_inbound_at"]
+        ), (
+            "last_valid_inbound_at 不得改變"
+            f"（前 {before['last_valid_inbound_at']} vs 後"
+            f" {after['last_valid_inbound_at']}）"
+        )
+        assert after["next_decay_due_at"] == pytest.approx(
+            before["next_decay_due_at"]
+        ), (
+            "next_decay_due_at 不得改變（TOUCH 時鐘 UPSERT 必須被整筆交易回滾）"
+            f"（前 {before['next_decay_due_at']} vs 後"
+            f" {after['next_decay_due_at']}）"
+        )
+
+        # ── 呼叫端不把失敗算成成功 ──────────────────────────────
+        assert result["reason"] != "TOUCHED", (
+            "結算中止時**不得**回報 TOUCHED，實際回報："
+            f"{result!r}（舊實作在 rollback 後仍 UPSERT 時鐘並回 TOUCHED）"
+        )
+        assert result["reason"] == SETTLE_ABORTED_REASON, (
+            f"必須回報明確的失敗代碼 {SETTLE_ABORTED_REASON!r}，實際 {result!r}"
+        )
+        assert result["applied"] is False, (
+            f"失敗不得回報 applied=True，實際 {result!r}"
+        )
+        assert result["touched"] is False, (
+            f"失敗不得回報 touched=True，實際 {result!r}"
+        )
+        assert real_conn.in_transaction is False, (
+            "整筆交易必須已回滾且不得殘留開啟的交易"
+        )
+
+    @pytest.mark.parametrize("mode", ["raise", "none"])
+    def test_try_apply_decay_does_not_report_decayed_on_settle_abort(
+        self, engine_on, mode: str
+    ) -> None:
+        """🔴 公開 API #2：`try_apply_decay()` 結算中止 ⇒ 整筆回滾、不報 DECAYED。
+
+        同一種故障注入（`rowcount` 不可判定），注入點同樣在公開入口的交易
+        邊界之外。
+
+        四個不變量（皆為**逐位元不變**）：
+          1. Delta 不變
+          2. ledger 不變（不增）
+          3. last_valid_inbound_at 不變
+          4. next_decay_due_at 不變
+        外加：**呼叫端不把失敗算成成功** —— 不得回報 `DECAYED`、`applied`
+        不得為 `True`。
+
+        舊實作：`applied = self._settle_once_locked(...)` 後**無條件**回
+        `{"applied": True, "reason": "DECAYED", ...}`（`applied` 只被當金額用）
+        ⇒ 本測試的 `DECAYED` / `applied=True` 斷言必紅。
+
+        本實作讓 `SettleAbortedError` 穿出交易邊界回滾整筆交易，並以例外表達
+        失敗（**絕非**一個看起來成功的 dict）。故本測試同時接受兩種「不算成功」
+        的形態：拋例外，或回傳明確的失敗 dict —— 兩者都不得是 DECAYED。
+        """
+        agent = "agent_yua"
+        engine_on.ensure_decay_schema()
+        engine_on.update_delta(agent, 7.0)
+        engine_on.touch_inbound(agent, "e0", "telegram", now=T0)
+
+        real_conn = engine_on.conn
+        before = self._snapshot(engine_on, real_conn, agent)
+        assert before["delta"] == pytest.approx(7.0), "前置：Delta 應為 7.0"
+        assert before["next_decay_due_at"] == pytest.approx(T0 + DAY), (
+            "前置：due 應為 T+24h"
+        )
+        assert before["ledger"] == [], "前置：ledger 應為空"
+
+        wrapper = _UndeterminableRowcountConn(real_conn, mode=mode)
+        engine_on.conn = wrapper
+        try:
+            # 🔴 走**公開 API**（排程 tick 的入口），now == due ⇒ 進入結算。
+            try:
+                result = engine_on.try_apply_decay(agent, now=T0 + DAY)
+            except SettleAbortedError:
+                result = None  # 失敗以例外表達 ⇒ 呼叫端絕不可能讀到 DECAYED
+        finally:
+            engine_on.conn = real_conn
+        assert wrapper.tripped, "故障注入未觸發（測試本身失效）"
+
+        # ── 四個不變量 ──────────────────────────────────────────
+        after = self._snapshot(engine_on, real_conn, agent)
+        assert after["delta"] == pytest.approx(before["delta"]), (
+            f"Delta 不得改變（前 {before['delta']} vs 後 {after['delta']}）"
+        )
+        assert after["ledger"] == before["ledger"], (
+            f"ledger 不得增加（前 {before['ledger']} vs 後 {after['ledger']}）"
+        )
+        assert after["last_valid_inbound_at"] == pytest.approx(
+            before["last_valid_inbound_at"]
+        ), (
+            "last_valid_inbound_at 不得改變"
+            f"（前 {before['last_valid_inbound_at']} vs 後"
+            f" {after['last_valid_inbound_at']}）"
+        )
+        assert after["next_decay_due_at"] == pytest.approx(
+            before["next_decay_due_at"]
+        ), (
+            "next_decay_due_at 不得改變（due 不得推進）"
+            f"（前 {before['next_decay_due_at']} vs 後"
+            f" {after['next_decay_due_at']}）"
+        )
+
+        # ── 呼叫端不把失敗算成成功 ──────────────────────────────
+        assert result is None or result.get("reason") != "DECAYED", (
+            f"結算中止時**不得**回報 DECAYED，實際回報：{result!r}"
+            "（舊實作無條件回 applied=True / DECAYED）"
+        )
+        assert result is None or result.get("applied") is not True, (
+            f"結算中止時 applied 不得為 True，實際回報：{result!r}"
+        )
+        assert real_conn.in_transaction is False, (
+            "整筆交易必須已回滾且不得殘留開啟的交易"
         )
 
 

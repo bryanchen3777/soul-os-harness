@@ -124,6 +124,30 @@ INTIMACY_DECAY_ELIGIBLE_AGENTS: frozenset = frozenset({
 #: 不合格角色的統一 reason（fail-safe：**不拋例外**，讓呼叫端零成本辨識）。
 NOT_ELIGIBLE_REASON = "NOT_ELIGIBLE"
 
+#: 🔴 結算中止的統一 reason（失敗傳播）：ledger 寫入結果**不可判定** ⇒
+#: 整筆交易已回滾。與 `NOT_ELIGIBLE_REASON`（政策擋下、非錯誤）語意不同 ——
+#: 本代碼代表一次**真實的失敗**，呼叫端**不得**將其計為成功。
+SETTLE_ABORTED_REASON = "SETTLE_ABORTED"
+
+
+class SettleAbortedError(RuntimeError):
+    """ledger 寫入結果不可判定 ⇒ 結算中止（**失敗傳播**用的內部例外）。
+
+    為什麼需要一個**例外**而不是返回值：失敗必須能穿過 `_write_tx()` 的
+    例外路徑，才能讓**整筆交易**（Delta 扣減 + ledger 列 + TOUCH 時鐘
+    UPSERT）一起回滾。只回傳一個 sentinel 值的話，交易邊界看不到失敗、
+    照樣 `commit()`，外層接著又能寫入並提交新的時鐘 —— 那正是本票要修的
+    漏洞（`touch_inbound()` 在私有函式 rollback 後仍執行
+    `_upsert_clock_locked()` 並回報 TOUCHED）。
+
+    **不繼承 `sqlite3.Error`**：這不是 DB 錯誤，而是「寫入結果不可判定」
+    的 fail-closed 訊號。公開入口在自己的邊界把本例外轉譯成
+    `reason == SETTLE_ABORTED_REASON` 的結構化失敗回報（見
+    `touch_inbound()` / `try_apply_decay()` 的 docstring），
+    故既有呼叫端（router.py 的 `except Exception`、run_server 的 tick
+    try/except）行為不變。
+    """
+
 
 def is_decay_eligible(agent_id: object) -> bool:
     """該 agent 是否具備**每角色**的衰減扣減資格（白名單查詢）。
@@ -460,6 +484,19 @@ class EmotionEngine:
         （本函式內、任何 DB 寫入之前）而非只在呼叫端，因為本函式是 §10 的
         唯一寫入路徑，呼叫端（TG / VC）無法保證已做過資格判斷。
         **不得拋例外**：TG 路徑對本函式包了 try/except，拋例外會被吞成靜默失敗。
+
+        🔴 **失敗傳播**（本票）：若逾期分支的 `_settle_once_locked()` 因 ledger
+        寫入結果不可判定而中止，本函式**不得**再推進 TOUCH 時鐘、**不得**回報
+        `TOUCHED`。此時回報：
+            `{"applied": False, "touched": False,
+              "reason": "SETTLE_ABORTED", "last_valid_inbound_at": <原值>,
+              "next_decay_due_at": <原 due>}`
+        其中 `last_valid_inbound_at` / `next_decay_due_at` 為**回滾後的實際值**
+        （即本次呼叫前的值），讓呼叫端不必再查一次 DB 就能確認「時鐘未動」。
+
+        實作機制：`_settle_once_locked()` 拋 `SettleAbortedError` ⇒ `_write_tx()`
+        的例外路徑 `rollback()` **整筆交易**（本次的 TOUCH 時鐘 UPSERT 也在同一
+        交易內，一併撤銷）⇒ 本函式在交易邊界內捕捉並轉成上表的失敗回報。
         """
         if not decay_enabled():
             return {"applied": False, "touched": False, "reason": "FLAG_OFF"}
@@ -481,62 +518,100 @@ class EmotionEngine:
         now_ts = float(now) if now is not None else time.time()
         window = DECAY_WINDOW_HOURS * 3600.0
 
-        with self._write_tx():
-            last_in, due, delta = self._read_clock_and_delta_locked(agent_id)
-            # 兩個**各自獨立**的值 —— 這是缺口 1 的修正核心：
-            #   `last_written` = 寫回 last_valid_inbound_at 的值
-            #                    ＝ 真人**實際到場時間**（單調不倒退）
-            #   `due_written`  = 寫回 next_decay_due_at 的值
-            #                    ＝ 該到場時間所開的新窗口結束點
-            # 舊實作把兩者綁在同一個 `target` 上（`target = max(now, due+window)`
-            # 再 `due = target + window`），正是「真人準時到場卻白拿一天」的來源。
-            last_written = now_ts
-            due_written = now_ts + window
-
-            if due is not None and now_ts >= due:
-                # §8：逾期 inbound ⇒ 先結算最多一次（扣 0.5、ledger 記一筆）。
-                self._settle_once_locked(
-                    agent_id, now_ts, due, delta, origin="inbound_late"
-                )
-                # 🔴 缺口 1 修正：結算後 `last_valid_inbound_at` ＝ **真人實際
-                #    到場時間**，取「本次 now_ts」與「結算前的 last_valid_inbound_at」
-                #    的較大者 —— 這樣亂序抵達的舊 timestamp 不會讓時鐘倒退
-                #    （既有「時鐘單調不倒退」契約），而準時到場者也不會被
-                #    偽造成未來時刻。
-                #
-                #    反面教材（舊實作）：`target = max(now_ts, due + window)`
-                #    後又拿 `target` 當 last_valid_inbound_at。真人恰在首次到期點
-                #    `T+24h` 到場時 `now_ts == due`，該式給出 `target = T+48h`
-                #    ⇒ last_valid_inbound_at 被寫成 T+48h、due 成 T+72h。真人
-                #    明明準時出現，卻白拿一天（多一整個 24h 窗口不衰減）。
-                #
-                #    **不得**用結算後的 due 當 last_valid_inbound_at。
+        try:
+            with self._write_tx():
+                last_in, due, delta = self._read_clock_and_delta_locked(agent_id)
+                # 兩個**各自獨立**的值 —— 這是缺口 1 的修正核心：
+                #   `last_written` = 寫回 last_valid_inbound_at 的值
+                #                    ＝ 真人**實際到場時間**（單調不倒退）
+                #   `due_written`  = 寫回 next_decay_due_at 的值
+                #                    ＝ 該到場時間所開的新窗口結束點
+                # 舊實作把兩者綁在同一個 `target` 上（`target = max(now, due+window)`
+                # 再 `due = target + window`），正是「真人準時到場卻白拿一天」的來源。
                 last_written = now_ts
-                if last_in is not None:
-                    last_written = max(float(last_in), last_written)
-                # 🔴 缺口 1（第二例）修正：下一次 due ＝ **本次有效互動所開的新窗口
-                #    結束點**（`last_written + window`），而**不是** `due + window`。
-                #
-                #    語意：**每次有效互動各自重新給滿 24 小時**（Owner 裁定）。
-                #    `due + window` 會違反這條：
-                #      準時 T+24h 到場 ⇒ due = T+48h（距本次互動 24h ✅）
-                #      延後 T+25h 到場 ⇒ due = T+48h（距本次互動只有 23h ❌）
-                #    延後者被偷走了 1 小時。舊 guard（`last_written >= due_written`
-                #    時改用 `last_written + window`）**打不到第二例** —— 因為
-                #    `T+25h < T+48h`，條件不成立。
-                #
-                #    逾期清算仍**最多一次**：`_settle_once_locked()` 的呼叫次數與
-                #    位置完全未動（bounded 1-step，§5），本次只是把它之後寫回的
-                #    下一次到期點改成「以真人實際到場時間為起點」。
-                #    單調性：`last_written` 本身單調不倒退（上方 `max`），
-                #    故 `due_written` 亦不倒退。
-                due_written = last_written + window
-            elif last_in is not None:
-                # 非逾期分支行為**不變**：維持既有 `max(last_in, now)` 語意。
-                last_written = max(float(last_in), now_ts)
-                due_written = last_written + window
+                due_written = now_ts + window
 
-            self._upsert_clock_locked(agent_id, last_written, due_written)
+                if due is not None and now_ts >= due:
+                    # §8：逾期 inbound ⇒ 先結算最多一次（扣 0.5、ledger 記一筆）。
+                    #
+                    # 🔴 失敗傳播（本票）：`_settle_once_locked()` 在 ledger 寫入
+                    #    結果**不可判定**時拋 `SettleAbortedError`。本處**不捕捉**
+                    #    它 —— 讓它穿出 `with self._write_tx()`，觸發交易邊界的
+                    #    `except BaseException: conn.rollback()` 回滾**整筆交易**，
+                    #    因此下方 `_upsert_clock_locked()` 與 TOUCHED 回報都不會被
+                    #    執行。轉譯成結構化失敗回報的動作在**交易邊界之外**（見
+                    #    函式尾端的 `except SettleAbortedError`）。
+                    #
+                    #    🔴 捕捉點**必須在 `with` 之外**：`_write_tx()` 是
+                    #    `@contextmanager`，只有在例外穿過 `yield` 時才會走
+                    #    `except BaseException` 分支；若在 `with` **內部**把例外
+                    #    吃掉，控制流會正常離開區塊 ⇒ 走 `else: commit()` ⇒
+                    #    ledger 列被**提交**（實測：ledger 會多一列）。
+                    self._settle_once_locked(
+                        agent_id, now_ts, due, delta, origin="inbound_late"
+                    )
+                    # 🔴 缺口 1 修正：結算後 `last_valid_inbound_at` ＝ **真人實際
+                    #    到場時間**，取「本次 now_ts」與「結算前的 last_valid_inbound_at」
+                    #    的較大者 —— 這樣亂序抵達的舊 timestamp 不會讓時鐘倒退
+                    #    （既有「時鐘單調不倒退」契約），而準時到場者也不會被
+                    #    偽造成未來時刻。
+                    #
+                    #    反面教材（舊實作）：`target = max(now_ts, due + window)`
+                    #    後又拿 `target` 當 last_valid_inbound_at。真人恰在首次到期點
+                    #    `T+24h` 到場時 `now_ts == due`，該式給出 `target = T+48h`
+                    #    ⇒ last_valid_inbound_at 被寫成 T+48h、due 成 T+72h。真人
+                    #    明明準時出現，卻白拿一天（多一整個 24h 窗口不衰減）。
+                    #
+                    #    **不得**用結算後的 due 當 last_valid_inbound_at。
+                    last_written = now_ts
+                    if last_in is not None:
+                        last_written = max(float(last_in), last_written)
+                    # 🔴 缺口 1（第二例）修正：下一次 due ＝ **本次有效互動所開的新窗口
+                    #    結束點**（`last_written + window`），而**不是** `due + window`。
+                    #
+                    #    語意：**每次有效互動各自重新給滿 24 小時**（Owner 裁定）。
+                    #    `due + window` 會違反這條：
+                    #      準時 T+24h 到場 ⇒ due = T+48h（距本次互動 24h ✅）
+                    #      延後 T+25h 到場 ⇒ due = T+48h（距本次互動只有 23h ❌）
+                    #    延後者被偷走了 1 小時。舊 guard（`last_written >= due_written`
+                    #    時改用 `last_written + window`）**打不到第二例** —— 因為
+                    #    `T+25h < T+48h`，條件不成立。
+                    #
+                    #    逾期清算仍**最多一次**：`_settle_once_locked()` 的呼叫次數與
+                    #    位置完全未動（bounded 1-step，§5），本次只是把它之後寫回的
+                    #    下一次到期點改成「以真人實際到場時間為起點」。
+                    #    單調性：`last_written` 本身單調不倒退（上方 `max`），
+                    #    故 `due_written` 亦不倒退。
+                    due_written = last_written + window
+                elif last_in is not None:
+                    # 非逾期分支行為**不變**：維持既有 `max(last_in, now)` 語意。
+                    last_written = max(float(last_in), now_ts)
+                    due_written = last_written + window
+
+                self._upsert_clock_locked(agent_id, last_written, due_written)
+        except SettleAbortedError as exc:
+            # 🔴 失敗傳播：交易邊界**已**回滾整筆交易（含本次的 TOUCH 時鐘
+            #    UPSERT）。在此轉譯成明確的失敗回報 —— 不回 TOUCHED、不回
+            #    applied=True，且回報**回滾後的實際值**（即本次呼叫前的時鐘），
+            #    讓呼叫端不必再查 DB 就能確認「時鐘未動」。
+            #
+            #    為何不讓例外穿出公開邊界：TG 的呼叫端
+            #    （`router.py::_touch_intimacy_clock`）對本函式包了
+            #    `except Exception` 只記 warning —— 那是「inbound 不得中斷」的
+            #    既有契約。在本邊界轉譯後，「呼叫端不把失敗算成成功」成為
+            #    **可斷言**的行為，而非依賴呼叫端記得吞例外。
+            logger.error(
+                "[INTIMACY-DECAY] touch aborted agent=%s channel=%s reason=%s "
+                "—— 整筆交易已回滾，不寫 TOUCH 時鐘：%s",
+                agent_id, channel, SETTLE_ABORTED_REASON, exc,
+            )
+            return {
+                "applied": False,
+                "touched": False,
+                "reason": SETTLE_ABORTED_REASON,
+                "last_valid_inbound_at": self._read_clock_and_delta_locked(agent_id)[0],
+                "next_decay_due_at": self._read_clock_and_delta_locked(agent_id)[1],
+            }
 
         logger.info(
             "[INTIMACY-DECAY] touch agent=%s channel=%s event=%s due_at=%.0f",
@@ -568,6 +643,13 @@ class EmotionEngine:
         檢查置於 `ensure_decay_schema()` 之前 ⇒ 不合格角色連 DDL 都不觸發。
 
         Returns dict：`applied` / `reason` / `applied_amount` / `due_at`。
+
+        Raises:
+            SettleAbortedError: ledger 寫入結果不可判定（fail-closed）。
+                **整筆交易已回滾**（Delta 不扣、ledger 不增、due 不推進）。
+                本函式**不會**在此情境回報 `DECAYED` / `applied=True` ——
+                失敗以例外表達，而非一個看起來成功的 dict。呼叫端
+                （run_server.py 排程 tick）的既有 try/except 會記下它。
         """
         if not decay_enabled():
             return {"applied": False, "reason": "FLAG_OFF"}
@@ -602,6 +684,21 @@ class EmotionEngine:
                     "due_at": now_ts + DECAY_WINDOW_HOURS * 3600.0,
                 }
 
+            # 🔴 失敗傳播（本票）：`_settle_once_locked()` 在 ledger 寫入結果
+            #    不可判定時拋 `SettleAbortedError`（`applied` 已不再兼任敗訊號
+            #    —— 舊實作把它當金額用，無論成敗都回 `applied=True` /
+            #    `DECAYED`，等於把未成功結算報成成功）。
+            #
+            #    本處**不捕捉**該例外，讓它穿過 `with self._write_tx()` 使整筆
+            #    交易回滾（Delta / ledger / due 全撤銷）。理由：`try_apply_decay()`
+            #    的既有呼叫端（run_server.py 的排程 tick）本身已對本函式包了
+            #    try/except，且「未到期 / DUPLICATE / UNKNOWN」等**正常**路徑
+            #    都是靠回傳值表達、不拋例外 —— 因此例外在本邊界**唯一**代表
+            #    「真實失敗」，語意清楚且不與既有回傳值混淆。
+            #
+            #    回傳值層級的不變量：本函式**只有在真的結算成功時**才回
+            #    `applied=True` / `DECAYED`；失敗時呼叫端拿到的是例外（絕非
+            #    DECAYED），故「呼叫端不把失敗算成成功」在兩個方向上成立。
             applied = self._settle_once_locked(
                 agent_id, now_ts, due, delta, origin="tick", event_key=event_key
             )
@@ -729,6 +826,13 @@ class EmotionEngine:
 
         `try_apply_decay()` 的既有前置查**保留**（雙保險：讓 DUPLICATE 這條
         便宜路徑不必進到本函式）。
+
+        Raises:
+            SettleAbortedError: `cursor.rowcount` 不可判定 ⇒ **無法確定**
+                ledger 是否真的寫入。此時本函式不扣減、不推進 due，並拋出
+                本例外讓 `_write_tx()` 回滾**整筆交易**（呼叫端的 Delta /
+                ledger / TOUCH 時鐘全部一起撤銷）。公開入口負責把本例外轉譯
+                成 `reason == SETTLE_ABORTED_REASON` 的失敗回報。
         """
         window = DECAY_WINDOW_HOURS * 3600.0
         applied = min(DECAY_STEP, max(0.0, float(delta)))  # §6 floor 0.0
@@ -750,7 +854,17 @@ class EmotionEngine:
         #    （AttributeError / TypeError / None）**絕不得假定寫入成功**。
         #    舊實作 `except ...: inserted = 1` 是 fail-open：不可判定 ⇒ 當成
         #    「已插入」⇒ 仍執行 UPDATE Delta 並推進 due ⇒ 可能**憑空再扣一次**。
-        #    正確行為：回滾該交易、記 ERROR、回 0.0（＝ 0 扣減）且**不推進 due**。
+        #
+        #    🔴 失敗傳播（本票）：本函式**不再**「回滾後回 0.0」——那只擋住
+        #    Delta 推進，公開入口仍會接著 `_upsert_clock_locked()` 並 commit
+        #    新的時鐘。改為**拋 `SettleAbortedError`**，讓失敗穿過呼叫端
+        #    （`touch_inbound()` / `try_apply_decay()`）的 `with self._write_tx()`
+        #    例外路徑 ⇒ `_write_tx()` 的 `except BaseException:` 分支執行
+        #    `conn.rollback()`，**整筆交易**（Delta + ledger + TOUCH 時鐘）
+        #    一起回滾，且 `commit()` 不再被呼叫。
+        #
+        #    `inserted == 0`（已結算過）**不在此列**：那是 DUPLICATE / skipped，
+        #    不是錯誤，語意完全不變（回 0.0、不拋）。
         try:
             inserted = cur.rowcount
         except (AttributeError, TypeError):
@@ -759,13 +873,16 @@ class EmotionEngine:
             logger.error(
                 "[INTIMACY-DECAY] settle aborted (rowcount undeterminable) "
                 "agent=%s origin=%s original_due=%.0f key=%s —— fail-closed："
-                "回滾交易、回 0.0、不推進 due",
+                "拋 SettleAbortedError 使整筆交易回滾（不推進 due、不寫時鐘）",
                 agent_id, origin, due, key,
             )
-            # 回滾本身若拋錯，**不得**吞成「假成功」：讓它往上拋（交易邊界
-            # `_write_tx()` 亦會在例外路徑再嘗試一次 rollback）。
-            self.conn.rollback()
-            return 0.0
+            # 例外往上拋：`_write_tx()` 會 rollback 整筆交易並 re-raise。
+            # 本層**不自行** rollback —— 交易邊界才是唯一回滾點，避免在
+            # 交易中段把連線狀態弄成「已回滾但外層仍以為在交易內」。
+            raise SettleAbortedError(
+                f"ledger write undeterminable (agent={agent_id} "
+                f"origin={origin} key={key})"
+            )
         if inserted == 0:
             logger.info(
                 "[INTIMACY-DECAY] settle skipped (duplicate) agent=%s origin=%s "
