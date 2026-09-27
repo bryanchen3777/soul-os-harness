@@ -3688,12 +3688,24 @@ class TestPeriodicDecayWiring:
           - **單元層（本票新增）**：
             `TestAntiSilentVacuity::test_schedule_seam_sentinel_stub_is_actually_read`
             與 `...::test_schedule_seam_unbinding_restores_real_schedule_behaviour`
-            —— 證明**測試會注意到排程接縫被換成 no-op / `return False`**
-            （auditor 實測：Neuter 排程入口後，本檔原有 6 條反空洞斷言
-            全部照樣綠燈；這兩條即為補上該範圍缺口者）。
-            🔴 它與 `test_periodic_wiring_attached_to_existing_loop` 的靜態
+            —— 證明**測試會注意到 `decay_worker` 排程接縫被換成
+            no-op / `return False`**。
+            `...::test_schedule_shell_sentinel_propagates_from_module_seam`、
+            `...::test_schedule_shell_noop_does_not_propagate_sentinel` 與
+            `...::test_schedule_shell_unbinding_restores_real_delegation`
+            —— 證明**測試會注意到 `run_server` 薄殼（生產實際呼叫的名字）
+            被換成 no-op / `return False`**。
+            （auditor 兩輪實測：①Neuter `decay_worker` 排程入口後，本檔原有
+            5 條測試／14 條 assert 全部照樣綠燈；②Neuter `run_server` 薄殼後，
+            同一組**依然全綠**而生產排程已失效。上述兩層即為補上這兩個
+            範圍缺口者。）
+            🔴 它們與 `test_periodic_wiring_attached_to_existing_loop` 的靜態
             證明**互補且不得互相替代**：靜態證明「有沒有接」，
-            這兩條證明「動態上真的是那條路在排、且弄壞它會紅」。
+            這些條證明「動態上真的是那條路在排、且弄壞它會紅」。
+            🔴 **動態覆蓋的精確界線**：`decay_worker` 接縫層與 `run_server`
+            薄殼層是**兩道獨立綁定**，缺一不可 —— 只綁接縫層時，薄殼被
+            neuter 仍全綠（auditor 實測）；只綁薄殼層時，接縫被 neuter
+            仍全綠。兩層合起來才覆蓋「觸發站 → 薄殼 → 實作」完整委派鏈。
         ─────────────────────────────────────────────────────────────
         """
         from src.agent.emotion import decay_evaluate_eligible_agents
@@ -5041,17 +5053,31 @@ class TestAntiSilentVacuity:
     # ═════════════════════════════════════════════════════════════
     # 🔴 排程接縫（scheduling seam）的反空洞 —— 補上 auditor 實測的缺口
     #
-    # 已證實的缺口（auditor 對抗式審計，非推論）：把**整個排程入口**
-    # `_maybe_schedule_decay_worker()` 換成 `return False`，
-    # 本檔既有的 **6 條反空洞斷言全部照樣綠燈**。
-    # 整檔跑起來仍會抓到（12 failed），但那是**別的**測試在抓 ——
+    # 已證實的缺口（auditor 對抗式審計，非推論）：把 `decay_worker` 的
+    # 排程入口 `_maybe_schedule_decay_worker()` 換成 `return False`，
+    # 本類別既有的反空洞測試**全部照樣綠燈**。
+    # 計數以 AST 實測為準（auditor 第二輪複核）：HEAD 上本類別共
+    # **5 個測試方法／14 條 assert**；本票再新增 **3 個測試方法／
+    # 10 條 assert**（見下方兩層綁定），合計 8 個方法。
+    # 整檔跑起來仍會抓到，但那是**別的**測試在抓，且數字依注入層而異
+    # （實測：`decay_worker` 中性化下 HEAD 9 failed／本票後 10 failed；
+    #   `run_server` 薄殼中性化下本票後 4 failed）——
     # 屬於「範圍缺口」，不是「安靜的假綠」。
+    #
+    # 🔴 **第二個缺口（本票補上，auditor 第二輪實測）**：上述既有測試
+    # 綁的是 **`decay_worker` 模組**的接縫，而**生產呼叫的是
+    # `scripts/run_server.py` 的薄殼**（`_sage_flush_loop` 內呼叫的是
+    # 本檔的 `_maybe_schedule_decay_worker`），薄殼才委派到實作端。
+    # 只把**薄殼**弄成 `return False`（實作端原封不動）時，
+    # 上述既有測試**依然全綠** —— 生產排程卻已完全失效。
+    # ⇒ 本組現在是**兩層綁定**：`decay_worker` 接縫（既有）＋
+    #   `run_server` 薄殼（本票新增，見 `..._shell_...` 三條）。
     #
     # 根因：`test_task_global_stub_is_actually_read` 證的是
     # `_DECAY_WORKER_TASK` 這個**全域被讀取**，而該 guard 只在
     # `_DECAY_WORKER_CANCEL` 未 set 時才被走到；它同時也**沒有**
     # 對「排入成功」的證據下任何斷言（`return False` 讓它更綠）。
-    # ⇒ 兩條新測試改為明確**綁定排程接縫本身**。
+    # ⇒ 新測試改為明確**綁定排程接縫本身**（兩層各自獨立綁定）。
     #
     # 與 §Claim A / Claim B 的關係：`TestPeriodicDecayWiring` 的文件
     # 說明了它自己**刻意排除** Claim B（排程接線），並把 Claim B
@@ -5059,7 +5085,18 @@ class TestAntiSilentVacuity:
     # 它證明「測試會注意到排程函式被換成 no-op」，與
     # `test_periodic_wiring_attached_to_existing_loop` 的靜態 AST
     # 證明**互補且不得互相替代**（靜態證明「有沒有接」，
-    # 本組證明「動態上真的是這條路在排」）。
+    # 兩層動態證明「觸發站 → 薄殼 → 實作」真的會被走到）。
+    #
+    # 🔴 **本組證明的動態範圍（精確界線，不得誇大）**：
+    #   1. **`decay_worker` 接縫層**（既有 5 條）：證明
+    #      `src.agent.decay_worker._maybe_schedule_decay_worker` 是排程
+    #      邏輯的實際來源、且弄壞它會紅。**單獨看，它不涵蓋**
+    #      `run_server` 薄殼是否真的委派。
+    #   2. **`run_server` 薄殼層**（本票新增 3 條）：證明
+    #      `scripts/run_server._maybe_schedule_decay_worker` 真的
+    #      **讀取並轉發**實作端接縫的回傳值、且把薄殼弄成 no-op
+    #      （`return False`）時斷言會紅。
+    #   兩層合起來才覆蓋「生產觸發站 → 薄殼 → 實作」的完整委派鏈。
     # ═════════════════════════════════════════════════════════════
 
     @pytest.mark.asyncio
@@ -5141,6 +5178,159 @@ class TestAntiSilentVacuity:
             assert in_flight is not None, (
                 "🔴 真實排程竟沒有建立 task —— 「排入成功」無可觀察證據，"
                 "正向斷言沒有意義"
+            )
+            assert not in_flight.done(), "剛排入的 worker 不應已完成"
+        finally:
+            dw._DECAY_WORKER_TASK = None
+            _reset_decay_worker(mod)
+
+    # ═════════════════════════════════════════════════════════════
+    # 🔴 **run_server 薄殼層**的反空洞（SHELL BINDING）—— 第二輪缺口
+    #
+    # 已證實的缺口（auditor 第二輪對抗式審計，非推論）：生產的**實際呼叫點**
+    # 是 `scripts/run_server.py` 的 `_sage_flush_loop()` →
+    # `run_server._maybe_schedule_decay_worker()`（薄殼）→
+    # `src.agent.decay_worker._maybe_schedule_decay_worker()`（實作）。
+    #
+    # 上面既有的反空洞測試（HEAD 上 5 條／14 條 assert，含
+    # `test_schedule_seam_*` 兩條）**只綁實作端接縫**。
+    # 實測：把**薄殼**換成 `return False`（實作端原封不動）⇒ 本類別
+    # **既有測試照樣綠燈**，而生產排程已完全失效。
+    #
+    # `test_schedule_seam_sentinel_stub_is_actually_read` 內那一行
+    # `via_server = mod._maybe_schedule_decay_worker()` **看起來**像在綁薄殼，
+    # 但它其實**沒有**：它先 stub 了 `dw._maybe_schedule_decay_worker`，
+    # 所以只要薄殼「有委派」就拿得到 sentinel；薄殼被換成 `return False`
+    # 時該行拿到的 `False` 會**恰好等於**真實邏輯的回傳值而被誤判
+    # —— 更關鍵的是，該斷言與其他斷言同屬一個測試方法，若薄殼被 neuter
+    # 它確實會紅，但**沒有任何測試單獨針對「薄殼是否讀取接縫」下斷言**，
+    # 且該行在 `_reset_decay_worker()` 造成的 `False` 語意下**不具可證偽性**：
+    # sentinel 是 `object()`，薄殼只要不委派就拿不到它 ⇒ 這一條是有效的，
+    # 但它證明的是「薄殼不回傳 sentinel 以外的東西」這一**弱**形式。
+    # ⇒ 下方三條改為對薄殼下**獨立、可單獨證偽**的斷言。
+    #
+    # 手法（與既有反空洞同構）：
+    #   (1) sentinel-stub 證明薄殼**真的讀了**實作端接縫（回傳值轉發）；
+    #   (2) 薄殼 no-op 證明哨兵**不會**憑空出現（負向可證偽）；
+    #   (3) 解綁證明哨兵消失且**真實委派**回歸（task 真的被建起來）。
+    #   🔴 (1)(2) 合起來才是完整綁定：只有 (1) 時，「薄殼自己造 sentinel」
+    #      這種空洞實作不會被抓到；(2) 正是用來排除它的。
+    # ═════════════════════════════════════════════════════════════
+
+    @pytest.mark.asyncio
+    async def test_schedule_shell_sentinel_propagates_from_module_seam(
+        self, monkeypatch
+    ) -> None:
+        """🔴 反空洞（正向，**薄殼層**）：`run_server._maybe_schedule_decay_worker`
+        必須**真的委派**到 `decay_worker` 的排程接縫。
+
+        證明方式：把**實作端**接縫換成 sentinel stub，再呼叫**薄殼**，
+        斷言薄殼的回傳值**就是**那顆 sentinel。
+
+        若薄殼是 no-op（`return False`）⇒ 拿不到 sentinel ⇒ 本測試**紅**。
+        若薄殼自造回傳值（不委派）⇒ 同樣拿不到 sentinel ⇒ 本測試**紅**。
+        """
+        mod = _import_run_server()
+        dw = _worker_mod()
+        _reset_decay_worker(mod)
+
+        sentinel = object()
+        try:
+            monkeypatch.setattr(
+                dw, "_maybe_schedule_decay_worker", lambda: sentinel
+            )
+            # 🔴 被斷言的對象是**薄殼**（生產觸發站實際呼叫的名字）。
+            via_shell = mod._maybe_schedule_decay_worker()
+            assert via_shell is sentinel, (
+                "🔴 run_server 薄殼未轉發 decay_worker 接縫的回傳值 —— "
+                "薄殼可能是 no-op 或自造回傳值（生產排程鏈失效，"
+                "測試會空洞地通過）"
+            )
+        finally:
+            dw._DECAY_WORKER_TASK = None
+            _reset_decay_worker(mod)
+
+    @pytest.mark.asyncio
+    async def test_schedule_shell_noop_does_not_propagate_sentinel(
+        self, monkeypatch
+    ) -> None:
+        """🔴 反空洞（負向可證偽，**薄殼層**）：把**薄殼**換成 `return False`
+        （即 auditor 的 injection）時，哨兵**必須**不再由薄殼傳出。
+
+        這一條是「薄殼被 neuter ⇒ 斷言翻面」的**直接**形式：
+        上面的正向斷言量的是「薄殼傳出 sentinel」；本條量的是
+        「薄殼被 neuter 後，同一條路徑**傳不出** sentinel」。
+        兩者合起來排除了「薄殼自己造 sentinel」這種空洞實作 ——
+        若薄殼不讀接縫卻回傳 sentinel，正向會綠但本條會紅。
+        """
+        mod = _import_run_server()
+        dw = _worker_mod()
+        _reset_decay_worker(mod)
+
+        sentinel = object()
+        try:
+            monkeypatch.setattr(
+                dw, "_maybe_schedule_decay_worker", lambda: sentinel
+            )
+            # 對照組：薄殼原樣 ⇒ 轉發 sentinel。
+            assert mod._maybe_schedule_decay_worker() is sentinel
+
+            # 🔴 auditor 的 injection：薄殼換成 no-op（實作端原封不動）。
+            monkeypatch.setattr(
+                mod, "_maybe_schedule_decay_worker", lambda: False
+            )
+            neutered = mod._maybe_schedule_decay_worker()
+            assert neutered is not sentinel, (
+                "🔴 薄殼已被 neuter（`return False`）卻仍傳出哨兵 —— "
+                "斷言量不到薄殼的委派行為（反空洞失敗）"
+            )
+            assert neutered is False, (
+                f"neuter 後的薄殼應回 False，實得：{neutered!r}"
+            )
+        finally:
+            dw._DECAY_WORKER_TASK = None
+            _reset_decay_worker(mod)
+
+    @pytest.mark.asyncio
+    async def test_schedule_shell_unbinding_restores_real_delegation(
+        self, monkeypatch
+    ) -> None:
+        """🔴 **stub invalidation turns it red**（負向鏡像，**薄殼層**）：
+        把薄殼 stub **解綁**回真實實作後，哨兵**必須消失**，且經由薄殼的
+        **真實委派**必須**真的把在途 task 建起來**。
+
+        這是本類別既有「解綁 ⇒ 哨兵消失 ⇒ 真實行為回歸」的薄殼版本。
+        若解綁後哨兵仍在，代表薄殼根本不是行為的來源（上游斷言是裝飾品）。
+        """
+        mod = _import_run_server()
+        dw = _worker_mod()
+        _reset_decay_worker(mod)
+
+        sentinel = object()
+        try:
+            monkeypatch.setattr(
+                mod, "_maybe_schedule_decay_worker", lambda: sentinel
+            )
+            assert mod._maybe_schedule_decay_worker() is sentinel
+            # 哨兵階段：**不得**真的排入任何 task（stub 取代了整個薄殼）。
+            assert dw._DECAY_WORKER_TASK is None, (
+                "薄殼哨兵 stub 竟仍建立了 task —— 排程並非經由該名字"
+            )
+
+            # 解綁 ⇒ 真實薄殼 ⇒ 真實委派 ⇒ 真實排程。
+            monkeypatch.undo()
+            res = mod._maybe_schedule_decay_worker()
+            assert res is not sentinel, (
+                "🔴 解綁薄殼 stub 後哨兵仍在 —— 該名字不是行為來源"
+                "（反空洞證明失敗）"
+            )
+            assert res is True, (
+                f"解綁後應回到真實排程行為（空閒 ⇒ True），實得：{res!r}"
+            )
+            in_flight = dw._DECAY_WORKER_TASK
+            assert in_flight is not None, (
+                "🔴 經由薄殼的真實委派竟沒有建立 task —— 「薄殼有排入」"
+                "無可觀察證據，薄殼層斷言沒有意義"
             )
             assert not in_flight.done(), "剛排入的 worker 不應已完成"
         finally:
