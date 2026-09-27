@@ -249,10 +249,17 @@ SUBPROCESS_ALLOWLIST: Dict[Tuple[str, int], str] = {
         "spawns the node work-adapter script with a JSON request on stdin, cwd=tmp_path",
     ("tests/test_work_adapter.py", 699):
         "read-only `git status --porcelain -- src/work` scope-containment check",
+    ("tests/soul/test_decay_worker_import_inert.py", 215):
+        "clean-child-interpreter import-inertness probe: runs a tmp-written script that "
+        "imports `src.agent.decay_worker` under a disposable SOUL_OS_DATA_DIR (set before "
+        "the child starts) with production credentials stripped, then reports what the "
+        "import did NOT touch (no emotion/run_server import, no SQLite, no files, no "
+        "sockets, no event loop). Read-only w.r.t. the repo; never imports run_server "
+        "in-process and never binds a port (180s timeout)",
 }
 
 #: R5 lock: the spawn allowlist may not grow (or shrink) without a deliberate edit.
-EXPECTED_SUBPROCESS_ALLOWLIST_SIZE = 19
+EXPECTED_SUBPROCESS_ALLOWLIST_SIZE = 20
 
 
 # ───────────────────────────────────────────────────────────

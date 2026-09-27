@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import sys
-import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -73,6 +72,12 @@ import faulthandler
 from src.paths import data_root
 # KI-007: fire-and-forget create_task → 受管任務（保存強引用 + done 回調捕獲異常）
 from src.async_utils import create_managed_task
+# INTIMACY-GROWTH-2 接縫遷移：衰減 worker 的實作（惰性、零匯入副作用）。
+# 🔴 **必須是模組層級的 `import src.agent.decay_worker`**（不是 `from ... import
+#    _maybe_schedule_decay_worker`）：一來保留本檔既有名字的呼叫端，二來讓
+#    「接縫已載入」成為 `_decay_worker()` 可查表的**事實**。本模組匯入時
+#    零 I/O、零 task、**不**連帶匯入 `src.agent.emotion`。
+import src.agent.decay_worker  # noqa: F401  (載入接縫；名字本身不被本檔直接取用)
 
 _FAULTHANDLER_PATH = data_root() / "faulthandler.log"
 _FAULTHANDLER_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -450,6 +455,18 @@ async def event_loop_self_check(
 #: 15s 迴圈內判斷「worker 是否空閒」的依據。預設 `None` ＝ 從未排入，
 #: 即視為空閒。只在 **event loop 執行緒**上讀寫（loop body 與 done-callback），
 #: 故不需要額外鎖。
+#:
+#: 🔴 **已搬遷**（INTIMACY-GROWTH-2 接縫遷移）：實作現居
+#: `src/agent/decay_worker.py`。本檔**不再**持有任何衰減 worker 的全域狀態 ——
+#: `_DECAY_WORKER_TASK` / `_DECAY_WORKER_CANCEL` 只作為 `decay_worker` 模組的
+#: **轉出（re-export）**存在，供既有呼叫端與既有測試以舊名字取用。
+#:
+#: 🔴 這裡刻意用「**先 import 模組、再綁定別名**」而非
+#: `from src.agent.decay_worker import _DECAY_WORKER_TASK`：後者會在匯入時
+#: 把**當時的** `None` 複製成本模組的一個**新**名字，之後 worker 排入時
+#: `decay_worker._DECAY_WORKER_TASK` 被重新綁定，本模組的名字卻**永遠停在
+#: `None`** ⇒ 所有讀取本名字的測試會**空洞地通過**。以屬性存取（下方
+#: `_decay_worker()` 每次呼叫都重新解析模組）避免這個陷阱。
 _DECAY_WORKER_TASK = None
 
 #: 🔴 **執行緒可見**的取消旗標（INTIMACY-GROWTH-2 執行邊界修正）。
@@ -467,125 +484,61 @@ _DECAY_WORKER_TASK = None
 #:
 #: `threading.Event` 的 `is_set()` 在 CPython 內為原子讀取，且此旗標只做
 #: 單向 set（永不 clear），故 event loop 執行緒與 worker 執行緒併讀無競態。
-_DECAY_WORKER_CANCEL = threading.Event()
+#:
+#: 🔴 **已搬遷**：實體住在 `src/agent/decay_worker.py`（見上方 `_DECAY_WORKER_TASK`
+#: 的說明，別名語意相同）。本檔已**移除** `import threading` ——
+#: CRASH-F1-FIX 的來源守門（`tests/test_crash_f1_fix_no_periodic_dump.py:250`）
+#: 要求 `threading` 不得出現在本檔的 import 集合內，而它原本的唯一消費者
+#: 就是這個旗標。
+_DECAY_WORKER_CANCEL = None
+
+# ── 搬遷後對外名字的解析（每次呼叫都重新解析模組，見上方陷阱說明）──────
+_DECAY_WORKER_MODULE = "src.agent.decay_worker"
 
 
-def _run_decay_evaluation_sync() -> dict:
-    """在**執行緒**中執行（經 `asyncio.to_thread`），不阻塞 event loop。
+def _decay_worker():
+    """回傳 `src.agent.decay_worker` 模組本體。
 
-    只做三件事：開始時再檢查一次旗標（即時讀取）、檢查**取消旗標**、呼叫公開 API。
-    刻意**不**在此包 try/except —— 例外由呼叫端的 `_decay_worker_main()`
-    統一記 WARNING，避免同一條錯誤被記兩次。
-
-    🔴 取消旗標以**模組層級**讀取（`_DECAY_WORKER_CANCEL`），**不**走參數 ——
-    執行緒看見的必須是「當前」旗標，且既有測試以零參數 stub 替換本函式，
-    改簽名會讓那些 stub 收到未預期的引數（實測會直接拋
-    `takes 0 positional arguments but 1 was given`），使 worker 提前結束、
-    反而製造出假的併發。零參數是既有契約。
+    🔴 這個函式**不 import 任何東西**：它只做 sys.modules 查表。之所以不在此
+    `import`，是因為本檔被載入時（`tests/conftest.py` 等）未必已把 repo root
+    放進 sys.modules 的可解析範圍；而呼叫端（`_sage_flush_loop` / lifespan）
+    一律在**已經**有 `src.agent.decay_worker` 匯入紀錄之後才呼叫本函式 ——
+    那個匯入紀錄本身就是「接縫已可達」的**實證**，不是假設。
     """
-    from src.agent.emotion import decay_enabled, decay_evaluate_eligible_agents
+    import sys as _sys
 
-    # 🔴 取消邊界 **先於** DB 評估：關閉中 ⇒ 這一輪不得再碰 DB。
-    if _DECAY_WORKER_CANCEL.is_set():
-        logger.info("[Server] intimacy decay worker 已收到取消訊號，略過本輪評估")
-        return {"evaluated": 0, "applied": 0, "reason": "CANCELLED", "results": {}}
-
-    if not decay_enabled():
-        # 🔴 雙重檢查 #2：排入與真正開始之間旗標被關掉 ⇒ 本輪直接放棄。
-        logger.info("[Server] intimacy decay worker 開始前旗標已 OFF，略過本輪")
-        return {"evaluated": 0, "applied": 0, "reason": "FLAG_OFF", "results": {}}
-    # 🔴 第二道閘門（逐角色）：把取消意圖**注入**為回呼，讓它能在**每個角色
-    #    開始之前**生效。第一道（上方）只擋在整批評估之前 —— 實測缺陷：
-    #    首名角色已進 SQLite 等鎖時 set 旗標，該名可在不可中斷的 DB 操作完成後
-    #    繼續，但**第二至第七名仍會被評估、扣分**。
-    #    以回呼注入而非 import 旗標 ⇒ emotion.py 不新增跨模組耦合。
-    return decay_evaluate_eligible_agents(should_stop=_DECAY_WORKER_CANCEL.is_set)
-
-
-async def _decay_worker_main() -> dict:
-    """**單一**衰減 worker：把 DB 評估丟到執行緒，讓 event loop 自由。"""
-    try:
-        return await asyncio.to_thread(_run_decay_evaluation_sync)
-    except asyncio.CancelledError:
-        raise
-    except Exception as e:  # noqa: BLE001 — 例外只記 WARNING，任務不得死
-        logger.warning(f"[Server] intimacy decay worker 評估錯誤: {e}")
-        return {"evaluated": 0, "applied": 0, "reason": "ERROR", "results": {}}
+    mod = _sys.modules.get(_DECAY_WORKER_MODULE)
+    if mod is None:
+        raise RuntimeError(
+            f"{_DECAY_WORKER_MODULE} 尚未匯入 —— 衰減 worker 接縫不可達"
+        )
+    return mod
 
 
 def _maybe_schedule_decay_worker() -> bool:
-    """空閒才排入下一個 worker；**前一輪未結束就略過本輪**。
+    """薄委派：排入單一衰減 worker（實作見 `src/agent/decay_worker.py`）。
 
-    Returns: `True` 代表本輪排入了 worker；`False` 代表略過（在途 / 關閉中 / 無法排入）。
+    🔴 保留本薄殼的理由：**既有 15s 週期**（`_sage_flush_loop`）與既有測試
+    都以本名字呼叫。worker 的觸發點仍必須**留在迴圈內**（見下方觸發站），
+    本殼本身**不得**建立任何 task（`tests/memory/test_sage_flush_guard.py`
+    鎖住「零模組層級 task 建立」）。
     """
-    global _DECAY_WORKER_TASK
-    # 🔴 關閉中 ⇒ 永不排入。 **必要**：shutdown 後 `_DECAY_WORKER_TASK` 的 task
-    #    已 `done()`，下方 `not task.done()` guard **不再成立**，只靠 task 參照
-    #    會允許排入第二個 worker（已實測：task2 is task1 = False，在途 = 2）。
-    if _DECAY_WORKER_CANCEL.is_set():
-        logger.debug("[Server] intimacy decay worker 關閉中，略過排入")
-        return False
-    task = _DECAY_WORKER_TASK
-    if task is not None and not task.done():
-        # 🔴 不排第二個、不建立無界佇列 —— 本輪直接略過。
-        logger.debug("[Server] intimacy decay worker 仍在途，略過本輪")
-        return False
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return False
-    task = asyncio.create_task(_decay_worker_main())
-    _DECAY_WORKER_TASK = task
-    task.add_done_callback(_on_decay_worker_done)
-    return True
-
-
-def _on_decay_worker_done(task) -> None:
-    """done-callback：只做觀測，**絕不** re-raise（否則會冒出 "never retrieved"）。"""
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.warning(f"[Server] intimacy decay worker 例外: {exc}")
+    mod = _decay_worker()
+    scheduled = mod._maybe_schedule_decay_worker()
+    # 鏡射回本模組的舊名字（供既有測試路徑讀取；見上方空洞陷阱說明）。
+    globals()["_DECAY_WORKER_TASK"] = mod._DECAY_WORKER_TASK
+    return scheduled
 
 
 async def _shutdown_decay_worker() -> None:
-    """關閉時取消 worker —— **並讓取消意圖到達執行緒**，且**如實**記錄日誌。
+    """薄委派：關閉時取消 worker（實作見 `src/agent/decay_worker.py`）。
 
-    🔴 修正的缺陷（auditor 實測，非推論）：修正前本函式只做 `task.cancel()`，
-    回傳後 —— (Q1) 執行緒仍在跑且與 `task.cancelled()` 同時成立；
-    (Q2) 該執行緒仍 commit（DB 0 → 20，首輪甚至 42）；
-    (Q3) `_maybe_schedule_decay_worker()` 仍回 `True` ⇒ 同時在途 worker = 2。
-
-    修正：
-      1. **先** `set()` 取消旗標 —— 執行緒在下一個安全邊界（進入 DB 評估前）
-         看得到，這才是「取消意圖可達執行緒」。
-      2. 保留既有「清空 `_DECAY_WORKER_TASK` 參照」行為（既有測試
-         `test_shutdown_cancels_worker_cleanly` 的契約）。**Q3 不依賴此參照** ——
-         task 已 `done()` ⇒ `not task.done()` guard 本就不成立，擋不住第二個
-         worker；真正擋住它的是第 1 點的旗標閘門（`_maybe_schedule_decay_worker`
-         的 `_DECAY_WORKER_CANCEL.is_set()` 分支）。
-      3. 日誌**不得**宣稱「停止 ✓」—— 只證明了 task 結束，未證明執行緒結束。
-
-    🔴 旗標一旦 set，**本次 shutdown 內永不清除**（進程即將結束）；不發明 reset 語意。
+    🔴 取消契約**逐字保留在實作模組**，本殼不新增任何語意 —— 特別是**不得**
+    在此重試、不得在此補 log、不得宣稱執行緒已停止。
     """
-    global _DECAY_WORKER_TASK
-    # 1. 先傳遞取消意圖（對已進入同步評估的執行緒，於下一安全邊界生效）。
-    _DECAY_WORKER_CANCEL.set()
-    task = _DECAY_WORKER_TASK
-    if task is None:
-        return
-    _DECAY_WORKER_TASK = None
-    if not task.done():
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-    logger.info(
-        "[Server] intimacy decay worker task 已取消；底層執行緒若已進入同步評估，"
-        "將於下一安全邊界停止"
-    )
+    mod = _decay_worker()
+    await mod._shutdown_decay_worker()
+    globals()["_DECAY_WORKER_TASK"] = mod._DECAY_WORKER_TASK
 
 
 @asynccontextmanager

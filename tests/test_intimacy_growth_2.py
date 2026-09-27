@@ -3665,6 +3665,27 @@ class TestPeriodicDecayWiring:
 
         舊實作下 `decay_evaluate_eligible_agents` **不存在** ⇒ 本測試在
         collection/attribute 階段即失敗（ImportError/AttributeError）⇒ 紅。
+
+        ─────────────────────────────────────────────────────────────
+        🔴 **接縫遷移後本測試的宣稱被一分為二（工單 §4.4，必須分開記錄）**
+
+        **Claim A（本測試實際證明）**：直接呼叫**真實的**
+        `decay_evaluate_eligible_agents()` ⇒ 逾期角色的
+        due/settlement 行為正確 —— 恰扣 0.5、恰寫 1 筆 ledger、due 推進到
+        T+48h、第二輪不再扣。**在 settlement 範圍內。**
+
+        **Claim B（本測試【不】證明，明確排除）**：本測試從頭到尾**沒有**
+        經過 worker 排程路徑 —— 它不碰 `_maybe_schedule_decay_worker()`、
+        不碰 `_decay_worker_main()`、不碰任何 `run_server`/`decay_worker`
+        全域狀態。因此「**worker 排程接線**是否把這個評估掛上 15s 週期」
+        由本測試**完全沒有證明**。
+
+        Claim B 的證據在別處（各自獨立，不得互相替代）：
+          - `test_periodic_wiring_attached_to_existing_loop`（靜態 AST，
+            證明觸發點在 `_sage_flush_loop` 內、且不得同步評估）；
+          - `TestExecutionBoundaryNormal::test_normal_loop_progress_and_single_worker`
+            等（以真實 worker 跑排入 → 執行 → ledger 落地）。
+        ─────────────────────────────────────────────────────────────
         """
         from src.agent.emotion import decay_evaluate_eligible_agents
 
@@ -3841,32 +3862,56 @@ class TestPeriodicDecayWiring:
     def test_periodic_wiring_attached_to_existing_loop(self) -> None:
         """🔴 靜態事實：接線掛在**既有**週期點上，**不得**新建定時器/loop。
 
-        🔴 **本測試的前提已於「同票修執行邊界」更新**（Owner 裁定選項 A）。
-        舊前提是「`_sage_flush_loop()` 內**直接**呼叫
-        `decay_evaluate_eligible_agents()`」—— 那正是被裁定要移除的**阻塞**
-        寫法（同步 DB 評估凍結 event loop）。新契約是：
+        🔴 **本測試的前提已兩度更新**：
 
-          1. `_sage_flush_loop()` **只負責觸發**：內含**排入 worker** 的呼叫，
-             且**不得**同步呼叫 `decay_evaluate_eligible_agents()`、
-             **不得** `await asyncio.to_thread(...)` 等它結束。
-          2. worker 評估函式確實在同一檔內被呼叫（只是改在 worker 內）。
-          3. `_sage_flush_loop` 仍只有**一個** `asyncio.sleep` 與**一個**
-             `while True`（不新增 timer / loop）。
+          1. 「同票修執行邊界」（Owner 裁定選項 A）：舊前提是
+             「`_sage_flush_loop()` 內**直接**呼叫
+             `decay_evaluate_eligible_agents()`」—— 那正是被裁定要移除的**阻塞**
+             寫法（同步 DB 評估凍結 event loop）。
+          2. **接縫遷移**（本票）：衰減 worker 的實作從 `scripts/run_server.py`
+             搬到 `src/agent/decay_worker.py`，`run_server.py` 只留**薄委派**。
 
-        以原始碼證據鎖住這三件事。
+        新契約（兩個檔案合起來看）：
+
+          A. `scripts/run_server.py`：`_sage_flush_loop()` **只負責觸發** ——
+             內含**排入 worker** 的呼叫，且**不得**同步呼叫
+             `decay_evaluate_eligible_agents()`、**不得** `await asyncio.to_thread(...)`
+             等它結束。`_sage_flush_loop` 仍只有**一個** `asyncio.sleep` 與
+             **一個** `while True`（不新增 timer / loop），且本體包 try/except。
+          B. `src/agent/decay_worker.py`（實作端）：評估函式確實在該檔內被呼叫
+             （只是改在 worker 內）。
+
+        🔴 本測試的八個 AST 錨點（A1–A8，見下）**逐一保留**：搬遷只改變
+        「接線在哪個檔案裡被實作」，**不**改變「接線如何被觸發、如何被保護」
+        這些被鎖住的性質。刪掉任一錨點、或只把期望字串改成新值以換取綠燈，
+        都是把鎖弄壞 —— 本測試的守門價值就在這些錨點本身。
+
+        🔴 **與 `tests/infra/test_no_production_spawn_guard.py` 的
+        `SUBPROCESS_ALLOWLIST` 無關**：那邊的 `(path, line)` 鍵**專屬於**該檔
+        掃描到的行程衍生站點；本檔的八個錨點是**本測試內部的斷言**，
+        `test_intimacy_growth_2.py` 自身行號位移**不**需要、也**不得**去
+        重新鍵入那份白名單。兩者是**互相獨立**的機制。
         """
         import ast as _ast
 
-        src = (REPO_ROOT / "scripts" / "run_server.py").read_text(
+        # ── A1（原 :3863-3865）接縫與觸發點兩個檔案都存在且可解析 ────────
+        #    搬遷後「decay_evaluate_eligible_agents」不再出現在 run_server.py，
+        #    但它**必須**出現在實作端 decay_worker.py —— 否則整條週期接線斷了。
+        server_src = (REPO_ROOT / "scripts" / "run_server.py").read_text(
             encoding="utf-8"
         )
-        assert "decay_evaluate_eligible_agents" in src, (
-            "run_server.py 找不到週期接線 —— try_apply_decay 仍零接線"
+        worker_src = (REPO_ROOT / "src" / "agent" / "decay_worker.py").read_text(
+            encoding="utf-8"
         )
-        tree = _ast.parse(src)
+        assert "decay_evaluate_eligible_agents" in worker_src, (
+            "decay_worker.py 找不到評估函式呼叫 —— 週期接線實作端失效"
+        )
+        server_tree = _ast.parse(server_src)
+        worker_tree = _ast.parse(worker_src)
 
+        # ── A2（原 :3876）既有 _sage_flush_loop() 仍存在 ──────────────────
         loop_fn = None
-        for node in _ast.walk(tree):
+        for node in _ast.walk(server_tree):
             if (
                 isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef))
                 and node.name == "_sage_flush_loop"
@@ -3875,7 +3920,7 @@ class TestPeriodicDecayWiring:
                 break
         assert loop_fn is not None, "找不到既有 _sage_flush_loop()"
 
-        # ── 1. loop 內必須**排入**worker ──────────────────────────
+        # ── A3（原 :3885-3888）loop 內必須**排入**worker ────────────────
         schedules = [
             n
             for n in _ast.walk(loop_fn)
@@ -3887,7 +3932,7 @@ class TestPeriodicDecayWiring:
             "—— 週期觸發接線失效"
         )
 
-        # ── 2. loop 內**不得**同步評估、**不得** await to_thread ────
+        # ── A4（原 :3897-3900）loop 內**不得**同步評估 ──────────────────
         direct = [
             n
             for n in _ast.walk(loop_fn)
@@ -3898,6 +3943,8 @@ class TestPeriodicDecayWiring:
             "🔴 _sage_flush_loop() 內仍**同步**呼叫 decay_evaluate_eligible_agents() "
             "—— 這會在 event loop 上阻塞數十秒（執行邊界修正的核心禁令）"
         )
+
+        # ── A5（原 :3911-3914）loop 內**不得** await to_thread / run_in_executor ─
         awaited_threads = [
             n
             for n in _ast.walk(loop_fn)
@@ -3913,18 +3960,18 @@ class TestPeriodicDecayWiring:
             "SAGE flush 週期等候數十秒（工單明文禁止）"
         )
 
-        # ── 3. 評估函式仍在同一檔內被呼叫（改在 worker 內）──────────
+        # ── A6（原 :3923-3925）評估函式在**實作端**確實被呼叫（改在 worker 內）─
         worker_calls = [
             n
-            for n in _ast.walk(tree)
+            for n in _ast.walk(worker_tree)
             if isinstance(n, _ast.Call)
             and getattr(n.func, "id", None) == "decay_evaluate_eligible_agents"
         ]
         assert worker_calls, (
-            "run_server.py 內找不到任何 decay_evaluate_eligible_agents() 呼叫"
+            "decay_worker.py 內找不到任何 decay_evaluate_eligible_agents() 呼叫"
         )
 
-        # 不得在迴圈內新增週期結構
+        # ── A7（原 :3941-3943）不得在迴圈內新增週期結構 / 不得新建 task ──
         sleeps = [
             n
             for n in _ast.walk(loop_fn)
@@ -3942,7 +3989,7 @@ class TestPeriodicDecayWiring:
         assert len(whiles) == 1, f"不得新增 background loop（found {len(whiles)}）"
         assert not creates, "不得在既有週期任務內新建 asyncio task"
 
-        # 例外不得殺死任務：呼叫包在 try/except 內
+        # ── A8（原 :3946-3956）例外不得殺死任務：呼叫包在 try/except 內 ───
         try_nodes = [n for n in _ast.walk(loop_fn) if isinstance(n, _ast.Try)]
         assert try_nodes, "週期任務本體必須包 try/except（慣例：例外只記 WARNING）"
         wrapped = any(
@@ -3954,6 +4001,7 @@ class TestPeriodicDecayWiring:
             for t in try_nodes
         )
         assert wrapped, "週期任務缺少 `except Exception` 保護"
+
 
 # ═════════════════════════════════════════════════════════════
 # INTIMACY-GROWTH-2 同票修：**執行邊界**
@@ -4126,6 +4174,11 @@ def _import_run_server():
     🔴 以 `importlib.util.spec_from_file_location` 載入：module 層級若真的
     有副作用（啟動 task / 綁埠）本測試會立刻看得出來，而不是被 `sys.modules`
     快取掩蓋。
+
+    🔴 **接縫遷移後本函式會一併載入 `src.agent.decay_worker`**：`run_server.py`
+    模組層級 `import src.agent.decay_worker`，而 worker 的**全部狀態與實作**
+    現在住在該模組。本函式把兩者**同時**回傳包起來，讓呼叫端不必猜
+    「哪個名字在哪個模組」—— 這正是反空洞的關鍵（見 `_worker_mod()`）。
     """
     import importlib.util
 
@@ -4137,17 +4190,64 @@ def _import_run_server():
     return mod
 
 
+def _worker_mod():
+    """回傳衰減 worker 的**實作模組** `src.agent.decay_worker`。
+
+    🔴 **反空洞（MANDATORY，工單 §4.4）**：搬遷之後，
+    `monkeypatch.setattr(run_server_mod, "_run_decay_evaluation_sync", stub)`
+    綁到的是**沒有任何東西會讀的名字** —— stub 靜默變成 no-op，測試會
+    **空洞地通過**。因此每一個遷移過來的測試都必須明確 re-target 到本模組。
+
+    本函式以「必存在」斷言把這件事變成**硬失敗**而不是靜默：
+    取不到實作模組 ⇒ 直接紅，不可能默默退回舊路徑。
+    """
+    import src.agent.decay_worker as _dw
+
+    assert hasattr(_dw, "_maybe_schedule_decay_worker"), (
+        "src.agent.decay_worker 缺 _maybe_schedule_decay_worker —— 接縫未就位"
+    )
+    return _dw
+
+
 def _reset_decay_worker(mod) -> None:
-    """把 worker 全域狀態歸零（測試間不得互相污染）。"""
-    task = getattr(mod, "_DECAY_WORKER_TASK", None)
+    """把 worker 全域狀態歸零（測試間不得互相污染）。
+
+    🔴 re-target 到**實作模組**（見 `_worker_mod()` 的反空洞說明）：被歸零的
+    必須是真正被讀取的那個 `_DECAY_WORKER_TASK`。
+
+    🔴 **接縫遷移引入的測試順序耦合（實測，非推論）**：`_DECAY_WORKER_CANCEL`
+    的**生產語意**是「一旦 set，本次 shutdown 內**永不清除**」（進程即將結束）。
+    但搬遷之後它從「每個測試各自載入的 `run_server` 模組私有全域」變成
+    **`src.agent.decay_worker` 這個行程級單例** —— 於是任何一支跑過
+    `_shutdown_decay_worker()` 的測試都會把旗標**永久** set 住，讓後續
+    所有測試的 `_maybe_schedule_decay_worker()` 一律回 `False`
+    （實測：`test_at_most_one_worker_in_flight` /
+    `test_shutdown_blocks_second_worker` /
+    `test_shutdown_prevents_thread_from_entering_db_evaluation` 三支連鎖紅）。
+
+    🔴 **本函式只在測試夾具裡 clear，生產程式碼一個字都沒改** —— 生產的
+    「永不清除」契約完整保留（`_shutdown_decay_worker()` 仍不清除）。
+    這裡做的是**測試隔離**，不是放寬契約。
+    """
+    dw = _worker_mod()
+    task = getattr(dw, "_DECAY_WORKER_TASK", None)
     if task is not None and not task.done():
         task.cancel()
-    mod._DECAY_WORKER_TASK = None
+    dw._DECAY_WORKER_TASK = None
+    # 測試夾具專用：把行程級的取消旗標歸零（生產語意不變，見上方說明）。
+    dw._DECAY_WORKER_CANCEL.clear()
+    # 舊名字鏡射（run_server 薄殼）；純觀測，非權威狀態。
+    if mod is not None:
+        mod._DECAY_WORKER_TASK = None
 
 
 async def _drain_decay_worker(mod, timeout: float = 60.0) -> None:
-    """等到在途 worker 真的結束（或逾時放棄）。"""
-    task = getattr(mod, "_DECAY_WORKER_TASK", None)
+    """等到在途 worker 真的結束（或逾時放棄）。
+
+    🔴 re-target 到**實作模組**（權威狀態在那裡）。
+    """
+    dw = _worker_mod()
+    task = getattr(dw, "_DECAY_WORKER_TASK", None)
     if task is None or task.done():
         return
     try:
@@ -4178,11 +4278,12 @@ class TestExecutionBoundaryNormal:
         monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
 
         mod = _import_run_server()
+        dw = _worker_mod()
         _reset_decay_worker(mod)
 
         async with _LoopProbe() as probe:
             probe.mark()
-            assert mod._maybe_schedule_decay_worker() is True, "空閒時應排入 worker"
+            assert dw._maybe_schedule_decay_worker() is True, "空閒時應排入 worker"
 
             # (c) 連續觸發多輪：同時在途 worker 至多一個。
             # 🔴 無競爭時評估僅 ~8ms，worker 可能**合法地**在兩次觸發之間結束
@@ -4191,14 +4292,14 @@ class TestExecutionBoundaryNormal:
             #    語意。「前一輪未結束就略過本輪」由**鎖競爭**情境（worker 真的
             #    在途數秒）與 `test_at_most_one_worker_in_flight` 證明。
             for _ in range(12):
-                mod._maybe_schedule_decay_worker()
-                task = mod._DECAY_WORKER_TASK
+                dw._maybe_schedule_decay_worker()
+                task = dw._DECAY_WORKER_TASK
                 assert task is not None, "排入後竟無 worker 參照"
                 await asyncio.sleep(0.01)
 
             await _drain_decay_worker(mod)
             probe.mark()
-            assert mod._DECAY_WORKER_TASK is not None
+            assert dw._DECAY_WORKER_TASK is not None
 
         # (a) 高頻協程仍能前進
         assert probe.fast_ticks > 0, "高頻探針完全沒跑 —— event loop 被凍結"
@@ -4258,18 +4359,19 @@ class TestExecutionBoundaryContendedSchemaReady:
         monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
 
         mod = _import_run_server()
+        dw = _worker_mod()
         _reset_decay_worker(mod)
 
         async with _ContendedWriteLock(db_path, _CONTENDED_LOCK_HOLD_SECS):
             async with _LoopProbe() as probe:
                 probe.mark()
-                assert mod._maybe_schedule_decay_worker() is True
+                assert dw._maybe_schedule_decay_worker() is True
 
                 # (c) 持鎖期間連續觸發 ⇒ 仍不得排第二個
                 dup = 0
                 for _ in range(15):
                     await asyncio.sleep(0.02)
-                    if mod._maybe_schedule_decay_worker():
+                    if dw._maybe_schedule_decay_worker():
                         dup += 1
                 assert dup == 0, f"鎖競爭期間排入了 {dup} 個額外 worker（(c) 被破壞）"
 
@@ -4388,16 +4490,17 @@ class TestExecutionBoundaryColdSchemaContended:
         monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
 
         mod = _import_run_server()
+        dw = _worker_mod()
         _reset_decay_worker(mod)
 
         async with _ContendedWriteLock(db_path, _CONTENDED_LOCK_HOLD_SECS):
             async with _LoopProbe() as probe:
                 probe.mark()
-                assert mod._maybe_schedule_decay_worker() is True
+                assert dw._maybe_schedule_decay_worker() is True
                 dup = 0
                 for _ in range(15):
                     await asyncio.sleep(0.02)
-                    if mod._maybe_schedule_decay_worker():
+                    if dw._maybe_schedule_decay_worker():
                         dup += 1
                 assert dup == 0, f"首輪鎖競爭期間排入了 {dup} 個額外 worker"
                 await _drain_decay_worker(mod)
@@ -4499,6 +4602,7 @@ class TestExecutionBoundaryFlagOff:
         monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
 
         mod = _import_run_server()
+        dw = _worker_mod()
         _reset_decay_worker(mod)
 
         # 15s 迴圈內的排入判斷：OFF ⇒ 必須**不排**
@@ -4508,15 +4612,15 @@ class TestExecutionBoundaryFlagOff:
         scheduled = 0
         for _ in range(5):
             if decay_enabled():
-                if mod._maybe_schedule_decay_worker():
+                if dw._maybe_schedule_decay_worker():
                     scheduled += 1
             await asyncio.sleep(0.01)
         assert scheduled == 0, "旗標 OFF 竟排入了 worker"
-        assert getattr(mod, "_DECAY_WORKER_TASK", None) is None, (
+        assert getattr(dw, "_DECAY_WORKER_TASK", None) is None, (
             "旗標 OFF 竟建立了 worker task"
         )
         # 即使有人硬呼叫 worker 本體，也必須是 FLAG_OFF 且零寫入
-        res = await mod._decay_worker_main()
+        res = await dw._decay_worker_main()
         assert res["reason"] == "FLAG_OFF", f"OFF 時 worker 竟做了事：{res}"
         assert res["evaluated"] == 0
         _reset_decay_worker(mod)
@@ -4720,16 +4824,21 @@ class TestDecayWorkerLifecycle:
 
     @pytest.mark.asyncio
     async def test_worker_exception_does_not_kill_task(self, monkeypatch) -> None:
-        """worker 內拋例外 ⇒ 吞成 WARNING、task 正常結束（不得 re-raise）。"""
+        """worker 內拋例外 ⇒ 吞成 WARNING、task 正常結束（不得 re-raise）。
+
+        🔴 **re-target 到 `src.agent.decay_worker`**（見 `_worker_mod()` 的反空洞
+        說明）：stub 綁在 `run_server` 的舊名字上會是 no-op ⇒ 本測試會空洞地通過。
+        """
         mod = _import_run_server()
+        dw = _worker_mod()
         _reset_decay_worker(mod)
 
         def _boom() -> dict:
             raise RuntimeError("injected worker failure")
 
-        monkeypatch.setattr(mod, "_run_decay_evaluation_sync", _boom)
+        monkeypatch.setattr(dw, "_run_decay_evaluation_sync", _boom)
 
-        task = asyncio.create_task(mod._decay_worker_main())
+        task = asyncio.create_task(dw._decay_worker_main())
         res = await task
         assert res["reason"] == "ERROR", f"worker 例外未轉成結構化失敗：{res}"
         assert task.done() and not task.cancelled(), "worker 被例外殺死"
@@ -4737,8 +4846,12 @@ class TestDecayWorkerLifecycle:
 
     @pytest.mark.asyncio
     async def test_shutdown_cancels_worker_cleanly(self, monkeypatch) -> None:
-        """shutdown ⇒ 乾淨取消 worker（與既有 `_sage_flush_task` 同型）。"""
+        """shutdown ⇒ 乾淨取消 worker（與既有 `_sage_flush_task` 同型）。
+
+        🔴 **re-target 到 `src.agent.decay_worker`**（反空洞）。
+        """
         mod = _import_run_server()
+        dw = _worker_mod()
         _reset_decay_worker(mod)
 
         started = threading.Event()
@@ -4748,10 +4861,10 @@ class TestDecayWorkerLifecycle:
             time.sleep(5.0)
             return {"evaluated": 0, "applied": 0, "reason": "EVALUATED", "results": {}}
 
-        monkeypatch.setattr(mod, "_run_decay_evaluation_sync", _block)
+        monkeypatch.setattr(dw, "_run_decay_evaluation_sync", _block)
 
-        assert mod._maybe_schedule_decay_worker() is True
-        task = mod._DECAY_WORKER_TASK
+        assert dw._maybe_schedule_decay_worker() is True
+        task = dw._DECAY_WORKER_TASK
         assert task is not None
         # 等 worker 真的進到 thread
         for _ in range(100):
@@ -4760,13 +4873,17 @@ class TestDecayWorkerLifecycle:
                 break
         assert started.is_set(), "worker 未進入評估函式"
 
-        await mod._shutdown_decay_worker()
-        assert mod._DECAY_WORKER_TASK is None, "shutdown 後仍留著 worker 參照"
+        await dw._shutdown_decay_worker()
+        assert dw._DECAY_WORKER_TASK is None, "shutdown 後仍留著 worker 參照"
 
     @pytest.mark.asyncio
     async def test_at_most_one_worker_in_flight(self, monkeypatch) -> None:
-        """(c) 直接以併發計數證明：連續觸發 50 輪，同時在途 worker ≤ 1。"""
+        """(c) 直接以併發計數證明：連續觸發 50 輪，同時在途 worker ≤ 1。
+
+        🔴 **re-target 到 `src.agent.decay_worker`**（反空洞）。
+        """
         mod = _import_run_server()
+        dw = _worker_mod()
         _reset_decay_worker(mod)
 
         in_flight = 0
@@ -4781,11 +4898,11 @@ class TestDecayWorkerLifecycle:
             in_flight -= 1
             return {"evaluated": 0, "applied": 0, "reason": "EVALUATED", "results": {}}
 
-        monkeypatch.setattr(mod, "_run_decay_evaluation_sync", _slow)
+        monkeypatch.setattr(dw, "_run_decay_evaluation_sync", _slow)
 
         scheduled = 0
         for _ in range(50):
-            if mod._maybe_schedule_decay_worker():
+            if dw._maybe_schedule_decay_worker():
                 scheduled += 1
             await asyncio.sleep(0.005)
 
@@ -4797,6 +4914,120 @@ class TestDecayWorkerLifecycle:
         assert in_flight == 0, "worker 未收斂"
         assert peak == 1
         _reset_decay_worker(mod)
+
+
+# ═════════════════════════════════════════════════════════════
+# 接縫遷移：**反空洞**（ANTI-SILENT-VACUITY）
+# ═════════════════════════════════════════════════════════════
+#
+# 🔴 為什麼需要這一組（工單 §4.4，MANDATORY）：
+#   搬遷之後，`monkeypatch.setattr(run_server_mod, "_run_decay_evaluation_sync", …)`
+#   綁到的是**沒有任何東西會讀的名字**。stub 變成 no-op ⇒ 測試仍然**通過**，
+#   但它證明的事情已經**消失**。這種「空洞地通過」比紅燈更危險：它讓
+#   「已遷移」的宣稱變成假的。
+#
+#   上面的遷移已把所有 stub 明確 re-target 到 `src.agent.decay_worker`。
+#   本組再獨立驗證**「這條 re-target 真的有效」**：刻意把 stub 弄壞／解綁，
+#   測試**必須轉紅**。若解綁後仍然綠，就代表 stub 根本沒被讀取
+#   —— 也就是上面那些測試的「已遷移」宣稱是假的。
+#
+# 🔴 手法：不重跑整個測試（那會拖慢且脆弱），而是把「stub 生效」這件事
+#   拆成一個**可獨立證偽的斷言對象**：直接量測「被 re-target 的名字是否
+#   真的驅動行為」。這是同一條路徑的最小可證單元。
+
+
+class TestAntiSilentVacuity:
+    """🔴 每一支遷移過的 stub，都必須證明「弄壞它 ⇒ 轉紅」。"""
+
+    def test_retargeted_sync_stub_is_actually_read(self, monkeypatch) -> None:
+        """🔴 反空洞：re-target 到 `decay_worker` 的 `_run_decay_evaluation_sync`
+        必須**真的被讀取**。
+
+        證明方式（正向）：把 stub 設成一個可辨識的回傳值，經由**真實的**
+        worker 路徑（`_decay_worker_main()`，它會 `to_thread` 呼叫它）跑一次，
+        斷言拿到的就是 stub 的回傳值。
+
+        若 stub 綁在沒人讀的名字上 ⇒ 真實評估會跑起來 ⇒ 回傳值不是 stub 的
+        ⇒ 本測試紅。這就是「弄壞它會紅」的可證形式。
+        """
+        mod = _import_run_server()
+        dw = _worker_mod()
+        # 確保真實評估不會真的動 DB（旗標 OFF ⇒ 真實路徑會回 FLAG_OFF，
+        # 這是與 stub 回傳值可區辨的哨兵）。
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "")
+
+        sentinel = {
+            "evaluated": 0,
+            "applied": 0,
+            "reason": "STUB_WAS_READ",
+            "results": {},
+        }
+        monkeypatch.setattr(dw, "_run_decay_evaluation_sync", lambda: sentinel)
+
+        res = asyncio.run(dw._decay_worker_main())
+        assert res.get("reason") == "STUB_WAS_READ", (
+            "🔴 stub 未被讀取 —— 測試會空洞地通過（反空洞檢查失敗）"
+        )
+
+    def test_unbinding_sync_stub_restores_real_behaviour(self, monkeypatch) -> None:
+        """🔴 **stub invalidation turns it red**（負向）：把 stub **解綁**回真實
+        實作後，哨兵值**必須消失**。
+
+        這是「弄壞 stub ⇒ 斷言翻面」的鏡像證明：若解綁後哨兵仍在，代表
+        那個名字根本不是行為的來源（上面所有 re-target 都是裝飾品）。
+        """
+        mod = _import_run_server()
+        dw = _worker_mod()
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "")
+
+        sentinel = {
+            "evaluated": 0,
+            "applied": 0,
+            "reason": "STUB_WAS_READ",
+            "results": {},
+        }
+        monkeypatch.setattr(dw, "_run_decay_evaluation_sync", lambda: sentinel)
+        assert asyncio.run(dw._decay_worker_main())["reason"] == "STUB_WAS_READ"
+
+        # 解綁 ⇒ 真實實作（旗標 OFF ⇒ FLAG_OFF）。哨兵必須消失。
+        monkeypatch.undo()
+        monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "")
+        res = asyncio.run(dw._decay_worker_main())
+        assert res.get("reason") != "STUB_WAS_READ", (
+            "🔴 解綁 stub 後哨兵仍在 —— 該名字不是行為來源（反空洞證明失敗）"
+        )
+        assert res.get("reason") == "FLAG_OFF", (
+            f"解綁後應回到真實實作（旗標 OFF ⇒ FLAG_OFF），實得：{res}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_task_global_stub_is_actually_read(self, monkeypatch) -> None:
+        """🔴 反空洞：`_DECAY_WORKER_TASK` 全域必須是**被排入邏輯讀取**的那一個。
+
+        若它綁在沒人讀的名字上 ⇒ `_maybe_schedule_decay_worker()` 會無視它、
+        照樣排入 ⇒ 本測試紅。
+        """
+        mod = _import_run_server()
+        dw = _worker_mod()
+        _reset_decay_worker(mod)
+
+        # 造一個「未完成」的假 task 放進**權威**全域 ⇒ 排入邏輯必須因此略過。
+        class _FakeTask:
+            def done(self) -> bool:
+                return False
+
+        fake = _FakeTask()
+        dw._DECAY_WORKER_TASK = fake
+        try:
+            res = dw._maybe_schedule_decay_worker()
+            assert res is False, (
+                "🔴 權威 `_DECAY_WORKER_TASK` 未被讀取 —— 在途 guard 失效"
+                "（測試會空洞地通過）"
+            )
+            assert dw._DECAY_WORKER_TASK is fake, "在途時竟被換掉了參照"
+        finally:
+            dw._DECAY_WORKER_TASK = None
+            _reset_decay_worker(mod)
 
 
 # ═════════════════════════════════════════════════════════════
@@ -5089,6 +5320,7 @@ class TestShutdownBlocksFurtherWork:
         修正前實測：回 `True`、`task2 is task1 = False`、**同時在途 worker = 2**。
         """
         mod = _import_run_server()
+        dw = _worker_mod()
         _reset_decay_worker(mod)
         gate = threading.Event()
         try:
@@ -5099,24 +5331,24 @@ class TestShutdownBlocksFurtherWork:
                 gate.wait(5.0)
                 return {"evaluated": 0, "applied": 0, "reason": "EVALUATED", "results": {}}
 
-            monkeypatch.setattr(mod, "_run_decay_evaluation_sync", _block)
+            monkeypatch.setattr(dw, "_run_decay_evaluation_sync", _block)
 
-            assert mod._maybe_schedule_decay_worker() is True, "空閒時應排入"
+            assert dw._maybe_schedule_decay_worker() is True, "空閒時應排入"
             for _ in range(200):
                 await asyncio.sleep(0.01)
                 if started.is_set():
                     break
             assert started.is_set(), "worker 未進入評估函式"
 
-            await mod._shutdown_decay_worker()
+            await dw._shutdown_decay_worker()
 
             # 🔴 核心斷言：關閉後不得再排入任何 worker。
-            assert mod._maybe_schedule_decay_worker() is False, (
+            assert dw._maybe_schedule_decay_worker() is False, (
                 "🔴 shutdown 後仍排入了第二個 worker（Q3 病灶未除）"
             )
             # 再連試數次（避免「剛好一次」的僥倖）
             assert all(
-                mod._maybe_schedule_decay_worker() is False for _ in range(5)
+                dw._maybe_schedule_decay_worker() is False for _ in range(5)
             ), "🔴 shutdown 後仍反覆允許排入 worker"
         finally:
             gate.set()
@@ -5157,10 +5389,11 @@ class TestShutdownBlocksFurtherWork:
         )
 
         mod = _import_run_server()
+        dw = _worker_mod()
         _reset_decay_worker(mod)
         try:
             # 讓執行緒有機會**先**看到未取消狀態並進入評估。
-            assert mod._maybe_schedule_decay_worker() is True
+            assert dw._maybe_schedule_decay_worker() is True
             for _ in range(300):
                 await asyncio.sleep(0.01)
                 if in_thread.is_set():
@@ -5168,11 +5401,11 @@ class TestShutdownBlocksFurtherWork:
             assert in_thread.is_set(), "首輪 worker 未進入 DB 評估（測試前提不成立）"
             assert len(entered_db) == 1, f"首輪進入次數異常：{len(entered_db)}"
 
-            await mod._shutdown_decay_worker()
+            await dw._shutdown_decay_worker()
             release.set()
 
             # 再嘗試排入並等待：不得有第二次進入。
-            assert mod._maybe_schedule_decay_worker() is False
+            assert dw._maybe_schedule_decay_worker() is False
             for _ in range(50):
                 await asyncio.sleep(0.01)
 
@@ -5203,14 +5436,15 @@ class TestShutdownBlocksFurtherWork:
         )
 
         mod = _import_run_server()
+        dw = _worker_mod()
         try:
-            mod._DECAY_WORKER_CANCEL.set()
-            res = mod._run_decay_evaluation_sync()
+            dw._DECAY_WORKER_CANCEL.set()
+            res = dw._run_decay_evaluation_sync()
             assert res["reason"] == "CANCELLED", f"旗標已 set 竟未回 CANCELLED：{res}"
             assert res["evaluated"] == 0 and res["applied"] == 0
             assert called == [], "🔴 旗標已 set 竟仍執行了 DB 評估"
         finally:
-            mod._DECAY_WORKER_CANCEL.clear()
+            dw._DECAY_WORKER_CANCEL.clear()
 
     def test_sync_runner_without_cancel_still_evaluates(self, monkeypatch) -> None:
         """控制組：旗標未 set ⇒ 同步函式**照常**執行 DB 評估（不得修過頭）。"""
@@ -5228,13 +5462,14 @@ class TestShutdownBlocksFurtherWork:
         )
 
         mod = _import_run_server()
+        dw = _worker_mod()
         try:
-            mod._DECAY_WORKER_CANCEL.clear()
-            res = mod._run_decay_evaluation_sync()
+            dw._DECAY_WORKER_CANCEL.clear()
+            res = dw._run_decay_evaluation_sync()
             assert called == [1], "旗標未 set 竟未執行 DB 評估（過度修正）"
             assert res["reason"] == "EVALUATED", f"未取消竟回非 EVALUATED：{res}"
         finally:
-            mod._DECAY_WORKER_CANCEL.clear()
+            dw._DECAY_WORKER_CANCEL.clear()
 
     @pytest.mark.asyncio
     async def test_shutdown_log_does_not_claim_stopped(self, monkeypatch) -> None:
@@ -5251,6 +5486,7 @@ class TestShutdownBlocksFurtherWork:
         import logging as _logging
 
         mod = _import_run_server()
+        dw = _worker_mod()
         _reset_decay_worker(mod)
 
         records: list = []
@@ -5262,6 +5498,9 @@ class TestShutdownBlocksFurtherWork:
         sink = _Sink()
         # 直接掛在 `logging` root 的 manager 上不可靠；改掛具名 logger 並
         # 同時降低其 level（還原於 finally）。
+        #
+        # 🔴 接縫遷移後日誌改由 `src.agent.decay_worker` 發出 —— 其 logger 名稱
+        #    仍是 "soul_os.server"（搬遷時刻意保留），故這裡的探針目標不變。
         srv_logger = _logging.getLogger("soul_os.server")
         old_level = srv_logger.level
         old_disabled = _logging.root.manager.disable
@@ -5275,10 +5514,10 @@ class TestShutdownBlocksFurtherWork:
                 gate.wait(5.0)
                 return {"evaluated": 0, "applied": 0, "reason": "EVALUATED", "results": {}}
 
-            monkeypatch.setattr(mod, "_run_decay_evaluation_sync", _block)
-            assert mod._maybe_schedule_decay_worker() is True
+            monkeypatch.setattr(dw, "_run_decay_evaluation_sync", _block)
+            assert dw._maybe_schedule_decay_worker() is True
 
-            await mod._shutdown_decay_worker()
+            await dw._shutdown_decay_worker()
 
             blob = "\n".join(records)
             assert blob, "未攔到任何 shutdown 日誌（探針失效）"
