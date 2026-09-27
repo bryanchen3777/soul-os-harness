@@ -171,6 +171,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     return st === "SPEAKING" && drained === false;
   }
 
+  function isSpeakingNow() {
+    return state === "SPEAKING" && playbackDrained === false;
+  }
+  window.isSpeakingNow = isSpeakingNow;
+
   function setState(s) {
     var leavingSpeaking = (state === "SPEAKING") && s !== "SPEAKING";
     state = s;
@@ -270,10 +275,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
   function onAvatarAction(msg) {
     try {
-      // 1) 白名單：只認 "play"（缺 action 視為 play）。其餘只警告，永不拋出。
-      var action = (msg && msg.action !== undefined && msg.action !== null) ? msg.action : "play";
-      if (action !== "play") {
-        warn("未知 avatar_action：" + action + "（忽略，維持現狀）");
+      var AP = window.AvatarPlayer;
+      if (!AP) {
+        warn("AvatarPlayer 尚未就緒，忽略 avatar_action");
         return;
       }
 
@@ -281,9 +285,25 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       //    確保殘留計時器不會把「較新的狀態」誤推回待機。
       if (avatarActionTimer !== null) { clearTimeout(avatarActionTimer); avatarActionTimer = null; }
 
-      var AP = window.AvatarPlayer;
-      if (!AP || typeof AP.playState !== "function") {
-        warn("AvatarPlayer 尚未就緒，忽略 avatar_action");
+      var action = (msg && msg.action !== undefined && msg.action !== null) ? String(msg.action).trim() : "play";
+
+      // VC-AVATAR-02：支援單次動作（one_shot 或具名動作如 "nod", "smile"）
+      if (action !== "play") {
+        if (action === "one_shot" || action === "action") {
+          var targetAction = (msg && msg.state) || (msg && msg.name) || "nod";
+          if (typeof AP.triggerOneShot === "function") {
+            AP.triggerOneShot(targetAction);
+            return;
+          }
+        } else if (typeof AP.triggerOneShot === "function") {
+          // 直接將 action 當作動作名進行單次插播
+          AP.triggerOneShot(action);
+          return;
+        }
+      }
+
+      if (typeof AP.playState !== "function") {
+        warn("AvatarPlayer.playState 尚未就緒，忽略 avatar_action");
         return;
       }
 
@@ -1032,8 +1052,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       if (myToken !== switchToken) return;
       var idleUrl = AVATAR_REGISTRY[currentAvatar] ? AVATAR_REGISTRY[currentAvatar].idle : '';
       if (config.url !== idleUrl && idleUrl) {
-        warn('影片加載失敗，優雅降級回 idle：' + config.url);
-        resetToIdle();
+        warn('影片加載失敗，優雅降級回底層態：' + config.url);
+        restoreBaseState();
       } else {
         warn('idle 影片加載失敗：' + config.url);
       }
@@ -1072,11 +1092,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     var p = incoming.play();
     if (p && typeof p.catch === 'function') {
       p.catch(function () {
-        // 自動播放被拒或載入失敗：退回該 avatar 的 idle，絕不留黑畫面
+        // 自動播放被拒或載入失敗：退回底層態，絕不留黑畫面
         if (myToken !== switchToken) return;
         cleanupListeners();
         if (isOneShot) {
-          resetToIdle();
+          restoreBaseState();
         } else if (config.url !== AVATAR_REGISTRY[currentAvatar].idle) {
           warn('play() 失敗，退回 idle：' + config.url);
           resetToIdle();
@@ -1086,17 +1106,29 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       });
     }
 
-    // 3c. 一次性動畫：播完自動回待機
+    // 3c. 一次性動畫：播完自動回退到底層循環態（speaking 或 idle）
     if (isOneShot) {
       var onEnded = function () {
         incoming.removeEventListener('ended', onEnded);
         if (myToken !== switchToken) return;
-        resetToIdle();
+        restoreBaseState();
       };
       incoming.addEventListener('ended', onEnded);
     }
 
     return crossed;
+  }
+
+  function restoreBaseState() {
+    // 依語音通話狀態機（state）決定回落目標：
+    // 若伴侶當前仍在說話（SPEAKING）且未排空，平滑淡回 speaking 短片；否則平滑淡回 idle。
+    try {
+      if (typeof window.isSpeakingNow === "function" && window.isSpeakingNow()) {
+        window.AvatarPlayer.playState("speaking");
+        return;
+      }
+    } catch (e) { /* noop */ }
+    resetToIdle();
   }
 
   function resetToIdle() {
@@ -1134,6 +1166,22 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     },
 
     resetToIdle: resetToIdle,
+
+    // VC-AVATAR-02：單次動作插播（One-Shot Action）與自動回落底層態
+    triggerOneShot: function (actionName) {
+      if (!actionName) return false;
+      var targetUrl = '';
+      var av = AVATAR_REGISTRY[currentAvatar];
+      if (av && av.states && av.states[actionName]) {
+        targetUrl = av.states[actionName].url;
+      } else {
+        targetUrl = '/static/avatars/' + currentAvatar + '_' + actionName + '.mp4';
+      }
+      console.log('[AvatarPlayer] Action: ' + actionName + ' (one-shot) -> target: ' + targetUrl);
+      currentState = actionName;
+      switchTo({ url: targetUrl, loop: false }, true);
+      return true;
+    },
 
     getState: function () {
       return { avatar: currentAvatar, state: currentState, activeIndex: activeIndex };
