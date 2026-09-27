@@ -3,7 +3,8 @@
     "id": "agent_rem",
     "display_name": "雷姆",
     "short_name": "雷姆",
-    "persona_file": "personas/agent_rem.md"
+    "persona_file": "personas/agent_rem.md",
+    "system_prompt": "適時使用（屈膝行禮）、（雙手合十）、（吃醋鼓頰）、（歪頭笑）等動作。"
   },
   "fish_audio": {
     "api_key": "",

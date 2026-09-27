@@ -128,8 +128,8 @@ _STAGE_STAR_RE = re.compile(r"\*[^*\n]*\*")
 OPEN_BRACKETS = {"（": "）", "(": ")", "[": "]", "【": "】"}
 CLOSE_BRACKETS = {"）": "（", ")": "(", "]": "[", "】": "【"}
 
-# VC-AVATAR-03: 動作字典映射表（Action Lexicon）
-ACTION_LEXICON: dict[str, str] = {
+# VC-AVATAR-05: 基礎動作字典（Base Action Lexicon）—— 全角色共用
+BASE_ACTION_LEXICON: dict[str, str] = {
     # happy: 微笑、笑、開心、輕笑
     "微笑": "happy",
     "笑": "happy",
@@ -168,11 +168,107 @@ ACTION_LEXICON: dict[str, str] = {
     "嘆氣": "cold",
     "輕嘆": "cold",
     "抱胸": "cold",
+    # VC-AVATAR-05：基礎字典補齊
+    "搖頭": "shake_head",
+    "不對": "shake_head",
+    "否認": "shake_head",
+    "驚訝": "surprise",
+    "睜大眼睛": "surprise",
+    "愣住": "surprise",
+    "揮手": "wave",
+    "打招呼": "wave",
+    "招手": "wave",
+    "拍手": "clap",
+    "鼓掌": "clap",
+    "撫胸": "hand_on_chest",
+    "鬆口氣": "hand_on_chest",
+    "撫著胸口": "hand_on_chest",
+    "聳肩": "shrug",
+    "無奈": "shrug",
+    "前傾": "lean_forward",
+    "湊近": "lean_forward",
 }
 
+# VC-AVATAR-05: 角色專屬簽名動作字典（Per-Agent Signature Lexicon）
+# 命中優先序：先查角色專屬，再回退基礎字典（見 map_action_keyword）。
+AGENT_SIGNATURE_LEXICONS: dict[str, dict[str, str]] = {
+    "agent_mai": {
+        "捉弄": "tease",
+        "壞笑": "tease",
+        "戲謔": "tease",
+        "抱胸": "cross_arms",
+        "冷淡": "cross_arms",
+        "居高臨下": "cross_arms",
+        "撥髮": "adjust_hair",
+        "撩頭髮": "adjust_hair",
+        "整理髮夾": "adjust_hair",
+        "別過頭": "blush_turn",
+        "傲嬌": "blush_turn",
+        "甩頭": "blush_turn",
+        "逼近": "lean_in",
+        "耳語": "lean_in",
+        "壓迫感": "lean_in",
+    },
+    "agent_rem": {
+        "行禮": "curtsy",
+        "屈膝": "curtsy",
+        "女僕禮": "curtsy",
+        "合十": "pray_hands",
+        "雙手合十": "pray_hands",
+        "祈禱": "pray_hands",
+        "深情注視": "pray_hands",
+        "歪頭笑": "tilt_smile",
+        "治癒笑": "tilt_smile",
+        "甜甜地笑": "tilt_smile",
+        "吃醋": "pout_jealous",
+        "鼓起臉頰": "pout_jealous",
+        "小怨念": "pout_jealous",
+        "等摸頭": "head_pat_wait",
+        "乖巧等待": "head_pat_wait",
+        "享受摸頭": "head_pat_enjoy",
+        "閉上眼": "head_pat_enjoy",
+        "安心享受": "head_pat_enjoy",
+    },
+    "agent_akane": {
+        "托下巴": "finger_chin",
+        "托腮": "finger_chin",
+        "分析癖": "finger_chin",
+        "認真分析": "finger_chin",
+        "摀臉": "cover_face",
+        "雙手掩面": "cover_face",
+        "把臉藏起來": "cover_face",
+        "偷瞄": "peek_through_fingers",
+        "手指張開縫": "peek_through_fingers",
+        "偷看": "peek_through_fingers",
+        "燦笑": "bright_smile",
+        "豁然開朗": "bright_smile",
+        "眼神發亮": "bright_smile",
+        "手指互絞": "fidget_hands",
+        "手足無措": "fidget_hands",
+        "不安": "fidget_hands",
+    },
+}
 
-def map_action_keyword(text: str) -> Optional[str]:
-    """從括號提取的文字中匹配對應的前端 Action Key。若無匹配則回傳 None。"""
+# 向後相容別名（VC-AVATAR-03 舊名；語意等同基礎字典）
+ACTION_LEXICON: dict[str, str] = BASE_ACTION_LEXICON
+
+
+def _match_lexicon(cleaned: str, lexicon: dict[str, str]) -> Optional[str]:
+    """在單一字典中比對：完全命中優先，其次最長鍵子字串命中。"""
+    if cleaned in lexicon:
+        return lexicon[cleaned]
+    for kw in sorted(lexicon.keys(), key=len, reverse=True):
+        if kw in cleaned:
+            return lexicon[kw]
+    return None
+
+
+def map_action_keyword(text: str, agent_id: Optional[str] = None) -> Optional[str]:
+    """從括號提取的文字中匹配對應的前端 Action Key。若無匹配則回傳 None。
+
+    VC-AVATAR-05：雙層字典 —— 給定 agent_id 且該角色有簽名字典時，先查簽名字典
+    （完全命中 → 最長鍵子字串），未命中才回退基礎字典 BASE_ACTION_LEXICON。
+    """
     if not text:
         return None
     cleaned = text.strip()
@@ -180,14 +276,15 @@ def map_action_keyword(text: str) -> Optional[str]:
         cleaned = cleaned.replace(ch, "")
     if not cleaned:
         return None
-    # 1. 完全命中
-    if cleaned in ACTION_LEXICON:
-        return ACTION_LEXICON[cleaned]
-    # 2. 子字串命中（優先長詞）
-    for kw in sorted(ACTION_LEXICON.keys(), key=len, reverse=True):
-        if kw in cleaned:
-            return ACTION_LEXICON[kw]
-    return None
+    # 1. 角色專屬簽名字典（較高優先序）
+    if agent_id:
+        signature = AGENT_SIGNATURE_LEXICONS.get(agent_id)
+        if signature:
+            hit = _match_lexicon(cleaned, signature)
+            if hit:
+                return hit
+    # 2. 基礎字典
+    return _match_lexicon(cleaned, BASE_ACTION_LEXICON)
 
 
 class StreamingVoiceSanitizer:
@@ -197,8 +294,10 @@ class StreamingVoiceSanitizer:
     暫存隨後丟棄；若緩衝區字元超過 max_suppress（防未閉合異常），則安全釋放。
     """
 
-    def __init__(self, max_suppress: int = 50):
+    def __init__(self, max_suppress: int = 50, agent_id: Optional[str] = None):
         self.max_suppress = max_suppress
+        # VC-AVATAR-05：角色簽名動作字典的查表鍵（None ⇒ 僅用基礎字典）
+        self.agent_id = agent_id
         self._bracket_stack: List[str] = []
         self._in_star = False
         self._suppress_buf: List[str] = []
@@ -214,7 +313,7 @@ class StreamingVoiceSanitizer:
     def _process_closed_suppression(self) -> None:
         """當括號或星號正常閉合時，解析內容是否含有合法的動作標籤。"""
         raw_text = "".join(self._suppress_buf)
-        action_key = map_action_keyword(raw_text)
+        action_key = map_action_keyword(raw_text, agent_id=self.agent_id)
         if action_key:
             self.extracted_actions.append(action_key)
         self._suppress_buf.clear()
@@ -820,7 +919,7 @@ class AkaneVoiceBrain:
             yield "我在。說說看。"
             return
         self._last_extracted_actions: List[str] = []
-        sanitizer = StreamingVoiceSanitizer()
+        sanitizer = StreamingVoiceSanitizer(agent_id=self.agent_id)
         for token in self.llm_stream(messages):
             cleaned = sanitizer.feed(token)
             if cleaned:

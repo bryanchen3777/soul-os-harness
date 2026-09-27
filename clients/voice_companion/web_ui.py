@@ -992,6 +992,31 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       pout:{ url:'/static/avatars/mai_pout.mp4',        loop:true, fallbackToIdle:true }
     } }
   };
+
+  // VC-AVATAR-05：單次動作多變體表（Multi-Variant Action Table）。
+  // 值可為單一字串（單一短片）或字串陣列 / { variants:[...] } 物件（多變體，隨機選一）。
+  // 變體一律以「短名」表示，實際 URL 由 triggerOneShot 以
+  // `/static/avatars/<avatar>_<短名>.mp4` 組出；短片不存在時由 switchTo 的 onerror 優雅降級。
+  var AVATAR_ACTION_VARIANTS = {
+    akane: {
+      finger_chin:  ['finger_chin'],
+      cover_face:   ['cover_face'],
+      fidget_hands: ['fidget_hands']
+    },
+    mai: {
+      tease:     ['tease'],
+      cross_arms:['cross_arms'],
+      blush_turn:['blush_turn'],
+      adjust_hair:['adjust_hair']
+    },
+    rem: {
+      curtsy:      ['curtsy'],
+      pray_hands:  ['pray_hands'],
+      pout_jealous:['pout_jealous'],
+      tilt_smile:  ['tilt_smile']
+    }
+  };
+
   var DEFAULT_AVATAR_ID = 'akane';
 
   var stage = document.getElementById('avatarStage');
@@ -1168,15 +1193,48 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     resetToIdle: resetToIdle,
 
     // VC-AVATAR-02：單次動作插播（One-Shot Action）與自動回落底層態
+    // VC-AVATAR-05：支援多變體隨機選一（variants array / { variants:[...] } 物件）
     triggerOneShot: function (actionName) {
       if (!actionName) return false;
       var targetUrl = '';
       var av = AVATAR_REGISTRY[currentAvatar];
+
+      // 先取出「變體宣告」：states 內的陣列/物件，或獨立的 AVATAR_ACTION_VARIANTS 表
+      var variants = null;
       if (av && av.states && av.states[actionName]) {
-        targetUrl = av.states[actionName].url;
+        variants = av.states[actionName];
+      } else if (AVATAR_ACTION_VARIANTS[currentAvatar] &&
+                 AVATAR_ACTION_VARIANTS[currentAvatar][actionName]) {
+        variants = AVATAR_ACTION_VARIANTS[currentAvatar][actionName];
+      }
+
+      // 物件容器：{ url:..., variants:[...] } / { variants:[...] }
+      if (variants && !Array.isArray(variants) && typeof variants === 'object') {
+        if (Array.isArray(variants.variants)) {
+          variants = variants.variants;
+        } else if (typeof variants.url === 'string') {
+          // 已是完整 URL，直接使用（單一資產）
+          console.log('[AvatarPlayer] Action: ' + actionName + ' (one-shot) -> target: ' + variants.url);
+          currentState = actionName;
+          switchTo({ url: variants.url, loop: false }, true);
+          return true;
+        } else {
+          variants = null;
+        }
+      }
+
+      if (Array.isArray(variants) && variants.length > 0) {
+        // 多變體：隨機挑一個短名，組出該角色的變體短片 URL
+        var chosen = variants[Math.floor(Math.random() * variants.length)];
+        targetUrl = '/static/avatars/' + currentAvatar + '_' + chosen + '.mp4';
+      } else if (variants && typeof variants === 'string') {
+        // 單一字串短名
+        targetUrl = '/static/avatars/' + currentAvatar + '_' + variants + '.mp4';
       } else {
+        // 無宣告：沿用標準命名慣例
         targetUrl = '/static/avatars/' + currentAvatar + '_' + actionName + '.mp4';
       }
+
       console.log('[AvatarPlayer] Action: ' + actionName + ' (one-shot) -> target: ' + targetUrl);
       currentState = actionName;
       switchTo({ url: targetUrl, loop: false }, true);

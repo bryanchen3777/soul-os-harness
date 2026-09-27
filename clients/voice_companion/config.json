@@ -3,7 +3,8 @@
     "id": "agent_akane",
     "display_name": "黑川茜",
     "short_name": "茜",
-    "persona_file": "personas/agent_akane.md"
+    "persona_file": "personas/agent_akane.md",
+    "system_prompt": "適時使用（托下巴思考）、（摀住臉）、（手指不安地互絞）等動作。"
   },
   "fish_audio": {
     "api_key": "",
