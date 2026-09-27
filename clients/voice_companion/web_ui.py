@@ -142,6 +142,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   var state = "IDLE";
   var ws = null, audioCtx = null, micStream = null;
   var recNode = null, playNode = null, micSource = null, analyser = null;
+  var playbackAnalyser = null;
   var workletNode = null, workletReady = false, workletLoading = false;
   var pendingAudioChunks = [];        // Worklet 加載期間暫存分片
   var MAX_PLAY_BUFFER = 44100 * 30;   // 30s @44.1k 環形緩衝容量
@@ -192,6 +193,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       // 若音訊圖被瀏覽器凍結（suspended）則喇叭不會有輸出 → 直接視為已排空，避免 auto-vad 永久卡死。
       if (audioCtx && audioCtx.state === "suspended") { playbackDrained = true; }
       autoVoiceMs = 0;
+      if (s === "IDLE") {
+        safeAvatarCall("resetToIdle");
+      }
     }
     var dot = $("statusDot"), txt = $("statusText");
     dot.className = "dot " + (s === "SPEAKING" ? "speaking" : s === "THINKING" ? "thinking" : s === "LISTENING" ? "listening" : "idle");
@@ -565,6 +569,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     playbackActive = true;
     playbackDrained = false;
     cancelTailTimer();
+    safeAvatarCall("playState", "speaking");
     roundQueuedSamples += f32.length;
     console.log("[Playback] queued +" + (f32.length / (audioCtx ? audioCtx.sampleRate : 44100)).toFixed(2) +
       "s chunk at " + new Date().toISOString() + " (round total ~" +
@@ -630,7 +635,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       // VC-VAD-TIMING-1 D4：fallback 路徑同樣在實際排空時通知（不可留下第二條漏時鐘路徑）
       if (hadAudio && fallbackAvail === 0) { onPlaybackDrained(); }
     };
-    playNode.connect(audioCtx.destination);
+    ensurePlaybackAnalyser();
+    playNode.connect(playbackAnalyser).connect(audioCtx.destination);
   }
 
   function initAudioWorklet() {
@@ -655,7 +661,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         playbackDrained = true;
         cancelTailTimer();
       };
-      workletNode.connect(audioCtx.destination);
+      ensurePlaybackAnalyser();
+      workletNode.connect(playbackAnalyser).connect(audioCtx.destination);
       workletReady = true;
       workletLoading = false;
       workletNode.port.postMessage({ type: "state", state: state });
@@ -677,6 +684,36 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       }
     });
   }
+
+  function ensurePlaybackAnalyser() {
+    if (!playbackAnalyser && audioCtx) {
+      try {
+        playbackAnalyser = audioCtx.createAnalyser();
+        playbackAnalyser.fftSize = 512;
+      } catch (e) {
+        console.warn("[Playback] createAnalyser error: " + e);
+        playbackAnalyser = null;
+      }
+    }
+    return playbackAnalyser;
+  }
+
+  function getPlaybackRms() {
+    if (!playbackAnalyser) return 0;
+    try {
+      var buf = new Uint8Array(playbackAnalyser.fftSize);
+      playbackAnalyser.getByteTimeDomainData(buf);
+      var sum = 0;
+      for (var i = 0; i < buf.length; i++) {
+        var v = (buf[i] - 128) / 128;
+        sum += v * v;
+      }
+      return Math.sqrt(sum / buf.length);
+    } catch (e) {
+      return 0;
+    }
+  }
+  window.getPlaybackRms = getPlaybackRms;
 
   function startPlayback() {
     if (audioCtx) { ensureAudioResume(); return; } // 冪等：已存在則只解凍
@@ -908,39 +945,31 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   var AVATAR_REGISTRY = {
     rem:   { id:'rem',   name:'雷姆',    idle:'/static/avatars/rem.mp4',   states:{
       idle:{ url:'/static/avatars/rem.mp4',   loop:true, fallbackToIdle:true },
-      // VC-AVATAR-3：speaking 目前指向既有 idle 檔（磁碟上僅 rem/akane/mai.mp4 三支）。
-      // 這是「接線驗證」狀態：未來有真實素材時只需換 url，不動其他邏輯。
-      speaking:{ url:'/static/avatars/rem.mp4', loop:false, fallbackToIdle:true },
-      // VC-AVATAR-5：情緒底色狀態（由伺服器 avatar_action 派發）。同樣是接線驗證，
-      // 目前沿用既有 idle mp4；有真實素材時只換 url。loop:true = 氛圍態、非一次性。
-      happy:{ url:'/static/avatars/rem.mp4',     loop:true, fallbackToIdle:true },
-      concerned:{ url:'/static/avatars/rem.mp4', loop:true, fallbackToIdle:true },
-      cold:{ url:'/static/avatars/rem.mp4',      loop:true, fallbackToIdle:true },
-      // VC-AVATAR-6：複合情緒底色（完全期）新增狀態；同為接線驗證，沿用既有 idle mp4，氛圍態 loop。
-      blush:{ url:'/static/avatars/rem.mp4',     loop:true, fallbackToIdle:true },
-      pout:{ url:'/static/avatars/rem.mp4',      loop:true, fallbackToIdle:true }
+      // VC-AVATAR-01：映射表擴充為資產矩陣命名；若專屬短片尚未就緒，由 switchTo 的 onerror 自動優雅降級回 idle
+      speaking:{ url:'/static/avatars/rem_speaking.mp4', loop:false, fallbackToIdle:true },
+      happy:{ url:'/static/avatars/rem_happy.mp4',       loop:true, fallbackToIdle:true },
+      concerned:{ url:'/static/avatars/rem_concerned.mp4', loop:true, fallbackToIdle:true },
+      cold:{ url:'/static/avatars/rem_cold.mp4',        loop:true, fallbackToIdle:true },
+      blush:{ url:'/static/avatars/rem_blush.mp4',       loop:true, fallbackToIdle:true },
+      pout:{ url:'/static/avatars/rem_pout.mp4',        loop:true, fallbackToIdle:true }
     } },
     akane: { id:'akane', name:'黑川茜',  idle:'/static/avatars/akane.mp4', states:{
       idle:{ url:'/static/avatars/akane.mp4', loop:true, fallbackToIdle:true },
-      speaking:{ url:'/static/avatars/akane.mp4', loop:false, fallbackToIdle:true },
-      // VC-AVATAR-5：情緒底色狀態（沿用既有 idle mp4，氛圍態 loop）
-      happy:{ url:'/static/avatars/akane.mp4',     loop:true, fallbackToIdle:true },
-      concerned:{ url:'/static/avatars/akane.mp4', loop:true, fallbackToIdle:true },
-      cold:{ url:'/static/avatars/akane.mp4',      loop:true, fallbackToIdle:true },
-      // VC-AVATAR-6：複合情緒底色（完全期）新增狀態；沿用既有 idle mp4，氛圍態 loop。
-      blush:{ url:'/static/avatars/akane.mp4',     loop:true, fallbackToIdle:true },
-      pout:{ url:'/static/avatars/akane.mp4',      loop:true, fallbackToIdle:true }
+      speaking:{ url:'/static/avatars/akane_speaking.mp4', loop:false, fallbackToIdle:true },
+      happy:{ url:'/static/avatars/akane_happy.mp4',       loop:true, fallbackToIdle:true },
+      concerned:{ url:'/static/avatars/akane_concerned.mp4', loop:true, fallbackToIdle:true },
+      cold:{ url:'/static/avatars/akane_cold.mp4',        loop:true, fallbackToIdle:true },
+      blush:{ url:'/static/avatars/akane_blush.mp4',       loop:true, fallbackToIdle:true },
+      pout:{ url:'/static/avatars/akane_pout.mp4',        loop:true, fallbackToIdle:true }
     } },
     mai:   { id:'mai',   name:'櫻島麻衣', idle:'/static/avatars/mai.mp4',   states:{
       idle:{ url:'/static/avatars/mai.mp4',   loop:true, fallbackToIdle:true },
-      speaking:{ url:'/static/avatars/mai.mp4', loop:false, fallbackToIdle:true },
-      // VC-AVATAR-5：情緒底色狀態（沿用既有 idle mp4，氛圍態 loop）
-      happy:{ url:'/static/avatars/mai.mp4',     loop:true, fallbackToIdle:true },
-      concerned:{ url:'/static/avatars/mai.mp4', loop:true, fallbackToIdle:true },
-      cold:{ url:'/static/avatars/mai.mp4',      loop:true, fallbackToIdle:true },
-      // VC-AVATAR-6：複合情緒底色（完全期）新增狀態；沿用既有 idle mp4，氛圍態 loop。
-      blush:{ url:'/static/avatars/mai.mp4',     loop:true, fallbackToIdle:true },
-      pout:{ url:'/static/avatars/mai.mp4',      loop:true, fallbackToIdle:true }
+      speaking:{ url:'/static/avatars/mai_speaking.mp4', loop:false, fallbackToIdle:true },
+      happy:{ url:'/static/avatars/mai_happy.mp4',       loop:true, fallbackToIdle:true },
+      concerned:{ url:'/static/avatars/mai_concerned.mp4', loop:true, fallbackToIdle:true },
+      cold:{ url:'/static/avatars/mai_cold.mp4',        loop:true, fallbackToIdle:true },
+      blush:{ url:'/static/avatars/mai_blush.mp4',       loop:true, fallbackToIdle:true },
+      pout:{ url:'/static/avatars/mai_pout.mp4',        loop:true, fallbackToIdle:true }
     } }
   };
   var DEFAULT_AVATAR_ID = 'akane';
@@ -994,12 +1023,29 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     // 1. 對「非活動」那顆設定新 src / loop，並壓成 opacity:0
     incoming.style.opacity = '0';
     incoming.loop = !!config.loop;
-    incoming.src = config.url;
 
     var crossed = false;
 
-    function onPlaying() {
+    // VC-AVATAR-01：資源加載失敗時（如短片尚未就緒），自動優雅降級回 idle，無黑畫面、無破圖
+    function onError() {
+      cleanupListeners();
+      if (myToken !== switchToken) return;
+      var idleUrl = AVATAR_REGISTRY[currentAvatar] ? AVATAR_REGISTRY[currentAvatar].idle : '';
+      if (config.url !== idleUrl && idleUrl) {
+        warn('影片加載失敗，優雅降級回 idle：' + config.url);
+        resetToIdle();
+      } else {
+        warn('idle 影片加載失敗：' + config.url);
+      }
+    }
+
+    function cleanupListeners() {
       incoming.removeEventListener('playing', onPlaying);
+      incoming.removeEventListener('error', onError);
+    }
+
+    function onPlaying() {
+      cleanupListeners();
       if (myToken !== switchToken) {
         // 競態：後續的切換已接手，本次放棄（不碰 opacity / activeIndex）
         return;
@@ -1019,14 +1065,16 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       crossed = true;
     }
 
+    incoming.addEventListener('error', onError);
     incoming.addEventListener('playing', onPlaying);
+    incoming.src = config.url;
 
     var p = incoming.play();
     if (p && typeof p.catch === 'function') {
       p.catch(function () {
         // 自動播放被拒或載入失敗：退回該 avatar 的 idle，絕不留黑畫面
         if (myToken !== switchToken) return;
-        incoming.removeEventListener('playing', onPlaying);
+        cleanupListeners();
         if (isOneShot) {
           resetToIdle();
         } else if (config.url !== AVATAR_REGISTRY[currentAvatar].idle) {
