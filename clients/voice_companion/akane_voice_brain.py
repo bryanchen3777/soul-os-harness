@@ -128,12 +128,73 @@ _STAGE_STAR_RE = re.compile(r"\*[^*\n]*\*")
 OPEN_BRACKETS = {"（": "）", "(": ")", "[": "]", "【": "】"}
 CLOSE_BRACKETS = {"）": "（", ")": "(", "]": "[", "】": "【"}
 
+# VC-AVATAR-03: 動作字典映射表（Action Lexicon）
+ACTION_LEXICON: dict[str, str] = {
+    # happy: 微笑、笑、開心、輕笑
+    "微笑": "happy",
+    "笑": "happy",
+    "開心": "happy",
+    "輕笑": "happy",
+    "笑了笑": "happy",
+    # nod: 點頭、嗯、贊同、理解
+    "點頭": "nod",
+    "嗯": "nod",
+    "贊同": "nod",
+    "理解": "nod",
+    "輕輕點頭": "nod",
+    # blush: 臉紅、害羞、移開視線、低頭
+    "臉紅": "blush",
+    "害羞": "blush",
+    "移開視線": "blush",
+    "低頭": "blush",
+    "微紅著臉": "blush",
+    # tilt_head: 歪頭、疑惑、好奇
+    "歪頭": "tilt_head",
+    "疑惑": "tilt_head",
+    "好奇": "tilt_head",
+    "輕輕歪頭": "tilt_head",
+    # thinking: 思考、想想、沉思
+    "思考": "thinking",
+    "想想": "thinking",
+    "沉思": "thinking",
+    "若有所思": "thinking",
+    # pout: 嘟嘴、鼓頰、生氣
+    "嘟嘴": "pout",
+    "鼓頰": "pout",
+    "生氣": "pout",
+    "鼓起臉頰": "pout",
+    # cold: 冷淡、嘆氣、抱胸
+    "冷淡": "cold",
+    "嘆氣": "cold",
+    "輕嘆": "cold",
+    "抱胸": "cold",
+}
+
+
+def map_action_keyword(text: str) -> Optional[str]:
+    """從括號提取的文字中匹配對應的前端 Action Key。若無匹配則回傳 None。"""
+    if not text:
+        return None
+    cleaned = text.strip()
+    for ch in "*#[]()（）【】 \t\r\n":
+        cleaned = cleaned.replace(ch, "")
+    if not cleaned:
+        return None
+    # 1. 完全命中
+    if cleaned in ACTION_LEXICON:
+        return ACTION_LEXICON[cleaned]
+    # 2. 子字串命中（優先長詞）
+    for kw in sorted(ACTION_LEXICON.keys(), key=len, reverse=True):
+        if kw in cleaned:
+            return ACTION_LEXICON[kw]
+    return None
+
 
 class StreamingVoiceSanitizer:
     """串流輸出守門狀態機：逐字元/逐 token 濾除跨 token 的動作描述（（…）、(…)、[…]、*…*）。
 
-    當進入括號或星號區間時，內容被暫存並不輸出；一旦閉合，暫存直接丟棄；
-    若緩衝區字元超過 max_suppress（防未閉合異常），則安全釋放。
+    當進入括號或星號區間時，內容被暫存並不輸出；一旦閉合，提取其中的 ActionToken，
+    暫存隨後丟棄；若緩衝區字元超過 max_suppress（防未閉合異常），則安全釋放。
     """
 
     def __init__(self, max_suppress: int = 50):
@@ -142,6 +203,21 @@ class StreamingVoiceSanitizer:
         self._in_star = False
         self._suppress_buf: List[str] = []
         self._line_start = True
+        self.extracted_actions: List[str] = []
+
+    def pop_extracted_actions(self) -> List[str]:
+        """取出並清空當前累積解析出的 Action Tokens。"""
+        acts = list(self.extracted_actions)
+        self.extracted_actions.clear()
+        return acts
+
+    def _process_closed_suppression(self) -> None:
+        """當括號或星號正常閉合時，解析內容是否含有合法的動作標籤。"""
+        raw_text = "".join(self._suppress_buf)
+        action_key = map_action_keyword(raw_text)
+        if action_key:
+            self.extracted_actions.append(action_key)
+        self._suppress_buf.clear()
 
     def feed(self, token: str) -> str:
         out: List[str] = []
@@ -165,7 +241,8 @@ class StreamingVoiceSanitizer:
                     self._suppress_buf.append(ch)
                 else:
                     self._in_star = False
-                    self._suppress_buf.clear()
+                    self._suppress_buf.append(ch)
+                    self._process_closed_suppression()
                 continue
 
             # 括號開頭
@@ -184,8 +261,9 @@ class StreamingVoiceSanitizer:
                             self._bracket_stack.pop()
                         if self._bracket_stack:
                             self._bracket_stack.pop()
+                    self._suppress_buf.append(ch)
                     if not self._bracket_stack and not self._in_star:
-                        self._suppress_buf.clear()
+                        self._process_closed_suppression()
                     continue
                 else:
                     continue
@@ -741,6 +819,7 @@ class AkaneVoiceBrain:
         if self.llm_stream is None:
             yield "我在。說說看。"
             return
+        self._last_extracted_actions: List[str] = []
         sanitizer = StreamingVoiceSanitizer()
         for token in self.llm_stream(messages):
             cleaned = sanitizer.feed(token)
@@ -749,6 +828,12 @@ class AkaneVoiceBrain:
         tail = sanitizer.flush()
         if tail:
             yield tail
+        self._last_extracted_actions = sanitizer.pop_extracted_actions()
+
+    @property
+    def last_extracted_actions(self) -> List[str]:
+        """最近一次 stream_respond 回合中自 LLM 輸出提取的動作標籤（VC-AVATAR-03）。"""
+        return list(getattr(self, "_last_extracted_actions", []))
 
     def _guarded(self, text: str) -> str:
         result = sanitize_voice_output(text).strip()
