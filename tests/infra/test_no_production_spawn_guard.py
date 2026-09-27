@@ -218,13 +218,17 @@ SUBPROCESS_ALLOWLIST: Dict[Tuple[str, int], str] = {
     ("tests/test_crash_obs3_faulthandler_enable.py", 250):
         "child interpreter running a tmp-written probe that only arms faulthandler and prints; "
         "proves the handler is installed in a real process (utf-8 env forced, 300s timeout)",
-    ("tests/test_epistemic_mind_eh42.py", 322):
+    ("tests/soul/test_life_thread_sim_time.py", 487):
+        "read-only git runner helper (_git_bytes) extracting revision bytes into tmp_path",
+    ("tests/soul/test_life_thread_sim_time.py", 517):
+        "read-only git cat-file -e probe checking commit object availability",
+    ("tests/test_epistemic_mind_eh42.py", 327):
         "nested `pytest -q` regression run over 3 sibling test files (read-only, cwd=repo)",
     ("tests/test_log_backup_fix_v2.py", 244):
         "PowerShell `PSParser::Tokenize` fed the script text on stdin — parses, never executes",
     ("tests/test_m1_5_night_400_fix.py", 200):
         "read-only `git log --oneline --grep=M1.5` commit-marker check",
-    ("tests/test_m3_1_phase_c.py", 756):
+    ("tests/test_m3_1_phase_c.py", 762):
         "read-only `git diff --stat <file>` frozen-file check",
     ("tests/test_m3_world_awareness.py", 579):
         "nested `pytest -q` regression run over 3 sibling test files, SOUL_OS_DATA_DIR removed from the child env",
@@ -259,7 +263,7 @@ SUBPROCESS_ALLOWLIST: Dict[Tuple[str, int], str] = {
 }
 
 #: R5 lock: the spawn allowlist may not grow (or shrink) without a deliberate edit.
-EXPECTED_SUBPROCESS_ALLOWLIST_SIZE = 20
+EXPECTED_SUBPROCESS_ALLOWLIST_SIZE = 22
 
 
 # ───────────────────────────────────────────────────────────

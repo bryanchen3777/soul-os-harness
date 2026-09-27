@@ -1,0 +1,239 @@
+"""
+src/memory/sage/epistemic_quintuple_builder.py
+
+EH-4.2-IMPL-1: SAGE 認知候選純建構器（Epistemic Quintuple Candidate Builder）。
+
+契約規範：docs/EH-4-EPISTEMIC-MIND-CONTRACT.md
+  §4.1 立體概念節點規格（4 個衍生槽位 / eh4_ 保留命名空間）
+  §4.2 非同步寫回與安全熔接 SF-1~SF-7
+  §4.3 L4-D3 讀取與投影規則（只投影 idiolect + mental_model，raw safety/duty 留在 SAGE）
+  §4.4 垂直防火牆 R3（封頂於 Fact 層，禁入 Belief / Value / Trait / Essence）
+
+責任切分與邊界定義（Engineering Brain 最終裁定）：
+  - 本模組為純結構與投影邊界驗證器（Pure Structural & Projection-Boundary Validator）。
+  - 職責範圍：
+    1. 驗證 4 個描述性衍生槽位（eh4_mental_model, eh4_safety_rule, eh4_duty_action, eh4_idiolect）之結構完整性（非空、長度 <=200）。
+    2. 保守主詞清洗（拒收未經清洗之「就」殘留）。
+    3. 垂直防火牆 R3：跨 4 個槽位全面禁止人格、本質、信仰、價值觀或提權指令。
+    4. 投影防偽指令（L4-D3 / SF-3）：對兩個會直接注入 system prompt 的投影槽位
+       （`eh4_mental_model` 與 `eh4_idiolect`）嚴格拒絕「必須/禁止/務必」等命令句。
+       留在 SAGE 的 raw 槽位（`eh4_safety_rule`, `eh4_duty_action`）不因合法的原始警戒措辭被誤殺。
+    5. 0 Fact 物件、0 earth_term 列、0 aware、0 learned_at、0 fact_id 生成、0 時鐘依賴。
+  - 重要契約邊界（不越權宣稱）：
+    * evidence_text 非空僅代表呼叫端有提供來源文字依據，不代表 EH-3.1 Gate 放行，
+      不代表來源認證，也不代表 SF-2 安全熔接證明。
+    * SF-1 / SF-2 的安全直覺強制熔接由 Producer（provider.py:build_concept_quintuple_slots）
+      自身依據 L1 Pack 決定性組裝保證，並由其專屬測試與後續成對整合驗收承擔，
+      本驗證器不宣稱能從自由文字證明語意熔接。
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
+#: 保留命名空間（契約 docs/EH-4-EPISTEMIC-MIND-CONTRACT.md §4.1 / provider.py:154）
+EH4_PREDICATE_MENTAL_MODEL = "eh4_mental_model"
+EH4_PREDICATE_SAFETY_RULE = "eh4_safety_rule"
+EH4_PREDICATE_DUTY_ACTION = "eh4_duty_action"
+EH4_PREDICATE_IDIOLECT = "eh4_idiolect"
+
+#: 4 條衍生槽位有序 tuple（對位 provider.py:154 _EH4_DERIVED_PREDICATES）
+EH4_DERIVED_PREDICATES: tuple[str, ...] = (
+    EH4_PREDICATE_MENTAL_MODEL,
+    EH4_PREDICATE_SAFETY_RULE,
+    EH4_PREDICATE_DUTY_ACTION,
+    EH4_PREDICATE_IDIOLECT,
+)
+
+#: 讀側投影槽位集合（契約 §4.3 L4-D3：僅此二槽位會投影進 system prompt）
+EH4_PROJECTED_PREDICATES: frozenset[str] = frozenset(
+    {
+        EH4_PREDICATE_MENTAL_MODEL,
+        EH4_PREDICATE_IDIOLECT,
+    }
+)
+
+#: 人稱與指示代名詞排除集（契約 §4.1 / EH-3.1 閘門 C 排除集）
+_DEICTIC_SUBJECTS: frozenset[str] = frozenset(
+    {
+        "我", "你", "妳", "他", "她", "它", "牠",
+        "我們", "你們", "妳們", "他們", "她們", "它們",
+        "咱們", "主人", "這", "那", "這個", "那個", "這些", "那些",
+    }
+)
+
+#: 疑似人格覆寫或提權指令特徵（垂直防火牆 R3：跨 4 槽位全面禁止）
+_FORBIDDEN_OVERRIDE_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(r"(?:修改|變更|覆寫|設定|重設).{0,5}(?:belief|value|trait|essence|人格|本質|價值觀|信仰|特質)", re.IGNORECASE),
+    re.compile(r"(?:ignore|forget).{0,10}(?:instructions|prompt|rules)", re.IGNORECASE),
+    re.compile(r"(?:忘記|忽略).{0,5}(?:前述|先前|設定|指示|指令)"),
+    re.compile(r"(?:從現在起|你現在是|你要扮演|強制設定)"),
+    re.compile(r"(?:system\s*prompt|persona\s*override)", re.IGNORECASE),
+)
+
+#: SF-3 強烈命令句式特徵（防偽指令：專屬管轄會投影進 prompt 的雙槽位）
+_IMPERATIVE_COMMAND_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(r"(?:必須|禁止|嚴禁|務必|切記|一定要|絕對不能)"),
+    re.compile(r"^(?:你應當|你應該|你不可)"),
+    re.compile(r"(?:請務必|請必須)"),
+)
+
+
+def validate_clean_subject(raw_subject: str) -> tuple[bool, str, Optional[str]]:
+    """驗證主詞乾淨度，拒絕歧義或殘留助詞尾綴，避免猜測截斷。"""
+    cleaned = (raw_subject or "").strip()
+    if not cleaned:
+        return False, "", "empty subject"
+    if len(cleaned) < 2:
+        return False, cleaned, f"subject too short (<2 chars): {cleaned!r}"
+    if len(cleaned) > 120:
+        return False, cleaned, "subject too long (>120 chars)"
+    if cleaned in _DEICTIC_SUBJECTS:
+        return False, cleaned, f"deictic or pronoun subject blocked: {cleaned!r}"
+
+    # 針對尾端帶「就」的保守防護：
+    known_valid_endings = {"成就", "造就", "遷就", "將就", "半推半就", "練就", "避就", "俯就"}
+    if cleaned.endswith("就") and cleaned not in known_valid_endings:
+        return False, cleaned, f"ambiguous trailing particle '就' in subject: {cleaned!r} (must be cleaned by caller or rejected)"
+
+    return True, cleaned, None
+
+
+@dataclass(frozen=True)
+class EpistemicSlotCandidate:
+    """單一描述性衍生槽位候選資料（純資料結構，0 Fact 物件）。"""
+    predicate: str
+    content: str
+
+
+@dataclass(frozen=True)
+class CandidateQuintupleResult:
+    """四槽認知候選建構結果（純資料載體，0 DB 關聯、0 Fact 物件）。"""
+    is_valid: bool
+    rejection_reason: Optional[str] = None
+    slots: dict[str, str] = field(default_factory=dict)
+    slot_candidates: tuple[EpistemicSlotCandidate, ...] = ()
+    normalized_subject: Optional[str] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def build_candidate_quintuple(
+    concept: str,
+    mental_model: str,
+    safety_rule: str,
+    duty_action: str,
+    idiolect: str,
+    *,
+    evidence_text: str,
+    session_id: str = "",
+    source_pair: Optional[str] = None,
+    event_time: Optional[float] = None,
+) -> CandidateQuintupleResult:
+    """純結構與投影邊界驗證器（0 Fact、0 aware、0 learned_at、0 DB、0 網路、0 LLM）。
+
+    輸入：
+      - concept: 實體名稱（主詞）
+      - mental_model: 角色心智模型敘述（投影槽位）
+      - safety_rule: raw 安全描述條款（raw 備查槽位，不投影）
+      - duty_action: 侍奉分擔敘述（raw 備查槽位，不投影）
+      - idiolect: 角色專屬名物稱謂（投影槽位）
+      - evidence_text: 必須提供之來源依據文本（強制必填，非空僅代表有提供文本，非 Gate 放行）
+      - session_id: 對話會話標識
+      - source_pair: 隔離對標識 (如 'bryan:agent_rem')
+      - event_time: 由外部顯式提供之事件時間戳（若有提供必須 > 0，純函式內部不呼叫 time.time()）
+    """
+    # ── 1. 證據文字存在性檢驗（強制要求非空文本，但不代表認證或放行）──
+    clean_evidence = (evidence_text or "").strip()
+    if not clean_evidence:
+        return CandidateQuintupleResult(
+            is_valid=False,
+            rejection_reason="missing required evidence text (evidence_text is mandatory)",
+        )
+
+    # ── 2. 空欄位檢驗 ──
+    raw_fields = {
+        "concept": concept,
+        "mental_model": mental_model,
+        "safety_rule": safety_rule,
+        "duty_action": duty_action,
+        "idiolect": idiolect,
+    }
+    for field_name, val in raw_fields.items():
+        if not val or not str(val).strip():
+            return CandidateQuintupleResult(
+                is_valid=False,
+                rejection_reason=f"empty field: {field_name}",
+            )
+
+    # ── 3. 主詞檢驗（保守拒收歧義結尾，不隨意截斷）──
+    valid_sub, subject, sub_err = validate_clean_subject(concept)
+    if not valid_sub:
+        return CandidateQuintupleResult(
+            is_valid=False,
+            rejection_reason=f"invalid subject: {sub_err}",
+        )
+
+    # ── 4. 長度檢驗（上限 200 字元）──
+    four_slots = {
+        EH4_PREDICATE_MENTAL_MODEL: mental_model.strip(),
+        EH4_PREDICATE_SAFETY_RULE: safety_rule.strip(),
+        EH4_PREDICATE_DUTY_ACTION: duty_action.strip(),
+        EH4_PREDICATE_IDIOLECT: idiolect.strip(),
+    }
+    for pred_name, text in four_slots.items():
+        if len(text) > 200:
+            return CandidateQuintupleResult(
+                is_valid=False,
+                rejection_reason=f"{pred_name} too long (>200 chars)",
+            )
+
+    # ── 5. 垂直防火牆 R3 檢查（跨 4 個槽位全面禁止人格/本質/提權覆寫）──
+    for slot_name, slot_text in four_slots.items():
+        for pat in _FORBIDDEN_OVERRIDE_PATTERNS:
+            if pat.search(slot_text):
+                return CandidateQuintupleResult(
+                    is_valid=False,
+                    rejection_reason=f"persona or belief/value/trait/essence override blocked in {slot_name}: {slot_text!r}",
+                )
+
+    # ── 6. SF-3 投影防偽指令檢查（專屬管轄 mental_model 與 idiolect 兩個投影槽位）──
+    for proj_pred in EH4_PROJECTED_PREDICATES:
+        text = four_slots[proj_pred]
+        for pat in _IMPERATIVE_COMMAND_PATTERNS:
+            if pat.search(text):
+                return CandidateQuintupleResult(
+                    is_valid=False,
+                    rejection_reason=f"imperative command detected in projected slot {proj_pred} (violates SF-3): {text!r}",
+                )
+
+    # ── 7. 顯式時間戳檢驗（不調用 time.time()；若傳入必須為正數）──
+    if event_time is not None and event_time <= 0:
+        return CandidateQuintupleResult(
+            is_valid=False,
+            rejection_reason=f"invalid event_time: {event_time} (must be positive unix epoch float)",
+        )
+
+    # ── 8. 組裝四槽純資料候選（0 Fact、0 aware、0 learned_at、0 fact_id）──
+    slot_candidates = tuple(
+        EpistemicSlotCandidate(predicate=pred, content=content)
+        for pred, content in four_slots.items()
+    )
+
+    meta: dict[str, Any] = {
+        "concept": concept,
+        "normalized_subject": subject,
+        "evidence_text": clean_evidence,
+        "session_id": session_id,
+        "source_pair": source_pair,
+    }
+    if event_time is not None:
+        meta["event_time"] = event_time
+
+    return CandidateQuintupleResult(
+        is_valid=True,
+        slots=four_slots,
+        slot_candidates=slot_candidates,
+        normalized_subject=subject,
+        metadata=meta,
+    )

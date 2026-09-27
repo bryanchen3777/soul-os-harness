@@ -1,0 +1,457 @@
+"""
+tests/test_epistemic_failure_isolation.py
+
+[EH-4.2-FAILURE-ISOLATION-1] & [EH-4.2-ATOMIC-PROTOTYPE-1]
+既有四槽寫入失敗注入與專用原子原型離線驗證。
+
+驗證範圍：
+A. 既有 provider 分段寫入之缺陷復現（EH-4.2-FAILURE-ISOLATION-1 原有測試保留）
+B. 原型專用寫入驗證（EH-4.2-ATOMIC-PROTOTYPE-1 新增驗收測試）：
+   1. clean-state 與 conn.in_transaction 檢驗
+   2. 四槽 SQL 各故障點之原子性與完整 rollback（0 eh4_* 殘留、槽位 1 完好、既有 pending writes 無恙）
+   3. 狀態矩陣：full skip / empty write / partial fail-closed / duplicate fail-closed / dirty fail-closed
+   4. 圖同步故障處置：DB-first 保證、圖中途異常之損壞標記與讀取阻斷
+   5. 0 DELETE / 0 REPLACE 物理保護
+"""
+from __future__ import annotations
+
+import os
+import sqlite3
+import time
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from src.memory.sage.graph_store import GraphStore
+from src.memory.sage.models import Fact
+from src.memory.sage.provider import (
+    _EH4_DERIVED_PREDICATES,
+    assimilate_concept_graph,
+    build_concept_quintuple_slots,
+)
+from src.paths import reset_data_root
+
+
+@pytest.fixture(autouse=True)
+def clean_env():
+    reset_data_root()
+    yield
+    reset_data_root()
+    if "SOUL_OS_DATA_DIR" in os.environ:
+        del os.environ["SOUL_OS_DATA_DIR"]
+
+
+def _make_isolated_store(tmp_path: Path, batch_size: int = 5) -> tuple[GraphStore, Path]:
+    db_path = tmp_path / "test_graph.sqlite"
+    store = GraphStore(db_path=db_path, batch_size=batch_size)
+    return store, db_path
+
+
+def _query_db_direct(db_path: Path) -> list[dict[str, Any]]:
+    """以純 sqlite3 繞過 GraphStore 記憶體快取直接查詢實體資料庫記錄。"""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT * FROM facts ORDER BY timestamp ASC").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def _make_test_quintuple_facts(entity: str = "氣炸鍋") -> list[Fact]:
+    """構造合法的四個衍生槽位 Fact 物件。"""
+    slots = build_concept_quintuple_slots(
+        agent_id="agent_rem",
+        entity=entity,
+        user_text="氣炸鍋就是個插電吹熱風把食物烤熟的箱子，外殼會燙要注意。",
+    )
+    facts = []
+    now = time.time()
+    for pred in _EH4_DERIVED_PREDICATES:
+        facts.append(
+            Fact(
+                subject=entity,
+                predicate=pred,
+                object=slots[pred],
+                source="inference",
+                timestamp=now,
+            )
+        )
+    return facts
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Section A: 既有 provider 分段寫入之缺陷復現測試（保留原測試）
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_add_fact_ok_set_dimensions_false_leaves_default_dimension(tmp_path):
+    store, db_path = _make_isolated_store(tmp_path, batch_size=1)
+
+    def mock_set_dim_fails(fact_id, **kwargs):
+        return False
+
+    store.set_fact_dimensions = mock_set_dim_fails
+
+    written = assimilate_concept_graph(
+        store=store,
+        agent_id="agent_rem",
+        entity="氣炸鍋",
+        user_text="氣炸鍋就是個插電吹熱風把食物烤熟的箱子，外殼會燙要注意。",
+    )
+
+    assert written == 4
+    rows = _query_db_direct(db_path)
+    assert len(rows) == 4
+    for r in rows:
+        assert r["origin"] == "lived_experience"
+        assert r["horizon_state"] == "aware"
+        assert r["learned_at"] is None
+
+
+def test_partial_failure_at_third_slot_leaves_earlier_slots(tmp_path):
+    store, db_path = _make_isolated_store(tmp_path, batch_size=10)
+
+    call_count = 0
+    real_add_fact = store.add_fact
+
+    def mock_add_fact_fail_on_3rd(fact: Fact):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 3:
+            raise sqlite3.OperationalError("Simulated Disk I/O Error on 3rd slot")
+        return real_add_fact(fact)
+
+    store.add_fact = mock_add_fact_fail_on_3rd
+
+    written = assimilate_concept_graph(
+        store=store,
+        agent_id="agent_rem",
+        entity="氣炸鍋",
+        user_text="氣炸鍋就是個插電吹熱風把食物烤熟的箱子，外殼會燙要注意。",
+    )
+
+    assert written == 0
+    store.flush()
+    rows = _query_db_direct(db_path)
+    assert len(rows) == 2
+
+
+def test_batch_threshold_commit_persists_unmarked_rows(tmp_path):
+    store, db_path = _make_isolated_store(tmp_path, batch_size=1)
+
+    def mock_set_dim_crash(fact_id, **kwargs):
+        raise RuntimeError("Crash right after add_fact committed to DB")
+
+    store.set_fact_dimensions = mock_set_dim_crash
+
+    written = assimilate_concept_graph(
+        store=store,
+        agent_id="agent_rem",
+        entity="氣炸鍋",
+        user_text="氣炸鍋就是個插電吹熱風把食物烤熟的箱子，外殼會燙要注意。",
+    )
+
+    assert written == 0
+    rows = _query_db_direct(db_path)
+    assert len(rows) == 1
+    assert rows[0]["origin"] == "lived_experience"
+    assert rows[0]["learned_at"] is None
+
+
+def test_return_zero_but_rows_actually_persisted(tmp_path):
+    store, db_path = _make_isolated_store(tmp_path, batch_size=2)
+
+    count = 0
+    real_set_dim = store.set_fact_dimensions
+
+    def mock_set_dim_fail_on_second(fact_id, **kwargs):
+        nonlocal count
+        count += 1
+        if count == 2:
+            raise sqlite3.DatabaseError("DB locked on 2nd set_dimensions")
+        return real_set_dim(fact_id, **kwargs)
+
+    store.set_fact_dimensions = mock_set_dim_fail_on_second
+
+    written = assimilate_concept_graph(
+        store=store,
+        agent_id="agent_rem",
+        entity="氣炸鍋",
+        user_text="氣炸鍋就是個插電吹熱風把食物烤熟的箱子，外殼會燙要注意。",
+    )
+
+    assert written == 0
+    store.close()
+    rows = _query_db_direct(db_path)
+    assert len(rows) >= 1
+
+
+def test_retry_semantics_on_polluted_default_dimension_row(tmp_path):
+    store, db_path = _make_isolated_store(tmp_path, batch_size=1)
+
+    polluted_fact = Fact(
+        subject="氣炸鍋",
+        predicate="eh4_mental_model",
+        object="殘留的未完成心智模型",
+        source="inference",
+    )
+    store.add_fact(polluted_fact)
+    store.flush()
+
+    user_text = "氣炸鍋就是個插電吹熱風把食物烤熟的箱子，外殼會燙要注意。"
+    assimilate_concept_graph(
+        store=store,
+        agent_id="agent_rem",
+        entity="氣炸鍋",
+        user_text=user_text,
+    )
+
+    store.flush()
+    final_rows = _query_db_direct(db_path)
+    mental_model_rows = [r for r in final_rows if r["predicate"] == "eh4_mental_model"]
+    assert len(mental_model_rows) == 2
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Section B: 原型專用寫入驗證（EH-4.2-ATOMIC-PROTOTYPE-1 核心驗收）
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_prototype_input_boundary_validation(tmp_path):
+    """驗證 1：輸入邊界嚴格檢驗（恰好四槽、同一 subject、合法 predicate、source=inference）。"""
+    store, _ = _make_isolated_store(tmp_path)
+    now = time.time()
+
+    # 案例 A: 槽位不足 4 個
+    facts_3 = _make_test_quintuple_facts()[:3]
+    assert store.add_assimilated_concept_quintuple(facts_3, learned_at=now) == "FAIL_INVALID_INPUT"
+
+    # 案例 B: 包含第一槽 (source="user", earth_term)
+    facts_with_user = _make_test_quintuple_facts()
+    facts_with_user[0].source = "user"
+    assert store.add_assimilated_concept_quintuple(facts_with_user, learned_at=now) == "FAIL_INVALID_INPUT"
+
+    # 案例 C: 主詞不一致
+    facts_diff_subj = _make_test_quintuple_facts()
+    facts_diff_subj[0].subject = "電磁爐"
+    assert store.add_assimilated_concept_quintuple(facts_diff_subj, learned_at=now) == "FAIL_INVALID_INPUT"
+
+    # 案例 D: learned_at 非法
+    facts_valid = _make_test_quintuple_facts()
+    assert store.add_assimilated_concept_quintuple(facts_valid, learned_at=-1.0) == "FAIL_INVALID_INPUT"
+
+
+def test_prototype_clean_state_and_transaction_isolation(tmp_path):
+    """驗證 2：乾淨交易與共享連線隔離。
+    有 pending_writes 或正在 transaction 中時，fail-closed 放棄，且絕不觸碰其他資料。
+    """
+    store, db_path = _make_isolated_store(tmp_path, batch_size=10)
+
+    # 模擬既有操作留下了 1 筆未提交的 pending write
+    dummy = Fact(subject="user", predicate="likes", object="tea", source="user")
+    store.add_fact(dummy)
+    assert store._pending_writes == 1
+
+    facts = _make_test_quintuple_facts("氣炸鍋")
+    res = store.add_assimilated_concept_quintuple(facts, learned_at=time.time())
+
+    # 斷言：遭遇 dirty connection，fail-closed 放棄
+    assert res == "FAIL_DIRTY_CONN"
+    # 斷言：原未決操作的計數器維持原樣，未被重設或誤提交
+    assert store._pending_writes == 1
+
+    # 斷言：DB 內未提交 dummy（仍在 buffer）且 0 氣炸鍋衍生列
+    conn = sqlite3.connect(str(db_path))
+    try:
+        cur_rows = conn.execute("SELECT * FROM facts WHERE subject='氣炸鍋'").fetchall()
+        assert len(cur_rows) == 0
+    finally:
+        conn.close()
+
+
+def test_prototype_atomic_write_success_and_full_skip(tmp_path):
+    """驗證 3：全成功與完整 skip（I1 冪等）。"""
+    store, db_path = _make_isolated_store(tmp_path)
+    now = time.time()
+    facts = _make_test_quintuple_facts("氣炸鍋")
+
+    # 第一輪：乾淨寫入，回傳 SUCCESS
+    res = store.add_assimilated_concept_quintuple(facts, learned_at=now)
+    assert res == "SUCCESS"
+
+    # 檢查 DB
+    rows = _query_db_direct(db_path)
+    assert len(rows) == 4
+    for r in rows:
+        assert r["origin"] == "assimilated"
+        assert r["horizon_state"] == "aware"
+        assert r["learned_at"] == now
+
+    # 檢查圖
+    for f in facts:
+        assert store.graph.has_edge(f.subject, f.object, key=f.fact_id)
+        edge_data = store.graph[f.subject][f.object][f.fact_id]
+        assert edge_data["origin"] == "assimilated"
+        assert edge_data["horizon_state"] == "aware"
+        assert edge_data["learned_at"] == now
+
+    # 第二輪：重複執行，必須識別為 full aware 並回傳 SKIP_FULL（0 變更）
+    res_retry = store.add_assimilated_concept_quintuple(facts, learned_at=now + 10.0)
+    assert res_retry == "SKIP_FULL"
+    rows_after = _query_db_direct(db_path)
+    assert len(rows_after) == 4
+
+
+def test_prototype_sql_failure_rolls_back_cleanly(tmp_path):
+    """驗證 4：四槽 SQL 中途失敗完整 Rollback，0 衍生列殘留，第一槽完好。"""
+    store, db_path = _make_isolated_store(tmp_path)
+    now = time.time()
+
+    # 先以標準生產路徑寫入第一槽 earth_term 並以 set_fact_dimensions 顯式放行（模擬 EH-3.1 既有 Gate 通過 fact）
+    slot1_fact = Fact(
+        subject="氣炸鍋",
+        predicate="is_a",
+        object="烤食物箱子",
+        source="user",
+    )
+    fid = store.add_fact(slot1_fact)
+    store.set_fact_dimensions(
+        fid,
+        origin="assimilated",
+        horizon_state="aware",
+        learned_at=now,
+    )
+    store.flush()
+    assert store._pending_writes == 0
+
+    # 驗證前置條件：槽位 1 在實體 DB 中確實帶有合法放行維度
+    s1_rows = _query_db_direct(db_path)
+    assert len(s1_rows) == 1
+    assert s1_rows[0]["origin"] == "assimilated"
+    assert s1_rows[0]["horizon_state"] == "aware"
+    assert s1_rows[0]["learned_at"] == now
+
+    facts = _make_test_quintuple_facts("氣炸鍋")
+
+    # 在第 3 槽構造欄位超限/類型不符引發真正的 SQLite 語法或約束例外
+    # facts 表中 session_id、predicate 等欄位有限制，或直接令第 3 槽 fact 的某些欄位引發 TypeError
+    # 例如：令 fact[2].is_anchor 傳入無法轉換為 int 的特殊非數字物件
+    class BadAnchor:
+        def __int__(self):
+            raise sqlite3.OperationalError("Simulated DB Type/Operational Error on 3rd SQL")
+
+    facts[2].is_anchor = BadAnchor()
+
+    res = store.add_assimilated_concept_quintuple(facts, learned_at=now)
+    assert res == "FAIL_SQL_ERROR"
+
+    # 斷言：本次新增的 eh4_* 列嚴格為 0！
+    rows = _query_db_direct(db_path)
+    eh4_rows = [r for r in rows if str(r["predicate"]).startswith("eh4_")]
+    assert len(eh4_rows) == 0, f"竟殘留了半成品衍生列: {eh4_rows}"
+
+    # 斷言：第一槽依然完好存在！
+    user_rows = [r for r in rows if r["source"] == "user"]
+    assert len(user_rows) == 1
+    assert user_rows[0]["predicate"] == "is_a"
+
+    # 斷言：記憶體圖完全乾淨（0 eh4_* 邊）
+    graph_eh4_edges = [
+        (u, v, k) for u, v, k, d in store.graph.edges(keys=True, data=True)
+        if str(d.get("predicate", "")).startswith("eh4_")
+    ]
+    assert len(graph_eh4_edges) == 0
+
+
+def test_prototype_conflict_state_fails_closed_without_deleting(tmp_path):
+    """驗證 5：存在部分列、髒列時，fail-closed 放棄，絕不 DELETE、不覆寫。"""
+    store, db_path = _make_isolated_store(tmp_path)
+    now = time.time()
+
+    # 手動插入 1 筆殘留列（模擬先前崩潰殘留的 partial / dirty 列）
+    dirty_fact = Fact(
+        subject="氣炸鍋",
+        predicate="eh4_mental_model",
+        object="舊殘留理解",
+        source="inference",
+        origin="lived_experience",  # 未標記維度
+    )
+    store.add_fact(dirty_fact)
+    store.flush()
+    assert len(_query_db_direct(db_path)) == 1
+
+    facts = _make_test_quintuple_facts("氣炸鍋")
+    res = store.add_assimilated_concept_quintuple(facts, learned_at=now)
+
+    # 斷言：判定為 FAIL_CONFLICT
+    assert res == "FAIL_CONFLICT"
+
+    # 斷言：0 刪除、0 覆寫、0 新增！資料庫依然只有原先那 1 筆！
+    rows = _query_db_direct(db_path)
+    assert len(rows) == 1
+    assert rows[0]["origin"] == "lived_experience"
+    assert rows[0]["object"] == "舊殘留理解"
+
+
+def test_candidate_graph_prep_failure_leaves_db_and_graph_untouched(tmp_path):
+    """驗證 6A：候選圖預構建失敗時，DB 與現有 live graph 嚴格維持 0 變更。"""
+    store, db_path = _make_isolated_store(tmp_path)
+    now = time.time()
+    facts = _make_test_quintuple_facts("氣炸鍋")
+
+    # 模擬 candidate_graph.copy() 或建構邊時發生記憶體耗盡
+    orig_copy = store.graph.copy
+
+    def mock_copy_crash():
+        raise MemoryError("Out of memory during candidate graph copy")
+
+    store.graph.copy = mock_copy_crash
+
+    res = store.add_assimilated_concept_quintuple(facts, learned_at=now)
+    assert res == "FAIL_GRAPH_PREP_ERROR"
+
+    # 斷言：實體 DB 嚴格 0 寫入
+    assert len(_query_db_direct(db_path)) == 0
+
+    # 斷言：現有 live graph 節點與邊數嚴格為 0
+    assert store.graph.number_of_nodes() == 0
+    assert store.graph.number_of_edges() == 0
+
+
+def test_candidate_graph_swap_success_and_cost_measurement(tmp_path):
+    """驗證 6B：候選圖預構建成功並在 commit 後切換，量測切換一致性、耗時與外部參照影響。"""
+    store, db_path = _make_isolated_store(tmp_path)
+    now = time.time()
+    facts = _make_test_quintuple_facts("氣炸鍋")
+
+    # 外部在調用前持有了現有圖的參照（模擬外部可能存在的 store.graph 參照者）
+    stale_graph_ref = store.graph
+
+    start_t = time.perf_counter()
+    res = store.add_assimilated_concept_quintuple(facts, learned_at=now)
+    elapsed_ms = (time.perf_counter() - start_t) * 1000
+
+    assert res == "SUCCESS"
+    assert elapsed_ms < 50.0  # 斷言：單次同化候選圖複製與切換在 50ms 內完成
+
+    # 1. 斷言：實體 DB 與 live graph 完全一致（4 列 ↔ 4 條邊）
+    db_rows = _query_db_direct(db_path)
+    assert len(db_rows) == 4
+
+    graph_edges = [
+        (u, v, k, d) for u, v, k, d in store.graph.edges(keys=True, data=True)
+        if str(d.get("predicate", "")).startswith("eh4_")
+    ]
+    assert len(graph_edges) == 4
+
+    # 2. 斷言：四槽屬性逐欄位嚴格對齊
+    for u, v, k, d in graph_edges:
+        assert d["origin"] == "assimilated"
+        assert d["horizon_state"] == "aware"
+        assert d["learned_at"] == now
+
+    # 3. 關鍵風險測量：外部持有的舊參照是否會出現「狀態過期」（Stale Reference Risk）
+    assert stale_graph_ref is not store.graph, "證明指標已成功原子切換為新候選圖"
+    assert stale_graph_ref.number_of_edges() == 0, "若外部持有舊參照，將讀不到最新四槽（Stale Reference Risk 成立）"
