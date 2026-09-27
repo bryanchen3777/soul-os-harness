@@ -3685,6 +3685,15 @@ class TestPeriodicDecayWiring:
             證明觸發點在 `_sage_flush_loop` 內、且不得同步評估）；
           - `TestExecutionBoundaryNormal::test_normal_loop_progress_and_single_worker`
             等（以真實 worker 跑排入 → 執行 → ledger 落地）。
+          - **單元層（本票新增）**：
+            `TestAntiSilentVacuity::test_schedule_seam_sentinel_stub_is_actually_read`
+            與 `...::test_schedule_seam_unbinding_restores_real_schedule_behaviour`
+            —— 證明**測試會注意到排程接縫被換成 no-op / `return False`**
+            （auditor 實測：Neuter 排程入口後，本檔原有 6 條反空洞斷言
+            全部照樣綠燈；這兩條即為補上該範圍缺口者）。
+            🔴 它與 `test_periodic_wiring_attached_to_existing_loop` 的靜態
+            證明**互補且不得互相替代**：靜態證明「有沒有接」，
+            這兩條證明「動態上真的是那條路在排、且弄壞它會紅」。
         ─────────────────────────────────────────────────────────────
         """
         from src.agent.emotion import decay_evaluate_eligible_agents
@@ -5025,6 +5034,115 @@ class TestAntiSilentVacuity:
                 "（測試會空洞地通過）"
             )
             assert dw._DECAY_WORKER_TASK is fake, "在途時竟被換掉了參照"
+        finally:
+            dw._DECAY_WORKER_TASK = None
+            _reset_decay_worker(mod)
+
+    # ═════════════════════════════════════════════════════════════
+    # 🔴 排程接縫（scheduling seam）的反空洞 —— 補上 auditor 實測的缺口
+    #
+    # 已證實的缺口（auditor 對抗式審計，非推論）：把**整個排程入口**
+    # `_maybe_schedule_decay_worker()` 換成 `return False`，
+    # 本檔既有的 **6 條反空洞斷言全部照樣綠燈**。
+    # 整檔跑起來仍會抓到（12 failed），但那是**別的**測試在抓 ——
+    # 屬於「範圍缺口」，不是「安靜的假綠」。
+    #
+    # 根因：`test_task_global_stub_is_actually_read` 證的是
+    # `_DECAY_WORKER_TASK` 這個**全域被讀取**，而該 guard 只在
+    # `_DECAY_WORKER_CANCEL` 未 set 時才被走到；它同時也**沒有**
+    # 對「排入成功」的證據下任何斷言（`return False` 讓它更綠）。
+    # ⇒ 兩條新測試改為明確**綁定排程接縫本身**。
+    #
+    # 與 §Claim A / Claim B 的關係：`TestPeriodicDecayWiring` 的文件
+    # 說明了它自己**刻意排除** Claim B（排程接線），並把 Claim B
+    # 的證據指向別處。本組即為該「別處」中**單元層**的那一塊 ——
+    # 它證明「測試會注意到排程函式被換成 no-op」，與
+    # `test_periodic_wiring_attached_to_existing_loop` 的靜態 AST
+    # 證明**互補且不得互相替代**（靜態證明「有沒有接」，
+    # 本組證明「動態上真的是這條路在排」）。
+    # ═════════════════════════════════════════════════════════════
+
+    @pytest.mark.asyncio
+    async def test_schedule_seam_sentinel_stub_is_actually_read(
+        self, monkeypatch
+    ) -> None:
+        """🔴 反空洞（正向）：`_maybe_schedule_decay_worker` 必須是**排程邏輯
+        的實際來源**。
+
+        證明方式（哨兵證明名字**有被讀**）：把排程接縫換成一個可辨識的
+        sentinel stub，斷言回傳值**就是** sentinel（而非真實邏輯的 `True`）。
+
+        若 stub 綁在沒人讀的名字上 ⇒ 真實邏輯照樣執行 ⇒ 回傳 `True`
+        ≠ sentinel ⇒ 本測試**紅**。這就是「弄壞它會紅」的可證形式。
+        """
+        mod = _import_run_server()
+        dw = _worker_mod()
+        _reset_decay_worker(mod)
+
+        sentinel = object()
+        try:
+            monkeypatch.setattr(
+                dw, "_maybe_schedule_decay_worker", lambda: sentinel
+            )
+            via_module = dw._maybe_schedule_decay_worker()
+            assert via_module is sentinel, (
+                "🔴 排程接縫 stub 未被讀取 —— 測試會空洞地通過"
+                "（反空洞檢查失敗）"
+            )
+
+            # 同一件事經由 **run_server 的薄委派** 再證一次：委派必須
+            # 落到實作端模組（而不是把某個本地副本排掉）。
+            via_server = mod._maybe_schedule_decay_worker()
+            assert via_server is sentinel, (
+                "🔴 run_server 的薄委派沒有落到 decay_worker 的排程接縫 "
+                "—— 委派鏈失效（測試會空洞地通過）"
+            )
+        finally:
+            dw._DECAY_WORKER_TASK = None
+            _reset_decay_worker(mod)
+
+    @pytest.mark.asyncio
+    async def test_schedule_seam_unbinding_restores_real_schedule_behaviour(
+        self, monkeypatch
+    ) -> None:
+        """🔴 **stub invalidation turns it red**（負向鏡像）：把哨兵 stub
+        **解綁**回真實實作後，哨兵**必須消失**，且真實行為**必須回歸**。
+
+        這是 `TestAntiSilentVacuity` 既有 sync-stub 鏡像斷言的排程版：
+        解綁後 (a) 哨兵值不得再出現，(b) 排入必須**真的把在途 task 建起來**
+        —— `_DECAY_WORKER_TASK` 從 `None` 變成一個 task。若 (b) 不成立，
+        代表「排程成功」根本沒有可觀察證據，正向斷言也就沒有意義。
+        """
+        mod = _import_run_server()
+        dw = _worker_mod()
+        _reset_decay_worker(mod)
+
+        sentinel = object()
+        try:
+            monkeypatch.setattr(
+                dw, "_maybe_schedule_decay_worker", lambda: sentinel
+            )
+            assert dw._maybe_schedule_decay_worker() is sentinel
+            # 哨兵階段：**不得**真的排入任何 task（stub 取代了整個排程）。
+            assert dw._DECAY_WORKER_TASK is None, (
+                "哨兵 stub 竟仍建立了 task —— 排程並非經由該名字"
+            )
+
+            # 解綁 ⇒ 真實實作。哨兵必須消失，且必須真的排入。
+            monkeypatch.undo()
+            res = dw._maybe_schedule_decay_worker()
+            assert res is not sentinel, (
+                "🔴 解綁 stub 後哨兵仍在 —— 該名字不是行為來源（反空洞證明失敗）"
+            )
+            assert res is True, (
+                f"解綁後應回到真實排程行為（空閒 ⇒ True），實得：{res!r}"
+            )
+            in_flight = dw._DECAY_WORKER_TASK
+            assert in_flight is not None, (
+                "🔴 真實排程竟沒有建立 task —— 「排入成功」無可觀察證據，"
+                "正向斷言沒有意義"
+            )
+            assert not in_flight.done(), "剛排入的 worker 不應已完成"
         finally:
             dw._DECAY_WORKER_TASK = None
             _reset_decay_worker(mod)

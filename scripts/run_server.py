@@ -482,15 +482,14 @@ _DECAY_WORKER_TASK = None
 #: `_DECAY_WORKER_TASK` 指向的 task 已 `done()`，單靠 task 參照的 guard
 #: **不再成立**（會允許排入第二個 worker）。
 #:
-#: `threading.Event` 的 `is_set()` 在 CPython 內為原子讀取，且此旗標只做
-#: 單向 set（永不 clear），故 event loop 執行緒與 worker 執行緒併讀無競態。
+#: 🔴 **已搬遷**：取消旗標的實體住在 `src/agent/decay_worker.py`。本檔
+#: **不再**持有該名字的任何別名，也不重新匯出它 —— 讀取者一律以
+#: `decay_worker._DECAY_WORKER_CANCEL` 取用（見上方 `_DECAY_WORKER_TASK`
+#: 的說明，以及 `_decay_worker()` 的每次呼叫重新解析）。
 #:
-#: 🔴 **已搬遷**：實體住在 `src/agent/decay_worker.py`（見上方 `_DECAY_WORKER_TASK`
-#: 的說明，別名語意相同）。本檔已**移除** `import threading` ——
-#: CRASH-F1-FIX 的來源守門（`tests/test_crash_f1_fix_no_periodic_dump.py:250`）
-#: 要求 `threading` 不得出現在本檔的 import 集合內，而它原本的唯一消費者
-#: 就是這個旗標。
-_DECAY_WORKER_CANCEL = None
+#: 本檔已**移除** `import threading` —— CRASH-F1-FIX 的來源守門
+#: （`tests/test_crash_f1_fix_no_periodic_dump.py:250`）要求 `threading`
+#: 不得出現在本檔的 import 集合內，而它原本的唯一消費者就是這個旗標。
 
 # ── 搬遷後對外名字的解析（每次呼叫都重新解析模組，見上方陷阱說明）──────
 _DECAY_WORKER_MODULE = "src.agent.decay_worker"
