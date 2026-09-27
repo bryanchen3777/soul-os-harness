@@ -783,14 +783,28 @@ class WebSession:
         _tts_mode = (self._config.get("fish_audio") or {}).get("mode", "live")
         await self._set_state(self.STATE_SPEAKING)
 
+        loop = asyncio.get_running_loop()
+        dispatched_actions = set()
+
         def _generate() -> str:
             # 同步阻塞段（LLM requests + TTS WS）在 dedicated thread 執行，不卡 asyncio 迴圈
             self._streamer.start()  # 釋放 interrupt 旗標（若有）
             hist = list(self._history)  # 對話快照：本回合結束前由 _finish 更新
             parts: list[str] = []
+
             for token in self._brain.stream_respond(user_text, history=hist, source=source):
                 parts.append(token)
                 self._streamer.feed_text_piece(token)
+                # VC-AVATAR-04：串流提取出的動作標籤即時透過 WebSocket 推播
+                current_actions = getattr(self._brain, "last_extracted_actions", [])
+                for act in current_actions:
+                    if act not in dispatched_actions:
+                        dispatched_actions.add(act)
+                        loop.call_soon_threadsafe(
+                            lambda a=act: loop.create_task(
+                                self._send_json({"type": "avatar_action", "action": a})
+                            )
+                        )
             self._streamer.end_session()
             return "".join(parts)
 
@@ -872,6 +886,12 @@ class WebSession:
                     companion_id = (self._config.get("companion") or {}).get("id", "agent_akane")
                     role_name = companion_id.replace("agent_", "")
                     await self._send_json({"type": "transcript", "role": role_name, "text": reply})
+                    # VC-AVATAR-04：回合結尾殘留動作兜底檢查
+                    final_actions = getattr(self._brain, "last_extracted_actions", [])
+                    for act in final_actions:
+                        if act not in dispatched_actions:
+                            dispatched_actions.add(act)
+                            await self._send_json({"type": "avatar_action", "action": act})
                     # VC-AVATAR-6：回合結束派發 Mood x Intimacy 複合情緒底色
                     # （speaking 由客戶端生命週期自行處理，此處不重複送）
                     try:
