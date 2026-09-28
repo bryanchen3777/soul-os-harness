@@ -169,6 +169,11 @@ BASE_ACTION_LEXICON: dict[str, str] = {
     "移開視線": "blush",
     "低頭": "blush",
     "微紅著臉": "blush",
+    # VC-BRAIN-DUAL-ACTION-DETECTION-AND-SEMANTIC-FALLBACK-01：
+    # LLM 口語常吐「低下頭」「低著頭」（動作詞綴），舊表只有「低頭」而
+    # `"低頭" in "低下頭"` 在 Python 為 False ⇒ 語意 fallback 掃到也 0 命中。
+    "低下頭": "blush",
+    "低著頭": "blush",
     # tilt_head: 歪頭、疑惑、好奇
     "歪頭": "tilt_head",
     "疑惑": "tilt_head",
@@ -208,6 +213,10 @@ BASE_ACTION_LEXICON: dict[str, str] = {
     "無奈": "shrug",
     "前傾": "lean_forward",
     "湊近": "lean_forward",
+    # VC-BRAIN-DUAL-ACTION-DETECTION-AND-SEMANTIC-FALLBACK-01：
+    # 「湊過去」「靠過去」是口語最常見的前傾變體（舊表只有「湊近」）。
+    "湊過去": "lean_forward",
+    "靠過去": "lean_forward",
     # VC-AVATAR-REM-40VIDEOS：基礎字典補齊（雷姆 40 支短片新增動作的通用關鍵字）。
     # 這些字在基礎字典一律對應「通用動作鍵」；角色若有專屬短片，由其簽名字典（較高優先序）接手。
     "握拳": "clench_fist",
@@ -282,6 +291,18 @@ AGENT_SIGNATURE_LEXICONS: dict[str, dict[str, str]] = {
         "乖巧等待": "head_pat_wait",
         "給摸頭": "head_pat_wait",
         "乖乖等摸頭": "head_pat_wait",
+        # VC-BRAIN-DUAL-ACTION-DETECTION-AND-SEMANTIC-FALLBACK-01：自由句實測詞族。
+        # 實況日誌：Bryan 說「繼續摸頭就是了」，雷姆答「低下頭，湊過去一點。」——
+        # 這類「無括號自由句」由語意 fallback（extract_fallback_actions_from_text）掃描，
+        # 若字典查不到就等於 0 動作。以下為該情境的實際詞形。
+        # 註：鍵集合仍不得與 agent_mai / agent_akane 的簽名鍵相交
+        # （見 test_signature_lexicon_isolation）。
+        "低下頭": "head_pat_enjoy",
+        "低著頭": "head_pat_enjoy",
+        "別停": "head_pat_enjoy",
+        "讓Bryan摸": "head_pat_wait",
+        "讓主人摸": "head_pat_wait",
+        "靠著": "head_pat_enjoy",
         # hand_on_chest：撫胸 / 摸摸胸口（明列以固化雷姆簽名）
         "撫胸": "hand_on_chest",
         "摸摸胸口": "hand_on_chest",
@@ -330,6 +351,9 @@ AGENT_SIGNATURE_LEXICONS: dict[str, dict[str, str]] = {
         "無奈": "shrug",
         "前傾": "lean_forward",
         "湊近": "lean_forward",
+        # VC-BRAIN-DUAL-ACTION-DETECTION-AND-SEMANTIC-FALLBACK-01：「湊過去」等口語前傾變體
+        "湊過去": "lean_forward",
+        "靠過去": "lean_forward",
         "揮手": "wave",
         "招手": "wave",
         "告別": "wave",
@@ -401,6 +425,40 @@ def map_action_keyword(text: str, agent_id: Optional[str] = None) -> Optional[st
     return _match_lexicon(cleaned, BASE_ACTION_LEXICON)
 
 
+# VC-BRAIN-DUAL-ACTION-DETECTION-AND-SEMANTIC-FALLBACK-01：
+# 語意 fallback 的分句規則與長度上限（module 級常數 ⇒ 可被測試引用、不得散落魔數）。
+_FALLBACK_CLAUSE_SPLIT_RE = re.compile(r"[\n。！？；;]")
+_FALLBACK_CLAUSE_MAX_CHARS = 25
+
+
+def extract_fallback_actions_from_text(
+    text: str, agent_id: Optional[str] = None
+) -> List[str]:
+    """若沒有括號動作標籤，改由自由句（散文）掃描動作關鍵字（語意 fallback）。
+
+    根因（VC-BRAIN-DUAL-ACTION-DETECTION-AND-SEMANTIC-FALLBACK-01）：多輪 session history
+    裡已存在「無括號」的動作描述，LLM 會模仿該既有格式（例：`低下頭，湊過去一點。`）
+    而不吐 `（…）` ⇒ 括號守門提取為 0 動作 ⇒ 前端動畫永不觸發。
+
+    規則（保守、只認「簡短且整句即動作描述」的子句）：
+      - 以換行／句末標點切分子句，逐句 strip；
+      - 空句或長度 > `_FALLBACK_CLAUSE_MAX_CHARS` 的子句一律跳過
+        （正常對話句通常較長／含多個資訊點，不該被誤判成動作）；
+      - 命中 `map_action_keyword` 者按出現順序收錄，去重。
+    """
+    if not text:
+        return []
+    found: List[str] = []
+    for part in _FALLBACK_CLAUSE_SPLIT_RE.split(text):
+        part = part.strip()
+        if not part or len(part) > _FALLBACK_CLAUSE_MAX_CHARS:
+            continue
+        act = map_action_keyword(part, agent_id=agent_id)
+        if act and act not in found:
+            found.append(act)
+    return found
+
+
 class StreamingVoiceSanitizer:
     """串流輸出守門狀態機：逐字元/逐 token 濾除跨 token 的動作描述（（…）、(…)、[…]、*…*）。
 
@@ -424,11 +482,26 @@ class StreamingVoiceSanitizer:
         self._in_xml_block = False         # 已進入具名區塊，等 `</tag>` 才解除
         self._xml_block_tag: Optional[str] = None
         self._xml_close_buf: List[str] = []  # 區塊內疑似 `</tag>` 的尾端緩衝
+        # VC-BRAIN-DUAL-ACTION-DETECTION-AND-SEMANTIC-FALLBACK-01：
+        # 全程原始輸出（未經任何抑制）——供「無括號自由句」的語意 fallback 掃描。
+        self._full_raw_text: List[str] = []
 
     def pop_extracted_actions(self) -> List[str]:
-        """取出並清空當前累積解析出的 Action Tokens。"""
+        """取出並清空當前累積解析出的 Action Tokens。
+
+        VC-BRAIN-DUAL-ACTION-DETECTION-AND-SEMANTIC-FALLBACK-01：若括號守門一個動作都沒
+        提到（LLM 沒寫括號），退而用 `extract_fallback_actions_from_text` 掃描累積原文 —
+        保證「嗯。\\n\\n低下頭，湊過去一點。\\n\\n雷姆會當真的。」這類自由句仍能觸發動畫。
+
+        語意 fallback **只在第一次 pop 生效**（取出後即清除原文緩衝）：否則重複 pop 會把
+        同一段文字反覆解出動作（既有契約：`pop_extracted_actions()` 第二次必須回 `[]`）。
+        """
         acts = list(self.extracted_actions)
+        raw = "".join(self._full_raw_text)
+        if not acts and raw:
+            acts = extract_fallback_actions_from_text(raw, agent_id=self.agent_id)
         self.extracted_actions.clear()
+        self._full_raw_text.clear()
         return acts
 
     def _process_closed_suppression(self) -> None:
@@ -504,6 +577,9 @@ class StreamingVoiceSanitizer:
 
     def feed(self, token: str) -> str:
         out: List[str] = []
+        # VC-BRAIN-DUAL-ACTION-DETECTION-AND-SEMANTIC-FALLBACK-01：原文累積（語意 fallback 用）
+        if token:
+            self._full_raw_text.append(token)
         for ch in token:
             # ── XML / 偽工具標籤抑制（最高優先序）──────────────────────
             if self._in_xml_block:
@@ -1140,13 +1216,18 @@ class AkaneVoiceBrain:
         #    整份 messages 與改動前逐位元相同（向後相容；見 tests/clients/test_vc_asr_channel_hint.py）。
         companion_action_hint = (self.config.get("companion") or {}).get("system_prompt")
         if companion_action_hint and companion_action_hint.strip():
+            # VC-BRAIN-DUAL-ACTION-DETECTION-AND-SEMANTIC-FALLBACK-01：強化措辭。
+            # 實況顯示 LLM 會把動作寫成「普通文字」（`低下頭，湊過去一點。`）而 0 括號，
+            # 故本段明示「每一句回覆都要有括號動作標籤」＋「務必用全形括號（動作）包起來」。
+            # 保留「語音動畫驅動標籤」字樣（既有測試的契約錨點）。
             sys_parts.append(
                 f"【伴侶肢體動作指引】\n"
-                f"在對話中，你可以且應當在適當時機，於句首或句中加入括號動作標籤"
-                f"（此為語音動畫驅動標籤，系統會自動解析並從朗讀中消除）。\n"
-                f"動作習慣指引：{companion_action_hint.strip()}\n"
-                f"注意：請自然且頻繁地搭配你的個性使用對應動作"
-                f"（例如高興時（微笑）、被誇獎或害羞時（摸摸頭）或（臉紅）、認真時（點頭）等）。"
+                f"在對話中，你必須積極且頻繁地在每句回覆加入括號動作標籤"
+                f"（如（摸摸頭）、（微笑）、（點頭）、（屈膝行禮）、（臉紅）、（鼓頰吃醋）等），"
+                f"以驅動虛擬化身動作演出（此為語音動畫驅動標籤，系統會自動解析並從朗讀中消除，"
+                f"不會被唸出）。\n"
+                f"請不要把動作直接寫成普通文字，務必用全形括號（動作）包起來！\n"
+                f"動作習慣指引：{companion_action_hint.strip()}"
             )
 
         # 0b. VC-UNIFY-1：認知地平線（Persona 之後、即時對話之前；fail-silent 空字串跳過）

@@ -600,3 +600,219 @@ def test_rem_hand_on_chest_variants_explicit():
         assert kw in rem_keys, f"{kw} 必須明列於 agent_rem 簽名字典"
         assert rem_keys[kw] == "hand_on_chest"
         assert map_action_keyword(kw, agent_id="agent_rem") == "hand_on_chest"
+
+
+# ─────────────────────────────────────────────────────────────
+# VC-BRAIN-DUAL-ACTION-DETECTION-AND-SEMANTIC-FALLBACK-01
+#
+# 根因：session history 內已存在「無括號」動作描述 ⇒ LLM 模仿該格式吐出
+# `低下頭，湊過去一點。` 這類自由句 ⇒ 括號守門 0 動作 ⇒ 動畫永不觸發。
+# 兩層防禦：(L1) 字典補齊口語變體；(L2) 無括號時改用語意 fallback 掃描原文。
+# ─────────────────────────────────────────────────────────────
+
+REM_SPOKEN_VARIANTS = {
+    "低下頭": "head_pat_enjoy",
+    "低著頭": "head_pat_enjoy",
+    "湊過去": "lean_forward",
+    "別停": "head_pat_enjoy",
+    "讓Bryan摸": "head_pat_wait",
+    "讓主人摸": "head_pat_wait",
+    "靠過去": "lean_forward",
+    "靠著": "head_pat_enjoy",
+}
+
+#: 實況日誌中雷姆實際吐出的兩句話（觸發本票的原始症狀）
+#: 「低下頭，讓 Bryan 摸。」→ head_pat_wait（「讓 Bryan 摸」優先命中）；
+#: 「低下頭，湊過去一點。」→ head_pat_enjoy ＋ lean_forward（本票的核心修復）。
+LIVE_FREE_FORM_REPLIES = (
+    "嗯。\n\n低下頭，讓 Bryan 摸。\n\n客戶還沒來嗎。",
+    "嗯。\n\n低下頭，湊過去一點。\n\nBryan 今天好幾次了，雷姆會當真的。",
+)
+
+#: 各句期望的 Action Key（逐句比對，避免把兩句的期望混在一起）。
+#: 「嗯。」是短子句且命中 nod（基礎字典既有行為），故順序上 nod 先出現。
+LIVE_FREE_FORM_EXPECTED = (
+    ["nod", "head_pat_wait"],
+    ["nod", "head_pat_enjoy"],
+)
+
+
+def test_rem_spoken_variants_map_in_signature_lexicon():
+    """L1：口語變體必須明列於 agent_rem 簽名字典並映射到正確 Action Key。"""
+    rem_keys = AGENT_SIGNATURE_LEXICONS["agent_rem"]
+    for kw, expected in REM_SPOKEN_VARIANTS.items():
+        assert kw in rem_keys, f"{kw} 必須明列於 agent_rem 簽名字典"
+        assert map_action_keyword(kw, agent_id="agent_rem") == expected, kw
+
+
+def test_base_lexicon_low_head_and_lean_variants():
+    """L1：基礎字典補齊「低下頭／低著頭／湊過去／靠過去」（無 agent_id 也命中）。"""
+    assert map_action_keyword("低下頭") == "blush"
+    assert map_action_keyword("低著頭") == "blush"
+    assert map_action_keyword("湊過去") == "lean_forward"
+    assert map_action_keyword("靠過去") == "lean_forward"
+
+
+def test_low_head_no_longer_gaps_on_substring():
+    """迴歸：`"低頭" in "低下頭"` 為 False —— 舊表對「低下頭」全 0 命中。"""
+    assert "低頭" not in "低下頭"  # 這正是舊表漏接的原因
+    assert map_action_keyword("低下頭", agent_id="agent_rem") == "head_pat_enjoy"
+    assert map_action_keyword("低下頭") == "blush"
+
+
+def test_spoken_variants_do_not_break_signature_isolation():
+    """L1：新增鍵不得與他角色簽名鍵相交（隔離契約）。"""
+    mai_keys = set(AGENT_SIGNATURE_LEXICONS["agent_mai"])
+    rem_keys = set(AGENT_SIGNATURE_LEXICONS["agent_rem"])
+    akane_keys = set(AGENT_SIGNATURE_LEXICONS["agent_akane"])
+    new_keys = set(REM_SPOKEN_VARIANTS) | {"湊過去", "靠過去", "低下頭", "低著頭"}
+    assert not (new_keys & mai_keys)
+    assert not (new_keys & akane_keys)
+    assert new_keys <= rem_keys
+
+
+def test_fallback_actions_from_text_scans_clauses():
+    """L2：純文字（0 括號）也能掃出動作鍵。
+
+    注意最長鍵優先：`低下頭，湊過去一點。` 整句先以「低下頭」命中 head_pat_enjoy；
+    逗號不是切分點（與票面規格 `re.split(r"[\\n。！？]", text)` 一致），故「湊過去」
+    由同一句內的另一個子句（換行／句末標點）或後續 fallback 子句命中。
+    """
+    from clients.voice_companion.akane_voice_brain import (
+        extract_fallback_actions_from_text,
+    )
+
+    # 逗號不分切 ⇒ 整句先命中「低下頭」
+    assert extract_fallback_actions_from_text("低下頭，湊過去一點。", agent_id="agent_rem") == [
+        "head_pat_enjoy"
+    ]
+    # 以換行分切 ⇒ 兩個子句各自命中（實況日誌的實際形狀）
+    assert extract_fallback_actions_from_text(
+        "低下頭。\n湊過去一點。", agent_id="agent_rem"
+    ) == ["head_pat_enjoy", "lean_forward"]
+    assert extract_fallback_actions_from_text("", agent_id="agent_rem") == []
+    assert extract_fallback_actions_from_text("今天天氣真好。", agent_id="agent_rem") == []
+
+
+def test_fallback_skips_long_prose_clauses():
+    """L2：長句（> 25 字）不得被誤判成動作描述。"""
+    from clients.voice_companion.akane_voice_brain import (
+        extract_fallback_actions_from_text,
+    )
+
+    long_clause = "低下頭看著窗外那一片被夕陽染紅的天空然後又慢慢把視線移回來"
+    assert len(long_clause) > 25
+    assert extract_fallback_actions_from_text(long_clause, agent_id="agent_rem") == []
+
+
+def test_sanitizer_fallback_extracts_without_brackets():
+    """L2 端到端：無括號回覆仍必須觸發動畫（括號守門落空 ⇒ 語意 fallback 接手）。"""
+    sanitizer = StreamingVoiceSanitizer(agent_id="agent_rem")
+    for line in LIVE_FREE_FORM_REPLIES[1].split("\n"):
+        sanitizer.feed(line + "\n")
+    assert sanitizer.pop_extracted_actions() == LIVE_FREE_FORM_EXPECTED[1]
+
+
+def test_sanitizer_bracketed_actions_take_priority_over_fallback():
+    """L2：括號動作存在時，fallback 不得汙染結果（不得回傳額外動作）。"""
+    sanitizer = StreamingVoiceSanitizer(agent_id="agent_rem")
+    sanitizer.feed("（點頭）低下頭，湊過去一點。")
+    sanitizer.flush()
+    assert sanitizer.pop_extracted_actions() == ["nod"]
+
+
+def test_stream_respond_extracts_free_form_actions_end_to_end():
+    """L2 端到端：stream_respond 對自由句回覆必須回報動作鍵（本票原始症狀）。"""
+    for reply, expected in zip(LIVE_FREE_FORM_REPLIES, LIVE_FREE_FORM_EXPECTED):
+        brain = AkaneVoiceBrain(
+            llm_stream=lambda msgs, _r=reply: iter([_r]), agent_id="agent_rem"
+        )
+        spoken = "".join(brain.stream_respond("那就不問了，繼續摸頭就是了"))
+
+        assert "低下頭" in spoken, "自由句是台詞，必須照唸（fallback 不修改朗讀輸出）"
+        assert brain.last_extracted_actions == expected, reply
+
+
+def test_free_form_actions_do_not_leak_into_tts():
+    """護欄：語意 fallback 只影響動作鍵，朗讀文字逐位元不變（0 新抑制）。"""
+    reply = "嗯。\n\n低下頭，湊過去一點。\n\n雷姆會當真的。"
+    brain = AkaneVoiceBrain(
+        llm_stream=lambda msgs: iter([reply]), agent_id="agent_rem"
+    )
+    spoken = "".join(brain.stream_respond("繼續摸頭就是了"))
+    assert spoken.strip() == reply.strip()
+    assert brain.last_extracted_actions == ["nod", "head_pat_enjoy"]
+
+
+def test_rem_free_form_actions_have_animation_assets():
+    """L1/L2 產出的每個 Action Key 都必須有雷姆影片（0 影片＝有動作卻沒畫面）。"""
+    for action_key in ("head_pat_enjoy", "head_pat_wait", "lean_forward", "blush"):
+        video = (
+            REPO_ROOT
+            / "clients"
+            / "voice_companion"
+            / "static"
+            / "avatars"
+            / f"rem_{action_key}.mp4"
+        )
+        if not video.parent.is_dir():
+            continue  # 靜態資產樹缺席（極簡 checkout）⇒ 本檢驗不適用
+        if action_key == "blush":
+            # blush 走多變體表（blush_slight / blush_deep）
+            variants = [f"rem_{n}.mp4" for n in ("blush_slight", "blush_deep")]
+            assert any((video.parent / v).is_file() for v in variants), variants
+            continue
+        assert video.is_file(), f"缺少雷姆動作影片：{video.name}"
+
+
+# ─────────────────────────────────────────────────────────────
+# L3：system prompt 必須明確要求「用全形括號包住動作」
+# ─────────────────────────────────────────────────────────────
+
+def test_action_hint_forbids_free_form_action_prose():
+    """L3：指引必須明示「不要把動作寫成普通文字」＋「務必用全形括號」。"""
+    config = dict(ISOLATED_CONFIG, companion={"system_prompt": ACTION_HINT})
+    system_content = _make_brain(config)._build_messages("你回來了")[0]["content"]
+
+    assert "【伴侶肢體動作指引】" in system_content
+    assert "請不要把動作直接寫成普通文字，務必用全形括號（動作）包起來！" in system_content
+    assert "積極且頻繁" in system_content
+    # 既有契約錨點不得被改掉（VC-BRAIN-INJECT-ACTION-HINT-01）
+    assert "語音動畫驅動標籤" in system_content
+    assert ACTION_HINT in system_content
+
+
+def test_action_hint_mentions_every_rem_profile_action_example():
+    """L3：指引中「（動作）」舉例都必須能在 agent_rem 字典查到（0 死例）。
+
+    只取指引的舉例句（含「如（…）」那一行）與 profile 的動作習慣指引；
+    散文說明中的括號（如「此為語音動畫驅動標籤，系統會自動解析並從朗讀中消除，不會被唸出」）
+    不是動作標籤，必須排除。
+    """
+    profile = json.loads(REM_PROFILE.read_text(encoding="utf-8"))
+    config = dict(ISOLATED_CONFIG, companion=profile["companion"])
+    system_content = _make_brain(config)._build_messages("主人，你回來了")[0]["content"]
+
+    head = "【伴侶肢體動作指引】"
+    start = system_content.index(head)
+    rest = system_content[start + len(head):]
+    nxt = rest.find("\n\n【")
+    block = rest if nxt < 0 else rest[:nxt]
+
+    # 只取「如（…）等」舉例句中的動作清單段（「如」到「等」之間），
+    # 以及 profile 指引那一行；散文說明中的括號（「此為語音動畫驅動標籤，…」）不是動作標籤。
+    examples_line = next((ln for ln in block.split("\n") if "如（" in ln), "")
+    assert examples_line, "指引必須有「如（…）」舉例句"
+    list_seg = examples_line.split("如", 1)[1].split("等", 1)[0]
+
+    examples = re.findall(r"[（(]([^（(）)]+)[）)]", list_seg)
+    for ln in block.split("\n"):
+        if ln.startswith("動作習慣指引："):
+            hint_text = ln.split("動作習慣指引：", 1)[1]
+            # profile 指引本體也是「…等動作。」形式 ⇒ 同樣只取「等」之前的動作清單
+            hint_seg = hint_text.split("等", 1)[0]
+            examples += re.findall(r"[（(]([^（(）)]+)[）)]", hint_seg)
+
+    assert examples, "指引必須至少舉一個（動作）例子"
+    unmapped = [a for a in examples if map_action_keyword(a, agent_id="agent_rem") is None]
+    assert unmapped == [], f"指引舉例中查不到的動作：{unmapped}"
