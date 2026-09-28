@@ -265,3 +265,132 @@ def test_stream_respond_isolation_across_agents():
     akane_brain = make("agent_akane")
     list(akane_brain.stream_respond("怎麼了？"))
     assert akane_brain.last_extracted_actions == []
+
+
+# ─────────────────────────────────────────────────────────────
+# VC-BRAIN-STRIP-XML-TOOL-TAGS-01
+# LLM 偶爾吐出偽工具標籤／XML 區塊（例如 <write_file path="…">…</write_file>），
+# 這些標籤與其內文絕不可被唸出（TTS）或流入前端 transcript。
+# ─────────────────────────────────────────────────────────────
+
+_WRITE_FILE_FULL = (
+    '<write_file path="C:\\Users\\bbfcc\\AppData\\Local\\hermes\\profiles\\rem'
+    '\\palace\\memory.md">秘密內容 secret content</write_file>'
+)
+
+
+def test_voice_brain_actions_module_imports_xml_constants():
+    """守門模組確實備有 XML 剝離規則（回歸防線：避免規則被誤刪）。"""
+    from clients.voice_companion import akane_voice_brain as mod
+
+    assert hasattr(mod, "_XML_BLOCK_RE")
+    assert hasattr(mod, "_XML_CLOSE_RE")
+    assert hasattr(mod, "_XML_TAG_RE")
+
+
+def test_sanitize_voice_output_strips_write_file_block():
+    """非串流路徑：<write_file …>…</write_file> 整段（含內文）必須 100% 剝離。
+
+    內文亦不得殘留 —— 只刪標籤而留下「秘密內容」仍會被唸出。
+    """
+    out = sanitize_voice_output(_WRITE_FILE_FULL)
+    assert out == ""
+    assert "write_file" not in out
+    assert "secret content" not in out
+    assert "秘密內容" not in out
+    assert "<" not in out and ">" not in out
+
+
+def test_sanitize_voice_output_strips_bare_and_selfclosing_tags():
+    """裸的 <write_file> 與自閉合 <write_file … /> 必須被剝離，其後文字保留。"""
+    assert sanitize_voice_output("<write_file>") == ""
+    assert sanitize_voice_output("<write_file/>") == ""
+    assert sanitize_voice_output('前言<write_file path="a" />後語') == "前言後語"
+    assert sanitize_voice_output('<write_file path="a" />ok') == "ok"
+
+
+def test_sanitize_voice_output_strips_generic_xml_and_keeps_prose():
+    """通用 XML/HTML 標籤剝離，同時保留正常散文。"""
+    assert sanitize_voice_output("<thinking>先想一想</thinking>你好") == "你好"
+    assert sanitize_voice_output("<b>粗體</b>文字") == "文字"
+    # 非標籤的數學比較不可被誤刪成空白句
+    assert sanitize_voice_output("5 < 10 是對的") == "5 < 10 是對的"
+
+
+def test_streaming_sanitizer_strips_tool_tag_block_token_by_token():
+    """串流路徑：逐 token 餵入時，<write_file> 標籤與內文皆不得外洩到 TTS。"""
+    sanitizer = StreamingVoiceSanitizer()
+    tokens = list(_WRITE_FILE_FULL)
+    streamed = "".join(sanitizer.feed(t) for t in tokens) + sanitizer.flush()
+
+    assert streamed == ""
+    assert "write_file" not in streamed
+    assert "secret content" not in streamed
+    assert "秘密內容" not in streamed
+    assert "bbfcc" not in streamed
+
+
+def test_streaming_sanitizer_strips_tool_tag_split_across_token_boundary():
+    """關鍵迴歸：`<` 與標籤名被切在不同 token（LLM 串流的常態）時仍須完全抑制。"""
+    sanitizer = StreamingVoiceSanitizer()
+    tokens = ["<", "write", "_file", ' path="a">', "body", "</", "write_file", ">"]
+    streamed = "".join(sanitizer.feed(t) for t in tokens) + sanitizer.flush()
+
+    assert streamed == ""
+    assert "write" not in streamed
+    assert "body" not in streamed
+
+
+def test_streaming_sanitizer_preserves_prose_around_tool_tag():
+    """標籤前後的正常語句必須完整保留（不可連坐刪除）。"""
+    sanitizer = StreamingVoiceSanitizer()
+    tokens = ["前言 ", '<write_file path="a">', "body", "</write_file>", " 後語"]
+    streamed = "".join(sanitizer.feed(t) for t in tokens) + sanitizer.flush()
+
+    assert "前言" in streamed
+    assert "後語" in streamed
+    assert "write_file" not in streamed
+    assert "body" not in streamed
+
+
+def test_streaming_sanitizer_selfclosing_tag_does_not_eat_following_text():
+    """自閉合標籤不得誤入區塊態而吞掉後續文字。"""
+    sanitizer = StreamingVoiceSanitizer()
+    tokens = ['<write_file path="a" />', "ok"]
+    streamed = "".join(sanitizer.feed(t) for t in tokens) + sanitizer.flush()
+
+    assert streamed == "ok"
+
+
+def test_streaming_sanitizer_keeps_non_tag_angle_brackets():
+    """非標籤的 `<`（例如 `a < b`、`1<2`）在串流路徑維持原樣，不誤刪。"""
+    sanitizer = StreamingVoiceSanitizer()
+    streamed = "".join(sanitizer.feed(t) for t in ["a < b 且 c>d"])
+    assert "a < b" in streamed
+
+
+def test_stream_respond_never_speaks_tool_tags():
+    """端到端：stream_respond 的最終輸出（= TTS 餵入內容）0 工具標籤殘留。"""
+    tokens = ["嗯，", _WRITE_FILE_FULL, "我知道了。"]
+    brain = AkaneVoiceBrain(llm_stream=lambda msgs: iter(tokens), agent_id="agent_rem")
+    spoken = "".join(brain.stream_respond("幫我記一下"))
+
+    lowered = spoken.lower()
+    assert "write_file" not in lowered
+    assert "secret content" not in lowered
+    assert "palace" not in lowered
+    assert "bbfcc" not in lowered
+    assert "秘密內容" not in spoken
+    assert "我知道了。" in spoken
+
+
+def test_respond_never_speaks_tool_tags():
+    """端到端：非串流 respond 的路徑同樣 0 工具標籤殘留。"""
+    brain = AkaneVoiceBrain(
+        llm_stream=lambda msgs: iter([_WRITE_FILE_FULL]), agent_id="agent_rem"
+    )
+    spoken = brain.respond("幫我記一下")
+
+    assert "write_file" not in spoken.lower()
+    assert "secret content" not in spoken
+    assert "秘密內容" not in spoken

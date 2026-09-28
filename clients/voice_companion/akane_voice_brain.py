@@ -125,6 +125,27 @@ _STAGE_PAREN_RE = re.compile(r"[（(][^（(）)]*[）)]")
 # 星號表情/強調段（*…*，含內容整段剝離）
 _STAGE_STAR_RE = re.compile(r"\*[^*\n]*\*")
 
+# VC-BRAIN-STRIP-XML-TOOL-TAGS-01：
+# LLM 偶爾把偽工具標籤／XML 區塊直接吐進語音輸出（例如
+# <write_file path="…">…</write_file>），會被 TTS 逐字唸出並污染 transcript。
+# 非串流（靜態）路徑的整段剝離規則：
+#   1. 具名工具區塊（開標籤…閉標籤，含內容；DOTALL 跨行）
+#   2. 殘餘的孤立閉合標籤 </tag>
+#   3. 殘餘的單一標籤（自閉合 <tag /> 或未閉合 <tag ...>）
+# 註：`<?…?>`／`<!--…-->` 不在此列（含 `?`／`!`，不匹配 `<[a-zA-Z/]`），
+#     但串流守門會把它們當一般標籤抑制，兩條路徑互不衝突。
+_XML_BLOCK_RE = re.compile(
+    r"<\s*(?P<tag>[A-Za-z][A-Za-z0-9_:\-]*)\b[^>]*>.*?<\s*/\s*(?P=tag)\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_XML_CLOSE_RE = re.compile(r"<\s*/\s*[A-Za-z][A-Za-z0-9_:\-]*\s*>")
+_XML_TAG_RE = re.compile(r"<\s*/?\s*[A-Za-z][A-Za-z0-9_:\-]*(?:\s[^<>]*)?/?\s*>")
+
+# 串流守門用：標籤名首字元判定（`<` 後緊接字母 ⇒ 進入標籤抑制）
+_XML_TAG_START_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+)
+
 OPEN_BRACKETS = {"（": "）", "(": ")", "[": "]", "【": "】"}
 CLOSE_BRACKETS = {"）": "（", ")": "(", "]": "[", "】": "【"}
 
@@ -375,6 +396,13 @@ class StreamingVoiceSanitizer:
         self._suppress_buf: List[str] = []
         self._line_start = True
         self.extracted_actions: List[str] = []
+        # VC-BRAIN-STRIP-XML-TOOL-TAGS-01：XML/偽工具標籤抑制狀態
+        self._lt_buf: List[str] = []       # 已見 `<`、尚未判定是否為標籤
+        self._in_tag = False               # 正在標籤內部（`<` 已見、`>` 未見）
+        self._tag_closing = False          # 目前標籤為 `</…>`
+        self._in_xml_block = False         # 已進入具名區塊，等 `</tag>` 才解除
+        self._xml_block_tag: Optional[str] = None
+        self._xml_close_buf: List[str] = []  # 區塊內疑似 `</tag>` 的尾端緩衝
 
     def pop_extracted_actions(self) -> List[str]:
         """取出並清空當前累積解析出的 Action Tokens。"""
@@ -390,9 +418,121 @@ class StreamingVoiceSanitizer:
             self.extracted_actions.append(action_key)
         self._suppress_buf.clear()
 
+    # ── VC-BRAIN-STRIP-XML-TOOL-TAGS-01：XML / 偽工具標籤抑制 ──────────
+
+    def _enter_xml_block(self, tag: Optional[str], self_closing: bool = False) -> None:
+        """進入具名區塊抑制態（`<tag …>` ⇒ 等 `</tag>` 才解除）。
+
+        自閉合標籤（`<tag />`）不進入區塊態 —— 它已完整結束。
+        """
+        if not tag or self_closing:
+            return
+        self._in_xml_block = True
+        self._xml_block_tag = tag.lower()
+        self._xml_close_buf = []
+
+    def _xml_block_end_match(self) -> int:
+        """在 `_xml_close_buf` 尾端尋找目前區塊的閉合標籤；回傳被吃掉的字元數。"""
+        if not self._xml_block_tag or not self._xml_close_buf:
+            return 0
+        text = "".join(self._xml_close_buf)
+        if not text.endswith(">"):
+            return 0
+        start = text.rfind("<")
+        if start < 0:
+            return 0
+        candidate = text[start:]
+        inner = candidate[1:-1].strip()
+        if not inner.startswith("/"):
+            return 0
+        if inner[1:].strip().lower() != self._xml_block_tag:
+            return 0
+        return len(candidate)
+
+    def _feed_xml_block(self, ch: str) -> Optional[str]:
+        """區塊抑制態內逐字元處理；回傳應輸出的字元（None ⇒ 全部抑制）。
+
+        注意（VC-BRAIN-STRIP-XML-TOOL-TAGS-01 bugfix）：區塊內換行不得進入尾端緩衝。
+        否則 `<write_file>\\ntext\\n</write_file>` 會在閉合時把緩衝的 `\\n` 釋放出來，
+        造成語音輸出開頭多一個換行。
+        """
+        if ch == "<":
+            # 疑似的閉合標籤起點：緩衝中的區塊內文一律丟棄（不得外洩），
+            # `_xml_close_buf` 重新以 `<` 起頭等待閉合標籤。
+            self._xml_close_buf = ["<"]
+            return None
+
+        if ch == "\n":
+            # 換行不進緩衝：區塊內文一律不輸出，閉合時也不得帶出換行
+            return None
+
+        self._xml_close_buf.append(ch)
+        matched = self._xml_block_end_match()
+        if matched:
+            # 閉合標籤命中 ⇒ 區塊結束。緩衝中的所有殘餘（= 區塊內文）一律丟棄，
+            # 不得釋放（VC-BRAIN-STRIP-XML-TOOL-TAGS-01：<write_file> 內文 0 外洩）。
+            self._in_xml_block = False
+            self._xml_block_tag = None
+            self._xml_close_buf = []
+            return None
+
+        # 安全閥：尾端緩衝只為偵測 `</tag>`；區塊內文本身仍不得輸出。
+        if len(self._xml_close_buf) > self.max_suppress:
+            self._xml_close_buf = []
+        return None
+
     def feed(self, token: str) -> str:
         out: List[str] = []
         for ch in token:
+            # ── XML / 偽工具標籤抑制（最高優先序）──────────────────────
+            if self._in_xml_block:
+                released = self._feed_xml_block(ch)
+                if released:
+                    out.append(released)
+                continue
+
+            if self._in_tag:
+                # 標籤內部：只等 `>`（`<` 重新開一個緩衝 ⇒ 取最後一個標籤）
+                if ch == "<":
+                    self._lt_buf = ["<"]
+                else:
+                    self._lt_buf.append(ch)
+                    if ch == ">":
+                        raw = "".join(self._lt_buf)
+                        self._in_tag = False
+                        self._lt_buf = []
+                        if not self._tag_closing:
+                            self._enter_xml_block(
+                                self._parse_tag_name(raw),
+                                self_closing=raw.rstrip().endswith("/>"),
+                            )
+                continue
+
+            if self._lt_buf:
+                # 已見 `<`，判定它是否為標籤起點（跨 token 的 `<` + `write_file>`）
+                self._lt_buf.append(ch)
+                nxt = self._lt_buf[1]
+                if nxt == "/":
+                    if len(self._lt_buf) == 2:
+                        continue  # 續等標籤名首字元
+                    if not self._lt_buf[2].isalpha():
+                        out.extend(self._flush_lt_buf())
+                        continue
+                    self._tag_closing = True
+                    self._in_tag = True
+                    continue
+                if nxt in _XML_TAG_START_CHARS:
+                    self._tag_closing = False
+                    self._in_tag = True
+                    continue
+                # 非標籤（例如 `1 < 2`、`a<b`）⇒ 原樣釋放，行為與改動前一致
+                out.extend(self._flush_lt_buf())
+                continue
+
+            if ch == "<":
+                self._lt_buf = ["<"]
+                continue
+
             if ch == "\n":
                 self._line_start = True
                 if not self._bracket_stack and not self._in_star:
@@ -461,6 +601,27 @@ class StreamingVoiceSanitizer:
 
         return "".join(out)
 
+    @staticmethod
+    def _parse_tag_name(raw: str) -> Optional[str]:
+        """自原始標籤字串（`<name …>`）取出標籤名；取不到回傳 None。"""
+        body = raw[1:-1] if raw.endswith(">") else raw[1:]
+        if body.startswith("/"):
+            body = body[1:]
+        i = 0
+        while i < len(body) and (body[i].isalnum() or body[i] in "_:-"):
+            i += 1
+        name = body[:i]
+        return name or None
+
+    def _flush_lt_buf(self) -> List[str]:
+        """把誤判的 `<…` 緩衝原樣釋放。"""
+        flushed = self._lt_buf
+        self._lt_buf = []
+        if not flushed:
+            return []
+        # `<` 本身不是 MARKDOWN_CHARS，無需過濾；其餘字元照原樣輸出
+        return [c for c in flushed if c not in MARKDOWN_CHARS or c in "<>"]
+
     def flush(self) -> str:
         out: List[str] = []
         if self._suppress_buf and len(self._suppress_buf) > self.max_suppress:
@@ -470,6 +631,18 @@ class StreamingVoiceSanitizer:
         self._suppress_buf.clear()
         self._bracket_stack.clear()
         self._in_star = False
+        # VC-BRAIN-STRIP-XML-TOOL-TAGS-01：
+        #  - 未閉合的標籤（`<` 已見、`>` 未見）⇒ 抑制捨棄（工具標籤不得被唸出）。
+        #  - 誤判的 `<…` 緩衝（非標籤）⇒ 原樣釋放，維持舊行為。
+        #  - 區塊態（`<tag>` 已見、`</tag>` 未見）⇒ 全程抑制捨棄。
+        if self._lt_buf and not self._in_tag:
+            out.extend(self._flush_lt_buf())
+        self._lt_buf = []
+        self._in_tag = False
+        self._tag_closing = False
+        self._in_xml_block = False
+        self._xml_block_tag = None
+        self._xml_close_buf = []
         return "".join(out)
 
 
@@ -478,10 +651,33 @@ def contains_markdown_chars(text: str) -> bool:
     return any(ch in text for ch in MARKDOWN_CHARS)
 
 
+def _strip_xml_artifacts(text: str) -> str:
+    """移除 XML/HTML 風格標籤與偽工具區塊（VC-BRAIN-STRIP-XML-TOOL-TAGS-01）。
+
+    順序：① 具名區塊（開標籤…閉標籤，含內容）→ ② 殘餘孤立閉合標籤 → ③ 殘餘單一標籤。
+    """
+    if "<" not in text:
+        return text
+    out = _XML_BLOCK_RE.sub("", text)   # <write_file …>…</write_file>、<thinking>…</thinking>
+    out = _XML_CLOSE_RE.sub("", out)    # </anything> 殘留
+    out = _XML_TAG_RE.sub("", out)      # <tag …> / <tag /> 殘留
+    return out
+
+
 def sanitize_voice_output(text: str) -> str:
-    """守門淨化：移除動作/表情段（*…*、（…）含內容）、Markdown/括號符號與行首條列點。"""
+    """守門淨化：移除動作/表情段（*…*、（…）含內容）、Markdown/括號符號與行首條列點。
+
+    VC-BRAIN-STRIP-XML-TOOL-TAGS-01：額外剝離 XML/HTML 風格標籤與偽工具區塊
+    （例如 `<write_file path="…">…</write_file>`、`<thinking>…</thinking>`），
+    確保非串流路徑的語音輸出 0 工具標籤殘留。
+
+    注意順序：XML 剝離必須在字元狀態機**之前**對原始輸入執行。
+    狀態機（feed/flush）處理標籤時只抑制標籤本身與區塊內文，
+    區塊內容已在此步驟整段移除，避免殘留被唸出。
+    """
+    out = _strip_xml_artifacts(text)
     sanitizer = StreamingVoiceSanitizer()
-    out = sanitizer.feed(text) + sanitizer.flush()
+    out = sanitizer.feed(out) + sanitizer.flush()
     out = _BULLET_RE.sub(r"\1", out)
     return out.strip()
 
