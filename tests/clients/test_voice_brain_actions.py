@@ -1,7 +1,15 @@
 """tests/clients/test_voice_brain_actions.py
 驗證 VC-AVATAR-03：後端 Voice Brain 動作語意解析與字典映射。
 驗證 VC-AVATAR-05：雙層動作字典（基礎 + 角色簽名）、變體選擇與角色隔離。
+驗證 VC-BRAIN-INJECT-ACTION-HINT-AND-EXPAND-PAT-LEXICON-01：
+  (a) `companion.system_prompt` 的肢體動作指引必須真的進 `_build_messages`（否則 LLM 只
+      看到 invariants 第 2 條「0 括號動作描寫」的禁令，永遠不會吐動作標籤）；
+  (b) agent_rem 的摸頭詞族必須覆蓋 LLM 實際會吐的變體（摸摸頭／摸頭／被摸頭／…）。
 """
+import json
+import re
+from pathlib import Path
+
 from clients.voice_companion.akane_voice_brain import (
     ACTION_LEXICON,
     AGENT_SIGNATURE_LEXICONS,
@@ -11,6 +19,9 @@ from clients.voice_companion.akane_voice_brain import (
     map_action_keyword,
     sanitize_voice_output,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+REM_PROFILE = REPO_ROOT / "clients" / "voice_companion" / "profiles" / "rem.json"
 
 
 def test_action_lexicon_keys():
@@ -394,3 +405,198 @@ def test_respond_never_speaks_tool_tags():
     assert "write_file" not in spoken.lower()
     assert "secret content" not in spoken
     assert "秘密內容" not in spoken
+
+
+# ─────────────────────────────────────────────────────────────
+# VC-BRAIN-INJECT-ACTION-HINT-01
+# 根因：AKANE_VOICE_INVARIANTS 第 2 條嚴禁括號動作描寫，而 profile 的
+# `companion.system_prompt`（動作習慣指引）從未被注入 `_build_messages`
+# ⇒ LLM 只看到禁令、沒有任何「可以使用動作標籤」的授權 ⇒ 動作鍵永遠收不到。
+# ─────────────────────────────────────────────────────────────
+
+ACTION_HINT = "適時使用（屈膝行禮）、（摸摸頭）等動作。"
+
+ISOLATED_CONFIG = {
+    "llm": {"endpoint": "", "api_key": ""},
+    "memory": {
+        "enabled": False,
+        "session_store": {"enabled": False},
+        "sage_write": {"enabled": False},
+    },
+    "temporal": {"enabled": False},
+}
+
+
+def _make_brain(config, agent_id="agent_rem"):
+    """真大腦但 0 網路／0 data/** 讀寫（停用記憶、時序、SessionStore）。"""
+    brain = AkaneVoiceBrain(
+        llm_stream=lambda msgs: iter(["嗯。"]), config=config, agent_id=agent_id
+    )
+    assert brain.memory_retriever is None
+    assert brain.temporal_provider is None
+    assert brain.session_store is None
+    return brain
+
+
+def test_action_hint_is_injected_into_system_prompt():
+    """config 有 companion.system_prompt ⇒ 該指引必須出現在 system 訊息。"""
+    config = dict(ISOLATED_CONFIG, companion={"system_prompt": ACTION_HINT})
+    brain = _make_brain(config)
+    messages = brain._build_messages("你回來了")
+
+    system_content = messages[0]["content"]
+    assert messages[0]["role"] == "system"
+    assert "【伴侶肢體動作指引】" in system_content
+    assert ACTION_HINT in system_content
+    # 必須明示這是對 invariants 第 2 條的例外（否則與禁令互相打架）
+    assert "語音動畫驅動標籤" in system_content
+    # 指引不得污染 user 側
+    assert messages[-1] == {"role": "user", "content": "你回來了"}
+
+
+def test_action_hint_absent_config_keeps_messages_byte_identical():
+    """無 companion / 空字串 / 純空白 ⇒ 0 注入（向後相容，逐位元相同）。"""
+    baseline = _make_brain(ISOLATED_CONFIG)._build_messages("嗨")
+
+    for companion in (None, {}, {"system_prompt": ""}, {"system_prompt": "   \n  "}):
+        config = dict(ISOLATED_CONFIG)
+        if companion is not None:
+            config["companion"] = companion
+        messages = _make_brain(config)._build_messages("嗨")
+
+        assert messages == baseline
+        assert "【伴侶肢體動作指引】" not in messages[0]["content"]
+
+
+def test_action_hint_present_in_both_respond_paths():
+    """`respond` 與 `stream_respond` 兩條路徑都必須帶到指引。"""
+    seen: list[list[dict]] = []
+
+    def _stream(msgs):
+        seen.append(msgs)
+        yield "（摸摸頭）嗯。"
+
+    config = dict(ISOLATED_CONFIG, companion={"system_prompt": ACTION_HINT})
+    brain = AkaneVoiceBrain(llm_stream=_stream, config=config, agent_id="agent_rem")
+    brain.schedule_sage_commit = lambda *a, **k: None
+
+    brain.respond("嗨")
+    list(brain.stream_respond("嗨"))
+
+    assert len(seen) == 2
+    for messages in seen:
+        assert ACTION_HINT in messages[0]["content"]
+
+
+def test_rem_profile_action_hint_reaches_llm():
+    """端到端：rem.json 的 companion.system_prompt 必須真的進 system 訊息。
+
+    這是本票的原始症狀 —— profile 寫了動作指引，但 LLM 從來沒收到。
+    """
+    profile = json.loads(REM_PROFILE.read_text(encoding="utf-8"))
+    hint = profile["companion"]["system_prompt"]
+    assert hint.strip()
+
+    config = dict(ISOLATED_CONFIG, companion=profile["companion"])
+    messages = _make_brain(config)._build_messages("主人，你回來了")
+    assert hint in messages[0]["content"]
+
+
+def test_rem_profile_hint_actions_are_all_mappable():
+    """profile 指引裡列出的每個（動作）都必須能被 agent_rem 解析成 Action Key。
+
+    防「prompt 教 LLM 吐一個字典查不到的動作 ⇒ 前端拿到 None ⇒ 動畫沒反應」。
+    """
+    profile = json.loads(REM_PROFILE.read_text(encoding="utf-8"))
+    hint = profile["companion"]["system_prompt"]
+
+    actions = re.findall(r"[（(]([^（(）)]+)[）)]", hint)
+    assert actions, "指引必須至少列出一個（動作）"
+
+    unmapped = [a for a in actions if map_action_keyword(a, agent_id="agent_rem") is None]
+    assert unmapped == [], f"以下動作在 agent_rem 字典查不到：{unmapped}"
+
+
+def test_rem_profile_hint_actions_survive_streaming_sanitizer():
+    """指引中的動作標籤，在串流守門下必須被提取為 Action Key 且不被唸出。"""
+    profile = json.loads(REM_PROFILE.read_text(encoding="utf-8"))
+    hint = profile["companion"]["system_prompt"]
+    actions = re.findall(r"[（(]([^（(）)]+)[）)]", hint)
+
+    for action in actions:
+        sanitizer = StreamingVoiceSanitizer(agent_id="agent_rem")
+        streamed = sanitizer.feed(f"（{action}）") + sanitizer.flush()
+        assert streamed == "", f"（{action}）不得被唸出"
+        assert sanitizer.pop_extracted_actions() == [
+            map_action_keyword(action, agent_id="agent_rem")
+        ]
+
+
+# ─────────────────────────────────────────────────────────────
+# VC-BRAIN-EXPAND-PAT-LEXICON-01：agent_rem 摸頭詞族擴充
+# ─────────────────────────────────────────────────────────────
+
+REM_HEAD_PAT_ENJOY = (
+    "摸摸頭",
+    "摸頭",
+    "被摸頭",
+    "摸摸腦袋",
+    "揉揉頭",
+    "摸了摸頭",
+    "享受摸頭",
+    "閉上眼",
+    "安心享受",
+)
+REM_HEAD_PAT_WAIT = ("等摸頭", "乖巧等待", "給摸頭", "乖乖等摸頭")
+
+
+def test_rem_head_pat_variants_map_to_distinct_keys():
+    """LLM 實際會吐的摸頭變體必須命中（舊表對這些全部回 None）。"""
+    for kw in REM_HEAD_PAT_ENJOY:
+        assert map_action_keyword(kw, agent_id="agent_rem") == "head_pat_enjoy", kw
+    for kw in REM_HEAD_PAT_WAIT:
+        assert map_action_keyword(kw, agent_id="agent_rem") == "head_pat_wait", kw
+
+
+def test_rem_head_pat_variants_have_no_animation_gap():
+    """每個摸頭變體都必須有對應的 avatar 影片（0 影片 = 前端收到動作卻沒畫面）。"""
+    for action_key in ("head_pat_enjoy", "head_pat_wait"):
+        video = (
+            REPO_ROOT
+            / "clients"
+            / "voice_companion"
+            / "static"
+            / "avatars"
+            / f"rem_{action_key}.mp4"
+        )
+        if not video.parent.is_dir():
+            continue  # 靜態資產樹缺席（極簡 checkout）⇒ 本檢驗不適用
+        assert video.is_file(), f"缺少雷姆動作影片：{video.name}"
+
+
+def test_rem_head_pat_variants_in_streamed_dialogue():
+    """端到端：LLM 吐出（摸摸頭）時，TTS 0 殘留、動作鍵正確。"""
+    tokens = ["（摸摸頭）", "主人……雷姆很高興。"]
+    brain = AkaneVoiceBrain(
+        llm_stream=lambda msgs: iter(tokens), agent_id="agent_rem"
+    )
+    spoken = "".join(brain.stream_respond("辛苦了"))
+
+    assert spoken == "主人……雷姆很高興。"
+    assert brain.last_extracted_actions == ["head_pat_enjoy"]
+
+    wait_tokens = ["（乖乖等摸頭）", "……"]
+    wait_brain = AkaneVoiceBrain(
+        llm_stream=lambda msgs: iter(wait_tokens), agent_id="agent_rem"
+    )
+    list(wait_brain.stream_respond("過來"))
+    assert wait_brain.last_extracted_actions == ["head_pat_wait"]
+
+
+def test_rem_hand_on_chest_variants_explicit():
+    """撫胸詞族必須明列在 agent_rem（不得只靠基礎字典回退）。"""
+    rem_keys = AGENT_SIGNATURE_LEXICONS["agent_rem"]
+    for kw in ("撫胸", "摸摸胸口", "撫著胸口"):
+        assert kw in rem_keys, f"{kw} 必須明列於 agent_rem 簽名字典"
+        assert rem_keys[kw] == "hand_on_chest"
+        assert map_action_keyword(kw, agent_id="agent_rem") == "hand_on_chest"

@@ -265,11 +265,28 @@ AGENT_SIGNATURE_LEXICONS: dict[str, dict[str, str]] = {
         "鼓頰": "pout",
         "嘟嘴": "pout",
         # head_pat：等摸頭 / 享受摸頭
-        "等摸頭": "head_pat_wait",
-        "乖巧等待": "head_pat_wait",
+        # VC-BRAIN-EXPAND-PAT-LEXICON-01：LLM 實際吐出的摸頭變體遠多於舊表（摸摸頭／摸頭／
+        # 被摸頭／摸摸腦袋／揉揉頭／摸了摸頭／給摸頭／乖乖等摸頭），舊表 0 命中 ⇒ 回傳 None
+        # ⇒ 前端收不到動作。此處補齊「被動承受 ⇒ enjoy」「主動等待 ⇒ wait」兩族。
+        # 註：鍵集合不得與 agent_mai / agent_akane 的簽名鍵相交（見 test_signature_lexicon_isolation）。
+        "摸摸頭": "head_pat_enjoy",
+        "摸頭": "head_pat_enjoy",
+        "被摸頭": "head_pat_enjoy",
+        "摸摸腦袋": "head_pat_enjoy",
+        "揉揉頭": "head_pat_enjoy",
+        "摸了摸頭": "head_pat_enjoy",
         "享受摸頭": "head_pat_enjoy",
         "閉上眼": "head_pat_enjoy",
         "安心享受": "head_pat_enjoy",
+        "等摸頭": "head_pat_wait",
+        "乖巧等待": "head_pat_wait",
+        "給摸頭": "head_pat_wait",
+        "乖乖等摸頭": "head_pat_wait",
+        # hand_on_chest：撫胸 / 摸摸胸口（明列以固化雷姆簽名）
+        "撫胸": "hand_on_chest",
+        "摸摸胸口": "hand_on_chest",
+        "撫著胸口": "hand_on_chest",
+        "鬆口氣": "hand_on_chest",
         # clench_fist：握拳打氣
         "握拳": "clench_fist",
         "加油": "clench_fist",
@@ -293,6 +310,10 @@ AGENT_SIGNATURE_LEXICONS: dict[str, dict[str, str]] = {
         "捏衣角": "shy_apron_clutch",
         "揪圍裙": "shy_apron_clutch",
         "不安捏衣角": "shy_apron_clutch",
+        # VC-BRAIN-EXPAND-PAT-LEXICON-01：profile 指引原文即寫「（捏緊圍裙）」，
+        # 舊表 0 命中 ⇒ 前端收不到。連帶補齊「捏緊衣角」等自然變體。
+        "捏緊圍裙": "shy_apron_clutch",
+        "捏緊衣角": "shy_apron_clutch",
         # tear_mist_smile：帶淚微笑
         "帶淚微笑": "tear_mist_smile",
         "泛淚微笑": "tear_mist_smile",
@@ -1100,11 +1121,35 @@ class AkaneVoiceBrain:
         VC-ASR-CHANNEL-HINT-1：`source == "voice_asr"`（本輪輸入來自 ASR）時，於 persona 的
         system 訊息之後、user 訊息之前另加**一則 ephemeral system**（標 ＋ 4.2 三段 ＋ 名冊
         一行）；persona 區塊與 **user content 逐位元＝轉寫本文**。其餘任何來源（打字 fallback /
-        未知 / 未傳）**完全不注入** ⇒ 整份 messages 與改動前逐位元相同（fail-closed）。
+        未知 / 未傳）**完全不注入**。
+
+        VC-BRAIN-INJECT-ACTION-HINT-01：persona 之後追加 `companion.system_prompt` 的伴侶
+        肢體動作指引（括號動作標籤的例外條款）。config 無此鍵或值為空白 ⇒ 不注入，行為與
+        改動前逐位元相同。
         """
         sys_parts = [self.persona]
 
-        # 0. VC-UNIFY-1：認知地平線（Persona 之後、即時對話之前；fail-silent 空字串跳過）
+        # 0. VC-BRAIN-INJECT-ACTION-HINT-01：伴侶肢體動作指引（`companion.system_prompt`）
+        #    AKANE_VOICE_INVARIANTS 第 2 條「0 括號動作描寫」是**朗讀層**的守門（括號內容
+        #    不得被 TTS 唸出），但 LLM 從未被告知「括號動作是合法且被期待的輸出格式」——
+        #    因為 profile 的 `companion.system_prompt` 從來沒有進過 prompt。結果：LLM 只看到
+        #    禁令，自然 0 動作標籤 ⇒ 前端動畫／動作鍵永遠收不到訊號。
+        #    本段在 persona 之後明示「例外條款」：括號動作標籤是語音動畫驅動標籤，系統會
+        #    自動解析並從朗讀中消除（sanitize / StreamingVoiceSanitizer 已實作），故可安心使用。
+        #    fail-closed：config 無 `companion` 或無非空白 `system_prompt` ⇒ 一個字都不加，
+        #    整份 messages 與改動前逐位元相同（向後相容；見 tests/clients/test_vc_asr_channel_hint.py）。
+        companion_action_hint = (self.config.get("companion") or {}).get("system_prompt")
+        if companion_action_hint and companion_action_hint.strip():
+            sys_parts.append(
+                f"【伴侶肢體動作指引】\n"
+                f"在對話中，你可以且應當在適當時機，於句首或句中加入括號動作標籤"
+                f"（此為語音動畫驅動標籤，系統會自動解析並從朗讀中消除）。\n"
+                f"動作習慣指引：{companion_action_hint.strip()}\n"
+                f"注意：請自然且頻繁地搭配你的個性使用對應動作"
+                f"（例如高興時（微笑）、被誇獎或害羞時（摸摸頭）或（臉紅）、認真時（點頭）等）。"
+            )
+
+        # 0b. VC-UNIFY-1：認知地平線（Persona 之後、即時對話之前；fail-silent 空字串跳過）
         #    EH-4.1：utterance 僅透傳（差量實作只在主服務讀側模組一份，VC 端 0 實作）
         horizon_block = format_voice_horizon_block(self.agent_id, utterance=user_text)
         if horizon_block:
