@@ -175,12 +175,39 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     return state === "SPEAKING" && playbackDrained === false;
   }
   window.isSpeakingNow = isSpeakingNow;
+  // VC-AVATAR-STATE-LIFECYCLE-AND-EXPRESSION-01：本回合的「情緒色調」。
+  // 伺服器回合結束才派發 Mood x Intimacy 底色（avatar_action{state:"happy"|"blush"|...}），
+  // 下一回合的音訊首幀才到；把它記在這裡，讓 speaking 動畫能沿用上一回合的情緒，
+  // 而不是每次都退回 neutral。null = 尚未收到任何情緒底色 → 走 speaking 變體表（含 neutral）。
+  var lastEmotionTone = null;
+  var EMOTION_TONE_STATES = { happy: 1, blush: 1, shy: 1, concerned: 1, cold: 1, pout: 1 };
+
+  // VC-AVATAR-STATE-LIFECYCLE-AND-EXPRESSION-01：狀態機 → avatar 播放態的唯一映射。
+  // 生命週期（Task 1）：LISTENING → listening、THINKING → thinking；SPEAKING 刻意不在此觸發
+  // （動畫維持 VC-AVATAR-AUDIO-SYNC-01 的「音訊首幀 onset」，由 queuePlaybackSamples 負責）。
+  // 情緒色調（Task 2）：若上一回合收到過情緒底色，speaking 首幀直接改用該情緒的 speaking 短片
+  // （happy → speaking_happy、blush → speaking_shy、concerned/cold/pout → speaking_serious），
+  // 而非每次都是 neutral。unknown/未收到 → speaking（走變體表隨機選一）。
+  // 回傳播放態名稱字串（供 setState / queuePlaybackSamples 共用；空字串＝不需要轉場）。
+  function resolveAvatarStateFor(s) {
+    if (s === "LISTENING") { return "listening"; }
+    if (s === "THINKING") { return "thinking"; }
+    if (s === "SPEAKING" && lastEmotionTone) { return "speaking_" + lastEmotionTone; }
+    return "";
+  }
 
   function setState(s) {
     var leavingSpeaking = (state === "SPEAKING") && s !== "SPEAKING";
     state = s;
     if (workletReady && workletNode) {
       workletNode.port.postMessage({ type: "state", state: s });
+    }
+    // VC-AVATAR-STATE-LIFECYCLE-AND-EXPRESSION-01 Task 1：補上 LISTENING / THINKING 的 avatar 轉場。
+    // 病根：舊碼只在 SPEAKING 做播放圖與 avatar 處理，使用者按住麥克風（LISTENING）與
+    // 送完音訊等 LLM（THINKING）期間，畫面仍停在 idle —— 語音狀態與視覺狀態脫鉤。
+    if (s !== "SPEAKING") {
+      var avName = resolveAvatarStateFor(s);
+      if (avName) { safeAvatarCall("playState", avName); }
     }
     if (s === "SPEAKING") {
       ensurePlayback(); // 茜開始說話 → 確保播放圖存在（打字路徑也能出聲）
@@ -267,6 +294,17 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     if (window.console && console.warn) console.warn('[AvatarPlayer] ' + msg);
   }
 
+  // VC-AVATAR-STATE-LIFECYCLE-AND-EXPRESSION-01：目前角色 id（供 avatar_action 查變體表／states 表）。
+  // AvatarPlayer 未就緒時回空字串 → 呼叫端視為「查不到」，一律 fail-open 走既有路徑。
+  function currentAvatarId() {
+    try {
+      var AP = window.AvatarPlayer;
+      if (AP && typeof AP.getAvatarId === "function") { return String(AP.getAvatarId() || ""); }
+      if (AP && typeof AP.getState === "function") { return String((AP.getState() || {}).avatar || ""); }
+    } catch (e) { /* noop */ }
+    return "";
+  }
+
   // ── VC-AVATAR-4：語音生命週期 → AvatarPlayer（安全呼叫；player 未就緒時為 no-op）──
   function safeAvatarCall(method, arg) {
     try {
@@ -313,6 +351,40 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         return;
       }
 
+      // VC-AVATAR-STATE-LIFECYCLE-AND-EXPRESSION-01 Task 2：情緒 → 說話情緒態。
+      // 伺服器回合結束才派發 Mood x Intimacy 底色（happy / blush / concerned / cold / pout；
+      // 見 web_server.map_emotion_to_avatar_state），此時 reply 音訊多半還在緩衝或剛播完，
+      // 故「正在說話」的判定沿用 isSpeakingNow()（SPEAKING 且緩衝未排空），並相容舊式
+      // msg.action === "happy" 的派發格式（web_server 兩條派發路徑之一只帶 action）。
+      var rawState = (msg && msg.state !== undefined && msg.state !== null) ? String(msg.state).trim() : "";
+      var rawAction = (action !== "play" && action !== "one_shot" && action !== "action") ? action : "";
+      var emotionName = EMOTION_TONE_STATES[rawState] ? rawState : (EMOTION_TONE_STATES[rawAction] ? rawAction : "");
+      if (emotionName) {
+        // 記住本回合情緒色調：下一回合的音訊首幀（queuePlaybackSamples）會據此選
+        // speaking_happy / speaking_shy / speaking_serious，讓「說話情緒」跨回合延續，
+        // 而不是每回合都退回 neutral。idle 這類中性底不覆寫（保持上一回合的色調）。
+        lastEmotionTone = emotionName;
+        // 說話中（或播放緩衝仍有音訊）→ 立刻換成該情緒的 speaking 短片（loop:true），
+        // 讓「情緒」在聲音還在播的當下就反映在畫面上。
+        // 未說話 → 維持既有「情緒底色」行為：由下方 playState 播放靜態情緒態。
+        if (isSpeakingNow()) {
+          var speakingForEmotion = "speaking_" + emotionName;
+          if (!resolveState(currentAvatarId(), speakingForEmotion) &&
+              !(AVATAR_ACTION_VARIANTS[currentAvatarId()] &&
+                AVATAR_ACTION_VARIANTS[currentAvatarId()][speakingForEmotion])) {
+            // 該角色沒有對應的 speaking 情緒片（例：akane / mai）→ 沿用該情緒的靜態態，
+            // 不因缺少 speaking_* 資產而靜默不播（fail-open 回既有行為）。
+            speakingForEmotion = emotionName;
+          }
+          if (AP.playState(speakingForEmotion) !== false) {
+            // 已即時反映情緒 → 不再往下走靜態態分支（避免同一則訊息切兩次片）。
+            // duration_ms 一律不套用：說話情緒短片是 loop 的「持續態」，收尾由
+            // onPlaybackDrained() / setState("IDLE") → resetToIdle() 負責。
+            return;
+          }
+        }
+      }
+
       // 3) 交給 AvatarPlayer。回傳 false（未知狀態）時，它的 fail-closed 已處理完畢，這裡不再動作。
       if (AP.playState(msg && msg.state) === false) { return; }
 
@@ -348,6 +420,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     pttActive = true;
     flushPlayback("sendPttStart");  // 新回合開始 → 中斷上一輪殘音（barge-in 語意）
     if ($("errorBox").dataset.persistent !== "1") { setError("", false); }  // 下一個 utterance 開始 → 自動清除暫態錯誤
+    // VC-AVATAR-STATE-LIFECYCLE-AND-EXPRESSION-01 Task 1：按下麥克風／空白鍵的「同一刻」就把畫面切到
+    // listening，不等伺服器回 state:"LISTENING"（WebSocket 來回 + 伺服器處理延遲會讓 mic 已收音、
+    // 畫面卻還停在 idle）。此處不呼叫 setState()，避免本地提早覆寫語音狀態機（state 仍由伺服器權威決定）；
+    // 伺服器隨後補送的 LISTENING 會再打一次同一態，switchTo 具冪等性、無閃動。
+    safeAvatarCall("playState", "listening");
     send({ type: "ptt_start" });
   }
   function sendPttStop() { if (!pttActive) { return; } pttActive = false; send({ type: "ptt_stop" }); }
@@ -607,8 +684,17 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         avatarState = (AP0.getState() || {}).state;
       }
     } catch (e0) { avatarState = null; }
-    if (avatarState !== "speaking") {
-      safeAvatarCall("playState", "speaking");
+    // VC-AVATAR-STATE-LIFECYCLE-AND-EXPRESSION-01 Task 2：onset 判定改看「目前是否是 speaking 家族」
+    // （speaking / speaking_happy / speaking_shy / speaking_serious）。
+    // 病根：舊碼只比對精確字串 "speaking"，若 avatar 已因情緒底色停在 speaking_happy，
+    // 這裡會判定「還沒開始說話」而再次 playState("speaking") —— playState 每次都重新抽變體再載入影片
+    // ⇒ 同一回合每幀都可能換片重載（抖動、動畫與聲音脫鉤）。
+    // 修正：只要是 speaking 家族就視為「已在說話」，不重複切換；尚未進入 speaking 家族時，
+    // 情緒色調（lastEmotionTone，見 onAvatarAction）優先於隨機變體 —— 讓「上一回合的情緒」
+    // 延續到本回合的說話動畫，而不是每回合都退回 neutral。
+    if (!/^speaking/.test(String(avatarState || ""))) {
+      var onsetState = resolveAvatarStateFor("SPEAKING") || "speaking";
+      safeAvatarCall("playState", onsetState);
     }
     roundQueuedSamples += f32.length;
     console.log("[Playback] queued +" + (f32.length / (audioCtx ? audioCtx.sampleRate : 44100)).toFixed(2) +
@@ -1357,6 +1443,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
     getState: function () {
       return { avatar: currentAvatar, state: currentState, activeIndex: activeIndex };
+    },
+
+    // VC-AVATAR-STATE-LIFECYCLE-AND-EXPRESSION-01：公開目前 avatar id。
+    // 外層 IIFE（avatar_action 分派）與 AvatarPlayer 無共享作用域，只能經此查表；
+    // getState().avatar 亦可得，但語意上這是「目前角色」的正式查詢點。
+    getAvatarId: function () {
+      return currentAvatar;
     },
 
     // 便利查詢（不屬於規格，但讓手動驗收與未來的標籤對照更好用）
