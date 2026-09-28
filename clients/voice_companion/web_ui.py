@@ -963,15 +963,26 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
   // 3a. Avatar registry
   var AVATAR_REGISTRY = {
-    rem:   { id:'rem',   name:'雷姆',    idle:'/static/avatars/rem.mp4',   states:{
-      idle:{ url:'/static/avatars/rem.mp4',   loop:true, fallbackToIdle:true },
-      // VC-AVATAR-01：映射表擴充為資產矩陣命名；若專屬短片尚未就緒，由 switchTo 的 onerror 自動優雅降級回 idle
-      speaking:{ url:'/static/avatars/rem_speaking.mp4', loop:false, fallbackToIdle:true },
-      happy:{ url:'/static/avatars/rem_happy.mp4',       loop:true, fallbackToIdle:true },
-      concerned:{ url:'/static/avatars/rem_concerned.mp4', loop:true, fallbackToIdle:true },
-      cold:{ url:'/static/avatars/rem_cold.mp4',        loop:true, fallbackToIdle:true },
-      blush:{ url:'/static/avatars/rem_blush.mp4',       loop:true, fallbackToIdle:true },
-      pout:{ url:'/static/avatars/rem_pout.mp4',        loop:true, fallbackToIdle:true }
+    rem:   { id:'rem',   name:'雷姆',    idle:'/static/avatars/rem_idle_normal.mp4',   states:{
+      // VC-AVATAR-REM-8VIDEOS：雷姆 8 支專屬短片已就位，映射表改指向真實資產。
+      // 外層 idle（resetToIdle / bootstrap / switchTo 失敗回落）一律走 rem_idle_normal.mp4；
+      // 它若也載入失敗，才由 SAFE_FALLBACK_IDLE 退到通用的 rem.mp4（最後一道保險，絕不留黑畫面）。
+      idle:{ url:'/static/avatars/rem_idle_normal.mp4',   loop:true,  fallbackToIdle:true },
+      idle_look_around:{ url:'/static/avatars/rem_idle_look_around.mp4', loop:false, fallbackToIdle:true },
+      listening:{ url:'/static/avatars/rem_listening.mp4', loop:true,  fallbackToIdle:true },
+      thinking:{ url:'/static/avatars/rem_thinking.mp4',   loop:true,  fallbackToIdle:true },
+      speaking:{ url:'/static/avatars/rem_speaking_neutral.mp4', loop:false, fallbackToIdle:true },
+      speaking_happy:{ url:'/static/avatars/rem_speaking_happy.mp4',   loop:false, fallbackToIdle:true },
+      speaking_shy:{ url:'/static/avatars/rem_speaking_shy.mp4',       loop:false, fallbackToIdle:true },
+      speaking_serious:{ url:'/static/avatars/rem_speaking_serious.mp4', loop:false, fallbackToIdle:true },
+      // 情緒態沿用 speaking 家族短片（雷姆目前沒有獨立情緒短片）
+      happy:{ url:'/static/avatars/rem_speaking_happy.mp4',   loop:false, fallbackToIdle:true },
+      // concerned 必須保留：web_server.py 的 map_emotion_to_avatar_state 會推送
+      // state:"concerned"（mood<0、或 middle band），缺鍵會走 fail-closed 而靜默退回 idle。
+      concerned:{ url:'/static/avatars/rem_speaking_serious.mp4', loop:false, fallbackToIdle:true },
+      blush:{ url:'/static/avatars/rem_speaking_shy.mp4',     loop:false, fallbackToIdle:true },
+      cold:{ url:'/static/avatars/rem_speaking_serious.mp4',  loop:false, fallbackToIdle:true },
+      pout:{ url:'/static/avatars/rem_speaking_serious.mp4',  loop:false, fallbackToIdle:true }
     } },
     akane: { id:'akane', name:'黑川茜',  idle:'/static/avatars/akane.mp4', states:{
       idle:{ url:'/static/avatars/akane.mp4', loop:true, fallbackToIdle:true },
@@ -1010,6 +1021,22 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       adjust_hair:['adjust_hair']
     },
     rem: {
+      // VC-AVATAR-REM-8VIDEOS：基礎播放態也納入變體表，讓每回合說話有情緒變化。
+      // speaking 四選一（neutral/happy/shy/serious），idle 兩選一（normal/look_around）。
+      speaking:    ['speaking_neutral', 'speaking_happy', 'speaking_shy', 'speaking_serious'],
+      speaking_happy:  ['speaking_happy'],
+      speaking_shy:    ['speaking_shy'],
+      speaking_serious:['speaking_serious'],
+      idle:        ['idle_normal', 'idle_look_around'],
+      idle_look_around: ['idle_look_around'],
+      listening:   ['listening'],
+      thinking:    ['thinking'],
+      happy:       ['speaking_happy'],
+      concerned:   ['speaking_serious'],
+      blush:       ['speaking_shy'],
+      cold:        ['speaking_serious'],
+      pout:        ['speaking_serious'],
+      // 簽名動作（維持既有，影片未就位時由 onerror 優雅降級）
       curtsy:      ['curtsy'],
       pray_hands:  ['pray_hands'],
       pout_jealous:['pout_jealous'],
@@ -1018,6 +1045,14 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   };
 
   var DEFAULT_AVATAR_ID = 'akane';
+
+  // VC-AVATAR-REM-8VIDEOS：各角色的「最後一道保險」底層片。
+  // 僅在專屬 idle 也載入失敗時使用（例：rem 專屬 8 片不存在時退到通用 rem.mp4）。
+  var SAFE_FALLBACK_IDLE = {
+    rem:   '/static/avatars/rem.mp4',
+    akane: '/static/avatars/akane.mp4',
+    mai:   '/static/avatars/mai.mp4'
+  };
 
   var stage = document.getElementById('avatarStage');
   var videoA = document.getElementById('avatar-video-a');
@@ -1046,6 +1081,39 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     return st;
   }
 
+  // VC-AVATAR-REM-8VIDEOS：從 AVATAR_ACTION_VARIANTS 取出某狀態的變體宣告，正規化為短名陣列。
+  // 支援三種寫法：陣列短名 / 單一字串短名 / { variants:[...] } 物件。
+  // 注意：傳入的宣告若已含 url 的物件（states 內的完整態）一律不處理 —— 那不是變體。
+  function normalizeVariants(raw) {
+    if (Array.isArray(raw)) {
+      return raw.filter(function (v) { return typeof v === 'string' && v; });
+    }
+    if (typeof raw === 'string' && raw) return [raw];
+    if (raw && typeof raw === 'object' && Array.isArray(raw.variants)) {
+      return raw.variants.filter(function (v) { return typeof v === 'string' && v; });
+    }
+    return [];
+  }
+
+  // 為基礎播放態挑一個變體（每回合隨機，帶情緒變化）。
+  // 'idle' 刻意不參與輪替：idle 是每次切換失敗 / 一次性動作播畢的共同回落目標，
+  // 若隨機化會讓 resetToIdle() 的結果不確定，且 short loop 會反覆重播造成閃動。
+  var VARIANT_PLAY_STATES = { speaking: true, listening: true, thinking: true };
+
+  function pickStateConfig(avatarId, stateName) {
+    var st = resolveState(avatarId, stateName);
+    if (!VARIANT_PLAY_STATES[stateName]) return st;
+
+    var table = AVATAR_ACTION_VARIANTS[avatarId];
+    var variants = table ? normalizeVariants(table[stateName]) : [];
+    if (variants.length === 0) return st;   // 無變體宣告 → 沿用 states 內的定義（向後相容）
+
+    var chosen = variants[Math.floor(Math.random() * variants.length)];
+    var url = '/static/avatars/' + avatarId + '_' + chosen + '.mp4';
+    // 變體短片一律走一次性播放，播完回落到 speaking 底層態
+    return { url: url, loop: false, fallbackToIdle: true };
+  }
+
   function clearOldBuffer(el) {
     // 釋放已解碼緩衝：暫停 + 清 src（影片記憶體不回收會累積）
     try {
@@ -1072,6 +1140,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     var crossed = false;
 
     // VC-AVATAR-01：資源加載失敗時（如短片尚未就緒），自動優雅降級回 idle，無黑畫面、無破圖
+    // VC-AVATAR-REM-8VIDEOS：多了第二層保險 —— 主 idle 也失敗時退到 SAFE_FALLBACK_IDLE。
     function onError() {
       cleanupListeners();
       if (myToken !== switchToken) return;
@@ -1079,9 +1148,17 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       if (config.url !== idleUrl && idleUrl) {
         warn('影片加載失敗，優雅降級回底層態：' + config.url);
         restoreBaseState();
-      } else {
-        warn('idle 影片加載失敗：' + config.url);
+        return;
       }
+      // 連 idle 都失敗：再退一層到通用安全片，避免整個舞台空白
+      var safeUrl = SAFE_FALLBACK_IDLE[currentAvatar];
+      if (config.url !== safeUrl && safeUrl) {
+        warn('idle 影片加載失敗，退到安全底：' + config.url + ' -> ' + safeUrl);
+        currentState = 'idle';
+        switchTo({ url: safeUrl, loop: true }, false);
+        return;
+      }
+      warn('idle 影片加載失敗：' + config.url);
     }
 
     function cleanupListeners() {
@@ -1147,12 +1224,15 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   function restoreBaseState() {
     // 依語音通話狀態機（state）決定回落目標：
     // 若伴侶當前仍在說話（SPEAKING）且未排空，平滑淡回 speaking 短片；否則平滑淡回 idle。
+    // VC-AVATAR-REM-8VIDEOS：speaking 落點會經 pickStateConfig 從變體表隨機選一支，
+    // 因此「這回合說什麼情緒」與「上回合用哪一支」無關，每回合都有變化。
     try {
       if (typeof window.isSpeakingNow === "function" && window.isSpeakingNow()) {
         window.AvatarPlayer.playState("speaking");
         return;
       }
     } catch (e) { /* noop */ }
+    // 不在說話：一律淡回 idle（行為與改動前一致，speaking 家族播畢亦走此路）。
     resetToIdle();
   }
 
@@ -1179,7 +1259,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     },
 
     playState: function (stateName) {
-      var st = resolveState(currentAvatar, stateName);
+      // VC-AVATAR-REM-8VIDEOS：speaking / listening / thinking 會先嘗試從變體表取一支短片，
+      // 取不到才落回 states 內的靜態定義；兩者皆無 → fail closed 維持待機。
+      var st = pickStateConfig(currentAvatar, stateName);
       if (!st) {
         // fail closed：未知狀態只警告，繼續播 idle，畫面絕不空白
         warn('未知狀態 "' + stateName + '"（avatar=' + currentAvatar + '），維持待機');
