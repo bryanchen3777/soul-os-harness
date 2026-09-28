@@ -187,6 +187,17 @@ BASE_ACTION_LEXICON: dict[str, str] = {
     "無奈": "shrug",
     "前傾": "lean_forward",
     "湊近": "lean_forward",
+    # VC-AVATAR-REM-40VIDEOS：基礎字典補齊（雷姆 40 支短片新增動作的通用關鍵字）。
+    # 這些字在基礎字典一律對應「通用動作鍵」；角色若有專屬短片，由其簽名字典（較高優先序）接手。
+    "握拳": "clench_fist",
+    "掩嘴": "cover_mouth",
+    "摀嘴": "cover_mouth",
+    "抓圍裙": "shy_apron_clutch",
+    "捏衣角": "shy_apron_clutch",
+    "捧頰": "hand_on_cheek",
+    "摸臉": "hand_on_cheek",
+    "帶淚微笑": "tear_mist_smile",
+    "含淚微笑": "tear_mist_smile",
 }
 
 # VC-AVATAR-05: 角色專屬簽名動作字典（Per-Agent Signature Lexicon）
@@ -209,25 +220,86 @@ AGENT_SIGNATURE_LEXICONS: dict[str, dict[str, str]] = {
         "耳語": "lean_in",
         "壓迫感": "lean_in",
     },
+    # VC-AVATAR-REM-40VIDEOS：雷姆 40 支專屬短片對應的簽名動作關鍵字。
+    # 命中優先序：完全命中 → 最長鍵子字串（見 _match_lexicon），故「屈膝行禮」優先於「屈膝」。
     "agent_rem": {
+        # curtsy：屈膝行禮 / 女僕禮
         "行禮": "curtsy",
         "屈膝": "curtsy",
         "女僕禮": "curtsy",
+        "屈膝行禮": "curtsy",
+        # pray_hands：雙手合十
         "合十": "pray_hands",
         "雙手合十": "pray_hands",
         "祈禱": "pray_hands",
         "深情注視": "pray_hands",
+        # tilt_smile：歪頭笑
         "歪頭笑": "tilt_smile",
         "治癒笑": "tilt_smile",
         "甜甜地笑": "tilt_smile",
+        # pout：鼓頰 / 嘟嘴 / 吃醋（雷姆專屬 → pout_jealous 變體家族）
         "吃醋": "pout_jealous",
         "鼓起臉頰": "pout_jealous",
         "小怨念": "pout_jealous",
+        "鼓頰": "pout",
+        "嘟嘴": "pout",
+        # head_pat：等摸頭 / 享受摸頭
         "等摸頭": "head_pat_wait",
         "乖巧等待": "head_pat_wait",
         "享受摸頭": "head_pat_enjoy",
         "閉上眼": "head_pat_enjoy",
         "安心享受": "head_pat_enjoy",
+        # clench_fist：握拳打氣
+        "握拳": "clench_fist",
+        "加油": "clench_fist",
+        "下定決心": "clench_fist",
+        "打氣": "clench_fist",
+        "鼓勁": "clench_fist",
+        # cover_mouth：摀嘴偷笑
+        "摀嘴": "cover_mouth",
+        "掩嘴": "cover_mouth",
+        "偷笑": "cover_mouth",
+        "掩口": "cover_mouth",
+        # hand_on_cheek：捧頰 / 摸臉
+        # 注意：「托腮」刻意不收錄 —— 它是 agent_akane 的簽名詞（→ finger_chin），
+        # 收進來會破壞三角色簽名字典鍵集合兩兩不相交的隔離契約
+        # （tests/clients/test_voice_brain_actions.py::test_signature_lexicon_isolation）。
+        "捧頰": "hand_on_cheek",
+        "摸臉": "hand_on_cheek",
+        "輕撫臉頰": "hand_on_cheek",
+        # shy_apron_clutch：抓圍裙 / 捏衣角
+        "抓圍裙": "shy_apron_clutch",
+        "捏衣角": "shy_apron_clutch",
+        "揪圍裙": "shy_apron_clutch",
+        "不安捏衣角": "shy_apron_clutch",
+        # tear_mist_smile：帶淚微笑
+        "帶淚微笑": "tear_mist_smile",
+        "泛淚微笑": "tear_mist_smile",
+        "含淚微笑": "tear_mist_smile",
+        "感動": "tear_mist_smile",
+        # sigh：嘆氣（雷姆專屬 → sigh 短片；基礎字典的「嘆氣」為 cold）
+        "嘆氣": "sigh",
+        "輕嘆": "sigh",
+        "呼出一口氣": "sigh",
+        # clap / shrug / lean_forward / wave：與基礎字典同值，明列以固化雷姆簽名
+        "拍手": "clap",
+        "鼓掌": "clap",
+        "聳肩": "shrug",
+        "無奈": "shrug",
+        "前傾": "lean_forward",
+        "湊近": "lean_forward",
+        "揮手": "wave",
+        "招手": "wave",
+        "告別": "wave",
+        "再見": "wave",
+        # shake_head / nod：否認 / 贊同
+        "搖頭": "shake_head",
+        "不是的": "shake_head",
+        "否認": "shake_head",
+        "點頭": "nod",
+        "嗯": "nod",
+        "理解": "nod",
+        "贊同": "nod",
     },
     "agent_akane": {
         "托下巴": "finger_chin",
