@@ -184,7 +184,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     }
     if (s === "SPEAKING") {
       ensurePlayback(); // 茜開始說話 → 確保播放圖存在（打字路徑也能出聲）
-      safeAvatarCall("playState", "speaking");
+      // VC-AVATAR-AUDIO-SYNC-01：**不在此處觸發 speaking 動畫**。
+      // 病根：伺服器在 _run_reply 開頭（LLM 首字之前）就宣告 SPEAKING，首個 PCM 幀要 ~3.0s 後才到；
+      // 若在此呼叫 playState("speaking")，avatar 會在 TTFT/TTS 沉默窗內就開始動嘴（動畫與聲音不同步）。
+      // 修正：speaking 動畫改由「首個音訊幀真正入列」的 queuePlaybackSamples() 觸發 —— 那是聲音即將播放的
+      // 精確時刻（同一時刻 playbackDrained 才設回 false）。等待音訊期間維持前一個狀態（THINKING → thinking
+      // 短片／IDLE → idle），絕不提前 speaking。
+      // 回落仍由 onPlaybackDrained()（緩衝歸零）與 setState("IDLE")（resetToIdle）負責，語意不變。
     }
     if (leavingSpeaking) {
       if (barging) {
@@ -589,7 +595,21 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     playbackActive = true;
     playbackDrained = false;
     cancelTailTimer();
-    safeAvatarCall("playState", "speaking");
+    // VC-AVATAR-AUDIO-SYNC-01：speaking 動畫的唯一觸發點 —— 首個（或任何）音訊幀入列的瞬間，
+    // 也就是聲音即將從喇叭出來的那一刻。setState("SPEAKING") 只宣告狀態、不再提前驅動 avatar。
+    // 已在 speaking 態則不重複切換（避免同一回合每幀都重播 speaking 短片開頭造成抖動）。
+    // 狀態來源為 AvatarPlayer.getState()（單一事實來源）；player 未就緒或讀不到時回 undefined，
+    // 此時照常觸發一次（維持既有「首幀即出聲」行為，不因觀測失敗而靜默不播動畫）。
+    var avatarState = null;
+    try {
+      var AP0 = window.AvatarPlayer;
+      if (AP0 && typeof AP0.getState === "function") {
+        avatarState = (AP0.getState() || {}).state;
+      }
+    } catch (e0) { avatarState = null; }
+    if (avatarState !== "speaking") {
+      safeAvatarCall("playState", "speaking");
+    }
     roundQueuedSamples += f32.length;
     console.log("[Playback] queued +" + (f32.length / (audioCtx ? audioCtx.sampleRate : 44100)).toFixed(2) +
       "s chunk at " + new Date().toISOString() + " (round total ~" +
@@ -971,22 +991,27 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       idle_look_around:{ url:'/static/avatars/rem_idle_look_around.mp4', loop:false, fallbackToIdle:true },
       listening:{ url:'/static/avatars/rem_listening.mp4', loop:true,  fallbackToIdle:true },
       thinking:{ url:'/static/avatars/rem_thinking.mp4',   loop:true,  fallbackToIdle:true },
-      speaking:{ url:'/static/avatars/rem_speaking_neutral.mp4', loop:false, fallbackToIdle:true },
-      speaking_happy:{ url:'/static/avatars/rem_speaking_happy.mp4',   loop:false, fallbackToIdle:true },
-      speaking_shy:{ url:'/static/avatars/rem_speaking_shy.mp4',       loop:false, fallbackToIdle:true },
-      speaking_serious:{ url:'/static/avatars/rem_speaking_serious.mp4', loop:false, fallbackToIdle:true },
+      // VC-AVATAR-AUDIO-SYNC-01：speaking 家族一律 loop:true。
+      // 病根：這些短片僅 5.18s，loop:false 會在 5.18s 時觸發 onEnded → restoreBaseState()，
+      // 使 10s/20s 的長句中途掉回 idle（動畫早於語音結束 = 不同步、且抖動）。
+      // 修正：說話期間無限循環；真正結束由 onPlaybackDrained()（音訊緩衝歸零）或
+      // setState("IDLE") → resetToIdle() 在聲音停止的同一刻平滑收尾。
+      speaking:{ url:'/static/avatars/rem_speaking_neutral.mp4', loop:true, fallbackToIdle:true },
+      speaking_happy:{ url:'/static/avatars/rem_speaking_happy.mp4',   loop:true, fallbackToIdle:true },
+      speaking_shy:{ url:'/static/avatars/rem_speaking_shy.mp4',       loop:true, fallbackToIdle:true },
+      speaking_serious:{ url:'/static/avatars/rem_speaking_serious.mp4', loop:true, fallbackToIdle:true },
       // 情緒態沿用 speaking 家族短片（雷姆目前沒有獨立情緒短片）
-      happy:{ url:'/static/avatars/rem_speaking_happy.mp4',   loop:false, fallbackToIdle:true },
+      happy:{ url:'/static/avatars/rem_speaking_happy.mp4',   loop:true, fallbackToIdle:true },
       // concerned 必須保留：web_server.py 的 map_emotion_to_avatar_state 會推送
       // state:"concerned"（mood<0、或 middle band），缺鍵會走 fail-closed 而靜默退回 idle。
-      concerned:{ url:'/static/avatars/rem_speaking_serious.mp4', loop:false, fallbackToIdle:true },
-      blush:{ url:'/static/avatars/rem_speaking_shy.mp4',     loop:false, fallbackToIdle:true },
-      cold:{ url:'/static/avatars/rem_speaking_serious.mp4',  loop:false, fallbackToIdle:true },
-      pout:{ url:'/static/avatars/rem_speaking_serious.mp4',  loop:false, fallbackToIdle:true }
+      concerned:{ url:'/static/avatars/rem_speaking_serious.mp4', loop:true, fallbackToIdle:true },
+      blush:{ url:'/static/avatars/rem_speaking_shy.mp4',     loop:true, fallbackToIdle:true },
+      cold:{ url:'/static/avatars/rem_speaking_serious.mp4',  loop:true, fallbackToIdle:true },
+      pout:{ url:'/static/avatars/rem_speaking_serious.mp4',  loop:true, fallbackToIdle:true }
     } },
     akane: { id:'akane', name:'黑川茜',  idle:'/static/avatars/akane.mp4', states:{
       idle:{ url:'/static/avatars/akane.mp4', loop:true, fallbackToIdle:true },
-      speaking:{ url:'/static/avatars/akane_speaking.mp4', loop:false, fallbackToIdle:true },
+      speaking:{ url:'/static/avatars/akane_speaking.mp4', loop:true, fallbackToIdle:true },
       happy:{ url:'/static/avatars/akane_happy.mp4',       loop:true, fallbackToIdle:true },
       concerned:{ url:'/static/avatars/akane_concerned.mp4', loop:true, fallbackToIdle:true },
       cold:{ url:'/static/avatars/akane_cold.mp4',        loop:true, fallbackToIdle:true },
@@ -995,7 +1020,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     } },
     mai:   { id:'mai',   name:'櫻島麻衣', idle:'/static/avatars/mai.mp4',   states:{
       idle:{ url:'/static/avatars/mai.mp4',   loop:true, fallbackToIdle:true },
-      speaking:{ url:'/static/avatars/mai_speaking.mp4', loop:false, fallbackToIdle:true },
+      speaking:{ url:'/static/avatars/mai_speaking.mp4', loop:true, fallbackToIdle:true },
       happy:{ url:'/static/avatars/mai_happy.mp4',       loop:true, fallbackToIdle:true },
       concerned:{ url:'/static/avatars/mai_concerned.mp4', loop:true, fallbackToIdle:true },
       cold:{ url:'/static/avatars/mai_cold.mp4',        loop:true, fallbackToIdle:true },
@@ -1100,6 +1125,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   // 若隨機化會讓 resetToIdle() 的結果不確定，且 short loop 會反覆重播造成閃動。
   var VARIANT_PLAY_STATES = { speaking: true, listening: true, thinking: true };
 
+  // VC-AVATAR-AUDIO-SYNC-01：基礎播放態挑變體，但「speaking 家族」恆為循環態。
   function pickStateConfig(avatarId, stateName) {
     var st = resolveState(avatarId, stateName);
     if (!VARIANT_PLAY_STATES[stateName]) return st;
@@ -1110,8 +1136,10 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
     var chosen = variants[Math.floor(Math.random() * variants.length)];
     var url = '/static/avatars/' + avatarId + '_' + chosen + '.mp4';
-    // 變體短片一律走一次性播放，播完回落到 speaking 底層態
-    return { url: url, loop: false, fallbackToIdle: true };
+    // VC-AVATAR-AUDIO-SYNC-01：基礎播放態（speaking/listening/thinking）一律無限循環。
+    // 這些是「持續中」的狀態，不是一次性動作：若 loop:false 且被當成 one-shot 處理，
+    // 播畢的 ended 會提前把畫面拉回 idle。收尾一律交給 onPlaybackDrained() / resetToIdle()。
+    return { url: url, loop: true, fallbackToIdle: true };
   }
 
   function clearOldBuffer(el) {
@@ -1268,7 +1296,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         return false;
       }
       currentState = stateName;
-      switchTo({ url: st.url, loop: !!st.loop }, !st.loop);
+      // VC-AVATAR-AUDIO-SYNC-01：speaking 家族強制 loop（單一收斂點）——
+      // 即使 states 表或變體表誤寫 loop:false，也不得讓 5.18s 短片中途把畫面拉回 idle。
+      // 一次性動作（idle_look_around 等）不受影響，其收尾仍走 onEnded → restoreBaseState()。
+      var loopIt = !!st.loop || /^speaking/.test(stateName);
+      switchTo({ url: st.url, loop: loopIt }, !loopIt);
       return true;
     },
 
