@@ -231,8 +231,19 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       // 若音訊圖被瀏覽器凍結（suspended）則喇叭不會有輸出 → 直接視為已排空，避免 auto-vad 永久卡死。
       if (audioCtx && audioCtx.state === "suspended") { playbackDrained = true; }
       autoVoiceMs = 0;
+      // VC-AVATAR-FIX-SPEAKING-STATE-RESET-01：IDLE ≠ 瀏覽器已播完。
+      // 病根：伺服器端 _finish(task_gen) 是「把 PCM chunk 推給 WebSocket → drain() → 立刻 _set_state(IDLE)」，
+      // 所以那則 {"type":"state","state":"IDLE"} 往往在首個音訊幀入列後 10ms 內就抵達瀏覽器；
+      // 此時 queuePlaybackSamples() 才剛把 speaking 短片切上去，這裡若無條件 resetToIdle()，
+      // 就會立刻把說話動畫覆寫回 idle —— 使用者看到的就是「嘴巴剛動一下就卡回待機」（或根本沒動）。
+      // 修正：IDLE 只在「播放緩衝確實已排空」時才回落動畫。緩衝仍有音訊（playbackDrained === false）
+      // 代表聲音還在從喇叭出來，動畫必須維持 speaking；真正的收尾由音訊時鐘 onPlaybackDrained()
+      // （available == 0）負責呼叫 resetToIdle()。使用者主動打斷（barge）已於上方把 playbackDrained
+      // 設回 true，故打斷路徑仍會即時回落，語意不變。
       if (s === "IDLE") {
-        safeAvatarCall("resetToIdle");
+        if (playbackDrained) {
+          safeAvatarCall("resetToIdle");
+        }
       }
     }
     var dot = $("statusDot"), txt = $("statusText");
@@ -855,7 +866,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   function flushPlayback(origin) {
     // VC-AVATAR-4：清空播放緩衝＝聲音立即停止 → 視覺同步回待機。
     // resetToIdle 具冪等性（已是 idle 時為安全 no-op），故對所有 origin 一律呼叫（Owner D2 = option a）。
+    // VC-AVATAR-FIX-SPEAKING-STATE-RESET-01：這條路徑（使用者插話／手動打斷／新回合開頭）與
+    // setState("IDLE") 的語意不同 —— 這裡是真的把緩衝砍掉、聲音當下就停，所以動畫必須立刻回待機。
+    // 因此 resetToIdle 一律無條件呼叫（不得套用 setState 的 playbackDrained 閘門），
+    // 同時把狀態時鐘歸零，讓後續的 IDLE 判定與開麥錨點都回到「已排空」。
     safeAvatarCall("resetToIdle");
+    playbackActive = false;
+    playbackDrained = true;
     // VC-VAD-TIMING-1 診斷：記錄 flush 的調用源頭（追蹤是否由真實打斷引起，而非回授自掐）
     console.log("[Playback] flushPlayback triggered by " + (origin || "unknown") + " at " + new Date().toISOString());
     isBuffering = true;
