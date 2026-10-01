@@ -366,6 +366,44 @@ AGENT_SIGNATURE_LEXICONS: dict[str, dict[str, str]] = {
         "嗯": "nod",
         "理解": "nod",
         "贊同": "nod",
+        # VC-AVATAR-REM-44VIDEOS-FULL-INTEGRATION：44 支短片的最後 4 個簽名動作。
+        # 只放簽名字典、不放 BASE_ACTION_LEXICONS —— 這 4 支片只有雷姆有，其他角色拿到
+        # 通用鍵只會指向不存在的資產（前端 onerror 降級＝白動作）。
+        # 鍵集合仍須與 agent_mai / agent_akane 兩兩不相交（見 test_signature_lexicon_isolation）。
+        # protective_alert：戒備 / 警戒 —— 護住主人的高優先警覺瞬態
+        "保護Bryan": "protective_alert",
+        "戒備": "protective_alert",
+        "保護主人": "protective_alert",
+        "警戒": "protective_alert",
+        "警惕": "protective_alert",
+        "防備": "protective_alert",
+        # protective_concern：認真逼視的關切 —— 對象是主人逞強時的雷姆招牌
+        "不要逞強": "protective_concern",
+        "逞強": "protective_concern",
+        "擔心逼視": "protective_concern",
+        "認真逼視": "protective_concern",
+        "請不要對雷姆逞強": "protective_concern",
+        "逼視": "protective_concern",
+        # silence_compress：克制靜默 / 無言陪伴 —— 沉重到說不出口時的壓抑持姿
+        "沉重靜默": "silence_compress",
+        "深沉靜默": "silence_compress",
+        "保持靜默": "silence_compress",
+        "克制靜默": "silence_compress",
+        "壓抑": "silence_compress",
+        "無言陪伴": "silence_compress",
+        "安靜陪伴": "silence_compress",
+        # acceptance_smile：溫柔接納 / 釋懷微笑 —— 心疼之後終於放下的瞬態
+        "溫柔接納": "acceptance_smile",
+        "釋懷微笑": "acceptance_smile",
+        "接納微笑": "acceptance_smile",
+        "安心微笑": "acceptance_smile",
+        "溫柔釋懷": "acceptance_smile",
+        "心疼微笑": "acceptance_smile",
+        # tilt_head：BASE 字典既有「歪頭 → tilt_head」，但雷姆簽名未收錄，
+        # 「歪著頭」這類口語變體也查不到。此處明列，讓歪頭動作固定落到
+        # AVATAR_ACTION_VARIANTS.rem.tilt_head → rem_tilt_smile_warm.mp4。
+        "歪頭": "tilt_head",
+        "歪著頭": "tilt_head",
     },
     "agent_akane": {
         "托下巴": "finger_chin",

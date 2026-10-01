@@ -1132,7 +1132,14 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       sigh:{ url:'/static/avatars/rem_sigh.mp4',                    loop:false, fallbackToIdle:true },
       surprise:{ url:'/static/avatars/rem_surprise_gasp.mp4',       loop:false, fallbackToIdle:true },
       tear_mist_smile:{ url:'/static/avatars/rem_tear_mist_smile.mp4', loop:false, fallbackToIdle:true },
-      wave:{ url:'/static/avatars/rem_wave_hello.mp4',              loop:false, fallbackToIdle:true }
+      wave:{ url:'/static/avatars/rem_wave_hello.mp4',              loop:false, fallbackToIdle:true },
+      // VC-AVATAR-REM-44VIDEOS-FULL-INTEGRATION：最後 4 支孤兒短片接線完畢，44 支全數有歸屬。
+      // protective_concern / silence_compress 是「持續中的克制姿態」（逼視關切、沉重無言）⇒ loop:true；
+      // protective_alert / acceptance_smile 是「一次性情緒瞬态」（警戒防禦、溫柔釋懷）⇒ loop:false。
+      protective_concern:{ url:'/static/avatars/rem_protective_concern.mp4', loop:true,  fallbackToIdle:true },
+      silence_compress:{ url:'/static/avatars/rem_silence_compress.mp4', loop:true,  fallbackToIdle:true },
+      protective_alert:{ url:'/static/avatars/rem_protective_alert.mp4',  loop:false, fallbackToIdle:true },
+      acceptance_smile:{ url:'/static/avatars/rem_acceptance_smile.mp4',  loop:false, fallbackToIdle:true }
     } },
     akane: { id:'akane', name:'黑川茜',  idle:'/static/avatars/akane.mp4', states:{
       idle:{ url:'/static/avatars/akane.mp4', loop:true, fallbackToIdle:true },
@@ -1215,6 +1222,23 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       wave:        ['wave_hello', 'wave_goodbye'],
       wave_hello:  ['wave_hello'],
       wave_goodbye:['wave_goodbye'],
+      // VC-AVATAR-REM-44VIDEOS-FULL-INTEGRATION：4 支新簽名動作 + 別名 + tilt_head 補接。
+      // 4 個新動作鍵同時存在 states（帶 url）與本表（短名）；triggerOneShot 優先取 states
+      // 的完整 url，本表則供別名與 LLM 直接吐短名時使用，兩條路徑都落到同一支真實資產。
+      protective_alert:  ['protective_alert'],
+      protective_concern:['protective_concern'],
+      silence_compress:  ['silence_compress'],
+      acceptance_smile:  ['acceptance_smile'],
+      // 別名：讓後端詞彙（警戒/擔心/接納…）與直覺式英文動作名都能命中同一支片
+      alert:        ['protective_alert'],
+      protect:      ['protective_alert'],
+      concern:      ['protective_concern'],
+      worry:        ['protective_concern'],
+      silence:      ['silence_compress'],
+      acceptance:   ['acceptance_smile'],
+      // tilt_head：BASE_ACTION_LEXICON 既有鍵，但雷姆從未宣告 ⇒ 前端會用標準命名慣例去要
+      // rem_tilt_head.mp4（不存在，404）。此處明接到 rem_tilt_smile_warm.mp4，死 token 消滅。
+      tilt_head:    ['tilt_smile_warm'],
       // 短名直入（LLM 直接吐出短名或子變體名時仍能命中對應資產）
       speaking_neutral:['speaking_neutral'],
       blush_slight:['blush_slight'],

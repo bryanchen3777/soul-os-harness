@@ -816,3 +816,255 @@ def test_action_hint_mentions_every_rem_profile_action_example():
     assert examples, "指引必須至少舉一個（動作）例子"
     unmapped = [a for a in examples if map_action_keyword(a, agent_id="agent_rem") is None]
     assert unmapped == [], f"指引舉例中查不到的動作：{unmapped}"
+
+
+# ─────────────────────────────────────────────────────────────
+# VC-AVATAR-REM-44VIDEOS-FULL-INTEGRATION
+#
+# 44 支 rem_*.mp4 到票前仍有 4 支掛在磁碟上卻沒有任何程式引用（孤兒）：
+# protective_alert / protective_concern / silence_compress / acceptance_smile。
+# 本節把「後端詞彙 → Action Key → 前端變體表 → 磁碟資產」整條鏈鎖起來：
+#   (a) 4 個新 Action Key 有詞彙可命中（LLM 說得出來 ⇒ 動畫才收得到訊號）
+#   (b) 自由句（無括號）也能被語意 fallback 掃出來
+#   (c) web_ui.py 宣告的 44 支片 0 壞名、磁碟上的 44 支片 0 孤兒
+#   (d) tilt_head（BASE 字典既有鍵）不再是要不到片的死 token
+# ─────────────────────────────────────────────────────────────
+
+AVATAR_DIR = REPO_ROOT / "clients" / "voice_companion" / "static" / "avatars"
+
+#: 本票接線的 4 支最後孤兒
+NEW_REM_ACTIONS = (
+    "protective_alert",
+    "protective_concern",
+    "silence_compress",
+    "acceptance_smile",
+)
+
+#: 4 個新 Action Key 的中文詞族（與 AGENT_SIGNATURE_LEXICONS["agent_rem"] 逐字對齊）
+REM_NEW_ACTION_KEYWORDS = {
+    "protective_alert": ("保護Bryan", "戒備", "保護主人", "警戒", "警惕", "防備"),
+    "protective_concern": (
+        "不要逞強",
+        "逞強",
+        "擔心逼視",
+        "認真逼視",
+        "請不要對雷姆逞強",
+        "逼視",
+    ),
+    "silence_compress": (
+        "沉重靜默",
+        "深沉靜默",
+        "保持靜默",
+        "克制靜默",
+        "壓抑",
+        "無言陪伴",
+        "安靜陪伴",
+    ),
+    "acceptance_smile": (
+        "溫柔接納",
+        "釋懷微笑",
+        "接納微笑",
+        "安心微笑",
+        "溫柔釋懷",
+        "心疼微笑",
+    ),
+}
+
+
+def _rem_declared_assets() -> set:
+    """web_ui.py 為雷姆宣告的影片「短名」全集（不含副檔名）。
+
+    兩條來源都要收：
+      1. `AVATAR_REGISTRY.rem.states` 內寫死的完整 url（`/static/avatars/rem_xxx.mp4`）；
+      2. `AVATAR_ACTION_VARIANTS.rem` 的短名陣列 —— 那些 url 是執行期用
+         `'/static/avatars/' + avatarId + '_' + chosen + '.mp4'` 拼出來的，
+         靜態掃描看不到，必須把短名也當成宣告。
+    """
+    from clients.voice_companion.web_ui import HTML_PAGE
+
+    declared = set(
+        re.findall(r"/static/avatars/(rem_[A-Za-z0-9_]+)\.mp4", HTML_PAGE)
+    )
+
+    start = HTML_PAGE.index("var AVATAR_ACTION_VARIANTS = {")
+    tail = HTML_PAGE[start:]
+    rem_open = tail.index("\n    rem: {")
+    depth = 0
+    block = None
+    for i in range(rem_open, len(tail)):
+        if tail[i] == "{":
+            depth += 1
+        elif tail[i] == "}":
+            depth -= 1
+            if depth == 0:
+                block = tail[rem_open:i]
+                break
+    assert block is not None, "AVATAR_ACTION_VARIANTS.rem 區塊未閉合（解析失敗）"
+
+    for segment in re.findall(r"\[([^\]]*)\]", block):
+        for short_name in re.findall(r"'([^']+)'", segment):
+            declared.add(f"rem_{short_name}")
+    return declared
+
+
+def _rem_variants_table() -> str:
+    """`AVATAR_ACTION_VARIANTS` 中 rem 的區塊原文（供結構斷言用）。"""
+    from clients.voice_companion.web_ui import HTML_PAGE
+
+    tail = HTML_PAGE[HTML_PAGE.index("var AVATAR_ACTION_VARIANTS = {"):]
+    rem_open = tail.index("\n    rem: {")
+    depth = 0
+    for i in range(rem_open, len(tail)):
+        if tail[i] == "{":
+            depth += 1
+        elif tail[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return tail[rem_open:i]
+    raise AssertionError("AVATAR_ACTION_VARIANTS.rem 區塊未閉合")
+
+
+def _rem_states_block() -> str:
+    """`AVATAR_REGISTRY` 中 rem 的 states 區塊原文（供結構斷言用）。"""
+    from clients.voice_companion.web_ui import HTML_PAGE
+
+    rem_at = HTML_PAGE.index("\n    rem:   { id:'rem'")
+    states_open = HTML_PAGE.index("states:{", rem_at)
+    depth = 0
+    for i in range(states_open + len("states:"), len(HTML_PAGE)):
+        if HTML_PAGE[i] == "{":
+            depth += 1
+        elif HTML_PAGE[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return HTML_PAGE[states_open:i]
+    raise AssertionError("AVATAR_REGISTRY.rem.states 區塊未閉合")
+
+
+def test_rem_new_action_keywords_map_to_new_action_keys():
+    """4 個新 Action Key 的每個中文詞族都必須映射到正確的鍵（不得回 None）。"""
+    rem_keys = AGENT_SIGNATURE_LEXICONS["agent_rem"]
+    for action_key, keywords in REM_NEW_ACTION_KEYWORDS.items():
+        for kw in keywords:
+            assert kw in rem_keys, f"{kw} 必須明列於 agent_rem 簽名字典"
+            assert rem_keys[kw] == action_key, kw
+            assert map_action_keyword(kw, agent_id="agent_rem") == action_key, kw
+
+
+def test_rem_new_action_keywords_keep_signature_isolation():
+    """4 個新詞族不得與 mai / akane 的簽名鍵相交（隔離契約）。"""
+    new_keys = {kw for kws in REM_NEW_ACTION_KEYWORDS.values() for kw in kws}
+    new_keys |= {"歪頭", "歪著頭"}
+
+    assert not (new_keys & set(AGENT_SIGNATURE_LEXICONS["agent_mai"]))
+    assert not (new_keys & set(AGENT_SIGNATURE_LEXICONS["agent_akane"]))
+    # 他角色不得拿到雷姆 4 支片的專屬動作
+    for kw in ("戒備", "不要逞強", "保持靜默", "溫柔接納"):
+        for other in ("agent_mai", "agent_akane"):
+            assert map_action_keyword(kw, agent_id=other) is None, (kw, other)
+
+
+def test_rem_new_actions_extracted_from_free_form_prose():
+    """無括號的自由句（語意 fallback）也必須掃得出 4 個新動作。"""
+    from clients.voice_companion.akane_voice_brain import (
+        extract_fallback_actions_from_text,
+    )
+
+    cases = {
+        "雷姆神情嚴肅地戒備四周": "protective_alert",
+        "雷姆警戒地擋在主人身前": "protective_alert",
+        "請不要再逞強了": "protective_concern",
+        "雷姆深深逼視著主人": "protective_concern",
+        "雷姆保持靜默，陪在主人身邊": "silence_compress",
+        "雷姆壓抑著情緒退到一旁": "silence_compress",
+        "雷姆露出溫柔接納的微笑": "acceptance_smile",
+        "雷姆終於安心微笑著": "acceptance_smile",
+    }
+    for sentence, expected in cases.items():
+        assert extract_fallback_actions_from_text(
+            sentence, agent_id="agent_rem"
+        ) == [expected], sentence
+
+    # 多子句（換行切分）時逐句收錄，依出現順序
+    assert extract_fallback_actions_from_text(
+        "嗯。\n\n雷姆神情嚴肅地戒備四周。\n\n雷姆保持靜默。", agent_id="agent_rem"
+    ) == ["nod", "protective_alert", "silence_compress"]
+
+
+def test_rem_new_actions_survive_streaming_sanitizer():
+    """端到端：LLM 吐（戒備）等括號動作時，TTS 0 殘留、動作鍵正確。"""
+    for action_key in NEW_REM_ACTIONS:
+        kw = REM_NEW_ACTION_KEYWORDS[action_key][0]
+        sanitizer = StreamingVoiceSanitizer(agent_id="agent_rem")
+        streamed = sanitizer.feed(f"（{kw}）主人。") + sanitizer.flush()
+
+        assert streamed == "主人。", kw
+        assert sanitizer.pop_extracted_actions() == [action_key], kw
+
+
+def test_rem_new_action_keys_have_animation_assets():
+    """4 個新 Action Key 必須各自對應一支真實存在的雷姆短片。"""
+    if not AVATAR_DIR.is_dir():
+        return  # 靜態資產樹缺席（極簡 checkout）⇒ 本檢驗不適用
+    for action_key in NEW_REM_ACTIONS:
+        video = AVATAR_DIR / f"rem_{action_key}.mp4"
+        assert video.is_file(), f"缺少雷姆動作影片：{video.name}"
+
+
+def test_rem_new_actions_are_wired_in_web_ui_registry_and_variants():
+    """4 個新動作必須同時出現在 states（帶 url）與變體表（短名）。"""
+    states = _rem_states_block()
+    variants = _rem_variants_table()
+
+    for action_key in NEW_REM_ACTIONS:
+        assert f"/static/avatars/rem_{action_key}.mp4" in states, action_key
+        assert re.search(rf"^\s*{action_key}:\s*\['{action_key}'\]", variants, re.M), (
+            action_key
+        )
+
+    # 別名：把後端詞彙（警戒／擔心／接納…）與直覺英文動作名導到同一支片
+    for alias in ("alert", "protect", "concern", "worry", "silence", "acceptance"):
+        assert re.search(rf"^\s*{alias}:\s*\[", variants, re.M), alias
+
+
+def test_tilt_head_is_no_longer_a_dead_token_for_rem():
+    """tilt_head 是 BASE 字典既有鍵，但雷姆前端從未宣告 ⇒ 曾經要不到片（404）。
+
+    迴歸防線：AVATAR_ACTION_VARIANTS.rem 必須把 tilt_head 接到 rem_tilt_smile_warm.mp4。
+    """
+    variants = _rem_variants_table()
+    assert re.search(r"^\s*tilt_head:\s*\['tilt_smile_warm'\]", variants, re.M)
+
+    if AVATAR_DIR.is_dir():
+        assert (AVATAR_DIR / "rem_tilt_smile_warm.mp4").is_file()
+    # 後端兩條歪頭路徑都要打到這個 Action Key
+    assert map_action_keyword("歪頭", agent_id="agent_rem") == "tilt_head"
+    assert map_action_keyword("歪著頭", agent_id="agent_rem") == "tilt_head"
+    assert map_action_keyword("歪頭笑", agent_id="agent_rem") == "tilt_smile"
+
+
+def test_all_rem_avatar_videos_are_wired_with_zero_orphans_and_zero_broken_names():
+    """44 支雷姆短片必須 0 孤兒、0 壞名（磁碟 ⇄ web_ui 宣告完全對稱）。"""
+    if not AVATAR_DIR.is_dir():
+        return  # 靜態資產樹缺席（極簡 checkout）⇒ 本檢驗不適用
+
+    on_disk = {p.stem for p in AVATAR_DIR.glob("rem_*.mp4")}
+    declared = _rem_declared_assets()
+
+    assert len(on_disk) == 44, f"雷姆短片數量異常：{len(on_disk)}"
+    # 宣告了卻沒有片子 ⇒ 前端 404（壞名）
+    assert declared - on_disk == set(), f"web_ui 宣告了不存在的片子：{declared - on_disk}"
+    # 有片子卻沒人宣告 ⇒ 孤兒（動畫永遠不會被觸發）
+    assert on_disk - declared == set(), f"磁碟上仍是孤兒的片子：{on_disk - declared}"
+
+
+def test_rem_profile_hint_advertises_the_four_new_actions():
+    """profile 指引要教得到 4 個新動作，否則 4 支片沒有 LLM 觸發來源。"""
+    profile = json.loads(REM_PROFILE.read_text(encoding="utf-8"))
+    hint = profile["companion"]["system_prompt"]
+    actions = re.findall(r"[（(]([^（(）)]+)[）)]", hint)
+
+    mapped = {map_action_keyword(a, agent_id="agent_rem") for a in actions}
+    for action_key in NEW_REM_ACTIONS:
+        assert action_key in mapped, f"profile 指引未教到 {action_key}"
+
