@@ -55,6 +55,14 @@
   旗標 `LIFE_THREAD_BOOTSTRAP_ENABLED` **預設關**（缺席 ⇒ 本分支整段不執行）；
   at-most-once 由 `life_thread_bootstrap.json` 標記界定（**先蓋章再執行**）。
   判定與標記全在 `src/soul/life_thread_bootstrap.py`（純標準庫、永不 raise）。
+- **第四條喚醒路徑（契約 §4.5，`LIFE-THREAD-W1`）：`whim_driven` 接線**：M3 判
+  `should_wake is False`、旗標 `LIFE_THREAD_WHIM_ENABLED` **預設關**（缺席即 OFF）、
+  且 `soul_context` 非空時，本層可**每 agent 每日至多 1 次**改以 `whim_driven`
+  （§2.3 四值之一，**非第五個**）喚醒。**M3 閘門 0 改動**（與 §4.4 同一模式：
+  不改 M3 判定式／常數／輸入，只改「喚醒後用哪個起源」）。每日計數為**行程內
+  記憶體狀態、不落盤**（重啟回到 0 ＝ fail-closed 方向，契約 §4.5 已知限制 ①）。
+  whim 必須**純內生** ⇒ **不傳 `world_records`**（M4 §5.2.3「不得觸碰 Lived
+  Context」）。整段 `try/except`（fail-closed：只記 warning，永不 raise）。
 - **寫入面＝0 檔案寫入**：唯一 I/O 是每輪 1 次感知檔（`perception_trace.jsonl`）唯讀；
   M1 讀取一律經 `life_threads` 的公開 API。（bootstrap 標記檔是本層**唯一**的寫入，
   且**僅在旗標 ON 且全條件成立**時發生。）
@@ -113,11 +121,44 @@ POLICY_STALE_CHECK_THRESHOLD_DAYS = 7
 #: 兩者**獨立開關／獨立回滾**；本旗標 OFF（預設）⇒ 本檔逐位元回到 catch-up 之前的行為。
 CATCHUP_ENABLED_ENV = "LIFE_THREAD_CATCHUP_ENABLED"
 
+#: 契約 §4.5「旗標」：`whim_driven` 接線的環境變數名（**呼叫時即時讀取，不得快取**）。
+#: **不得**寫進 `.env`／`configs/**`（落地即休眠）。
+WHIM_ENABLED_ENV = "LIFE_THREAD_WHIM_ENABLED"
+
+#: 契約 §4.5「`origin_type` 的選定」：已拍板值（§2.3 四值之一，**非第五個**）。
+#: 🔴 `life_thread_origins` **沒有** `WHIM_DRIVEN` 常數（該模組只有 `WORLD_COLLISION`／
+#:    `ORIGIN_TYPES`／`_ORIGIN_BLOCKS`），故此處**字面量登錄**、**不得 import 那些名字**、
+#:    **不得**為了取得常數去改動 M4（形同 `lt_boot.BOOTSTRAP_ORIGIN_TYPE` 的先例）。
+#: 語意屬 M4 §5.2.3；本模組只決定「喚醒後用哪個起源」。
+WHIM_ORIGIN_TYPE = "whim_driven"
+
+#: 契約 §4.5「成本上限」：每 agent 每**評估日**至多 1 次 whim 輪。日期口徑 ＝
+#: `now.date()`（**與既有 `_LAST_PROCESSED` 冪等鍵同一口徑**；`now` 由 scheduler 以
+#: 本地時區給入，故是**本地日**、非 UTC 日）。
+#: 🔴 **硬編碼，不從 env 讀** —— 成本上界不得被環境變數放大（INV-3 的條件式例外
+#:    必須有可反證的數字上界）。**非**評分欄位（INV-5 成立：整數計數，非分數）。
+LIFE_THREAD_WHIM_MAX_PER_DAY = 1
+
+#: 🔴 **修訂（2026-10-03 11:50，主大腦覆核 W1 執行者回報）**：本旗標原定義
+#:    `_WHIM_OFF_TOKENS = ("0", "false")`，配合「非空即 ON」的判準。
+#:    實測該組合是 **fail-open**（`off`／`no`／`disabled`／`maybe` 皆被判 ON），
+#:    企圖關閉反而開啟，且與 `bootstrap_enabled()`／`catchup_enabled()` 的
+#:    `TRUTHY_VALUES = {"1","true","yes","on"}` 慣例相反。
+#:    **已改為直接採用 `lt_wiring.TRUTHY_VALUES` 白名單**，`_WHIM_OFF_TOKENS`
+#:    已移除（無引用，刻意不留死碼）。真值集合為 `lt_wiring` 既有常數，
+#:    故**無需**在模組層新增任何 tuple／frozenset 字面值
+#:    （仍滿足 `test_c3_no_io_at_module_import_time`：模組層僅 `getLogger` 呼叫）。
+
 #: 觀測行內文上限（避免日誌被單一長字串撐爆）。
 _LOG_MAX_CHARS = 200
 
 #: 行程內冪等鍵：`f"{agent_id}:{slot}:{date}"`（at-most-once；見 `_run_agent`）。
 _LAST_PROCESSED: Dict[str, int] = {}
+
+#: 契約 §4.5「每日計數器」：行程內 `{agent_id: {"date": "YYYY-MM-DD", "count": int}}`。
+#: 🔴 **記憶體狀態、不落盤**（與 bootstrap 的一次性標記檔**結構完全不同**、不複用）⇒
+#:    服務重啟後回到 0，屬 fail-closed 方向（契約 §4.5「已知限制 ①」已登記）。
+_WHIM_DAILY: Dict[str, Dict[str, Any]] = {}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -133,6 +174,92 @@ def reset_state() -> None:
     兩次，導致重複喚醒與重複 LLM 花費（突破「每日 2 評估點」）。
     """
     _LAST_PROCESSED.clear()
+
+
+def whim_enabled() -> bool:
+    """契約 §4.5 旗標是否開啟（**每次呼叫都重新讀 `os.environ`**，讓測試能 monkeypatch）。
+
+    **嚴格 fail-closed 解析**：去首尾空白、轉小寫後，僅當落在
+    `lt_wiring.TRUTHY_VALUES`（`{"1", "true", "yes", "on"}`）**白名單內**才為 `True`。
+    缺席（`None`）／空字串／`"0"`／`"false"`／**`"off"`／`"no"`／`"disabled"`／
+    任何非白名單 token**／非字串／讀取失敗 ⇒ 一律 `False`。
+
+    🔴 **修訂（2026-10-03 11:50，主大腦覆核 W1 執行者回報）**：初版採
+    「非空且非 `0`／非 `false` 即 ON」，實測該規則**是 fail-open** ——
+    `off`／`no`／`disabled`／`maybe`／`0.0` 皆被判為 `True`，
+    與本 docstring 自稱的「嚴格 fail-closed」自相矛盾，且**與 repo 另兩支
+    旗標的真值白名單慣例相反**。**企圖關閉此旗標會意外開啟它**，屬危險預設。
+    故改為與 `catchup_enabled()`／`bootstrap_enabled()` **完全一致**的白名單解析。
+    工單 `LIFE-THREAD-W1` 原規格由主大腦判定為誤，已於契約 §4.5 更正。
+
+    🔴 **缺席即 OFF** ⇒ 落地後本節整段不執行，**生產行為與引入前逐位元相同**。
+    🔴 **0 新增 import**：`os` 取自已匯入的 `lt_wiring` 所繫結的同一個行程環境物件
+    （與 `catchup_enabled()` 同一慣例；`test_a1` 釘死 `src.*` import 恰為 6 個）。
+    🔴 **永不 raise**。
+    """
+    try:
+        raw = lt_wiring.os.environ.get(WHIM_ENABLED_ENV)
+    except Exception as exc:  # pragma: no cover - defensive（fail-closed → OFF）
+        logger.warning(
+            f"[LifeThreadOrchestrator] {WHIM_ENABLED_ENV} 讀取失敗 "
+            f"(fail-closed → OFF): {_clip(exc)}"
+        )
+        return False
+    if raw is None or not isinstance(raw, str):
+        return False
+    try:
+        token = raw.strip().lower()
+    except Exception as exc:  # pragma: no cover - defensive（fail-closed → OFF）
+        logger.warning(
+            f"[LifeThreadOrchestrator] {WHIM_ENABLED_ENV} 解析失敗 "
+            f"(fail-closed → OFF): {_clip(exc)}"
+        )
+        return False
+    if token in lt_wiring.TRUTHY_VALUES:
+        return True
+    return False
+
+
+def _whim_claim_daily_slot(agent_id: str, now: datetime) -> bool:
+    """契約 §4.5 每日計數閘門：回 `True` ＝ 本 agent 今日**尚有**額度（且**本輪已佔用**）。
+
+    **先佔用再回 True**（沿用既有紀律：`_LAST_PROCESSED`／bootstrap 標記皆「先蓋章再執行」
+    ⇒ 寧可漏一次，不可重複花費）。計數**跨 slot 累計**（morning 與 night 共用）；
+    **日期跨日自動歸零**；**不落盤**（重啟回到 0 ＝ fail-closed 方向）。
+    整體包在 `_run_agent` 的 `try/except` 內 ⇒ **永不 raise**。
+    """
+    today = now.date().isoformat()
+    entry = _WHIM_DAILY.get(agent_id)
+    if not isinstance(entry, dict) or entry.get("date") != today:
+        entry = {"date": today, "count": 0}
+        _WHIM_DAILY[agent_id] = entry
+    count = entry.get("count")
+    if not isinstance(count, int) or isinstance(count, bool):
+        count = 0
+    if count >= LIFE_THREAD_WHIM_MAX_PER_DAY:
+        return False
+    entry["count"] = count + 1
+    return True
+
+
+def _whim_failed_round(agent_id: str) -> Dict[str, Any]:
+    """whim 輪失敗時的 fail-closed 回填（key 集合與 M4 `run_origin_round` 失敗回傳相同）。
+
+    用途：whim 路徑的 `try/except` 捕到例外時，**不冒泡到 scheduler**（§4.5 fail-closed），
+    只記 warning 並回一個「0 LLM、0 落盤」的結構，使 `summary["origin_round"]` 形狀不漂移。
+    """
+    return {
+        "agent_id": agent_id,
+        "origin_type": WHIM_ORIGIN_TYPE,
+        "prompt_available": False,
+        "called": False,
+        "llm_calls": 0,
+        "created": [],
+        "advanced": [],
+        "transitioned": [],
+        "skipped": [],
+        "dissolved": [],
+    }
 
 
 def catchup_enabled() -> bool:
@@ -227,6 +354,10 @@ async def run_slot_pipeline(
        "bootstrap": True, "origin_round": {...}, "dissolved_candidates": N}` ——
       **契約 §4.4 第三條喚醒路徑**（冷啟動引導；旗標 `LIFE_THREAD_BOOTSTRAP_ENABLED`
       **預設關**、每 agent 一次性）。
+    - `{"woke": True, "reason": ..., "origin_type": "whim_driven",
+       "whim_wake": True, "origin_round": {...}, "dissolved_candidates": N}` ——
+      **契約 §4.5 第四條喚醒路徑**（心血的接線；旗標 `LIFE_THREAD_WHIM_ENABLED`
+      **預設關**、每 agent 每日至多 1 次）。**其餘路徑不出現 `whim_wake` 鍵。**
     - `{"woke": True, "wake_blocked": "empty_soul_context", "reason": ...}` ——
       人格上下文為空 ⇒ 提前跳過（`build_origin_prompt` 對 falsy 回 `None` ⇒ 0 LLM）。
     - `{"woke": True, "reason": ..., "origin_type": ..., "origin_round": {...}}` —— 真喚醒。
@@ -373,6 +504,9 @@ async def _run_agent(
     #  之後接手）。**旗標缺席／OFF（預設）⇒ 整段不執行** ⇒ 生產行為與本節引入前相同。
     # `bootstrap_mode` 只在**蓋章成功**時為 `True`（at-most-once；先蓋章再執行）。
     bootstrap_mode = False
+    # 契約 §4.5：`whim_driven` 接線旗標（**預設關**）。同樣只在 `should_wake is False`
+    # 之後接手 ⇒ **M3 閘門 0 改動**（與 §4.4 bootstrap 同一模式、同一層）。
+    whim_mode = False
     if not decision.should_wake:
         boot_marker = None
         if lt_boot.bootstrap_enabled():
@@ -394,7 +528,35 @@ async def _run_agent(
                     logger.info(f"[LifeThreadOrchestrator] agent={_clip(agent_id)} slot={_clip(slot)} "
                                 f"bootstrap wake（第三條路徑 §4.4；reason={_clip(decision.reason)}；一次為限）")
                     bootstrap_mode = True
+        # ── 契約 §4.5：`whim_driven` 接線（旗標 **預設關**）────────────
+        # 🔴 與 §4.4 bootstrap 同一模式、同一層：**不動 M3 判定式／常數／輸入**，
+        #    只在 orchestrator 改「喚醒後用哪個起源」。
+        # 🔴 **旗標 OFF（預設）⇒ 本段整段不執行** ⇒ 0 多餘 I/O（含**不**多讀一次
+        #    `load_soul_context`）、0 LLM、summary 鍵集合不變。
+        # 🔴 bootstrap 優先（一次性路徑優先於每日額度路徑）：`bootstrap_mode` 為真
+        #    時本段不執行 ⇒ 不會同日雙重花費。
         if not bootstrap_mode:
+            try:
+                if whim_enabled():
+                    # 🔴 `soul_context` 在此**首次**載入並沿用（下方 M4 前置**不重複呼叫**
+                    #    `load_soul_context`；既有空值判定即 §4.5 的條件 ③）。
+                    whim_soul = lt_origins.load_soul_context(agent_id)
+                    if whim_soul and _whim_claim_daily_slot(agent_id, now):
+                        soul_context = whim_soul
+                        whim_mode = True
+                        logger.info(
+                            f"[LifeThreadOrchestrator] agent={_clip(agent_id)} slot={_clip(slot)} "
+                            f"whim wake（§4.5；reason={_clip(decision.reason)}；"
+                            f"每日上限={LIFE_THREAD_WHIM_MAX_PER_DAY}）"
+                        )
+            except Exception as exc:
+                # fail-closed：任何例外只記 warning（不 raise、不冒泡到 scheduler）。
+                whim_mode = False
+                logger.warning(
+                    f"[LifeThreadOrchestrator] agent={_clip(agent_id)} slot={_clip(slot)} "
+                    f"whim 判定失敗 (fail-closed): {type(exc).__name__}: {_clip(exc)}"
+                )
+        if not bootstrap_mode and not whim_mode:
             return {
                 "woke": False,
                 "reason": decision.reason,
@@ -406,8 +568,9 @@ async def _run_agent(
     # 且避開 germ/seeded 分歧 —— 直接呼叫 `proxy.load_persona()` 預設 `seeded`，
     # 對 germ agent 會取錯人格）。
     # 🔴 bootstrap 模式**重用**上面已載入的值（同一輪同一 agent，且該值必為非空，
-    #    否則蓋不了章）；**非** bootstrap 路徑的呼叫次數與行為**逐字不變**。
-    if not bootstrap_mode:
+    #    否則蓋不了章）；§4.5 whim 模式同樣**重用**（同一次呼叫、同一輪同一 agent）；
+    #    **非** bootstrap／whim 路徑的呼叫次數與行為**逐字不變**。
+    if not bootstrap_mode and not whim_mode:
         soul_context = lt_origins.load_soul_context(agent_id)
     if not soul_context:
         logger.warning(
@@ -438,26 +601,59 @@ async def _run_agent(
     # **完全不做** due 過濾，未到期的 active 線頭會被 over-include 進 prompt。
     # 取捨（見模組 docstring）：**單一 predicate 來源 > 省一次整檔讀**；
     # 代價 ＝ WAKE 時多 1 次 `lt.list_active()`（≤2 次/日/agent）。
-    # 契約 §4.4「`origin_type` 的選定」：bootstrap 模式**改以**
-    # `lt_boot.BOOTSTRAP_ORIGIN_TYPE`（`"necessity_driven"`，§2.3 四值之一，
-    # **不發明第五個**）呼叫；非 bootstrap 模式**逐字沿用** `decision.origin_type`
-    # （M3 的判定值，行為不變）。§5.2.2 的模板與語意仍全部屬 M4。
-    wake_origin_type = (
-        lt_boot.BOOTSTRAP_ORIGIN_TYPE if bootstrap_mode else decision.origin_type
-    )
-    result = await lt_origins.run_origin_round(
-        agent_id,
-        wake_origin_type,
-        now=now,
-        due_threads=None,
-        llm_caller=llm_caller,
-        dissolve_hook=dissolve_hook,
-        build_kwargs={"soul_context": soul_context, "world_records": list(perceptions)},
-    )
+    # 契約 §4.5「`origin_type` 的選定」：whim 模式**改以** `WHIM_ORIGIN_TYPE`
+    # （字面量 `"whim_driven"`，§2.3 四值之一、**非第五個**）呼叫；其餘兩種模式
+    # **逐字沿用** §4.4／M3 的既有值。§5.2.3 的模板與語意仍全部屬 M4。
+    # 🔴 三種模式**互斥**（bootstrap／whim 只在 `should_wake is False` 內成立，
+    #    且 `not bootstrap_mode` 才評估 whim）⇒ 同一輪至多一個起源。
+    if whim_mode:
+        wake_origin_type = WHIM_ORIGIN_TYPE
+    else:
+        wake_origin_type = (
+            lt_boot.BOOTSTRAP_ORIGIN_TYPE if bootstrap_mode else decision.origin_type
+        )
+    if whim_mode:
+        # 🔴 **不傳 `world_records`**：`collect_whim_seeds` 必須**純內生**（M4 §5.2.3
+        #    「不得觸碰 Lived Context」）⇒ 傳入世界記錄會污染語意。
+        # 🔴 `due_threads=None` 沿用既有呼叫慣例（due 過濾交還 M4 自己的
+        #    `_render_due_threads`；§4.2 判定 1 同口徑）。
+        # 🔴 fail-closed：整段 `try/except` ⇒ **不 raise、不冒泡到 scheduler**
+        #    （scheduler 側的同構保護不因本票改動）。
+        try:
+            result = await lt_origins.run_origin_round(
+                agent_id,
+                wake_origin_type,
+                now=now,
+                due_threads=None,
+                llm_caller=llm_caller,
+                dissolve_hook=dissolve_hook,
+                build_kwargs={"soul_context": soul_context},
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[LifeThreadOrchestrator] agent={_clip(agent_id)} slot={_clip(slot)} "
+                f"whim 輪失敗 (fail-closed): {type(exc).__name__}: {_clip(exc)}"
+            )
+            result = _whim_failed_round(agent_id)
+    else:
+        result = await lt_origins.run_origin_round(
+            agent_id,
+            wake_origin_type,
+            now=now,
+            due_threads=None,
+            llm_caller=llm_caller,
+            dissolve_hook=dissolve_hook,
+            build_kwargs={"soul_context": soul_context, "world_records": list(perceptions)},
+        )
     if bootstrap_mode:
         logger.info(
             f"[LifeThreadOrchestrator] agent={_clip(agent_id)} slot={_clip(slot)} "
             f"bootstrap wake 完成（origin_type={_clip(wake_origin_type)}）"
+        )
+    if whim_mode:
+        logger.info(
+            f"[LifeThreadOrchestrator] agent={_clip(agent_id)} slot={_clip(slot)} "
+            f"whim wake 完成（origin_type={_clip(wake_origin_type)}）"
         )
     summary: Dict[str, Any] = {
         "woke": True,
@@ -469,4 +665,7 @@ async def _run_agent(
     if bootstrap_mode:
         # 契約 §4.4：bootstrap 模式成功喚醒時可觀測（非 bootstrap 路徑鍵集合不變）。
         summary["bootstrap"] = True
+    if whim_mode:
+        # 契約 §4.5：whim 路徑完成時可觀測（**非 whim 路徑不得出現此鍵**）。
+        summary["whim_wake"] = True
     return summary

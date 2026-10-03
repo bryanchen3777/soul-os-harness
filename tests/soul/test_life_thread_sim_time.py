@@ -227,6 +227,23 @@ def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _prefix_digest(rows: Sequence[Dict[str, Any]]) -> str:
+    """截斷後 rows 的穩定摘要（append-only 前綴指紋）。
+
+    🔴 **2026-10-03 設計更正（Owner 指示：不靠等真實時間，用隔離模擬驗證）**：
+    舊版以 `_sha256_file()` 對**整個**生產 log 算 hash 並斷言等於金樣值。
+    但 `life_threads.jsonl` 是 **append-only**——生產只要持續寫入，檔案 hash 必然改變，
+    該斷言**恆紅且不可能轉綠**（實測：自 2026-09-20 凍結後持續紅至今）。
+    等真實時間過去**不會**讓它變綠，**重凍結也只是把炸彈往後推**。
+
+    正確的不變量不是「整個檔案沒變過」，而是：
+    **「cutoff_utc 之前的內容未被竄改」**——append-only 保證 cutoff 之前的列不可變，
+    因此**前綴摘要**是真正穩定、且仍能抓出歷史竄改的 provenance 證據。
+    """
+    payload = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _parse_iso(value: Any) -> Optional[datetime]:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -267,7 +284,7 @@ def derive_snapshot(
     投影至 `SNAPSHOT_FIELDS`；`updated_at` 缺失／不可解析的事件一律丟棄（不猜時間）。
     """
     rows_by_agent: Dict[str, List[Dict[str, Any]]] = {}
-    shas: Dict[str, str] = {}
+    prefix_digests: Dict[str, str] = {}
     missing: List[str] = []
     for agent_id in agents:
         path = prod_dir / agent_id / LIFE_THREADS_FILENAME
@@ -275,7 +292,6 @@ def derive_snapshot(
             missing.append(agent_id)
             rows_by_agent[agent_id] = []
             continue
-        shas[agent_id] = _sha256_file(path)
         kept: List[Dict[str, Any]] = []
         for entry in _read_jsonl(path):
             ts = _parse_iso(entry.get("updated_at"))
@@ -283,7 +299,12 @@ def derive_snapshot(
                 continue
             kept.append({field: entry.get(field) for field in SNAPSHOT_FIELDS})
         rows_by_agent[agent_id] = kept
-    return {"agents": rows_by_agent, "source_sha256": shas, "missing": missing}
+        prefix_digests[agent_id] = _prefix_digest(kept)
+    return {
+        "agents": rows_by_agent,
+        "truncated_prefix_sha256": prefix_digests,
+        "missing": missing,
+    }
 
 
 def load_fixture(path: Path) -> Dict[str, Any]:
@@ -583,8 +604,12 @@ def test_s0_fixture_matches_production_time_truncation(fixture_path, cutoff):
 
     assert derived["missing"] == [], f"金樣來源 agent 缺檔：{derived['missing']}"
     assert snapshot["agents"] == derived["agents"], "金樣內容與生產時間截斷推導不一致"
-    assert snapshot["provenance"]["source_sha256"] == derived["source_sha256"], (
-        "金樣 provenance 的來源 sha256 與現行生產 log 不一致（生產 log 已被追加 ⇒ 需重凍結金樣）"
+    assert (
+        snapshot["provenance"]["truncated_prefix_sha256"]
+        == derived["truncated_prefix_sha256"]
+    ), (
+        "金樣 provenance 的『截斷前綴摘要』與現行生產推導不一致"
+        "（⇒ cutoff 之前的列被竄改，或金樣需重凍結）"
     )
     assert snapshot["provenance"]["cutoff_utc"] == cutoff.isoformat()
     assert snapshot["provenance"]["fields_kept"] == list(SNAPSHOT_FIELDS)
@@ -593,6 +618,89 @@ def test_s0_fixture_matches_production_time_truncation(fixture_path, cutoff):
         for row in rows:
             assert set(row) == set(SNAPSHOT_FIELDS)
             assert "title" not in row and "narrative_content" not in row
+
+
+def test_s0_truncation_logic_is_hermetic_on_synthetic_data(tmp_path):
+    """🔴 **完全隔離**的截斷邏輯驗證：合成資料，**不讀生產、不靠等真實時間**。
+
+    這是本檔的核心回歸測試。舊版把邏輯正確性綁在生產 log 上，導致：
+      - 測試結果隨生產持續寫入而漂移（append-only ⇒ 整檔 hash 永變 ⇒ 恆紅）；
+      - 「修好」的唯一手段是等真實時間過去或重凍結金樣——兩者都不是工程手段。
+
+    本測試改為：造一份可控時間戳的合成 append-only log，驗證
+      ① cutoff 之前的列被保留、之後的被截掉（`== cutoff` 的邊界納入保留）；
+      ② 截斷後才發生的**追加不會**改變前綴摘要（append-only 的核心性質）；
+      ③ 前綴摘要**會**因截斷範圍內的竄改而改變（provenance 仍有意義）。
+    """
+    def _iso(dt: datetime) -> str:
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    base = datetime(2026, 9, 19, 8, 0, 0, tzinfo=timezone.utc)
+    cutoff = base + timedelta(hours=4)
+
+    def _row(offset_min: int, tid: str) -> Dict[str, Any]:
+        return {
+            "thread_id": tid,
+            "status": "active",
+            "origin_type": "necessity_driven",
+            "share_target": "none",
+            "updated_at": _iso(base + timedelta(minutes=offset_min)),
+            "title": f"t-{tid}",
+            "narrative_content": "不該入金樣",
+        }
+
+    agent = "agent_synthetic"
+    log = tmp_path / agent / LIFE_THREADS_FILENAME
+    log.parent.mkdir(parents=True, exist_ok=True)
+
+    # 檔內順序故意非時間序：截斷必須依 updated_at 判斷，而非檔案位置。
+    before_early = _row(0, "early")
+    before_late = _row(0, "late")
+    at_cutoff = _row(240, "at_cutoff")        # 邊界：== cutoff 應保留
+    after = _row(241, "after")                # 應被截掉
+    log.write_text(
+        "\n".join(
+            json.dumps(r, ensure_ascii=False)
+            for r in (before_late, after, before_early, at_cutoff)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    derived = derive_snapshot(cutoff, prod_dir=tmp_path, agents=(agent,))
+    assert derived["missing"] == []
+    got_ids = [row["thread_id"] for row in derived["agents"][agent]]
+    assert got_ids == ["late", "early", "at_cutoff"], f"截斷結果錯誤：{got_ids}"
+    assert "after" not in got_ids
+    assert all("title" not in row for row in derived["agents"][agent]), "敘事欄位不得入金樣"
+
+    first = derived["truncated_prefix_sha256"][agent]
+
+    # ② append-only：只追加 cutoff 之後的列 ⇒ 前綴摘要必須不變。
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_row(300, "later-append"), ensure_ascii=False) + "\n")
+    again = derive_snapshot(cutoff, prod_dir=tmp_path, agents=(agent,))
+    assert again["truncated_prefix_sha256"][agent] == first, (
+        "追加 cutoff 之後的列不應改變前綴摘要（否則此測試會隨生產寫入而漂移）"
+    )
+    assert [r["thread_id"] for r in again["agents"][agent]] == got_ids
+
+    # ③ 竄改 cutoff 之前的內容 ⇒ 前綴摘要必須改變（provenance 仍有效）。
+    #    竄改必須落在 `SNAPSHOT_FIELDS` **之內**——投影外的欄位（例如 share_target）
+    #    依設計在投影時就被丟棄，改它不影響摘要（這正是投影的語意）。
+    tampered = [dict(r) for r in derived["agents"][agent]]
+    assert "status" in tampered[0], "篡改目標欄位必須在 SNAPSHOT_FIELDS 內"
+    tampered[0]["status"] = "completed"
+    rewritten = tmp_path / "tampered" / LIFE_THREADS_FILENAME
+    rewritten.parent.mkdir(parents=True, exist_ok=True)
+    rewritten.write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False) for r in tampered) + "\n",
+        encoding="utf-8",
+    )
+    after_tamper = derive_snapshot(cutoff, prod_dir=tmp_path, agents=("tampered",))
+    assert after_tamper["truncated_prefix_sha256"]["tampered"] != first, (
+        "竄改 cutoff 之前的內容必須改變前綴摘要，否則 provenance 斷言形同虛設"
+    )
 
 
 def test_s0_golden_b_boundary_reproduces_s2_expectation():

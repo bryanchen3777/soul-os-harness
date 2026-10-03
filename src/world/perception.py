@@ -374,6 +374,13 @@ TYPE_BASELINE_RELEVANCE: Dict[str, float] = {
     "voice_transcript": 0.30,
     "ambient_audio": 0.10,
     "camera_scene": 0.25,
+    # LIFE-THREAD-W2 (2026-10-03, Owner 裁定方案 3「修評分結構本身」):
+    # news_event 是生產中實際存在的事件型別 (實測 2026-09-21 起 534 次評估),
+    # 但從未被列入本表 → 只能吃 DEFAULT_TYPE_BASELINE_RELEVANCE = 0.10。
+    # 這是「表遺漏」, 不是刻意低評。0.30 對齊 calendar_event / user_going_outside
+    # 的既有量級 (皆為「與 Bry 的生活直接相關」之事件)。
+    # 門檻 DEFAULT_ACCEPT_THRESHOLD = 0.35 不動 —— 本票修的是評分結構, 不是門檻。
+    "news_event": 0.30,
 }
 DEFAULT_TYPE_BASELINE_RELEVANCE: float = 0.10  # 未知 type 用這個
 
@@ -497,6 +504,10 @@ def compute_scores(
     # Bry 拍板: 「Quality > Quantity」 — 不同 type 基礎 relevance 應該不同
     # 沒 user context 時: 用 type baseline
     # 有 user context 且 summary 跟 user context 重疊: 用 max(baseline, overlap)
+    # LIFE-THREAD-W2 (2026-10-03): news_event 已於上方 TYPE_BASELINE_RELEVANCE 納入表中
+    # (0.30, 對齊 calendar_event 量級)。weather_temp_change = 0.05 與 celebrity_news = 0.05
+    # 是 Bry 2026-08-07 的拍板（「minor temperature fluctuation」/ 與 Bry 無關的八卦,
+    # 註解明寫「應該被 reject」）, 刻意不動 —— 純天氣波動 / 八卦不可見是裁定結果, 不是 bug。
     baseline = TYPE_BASELINE_RELEVANCE.get(event.type, DEFAULT_TYPE_BASELINE_RELEVANCE)
 
     if current_user_context_keywords:

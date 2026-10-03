@@ -419,16 +419,44 @@ class TestMCPNotification:
                     await cam.close()
 
             by_name = {t.name: t for t in audio_tools + cam_tools}
-            assert set(by_name) == {"mic_listen", "audio_transcribe", "camera_capture"}
+
+            # ── MS-2 契約（已批准，multimodal-perception-contract §2.1／§2.2）──
+            # 這三個工具的 group 與權限是明文契約，**行為不可變**。
             for name in ("mic_listen", "audio_transcribe"):
+                assert name in by_name, f"MS-2 契約工具 {name} 消失"
                 assert by_name[name].capability_group == CAPABILITY_GROUP_OBSERVE
                 assert by_name[name].permission_class == PERM_AUTO_APPROVED
+            assert "camera_capture" in by_name, "MS-2 契約工具 camera_capture 消失"
             assert by_name["camera_capture"].capability_group == CAPABILITY_GROUP_OBSERVE
             assert by_name["camera_capture"].permission_class == PERM_ASK_REQUIRED
+
+            # ── MS-3.1 additive（2026-09-04，commit bc7bbda）──
+            # 🔴 2026-10-03 更正：本測試原以 `set(by_name) == {3 個}` 與
+            # `len(tools) == 3` 斷言**精確集合相等**。MS-3.1 刻意新增
+            # voice_session_start/feed/stop（audio_stream_mcp.py docstring 明載
+            # 「additive，既有 mic_listen/audio_transcribe 0 行為變化」），
+            # 但**未更新本測試的預期** ⇒ 該測試自 2026-09-04 起持續紅至今。
+            #
+            # 修法原則：**精確集合相等是壞掉的斷言形式**——它讓「上游 additive
+            # 地新增工具」必然變紅，且必須有人記得回來改，否則永久腐化。
+            # 改為：① 已批准契約用子集斷言釘死（行為不可變）；② MS-3.1 工具
+            # 斷言存在且歸 observe；③ **不**斷言總數或集合相等（允許 additive 演進）。
+            for name in ("voice_session_start", "voice_session_feed", "voice_session_stop"):
+                assert name in by_name, f"MS-3.1 工具 {name} 消失（additive 契約被破壞）"
+                assert by_name[name].capability_group == CAPABILITY_GROUP_OBSERVE
+
+            # ⚠️ **未裁定的設計問題（主大腦 2026-10-03 登記，未擅自改動）**：
+            # MS-3.1 未把 voice_session_* 加入 `EXPLICIT_PERMISSION_MAP`，
+            # 故它們落在 §4.1.1 的**語義兜底 fail-closed 預設** `ask_required`。
+            # 這是否為預期，尚待 Owner 裁定——理由是語意上的兩難：
+            #   · 與 mic_listen 同屬音訊擷取，但會話長 30s（vs 單發 4s 上限）；
+            #   · 拆成 start/feed/stop 三支，若三支都 ask 會問三次，體驗極差。
+            # 本測試**刻意不斷言**其 permission_class，只記錄現況供覆核。
+            # 見 `logs/ENGINEERING_STATE.md` §0.1.4。
             return by_name
 
         tools = _run(scenario())
-        assert len(tools) == 3
+        # 不再斷言總數：additive 演進是允許的，契約保證改由上面的子集斷言承擔。
 
     def test_observe_dispatch_flows_to_world_event_not_user_message(self, isolated_root):
         """端到端：Actuator observe 派發 camera_capture（ask_required，經
@@ -510,7 +538,13 @@ class TestMCPNotification:
 class TestRegressionCompatibility:
     def test_registry_register_audio_server_groups_correctly(self, isolated_root):
         """真實 audio server 註冊：mic_listen/audio_transcribe 歸 observe +
-        auto_approved，可被 observe 組列出。"""
+        auto_approved，可被 observe 組列出。
+
+        🔴 2026-10-03 更正：原斷言 `names == {mic_listen, audio_transcribe}` 與
+        `len(tools) == 2` 為精確相等，MS-3.1（2026-09-04）additive 新增
+        voice_session_* 後持續紅。改為子集斷言（契約保證）＋ MS-3.1 存在性，
+        並**不**斷言總數。理由見同檔 `test_observe_path_routes_multimodal_to_perception`。
+        """
         async def scenario():
             reg = ToolRegistry()
             client = _audio_client()
@@ -521,11 +555,22 @@ class TestRegressionCompatibility:
                 await client.close()
             groups = reg.project_capabilities()
             assert any(cap.id == CAPABILITY_GROUP_OBSERVE for cap in groups)
-            names = {t.name for t in tools}
-            assert names == {"mic_listen", "audio_transcribe"}
+            by_name = {t.name: t for t in tools}
+            # MS-2 契約：兩個工具必須存在且為 observe + auto_approved。
+            for name in ("mic_listen", "audio_transcribe"):
+                assert name in by_name, f"MS-2 契約工具 {name} 消失"
+                assert by_name[name].capability_group == CAPABILITY_GROUP_OBSERVE
+                assert by_name[name].permission_class == PERM_AUTO_APPROVED
+            # MS-3.1 additive：三支會話工具必須存在且歸 observe。
+            for name in ("voice_session_start", "voice_session_feed", "voice_session_stop"):
+                assert name in by_name, f"MS-3.1 工具 {name} 消失"
+                assert by_name[name].capability_group == CAPABILITY_GROUP_OBSERVE
             observe = reg.list_tools(group=CAPABILITY_GROUP_OBSERVE)
-            assert {t.name for t in observe} >= names
+            observed_names = {t.name for t in observe}
+            assert observed_names >= set(by_name), (
+                f"observe 組未列出全部已註冊工具：缺 {set(by_name) - observed_names}"
+            )
             return tools
 
         tools = _run(scenario())
-        assert len(tools) == 2
+        # 不再斷言總數（additive 演進允許）。

@@ -27,6 +27,205 @@ This registry is the single canonical source-of-truth for:
 
 Historical closeout files in `logs/` are **preserved unchanged** per §4 Historical Document Rule. Any apparent contradiction between a historical closeout and this registry is resolved in favor of this registry, with the stale reference documented in §6.
 
+### 0.1 內在生活完成定義（canonical，Owner 2026-10-03 裁定採納）
+
+**Canonical 文件**：`docs/INNER-LIFE-DEFINITION-OF-DONE.md`。
+
+本文件建立之前，Soul OS **沒有**「內在生活算完成」的正式定義。並存的「Phase 1 Step 60 完成」（鏈路跑通）與「M1–M5 契約章節 ✅」（模組落地）都會造成「核心問題已解」的錯覺，但兩者均不覆蓋 North Star v2 第 5 點「記憶昇華」。
+
+**三個門檻（全成立才算 Phase 1.5 CLOSED）**：
+
+| 門檻 | 名稱 | 判準摘要 | 現況（2026-10-03 唯讀實測） |
+|---|---|---|---|
+| 一 | 供給多元 | 任一 7 天窗內四起源皆 >0，且單一起源占比 ≤80% | **0/4**，`necessity_driven` 100% |
+| 二 | 經歷能沉澱成信念 | ≥1 agent 的 `run_elevation` 實際行使且產出 belief/value，重啟後可讀回 | **0**（21 條溶解事實從未入昇華） |
+| 三 | 連續性可見 | ≥1 agent 連續 7 天有主動推進線頭，且非同一件事重複 | **不成立**（38 條主要來自 09-18 bootstrap 首批） |
+
+**明確排除**（不得用作完成判準）：契約章節落地、鏈路端到端跑通、主動發訊數 >0（契約 §9 INV-7「留白是成功」）、線頭總數增加、LLM 呼叫量。
+
+**依賴順序**：門檻一 → 門檻三 → 門檻二。門檻三須待門檻一，否則連續性會退化成「同一件事連續七天」；門檻二**可獨立推進**（2026-10-03 12:20 更正，見下）。
+
+**🔴 更正（2026-10-03 12:20）：「門檻二與 EH-4.2 圍堵交疊」為主大腦未經查證即寫入的錯誤斷言，現撤除。** 查證結果：① **EH-4.2 並非停滯圍堵**——`EH-4.2-SMOKE` 揭露 3 缺陷後，`EH-4.2-FIX-1`（commit `ddb190f`）已修 S3 過度捕獲並 14 passed；尚餘 2 項已知未修缺陷（定義句不產生錨點、五元組 subject 污染為 `氣炸鍋就`）。② **門檻二真正的邊界是 `EH-2.1 R1`「垂直防火牆」**（`src/inner_life/submission_gate.py:392-405`，D2 裁定、契約 §4.3），**屬刻意設計邊界而非待解除封鎖**：`world:news*`／`world:feed*`／`world:celebrity_news`（外部媒體情報）**不得 consume、不得產 pattern 候選**（理由逐字：「外界新聞情報不是這個靈魂活過的事，不得沉澱成『我成為』」）；`world:weather*`／`world:rain*`／`world:calendar*`／`world:user_going_outside*`（環境與日程）放行；**所有非 `world:*` trigger 0 阻斷**。③ fact 層過濾 `origin == external_world` 不入昇華（`:407-418`），本專案 21 條線頭溶解事實為 `lived_experience`，不受影響。**結論：門檻二可獨立推進。**
+
+**✅ Owner 裁定（2026-10-03 12:20）：「沉澱成信念需要自己的經歷。光看完就沉澱是不合理的。」** 故「門檻一讓新聞可見 vs 門檻二不讓新聞成信念」**並非語意張力，而是同一原則的兩面：看見世界 ≠ 被世界改變**。此裁定確立門檻二設計前提：生活線頭（＝靈魂自己活過的事）有資格沉澱成信念；新聞與外部媒體情報（＝只是看過）不得沉澱。**防火牆維持不動，門檻二可獨立推進，無任何待解除的封鎖。**
+
+**治理**：修改門檻需 Owner 明確裁定；每次判定成立須附實際量測輸出，不接受自報。**本定義不等於專案完成**（North Star v2 第 2／3／4／7 點未涵蓋）。
+
+#### 0.1.1 門檻一 W1／W2 已上線（2026-10-03 11:40，Owner 授權部署）
+
+**部署事實**：`.env` 新增 `LIFE_THREAD_WHIM_ENABLED=1`（sha256 `A867C4B2E991D42A` → `97DEF37F6D234BF1`，恰 +1 行，CRLF 保留）。依 2026-09-14 登記之修正重啟程序：停止舊服務（pid 21892 listener ＋ 20232 trampoline）→ `schtasks /run /tn SoulOS_Watchdog` → 排程路徑 Plan A 重新拉起（pid 18256，StartTime 11:40:41）。**服務中斷 7 秒**（11:40:34 → 11:40:41）。`/health`=200；VC 三埠 8765／8766／8767 未受影響。watchdog `n_restarts` 1→2（cap 10）。
+
+**上線驗證（經 `load_dotenv` 與真實 `orchestrator.whim_enabled()` 路徑）**：`LIFE_THREAD_WHIM_ENABLED='1'` → `whim_enabled()=True`；`WHIM_ORIGIN_TYPE='whim_driven'` 且確認屬 `ORIGIN_TYPES` 合法成員（非發明第五值）；`news_event` baseline=0.30 且 `DEFAULT_ACCEPT_THRESHOLD=0.35` 未動；`news_event final=0.4050 accepted=True`。
+
+**Frozen contract 自證**：`life_thread_wake_gate.py`（M3 凍結）、`life_thread_origins.py`、`life_thread_bootstrap.py`、`scheduler.py`、`src/world/middleware.py` 之 `git diff` 全部為空。`data/**` 全程 0 寫入／改名／刪除。
+
+**本輪重要更正（見 Notion 狀態頁第九節）**：`world_collision` 根因**不是** fact text 供給斷裂，而是 **`accepted` 自 2026-09-21 起恆為 False**（09-21 前 1,776 列；09-21 起 2,553 列全 False，`selection_reason` 100% `rejected_at_threshold`）。已量測：`personal_significance`／`emotional_significance`／`temporal_significance` 恆在下限，因其依賴的 context 訊號（`user_keywords`／`vulnerability_window`／`temporal_salience`）在 Bry 不在場時不進場。**Owner 2026-10-03 原裁定「擴大 `SOURCES_QUALIFYING`」在此現況下無效**（該集合已含 news／calendar），故 W2 改為修評分結構（`news_event` 未列入 `TYPE_BASELINE_RELEVANCE` 屬表遺漏）。
+
+**`goal_driven` 現況（實測）**：72 條 goal **100% 為 `SUSPENDED`**，`advance_count` 71 條為 0，`suspend_snapshot.reason` **72/72 全為 `bryan_last_seen_timeout`**。此與 2026-09-14「拒送為正確且健康的留白」裁定同源 ⇒ **`goal_driven` 不可達不是缺陷，不得以工程手段修復**（放寬 SUSPENDED 判定或強制喚醒＝撤銷 Bry 的在場語意）。正確途徑為 Bry 在場時 goal 回到 ACTIVE。
+
+**門檻一現況（2026-10-03 11:45，部署後當下）**：`whim_driven` 與 `world_collision` 之程式路徑已上線，但**尚無生產證據**——兩者皆須經 `morning`／`night` slot 觸發。**門檻一仍為未達成**，第一個真實讀數須待 7 天滾動窗口累積後以 `scripts/audit_life_threads_fold.py` 量測。
+
+**🔴 已知既有紅燈（非本次造成，勿誤記為回歸）**：
+- `tests/soul/test_life_thread_sim_time.py` 2 筆 `test_s0_fixture_matches_production_time_truncation` 失敗。**根因為時間炸彈，非本次改動**：`derive_snapshot` 於 `line 278` 對**整個** `life_threads.jsonl` 算 `_sha256_file`（截斷只套用於 `kept` rows，不影響該 hash），而金樣凍結於 09-19／09-20 08:00，生產檔案持續追加（mtime 已至 10-03）⇒ 必然不一致，該測試在生產持續寫入期間**恆紅**。同檔 line 585 的 `agents` 內容斷言**仍通過**，顯示 orchestrator 改動未改變既有行為。⇒ **該測試在重凍結金樣前不能作為綠色基線。**
+- `tests/test_ms2_multimodal_perception.py` 2 筆失敗，屬 MCP 音訊工具集與 MS-2 測試期望不同步（`voice_session_stop` 等），與本次評分改動無關。
+
+#### 0.1.2 部署後覆核修正（2026-10-03 11:50，主大腦覆核 W1 執行者回報）
+
+執行者回報揭露**兩個由主大腦造成**的問題，均已修正並驗證。
+
+**🔴 修正一：`.env` 新增旗標洩漏進 pytest 行程，造成 7 筆既有測試轉紅。**
+`tests/conftest.py:86-101` 設有「OFF-by-default 旗標釘住清單」（該段註解明寫「同一類地雷的**第四次**踩點預防」），因 `load_dotenv(override=False)` 會在「變數不存在」時把生產 `.env` 的值補回 pytest 行程。`LIFE_THREAD_WHIM_ENABLED` 未列入該清單，故部署寫入 `.env` 後，7 筆早於本旗標的既有 life-thread 測試（`test_40`／`test_62`／`test_i2`／`test_f1`／`test_m2c5`／`test_s1`／`test_s2`）轉紅。**已補入 `tests/conftest.py`（第五次踩點預防）**。修正前後：`9 failed` → `2 failed, 1167 passed`，完全回到既有基線。**教訓見 §7 操作教訓。**
+
+**🔴 修正二：W1 旗標解析規則是 fail-open，非工單宣稱的 fail-closed。**
+W1 工單（主大腦出）指定「非空且非 `0`／`false` 即 ON」並稱之為 fail-closed。**實測該規則是 fail-open**：`off`／`no`／`disabled`／`maybe`／`0.0`／`2` 全部被判為 `True`——**企圖關閉此旗標反而會開啟它**，屬危險預設；且與 `bootstrap_enabled()`／`catchup_enabled()` 的 `TRUTHY_VALUES = {"1","true","yes","on"}` 慣例相反，並與該函式 docstring 自稱的「嚴格 fail-closed」自相矛盾（執行者讀碼時發現並回報）。**已改為直接採用 `lt_wiring.TRUTHY_VALUES`**，並移除已無引用的 `_WHIM_OFF_TOKENS` 死碼。18 個案例實測全數正確。契約 §4.5 同步更正，測試 `test_w1_flag_truthiness_is_fail_closed` 的 OFF 清單已納入 `off`／`no`／`disabled`／`maybe`／`0.0`／`2` 釘死回歸，並新增 `test_w1_flag_uses_repo_truthy_whitelist_not_invented_list` 斷言真值集合**必須就是** repo 既有常數。
+
+**生產影響評估（誠實登記）**：此修正**尚未重啟生效**。生產目前執行修正前版本，但 `.env` 值為 `=1`，兩種解析**同樣判 ON** ⇒ **生產行為逐位元相同**，不需為此緊急重啟。flag 關閉時的新行為將於下次例行重啟自然帶入。
+
+**執行者表現登記**：W1 執行者正確拒絕自行還原 `.env`（主大腦所寫、非其範圍）與拒絕修改 `conftest.py`（超出三檔範圍），兩者皆將決定權回報主大腦；並主動全庫回歸（`96 failed, 5918 passed, 15 errors`）逐一檢視歸因。**此為正確的範圍紀律**。
+
+#### 0.1.3 時間炸彈金樣已解除（2026-10-03 12:00，Owner 指示：不等真實時間，改隔離模擬）
+
+**Owner 原話指示**：「測試可以進行，原則上需要時間來做的，強烈建議使用寫模擬隔離測試的方式來做。用實際時間來等，是最不實際的辦法，所以結論是不等。」
+
+**病灶重新診斷**：`test_s0_fixture_matches_production_time_truncation` 以 `_sha256_file()` 對**整個**生產 `life_threads.jsonl` 算 hash 並斷言等於金樣值。但該日誌是 **append-only**——生產只要持續寫入，檔案 hash 必然改變，斷言**恆紅且不可能轉綠**。**等真實時間過去不會讓它變綠；重凍結金樣也只是把炸彈往後推。**
+
+**設計錯誤**：用「整檔沒變過」當 append-only 日誌的 provenance 不變量，是錯誤的原語。正確的不變量是 **「cutoff 之前的內容未被竄改」**。
+
+**修法（兩處，皆不依賴真實時間）**：
+1. `derive_snapshot()` 的 `source_sha256` 改為 **`truncated_prefix_sha256`**——對**截斷後投影 rows** 的 canonical JSON 取 sha256。append-only 保證 cutoff 前的列不可變 ⇒ **此值永久穩定**，且**仍能抓出歷史竄改**。兩份金樣已重凍結（一次性計算，非等待）。
+2. 新增 `test_s0_truncation_logic_is_hermetic_on_synthetic_data`：**完全合成資料、不讀生產、不靠等時間**的三段式驗證——① 截斷正確（含 `== cutoff` 邊界納入保留，且故意用非時間序檔案內容證明依 `updated_at` 判斷而非檔案位置）；② **只追加 cutoff 之後的列 ⇒ 前綴摘要不變**（append-only 核心性質，即原炸彈所在）；③ 竄改 cutoff 之前的內容 ⇒ 摘要**必須**改變（否則 provenance 斷言形同虛設）。**注意**：篡改必須落在 `SNAPSHOT_FIELDS` 之內（`thread_id`／`event_seq`／`event_type`／`origin_type`／`status`／`check_after_ts`／`created_at`／`updated_at`／`dissolved_at`）；投影外欄位（如 `share_target`）依設計在投影時丟棄，改它不影響摘要——此為實作時實測發現並釘入測試註解。
+
+**金樣結構變更**：`source_sha256` 已移除；原整檔 hash 保留為 `source_file_sha256_at_freeze_historical` 並附 `_note` 明文「**NEVER ASSERTED**」；新增 `truncated_prefix_sha256` 與 `_provenance_invariant` 說明。
+
+**驗證（主大腦實跑，`.venv` 解器）**：`tests/soul/test_life_thread_sim_time.py` **13 passed**（原 12 ＋ 新隔離測試 1）；`pytest tests/soul -k life_thread` **1170 passed / 0 failed**；`pytest tests/soul` **1196 passed / 0 failed**。**生命線頭區塊已恢復為可信綠基線。**
+
+**Frozen contract 自證**：`life_thread_wake_gate.py`、`life_thread_origins.py`、`life_thread_bootstrap.py`、`scheduler.py`、`src/world/middleware.py` 之 `git diff` 全部 EMPTY。`src/world/perception.py` 為 W2 預期改動（非本輪）。`data/**` 全程 0 寫入。
+
+#### 0.1.4 MS-2 陳舊測試已修（2026-10-03 12:10，四週腐化的 additive 斷言）
+
+**病灶**：`tests/test_ms2_multimodal_perception.py` 兩處斷言以**精確集合相等／精確總數**檢查 audio＋camera server 的工具集（`set(by_name) == {mic_listen, audio_transcribe, camera_capture}` 與 `len(tools) == 3`；另一處 `names == {mic_listen, audio_transcribe}` 與 `len(tools) == 2`）。MS-3.1（**2026-09-04，commit `bc7bbda`**，device-level voice session MCP tools）**刻意 additive** 新增 `voice_session_start`／`voice_session_feed`／`voice_session_stop`，但未更新本測試預期 ⇒ **自 2026-09-04 起持續紅至今（四週）**。與 W1／W2 完全無關（本次工作未觸碰 `scripts/audio_stream_mcp.py` 或 `src/soul/tool_registry.py`）。
+
+**修法（與 §0.1.3 同一原則）**：**精確集合相等／精確總數是壞掉的斷言形式**——它讓任何上游 additive 演進必然變紅，且必須有人記得回來改，否則永久腐化。改為：① **已批准契約**（MS-2 的三個工具之 group 與權限）以**子集斷言**釘死，行為不可變；② **MS-3.1 工具**斷言存在且歸 `observe_environment`；③ **不**斷言總數與集合相等（允許 additive 演進）。
+
+**⚠️ 未擅自裁定的設計問題（待 Owner）**：MS-3.1 **未**把 `voice_session_*` 加入 `EXPLICIT_PERMISSION_MAP`，故它們落在 §4.1.1 的**語義兜底 fail-closed 預設 `ask_required`**（實測確認）。這是否為預期**尚待裁定**，理由是語意兩難：與 `mic_listen` 同屬音訊擷取但會話長 30s（vs 單發 4s 上限）；且拆成 start/feed/stop 三支，若三支皆 ask 將問三次、體驗極差。**本輪刻意不斷言其 `permission_class`**，只記錄現況；亦**未**修改 `tool_registry.py` 的任何映射。實測 metadata 現況：`voice_session_*` 三者皆 `observe_environment` + `ask_required`。
+
+**驗證（主大腦實跑，`.venv` 解器）**：`test_ms2_multimodal_perception.py` **28 passed**（原 26 ＋ 2 修好）；`test_tool_registry.py` ＋ `test_ts3_real_mcp_e2e.py` ＋ `tests/tools/test_voice_session_mcp.py` ＋ ms2 合計 **91 passed**。
+
+#### 0.1.5 🔴 P0：昇華鏈把新聞沉澱成信念（D2 裁定遭違反）——已清理 ＋ 已修根因
+
+**Owner 裁定（2026-10-03 12:45，逐字）**：「既然都說是垃圾 錯了就要改 我們不是做產品 不要怕執行 我們只怕錯 沒有往理想道路上前行」；以及 12:20 的「沉澱成信念需要自己的經歷，光看完就沉澱是不合理的」。
+
+**量測（唯讀）**：`data/elevation/elevation_nodes.jsonl` 累積 **4,125 節點**（pattern 2,776／belief 915／value 343／trait 91）。**零條是真信念**：
+- `agent_id="default"`（world marker）2,804 條，其中 **910 條 belief 的內容是新聞標題原文**（`"Trump hails 'historic' deal for US to control 65bn barrels of Venezuela's oil"`）＋ 5 條天氣報告。
+- per-agent 434 條 value/trait 內容是**中繼資料標籤**（`"diary:night: slot=night"`，同一句出現在全部 10 個 agent）。
+- pattern 2,776 條：2,032 條 `world:*: world_novelty_id=…; world_source=…`、719 條 `diary:*: slot=*`、17 新聞、8 天氣。
+
+**時間軸（`elevation_trace.jsonl` join 備份，未靠等待）**：`default` 節點自 **2026-08-29** 起**每日穩定產出 36–45 筆**，最後一筆 2026-10-03 16:10 UTC。**不是歷史殘留，是當下仍在發生。**
+
+**根因（模擬測試定位，未等 slot）**：`is_world_media_trigger()` **本身正確**（19 案例 18 通過，唯一差異是我測試期望寫錯——尾端空白仍被擋是正確行為）。漏洞在**另一條路徑**：
+- `scripts/run_server.py:674-685` 的 `_elevate_check()` → `elevate_matured_patterns()`，docstring 明載「**elevate 是独立机制——独立于 Submission Gate**」（EL-DD-2）。
+- `src/inner_life/elevation_adapter.py:616` 的 `elevate_matured_patterns()` **無任何 world／news 過濾**：`agent_ids` 直接含 `default`（`:651`），EH-2 R3 防火牆（`:664-690`）**只擋 assimilated fact 累積的 pattern**，未擋 world。
+- ⇒ **EH-2.1 R1 垂直防火牆只覆蓋 `consume()`，未覆蓋 `elevate()`**。`consume()` 擋住了新聞不進 pattern，但**既存的 world pattern 仍被昇華成 belief**。
+
+**處置一：資料清理（Owner 授權）**。完整備份 4 檔 → `data/elevation.bak-20261003_124646/`（含 34.5MB trace，可回滾）。`elevation_nodes.jsonl` 4,125 → **0**；`elevation_edges.jsonl` 5,544 → **0**。**保留數為 0**（8 條天氣報告亦不保留——天氣報告不是經歷）。兩個 trace 檔未動。LF 行尾乾淨（CRLF=0）。三個靈魂的「靈魂本質」區塊現為**空**——**誠實狀態：尚無真信念**。
+
+**處置二：根因修正（已落地）**。`elevation_adapter.py::elevate_matured_patterns()` 於分組前**整組跳過 `agent_id == DEFAULT_AGENT_ID`**，與 read 側 `emergent_projection.py:58,237` 的「world node **永不投影**」不變式對稱。`DEFAULT_AGENT_ID` 採**函式內延遲 import**（維持既有風格，0 新增模組層 import）。註解載明缺陷原委、實測危害與 D2 裁定依據。
+
+**驗證**：`tests/inner_life/test_elevate_world_node_exclusion.py`（新檔，4 支，**全合成資料 + tmp store，0 生產依賴、0 等待**）——① 純 world → 昇華 0 節點；② 混合 → world 不昇華**且 per-agent 不被誤傷**；③ 全 world → 回 `[]` 不 raise；④ read 側對稱性仍成立。**合併回歸 `1293 passed / 0 failed`**（`test_elevation_adapter`＋`test_elevate_mechanism`＋`test_elevation_evidence_scope_a1`＋`test_epistemic_horizon`＋`tests/inner_life`＋`tests/soul`＋ms2）。
+
+**未修（登記為 P1）**：`diary:night: slot=night` 這類**中繼資料標籤被當成信念內容**，根因為事件餵入 `soul_elevation` 時帶的是標籤而非日記正文（`soul_elevation/llm.py:72` 的 `StubElevationLLM` 為 passthrough，不做語意判斷）。**日記正文其實存在且品質良好**（實例：ruka「Bryのことを、ふと思い出した。あの人の前だと、役じゃない自分でいられる気がする」），只是沒有被傳入昇華鏈。此項與防火牆無關，屬獨立缺陷。
+
+#### 0.1.6 P1 修正：昇華帶入真實正文（不再以中繼資料標籤冒充信念）
+
+**根因**：`scripts/run_server.py::_diary_writer_executor` 原先在 **`cb_real()` 之前** 執行 `submit()` + `_elevate_check()`，此刻 `InnerLifeEvent` 尚無正文、`extras` 只有 `{"slot": slot}`。而 `elevation_adapter._event_content()`（`:130-138`）以 `f"{trigger_type}: " + "; ".join(f"{k}={v}")` 合成事件內容 ⇒ 產出 `diary:night: slot=night`，再經 `soul_elevation` 的 passthrough stub 原樣寫成 value/belief。
+
+**修法（完全在契約內）**：把 `submit()` + `_elevate_check()` **移到 `cb_real()` 之後**，並在送出前以新 helper `_extract_diary_narrative()` 取出真實日記正文寫入 `provenance.extras["narrative"]`。
+
+**契約相容性依據**：
+- `event.py:94` 明文 `extras: extensible dict (no schema migration needed for new fields)` → 新增 `narrative` key 為設計預期用途。
+- `frozen=True` 只擋屬性賦值，**`extras` 這顆 dict 本身可安全 mutate**（測試 `test_frozen_provenance_still_allows_extras_mutation` 釘死）。
+- **`create_event` 時機未動**：M5.4-6.1「事件先於 diary 寫入」契約維持（`event_id` 照樣傳給 `write_entry`）。動的只有「送去昇華」的時機。
+- **placeholder 一律不昇華**：沿用 `proxy.py:295-302` Bry 2026-08-07 拍板「只注入 source=llm 的真實內容」。`source=placeholder` 的日記回空字串 ⇒ 不進昇華。與 Owner「沒有真實經歷就不該沉澱」同一原則。
+
+**驗證**：`tests/inner_life/test_diary_elevation_narrative.py`（新檔 6 支，全合成、無生產依賴、無等待）——① 無 `narrative` 時產生 `diary:night: slot=night`（記錄 bug 原樣）；② 有 `narrative` 時帶入真實正文；③ `frozen` 擋屬性但放行 `extras` mutate；④ AST 斷言 `await cb_real` 在 `submit` **之前**；⑤ AST 斷言 `extras['narrative']` 寫入在 `submit` 之前；⑥ AST 斷言 **`create_event` 仍在 `cb_real` 之前**（防日後手滑改壞 M5.4-6.1）。**合併回歸 `1271 passed / 0 failed`**。
+
+#### 0.1.7 門檻二錨 A 落地：生活線頭 narrative 進 prompt（契約 §6.2.2）
+
+**背景**：契約 §6.2.3 記載錨 A 的**原瓶頸**為「供給率 ≈0.1 筆/角色/日、卡在 `shareable:false`」。**2026-10-03 實測該前提已過時**：`_format_recent_inner_life()` **根本沒有 `shareable` 過濾**（只過濾 `slot ∈ (morning,night,dream,event)` 與 `source=="llm"`），現況 3 日窗合計 72 筆合格、實際注入 50 筆 ≈ **4.24 筆/角色/日**。故錨 A 的價值**不是補供給量，而是讓靈魂「正在過的日子」進 prompt**（契約 §6.2.3 語意）。
+
+**實作**：`src/llm/proxy.py` 新增 `_format_life_thread_lines(agent_id)`，於 `_format_recent_inner_life()` 的 `out_lines` **diary 之後、截斷之前**併入（契約 §6.2.2 逐字指定的合併位置）。格式 `- [<YYYY-MM-DD> thread] <narrative 截斷至 60 字>`，截斷常數**對齊**既有 `INNER_LIFE_MAX_CHARS_PER_ENTRY`（不新增第二套語意），總行數上限維持 `INNER_LIFE_MAX_ENTRIES = 5`（不提高），既有注入塊逐字文案**未改動**。
+
+**🔴 實作過程中被測試抓到一次違規**：第一版把線頭行插在 diary **之前**，結果被 `out_lines[-5:]` 截掉——**插在最前等於白插**。修正為契約指定的「diary 之後、截斷之前」後通過。此誤記錄於程式碼註解，防日後重犯。
+
+**驗證**：`tests/llm/test_anchor_a_life_thread_injection.py`（新檔 8 支，全合成 tmp data_root）——① 檔案不存在時靜默；② active 線頭帶 `thread` 標記出現；③ `completed`／`abandoned` 被排除；④ 空 narrative 被排除；⑤ 截斷恰為 60 字且以 `...` 結尾；⑥ append-only 依契約 §2.4 fold 取現行狀態（同一 thread_id 多列事件）；⑦ 與 diary 合併後總行數**恰為 5**且線頭行**保留在末行**、既有 diary 行逐字格式不變；⑧ **placeholder diary 仍被排除**（既有規則未破壞）。**合併回歸 `1593 passed / 1 failed`**，唯一失敗為 `tests/clients/test_voice_brain_actions.py::test_all_rem_avatar_videos_are_wired`（`rem*.mp4` 實有 50 個 vs 測試期待 44，屬 **VC 線既有工作區改動**，與本票無關，已查證 `git status clients/voice_companion` 顯示為先前存在的 M/?? 項）。
+
+#### 0.1.8 TA-2-A — Temporal Context Participation（Owner 2026-10-03 重新定義並授權實作）
+
+**Owner 逐字定義**：
+> TA-2 = **Time participates in interpretation**。時間感知不是知道現在幾點，而是**時間會改變 Soul 對正在發生之事的理解**。
+
+**Owner 指出的核心機制（推翻主大腦原理解）**：
+> 「要開會」→ 會想到**幾時**開會；「去吃飯」→ 會想**午餐還是晚飯**。**粗顆粒不是少資訊，是保留足夠資訊讓 Soul 可以推理，但不把推理答案提前給它。**
+
+主大腦先前實作的 TIME-PERCEPTION-1（46 支 formatter 測試）**只驗證到第 1-2 層**（Representation → Context），**未驗證第 3-4 層**（Interpretation → Uncertainty）。Owner 裁示：**「後者只是驗證 formatter。」**
+
+**驗收判準（difference-in-difference，非單純 diff）**：
+```
+時間敏感 probe:  ON vs OFF → 有意義且穩定的差異
+時間無關對照:    ON vs OFF → 不應有同等程度的系統性差異（雜訊地板）
+```
+若差異不穩定／determinism 不成立／對照組同樣有 comparable variation ⇒ **INCONCLUSIVE，不得算 PASS**。
+
+**不要求**（Owner 逐字）：Soul 一定問「幾點？」／一定產生 temporal curiosity／一定產生 motive／一定行動／固定 wording。**ASK / WAIT / INFER / IGNORE 屬 Agency / TA-2-B。**
+
+**實作（`harness/tl12_temporal.py` ＋ `harness/run_tl12.py`）**：**重用既有 harness 全部元件，未建立第二套**——`SimulationClock`（既有假時鐘）／`GrowthProbe`（既有 probe）／`Observer` + `derive_determinism`（既有 determinism）／`make_real_llm_call`（既有真 LLM 工廠，temperature=0）。
+**唯一注入點是 `llm_call` 的一層包裝**：ON 加一行 coarse 時間行、OFF 完全不加，**其餘 prompt/context 逐字元相同**（AST 測試釘死）。時間行由 `src/timezone_utils.coarse_now_line()` 產生（錨 A 節實作之粗顆粒表示，**不重新引入精確時間**）。
+**`harness/observer.py` 0 改動**——TL-12 的時間標記分析是**本地 reporting layer**（`reporting_only: true` / `rewrites_source: false`），不把 observer 變成 cognition layer。
+
+**Gate 1 結構守門**（`tests/harness/test_tl12_temporal_harness.py`，**13 支全過**）：基礎設施重用／無 duplicate runner／observer 語意未污染／canonical probes 齊備／≥2 temporal contexts（週六 09:00 與 14:22 EDT）／**ON 與 OFF 逐字元只差那一行**／stub LLM 必須得 INCONCLUSIVE 而非 PASS／ON-OFF 呼叫次數對稱（各 30）／production 0 mutation。
+**回歸**：`tests/harness` ＋ `test_tl1_harness` ＋ `test_tl6_social_harness` ＋ `test_tl7_social_opportunity_harness` = **161 passed / 0 failed**（既有 TL 實驗未受影響）。
+
+**Gate 2 行為觀察**：真實 LLM（`OpenAIBackend` → `https://ollama.com/v1/chat/completions`，model `deepseek-v4.1-flash`，temperature=0），60 次呼叫。Owner 2026-10-03 授權使用（Ollama Cloud 為包月方案）。
+
+**🔴 方法論更正（主大腦自承）**：Owner 問「`test_ts3_real_mcp_e2e.py` 能否作真實 LLM 模式」時，主大腦找錯檔——該檔無 mock LLM 痕跡。**真正的既有實驗基礎設施是 `harness/`（29 檔，TL1–TL11 八個實驗）**，且 `harness/clock.py` 早已是假時鐘（固定 epoch、瞬間推進、絕不觸碰 production scheduler）。**Bry 一直說的「不等時間、寫模擬」在 repo 裡是既定做法，不是新提案。**
+
+#### 0.1.9 🔴 P2 架構發現：`temperature = 0` ≠ determinism（Owner 2026-10-03 裁定暫不升 P1）
+
+**實測（Gate 2 首輪，`.venv`，`deepseek-v4.1-flash` @ Ollama Cloud）**：**同一 Soul、同一 probe、同一模型、同一 configuration、`temperature=0`，跑 3 次得到 3 個不同輸出**（20 個 probe×arm 組合中 19 個 `on_distinct=3`）。
+
+**結論**：`temperature = 0` 只描述 **sampling configuration**，**不得**在 Soul OS harness 裡直接當作 **determinism evidence**。
+
+**證據鏈為何不受接線錯誤影響**：主大腦首輪把 determinism 接錯（把 20 個**條件間**折疊去比對，而非**同一條件的 3 次重複間**）⇒ 已修正。但修正前後都有**獨立的** `on_stable_across_runs` 證據（直接比較同一條件的 3 次重複）⇒ **非確定性是實在的，不是 instrumentation artifact**。
+
+**Owner 裁定層級**：記為 **P2 architecture / experimental methodology finding，暫不升 P1**（目前無 production correctness failure）。**但它會影響對既有 TL 實驗的解讀。**
+
+**影響範圍（誠實登記，尚未 audit）**：Notion 記載 TL-1「D2 determinism PASS（3 runs decision 一致）」與 `change_verdict = INTERPRETATION_DECISION_CHANGED`（Level 2 Growth proven）。**該 determinism evidence 是在不同模型／配置下取得，可能不適用於現行後端。**
+
+**⚠️ 不得據此推翻 TL-1**。正確做法是**重新驗證 evidence chain**：檢查其模型、backend、configuration、run structure，以及 **Level-2 change verdict 是否其實不需要 strict determinism 才成立**。**新發現不得反過來污染舊 evidence。**（Owner 2026-10-03 指示；audit 尚未執行，另開 ticket。）
+
+#### 0.1.10 測量有效性修正：回音（echo）vs 推理（inference）
+
+**Owner 警示**：「不要因為看到 ON/OFF 有文字差異就直接 PASS。我們真正要回答的是——**時間是否改變了 Soul 對事情的理解？** 而不是——時間是否讓 Soul 說出了不同的句子？」
+
+**主大腦首輪判定邏輯正好犯此錯**：以「輸出文字含時間關鍵字」為指標，那量的是**措辭**。
+
+**修正後的核心規則**（`_inference_markers()`）：**一個 marker 若其字面已存在於 stimulus 或注入的時間行中，它只是被複述（echo），不構成推理證據。**
+
+| 輸出 | stimulus | 注入行 | 判定 |
+|---|---|---|---|
+| 「下午」 | — | 「週六。**下午**，約兩點半…」 | **回音，非證據** |
+| 「現在」 | — | 「你大概**知道現在是**：…」 | **回音，非證據** |
+| 「午餐」 | 「等一下去吃飯」 | 「週六。早上，剛過九點…」 | **必須推理（判斷這是午餐非晚餐）= 真證據** |
+
+**判定改以 `temporal_inference` 為準**（`temporal_marker` 僅供對照觀察，不參與判定），且報告會**明列「哪些 probe 只有措辭差異」**。
+
+**修正過程中抓到兩個 measurement validity bug（皆已修 + 加守門測試）**：
+1. `_TEMPORAL_MARKERS` 只收複合詞（`今天早上`），**漏了單獨時段詞**（`早上`／`下午`／`晚上`）⇒ echo 規則無法自動把它們判為回音。已補齊單獨時段詞。
+2. 回音基準只含 `stimulus + temporal_line`，**漏了模板框文字**（「你大概知道現在是：」）⇒「現在」被誤判為推理。已把 `_TEMPORAL_HEADER` 納入回音基準。
+
+**守門測試**：`test_echo_is_not_inference`（釘死三種情形）、`test_report_records_both_marker_and_inference`（釘死回音與推理分別記錄）。
+
+
 ---
 
 ## 1. CURRENT STATE

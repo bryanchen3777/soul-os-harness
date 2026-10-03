@@ -88,8 +88,14 @@ def _isolate_soul_os_data_root(request, tmp_path_factory):
     env_patch.setenv("LIFE_THREAD_BOOTSTRAP_ENABLED", "")
     env_patch.setenv("LIFE_THREAD_CONSOLIDATION_ENABLED", "")
     env_patch.setenv("LIFE_THREAD_CATCHUP_ENABLED", "")
-    # INTIMACY-GROWTH-2 (C6)：同一類地雷的第四次踩點預防。
-    # `src/agent/emotion.py` 的 `decay_enabled()` **缺席即 OFF**，而
+    # LIFE-THREAD-W1 (2026-10-03)：同一類地雷的第五次踩點預防。
+    # `life_thread_orchestrator.whim_enabled()` 採「非空且非 0／非 false 即 ON」
+    # 的解析規則，**缺席即 OFF 不成立** —— 必須顯式釘成空字串，
+    # 否則 2026-10-03 部署寫入 `.env` 的 `LIFE_THREAD_WHIM_ENABLED=1`
+    # 會被 `load_dotenv(..., override=False)` 補回 pytest 行程，
+    # 讓 7 筆早於本旗標的既有 life-thread 測試轉紅。
+    env_patch.setenv("LIFE_THREAD_WHIM_ENABLED", "")
+    # INTIMACY-GROWTH-2 (C6)：同一類地雷的第四次踩點預防。    # `src/agent/emotion.py` 的 `decay_enabled()` **缺席即 OFF**，而
     # `load_dotenv(..., override=False)` 會在「變數不存在」時把生產
     # `.env` 的值補回 pytest 行程 ⇒ 若只靠「沒設」來當 OFF，測試會在
     # 開發機（有 .env）與 CI（無 .env）給出不同結果。

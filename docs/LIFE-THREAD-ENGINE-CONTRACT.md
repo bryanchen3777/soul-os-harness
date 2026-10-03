@@ -317,6 +317,8 @@ VISION §4.1 逐字：**「線頭是『未解決的心理張力』的在場暫�
 > **修訂 3（LIFE-THREAD-CONTRACT-BOOTSTRAP-FUP-1，2026-09-17）：§7 INV-3／§8.1／§8 約束第 2 條同步 §4.4 例外條款；§4.4 成本上界 agent 數 11 → 10；§4.4 新增「空種子與標記消耗」已知限制。**
 >
 > **修訂 4（`LIFE-THREAD-BOOTSTRAP-1`，2026-09-17）：§4.4 標記落點改為「經 M1 `life_threads_path()` 導出 per-agent 目錄（該函式內含 `data_root()` 慣例與 agent_id 安全路徑段驗證）」＋護欄 `test_a5` 恰等值演化（0 ⇒ 恰 1 次、且僅作 `bootstrap_marker_path(...)` 直接引數）；§4.4 已知限制① 改為與 M4 實況一致（無 diary ⇒ 退回 `WHIM_NEUTRAL_ANCHOR`，仍 bootstrap 但不宣稱具體外部事件）。**
+>
+> **修訂 5（`LIFE-THREAD-W1`，2026-10-03）：新增 §4.5 心血接線（`whim_driven` 第四條喚醒路徑，旗標 `LIFE_THREAD_WHIM_ENABLED` **預設關**、每 agent 每評估日 ≤1、硬編碼不從 env 讀）；§7 INV-3／§8.1 同步為「兩個條件式例外」。`life_thread_wake_gate.py`（M3 凍結面）**全檔 0 改動**。**
 
 VISION §4.2 逐字：**「復用既有時段 checkpoint（0 新定時器）。系統只做二元『存在性判定』（有未決線頭到期、或外部記憶/事件有新輸入），絕不做擾動程度評分。未滿足條件時系統保持安靜，不給 LLM 頻繁編造瑣事。」**
 
@@ -527,6 +529,98 @@ should_wake := check_points_due(agent_id) OR world_collision_detected(agent_id)
 | BS-3 | 條件②（標記）為**唯一的持久防重** | 標記檔存在 ⇒ 恆不 bootstrap（跨重啟亦然） |
 | BS-4 | 標記讀／寫失敗 ⇒ **不 bootstrap** | 注入 IO 例外 ⇒ 0 LLM、0 新標記、**不 raise** |
 | BS-5 | **M3 逐位元不變** | `evaluate_wake_gate` 的呼叫參數、回傳與 log 與本節引入前相同（`should_wake is False` 時其 `reason` 仍照原樣產生與記錄） |
+
+### 4.5 心血接線（`whim_driven` wake）——**第四條喚醒路徑（`LIFE-THREAD-W1`）**
+
+> **一句話**：當 M3 判該時段該安靜、且該 agent 的**人格上下文非空**時，讓它**每評估日至多一次**、在**旗標預設關**的前提下，以 `whim_driven` 醒來一次，使「**心血的泉眼**」（§5.2.3）第一次在生產上**可達**。
+
+#### 動機（**D5 量測登記**，2026-10-03，唯讀 fold）
+
+10 個 agent 共 **38** 條線頭，`origin_type` 為 `necessity_driven` **38/38（100%）**；`whim_driven`／`goal_driven`／`world_collision` 皆 **0**。此為**架構必然**：M4 的 `collect_whim_seeds` 與 §5.2.3 模板**早已就位**（LIFE-THREAD-M4），但喚醒路徑上**沒有任何呼叫者**。故本節的性質**不是**新增能力，而是**接通既有 §5.2.3**。
+
+#### 定位（**不得誤讀**）
+
+| 本路徑**是** | 本路徑**不是** |
+|---|---|
+| **第四條喚醒路徑**（前三條 ＝ §4.2 判定 1／判定 2／§4.4 bootstrap） | **不是**新型 `origin_type`：值域仍**恰 4 值**（§2.3、§11 OQ-1），**不發明第五個**；`whim_driven` 是 §2.3 **既有**第 3 值 |
+| **orchestrator 層**的路由決策（在 M3 判定**之後**、M4 喚醒**之前**） | **不是** M3 的第三態：§4.2「放行邏輯（二元，無第三態）」**不被修改**，M3 仍只回 `True/False` |
+| 🔴 **`src/soul/life_thread_wake_gate.py` 全檔 0 改動** | **不是** M3 的第三個喚醒訊號：`check_points_due`／`world_collision_detected` **兩個輸入皆不新增** |
+
+#### 🔴 M3 閘門 0 改動（**明文聲明**）
+
+本節沿用 §4.4 已建立的**同一先例、同一層**的模式：**不修改 M3 閘門的判定式、常數、輸入或日誌**，只在 orchestrator 改「**喚醒後用哪個起源**」。落地後的客觀證據為 `git diff -- src/soul/life_thread_wake_gate.py` **輸出為空**，並由 `tests/soul/test_life_thread_whim_origin.py::test_m3_gate_untouched` 以 AST 釘死 `life_thread_wake_gate.py` 公開函式的簽章基線。**`WORLD_COLLISION_WINDOW_HOURS`（4h）、`TYPE_BASELINE_RELEVANCE`／門檻 `0.35` 一律不動。**
+
+#### 觸發條件（**三者全部成立**才走 whim）
+
+| # | 條件 | 判定口徑 |
+|---|---|---|
+| ① | 旗標 `LIFE_THREAD_WHIM_ENABLED` **ON** | 見下「旗標」；**缺席即 OFF（預設）** |
+| ② | **M3 判定 `should_wake is False`** | 契約 §4.2 的二元判定**照原樣**成立（bootstrap 未成立時才評估本條件） |
+| ③ | **`soul_context` 非空** | M4 `load_soul_context(agent_id)` 的既有 0-LLM 前置檢查；**沿用同一次呼叫**，不得重複讀取 |
+
+#### 起源值（**§2.3 既有四值之一**，非新增）
+
+- **選定值**：**`whim_driven`**（§2.3 第 3 行：語意「心血來潮」、種子來源「角色個性」、必要性判定「最貼近個性魅力」、VISION §4.3）。
+- **字面值登錄**：`src/soul/life_thread_orchestrator.py` 以**本檔內的模組常數**登錄 `"whim_driven"`。🔴 `src/soul/life_thread_origins.py` **並無** `WHIM_DRIVEN`／`GOAL_DRIVEN`／`NECESSITY_DRIVEN` 常數（該模組只有 `WORLD_COLLISION`、`ORIGIN_TYPES`、`_ORIGIN_BLOCKS`）⇒ **不得 import 那些名字**，**不得**為了取得常數去改動 M4（形同 `lt_boot.BOOTSTRAP_ORIGIN_TYPE` 的既有先例）。
+- **語意歸屬**：模板與語意**全部屬 M4 §5.2.3**；本節只決定「喚醒後用哪個起源」。
+
+#### 種子（**純內生**）
+
+- 傳 `due_threads=None`（沿用 orchestrator 既有呼叫慣例，due 過濾**交還 M4** 自己的 `_render_due_threads`，與 §4.2 判定 1 同口徑）。
+- `build_kwargs` **只有** `soul_context`。🔴 **不得傳 `world_records`**：`collect_whim_seeds` 必須**純內生**（M4 §5.2.3「本函式**不得**觸碰 Lived Context／外部事實／時間」），傳入世界記錄會污染語意、與 `world_collision` 重疊。
+
+#### 🔴 防捏造約束（**逐字**）
+
+- whim 產生的線頭**不得宣稱任何具體外部事件**（無天氣、無新聞、無日程、無他人具體行為）。語意沿用 M4 `WHIM_NEUTRAL_ANCHOR` 的「不捏造」原則：M4 的 `build_origin_prompt` 對 `whim_driven` **不注入**時間／diary／世界事實區塊（`context_block = ""`、`fact_block = ""`），故此約束**由 M4 現行行為保證**，本節**不**為此改動 M4。
+- 空 `soul_context` ⇒ `build_origin_prompt` 回 `None` ⇒ **0 LLM、0 落盤**（§5.1 的「必填上下文不足」執行點）。orchestrator 另在條件 ③ 先擋一層，**不消耗**每日額度。
+
+#### 旗標（**預設關**）
+
+| 項目 | 規格 |
+|---|---|
+| 名稱 | **`LIFE_THREAD_WHIM_ENABLED`** |
+| 讀取時機 | **呼叫時讀取**（每次呼叫重新讀環境，**非**匯入時快取） |
+| 真值解析 | 去首尾空白、轉小寫後：**非空** 且 **非 `"0"`** 且 **非 `"false"`** ⇒ ON。**缺席**／`""`／`"0"`／`"false"`／非字串／讀取失敗（記 warning）⇒ **OFF** |
+| ⚠️ **與既有兩支旗標的差異（誠實登記）** | `LIFE_THREAD_BOOTSTRAP_ENABLED`／`LIFE_THREAD_CATCHUP_ENABLED`／`LIFE_THREAD_CONSOLIDATION_ENABLED` 採**真值白名單**（只有 `1/true/yes/on` 才 ON）；**本旗標刻意採「非 0／非 false 即 ON」**（工單指定）。⇒ 若日後有人設 `LIFE_THREAD_WHIM_ENABLED=off`，本旗標會被判為 **ON**。**此語意差異為已宣告的刻意選擇，不是實作疏漏。** |
+| `.env`／`configs/**` | **不得**寫入此變數（落地後**預設休眠**） |
+| 啟用 | 屬 **Owner 決定**：設環境變數 ＋ **一次重啟**。**本票不部署、不重啟。** |
+
+#### 成本上限（**硬編碼，必須可反證**）
+
+| 項目 | 規格 |
+|---|---|
+| 每日計數器 | **全新機制**：模組級記憶體 dict `{agent_id: {"date": "YYYY-MM-DD", "count": int}}`。**不是** §4.4 的一次性標記檔、**不複用**其結構、**不落盤** |
+| 「日」的口徑 | `now.date()`（`now` 由 scheduler 以**本地時區**給入）⇒ **本地日**、**非 UTC 日**；與既有 `_LAST_PROCESSED` 冪等鍵（`f"{agent_id}:{slot}:{date}"`）**同一口徑**，故兩個 slot 必落在同一日 |
+| 次數上界 | **每 agent 每評估日至多 1 次**（常數 `LIFE_THREAD_WHIM_MAX_PER_DAY = 1`，**硬編碼、不得從 env 讀**——成本上界不得被環境變數放大） |
+| 跨 slot | **累計同一計數**（`morning` 與 `night` 共用）⇒ 單日第二次 slot 不再花費 |
+| 跨日 | 日期不同 ⇒ **自動歸零**（`{"date": today, "count": 0}`） |
+| 全機上界 | ≤ **10** 個 agent × 1 次／日 ＝ **≤ 10 次／日**（僅在旗標 ON 時；預設 OFF ⇒ **0**） |
+| 重試 | **不得**新增任何重試：該輪失敗即失敗（fail-quiet），額度已佔用**不補** |
+
+#### 已知限制（**誠實登記**）
+
+①**計數不落盤** ⇒ 服務重啟後當日額度回到 0（最壞情況：**重啟當日該 agent 至多 2 次** whim 輪，而非 1 次）。此為 fail-closed 以外的**已知成本上界放寬**，屬刻意取捨（不寫任何 `data/**` 檔案）。②`soul_context` 為空時**不佔用**額度（條件 ③ 先於計數閘門）。③額度在**佔用時**即消耗，故若 `run_origin_round` 因 `prompt_available is False` 或 LLM 失敗而無產出，當日額度即作廢（fail-quiet、不重試，同 §4.4 已知限制 ②）。
+
+#### 與既有條文的邊界（**本節未修改任何既有條文**）
+
+1. **§7 INV-3**（逐字：「安靜時 0 LLM」）與 **§8.1**（「兩條常態路徑」／「0 條 LLM 路徑」）：在旗標**缺席／OFF（＝預設）**時，兩者**逐字仍真**——本節完全不執行，生產行為與本節引入前**逐位元相同**（0 多餘 I/O、0 LLM、`summary` 鍵集合不變）。旗標**啟用**後，本節是 §7／§8 既有文字的**第二個條件式例外**（每 agent 每日 ≤1、預設 OFF），已由該兩節同步入約。
+2. **§4.2**：**不被修改**（見上「M3 閘門 0 改動」）。
+3. **§2.3 的四值域**：**不動**（只用既有 `whim_driven`）。
+4. **§5.2.3**：**不被修改**（模板、錨點、種子收集器皆屬 M4 既有實作）。
+
+#### 可測斷言（設計，供本節實作驗收）
+
+| # | 斷言 | 形式 |
+|---|---|---|
+| W1 | 旗標缺席 ⇒ **完全不執行** | whim 觸發次數 == 0；LLM 呼叫數 == 0 |
+| W2 | 旗標 ON ＋ 條件 ②③ ⇒ 實際傳給 `run_origin_round` 的 `origin_type` == `"whim_driven"` | spy `run_origin_round` 的入參 |
+| W3 | `should_wake is True` ⇒ **不得**走 whim | 沿用 `decision.origin_type`；`summary` 無 `whim_wake` 鍵 |
+| W4 | 同一 agent 同一日兩個 slot ⇒ whim 生效**恰 1 次** | 第 2 次 `woke is False` |
+| W5 | `soul_context` 為空 ⇒ 不呼叫且 **0 LLM 花費** | `llm_caller` 呼叫次數 == 0 |
+| W6 | `build_kwargs` **不含** `world_records` 鍵 | spy `run_origin_round` 的 kwargs |
+| W7 | **M3 逐位元不變** | `git diff -- src/soul/life_thread_wake_gate.py` 為空 ＋ AST 簽章基線等值 |
+| W8 | `run_origin_round` 拋例外 ⇒ 記 warning、正常返回、**不 raise** | spy 注入 `RuntimeError` |
+
 
 ---
 
@@ -740,7 +834,7 @@ crosses_resistance(thread) -> bool
 |---|---|---|
 | **INV-1** | **防 Goals v2 膨脹**：終態（`completed`/`abandoned`）與 `dormant` 線頭**永不**被閘門主動調度 | `check_points_due(agent)` 對僅含 `dormant`/終態線頭的 agent **恆回 `False`**；fold 後 `status == "active"` 的線頭數 `<= LIFE_THREAD_ACTIVE_CAP_HARD_MAX`（=3） |
 | **INV-2** | **0 新定時器 / 0 新 tick / 0 新 sleep** | 全 repo `grep -E "threading\.Timer\|APScheduler\|apscheduler\|BackgroundScheduler\|loop\.call_later\|call_later"` 命中數**不增加**（現況 **0**）；本引擎相關檔案 `grep "create_task"` 命中 **0**；`src/soul/scheduler.py` 的 `asyncio.sleep` 呼叫數**不增加**（現況 2 處：`:1696`、`:1702`） |
-| **INV-3** | **安靜時 0 LLM 呼叫（預設；旗標 ON 時至多 1 次 §4.4 bootstrap）** | 當 `check_points_due == False` 且 `world_collision_detected == False` 時：旗標 LIFE_THREAD_BOOTSTRAP_ENABLED 缺席／OFF（預設）⇒ 該時段 LLM 呼叫數 == 0；旗標 ON ⇒ 恰 0 或恰 1，且為 1 時必須是 §4.4 的 bootstrap 例外、且該 agent 的 bootstrap 標記在該次之前未設（每 agent 每 epoch 恰一次）（以 mock LLM 計數斷言）；且**檔案列數不變**（`life_threads.jsonl` 的 `stat().st_size` 前後相等） |
+| **INV-3** | **安靜時 0 LLM 呼叫（預設；旗標 ON 時至多 1 次 §4.4 bootstrap ＋ 至多 1 次／日 §4.5 whim）** | 當 `check_points_due == False` 且 `world_collision_detected == False` 時：旗標 `LIFE_THREAD_BOOTSTRAP_ENABLED` 與 `LIFE_THREAD_WHIM_ENABLED` **皆缺席／OFF（預設）** ⇒ 該時段 LLM 呼叫數 == 0；bootstrap 旗標 ON ⇒ 恰 0 或恰 1，且為 1 時必須是 §4.4 的 bootstrap 例外、且該 agent 的 bootstrap 標記在該次之前未設（每 agent 每 epoch 恰一次）；whim 旗標 ON ⇒ 恰 0 或恰 1，且為 1 時必須是 §4.5 的 whim 例外、且該 agent 當日計數在此之前為 0（每 agent 每評估日恰一次）——兩者皆**不得同日同時為 1**（bootstrap 成立時不評估 whim）（以 mock LLM 計數斷言）；且**檔案列數不變**（`life_threads.jsonl` 的 `stat().st_size` 前後相等） |
 | **INV-4** | **per-agent 隔離**（**以路徑分割實作，不依賴 IdentityFirewall**——後者生產未接線，`scripts/run_server.py:495-498` ＋ `src/inner_life/submission_gate.py:333`） | 讀寫 API **只接受單一 `agent_id`** 參數；`agent_A` 的呼叫**永不開啟** `data/soul/agent_B/**`（以 monkeypatch `Path.open` 記錄開啟路徑斷言）；寫入 dict 的 key 集合**不含** `agent_id`（身分由路徑承載，避免偽造） |
 | **INV-5** | **0 數值打分** | `life_threads.jsonl` 與 SAGE `Fact` 的寫入 key 集合**不含** `score`/`weight`/`intensity`/`urgency`/`priority`/`longing`；§5.1 輸出 schema 的浮點欄位數 == **0**；`Fact.confidence` **恆為常數 1.0**（非 LLM 產生） |
 | **INV-6** | **狀態機封閉性** | `allowed_transition("completed", X) is False` 且 `allowed_transition("abandoned", X) is False` 對所有 `X`；非法轉移**不寫列**（檔列數不變）＋ 回傳 `False` ＋ **不 raise** |
@@ -754,14 +848,19 @@ crosses_resistance(thread) -> bool
 
 ## §8 成本模型（**Owner 對成本敏感，本章為契約必要章節**）
 
-### 8.1 呼叫路徑清單（**兩條常態路徑 ＋ §4.4 bootstrap 例外；後者預設關**）
+### 8.1 呼叫路徑清單（**兩條常態路徑 ＋ §4.4 bootstrap 例外 ＋ §4.5 whim 例外；兩者皆預設關**）
 
 | 路徑 | 觸發 | `path:line`（掛載點） | 每次呼叫數 | 每日上限機制 |
 |---|---|---|---|---|
 | **A｜生活推進詮釋** | §4 閘門 `should_wake == True` | `src/soul/scheduler.py:1687` 之後新增一行（設計）；守門 `:1753` 同構 | **1** | `LIFE_THREAD_WAKE_MAX_PER_DAY = 2`（＝既有時段數） |
 | **B｜蔡戈尼溶解** | §3 線頭轉終態 | 同路徑 A 輪內，`op == complete/abandon` 之後（設計） | **1** | `DISSOLVE_MAX_PER_DAY = 3`（＝ `ACTIVE_CAP_HARD_MAX`） |
 
-**例外（唯一）**：旗標 LIFE_THREAD_BOOTSTRAP_ENABLED 為 ON 時，另有一條 §4.4 的 bootstrap 路徑（每 agent 每 epoch 恰一次、預設關、缺席即 OFF）。**除上述兩條常態路徑與這一個例外之外，本引擎 0 條 LLM 路徑。**（特別聲明：閘門判定本身、fold、狀態機、SAGE 寫入**皆不呼叫 LLM**；`world_collision_detected` 只讀檔案。）
+**例外（共 2 個，皆預設關、缺席即 OFF）**：
+
+1. **§4.4 bootstrap**：旗標 `LIFE_THREAD_BOOTSTRAP_ENABLED` 為 ON 時，另有一條 bootstrap 路徑（每 agent **每 epoch 恰一次**、預設關）。
+2. **§4.5 whim**：旗標 `LIFE_THREAD_WHIM_ENABLED` 為 ON 時，另有一條 `whim_driven` 路徑（**每 agent 每評估日至多 1 次**、預設關、`LIFE_THREAD_WHIM_MAX_PER_DAY = 1` **硬編碼**、不傳 `world_records`、純內生）。
+
+**除上述兩條常態路徑與這兩個例外之外，本引擎 0 條 LLM 路徑。**（特別聲明：閘門判定本身、fold、狀態機、SAGE 寫入**皆不呼叫 LLM**；`world_collision_detected` 只讀檔案。兩支例外旗標**預設皆為 OFF** ⇒ 實際生產狀態下本引擎仍只有兩條 LLM 路徑。）
 
 ### 8.2 每 agent 每日最壞情況
 

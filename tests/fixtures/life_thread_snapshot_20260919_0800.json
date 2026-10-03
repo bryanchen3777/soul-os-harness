@@ -5,18 +5,6 @@
     "plane": "simulation (fake clock + memory fork + zero LLM)",
     "derivation": "time-truncation of the append-only production event log: keep events with updated_at <= cutoff_utc (file order preserved), project to fields_kept",
     "source_glob": "data/soul/<agent>/life_threads.jsonl",
-    "source_sha256": {
-      "agent_akane": "907324248e46780a9c752d8622b5d457fc7954dbd4d8388ea7821e4d73df9fe2",
-      "agent_anna": "7d6f66af481d4975b06f6374a529d3c423d8017df3ac514d5c17f970fca9bd62",
-      "agent_aoi": "f6e8f48006daf57a8739171bb4ff78ddf43e86660713365fbbdb89d4bffbd0c1",
-      "agent_mahiru": "1650ce16cfc895b00a9253f908eb4f1981db6393a16732b20da65623a0bddf2d",
-      "agent_mai": "879221b6c22ecacc42401d2beb23e4eb8f241dcff1da01912769033f3a2316db",
-      "agent_miku": "c12f467c6d4f522637dc06bcab6989eb6f2b863a15308fb283b6243ae9dbd438",
-      "agent_ram": "12775bb50c63f2fc9ebf3f732e7a94e1d1589e72aef0d80ed311cfb054cdfbb5",
-      "agent_rem": "a0c19affd401d7df16f26260a999973f8a25b7b7122b41ec14184b8b4fc824f6",
-      "agent_ruka": "4ec939036e32541e53be253c25594cc0cc4dcf220ab4bee2383313d90392b1aa",
-      "agent_yua": "bb3d9e58d7f30ec13ac3767f3b4dd77d37f03b75d7c3dac38013cbd6a77a37b7"
-    },
     "cutoff_utc": "2026-09-19T12:00:00+00:00",
     "cutoff_local": "2026-09-19T08:00:00-04:00",
     "cutoff_rule": "updated_at <= cutoff_utc",
@@ -57,7 +45,33 @@
       "agent_ruka",
       "agent_yua"
     ],
-    "generated_by": "tests/soul/test_life_thread_sim_time.py::derive_snapshot（同一支推導函式）"
+    "generated_by": "tests/soul/test_life_thread_sim_time.py::derive_snapshot（同一支推導函式）",
+    "source_file_sha256_at_freeze_historical": {
+      "_note": "Whole-file sha256 at freeze time. NEVER ASSERTED: the log is append-only, so any production append changes this value. The asserted invariant is truncated_prefix_sha256.",
+      "agent_akane": "907324248e46780a9c752d8622b5d457fc7954dbd4d8388ea7821e4d73df9fe2",
+      "agent_anna": "7d6f66af481d4975b06f6374a529d3c423d8017df3ac514d5c17f970fca9bd62",
+      "agent_aoi": "f6e8f48006daf57a8739171bb4ff78ddf43e86660713365fbbdb89d4bffbd0c1",
+      "agent_mahiru": "1650ce16cfc895b00a9253f908eb4f1981db6393a16732b20da65623a0bddf2d",
+      "agent_mai": "879221b6c22ecacc42401d2beb23e4eb8f241dcff1da01912769033f3a2316db",
+      "agent_miku": "c12f467c6d4f522637dc06bcab6989eb6f2b863a15308fb283b6243ae9dbd438",
+      "agent_ram": "12775bb50c63f2fc9ebf3f732e7a94e1d1589e72aef0d80ed311cfb054cdfbb5",
+      "agent_rem": "a0c19affd401d7df16f26260a999973f8a25b7b7122b41ec14184b8b4fc824f6",
+      "agent_ruka": "4ec939036e32541e53be253c25594cc0cc4dcf220ab4bee2383313d90392b1aa",
+      "agent_yua": "bb3d9e58d7f30ec13ac3767f3b4dd77d37f03b75d7c3dac38013cbd6a77a37b7"
+    },
+    "truncated_prefix_sha256": {
+      "agent_akane": "14d56e326175b07e617bc0d412c1b7dca6e1a4e902d00b516bb7059ea0242559",
+      "agent_anna": "01de6492eac3963935fdc43f0afca85967ddbc1da8a7a210643657912eb7c89d",
+      "agent_aoi": "eb8bd9837af1431711518be5c0e8d29c14b5f9c054e2902299f6c464bcd8f9da",
+      "agent_mahiru": "0746c59d09a10800a95bdfa6aa932929f0e26fd4ae34057a9c3550e841cad4b0",
+      "agent_mai": "b5632b9a0aac9b0e85341971eecdd78d52867ffa50e77133c0d5b62fd9a24a07",
+      "agent_miku": "7891f56f882068e66f9ada3c28e3a79283fa2fd4fb9e18a8321c9ac2adc90031",
+      "agent_ram": "88fb999d65ff201dff482c4d355fe2db241ba2eaeb6075039e3a4cb3c41192b7",
+      "agent_rem": "48665f4784ce3f69af6cfc6214299d951439f1f98138842e25af5ef47396630b",
+      "agent_ruka": "03c9a2a1ed8f4debfddb168d77ca9f1272773ca4b216a42974dd1c86bc5e8762",
+      "agent_yua": "6c588b097d5be075d5c1a6e8d2a2f1b3063b81ba41c47fa0a8ba30b49a75bd83"
+    },
+    "_provenance_invariant": "truncated_prefix_sha256 = sha256 of the canonical JSON projection of events with updated_at <= cutoff_utc. Stable under append-only growth; changes if pre-cutoff rows are tampered with."
   },
   "agents": {
     "agent_akane": [

@@ -642,13 +642,42 @@ def elevate_matured_patterns(
 
     resolved_dir = _resolve_store_dir(store_dir)
     try:
-        from .emergent_projection import load_elevation_nodes
+        from .emergent_projection import DEFAULT_AGENT_ID, load_elevation_nodes
 
         nodes = load_elevation_nodes(resolved_dir)
         edges = _load_edges(resolved_dir)
         if not nodes:
             return []
         agent_ids = sorted({n.get("agent_id", "default") for n in nodes})
+
+        # 🔴 P0 修正（2026-10-03，Owner 裁定「沉澱成信念需要自己的經歷，
+        # 光看完就沉澱是不合理的」）：world node（agent_id="default"）**永不昇華**。
+        #
+        # 缺陷原委：`elevate_matured_patterns()` 是**独立于 Submission Gate** 的机制
+        # （run_server.py `_elevate_check()`，EL-DD-2）。EH-2.1 R1 垂直防火牆只擋
+        # `consume()`（submission_gate.py:399），**沒有覆蓋本路徑** —— 故 world 的
+        # pattern 仍被 `engine.elevate()` 升成 belief/value/trait。
+        #
+        # 實測危害（2026-10-03）：`data/elevation/elevation_nodes.jsonl` 累積
+        # 4,125 節點，其中 agent_id="default" 佔 2,804，其中 910 條 belief 的內容
+        # 是**新聞標題原文**（如 "Trump hails 'historic' deal for US to control
+        # 65bn barrels of Venezuela's oil"），自 2026-08-29 起每日穩定產出
+        # 36–45 筆，**直接違反 D2 裁定**。
+        #
+        # 修法語意：world node 為系統級標記，`emergent_projection.py:58` 已明文
+        # 「永不投影」——昇華它本來就是白做，且會把「只是看過」寫成「我成為」。
+        # 故此處整組跳過，與 read 側的不變式對齊。
+        _default_agent_id = DEFAULT_AGENT_ID
+        _skipped_world = [a for a in agent_ids if a == _default_agent_id]
+        if _skipped_world:
+            agent_ids = [a for a in agent_ids if a != _default_agent_id]
+            logger.info(
+                f"[elevate] 跳过 world node group agent={_default_agent_id!r} "
+                f"({len(_skipped_world)} 组) —— world 事件不得沉澱成靈魂信念 "
+                f"(EH-2.1 R1 對稱條款; read 側 emergent_projection 亦永不投影)"
+            )
+        if not agent_ids:
+            return []
 
         elevated: List[ElevationNode] = []
         for agent_id in agent_ids:

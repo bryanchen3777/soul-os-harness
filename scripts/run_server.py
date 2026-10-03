@@ -1685,6 +1685,52 @@ async def lifespan(app: FastAPI):
         # diary_writer_executor 在 production 從 diary_callbacks_real lookup 既有 callback 並執行
         # (跟原 _fire_all 的 lookup 邏輯對齊, 但搬到 handler 端透過 Agency decision 控管)
         from src.agency import DiaryHandler
+
+        def _extract_diary_narrative(
+            aid: str, slot: str, cb_result: Any
+        ) -> str:
+            """LIFE-THREAD-P1: 取出剛寫入的日記正文（只讀，不寫）。
+
+            優先用 diary callback 的回傳值（`generate_diary_entry` 回傳
+            `writer.write_entry(...)` 的結果）。若回傳值不是可用的正文，
+            則回讀本日 diary jsonl 最後一筆（同一 slot）作為後備。
+
+            **placeholder 一律回空字串** —— placeholder 不是靈魂真的寫的日記
+            （proxy.py:295-302 Bry 拍板過「只注入 source=llm 的真實內容」），
+            讓它昇華成信念會違反同一條原則。
+            """
+            cand = cb_result
+            if isinstance(cand, dict):
+                cand = cand.get("content")
+            if isinstance(cand, str) and cand.strip():
+                text = cand.strip()
+                # placeholder 的 source 標記若存在則拒絕
+                if isinstance(cb_result, dict) and cb_result.get("source") == "placeholder":
+                    return ""
+                return text
+            # 後備：回讀本日 diary 最後一筆同 slot 條目
+            from pathlib import Path as _P
+            from datetime import datetime as _DT
+            _p = (
+                _P(str(data_root())) / "soul" / aid / "diary"
+                / f"{_DT.now().strftime('%Y-%m-%d')}.jsonl"
+            )
+            if not _p.is_file():
+                return ""
+            lines = [x for x in _p.read_text(encoding="utf-8").splitlines() if x.strip()]
+            for raw in reversed(lines):
+                try:
+                    import json as _json
+                    e = _json.loads(raw)
+                except Exception:
+                    continue
+                if e.get("slot") != slot:
+                    continue
+                if e.get("source") != "llm":
+                    return ""  # placeholder → 不昇華
+                return str(e.get("content") or "").strip()
+            return ""
+
         async def _diary_writer_executor(agent_id: str, slot: str) -> None:
             """M5.2-H Phase 3: 真正跑 diary generation 的 executor, 由 DiaryHandler 在 decision=YES 時觸發.
 
@@ -1733,15 +1779,6 @@ async def lifespan(app: FastAPI):
                     )
                 )
                 _event_id = _event.event_id
-                # SG-1: 改走 Submission Gate（验证 event_id → consume，只产 pattern）。
-                # EL-OWN-0: 传 agent_id=agent_id（日记灵魂），让 emergent 属性归属到
-                # 具体灵魂。
-                if submission_gate is not None:
-                    submission_gate.submit(
-                        _event.event_id, agent_id=_event.provenance.actor_id
-                    )
-                    # EL-DD-2: consume 后证据驱动 elevate（独立于 Gate，失败隔离在函数内）
-                    _elevate_check()
             except Exception as _e:
                 logger.warning(
                     f"[DiaryHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
@@ -1751,7 +1788,57 @@ async def lifespan(app: FastAPI):
                 _event_id = None
             # M5.4-6.1: cb 接受 inner_life_event_id 參數 (M5.4-6.1 既有契約延伸,
             # 預設 None, 不傳時跟 M5.2-H Phase 3 行為一致)
-            await cb_real(agent_id, slot, inner_life_event_id=_event_id)
+            _cb_result = await cb_real(agent_id, slot, inner_life_event_id=_event_id)
+
+            # ── LIFE-THREAD-P1 (2026-10-03) ─────────────────────────────────
+            # 昇華改為「日記寫入之後」才執行，並把真實正文帶進 provenance。
+            #
+            # 缺陷原委：原本 submit() + _elevate_check() 在 cb_real **之前**執行，
+            # 此刻 InnerLifeEvent 尚無正文，extras 只有 {"slot": slot}。
+            # elevation_adapter._event_content() 以 `trigger_type + extras` 合成
+            # 事件內容 ⇒ 產出 "diary:night: slot=night" 這種**中繼資料標籤**，
+            # 再經 soul_elevation 的 passthrough LLM stub 原樣寫成 value/belief。
+            # 實測（2026-10-03）：per-agent 434 條 value/trait 內容全是此標籤，
+            # 且同一句出現在全部 10 個 agent —— 靈魂的「靈魂本質」區塊被灌入 log。
+            #
+            # 修法（完全在契約內）：`Provenance.extras` 於 event.py:94 明文為
+            # 「extensible dict (no schema migration needed for new fields)」，
+            # 故塞入 narrative key 即可，**不改 InnerLifeEvent / Provenance 結構、
+            # 不改 create_event 時機**（M5.4-6.1 維持：事件先於 diary 寫入）。
+            # frozen=True 只擋屬性賦值，extras 這顆 dict 本身可安全 mutate。
+            #
+            # 語意依據 Owner 2026-10-03：「沉澱成信念需要自己的經歷，
+            # 光看完就沉澱是不合理的」——**沒有正文的經歷不該沉澱**。
+            if _event_id is not None:
+                try:
+                    _narrative = _extract_diary_narrative(agent_id, slot, _cb_result)
+                    if _narrative:
+                        _event.provenance.extras["narrative"] = _narrative
+                        logger.info(
+                            f"[DiaryHandler] P1 昇華帶入正文 "
+                            f"agent_id={agent_id} slot={slot} "
+                            f"chars={len(_narrative)}"
+                        )
+                    else:
+                        logger.info(
+                            f"[DiaryHandler] P1 無正文（placeholder 或未寫入）→ 不昇華 "
+                            f"agent_id={agent_id} slot={slot}"
+                        )
+                except Exception as _e:
+                    logger.warning(
+                        f"[DiaryHandler] P1 正文提取失敗 (不影響主路徑): "
+                        f"agent_id={agent_id} slot={slot} "
+                        f"err={type(_e).__name__}: {_e}"
+                    )
+                # SG-1: 改走 Submission Gate（验证 event_id → consume，只产 pattern）。
+                # EL-OWN-0: 传 agent_id=agent_id（日记灵魂），让 emergent 属性归属到
+                # 具体灵魂。
+                if submission_gate is not None:
+                    submission_gate.submit(
+                        _event.event_id, agent_id=_event.provenance.actor_id
+                    )
+                    # EL-DD-2: consume 后证据驱动 elevate（独立于 Gate，失败隔离在函数内）
+                    _elevate_check()
 
         _diary_handler = DiaryHandler(
             state=None,  # 用預設 AgencyState (跟其他 handler 共用)

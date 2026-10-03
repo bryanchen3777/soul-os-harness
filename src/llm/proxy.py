@@ -247,6 +247,71 @@ def _append_group_user(speaker: str, content: str) -> None:
     _save_group(history)
 
 
+def _format_life_thread_lines(agent_id: str) -> List[str]:
+    """LIFE-THREAD-ANCHOR-A: 生活線頭的 active narrative（契約 §6.2.2）。
+
+    錨 A 的**唯一增量機制**：線頭的 `narrative_content` 不依賴 `shareable`
+    旗標、不經 diary 的 event slot，因此可在 diary 供給為 0 的日子仍然供給。
+
+    規格（契約 §6.2.2 逐字）：
+      - 格式 `- [<YYYY-MM-DD> thread] <narrative_content 截斷至 60 字>`
+      - `THREAD_ANCHOR_MAX_CHARS = 60`，**對齊**既有
+        `INNER_LIFE_MAX_CHARS_PER_ENTRY`，不新增第二套截斷語意
+      - 總行數上限維持 `INNER_LIFE_MAX_ENTRIES = 5`，不提高（避免 prompt 膨脹）
+      - 不得改動既有注入塊逐字文案；線頭行走**同一區塊內**
+
+    邊界：
+      - 檔案不存在 / agent 無線頭 → 回空 list（fail-silent，絕不 raise）
+      - 只取 `status == "active"` 的現行狀態（依契約 §2.4 fold 語意）
+      - 壞行一律跳過，不 crash
+    """
+    out: List[str] = []
+    path = Path(INNER_LIFE_DATA_DIR) / agent_id / "life_threads.jsonl"
+    if not path.is_file():
+        return out
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except Exception:
+        return out
+
+    # 契約 §2.4：append-only 事件日誌 → 依 thread_id 分組，取現行狀態。
+    groups: dict = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        tid = entry.get("thread_id")
+        if not tid:
+            continue
+        prev = groups.get(tid)
+        key = (str(entry.get("updated_at") or ""), entry.get("event_seq") or 0)
+        if prev is None or key > prev[0]:
+            groups[tid] = (key, entry)
+
+    # 依 updated_at 升序，讓「最近發生」在截斷時被優先保留。
+    rows = sorted(
+        (e for _, e in groups.values()),
+        key=lambda e: str(e.get("updated_at") or ""),
+    )
+    for entry in rows:
+        if entry.get("status") != "active":
+            continue
+        content = str(entry.get("narrative_content") or "").strip()
+        if not content:
+            continue
+        date_str = str(entry.get("updated_at") or "")[:10] or "????-??-??"
+        if len(content) > INNER_LIFE_MAX_CHARS_PER_ENTRY:
+            content = content[: INNER_LIFE_MAX_CHARS_PER_ENTRY - 3] + "..."
+        out.append(f"- [{date_str} thread] {content}")
+    return out
+
+
 def _format_recent_inner_life(agent_id: str) -> str:
     """
     M2.0 (Bry 拍板 2026-08-07 15:44): 從 diary jsonl 撈最近內在生活片段
@@ -307,6 +372,14 @@ def _format_recent_inner_life(agent_id: str) -> str:
             if len(content) > INNER_LIFE_MAX_CHARS_PER_ENTRY:
                 content = content[:INNER_LIFE_MAX_CHARS_PER_ENTRY - 3] + "..."
             out_lines.append(f"- [{date_str} {slot}] {content}")
+
+    # LIFE-THREAD-ANCHOR-A (2026-10-03, 契約 §6.2.2): 活躍線頭行插入於
+    # **diary 之後、截斷之前**（`out_lines[-MAX:]` 之前）—— 如此線頭行才會
+    # 真正保留在被截出的 5 行內（插在最前會被後面的 diary 擠掉，那是本票
+    # 第一次實作時被測試抓到的錯）。總行數上限維持 INNER_LIFE_MAX_ENTRIES
+    # = 5，**不提高**，避免 prompt 膨脹。
+    out_lines.extend(_format_life_thread_lines(agent_id))
+
     if not out_lines:
         return ""
     return "\n".join(out_lines[-INNER_LIFE_MAX_ENTRIES:])
