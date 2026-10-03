@@ -251,3 +251,89 @@ class Observer:
             "determinism_verdict": "BLOCKED" if blocked else "PASS",
             "matrix": matrix,
         }
+
+    # ── P2 Determinism Contract (2026-10-03) ──────────────────────
+    # 🔴 本段是 **additive**：不修改 `derive_determinism` 的任何既有行為
+    #    （既有呼叫者 TL-1／TL-5 逐位元不受影響）。
+    #
+    # 為什麼需要：原 `derive_determinism` 只回 PASS／BLOCKED，**無法表達
+    # 「raw text 不穩，但 observation 層的結構化 evidence 穩定」**。
+    # 2026-10-03 實測（TA-2-A／TL-12）證實：temperature=0 下同條件 3 次 run
+    # 產生 3 個不同 raw 輸出 ⇒ verdict BLOCKED ⇒ observation 層是否穩定
+    # **從未被檢查** ⇒ 過度嚴格的失敗。
+    #
+    # 三層區分（docs/DETERMINISM-CONTRACT-P2.md §2）：
+    #   A. Raw determinism        同條件 → 同 raw output
+    #   B. Observation stability  raw 不同，但 observation evidence 一致
+    #   C. Causal attribution     ON/OFF 差異可歸因於被控制的變因
+    # 判定必須在「該實驗的主張所需層級」上做，不可從低層級推論高層級。
+
+    def classify_experiment_determinism(
+        self,
+        runs: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """把 determinism 判定拆成 raw / observation 兩層，回四級判定。
+
+        四級詞彙（docs/DETERMINISM-CONTRACT-P2.md §3）：
+          DETERMINISTIC        raw 一致
+          STABLE_OBSERVATION   raw 不一致但 observation evidence 一致
+          NON_DETERMINISTIC    raw 不一致且 observation evidence 不一致
+          INCONCLUSIVE         樣本不足以判定
+
+        🔴 本函式**不判定** causal attribution（第三層）—— 那需要實驗自行提供
+        對照組（即 TL-12 的 control_clean / noise_floor）。raw/observation 皆
+        穩定**不足以**支撐因果歸因。
+        """
+        legacy = self.derive_determinism(runs)
+        matrix = legacy.get("matrix", {})
+
+        # ── A. Raw determinism：逐 checkpoint 比較 emergent_snapshot 原文 ──
+        raw_matrix: Dict[str, Dict[str, str]] = {}
+        for run in runs:
+            run_id = run["run_id"]
+            for rec in run.get("records", []):
+                cp = rec.get("checkpoint", "")
+                raw_matrix.setdefault(cp, {})[run_id] = (
+                    rec.get("emergent_snapshot") or ""
+                ).strip()
+        raw_stable = (
+            all(len(set(v.values())) == 1 for v in raw_matrix.values())
+            if raw_matrix
+            else False
+        )
+        raw_layer = {
+            "verdict": "DETERMINISTIC" if raw_stable else "NON_DETERMINISTIC",
+            "matrix": raw_matrix,
+            "metric": "emergent_snapshot (raw interpretation text)",
+        }
+
+        # ── B. Observation stability：沿用既有比對錨點（decision_parsed）──
+        #      **不新增比對維度**，避免另立一套 framework。
+        obs_stable = legacy["determinism_verdict"] == "PASS"
+        if obs_stable and raw_stable:
+            obs_verdict = "DETERMINISTIC"
+        elif obs_stable:
+            obs_verdict = "STABLE_OBSERVATION"
+        else:
+            obs_verdict = "NON_DETERMINISTIC"
+        obs_layer = {
+            "verdict": obs_verdict,
+            "matrix": matrix,
+            "metric": "decision_parsed (existing observation anchor)",
+        }
+
+        # 較嚴格者優先：raw 不穩且 observation 也不穩 ⇒ 無法支撐任何結論。
+        verdict = obs_verdict if obs_stable else "INCONCLUSIVE"
+
+        return {
+            "verdict": verdict,
+            "raw_layer": raw_layer,
+            "observation_layer": obs_layer,
+            "legacy_verdict": legacy["determinism_verdict"],
+            "causal_attribution": "NOT_ASSESSED",
+            "causal_attribution_note": (
+                "本函式**不判定** causal attribution（第三層）。該判定需要實驗"
+                "自行提供對照組 —— 即 TL-12 的 control_clean / noise_floor。"
+                "raw / observation 皆穩定**不足以**支撐因果歸因。"
+            ),
+        }
