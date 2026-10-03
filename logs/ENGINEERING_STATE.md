@@ -291,6 +291,29 @@ W1 工單（主大腦出）指定「非空且非 `0`／`false` 即 ON」並稱�
 
 **回歸**：`sage/memory/writer/epistem*/horizon/extract` 相關 17 檔 = **191 passed / 2 failed / 1 error**。**該 2 failed + 1 error 經 stash 隔離驗證為既有基線**（移除本次 `writer.py` 改動後仍紅）：`test_extract_and_judge_context_bug::test_content_stage_sees_real_text`、`test_short_term_memory_framing_v1::test_baseline_bry_recent_block_has_no_anti_framing`、`test_memory_middleware::test_memory_middleware_e2e`（error）。**與本票無關。**
 
+#### 0.1.14 TL-1 Revalidation 結果（2026-10-03 15:05）：`STABLE_OBSERVATION`
+
+執行器 `harness/run_tl1_revalidation.py`（additive，未改既有 `run_tl1.py`），輸出 `data/harness_out/tl1/tl1_revalidation.json`（derived 邊界）。參數 `deepseek-v4.1-flash` / `temperature=0.0` / `n_runs=3` / `pipeline 5c0e954`。
+
+| 層 | 結果 |
+|---|---|
+| ① Raw determinism | **`NON_DETERMINISTIC`** |
+| ② Observation stability | **`STABLE_OBSERVATION`** |
+| ③ Causal attribution | `NOT_ASSESSED`（TL-1 無 counterfactual 設計） |
+| legacy verdict | `PASS` |
+| **最終判定** | **`STABLE_OBSERVATION`** |
+| production mutation | **PASS (0 diff)** |
+
+**依契約 §2 判定必須在「主張所需層級」上做**：TL-1 的主張＝「Level-2 Growth proven」＝ `change_verdict == INTERPRETATION_DECISION_CHANGED`。**該主張層 3/3 run 一致**；跨兩批共 **6/6 一致** ⇒ **主張可重現**。
+
+**⚠️ 附加發現（不影響主張判定，但比 Notion 原描述更細緻）**：**trajectory 形狀跨 run 不唯一**（T0 與 T30 的 `attribution` 在 `external`↔`uncertain` 之間波動）；但 **`stance` 與 `concern` 在三個 checkpoint 皆穩定為 `concerned` / `alex`**。⇒ **結論可重現，但演變路徑的細節不唯一。** 這**不推翻** Notion 原本的「擔心 → 自我懷疑 → 接受」描述，而是把它從「唯一路徑」修正為「主張可重現、路徑非唯一解」。
+
+**🔴 過程中修正的兩個自身錯誤**：
+1. **mutation 快照傳錯路徑 → 假陽性**。首跑報 FAIL，diff 為 `data/heartbeats/telegram_channel.json` 與 `data/state/event_loop_alive.json`——**兩者皆為活服務心跳檔**。根因：呼叫 `snapshot_data_root_hashes(REPO)` 而非 `(REPO/"data")`，使 `_is_mutation_skipped` 的相對路徑全部失配（`data/heartbeats/*` vs 預期 `heartbeats/*`）。實測傳 `REPO` 得 **29,284** 檔（誤判）、傳 `REPO/"data"` 得 **236** 檔（正確）。**harness 既有的 mutation 檢查一直是對的；錯在呼叫端。**
+2. **判定邏輯違反契約自身原則**。首版要求 `trajectory_stable` 為必要條件，但 trajectory 三元組**比 TL-1 的主張更嚴**——**拿比主張更嚴的條件否決一個成立的主張**。已改以 `claim_stable`（change_verdict 一致）為主張層判準，trajectory 降級為**獨立記錄的附加發現**。
+
+**TL-1 狀態：Needs Revalidation → `STABLE_OBSERVATION`（可重現，observation-level）。** 未推翻、未保護，由 evidence 決定。
+
 
 ---
 

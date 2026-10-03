@@ -126,3 +126,66 @@ TL-1 的 Level-2 結論依賴兩件事：
 - 本 audit **只盤點 repo 內可查證的部分**。TL-1／TL-5／TL-6／TL-7 的**實際執行結果不在 repo**，故其「當時觀察到什麼」只能從 Notion 記錄與程式碼推斷，**不能從 repo 重建**。
 - 「Needs Revalidation」是**狀態描述**，不是「結論錯誤」。
 - 本 audit **未**推翻任何歷史結論，也**未**保護任何歷史結論。
+
+---
+
+## §7 TL-1 Revalidation 結果（2026-10-03 15:05）
+
+執行器：`harness/run_tl1_revalidation.py`（additive，未修改既有 `run_tl1.py`）。
+輸出：`data/harness_out/tl1/tl1_revalidation.json`（derived 邊界）。
+參數：`deepseek-v4.1-flash` ／ `temperature=0.0` ／ `n_runs=3` ／ `pipeline 5c0e954`。
+
+### 7.1 三層結果
+
+| 層 | 結果 |
+|---|---|
+| ① Raw determinism | **`NON_DETERMINISTIC`** |
+| ② Observation stability | **`STABLE_OBSERVATION`** |
+| ③ Causal attribution | **`NOT_ASSESSED`**（TL-1 無 counterfactual 設計） |
+| legacy `determinism_verdict` | `PASS` |
+
+### 7.2 🔴 最終判定：**`STABLE_OBSERVATION`**
+
+**依契約 §2 核心原則，判定必須在「該實驗的主張所需層級」上做**：
+TL-1 的**主張**＝「Level-2 Growth proven」＝ `change_verdict == INTERPRETATION_DECISION_CHANGED`。
+**主張層在 3/3 run 一致**（且見 §7.4 跨兩批共 6/6 一致）⇒ 主張可重現。
+
+### 7.3 附加發現（**不影響**主張判定，但比 Notion 原描述更細緻）
+
+**trajectory 形狀跨 run 不唯一**（stance／concern／attribution 三元組逐字元不一致）：
+
+```
+run0: T0:concerned|external → T15:concerned|external → T30:concerned|uncertain
+run1: T0:concerned|uncertain → T15:concerned|external → T30:concerned|external
+run2: T0:concerned|uncertain → T15:concerned|external → T30:concerned|external
+```
+
+變動集中於 **T0 的 attribution**（external↔uncertain）與 **T30 的 attribution**。
+**stance 與 concern 在三個 checkpoint 皆穩定為 `concerned` / `alex`。**
+
+⇒ **結論可重現，但演變路徑的細節不唯一。** 這**不推翻** Notion 原本的
+「擔心 → 自我懷疑 → 接受」描述，**而是把它從「唯一路徑」修正為「主張可重現、
+路徑非唯一解」**。
+
+### 7.4 跨兩批共 6 次 run 的主張層一致性
+
+| 批次 | change_verdict |
+|---|---|
+| 首跑（run_tl1_revalidation 首版） | 3/3 `INTERPRETATION_DECISION_CHANGED/L2` |
+| 修正後重跑 | 3/3 `INTERPRETATION_DECISION_CHANGED/L2` |
+| **合計** | **6/6 一致** |
+
+### 7.5 🔴 過程中修正的兩個自身錯誤（記錄以防重蹈）
+
+**(a) mutation 快照傳錯路徑 → 假陽性。**
+首跑報 `production mutation: FAIL`，diff 為 `data/heartbeats/telegram_channel.json` 與
+`data/state/event_loop_alive.json` ——**兩者皆為活服務心跳檔**。根因：呼叫
+`snapshot_data_root_hashes(REPO)` 而非 `snapshot_data_root_hashes(REPO/"data")`，
+使 `_is_mutation_skipped` 的相對路徑全部失配（`data/heartbeats/*` vs 預期 `heartbeats/*`）。
+實測：傳 `REPO` 得 **29,284** 檔（誤判），傳 `REPO/"data"` 得 **236** 檔（正確）。
+**harness 既有的 mutation 檢查一直是對的；錯在呼叫端。**
+
+**(b) 判定邏輯違反契約自身原則。**
+首版要求 `trajectory_stable` 為必要條件，但 trajectory 三元組**比 TL-1 的主張更嚴**。
+**拿比主張更嚴的條件否決一個成立的主張，等於違背 §2。** 已改為以 `claim_stable`
+（change_verdict 一致）為主張層判準，trajectory 降級為**獨立記錄的附加發現**。
