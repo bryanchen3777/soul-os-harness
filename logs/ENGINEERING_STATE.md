@@ -272,6 +272,25 @@ W1 工單（主大腦出）指定「非空且非 `0`／`false` 即 ON」並稱�
 
 **陷阱**：`compute_scores()` 的參數名是 `current_user_context_keywords`（`perception.py:467-476`），**不是** `user_context_keywords`。
 
+#### 0.1.13 EH-4.2-DEF-1：定義句繫詞邊界修正（兩個缺陷同一根因）
+
+**兩個缺陷**（出自 `harness/eh2_smoke_natural3.py` 的真機觀察 + `docs/MEM-VISIBILITY-0-AUDIT.md` 實驗組 B）：
+
+| # | 缺陷 | 實測症狀 |
+|---|---|---|
+| ① | 五元組 subject 污染 | subject = 「氣炸鍋**就**」 |
+| ② | 定義句不產生錨點 | 打標寫入 subject=「氣炸鍋就」→ 之後 `get_idiolect_facts()` 以「氣炸鍋」檢索**命中不了** |
+
+**根因（單一）**：`src/memory/sage/writer.py:75` 的 `(r"(.+?)是(.+)", "是", 1.0)`。`re.search` 取**最左**匹配、`.+?` 非貪婪逐字試 ⇒ 對「氣炸鍋就是個插電烤熟食物的箱子。」會把「就」留在 `group(1)`。**「就是」是中文複合繫詞，本不可拆開。** 缺陷②是缺陷①的下游後果（存進去的 subject 髒了，檢索自然命中不了）。
+
+**修法＝邊界修正，非特例關鍵字黑名單**：改為 `(r"(.+?)(?:就是|是)(.+)", "是", 1.0)`——`就是` 列為**原子 alternative 且排在 `是` 之前**，掃描在「氣炸鍋」處即命中，subject 乾淨、繫詞整體歸入 predicate 語意。**僅新增 `就是` 一個複合式（最保守）；`就是` 之外的複合繫詞不在本票範圍。**
+
+**已知 v1 邊界（依 smoke 記錄「只記錄不修」，本票未動）**：「今天就是想休息一下」會命中 `就是` 而被標記為 `assimilated`（substring false-positive）。**修正後該句的 subject 由「今天就」變為「今天」**（更乾淨），但**是否構成定義句仍需語意判斷**——該問題屬 L3 求知動機層，非本票範圍。
+
+**驗證**：`tests/test_eh42_definition_copula.py`（新檔 **7 支全過**，全隔離 tmp data_root）——① 定義句 subject 乾淨為「氣炸鍋」且不含「氣炸鍋就」；② object 不殘留「就是」；③ **以「氣炸鍋」檢索必須命中**（缺陷②直接驗收）；④ 單純繫詞「雷姆是…」不變；⑤ 其他關係型（「喜歡」）不變；⑥ 非定義句不拋例外；⑦ **結構斷言：修的是繫詞邊界，且 `_normalize_entity` 內不得有單字元特例 replace/strip**（防止未來退化成 keyword blacklist）。
+
+**回歸**：`sage/memory/writer/epistem*/horizon/extract` 相關 17 檔 = **191 passed / 2 failed / 1 error**。**該 2 failed + 1 error 經 stash 隔離驗證為既有基線**（移除本次 `writer.py` 改動後仍紅）：`test_extract_and_judge_context_bug::test_content_stage_sees_real_text`、`test_short_term_memory_framing_v1::test_baseline_bry_recent_block_has_no_anti_framing`、`test_memory_middleware::test_memory_middleware_e2e`（error）。**與本票無關。**
+
 
 ---
 
