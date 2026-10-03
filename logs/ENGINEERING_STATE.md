@@ -225,6 +225,53 @@ W1 工單（主大腦出）指定「非空且非 `0`／`false` 即 ON」並稱�
 
 **守門測試**：`test_echo_is_not_inference`（釘死三種情形）、`test_report_records_both_marker_and_inference`（釘死回音與推理分別記錄）。
 
+#### 0.1.11 W1 接線模擬驗證（2026-10-03 14:20，`scripts/sim_life_thread_origin.py`）
+
+**背景**：flag 於 13:08 上線，但 `morning` slot（08:00）已過、`night` 要 22:00 ⇒ 無生產資料可讀。**依 Owner 規則「需要時間的就跑模擬」，用假時鐘＋stub LLM 回答「W1 會不會產出」。**
+
+**結果（counterfactual 隔離成立）**：
+
+| slot | `flag=OFF` | `flag=ON` |
+|---|---|---|
+| morning | `woke=False` | **`woke=True` / `origin_type="whim_driven"` / `whim_wake=True`** |
+| night | `woke=False` | `woke=False`（**每日上限 1 次已用掉**——`_WHIM_DAILY` 為模組級記憶體狀態，行為正確） |
+
+**⇒ W1 接線在模擬下確實會走到 `whim_driven` 並實際呼叫 LLM 1 次。** 旗標開關的 counterfactual 隔離乾淨。
+
+**🔴 模擬抓到的三個真實陷阱（若非模擬，會被誤判）**：
+1. **`llm_caller` 簽章是 `(messages, agent_id)` 兩參**（`life_thread_origins.py:985`），非 4 參 ⇒ 初版 stub 簽章錯誤導致全部 fail-silent。
+2. **回傳格式必須是 `{"actions": [...]}`**（`parse_actions()` `:839-850`），非 `{title, narrative_content}` ⇒ 非 actions list 時**不落盤**。
+3. **必須預先蓋 bootstrap 一次性標記**才能重現生產狀態：bootstrap 早在 09-18 用掉，模擬若未蓋章則 `claim_bootstrap()` 成功 ⇒ `bootstrap_mode=True` ⇒ `if not bootstrap_mode:` 整段跳過 ⇒ **whim 永遠沒機會**（假陰性）。
+4. **必須播種 persona**：`whim` 條件②是 `load_soul_context()` 非空，isolated tempdir 無 persona ⇒ 條件恆不成立。
+
+**誠實登記**：本次模擬證明的是**接線與 LLM 呼叫**（`origin_round.called=true`、`llm_calls=1`）。**尚未證明線頭落盤**——`落盤 origins: {}`，因 stub 的 action schema 仍不完整（缺 `apply_actions` 所需的完整欄位）。**不影響「W1 會不會走到」的結論，但端到端落盤需再驗一次。**
+
+**M3 實測（`evaluate_wake_gate` 直接探測）**：`morning`／`night` → `should_wake=False` / `REFLECTION_SLOT_CLEAR`；`daytime`／`evening` → `DAYTIME_WHITESPACE`；`dream` → `FAIL_CLOSED_DEFAULT_SLEEP`。**即在乾淨狀態下 M3 恆不喚醒 ⇒ whim 有機會接手**（與生產 38 條全為 `necessity_driven` 的成因一致：生產有到期線頭／世界碰撞時 M3 才喚醒）。
+
+**✅ 端到端落盤驗證完成（`op` 欄位修正後）**：
+
+| slot | `flag=OFF` | `flag=ON` |
+|---|---|---|
+| morning | `woke=False`，落盤 `{}` | `woke=True` / `origin_type="whim_driven"` / `whim_wake=True`，**落盤 `{'whim_driven': 1}`** |
+| night | `woke=False`，落盤 `{}` | 同上，**落盤 `{'whim_driven': 1}`** |
+
+**W1 完整驗證通過**：接線、LLM 呼叫、落盤、`origin_type` 四段全對，counterfactual 隔離乾淨（OFF 完全無產出）。
+
+**補充陷阱 5**：action 用 **`op`** 欄位（**不是** `action`），`create` 另需 `title` / `narrative_content` / `next_check_hours`（`apply_actions()` `:853-900`）。另 `_WHIM_DAILY` 為模組級記憶體狀態且 `reset_state()` **不清它**，模擬每輪都須手動歸零，否則第二輪被第一輪的每日額度擋掉（那是正確行為但會掩蓋 slot 驗證）。
+
+#### 0.1.12 W2 模擬驗證（2026-10-03 14:25，`scripts/sim_world_perception_scoring.py`）
+
+| 情境 | rel | final | accepted |
+|---|---|---|---|
+| news_event **W2 前**（不在表內 → default 0.10） | 0.10 | **0.3450** | False |
+| news_event **W2 後**（0.30） | 0.30 | **0.4050** | **True** ✅ |
+| weather_temp_change 0.05 | 0.05 | 0.3300 | False ✅（Bry 8/7 拍板守住） |
+| celebrity_news 0.05 | 0.05 | 0.3300 | False ✅ |
+
+**⇒ W2 讓 `news_event` 通過門檻，且未動 Bry 2026-08-07 明文拍板不得調高的兩項。** 數值與本日 11:20 的手算**完全吻合**（0.3450 → 0.4050），構成獨立交叉驗證。
+
+**陷阱**：`compute_scores()` 的參數名是 `current_user_context_keywords`（`perception.py:467-476`），**不是** `user_context_keywords`。
+
 
 ---
 
