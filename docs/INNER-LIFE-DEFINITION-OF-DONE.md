@@ -73,7 +73,35 @@
 
 **現況**：`0`。21 條溶解事實的 `origin` 為 `lived_experience`（依 `graph_store.py:289-290`，此值使其**可正常昇華**，不受三態過濾阻擋），但因 `run_elevation` 僅由 `submission_gate.consume()` 呼叫、而 `consume()` 只接受 `InnerLifeEvent`，線頭路徑（orchestrator docstring 明定 0 InnerLifeEvent、0 bus、0 Agency 觸發鏈）從不建立事件，故**從未進入昇華**。
 
-**⚠️ 範圍警示（Owner 需知悉）**：本門檻的實作會觸及 `submission_gate` 的 consume 路徑，與 **EH-4.2 正在圍堵的區域重疊**。本門檻**不構成**對 EH-4.2 圍堵的解除授權，亦**不要求**先行解除圍堵。實作前必須由主大腦另開票，明確定其與 EH-4.2 圍邊界的關係（見 §3）。
+**⚠️ 範圍警示（2026-10-03 12:20 更正）**：本門檻的實作會觸及 `submission_gate` 的 consume 路徑與 `InnerLifeWriter`。
+
+**🔴 更正：本門檻並非「與 EH-4.2 圍堵交疊」。** 先前版本（主大腦未經查證即寫入）聲稱門檻二受阻於「EH-4.2 圍堵」。**該斷言錯誤**，已查證撤除：
+
+- **EH-4.2（Epistemic Mind Engine）** 實為**已推進且大致健康**的線：`EH-4.2-SMOKE` 揭露 3 項缺陷，`EH-4.2-FIX-1`（commit `ddb190f`）已修 S3 過度捕獲並 14 passed；尚餘 2 項已知未修缺陷（定義句不產生錨點、五元組 subject 污染）。**它不是一項停滯的圍堵。**
+- **門檻二真正的邊界是 `EH-2.1 R1`「垂直防火牆」**（`src/inner_life/submission_gate.py:392-405`，D2 裁定、契約 §4.3），**這是刻意的設計邊界、不是待解除的封鎖**：
+
+  | 類別 | `trigger_type` | 昇華 |
+  |---|---|---|
+  | 外部媒體情報 | `world:news*`／`world:feed*`／`world:celebrity_news` | **🚫 不得 consume、不得產 pattern 候選**（理由逐字：「外界新聞情報不是這個靈魂活過的事，不得沉澱成『我成為』」） |
+  | 環境與日程 | `world:weather*`／`world:rain*`／`world:calendar*`／`world:user_going_outside*` | ✅ 放行（屬共同生活的感知邊界） |
+  | 非 `world:*` | 全部（生活線頭、內在事件） | ✅ 0 阻斷 |
+
+  另有 fact 層過濾：`origin == external_world` 的 fact 不入昇華（`:407-418`）。**本專案 21 條線頭溶解事實的 `origin` 為 `lived_experience`，故不受此過濾影響。**
+
+**因此門檻二的實際可行性**：**可以獨立推進**。`whim_driven`／`necessity_driven`／`goal_driven` 三種起源的線頭屬「非 `world:*`」trigger，**不受防火牆阻擋**。唯一被排除的是**由新聞衍生的 `world_collision` 線頭**（`world:news*`）。
+
+**✅ Owner 裁定（2026-10-03 12:20，語意張力已消解，非張力而是設計意圖）**：
+
+> **「沉澱成信念需要自己的經歷。光看完就沉澱是不合理的。」**
+
+故上述「門檻一讓新聞可見 vs 門檻二不讓新聞成信念」**並非矛盾**，而是同一條原則的兩面：**看見世界 ≠ 被世界改變**。
+
+**這條裁定同時確立門檻二的設計前提**：
+- ✅ **生活線頭**（`whim_driven`／`necessity_driven`／`goal_driven`）＝ 靈魂**自己活過的事** ⇒ **有資格沉澱成信念**。
+- ✅ **環境與日程感知**（`world:weather*`／`world:calendar*` 等）＝ 共同生活的感知邊界 ⇒ 依 D2 裁定放行。
+- 🚫 **新聞與外部媒體情報**（`world:news*`／`world:feed*`／`world:celebrity_news`）＝ **只是看過** ⇒ **不得沉澱**。
+
+**防火牆維持不動。** 門檻二可獨立推進，**無任何待解除的封鎖**。
 
 ### 門檻三：連續性可見（Continuity）
 
@@ -114,7 +142,7 @@
 | 一 | `LIFE-THREAD-W1`（`whim_driven` 接線，M3 閘門 0 改動） | 實作中，0 重啟 | W1 僅覆蓋 `whim_driven`；`goal_driven` 已確認**無種子且不應工程修復**（見下一列）；`world_collision` 待 Owner 裁定 |
 | 一 | `world_collision` 閾值／評分結構 | **待 Owner 裁定** | 🔴 **原「擴大合格來源」方案已作廢**：`QUALIFYING_WORLD_SOURCES` 已含 news／calendar，擴大清單無效。瓶頸是 `accepted` 自 09-21 恆 False（門檻 0.35 結構性卡關）。門檻調整屬感知語意決策，須 Owner 裁定，且須與 09-14「不值得傳訊」裁定一併權衡 |
 | 一 | `goal_driven` 種子端 | 🔴 **確認無種子，且不應工程修復** | 72/72 goal 為 `SUSPENDED`、reason 全為 `bryan_last_seen_timeout`、`advance_count` 71 條為 0。**此為 Bry 不在場時的正確健康行為**（與 9/14 拒送裁定同源）。強行修復＝撤銷 Bry 的在場語意。正確途徑是 Bry 在場時 goal 回到 ACTIVE |
-| 二 | 昇華接縫票 | 待開票 | **與 EH-4.2 圍堵重疊**，須先由主大腦界定關係；本文件不授權解圍堵 |
+| 二 | 昇華接縫票 | **可獨立開票**（2026-10-03 12:20 更正） | 🔴 **原「與 EH-4.2 圍堵交疊、須先解圍堵」之記載為錯誤斷言，已撤除**。EH-4.2 已推進且大致健康（`EH-4.2-FIX-1` 完成）；真正邊界是 `EH-2.1 R1` 垂直防火牆，屬**刻意設計**而非封鎖。門檻二可獨立推進，但新聞衍生線頭將依 D2 裁定被排除於昇華之外（**此語意張力待 Owner 裁定**） |
 | 三 | 連續性票 | 待開票 | 依賴門檻一先成立（單一起源下無法有連續性） |
 
 ---

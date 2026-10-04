@@ -189,3 +189,76 @@ run2: T0:concerned|uncertain → T15:concerned|external → T30:concerned|extern
 首版要求 `trajectory_stable` 為必要條件，但 trajectory 三元組**比 TL-1 的主張更嚴**。
 **拿比主張更嚴的條件否決一個成立的主張，等於違背 §2。** 已改為以 `claim_stable`
 （change_verdict 一致）為主張層判準，trajectory 降級為**獨立記錄的附加發現**。
+
+---
+
+## §8 ✅ Owner 驗收措辭（2026-10-03 15:51，逐字定案）
+
+> **TL-1 Revalidation — ACCEPTED / `STABLE_OBSERVATION`**
+> **無 P0 / P1。** 有一個已正確記錄的 **P2 evidence limitation**：attribution
+> trajectory non-unique，但它**不阻塞** TL-1 的既定 claim。
+
+**逐字採用的對外描述**：
+
+> **TL-1's Level-2 Growth claim is reproducible at the observation layer across three independent real-LLM runs. Raw expression is non-deterministic, and detailed attribution trajectories are not unique. Causal attribution is not assessed because TL-1 has no counterfactual design.**
+
+**🔴 明確不得採用的描述**：❌ `DETERMINISTIC`／❌ `FULLY PROVEN`／❌ `CAUSALLY PROVEN`
+
+**Notion 既有描述的降級**：若把「擔心 → 自我懷疑 → 接受」寫成一條**唯一、固定的
+temporal trajectory**，該描述應降級為：
+
+> **observable growth claim is reproducible, while the detailed attribution trajectory is not unique.**
+
+**這不是否定 TL-1，而是把 claim 精準化。**
+
+**逐維度穩定性（實測 3 run）**：
+
+| 維度 | 狀態 | 說明 |
+|---|---|---|
+| `stance` | **stable** | 三個 checkpoint 全部 `concerned` |
+| `concern` | **stable** | 三個 checkpoint 全部 `alex` |
+| `attribution` | **unstable** | T0／T30 在 `external`↔`uncertain` 間波動 |
+
+### §8.1 本次驗收的方法論價值
+
+**沒有「修掉不穩定」，而是把「什麼叫穩定」定義正確了。**
+
+舊思維鏈：`LLM output 不完全相同 → determinism FAIL → experiment invalid`
+
+新思維鏈：`Raw expression → 可能變動 → Observation layer → 主張需要的 observable state → 是否穩定？`
+
+**核心表述（本次最有價值的方法論結果）**：
+> **expression may vary; observable lived-state trajectory must be evidentially stable.**
+
+**與 TA-2 的直接一致性**：不能要求 LLM 每個 token／wording deterministic，
+**必須定義 experiment claim 所需的 evidence layer**。
+
+---
+
+## §9 下一主線：TA-2 Gate 2（corrected behavioral validation）
+
+**TL-1 Revalidation → CLOSED。** 依 dependency graph，下一張是 **TA-2 Gate 2**。
+
+**TA-2 比 TL-1 多一個關鍵 requirement**：
+
+| | TL-1 | **TA-2 Gate 2** |
+|---|---|---|
+| 需要 | stability（重複執行一致） | stability ＋ **counterfactual attribution** |
+| 設計 | 同 probe 重跑 N 次 | **ON vs OFF** 的差異須可歸因於 temporal context |
+
+**TA-2 不能只做 TL-1 那種 repeated-run stability。** 必須保留 counterfactual 設計，
+且採**更強的四臂版本**：
+
+```
+OFF              無時間 context（對照基準）
+ON-correct       與情境相符的時間（例：早上 ＋「去吃飯」）
+ON-mismatched    與情境矛盾的時間（例：凌晨 3 點 ＋「吃晚飯」）
+irrelevant       時間存在但 stimulus 與時間無關（自然變動雜訊地板）
+```
+
+**為什麼 `ON-correct` vs `ON-mismatched` 是關鍵**：單純 ON vs OFF 的差異，可能只是
+「時間被提到了」這種表面效應（echo）。而**正確 vs 矛盾的時間必須產生不同結果**，
+才證明**時間的「值」本身參與了推理**，而不只是時間的存在被複述。
+
+這與 §8.1 的 echo/inference 區分**直接銜接**：我們已經定義了「複述注入行裡
+已有的詞」不算推理證據。`ON-mismatched` 是這個區分的**行為層版本**。
