@@ -8,6 +8,45 @@
 
 ---
 
+## §0 🔴 Owner 最終裁定（2026-10-04 09:25）— **本檔的 GO E 建議已被否法**
+
+> **A3 正式狀態 = `STOP / INCONCLUSIVE FOR A-vs-E`**
+> **不是** GO E，**不是** A survives。
+
+本檔 §7／§8 由主要標註者提出的 **GO E 建議不成立**。
+
+| 項目 | 裁定 |
+|---|---|
+| L09 的 clause 懺4例 | **語法 clause**（兩個完整述語 = 兩個小句） |
+| L09 分類 | **N1** — 不翻成 LOCAL |
+| L18／L19 | **v1 false positives，不是 A 的 headroom loss** |
+| 正確的 future headroom population | **17 筆** |
+| 原 A3 的 19-row denominator | **不得事後修改** |
+| raw agreement 11/19 = 57.9% | **< 70% 停止線** |
+| A3 能否宣布 GO E？ | **不能** |
+| A3 能否宣布 A survives？ | **不能** |
+| Gate 2 | **INCONCLUSIVE** |
+| A4 | **不授權** |
+| E / 96 calls | **不進行** |
+
+### 為什麼已知 17 筆正確，仍不用它回頭改判
+
+因為那是 **post-hoc denominator change**：先看 19 筆結果 → 發現 2 筆讓 GO E 過門檻 →
+發現那 2 筆是 v1 假陳性 → 拿掉 → 得到 11/17 → 宣布 A 存活。
+
+**即使這個 change 在科學上合理，也不能假装它是原本 A3 的 prospective decision。**
+
+> **17 筆是正確的 future population，但 12/19 這條 stop rule 不得用它回頭改判本輪。**
+
+### 主大腦追加的診斷
+
+**「A2 只救 2/19 → Candidate A coverage 不足」這個 inference 目前被母體污染，不可成立。**
+因為 19 筆裡至少有一部分**不是「A 應該救但沒救」，而是 v1 本身就是 false positive**。
+
+下一張票是 **measurement contract correction**（`TA-2-V2A3-MEASUREMENT`），**不是 A4**。
+
+---
+
 ## §1 已撤銷前提（不引用）
 
 「已知 pollution proxies precision = 1.0」**已撤銷**，真值 **5/7 = 0.714**。
