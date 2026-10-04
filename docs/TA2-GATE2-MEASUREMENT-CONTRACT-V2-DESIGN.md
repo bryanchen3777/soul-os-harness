@@ -1,8 +1,9 @@
 # TA-2 Measurement Contract v2 — Event Temporal Attribution
 
-> **狀態**：**DESIGN / AUDIT ONLY — NOT AUTHORIZED FOR IMPLEMENTATION**（Owner 2026-10-03 21:45）
+> **狀態**：**DESIGN 已拍板（Owner 2026-10-03 21:52）**；**候選 E implementation 仍未授權**。
 > **前置**：TA-2-MEAS-AUDIT-1 CLOSED（`d859792`）。v1 契約**不修改**。
 > **本文用途**：定義「什麼才算時間真正參與 interpretation」，並評估候選量測手段。**不含程式碼。**
+> **§6 / §7 已被 §9 的 Owner 裁定取代**（保留原文作為決策過程紀錄，不得刪除）。
 
 ---
 
@@ -151,3 +152,66 @@ TA-2-MEAS-AUDIT-1 的 raw evidence 證明這與目標構念**不等價**：
 - 本文**不**宣稱任何候選已驗證；**不**含實驗結果。
 - 候選 A 的「語法依附」在中文上**沒有免費的乾淨實作**；若需引入分句 parser 即違反 G4 的精神，須重新評估。
 - v1 契約**維持凍結**。任何實作需另開 implementation ticket 並經 Owner 批准。
+
+---
+
+## §9 Owner Architecture Review 裁定（2026-10-03 21:52，**取代 §6 / §7**）
+
+### §9.1 拍板結果
+
+| 問題 | Owner 裁定 |
+|---|---|
+| 1. 接受 C 對 G2 的損失？ | **不接受**。C 僅作 diagnostic / control arm，**不作 Gate 2 主要證據** |
+| 2. E 如何避免答案洩漏？ | **不追求零 leakage**。randomized order ＋ opaque labels（A/B/C）＋ mapping 每次 trial 隨機化；明確定義為**受控 measurement layer** |
+| 3. E ≈96 calls 成本？ | **接受** |
+| 4. 先做 A prototype？ | **是**（強烈建議）。但 A **不是** v2 implementation、**不改** v1 |
+| 5. E 不可行時接受 D？ | **是**，D 作 fallback，以 quantified error bar ＋ INCONCLUSIVE 結案 |
+
+### §9.2 正式排序
+
+> **E > A > D > C**；**N=12 v1 不做**。
+
+- **A**：先探成本下界（feasibility spike，非最終方案）
+- **E**：最終候選（preferred measurement architecture）
+- **D**：fallback / reporting-only
+- **C**：diagnostic only
+
+### §9.3 正式路徑
+
+> **A prototype → audit → decision → E implementation**
+
+**A prototype 的定義邊界**（Owner 逐字）：它是一張**非常小的 measurement feasibility spike / design validation**，只回答一句話：
+
+> 語法依附是否能比 v1 lexical matching 更接近「**事件本身**被放進 temporal frame」？
+
+**A prototype 明文不做**：semantic parser、LLM judge、dependency framework、**新 temporal classifier**、修改 Soul OS runtime。
+
+### §9.4 正式鎖定的 boundary（寫入契約）
+
+> **event temporal attribution ≠ temporal language**
+
+| 原文 | 不得成立 |
+|---|---|
+| 「去睡吧，別再撐了。」 | `睡` 出現 ⇒ event → night |
+| 「剛入夜的那種深藍」 | `夜` 出現 ⇒ event → night |
+| 「週六中午十一點半，差不多該出發了。」 | 沒有 frame marker ⇒ 一定 unframed |
+
+**v2 的目標不是「找更多 temporal words」，而是「找 event → temporal frame 的關係」。**
+
+### §9.5 設計張力的正式定性（Owner 裁定）
+
+- 候選 **E 的 closed choice 本身就是 intervention**，不是自然語境；**不假裝它沒有 leakage**。
+- 目的是量出「**natural response 看不到的 attribution，在受控 elicitation 下是否存在**」，而非證明 closed-choice 無 leakage。
+- 與 §2 一致：v2 是**降低 per-arm estimator 的 noise**，不是讓單次 response 判斷得更準。
+
+### §9.6 Gate 2 狀態（不變）
+
+> **TA-2 Gate 2：仍 INCONCLUSIVE。**
+
+- 這**不是**「Soul 沒有 temporal effect」。evidence 已支持 ΔR=1 / ΔI=0 / DiD=1。
+- 未解決的是：**現有 observation instrument 能不能穩定地把 Soul 已經產生的 temporal interpretation 顯露出來**。
+- 這是 **measurement validity problem，不是 Soul capability 已被證明不存在**。
+
+### §9.7 本文的效力邊界
+
+§9 為 **architecture decision**。它**不授權**候選 E 的 implementation；E 須另開 ticket 並經 Owner 批准。
