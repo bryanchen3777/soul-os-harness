@@ -121,16 +121,37 @@ ATTACHMENT_MARKERS  = {就, 吧, 改, 換, 挪, 推, 順延, 延到, 到, 這, �
 5. **不得**為了讓某筆結果好看而調整規則表、詞表或窗口大小。
 6. **不得**因為「某幀全數消失」而擴大 `ACTION_TOKENS`——那會把真實幀殺成 `unframed`，屬 measurement drift。照實回報。
 
-### §4 A1 的輸出語意
+### §4 A1 的輸出語意（**兩段式：token 層判定 → frame 層彙總**）
 
-對每筆 observation：
+> 🔴 **主大腦自查修正（派工後撤回重派，2026-10-03 21:55）**
+> 原規格是「對 observation 直接做 frame 層級否決」。該設計有**假陰性缺陷**：v1 的 `night` 觸發詞是 `夜`／`睡`／`就寢`，一個回應若同時含**合法的 `夜`** 與**動作詞 `睡`**（例：「夜深了，該睡了」），frame 層級否決會把整筆判為 `vetoed`，**連合法的 `夜` 一起殺掉**。
+> 這會製造 A1「沒有頭寸」的**假結論**，而 A→E 正是靠這個結論拍板——**污染它等於污染整個決策**。故改為兩段式。
 
-- 輸入：v1 `extract_temporal_frame(raw_text)` 的結果 + raw_text
-- 逐字套用 §3 規則表
-- 輸出三元之一：`kept`（保留 v1 frame）／`vetoed`（退回 `unframed`）／`undecided`
-- **A1 的 frame 定義**：`kept` → v1 frame；`vetoed` 與 `undecided` → `unframed`
+**第一段 — token 層**：對 v1 判定為 frame `F` 的每個 observation，用 v1 規則表（唯讀 import）列出 `F` 的**所有實際命中 token**：
 
-> ⚠️ 這是**刻意的保守選擇**：`undecided` 不算 `kept`。理由：無法判定時若算命中，A1 的 precision 指標會被不可解釋的樣本稀釋。報告必須揭露 `undecided` 的全部原文。
+```
+T = [k for k in _FRAME_RULES[F].keys if k in raw_text]     # v1 已處理 exclusive/exclude
+```
+
+對 `T` 中**每個** token 套用 §3 規則表，各得一個 token 層判定：`vetoed` / `undecided` / `kept`。
+
+**第二段 — frame 層彙總（預登記，不得自行改寫）**：
+
+| 條件 | A1 判定 | v2 frame |
+|---|---|---|
+| `T` 中**所有** token 皆 `vetoed` | `vetoed` | `unframed` |
+| `T` 中**存在任一** token 為 `kept` | `kept` | 保留 v1 frame `F` |
+| 其餘（無 `kept`，且至少一個 `undecided`） | `undecided` | `unframed` |
+
+`T` 為空（v1 已是 `unframed`）⇒ A1 判定直接為 `undecided`，v2 frame = `unframed`，**不進入規則表**。
+
+> ⚠️ 仍刻意保守：`undecided` 不算 `kept`。
+> 理由：無法判定時若算命中，A1 的 precision 指標會被不可解釋的樣本稀釋。
+> **但報告必須逐 token 揭露**——這樣「丟掉」究竟是因為 `睡` 被殺、還是因為 `夜` 找不到依附標記，一目了然。這正是 token 層存在的理由：**診斷價值，而非更高的分數。**
+
+> **預期的真實後果（不是缺陷，是 spike 要量出來的答案）**：
+> 「夜深了，該睡了」這類回應，`睡` 會被 `R1` 否決，但 `夜` 未必能找到 `ATTACHMENT_MARKERS`（`夜深了` 小句內無 marker）→ 該 token 判 `undecided` → 整筆判 `undecided` → 丟失 frame。
+> **執行者不得為了救回這種情形而往 `ATTACHMENT_MARKERS` 加詞。**那正是 measurement drift。照實回報「純規則依附濾層有這個 recall 損失」即可——這對 A→E 決策是有效資訊。
 
 ### §5 量化指標（全部用 **frozen v1 公式**，不得重寫）
 
@@ -153,12 +174,14 @@ ATTACHMENT_MARKERS  = {就, 吧, 改, 換, 挪, 推, 順延, 延到, 到, 這, �
 |---|---|
 | `obs_id` | probe_id + arm + run_index |
 | `v1_frame` / `v2_frame` | 對照 |
-| `A1_verdict` | `kept` / `vetoed` / `undecided` |
-| `rule_id` | 觸發的規則（多值） |
+| `T` | 命中 token 串（第一段輸入） |
+| `token_verdicts` | **逐 token** 判定：`夜:undecided, 睡:vetoed`（第二段的依據） |
+| `A1_verdict` | `kept` / `vetoed` / `undecided`（frame 層彙總結果） |
+| `rule_id` | 觸發的規則（多值，逐 token 對應） |
 | `span` | 命中 token 與小句摘錄（≤40 字） |
 | `raw_text` | **完整原文**（不得截斷） |
 
-另需兩份彙總表：**veto ledger**（依 rule_id 統計）與 **undecided 清單**（全部原文）。
+另需三份彙總表：**veto ledger**（依 rule_id 統計）、**undecided 清單**（全部原文）、**token 層丟失歸因表**（哪些 frame 是因為「所有 token 皆 vetoed」而丟、哪些是因為「token 無依附標記」而丟——這兩者的區別就是 A1 損失的性質）。
 
 ---
 
@@ -190,6 +213,8 @@ ATTACHMENT_MARKERS  = {就, 吧, 改, 換, 挪, 推, 順延, 延到, 到, 這, �
 | R5 正例 | 「不是晚上，應該是中午才對」 | `vetoed` |
 | R6 正例 | 命中詞孤立、無任何 marker | `undecided` |
 | R1 反例 | 「午睡一下比較好」 | **不得** `vetoed`（`午睡` 是 `COMPOUND_TIME_NOUNS`） |
+| **彙總 1** | 「夜深了，該睡了」 | token 層 `夜`≠`vetoed`、`睡`=`vetoed`；frame 層 **不得**直接判 `vetoed`（否則誤殺合法的 `夜`） |
+| **彙總 2** | 「大概補個眠吧」 | `補眠` 不受 `R1`；且 `吧` 在 `ATTACHMENT_MARKERS` → 依實算，不得硬寫期望值 |
 
 > **`R2` 的誠實說明（主大腦自查）**：`R2_EXCLUDE_TOKEN` 在 v1 規則表順序下**實際不可達**——`_FRAME_RULES` 先比 `siesta`（含 `補眠`）與 `late_night_meal`（含 `宵夜`），所以帶排除詞的文本永遠不會走到 `night`／`early_breakfast`。`R2` 因此是**防禦性規則**，作用只在 ledger 記錄，**不得**用它反推任何結論，也**不得**為了讓它「有作用」而調整 v1 規則順序（v1 凍結）。
 
