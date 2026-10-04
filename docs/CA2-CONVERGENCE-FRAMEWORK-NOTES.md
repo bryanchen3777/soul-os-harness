@@ -164,7 +164,81 @@ d₂ ∩ d₃ → W        jointly eliminated / attribution unresolved
 
 ---
 
-## §8 本檔性質
+## §9 Separable region 的存在性（**LOCKED，構造法證明**）
+
+> **separability 是 mechanism-level property，不是 dimension-level property。**
+> 不可滑回「d₂ independent、d₃ not independent」這種二元化。
+
+### §9.1 d₂ 有非空 separable region
+
+```
+Mₐ : d₂ = query,      d₃ = in-context
+M_b : d₂ = provision,  d₃ = in-context
+```
+**d₃ 相同、d₂ 不同** ⇒ 切 d₂ 不必動 d₃。 ✅
+
+### §9.2 d₃ 有非空 separable region
+
+```
+M_c : d₂ = provision,  d₃ = in-context
+M_d : d₂ = provision,  d₃ = learned prior
+```
+**d₂ 相同、d₃ 不同** ⇒ 切 d₃ 不必動 d₂。 ✅
+
+> 因此「d₂／d₃ 只能 bundled 測」這個分支**正式丟棄**。
+
+---
+
+## §10 Bundled subset B 的結構性刻畫（**LOCKED，但限定範圍**）
+
+> ## **B = { m ∈ M | capability information 本身以 prior 形式儲存 }**
+
+- 這是**可在 intervention 之前辨識的** mechanism class，**不是事後解釋**
+- `M \ B` 為目前 ontology 下的 separable region
+- **兩邊都進入 survivor-set calculation**：`M* = ⋂Cᵢ` 不因 attribution 不乾淨而排除 B
+- **B 內的 attribution 可標記為 jointly eliminated / unresolved**
+
+> ⚠️ **限定：under current mechanism ontology。**
+> 已證明在目前定義的 mechanism space 中沒有第二種纏繞來源。
+> **不得**升級為「不可能存在第三種纏繞機制」。
+
+---
+
+## §11 Attribution 狀態是**三種**（**LOCKED**）
+
+| 狀態 | 意思 |
+|---|---|
+| **可歸因** | 「d₃ 在 d₂ 未觸及處新增了 elimination」 |
+| **jointly eliminated / attribution unresolved** | 「該區域的 elimination 不可分配給單一維度」 |
+| **unmeasured** | 「未測，不推論」 |
+
+> 🔴 **第三種必須存在，且不可被省略或合併。**
+> **「歸不了因」≠「沒有新增 elimination power」。**
+
+---
+
+## §12 Coverage 是剩下的主要 OPEN（**LOCKED 為 OPEN 項**）
+
+| 問題 | 狀態 |
+|---|---|
+| B ≠ ∅ | LOCKED |
+| M \ B ≠ ∅ | LOCKED |
+| B 是否有其他纏繞來源？ | 無，**under current ontology** |
+| **B 的相對 coverage** | **OPEN — empirical** |
+| d₂ incremental elimination | **OPEN — empirical** |
+| d₃ incremental elimination | **OPEN — empirical** |
+
+> ⚠️ **coverage 未必是 `|B| / |M|`。**
+> mechanism space 不是有限集合，比例本身可能不是最好的 quantity。
+> 更精確的問題是：**在研究所涵蓋的 mechanism distribution 下，B 的 mass 有多大？**
+> 這只有 measurement design 能答，**不能由邏輯推導**。
+
+> 兩個構造法**只能**證明 separable region ≠ ∅ 與 bundled region ≠ ∅。
+> **不能**推出 bundled region 很大、很小、常見或罕見。
+
+---
+
+## §13 本檔性質
 
 - **分析記錄，不是 spec。** 任何一行都沒有被採納為 measurement design。
 - **不授權**：intervention 執行、item set、evaluator、scoring、threshold、architecture fork、pilot。
