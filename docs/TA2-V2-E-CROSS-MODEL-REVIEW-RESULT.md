@@ -1,3 +1,8 @@
+# HISTORICAL — Cross-Model Review of the superseded E design
+
+> **SUPERSEDED** 2026-10-04 by Temporal Cognition construct.
+> See docs/TA2-V2-CONSTRUCT-SUPERSESSION-TEMPORAL-COGNITION.md
+
 # TA-2 v2-E — Cross-Model Design Review 結果與 Gate 判定
 
 > **日期**：2026-10-04 12:34

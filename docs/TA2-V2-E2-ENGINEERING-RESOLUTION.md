@@ -1,3 +1,8 @@
+# SUPERSEDED — E2 Engineering Resolution (TCS construct)
+
+> **SUPERSEDED** 2026-10-04 by Temporal Cognition construct.
+> See docs/TA2-V2-CONSTRUCT-SUPERSESSION-TEMPORAL-COGNITION.md
+
 
 # TA-2 v2-E — E2 Engineering Resolution
 

@@ -1,3 +1,8 @@
+# HISTORICAL — Design contract review of the superseded E2 resolution
+
+> **SUPERSEDED** 2026-10-04 by Temporal Cognition construct.
+> See docs/TA2-V2-CONSTRUCT-SUPERSESSION-TEMPORAL-COGNITION.md
+
 # TA-2 v2-E2 — Design Contract Review（對抗式）
 
 > **被審標的**：`docs/TA2-V2-E2-ENGINEERING-RESOLUTION.md`（`97db36f`）
