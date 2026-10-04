@@ -171,7 +171,53 @@ H₀ declared first → intervention → observation → refutation / survival
 
 ---
 
-## §8 本檔性質
+## §8 L3 的取得條件（**RETAINED / NOT ACQUIRED**，2026-10-04 14:56）
+
+> **L3 保留為最高強度、最高成本的候選 intervention。目前不購買。**
+
+### §8.1 為什麼現在不买
+
+**L3 的 epistemic ceiling 已經是已知的**（§3.1），所以 pending **不是缺資料造成的**，
+而是「已經知道能買到什麼，現在是在決定這個 ceiling 值不值得買」。
+
+### §8.2 🔴 取得條件（**唯一的購買判準**）
+
+> **在購買之前，必須先能回答這一個問題：**
+>
+> **「如果 L3 成功，我們究竟會因此獲得哪一個現在拿不到的研究決策？」**
+>
+> - 答案 = **沒有** ⇒ **L3 不值得買**
+> - 答案 = **有**，且該決策會**真正改變 CA-2 的下一步** ⇒ 才值得付這個成本
+
+**這是 information-gain / cost 的判準，不是「L3 好不好」的判準。**
+
+### §8.3 為什麼目前答不出來
+
+**L3 成功之後，我們不能因此：**
+
+- ❌ 把它叫成 Activation evidence
+- ❌ 宣稱 boundary recognition
+- ❌ 宣稱 architecture truth tracking
+- ❌ 進 Q1c-2
+- ❌ 更不能進 runtime / pilot
+
+**它只是讓 mechanism frontier 往前移一格。** 而目前沒有任何一個下游決策會因為那一格移動而改變。
+
+### §8.4 前後的機制集合
+
+```
+Before L3                        After successful L3
+❌ stimulus-only          ──►    ❌ stimulus-only（整類被排除）
+✅ architecture-sensitive         ✅ architecture-accessible mechanisms
+                                     provision / listing / query
+                                     trial / representation / ...
+```
+
+**倖存集合小很多，但仍然離 CA-2 的 cognition claim 有距離。**
+
+---
+
+## §9 本檔性質
 
 - **這是分析記錄，不是 spec。** 任何一行都沒有被採納為 measurement design。
 - 全部來自 construct freeze 之後的 OPEN-side 討論。
