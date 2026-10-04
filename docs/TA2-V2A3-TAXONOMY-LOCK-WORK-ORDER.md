@@ -69,6 +69,53 @@ Bry 逐字：
 
 ---
 
+## §3b 🔴 本輪**無法避免**的洩漏：R5 的例句取自語料
+
+R5 的示意例句（`正好補眠`、`熬到現在，該補眠了`、`去吃飯，算宵夜`）**就是上一輪兩位標註者
+分歧的那兩筆的文本**。若不給例句，R5 無法被 operationalize；若給了例句，
+那兩筆就不再是獨立測量。
+
+**處置（pre-declared，不得事後調整）**：
+
+1. 例句**保留在 brief 中**（否則規則不可操作化）。
+2. **凡與 R5 例句結構相符的觀測，一律標記為 `rule_constrained = R5`，
+   不得計入「genuine independent judgment」。**
+3. 報告中**必須**分開呈現：
+   - **implementation consistency**（規則強制一致的部分）
+   - **independent annotation reliability**（真正需要標註者自己判斷的部分）
+4. **不得**把整體 agreement 數字直接當成 reliability 報出。
+
+> 上一輪的 90.9% **不撤銷**——它確實符合事前寫死的 Gate 2。
+> 但 closeout 必須明寫：**90.9% ＝ operational validity gate pass，
+> 不等於 independent semantic reliability = 90.9%。**
+> 當時真正未受規則決定的獨立邊界是 **2/2 不一致**。
+
+---
+
+## §3c 證據優先序（Owner 裁定）
+
+> **ROW-LEVEL ANNOTATION DATA WINS.**
+
+summary count 與 row-level 資料衝突時，**以逐列資料為準**，全部機械重算。
+**不得**使用與逐列資料不符的標註者自報彙總。
+
+> 上一輪第一位標註者自報 `23 筆 / N1=17`，但其**自己的表格只有 22 列、N1=16**。
+> 本輪所有合計一律從逐列記錄機械重算。
+
+---
+
+## §3d 這是最後一次 taxonomy lock
+
+> 若本輪仍出現新的實質語義邊界，**不得再加规則**。
+> 應承認目前 taxonomy **不足以支撐 A/E 決策**，重新評估 measurement design，
+> 而不是繼續「修到 agreement 過關」。
+
+**理由**：一旦進入「不一致 → 加規則 → 再不一致 → 再加規則」的循環，
+最後得到的是**為這批語料特製的 classifier**。那種東西的 agreement 數字會很漂亮，
+但**沒有外部效度**。
+
+---
+
 ## §4 關鍵驗收命題（Owner 逐字）
 
 > 規則 operationalization 成功 **≠** 標註可靠性被證明。
