@@ -187,6 +187,11 @@ UNPLACED / OPEN
 ```
 
 > **本層的成員由本輪更新。DCG #13 §8 的版本只含 Agency，該處已加交叉引用指回本檔。**
+>
+> 🔴 **此層在 DCG #15 再次更新：另加入 `Expression` / `Commitment` /
+> `Self-Binding` / `Temporal Constraint`（皆 construct rejected ＋ vocabulary OPEN），
+> 並新增 `DOCUMENTED GAPS` 一層。**
+> **現況分層見 `docs/NORTH-STAR-EXPRESSION-COMMUNICATION-BOUNDARY-DCG-CONVERGENCE.md` §8。**
 
 ---
 
