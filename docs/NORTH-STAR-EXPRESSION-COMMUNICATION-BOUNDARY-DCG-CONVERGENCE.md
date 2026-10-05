@@ -232,6 +232,11 @@ DOCUMENTED GAPS
        └─ relation: not established
 ```
 
+> 🔴 **本表在 DCG #16 再次更新：另加入 `DOCUMENTED CONVENTION CANDIDATES`
+> （𝒯_A invariance convention 已凍結、Temporal Semantics 待凍結）
+> 與 `OPEN EPISTEMIC QUESTION`（ontology causal completeness 的 A/B 不可分辨）兩個區塊。**
+> **最新分層見 `docs/NORTH-STAR-ARCHITECTURE-SEED-SUBSTRATE-DCG-CONVERGENCE.md` §6。**
+
 ---
 
 ## 9. Open Questions
