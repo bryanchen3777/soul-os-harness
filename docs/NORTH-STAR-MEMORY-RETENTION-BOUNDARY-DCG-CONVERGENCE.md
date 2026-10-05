@@ -283,72 +283,107 @@ DESCRIPTIVE VOCABULARY
 - Memory 的 causal affordance 如何做獨立 measurement → **measurement 問題**
 - Memory 是否必須由 Agent 自己維護，抑或 external substrate 進入 𝒯_A 即足夠
   → **本輪未決。本檔不記錄傾向。**（見 §14.3）
-- **🔴 §14.1 canonical rule 的回溯審查尚未涵蓋 `World` / `Free Growth` / `Interaction`。**
-  Owner 指定的回溯檢查只跑了 History / Awareness / Temporal Identity / Memory / Growth。
-  這三項在 CONSTRUCTS 清單中，但**它們是否仍通過「不可還原為既有 construct / relation
-  vocabulary」這一道 gate，尚未驗證。**此項會直接影響 DCG #12 候選詞的判讀基準。
 
 ---
 
 
 ## 14. 措辭問題（皆已於 DCG #11 閉環後由 Owner 裁決）
 
-### 14.1 准入規則的正式措辭（Owner 裁決）
+### 14.1 准入規則的正式措辭：Independent Structural Distinction Gate（Owner 裁決）
 
-原規則寫作「**只有增加一個新的 causal structure，才足以新增 construct**」，
-但 §2 明確指出 Memory 多出的**不是另一條 causal edge**，
-而是 transition system 的 **functional role**。
+**這一條修正了本專案長期口頭使用、但從未正式寫下的一條規則。**
 
-**Owner 裁決：採 A 的方向，但採加強版 canonical wording，不採裸 A。**
+原規則寫作「**只有增加一個新的 causal structure，才足以新增 construct**」。該措辭有兩個問題：
 
-兩種讀法結果相反：
+1. 「causal structure」易被字面讀成新節點／新因果邊／新 process，
+   而 #11 已證明：**新增 construct 不要求新增 causal edge / node。**
+2. 「不能還原為既有 construct / relation vocabulary」把
+   「**可以用舊詞描述**」誤當成「**完全由舊結構決定**」。
+   這兩件事不同；混淆會誤殺 World / Free Growth / Interaction。
 
-> ### **Canonical Construct Admission Rule**
+**Owner 裁決：前兩版皆非最終答案。採 ISD Gate。**
+
+> ### **Canonical Construct Admission Rule — ISD Gate**
 >
 > **A candidate earns construct status only when it introduces an
-> independently specifiable structural dimension of the causal system that is
-> not reducible to the existing construct/relation vocabulary and that
-> partitions the causal state space.**
+> independently specifiable structural distinction that is not determined by the
+> existing construct/relation dimensions and therefore partitions otherwise
+> equivalent causal systems into different classes.**
 >
-> **中文：候選項目只有在引入一個可獨立指定、不能還原為既有
-> construct / relation vocabulary，且能劃分 causal state space 的結構維度時，
-> 才取得 construct 地位。**
+> **中文：候選項目只有在引入一個可獨立指定、不能由既有 construct / relation
+> 維度決定的結構性差異，並因此能把原本在既有 causal description 下等價的
+> 系統分成不同類別時，才取得 construct 地位。**
 
-**為何裸 A 太寬**：任意 observer classification 都能「劃分 state space」
-（state checksum 偶數／奇數也能切成兩區），但那不配成 construct。
-**承重的是「可獨立指定」＋「結構性地劃分」，不是「任何可分類的 predicate」。**
+**正式定義：**
 
-**為何不採 B**：「新的 causal structure」易被字面理解為新節點／新因果邊／新 process，
-會與 #11 的裁定直接衝突。**#11 已證明：新增 construct 不要求新增 causal edge / node。**
+ISD(C) 成立，當且僅當存在 X、Y 滿足：
+`ExistingDims(X) = ExistingDims(Y)` 且 `C(X) ≠ C(Y)`
 
-**三個 gate：**
+即：**若存在兩個在既有 ontology 描述下相同、但在候選 construct 上不同的
+causal systems，則候選項目具有獨立 structural distinction。**
+
+**核心測試：**
 
 ```
-New candidate
+Existing vocabulary
+        ↓
+能否已經決定 candidate 的真假？
     │
-    ├─ 只是既有 relation 的 projection？    ── YES → 不進
+    ├─ YES → 只是 projection / composition / vocabulary
+    │         → 不新增 construct
     │
-    ├─ 只是 vocabulary / interpretation？   ── YES → 不進
-    │
-    └─ 引入獨立可指定、不可還原的新 structural dimension，
-       且能劃分 causal state space？        ── YES → 進 construct
+    └─ NO
+        ↓
+   存在兩個 systems：
+   在既有 dimensions 上完全相同，
+   但 candidate 不同
+        ↓
+   candidate 引入新 structural distinction
+        ↓
+   → 可以成為 construct
 ```
 
-**回溯檢查（Owner 指定的五項）：**
+**為何不再稱為 irreducibility gate：**
+真正檢查的不是「這個詞不能用舊詞描述」，
+而是「**這個 structural distinction 是否能被既有 dimensions 完全決定**」。
+兩者在功能上差一個量級。
 
-| 候選 | 判定 | 理由 |
+---
+
+### 14.1.1 🔴 六項 construct 的統一回溯檢查
+
+| Construct | ISD Gate | 理由 |
 |---|---|---|
-| **History** | ✘ | `Event ↝ Agent` 只是既有 causal ancestry 的 projection |
-| **Awareness** | ✘ | 沒有自己的 structural dimension，只是 Agent–X relations 的 family vocabulary |
+| **Agent** | ✔ | lineage ＋ instantiation 結構，非既有維度可決定 |
+| **World** | ✔ | **可用** Agent 描述（「不是任何 Agent 的 dynamics」），但**這不等於由 Agent 決定**。兩個 process 都可有 persistence、causality、state transition，卻在「transition dynamics 是否屬於某個 Agent trajectory 的 reducible image」上不同。新增的是 **causal process ownership / non-Agent-image dynamics** 這個 process-structural distinction。「補集」只是表示方式 |
+| **Memory** | ✔ | `PastDirected(R,E) + CausallyAffordance(R,A)`。可構造兩個系統：same provenance、same event history、same Agent、same representation existence，**但 R 在 𝒯_A 中 causally inert**。既有 vocabulary 無法分開，Memory 可以 |
+| **Growth** | ✔ | 無新 external input 條件下的 revision 與 subsequent causal participation，是新的 transition-level structure |
+| **Free Growth** | ✔ | `FreeGrowth ⇒ Growth` 不妨礙入列：**construct 不要求完全不引用既有 construct，否則任何 refinement 都不可能存在。**兩個系統 `Growth = 1`，但 past content 是否參與 revision formation 不同 ⇒ 新增 **revision formation 對 past representation content 的 causal dependence** |
+| **Interaction** | ✔ | 兩個系統在 Agent、World、一般 Agent-Agent causality 上都成立，但一個 reciprocal、一個非 reciprocal ⇒ 新增 **coupling topology**。不是 `Agent↔Agent` 換名字 |
+| **History** | ✘ | `ExternalExposure(E,A) ∧ E ↝ A_later` 一旦 relation 給定，真假即被完全決定，**不存在「相同但 History 不同」的情形** ⇒ projection |
+| **Awareness** | ✘ | Agent–X relation 給定後，沒有額外 structural bit 可再區分兩個系統 ⇒ descriptive family vocabulary |
 | **Temporal Identity** | ✘ | architecture-defined relation |
-| **Memory** | ✔ | `PastDirected(R,E) + CausallyAffordance(R,A)`；affordance 引入 representation 在 Agent transition functional composition 中的結構角色 |
-| **Growth** | ✔ | 無新 external input 條件下，既有 representation 的 revision 與 subsequent causal participation，是新的 transition-level structure |
 
-> **Memory 是十一輪第一次真正新增 construct，
-> 這個歷史事實由本規則保留，不會被規則自己否掉。**
+> **六項現有 constructs 經統一標準回溯檢查後全部保留。**
+> **不需 rollback DCG #7 / #5 / #6，不需重開任何 DCG。**
 >
-> ⚠️ **回溯檢查未涵蓋 World / Free Growth / Interaction。見 §13。**
+> **本輪是修正准入規則的 meta-definition，不是推翻 Memory。**
+> **Memory 仍是十一輪裡第一次真正新增的 construct。**
 
+---
+
+### 14.1.2 🔴 Anti-slip：可用舊詞描述 ≠ 由舊結構決定
+
+```
+Old vocabulary can describe it   ≠   Old structure determines it
+```
+
+**「能用既有詞彙寫出公式」從來不是 irreducibility 的反證。**
+真正的反證是：
+
+> **candidate 的真假已被既有 structural dimensions 完全決定。**
+
+**這是拿去打 DCG #12 的尺。**
 ### 14.2 §3 否定清單漏列 recoverability
 
 Conclusions 的否定清單原列了 storage / state / parameter-list / occurrence /
