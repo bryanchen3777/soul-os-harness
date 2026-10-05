@@ -203,6 +203,10 @@ Agency
 └─ vocabulary placement: not yet determined
 ```
 
+> 🔴 **此層的成員已於 DCG #14 更新：`Motive` 與 `Decision`
+> 亦為 construct placement rejected + vocabulary placement not yet determined。**
+> **現況分層見 `docs/NORTH-STAR-MOTIVE-DECISION-BOUNDARY-DCG-CONVERGENCE.md` §8。**
+
 ### 8.1 🔴 Vocabulary 也有准入條件
 
 DCG #3 已確立：**question-preserving force 是 Soul 被保留為 vocabulary 的理由。**
