@@ -162,6 +162,11 @@ realized successor
 ## 8. 十三次 DCG 後的分層
 
 ```
+QUESTION
+────────────────────────
+Soul
+└─ question-preserving vocabulary
+
 CONSTRUCTS
 ────────────────────────
 Agent
@@ -173,7 +178,7 @@ Interaction
 
 STRUCTURAL PROPERTIES
 ────────────────────────
-Branching / Set-valued Transition      ← 本輪新增此層
+Branching / Set-valued Transition
 
 RELATIONS
 ────────────────────────
@@ -190,21 +195,47 @@ VOCABULARY
 History
 Lived Experience
 Awareness
+
+UNPLACED / OPEN
+────────────────────────
 Agency
-Soul
+├─ construct placement: rejected
+└─ vocabulary placement: not yet determined
 ```
 
-> ⚠️ **🔴 標記待裁決：上表把 `Agency` 列於 VOCABULARY。**
->
-> **DCG #12 §8 明確記載：Agency 是否具有 question-preserving force
-> 需另開題做 rename test，本輪不裁決。**
-> **DCG #13 的授權範圍是 Branching，不包含 Agency 的 vocabulary placement。**
->
-> **本檔保留上表原樣以反映收斂稿，但此格為 flagged item，未經 rename test。**
-> **列為 VOCABULARY 與「維持 open」是兩種不同狀態，不應混同。**
+### 8.1 🔴 Vocabulary 也有准入條件
 
----
+DCG #3 已確立：**question-preserving force 是 Soul 被保留為 vocabulary 的理由。**
+所以 vocabulary 不是「不是 construct 的詞的收容所」，它有自己的 gate。
 
+> ### **A gate 的 failure，不會自動變成 B gate 的 pass。**
+
+**`ISD(Agency) = false` 不蕴含 `VocabularyStatus(Agency) = pass`。**
+**這與 #11 的 `recoverability ≠ representation` 屬於同一族：
+一個 gate 的失敗不構成另一個 gate 的證據。**
+
+### 8.2 Agency 的兩個已知結果必須分開保存
+
+| 性質 | 值 |
+|---|---|
+| `ISD(Agency)` | **false**（DCG #12 已決） |
+| `VocabularyStatus(Agency)` | **OPEN**（rename test 尚未做） |
+
+> **兩者不能互相替代。「不是 construct」不是一個完整的 ontology placement。**
+
+**未來處理 Agency vocabulary 所需的 rename test：**
+
+> **拿掉「Agency」這個詞後，是否仍然保留一個值得獨立保存的研究問題？**
+>
+> **若否，連 vocabulary 都不需要。若是，才正式進 VOCABULARY。**
+
+**本輪不裁決此項，且不得預先授予 question-preserving 地位。**
+
+### 8.3 Soul 同步移入 QUESTION 層
+
+`Soul` 與 `Agency` 同樣不得預先列於 VOCABULARY。
+**Soul 的 vocabulary 地位由 DCG #3 的 rename test 確立（question-preserving force 成立），
+因此它的位置記於 QUESTION 層，不重複列入 VOCABULARY。**
 ## 9. Open Questions
 
 **只剩新 candidate，皆不屬於本題：**
