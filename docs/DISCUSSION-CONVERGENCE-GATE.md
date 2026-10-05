@@ -92,6 +92,11 @@
 | Owner / Engineering Brain 分界 | **誰**決定什麼 |
 | Construct / Ground truth freeze | **什麼**已被定案，不得再漂移 |
 | 「New finding ≠ new authorization」 | 新發現不構成新授權 |
+| **Ontology Privilege Policy**（`docs/ONTOLOGY-PRIVILEGE-POLICY.md`） | 被採用的 ontology-selection 規則**必須宣告什麼**（參數、語義、scope、變更程序） |
 
-**四者互不取代。** 討論可以在 5 輪內收斂而仍然不授權任何施工；
+**五者互不取代。** 討論可以在 5 輪內收斂而仍然不授權任何施工；
 也可以在第 5 輪產出結論，而結論本身是「不動」。
+
+**兩者分工：**本檔規定研究討論**多久**必須收斂；
+`ONTOLOGY-PRIVILEGE-POLICY.md` 規定被採用的選擇規則**必須自我宣告到什麼程度**。
+**後者不取代前者——一個可以在五輪內收斂的討論，其結論仍必須遵守後者的宣告要求。**
