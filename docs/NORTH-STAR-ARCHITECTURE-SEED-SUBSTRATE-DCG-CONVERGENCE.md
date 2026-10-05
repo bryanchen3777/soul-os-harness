@@ -168,10 +168,22 @@ DOCUMENTED CONVENTION CANDIDATES
     𝒯_A invariance convention            (frozen, DCG #15)
     Temporal Semantics / Time Base        (candidate, DCG #16)
 
-OPEN EPSTEMIC QUESTION
+OPEN EPISTEMIC QUESTION
     Ontology causal completeness:
       真完整（A）vs 邊界太粗（B）—— 不可分辨
 ```
+
+> 🔴 **此 open question 已在 DCG #17 / #18 被實質取代，請以那兩份為準。**
+>
+> **DCG #17**：`CausalFacts ⇏ UniqueGranularity`
+> **DCG #18**：`CausalFacts → Canonical Distinguishability Boundary`，但 `⇏ Unique Privileged Granularity`；
+> 並找到 **$C^\*$**（canonical causal quotient，條件於固定 intervention semantics）。
+>
+> **A / B 的真正形態是「在 canonical boundary 上選哪個 quotient / representation」，
+> 而不是「不可分辨」。Terminal State 已改為 `DEFERRED TO MODELING / RESEARCH-INTENT DECISION`。**
+>
+> **現況見 `docs/NORTH-STAR-ONTOLOGY-COMPLETENESS-GRANULARITY-DCG-CONVERGENCE.md`
+> 與 `docs/NORTH-STAR-ONTOLOGY-SELECTION-MODELING-PRINCIPLE-DCG-CONVERGENCE.md`。**
 
 ---
 
