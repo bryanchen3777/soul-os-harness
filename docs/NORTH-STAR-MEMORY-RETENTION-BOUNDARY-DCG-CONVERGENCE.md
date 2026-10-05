@@ -34,14 +34,14 @@
 
 ## 3. 🔴 Accessibility 的否定清單
 
-Causal accessibility **不是**以下任何一項：
+**以下六項都不能單獨構成 Memory：**
 
 ```
 ❌ storage location
-❌ presence in state
+❌ state persistence
 ❌ parameter-list membership
-❌ actual occurrence / use
 ❌ arbitrary codebase function 的 dataflow
+❌ actual occurrence / use
 ❌ information-theoretic recoverability
 ```
 
@@ -283,38 +283,89 @@ DESCRIPTIVE VOCABULARY
 - Memory 的 causal affordance 如何做獨立 measurement → **measurement 問題**
 - Memory 是否必須由 Agent 自己維護，抑或 external substrate 進入 𝒯_A 即足夠
   → **本輪未決。本檔不記錄傾向。**（見 §14.3）
+- **🔴 §14.1 canonical rule 的回溯審查尚未涵蓋 `World` / `Free Growth` / `Interaction`。**
+  Owner 指定的回溯檢查只跑了 History / Awareness / Temporal Identity / Memory / Growth。
+  這三項在 CONSTRUCTS 清單中，但**它們是否仍通過「不可還原為既有 construct / relation
+  vocabulary」這一道 gate，尚未驗證。**此項會直接影響 DCG #12 候選詞的判讀基準。
 
 ---
 
-## 14. 🔴 三處在收斂時被標記的措辭問題（不影響本輪裁決，待下一輪統一）
 
-### 14.1 准入規則的措辭
+## 14. 措辭問題（皆已於 DCG #11 閉環後由 Owner 裁決）
 
-規則寫作「**只有增加一個新的 causal structure，才足以新增 construct**」，
+### 14.1 准入規則的正式措辭（Owner 裁決）
+
+原規則寫作「**只有增加一個新的 causal structure，才足以新增 construct**」，
 但 §2 明確指出 Memory 多出的**不是另一條 causal edge**，
 而是 transition system 的 **functional role**。
 
+**Owner 裁決：採 A 的方向，但採加強版 canonical wording，不採裸 A。**
+
 兩種讀法結果相反：
 
-| 讀法 | Memory 是否通過 |
-|---|---|
-| 「new causal structure」＝新的因果邊／新節點 | **不通過** |
-| 「new structural dimension」＝能劃分狀態空間的新維度 | **通過** |
+> ### **Canonical Construct Admission Rule**
+>
+> **A candidate earns construct status only when it introduces an
+> independently specifiable structural dimension of the causal system that is
+> not reducible to the existing construct/relation vocabulary and that
+> partitions the causal state space.**
+>
+> **中文：候選項目只有在引入一個可獨立指定、不能還原為既有
+> construct / relation vocabulary，且能劃分 causal state space 的結構維度時，
+> 才取得 construct 地位。**
 
-> **目前以「能劃分 causal state space 的新結構維度」為準則。**
-> 這條規則會被用來判 DCG #12 的候選詞，措辭必須在下一次統一，否則會誤擋。
+**為何裸 A 太寬**：任意 observer classification 都能「劃分 state space」
+（state checksum 偶數／奇數也能切成兩區），但那不配成 construct。
+**承重的是「可獨立指定」＋「結構性地劃分」，不是「任何可分類的 predicate」。**
+
+**為何不採 B**：「新的 causal structure」易被字面理解為新節點／新因果邊／新 process，
+會與 #11 的裁定直接衝突。**#11 已證明：新增 construct 不要求新增 causal edge / node。**
+
+**三個 gate：**
+
+```
+New candidate
+    │
+    ├─ 只是既有 relation 的 projection？    ── YES → 不進
+    │
+    ├─ 只是 vocabulary / interpretation？   ── YES → 不進
+    │
+    └─ 引入獨立可指定、不可還原的新 structural dimension，
+       且能劃分 causal state space？        ── YES → 進 construct
+```
+
+**回溯檢查（Owner 指定的五項）：**
+
+| 候選 | 判定 | 理由 |
+|---|---|---|
+| **History** | ✘ | `Event ↝ Agent` 只是既有 causal ancestry 的 projection |
+| **Awareness** | ✘ | 沒有自己的 structural dimension，只是 Agent–X relations 的 family vocabulary |
+| **Temporal Identity** | ✘ | architecture-defined relation |
+| **Memory** | ✔ | `PastDirected(R,E) + CausallyAffordance(R,A)`；affordance 引入 representation 在 Agent transition functional composition 中的結構角色 |
+| **Growth** | ✔ | 無新 external input 條件下，既有 representation 的 revision 與 subsequent causal participation，是新的 transition-level structure |
+
+> **Memory 是十一輪第一次真正新增 construct，
+> 這個歷史事實由本規則保留，不會被規則自己否掉。**
+>
+> ⚠️ **回溯檢查未涵蓋 World / Free Growth / Interaction。見 §13。**
 
 ### 14.2 §3 否定清單漏列 recoverability
 
-Conclusions 的否定清單列了 storage / state / parameter-list / occurrence /
-codebase dataflow，**但漏列 information-theoretic recoverability**。
+Conclusions 的否定清單原列了 storage / state / parameter-list / occurrence /
+codebase dataflow，**漏列 information-theoretic recoverability**。
 §7 文字已保留該警告，清單應與之一致。
+
+**Owner 裁定：同意。§3 已補入該項，並統一為以下措辭——**
+
+> storage location / state persistence / parameter-list membership /
+> codebase dataflow / occurrence / information-theoretic recoverability
+> **都不能單獨構成 Memory。**
 
 ### 14.3 OQ 內記錄傾向
 
 原收斂稿在 Open Questions 中寫「本輪已偏向後者」。
 **Open Question 不得承載 decision。**要嘛寫成已決，要嘛純記為 open。
-本檔 §13 採後者，不保留傾向。
+本檔 §13 採後者，不保留傾向。**Owner 已確認此修正符合 DCG 規則。**
 
 ---
 
