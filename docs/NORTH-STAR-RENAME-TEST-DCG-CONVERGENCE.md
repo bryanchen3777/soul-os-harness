@@ -480,7 +480,7 @@ VOCABULARY
 **這正是「一個 gate 的 failure 不會自動變成另一個 gate 的 pass」的對稱版本：
 沒有 gate 的 pass，就沒有 NOT ADMITTED。**
 
-### 21.1 主大腦提出的候選判準（**這是提案，不是裁定**）
+### 21.1 主大腦提出的候選判準 —— 🔴 **已撤回，見 §24.1**
 
 **觀察：目前 VOCABULARY 的三項共享一個形式——它們是 rejection records。**
 
@@ -533,3 +533,163 @@ VOCABULARY
 - ❌ 六項 NOT ADMITTED 的理由已被補上（**它們目前是懸空的**）
 - ❌ History 與 Lived Experience 的 QPF 值
 - ❌ Awareness 的 VOCABULARY placement 受到 QPF 支持（**它由 #8 支持，與 QPF 無關**）
+---
+
+## 24. 🔴 Owner 裁定：六項退回 `VOCABULARY PLACEMENT = OPEN`
+
+### 24.1 先撤掉主大腦 §21.1 的 premise
+
+> **「三個 VOCABULARY 共享同一形式（rejection record）」這個前提不成立。**
+
+| 詞 | canonical 理由（回頭查 #8 / #9） |
+|---|---|
+| **Awareness** | **descriptive family vocabulary**：已定義 Agent–X relations 的自然語言家族名 |
+| **History** | **relation-derived set / projection**：causal graph 的 projection，不是 relation family |
+| **Lived Experience** | 保留 **subject-level semantics**，因為目前沒有可識別 discriminator |
+
+> $$\boxed{ \text{Awareness / History / Lived Experience 並沒有共同的 vocabulary-admission form} }$$
+
+**⚠️ 因此主大腦 §21.1 的「rejection record」候選判準撤回。**
+**把三者都叫 rejection record 會把 #8、#9 當時不同的理由事後壓成同一類——
+那是新的 modeling choice，不是從既有 DCG 必然推出的。**
+
+**而且該判準的第 2 個洞（History 是 projection，為何算 record）本來就答不出來。**
+
+### 24.2 六項的狀態修正
+
+**QPF=0 既不是 vocabulary rejection 的依據，construct rejection 也不是。**
+**既然沒有任何 vocabulary-admission criterion 存在，那麼它們從未被「考慮並拒絕」——
+它們是未被考慮。**
+
+$$\boxed{ \text{VOCABULARY PLACEMENT} = \text{OPEN} \quad\text{而非}\quad \text{REJECTED} }$$
+
+**⚠️ 這不是「推翻六項」，而是撤回一個缺乏 admission criterion 支撐的 rejection。**
+**而依 §26 對稱規則，禁止事後創造一個剛好把它們排出去的 gate——那是 post-hoc rationalization。**
+
+### 24.3 🔴 連帶後果：**Agency 必須回到 OPEN**
+
+**這是主大腦先前遺漏、且本輪因六項修正而浮現的。**
+
+我的 §14 把 Agency 寫成 `vocabulary placement: rejected (QPF=0)`。
+**那與 §24.2 的邏輯完全相同，而且同樣錯。**
+
+**#19 只測量 QPF，它不決定 placement。**（§19.1 已凍結：
+`Placement criterion ≠ QPF measurement`。）
+
+| 詞 | QPF | 有無 declared placement rationale | 正確狀態 |
+|---|---|---|---|
+| **Awareness** | 0 | **✔ 有**（DCG #8 descriptive family） | **IN VOCABULARY** |
+| **Agency** | 0 | **✘ 無** | **OPEN**（不是 rejected） |
+| **其餘六項** | 0 | **✘ 無** | **OPEN** |
+
+> ### **⇒ 沒有任何一個候選的 vocabulary placement 是「因 QPF=0 而被拒絕」。**
+> **因為 QPF 不是 placement 判準。**
+
+---
+
+## 25. 🔴 對稱的雙向封堵（Owner 裁定）
+
+> $$\boxed{ \text{No declared vocabulary-admission criterion} \;\Rightarrow\; \text{no candidate gains vocabulary admission by analogy} }$$
+
+**這同時封住兩個方向：**
+
+```
+「Awareness 有 descriptive-family rationale」
+        ↓
+  ❌ 不能自動複製成其他候選的 admission
+  （否則 Decision / Motive / Temporal 都能用同一路徑重新進場）
+
+「QPF = 0」
+        ↓
+  ❌ 不能自動變成 vocabulary rejection
+  （否則 #19 就變成 placement veto，違反 §19.1 的正交性）
+```
+
+> **這是「一個 gate 的 failure 不會自動變成另一個 gate 的 pass」的完整對稱版本：
+> 沒有 gate 的 pass，也沒有 REJECTED。**
+
+---
+
+## 26. 🔴 #19 的自我評估：QPF 目前不預測任何 placement
+
+**把 25 的結果放在一起看，會得到一個必須明說的事實：**
+
+| | QPF | placement |
+|---|---|---|
+| **Soul** | **1** | IN QUESTION |
+| **Awareness** | 0 | IN VOCABULARY（依 #8） |
+| **Agency** | 0 | **OPEN** |
+| **其餘六項** | 0 | **OPEN** |
+
+> ### **QPF 目前不預測任何 placement 結果。**
+> **Soul 的 QPF=1 與它的 placement 相關，但那是它唯一一個案例，
+> 而且 §4.3 已凍結「QPF result ≠ validity proof of the test」。**
+
+**⇒ 這是 #19 的貢獻，也是它不能當 admission gate 的原因。**
+**#19 測量了一個與 placement 正交的性質。這正是 DCG #20 存在的理由。**
+
+---
+
+## 27. 更新後的分層
+
+```
+VOCABULARY（每一項各有自己的 declared placement rationale）
+├─ Awareness          placement source: DCG #8（descriptive family）      QPF = 0
+├─ History            placement source: DCG #9（relation-derived set）    未測
+└─ Lived Experience   placement source: DCG #9（subject-level）           未測
+
+UNPLACED / OPEN（QPF 已測；無 declared placement rationale）
+├─ Agency                  QPF = 0（residual 由 #12 open candidate 承載）
+├─ Motive                  QPF = 0（無 residual）
+├─ Decision                QPF = 0（無 residual）
+├─ Expression              QPF = 0（無 residual）
+├─ Commitment              QPF = 0（無 residual）
+├─ Self-Binding            QPF = 0（無 residual）
+└─ Temporal Constraint     QPF = 0（residual 由 convention candidate 承載）
+
+QUESTION
+└─ Soul                    QPF = 1
+```
+
+> **注意：`UNPLACED / OPEN` 不再意味「construct rejected 但 vocabulary pending」，
+> 而是「QPF 已測，但沒有任何 placement decision 存在」。**
+
+---
+
+## 28. DCG #20（已提議，未啟動）
+
+> **DCG #20 — Vocabulary Admission / Descriptive Role Boundary**
+>
+> **唯一問題：什麼條件下，一個沒有獨立 causal structure 的詞，
+> 可以取得正式 VOCABULARY placement？**
+>
+> **開題時必須先防三種偷渡：**
+> 1. `QPF ≠ vocabulary admission`
+> 2. `construct rejection ≠ vocabulary admission`
+> 3. **`某一 canonical case 的 rationale ≠ universal admission gate`**
+>
+> **三個既有 case 作為約束案例，不是答案：**
+>
+> | 案例 | canonical rationale |
+> |---|---|
+> | Awareness | descriptive family |
+> | History | relation-derived projection |
+> | Lived Experience | subject-level / interpretive unresolved reference |
+>
+> **若找不到共同必要條件，完全可以得到：**
+> $$\boxed{ \text{Vocabulary 沒有單一 admission criterion；不同 vocabulary kind 需要不同、明確宣告的 placement rationale} }$$
+>
+> **這比硬造一個 universal vocabulary gate 更乾淨。**
+
+---
+
+## 29. Non-Claims（新增於 §24–§28）
+
+**本輪沒有證明：**
+
+- ❌ 任何候選的 vocabulary placement 被「拒絕」
+- ❌ rejection record 是一個有效的 vocabulary 形式（**該提案已撤回**）
+- ❌ Awareness / History / Lived Experience 有共同准入判準
+- ❌ DCG #20 一定能找到共同必要條件
+- ❌ QPF 與 placement 完全無關（**Soul 是唯一 QPF=1 且 placement 相關的案例，但不足以支持預測力**）
+- ❌ 任何 canonical rationale 可以推廣成普遍 gate

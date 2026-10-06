@@ -164,17 +164,15 @@ VOCABULARY
     Lived Experience
     Awareness
 
-UNPLACED / OPEN
-    Motive / Decision / Expression
-    Commitment / Self-Binding / Temporal Constraint
-    └─ construct placement: rejected
-       └─ vocabulary placement: not yet determined
-
-NOT ADMITTED（construct 與 vocabulary 兩層皆已裁定）
-    Agency
-    ├─ construct placement: rejected
-    └─ vocabulary placement: rejected (QPF=0, DCG #19)
-       └─ residual question 已由 DCG #12 的 prospective open candidate 承載
+UNPLACED / OPEN（QPF 已測；無 declared placement rationale）
+    Agency                  QPF=0   construct: rejected / vocabulary: OPEN
+    Motive                  QPF=0   construct: rejected / vocabulary: OPEN
+    Decision                QPF=0   construct: rejected / vocabulary: OPEN
+    Expression              QPF=0   construct: rejected / vocabulary: OPEN
+    Commitment              QPF=0   construct: rejected / vocabulary: OPEN
+    Self-Binding            QPF=0   construct: rejected / vocabulary: OPEN
+    Temporal Constraint     QPF=0   construct: rejected / vocabulary: OPEN
+    （QPF≠0 不構成 vocabulary rejection；見 DCG #19 §25 的對稱封堵）
 
 DOCUMENTED GAPS
     Architecture-seeded, non-past-derived causal state (Horn D)
