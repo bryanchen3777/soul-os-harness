@@ -232,6 +232,17 @@ DOCUMENTED GAPS
        └─ relation: not established
 ```
 
+> 🔴 **Ontology Privilege Policy：Gate-only / Admissibility Closure（Owner 已裁定）**
+>
+> **Admission ＝ ISD + CEG；不套用第二層 coarsening 或 privilege principle。**
+> **Review Trigger ＝ a new refinement or candidate passes both ISD and CEG；
+> 該事件只觸發 Owner-level policy review，不自動切換到第二層。**
+>
+> **本檔的 construct / relation / vocabulary placement 為 Gate-only 下的 current state；
+> 政策若變更，scope 內的 placement 必須重跑。**
+>
+> **政策全文：`docs/ONTOLOGY-PRIVILEGE-POLICY.md`**
+
 > 🔴 **本表在 DCG #16 再次更新：另加入 `DOCUMENTED CONVENTION CANDIDATES`
 > （𝒯_A invariance convention 已凍結、Temporal Semantics 待凍結）
 > 與 `OPEN EPISTEMIC QUESTION`（ontology causal completeness 的 A/B 不可分辨）兩個區塊。**

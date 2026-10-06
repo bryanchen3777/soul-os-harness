@@ -130,6 +130,17 @@ $$Agent \;\lor\; World \;\lor\; Interaction$$
 ## 6. 十六次 DCG 後的分層
 
 ```
+
+GOVERNANCE / MODELING LAYER
+    Ontology Privilege Policy: Gate-only / Admissibility Closure
+    ├─ Admission: ISD + CEG
+    ├─ Second-layer privilege rule: none
+    ├─ Review Trigger: a new refinement/candidate passes both ISD and CEG
+    └─ Change: Owner; re-evaluate all placements within declared scope
+    (政策全文：docs/ONTOLOGY-PRIVILEGE-POLICY.md)
+
+—— 以上為 governance / modeling layer，不屬於 causal ontology ——
+
 QUESTION
     Soul
 └─ question-preserving vocabulary
@@ -169,9 +180,20 @@ DOCUMENTED CONVENTION CANDIDATES
     Temporal Semantics / Time Base        (candidate, DCG #16)
 
 OPEN EPISTEMIC QUESTION
-    Ontology causal completeness:
-      真完整（A）vs 邊界太粗（B）—— 不可分辨
+    已被 Owner 裁定：見上方 GOVERNANCE / MODELING LAYER
+    （DCG #17 / #18 已把它取代為「canonical boundary 可決定、privileged granularity 不可唯一決定」）
 ```
+
+> 🔴 **Ontology Privilege Policy：Gate-only / Admissibility Closure（Owner 已裁定）**
+>
+> **Admission ＝ ISD + CEG；不套用第二層 coarsening 或 privilege principle。**
+> **Review Trigger ＝ a new refinement or candidate passes both ISD and CEG；
+> 該事件只觸發 Owner-level policy review，不自動切換到第二層。**
+>
+> **本檔的 construct / relation / vocabulary placement 為 Gate-only 下的 current state；
+> 政策若變更，scope 內的 placement 必須重跑。**
+>
+> **政策全文：`docs/ONTOLOGY-PRIVILEGE-POLICY.md`**
 
 > 🔴 **此 open question 已在 DCG #17 / #18 被實質取代，請以那兩份為準。**
 >

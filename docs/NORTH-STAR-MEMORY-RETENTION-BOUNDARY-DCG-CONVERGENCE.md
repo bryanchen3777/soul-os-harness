@@ -268,6 +268,17 @@ DESCRIPTIVE VOCABULARY
     Awareness
 ```
 
+> 🔴 **Ontology Privilege Policy：Gate-only / Admissibility Closure（Owner 已裁定）**
+>
+> **Admission ＝ ISD + CEG；不套用第二層 coarsening 或 privilege principle。**
+> **Review Trigger ＝ a new refinement or candidate passes both ISD and CEG；
+> 該事件只觸發 Owner-level policy review，不自動切換到第二層。**
+>
+> **本檔的 construct / relation / vocabulary placement 為 Gate-only 下的 current state；
+> 政策若變更，scope 內的 placement 必須重跑。**
+>
+> **政策全文：`docs/ONTOLOGY-PRIVILEGE-POLICY.md`**
+
 > **本輪真正新增的不是「記憶這個詞」，
 > 而是 `past-directed representation × Agent transition machinery`
 > 這個此前沒有被 ontology 單獨刻畫的 causal-functional structure。**

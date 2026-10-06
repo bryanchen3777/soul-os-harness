@@ -203,6 +203,17 @@ Agency
 └─ vocabulary placement: not yet determined
 ```
 
+> 🔴 **Ontology Privilege Policy：Gate-only / Admissibility Closure（Owner 已裁定）**
+>
+> **Admission ＝ ISD + CEG；不套用第二層 coarsening 或 privilege principle。**
+> **Review Trigger ＝ a new refinement or candidate passes both ISD and CEG；
+> 該事件只觸發 Owner-level policy review，不自動切換到第二層。**
+>
+> **本檔的 construct / relation / vocabulary placement 為 Gate-only 下的 current state；
+> 政策若變更，scope 內的 placement 必須重跑。**
+>
+> **政策全文：`docs/ONTOLOGY-PRIVILEGE-POLICY.md`**
+
 > 🔴 **此層的成員已於 DCG #14 更新：`Motive` 與 `Decision`
 > 亦為 construct placement rejected + vocabulary placement not yet determined。**
 > **現況分層見 `docs/NORTH-STAR-MOTIVE-DECISION-BOUNDARY-DCG-CONVERGENCE.md` §8。**
