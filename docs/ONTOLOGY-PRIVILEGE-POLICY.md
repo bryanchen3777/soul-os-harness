@@ -86,6 +86,8 @@ SELF-DECLARATION
 **本層的 scope 凍結為：**
 
 > ### $$\boxed{ \text{all frozen ontology-selection / placement governance} }$$
+      §6.3 Gate-only 另宣告為 all construct-placement decisions after adoption
+      §6.5 Vocabulary-placement governance scope = all frozen vocabulary-placement decisions
 
 **理由：**若不如此，就會出現「這條規則要求所有參數自我宣告，但它自己的參數沒有宣告」的遞迴漏洞。
 
@@ -181,6 +183,45 @@ Owner 可重新決定：
 
 ---
 
+
+### 6.5 Vocabulary-Placement Governance Scope（Owner 於 DCG #20 裁定）
+
+> **⚠️ §6.3 的 scope 維持 construct-only，不擴張到 vocabulary。**
+> **否則會把 construct admission gate 偷偷變成 vocabulary admission gate，
+> 與 DCG #20 的結果正面矛盾。**
+> **Gate-only / ISD / CEG 不適用於 vocabulary placement。**
+
+**Scope：**
+
+$$\boxed{ all\ frozen\ vocabulary\text{-}placement\ decisions }$$
+
+**Semantics：**
+
+| # | 規則 |
+|---|---|
+| 1 | 每一個 frozen vocabulary placement 必須有 **declared rationale** |
+| 2 | rationale **不自動構成** substantive admission gate |
+| 3 | **QPF 不構成 placement veto** |
+| 4 | **construct rejection 不構成 placement approval** |
+| 5 | canonical case 的 rationale **不自動成為** universal gate |
+| 6 | Vocabulary placement 受本檔 §2–§4 的 governance invariants 約束 |
+
+### 6.6 Vocabulary Governance Status（DCG #20 R4 裁定：partial governance completion）
+
+| 詞 | Substantive rationale | Governance parameter | 狀態 |
+|---|---|---|---|
+| **Soul** | QPF / question-preserving（#3 §2） | ✔ QPF | **Governable / parameterized** |
+| **Awareness** | Agent–X relation expansion（#8 §5） | ✔ 但「testable」未形式化 | **Governable / partially formalized** |
+| **History** | projection | ✘ | **Placement retained, admission rule OPEN** |
+| **Lived Experience** | unresolved subject-level reference | ✘ | **Placement retained, admission rule OPEN** |
+
+> **⚠️ History 與 Lived Experience 不得被稱為「已 frozen 但 non-compliant」——
+> 那會直接違反 §2 第一條 `Undeclared parameter ⇒ not a frozen rule`。**
+
+> **🔴 已知邊界：**DCG #20 確立 **Vocabulary privilege 不能偷偷冒充 causal entailment**。
+> 目前未識別出 universal vocabulary-admission gate；
+> 已存在的是 per-kind substantive rules，它們是 **stipulations with declared scope**。
+
 ## §7 A 的實質取捨（Owner 已接受）
 
 $$\boxed{ A:\ \text{系統決定 ontology 的成長速度} }$$
@@ -229,6 +270,7 @@ Parameters
     §3 scope default rule
     §4 self-declaration requirement
     §6 Gate-only policy 的四項（Parameter / Semantics / Scope / Change Procedure）
+    §6.5 Vocabulary-placement governance scope 與 §6.6 governance status
     §9 本 self-declaration 本身的變更程序
 
 Semantics

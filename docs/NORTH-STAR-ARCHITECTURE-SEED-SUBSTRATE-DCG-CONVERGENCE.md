@@ -160,9 +160,14 @@ RELATIONS
     Agent ↔ Agent
 
 VOCABULARY
-    History
-    Lived Experience
-    Awareness
+    ├─ Awareness          placement source: DCG #8（descriptive family）
+    │                     parameter: Agent–X relation expansion（#8 §5）
+    │                     ⚠️ 「testable」未形式化 ⇒ partially formalized
+    ├─ History            placement source: DCG #9（relation-derived set）
+    │                     admission rule: OPEN（privilege 非結構決定）
+    └─ Lived Experience   placement source: DCG #9（subject-level reference）
+                          admission rule: OPEN（無可宣告 parameter）
+    （Vocabulary privilege 不能冒充 causal entailment；見 DCG #20 §2）
 
 UNPLACED / OPEN（QPF 已測；無 declared placement rationale）
     Agency                  QPF=0   construct: rejected / vocabulary: OPEN
