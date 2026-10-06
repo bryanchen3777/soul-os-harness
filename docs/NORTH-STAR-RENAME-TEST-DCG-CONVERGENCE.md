@@ -299,12 +299,19 @@ QUESTION
    └─ QPF = 1 / PASS
 
 VOCABULARY
-├─ History                    （未跑 rename test）
-├─ Lived Experience           （未跑 rename test）
-└─ Awareness
-   └─ QPF = 0 / FAIL           ← ⚠️ 見 §15.1
+│
+├─ question-preserving vocabulary
+│  └─ （見上方 QUESTION: Soul，QPF = 1 / PASS）
+│
+└─ descriptive family vocabulary
+   ├─ History                    （未跑 rename test）
+   ├─ Lived Experience           （未跑 rename test）
+   └─ Awareness                  QPF = 0
+      └─ QPF=0 不否決 placement；placement 由 DCG #8 支撐（見 §19）
 
 NOT ADMITTED
+   ⚠️ 六項的 NOT ADMITTED 理由目前懸空：QPF=0 已於 §19 被宣告不構成否決，
+     而 descriptive family vocabulary 的準入判準尚未凍結（§21）。
 ├─ Agency                     QPF = 0 / FAIL
 ├─ Motive                     QPF = 0 / FAIL
 ├─ Decision                   QPF = 0 / FAIL
@@ -393,3 +400,136 @@ $$\boxed{ \text{construct rejected} \;\not\Rightarrow\; \text{vocabulary rejecte
 - ❌ 未來 upstream 變更不會使這批結果失效
 - ❌ History / Lived Experience / Branching 的 placement 已通過 rename test（見 §15）
 - ❌ Awareness 應離開 VOCABULARY（見 §15.1，**本輪未裁定**）
+---
+
+## 19. 🔴 Vocabulary Status 與 QPF 的正交性（Owner 裁定）
+
+> **Awareness remains in VOCABULARY under DCG #8's descriptive-family criterion;
+> DCG #19 records QPF(Awareness)=0 as an orthogonal property, not as a
+> vocabulary-placement veto.**
+>
+> **Awareness 依 DCG #8 的 descriptive family vocabulary 判準保留於 VOCABULARY；
+> DCG #19 的 QPF(Awareness)=0 僅表示它不具 question-preserving force，
+> 不構成其 vocabulary placement 的否決。**
+
+$$\boxed{ Placement\ criterion \neq QPF\ measurement }$$
+
+### 19.1 兩種 vocabulary 性質正式分開
+
+```
+VOCABULARY
+├─ question-preserving vocabulary
+│  └─ Soul
+│     └─ 保護「沒有其他 carrier 能承載的問題」
+│
+└─ descriptive family vocabulary
+   └─ Awareness
+      └─ 為已定義結構提供自然語言的 family name
+```
+
+> ### **QPF=0 ≠ Vocabulary Status=FAIL**
+> **兩者在 #19 中從未被形式綁死。**
+
+**#8 與 #19 因此不是兩個互相競爭的理由，而是兩條不同的 vocabulary property。**
+
+### 19.2 #19 自身定位的收緊
+
+> **#19 可以安全宣稱的只有：它判定一個詞是否具有 question-preserving force。**
+> **它不得默認成「QPF=0 ⇒ 該詞不能存在於任何 vocabulary layer」。**
+
+**否則就會觸發 #19 自己的 anti-slip：`QPF result ≠ validity proof of the test`。**
+
+---
+
+## 20. 🔴🔴 但這條規則產生了一個直接後果：**那六項的 NOT ADMITTED 理由消失了**
+
+**這是本輪必須記錄的推論後果，不是新的爭議。**
+
+| | 狀態 |
+|---|---|
+| **本輪之前** | 六項的 NOT ADMITTED 由 **QPF=0** 支持 |
+| **本輪裁決** | **QPF=0 不構成 vocabulary placement 的否決** |
+| **⇒ 現在** | **六項的 NOT ADMITTED 沒有被引用的理由** |
+
+**它們需要下列其中之一，否則 NOT ADMITTED 是懸空的：**
+
+- **(a)** 明文聲明：這六項**從未提出過 descriptive-family claim**，因此沒有第二條准入路徑可用
+- **(b)** 一條 **descriptive family vocabulary 的准入判準**，而它們不通過
+
+**本輪未裁定。記為 open。**
+
+---
+
+## 21. 🔴 descriptive family vocabulary 目前沒有准入判準
+
+**這與 §20 是同一個問題的兩面。**
+
+若「descriptive family vocabulary」是有效的第二條准入路徑，則**幾乎任何為既有家族命名的詞都合格**：
+
+| 詞 | 它命名的家族 |
+|---|---|
+| Awareness | Agent–X relations |
+| **Decision** | 𝒯_A 內部的選擇機制 |
+| **Motive** | goal / memory-derived structure |
+| **Temporal** | 全部時間相關結構 |
+| **Causality** | 全部因果結構 |
+
+**⇒ 若不補判準，§13 的六項 FAIL 都可以用 descriptive-family 路徑重新入場，
+而且理由與 Awareness 完全相同。**
+
+**這正是「一個 gate 的 failure 不會自動變成另一個 gate 的 pass」的對稱版本：
+沒有 gate 的 pass，就沒有 NOT ADMITTED。**
+
+### 21.1 主大腦提出的候選判準（**這是提案，不是裁定**）
+
+**觀察：目前 VOCABULARY 的三項共享一個形式——它們是 rejection records。**
+
+| 詞 | 它記錄的 construct-status boundary |
+|---|---|
+| **Awareness** | Agent–X relations 明確**被拒絕**成為 construct |
+| **History** | `Event↝Agent` 的 projection，**被拒絕**成為 construct |
+| **Lived Experience** | **被拒絕**，且需要 subject-level discriminator |
+
+**而 Motive / Decision / Expression / Commitment / Self-Binding / Temporal Constraint
+是 reductions——它們的內容被吸收進既有 constructs，不是 boundary 記錄。**
+
+> **候選判準：VOCABULARY 承載 *rejection records*——
+> 記錄一個已被畫下、且被記錄下來的 construct-status boundary；
+> 而非單純「為既有家族命名」。**
+
+**⚠️ 這個候選判準自己也還有洞，我必須講清楚：**
+1. 它事後合理化了一個 DCG #8 當時並未明文的分類
+2. 它需要再說明「被吸收」與「被拒絕」的界線在哪裡——`History` 是 projection（被吸收？）
+   卻仍在 VOCABULARY，**這條判準必須解釋為什麼 History 不是 reduction**
+3. 它尚未被測試過能否排除任何具體候選
+
+**⇒ 這是提案，需 Owner 裁決，且需回頭檢查 DCG #8 的原始理由是否被擴張。**
+
+---
+
+## 22. 三個 open item 的最新狀態
+
+| # | 項目 | 狀態 |
+|---|---|---|
+| ① | **Awareness** | **✅ CLOSED** — 保留 VOCABULARY；QPF=0 為正交性質，非否決 |
+| ② | **History / Lived Experience 的 Rename Test** | **OPEN** — 確實未跑，且不得由 Awareness 的處理方式類推 |
+| ③ | **Branching 的 Rename Test 適用性** | **OPEN** — 屬 STRUCTURAL PROPERTIES 層，目前無 scope declaration，**不應硬套** |
+
+**新增 open item：**
+
+| # | 項目 | 狀態 |
+|---|---|---|
+| ④ | **descriptive family vocabulary 的准入判準** | **OPEN** — 見 §21。**在此判準凍結前，§13 六項的 NOT ADMITTED 理由懸空** |
+
+---
+
+## 23. Non-Claims（新增於 §19–§22）
+
+**本輪沒有證明：**
+
+- ❌ descriptive family vocabulary 應該有自己的准入判準
+- ❌ §21.1 的 rejection-record 判準成立
+- ❌ §21.1 的候選判準沒有把 DCG #8 的原始理由擴張
+- ❌ 六項 NOT ADMITTED 的理由已被補上（**它們目前是懸空的**）
+- ❌ History 與 Lived Experience 的 QPF 值
+- ❌ Awareness 的 VOCABULARY placement 受到 QPF 支持（**它由 #8 支持，與 QPF 無關**）
