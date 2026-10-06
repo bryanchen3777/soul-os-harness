@@ -142,31 +142,18 @@ GOVERNANCE / MODELING LAYER
 —— 以上為 governance / modeling layer，不屬於 causal ontology ——
 
 QUESTION
-    Soul
-└─ question-preserving vocabulary
-
-CONSTRUCTS
-    Agent / World / Memory / Growth / Free Growth / Interaction
-
-STRUCTURAL PROPERTIES
-    Branching / Set-valued Transition
-
-RELATIONS
-    Temporal Identity
-    Event ↝ Agent
-    External Exposure
-    Agent–Capability
-    Agent–World
-    Agent ↔ Agent
+├─ Soul
+│  └─ QPF = 1（#19 §5.1；governance parameter 已宣告）
+└─ Lived Experience
+   └─ QPF = 1（#19 §30.2；governance parameter 未宣告 ⇒ 尚非 frozen rule）
 
 VOCABULARY
     ├─ Awareness          placement source: DCG #8（descriptive family）
     │                     parameter: Agent–X relation expansion（#8 §5）
     │                     ⚠️ 「testable」未形式化 ⇒ partially formalized
-    ├─ History            placement source: DCG #9（relation-derived set）
-    │                     admission rule: OPEN（privilege 非結構決定）
-    └─ Lived Experience   placement source: DCG #9（subject-level reference）
-                          admission rule: OPEN（無可宣告 parameter）
+    └─ History            placement source: DCG #9（relation-derived set）
+                          QPF = 0（#19 §30.1）
+                          admission rule: OPEN（privilege 非結構決定）
     （Vocabulary privilege 不能冒充 causal entailment；見 DCG #20 §2）
 
 UNPLACED / OPEN（QPF 已測；無 declared placement rationale）

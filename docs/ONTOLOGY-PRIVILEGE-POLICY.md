@@ -213,7 +213,7 @@ $$\boxed{ all\ frozen\ vocabulary\text{-}placement\ decisions }$$
 | **Soul** | QPF / question-preserving（#3 §2） | ✔ QPF | **Governable / parameterized** |
 | **Awareness** | Agent–X relation expansion（#8 §5） | ✔ 但「testable」未形式化 | **Governable / partially formalized** |
 | **History** | projection | ✘ | **Placement retained, admission rule OPEN** |
-| **Lived Experience** | unresolved subject-level reference | ✘ | **Placement retained, admission rule OPEN** |
+| **Lived Experience** | unresolved subject-level reference | **✔ QPF（#19 §30.2，QPF=1）** | **Placement 已移入 QUESTION 層（#19 §30.4）；governance parameter 尚未宣告** |
 
 > **⚠️ History 與 Lived Experience 不得被稱為「已 frozen 但 non-compliant」——
 > 那會直接違反 §2 第一條 `Undeclared parameter ⇒ not a frozen rule`。**

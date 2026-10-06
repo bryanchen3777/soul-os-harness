@@ -32,9 +32,9 @@ $$\boxed{ \text{Rename Test 的判準、tracked 定義與 dependency 已確定�
 
 ---
 
-## 3. Tracked 的正式定義
+## 3. Tracked 的正式定義（**含 self-carrier 排除，Owner 裁定**）
 
-> $$\boxed{ Tracked(Q)\iff \exists T:\ T\text{ 明確承載與 }Q\text{ 相同的 research question} }$$
+> $$\boxed{ Tracked_w(Q)\iff \exists T\neq w:\ T\text{ 明確承載與 }Q\text{ 相同的 research question} }$$
 
 **$T$ 可以是：**
 
@@ -51,6 +51,44 @@ $$\boxed{ \text{Rename Test 的判準、tracked 定義與 dependency 已確定�
 >
 > **否則任何詞都可以靠自己的附帶討論偽造一個 FAIL。**
 
+### 3.1 🔴 Self-carrier 排除（本輪新增，Owner 裁定）
+
+**$T \neq w$ 不只是「名稱不同」。$T$ 必須是獨立的 tracked item，
+而不是 $w$ 自己的 placement rationale、decision statement、
+open-question note，或同一條裁定的任何改寫。**
+
+> ### **A candidate's own canonical placement rationale, decision record, or
+> self-referential open-question statement cannot serve as its Step-3 carrier.**
+>
+> **候選先自己提出一個問題，再用自己提出的問題當作 Step 3 的 carrier，
+> 那不是 tracking，那是 self-reference。**
+
+**實例（兩端都會被這個漏洞誤判）：**
+
+| 詞 | 若允許 self-carriage 會怎樣 |
+|---|---|
+| **Soul** | 「causal vocabulary 是否足以表達研究對象？」出現在 Soul 自己的 DCG ⇒ Tracked = true ⇒ **QPF(Soul) = 0**（錯） |
+| **Lived Experience** | 「causal history ≠ subjective experience」出現在 #9，而 #9 就是 Lived Experience 的 placement decision ⇒ **QPF = 0**（錯） |
+
+> ### **本條的真正意義：一個東西不能充當「用來測試它是否保存該問題」的獨立 carrier。**
+> **否則 Rename Test 可以靠 self-description 被系統性操縱。**
+
+### 3.2 本澄清的影響範圍
+
+**這是對 #19 frozen method 的方法層 clarification，不是兩個 application 的修正。**
+
+依 #19 §7 的 dependency rule，`RenameResult(w)` 依賴 `TrackedQuestions`，
+而後者語義變更 ⇒ 檢查受影響的 application。
+
+**但只有「曾把 candidate 自身的 DCG / placement record 當成 carrier」的案例需要重做。**
+
+| 案例 | carrier | 是否受影響 |
+|---|---|---|
+| **Soul** | 曾用自己的 DCG | **🔴 需依新語義確認** |
+| **Lived Experience** | 曾用自己的 #9 | **🔴 需依新語義確認** |
+| **Awareness** | 已 admission 的 relations | 不受影響 |
+| **Agency** | **#12 的 prospective open candidate（不同 tracked item）** | **不受影響** |
+| **其餘六項** | 無 residual 或由其他 item 承載 | 不受影響 |
 ---
 
 ## 4. 三條 Anti-slip（已凍結）
@@ -693,3 +731,72 @@ QUESTION
 - ❌ DCG #20 一定能找到共同必要條件
 - ❌ QPF 與 placement 完全無關（**Soul 是唯一 QPF=1 且 placement 相關的案例，但不足以支持預測力**）
 - ❌ 任何 canonical rationale 可以推廣成普遍 gate
+---
+
+## 30. Application（第二批）：History 與 Lived Experience
+
+**約束（#19 §13）：**「原始問題」限制在各自 canonical DCG 真正提出過的問題，
+不另外創造更強的語義版本。
+
+**依據原文（DCG #9）：**
+- §1 —「History 只是對 causal graph 的一種 projection。它沒有創造新的 causal mechanism。」
+- §7 —「『E is in A's causal history』不等於『A subjectively lived through E』。
+  後者保留 subject-level 語義，而該部分**目前沒有 identification power**。」
+
+### 30.1 History → QPF = 0
+
+| Step | 結果 |
+|---|---|
+| 1 中性化 | 移除 `History`；不用 `Causal History` / `Event Set` 等替身 |
+| 2 問題是否存活 | **不存活為 open question。**「哪些事件屬於 A 的 past」已被 §1 的公式**回答**：`{E \| ExternalExposure(E,A) ∧ E↝A_later}` |
+| 3 是否有**獨立** carrier | **✔** `ExternalExposure` 與 `Event↝Agent` 兩個已 admission relations |
+| 4 無名替身 | 不需要 |
+
+> **它是 derived-projection 那一端的 canonical case：問題已被回答，不是被保留。**
+> **這與 #20 R3 一致——projection 可有完全客觀的 denotation，同時仍是 modeling choice 才被命名。**
+
+### 30.2 Lived Experience → QPF = 1
+
+| Step | 結果 |
+|---|---|
+| 1 中性化 | 移除 `Lived Experience`；不用 `Subjective Experience` / `Felt Experience` |
+| 2 問題是否存活 | **✔ 存活。**#9 §7 明確保留「causal incorporation ≠ subjective lived experience」，且該部分**沒有 identification power**——這是一個**未解問題**，不是已回答的 projection |
+| 3 是否有**獨立** carrier | **✘ 沒有。**六個 constructs 都不涵蓋 subjective experience；`Awareness` 的 expansion rule（#8 §5）要求展開成**已定義的** Agent–X relation，而「主觀經歷」不是已定義 relation |
+| 4 無名替身 | 不需要 |
+
+> ### **§3.1 的 self-carrier 排除在此直接生效。**
+> **#9 §7 描述這個問題，但 #9 就是 Lived Experience 的 placement decision 本身，
+> 不是另一個獨立 tracked item ⇒ 不能作為自己的 carrier。**
+
+### 30.3 🔴 與 Soul 的關係：兩個 PASS，但理由不同
+
+$$\boxed{ QPF(Soul)=1 \neq \text{（理由）} \neq \text{（理由）} \neq QPF(LivedExperience)=1 }$$
+
+| | 保留的問題 | 層級 |
+|---|---|---|
+| **Soul** | causal vocabulary 是否足以表達研究對象？ | **ontology / vocabulary 的表達 ceiling** |
+| **Lived Experience** | causal incorporation 是否等於 subjective lived experience？ | **subject-level phenomenon 是否有可識別 discriminator** |
+
+> **兩者不是同一個問題。它們是兩個獨立的 question-preserving vocabulary。**
+
+### 30.4 連帶結果：Lived Experience 的 placement 改變
+
+**Lived Experience 從 VOCABULARY 移入 QUESTION 層。**
+
+**理由：#9 保留它的理由就是「該部分沒有 identification power」——
+那正是一個 open question，而 QUESTION 層是 question-preserving vocabulary 的所在。**
+
+> ### ⚠️ **但它的 governance parameter 尚未宣告。**
+> **QPF(Lived Experience) = 1 使 QPF 成為它的 parameter 候選，
+> 但依 invariant 2 仍需宣告 parameter + semantics + scope + change procedure。
+> 在宣告之前，依 invariant 1，它尚不是 frozen rule。**
+> **這與 Soul 的狀態相同（Soul 的 QPF 已宣告為 parameter），但宣告尚未完成。**
+
+### 30.5 不受本次澄清影響的案例
+
+**Agency 的 carrier 是 DCG #12 的 prospective-directedness open candidate，
+那是與 Agency 不同的 tracked item ⇒ 不受 §3.1 影響。**
+
+**Awareness 的 carrier 是已 admission 的 relations ⇒ 不受影響。**
+
+**其餘六項（無 residual，或由其他 item 承載）⇒ 不受影響。**
