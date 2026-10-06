@@ -165,10 +165,16 @@ VOCABULARY
     Awareness
 
 UNPLACED / OPEN
-    Agency / Motive / Decision / Expression
+    Motive / Decision / Expression
     Commitment / Self-Binding / Temporal Constraint
     └─ construct placement: rejected
        └─ vocabulary placement: not yet determined
+
+NOT ADMITTED（construct 與 vocabulary 兩層皆已裁定）
+    Agency
+    ├─ construct placement: rejected
+    └─ vocabulary placement: rejected (QPF=0, DCG #19)
+       └─ residual question 已由 DCG #12 的 prospective open candidate 承載
 
 DOCUMENTED GAPS
     Architecture-seeded, non-past-derived causal state (Horn D)
