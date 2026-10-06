@@ -145,7 +145,7 @@ QUESTION
 ├─ Soul
 │  └─ QPF = 1（#19 §5.1；governance parameter 已宣告）
 └─ Lived Experience
-   └─ QPF = 1（#19 §30.2；governance parameter 未宣告 ⇒ 尚非 frozen rule）
+   └─ QPF = 1（#19 §30.2；governance parameter 已宣告 ⇒ Governable）
 
 VOCABULARY
     ├─ Awareness          placement source: DCG #8（descriptive family）

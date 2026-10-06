@@ -786,10 +786,10 @@ $$\boxed{ QPF(Soul)=1 \neq \text{（理由）} \neq \text{（理由）} \neq QPF
 **理由：#9 保留它的理由就是「該部分沒有 identification power」——
 那正是一個 open question，而 QUESTION 層是 question-preserving vocabulary 的所在。**
 
-> ### ⚠️ **但它的 governance parameter 尚未宣告。**
-> **QPF(Lived Experience) = 1 使 QPF 成為它的 parameter 候選，
-> 但依 invariant 2 仍需宣告 parameter + semantics + scope + change procedure。
-> 在宣告之前，依 invariant 1，它尚不是 frozen rule。**
+> ### **✔ governance parameter 已宣告（Owner 裁定）。**
+> **Parameter = QPF(Lived Experience) = 1**（與 Soul 同型）。
+> **Semantics 直接引用 #19 的 frozen QPF 定義；Scope = `all frozen placement decisions for Lived Experience`（刻意不擴張）。**
+> **完整四項宣告見 `ONTOLOGY-PRIVILEGE-POLICY.md` §6.7。狀態升級為 Governable / parameterized。**
 > **這與 Soul 的狀態相同（Soul 的 QPF 已宣告為 parameter），但宣告尚未完成。**
 
 ### 30.5 不受本次澄清影響的案例

@@ -136,16 +136,16 @@ $$\boxed{ Construct = filtered\ admission } \qquad \boxed{ Vocabulary = governed
 | **Soul** | QPF / question-preserving（#3 §2） | **✔ QPF（#19 凍結）** | **Governable / parameterized** |
 | **Awareness** | Agent–X relation expansion（#8 §5） | **✔ 但「testable」未形式化** | **Governable / partially formalized** |
 | **History** | projection | **✘** | **Placement retained, admission rule OPEN** |
-| **Lived Experience** | unresolved subject-level reference | **✔ QPF（#19 §30.2，QPF=1）** | **Placement 已移入 QUESTION 層（#19 §30.4）；governance parameter 尚未宣告** |
+| **Lived Experience** | question-preserving（#9 §7） | **✔ QPF = 1**（#19 §30.2，**已宣告**） | **Governable / parameterized（QUESTION 層）** |
 
 > ### 🔴 DCG #19 §30 的後續修正（本檔 §7.1 已被取代）
 >
 > **Lived Experience 的 QPF = 1**（#19 §30.2）。
 > **QPF(LE)=1 使 QPF 成為它的 governance parameter 候選——這推翻本檔 §7.1 的「無可宣告 parameter」。**
 >
-> **⚠️ 但 parameter 尚未依 invariant 2 宣告（parameter + semantics + scope + change procedure）。
-> 依 invariant 1，在宣告之前它**尚非 frozen rule**。**
->
+> **✔ 該 parameter 已依 invariant 2 宣告（QPF；四項齊備），並記錄於 `ONTOLOGY-PRIVILEGE-POLICY.md` §6.7。**
+> **其 scope 刻意限定為 `all frozen placement decisions for Lived Experience`，不擴張到其他 vocabulary kind。**
+> **⚠️ 仍須記錄的邊界：QPF=1 不表示「凡是 QPF=1 的詞都必須進 QUESTION」，也不表示 QPF 是 universal gate。**
 > **Placement 已移入 QUESTION 層**（#19 §30.4），因為 #9 保留它的理由正是「該部分沒有 identification power」——那是一個 open question。
 >
 > **本檔 §6.6 的對應列亦已更新。**

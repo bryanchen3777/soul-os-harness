@@ -88,6 +88,7 @@ SELF-DECLARATION
 > ### $$\boxed{ \text{all frozen ontology-selection / placement governance} }$$
       §6.3 Gate-only 另宣告為 all construct-placement decisions after adoption
       §6.5 Vocabulary-placement governance scope = all frozen vocabulary-placement decisions
+      §6.7 Lived Experience parameter 的 scope = all frozen placement decisions for Lived Experience（刻意不擴張至其他 kind）
 
 **理由：**若不如此，就會出現「這條規則要求所有參數自我宣告，但它自己的參數沒有宣告」的遞迴漏洞。
 
@@ -213,7 +214,7 @@ $$\boxed{ all\ frozen\ vocabulary\text{-}placement\ decisions }$$
 | **Soul** | QPF / question-preserving（#3 §2） | ✔ QPF | **Governable / parameterized** |
 | **Awareness** | Agent–X relation expansion（#8 §5） | ✔ 但「testable」未形式化 | **Governable / partially formalized** |
 | **History** | projection | ✘ | **Placement retained, admission rule OPEN** |
-| **Lived Experience** | unresolved subject-level reference | **✔ QPF（#19 §30.2，QPF=1）** | **Placement 已移入 QUESTION 層（#19 §30.4）；governance parameter 尚未宣告** |
+| **Lived Experience** | question-preserving（#9 §7） | **✔ QPF = 1**（#19 §30.2，**已宣告，見 §6.7**） | **Governable / parameterized** |
 
 > **⚠️ History 與 Lived Experience 不得被稱為「已 frozen 但 non-compliant」——
 > 那會直接違反 §2 第一條 `Undeclared parameter ⇒ not a frozen rule`。**
@@ -221,6 +222,58 @@ $$\boxed{ all\ frozen\ vocabulary\text{-}placement\ decisions }$$
 > **🔴 已知邊界：**DCG #20 確立 **Vocabulary privilege 不能偷偷冒充 causal entailment**。
 > 目前未識別出 universal vocabulary-admission gate；
 > 已存在的是 per-kind substantive rules，它們是 **stipulations with declared scope**。
+
+
+### 6.7 Question-Preserving Vocabulary 的 per-term parameter 宣告（Lived Experience）
+
+> $$\boxed{ LivedExperience\ 的\ placement\ parameter = QPF(LivedExperience)=1 }$$
+
+**⚠️ 這不是新增 vocabulary gate，也不是把 QPF 提升成 universal admission criterion。
+它是 Question-Preserving Vocabulary 這個 kind 的 per-term substantive rule，與 Soul 同型。**
+
+#### Parameter
+
+$$\boxed{ Parameter = QPF(LivedExperience),\ \ 目前值 = 1 }$$
+
+**依 DCG #19 §30 的 frozen method，該值的來源：**
+
+| 條件 | 結果 |
+|---|---|
+| 移除候選後原問題仍存活 | ✔ subject-level question survives |
+| 沒有其他**獨立** tracked item 承載 | ✔ no independent carrier |
+| 不以候選自己的 placement rationale 自我承載 | ✔ 依 #19 §3.1 self-carrier 排除 |
+| 不需要建立無名等價替身 | ✔ |
+
+#### Semantics（**直接引用 #19 的既有 frozen semantics，不另造規則**）
+
+> **QPF = 1 iff removing the term leaves the original research question alive,
+> no independent tracked item already carries that same question,
+> and no nameless equivalent substitute is introduced.**
+
+#### Scope
+
+$$\boxed{ Scope = \text{all frozen placement decisions for Lived Experience} }$$
+
+> **⚠️ 刻意不擴張。**不擴成 `all Question vocabulary`，也不擴成 `all vocabulary placement`。
+> **否則一個 LE 的 parameter 會不必要地影響 Soul、Awareness、History 等不同 kind。**
+
+#### Change Procedure
+
+| # | 規則 |
+|---|---|
+| 1 | **只有 Owner** 可變更 Lived Experience 的 placement parameter |
+| 2 | 若 QPF(LivedExperience) 或其適用 semantics 改變，必須重新評估上述 scope 內的 Lived Experience placement |
+| 3 | 若 #19 的 frozen methodology、tracked-question registry 或候選 decomposition 發生會影響此 parameter 的變更，依 #19 的 dependency rule **重新計算 QPF；不能靠舊值延續** |
+| 4 | 變更文件必須記錄：變更原因、parameter、scope、重新評估結果 |
+
+#### 邊界（防止 QPF 被升格）
+
+> **QPF(Lived Experience) = 1 不表示「凡是 QPF=1 的詞都必須進 QUESTION」。**
+> **也不表示「QPF 是 universal vocabulary admission gate」。**
+> **它只表示：這個已選定為 question-preserving kind 的 term，其 placement 由 QPF 這個已宣告 parameter 治理。**
+
+**這維持 DCG #20 的 Terminal State：`No universal vocabulary-admission gate identified`，
+同時允許 per-kind substantive governance。**
 
 ## §7 A 的實質取捨（Owner 已接受）
 
@@ -270,7 +323,7 @@ Parameters
     §3 scope default rule
     §4 self-declaration requirement
     §6 Gate-only policy 的四項（Parameter / Semantics / Scope / Change Procedure）
-    §6.5 Vocabulary-placement governance scope 與 §6.6 governance status
+    §6.5 Vocabulary-placement governance scope ＋ §6.6 governance status ＋ §6.7 Lived Experience parameter（QPF）四項宣告
     §9 本 self-declaration 本身的變更程序
 
 Semantics
