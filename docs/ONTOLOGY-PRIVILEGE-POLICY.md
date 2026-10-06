@@ -89,6 +89,7 @@ SELF-DECLARATION
       §6.3 Gate-only 另宣告為 all construct-placement decisions after adoption
       §6.5 Vocabulary-placement governance scope = all frozen vocabulary-placement decisions
       §6.7 Lived Experience parameter 的 scope = all frozen placement decisions for Lived Experience（刻意不擴張至其他 kind）
+      §6.8 Awareness parameter 的 scope = Awareness vocabulary / phrase compliance
 
 **理由：**若不如此，就會出現「這條規則要求所有參數自我宣告，但它自己的參數沒有宣告」的遞迴漏洞。
 
@@ -212,7 +213,7 @@ $$\boxed{ all\ frozen\ vocabulary\text{-}placement\ decisions }$$
 | 詞 | Substantive rationale | Governance parameter | 狀態 |
 |---|---|---|---|
 | **Soul** | QPF / question-preserving（#3 §2） | ✔ QPF | **Governable / parameterized** |
-| **Awareness** | Agent–X relation expansion（#8 §5） | ✔ 但「testable」未形式化 | **Governable / partially formalized** |
+| **Awareness** | Agent–X relation expansion（#8 §5） | **✔ 完整（`testable` 已宣告，見 §6.8）** | **Governable / fully formalized** |
 | **History** | projection | ✘ | **Placement retained, admission rule OPEN** |
 | **Lived Experience** | question-preserving（#9 §7） | **✔ QPF = 1**（#19 §30.2，**已宣告，見 §6.7**） | **Governable / parameterized** |
 
@@ -275,6 +276,75 @@ $$\boxed{ Scope = \text{all frozen placement decisions for Lived Experience} }$$
 **這維持 DCG #20 的 Terminal State：`No universal vocabulary-admission gate identified`，
 同時允許 per-kind substantive governance。**
 
+
+### 6.8 Awareness 的 testable parameter semantics（Owner 裁定，cross-reference formalization）
+
+$$\boxed{ Testable(R) \;\text{借用 DCG \#9 §6 的 counterfactual-removal operational sense} }$$
+
+> ### 🔴 **Anti-slip（文件必須保留）**
+>
+> **The operational sense of `testable` is borrowed from DCG #9 §6;
+> this does not make `testable Agent–X relation` identical to the History
+> membership condition.**
+>
+> **一個 relation 可以 testable 而不進 History，也可以反之。
+> 所以這條交叉引用只能是語義來源，不能變成條件等價。**
+
+#### Parameter
+
+$$ AwarenessOf(X)\ \Rightarrow\ X \text{ must expand to an explicitly defined, testable Agent–X relation} $$
+
+#### Semantics（四項對齊）
+
+| # | 要素 | 內容 |
+|---|---|---|
+| 1 | **Parameter** | `AwarenessOf(X)` / Agent–X relation expansion（DCG #8 §5） |
+| 2 | **Semantics** | **explicitly defined** ＋ **borrowed #9 §6 operational sense of testability** |
+| 3 | **Scope** | Awareness vocabulary / phrase compliance 的既定 scope |
+| 4 | **Change Procedure** | 既有 governance procedure（§6.4） |
+
+**`testable` 的正式理解：**
+
+> **該 Agent–X relation 必須存在可用的 counterfactual-removal 操作，
+> 使其 causal contribution 能被檢驗。**
+
+**「檢驗」的 operational reference 來自 #9 §6。**
+
+#### 依賴方向（**不是條件等價**）
+
+```
+DCG #9 §6  ── 提供 operational sense
+     │          （#9 的實際應用對象是：E ∈ History(A) ?）
+     ↓
+DCG #8 §5  ── 把這個 sense 作為 Awareness relation 的 testable parameter semantics
+     │          （#8 的對象是：Agent–X relation R）
+```
+
+> **❌ 不是：** `Testable(Agent–X) ≡ History criterion`
+> **✔ 是：** 語義來源借自 #9 §6，條件不同。
+
+#### 為何 `explicitly defined` 不足
+
+$$\boxed{ ExplicitlyDefined(R) \;\not\Rightarrow\; Testable(R) }$$
+
+**反例：** `"awareness of the felt quality of E"` 可以被精確定義，
+但「精確定義」不等於它有可檢驗的 causal contribution。
+
+**⇒ `testable` 正是 #8 §5 防止 arbitrary / non-identifiable awareness family
+無限增殖的實質門檻。**
+
+> **⚠️ 據此撤回先前「testable 可能是 wording redundancy」的假設。**
+
+#### 這不是新增 universal gate
+
+$$\boxed{ \text{formalization by cross-reference} }$$
+
+**本條只是 Awareness 這一 kind 自己的 substantive stipulation 完整化，
+不新增 measurement criterion，也不新增 universal vocabulary gate。**
+
+**⇒ Awareness governance：`Partially Formalized` → `Fully Formalized`**
+**（DCG #20 的 Terminal State 不變。）**
+
 ## §7 A 的實質取捨（Owner 已接受）
 
 $$\boxed{ A:\ \text{系統決定 ontology 的成長速度} }$$
@@ -323,7 +393,7 @@ Parameters
     §3 scope default rule
     §4 self-declaration requirement
     §6 Gate-only policy 的四項（Parameter / Semantics / Scope / Change Procedure）
-    §6.5 Vocabulary-placement governance scope ＋ §6.6 governance status ＋ §6.7 Lived Experience parameter（QPF）四項宣告
+§6.5 Vocabulary-placement governance scope ＋ §6.6 governance status ＋ §6.7 Lived Experience parameter（QPF）四項宣告 ＋ §6.8 Awareness testable semantics 宣告
     §9 本 self-declaration 本身的變更程序
 
 Semantics

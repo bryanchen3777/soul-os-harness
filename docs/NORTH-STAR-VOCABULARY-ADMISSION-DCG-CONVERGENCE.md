@@ -134,7 +134,7 @@ $$\boxed{ Construct = filtered\ admission } \qquad \boxed{ Vocabulary = governed
 | 詞 | Substantive rationale | Governance parameter | 狀態 |
 |---|---|---|---|
 | **Soul** | QPF / question-preserving（#3 §2） | **✔ QPF（#19 凍結）** | **Governable / parameterized** |
-| **Awareness** | Agent–X relation expansion（#8 §5） | **✔ 但「testable」未形式化** | **Governable / partially formalized** |
+| **Awareness** | Agent–X relation expansion（#8 §5） | **✔ 完整（`testable` 已宣告）** | **Governable / fully formalized** |
 | **History** | projection | **✘** | **Placement retained, admission rule OPEN** |
 | **Lived Experience** | question-preserving（#9 §7） | **✔ QPF = 1**（#19 §30.2，**已宣告**） | **Governable / parameterized（QUESTION 層）** |
 
@@ -172,10 +172,21 @@ History
 $$AwarenessOf(X) \Rightarrow X\ \text{must expand to an explicitly defined, testable Agent–X relation}$$
 
 **「explicitly defined」可對照 admitted RELATIONS 清單檢查。
-但「testable」沒有形式定義。**
+「testable」採用 DCG #9 §6 的 counterfactual-removal operational sense。**
 
-> ### **Awareness governance = partially formalized。**
-> **「testable」必須被記錄為未宣告詞，不得默認成 frozen parameter semantics。**
+> ### **✔ Awareness governance = fully formalized（Owner 裁定）。**
+>
+> **Anti-slip（必須保留）：**`testable` 的 operational sense **借用自 #9 §6**；
+> **這不使 `testable Agent–X relation` 與 History membership condition 等價。**
+>
+> **一個 relation 可以 testable 而不進 History，也可以反之。
+> 所以這條交叉引用只能是語義來源，不能變成條件等價。**
+>
+> **且：`ExplicitlyDefined(R) ⇏ Testable(R)`**——`"awareness of the felt quality of E"`
+> 可被精確定義，卻沒有可檢驗的 causal contribution。
+> **這正是 `testable` 在 #8 §5 阻止 awareness family 增殖的實質門檻。**
+>
+> **完整四項宣告見 `ONTOLOGY-PRIVILEGE-POLICY.md` §6.8。**
 
 ---
 

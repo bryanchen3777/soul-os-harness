@@ -150,7 +150,7 @@ QUESTION
 VOCABULARY
     ├─ Awareness          placement source: DCG #8（descriptive family）
     │                     parameter: Agent–X relation expansion（#8 §5）
-    │                     ⚠️ 「testable」未形式化 ⇒ partially formalized
+    │                     parameter 已完整宣告 ⇒ fully formalized（§6.8）
     └─ History            placement source: DCG #9（relation-derived set）
                           QPF = 0（#19 §30.1）
                           admission rule: OPEN（privilege 非結構決定）
