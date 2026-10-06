@@ -147,6 +147,20 @@ QUESTION
 └─ Lived Experience
    └─ QPF = 1（#19 §30.2；governance parameter 已宣告 ⇒ Governable）
 
+CONSTRUCTS
+    Agent / World / Memory / Growth / Free Growth / Interaction
+
+STRUCTURAL PROPERTIES
+    Branching / Set-valued Transition
+
+RELATIONS
+    Temporal Identity
+    Event ↝ Agent
+    External Exposure
+    Agent–Capability
+    Agent–World
+    Agent ↔ Agent
+
 VOCABULARY
     ├─ Awareness          placement source: DCG #8（descriptive family）
     │                     parameter: Agent–X relation expansion（#8 §5）
@@ -261,3 +275,21 @@ boundary 足夠寬而呈現出 closure？**
 > **理由與 DCG #12 完全相同：名字不能預設它所命名的對象的性質。**
 > **開 #16 的紀律由 Bry 訂立（不得直接用 `Soul Seed`），主大腦自己加了一條：**
 > **也不得用預設了答案的詞。**
+
+> ### 🔴 **事後資料遺失修正（2026-10-06）**
+>
+> **本檔 §6 的 master layering 表曾於 commit `2cfb6e5` 遺失三層：**
+> `CONSTRUCTS` / `STRUCTURAL PROPERTIES` / `RELATIONS`。
+>
+> **成因：**主大腦以行區塊 splice 更新 `QUESTION` 與 `UNPLACED` 之間的內容時，
+> 未先確認該區間是否只含目標兩層，因而把中間三層一併刪除。
+>
+> **後果：**canonical 分層表連續 4 個 commit（`2cfb6e5` / `dd02653` / `c072a55`）缺少三層。
+> **該表是所有 DCG 文件的分層依賴，遺失三層等於讓後續讀者得到不完整本體。**
+>
+> **已逐字還原自 `d756157`，並驗證層序為：
+> GOVERNANCE → QUESTION → CONSTRUCTS → STRUCTURAL PROPERTIES → RELATIONS → VOCABULARY → UNPLACED → GAPS → CONVENTION CANDIDATES → OPEN QUESTION。**
+>
+> **⚠️ 方法論教訓：splice 前必須先讀出目標區間的實際內容並逐行比對，
+> 不可依「區間看起來只含我預期的內容」假設。**
+> **這與 DCG #14 §13 第 3 項同型：識別到風險卻未在處置上防止它。**
