@@ -186,7 +186,7 @@ $$\boxed{ current seven-way evaluation is simultaneous }$$
 
 ---
 
-## 8. 剩餘六項（**本輪未裁定**）
+## 8. 剩餘六項（方法層收斂時未裁定；**application 已在 §13 完成**）
 
 $$\boxed{ Motive,\ Decision,\ Expression,\ Commitment,\ SelfBinding,\ TemporalConstraint }$$
 
@@ -249,3 +249,147 @@ $$\boxed{ Motive,\ Decision,\ Expression,\ Commitment,\ SelfBinding,\ TemporalCo
 | `docs/NORTH-STAR-AWARENESS-BOUNDARY-DCG-CONVERGENCE.md` | DCG #8，Awareness 的 decomposition 出處 |
 | `docs/NORTH-STAR-SOUL-ONTOLOGY-DCG-CONVERGENCE.md` | DCG #3，Soul 保留為 QUESTION vocabulary 的出處 |
 | `docs/NORTH-STAR-ARCHITECTURE-SEED-SUBSTRATE-DCG-CONVERGENCE.md` | §6 master layering |
+---
+
+## 13. Application：六項逐項裁定
+
+**限制（Bry 訂立）：**「原始問題」限制在各自 canonical DCG **已經真正提出過**的問題；
+**不另外替候選詞創造一個更強的語義版本。**
+**否則 Step 1 本身就會偷渡新問題。**
+
+| Candidate | Step 1：中性化後的 residual | Step 3：tracked carrier | QPF | 裁定 |
+|---|---|---|---|---|
+| **Motive** | 無獨立 residual；#14 已還原為既有 goal / memory-derived structure | — | **0** | FAIL |
+| **Decision** | 無獨立 residual；selection 已在 𝒯_A 內 | Agent / 𝒯_A / Branching | **0** | FAIL |
+| **Expression** | 無獨立 causal / research residual；#15 為 composite reduction | Agent / World / Interaction / Memory | **0** | FAIL |
+| **Commitment** | 「持續約束未來」未形成獨立於既有 causal machinery 的問題 | retained past-derived R → Memory | **0** | FAIL |
+| **Self-Binding** | 同型；#15 明文「不能另立 self-constraint kind」 | Memory / 𝒯_A | **0** | FAIL |
+| **Temporal Constraint** | **residual 存在**：「時間是否具有獨立 causal constraining role」 | **Temporal Semantics / Time Base ＋ #16 的 temporal-mechanism 問題** | **0** | FAIL |
+
+### 13.1 Temporal Constraint 是六項中最需要 Step 3 的一項
+
+**它的 FAIL 不是「Step 1 沒問題」，而是 Step 1 有 residual、Step 3 找得到 carrier。**
+
+**這同時驗證了 §3 擴大的 Tracked 定義：convention candidate 也能承接問題，
+不必等它升格成 construct 才算「沒有遺失」。**
+
+> ⚠️ **這是六項中匹配最緊的一項，理由必須留下以便稽核：**
+> residual 的原始措辭是「時間是否具有一個獨立於既有 Agent / World / Interaction 的
+> causal constraining role」；DCG #16 記錄的是「temporal mechanism / causal clock
+> 是否具有 causal effect，以及其 locus 在 𝒯_A / World / input 的哪一處」。
+> **兩者是同一問題在 clock 層級的表述**，不是兩個相鄰問題。
+> **若未來有人主張這是「merely related」，本項必須重跑。**
+
+### 13.2 Agency 與 Self-Binding 的差別（不是高下之別）
+
+| | decomposition 後的結果 |
+|---|---|
+| **Agency** | **真的冒出了 prospective-directedness**，所以 Round 3 一度看起來像 PASS |
+| **Self-Binding** | **沒有形成新的 residual candidate** |
+
+**這不是「Agency 比 Self-Binding 高級」，只是兩次 decomposition 的結果不同。**
+
+---
+
+## 14. 六項跑完後的分層
+
+```
+QUESTION
+└─ Soul
+   └─ QPF = 1 / PASS
+
+VOCABULARY
+├─ History                    （未跑 rename test）
+├─ Lived Experience           （未跑 rename test）
+└─ Awareness
+   └─ QPF = 0 / FAIL           ← ⚠️ 見 §15.1
+
+NOT ADMITTED
+├─ Agency                     QPF = 0 / FAIL
+├─ Motive                     QPF = 0 / FAIL
+├─ Decision                   QPF = 0 / FAIL
+├─ Expression                 QPF = 0 / FAIL
+├─ Commitment                 QPF = 0 / FAIL
+├─ Self-Binding               QPF = 0 / FAIL
+└─ Temporal Constraint        QPF = 0 / FAIL
+```
+
+---
+
+## 15. 🔴 三處範圍問題（**本輪不裁定，記為 open**）
+
+### 15.1 🔴 Awareness 在 VOCABULARY，但 QPF = 0
+
+**這是一個實質不一致，不是記錄問題。**
+
+- **DCG #8** 把 Awareness 放進 VOCABULARY，其依據是「awareness 問題由解讀回答，
+  不由結構回答」——**那是 structural / interpretive 的理由。**
+- **DCG #19** 的 QPF 測的是另一件事：**該詞是否保住一個既有 vocabulary 無法承載的問題。**
+  Awareness 的答案是 **否**。
+
+> **⇒ 同一個詞在兩輪用不同判準得到不同層級的答案。**
+> **依 §4 的 anti-slip「QPF result ≠ validity proof of the test」，
+> 這不自動意味 Awareness 應離開 VOCABULARY；但它意味著
+> 「Awareness 為何在 VOCABULARY」目前有兩個互不引用的理由。**
+
+**本輪不裁定。**需另開一個極小的 decision：Awareness 的 vocabulary placement
+以 DCG #8 的理由為準，還是以 #19 的 QPF 為準。
+
+### 15.2 🔴 History 與 Lived Experience 從未跑過 rename test
+
+**§14 的表把它們列在 VOCABULARY 之下，但沒有 QPF 值——因為它們沒有被測試過。**
+
+DCG #19 的實例只有 **Soul、Awareness、Agency** 三個 anchor，加上本輪的六項。
+**History 與 Lived Experience 從未進入任何一輪。**
+
+> **⇒ 「vocabulary 層已完成 rename test application」這個說法目前不成立。
+> 成立的說法是：「UNPLACED / OPEN 六項 ＋ Agency 已完成」。**
+
+### 15.3 Branching 的 rename test 適用性未定義
+
+`Branching` 在 **STRUCTURAL PROPERTIES** 層，不在 VOCABULARY 層。
+
+> **Rename Test 的判準是為「vocabulary admission」設計的。
+> 它是否適用於 structural property 層，目前未定義。**
+
+---
+
+## 16. Fixpoint（已成立，但有條件）
+
+**六項全部 FAIL ⇒ 沒有任何新的 admitted vocabulary ⇒ dependency 不產生新的接管者
+⇒ 沒有新的 downstream rename rerun。**
+
+$$\boxed{ \text{No new vocabulary admission} \;\Rightarrow\; \text{current rename evaluation reaches fixpoint} }$$
+
+> ### ⚠️ **此 fixpoint 條件於：tracked-question registry 與 canonical decomposition 均未改變。**
+> **若 DCG #16 的 Temporal Semantics 升格為 convention，或任何 decomposition 被推翻，
+> scope 內的 Rename Test 必須重跑。**
+
+---
+
+## 17. 真正被打穿的是什麼（**不是「六個都 FAIL」**）
+
+$$\boxed{ \text{construct rejected} \;\not\Rightarrow\; \text{vocabulary rejected} }$$
+
+**這不是從 Agency 一例推出的，而是逐項重新測過之後，結果才恰好全部落在 FAIL。**
+
+**而 Soul 是唯一一個 residual question 找不到承載者的詞。**
+
+> **Soul 被保留，不是因為 Soul 這個詞「重要」、神秘或直覺上不能拿掉；
+> 而是因為移除它後，確實有一個既有 tracked ontology 無法承載的 research question 失去歸屬。**
+
+**反過來：其他七個詞全部能被中性化，其問題要嘛沒有 residual，
+要嘛已被既有 construct / relation / open candidate / convention candidate 接住。**
+
+---
+
+## 18. Non-Claims（本輪 application 部分）
+
+**本輪沒有證明：**
+
+- ❌ Rename Test 的 validity 已被證明（只有 consistency check）
+- ❌ 這七個詞在一般語言、哲學或產品設計上「沒有價值」
+- ❌ 任何 canonical placement 永遠正確
+- ❌ 未來 upstream 變更不會使這批結果失效
+- ❌ History / Lived Experience / Branching 的 placement 已通過 rename test（見 §15）
+- ❌ Awareness 應離開 VOCABULARY（見 §15.1，**本輪未裁定**）
