@@ -441,7 +441,9 @@ TTL   = 15 分鐘；上限 200 筆；超限或過期 → 逐出最舊
 `tests/test_memory_continuity_v1.py`：
 
 - **T1 canonicalize / hash**：中英日、emoji、CRLF 皆 deterministic；同輸入同 hash
-- **T2 injection schema 完整**：11 個必填欄位齊全、型別正確、`injection_rank` 連續
+- **T2 injection schema 完整**：**14** 個必填欄位齊全、型別正確、`injection_rank` 連續
+  （Bry D11 裁決 2026-10-07：canonical schema = 上方「Schema（凍結）」區塊列出的
+  **14 欄**。本行原誤寫「11 個」，已更正為 14；實作與測試自始以 Schema 區塊為準。）
 - **T3 rank 對應**：`eligible` 第 k 筆 → `injection_rank=k`，且 `memory_text` 等於
   `format_for_prompt` 實際渲染出去的 content
 - **T4 4-gram 邊界**：0 命中 / 1 命中（不算）/ 2 個**不同** 4-gram（算）/ 重複同一

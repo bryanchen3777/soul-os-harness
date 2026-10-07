@@ -133,6 +133,36 @@ class MemoryMiddleware:
         # Lazy Loader instance
         self._loader = None
 
+        # ── Memory Continuity Observability v1 (Layer 2 injection + Layer 3 turn) ──
+        # 純 additive observability sidecar (D4 frozen-surface exception)。
+        # 🔴 D8 lazy：以下只建立「記憶體中的物件」，不得 mkdir / 開檔 / 寫入；
+        #    檔案要到第一次 record_injection() / record_turn() 才 lazy 建立。
+        #    recorder 的存在**不得**影響 middleware 建構：整段包 try/except，
+        #    失敗 → 設 None → 所有 sidecar 呼叫短路。
+        self._continuity = None
+        self._turn_links = None
+        try:
+            from src.memory.continuity import (
+                ContinuityRecorder,
+                TurnLinkIndex,
+            )
+            from src.memory.continuity import (
+                enabled as continuity_enabled,
+            )
+
+            self._continuity = ContinuityRecorder(
+                data_dir=self.data_dir,
+                enabled=continuity_enabled(),
+            )
+            self._turn_links = TurnLinkIndex()
+        except Exception as _continuity_init_err:
+            logger.warning(
+                f"[MemoryMiddleware] continuity sidecar 初始化失敗, "
+                f"已停用 (不影響既有記憶行為): {_continuity_init_err}"
+            )
+            self._continuity = None
+            self._turn_links = None
+
         # Bry 拍板 2026-07-18 Stage 4.1: 角色靜態關係圖整合
         # session_agents: 追蹤該 session 內出現過的 agent, 給 AGENT_SPEAK 觸發
         # 角色之間關係用 (4.3 動態互動會更精細, 4.1 第一刀先靠 session 共現)
@@ -350,6 +380,19 @@ class MemoryMiddleware:
                         f"eligible={len(eligible)} | "
                         f"context_len={len(context)}"
                     )
+                    # Memory Continuity Observability v1 (Layer 2, additive):
+                    # 🔴 D9：位置在 format_for_prompt(eligible) 與 context 拼接
+                    # **之後** —— 抓的是「已決定注入」的這份 eligible，
+                    # 不得從 rendered prompt 反解析（format_for_prompt 不含 memory_id）。
+                    # 🔴 D4：eligible 只讀，本 sidecar 不得改它；record_injection()
+                    # 就算整個失效，也不得阻止原本的 memory_context 注入。
+                    if self._continuity is not None:
+                        self._continuity.record_injection(
+                            event=event,
+                            eligible=eligible,
+                            response_id=load_result.get("response_id"),
+                            link_index=self._turn_links,
+                        )
                 else:
                     # Loader 跑了但 fail-safe, 仍要 log 知道有觸發
                     logger.debug(
@@ -412,6 +455,19 @@ class MemoryMiddleware:
 
         Phase 4 加節流：同 agent 5s 內只寫一次，防 N² 寫入爆炸。
         """
+        # ── Memory Continuity Observability v1 (Layer 3, additive) ──
+        # 🔴 D10：這個位置**不可下移**，也沒有更晚的替代位置。它是本 handler 的
+        #    第一個 statement —— 早於下方兩個既有 early return（commit cooldown、
+        #    空 text）。理由：src/llm/proxy.py 的 stub 路徑發出的 AGENT_SPEAK 帶
+        #    text="" 且 is_stub=True，必然撞上那兩個 return；若觀測寫在主體內，
+        #    **所有 stub turn 會靜默消失**，那正是 P5 違反（缺資料被當不存在）。
+        #    所以 response_status 必須區分 ok / stub / empty_text。
+        #    record_turn() 為同步、非阻塞、零 await、零 LLM call；任何例外由 sidecar
+        #    自行吞掉並以固定前綴標記 instrumentation gap（不影響 cooldown / commit
+        #    / graph 寫入時序）。
+        if self._continuity is not None:
+            self._continuity.record_turn(event, link_index=self._turn_links)
+
         agent_id = event.payload.get("agent_id")
         if not agent_id:
             # 修 KI-006 前置:不再靜默吞掉,留可追蹤異常
