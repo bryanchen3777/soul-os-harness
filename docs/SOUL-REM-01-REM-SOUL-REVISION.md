@@ -168,7 +168,54 @@ Finding B 的病根不是「規則太嚴」，是「被追問也只說不知道�
 這是本方案風險最高的一項：降級後跨 session 連續性是否還成立，需要實際跑幾個
 session 觀察有沒有漏寫。**本工單不修改 memory runtime，所以這項無法在本次關閉。**
 
-### 8.4 全庫 regression 抓到兩個既有紅點（與本工單無關，但擋住「全綠」）
+### 8.4 全庫 regression 數字
+
+`.venv` 直譯器，`pytest -q tests`：
+
+```
+101 failed, 6147 passed, 15 skipped, 15 errors, 27 subtests passed  (622.56s)
+```
+
+紅點集中在 event_bus / timezone / memory_middleware / speaker_token / stale_filter，
+以及需要真實外部條件的組（`test_translate.py` 真實 API、`test_websocket_e2e.py`），
+另有 `tests/test_speaker_token.py` 三筆 `async def functions are not natively supported`。
+
+### 8.5 差分驗證：本次改動沒有製造任何新紅點
+
+依 AGENTS.md「自報不算證據」，這一條不能只寫「應該沒關係」，所以做了回歸差分：
+
+1. 建 `git worktree --detach <HEAD~2>`（`5e0ff46`，persona = 54,217 B）。
+2. 在基線與 HEAD 各跑同一組紅點測試（9 個檔案）。
+3. 逐一比對 FAILED / ERROR 的 node ID。
+
+```
+baseline red : 21
+head     red : 19
+差異筆數     : 2   （方向為 baseline-only —— HEAD 沒有 baseline 沒有的紅點）
+```
+
+**結論：HEAD 的失敗集合 ⊂ baseline 的失敗集合，本工單沒有新增任何失敗。**
+那 2 筆只出現在基線的，是 repo hygiene 測試在 worktree 與主 repo 不同 git 脈絡下的
+上下文差異，不是行為變更。驗證用的 worktree 已移除，`git worktree list` 只剩主 worktree。
+
+### 8.6 血緣檢查：紅點測試沒有讀 persona
+
+全庫只有 6 個檔案引用 rem persona：`test_harem_aos.py`、`test_harem_multiturn.py`、
+`test_rem_l2b.py`（三者收集 0 測試）、`test_voice_companion.py`（讀的是 Akane persona，
+且非紅點）、`test_rem_text_guard.py`（18 筆全綠）、`test_rem_soul_regression.py`（36 筆全綠）。
+紅點測試中出現的 "persona" 兩處都只是註解與 log 字串，沒有任何紅點測試讀 persona 內容。
+
+### 8.7 ⚠️ 全庫回順會打到真實服務（依鐵律 #5 應視為高危）
+
+`tests/test_work_p1c1_routing.py::TestRealDshSmoke::test_real_dsh_execution_three_layer_pass`
+與 `tests/test_work_p1c2_integration.py::TestRealDshClosedLoop::test_real_dsh_artifact_closed_loop`
+的名稱顯示它們會對**真實 DSH 服務**發請求。**所以「跑一次全庫回歸」本身就等於對生產服務
+打了請求** —— 這與 AGENTS.md 鐵律 #5「測試一律不得對 production 服務發真實請求」牴觸。
+
+本次為了做差分驗證而跑了全庫，這一點必須如實回報。建議 Bry 裁決：把這兩個檔案
+移出常規回歸，或加上明確的 opt-in 開關。
+
+### 8.8 兩個既有紅點（與本工單無關）
 
 `pytest -q tests\infra` → **2 failed, 31 passed**。兩者都不在本次 commit 的 9 個檔案內：
 
@@ -179,7 +226,7 @@ session 觀察有沒有漏寫。**本工單不修改 memory runtime，所以這�
 
 兩者的修法都會動到安全護欄或既有髒檔，**不在本工單範圍，僅回報不動手**。
 
-附帶一條觀察：spawn guard 的掃描根是 `TESTS_DIR = REPO_ROOT / "tests"`
+附帶觀察：spawn guard 的掃描根是 `TESTS_DIR = REPO_ROOT / "tests"`
 （`tests/infra/test_no_production_spawn_guard.py`），**`harness/` 不在掃描範圍**。
 本次新增的 `harness/rem_soul_regression_live.py` 會呼叫 `subprocess.run`，
 因此護欄看不到它。它預設 dry-run、且輸出路徑拒絕落在 `data/` 底下（已實測中止），
@@ -206,11 +253,14 @@ session 觀察有沒有漏寫。**本工單不修改 memory runtime，所以這�
 
 ## 10. Production 整合性
 
-- `data/` 全目錄被 `.gitignore:42` 排除，`git status -- data` 為空。
+- `data/` 全目錄被 `.gitignore:42` 排除，`git status -- data` 為空；本工單未寫入 `data/`。
 - 本工單的寫入面只有 6 個路徑：`personas/agent_rem.md`、
   `tests/soul/test_rem_soul_regression.py`、`tests/fixtures/soul_rem/`（4 檔）、
   `tests/test_rem_text_guard.py`、`harness/rem_soul_regression_live.py`、本文件。
-- 未啟動、未重啟、未殺任何行程；未綁任何 production port；未對 production 服務發請求。
+- 未啟動、未重啟、未殺任何行程；未綁任何 production port。
+- ⚠️ **但全庫回歸會打到真實服務**：`test_work_p1c1_routing.py::RealDshSmoke` 與
+  `test_work_p1c2_integration.py::RealDshClosedLoop` 會對生產 DSH 發請求（見 §8.7）。
+  這是既有測試的行為，不是本工單新增的，但本次確實執行了，如實回報。
 - live harness 的輸出隔離已實測：指定 `--out data/...` 時腳本中止並退出 1。
 
 ## 11. Git
