@@ -168,6 +168,23 @@ Finding B 的病根不是「規則太嚴」，是「被追問也只說不知道�
 這是本方案風險最高的一項：降級後跨 session 連續性是否還成立，需要實際跑幾個
 session 觀察有沒有漏寫。**本工單不修改 memory runtime，所以這項無法在本次關閉。**
 
+### 8.4 全庫 regression 抓到兩個既有紅點（與本工單無關，但擋住「全綠」）
+
+`pytest -q tests\infra` → **2 failed, 31 passed**。兩者都不在本次 commit 的 9 個檔案內：
+
+| 紅點 | 根因 |
+|---|---|
+| `test_no_unlisted_process_spawn_in_scanned_tree` | `tests/soul/test_life_thread_sim_time.py` 的兩個 `subprocess.run` 實際在 **508 / 538** 行，但 `SUBPROCESS_ALLOWLIST` 仍記舊行號 **487 / 517**。有人改了測試沒更新 allowlist。 |
+| `test_every_collectable_test_file_under_tests_is_git_tracked` | `tests/soul/test_life_thread_elevation_seam.py` 是**未追蹤**檔案，從未進過 git。 |
+
+兩者的修法都會動到安全護欄或既有髒檔，**不在本工單範圍，僅回報不動手**。
+
+附帶一條觀察：spawn guard 的掃描根是 `TESTS_DIR = REPO_ROOT / "tests"`
+（`tests/infra/test_no_production_spawn_guard.py`），**`harness/` 不在掃描範圍**。
+本次新增的 `harness/rem_soul_regression_live.py` 會呼叫 `subprocess.run`，
+因此護欄看不到它。它預設 dry-run、且輸出路徑拒絕落在 `data/` 底下（已實測中止），
+但「護欄沒在管 harness/」這件事本身值得 Bry 知道。
+
 ---
 
 ## 9. 未解決 / 需要 Bry 決定
@@ -198,7 +215,11 @@ session 觀察有沒有漏寫。**本工單不修改 memory runtime，所以這�
 
 ## 11. Git
 
-commit 只包含本工單的 6 個路徑。工作區另有 7 個**本次工單之前就存在**的未提交改動
+- commit `fb056b0` — Soul 定義與 regression 套件（本工單 9 個檔案）
+- push 驗證：`HEAD` == `origin/main` == `fb056b03c143bc38425dedb74283e3b0293938c2`，
+  ahead/behind = `0 / 0`
+- 工作區於本工單 6 個路徑上乾淨（modified / staged / untracked 皆為空）
+
+工作區另有 7 個**本次工單之前就存在**的未提交改動
 （voice companion 素材／web_ui.py／LIFE-THREAD 合約／ENGINEERING_STATE／
 life_thread_orchestrator.py／conftest.py／test_life_thread_m5_wiring.py），一律不碰。
-commit SHA 與 push 驗證見最終回報。
