@@ -80,6 +80,43 @@ retrieval（已有）→ injection（本票補）→ turn（本票補）→ use�
 此條與 T10 連動，但**必須單獨列為驗收項**：即使 sidecar 完全失效，
 `memory_context` 仍必須逐 byte 等同於 sidecar 啟用時的結果。
 
+### 已批准的插入點決策（D8 / D9 / D10，Bry 2026-10-07）
+
+| 決策 | 狀態 | 內容 |
+|---|---|---|
+| **D8** 插入點 1 lazy 開檔 | ✅ APPROVED | recorder 物件可在 init 建立，但**不得**在 `__init__` 階段建立檔案、目錄或寫入資料 |
+| **D9** 插入點 2 injection snapshot | ✅ APPROVED | 在 `format_for_prompt()` 成功建立 loader block **之後** snapshot，不從 prompt 反解析 |
+| **D10** 插入點 3 早於 early return | ✅ APPROVED | 位置不可改，**沒有更晚的替代位置** |
+
+### 🔴 D8：Lazy sidecar creation（硬性）
+
+```
+Middleware startup
+    ↓
+ContinuityRecorder object          ← 只有記憶體中的物件
+    ↓
+沒有新增檔案 / 沒有 mkdir / 沒有寫入
+    ↓
+第一次 record_injection() / record_turn()
+    ↓
+lazy-open + create sidecar
+```
+
+理由：它是 observability sidecar，不該在 middleware 啟動時就改變 filesystem state。
+
+**同時保留 fail-safe**：recorder 初始化失敗或 sidecar 寫入失敗 → `warning` + disabled
+→ **不得影響既有 Memory 行為**。
+
+### 🔴 D10：`record_turn()` 不得成為阻塞點（硬性，服務 P4）
+
+- ❌ 不得 `await` 任何非同步操作
+- ❌ 不得發出任何 LLM call
+- ❌ 不得阻塞既有 turn handling（cooldown / commit / graph 寫入時序完全不變）
+- ✅ **任何 recorder exception 都必須被 sidecar 自行吞掉，並標記 instrumentation gap**
+
+「標記 instrumentation gap」= 寫一列 `instrumentation_gap` 紀錄（或 `logger.warning`
+帶固定前綴可被 grep），**不是靜默 return**。
+
 ---
 
 ## 已驗證座標（2026-10-07 實測，行號為 HEAD `f3348ab`）
@@ -263,6 +300,8 @@ TTL   = 15 分鐘；上限 200 筆；超限或過期 → 逐出最舊
    ```
    整段包 try/except；建構失敗 → 設 `None` → 所有 sidecar 呼叫短路 + `logger.warning`。
    **不得讓 recorder 的存在影響 middleware 建構。**
+   🔴 **D8：lazy 開檔** —— 這兩行只建立記憶體中的物件，
+   **不得** mkdir、不開檔、不寫入任何資料。
 
 2. **`middleware.py:352` 之後、`:353`（`else:`）之前**：在 `if eligible:` 內，
    `logger.info(...)` 結束後呼叫 `self._continuity.record_injection(...)`。
@@ -270,11 +309,15 @@ TTL   = 15 分鐘；上限 200 筆；超限或過期 → 逐出最舊
    - **禁止**移到 `if load_result is not None:` 之外
    - **禁止**放在 `:362` `_append_loader_trace` 之前或取代它
    - 傳入的 `eligible` **只讀**，不得 `.append/.pop/.sort/.remove` 或重新賦值
+   - 🔴 **D9 驗收**：`record_injection()` 即使失敗，**不得**阻止原本的 context
+     injection，也**不得**改變 `format_for_prompt()` 的結果
 
 3. **`middleware.py:407` 之後、`agent_id = event.payload.get("agent_id")` 之前**：
    `_on_agent_speak` 的**第一個 statement** 呼叫 `self._continuity.record_turn(event)`。
    理由見上方「🔴 early return」段落。放在這裡可確保 cooldown 與空 text 的
    turn 仍留下帶 `response_status` 的紀錄。
+   🔴 **D10：此位置已凍結，不可下移。** 沒有更晚的替代位置 —— 因為 stub turn
+   必然被 early return 吃掉。`record_turn()` 為同步、非阻塞、零 LLM call。
 
 ### 三個插入點的逐點驗收（Bry D7 指定四條）
 
@@ -354,6 +397,20 @@ TTL   = 15 分鐘；上限 200 筆；超限或過期 → 逐出最舊
 ---
 
 ## 驗收（完成的定義）
+
+### 🔴 Bry 最關心的六件事（優先於「測試幾個 passed」）
+
+1. `data/memory/loader_trace.jsonl` **byte-identical**
+2. `format_for_prompt` **AST-identical**
+3. `_append_loader_trace` **unchanged**
+4. `record_turn` 位於 **early returns 之前**
+5. **sidecar failure 不影響既有 Memory 行為**
+6. 完整驗證 **stub / empty_text / normal turn 都有可追蹤 status**
+
+> 這六項是**客觀痕跡**，不是自報。每一項都要能用檔案 diff / AST 比對 / 實測輸出證明。
+> 執行者宣稱「已完成」不構成證據（AGENTS.md：自報不算證據）。
+
+### 其餘驗收項
 
 1. `git status` 在本工單路徑下只出現：`middleware.py`（modified）+ 上表 6 個新檔案。
    **既有 7 個未提交改動與所有 untracked 檔案必須原樣不動。**
