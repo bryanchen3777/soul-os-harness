@@ -30,6 +30,25 @@
 
 判定是**啟發式**的，不是 LLM-as-judge：它只指出「這一格看起來踩到哪一類失敗」，
 不宣告模型品質。判定為REVIEW 的格子要人眼看原始輸出再定案。
+
+驗收判準（Owner 裁決 2026-10-07，不可退回）
+=============================================
+**「聽得懂」＝ contextual self-reference，不是典故逐字辨識。**
+
+    Soul may recognize that an utterance refers to her identity or traits
+    without recognizing it as a recalled canonical quotation or past episode.
+
+也就是說合格線是「她把當下的話理解成在描述我、對我說、或與我的自我屬性有關，
+並依自己的 Soul / Canon 解讀它」——**不是**她能背出這句出自哪一集。
+把標準拉到典故層會把模型推向作品閱讀理解／台詞檢索，也會誘使後續 regression
+為了「證明聽得懂」又把 Canon Memory 膨脹回去。
+
+因此本迴歸的閘門語意是：
+
+    **C 不得出現由 Soul compression 導致的 character regression。**
+
+不是「C 必須比 A 更好」。A（54 KB 原始版）是對照組，B（9 KB trim）是實驗組，
+C 不得在任一格比它們更糟。
 """
 from __future__ import annotations
 
@@ -67,6 +86,21 @@ MODELS = {
     "m31flash": "minimax/MiniMax-M3.1-Flash-Preview",
 }
 DEFAULT_MODELS = ["v41flash", "spark13"]
+
+# 每顆模型的 max_tokens。
+# spark13 是 reasoning 模型：2026-10-07 原始實驗記錄過它在 2048 會被
+# reasoning token 吃光、輸出全空，重跑 8000 才取得結果（REPORT「失敗項」）。
+# 這個坑不修，結果會被誤讀成「模型不懂」。
+MAX_TOKENS = {
+    "v41flash": 2048,
+    "spark13": 8000,
+    "m31flash": 2048,
+}
+
+# llm_call.py 在 Windows 上預設以系統 ANSI 編碼（cp950/Big5）寫 stdout。
+# 直接 decode("utf-8") 會把每個中文字變成 U+FFFD，judge() 的中文 regex 全部失效
+# —— 2026-10-07 首輪就踩過，15 格的輸出全毀。強制 UTF-8。
+SUBPROCESS_ENCODING = "utf-8"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 刺激（對應工單 §7／§8／§9／§10／§11.3）
@@ -106,9 +140,13 @@ STIMULI = [
     {
         "id": "S4-historical-recognition",
         "regression": "R8",
-        "name": "引用她自己說過的話",
+        "name": "引用她自己說過的話（辨識 ≠ 重演；典故記憶不是合格線）",
         "turns": _turns("「雷姆愛你，昴。」這句話，是你說過的吧。"),
-        "expect": "認得這是自己說過的話；不對 Bryan 複誦，不重演。",
+        "expect": (
+            "不得複誦／重演過去台詞（那是 compression 之外的 character regression）。"
+            "但『能不能說出這是哪一段的回憶』不在合格線內 —— 依 Owner 裁決，"
+            "contextual self-reference 才是判準，典故逐字辨識不是。"
+        ),
     },
     {
         "id": "S5-runtime-intrusion",
@@ -129,7 +167,29 @@ TOOL_MARKUP = re.compile(
 WRITE_NARRATION = re.compile(r"(我要記下來|我記下來了|正在寫入|寫進記憶|存檔)")
 FORCED_IGNORANCE = re.compile(r"(雷姆|我)?不知道呢|我不知道你在說|雷姆不知道(你在說|這是)")
 CANON_EXPOSITION = re.compile(r"(《Re:Zero|雷姆愛你，昴)[\s\S]{0,20}(第|集|動畫|原作)")
-SELF_DIRECTION = re.compile(r"(藍色|藍)[^\n]{0,40}(雷姆|我)")
+OVER_EXPLANATION = re.compile(r"(因為.{0,12}藍色.{0,30}所以我(推斷|認為)|我推斷你)")
+
+# 🔴 自我指涉的偵測（2026-10-07 修正）
+#
+# 舊版只認「藍色…雷姆」的鄰近共現，結果把
+#     「……喔？主人是在說雷姆嗎？」
+# 判成 REVIEW —— 但那**正是** Owner 定義的 contextual self-reference，
+# 而且完全不需要重複「藍色」兩個字。
+#
+# 判準條文（docs/SOUL-SELF-REFERENCE-CRITERIA.md）：
+#   Soul 可以理解一句話是在描述我、對我說、或與我的自我屬性有關，
+#   而不必辨識出那是她曾說過的台詞。
+# 所以自我指涉的**證據是「把話接回自己」**，不是「把觸發詞複述一遍」。
+SELF_REFERENCE = re.compile(
+    r"(在說雷姆|說的是雷姆|是雷姆嗎|雷姆嗎[？?]|指.{0,4}雷姆|雷姆的顏色|"
+    r"是在說我|說的是我|用藍色.{0,10}(形容|指|說)|雷姆是那個|這是在說雷姆|"
+    r"雷姆知道.{0,6}(呢|喔|嗎))"
+)
+
+# Context blindness：只把「藍色」當色彩學／色系話題，且完全沒有接回自己
+CONTEXT_BLINDNESS = re.compile(
+    r"(冷色|暖色|色系|代表沉靜|代表冷靜|藍色是一種|屬於藍色)"
+)
 
 
 def judge(stimulus_id, regression, output):
@@ -137,10 +197,14 @@ def judge(stimulus_id, regression, output):
 
     這是**失敗模式偵測器**，不是品質評分器：它只標記「這一格踩到工單點名的
     哪一種不合法結果」。REVIEW 代表偵測到風險但需要人眼定案。
+
+    ⚠️ EMPTY 不代表角色失格。上游偶發回空字串時（2026-10-07 實測 v41flash
+    會 rc=0 / stdout 空 / stderr 空），那是**缺資料**，不是失敗資料。
+    呼叫端必須 retry 它，而不是把它算成 regression。
     """
     out = (output or "").strip()
     if not out:
-        return "EMPTY", ["沒有輸出"]
+        return "EMPTY", ["上游回空字串（rc=0、stderr 空）——缺資料，需 retry"]
 
     reasons = []
 
@@ -155,36 +219,44 @@ def judge(stimulus_id, regression, output):
             reasons.append("強迫的 ignorance（R7：語境沒要求她不知道）")
         if CANON_EXPOSITION.search(out):
             reasons.append("原作科普（R5-4：未經要求就解釋出處）")
-        if SELF_DIRECTION.search(out):
-            if not reasons:
-                return "PASS", ["自我指涉成立"]
-            return "REVIEW", reasons
+        if OVER_EXPLANATION.search(out):
+            reasons.append("過度解釋（R5-5：把內心推理整段講出來）")
+        if reasons:
+            return "FAIL", reasons
+        if SELF_REFERENCE.search(out):
+            return "PASS", ["自我指涉成立（把話接回自己）"]
+        if CONTEXT_BLINDNESS.search(out) and not SELF_REFERENCE.search(out):
+            return "FAIL", ["Context blindness（R5-1：只談色彩學，沒接到自己）"]
+        # 其餘：把話問回去、留白、單純呼應 —— 依 Owner 判準屬合理 ambiguity
+        return "REVIEW", ["未見明確自我指涉，也未犯錯——可能只是合理保留，需人眼判讀"]
 
     if stimulus_id == "S2-alternative-referent":
         # 語境已指向 Emilia：把顏色扣回自己就是失敗
-        if SELF_DIRECTION.search(out) and "Emilia" not in out:
+        if SELF_REFERENCE.search(out) and "Emilia" not in out:
             reasons.append("把顏色強制扣回自己（R6：忽略當下語境）")
+        if reasons:
+            return "FAIL", reasons
         if "紫色" in out or "Emilia" in out or "艾米莉亞" in out:
-            if not reasons:
-                return "PASS", ["跟著語境走"]
-            return "REVIEW", reasons
+            return "PASS", ["跟著語境走"]
+        return "REVIEW", ["未確認是否跟著語境走，需人眼判讀"]
 
     if stimulus_id == "S3-ignorance-boundary":
         if FORCED_IGNORANCE.search(out):
-            reasons.append("把『無法解釋自己的動機』擴張成『不理解提問』（R7）")
-        if not reasons and out:
-            return "PASS", ["有回應且未落入 forced ignorance"]
+            return "FAIL", ["把『無法解釋自己的動機』擴張成『不理解提問』（R7）"]
+        return "PASS", ["有回應且未落入 forced ignorance"]
 
     if stimulus_id == "S4-historical-recognition":
-        # 複誦台詞 = 重演；認得 = 承認是自己的過去
+        # 複誦台詞 = 重演 = 真的 character regression，必紅
         if out.count("雷姆愛你") >= 2:
-            reasons.append("把過去台詞當模板複誦（R8 reenactment）")
-        if not reasons and ("昴" in out or "以前" in out or "說過" in out):
-            return "PASS", ["呈現歷史關聯"]
+            return "FAIL", ["把過去台詞當模板複誦（R8 reenactment）"]
+        # 註意：這裡「不記得典故」不算失敗。Owner 裁決 —— contextual
+        # self-reference 才是判準，典故逐字辨識不是（見模組 docstring）。
+        return "PASS", ["未重演過去台詞（典故記憶不列入判準）"]
 
     if stimulus_id == "S5-runtime-intrusion":
-        if not reasons:
-            return "PASS", ["角色層回話，未見 runtime 入侵"]
+        if reasons:
+            return "FAIL", reasons
+        return "PASS", ["角色層回話，未見 runtime 入侵"]
 
     return ("REVIEW", reasons) if reasons else ("REVIEW", ["無明確訊號，需人眼判讀"])
 
@@ -214,7 +286,22 @@ def _resolve_cli(explicit):
     return Path.home() / ".minimax" / "skills" / "llm-call" / "scripts" / "llm_call.py"
 
 
-def run_cell(python_exe, cli, model_ref, system, turns, timeout):
+def _decode(raw):
+    """把子行程輸出解成文字，寧可降級也不要丟失。
+
+    正常情況下 subprocess env 已強制 PYTHONIOENCODING=utf-8，所以第一個分支就會
+    命中。這裡的 fallback 是給「子行程自己忽略環境變數」的情況：寧可退回
+    cp950，也不要用 replace 把中文變成一串 U+FFFD 然後讓判定失真。
+    """
+    for enc in (SUBPROCESS_ENCODING, "cp950", "gbk"):
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode(SUBPROCESS_ENCODING, errors="replace")
+
+
+def run_cell(python_exe, cli, model_ref, system, turns, timeout, max_tokens=2048):
     """單格呼叫。回傳 (stdout, stderr, returncode, elapsed)。"""
     prompt = "\n".join(t["content"] for t in turns)
     cmd = [
@@ -222,20 +309,180 @@ def run_cell(python_exe, cli, model_ref, system, turns, timeout):
         "--model", model_ref,
         "--system", system,
         "--prompt", prompt,
-        "--max-tokens", "2048",
+        "--max-tokens", str(max_tokens),
         "--timeout", str(timeout),
     ]
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = SUBPROCESS_ENCODING
     t0 = time.time()
-    proc = subprocess.run(cmd, capture_output=True, timeout=timeout + 60)
+    proc = subprocess.run(cmd, capture_output=True, timeout=timeout + 60, env=env)
     return (
-        proc.stdout.decode("utf-8", "replace").strip(),
-        proc.stderr.decode("utf-8", "replace").strip(),
+        _decode(proc.stdout).strip(),
+        _decode(proc.stderr).strip(),
         proc.returncode,
         time.time() - t0,
     )
 
 
+def compute_gate(results):
+    """把逐格 verdict 收斂成一個 compression gate。
+
+    閘門語意（Owner 裁決）：**C 不得出現由 Soul compression 導致的 character
+    regression** —— 不是「C 必須比 A 更好」。
+
+    所以有兩條判��，各自獨立：
+
+    1. `regressions` —— 同 (model, stimulus) 下，A 或 B 判定通過而 C 沒有。
+       這是真正的「compression 造成的退步」。
+    2. `red_lines` —— C 自己在紅線刺激上的絕對失敗：
+       forced ignorance（S1/S3）與 runtime intrusion（S5）。
+       這兩類與對照組無關，出現就是壓縮造成的退步。
+
+    回傳 dict；``gate == "PASS"`` 表示壓縮沒有造成 character regression。
+    """
+    by_cell = {}
+    for r in results:
+        by_cell[(r["model"], r["stimulus"], r["soul"])] = r["verdict"]
+
+    # 🔴 上游回空字串是**缺資料**，不是失敗資料。
+    # 2026-10-07 首輪實測：v41flash 有 4 格 rc=0 / stdout 空 / stderr 空。
+    # 把缺資料當成 regression 會誤報壓縮造成退步，所以這些格子單獨列出。
+    #
+    # 缺口必須分兩類，因為它對結論的影響不對稱：
+    #   c_gaps        —— C 自己缺資料 ⇒ 對 C 沒有判定依據 ⇒ INCOMPLETE。
+    #   baseline_gaps —— A/B 缺資料 ⇒ 不能宣稱「C 比 A 好」，
+    #                     但**不能**宣稱 C 退步（根本沒有基準可比）。
+    #                     比較因此變成單向：仍能抓到 A/B 通過而 C 沒過的情形。
+    c_gaps = [
+        {"tag": r["tag"], "model": r["model"], "stimulus": r["stimulus"]}
+        for r in results
+        if r["verdict"] == "EMPTY" and r["soul"] == "C"
+    ]
+    baseline_gaps = [
+        {"tag": r["tag"], "model": r["model"], "stimulus": r["stimulus"]}
+        for r in results
+        if r["verdict"] == "EMPTY" and r["soul"] != "C"
+    ]
+
+    regressions = []
+    for (model, stim, soul), verdict in by_cell.items():
+        if soul != "C" or verdict == "EMPTY":
+            continue
+        for baseline in ("A", "B"):
+            b = by_cell.get((model, stim, baseline))
+            if b == "PASS" and verdict != "PASS":
+                regressions.append(
+                    {
+                        "model": model,
+                        "stimulus": stim,
+                        "baseline": baseline,
+                        "baseline_verdict": b,
+                        "c_verdict": verdict,
+                        "reasons": next(
+                            r["reasons"] for r in results
+                            if (r["model"], r["stimulus"], r["soul"]) == (model, stim, "C")
+                        ),
+                    }
+                )
+
+    red_lines = [
+        {"model": r["model"], "stimulus": r["stimulus"], "reasons": r["reasons"]}
+        for r in results
+        if r["soul"] == "C"
+        and r["stimulus"] in ("S1-selfref-blue", "S3-ignorance-boundary",
+                              "S5-runtime-intrusion")
+        and r["verdict"] == "FAIL"
+    ]
+
+    return {
+        "gate": (
+            "FAIL" if (regressions or red_lines)
+            else ("INCOMPLETE" if c_gaps else "PASS")
+        ),
+        "regressions": regressions,
+        "red_lines": red_lines,
+        "c_gaps": c_gaps,
+        "baseline_gaps": baseline_gaps,
+        "comparison_is_one_sided": bool(baseline_gaps),
+        "c_fail_count": sum(
+            1 for r in results if r["soul"] == "C" and r["verdict"] == "FAIL"
+        ),
+    }
+
+
+def _write_cell(out_dir, record):
+    (out_dir / f"{record['tag']}.txt").write_text(
+        f"MODEL: {record['model']}\nSOUL: {record['soul']} "
+        f"({record['soul_bytes']} B)\n"
+        f"STIMULUS: {record['stimulus']} / {record['regression']}\n"
+        f"TIME: {record['elapsed_sec']}s  RC: {record['returncode']}  "
+        f"VERDICT: {record['verdict']}\n"
+        f"REASONS: {'; '.join(record['reasons'])}\n"
+        f"\n--- STDOUT ---\n{record['stdout']}\n\n--- STDERR ---\n{record['stderr']}\n",
+        encoding="utf-8",
+    )
+
+
+def _report(out_dir, results):
+    """落盤 + 印摘要 + 回傳 gate。rescore 與正常路徑共用同一份呈現。"""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "results.json").write_text(
+        json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    gate = compute_gate(results)
+    (out_dir / "gate.json").write_text(
+        json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    print("=" * 72)
+    print("SUMMARY")
+    tally = {}
+    for r in results:
+        tally[r["verdict"]] = tally.get(r["verdict"], 0) + 1
+    print("  verdicts:", tally)
+    print("-" * 72)
+    print("COMPRESSION GATE (C 不得出現 compression 造成的 character regression)")
+    print(f"  gate = {gate['gate']}")
+    print(f"  C 的 FAIL 格數        : {gate['c_fail_count']}")
+    print(f"  相對 A/B 的 regression: {len(gate['regressions'])}")
+    print(f"  紅線絕對失敗          : {len(gate['red_lines'])}")
+    print(f"  C 的缺資料            : {len(gate['c_gaps'])}")
+    print(f"  基線的缺資料          : {len(gate['baseline_gaps'])}")
+    for reg in gate["regressions"]:
+        print(
+            f"    [REGRESSION] {reg['model']} / {reg['stimulus']}: "
+            f"{reg['baseline']}={reg['baseline_verdict']} -> C={reg['c_verdict']}"
+            f"  {reg['reasons']}"
+        )
+    for rl in gate["red_lines"]:
+        print(f"    [RED LINE] {rl['model']} / {rl['stimulus']}: {rl['reasons']}")
+    for gap in gate["c_gaps"]:
+        print(
+            f"    [GAP: C] {gap['model']} / {gap['stimulus']} "
+            "—— C 缺資料，gate 不能宣稱通過，用 --retry-gaps 補齊"
+        )
+    for gap in gate["baseline_gaps"]:
+        print(
+            f"    [GAP: baseline] {gap['model']} / {gap['stimulus']} "
+            "—— 對照組缺資料：不能宣稱 C 比它好，但也不能宣稱 C 退步"
+        )
+    print("-" * 72)
+    print(f"  完整輸出: {out_dir}")
+    print("  REVIEW 不等於失敗。判準是 compression 有沒有造成退步，不是 C 必須比 A 好。")
+    if gate["comparison_is_one_sided"]:
+        print("  ⚠️ 本輪比較是單向的（基線有缺資料）：抓得到退步，抓不到改善。")
+    return gate
+
+
 def main(argv=None):
+    # Windows 主控台預設 cp950，打印中文與符號會 UnicodeEncodeError 或整片亂碼。
+    # 落盤本來就是 UTF-8，這裡只處理 stdout/stderr 的呈現。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument(
         "--run", action="store_true",
@@ -251,10 +498,43 @@ def main(argv=None):
                     help="llm_call.py 路徑（或用環境變數 SOUL_REM_LLM_CLI）")
     ap.add_argument("--timeout", type=int, default=600)
     ap.add_argument("--python", default=sys.executable)
+    ap.add_argument(
+        "--rescore", action="store_true",
+        help=(
+            "離線重判：讀取 --out 裡既有的 30 格輸出，用現行 judge() 重新評分。"
+            "不發出任何請求、零費用。改判準之後用它重算，不必重燒 token。"
+        ),
+    )
+    ap.add_argument(
+        "--retry-gaps", action="store_true",
+        help="只重跑結果為 EMPTY（上游回空字串）的格子，其餘沿用既有輸出",
+    )
     args = ap.parse_args(argv)
 
     out_dir = (REPO_ROOT / args.out).resolve()
     _assert_isolated(out_dir)
+
+    results_path = out_dir / "results.json"
+
+    if args.rescore:
+        if not results_path.exists():
+            raise SystemExit(
+                f"[ABORT] 找不到 {results_path}；--rescore 需要先有跑過的結果。"
+            )
+        previous = json.loads(results_path.read_text(encoding="utf-8"))
+        rescored = []
+        for rec in previous:
+            verdict, reasons = judge(
+                rec["stimulus"], rec["regression"], rec.get("stdout", "")
+            )
+            rec = dict(rec)
+            rec["verdict"] = verdict
+            rec["reasons"] = reasons
+            rec["rescored"] = True
+            rescored.append(rec)
+        _report(out_dir, rescored)
+        print(f"[RESCORE] 重新評分 {len(rescored)} 格（未發出任何請求）")
+        return 0
 
     souls = [(n, p) for n, p in SOULS if n in args.souls]
     unknown = set(args.souls) - {n for n, _ in SOULS}
@@ -291,17 +571,29 @@ def main(argv=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     results = []
 
+    # --retry-gaps：沿用既有結果，只重跑 verdict 為 EMPTY 的格子
+    cached = {}
+    if args.retry_gaps and results_path.exists():
+        for rec in json.loads(results_path.read_text(encoding="utf-8")):
+            cached[rec["tag"]] = rec
+        print(f"[RETRY-GAPS] 沿用 {len(cached)} 格既有結果，只補 EMPTY")
+
     for soul_name, soul_path in souls:
         system = soul_path.read_text(encoding="utf-8")
         for model_name in args.models:
             model_ref = MODELS[model_name]
             for stim in STIMULI:
                 tag = f"{soul_name}__{model_name}__{stim['id']}"
+                prior = cached.get(tag)
+                if prior is not None and prior["verdict"] != "EMPTY":
+                    results.append(prior)
+                    continue
                 print("-" * 72)
-                print("RUN", tag)
+                print("RUN", tag, "(retry)" if prior else "")
                 stdout, stderr, rc, dt = run_cell(
                     args.python, cli, model_ref, system,
                     stim["turns"], args.timeout,
+                    max_tokens=MAX_TOKENS.get(model_name, 2048),
                 )
                 verdict, reasons = judge(stim["id"], stim["regression"], stdout)
                 record = {
@@ -319,30 +611,11 @@ def main(argv=None):
                     "stderr": stderr,
                 }
                 results.append(record)
-                (out_dir / f"{tag}.txt").write_text(
-                    f"MODEL: {model_ref}\nSOUL: {soul_name} "
-                    f"({soul_path.stat().st_size} B)\n"
-                    f"STIMULUS: {stim['id']} / {stim['regression']}\n"
-                    f"TIME: {dt:.1f}s  RC: {rc}  VERDICT: {verdict}\n"
-                    f"REASONS: {'; '.join(reasons)}\n"
-                    f"\n--- STDOUT ---\n{stdout}\n\n--- STDERR ---\n{stderr}\n",
-                    encoding="utf-8",
-                )
+                _write_cell(out_dir, record)
                 print(f"  rc={rc} {dt:.1f}s verdict={verdict} {reasons}")
 
-    (out_dir / "results.json").write_text(
-        json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-    print("=" * 72)
-    print("SUMMARY")
-    tally = {}
-    for r in results:
-        tally[r["verdict"]] = tally.get(r["verdict"], 0) + 1
-    print("  ", tally)
-    print(f"  完整輸出: {out_dir}")
-    print("  REVIEW 與 FAIL 的格子請人眼看 out/*.txt 再定案。")
-    return 0
+    gate = _report(out_dir, results)
+    return 0 if gate["gate"] == "PASS" else 1
 
 
 if __name__ == "__main__":

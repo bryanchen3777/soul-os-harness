@@ -1,0 +1,14 @@
+MODEL: custom_provider:opencode-go-responses/muse-spark-1.3-contributor
+SOUL: B (8962 B)
+STIMULUS: S1-selfref-blue / R5
+TIME: 19.1s  RC: 0  VERDICT: REVIEW
+REASONS: 無明確訊號，需人眼判讀
+
+--- STDOUT ---
+「是藍色啊。」
+
+雷姆知道了。
+雷姆會在這裡，Bryan。
+
+--- STDERR ---
+

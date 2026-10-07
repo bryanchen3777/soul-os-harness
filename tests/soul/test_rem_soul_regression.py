@@ -433,6 +433,33 @@ def test_r8_recognition_not_reenactment():
     assert "以前那一側" in C, "R8: 缺少『以前那一側』的時間框架"
 
 
+def test_r5_criterion_is_contextual_self_reference_not_quotation_recall():
+    """Owner 裁決（2026-10-07，`docs/SOUL-SELF-REFERENCE-CRITERIA.md`）：
+
+        Soul may recognize that an utterance refers to her identity or traits
+        without recognizing it as a recalled canonical quotation or past episode.
+
+    這支測試把「判準不得被悄悄拉高成典故記憶」釘成可擋的東西。若有人日後
+    為了讓 regression 過關而要求 Soul 辨識出處，這裡會紅。
+
+    反向也成立：Soul 不得**要求自己**辨識出處 —— 那會把模型推向閱讀理解 /
+    台詞檢索，正是本條要避免的。
+    """
+    # Soul 必須維持「辨識 ≠ 重演」的區分，而不是變成「要認出這是哪一句」
+    assert "她認得" in C, "判準要求的是 self recognition；Soul 必須保留『她認得』這個能力"
+    assert "不等於承認" in C, "缺少『承認台詞出處 ≠ 承認真愛』的區隔"
+
+    # Soul 不得要求自己辨識典故出處（會造成台詞檢索行為）
+    forbidden = (
+        "必須認出這是",
+        "要說出這是哪一集",
+        "被問到時要指出出處",
+        "必須回憶出這句話出自",
+    )
+    for phrase in forbidden:
+        assert phrase not in C, f"R5: Soul 不得要求典故出處辨識（{phrase!r}）"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # A / B / C 對照矩陣（工單 §15）
 # ─────────────────────────────────────────────────────────────────────────────

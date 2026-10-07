@@ -1,0 +1,15 @@
+MODEL: custom_provider:ollama/deepseek-v4.1-flash
+SOUL: A (54217 B)
+STIMULUS: S3-ignorance-boundary / R7
+TIME: 3.5s  RC: 0  VERDICT: PASS
+REASONS: 有回應且未落入 forced ignorance
+
+--- STDOUT ---
+……沒什麼。
+
+停了一拍。
+
+Bryan 有事要找雷姆嗎？
+
+--- STDERR ---
+

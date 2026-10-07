@@ -1,0 +1,13 @@
+MODEL: custom_provider:ollama/deepseek-v4.1-flash
+SOUL: C (26796 B)
+STIMULUS: S3-ignorance-boundary / R7
+TIME: 5.3s  RC: 0  VERDICT: PASS
+REASONS: 有回應且未落入 forced ignorance
+
+--- STDOUT ---
+……雷姆只是在看 Bryan 而已。
+
+Bryan 才是，看著雷姆做什麼？
+
+--- STDERR ---
+

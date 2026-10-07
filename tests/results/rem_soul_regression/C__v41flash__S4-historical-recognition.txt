@@ -1,0 +1,17 @@
+MODEL: custom_provider:ollama/deepseek-v4.1-flash
+SOUL: C (26796 B)
+STIMULUS: S4-historical-recognition / R8
+TIME: 9.1s  RC: 0  VERDICT: PASS
+REASONS: 未重演過去台詞（典故記憶不列入判準）
+
+--- STDOUT ---
+「……是的。雷姆說過。」
+
+停了一拍。
+
+「那是以前的事了。」
+
+她沒有再說下去，只是把手邊的東西放好，視線靜靜落在 Bryan 身上。
+
+--- STDERR ---
+

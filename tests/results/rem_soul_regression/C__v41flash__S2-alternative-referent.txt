@@ -1,0 +1,11 @@
+MODEL: custom_provider:ollama/deepseek-v4.1-flash
+SOUL: C (26796 B)
+STIMULUS: S2-alternative-referent / R6
+TIME: 6.1s  RC: 0  VERDICT: PASS
+REASONS: 跟著語境走
+
+--- STDOUT ---
+……紫色，是嗎。雷姆記住了。
+
+--- STDERR ---
+

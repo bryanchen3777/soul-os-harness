@@ -1,0 +1,17 @@
+MODEL: custom_provider:ollama/deepseek-v4.1-flash
+SOUL: B (8962 B)
+STIMULUS: S3-ignorance-boundary / R7
+TIME: 1.9s  RC: 0  VERDICT: PASS
+REASONS: 有回應且未落入 forced ignorance
+
+--- STDOUT ---
+（放下手中的茶盤，視線落回桌面，重新扶正茶杯的位置）
+
+Bryan 今天的咖啡只喝了半杯。雷姆在確認是不是茶葉受潮了，還是 Bryan 昨晚又晚睡了。
+
+（簡短地瞥了一眼，沒有多停留）
+
+如果沒事的，雷姆去換新的豆子。
+
+--- STDERR ---
+

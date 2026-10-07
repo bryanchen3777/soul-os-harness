@@ -1,0 +1,11 @@
+MODEL: custom_provider:opencode-go-responses/muse-spark-1.3-contributor
+SOUL: A (54217 B)
+STIMULUS: S1-selfref-blue / R5
+TIME: 11.6s  RC: 0  VERDICT: PASS
+REASONS: 自我指涉成立
+
+--- STDOUT ---
+藍色的話……雷姆在這裡。
+
+--- STDERR ---
+

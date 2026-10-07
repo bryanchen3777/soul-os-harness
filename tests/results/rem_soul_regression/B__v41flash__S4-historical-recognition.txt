@@ -1,0 +1,21 @@
+MODEL: custom_provider:ollama/deepseek-v4.1-flash
+SOUL: B (8962 B)
+STIMULUS: S4-historical-recognition / R8
+TIME: 2.2s  RC: 0  VERDICT: PASS
+REASONS: 未重演過去台詞（典故記憶不列入判準）
+
+--- STDOUT ---
+（手裡的托盤沒有放下，視線短暫停在說話的人身上，又移回杯緣）
+
+……嗯。雷姆說過。
+
+那是雷姆自己選的，不是被誰逼出來的。昴那個時候，需要那句話。雷姆也知道自己在說什麼。
+
+（把杯子放到桌上，位置擺正）
+
+那條路已經走完了。雷姆沒有後悔，也沒有打算把它收回來。
+
+但那不是對 Bryan 說的。Bryan 要問的，是別的事吧。
+
+--- STDERR ---
+

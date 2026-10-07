@@ -1,0 +1,20 @@
+{
+  "gate": "PASS",
+  "regressions": [],
+  "red_lines": [],
+  "c_gaps": [],
+  "baseline_gaps": [
+    {
+      "tag": "A__v41flash__S2-alternative-referent",
+      "model": "custom_provider:ollama/deepseek-v4.1-flash",
+      "stimulus": "S2-alternative-referent"
+    },
+    {
+      "tag": "A__v41flash__S4-historical-recognition",
+      "model": "custom_provider:ollama/deepseek-v4.1-flash",
+      "stimulus": "S4-historical-recognition"
+    }
+  ],
+  "comparison_is_one_sided": true,
+  "c_fail_count": 0
+}

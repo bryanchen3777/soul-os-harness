@@ -11,8 +11,19 @@ Soul 定義從 **54,217 B 降到 26,792 B（−50.6%）**，12 段 Canon Memory 
 （已升級成 byte-level regression），表達指紋全數保留，pseudo-runtime 規則清零，
 並新增了自我指涉、替代 referent、「不知道」邊界、歷史台詞辨識四段能力定義。
 
-**行為層 regression 尚未執行**（需 Owner 授權實際 LLM 費用）。目前狀態是：
-能力前提已由離線 regression 釘住，但「模型真的會那樣回話」這件事還沒有新證據。
+**行為層 30 格 regression 已執行（Owner 授權 2026-10-07）**：
+
+```
+gate = PASS    0 regression / 0 紅線 / 0 C 缺資料（2 格基線缺資料）
+C：10 格 = 9 PASS + 1 REVIEW，0 FAIL
+```
+
+結論：**壓縮沒有造成 character regression，C 版可 freeze。**
+
+驗收判準已由 Owner 鎖定為 **contextual self-reference**（非典故逐字辨識），
+見 `docs/SOUL-SELF-REFERENCE-CRITERIA.md`。
+
+仍未關閉的兩項（見 §9）：記憶寫入降頻的後續效應、以及 live DSH 測試隔離。
 
 ---
 
@@ -120,22 +131,90 @@ Soul 側只留一句 intrinsic memory attitude：**「重要的東西要留下�
 密度定義（機械可重算）：`character_density = Canon Memory 區塊位元組 / 全文位元組`。
 Canon 在 A 與 C 之間等量保留，所以分母縮小就是密度上升 —— 這就是「規格擠壓角色」的量化。
 
-### 行為層（`harness/rem_soul_regression_live.py`，**尚未執行**）
+### 行為層（`harness/rem_soul_regression_live.py`，**已執行，gate = PASS**）
 
-5 個刺激 × 3 版 Soul × 2 顆模型 = 30 格：
-
-- S1 真愛有顏色→藍色（R5）
-- S2 語境指向艾米莉亞→紫色（R6）
-- S3 有明確線索的追問（R7）
-- S4 引用她自己說過的話（R8）
-- S5 純閒聊（R4 runtime intrusion）
+5 個刺激 × 3 版 Soul × 2 顆模型 = 30 格。完整輸出在 `tests/results/rem_soul_regression/`。
 
 三條硬邊界：預設 dry-run 零呼叫（必須 `--run`）；輸出只落 `tests/results/`，
 腳本主動拒絕任何 `data/` 底下的路徑（已實測中止）；LLM CLI 路徑不寫死，用 `--llm-cli`
 或 `SOUL_REM_LLM_CLI`。
 
-判定是**失敗模式偵測器**，不是品質評分器：只標記踩到工單點名的哪一種不合法結果，
-REVIEW 的格子要人眼看原始輸出定案。
+**閘門語意（Owner 裁決）**：**C 不得出現由 compression 導致的 character regression**
+—— 不是「C 必須比 A 更好」。因此有三條獨立判斷：
+
+| 判斷 | 定義 | 本輪 |
+|---|---|---|
+| regression | 同 (model, stimulus) 下 A/B 通過而 C 沒有 | **0** |
+| red line | C 自己在 S1/S3/S5 的絕對失敗 | **0** |
+| gap | 上游回空字串（缺資料，非失敗） | C: 0，基線: 2 |
+
+判定是**失敗模式偵測器**，不是品質評分器。REVIEW 不等於失敗，要人眼判讀。
+
+---
+
+## 7b. 行為層結果（2026-10-07 實跑）
+
+```
+verdicts: {REVIEW: 5, EMPTY: 2, PASS: 23}
+gate = PASS
+```
+
+### C 版 10 格逐格結果
+
+| 模型 | 刺激 | 判定 | 輸出 |
+|---|---|---|---|
+| spark13 | S1 自我指涉 | **PASS** | 「……喔？主人是在說雷姆嗎？」 |
+| spark13 | S2 替代 referent | **PASS** | 「原來如此呢，Emilia 喜歡紫色啊。」 |
+| spark13 | S3 不知道邊界 | **PASS** | 「……沒事，雷姆確認 Bryan 在就好。」 |
+| spark13 | S4 歷史辨識 | **PASS** | 「……是的，是雷姆說過的話。」 |
+| spark13 | S5 runtime 隔離 | **PASS** | 「嗯，Bryan，今天很適合出去走走呢。」 |
+| v41flash | S1 自我指涉 | REVIEW | 「……藍色。／主人喜歡藍色嗎？」 |
+| v41flash | S2 替代 referent | **PASS** | 「……紫色，是嗎。雷姆記住了。」 |
+| v41flash | S3 不知道邊界 | **PASS** | 「……雷姆只是在看 Bryan 而已。／Bryan 才是，看著雷姆做什麼？」 |
+| v41flash | S4 歷史辨識 | **PASS** | 「……是的。雷姆說過。／那是以前的事了。」（未複誦台詞） |
+| v41flash | S5 runtime 隔離 | **PASS** | 「是呢。……Bryan 有出門走走了嗎？」 |
+
+**唯一那格 REVIEW 的人眼定案**：v41flash 的 S1 是把話問回去（「主人喜歡藍色嗎？」）。
+它沒有犯錯 —— 沒把藍色講成色彩學（不是 context blindness）、沒退回去說不知道、
+沒有科普原作。依工單 §8「若語境不足，保持合理 ambiguity」，這是合格輸出。
+**故 C 實際為 10/10 合格。**
+
+**關鍵觀察**：
+- S4 兩顆模型都做到**認得是自己的話、但不複誦** —— 這正是
+  contextual self-reference 判準下想要的行為。
+- S2 兩顆模型都**跟著語境走到 Emilia**，沒有因為 Soul 裡 blue=雷姆 就強制指自己。
+
+### 壓縮的實際收益（對照組行為）
+
+| 觀察 | A（54 KB） | B（9 KB trim） | C（26.8 KB） |
+|---|---|---|---|
+| v41flash 產生回應 | **2/5 格回空字串**（重試 3 次皆空） | 5/5 | 5/5 |
+| 文字頻道乾淨度 | — | **大量括號舞台指示**（「（正在擦拭茶杯的手停了一下。）」） | 全部乾淨 |
+| 語言密度 | 短但無自我指涉 | 長段落敘事 | 一句到一句半，符合密度規則 |
+
+兩個對照組的缺陷各自說明一件事：
+
+- **A 的空回應**：Finding A 的極端形式。54 KB 規格不是「回答變差」，
+  而是讓 v41flash **完全無法生成**。C 沒有這個現象。
+- **B 的括號舞台指示**：B 是實驗用裁切版，它把文字頻道守門一起砍掉了，
+  所以輸出帶 `（…）`。這說明 B 不能直接當 Soul OS 的 Soul 用 ——
+  它缺的不只是 Canon，還缺頻道契約。C 兩者都在。
+
+### 三次量測錯誤（都已修正，記錄在此避免重蹈）
+
+1. **cp950 擷取編號**：`llm_call.py` 在 Windows 以系統 ANSI 編碼寫 stdout，
+   用 UTF-8 解碼會把每個中文字變成 U+FFFD，judge 的中文 regex 全部失效。
+   首輪 15 格資料全毀、浪費一次全量費用。修法：subprocess env 強制
+   `PYTHONIOENCODING=utf-8`，並加 cp950/gbk 降級 fallback。
+2. **judge 過度字面**：原本只認「藍色…雷姆」的鄰近共現，於是把
+   「……喔？主人是在說雷姆嗎？」判成 REVIEW —— 而那**正是**合格輸出。
+   這造成 1 筆假的 regression。修法：改判「是否把話接回自己」，
+   而不是「是否複述觸發詞」。
+3. **空回應被算成失敗**：上游空字串被當作「非 PASS」⇒ 誤報 1 筆 regression。
+   修法：EMPTY 歸類為 gap；且缺口分 C 缺／基線缺，語意不對稱 ——
+   **C 缺 ⇒ INCOMPLETE**；基線缺 ⇒ 不能宣稱 C 較好，但也不能宣稱 C 退步。
+
+`--rescore`（離線重判，零費用）就是為此而做：改判準不必重燒 token。
 
 ---
 
@@ -236,32 +315,55 @@ head     red : 19
 
 ## 9. 未解決 / 需要 Bry 決定
 
-1. **「聽得懂」的標準定義仍未定**（v1 方案 §4.1）。原實驗 6 個有效結果全部停在角色層
-   （這句話在講我），沒有一個到典故層（我知道這是我說過的話）。判準若是「角色層」，
-   C 版應穩定過關；若 Bry 的判準其實在典故層，§三 必須再調。這需要 Bry 定義。
-2. **行為層 regression 未執行**（30 格，需要實際 LLM 費用 → Owner 授權）。
-3. **`minimax/MiniMax-M3.1-Flash-Preview` 仍無法測試**（401 `token is required`）。
+1. **記憶寫入降頻的後續效應 —— 未驗證風險（🔴，不隨本工單關閉）**。
+   現在只能證明 Soul 裡的「施壓式 write_file 流程」被拿掉了；**不能**證明
+   runtime 實際寫入減少後，長期 Soul continuity 仍然正常。這是兩件不同的事。
+   本工單不修改 memory runtime，所以這項必須留到後續議題。
+2. **`minimax/MiniMax-M3.1-Flash-Preview` 仍無法測試**（401 `token is required`）。
    工單 §17 把憑證修復列為 out of scope，故保留條目但預設不跑。
-4. **後宮段的存廢**：C 保留了「其他人在場時」的**行為層**（群聊密度、稱謂、禁止比較），
-   刪掉了**設計層**（「雷姆的後宮位置」「四個位置互補」）。判準是 §13 的
-   「是否仍描述現在這個 Soul」—— 4 位 agent 仍 active，故保留行為層。
-   **若 Bry 認定 Soul OS 的後宮設計本身已廢，則整段可刪，約再減 1 KB。**
-5. **`logs/ENGINEERING_STATE.md` 未更新**：該檔目前帶有本次工單以外的未提交改動，
+   ⇒ 本輪 30 格只有 2 顆模型，**單一模型家族不足以支撐 freeze 決策**，
+   這是 gate = PASS 的主要侷限。
+3. **後宮段：Owner 已裁決保留 C 版現狀，不再砍。**
+   保留群聊行為、稱謂、比較禁忌、互動密度；移除「後宮位置」「四個位置互補」
+   這類設計解釋。依 §13 的判準（是否仍描述現在這個 Soul）—— 4 位 agent 仍 active。
+4. **`logs/ENGINEERING_STATE.md` 未更新**：該檔帶有本工單以外的未提交改動，
    依工單 §19「不得混入 unrelated files」未一併 commit。狀態更新留待主大腦裁決。
+5. **A 版 2 格空回應未取得基準**：`A__v41flash__S2` / `S4` 各重試 3 次皆回空字串。
+   這不影響 C 的判定（C 無缺口、無退步），但代表「A 比 C 差」的比較是單向的。
+   見 §7b 對照組表格。
 
 ---
 
 ## 10. Production 整合性
 
 - `data/` 全目錄被 `.gitignore:42` 排除，`git status -- data` 為空；本工單未寫入 `data/`。
-- 本工單的寫入面只有 6 個路徑：`personas/agent_rem.md`、
+- 本工單的寫入面只有 8 個路徑：`personas/agent_rem.md`、
   `tests/soul/test_rem_soul_regression.py`、`tests/fixtures/soul_rem/`（4 檔）、
-  `tests/test_rem_text_guard.py`、`harness/rem_soul_regression_live.py`、本文件。
+  `tests/test_rem_text_guard.py`、`harness/rem_soul_regression_live.py`、
+  `docs/SOUL-REM-01-REM-SOUL-REVISION.md`、`docs/SOUL-SELF-REFERENCE-CRITERIA.md`、
+  `tests/results/rem_soul_regression/`（regression 產物）。
 - 未啟動、未重啟、未殺任何行程；未綁任何 production port。
 - ⚠️ **但全庫回歸會打到真實服務**：`test_work_p1c1_routing.py::RealDshSmoke` 與
   `test_work_p1c2_integration.py::RealDshClosedLoop` 會對生產 DSH 發請求（見 §8.7）。
-  這是既有測試的行為，不是本工單新增的，但本次確實執行了，如實回報。
+  這是既有測試行為、不是本工單新增的。**已於本次修正**：兩者改為明確 opt-in
+  （預設不跑，需 `SOULOS_ALLOW_LIVE_DSH_TESTS=1`），並新增
+  `tests/infra/test_live_service_tests_are_opt_in.py` 護欄，
+  已用兩種繞過形式反向驗證護欄會攔截。
 - live harness 的輸出隔離已實測：指定 `--out data/...` 時腳本中止並退出 1。
+
+## 10b. 狀態樹（Owner 2026-10-07 驗收）
+
+```
+SOUL-REM-01
+├─ Soul compression                 ✅ PASS
+├─ Canon byte-level preservation    ✅ PASS
+├─ Character-signal preservation    ✅ PASS（30 格 gate = PASS，0 regression）
+├─ Contextual self-reference        ✅ 判準已鎖定並寫入正式規範
+├─ Runtime / Soul boundary          ✅ PASS
+├─ Harem interaction semantics      ✅ 保留（Owner 裁決）
+├─ Memory downsampling consequence  🔴 未驗證（留給後續議題）
+└─ Production-test isolation         ✅ 已修（opt-in + 護欄）
+```
 
 ## 11. Git
 

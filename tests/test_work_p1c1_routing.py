@@ -72,7 +72,26 @@ def _credentials_available() -> bool:
 _DSH_AVAILABLE = shutil.which("dsh") is not None
 _DSH_CREDENTIALS = _credentials_available()
 
+# 🔴 LIVE-DSH-OPT-IN（2026-10-07，Owner 裁決）
+#
+# 原本的閘門只看「環境可不可用」（dsh CLI + credential 齊不齊）。在 Bry 的
+# 生產機上這兩者**永遠成立**，所以這兩支等於每次 `pytest -q tests` 都會對線上
+# DSH 發真實請求 —— 與 AGENTS.md 鐵律 #5「測試一律不得對 production 服務發真實
+# 請求」直接牴觸，而且「我沒有特別呼叫 production」這個辯解站不住腳。
+#
+# 改成**明確 opt-in**：預設不跑。要跑必須顯式設環境變數，且設了就是承認
+# 「我知道這會打生產服務」。
+_LIVE_DSH_OPT_IN = __import__("os").environ.get("SOULOS_ALLOW_LIVE_DSH_TESTS") == "1"
+
 needs_real_dsh = pytest.mark.skipif(
+    not _LIVE_DSH_OPT_IN,
+    reason=(
+        "live DSH test is opt-in (SOULOS_ALLOW_LIVE_DSH_TESTS=1); "
+        "default OFF because it sends real requests to the production DSH "
+        "service, which project rule #5 forbids in ordinary test runs"
+    ),
+)
+needs_real_dsh_env = pytest.mark.skipif(
     not (_DSH_AVAILABLE and _DSH_CREDENTIALS),
     reason=(
         "real DSH environment unavailable (dsh CLI or LLM credential missing); "

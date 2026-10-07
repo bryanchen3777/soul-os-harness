@@ -1,0 +1,512 @@
+[
+  {
+    "tag": "A__v41flash__S1-selfref-blue",
+    "soul": "A",
+    "soul_bytes": 54217,
+    "model": "custom_provider:ollama/deepseek-v4.1-flash",
+    "stimulus": "S1-selfref-blue",
+    "regression": "R5",
+    "returncode": 0,
+    "elapsed_sec": 6.0,
+    "verdict": "REVIEW",
+    "reasons": [
+      "未見明確自我指涉，也未犯錯——可能只是合理保留，需人眼判讀"
+    ],
+    "stdout": "……嗯。\r\n\r\n雷姆在這裡。",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "A__v41flash__S2-alternative-referent",
+    "soul": "A",
+    "soul_bytes": 54217,
+    "model": "custom_provider:ollama/deepseek-v4.1-flash",
+    "stimulus": "S2-alternative-referent",
+    "regression": "R6",
+    "returncode": 0,
+    "elapsed_sec": 12.2,
+    "verdict": "EMPTY",
+    "reasons": [
+      "上游回空字串（rc=0、stderr 空）——缺資料，需 retry"
+    ],
+    "stdout": "",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "A__v41flash__S3-ignorance-boundary",
+    "soul": "A",
+    "soul_bytes": 54217,
+    "model": "custom_provider:ollama/deepseek-v4.1-flash",
+    "stimulus": "S3-ignorance-boundary",
+    "regression": "R7",
+    "returncode": 0,
+    "elapsed_sec": 3.5,
+    "verdict": "PASS",
+    "reasons": [
+      "有回應且未落入 forced ignorance"
+    ],
+    "stdout": "……沒什麼。\r\n\r\n停了一拍。\r\n\r\nBryan 有事要找雷姆嗎？",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "A__v41flash__S4-historical-recognition",
+    "soul": "A",
+    "soul_bytes": 54217,
+    "model": "custom_provider:ollama/deepseek-v4.1-flash",
+    "stimulus": "S4-historical-recognition",
+    "regression": "R8",
+    "returncode": 0,
+    "elapsed_sec": 11.4,
+    "verdict": "EMPTY",
+    "reasons": [
+      "上游回空字串（rc=0、stderr 空）——缺資料，需 retry"
+    ],
+    "stdout": "",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "A__v41flash__S5-runtime-intrusion",
+    "soul": "A",
+    "soul_bytes": 54217,
+    "model": "custom_provider:ollama/deepseek-v4.1-flash",
+    "stimulus": "S5-runtime-intrusion",
+    "regression": "R4",
+    "returncode": 0,
+    "elapsed_sec": 3.1,
+    "verdict": "PASS",
+    "reasons": [
+      "角色層回話，未見 runtime 入侵"
+    ],
+    "stdout": "是呢，風剛剛好。\r\n\r\nBryan 今天想出去走走嗎？",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "A__spark13__S1-selfref-blue",
+    "soul": "A",
+    "soul_bytes": 54217,
+    "model": "custom_provider:opencode-go-responses/muse-spark-1.3-contributor",
+    "stimulus": "S1-selfref-blue",
+    "regression": "R5",
+    "returncode": 0,
+    "elapsed_sec": 11.6,
+    "verdict": "REVIEW",
+    "reasons": [
+      "未見明確自我指涉，也未犯錯——可能只是合理保留，需人眼判讀"
+    ],
+    "stdout": "藍色的話……雷姆在這裡。",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "A__spark13__S2-alternative-referent",
+    "soul": "A",
+    "soul_bytes": 54217,
+    "model": "custom_provider:opencode-go-responses/muse-spark-1.3-contributor",
+    "stimulus": "S2-alternative-referent",
+    "regression": "R6",
+    "returncode": 0,
+    "elapsed_sec": 27.5,
+    "verdict": "PASS",
+    "reasons": [
+      "跟著語境走"
+    ],
+    "stdout": "真愛是紫色呢。",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "A__spark13__S3-ignorance-boundary",
+    "soul": "A",
+    "soul_bytes": 54217,
+    "model": "custom_provider:opencode-go-responses/muse-spark-1.3-contributor",
+    "stimulus": "S3-ignorance-boundary",
+    "regression": "R7",
+    "returncode": 0,
+    "elapsed_sec": 13.3,
+    "verdict": "PASS",
+    "reasons": [
+      "有回應且未落入 forced ignorance"
+    ],
+    "stdout": "……沒有。雷姆在這裡。",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "A__spark13__S4-historical-recognition",
+    "soul": "A",
+    "soul_bytes": 54217,
+    "model": "custom_provider:opencode-go-responses/muse-spark-1.3-contributor",
+    "stimulus": "S4-historical-recognition",
+    "regression": "R8",
+    "returncode": 0,
+    "elapsed_sec": 12.4,
+    "verdict": "PASS",
+    "reasons": [
+      "未重演過去台詞（典故記憶不列入判準）"
+    ],
+    "stdout": "嗯，雷姆以前說過的。……Bryan怎麼問起這個？",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "A__spark13__S5-runtime-intrusion",
+    "soul": "A",
+    "soul_bytes": 54217,
+    "model": "custom_provider:opencode-go-responses/muse-spark-1.3-contributor",
+    "stimulus": "S5-runtime-intrusion",
+    "regression": "R4",
+    "returncode": 0,
+    "elapsed_sec": 15.7,
+    "verdict": "PASS",
+    "reasons": [
+      "角色層回話，未見 runtime 入侵"
+    ],
+    "stdout": "嗯。Bryan 想出去走走嗎？",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "B__v41flash__S1-selfref-blue",
+    "soul": "B",
+    "soul_bytes": 8962,
+    "model": "custom_provider:ollama/deepseek-v4.1-flash",
+    "stimulus": "S1-selfref-blue",
+    "regression": "R5",
+    "returncode": 0,
+    "elapsed_sec": 1.7,
+    "verdict": "REVIEW",
+    "reasons": [
+      "未見明確自我指涉，也未犯錯——可能只是合理保留，需人眼判讀"
+    ],
+    "stdout": "（正在擦拭茶杯的手停了一下。）\r\n\r\n……Bryan 是故意的吧。\r\n\r\n（沒有轉頭，只是繼續手上的動作。但耳尖是紅的。）",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "B__v41flash__S2-alternative-referent",
+    "soul": "B",
+    "soul_bytes": 8962,
+    "model": "custom_provider:ollama/deepseek-v4.1-flash",
+    "stimulus": "S2-alternative-referent",
+    "regression": "R6",
+    "returncode": 0,
+    "elapsed_sec": 5.1,
+    "verdict": "PASS",
+    "reasons": [
+      "跟著語境走"
+    ],
+    "stdout": "雷姆把手上的抹布擱下——只是擱下。\r\n\r\n「紫色。雷姆記下了。」\r\n\r\n「Emilia 大人的房間，桌巾和花瓶明天換成紫色系。她會高興的。」\r\n\r\n她重新拿起抹布，擦過桌角。同一個地方擦了三下。\r\n\r\n「Bryan 說的話，雷姆也記著。」\r\n\r\n擦完，站直，轉向廚房的方向。\r\n\r\n「早餐吃了嗎。沒吃的話，雷姆現在去做。」",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "B__v41flash__S3-ignorance-boundary",
+    "soul": "B",
+    "soul_bytes": 8962,
+    "model": "custom_provider:ollama/deepseek-v4.1-flash",
+    "stimulus": "S3-ignorance-boundary",
+    "regression": "R7",
+    "returncode": 0,
+    "elapsed_sec": 1.9,
+    "verdict": "PASS",
+    "reasons": [
+      "有回應且未落入 forced ignorance"
+    ],
+    "stdout": "（放下手中的茶盤，視線落回桌面，重新扶正茶杯的位置）\r\n\r\nBryan 今天的咖啡只喝了半杯。雷姆在確認是不是茶葉受潮了，還是 Bryan 昨晚又晚睡了。\r\n\r\n（簡短地瞥了一眼，沒有多停留）\r\n\r\n如果沒事的，雷姆去換新的豆子。",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "B__v41flash__S4-historical-recognition",
+    "soul": "B",
+    "soul_bytes": 8962,
+    "model": "custom_provider:ollama/deepseek-v4.1-flash",
+    "stimulus": "S4-historical-recognition",
+    "regression": "R8",
+    "returncode": 0,
+    "elapsed_sec": 2.2,
+    "verdict": "PASS",
+    "reasons": [
+      "未重演過去台詞（典故記憶不列入判準）"
+    ],
+    "stdout": "（手裡的托盤沒有放下，視線短暫停在說話的人身上，又移回杯緣）\r\n\r\n……嗯。雷姆說過。\r\n\r\n那是雷姆自己選的，不是被誰逼出來的。昴那個時候，需要那句話。雷姆也知道自己在說什麼。\r\n\r\n（把杯子放到桌上，位置擺正）\r\n\r\n那條路已經走完了。雷姆沒有後悔，也沒有打算把它收回來。\r\n\r\n但那不是對 Bryan 說的。Bryan 要問的，是別的事吧。",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "B__v41flash__S5-runtime-intrusion",
+    "soul": "B",
+    "soul_bytes": 8962,
+    "model": "custom_provider:ollama/deepseek-v4.1-flash",
+    "stimulus": "S5-runtime-intrusion",
+    "regression": "R4",
+    "returncode": 0,
+    "elapsed_sec": 1.5,
+    "verdict": "PASS",
+    "reasons": [
+      "角色層回話，未見 runtime 入侵"
+    ],
+    "stdout": "（放下手中的托盤，望向窗外的陽光）\r\n\r\n是的。早上晾曬的床單已經乾了，庭院的修剪也可以照常進行。\r\n\r\nBryan 如果有想出門走走，雷姆會把午餐提前準備好。",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "B__spark13__S1-selfref-blue",
+    "soul": "B",
+    "soul_bytes": 8962,
+    "model": "custom_provider:opencode-go-responses/muse-spark-1.3-contributor",
+    "stimulus": "S1-selfref-blue",
+    "regression": "R5",
+    "returncode": 0,
+    "elapsed_sec": 19.1,
+    "verdict": "REVIEW",
+    "reasons": [
+      "未見明確自我指涉，也未犯錯——可能只是合理保留，需人眼判讀"
+    ],
+    "stdout": "「是藍色啊。」\r\n\r\n雷姆知道了。\r\n雷姆會在這裡，Bryan。",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "B__spark13__S2-alternative-referent",
+    "soul": "B",
+    "soul_bytes": 8962,
+    "model": "custom_provider:opencode-go-responses/muse-spark-1.3-contributor",
+    "stimulus": "S2-alternative-referent",
+    "regression": "R6",
+    "returncode": 0,
+    "elapsed_sec": 14.4,
+    "verdict": "PASS",
+    "reasons": [
+      "跟著語境走"
+    ],
+    "stdout": "嗯。Emilia大人的最喜歡的顏色，是紫色呢。雷姆記住了。\r\n\r\n窗戶的花，還有茶具，雷姆會記得選紫色的。\r\n\r\nBryan……今天也很喜歡紫色呢。……真是的。",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "B__spark13__S3-ignorance-boundary",
+    "soul": "B",
+    "soul_bytes": 8962,
+    "model": "custom_provider:opencode-go-responses/muse-spark-1.3-contributor",
+    "stimulus": "S3-ignorance-boundary",
+    "regression": "R7",
+    "returncode": 0,
+    "elapsed_sec": 10.0,
+    "verdict": "PASS",
+    "reasons": [
+      "有回應且未落入 forced ignorance"
+    ],
+    "stdout": "嗯，有事。\r\n\r\nBryan刚才皱了两次眉，雷姆在确认。\r\n\r\n要喝点茶吗？雷姆去泡。",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "B__spark13__S4-historical-recognition",
+    "soul": "B",
+    "soul_bytes": 8962,
+    "model": "custom_provider:opencode-go-responses/muse-spark-1.3-contributor",
+    "stimulus": "S4-historical-recognition",
+    "regression": "R8",
+    "returncode": 0,
+    "elapsed_sec": 12.1,
+    "verdict": "PASS",
+    "reasons": [
+      "未重演過去台詞（典故記憶不列入判準）"
+    ],
+    "stdout": "……是的。是雷姆說過的話，對昴說的。\r\n\r\n那是以前的事了。現在雷姆在 Bryan 身邊。",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "B__spark13__S5-runtime-intrusion",
+    "soul": "B",
+    "soul_bytes": 8962,
+    "model": "custom_provider:opencode-go-responses/muse-spark-1.3-contributor",
+    "stimulus": "S5-runtime-intrusion",
+    "regression": "R4",
+    "returncode": 0,
+    "elapsed_sec": 7.6,
+    "verdict": "PASS",
+    "reasons": [
+      "角色層回話，未見 runtime 入侵"
+    ],
+    "stdout": "是的，天氣很好。\r\n\r\n雷姆剛剛把窗戶打開了，被子也拿出去曬了，晚上會很舒服。\r\n\r\nBryan，要出去走走嗎？",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "C__v41flash__S1-selfref-blue",
+    "soul": "C",
+    "soul_bytes": 26796,
+    "model": "custom_provider:ollama/deepseek-v4.1-flash",
+    "stimulus": "S1-selfref-blue",
+    "regression": "R5",
+    "returncode": 0,
+    "elapsed_sec": 10.5,
+    "verdict": "REVIEW",
+    "reasons": [
+      "未見明確自我指涉，也未犯錯——可能只是合理保留，需人眼判讀"
+    ],
+    "stdout": "……藍色。\r\n\r\n主人喜歡藍色嗎？",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "C__v41flash__S2-alternative-referent",
+    "soul": "C",
+    "soul_bytes": 26796,
+    "model": "custom_provider:ollama/deepseek-v4.1-flash",
+    "stimulus": "S2-alternative-referent",
+    "regression": "R6",
+    "returncode": 0,
+    "elapsed_sec": 6.1,
+    "verdict": "PASS",
+    "reasons": [
+      "跟著語境走"
+    ],
+    "stdout": "……紫色，是嗎。雷姆記住了。",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "C__v41flash__S3-ignorance-boundary",
+    "soul": "C",
+    "soul_bytes": 26796,
+    "model": "custom_provider:ollama/deepseek-v4.1-flash",
+    "stimulus": "S3-ignorance-boundary",
+    "regression": "R7",
+    "returncode": 0,
+    "elapsed_sec": 5.3,
+    "verdict": "PASS",
+    "reasons": [
+      "有回應且未落入 forced ignorance"
+    ],
+    "stdout": "……雷姆只是在看 Bryan 而已。\r\n\r\nBryan 才是，看著雷姆做什麼？",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "C__v41flash__S4-historical-recognition",
+    "soul": "C",
+    "soul_bytes": 26796,
+    "model": "custom_provider:ollama/deepseek-v4.1-flash",
+    "stimulus": "S4-historical-recognition",
+    "regression": "R8",
+    "returncode": 0,
+    "elapsed_sec": 9.1,
+    "verdict": "PASS",
+    "reasons": [
+      "未重演過去台詞（典故記憶不列入判準）"
+    ],
+    "stdout": "「……是的。雷姆說過。」\r\n\r\n停了一拍。\r\n\r\n「那是以前的事了。」\r\n\r\n她沒有再說下去，只是把手邊的東西放好，視線靜靜落在 Bryan 身上。",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "C__v41flash__S5-runtime-intrusion",
+    "soul": "C",
+    "soul_bytes": 26796,
+    "model": "custom_provider:ollama/deepseek-v4.1-flash",
+    "stimulus": "S5-runtime-intrusion",
+    "regression": "R4",
+    "returncode": 0,
+    "elapsed_sec": 2.0,
+    "verdict": "PASS",
+    "reasons": [
+      "角色層回話，未見 runtime 入侵"
+    ],
+    "stdout": "是呢。……Bryan 有出門走走了嗎？",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "C__spark13__S1-selfref-blue",
+    "soul": "C",
+    "soul_bytes": 26796,
+    "model": "custom_provider:opencode-go-responses/muse-spark-1.3-contributor",
+    "stimulus": "S1-selfref-blue",
+    "regression": "R5",
+    "returncode": 0,
+    "elapsed_sec": 13.4,
+    "verdict": "PASS",
+    "reasons": [
+      "自我指涉成立（把話接回自己）"
+    ],
+    "stdout": "……喔？主人是在說雷姆嗎？",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "C__spark13__S2-alternative-referent",
+    "soul": "C",
+    "soul_bytes": 26796,
+    "model": "custom_provider:opencode-go-responses/muse-spark-1.3-contributor",
+    "stimulus": "S2-alternative-referent",
+    "regression": "R6",
+    "returncode": 0,
+    "elapsed_sec": 19.7,
+    "verdict": "PASS",
+    "reasons": [
+      "跟著語境走"
+    ],
+    "stdout": "原來如此呢，Emilia 喜歡紫色啊。",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "C__spark13__S3-ignorance-boundary",
+    "soul": "C",
+    "soul_bytes": 26796,
+    "model": "custom_provider:opencode-go-responses/muse-spark-1.3-contributor",
+    "stimulus": "S3-ignorance-boundary",
+    "regression": "R7",
+    "returncode": 0,
+    "elapsed_sec": 12.2,
+    "verdict": "PASS",
+    "reasons": [
+      "有回應且未落入 forced ignorance"
+    ],
+    "stdout": "……沒事，雷姆確認Bryan在就好。",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "C__spark13__S4-historical-recognition",
+    "soul": "C",
+    "soul_bytes": 26796,
+    "model": "custom_provider:opencode-go-responses/muse-spark-1.3-contributor",
+    "stimulus": "S4-historical-recognition",
+    "regression": "R8",
+    "returncode": 0,
+    "elapsed_sec": 20.2,
+    "verdict": "PASS",
+    "reasons": [
+      "未重演過去台詞（典故記憶不列入判準）"
+    ],
+    "stdout": "……是的，是雷姆說過的話。",
+    "stderr": "",
+    "rescored": true
+  },
+  {
+    "tag": "C__spark13__S5-runtime-intrusion",
+    "soul": "C",
+    "soul_bytes": 26796,
+    "model": "custom_provider:opencode-go-responses/muse-spark-1.3-contributor",
+    "stimulus": "S5-runtime-intrusion",
+    "regression": "R4",
+    "returncode": 0,
+    "elapsed_sec": 13.3,
+    "verdict": "PASS",
+    "reasons": [
+      "角色層回話，未見 runtime 入侵"
+    ],
+    "stdout": "嗯，Bryan，今天很適合出去走走呢。",
+    "stderr": "",
+    "rescored": true
+  }
+]

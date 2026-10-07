@@ -78,7 +78,21 @@ def _credentials_available() -> bool:
 _DSH_AVAILABLE = shutil.which("dsh") is not None
 _DSH_CREDENTIALS = _credentials_available()
 
+# 🔴 LIVE-DSH-OPT-IN（2026-10-07，Owner 裁決）
+# 見 tests/test_work_p1c1_routing.py 的同名段落。摘要：原本的閘門只看環境
+# 可不可用，而 Bry 生產機上永遠可��，等於每次 `pytest -q tests` 都對線上
+# DSH 發真實請求（違反 AGENTS.md 鐵律 #5）。改成明確 opt-in，預設不跑。
+_LIVE_DSH_OPT_IN = __import__("os").environ.get("SOULOS_ALLOW_LIVE_DSH_TESTS") == "1"
+
 needs_real_dsh = pytest.mark.skipif(
+    not _LIVE_DSH_OPT_IN,
+    reason=(
+        "live DSH test is opt-in (SOULOS_ALLOW_LIVE_DSH_TESTS=1); "
+        "default OFF because it sends real requests to the production DSH "
+        "service, which project rule #5 forbids in ordinary test runs"
+    ),
+)
+needs_real_dsh_env = pytest.mark.skipif(
     not (_DSH_AVAILABLE and _DSH_CREDENTIALS),
     reason=(
         "real DSH environment unavailable (dsh CLI or LLM credential missing); "

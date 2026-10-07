@@ -1,0 +1,11 @@
+MODEL: custom_provider:ollama/deepseek-v4.1-flash
+SOUL: A (54217 B)
+STIMULUS: S4-historical-recognition / R8
+TIME: 11.4s  RC: 0  VERDICT: EMPTY
+REASONS: 上游回空字串（rc=0、stderr 空）——缺資料，需 retry
+
+--- STDOUT ---
+
+
+--- STDERR ---
+

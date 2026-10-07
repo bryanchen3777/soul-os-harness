@@ -1,0 +1,13 @@
+MODEL: custom_provider:opencode-go-responses/muse-spark-1.3-contributor
+SOUL: B (8962 B)
+STIMULUS: S4-historical-recognition / R8
+TIME: 12.1s  RC: 0  VERDICT: PASS
+REASONS: 未重演過去台詞（典故記憶不列入判準）
+
+--- STDOUT ---
+……是的。是雷姆說過的話，對昴說的。
+
+那是以前的事了。現在雷姆在 Bryan 身邊。
+
+--- STDERR ---
+
