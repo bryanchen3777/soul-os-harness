@@ -125,10 +125,22 @@ p50 = 2.09 秒。這與兩處既有假設不符：
 所以無法區分是「有查詢但被 gate 擋掉」還是「查詢本身沒對應到任何記憶」。
 這兩者的處置方向相反，必須先有 query 側的資料才能說。
 
-### 2.4 Interpretation 層：可觀測性已中斷
+### 2.4 Interpretation 層：**這個儀器從來就不是 continuity 儀器**（2026-10-07 更正）
 
-`data/shadow/shadow_log.jsonl` 最後一筆是 **2026-08-19T12:18:31**，
-距今 **49 天無新資料**。`loader_trace.jsonl` 是最新的（2026-10-07 17:50）。
+> ⚠️ 本節框架已於 2026-10-07 的 [Shadow Log Availability Audit](SHADOW-LOG-AVAILABILITY-AUDIT.md)
+> 中更正。原始版本把它誤讀成「觀測鏈斷了 49 天」。實際情況更根本，見下。
+
+`data/shadow/shadow_log.jsonl` 最後一筆是 **2026-08-19T12:18:31**。
+原本判讀為「instrumentation 停擺」，**這是錯的** —— 停用根因是
+commit `94e3c6b`（同日 13:03:18 -0400，相差 45 分鐘）把
+`run_server.py` 的 `init_shadow_observer(..., enabled=False)`，
+是 Bry 2026-08-18 拍板的**刻意停用**（省每則回覆 13 次串行 judge）。
+
+但真正的重點是：**shadow_log 的 schema 本來就答不了 continuity 問題**。
+它的欄位只有 `timestamp / agent_id / speaker / text / context_provided /
+v6 / heuristic` —— 那是 2026-07-02 的 **v6 judge vs heuristic 7 天 A/B 實驗**，
+`context_provided` 只是「呼叫當下有沒有 context 字串」的布林值，
+**沒有任何欄位把「被取回的記憶」連到「行為的改變」**。
 
 在有資料的那段期間：
 
@@ -138,10 +150,11 @@ p50 = 2.09 秒。這與兩處既有假設不符：
 | `context_provided=true` | 1,142（32.6%） |
 | 其中 **0 facts** | **916（80.2%）** |
 
-即：記憶上下文被提供時，八成的情況下抽不出任何事實。
+**正確的結論不是「停了 49 天所以缺資料」，而是：**
 
-**但因為這一層已停擺 49 天，這個數字不能代表現況**。
-「取回後是否影響後續行為／interpretation」這一格，目前無法產出證據。
+> 能回答「記憶被取回後是否影響後續行為」的觀測鏈，**從來沒有被建造過**。
+
+這比原本的判斷更嚴重，但方向不同 —— 不是 instrumentation 壞了，而是**選錯了儀器**。
 
 ---
 
@@ -177,16 +190,20 @@ p50 = 2.09 秒。這與兩處既有假設不符：
 
 ## 4. 必須先補的可觀測性缺口
 
-這兩格沒有它們，「降頻是否退化」永遠算不出來：
+**（2026-10-07 更正：第 2 點的性質變了，見下。）**
 
 1. **Submission gate 沒有獨立記錄。** 目前只能看到 InnerLifeEvent 存在與否，
    看不出「產生之後、被寫入之前」發生了什麼。若降頻發生在這一層，
-   現在的資料會顯示成「寫入變少」，但原因不可見。
+   现在的資料會顯示成「寫入變少」，但原因不可見。
 
-2. **Interpretation 層（記憶是否影響行為）已停擺 49 天。**
-   `shadow_log` 停在 2026-08-19。在修復前，任何「取回後有沒有形成 continuity」
-   的結論都只能用 8 月以前的資料 —— 那是降頻**之前**的狀態，
-   正好不能用來當降頻後的對照。
+2. ~~Interpretation 層（記憶是否影響行為）已停擺 49 天。~~
+   **更正**：shadow log 是被刻意關閉的 v6-vs-heuristic A/B 實驗記錄，
+   它本來就不是 continuity 儀器（沒有「記憶 → 行為」的欄位）。
+   所以這格不是「資料停了」，而是**觀測鏈從未存在**。
+   要補的不是把它翻回來，而是**設計一個真正的 continuity 觀測鏈** ——
+   把 `loader_trace`（哪筆記憶被檢出、confidence 多少）與該回合實際注入的
+   prompt 快照／輸出關聯起來。根因與選項見
+   [Shadow Log Availability Audit](SHADOW-LOG-AVAILABILITY-AUDIT.md)。
 
 ---
 
