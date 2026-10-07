@@ -322,14 +322,24 @@ def test_rem_persona_stage_paren_teaching_removed():
 
 
 def test_rem_persona_hard_rules_intact():
-    """TIER 0 / TIER 1 / Canon Lock / Ghost Edge / Recovery Loop 語意原樣保留。"""
+    """TIER 0 / TIER 1 / Canon Lock / Ghost Edge 語意原樣保留。
+
+    SOUL-REM-01（2026-10-07）起，TIER 分層與 Recovery Loop 的六步回退流程
+    已從 Soul 定義移除：前者與語言禁忌表重複，後者是單次 generation 做不到的
+    跨輪流程（Finding C：假規則只佔頻寬）。漂移**偵測語意**改由語言禁忌與
+    Shadow Core 承載，所以這裡驗的是語意還在，不是那個名字還在。
+    """
     content = PERSONA_REM.read_text(encoding="utf-8")
     assert "情緒名詞絕對不出現在輸出中" in content       # TIER 0 #1
     assert "行為先於語言" in content                     # TIER 0 #2
     assert "固定句型鎖定" in content                     # TIER 1 #5
     assert "Canon Lock" in content
     assert "Ghost Edge" in content
-    assert "Recovery Loop" in content
+    # 漂移語意仍在（Ghost Edge 自我消滅仍是禁止項）
+    assert "Ghost Edge 自我消滅" in content
+    # 已被移除的不可執行流程
+    assert "Recovery Loop" not in content
+    assert "STEP R-" not in content
 
 
 def test_rem_persona_serenity_mechanisms_and_template_removal():
