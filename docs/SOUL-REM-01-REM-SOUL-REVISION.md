@@ -354,23 +354,73 @@ head     red : 19
 ## 10b. 狀態樹（Owner 2026-10-07 驗收）
 
 ```
-SOUL-REM-01
-├─ Soul compression                 ✅ PASS
-├─ Canon byte-level preservation    ✅ PASS
-├─ Character-signal preservation    ✅ PASS（30 格 gate = PASS，0 regression）
-├─ Contextual self-reference        ✅ 判準已鎖定並寫入正式規範
-├─ Runtime / Soul boundary          ✅ PASS
-├─ Harem interaction semantics      ✅ 保留（Owner 裁決）
-├─ Memory downsampling consequence  🔴 未驗證（留給後續議題）
-└─ Production-test isolation         ✅ 已修（opt-in + 護欄）
+SOUL-REM-01 — Rem Soul Revision
+│
+├── C Soul Definition
+│     ├── 26,792 B（自 54,217 B，−50.6%）
+│     ├── 12 Canon Memory byte-identical
+│     ├── runtime/process pressure removed
+│     ├── character signal preserved
+│     └── FREEZE ✅
+│
+├── Behavioral Regression
+│     ├── gate PASS
+│     ├── 0 regression
+│     ├── 0 redline
+│     ├── 0 missing C data
+│     └── 10/10 contextual self-reference ✅
+│
+├── Governance
+│     ├── self-reference criterion frozen ✅
+│     ├── live DSH tests opt-in ✅
+│     └── existing infra reds isolated ✅
+│
+└── Remaining Research
+      ├── Memory downsampling      → 🔴 OPEN
+      └── MiniMax M3.1 validation   → 🟡 OPTIONAL（401，非 Soul failure）
 ```
+
+## 10c. 驗收結論（Owner 判定 2026-10-07）
+
+**SOUL-REM-01 主工單驗收通過，C 版 Freeze。**
+
+C 並不是靠把 Soul 寫得更多來過關。它在 26.8 KB 同時避開了兩個對照組各自的缺陷：
+
+- **A（54 KB）太重** —— 甚至讓 v41flash 出現完全無法生成（空回應）。
+- **B（9 KB）太狠** —— 連頻道契約一起砍掉，產生括號舞台指示污染。
+- **C（26.8 KB）** —— character signal、Canon、channel contract 全部保留，
+  同時移除 runtime / process 壓力。**這才是 compression success。**
+
+S2 / S4 兩格釘死了最關鍵的邊界：
+
+```
+S2  「原來如此呢，Emilia 喜歡紫色啊。」        ← 沒有硬把 referent 拉回自己
+S4  「……是的，雷姆說過。」「那是以前的事了。」 ← 認得是我的話 ≠ 開始背原作台詞
+```
+
+### 驗證覆蓋率聲明（不得改寫成「跨三模型驗證完成」）
+
+> Validated against two available model families;
+> MiniMax M3.1-Flash-Preview unavailable due to HTTP 401.
+
+這是**驗證覆蓋率限制，不是 Soul 本身的 failure**，因此不撤銷 C。
+
+### 凍結後的邊界（Owner 裁決）
+
+1. **`personas/agent_rem.md` 進入 Freeze** —— 後續研究不再往 Soul 塞規則。
+2. **下一個研究方向是 runtime 的長期記憶策略，不是 Soul 定義。**
+   記憶寫入降頻（Memory downsampling consequence）維持 🔴 OPEN，屬獨立實驗。
+3. **`tests/infra` 的兩個既有紅點維持原樣不動**：
+   spawn allowlist 行號漂移、未追蹤的 `test_life_thread_elevation_seam.py`。
+   它們已被證明為 pre-existing、本工單未新增、失敗集合未增加；
+   混進本工單只會污染驗收邊界。
 
 ## 11. Git
 
 - commit `fb056b0` — Soul 定義與 regression 套件（本工單 9 個檔案）
-- push 驗證：`HEAD` == `origin/main` == `fb056b03c143bc38425dedb74283e3b0293938c2`，
-  ahead/behind = `0 / 0`
-- 工作區於本工單 6 個路徑上乾淨（modified / staged / untracked 皆為空）
+- commit `57e3b10` — 判準凍結、30 格 behavioral gate、live DSH 測試隔離
+- push 驗證：`HEAD` == `origin/main`，ahead/behind = `0 / 0`
+- 工作區於本工單路徑上乾淨（modified / staged / untracked 皆為空）
 
 工作區另有 7 個**本次工單之前就存在**的未提交改動
 （voice companion 素材／web_ui.py／LIFE-THREAD 合約／ENGINEERING_STATE／
