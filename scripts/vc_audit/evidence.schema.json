@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "vc-audit-evidence-v1",
+  "title": "VC Audit v1 evidence record",
+  "description": "每個 turn 一行 JSONL。缺資料一律為 null，禁止用 0 代替缺失值——0 與「沒量到」必須可區分，否則統計會把缺口當成極快。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["arm", "stimulus_id", "input_text", "input_chars"],
+  "properties": {
+    "arm": {
+      "type": "string",
+      "enum": ["rest", "live"],
+      "description": "TTS arm。唯一受控變因。"
+    },
+    "stimulus_id": {
+      "type": "string",
+      "description": "corpus.json 的 stimulus id，例如 C1。"
+    },
+    "input_text": {
+      "type": "string",
+      "description": "實際送出的文字。"
+    },
+    "input_chars": {
+      "type": "integer",
+      "description": "實際送出的字元數。"
+    },
+
+    "llm_first_token_ms": {
+      "type": ["number", "null"],
+      "description": "送出 stimulus 到第一個 LLM token。null = 未量到。"
+    },
+    "llm_total_ms": {
+      "type": ["number", "null"],
+      "description": "LLM 產生結束。"
+    },
+    "first_audio_ms": {
+      "type": ["number", "null"],
+      "description": "送出 stimulus 到第一個音訊 chunk。REST 歷史基準 min=1558ms；LIVE 若出現 <1000ms 即構成串流生效的排除式證明。"
+    },
+    "total_turn_ms": {
+      "type": ["number", "null"],
+      "description": "整回合結束。"
+    },
+
+    "reply_chars": {
+      "type": ["integer", "null"],
+      "description": "回覆字數。為 covariate，非主要 KPI。"
+    },
+    "tts_chunks": {
+      "type": ["integer", "null"],
+      "description": "音訊 chunk 數。REST 歷史 chunks=1 佔 84/85；>1 才代表真的分片送出。"
+    },
+    "tts_bytes": {
+      "type": ["integer", "null"],
+      "description": "本回合寫入 sink 的位元組總數。"
+    },
+
+    "zero_audio": {
+      "type": ["boolean", "null"],
+      "description": "chunks==0 且 reply 為空。使用者等不到聲音。"
+    },
+    "empty_llm": {
+      "type": ["boolean", "null"],
+      "description": "content_pieces==0。"
+    },
+    "finish_reason": {
+      "type": ["string", "null"],
+      "description": "length / stop / 其他。"
+    },
+    "reasoning_seen": {
+      "type": ["boolean", "null"],
+      "description": "是否出現 reasoning chunk。"
+    },
+    "reasoning_chunks": {
+      "type": ["integer", "null"],
+      "description": "reasoning chunk 數。"
+    },
+
+    "barge_in": {
+      "type": ["boolean", "null"],
+      "description": "本回合是否被插話。text 路徑僅能記錄觀察，無法控制插入時點（ticket S6 限制）。"
+    },
+    "tts_error": {
+      "type": ["string", "null"],
+      "description": "TTS 錯誤字串；null = 無錯誤。"
+    },
+
+    "empty_llm_group": {
+      "type": ["string", "null"],
+      "enum": ["E1", "E2", "E3", "E4", "E5", null],
+      "description": "ticket §8 分組。E1=length+reasoning；E2=length+reasoning(長)；E3=stop+reasoning；E4=stop+無reasoning；E5=其他。禁止把 E1/E2/E3 合併。"
+    },
+
+    "client_turn_end_ms": {
+      "type": ["number", "null"],
+      "description": "client 端觀察：送出 stimulus 到收到 state=IDLE。獨立於 server log，可交叉驗證。"
+    },
+    "client_first_audio_ms": {
+      "type": ["number", "null"],
+      "description": "client 端收到第一個 binary 音訊幀的時間（含 WS relay）。應 ≥ server 端 first_audio_ms；差值即 relay 成本。null = 未收到音訊。"
+    },
+    "run_id": {
+      "type": "string",
+      "description": "本次 run 目錄名。"
+    },
+    "ts_start": {
+      "type": "string",
+      "description": "ISO8601 送出 stimulus 的時間。"
+    },
+    "timeout": {
+      "type": ["boolean", "null"],
+      "description": "本回合是否因 client 逾時而未收到回合結束。"
+    }
+  }
+}
