@@ -95,6 +95,13 @@ def _isolate_soul_os_data_root(request, tmp_path_factory):
     # 會被 `load_dotenv(..., override=False)` 補回 pytest 行程，
     # 讓 7 筆早於本旗標的既有 life-thread 測試轉紅。
     env_patch.setenv("LIFE_THREAD_WHIM_ENABLED", "")
+    # LIFE-THREAD-W3 (2026-10-06)：同一類地雷的第六次踩點預防。
+    # `life_thread_orchestrator.elevation_enabled()` 採 `lt_wiring.TRUTHY_VALUES`
+    # 白名單解析且**缺席即 OFF**（見 orchestrator docstring）—— 釘空字串的理由
+    # 是擋 `load_dotenv(..., override=False)` 回注：若只靠「沒設」來當 OFF，
+    # 生產 `.env` 的 `LIFE_THREAD_ELEVATION_ENABLED=1` 會被補回 pytest 行程，
+    # 讓「預設關」類斷言轉紅。
+    env_patch.setenv("LIFE_THREAD_ELEVATION_ENABLED", "")
     # INTIMACY-GROWTH-2 (C6)：同一類地雷的第四次踩點預防。    # `src/agent/emotion.py` 的 `decay_enabled()` **缺席即 OFF**，而
     # `load_dotenv(..., override=False)` 會在「變數不存在」時把生產
     # `.env` 的值補回 pytest 行程 ⇒ 若只靠「沒設」來當 OFF，測試會在

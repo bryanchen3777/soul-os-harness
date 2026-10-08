@@ -621,6 +621,43 @@ should_wake := check_points_due(agent_id) OR world_collision_detected(agent_id)
 | W7 | **M3 逐位元不變** | `git diff -- src/soul/life_thread_wake_gate.py` 為空 ＋ AST 簽章基線等值 |
 | W8 | `run_origin_round` 拋例外 ⇒ 記 warning、正常返回、**不 raise** | spy 注入 `RuntimeError` |
 
+### 4.6 生活線頭→昇華接縫（`LIFE-THREAD-W3`，門檻二接縫）
+
+> **一句話**：昇華鏈的每一道閘門都已對生活線頭敞開，唯一的缺口是生活線頭從未建立
+> `InnerLifeEvent`。本節只開通「線頭 → 昇華」這一條路，**0 新 LLM 通道、0 定時器、
+> 0 數值評分**。
+
+#### 設計前提（Owner 裁定，逐字引用）
+
+> **「沉澱成信念需要自己的經歷，光看完就沉澱是不合理的。」**（Owner，2026-10-03）
+
+故生活線頭（＝靈魂自己活過的事）**有資格**沉澱；新聞（＝只是看過）**不得**沉澱。
+本節的每一項設計都服從此原則：接縫只接受「真的發生、而且被走完」的經歷，
+且防火牆（EH-2.1 R1）與事實 `origin` 語意**一字不動**。
+
+#### 機制（orchestrator 層，旗標預設關）
+
+| # | 項目 | 規格 |
+|---|---|---|
+| ① | 旗標 | `LIFE_THREAD_ELEVATION_ENABLED`；**呼叫時讀取**；真值解析**直接採用 `lt_wiring.TRUTHY_VALUES`**（`{"1","true","yes","on"}`）；**缺席即 OFF** ⇒ 落地後生產行為逐位元相同 |
+| ② | 何時建立 | 僅當線頭 `status == "completed"`（契約 §2 的終態）**且**已有對應溶解事實（`sage_fact_id` 非空字串）時。`active`（還在進行中）／`abandoned`（被放棄）**不建立** |
+| ③ | trigger_type | **沿用既有** `TRIGGER_TYPE_DIARY_MORNING`／`TRIGGER_TYPE_DIARY_NIGHT`（依 slot 對應時段）；**0 新增常數**；**嚴禁** `TRIGGER_TYPE_SYSTEM` |
+| ④ | 路徑 | 事件**必須**經既有 `InnerLifeWriter` 建立（sole canonical creator），並經既有 `submission_gate.submit()` 進入（走 Gate 既有驗證與 consume 路徑）。**嚴禁**直接呼叫消耗鏈、**嚴禁**直接寫 `facts` 表、**嚴禁**新增 `elevate()` 呼叫點 |
+| ⑤ | 失敗方向 | 整段 `try/except`，任何例外只 `logger.warning`，**永不 raise**（不冒泡到 scheduler）；旗標 OFF 或建立失敗 ⇒ 該線頭不產生事件（寧可漏一次，不可重複花費） |
+| ⑥ | 可觀測性 | `summary` 新鍵 `"elevation_event_created": True`（**僅**在真的建立時出現）；同一 `thread_id` 在本行程只發射一次（行程內記憶體集合，不落盤） |
+
+#### 不得觸碰（凍結與範圍界線）
+
+- `src/inner_life/**`（SubmissionGate／elevation_adapter／event、`VALID_PRODUCER_TRIGGER_TYPES`）**全數 0 改動**。
+- `src/soul/life_thread_wake_gate.py`（M3 凍結面）、`src/soul/life_thread_dissolution_exec.py` **0 改動**。
+- EH-2.1 R1 垂直防火牆**一字不動**；任何事實的 `origin`（線頭事實維持 `lived_experience`）**不得變更**。
+- INV-2（0 新定時器）／INV-5（0 數值打分）必須成立；本檔頂層 `src.*` import 集合不增加（惰性解析由 `importlib` 承載）。
+- 是否開啟旗標屬 Owner 另行決定（涉及一次排程路徑重啟）；**本票不部署、不重啟**。
+
+#### 可測斷言（見 `tests/soul/test_life_thread_elevation_seam.py` 十項）
+
+旗標缺席 ⇒ 0 事件／0 submit／0 LLM；`completed`＋fact ⇒ 恰 1 事件（`diary:morning`／`diary:night` 依 slot）；`active`／`abandoned` ⇒ 0；trigger ∈ 既有合法集合；呼叫點為 `submission_gate.submit`；`elevate()` 0 呼叫；`submit` 拋例外 ⇒ warning＋正常返回；AST 掃描無新定時器／無新 LLM 通道；執行前後 `data/**` 逐位元一致。
+
 
 ---
 

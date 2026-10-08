@@ -76,7 +76,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable, Sequence
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from src.soul import life_thread_bootstrap as lt_boot
@@ -149,8 +149,19 @@ LIFE_THREAD_WHIM_MAX_PER_DAY = 1
 #:    故**無需**在模組層新增任何 tuple／frozenset 字面值
 #:    （仍滿足 `test_c3_no_io_at_module_import_time`：模組層僅 `getLogger` 呼叫）。
 
+#: 契約 §4.6「旗標」：生活線頭→昇華接縫的環境變數名（**呼叫時即時讀取，不得快取**）。
+#:
+#: 🔴 **預設關**：缺席即 OFF ⇒ 落地後生產行為逐位元相同（啟用屬 Owner 另行決定，
+#:    涉及一次排程路徑重啟，本票不部署）。
+ELEVATION_ENABLED_ENV = "LIFE_THREAD_ELEVATION_ENABLED"
+
 #: 觀測行內文上限（避免日誌被單一長字串撐爆）。
 _LOG_MAX_CHARS = 200
+
+#: 契約 §4.6：本行程已發射過昇華事件的線頭 `thread_id` 登記表（以 dict 鍵承載，
+#: 沿用 `_LAST_PROCESSED` 的字面量形態：模組層僅允許 `getLogger` 呼叫，
+#: 故不用 `set()` 建構；語意與集合等價 —— `in` 判重、`[tid] = 1` 蓋章）。
+_ELEVATION_EMITTED: Dict[str, int] = {}
 
 #: 行程內冪等鍵：`f"{agent_id}:{slot}:{date}"`（at-most-once；見 `_run_agent`）。
 _LAST_PROCESSED: Dict[str, int] = {}
@@ -283,6 +294,165 @@ def catchup_enabled() -> bool:
     if not isinstance(raw, str):
         return False
     return raw.strip().lower() in lt_wiring.TRUTHY_VALUES
+
+
+def elevation_enabled() -> bool:
+    """契約 §4.6 旗標是否開啟（**每次呼叫都重新讀 `os.environ`**，讓測試能 monkeypatch）。
+
+    **嚴格 fail-closed 解析**：去首尾空白、轉小寫後，僅當落在
+    `lt_wiring.TRUTHY_VALUES`（`{"1", "true", "yes", "on"}`）**白名單內**才為 `True`。
+    缺席（`None`）／非字串／其餘值（含 `""`／`"0"`／`"off"`／`"false"`）／
+    讀取失敗 ⇒ 一律 `False`。
+
+    🔴 **缺席即 OFF** ⇒ 落地後本節整段不執行，**生產行為與引入前逐位元相同**。
+    🔴 **0 新增 import**：`os` 取自已匯入的 `lt_wiring` 所繫結的同一個行程環境物件
+    （與 `catchup_enabled()`／`whim_enabled()` 同一慣例）。
+    🔴 **永不 raise**。
+    """
+    try:
+        raw = lt_wiring.os.environ.get(ELEVATION_ENABLED_ENV)
+    except Exception:  # pragma: no cover - defensive（fail-safe：不做額外工作）
+        return False
+    if not isinstance(raw, str):
+        return False
+    return raw.strip().lower() in lt_wiring.TRUTHY_VALUES
+
+
+def _elevation_trigger_for_slot(slot: str) -> Optional[str]:
+    """契約 §4.6：slot → 既有 diary trigger 常數（**不新增常數**）。
+
+    `morning` ⇒ 既有 `TRIGGER_TYPE_DIARY_MORNING`；`night` ⇒ 既有
+    `TRIGGER_TYPE_DIARY_NIGHT`；其餘 ⇒ `None`（不建立事件）。
+    **嚴禁**使用 `TRIGGER_TYPE_SYSTEM`（語意不符，難以分辨來源）。
+
+    🔴 以 `importlib` 惰性解析 `src.inner_life.event`：本檔頂層 `src.*` import
+    集合已被既有測試釘住（恰 6 個葉模組），**不得**新增任何形式（頂層或函式層）
+    的 `from src... import`（`ast.walk` 會掃到函式體）。
+    解析失敗 ⇒ `None`（fail-silent，由呼叫端記 warning）。
+    """
+    try:
+        import importlib
+
+        event_mod = importlib.import_module("src.inner_life.event")
+    except Exception as exc:
+        logger.warning(
+            "[LifeThreadOrchestrator] elevation 常數解析失敗 (fail-silent): "
+            f"{_clip(exc)}"
+        )
+        return None
+    if slot == "morning":
+        return event_mod.TRIGGER_TYPE_DIARY_MORNING
+    if slot == "night":
+        return event_mod.TRIGGER_TYPE_DIARY_NIGHT
+    return None
+
+
+def maybe_emit_elevation_events(
+    agent_id: str,
+    threads: Sequence[Any],
+    slot: str,
+    now: datetime,
+    *,
+    writer: Any = None,
+    submission_gate: Any = None,
+) -> bool:
+    """契約 §4.6：`completed`＋有 `sage_fact_id` 的線頭建立 `InnerLifeEvent`。
+
+    只處理同時滿足兩者的線頭：
+      - `status == "completed"`（契約 §2 的終態＝「這件事真的發生了，而且被走完了」；
+        `active` 還在進行中、`abandoned` 是被放棄，兩者皆不是 Owner 所言「自己的經歷」）；
+      - `sage_fact_id` 為非空字串（已有對應的溶解事實＝該經歷的沉澱物）。
+
+    事件**必須**經既有 `InnerLifeWriter` 建立（sole canonical creator），並經既有
+    `submission_gate.submit()` 進入（走 Gate 的既有驗證與 consume 路徑）。
+    **嚴禁**直接寫 `facts` 表、**嚴禁**新增 `trigger_type` 常數。
+
+    - 旗標 `LIFE_THREAD_ELEVATION_ENABLED` 缺席／OFF ⇒ 直接回 `False`（0 事件、0 寫入）。
+    - 同一 `thread_id` 在本行程只發射一次（`_ELEVATION_EMITTED`，寧可漏、不可重）。
+    - 整段 `try/except`：任何例外只 `logger.warning`，**永不 raise**（不冒泡到 scheduler）。
+    - `writer`／`submission_gate` 參數**僅供測試注入**；生產路徑為 `None` ⇒
+      惰性建構既有預設實例（記憶體內 `InnerLifeWriter()`，不帶 trace sidecar）。
+
+    回傳：本呼叫是否真的建立並提交了 ≥1 個事件（呼叫端據此決定是否寫
+    `summary["elevation_event_created"]`）。
+    """
+    try:
+        if not elevation_enabled():
+            return False
+        trigger_type = _elevation_trigger_for_slot(slot)
+        if trigger_type is None:
+            return False
+        if threads is None:
+            return False
+        created_any = False
+        for thread in threads:
+            if not isinstance(thread, dict):
+                continue
+            if thread.get("status") != "completed":
+                continue
+            fact_id = thread.get("sage_fact_id")
+            if not isinstance(fact_id, str) or not fact_id.strip():
+                continue
+            thread_id = thread.get("thread_id")
+            if not isinstance(thread_id, str) or not thread_id:
+                continue
+            if thread_id in _ELEVATION_EMITTED:
+                continue
+            if writer is None or submission_gate is None:
+                import importlib
+
+                if writer is None:
+                    writer_mod = importlib.import_module("src.inner_life.writer")
+                    writer = writer_mod.InnerLifeWriter()
+                if submission_gate is None:
+                    gate_mod = importlib.import_module("src.inner_life.submission_gate")
+                    submission_gate = gate_mod.SubmissionGate(writer=writer)
+                provenance_mod = importlib.import_module("src.inner_life.event")
+            else:
+                provenance_mod = _elevation_provenance_module()
+            provenance = provenance_mod.Provenance(
+                trigger_type=trigger_type,
+                actor_id=agent_id,
+                source_system="diary",
+                trace_ref=f"life_thread:{thread_id}",
+                extras={
+                    "thread_id": str(thread_id),
+                    "sage_fact_id": str(fact_id),
+                    "origin_type": str(thread.get("origin_type") or ""),
+                    "title": str(thread.get("title") or ""),
+                },
+            )
+            event = writer.create_event(
+                provenance=provenance,
+                ts=now.astimezone(timezone.utc).isoformat(),
+            )
+            submission_gate.submit(event.event_id, (), agent_id=agent_id)
+            _ELEVATION_EMITTED[thread_id] = 1
+            logger.info(
+                f"[LifeThreadOrchestrator] agent={_clip(agent_id)} "
+                f"elevation 事件已提交 thread={_clip(thread_id[:8])} "
+                f"trigger={_clip(trigger_type)}"
+            )
+            created_any = True
+        return created_any
+    except Exception as exc:
+        logger.warning(
+            f"[LifeThreadOrchestrator] agent={_clip(agent_id)} elevation 接縫失敗 "
+            f"(fail-silent): {type(exc).__name__}: {_clip(exc)}"
+        )
+        return False
+
+
+def _elevation_provenance_module() -> Any:
+    """測試注入路徑的 `Provenance` 來源（生產路徑不經此函式）。
+
+    🔴 存在理由：呼叫端注入假 `writer`／假 gate 時，仍需一個與生產同構的
+    `Provenance` 類別；集中在此一處惰性解析，避免在主流程散置 import。
+    失敗時向呼叫端拋出 ⇒ 由外層 `try/except` 以 fail-silent 收斂。
+    """
+    import importlib
+
+    return importlib.import_module("src.inner_life.event")
 
 
 def _clip(value: Any) -> str:
@@ -487,6 +657,21 @@ async def _run_agent(
         f"catchup_enabled={catchup_on} catchup_invoked={catchup_invoked}"
     )
 
+    # ── 契約 §4.6（LIFE-THREAD-W3）：completed＋有 sage_fact_id 線頭的昇華接縫 ──
+    # 旗標 `LIFE_THREAD_ELEVATION_ENABLED` **預設關**（缺席即 OFF）⇒ 預設只做一次
+    # 旗標讀取，0 事件、0 寫入、`summary` 鍵集合不變。整段 fail-silent（見函式內
+    # `try/except` 只記 warning）；僅真的建立時 `summary` 才多一鍵。
+    try:
+        elevation_created = maybe_emit_elevation_events(
+            agent_id, all_threads, slot, now
+        )
+    except Exception as exc:  # pragma: no cover - defensive（函式內已 fail-silent）
+        logger.warning(
+            f"[LifeThreadOrchestrator] agent={_clip(agent_id)} elevation 接縫呼叫失敗 "
+            f"(fail-closed): {type(exc).__name__}: {_clip(exc)}"
+        )
+        elevation_created = False
+
     # ── M3：Salience Gate（`current_time` 是 float epoch 秒）──
     decision = lt_gate.evaluate_wake_gate(
         agent_id,
@@ -557,6 +742,14 @@ async def _run_agent(
                     f"whim 判定失敗 (fail-closed): {type(exc).__name__}: {_clip(exc)}"
                 )
         if not bootstrap_mode and not whim_mode:
+            if elevation_created:
+                # 契約 §4.6：僅真的建立時才多此一鍵；下方既有三鍵返回逐字保留。
+                return {
+                    "woke": False,
+                    "reason": decision.reason,
+                    "dissolved_candidates": dissolved_candidates,
+                    "elevation_event_created": True,
+                }
             return {
                 "woke": False,
                 "reason": decision.reason,
@@ -577,12 +770,16 @@ async def _run_agent(
             f"[LifeThreadOrchestrator] agent={_clip(agent_id)} slot={_clip(slot)} "
             f"wake_blocked=empty_soul_context（0 LLM 花費）"
         )
-        return {
+        blocked_summary: Dict[str, Any] = {
             "woke": True,
             "wake_blocked": "empty_soul_context",
             "reason": decision.reason,
             "dissolved_candidates": dissolved_candidates,
         }
+        if elevation_created:
+            # 契約 §4.6：僅真的建立時才出現此鍵。
+            blocked_summary["elevation_event_created"] = True
+        return blocked_summary
 
     # ── M4：唯一喚醒動作（§5 注入範式）───────────────────────
     # 🔴 `dissolve_hook` **已接線（LIFE-THREAD-M2-WIRING-1）但預設關**：注入
@@ -668,4 +865,7 @@ async def _run_agent(
     if whim_mode:
         # 契約 §4.5：whim 路徑完成時可觀測（**非 whim 路徑不得出現此鍵**）。
         summary["whim_wake"] = True
+    if elevation_created:
+        # 契約 §4.6：僅真的建立時才出現此鍵。
+        summary["elevation_event_created"] = True
     return summary

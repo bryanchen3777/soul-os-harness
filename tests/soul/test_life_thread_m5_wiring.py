@@ -1115,6 +1115,11 @@ _FORBIDDEN_NET_ROOTS = frozenset({
     "httpx", "requests", "aiohttp", "urllib", "socket", "openai", "anthropic",
 })
 
+#: 契約 §4.6 接縫函式：W3 批准的 `trigger_type` 唯一合法位置（寫死為模組常數，
+#: 不得做成開放參數；`_audit_source(..., allow_trigger_in=_SEAM_FUNCTIONS)` 的
+#: 固定值，呼叫端不得傳入其他集合）。
+_SEAM_FUNCTIONS = frozenset({"maybe_emit_elevation_events", "_elevation_trigger_for_slot"})
+
 
 def _leaf_imports(tree: ast.AST) -> List[str]:
     """把 AST 攤平成「被 import 的葉節點模組路徑」清單。"""
@@ -1131,14 +1136,35 @@ def _leaf_imports(tree: ast.AST) -> List[str]:
     return leaves
 
 
-def _audit_source(source: str) -> List[str]:
+def _audit_source(source: str, *, allow_trigger_in: frozenset = frozenset()) -> List[str]:
     """AST 稽核：回違規清單（空 ＝ 通過）。
 
     只認**真的** import／呼叫／關鍵字引數 —— 因此「文件字串裡聲明不新增
     `trigger_type`」不會偽紅，而真做了**一定**紅。
+
+    `allow_trigger_in`（W3-FUP-1，契約 §4.6 接縫白名單例外）：`trigger_type`
+    kwarg／`trigger_type` 賦值節點，若其 enclosing 函式名落在該集合內則豁免；
+    其餘位置（其他函式、模組層、lambda 內等）一律仍報違規。預設為空集合
+    （舊行為逐字保留）；唯一合法的非空值是 `_SEAM_FUNCTIONS`。
     """
     tree = ast.parse(source)
     issues: List[str] = []
+
+    _parents: Dict[int, ast.AST] = {}
+    for _p in ast.walk(tree):
+        for _c in ast.iter_child_nodes(_p):
+            _parents[id(_c)] = _p
+
+    def _enclosing_function_name(node: ast.AST) -> str | None:
+        """回節點的 enclosing 函式名；lambda 內／模組層回 None（＝不豁免）。"""
+        cur = _parents.get(id(node))
+        while cur is not None:
+            if isinstance(cur, ast.Lambda):
+                return None
+            if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return cur.name
+            cur = _parents.get(id(cur))
+        return None
 
     for leaf in _leaf_imports(tree):
         if leaf.startswith(_FORBIDDEN_MODULE_PREFIXES):
@@ -1154,11 +1180,13 @@ def _audit_source(source: str) -> List[str]:
             ):
                 issues.append(f"禁止呼叫：{func.id}()")
         elif isinstance(node, ast.keyword) and node.arg == "trigger_type":
-            issues.append("禁止傳遞 trigger_type 引數")
+            if _enclosing_function_name(node) not in allow_trigger_in:
+                issues.append("禁止傳遞 trigger_type 引數")
         elif isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == "trigger_type":
-                    issues.append("禁止新增 trigger_type 變數")
+                    if _enclosing_function_name(node) not in allow_trigger_in:
+                        issues.append("禁止新增 trigger_type 變數")
     return sorted(set(issues))
 
 
@@ -1337,8 +1365,25 @@ def _walk_calls(tree: ast.AST):
 
 def test_a0_orchestrator_has_zero_forbidden_constructs():
     """orchestrator：0 `bus.publish`／`trigger_type`／`src.agency`／`src.memory.sage`
-    ／`append_dissolved`／`append_transition`／`open(` 寫入。"""
-    assert _audit_source(MODULE_PATH.read_text(encoding="utf-8")) == []
+    ／`append_dissolved`／`append_transition`／`open(` 寫入。
+
+    🔴 **恰等值演化（W3-FUP-1，契約 §4.6）**：本測試原先是舊 M5「0 InnerLifeEvent」
+    契約的編碼（全域禁止 orchestrator 出現任何 `trigger_type` kwarg／賦值）；
+    W3 已批准 §4.6 接縫（`maybe_emit_elevation_events`／`_elevation_trigger_for_slot`）
+    經 InnerLifeWriter＋submission_gate 提交事件，`trigger_type` 在該接縫內是已批准
+    的新契約內容。故本守門由「全域禁止」演化為「§4.6 接縫白名單例外」
+    （`_audit_source(..., allow_trigger_in=_SEAM_FUNCTIONS)`）。
+
+    **這不是放寬**（其餘守門斷言逐字保留）：
+      1. 仍禁新增 `trigger_type` 常數；
+      2. 仍禁接縫函式**之外**的任何 `trigger_type` kwarg／`trigger_type` 變數
+         （其他函式、模組層、lambda 內一律仍報違規）；
+      3. 仍禁直接 elevate（直接寫 `facts` 表、不經 InnerLifeWriter／submission_gate）；
+      4. 仍禁接縫函式之外的任何事件建立（`bus.publish`／`append_*` 逐字保留）。
+    """
+    assert _audit_source(
+        MODULE_PATH.read_text(encoding="utf-8"), allow_trigger_in=_SEAM_FUNCTIONS
+    ) == []
 
 
 def test_a1_orchestrator_import_whitelist_only():
@@ -1386,6 +1431,104 @@ def test_a2_forbidden_scanner_has_teeth(tmp_path):
     assert _audit_source(prose_only) == [], "文件字串不得偽紅"
 
 
+def test_a2b_seam_trigger_allowlist_has_teeth():
+    """🔴 W3-FUP-1 牙齒（契約 §4.6）：接縫函式內的 `trigger_type` ⇒ 豁免 MISS；
+    同一寫法出現在其他函式／模組層／lambda 內 ⇒ 仍 DETECT（即使傳了白名單）。
+
+    豁免的判定是 enclosing `FunctionDef` 名稱落在 `_SEAM_FUNCTIONS` 內，
+    不是字串出現與否。
+    """
+    seam_kwarg = (
+        "def maybe_emit_elevation_events():\n"
+        "    submit(trigger_type='x')\n"
+    )
+    assert _audit_source(seam_kwarg, allow_trigger_in=_SEAM_FUNCTIONS) == [], (
+        "接縫函式內的 trigger_type kwarg 必須豁免"
+    )
+
+    seam_assign = (
+        "def maybe_emit_elevation_events(slot):\n"
+        "    trigger_type = _elevation_trigger_for_slot(slot)\n"
+    )
+    assert _audit_source(seam_assign, allow_trigger_in=_SEAM_FUNCTIONS) == [], (
+        "接縫函式內的 trigger_type 賦值必須豁免"
+    )
+
+    seam_second = (
+        "def _elevation_trigger_for_slot(slot):\n"
+        "    return submit(trigger_type='x')\n"
+    )
+    assert _audit_source(seam_second, allow_trigger_in=_SEAM_FUNCTIONS) == [], (
+        "第二個接縫函式內的 trigger_type kwarg 也必須豁免"
+    )
+
+    # 同一 kwarg 在其他函式 ⇒ 仍 DETECT
+    other_fn = (
+        "def some_other_function():\n"
+        "    submit(trigger_type='x')\n"
+    )
+    assert any(
+        "trigger_type" in i
+        for i in _audit_source(other_fn, allow_trigger_in=_SEAM_FUNCTIONS)
+    ), "接縫外函式的 trigger_type kwarg 必須仍報違規"
+
+    other_assign = (
+        "def some_other_function():\n"
+        "    trigger_type = 'y'\n"
+    )
+    assert any(
+        "trigger_type" in i
+        for i in _audit_source(other_assign, allow_trigger_in=_SEAM_FUNCTIONS)
+    ), "接縫外函式的 trigger_type 賦值必須仍報違規"
+
+    # 模組層 ⇒ 仍 DETECT
+    module_level = "submit(trigger_type='x')\n"
+    assert any(
+        "trigger_type" in i
+        for i in _audit_source(module_level, allow_trigger_in=_SEAM_FUNCTIONS)
+    ), "模組層的 trigger_type kwarg 必須仍報違規"
+
+    # lambda 內（即使包在接縫函式裡）⇒ 仍 DETECT
+    lambda_inside_seam = (
+        "def maybe_emit_elevation_events():\n"
+        "    f = lambda: submit(trigger_type='x')\n"
+    )
+    assert any(
+        "trigger_type" in i
+        for i in _audit_source(lambda_inside_seam, allow_trigger_in=_SEAM_FUNCTIONS)
+    ), "lambda 內的 trigger_type kwarg 必須仍報違規"
+
+    # 預設呼叫（不傳白名單）下接縫函式內的寫法 ⇒ 仍 DETECT（舊行為逐字保留）
+    assert any(
+        "trigger_type" in i for i in _audit_source(seam_kwarg)
+    ), "預設呼叫不得豁免：接縫函式內的 kwarg 也必須 DETECT"
+
+
+def test_a2c_default_call_still_detects_real_bad():
+    """🔴 W3-FUP-1 牙齒：原 `real_bad` 字串以預設呼叫 ⇒ 仍全 DETECT。
+
+    證明預設行為（舊呼叫全通過、語意不變）：白名單是 opt-in，沒傳就不豁免。
+    """
+    real_bad = (
+        "from src.agency import bus\n"
+        "import src.memory.sage.writer\n"
+        "def f():\n"
+        "    bus.publish(trigger_type='x')\n"
+        "    open('/tmp/x', 'w')\n"
+        "    lt.append_dissolved('a', 'b')\n"
+        "    lt.append_transition('a', 'b', 'completed')\n"
+        "    trigger_type = 'y'\n"
+    )
+    issues = _audit_source(real_bad)
+    assert any("src.agency" in i for i in issues)
+    assert any("src.memory.sage" in i for i in issues)
+    assert any("publish" in i for i in issues)
+    assert any("open" in i for i in issues)
+    assert any("append_dissolved" in i for i in issues)
+    assert any("append_transition" in i for i in issues)
+    assert any("trigger_type" in i for i in issues)
+
+
 def test_a3_orchestrator_has_no_float_literals_or_scoring_idents():
     """orchestrator 自身 0 浮點字面量、0 個 `score|weight|confidence|probab` 識別字。"""
     src = MODULE_PATH.read_text(encoding="utf-8")
@@ -1401,9 +1544,13 @@ def test_a3_orchestrator_has_no_float_literals_or_scoring_idents():
 
 
 def test_a4_orchestrator_has_no_direct_llm_or_network_channel():
-    """0 LLM 直接呼叫／0 網路通道：AST 判定呼叫與 import（文件字串聲明不算違規）。"""
+    """0 LLM 直接呼叫／0 網路通道：AST 判定呼叫與 import（文件字串聲明不算違規）。
+
+    🔴 W3-FUP-1（契約 §4.6）：與 `test_a0` 同因演化為接縫白名單例外
+    （`allow_trigger_in=_SEAM_FUNCTIONS`），其餘斷言逐字保留。
+    """
     src = MODULE_PATH.read_text(encoding="utf-8")
-    assert _audit_source(src) == []
+    assert _audit_source(src, allow_trigger_in=_SEAM_FUNCTIONS) == []
     leaves = _leaf_imports(ast.parse(src))
     for lib in sorted(_FORBIDDEN_NET_ROOTS):
         assert not any(
