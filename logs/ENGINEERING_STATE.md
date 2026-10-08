@@ -314,6 +314,22 @@ W1 工單（主大腦出）指定「非空且非 `0`／`false` 即 ON」並稱�
 
 **TL-1 狀態：Needs Revalidation → `STABLE_OBSERVATION`（可重現，observation-level）。** 未推翻、未保護，由 evidence 決定。
 
+#### 0.1.15 W3 接縫實作＋啟用（2026-10-06，Owner 授權；ACTIVATE-1 ACCEPTED 2026-10-06 22:05 首輪驗證）
+
+**W3 ACCEPTED / implementation complete**：`src/soul/life_thread_orchestrator.py` 新增 `maybe_emit_elevation_events`（旗標 `LIFE_THREAD_ELEVATION_ENABLED` 預設 OFF，解析沿用 `lt_wiring.TRUTHY_VALUES`；僅 `completed`＋`sage_fact_id` 非空；沿用既有 diary 常數，嚴禁 `TRIGGER_TYPE_SYSTEM`；經既有 `InnerLifeWriter`＋`submission_gate.submit()`，嚴禁直接 `run_elevation`／寫 facts／新增 `elevate()`；整段 fail-silent；`summary["elevation_event_created"]` 僅真建時出現）。新測試 `tests/soul/test_life_thread_elevation_seam.py` 10 支全過。契約新增 §4.6（含 Owner 裁定逐字引文「沉澱成信念需要自己的經歷，光看完就沉澱是不合理的」）。
+
+**W3-FUP-1（Owner 裁定 1A）**：a0/a4 守門的 `trigger_type` 全域禁止與 W3 做法實質衝突（`Provenance.trigger_type` 為必填 kwarg，無忠實寫法可避 AST；位置引數／`**` 解包屬守門繞過，未採用）。`_audit_source` 加 `allow_trigger_in=_SEAM_FUNCTIONS` 位置受限豁免（僅兩接縫函式體內，lambda／模組層／他函式不豁免），其餘斷言逐字保留（前例：BOOTSTRAP-1 a5 恰等值演化）。wiring 檔 91 passed（含 2 新牙齒測試）。
+
+**W3-FUP-2／FUP-3（測試隔離，沿 TEST-INFRA-ENV-ISOLATION-1 既定規則）**：生產 `.env=1` 落地後，`load_dotenv(override=False)` 回注導致 `test_flag_off_is_noop` 的 `delenv`＋跑管線轉紅。`tests/conftest.py` 補 OFF-by-default 釘住（第六次踩點預防；註解已更正為 TRUTHY_VALUES＋缺席即 OFF）；缺席子案例改 `delenv`→`setenv("")`。兩檔重跑 **101 passed**。**未改 W3 runtime 語義。**
+
+**ACTIVATE-1 部署（2026-10-06 20:46，Owner 授權執行）**：生產根 `.env` 27→28 行（恰 +1 行 `LIFE_THREAD_ELEVATION_ENABLED=1`，CRLF 保留，sha256 `97DEF37F…`→`15B9BA33…`）。經 repo 既有 `server_ops.ps1 restart` 一次性排程任務重啟（已刪）：20:46:28 觸發 → 20:46:44 就緒，中斷約 10–15 秒，零 kill。`/health`=200；VC 8765／8766／8767 listener 未變；watchdog `n_restarts`=0。
+
+**首輪 runtime 證據（2026-10-06 22:00 night slot，獨立複核）**：22:00:17–22:01:30 共 **26 筆**提交，全 `trigger=diary:night`（既有常數），0 fail-silent；8 agents（akane4／anna2／aoi1／mahiru6／mai6／miku3／ram2／rem1／ruka1）。26/26 落為 pattern 候選節點（`thread_id`＋`sage_fact_id` 逐筆對應，抽查終端行皆 `completed`＋fact 非空）。反面條件 intact：無新 trigger、無直接 `elevate()`、無 timer／LLM 新增。frozen 三面（`src/inner_life/`、wake_gate、dissolution_exec）diff 全空。
+
+**運作特性登記（設計使然，非缺陷）**：`_ELEVATION_EMITTED` 為行程內去重，重啟即重置 ⇒ 每次重啟後首輪會重放 backlog burst（本次 26 筆）。後續重啟前須預期此行為；若要持久去重屬另案設計變更。
+
+**Non-claims**：Threshold 2 未宣稱達標；本輪不改 Source truth、不觸發 canonicalization、不產生 commit／push／merge 授權（DCG #22 治理下第一筆 Runtime＋Evidence）。
+
 
 ---
 
