@@ -7,6 +7,10 @@
 #   1. `accepted == True` ⇒ 既有感知 trace 的**既有** `extra` dict 被寫入
 #      `extra["summary"]`（世界事實文字副本），且**截斷 <= 200 字元**。
 #   2. `accepted == False` ⇒ **不寫**該鍵（被拒事件不增加資料量）。
+#      ※ WORLD-FACT-TEXT-3 P1（Owner 已批）放寬了 weather 被拒路徑（也寫
+#      summary；見 `tests/test_world_fact_text_3_weather_rejected.py`）。
+#      本檔被拒路徑斷言改用 news source（契約不變），兩條 golden extra
+#      斷言形狀維持 Owner Authorization A 原樣，一字未動。
 #   3. summary 為空字串／純空白 ⇒ **不寫**該鍵（缺欄 ＝ 無 fact text）。
 #   4. 既有判定（`accepted`／`scores`／`novelty_*`／`context_injected`／
 #      `memory_written`／`selection_reason`／`reason`）**逐位元不變**。
@@ -181,6 +185,8 @@ def _external_scenario(
     novelty_id: str = "novelty_fact_text_0001",
     pre_change: bool = False,
     tag: str = "x",
+    source: str = "weather",
+    type_: str = "rain_started",
 ) -> List[Dict[str, Any]]:
     """跑一次「外部世界事件 → evaluated」路徑，回傳全部 trace records。
 
@@ -191,8 +197,8 @@ def _external_scenario(
     trace_path = tmp_path / f"trace_{tag}.jsonl"
     mw = _make_middleware(trace_path, accept_threshold=accept_threshold)
     ev = WorldEvent(
-        source="weather",
-        type="rain_started",
+        source=source,
+        type=type_,
         novelty_id=novelty_id,
         ts=FIXED_TS,
         summary=summary,
@@ -275,9 +281,13 @@ def test_external_accepted_summary_truncated_to_200_chars(tmp_path, iso_env):
 
 
 def test_external_rejected_does_not_write_summary(tmp_path, iso_env):
-    """accepted == False ⇒ **不寫** `extra["summary"]`（不讓被拒事件增加資料量）。"""
+    """accepted == False ⇒ **不寫** `extra["summary"]`（不讓被拒事件增加資料量）。
+
+    WORLD-FACT-TEXT-3 P1 注：本斷言用 news source（契約不變）；weather 被拒
+    放寬見 `tests/test_world_fact_text_3_weather_rejected.py`。"""
     recs = _external_scenario(
-        tmp_path, summary=FACT_TEXT, accept_threshold=0.99, tag="rej"
+        tmp_path, summary=FACT_TEXT, accept_threshold=0.99, tag="rej",
+        source="news", type_="news_event",
     )
     evaluated = _records_of_phase(recs, "evaluated")
     assert len(evaluated) == 1
@@ -297,7 +307,9 @@ def test_external_blank_summary_never_writes_key(tmp_path, iso_env):
 
 
 def test_empty_and_whitespace_summary_unit_matrix():
-    """`_fact_summary_extra` 逐格斷言：只寫非空事實文字，且僅 accepted == True。"""
+    """`_fact_summary_extra` 逐格斷言：預設 source 下只寫非空事實文字，且僅
+    accepted == True（weather 被拒放寬見
+    `tests/test_world_fact_text_3_weather_rejected.py::test_fact_summary_extra_source_matrix`）。"""
     f = mwmod._fact_summary_extra
     assert f(True, FACT_TEXT) == {"summary": FACT_TEXT}
     assert f(True, "") == {}
@@ -393,14 +405,19 @@ def test_control_group_before_vs_after_only_extra_summary_differs(tmp_path, iso_
 
 
 def test_control_group_rejected_path_bitwise_identical(tmp_path, iso_env):
-    """被拒路徑（accepted False）改動前後**完全**逐位元相同（連 extra 都不變）。"""
+    """被拒路徑（accepted False）改動前後**完全**逐位元相同（連 extra 都不變）。
+
+    WORLD-FACT-TEXT-3 P1 注：本斷言用 news source（契約不變）；weather 被拒
+    放寬見 `tests/test_world_fact_text_3_weather_rejected.py`。"""
     before = _external_scenario(
         tmp_path, summary=FACT_TEXT, accept_threshold=0.99,
         pre_change=True, tag="before_rej",
+        source="news", type_="news_event",
     )
     after = _external_scenario(
         tmp_path, summary=FACT_TEXT, accept_threshold=0.99,
         pre_change=False, tag="after_rej",
+        source="news", type_="news_event",
     )
     b = _records_of_phase(before, "evaluated")[0]
     a = _records_of_phase(after, "evaluated")[0]
