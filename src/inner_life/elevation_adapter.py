@@ -22,6 +22,7 @@ adapter 接在写路径之后，是 fire-and-forget，失败隔离不阻断写�
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import asdict
@@ -300,20 +301,97 @@ def _append_jsonl(path: Path, records: Sequence[dict]) -> bool:
         return False
 
 
+def _dedup_content_hash(content: Any) -> str:
+    """content 去重雜湊（VALUE-DEDUP-A-1 口徑：strip only）。
+
+    normalize 口徑註明：僅 ``str.strip()``（去首尾空白），不做全半形 /
+    大小寫折疊——repo 內無既有全半形正規化工具，故按工單 fallback
+    （strip 即可）。非 str 輸入先 ``str()`` 再 strip。
+    """
+    text = content if isinstance(content, str) else str(content)
+    return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
+
+
+def _load_existing_dedup_keys(store_dir: Path) -> set:
+    """讀現有 NODES 落檔建 (agent_id, node_type, content_hash) 集合。
+
+    fail-open：檔缺失回空集合；讀檔異常（OSError 等）只 warning 並回空集合，
+    絕不 raise（呼叫方因此不跳過，合法產出不受損）。
+    """
+    keys: set = set()
+    path = store_dir / NODES_FILENAME
+    try:
+        if not path.exists():
+            return keys
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                try:
+                    keys.add(
+                        (
+                            rec.get("agent_id"),
+                            rec.get("node_type"),
+                            _dedup_content_hash(rec.get("content", "")),
+                        )
+                    )
+                except Exception:  # noqa: BLE001 — 單行容錯，不污染整批
+                    continue
+    except OSError as exc:
+        logger.warning("elevation dedup read failed (%s): %s", path, exc)
+        return set()
+    except Exception as exc:  # noqa: BLE001 — fail-open：任何異常都不跳過
+        logger.warning("elevation dedup read failed (%s): %s", path, exc)
+        return set()
+    return keys
+
+
 def _persist_result(
     store_dir: Path,
     nodes: Sequence[ElevationNode],
     edges: Sequence[Any],
 ) -> None:
-    """把升华节点 + 证据边持久化到 data/elevation/（自有 store）。
+    """把升華节点 + 证据边持久化到 data/elevation/（自有 store）。
 
     节点/证据边用 ``dataclasses.asdict`` 序列化为 JSONL，与 soul-elevation 的
     elevation_trace.jsonl（审计 sidecar）并列存放，使「节点 + 证据边」可回查。
+
+    VALUE-DEDUP-A-1 冪等：同 agent 同 node_type 已有相同 content（normalize
+    後 sha256，口徑見 ``_dedup_content_hash``）的節點落盤時跳過 append（僅跳過
+    該 node＋其邊），引擎語意不動（回傳值不變）；讀檔異常則 fail-open（不跳過，
+    只 warning，絕不丟合法產出）。
     """
     node_records = [asdict(n) for n in nodes]
     edge_records = [asdict(e) for e in edges]
     if node_records:
-        _append_jsonl(store_dir / NODES_FILENAME, node_records)
+        existing = _load_existing_dedup_keys(store_dir)
+        fresh_records: list = []
+        skipped_node_ids: set = set()
+        for rec in node_records:
+            try:
+                key = (
+                    rec.get("agent_id"),
+                    rec.get("node_type"),
+                    _dedup_content_hash(rec.get("content", "")),
+                )
+            except Exception:  # noqa: BLE001 — 雜湊異常則 fail-open 照寫
+                fresh_records.append(rec)
+                continue
+            if key in existing:
+                skipped_node_ids.add(rec.get("node_id"))
+                continue
+            existing.add(key)
+            fresh_records.append(rec)
+        if skipped_node_ids:
+            edge_records = [
+                e for e in edge_records if e.get("node_id") not in skipped_node_ids
+            ]
+        if fresh_records:
+            _append_jsonl(store_dir / NODES_FILENAME, fresh_records)
     if edge_records:
         _append_jsonl(store_dir / EDGES_FILENAME, edge_records)
 
