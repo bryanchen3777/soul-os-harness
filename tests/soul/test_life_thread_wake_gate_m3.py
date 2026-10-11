@@ -1809,7 +1809,7 @@ def test_t12_f1_constant_literal_is_pinned(name, value, literal):
         assert "synthetic" not in value, name
 
 
-def test_t12_f1_collision_window_seconds_are_hardcoded_14400():
+def test_t12_f1_collision_window_seconds_are_hardcoded_50400():
     """F1：視窗秒數以**獨立算式** 14*3600 釘死為 50400 秒（3 項皆不得位移）。"""
     assert 14 * 3600 == 50400
     assert WORLD_COLLISION_WINDOW_HOURS * 3600 == 14 * 3600
