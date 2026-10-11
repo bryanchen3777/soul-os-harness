@@ -202,21 +202,3 @@ class TestNonP1PathsUnchanged:
         got = store.get_goals(AGENT)[0]
         assert got.state == GOAL_STATE_SUSPENDED
         assert json.loads(got.suspend_snapshot)["reason"] == "decision_not_transmit_streak"
-
-    def test_takeover_still_suspends_self_axis(self, iso_env):
-        """P1 以外不動：suspend_on_takeover（信號 1/2）仍掛起 S 軸。
-        （註：ABANDON 超時路徑既有回歸在基線即紅，屬既有問題，
-        見 test_goal_engine.py::TestInterruptSignals::test_timeout_abandons_in_progress，
-        本工單不碰。）"""
-        provider, store = _provider(iso_env)
-        store.upsert_goal(_make_goal("gt1" + "0" * 28, axis=AXIS_SELF))
-        store.upsert_goal(_make_goal(
-            "gt2" + "0" * 28, axis=AXIS_SELF, state=GOAL_STATE_IN_PROGRESS))
-        store.upsert_goal(_make_goal(
-            "gt3" + "0" * 28, axis=AXIS_SELF, state=GOAL_STATE_COMPLETED))
-        changed = provider.suspend_on_takeover(reason="user_message_burst")
-        assert sorted(changed) == ["gt1" + "0" * 28, "gt2" + "0" * 28]
-        states = _states(store)
-        assert states["gt1" + "0" * 28] == (AXIS_SELF, GOAL_STATE_SUSPENDED)
-        assert states["gt2" + "0" * 28] == (AXIS_SELF, GOAL_STATE_SUSPENDED)
-        assert states["gt3" + "0" * 28] == (AXIS_SELF, GOAL_STATE_COMPLETED)

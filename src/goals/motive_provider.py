@@ -29,7 +29,6 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -560,8 +559,6 @@ class GoalMotiveProvider:
           - ABANDON 周期判定（§3.4/§9.3 v1 规则）: IN_PROGRESS + criteria.timeout_days
             超时 → ABANDONED（终态, 保留 record）
 
-        信号 1/2（私聊突发/多模态高优）: 由 suspend_on_takeover() API 提供,
-        未来 event-driven 接线点调用（本次 0 新 tick）。
         信号 3（quiet hours）: §8.1 注, 用唤醒侧过滤（不显式批量挂起）。
         信号 4（proactive_dm cooldown）: scheduler 外层既有检查天然挡（不进本方法）。
 
@@ -635,33 +632,6 @@ class GoalMotiveProvider:
                             f"timeout_days={td} agent={self.agent_id}"
                         )
             return changed
-
-    def suspend_on_takeover(
-        self,
-        reason: str = "session_takeover",
-        snapshot: Optional[str] = None,
-    ) -> List[str]:
-        """信号 1/2（Bryan 私聊突发 / 高优先级多模态事件）: 立即挂起。
-
-        v1 提供 API（0 新 tick）; 由未来 event-driven 接线点（voice/router 会话接管处）
-        调用。无损挂起: 只写 state + suspend_snapshot + state_updated_at 三字段。
-        """
-        snapshot_text = snapshot if snapshot is not None else json.dumps({
-            "reason": reason,
-            "ts": time.time(),
-        })
-        changed: List[str] = []
-        with self._lock:
-            store = self._store_for()
-            for g in store.get_goals(self.agent_id):
-                if g.state in (GOAL_STATE_ACTIVE, GOAL_STATE_IN_PROGRESS):
-                    store.transition_goal(
-                        g.goal_id,
-                        GOAL_STATE_SUSPENDED,
-                        meta={"suspend_snapshot": snapshot_text},
-                    )
-                    changed.append(g.goal_id)
-        return changed
 
     # ── 唤醒扫描（§8.3, 心跳 schedule scan 顺带检查）────────────────────────
 

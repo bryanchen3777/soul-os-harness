@@ -1,21 +1,18 @@
 """
 tests/harness/test_goal_driven_harness.py — TG-3 自主目标驱动行为 Harness 整合验收
 
-阶段 C-1「自主目标与意向引擎」最终生产闭环钢印: 在模拟多心跳时间序列与
-外部干扰环境下, 实证跨心跳长程推进 / 突发中断与唤醒 / 双轴配额轮替防饥饿 /
-终态记忆沉淀, 刚性验证 Volition Gate 与 No-Scoring 哲学在端到端运行时的不变量。
+阶段 C-1「自主目标与意向引擎」最终生产闭环钢印: 在模拟多心跳时间序列下,
+实证跨心跳长程推进 / 双轴配额轮替防饥饿 / 终态记忆沉淀, 刚性验证
+Volition Gate 与 No-Scoring 哲学在端到端运行时的不变量。
 
-四大剧本:
+三大剧本:
   1. 跨心跳长程推进: 多步骤目标 × 连续 5 心跳无外部干扰 →
      选中心跳 advance_count 严格 ==1 / 同心跳 0 二次连续决策 (No ReAct cascade) /
      首个推进心跳后 ACTIVE→IN_PROGRESS。
-  2. 突发中断与唤醒恢复: IN_PROGRESS 时注入 Bryan 1:1 私聊 →
-     心跳让位 (决策让位对话响应) + SUSPENDED 无损; 对话结束 2 次 IDLE 心跳 →
-     唤醒条件满足 → 自动恢复 ACTIVE 并接续, 进度无丢失。
-  3. 双轴配额轮替与防饥饿: Bryan 轴 + 自我轴目标 × 连续 10 心跳 →
+  2. 双轴配额轮替与防饥饿: Bryan 轴 + 自我轴目标 × 连续 10 心跳 →
      单心跳候选 ≤1 / 同轴连续选中 ≤2 / 两轴均获推进 / 任一轴无 >3 周期饥饿 +
      No-Scoring 铁证 (源码 AST 审计 + 运行期结构 sidecar)。
-  4. 达成与终态沉淀: 最后一步 → COMPLETED → goals 表状态 + 时间戳写入 +
+  3. 达成与终态沉淀: 最后一步 → COMPLETED → goals 表状态 + 时间戳写入 +
      不再入活跃轮替; 沉淀隔离 (facts 0 直写) + 合规沉淀链 (InnerLifeWriter →
      trace.jsonl → 既有升华管线)。
 
@@ -68,9 +65,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class _FakeClock:
-    """可控 time.time 源: 替换 graph_store / motive_provider 模块的 time 引用。
+    """可控 time.time 源: 替换 graph_store 模块的 time 引用。
 
-    transition_goal / suspend_on_takeover 内部走 time.time(), 真实时钟会让
+    transition_goal 内部走 time.time(), 真实时钟会让
     SUSPENDED 跨日判定、state_updated_at 断言依赖运行日——用模拟时钟彻底确定化。
     """
 
@@ -164,7 +161,7 @@ def iso_env(tmp_path, monkeypatch):
     """P0.5 隔离: SOUL_OS_DATA_DIR → tmp_path + v8 迁移预检 + 可控时钟 + 升华数据隔离。
 
     - 每测试用例独立 tmp_path → 独立 SQLite（含 goals/facts 表, Schema v8）
-    - graph_store / motive_provider 的 time 引用替换为 _FakeClock（状态机判定确定化）
+    - graph_store 的 time 引用替换为 _FakeClock（状态机判定确定化）
     - Decision 重检索子块剥离（_build_memory_summary/_build_emergent_summary/
       _build_temporal_anchor → None）: 只禁按需注入的检索, 不碰 Framing/Motive/
       Boundary 冻结四块与 parse 主路径
@@ -176,9 +173,7 @@ def iso_env(tmp_path, monkeypatch):
 
     clock = _FakeClock()
     import src.memory.sage.graph_store as gs_mod
-    import src.goals.motive_provider as mp_mod
     monkeypatch.setattr(gs_mod, "time", clock)
-    monkeypatch.setattr(mp_mod, "time", clock)
 
     # Schema v9 迁移预检 (EH-2: v9 雙維度 Schema): 全新库走迁移 → goals + facts 表, version=9
     db = tmp_path / "memory" / AGENT / "graph.sqlite"
@@ -282,21 +277,14 @@ def _trace_records(tmp_path: Path) -> List[Dict[str, Any]]:
 # MockHeartbeatRunner — 受控时间推进步进器（复刻 _decision_check 接线顺序）
 # ───────────────────────────────────────────────────────────
 
-# 外部干扰类型（对齐 §8.1 信号 1/2）
-INTERFERENCE_USER_MESSAGE = "USER_MESSAGE"
-INTERFERENCE_MULTIMODAL = "MULTIMODAL_HIGH_PRIORITY"
-
-
 class MockHeartbeatRunner:
     """受控时间推进步进器: 复刻 scheduler._decision_check 接线顺序
     (interpret → interrupt → wakeup → assemble → resolve → decide → on_decision),
     逐心跳观察 GoalMotiveProvider / DecisionEngine / 状态转移。
 
     语义要点:
-      - 时钟: 自持 _now（本地 aware）, 步进时同步 _FakeClock（transition_goal/
-        suspend_on_takeover 的内部 time.time 用同一模拟时间）
-      - 干扰心跳（Bryan 私聊 / 多模态高优）: 决策让位对话响应 — suspend_on_takeover
-        立即挂起 + 跳过例行扫描/装配/决策, 记录 yielded_dialog=True
+      - 时钟: 自持 _now（本地 aware）, 步进时同步 _FakeClock（transition_goal
+        的内部 time.time 用同一模拟时间）
       - decide: 真实 decide_motive（Framing/Motive/Boundary 冻结四块 + LLM stub +
         fail-closed parse）, 每心跳至多 1 次（Volition Gate: 1 Heartbeat 1 Step）
       - 每心跳记录: 候选 / 决策次数 / 状态快照 / advance delta
@@ -314,29 +302,8 @@ class MockHeartbeatRunner:
         self.clock = clock
         self._now = start if start is not None else _local(10)
         self.decision_action = decision_action
-        self._interference: Optional[str] = None
         self.records: List[Dict[str, Any]] = []
         self.prompts: List[str] = []      # DecisionEngine 收到的 prompt（观察用）
-
-    # ── 外部干扰注入（ExternalInterferenceSimulator 调用面）──
-
-    def inject_interference(self, kind: str) -> None:
-        assert kind in (INTERFERENCE_USER_MESSAGE, INTERFERENCE_MULTIMODAL)
-        self._interference = kind
-
-    def clear_interference(self) -> None:
-        self._interference = None
-
-    def _write_bryan_last_seen(self) -> None:
-        """模拟 channel inbound: touch_bryan_last_seen（统一信号源）。"""
-        from src.io.channels.bryan_state import _bryan_last_seen_file
-        path = _bryan_last_seen_file()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({
-            "last_recv_ts": self._now.isoformat(),
-            "last_recv_agent": AGENT,
-            "last_recv_preview": "TG-3 harness",
-        }, ensure_ascii=False), encoding="utf-8")
 
     # ── 心跳执行 ───────────────────────────────────────────
 
@@ -351,8 +318,6 @@ class MockHeartbeatRunner:
         rec: Dict[str, Any] = {
             "beat": beat,
             "now": self._now.isoformat(),
-            "interference": self._interference,
-            "yielded_dialog": False,
             "suspend_changed": [],
             "wakeup_changed": [],
             "candidate": None,
@@ -367,22 +332,6 @@ class MockHeartbeatRunner:
         }
         # 心跳开始基线（delta 以同心跳 before→after 计算, 不依赖跨心跳记忆）
         self._snapshot_before(rec)
-
-        # 0) 干扰心跳: 决策让位对话响应
-        if self._interference is not None:
-            if self._interference == INTERFERENCE_USER_MESSAGE:
-                self._write_bryan_last_seen()
-                reason = "user_message_burst"
-            else:
-                reason = "multimodal_high_priority"
-            rec["yielded_dialog"] = True
-            rec["suspend_changed"] = self.provider.suspend_on_takeover(
-                reason=reason,
-                snapshot=json.dumps({"reason": reason, "ts": self._now.timestamp()}),
-            )
-            self._snapshot_after(rec)
-            self.records.append(rec)
-            return rec
 
         # 1) 中断信号扫描（§8.2; 信号 5/6 + ABANDON 周期）
         rec["suspend_changed"] = self.provider.apply_interrupt_signals(now=self._now)
@@ -472,32 +421,6 @@ class MockHeartbeatRunner:
 
 
 # ───────────────────────────────────────────────────────────
-# ExternalInterferenceSimulator — 外部干扰注入器
-# ───────────────────────────────────────────────────────────
-
-
-class ExternalInterferenceSimulator:
-    """随时注入外部干扰信号（模拟通道层接线点）:
-
-      - bryan_private_message(): 注入 Bryan 1:1 私聊（USER_MESSAGE, 会话接管）
-      - multimodal_high_priority(): 注入高优先级多模态感知事件
-      - conversation_ended(): 对话结束, 清除干扰 → 进入 IDLE 心跳序列
-    """
-
-    def __init__(self, runner: MockHeartbeatRunner) -> None:
-        self.runner = runner
-
-    def bryan_private_message(self) -> None:
-        self.runner.inject_interference(INTERFERENCE_USER_MESSAGE)
-
-    def multimodal_high_priority(self) -> None:
-        self.runner.inject_interference(INTERFERENCE_MULTIMODAL)
-
-    def conversation_ended(self) -> None:
-        self.runner.clear_interference()
-
-
-# ───────────────────────────────────────────────────────────
 # 剧本 1: 跨心跳长程推进（Volition Gate: 1 Heartbeat 1 Step）
 # ───────────────────────────────────────────────────────────
 
@@ -513,13 +436,12 @@ class TestScenario1LongRangeAdvance:
     """
 
     def test_five_heartbeats_strict_advance_no_react_cascade(self, iso_env):
-        runner, interference, gb, gs = self._setup(iso_env)
+        runner, gb, gs = self._setup(iso_env)
         # 连续 5 心跳, 无外部干扰; 间隔 25h > 24h 配额窗 → 每心跳可产 1 候选
         for _ in range(5):
             runner.step(timedelta(hours=25))
 
         assert len(runner.records) == 5
-        assert all(r["interference"] is None for r in runner.records)
         produced_beats = [r for r in runner.records if r["candidate"] is not None]
         # 双轴轮替下 5 心跳全部产出候选（排除上候选 + streak 交替 → 无 skip）
         assert len(produced_beats) == 5
@@ -570,100 +492,15 @@ class TestScenario1LongRangeAdvance:
             gs, axis=AXIS_SELF, title="沉淀本周三个观察", completion_criteria=criteria,
         ))
         runner = MockHeartbeatRunner(provider, clock, start=_local(10))
-        interference = ExternalInterferenceSimulator(runner)
-        return runner, interference, gb, gs
+        return runner, gb, gs
 
 
 # ───────────────────────────────────────────────────────────
-# 剧本 2: 突发中断与唤醒恢复
+# 剧本 2: 双轴配额轮替与防饥饿 + No-Scoring 铁证
 # ───────────────────────────────────────────────────────────
 
 
-class TestScenario2InterruptAndWakeup:
-    """IN_PROGRESS 时注入 Bryan 1:1 私聊 → SUSPENDED（决策让位对话响应）;
-    对话结束 → 连续 2 次 IDLE 心跳（无唤醒无推进）→ 唤醒条件满足 → 自动恢复
-    ACTIVE 并接续, 进度无丢失（advance_count 挂起后保留、接续 +1）。"""
-
-    def test_user_message_interrupt_yield_and_wakeup_resume(self, iso_env):
-        tmp, clock = iso_env["tmp"], iso_env["clock"]
-        provider = _new_provider(tmp, clock)
-        gid = "gi" + "0" * 30
-        provider._store_for().upsert_goal(_make_goal(
-            gid, axis=AXIS_BRYAN, title="推动 9 月健康习惯复盘",
-            completion_criteria=json.dumps({"kind": "interaction", "count": 3, "timeout_days": 30}),
-        ))
-        runner = MockHeartbeatRunner(provider, clock, start=_local(10))
-        sim = ExternalInterferenceSimulator(runner)
-
-        # ── 心跳 1: 无干扰 → 选中推进 → IN_PROGRESS advance=1 ──
-        r1 = runner.run_heartbeat()
-        assert r1["candidate"] == f"goal:{gid}"
-        assert r1["decision"] == "transmit"
-        assert runner.goal(gid)["state"] == GOAL_STATE_IN_PROGRESS
-        assert runner.goal(gid)["advance_count"] == 1
-
-        # ── 心跳 2 (+3h): Bryan 1:1 私聊突发 → 目标精确 SUSPENDED, 决策让位 ──
-        sim.bryan_private_message()
-        r2 = runner.step(timedelta(hours=3))
-        assert r2["yielded_dialog"] is True           # 决策让位对话响应
-        assert r2["candidate"] is None                 # 本心跳 0 goal 候选进池
-        assert r2["decision_count"] == 0               # 0 二次决策（让位）
-        assert r2["decision"] is None
-        g = runner.goal(gid)
-        assert g["state"] == GOAL_STATE_SUSPENDED      # 精确转移 SUSPENDED
-        assert g["advance_count"] == 1                 # 无损: 0 计数重置
-        snap = json.loads(g["suspend_snapshot"])
-        assert snap["reason"] == "user_message_burst"  # 中断现场快照
-        # ts 精确等于心跳 2 的模拟时间戳（可控时钟）
-        assert int(snap["ts"]) == int(datetime.fromisoformat(r2["now"]).timestamp())
-
-        # ── 对话结束 → 心跳 3 (+8h): IDLE #1 —— 同日无唤醒条件, 保持 SUSPENDED ──
-        sim.conversation_ended()
-        r3 = runner.step(timedelta(hours=8))
-        assert r3["interference"] is None
-        assert r3["wakeup_changed"] == []              # 真 IDLE: 无唤醒
-        assert r3["candidate"] is None                 # SUSPENDED 不入轮替
-        assert r3["decision_count"] == 0
-        assert runner.goal(gid)["state"] == GOAL_STATE_SUSPENDED
-        assert runner.goal(gid)["advance_count"] == 1  # 进度无丢失
-
-        # ── 心跳 4 (+20h, 跨日): IDLE #2 —— 唤醒条件满足（新一天）→ 自动恢复并接续 ──
-        r4 = runner.step(timedelta(hours=20))
-        assert r4["wakeup_changed"] == [gid]           # SUSPENDED → ACTIVE
-        assert r4["candidate"] == f"goal:{gid}"        # 恢复后重新入活跃轮替
-        assert r4["decision"] == "transmit"
-        assert r4["decision_count"] == 1
-        g = runner.goal(gid)
-        assert g["state"] == GOAL_STATE_IN_PROGRESS    # 接续推进（非重置）
-        assert g["advance_count"] == 2                 # 1 + 1 = 2, 进度无丢失
-
-        # 状态机合法性: SUSPENDED → ACTIVE → IN_PROGRESS 全程合法转移（无异常即证）
-
-    def test_multimodal_high_priority_also_suspends(self, iso_env):
-        """高优先级多模态感知事件同样触发无损挂起（信号 2 变体）。"""
-        tmp, clock = iso_env["tmp"], iso_env["clock"]
-        provider = _new_provider(tmp, clock)
-        gid = "gm" + "0" * 30
-        provider._store_for().upsert_goal(_make_goal(gid, axis=AXIS_SELF))
-        runner = MockHeartbeatRunner(provider, clock, start=_local(10))
-        sim = ExternalInterferenceSimulator(runner)
-        runner.run_heartbeat()
-        assert runner.goal(gid)["state"] == GOAL_STATE_IN_PROGRESS
-        sim.multimodal_high_priority()
-        r = runner.step(timedelta(hours=2))
-        assert r["yielded_dialog"] is True
-        assert runner.goal(gid)["state"] == GOAL_STATE_SUSPENDED
-        assert json.loads(runner.goal(gid)["suspend_snapshot"])["reason"] == (
-            "multimodal_high_priority"
-        )
-
-
-# ───────────────────────────────────────────────────────────
-# 剧本 3: 双轴配额轮替与防饥饿 + No-Scoring 铁证
-# ───────────────────────────────────────────────────────────
-
-
-class TestScenario3DualAxisQuotaRoundRobin:
+class TestScenario2DualAxisQuotaRoundRobin:
     """Bryan 轴 + 自我轴目标 × 连续 10 心跳。
 
     刚性断言:
@@ -755,11 +592,11 @@ class TestScenario3DualAxisQuotaRoundRobin:
 
 
 # ───────────────────────────────────────────────────────────
-# 剧本 4: 达成与终态沉淀
+# 剧本 3: 达成与终态沉淀
 # ───────────────────────────────────────────────────────────
 
 
-class TestScenario4CompletionAndSediment:
+class TestScenario3CompletionAndSediment:
     """目标执行最后一步 → 完成判定 → COMPLETED:
       - goals 表状态 COMPLETED + 时间戳写入（模拟时钟确定化）
       - 不再入活跃轮替（终态无出边 / 不装配）
@@ -825,20 +662,19 @@ class TestScenario4CompletionAndSediment:
 
 
 # ───────────────────────────────────────────────────────────
-# 汇编: 4 剧本入口（-k / 全量运行统一可见）
+# 汇编: 3 剧本入口（-k / 全量运行统一可见）
 # ───────────────────────────────────────────────────────────
 
 
 class TestGoalDrivenHarnessSuite:
-    """TG-3 四大剧本汇编（运行顶层测试等价; 此 class 仅作清单与 phi 注记）。"""
+    """TG-3 三大剧本汇编（运行顶层测试等价; 此 class 仅作清单与 phi 注记）。"""
 
     def test_suite_manifest(self):
-        """清单断言: 四大剧本类均存在且各自至少 1 个刚性测试。"""
+        """清单断言: 三大剧本类均存在且各自至少 1 个刚性测试。"""
         classes = {
             "剧本1 跨心跳长程推进": TestScenario1LongRangeAdvance,
-            "剧本2 突发中断与唤醒恢复": TestScenario2InterruptAndWakeup,
-            "剧本3 双轴配额轮替防饥饿": TestScenario3DualAxisQuotaRoundRobin,
-            "剧本4 达成与终态沉淀": TestScenario4CompletionAndSediment,
+            "剧本2 双轴配额轮替防饥饿": TestScenario2DualAxisQuotaRoundRobin,
+            "剧本3 达成与终态沉淀": TestScenario3CompletionAndSediment,
         }
         for name, cls in classes.items():
             tests = [m for m in dir(cls) if m.startswith("test_")]

@@ -449,7 +449,7 @@ class TestRotationQuota:
 
 
 # ───────────────────────────────────────────────────────────
-# 5. 中断信号（do_nothing 计数 / last-seen 超时 / timeout ABANDON / 会话接管）
+# 5. 中断信号（do_nothing 计数 / last-seen 超时 / timeout ABANDON）
 # ───────────────────────────────────────────────────────────
 
 class TestInterruptSignals:
@@ -519,17 +519,6 @@ class TestInterruptSignals:
         got = store.get_goals(AGENT)[0]
         assert got.state == GOAL_STATE_ABANDONED
         assert got.advance_count == 1  # record 保留
-
-    def test_suspend_on_takeover(self, iso_env):
-        """信号 1/2（会话接管）: 立即挂起 ACTIVE/IN_PROGRESS（API 提供, 0 新 tick）。"""
-        provider, store = _provider(iso_env)
-        store.upsert_goal(_make_goal("gt1" + "0" * 28))
-        store.upsert_goal(_make_goal("gt2" + "0" * 28, state=GOAL_STATE_IN_PROGRESS))
-        store.upsert_goal(_make_goal("gt3" + "0" * 28, state=GOAL_STATE_COMPLETED))
-        changed = provider.suspend_on_takeover(reason="user_message_burst")
-        assert sorted(changed) == ["gt1" + "0" * 28, "gt2" + "0" * 28]
-        states = {g.goal_id: g.state for g in store.get_goals(AGENT)}
-        assert states["gt3" + "0" * 28] == GOAL_STATE_COMPLETED  # 终态不动
 
 
 # ───────────────────────────────────────────────────────────
