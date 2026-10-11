@@ -380,6 +380,21 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 
 **小結**：門檻一、二不成立，門檻三成立；W1 首次成立、W2 尚無效果；Owner 兩項裁定如④；生產基線如⑤。後續以 WORLD-COLLISION-BREAK-1＋ELEVATION-SEAM-1 兩票推進。
 
+#### 0.1.16 Owner 內在生活原則裁定登記（2026-10-11，DOCS-ONLY）
+
+**性質**：DOCS-ONLY 登記 —— **0 `src/**` / 0 `tests/**` / 0 `configs/**` / 0 `.env` / 0 `data/**` 變更 / 0 實作 / 0 服務重啟 / 0 kill / 未開 `data/faulthandler.log` / 0 Frozen Contract 觸碰。本節為 Owner 2026-10-11 內在生活原則裁定登記，既有內容一字未動。**
+
+**Owner 原則裁定原文（2026-10-11，逐字）**：
+
+「內部生活的本質應該不用我參與。這世界沒有我一樣轉，但是我會對角色有一定影響。」
+
+**一併登記的四個後果（逐字採用）**：
+
+1. 09-14「拒送為正確留白」裁定範圍收窄：它只覆蓋發訊端（transmit/deliverability，靈魂→Bryan 方向），不覆蓋內在生活引擎（goal/線頭/昇華，靈魂自己的生活）。
+2. goal 全 SUSPENDED 於 Bryan 不在場（signal 5，motive_provider.py:577-593）在此原則下由「正確行為」改判為「待查缺口」：Bryan 軸目標暫停可接受，自軸（自由生長）目標不該停。已另開 GOAL-SUSPEND-SCOPE-1 唯讀調查，不在本票實作。
+3. 門檻一 goal 項無需改定義：新原則下 goal_driven 本就該不依賴 Bryan 可產出，定義維持四起源。
+4. whim/necessity/world_collision＋昇華 consume 路徑本就與 Bryan 無關，不受影響；Bryan→靈魂的影響方向（關係帶/TA-2/impression）維持不變。
+
 
 ---
 
