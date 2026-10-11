@@ -1,0 +1,73 @@
+{
+  "schema_version": "vc-audit-corpus-v1",
+  "description": "VC Audit v1 固定刺激語料。Phase 1 = text-fallback 路徑（繞過 VAD/ASR），Phase 1.5 = 另需 audio corpus（見 ticket §4）。",
+  "profile": "clients/voice_companion/profiles/rem.json",
+  "notes": [
+    "全部為 agent_rem 語境；上一版工單寫『茜』屬 persona 不匹配，已修正。",
+    "wake word 不會擋：_has_wake_word 僅存在於 akane_live.py，web_server.on_text 無閘門。",
+    "input_chars 對齊歷史實測 p50=9、max=17。"
+  ],
+  "stimuli": [
+    {
+      "id": "C1",
+      "text": "雷姆，你在嗎？",
+      "expected_input_chars": 7,
+      "purpose": "極短 baseline"
+    },
+    {
+      "id": "C2",
+      "text": "雷姆在做什麼呢",
+      "expected_input_chars": 7,
+      "purpose": "短問句"
+    },
+    {
+      "id": "C3",
+      "text": "測試一下，聽得到嗎",
+      "expected_input_chars": 9,
+      "purpose": "歷史最常見刺激（出現 2 次）"
+    },
+    {
+      "id": "C4",
+      "text": "好 那我摸摸頭",
+      "expected_input_chars": 7,
+      "purpose": "短陳述 + 動作"
+    },
+    {
+      "id": "C5",
+      "text": "以前你失去記憶昏倒的時候的事情啊。",
+      "expected_input_chars": 17,
+      "purpose": "長陳述（歷史 input_chars 上限）"
+    },
+    {
+      "id": "C6",
+      "text": "你今天過得怎麼樣？",
+      "expected_input_chars": 9,
+      "purpose": "一般問答"
+    },
+    {
+      "id": "C7",
+      "text": "你覺得一個人真正喜歡另一個人的時候，自己會知道嗎？",
+      "expected_input_chars": 25,
+      "purpose": "reasoning-sensitive；對應 empty-output 族 E1/E2/E3"
+    },
+    {
+      "id": "C8",
+      "text": "我。這是聽說的呀。",
+      "expected_input_chars": 9,
+      "purpose": "歷史長延遲樣本（7463 ms）"
+    },
+    {
+      "id": "C9",
+      "text": "subaru",
+      "expected_input_chars": 6,
+      "purpose": "最短邊界（歷史 8677 ms）"
+    }
+  ],
+  "pilot_orders": {
+    "pilot_10": {
+      "description": "Phase 2 pilot：C1–C9 各一次 + C7 再跑一次，共 10 turns。兩臂必須使用完全相同且順序一致的序列。",
+      "order": ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C7"],
+      "turns": 10
+    }
+  }
+}

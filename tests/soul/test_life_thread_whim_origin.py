@@ -324,7 +324,7 @@ def _public_surface(tree: ast.Module) -> Dict[str, str]:
     return surface
 
 
-#: M3 凍結面基線（本票**之前**的現況，逐位釘死）。任何一格不符 ⇒ 紅燈。
+#: M3 凍結面基線（WINDOW-1 後基線：WORLD_COLLISION_WINDOW_HOURS=14，逐位釘死）。任何一格不符 ⇒ 紅燈。
 M3_BASELINE_SURFACE = {
     "WakeDecision": (
         "class WakeDecision(should_wake: bool, origin_type: Optional[str], "
@@ -339,7 +339,7 @@ M3_BASELINE_SURFACE = {
 
 
 def test_m3_gate_untouched():
-    """W7：`life_thread_wake_gate.py` 的公開介面與本票前基線**逐位一致**（0 改動）。
+    """W7：`life_thread_wake_gate.py` 的公開介面與 WINDOW-1 後基線**逐位一致**（0 改動）。
 
     §4.5 明文聲明「M3 閘門 0 改動」：公開函式簽章、公開 dataclass 欄位、
     凍結常數 `WORLD_COLLISION_WINDOW_HOURS` 皆不得被本票動到。
@@ -361,7 +361,7 @@ def test_m3_gate_untouched():
         and isinstance(n.targets[0], ast.Name)
         and isinstance(n.value, ast.Constant)
     }
-    assert consts.get("WORLD_COLLISION_WINDOW_HOURS") == 4, consts.get(
+    assert consts.get("WORLD_COLLISION_WINDOW_HOURS") == 14, consts.get(
         "WORLD_COLLISION_WINDOW_HOURS"
     )
 

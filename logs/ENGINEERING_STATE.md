@@ -330,6 +330,56 @@ W1 工單（主大腦出）指定「非空且非 `0`／`false` 即 ON」並稱�
 
 **Non-claims**：Threshold 2 未宣稱達標；本輪不改 Source truth、不觸發 canonicalization、不產生 commit／push／merge 授權（DCG #22 治理下第一筆 Runtime＋Evidence）。
 
+#### 0.1.15 INNER-LIFE-AUDIT-2 七天窗重測結果＋Owner 兩項裁定登記（2026-10-11，DOCS-ONLY）
+
+**性質**：DOCS-ONLY 登記 —— **0 `src/**` / 0 `tests/**` / 0 `configs/**` / 0 `.env` / 0 `data/**` 變更 / 0 實作 / 0 服務重啟 / 0 kill / 未開 `data/faulthandler.log` / 0 Frozen Contract 觸碰。本節為 INNER-LIFE-AUDIT-2 七天窗重測的結果登記＋Owner 裁定登記，既有內容一字未動。**
+
+**① 七天窗線頭統計（生產唯讀量測）**：
+
+窗口 10-04~10-11：新線頭 10 條（whim 8 / necessity 2 / goal 0 / world_collision 0），單一起源 80.0%
+
+| 起源 | 條數 |
+|---|---|
+| whim | 8 |
+| necessity | 2 |
+| goal | 0 |
+| world_collision | 0 |
+| **合計** | **10（單一起源 80.0%）** |
+
+**② 三門檻判定**：
+
+門檻一：不成立（2/4 起源）。門檻二：不成立（run_elevation 每日行使 98 elevated、value 80，但線頭來源 0/530，value 全 diary:night）。門檻三：成立（mahiru 連 8 天、7 distinct 標題、全生命週期齊備）
+
+| 門檻 | 判定 | 備註 |
+|---|---|---|
+| 門檻一 | **不成立** | 2/4 起源 |
+| 門檻二 | **不成立** | `run_elevation` 每日行使 98 elevated、value 80，但線頭來源 0/530，value 全 `diary:night` |
+| 門檻三 | **成立** | mahiru 連 8 天、7 distinct 標題、全生命週期齊備 |
+
+**③ W1 / W2 生產效果判定**：
+
+W1 生產證據首次成立（whim 10-04 起 8 線頭）；W2 尚無效果（world_collision 全時 0）
+
+- **W1**：生產證據**首次成立** —— 自 10-04 起 whim 產出 8 線頭。
+- **W2**：**尚無效果** —— `world_collision` 全時段為 0。
+
+**④ Owner 裁定（2026-10-11，兩項）**：
+
+Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) 兩票都開（WORLD-COLLISION-BREAK-1＋ELEVATION-SEAM-1）
+
+- **裁定①**：`diary` 衍生 `value` **不計入**門檻二（門檻二維持不成立）。
+- **裁定②**：`(a)(b)` 兩票都開 —— **WORLD-COLLISION-BREAK-1** ＋ **ELEVATION-SEAM-1**（後續實作票另發，本節僅登記開票決定）。
+
+**⑤ 生產事實基線（重測窗口的可比性錨點）**：
+
+生產事實：10-08 曾重啟（pid 11968，mktime 2026-10-08 19:40:47）；10-03 後 src/soul/life_thread_* 0 commits；HEAD 0247d36
+
+- 10-08 曾重啟（pid 11968，mktime 2026-10-08 19:40:47）。
+- 10-03 後 `src/soul/life_thread_*` **0 commits**（重測窗口內該路徑無程式變更）。
+- 重測參照 HEAD `0247d36`。
+
+**小結**：門檻一、二不成立，門檻三成立；W1 首次成立、W2 尚無效果；Owner 兩項裁定如④；生產基線如⑤。後續以 WORLD-COLLISION-BREAK-1＋ELEVATION-SEAM-1 兩票推進。
+
 
 ---
 

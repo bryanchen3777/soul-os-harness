@@ -61,8 +61,9 @@ ORIGIN_TYPES: Tuple[str, ...] = (
 #: （`dormant` 不佔額度；`completed` / `abandoned` 為終態，亦不佔額度）。
 ACTIVE_THREAD_STATUS = "active"
 
-#: 契約 §4.2 具名常數：世界碰撞視窗（小時）。**不得**寫裸字面量 `4`。
-WORLD_COLLISION_WINDOW_HOURS = 4
+#: 契約 §4.2 具名常數：世界碰撞視窗（小時）。**不得**寫裸字面量 `14`。
+#: 同口徑約束（WORLD-COLLISION-WINDOW-1）：M3 閘門／M4 起源兩處同名常數須同值，4→14。
+WORLD_COLLISION_WINDOW_HOURS = 14
 
 #: 契約 §4.2 `SOURCES_QUALIFYING`（算數的來源，窮舉）。其餘（含測試用 `synthetic`）不算。
 QUALIFYING_WORLD_SOURCES = frozenset(

@@ -1774,7 +1774,7 @@ def test_t12_second_active_flips_same_list_to_saturated():
 
 #: (常數名, 執行期值, 契約明令的字面值)
 _CONSTANT_LITERAL_CASES = (
-    ("WORLD_COLLISION_WINDOW_HOURS", WORLD_COLLISION_WINDOW_HOURS, 4),
+    ("WORLD_COLLISION_WINDOW_HOURS", WORLD_COLLISION_WINDOW_HOURS, 14),
     ("SEED_HINT_MAX_ITEMS", SEED_HINT_MAX_ITEMS, 5),
     ("SEED_HINT_MAX_TEXT_CHARS", SEED_HINT_MAX_TEXT_CHARS, 200),
     ("LOG_MAX_CHARS", LOG_MAX_CHARS, 200),
@@ -1810,25 +1810,25 @@ def test_t12_f1_constant_literal_is_pinned(name, value, literal):
 
 
 def test_t12_f1_collision_window_seconds_are_hardcoded_14400():
-    """F1：視窗秒數以**獨立算式** 4*3600 釘死為 14400 秒（3 項皆不得位移）。"""
-    assert 4 * 3600 == 14400
-    assert WORLD_COLLISION_WINDOW_HOURS * 3600 == 4 * 3600
-    assert WORLD_COLLISION_WINDOW_HOURS == 4
+    """F1：視窗秒數以**獨立算式** 14*3600 釘死為 50400 秒（3 項皆不得位移）。"""
+    assert 14 * 3600 == 50400
+    assert WORLD_COLLISION_WINDOW_HOURS * 3600 == 14 * 3600
+    assert WORLD_COLLISION_WINDOW_HOURS == 14
 
 
 @pytest.mark.parametrize("encode", ["epoch_seconds", "iso_string"])
-def test_t12_f1_e2e_exactly_four_hours_wakes_and_one_more_second_sleeps(encode):
-    """F1 端到端（硬寫死 14400 秒，不引用常數）：恰 4h ⇒ WAKE；4h＋1s ⇒ SLEEP / 留白。"""
+def test_t12_f1_e2e_exactly_fourteen_hours_wakes_and_one_more_second_sleeps(encode):
+    """F1 端到端（硬寫死 50400 秒，不引用常數）：恰 14h ⇒ WAKE；14h＋1s ⇒ SLEEP / 留白。"""
     def _record(offset_seconds: int) -> dict:
         stamp = NOW - offset_seconds
         return _world_record(timestamp=stamp if encode == "epoch_seconds" else _iso(stamp))
 
-    at_edge = _call(timeslot="daytime", recent_perceptions=[_record(14400)])
+    at_edge = _call(timeslot="daytime", recent_perceptions=[_record(50400)])
     assert at_edge.should_wake is True, encode
     assert at_edge.reason == "WORLD_COLLISION_WAKE", encode
     assert at_edge.origin_type == "world_collision", encode
 
-    past_edge = _call(timeslot="daytime", recent_perceptions=[_record(14401)])
+    past_edge = _call(timeslot="daytime", recent_perceptions=[_record(50401)])
     assert past_edge.should_wake is False, encode
     assert past_edge.reason == "DAYTIME_WHITESPACE", encode
     assert past_edge.origin_type is None, encode
