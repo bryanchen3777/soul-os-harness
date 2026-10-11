@@ -3,7 +3,7 @@
 > **性質**：READ-ONLY 調查 ＋ DOCS-ONLY 新文件。本票只新建本檔 1 個 MD；**0 `src/**` / 0 `tests/**` / 0 `configs/**` / 0 `scripts/**` / 0 `data/**` 寫入 / 0 服務重啟 / 0 kill / 未開 `data/faulthandler.log` / 0 Frozen Contract 觸碰 / 未用 `git add -A`**（逐檔明確 add 本檔）。
 > **`data/**` 全程唯讀**（本票實際只用 `git`＋`grep`＋`read`，連 SQLite `mode=ro` 都未需動用；`data/faulthandler.log` 未開啟）。
 > **調查時刻 HEAD**：`a1bf9e6`（TEST-HYGIENE-2；`git status` 僅 1 個預先存在的 untracked `scripts/_watchdog_hidden.vbs`，非本票產物，未動）。
-> **前置基線**：今日已閉環 AUDIT-2（§0.1.15）、碰撞窗 14h（WINDOW-1）、昇華 consume 接線（CONSUME-1＋FUP-1，merge `8f645c1`）、自軸豁免（GOAL-AXIS-GUARD-1，`96528e8`＋`e799f11`）、去重冪等（VALUE-DEDUP-A-1，`fb7ab63`＋`469de8d`）、S 軸模擬通（S-SEED-SIM-1，`92cae38`）、hygiene 清零（`0aeca3b`）。**以上合併碼生產未重啟、新碼未生效**——凡需 runtime 證據的票一律列入 B 批。
+> **前置基線**：今日已閉環 AUDIT-2（§0.1.15）、碰撞窗 14h（WINDOW-1）、昇華 consume 接線（CONSUME-1＋FUP-1，merge `8f645c1`）、自軸豁免（GOAL-AXIS-GUARD-1，`96528e8`＋`e799f11`）、去重冪等（VALUE-DEDUP-A-1，`fb7ab63`＋`469de8d`）、S 軸模擬通（S-SEED-SIM-1，`92cae38`）、hygiene 清零（`0aeca3b`）。**本句為調查時刻快照；之後生產已重啟 3 次（18:23 接縫＋碰撞窗、18:36 自軸豁免、18:48 去重冪等），新碼全生效**——凡需 runtime 證據的票一律列入 B 批。
 > **門檻現況（AUDIT-2 七天窗 10-04~10-11）**：一❌（2/4：whim 8 / necessity 2 / goal 0 / world_collision 0，單一起源 **80.0%** 恰壓線）、二❌（`run_elevation` 每日行使 98 elevated、value 80，但**線頭來源 0/530**，value 全 `diary:night`；Owner 已裁定 diary 衍生 value **不計入**）、三✅（mahiru 連 8 天、7 distinct 標題）。
 
 ---
@@ -58,7 +58,7 @@
 
 ---
 
-## 4. 工單總表（15 票：A 7 / B 4 / C 4）
+## 4. 工單總表（12 票：A 5 / B 4 / C 3；另 A6/A7＋C1 已完成保留備查，共 15 行）
 
 | ID | 目標一句話 | 工法 | 大小 | 依賴（前置票） | Frozen 觸碰 | 需 Owner 裁定 |
 |---|---|---|---|---|---|---|
@@ -66,15 +66,15 @@
 | A2 IL-TESTNAME-1 | 誤名測試 `..._hardcoded_14400` 改名（實值 50400，名實不符） | IMPL（test-only） | S | 無 | 無 | 無 |
 | A3 IL-SIGNAL6-1 | signal 6（連續 not_transmit≥3 掛起）生產是否曾開火唯讀觀測＋「是否該有」判定 | READ-ONLY | S | 無 | 無 | 無 |
 | A4 IL-PROJ-1 | `emergent_projection` 對門檻二新產 belief 的投影覆蓋審計（測試＋trace 雙查） | READ-ONLY | S | 無 | 無 | 無 |
-| A5 IL-DEDUP-1 | 既有 80 value 觀測＋VALUE-DEDUP-A-1 冪等守門生效確認（**不清倉**） | READ-ONLY | S | 生產重啟（僅為確認生效；觀測本身可先行） | 無 | 無 |
-| A6 ELEVATION-SEAM-1 | 線頭→昇華接縫生效驗證＋缺口補齊（Owner 10-11 已授權開票） | IMPL/TEST | M | 生產重啟（Owner 授權） | 無（既有接縫路徑內；超範圍需另申請） | 無（已授權；閾值調整另見 C2） |
-| A7 WORLD-COLLISION-BREAK-1 | `world_collision` 全時 0 打破（W2 無效果的後續；Owner 10-11 已授權開票） | IMPL/TEST | M | 無（sim 先行） | 無（超範圍需另申請） | 無（已授權；閾值最終值另見 C2） |
+| A5 IL-DEDUP-1 | 既有 80 value 觀測＋VALUE-DEDUP-A-1 冪等守門生效確認（**不清倉**） | READ-ONLY | S | 重啟已完成（18:23 起），待自然 slot 確認生效；觀測本身可先行 | 無 | 無 |
+| A6 ELEVATION-SEAM-1 | 線頭→昇華接縫生效驗證＋缺口補齊（Owner 10-11 已授權開票）✅ 已完成（見 §0.1.15＋部署記錄），本表保留備查 | IMPL/TEST | M | 生產重啟（Owner 授權） | 無（既有接縫路徑內；超範圍需另申請） | 無（已授權；閾值調整另見 C2） |
+| A7 WORLD-COLLISION-BREAK-1 | `world_collision` 全時 0 打破（W2 無效果的後續；Owner 10-11 已授權開票）✅ 已完成（見 §0.1.15＋部署記錄），本表保留備查 | IMPL/TEST | M | 無（sim 先行） | 無（超範圍需另申請） | 無（已授權；閾值最終值另見 C2） |
 | B1 IL-WHIMBAL-1 | whim 80.0% 壓線平衡追蹤（完整 7 天窗重測＋緩衝評估） | READ-ONLY | S | 生產重啟＋完整 7 天窗 | 無 | 無 |
 | B2 IL-S4PROD-1 | S4 `motive_trace` 種子生產驗證（sim 已通 `92cae38`，待生產 seed 事件讀數） | TEST | S | 生產自然 seed 事件 | 無 | 無 |
 | B3 IL-SEAM-EFFECT-1 | 接縫生效後線頭來源 value 觀測（`run_elevation` 線頭來源 0/530 是否鬆動） | READ-ONLY | S | A6＋生產重啟＋≥1 輪 `run_elevation` | 無 | 無 |
 | B4 IL-BWAKE-1 | Bryan 回來喚醒及時性觀測（在場事件→自軸/S 軸 goal 恢復時延） | READ-ONLY | M | Bryan 在場事件（自然發生，不等人為觸發） | 無 | 無（語意裁定見 C1） |
-| C1 IL-GOALABS-1 | goal 缺席期語意裁定請示（B 軸暫停可接受／自軸不該停；沿 0.1.16 原則） | READ-ONLY | M | GOAL-SUSPEND-SCOPE-1 調查結論（參考，不硬等） | 無 | **有** |
-| C2 IL-THRESH-1 | `world_collision` 閾值最終裁定請示（0.33 見 weather／0.23 見 news；與 09-14「不值得傳訊」一併權衡） | READ-ONLY | S | 無 | 無 | **有** |
+| C1 IL-GOALABS-1 | goal 缺席期語意裁定請示（B 軸暫停可接受／自軸不該停；沿 0.1.16 原則）語意已裁定並實作；殘留喚醒及時性併入 B4，本票關閉備查 | READ-ONLY | M | GOAL-SUSPEND-SCOPE-1 調查結論（參考，不硬等） | 無 | **有** |
+| C2 IL-THRESH-1 | `world_collision` 閾值最終裁定請示（0.33 見 weather／0.23 見 news，出處 `docs/INNER-LIFE-DEFINITION-OF-DONE.md:122`「門檻降至 0.33 ⇒ weather 可見；降至 0.23 ⇒ news 可見」；另見 `docs/LIFE-THREAD-W2-PERCEPTION-SCORING-WORK-ORDER.md:45-46` 實算 0.3300／0.2300；與 09-14「不值得傳訊」一併權衡） | READ-ONLY | S | 無 | 無 | **有** |
 | C3 IL-DIARYVAL-1 | diary 衍生 value 既有節點處置裁定請示（不清倉／重標／保留三選一；門檻二不計入已定） | READ-ONLY | S | A5 觀測（參考） | 無 | **有** |
 | C4 IL-RECALL-1 | DORMANT/SUPERSEDED 回憶讀取設計＋實作（「我以前很在意」可查詢） | IMPL | M | C1（範圍）＋B3（有線頭來源產物後才有真實回憶對象） | 無（讀側；碰 SAGE 寫入需另申請） | **有**（TG-1 排除在先） |
 
@@ -84,16 +84,16 @@
 
 ## 5. 依賴排序（三批）
 
-### A 批：現在可開（7 票：A1–A7）
-無前置生產證據需求，無未決裁定阻擋（A6/A7 屬 Owner 10-11 已授權；A1 的裁定在驗收端）。建議順序：A3/A4/A5（純觀測先行，0 風險）→ A2（test-only 改名）→ A1（調查＋裁定請示）→ A6/A7（實作票，sim 先行）。
+### A 批：現在可開（5 票：A1–A5；A6/A7 已完成保留備查）
+無前置生產證據需求，未決裁定阻擋（A1 的裁定在驗收端）。建議順序：A3/A4/A5（純觀測先行，0 風險）→ A2（test-only 改名）→ A1（調查＋裁定請示）。
 
 ### B 批：需等生產證據（4 票：B1–B4）
-- B1：等重啟後完整 7 天窗。
+- B1：重啟已完成（18:23 起），待自然 slot 滿完整 7 天窗。
 - B2：等生產自然 seed 事件（不等人為觸發、不為了驗證而造事件）。
-- B3：等 A6＋重啟＋≥1 輪 `run_elevation`。
+- B3：重啟已完成（18:23 起），A6 已閉環，待自然 slot ≥1 輪 `run_elevation`。
 - B4：等 Bryan 自然在場事件（跨越數小時的等待不得依賴背景 job，以落盤證據事後回讀）。
 
-### C 批：需 Owner 先裁定（4 票：C1–C4）
+### C 批：需 Owner 先裁定（3 票：C2–C4；C1 已關閉備查）
 - C1：goal 缺席期語意（B 軸 vs 自軸）。
 - C2：world_collision 閾值最終值。
 - C3：diary-value 既有節點處置。
