@@ -506,7 +506,7 @@ class TestInterruptSignals:
     def test_timeout_abandons_in_progress(self, iso_env):
         """timeout_days 超时（IN_PROGRESS + 无推进）→ ABANDONED（保留 record）。"""
         provider, store = _provider(iso_env)
-        old_ts = time.time() - 2 * 86400
+        old_ts = _utc(10).timestamp() - 2 * 86400
         store.upsert_goal(_make_goal(
             "ga" + "0" * 29, state=GOAL_STATE_IN_PROGRESS, advance_count=1,
             now_ts=old_ts, last_advanced_at=old_ts,
@@ -792,7 +792,7 @@ class TestHeartbeatWiring:
             produced.extend(await engine.interpret_new_events(AGENT))
             m = provider.assemble_candidate(now=_utc(10))
             assert m is not None
-            return engine.resolve_pending(AGENT)
+            return engine._store.resolve_pending(AGENT, now=_utc(10) + timedelta(minutes=1))
 
         motive = asyncio.run(run())
         assert produced == []
