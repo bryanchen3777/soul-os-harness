@@ -316,7 +316,7 @@ def test_world_collision_tolerates_legacy_records_without_summary(soul_env, capl
 
 
 def test_world_collision_rejects_unqualified_and_stale_records(soul_env):
-    """§4.2／§5.2.4：只算 `SOURCES_QUALIFYING`、`accepted is True`、4h 視窗內。"""
+    """§4.2／§5.2.4：只算 `SOURCES_QUALIFYING`、`accepted is True`、14h 視窗內。"""
     stale = _NOW - timedelta(hours=m4.WORLD_COLLISION_WINDOW_HOURS + 1)
     _fake_trace([
         _world_record("未過門檻", accepted=False),
@@ -326,7 +326,7 @@ def test_world_collision_rejects_unqualified_and_stale_records(soul_env):
     ])
     facts = m4.collect_world_seeds(AGENT, now=_NOW)["facts"]
     assert [f["summary"] for f in facts] == ["新鮮的天氣"]
-    assert m4.WORLD_COLLISION_WINDOW_HOURS == 4
+    assert m4.WORLD_COLLISION_WINDOW_HOURS == 14
 
 
 def test_world_collision_accepts_weather_news_and_bryan_calendar(soul_env):
