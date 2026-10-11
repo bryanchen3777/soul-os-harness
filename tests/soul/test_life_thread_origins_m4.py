@@ -1005,9 +1005,14 @@ def test_legacy_git_grep_false_green_is_fixed(soul_env):
         )
 
     # 🔴 明文邊界：不得為了讓本測試變綠去改 `src/world/middleware.py`
+    # TEST-HYGIENE-1（2026-10-11）：`scripts/sim_life_thread_origin.py:40` 是
+    # docstring 內對 `life_thread_origins.py:985` 簽章的純文字引用（AST 無 import
+    # M4，已驗證；與 middleware.py:97 註解同類），故列為文字比對層例外；真正接線
+    # 不變量仍由 `test_module_is_not_wired_into_production_paths` 的 AST 白名單釘死。
+    _text_only_refs = ("src/world/middleware.py", "scripts/sim_life_thread_origin.py")
     for line in fixed_out.splitlines():
         rel = line.split(":", 1)[0].replace("\\", "/")
-        assert rel in _M4_IMPORTER_WHITELIST or rel == "src/world/middleware.py", (
+        assert rel in _M4_IMPORTER_WHITELIST or rel in _text_only_refs, (
             f"出現白名單外的 M4 引用：{line}"
         )
 
