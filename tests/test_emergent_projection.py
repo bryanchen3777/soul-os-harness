@@ -446,6 +446,33 @@ class TestLifecycleGatedProjection(unittest.TestCase):
         rec = json.loads(sidecar.read_text(encoding="utf-8").splitlines()[0])
         self.assertEqual(rec["projected_node_ids"], ["n-B"])
 
+    def test_12_fresh_threshold_belief_plain_projection(self):
+        """门槛二新产 belief（pattern 父 active + belief 子 fresh）→ 子原样投影"""
+        import uuid
+        parent = _make_node("n-P-fresh", "pattern", "用户常在深夜提到工作压力。", lifecycle_state="active")
+        child = _make_node(
+            "n-C-fresh", "belief", "深夜的压力值得被认真对待。",
+            lifecycle_state="active", parent_node_id="n-P-fresh",
+        )
+        child["lineage_depth"] = 1
+        child["lineage_path"] = "n-P-fresh/n-C-fresh"
+        child["provenance_ref"] = str(uuid.uuid4())
+        _write_nodes(self.tmp, [parent, child])
+        # (a) 只投影子，且 content 原样（无降维合成、无 weakening 前缀）
+        result = project_emergent(ALICE, store_dir=self.tmp, record_trace=False)
+        self.assertEqual([p["node_id"] for p in result], ["n-C-fresh"])
+        self.assertEqual(result[0]["content"], "深夜的压力值得被认真对待。")
+        self.assertNotIn("我以前觉得", result[0]["content"])
+        self.assertNotIn("我隐约觉得", result[0]["content"])
+        # (b) block 含子 content
+        block = format_emergent_block(ALICE, store_dir=self.tmp, record_trace=False)
+        self.assertIn("深夜的压力值得被认真对待。", block)
+        # (c) sidecar 只记录子 id
+        project_emergent(ALICE, store_dir=self.tmp, record_trace=True)
+        sidecar = self.tmp / PROJECTION_TRACE_FILENAME
+        rec = json.loads(sidecar.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(rec["projected_node_ids"], ["n-C-fresh"])
+
 
 def _rmtree(path: Path):
     import shutil
