@@ -1119,11 +1119,11 @@ class TestSectionF_Invariants:
         assert state.snapshot()["novelty_window_seconds"] == 24 * 3600
         assert state.snapshot()["active_events"] == 2
 
-        # 4h world_collision / wake gate 契約常數不變
+        # 14h world_collision / wake gate 契約常數不變
         from src.soul import life_thread_origins, life_thread_wake_gate
 
-        assert life_thread_wake_gate.WORLD_COLLISION_WINDOW_HOURS == 4
-        assert life_thread_origins.WORLD_COLLISION_WINDOW_HOURS == 4
+        assert life_thread_wake_gate.WORLD_COLLISION_WINDOW_HOURS == 14
+        assert life_thread_origins.WORLD_COLLISION_WINDOW_HOURS == 14
 
     def test_f3_wake_gate_decision_is_unaffected_by_world_log(self, tmp_path):
         """F.3: wake gate 的輸入面（perception trace 行）不受 World Log 影響，
