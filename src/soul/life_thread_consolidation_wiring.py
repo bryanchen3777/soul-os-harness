@@ -281,6 +281,39 @@ def _append_dissolved(agent_id: str, thread_id: str, fact_id: str) -> bool:
     return bool(lt.append_dissolved(agent_id, thread_id, sage_fact_id=fact_id))
 
 
+def _consume_dissolved_fact(agent_id: str, fact: Dict[str, Any], fact_id: str) -> None:
+    """ELEVATION-CONSUME-1：dissolve 事實直通昇華鏈（fire-and-forget，不經 Gate.submit）。
+
+    背景：dissolve 產出的 `lived_experience` 事實只落 SAGE、從未進昇華鏈
+    （`elevation_edges` 0 筆 `sage_fact`）。經 Gate.submit 需新增 `trigger_type` ＝
+    已排除的解凍項 ⇒ 改在此（`_append_dissolved` 成功後、同一背景任務內）直接
+    `InternalizingEngine.consume(sage_fact_to_input(fact))` ＋ `_persist_result`。
+    `lived_experience` 在防火牆天然放行（`elevation_adapter` fact 層只剔除
+    `external_world`，本處不動防火牆）。`edges` 已有 `source_id == fact_id` 則跳過
+    （冪等：同一批證據不重複支持）。呼叫端包裹 try/except（fail-silent 只 warning）。
+    `lazy import`（不把 `soul_elevation` 拉進本模組 import 期）；0 新定時器／事件／schema。
+    """
+    from soul_elevation import InternalizingEngine as _Engine
+
+    from src.inner_life import elevation_adapter as _ea
+    from src.memory.sage.models import Fact as _SageFact
+
+    store_dir = _ea._resolve_store_dir(None)
+    for _edge in _ea._load_edges(store_dir):
+        if str((_edge or {}).get("source_id") or "") == fact_id:
+            return
+    _fact_obj = _SageFact.from_dict({**dict(fact), "fact_id": fact_id})
+    _kwargs: Dict[str, Any] = {
+        "llm": _ea.StubElevationLLM(),
+        "trace_writer": _ea.ElevationTraceWriter(str(store_dir / _ea.TRACE_FILENAME)),
+    }
+    if agent_id:
+        _kwargs["agent_id"] = agent_id
+    _engine = _Engine(**_kwargs)
+    _nodes = _engine.consume(_ea.sage_fact_to_input(_fact_obj, agent_id=agent_id))
+    _ea._persist_result(store_dir, _nodes, _engine.evidence_edges)
+
+
 def _now() -> datetime:
     """溶解時刻（UTC aware）。"""
     return datetime.now(timezone.utc)
@@ -316,6 +349,16 @@ async def _consolidate_once(agent_id: str, thread_id: str) -> Any:
                 # 回填失敗**不得**影響已落地的 fact（fail-silent，只記 warning）。
                 logger.warning(
                     f"{_LOG_PREFIX}sage_fact_id 回填失敗 thread_id={thread_id!r} "
+                    f"type={type(exc).__name__}"
+                )
+            # ELEVATION-CONSUME-1：dissolve 事實直通昇華鏈（fire-and-forget，不經
+            # Gate.submit；lived_experience 防火牆天然放行；edges 已有 source_id 則
+            # 跳過；全程 fail-silent 只 warning，沿用既有背景任務，0 新定時器）。
+            try:
+                _consume_dissolved_fact(agent_id, fact, fact_id)
+            except Exception as exc:
+                logger.warning(
+                    f"{_LOG_PREFIX}elevation consume 失敗 thread_id={thread_id!r} "
                     f"type={type(exc).__name__}"
                 )
         return fact_id
