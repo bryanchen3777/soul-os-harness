@@ -580,7 +580,9 @@ class GoalMotiveProvider:
                 last_seen_hours = (now - bry_dt).total_seconds() / 3600.0
                 if last_seen_hours > PROACTIVE_DM_BRYAN_INACTIVE_HOURS:
                     for g in store.get_goals(self.agent_id):
-                        if g.state in (GOAL_STATE_ACTIVE, GOAL_STATE_IN_PROGRESS):
+                        # Owner 2026-10-11 原則（DOC-RULING-1 落地）: Bryan 缺席 P1
+                        # 只掛起 Bryan 軸，自軸（自由生長）豁免。
+                        if g.axis != AXIS_SELF and g.state in (GOAL_STATE_ACTIVE, GOAL_STATE_IN_PROGRESS):
                             store.transition_goal(
                                 g.goal_id,
                                 GOAL_STATE_SUSPENDED,
