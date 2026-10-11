@@ -13,6 +13,9 @@
 #   * 背景任務一律在測試結束前被 `await`（0 殘留斷言）。
 #   * 不碰 Frozen（Agency／TriggerEnvelope／InnerLifeEvent／4 handlers／SAGE 寫入主幹）：
 #     只讀 fact dict、不改寫路徑。
+#   * **不 import 執行層**（`life_thread_dissolution_exec` 的 T54 importer 護欄指名
+#     恰 3 個 importer；本檔以字面狀態碼＋duck-typing 斷言，哨兵／預算則以
+#     「每測試獨立 agent＋獨立 thread_id」天然隔離，0 行程級重置需求）。
 from __future__ import annotations
 
 import asyncio
@@ -29,9 +32,11 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 import src.soul.life_thread_consolidation_wiring as w  # noqa: E402
-import src.soul.life_thread_dissolution_exec as ex  # noqa: E402
 
-AGENT = "agent_dissolve_consume"
+#: 執行層成功狀態碼的字面值（來源 `life_thread_dissolution_exec.STATUS_CONSOLIDATED`；
+#: 本檔不 import 執行層，見檔頭 T54 說明；漂移時此斷言會紅，即為哨兵）。
+_STATUS_CONSOLIDATED = "consolidated"
+
 NARRATIVE = "我把簡報做完了，這讓我覺得自己能扛事。"
 LLM_JSON = json.dumps({"dissolution": NARRATIVE, "meaning_kind": "competence"})
 FACT_ID = "fact-dissolve-consume-001"
@@ -39,15 +44,11 @@ FACT_ID = "fact-dissolve-consume-001"
 
 @pytest.fixture(autouse=True)
 def _isolate_process_state():
-    """清空行程級狀態＋斷言 0 背景任務殘留（對齊既有 wiring 測試矩陣）。"""
-    ex._clear_consolidated_registry()
-    ex._reset_default_budget()
+    """丟棄 writer 快取＋斷言 0 背景任務殘留（本檔不碰執行層行程級狀態）。"""
     w._reset_writers()
     yield
     assert w.pending_task_count() == 0, "測試結束仍有未清理的背景任務"
     w._BACKGROUND_TASKS.clear()
-    ex._clear_consolidated_registry()
-    ex._reset_default_budget()
     w._reset_writers()
 
 
@@ -80,9 +81,7 @@ class _RecordingProxy:
         return self.text
 
 
-def _drive(
-    agent_id: str = AGENT, thread_id: str = "th-consume-1", status: str = "completed"
-) -> Dict[str, Any]:
+def _drive(agent_id: str, thread_id: str, status: str = "completed") -> Dict[str, Any]:
     """在 running loop 內呼叫同步 hook，並把背景任務 `await` 完（0 殘留）。"""
     out: Dict[str, Any] = {"tasks": [], "results": []}
 
@@ -126,6 +125,15 @@ def _read_edges() -> List[Dict[str, Any]]:
     ]
 
 
+def _assert_consolidated(out: Dict[str, Any]) -> Any:
+    """duck-typing 斷言：任務成功且狀態為 consolidated（不 import 執行層）。"""
+    assert len(out["results"]) == 1, out["results"]
+    result = out["results"][0]
+    assert not isinstance(result, BaseException), result
+    assert getattr(result, "status", None) == _STATUS_CONSOLIDATED, result
+    return result
+
+
 def test_dissolve_success_triggers_consume_with_fact_source_id(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -135,11 +143,7 @@ def test_dissolve_success_triggers_consume_with_fact_source_id(
         w, "_read_thread_state", lambda a, t: _terminal_thread("th-consume-1")
     )
 
-    out = _drive(thread_id="th-consume-1")
-    assert len(out["results"]) == 1
-    result = out["results"][0]
-    assert isinstance(result, ex.ConsolidationResult), result
-    assert result.status == ex.STATUS_CONSOLIDATED, result.reason
+    _assert_consolidated(_drive("agent_consume_1", "th-consume-1"))
 
     edges = _read_edges()
     sage_edges = [e for e in edges if e.get("source_type") == "sage_fact"]
@@ -158,12 +162,11 @@ def test_repeat_dissolve_same_fact_skips_second_consume(
         lambda a, t: _terminal_thread(t),  # 每次用呼叫端的 thread_id 建終態線頭
     )
 
-    out1 = _drive(thread_id="th-consume-dup-1")
-    assert out1["results"][0].status == ex.STATUS_CONSOLIDATED
+    _assert_consolidated(_drive("agent_consume_2", "th-consume-dup-1"))
     first_bytes = _edges_path().read_bytes()
 
-    out2 = _drive(thread_id="th-consume-dup-2")  # 不同線頭、同一 fact_id
-    assert out2["results"][0].status == ex.STATUS_CONSOLIDATED
+    # 不同線頭、同一 fact_id ⇒ 執行層會再調 fact_writer，但昇華側必須跳過。
+    _assert_consolidated(_drive("agent_consume_2", "th-consume-dup-2"))
     assert _edges_path().read_bytes() == first_bytes, "第二次必須跳過 consume（0 追加）"
 
 
@@ -182,9 +185,8 @@ def test_consume_exception_is_fail_silent(
     )
 
     with caplog.at_level(logging.WARNING, logger=w.logger.name):
-        out = _drive(thread_id="th-consume-boom")  # 不得拋
+        _assert_consolidated(
+            _drive("agent_consume_3", "th-consume-boom")  # 不得拋
+        )
 
-    result = out["results"][0]
-    assert isinstance(result, ex.ConsolidationResult), result
-    assert result.status == ex.STATUS_CONSOLIDATED, result.reason
     assert any("elevation consume" in r.message for r in caplog.records), caplog.text
