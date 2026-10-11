@@ -88,6 +88,10 @@ DEFAULT_PERCEPTION_BUDGET = 3
 DEFAULT_SOCIAL_PERCEPTION_BUDGET = 2
 
 # WORLD-FACT-TEXT-PERSIST-1 (2026-09-14): fact text（世界事實文字）落點與上限。
+# WORLD-FACT-TEXT-3 P1 (2026-10-11, Owner 已批): weather 放寬——`source == "weather"`
+#   時即使 `accepted is not True`（被拒）也寫 `extra["summary"]`（M4 讀 rejected
+#   weather 的 fact text；缺欄 ⇒ 跳過）。news／social／其他 source 維持原規則
+#   （僅 accepted 才寫）。空白／非字串 ⇒ 不寫鍵、200 字截斷、評分／門檻零變動。
 # 契約 `docs/LIFE-THREAD-ENGINE-CONTRACT.md` §5.2.4／A.4（修訂 1）：生活線頭引擎的
 # `world_collision` 種子文字取自**既有**感知 trace 的 `extra["summary"]`。
 # 規則（本票決策已定）：僅 `accepted is True` 才寫（被拒事件不增加資料量；消費者
@@ -98,11 +102,17 @@ DEFAULT_SOCIAL_PERCEPTION_BUDGET = 2
 FACT_SUMMARY_MAX_CHARS = 200
 
 
-def _fact_summary_extra(accepted: bool, summary: Any) -> Dict[str, Any]:
-    """回傳要併入**既有** `extra` dict 的 fact text 片段（WORLD-FACT-TEXT-PERSIST-1）。
+def _fact_summary_extra(
+    accepted: bool, summary: Any, source: Any = None
+) -> Dict[str, Any]:
+    """回傳要併入**既有** `extra` dict 的 fact text 片段（WORLD-FACT-TEXT-PERSIST-1
+    ＋ WORLD-FACT-TEXT-3 P1 放寬）。
 
-    規則（契約 §5.2.4／A.4 修訂 1）:
-    - **僅** `accepted is True` 才回內容；其餘（含 False）⇒ `{}`（不寫該鍵）。
+    規則（契約 §5.2.4／A.4 修訂 1 ＋ WORLD-FACT-TEXT-3 P1）:
+    - `accepted is True` ⇒ 全 source 照舊寫（空白／非字串 ⇒ `{}`）。
+    - WORLD-FACT-TEXT-3 P1：`source == "weather"` 且 `accepted is not True`
+      （被拒）⇒ **也寫**（同樣的空白／截斷規則；M4 讀 rejected weather 用）。
+    - 其餘 source（news／social／其他）被拒 ⇒ `{}`（不寫該鍵；行為一字不動）。
     - 非字串／空字串／純空白 ⇒ `{}`（**不寫該鍵**；缺欄表示無 fact text）。
     - 寫入值一律 <= `FACT_SUMMARY_MAX_CHARS` 字元（保護 trace 檔成長）。
     - **不得**以 `event_type`／`novelty_id`／`reason` 頂替：本函式只接受事實文字。
@@ -111,7 +121,7 @@ def _fact_summary_extra(accepted: bool, summary: Any) -> Dict[str, Any]:
     `memory_written` 全在呼叫端先算完；這裡只多做一個 dict 鍵（0 讀取、0 改寫、
     0 副作用），故既有判定逐位元不變。
     """
-    if accepted is not True:
+    if accepted is not True and source != "weather":
         return {}
     if not isinstance(summary, str):
         return {}
@@ -605,8 +615,11 @@ class WorldPerceptionMiddleware:
                     # M3.2-A (Bry 拍板 2026-08-08 11:36): priority 進 trace observability
                     "world_event_priority": world_event.priority,
                     # WORLD-FACT-TEXT-PERSIST-1 (2026-09-14): 事實文字副本
-                    # （僅 accepted == True；<= 200 字元；空白 ⇒ 不寫鍵）
-                    **_fact_summary_extra(decision.accepted, world_event.summary),
+                    # （accepted 寫；WORLD-FACT-TEXT-3 P1：weather 被拒也寫；
+                    #   news／其他 source 被拒不寫；<= 200 字元；空白 ⇒ 不寫鍵）
+                    **_fact_summary_extra(
+                        decision.accepted, world_event.summary, world_event.source
+                    ),
                     # Step 60 (Phase B, 引用閉環): 唯讀 observation / join
                     # evidence —— 讓本筆 evaluated trace 可以回指 Phase A
                     # World Log 的 canonical record id。**僅當** source 在
