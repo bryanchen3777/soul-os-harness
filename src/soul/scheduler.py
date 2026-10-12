@@ -177,6 +177,11 @@ class SoulScheduler:
         # 只作用于 _decision_check 的内部动作分支; 默认 None 向后兼容——
         # 不注入时 observe/reflect 决策行为与现状完全等价（空转, 直接 mark_rejected）。
         actuator: Optional[Any] = None,
+        # WORLD-EVAL-TIMER-1 (2026-10-12, Owner 已選 B): 獨立定時評分 hook。
+        # 由 run_server 在 world_perception 就緒後注入（`set_world_eval_hook` 或
+        # 本參數）；預設 None＝空轉（向後相容，測試／舊呼叫端行為不變）。
+        # 主循環 30s wake 內以 `_fire_world_timer_eval` 並列分支呼叫；0 新定時器。
+        world_eval_hook: Optional[Callable[[], Awaitable[int]]] = None,
     ):
         self.morning_time = morning_time
         self.night_time = night_time
@@ -232,6 +237,8 @@ class SoulScheduler:
         self._next_cross_chat_time: Optional[datetime] = None
         # TS-2.1: Actuator（observe/reflect 执行器）注入; None = 空转（向前兼容）
         self._actuator = actuator
+        # WORLD-EVAL-TIMER-1: 獨立定時評分 hook；None = 空轉（向後相容）。
+        self._world_eval_hook: Optional[Callable[[], Awaitable[int]]] = world_eval_hook
         # C-3.1 (2026-09-05): 最近一次 transmit 的 motive.target 暂存
         # （契约 §2.3 #1）: _decision_check transmit 分支记录 → _publish_agency_trigger
         # payload 组装时写入 extra（既有透传通道），单次消费后清空。
@@ -1679,6 +1686,10 @@ class SoulScheduler:
                 # 5.5 TG-2 Goal (2026-09-05): 中断/唤醒扫描 — 挂既有 30s wake 顺带检查
                 #     (TG-1 §8.3「心跳 schedule scan」; 0 新定时器 0 新 tick 0 新 sleep)
                 await self._goal_scan_all()
+                # 5.5b WORLD-EVAL-TIMER-1 (2026-10-12): 獨立定時評分 — 掛既有
+                #     30s wake 並列分支（與 _goal_scan_all 並列；0 新定時器 0 新
+                #     tick 0 新 sleep；hook 未注入時空轉；fail-closed 不阻斷主循環）。
+                await self._fire_world_timer_eval()
                 # 5.6 C-2.1 (2026-09-06): 週期敘事昇華 — night slot 檢查鏈 additive 分支。
                 #     判據 = 既有 night slot（22:00, _slot_for_time=="night" 60s 觸發窗）;
                 #     0 新定時器 / 0 新 payload 通道（沉澱唯一出口 = InnerLifeWriter）;
@@ -1739,6 +1750,39 @@ class SoulScheduler:
         except Exception as e:
             logger.warning(
                 f"[Goal] 主循环扫描异常 (fail-closed): {type(e).__name__}: {e}"
+            )
+
+    def set_world_eval_hook(
+        self, hook: Optional[Callable[[], Awaitable[int]]]
+    ) -> None:
+        """WORLD-EVAL-TIMER-1：注入獨立定時評分 hook（run_server 在
+        world_perception 就緒後呼叫；None＝空轉）。"""
+        self._world_eval_hook = hook
+
+    async def _fire_world_timer_eval(self) -> None:
+        """WORLD-EVAL-TIMER-1 (2026-10-12)：獨立定時評分 — 既有 30s wake 內
+        與 `_goal_scan_all` 並列的 additive 分支；0 新定時器／0 新 tick／
+        0 新 sleep（本方法內無 sleep／while／create_task）。
+
+        行為：hook 未注入（None）→ 直接返回（空轉，向後相容）；否則
+        `await hook()`（生產 hook＝`world_perception.evaluate_received_pending`
+        的薄包裝，sync 評分＋落盤，無對話、無 AGENT_INTENT、無 LLM）。
+        fail-closed：任何異常只 log warning，不阻斷主循環（與 _goal_scan_all
+        同級）。heartbeat 路徑（8/6 修法維持）0 觸碰。
+        """
+        hook = self._world_eval_hook
+        if hook is None:
+            return
+        try:
+            evaluated = await hook()
+            if evaluated:
+                logger.info(
+                    f"[WorldEvalTimer] 定時評分落盤 {evaluated} 筆 (無對話覆蓋)"
+                )
+        except Exception as e:
+            logger.warning(
+                f"[WorldEvalTimer] 定時評分異常 (fail-closed): "
+                f"{type(e).__name__}: {e}"
             )
 
     async def _fire_periodic_narrative(self) -> None:

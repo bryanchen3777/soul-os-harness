@@ -27,11 +27,12 @@ Event Bus 整合位置:
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 from src.eventbus.bus import SoulEventBus
 from src.eventbus.schema import (
@@ -100,6 +101,93 @@ DEFAULT_SOCIAL_PERCEPTION_BUDGET = 2
 # 0 新檔 / 0 新 artifact / 0 新 schema 版本 / 0 新儲存面。
 # 上限與讀取端 `src/soul/life_thread_origins.py:103` `MAX_FACT_CHARS`（＝200）一致。
 FACT_SUMMARY_MAX_CHARS = 200
+
+# WORLD-EVAL-TIMER-1 (2026-10-12, Owner 已選 B): 獨立定時評分任務常數。
+# 背景: 評分只跑在 AGENT_INTENT_ENRICHED 內，10-07 後零對話流入 → 5 天 0 評分。
+# 本票新增與對話無關的定時評分：掃近窗 received 佔位行 → compute_scores＋
+# should_accept 純函數（簽名不動）→ trace_writer append evaluated 行。
+# - TIMER_EVAL_TRACE_LOOKBACK_HOURS = 48.0: 去重掃 trace 只看近 48h（大檔全掃
+#   太貴；註明）。充分性：state 的 novelty_window 預設 24h ⇒ 待評宇宙 ⊆ 近 24h，
+#   48h 嚴格覆蓋；trace append-only 時間遞增 ⇒ 由尾向前掃、遇首筆超窗即停。
+# - TIMER_EVALUATION_TRIGGER = "timer": 定時列 extra 內的來源標記（與對話路徑
+#   的 ENRICHED 列區分；observability 用，不進任何 gate/scoring/prompt）。
+TIMER_EVAL_TRACE_LOOKBACK_HOURS = 48.0
+TIMER_EVALUATION_TRIGGER = "timer"
+
+
+def _load_recent_evaluated_novelty_ids(
+    trace_path: Any,
+    *,
+    now: datetime,
+    lookback_hours: float = TIMER_EVAL_TRACE_LOOKBACK_HOURS,
+) -> Set[str]:
+    """讀 trace 建已 evaluated 的 novelty_id 集合（定時評分去重用）。
+
+    只收集 `extra.phase == "evaluated"` 且落盤時間在近窗內的列；缺檔／壞行
+    fail-quiet（回傳已收集到的集合，絕不 raise）。
+
+    成本註記：trace 是 append-only 且時間遞增，故由尾向前掃、遇到首筆可解析
+    且早於 cutoff 的時間戳即停（大檔不全掃；呼叫端每 30s tick 跑一次）。
+    時間戳不可解析的列無法判斷新舊 → 保守納入（若其 phase 為 evaluated），
+    避免誤重寫；同樣絕不 raise。
+    """
+    from pathlib import Path as _Path
+
+    done: Set[str] = set()
+    try:
+        cutoff = now - timedelta(hours=lookback_hours)
+    except Exception:
+        return done
+    try:
+        text = _Path(trace_path).read_text(encoding="utf-8")
+    except OSError:
+        return done
+    for line in reversed(text.splitlines()):
+        s = line.strip()
+        if not s:
+            continue
+        try:
+            rec = json.loads(s)
+        except Exception:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        ts_raw = rec.get("timestamp")
+        ts_ok = False
+        try:
+            ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            ts_ok = True
+        except Exception:
+            ts = None
+        if ts_ok and ts is not None and ts < cutoff:
+            break  # 更早的列只會更舊（append-only 時間遞增）→ 停。
+        extra = rec.get("extra")
+        if not isinstance(extra, dict):
+            continue
+        if extra.get("phase") != "evaluated":
+            continue
+        # 時間戳壞掉但 phase 確為 evaluated → 仍保守納入（防誤重寫）。
+        nid = rec.get("novelty_id")
+        if isinstance(nid, str) and nid:
+            done.add(nid)
+    return done
+
+
+def _world_event_id_join_extra(source: Any, novelty_id: str) -> Dict[str, Any]:
+    """Step 60 Phase B 引用閉環 join evidence 的**唯一調用點**（本模組內
+    `build_world_event_id` 的唯一 lexical 呼叫處；`test_c2_*_one_call_site` 守門）。
+
+    唯讀 observation／join evidence——讓 evaluated trace 可以回指 Phase A World
+    Log 的 canonical record id。**僅當** source 在 `WORLD_LOG_BACKED_SOURCES`
+    內才寫鍵；其他 source（social／synthetic／未知／未來新 source）**缺欄**
+    （不寫 null）。它不是行為信號：不進任何 gate／scoring／prompt。
+    `_on_agent_intent_enriched` Pass 3 與 WORLD-EVAL-TIMER-1 定時路徑共用。
+    """
+    if source in WORLD_LOG_BACKED_SOURCES:
+        return {"world_event_id": build_world_event_id(source, novelty_id)}
+    return {}
 
 
 def _fact_summary_extra(
@@ -621,19 +709,9 @@ class WorldPerceptionMiddleware:
                         decision.accepted, world_event.summary, world_event.source
                     ),
                     # Step 60 (Phase B, 引用閉環): 唯讀 observation / join
-                    # evidence —— 讓本筆 evaluated trace 可以回指 Phase A
-                    # World Log 的 canonical record id。**僅當** source 在
-                    # WORLD_LOG_BACKED_SOURCES 內才寫鍵；其他 source（social /
-                    # synthetic / 未知 / 未來新 source）**缺欄**（不寫 null）。
-                    # 它不是行為信號：不進任何 gate / scoring / prompt。
-                    **(
-                        {
-                            "world_event_id": build_world_event_id(
-                                world_event.source, world_event.novelty_id
-                            )
-                        }
-                        if world_event.source in WORLD_LOG_BACKED_SOURCES
-                        else {}
+                    # evidence（唯一調用點 `_world_event_id_join_extra`）。
+                    **_world_event_id_join_extra(
+                        world_event.source, world_event.novelty_id
                     ),
                 },
             ))
@@ -835,6 +913,168 @@ class WorldPerceptionMiddleware:
             ))
 
         return block
+
+    # ── WORLD-EVAL-TIMER-1: 獨立定時評分（無對話覆蓋）─────────
+
+    def evaluate_received_pending(
+        self,
+        *,
+        now: Optional[datetime] = None,
+        trace_lookback_hours: float = TIMER_EVAL_TRACE_LOOKBACK_HOURS,
+    ) -> int:
+        """定時評分：把 state 內「已收到、尚未被評過」的 world 事件評分落盤。
+
+        WORLD-EVAL-TIMER-1 (2026-10-12, Owner 已選 B)：無對話時 world 事件照常
+        評分落盤；有對話時行為不變（不雙寫——已 evaluated 的 novelty_id 跳過）。
+
+        流程（與 `_on_agent_intent_enriched` Pass 1/2/3 同構，但 0 對話依賴）:
+        1. 待評宇宙 ＝ `state.get_active_events()`（received-valid 事件；state 是
+           ephemeral（見 `state.py` 檔頭），24h novelty window 外自動 prune）。
+        2. 去重 ＝ 讀 trace 建近窗 evaluated novelty_id 集合（只掃近 48h＋註明，
+           見 `_load_recent_evaluated_novelty_ids`）；命中者跳過。
+        3. 每筆待評調 `compute_scores`＋`should_accept` 純函數（簽名不動；
+           無對話 ⇒ 中性上下文：keywords=[]／temporal low／flavor none／
+           vulnerability False／silence 0.0；priority 取事件自帶值）。
+           門檻沿用 `self.accept_threshold`（預設 0.35，本票不動）。
+        4. 經 `trace_writer` append evaluated 行（`extra.phase="evaluated"`，沿
+           Pass 3 `:595-639` 格式；`context_injected` 恆 False——定時路徑不向
+           任何 prompt 注入；`selection_reason` 沿用同款三段式以保可比性；
+           `extra` 省略 `agent_id`（定時無 agent）並加
+           `evaluation_trigger="timer"` 區分來源；fact-summary 與 world_event_id
+           join 規則與 Pass 3 完全一致）。
+
+        禁止事項（本票紅線）:
+        - 不經 AGENT_INTENT（會觸 LLM／SpeakerToken 路徑燒錢）：本方法 0
+          `bus.publish`、0 LLM、0 新事件型別；sync 純函數＋落盤。
+        - 不改 SCORE_WEIGHTS／accept_threshold／heartbeat（本方法不碰）。
+        - 社交事件（SocialWorldEvent）跳過：其 `social_evaluated` 路徑需要
+          per-agent aggregator＋agent 上下文，留給對話路徑（不做）。
+
+        Args:
+            now: 測試用注入點；None ⇒ wall clock（production 一律走這條）。
+            trace_lookback_hours: 去重掃窗（預設 48h；測試可調小）。
+
+        Returns:
+            新寫入的 evaluated 行數（0+）。永不 raise（fail-closed：任何異常
+            只 log warning，回 0，不阻斷 scheduler 主循環）。
+        """
+        try:
+            return self._evaluate_received_pending_inner(
+                now=now, trace_lookback_hours=trace_lookback_hours
+            )
+        except Exception as e:
+            logger.warning(
+                f"[WorldEvalTimer] 定時評分異常 (fail-closed): "
+                f"{type(e).__name__}: {e}"
+            )
+            return 0
+
+    def _evaluate_received_pending_inner(
+        self,
+        *,
+        now: Optional[datetime] = None,
+        trace_lookback_hours: float = TIMER_EVAL_TRACE_LOOKBACK_HOURS,
+    ) -> int:
+        """`evaluate_received_pending` 的實作本體（可拋；外層負責 fail-closed）."""
+        # 局部 import（避免 circular：src/social/schema.py 依賴 src.world.perception；
+        # 與 `_on_agent_intent_enriched`／`_render_social_context` 同 pattern）。
+        from src.social.schema import SocialWorldEvent  # noqa: E402
+
+        moment = now
+        if moment is None:
+            moment = datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+
+        active_events = self.state.get_active_events(now=moment)
+        world_events = [
+            ev for ev in active_events if not isinstance(ev, SocialWorldEvent)
+        ]
+        if not world_events:
+            return 0
+
+        evaluated_ids = _load_recent_evaluated_novelty_ids(
+            self.trace_writer.trace_log_path,
+            now=moment,
+            lookback_hours=trace_lookback_hours,
+        )
+        pending = [ev for ev in world_events if ev.novelty_id not in evaluated_ids]
+        if not pending:
+            return 0
+
+        # ── Pass 1（中性上下文）: scores＋accept/reject ──
+        scored: List[Any] = []
+        for world_event in pending:
+            novelty_count = self.state.get_novelty_count(
+                world_event.novelty_id, now=moment
+            )
+            scores = compute_scores(
+                event=world_event,
+                novelty_count=novelty_count,
+                current_user_context_keywords=[],
+                temporal_salience="low",
+                anticipatory_flavor="none",
+                vulnerability_window=False,
+                silence_hours=0.0,
+                event_priority=world_event.priority,
+            )
+            accepted, reason = should_accept(scores, threshold=self.accept_threshold)
+            scored.append((world_event, scores, accepted, reason, novelty_count))
+
+        # ── Pass 2: accepted 按 final 排名取 top-N（與 ENRICHED 同式）──
+        accepted_scored = [s for s in scored if s[2]]
+        accepted_scored.sort(key=lambda t: t[1].final(), reverse=True)
+        top_n_ids = set(id(ev) for ev, _, _, _, _ in accepted_scored[:self.perception_budget])
+
+        # ── Pass 3: 寫 trace（沿 :595-639 格式；注入恆 False）──
+        written = 0
+        for world_event, scores, accepted, reason, novelty_count in scored:
+            is_top_n = id(world_event) in top_n_ids
+            if not accepted:
+                selection_reason = SELECTION_REJECTED_AT_THRESHOLD
+            elif is_top_n:
+                selection_reason = f"{SELECTION_SELECTED_TOP_N} (budget={self.perception_budget})"
+            else:
+                selection_reason = SELECTION_BELOW_BUDGET
+
+            ok = self.trace_writer.write(WorldPerceptionTrace(
+                event_id=world_event.novelty_id,
+                timestamp=moment.isoformat(),
+                source=world_event.source,
+                event_type=world_event.type,
+                novelty_id=world_event.novelty_id,
+                scores=scores,
+                accepted=accepted,
+                reason=reason,
+                context_injected=False,  # 定時路徑不向任何 prompt 注入
+                memory_written=False,  # Phase 1 永遠 False（Perception ≠ Memory）
+                novelty_count_in_window=novelty_count,
+                selection_reason=selection_reason,
+                extra={
+                    "phase": "evaluated",
+                    "evaluation_trigger": TIMER_EVALUATION_TRIGGER,
+                    "temporal_salience": "low",
+                    "anticipatory_flavor": "none",
+                    "vulnerability_window": False,
+                    "user_keyword_count": 0,
+                    "world_event_priority": world_event.priority,
+                    **_fact_summary_extra(
+                        accepted, world_event.summary, world_event.source
+                    ),
+                    # Step 60 Phase B 引用閉環（與 Pass 3 共用唯一調用點）。
+                    **_world_event_id_join_extra(
+                        world_event.source, world_event.novelty_id
+                    ),
+                },
+            ))
+            if ok:
+                written += 1
+        if written:
+            logger.info(
+                f"[WorldEvalTimer] 定時評分落盤 {written} 筆 "
+                f"(pending={len(pending)} active={len(active_events)})"
+            )
+        return written
 
     # ── External API (給 test / observability) ───────────
 

@@ -1359,6 +1359,36 @@ async def lifespan(app: FastAPI):
                 f"[M6.1-8.2 Full] registered all {len(agent_ids)} agents (M6.1-8.1 default)"
             )
 
+        # ── WORLD-EVAL-TIMER-1 (2026-10-12, Owner 已選 B): 獨立定時評分掛載 ──
+        # 觸發點＝scheduler 30s wake 並列分支（`_fire_world_timer_eval`，與
+        # `_goal_scan_all` 並列；0 新進程／0 新定時器／0 新 tick／0 新 sleep）。
+        # 選擇理由：world poller 是「每 source 各自為政」（calendar 300s／
+        # weather・news 1800s、且皆 env-gated——未接線的 source 根本無節奏可掛；
+        # social／synthetic 事件更從無 poller 經過），掛 poller 會造成「覆蓋按
+        # source 碎裂＋延遲最長 30 分鐘」；scheduler 主循環是單一均勻 30s 節奏，
+        # 一次覆蓋 state 內全 source，且 TG-2／LS-2／SG-2／LIFE-THREAD-M5 皆已
+        # 建立「掛 30s wake 並列分支＋內部節流」的先例。
+        # 語意：hook 是 thin async 包裝，直調
+        # `world_perception.evaluate_received_pending()`（sync：compute_scores＋
+        # should_accept 純函數＋trace append；0 bus.publish ⇒ 不經 AGENT_INTENT，
+        # 不觸 LLM／SpeakerToken 路徑；門檻／權重／heartbeat 皆不動）。
+        if world_perception is not None:
+            _wp = world_perception
+
+            async def _world_timer_eval_hook() -> int:
+                return _wp.evaluate_received_pending()
+
+            scheduler.set_world_eval_hook(_world_timer_eval_hook)
+            logger.info(
+                "[WORLD-EVAL-TIMER-1] 獨立定時評分已掛載 ✓ "
+                "(scheduler 30s wake 並列分支 _fire_world_timer_eval, 0 新定時器)"
+            )
+        else:
+            logger.info(
+                "[WORLD-EVAL-TIMER-1] 獨立定時評分未掛載 "
+                "(SOULOS_WORLD_PERCEPTION_ENABLED=0, 無 world 感知)"
+            )
+
         # 4.2+缺口 1: dream + event 觸發時機 (Bry 2026-07-20 19:03 拍板)
         # 夢境 22:05, 事件隨機 4-8 小時, 100% 觸發, 不做觀察期
         # M5.2-H Phase 1/2 (Bry 拍板 2026-08-08): dream + event 真實執行路徑
