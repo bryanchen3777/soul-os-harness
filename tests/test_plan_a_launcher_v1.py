@@ -47,16 +47,50 @@ class TestPlanALauncherV1(unittest.TestCase):
         self.start_plan_a = REPO / "scripts" / "_start_plan_a.ps1"
 
     def test_baseline_start_plan_a_file_does_not_exist(self):
-        """v1 baseline: _start_plan_a.ps1 從來沒存在過 (Bry 拍板修法前的現狀)"""
-        # Bry 派工單修法後, 這個檔案才存在. v1 baseline 確認修法前不存在
-        if self.start_plan_a.exists():
-            # 已經被修法後的 v2 寫進去 — 這個測試不該在修法後跑
-            self.fail(
-                f"_start_plan_a.ps1 已經存在於 {self.start_plan_a} - "
-                f"這個 v1 baseline 應該在修法前跑. "
-                f"如果這是修法後跑 v1, 表示修法後這條測試過時, 跳過"
-            )
-        print(f"[v1 baseline] _start_plan_a.ps1 不存在於 {self.start_plan_a} (跟 Bry 派工前現狀一致)")
+        """2026-10-12 更新: v1 「檔案必須不存在」的前提已過期, 改驗現行生產契約。
+
+        證據: scripts/_start_plan_a.ps1 現存 (Bry 拍板 2026-08-15 23:33 修法後建立,
+        檔頭 L3 明載拍板日期)。它是 watchdog Plan A 的正式生產基礎建設, 由
+        tests/test_plan_a_launcher_v2.py 驗其行為; watchdog _watchdog.ps1 亦呼叫它。
+
+        原本這條 v1 斷言「檔案不存在」, 修法落地後必然失敗 —— 屬過期 baseline,
+        不是生產缺陷。改為驗證該檔案「存在且宣告預期結構」, 保留對生產基礎建設的
+        迴歸防護 (若檔案被刪或結構走樣仍會紅)。
+        """
+        self.assertTrue(
+            self.start_plan_a.exists(),
+            f"生產基礎建設 scripts/_start_plan_a.ps1 應該存在 "
+            f"(Bry 拍板 2026-08-15 23:33 修法後建立), 但不見於 {self.start_plan_a} "
+            f"— watchdog Plan A 會退回 23:18/23:23 那種「立刻死」行為"
+        )
+        source = self.start_plan_a.read_text(encoding="utf-8")
+
+        # 1. 明確指定 soul-os .venv python (Bry 派工 spirit「不依賴系統 PATH」)
+        self.assertIn(
+            ".venv\\Scripts\\python.exe", source,
+            "_start_plan_a.ps1 必須明確指定 soul-os .venv python, 不依賴系統 PATH"
+        )
+        # 2. 啟動 run_server.py, 不靠 PATH 猜
+        self.assertIn("run_server.py", source,
+                      "_start_plan_a.ps1 必須啟動 run_server.py")
+        # 3. Start-Process detach (讓 python 不跟著 powershell session 走)
+        self.assertIn("Start-Process", source,
+                      "_start_plan_a.ps1 必須用 Start-Process detach python")
+        # 4. 寫 PID 給 watchdog / server_ops 共用
+        self.assertIn("data\\server.pid", source,
+                      "_start_plan_a.ps1 必須寫 data\\server.pid 給 watchdog 共用")
+        # 5. 啟動失敗要 exit 1, 讓 watchdog 失敗計數不會誤判成功
+        self.assertIn("exit 1", source,
+                      "_start_plan_a.ps1 啟動失敗必須 exit 1 (watchdog 依賴失敗計數)")
+        # 6. 成功路徑 exit 0
+        self.assertIn("exit 0", source,
+                      "_start_plan_a.ps1 成功啟動必須 exit 0")
+
+        print(
+            f"[現行契約] scripts/_start_plan_a.ps1 存在 ({len(source)} chars) "
+            f"且宣告預期結構 (venv python / run_server.py / Start-Process / "
+            f"server.pid / exit 0|1)"
+        )
 
     def test_baseline_powershell_fails_on_missing_file(self):
         """v1 baseline: 模擬 Plan A 啟動不存在的 _start_plan_a.ps1, powershell.exe 找不到檔案立刻退出

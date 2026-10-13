@@ -216,8 +216,17 @@ def test_world_event_constructs_with_full_m3_fields():
 
 def test_world_event_to_payload_unchanged():
     """
-    M3.1 Phase B: 既有 M3 to_payload() / from_payload() 100% 保留
-    (Bry 派工: 不改既有 bus serialization, priority 不進 payload)。
+    M3.1 Phase B 的 frozen M3 六欄位 100% 保留 + M5.4-3.1 additive priority 進場。
+
+    契約演進（本 test 原斷言已過期，2026-10-12 校準）:
+      - 2026-08-08 M3.1 Phase B: priority「不進 payload」(派工 d8703af)
+      - 2026-08-09 M5.4-3.1:    priority「進 payload」—— commit daf0f78
+        "world event bus contract alignment" 明確把 priority 加進
+        to_payload()、讓 from_payload() 讀回，讓 M3.2-A priority_boost
+        在 E2E bus-payload path 上恢復作用（修 H5）。
+
+    本 test 守的 frozen 部分不變: {source, type, novelty_id, ts, summary, data}
+    六欄位名稱與值都不受 priority 影響（additive, 非 replace）。
     """
     e = WorldEvent(
         source="weather",
@@ -228,17 +237,20 @@ def test_world_event_to_payload_unchanged():
         priority=7,
     )
     payload = e.to_payload()
-    # M3 既有欄位都還在
+    # M3 既有欄位都還在（frozen M3 contract, M5.4-3.1 後仍 100% 保留）
     assert payload["source"] == "weather"
     assert payload["type"] == "rain_started"
     assert payload["novelty_id"] == "x"
     assert payload["ts"] == "2026-08-08T00:00:00Z"
     assert payload["summary"] == "test"
     assert payload["data"] == {}
-    # M3.1 Phase B: priority 不進 payload
-    assert "priority" not in payload
+    # M5.4-3.1 (daf0f78): priority 進 payload, 且不擠掉任何 M3 欄位
+    assert payload["priority"] == 7
+    assert set(payload) == {
+        "source", "type", "novelty_id", "ts", "summary", "data", "priority",
+    }
 
-    # from_payload round-trip
+    # from_payload round-trip: priority 現在必須存活
     e2 = WorldEvent.from_payload(payload)
     assert e2.source == e.source
     assert e2.type == e.type
@@ -246,7 +258,17 @@ def test_world_event_to_payload_unchanged():
     assert e2.ts == e.ts
     assert e2.summary == e.summary
     assert e2.data == e.data
-    assert e2.priority == 0  # 從 payload 還原時 default 0 (payload 沒 priority)
+    assert e2.priority == 7  # M5.4-3.1: round-trip 不再遺失 priority
+
+    # 向後相容邊界 1: 舊 payload（無 priority key）仍可還原, default 0
+    legacy = dict(payload)
+    del legacy["priority"]
+    assert WorldEvent.from_payload(legacy).priority == 0
+
+    # 向後相容邊界 2: 非 int / bool priority 防禦性視為 0
+    # (不可讓 __post_init__ 的 TypeError crash 掉 middleware)
+    for bad in (None, "high", 1.5, True, [3]):
+        assert WorldEvent.from_payload({**payload, "priority": bad}).priority == 0
 
 
 # ───────────────────────────────────────────────────────────

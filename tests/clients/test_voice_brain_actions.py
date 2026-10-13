@@ -10,6 +10,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from clients.voice_companion.akane_voice_brain import (
     ACTION_LEXICON,
     AGENT_SIGNATURE_LEXICONS,
@@ -22,6 +24,42 @@ from clients.voice_companion.akane_voice_brain import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REM_PROFILE = REPO_ROOT / "clients" / "voice_companion" / "profiles" / "rem.json"
+
+# ─────────────────────────────────────────────────────────────
+# 動畫資產前置條件（Bry 2026-10-12 裁定：環境耦合，非大腦邏輯缺陷）
+# ─────────────────────────────────────────────────────────────
+# 這批測試斷言的是「後端 Action Key ⇄ 前端 .mp4 資產」的**接線對稱性**。
+# `.mp4` 是二進位多媒體，屬於**前端／客戶端資產**，依裁定不進純後端
+# `soul-os-harness` 的 git repo；因此在本 repo 的後端單元測試環境下，
+# 這棵資產樹必然缺席。
+#
+# 關鍵：`_avatars/` **目錄本身是存在的**（內含 3 支角色基礎片
+# `rem.mp4` / `akane.mp4` / `mai.mp4`），只有**動作變體**（`rem_<key>.mp4`）
+# 這一層不在 repo 內。因此判斷前置條件不能只看目錄存在與否，必須實際
+# 檢查一支配給動作變體的代表檔 —— 否則守門條件恆為真，等於沒有守門。
+#
+# 本檔既有程式碼裡數處 `if not video.parent.is_dir(): return/continue`
+# 的舊守門，正是因為目錄恆存在而從未生效（那些分支等於死碼）。
+ANIMATION_ASSET_PATH = (
+    REPO_ROOT
+    / "clients"
+    / "voice_companion"
+    / "static"
+    / "avatars"
+    / "rem_head_pat_enjoy.mp4"
+)
+
+#: 動畫變體資產是否隨本 repo 一併提供（ Bry 裁定：純後端 repo 內為 False）。
+ANIMATION_ASSETS_BUNDLED = ANIMATION_ASSET_PATH.exists()
+
+
+#: 動畫資產未隨後端 repo 提供時，這 5 支「接線對稱性」測試的共用守門。
+#: 條件檢查的是**動作變體資產是否實際存在**（見上方 Bry 裁定說明），
+#: 不是目錄是否存在 —— 目錄恆存在，用目錄判斷會讓守門恆為真而失效。
+requires_animation_assets = pytest.mark.skipif(
+    not ANIMATION_ASSETS_BUNDLED,
+    reason="Client visual assets (.mp4) not bundled in harness git repo",
+)
 
 
 def test_action_lexicon_keys():
@@ -558,6 +596,7 @@ def test_rem_head_pat_variants_map_to_distinct_keys():
         assert map_action_keyword(kw, agent_id="agent_rem") == "head_pat_wait", kw
 
 
+@requires_animation_assets
 def test_rem_head_pat_variants_have_no_animation_gap():
     """每個摸頭變體都必須有對應的 avatar 影片（0 影片 = 前端收到動作卻沒畫面）。"""
     for action_key in ("head_pat_enjoy", "head_pat_wait"):
@@ -744,6 +783,7 @@ def test_free_form_actions_do_not_leak_into_tts():
     assert brain.last_extracted_actions == ["nod", "head_pat_enjoy"]
 
 
+@requires_animation_assets
 def test_rem_free_form_actions_have_animation_assets():
     """L1/L2 產出的每個 Action Key 都必須有雷姆影片（0 影片＝有動作卻沒畫面）。"""
     for action_key in ("head_pat_enjoy", "head_pat_wait", "lean_forward", "blush"):
@@ -1002,6 +1042,7 @@ def test_rem_new_actions_survive_streaming_sanitizer():
         assert sanitizer.pop_extracted_actions() == [action_key], kw
 
 
+@requires_animation_assets
 def test_rem_new_action_keys_have_animation_assets():
     """4 個新 Action Key 必須各自對應一支真實存在的雷姆短片。"""
     if not AVATAR_DIR.is_dir():
@@ -1027,6 +1068,7 @@ def test_rem_new_actions_are_wired_in_web_ui_registry_and_variants():
         assert re.search(rf"^\s*{alias}:\s*\[", variants, re.M), alias
 
 
+@requires_animation_assets
 def test_tilt_head_is_no_longer_a_dead_token_for_rem():
     """tilt_head 是 BASE 字典既有鍵，但雷姆前端從未宣告 ⇒ 曾經要不到片（404）。
 
@@ -1043,6 +1085,7 @@ def test_tilt_head_is_no_longer_a_dead_token_for_rem():
     assert map_action_keyword("歪頭笑", agent_id="agent_rem") == "tilt_smile"
 
 
+@requires_animation_assets
 def test_all_rem_avatar_videos_are_wired_with_zero_orphans_and_zero_broken_names():
     """44 支雷姆短片必須 0 孤兒、0 壞名（磁碟 ⇄ web_ui 宣告完全對稱）。"""
     if not AVATAR_DIR.is_dir():

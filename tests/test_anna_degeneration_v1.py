@@ -46,40 +46,60 @@ class TestAnnaDegenerationV1(unittest.TestCase):
         self.content = PROXY.read_text(encoding="utf-8")
 
     def test_baseline_no_truncate_repetition_function(self):
-        """v1 baseline: 沒 _truncate_repetition 函數定義 (B 沒加)
-        修法後會新增這個函數
+        """修法 6 B 已套用: _truncate_repetition 函數存在, 且真的被呼叫
+
+        本測試原本寫成 v1 baseline (斷言 proxy.py 沒有這個函數)。
+        Bry 拍板 2026-08-03 23:48 修法 6 B 之後 production 已加上:
+        - src/llm/proxy.py:2775 `def _truncate_repetition(text, max_repeat=5)`
+        - src/llm/proxy.py:3290/3291 Layer 3 兜底對 cleaned_text / extracted_ja 套用
+        - src/llm/proxy.py:3378/3379 成功路徑對 text / audio_text 套用
         """
         match = re.search(r"def\s+_truncate_repetition\b", self.content)
-        self.assertIsNone(
+        self.assertIsNotNone(
             match,
-            f"v1 baseline: 沒 _truncate_repetition 函數 (修法前的現狀), "
-            f"修法後才會有. 修法前定義位置: {match.start() if match else 'N/A'}"
+            "修法 6 B (Bry 拍板 2026-08-03 23:48): proxy.py 應該有 _truncate_repetition "
+            "函數定義 (連續重複截斷)。找不到 → 修法被回退, 這是真正的 regression"
         )
-        print(f"[v1 baseline] proxy.py 沒 _truncate_repetition 函數定義 (B 沒加, 修法前的現狀)")
+        # 不是只有定義, 真的要呼叫 (修法 6 B 生效的證據)
+        call_count = len(re.findall(r"=\s*_truncate_repetition\(", self.content))
+        self.assertGreater(
+            call_count, 0,
+            "修法 6 B: _truncate_repetition 有定義但沒有任何呼叫點 → 截斷實際沒生效"
+        )
+        print(f"[修法 6 B 已套用] proxy.py:2775 有 _truncate_repetition 定義, "
+              f"{call_count} 個呼叫點")
 
     def test_baseline_layer3_uses_safe_emotion(self):
-        """v1 baseline: Layer 3 E 兜底 emotion 用 _get_safe_emotion(agent_id)
-        修法後會改成 "confused" (D 修法)
+        """修法 6 D.2 已套用: Layer 3 E 兜底 emotion 改 "confused"
+
+        本測試原本寫成 v1 baseline (斷言 proxy.py 沒有 "confused" 字串)。
+        Bry 拍板 2026-08-03 23:48 修法 6 D.2 之後 production 已改:
+        - src/llm/proxy.py:3243 / 3257 / 3304 / 3348 / 3365 `"emotion": "confused"`
+          (註解都標「修法 6 D.2: 從 _get_safe_emotion 改 confused」)
         """
-        # 確認 Layer 3 E 兜底 return dict 用 _get_safe_emotion
-        # 找 _get_safe_emotion(agent_id) 在 proxy.py 內的出現次數
+        # _get_safe_emotion(agent_id) 仍保留 (成功解析路徑的 safe default 仍需要)
         matches = list(re.finditer(r"_get_safe_emotion\(agent_id\)", self.content))
         self.assertGreater(
             len(matches), 0,
-            f"v1 baseline: _get_safe_emotion(agent_id) 應該在 Layer 3 E 兜底出現, "
-            f"作為 safe default emotion"
+            "_get_safe_emotion(agent_id) 應該仍在 proxy.py 內作為 safe default emotion"
         )
-        # 確認 Layer 3 E 兜底 (L1684-1730 範圍) emotion 用 _get_safe_emotion, 不是 "confused"
-        # 找 "confused" 在 proxy.py 內的出現
+        # 修法 6 D.2: "confused" 已存在於 Layer 3 E 兜底
         confused_matches = list(re.finditer(r"\bconfused\b", self.content))
-        self.assertEqual(
+        self.assertGreater(
             len(confused_matches), 0,
-            f"v1 baseline: proxy.py 應該沒 'confused' 字串 (修法前的現狀), "
-            f"修法後才會有. 找到 {len(confused_matches)} 個: "
-            f"{[m.start() for m in confused_matches[:5]]}"
+            "修法 6 D.2 (Bry 拍板 2026-08-03 23:48): proxy.py Layer 3 E 兜底應該用 "
+            '"confused"。找不到 → 修法被回退, 這是真正的 regression'
         )
-        print(f"[v1 baseline] Layer 3 E 兜底 emotion 用 _get_safe_emotion(agent_id) "
-              f"({len(matches)} 個出現), 沒 'confused' 字串 (D 沒加)")
+        # 確認 "confused" 確實綁在 emotion key 上 (不是只出現在註解)
+        emotion_confused = re.findall(r'"emotion"\s*:\s*"confused"', self.content)
+        self.assertGreater(
+            len(emotion_confused), 0,
+            '修法 6 D.2: 應該有 `"emotion": "confused"` 的實際程式碼, '
+            "不是只有註解提到 confused"
+        )
+        print(f"[修法 6 D.2 已套用] Layer 3 E 兜底 emotion 改 confused "
+              f"({len(emotion_confused)}  個 '\"emotion\": \"confused\"'), "
+              f"_get_safe_emotion(agent_id) 仍保留 {len(matches)} 處")
 
     def test_baseline_finish_reason_info_only(self):
         """v1 baseline: OpenAIBackend finish_reason log 應該只有 INFO level

@@ -39,14 +39,30 @@ from src.soul import dream_event as de_mod
 class TestM04Baseline(unittest.TestCase):
     """M0.4 修法前的現狀證明."""
 
-    def test_01_diary_max_clean_chars_is_50(self):
-        """現狀: DIARY_MAX_CLEAN_CHARS = 50 (Bry 拍板放寬到 80)."""
-        self.assertEqual(diary_mod.DIARY_MAX_CLEAN_CHARS, 50)
+    def test_01_diary_max_clean_chars_is_80(self):
+        """現況: DIARY_MAX_CLEAN_CHARS = 80。
 
-    def test_02_diary_write_entry_accepts_think_only(self):
-        """現狀: write_entry 接受 think_only content 寫入 raw (含 think block).
+        修法 M0.4 (Bry 拍板 2026-08-06 21:30): 50 → 80。
+        生產證據: src/soul/diary.py:60-66 —
+          「M0.4 (2026-08-06 21:30 Bry 拍板): 50 → 80」
+          「動機: 8/6 Rem sim 跑出 6 條 placeholder, 全部是「超過 50 字」觸發
+            (非 LLM 失敗), 50 字對中文 LLM 太嚴格, 放寬到 80 給 LLM 自然表達空間」
+          DIARY_MAX_CLEAN_CHARS = 80
+        這是 Bry 拍板的意圖值, 不是殘留值: diary.py 同段保留 M0.3 的 50 字由來,
+        M0.4 只做「放寬」一個動作, 且 DREAM_EVENT_MAX_CLEAN_CHARS = 80 對齊
+        (src/soul/dream_event.py:65-67)。
+        """
+        self.assertEqual(diary_mod.DIARY_MAX_CLEAN_CHARS, 80)
 
-        Bry 拍板: 修法後應拿 clean 判斷, think_only 不該被當 LLM 成功寫入。
+    def test_02_diary_write_entry_rejects_think_only(self):
+        """現況: write_entry 拿 clean 判斷, think_only 直接拒寫 (return None)。
+
+        修法 M0.4 (Bry 拍板 2026-08-06 21:30): 邏輯收斂到 write_entry 內做。
+        生產證據: src/soul/diary.py:246-255 —
+            clean = self._strip_think(content)
+            if not clean:  logger.warning("拒絕寫入: clean 為空 ..."); return None
+        配套: src/soul/diary.py:261 「content: clean  # M0.4: 寫 clean (不是 raw)」。
+        測試若要證明會被擋, 就必須拿 think_only 回頭丟給 write_entry 拿 None。
         """
         # 構造 think_only content: 200 chars think block, 0 chars clean
         think_only_content = "<think>\n" + "A" * 200 + "\n</think>"
@@ -56,17 +72,23 @@ class TestM04Baseline(unittest.TestCase):
             path = writer.write_entry(
                 "agent_test", "morning", think_only_content, source="llm"
             )
-            # 修法前: 寫入成功, content 包含 think block
-            self.assertIsNotNone(path)
-            self.assertTrue(path.is_file())
-            entry = json.loads(path.read_text(encoding="utf-8").strip())
-            self.assertEqual(entry["content"], think_only_content)
-            self.assertIn("<think>", entry["content"])
-            self.assertEqual(entry["source"], "llm")
-            # 證明: 修法前 jsonl 內是 raw (含 think), 沒有任何 clean 判斷
+            # 修法後: 拒絕寫入, 呼叫端 (generate_diary_entry) 必須改傳 placeholder
+            self.assertIsNone(
+                path,
+                "M0.4 後 think_only 應被 write_entry 擋掉 (return None)",
+            )
+            # 磁碟上不該留下任何 diary jsonl (連 think block 都不該落地)
+            self.assertEqual(list(data_dir.rglob("*.jsonl")), [])
 
-    def test_03_dream_event_write_entry_accepts_think_only(self):
-        """現狀: DreamEventWriter._write_entry 也接受 think_only 寫入 raw."""
+    def test_03_dream_event_write_entry_rejects_think_only(self):
+        """現況: DreamEventWriter._write_entry 拿 clean 判斷, think_only 拒寫。
+
+        修法 M0.4 (Bry 拍板 2026-08-06 21:30)。
+        生產證據: src/soul/dream_event.py:472-479 —
+            clean = self._strip_think(content)
+            if not clean:  logger.warning("拒絕寫入: clean 為空 ..."); return None
+        配套: src/soul/dream_event.py:487 「content: clean  # M0.4: 寫 clean, jsonl 不含 think block」。
+        """
         think_only_content = "<think>\n" + "B" * 150 + "\n</think>"
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -74,10 +96,11 @@ class TestM04Baseline(unittest.TestCase):
             path = writer._write_entry(
                 "agent_test", "event", think_only_content, source="llm"
             )
-            self.assertIsNotNone(path)
-            entry = json.loads(path.read_text(encoding="utf-8").strip())
-            self.assertEqual(entry["content"], think_only_content)
-            self.assertIn("<think>", entry["content"])
+            self.assertIsNone(
+                path,
+                "M0.4 後 dream/event think_only 應被 _write_entry 擋掉 (return None)",
+            )
+            self.assertEqual(list(data_dir.rglob("*.jsonl")), [])
 
     def test_04_diary_clean_long_but_under_50_actually_under_50_writes(self):
         """現狀: 51 chars clean 走 placeholder, 49 chars clean 寫 llm.
@@ -103,33 +126,33 @@ class TestM04Baseline(unittest.TestCase):
             entry = json.loads(path.read_text(encoding="utf-8").strip())
             self.assertEqual(entry["source"], "llm")  # write_entry 不擋
 
-    def test_05_real_sim_think_only_count(self):
-        """證明: Bry 8/6 sim 跑出 7 條 think_only (這次 v1 跑 source code 證明邏輯可重現).
+    def test_05_write_entry_never_persists_think_block(self):
+        """修法後: jsonl 內不可能出現 think block (M0.4 的核心保證).
 
-        從 8/6~8/12 diary jsonl 讀取, 統計有多少條 LLM 寫入但 clean = 0。
-        修法前這些都是 source=llm, 修法後應該被歸類到 placeholder。
+        舊版這支是掃 data/soul/agent_rem/diary/2026-08-*.jsonl 統計 think_only
+        條數 (8/6 sim 跑出 7 條, source=llm 但 clean=0)。那是「修法前」才會發生的
+        現況, M0.4 生效後 data/ 早就沒有這種條目, 拿 data/ 當斷言來源會隨生產
+        資料累積而漂移, 已經不能證明任何東西。
+
+        改成直接驗現行契約: write_entry 一律寫 clean, think block 不落地。
+        如果有人把 M0.4 的 _strip_think 拿掉, 這支會直接紅 (寫進去會含 <think>)。
+        生產證據: src/soul/diary.py:246-247 (strip), :261 (content 寫 clean)。
         """
-        workspace = Path("C:/Users/bbfcc/.local/bin/soul-os-harness")
-        diary_dir = workspace / "data" / "soul" / "agent_rem" / "diary"
-        think_only = 0
-        total_llm = 0
-        for jsonl in diary_dir.glob("2026-08-*.jsonl"):
-            for line in jsonl.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                entry = json.loads(line)
-                if entry.get("source") == "llm":
-                    total_llm += 1
-                    clean = re.sub(
-                        r"^<think>.*?</think>\s*", "",
-                        entry["content"], flags=re.DOTALL,
-                    ).strip()
-                    if not clean:
-                        think_only += 1
-        # 8/6 sim 跑出 7 條 think_only (報告已驗證), 這裡再次從 raw jsonl 確認
-        self.assertGreaterEqual(think_only, 5)  # 寬鬆一點, 至少 5 條
-        self.assertGreater(total_llm, 0)
-        print(f"\n  [baseline] 8/6 sim: {think_only} think_only / {total_llm} LLM 寫入")
+        clean_body = "朝向外面的街道走了一段路。"  # 30 chars
+        raw_with_think = "<think>\n" + "A" * 200 + "\n</think>\n" + clean_body
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            writer = diary_mod.DiaryWriter(data_dir=str(data_dir))
+            path = writer.write_entry(
+                "agent_test", "morning", raw_with_think, source="llm"
+            )
+            self.assertIsNotNone(path)
+            entry = json.loads(path.read_text(encoding="utf-8").strip())
+            # 核心保證: 落地的是 clean, 不是 raw
+            self.assertNotIn("<think>", entry["content"])
+            self.assertNotIn("</think>", entry["content"])
+            self.assertEqual(entry["content"], clean_body)
+            self.assertEqual(entry["source"], "llm")
 
 
 if __name__ == "__main__":

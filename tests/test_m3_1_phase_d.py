@@ -420,8 +420,15 @@ def test_phase_d_injector_call_count_exactly_one_per_emit_with_priority():
 # ───────────────────────────────────────────────────────────
 
 
-def test_phase_d_to_payload_does_not_include_priority():
-    """to_payload() 仍不包含 priority (Phase B payload round-trip 設計, Phase D 不可破壞)。"""
+def test_phase_d_to_payload_includes_priority():
+    """to_payload() 包含 priority (M5.4-3.1 / daf0f78 取代 Phase B 的「不含」契約)。
+
+    契約演進:
+      - Phase B (d8703af, 2026-08-08): priority 不進 payload, payload 固定 6 欄
+      - M5.4-3.1 (daf0f78, 2026-08-09): payload 加 priority (additive, 第 7 欄),
+        讓 M3.2-A priority_boost 在 E2E bus-payload path 恢復作用 (修 H5)
+    本 test 守的不變量: M3 frozen 六欄名稱與值不被 priority 擠掉。
+    """
     d, stub = _make_dispatcher_with_stub()
     e = asyncio.run(d.emit_and_inject(
         source_id="synthetic",
@@ -431,15 +438,21 @@ def test_phase_d_to_payload_does_not_include_priority():
         priority=13,
     ))
     payload = e.to_payload()
-    assert "priority" not in payload
-    # payload 欄位必須只有 6 個 (M3 既有 6 欄: source / type / novelty_id / ts / summary / data)
+    assert payload["priority"] == 13
+    # M3 frozen 六欄仍在, priority 是 additive 第 7 欄 (不 replace 任何既有欄位)
     assert set(payload.keys()) == {
-        "source", "type", "novelty_id", "ts", "summary", "data"
+        "source", "type", "novelty_id", "ts", "summary", "data", "priority"
     }
+    assert payload["source"] == e.source
+    assert payload["novelty_id"] == "d_payload"
 
 
-def test_phase_d_from_payload_does_not_read_priority():
-    """from_payload() 仍不讀 priority (Phase B 設計, Phase D 不可破壞)。"""
+def test_phase_d_from_payload_reads_priority():
+    """from_payload() 讀 priority (M5.4-3.1 / daf0f78)。
+
+    含防禦性邊界: 非 int / bool priority 視為 0 (不可讓 __post_init__ 的
+    TypeError crash 掉 middleware)。
+    """
     d, stub = _make_dispatcher_with_stub()
     e = asyncio.run(d.emit_and_inject(
         source_id="synthetic",
@@ -448,14 +461,19 @@ def test_phase_d_from_payload_does_not_read_priority():
         novelty_id="d_from_p",
         priority=21,
     ))
-    # 即使傳入含 priority 的 dict, from_payload 也不會把它讀進 WorldEvent
-    payload_with_priority = e.to_payload()
-    payload_with_priority["priority"] = 999  # 嘗試注入假 priority
-    e2 = WorldEvent.from_payload(payload_with_priority)
-    # WorldEvent 沒被汙染, priority 仍走 default 0
-    assert e2.priority == 0
-    # 注意: e2 是新 object, e 仍是 priority=21
+    payload = e.to_payload()
+    payload["priority"] = 999  # 驗證 payload 內的 priority 真的被讀回
+    e2 = WorldEvent.from_payload(payload)
+    assert e2.priority == 999
+    # e2 是新 object, e 仍是 priority=21
     assert e.priority == 21
+    # 向後相容: 無 priority key 的舊 payload → default 0
+    legacy = dict(payload)
+    del legacy["priority"]
+    assert WorldEvent.from_payload(legacy).priority == 0
+    # 防禦: 非 int / bool → 0, 不 raise
+    for bad in (None, "high", 2.5, True, [7]):
+        assert WorldEvent.from_payload({**payload, "priority": bad}).priority == 0
 
 
 # ───────────────────────────────────────────────────────────

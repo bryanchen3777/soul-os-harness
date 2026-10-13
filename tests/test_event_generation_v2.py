@@ -23,10 +23,13 @@ from typing import List, Dict, Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import pytest
+
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
 from src.eventbus import SoulEventBus
 from src.llm.proxy import LLMBackend, LLMProxy
 from src.memory.middleware import MemoryMiddleware
+from src.timezone_utils import LOCAL_TZ
 
 logging.basicConfig(
     level=logging.INFO,
@@ -114,6 +117,43 @@ class EnrichedCapture:
 # 3. 主測試 — Part A: middleware 層驗證
 # ─────────────────────────────────────────────
 
+# SOUL-TECH-DEBT-001（calibration of test-owned machinery, non-production defect）：
+# 本檔兩支函式是「獨立腳本式」測試 —— 檔尾 `main()`（:372-376）自己用
+# tempfile.mkdtemp() 產生 tmp_dir / events_dir, 再把 part_a 的輸出
+# （mock_backend / event_text）當參數餵給 part_b, 彼此串成一條管線。
+# pytest 跑時沒有 __main__, 那幾個參數就變成「找不到的 fixture」→ 2 個 ERROR。
+#
+# 處置沿用 tests/conftest.py SOUL-TECH-DEBT-001 已確立的同一套做法
+# （見 conftest.py:152-168 的說明）: **在本檔內**補上等價語意的 fixture,
+# 不動 conftest.py, 也不把這兩支函式改名踢出收集 —— 這兩支的斷言是
+# β2.1 事件生成鏈唯一的回歸保護, 踢出收集等於把它們變成沒人跑的裝飾品。
+#
+# events_dir ≡ main() 裡的 `events_dir = tmp_dir / "events"`（:369-370）
+# mock_backend / event_text ≡ main() 裡由 part_a 回傳的那兩個值（:374-375）。
+# 兩支函式的參數名與順序都沒變, 所以檔尾 main() 的位置引數呼叫照樣成立。
+
+
+@pytest.fixture
+def events_dir(tmp_dir: Path) -> Path:
+    """≡ main() 的 events_dir = tmp_dir / "events"（隔離, 不碰真實 data/events/）。"""
+    d = tmp_dir / "events"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+@pytest.fixture
+def mock_backend() -> MockLLMBackend:
+    """≡ part_a 回傳的 mock_backend（spy, 全程 0 真實 LLM 呼叫）。"""
+    return MockLLMBackend()
+
+
+@pytest.fixture
+def event_text() -> str:
+    """≡ part_a 回傳的 event_text（middleware 產出的事件文字）。"""
+    return MockLLMBackend().canned_event
+
+
+@pytest.mark.asyncio
 async def test_middleware_event_gen(
     tmp_dir: Path,
     events_dir: Path,
@@ -208,9 +248,26 @@ async def test_middleware_event_gen(
         )
 
         # 斷言 3: data/events/{date}.jsonl 有 1 行
-        today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
-        events_file = events_dir / f"{today}.jsonl"
-        assert events_file.exists(), f"{events_file} 應該存在"
+        # SOUL-TECH-DEBT-001 校準（test-owned bug）:
+        # 原碼寫死 `timezone(timedelta(hours=8))` 算日期, 那是 Bry 派工
+        # 2026-08-03 18:21 之前的舊世界 —— 當時 middleware.py 自己 hardcode
+        # hours=8。修法之後（middleware.py:764-767）已統一改用
+        # `from src.timezone_utils import LOCAL_TZ` →
+        # `event.timestamp.astimezone(LOCAL_TZ).strftime("%Y-%m-%d")`,
+        # 預設是 America/New_York（timezone_utils.py:39 DEFAULT_TIMEZONE_NAME）。
+        # 本機是 EDT (UTC-4), 與 UTC+8 差 12 小時 → 換日附近兩者算出不同日期,
+        # 原碼在 19:00-07:00 EDT 之間會去讀一個不存在的檔案而失敗。
+        # 這裡改成**完全照抄 production 的算式**, 不再自備一份時區假設。
+        local_date = datetime.now(timezone.utc).astimezone(LOCAL_TZ).strftime("%Y-%m-%d")
+        # 邊界: LOCAL_TZ 本身必須真的不是 UTC+8（否則上面等於沒校準）
+        assert LOCAL_TZ.utcoffset(None) != timedelta(hours=8), (
+            f"LOCAL_TZ 意外變成 UTC+8: {LOCAL_TZ}"
+        )
+        events_file = events_dir / f"{local_date}.jsonl"
+        assert events_file.exists(), (
+            f"{events_file} 應該存在（本地日期 {local_date} / {LOCAL_TZ}）; "
+            f"實際寫出: {sorted(p.name for p in events_dir.glob('*.jsonl'))}"
+        )
         with open(events_file, "r", encoding="utf-8") as f:
             lines = f.readlines()
         assert len(lines) == 1, (
@@ -244,6 +301,7 @@ async def test_middleware_event_gen(
 # 4. Part B: LLMProxy 注入驗證
 # ─────────────────────────────────────────────
 
+@pytest.mark.asyncio
 async def test_llmproxy_injection(
     mock_backend: MockLLMBackend,
     event_text: str,

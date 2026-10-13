@@ -183,7 +183,17 @@ async def test_chrono_block_reaches_llm_prompt() -> None:
         },
     )
     await bus.publish(intent)
-    await asyncio.sleep(0.5)
+    # SOUL-TECH-DEBT-001 校準（test-owned bug, 非 production defect）:
+    # 原本這裡是 `await asyncio.sleep(0.5)` —— 固定等待, 不等事件鏈走完。
+    # MemoryMiddleware 的 enrich 首次執行要載 jieba dict + 跑 RAG, 實測 >0.5s,
+    # 於是 bus.stop() 在 AGENT_INTENT_ENRICHED 還沒 publish 出去就先把總線關了,
+    # middleware 的 re-publish 被丟（bus.py:184-186 "總線尚未啟動，事件被丟棄"）
+    # → token manager 拿不到 ENRICHED → 不發 SPEAKER_TOKEN_GRANTED →
+    # LLMProxy（只監聽 SPEAKER_TOKEN_GRANTED, proxy.py:3648）永遠不產 AGENT_SPEAK。
+    # 改成等 bus 佇列清空: 用的是 bus 自己的背壓語意（stop() 自己也 await
+    # queue.join(), bus.py:232）, 不是新機制。join() 會連 middleware 在
+    # handler 中 re-publish 的新事件一起等到, 所以 0.5s 的競態消失。
+    await asyncio.wait_for(bus._queue.join(), timeout=30)
 
     memory.shutdown()
     await bus.stop()
@@ -194,8 +204,46 @@ async def test_chrono_block_reaches_llm_prompt() -> None:
 
     msgs = mock_llm.captured_messages[0]
     sys_content = next((m["content"] for m in msgs if m["role"] == "system"), "")
+    # 🔴 SOUL-BUG（SOUL-TECH-DEBT-001 深查, production defect, **故意留紅**）:
+    # chrono / 時間感知區塊在 production **已經無法送進任何 LLM system prompt**。
+    # 這不是測試過期, 是真的斷鏈, 兩端各斷一次:
+    #
+    #   [來源端] HeartbeatEngine 每 tick 都算好 chrono_block
+    #     (src/heartbeat/engine.py:233 render_temporal_context → render_temporal_block,
+    #      engine.py:252 放進 SYSTEM_TICK payload),
+    #     而唯一會把它帶進 AGENT_INTENT 的呼叫者是 consciousness._on_tick
+    #     (consciousness.py:341 `chrono_payload=event.payload`)。
+    #     但 M5.7-2 把 EventType.SYSTEM_TICK 從 agent 的訂閱清單拿掉
+    #     (consciousness.py:155, 註解「拿掉, 避免 proactive Agency」),
+    #     `_on_tick` 從此**永遠不會被呼叫** —— handle_event 的分派分支
+    #     (consciousness.py:171-172) 已是死碼。
+    #     其他所有 caller 只給 {"draft": ...}, 沒有 chrono_block
+    #     (consciousness.py:223 / 262 / 294 / 389)。
+    #
+    #   [出口端] PromptContext.chrono_context (proxy.py:1568) 與它的注入
+    #     (proxy.py:1596-1598) 是**死代碼** —— 全庫 0 實例化,
+    #     見 docs/EH-1-EPISTEMIC-HORIZON-CONTRACT.md:128
+    #     「PromptContext 為死代碼, 0 實例化」(§2.6)。
+    #     實際上線的 _build_messages_group / _build_messages_private
+    #     (proxy.py:682 / :1436 附近) 簽名裡**根本沒有 chrono_context 參數**,
+    #     所以就算 AGENT_INTENT.payload["chrono_context"] 有值也無處可插。
+    #
+    # 影響: 角色完全失去時間感知偏誤 (time_period / silence /
+    # vulnerability_window / attachment_heat / reaction_bias / expression_mode)。
+    # M5.11-2 (engine.py:212-213) 的註解仍宣稱 carryover「流入 LLM prompt
+    # 生成階段」—— 該敘述現已不成立。
+    #
+    # 本測試的競態已於上方修好（改等 bus._queue.join(), 不再用 sleep(0.5)),
+    # 整條鏈現在確實跑完並產出 AGENT_SPEAK, 所以這兩行斷言是**真實紅**:
+    # 紅在此處代表 production 斷鏈, 不是測試自己壞掉。
+    # 修好 production 後這兩行自然轉綠 —— 不要用 skip/xfail 把它藏起來。
     assert "[CHRONO_SOCIAL_CONTEXT v2.2]" in sys_content, (
-        f"system message 缺 chrono 區塊：{sys_content[:300]}"
+        "SOUL-BUG: chrono 區塊沒進到 system message。"
+        "來源端 consciousness.py:155 已取消 SYSTEM_TICK 訂閱（M5.7-2）"
+        "→ _on_tick 死碼；出口端 PromptContext 死代碼"
+        "（proxy.py:1568/1596-1598，EH-1 契約 §2.6 已記錄 0 實例化）"
+        f" → _build_messages_* 無 chrono_context 插槽。"
+        f"實際 system content: {sys_content[:300]}"
     )
     assert "time_period=afternoon" in sys_content, (
         f"system message 缺 chrono 欄位：{sys_content[:300]}"

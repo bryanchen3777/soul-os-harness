@@ -412,17 +412,34 @@ def test_trace_records_world_event_priority(monkeypatch, tmp_path):
 # ───────────────────────────────────────────────────────────
 
 
-def test_payload_round_trip_still_omits_priority():
-    """派工 #14: WorldEvent.to_payload() 仍不包含 priority (M3.1 frozen 100% 保留)。"""
+def test_payload_round_trip_preserves_priority():
+    """派工 #14 的 frozen 部分 + M5.4-3.1 (daf0f78) 的 payload 傳遞。
+
+    契約演進: 派工 #14 (2026-08-08) 要求「to_payload() 不含 priority」,
+    但 M5.4-3.1 (2026-08-09, commit daf0f78) 明確改為 priority 進 payload,
+    讓 M3.2-A priority_boost 在 E2E path 恢復作用。派工 #14 當時的前提
+    (priority 無法在 E2E 生效) 已不成立, 故校準。
+
+    仍守的不變量: frozen M3 六欄名稱與值 100% 保留 (additive, 非 replace)。
+    """
     ev = _make_rain_event(priority=42)
     payload = ev.to_payload()
-    assert "priority" not in payload
-    # from_payload() 仍 reconstruct 既有 6 欄位
-    assert set(payload.keys()) == {"source", "type", "novelty_id", "ts", "summary", "data"}
-    # 即使傳入 priority 也不會被污染
-    payload_with_priority = {**payload, "priority": 999}
-    ev2 = WorldEvent.from_payload(payload_with_priority)
-    assert ev2.priority == 0  # WorldEvent 沒被污染, priority 走 default
+    assert payload["priority"] == 42
+    # frozen M3 六欄仍在, priority 為 additive 第 7 欄
+    assert set(payload.keys()) == {
+        "source", "type", "novelty_id", "ts", "summary", "data", "priority"
+    }
+    # round-trip 保留 priority (這是 M5.4-3.1 修復的核心: 不再遺失)
+    ev2 = WorldEvent.from_payload(payload)
+    assert ev2.priority == 42
+    assert ev2.novelty_id == ev.novelty_id
+    # 向後相容: 舊 payload 無 priority key → default 0
+    legacy = dict(payload)
+    del legacy["priority"]
+    assert WorldEvent.from_payload(legacy).priority == 0
+    # 防禦: 非 int / bool → 0, 不 raise
+    for bad in (None, "high", 3.5, True, [9]):
+        assert WorldEvent.from_payload({**payload, "priority": bad}).priority == 0
 
 
 # ───────────────────────────────────────────────────────────

@@ -56,19 +56,23 @@ class TestM20InnerLifeBaseline(unittest.TestCase):
         self.proxy_source = PROXY_PATH.read_text(encoding="utf-8")
 
     def test_a_no_helper_function(self):
-        """v1: _format_recent_inner_life helper 不存在 (修法前沒有)"""
-        self.assertFalse(
+        """M2.0 已套用: _format_recent_inner_life helper 存在 (proxy.py:315)"""
+        self.assertTrue(
             hasattr(proxy, "_format_recent_inner_life"),
-            "v1 baseline 期望 proxy 模組沒有 _format_recent_inner_life (修法前不存在)"
+            "M2.0 (Bry 派工 2026-08-07 15:44): proxy 應該有 _format_recent_inner_life "
+            "helper (proxy.py:315)"
         )
-        print("[v1 baseline] proxy 模組沒有 _format_recent_inner_life (預期: 修法後才存在)")
+        print("[M2.0 已套用] proxy 有 _format_recent_inner_life helper (proxy.py:315)")
 
     def test_b_proxy_source_no_inner_life_injection(self):
-        """v1: proxy.py 內 _build_messages_group / _build_messages_private 沒有 inner_life 字串
+        """M2.0 已套用: _build_messages_group / _build_messages_private 有注入 inner_life
 
-        Bry 派工: 「不動 SAGE/v1/Loader/consciousness 任何既有邏輯, 範圍限定在 proxy.py」
-        v1 驗證: proxy.py 內沒有 [最近內在生活] / 你的最近內在生活 / inner_life 字串
-        v2 修法: 上面三個字串會出現, 並且在 _build_messages_group / _build_messages_private 內
+        本測試原本寫成 v1 baseline (斷言兩個 build_messages 函式內沒有 inner_life 字串)。
+        Bry 派工 2026-08-07 15:44 M2.0 之後:
+        - src/llm/proxy.py:792 `inner_life = _format_recent_inner_life(agent_id)`
+          (_build_messages_group)
+        - src/llm/proxy.py:1426 同樣一行 (_build_messages_private)
+        - src/llm/proxy.py:794-799 注入 f"## 你的最近內在生活\\n{inner_life}"
         """
         # 找 _build_messages_group / _build_messages_private 函式
         for fn_name in ["_build_messages_group", "_build_messages_private"]:
@@ -79,66 +83,93 @@ class TestM20InnerLifeBaseline(unittest.TestCase):
             )
             self.assertIsNotNone(match, f"找不到 {fn_name} 函式")
             fn_source = match.group(0)
-            # v1 baseline 期望: 函式內沒有 inner_life / 內在生活 / 你的最近內在生活
-            for marker in ["_format_recent_inner_life", "[最近內在生活]", "你的最近內在生活", "inner_life"]:
-                self.assertNotIn(
-                    marker, fn_source,
-                    f"v1 baseline 期望 {fn_name} 沒有 {marker} (修法前沒注入), "
-                    f"但找到了 → 修法可能已套用或 v1 寫在修法後"
-                )
-        print("[v1 baseline] _build_messages_group / _build_messages_private 沒有 inner_life 注入")
+            # M2.0 之後: 函式內呼叫 helper 並注入摘要區塊
+            self.assertIn(
+                "_format_recent_inner_life", fn_source,
+                f"M2.0: {fn_name} 應該呼叫 _format_recent_inner_life() 組裝 inner_life"
+            )
+            self.assertIn(
+                "[最近內在生活]", fn_source,
+                f"M2.0: {fn_name} 應該注入「[最近內在生活]」摘要區塊"
+            )
+        print("[M2.0 已套用] _build_messages_group / _build_messages_private 都有 inner_life 注入")
 
     def test_c_diary_dream_disconnected(self):
-        """v1: diary.py 寫入 API 存在, 但 reader API 無 caller (Bry 8/7 15:34 查證結論)
+        """M2.0 已套用: diary/dream 記憶已接上 (reader API 有 caller + 對話組裝讀檔)
 
-        這個測試保護 Bry 查證結論: 對話記憶完整, 內在人生記憶完全斷開
-        修法前: read_entries / recent_entries 在 diary.py 內定義但無 caller
-        修法後: _format_recent_inner_life 會用 read_entries (或自己 Path.read_text)
+        本測試原本寫成 v1 baseline (斷言 Bry 8/7 15:34 查證結論「reader API 無 caller」)。
+        Bry 派工 2026-08-07 15:44 M2.0 之後現狀已改變:
+        - src/io/gateway.py:532 / 569 `writer.recent_entries(aid, days=7)` 有 caller
+        - src/llm/proxy.py:269 `path = Path(INNER_LIFE_DATA_DIR) / agent_id / "life_threads.jsonl"`
+          + proxy.py:342 `path = ... / "diary" / f"{date_str}.jsonl"`
+          (_format_recent_inner_life 直接讀檔, 不走 diary.py reader API — Bry 派工「只動 proxy.py」)
         """
         diary_path = Path(
             "C:/Users/bbfcc/.local/bin/soul-os-harness/src/soul/diary.py"
         )
         diary_source = diary_path.read_text(encoding="utf-8")
-        # 找 read_entries / recent_entries 函式定義
+        # reader API 仍存在
         for fn_name in ["def read_entries", "def recent_entries"]:
             self.assertIn(
                 fn_name, diary_source,
-                f"v1 期望 diary.py 內有 {fn_name} 函式定義 (Bry 8/7 15:34 查證)"
+                f"diary.py 內應有 {fn_name} 函式定義 (Bry 8/7 15:34 查證, 後續仍保留)"
             )
-        # 找整個 codebase 內 read_entries / recent_entries 的 caller
+        # reader API 現在有 caller (gateway.py 的狀態 API)
         repo_root = Path("C:/Users/bbfcc/.local/bin/soul-os-harness")
-        caller_count = 0
+        callers = []
         for src_file in repo_root.rglob("src/**/*.py"):
+            if src_file.name == "diary.py" or "_backup_jp_20260722_rollback" in str(src_file):
+                continue  # 跳過 diary.py 自己與 JP rollback 備份
             try:
                 content = src_file.read_text(encoding="utf-8")
             except Exception:
                 continue
-            if "diary.py" in str(src_file):
-                continue  # 跳過 diary.py 自己
             for fn_name in ["read_entries", "recent_entries"]:
                 if f".{fn_name}(" in content or f" {fn_name}(" in content:
-                    caller_count += 1
-        # v1 baseline 期望: 無 caller (Bry 查證結論)
-        self.assertEqual(
-            caller_count, 0,
-            f"v1 baseline 期望 read_entries/recent_entries 無 caller (Bry 8/7 15:34 查證結論), "
-            f"實際找到 {caller_count} 個 caller — 修法可能已套用或 v1 寫在修法後"
+                    callers.append(f"{src_file.name}:{fn_name}")
+        self.assertGreater(
+            len(callers), 0,
+            "M2.0 之後 diary/dream 記憶已接上, reader API 應該有 caller "
+            "(預期 src/io/gateway.py 的 recent_entries) — 0 caller 代表記憶又斷開了"
         )
-        print(f"[v1 baseline] diary read_entries/recent_entries 無 caller (Bry 8/7 15:34 查證結論保留下來)")
+        # 對話組裝也真的讀 diary / life_threads 檔 (Bry 派工「範圍限定 proxy.py」)
+        self.assertIn(
+            '"diary" / f"{date_str}.jsonl"', self.proxy_source,
+            "M2.0: _format_recent_inner_life 應該直接讀 data/soul/{agent_id}/diary/*.jsonl"
+        )
+        self.assertIn(
+            "life_threads.jsonl", self.proxy_source,
+            "M2.0: _format_recent_inner_life 應該讀 life_threads.jsonl"
+        )
+        print(f"[M2.0 已套用] diary reader API 有 caller {callers}, "
+              f"且 _format_recent_inner_life 直接讀 diary/life_threads 檔")
 
     def test_d_no_diary_root_constant_in_proxy(self):
-        """v1: proxy.py 內沒有 DIARY_ROOT / INNER_LIFE_DAYS / INNER_LIFE_MAX_ENTRIES 常數
+        """M2.0 已套用: proxy.py 有 INNER_LIFE_* 常數 (proxy.py:134-137)
 
-        v2 修法會新增這些常數, 跟 β2.1 風格一致 (Bry 派工: 「呼應 β2.1 事件背景那段的做法」)
-        v1 baseline 確認修法前 proxy.py 沒有這些常數
+        本測試原本寫成 v1 baseline (斷言 proxy.py 沒有這些常數)。
+        Bry 派工 2026-08-07 15:44 M2.0 之後:
+        - src/llm/proxy.py:134 INNER_LIFE_DATA_DIR = str(data_root() / "soul")
+        - src/llm/proxy.py:135 INNER_LIFE_DAYS = 3
+        - src/llm/proxy.py:136 INNER_LIFE_MAX_ENTRIES = 5
+        - src/llm/proxy.py:137 INNER_LIFE_MAX_CHARS_PER_ENTRY = 60
         """
-        for marker in ["INNER_LIFE_DAYS", "INNER_LIFE_MAX_ENTRIES", "INNER_LIFE_DATA_DIR"]:
-            self.assertNotIn(
+        for marker in ["INNER_LIFE_DATA_DIR", "INNER_LIFE_DAYS", "INNER_LIFE_MAX_ENTRIES"]:
+            self.assertIn(
                 marker, self.proxy_source,
-                f"v1 baseline 期望 proxy.py 沒有 {marker} 常數 (修法後才加), "
-                f"但找到了"
+                f"M2.0: proxy.py 應該有 {marker} 常數 (proxy.py:134-136) — "
+                f"找不到就是修法被回退"
             )
-        print("[v1 baseline] proxy.py 沒有 INNER_LIFE_* 常數 (修法後才加)")
+        # 常數必須真的有值, 不是只有名字
+        self.assertRegex(
+            self.proxy_source, r"(?m)^INNER_LIFE_DAYS\s*=\s*\d+",
+            "INNER_LIFE_DAYS 應該有整數預設值",
+        )
+        self.assertRegex(
+            self.proxy_source, r"(?m)^INNER_LIFE_MAX_ENTRIES\s*=\s*\d+",
+            "INNER_LIFE_MAX_ENTRIES 應該有整數預設值",
+        )
+        print("[M2.0 已套用] proxy.py 有 INNER_LIFE_DATA_DIR / DAYS / MAX_ENTRIES 常數")
 
 
 if __name__ == "__main__":

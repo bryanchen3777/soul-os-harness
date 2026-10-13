@@ -1,24 +1,24 @@
 """
-test_server_ops_python_path_v1.py — server_ops.ps1 修法 v1 baseline (before 修法)
+test_server_ops_python_path_v1.py — server_ops.ps1 修法 v1 baseline (2026-10-12 校準為現況)
 
 Bry 拍板 2026-08-03 23:40 修法: 跟 _start_plan_a.ps1 一樣修 server_ops.ps1 Start-SoulOsServer
-- 明確指定 hermes-agent venv python, 不依賴系統 PATH
+- 明確指定 venv python, 不依賴系統 PATH
 - 加 pre-check (python 存在 + uvicorn 可 import)
 - 跟 8/2 15:20 miku 教訓 + 8/3 23:25:05 server_ops 重啟失敗同類問題
 
-Bry 派工原話: 「Bry 派工原話假設 server_ops.ps1 已經修過, 實際還沒修」
+後續 2026-08-15 23:33 二次修: $python 由 hermes venv 改成 soul-os .venv
+根因: hermes venv 缺 networkx/telegram → 8/15 22:00 night slot server 掛了
+
+Bry 派工原話: 「 Bry 派工原話假設 server_ops.ps1 已經修過, 實際還沒修」
 - 修法前 server_ops.ps1 L37 用 'Start-Process -FilePath python' (系統 PATH)
-- 修法後改用 $python 變數 (hermes-agent venv) + pre-check
+- 修法後改用 $python 變數 (venv) + pre-check
 
-這個 v1 驗證現狀 (before 修法):
-- server_ops.ps1 L37 仍用系統 PATH 'python' (沒明確指定 hermes-agent venv)
-- 沒 pre-check (直接 Start-Process)
-- 跟 _start_plan_a.ps1 不一致 (修法前 _start_plan_a.ps1 不存在, server_ops.ps1 仍用 PATH)
-
+2026-10-12 校準: 本檔原為「修法前」baseline, 修法早已落地, 兩條斷言皆已過期。
+不刪測試, 只把期望值校準成現況契約 (production 正確, 測試過期):
+- test_baseline_uses_system_path_python: 明確 venv python + Start-Process 用 $python 變數
+- test_baseline_no_uvicorn_pre_check: 有 uvicorn pre-check 且位置在 Start-Process 之前
 mock 範圍:
-- 讀 server_ops.ps1 內容, 確認 L37 用 'python' 不是 hermes-agent venv
-- 確認沒 pre-check (沒 'import uvicorn' 字串)
-- 不實際啟動 server (避免跟現有 PID 23512 衝突)
+- 讀 server_ops.ps1 內容, 不實際啟動 server (避免跟生產服務衝突)
 """
 import re
 import sys
@@ -28,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 REPO = Path("C:\\Users\\bbfcc\\.local\\bin\\soul-os-harness")
-EXPECTED_PYTHON = r"C:\Users\bbfcc\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe"
+EXPECTED_PYTHON = str(REPO / ".venv" / "Scripts" / "python.exe")
 
 
 class TestServerOpsPythonPathV1(unittest.TestCase):
@@ -41,34 +41,34 @@ class TestServerOpsPythonPathV1(unittest.TestCase):
         self.content = self.server_ops.read_text(encoding="utf-8")
 
     def test_baseline_uses_system_path_python(self):
-        """v1 baseline: server_ops.ps1 用系統 PATH 'python' (沒明確指定 hermes-agent venv)
-        跟 Bry 派工原話查證事實一致: 之前 8/3 23:25:05 server_ops 重啟失敗是因為這個
+        """校準 (2026-10-12): server_ops.ps1 明確指定 venv python, 不依賴系統 PATH
+
+        證據: server_ops.ps1 L28 $python = repo .venv python (Bry 2026-08-15 23:33 二次修:
+        hermes venv 缺 networkx → 8/15 22:00 night slot server 掛掉), L109 Start-Process 用 $python。
+        原 v1 期望 (修法前用系統 PATH 'python') 已被 Bry 2026-08-03 23:40 修法推翻。
         """
-        # 確認 Start-Process -FilePath 'python' 存在 (系統 PATH, 不是 hermes-agent venv)
-        match = re.search(r"Start-Process\s+-FilePath\s+'python'", self.content)
-        self.assertIsNotNone(
-            match,
-            f"v1 baseline: server_ops.ps1 應該用 'Start-Process -FilePath python' (系統 PATH), "
-            f"這是修法前的現狀"
-        )
-        # 確認沒用 hermes-agent venv
-        self.assertNotIn(
+        self.assertIn(
             EXPECTED_PYTHON, self.content,
-            f"v1 baseline: server_ops.ps1 不應該包含 hermes-agent venv python ({EXPECTED_PYTHON}) - "
-            f"這是修法前的現狀, 修法後才會有"
+            f"校準: 應該明確指定 venv python ({EXPECTED_PYTHON}, server_ops.ps1 L28)"
         )
-        print(f"[v1 baseline] server_ops.ps1 用系統 PATH 'python' (修法前的現狀)")
+        # 真的用在 Start-Process 上 (server_ops.ps1 L109), 不是宣告完就擱著
+        match = re.search(r"Start-Process\s+-FilePath\s+(\S+)", self.content)
+        self.assertIsNotNone(match, "應該有 Start-Process -FilePath 呼叫")
+        actual = match.group(1)
+        self.assertEqual(actual, "$python", f"L109 應該用 $python 變數, 實際 = {actual!r}")
+        self.assertNotEqual(actual, "'python'", "不該用系統 PATH 'python' (8/3 23:25:05 同類問題)")
+        print(f"[v1 校準] server_ops.ps1 = venv python ({EXPECTED_PYTHON}), 非系統 PATH")
 
     def test_baseline_no_uvicorn_pre_check(self):
-        """v1 baseline: server_ops.ps1 沒 uvicorn pre-check
-        修法後才有 pre-check (跟 _start_plan_a 一致)
-        """
-        self.assertNotIn(
-            "import uvicorn", self.content,
-            f"v1 baseline: server_ops.ps1 不應該有 'import uvicorn' pre-check - "
-            f"修法前的現狀沒 pre-check, 啟動後才會死於 ModuleNotFoundError"
-        )
-        print(f"[v1 baseline] server_ops.ps1 沒 uvicorn pre-check (跟 8/3 23:25:05 失敗模式一致)")
+        """校準 (2026-10-12): server_ops.ps1 有 uvicorn pre-check, 且在 Start-Process 之前"""
+        # 證據: server_ops.ps1 L67-81 (Test-Path $python + import uvicorn, 失敗 exit 1),
+        # 早於 L109 Start-Process — Bry 2026-08-03 23:40 修法, 避免 8/3 23:25:05 啟動後才死。
+        self.assertIn("import uvicorn", self.content, "校準: 應該有 uvicorn pre-check")
+        match = re.search(r"Start-Process\s+-FilePath", self.content)
+        self.assertIsNotNone(match, "應該有 Start-Process -FilePath 呼叫")
+        self.assertLess(self.content.find("import uvicorn"), match.start(),
+                        "pre-check (L67-81) 應該在 Start-Process (L109) 之前, 否則檢查沒意義")
+        print("[v1 校準] uvicorn pre-check 在 Start-Process 之前 (server_ops.ps1 L67-81)")
 
     def test_baseline_existing_server_not_affected(self):
         """v1 baseline: 確認現有 server PID 23512 還活, mock test 不影響它

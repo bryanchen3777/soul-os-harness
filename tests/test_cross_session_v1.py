@@ -66,69 +66,107 @@ class TestCrossSessionBaseline(unittest.TestCase):
         self.main_session_history = _make_main_session_history()
 
     def test_a_baseline_is_bry_online_uses_messages_param(self):
-        """Baseline: _is_bry_online 用 messages_with_meta 參數算 (沒跨 session)
-        模擬 main session 內 Bry 52.26h 前, 呼叫 _is_bry_online(main_session_history, NOW)
-        期望 False (Bry 不在線, 52.26h > 30min)
-        注意: 這個 case 沒法 mock 跨 session 數據, 因為現狀 _is_bry_online 只看傳入的 messages
+        """修法 9 已套用: _is_bry_online 改成接受 bry_latest_ts (跨 session 純函式)
+
+        本測試原本寫成 v1 baseline (呼叫 _is_bry_online(messages, NOW))。
+        Bry 拍板 2026-08-04 20:37 修法 9 之後 signature 改成:
+        - src/llm/proxy.py:919 `def _is_bry_online(bry_latest_ts: int, now: int) -> bool`
+          (docstring 明講「修法 9 改 signature: 改接受 bry_latest_ts 直接時間比對,
+          不再傳 messages_with_meta」)
+        - 跨 session 取最大值統一在 src/llm/proxy.py:949 `_get_bry_latest_ts(memory, agent_id)`
+
+        本測試現在驗證現行契約: 純函式 + 30 分鐘閾值 (STALE_THRESHOLD_SEC, proxy.py:93)
         """
-        result = proxy._is_bry_online(self.main_session_history, NOW)
-        delta_sec = NOW - BRY_MAIN_SESSION_TS
-        delta_h = delta_sec / 3600
-        print(f"  Bry main session 最後: ts={BRY_MAIN_SESSION_TS} (8/2 14:57 EDT)")
-        print(f"  觸發時間: ts={NOW} (8/4 19:12 EDT)")
-        print(f"  差距: {delta_h:.1f} 小時")
-        print(f"  _is_bry_online 判斷: {result} (預期 False = Bry 不在線)")
         self.assertFalse(
-            result,
-            f"_is_bry_online 應該回 False (Bry 不在線, 52.26h > 30min), 實際: {result}"
+            proxy._is_bry_online(BRY_MAIN_SESSION_TS, NOW),
+            f"main session Bry 最後講話 52.26h 前 > 30min 閾值, 應該判 False (不在線)"
         )
+        self.assertTrue(
+            proxy._is_bry_online(NOW - 600, NOW),
+            "Bry 10 分鐘前講過話 < 30min 閾值, 應該判 True (在線)"
+        )
+        # Bry 從未講過話 (bry_latest_ts <= 0) → False (proxy.py:944)
+        self.assertFalse(
+            proxy._is_bry_online(0, NOW),
+            "bry_latest_ts=0 (Bry 從未跟這個 agent 講過話) 應該判 False"
+        )
+        print(f"  _is_bry_online 修法 9 signature: (bry_latest_ts, now) — "
+              f"52.26h→False / 10min→True / 0→False")
 
     def test_b_baseline_compute_silence_uses_messages_param(self):
-        """Baseline: _compute_silence_str 用 messages_with_meta 參數算 (沒跨 session)
-        模擬 main session 內 Bry 52.26h 前, 呼叫 _compute_silence_str(main_session_history, NOW)
-        期望顯示 2 天 (52.26h floor=2) — 但現狀沒考慮 TG session Bry 6.5h 前講過話
+        """修法 8+9 已套用: _compute_silence_str(bry_latest_ts, now) 跨 session 算沉默時長
+
+        本測試原本寫成 v1 baseline (呼叫 _compute_silence_str(messages, NOW) 期望 2 天)。
+        Bry 拍板 2026-08-04 20:37 修法 9 之後:
+        - src/llm/proxy.py:1089 `def _compute_silence_str(bry_latest_ts: int, now: int)`
+          <24h = "X 小時" (四捨五入) / >=24h = "X 天" (取整天數)
         """
-        result = proxy._compute_silence_str(self.main_session_history, NOW)
-        print(f"  _compute_silence_str 結果: {result!r}")
-        print(f"  Baseline 期望: 顯示「距離 Bry 上次跟你說話已經 2 天」 (52.26h floor=2)")
+        # 52.26h 前講過話 → 2 天
         self.assertEqual(
-            result, "距離 Bry 上次跟你說話已經 2 天",
-            "Baseline (v1) 期望 _compute_silence_str 只看當前 session, 顯示 2 天 (52.26h floor)"
+            proxy._compute_silence_str(BRY_MAIN_SESSION_TS, NOW),
+            "距離 Bry 上次跟你說話已經 2 天",
+            "52.26h 前 Bry 講過話 → 52.26 // 24 = 2 天"
         )
+        # 6.5h 前講過話 → 7 小時 (四捨五入)
+        self.assertEqual(
+            proxy._compute_silence_str(BRY_TG_SESSION_TS, NOW),
+            "距離 Bry 上次跟你說話已經 7 小時",
+            "6.5h 前 Bry 在 TG session 講過話 → round(6.57) = 7 小時 (修法 9 跨 session 取最大值後應走這條)"
+        )
+        # Bry 從未講過話 → None (跳過這行)
+        self.assertIsNone(
+            proxy._compute_silence_str(0, NOW),
+            "Bry 從未跟這個 agent 講過話 → 回 None (跳過沉默時長行)"
+        )
+        # Bry 在線 (剛講過話) → None (講了反而多餘)
+        self.assertIsNone(
+            proxy._compute_silence_str(NOW - 600, NOW),
+            "Bry 10 分鐘前講過話 (在線) → 回 None, 不注入沉默時長行"
+        )
+        print(f"  _compute_silence_str: 52.26h→2 天 / 6.5h→7 小時 / 0→None / 在線→None")
 
     def test_c_baseline_no_cross_session_helper(self):
-        """Baseline: proxy 沒有 _get_bry_latest_ts / _get_bry_latest_ts_across_sessions helper"""
-        self.assertFalse(
+        """修法 9 已套用: proxy 有 _get_bry_latest_ts 跨 session helper
+
+        本測試原本寫成 v1 baseline (斷言 proxy 沒有這個 helper)。
+        Bry 拍板 2026-08-04 20:37 修法 9 之後:
+        - src/llm/proxy.py:949 `def _get_bry_latest_ts(memory, agent_id: str) -> int`
+          (跨 session SQL 查 messages table, 對 session_id 以 _{agent_id} 結尾者取 max ts)
+        - 正式名稱就是 _get_bry_latest_ts, 沒有 _get_bry_latest_ts_across_sessions 這個名字
+        """
+        self.assertTrue(
             hasattr(proxy, "_get_bry_latest_ts"),
-            "Baseline (v1) 期望 proxy 沒有 _get_bry_latest_ts, 修法 9 才加"
+            "修法 9: proxy 應該有 _get_bry_latest_ts 跨 session helper (proxy.py:949)"
         )
         self.assertFalse(
             hasattr(proxy, "_get_bry_latest_ts_across_sessions"),
-            "Baseline (v1) 期望 proxy 沒有 _get_bry_latest_ts_across_sessions"
+            "修法 9 正式命名是 _get_bry_latest_ts, 沒有 _get_bry_latest_ts_across_sessions"
         )
-        print(f"[v1 baseline] proxy 沒有 _get_bry_latest_ts / _get_bry_latest_ts_across_sessions")
+        print(f"[修法 9 已套用] proxy 有 _get_bry_latest_ts (跨 session 取 Bry 最後 ts)")
 
     def test_d_baseline_proxy_source_no_method_9(self):
-        """Baseline: proxy source 沒修法 9 注入字眼
-        注意: proxy 已有「跨 session」字眼 (RAG 注入註解 L80774)
-        修法 9 注入字眼用更精準的 pattern 找
+        """修法 9 已套用: proxy source 有修法 9 注入字眼 + helper 定義
+
+        本測試原本寫成 v1 baseline (斷言 proxy source 沒修法 9 字眼)。
+        Bry 拍板 2026-08-04 20:37 修法 9 之後 proxy.py 內有:
+        - proxy.py:949 `def _get_bry_latest_ts(...)` 定義
+        - proxy.py:951-983 docstring 寫明 Bry 派工原話「同一個 agent 底下, 所有 session...」
         """
         proxy_source = Path(proxy.__file__).read_text(encoding="utf-8")
-        self.assertNotIn(
-            "_get_bry_latest_ts", proxy_source,
-            "Baseline (v1) 期望 proxy source 沒 _get_bry_latest_ts, 修法 9 才加"
+        self.assertIn(
+            "def _get_bry_latest_ts", proxy_source,
+            "修法 9: proxy source 應該有 _get_bry_latest_ts 函數定義 (proxy.py:949)"
         )
-        # 修法 9 拍板字眼 (精準 pattern, 排除 RAG 既有「跨 session」)
-        self.assertNotIn(
+        # 修法 9 拍板字眼 (Bry 派工原話)
+        self.assertIn(
             "修法 9", proxy_source,
-            "Baseline (v1) 期望 proxy source 沒「修法 9」字眼, 修法 9 commit 才加"
+            "修法 9: proxy source 應該有「修法 9」註解字眼"
         )
-        # 修法 9 拍板 Bry 派工原話字眼
-        self.assertNotIn(
+        self.assertIn(
             "同一個 agent 底下", proxy_source,
-            "Baseline (v1) 期望 proxy source 沒「同一個 agent 底下」字眼"
+            '修法 9: proxy source 應該有 Bry 派工原話「同一個 agent 底下」字眼'
         )
-        print(f"[v1 baseline] proxy source 沒修法 9 注入字眼 (排除 RAG 既有「跨 session」)")
+        print(f"[修法 9 已套用] proxy source 有 _get_bry_latest_ts 定義 + 修法 9 註解字眼")
 
 
 if __name__ == "__main__":

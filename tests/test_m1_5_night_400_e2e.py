@@ -63,6 +63,13 @@ class TestM15E2E10Agents(unittest.TestCase):
         proxy._memory = MagicMock()
         proxy._history = {}
         proxy._in_flight = set()
+        # PERSONA-FIX-3 (proxy.py:3519) 的 Ruka heartbeat session-once gate 狀態容器。
+        # 本 fake 以 `LLMProxy.__new__` 繞過 `__init__` 手工組出屬性，因此凡是
+        # `__init__` 會初始化的欄位都必須在此補齊；漏一個就會在
+        # `_handle_event_impl` 走到 agent_ruka 分支時拋 AttributeError。
+        # 這是**測試替身沒跟上生產類別新增欄位**，不是 M1.5 邏輯缺陷：
+        # 補上後 10/10 全綠（實測），M1.5 的 placeholder user role 契約成立。
+        proxy._ruka_heartbeat_fired = set()
         proxy._conversation_dir = None  # sentinel: 走 module-level CONV_DIR (P0 隔離 persistence)
         return proxy
 

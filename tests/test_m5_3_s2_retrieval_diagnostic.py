@@ -32,6 +32,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 
 # Ensure project root on sys.path
@@ -42,6 +43,38 @@ import pytest
 from src.memory.v1.schema import Memory
 from src.memory.v1.store import V1Store
 from src.memory.v1.loader import MemoryLoader, format_for_prompt, derive_query_tags
+
+
+@contextmanager
+def _utf8_console():
+    """在印診斷表期間暫時把 sys.stdout 切到 utf-8, 結束後還原。
+
+    為什麼需要: `capsys.disabled()` 會把 sys.stdout 還原成「真實主控台」,
+    而 Windows 繁中預設是 cp950。診斷表印的是繁中 memory tag 與 emoji
+    (⚠️ / ✅), 會直接 UnicodeEncodeError, 讓 test 在「印表」階段就爆掉。
+
+    2026-10-12: 這個 encoding 問題會**遮蔽真正的斷言失敗**——
+    test_s2_a_4 的 UnicodeEncodeError 讓人誤以為只是環境問題, 但底下
+    其實是「負向 query 真的撈到 eligible memory」的真實缺陷。
+    修好印表後, 真正的斷言才會如實浮現。
+    """
+    stream = sys.stdout
+    orig_encoding = getattr(stream, "encoding", None)
+    orig_errors = getattr(stream, "errors", None)
+    switched = False
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+        switched = True
+    except (AttributeError, ValueError, OSError):
+        pass  # 不支援 reconfigure 的 stream 就維持原樣
+    try:
+        yield
+    finally:
+        if switched and orig_encoding is not None:
+            try:
+                stream.reconfigure(encoding=orig_encoding, errors=orig_errors)
+            except (AttributeError, ValueError, TypeError, OSError):
+                pass
 
 
 # ────────────────────────────────────────────────────────────
@@ -227,7 +260,7 @@ def test_s2_a_1_production_like_corpus_diagnostic(capsys):
     }
 
     # Print diagnostic table
-    with capsys.disabled():
+    with capsys.disabled(), _utf8_console():
         print()
         print("=" * 100)
         print(f"M5.3-S2-A-1 Layer 1 — Production-Like Corpus Diagnostic")
@@ -522,7 +555,7 @@ def test_s2_a_4_negative_no_false_positive(capsys):
     n_with_cand = sum(1 for r in results if r["candidate_count"] > 0)
     n_eligible = sum(1 for r in results if r["eligible_count"] > 0)
 
-    with capsys.disabled():
+    with capsys.disabled(), _utf8_console():
         print()
         print("=" * 100)
         print("M5.3-S2-A-1 Layer 4 — Negative / False-Positive Tests")
@@ -548,6 +581,14 @@ def test_s2_a_4_negative_no_false_positive(capsys):
     # (some jieba token matches with common words like 什麼 might happen)
     # But eligible should be 0 (none of these should pass confidence filter
     # for matching memory content)
+    #
+    # NOTE (2026-10-12 裁決): 此斷言維持紅燈 —— 真實 production 缺陷, 非過期斷言。
+    # 先前此 test 在「印診斷表」階段就 UnicodeEncodeError 爆掉, 把真正的
+    # 缺陷完全遮蔽 (看起來像只是 Windows 編碼問題)。印表修好後才浮現:
+    # 「今天 天氣 怎麼 樣」與「Python 是 什麼 程式語言」各撈到 eligible memory,
+    # 命中的都是零區分力 token(「今天」「什麼」)。
+    # 根因同 test_m5_3_s2_b_normalization.py::test_s2_b_4_negative_zero_false_positive,
+    # 見 SOUL-BUG 候選: SAGE loader 缺通用停用詞 + MIN_OVERLAP_SHORT_CONTENT=1。
     assert n_eligible == 0, (
         f"Negative queries should NOT produce eligible memories. "
         f"Got {n_eligible} eligible from irrelevant queries: "
@@ -585,7 +626,7 @@ def test_s2_a_5_memory_tag_structure_inspection(capsys):
             if len(tag) <= 1 and len(single_examples) < 5:
                 single_examples.append((m.memory_id[:8], tag, m.content[:40]))
 
-    with capsys.disabled():
+    with capsys.disabled(), _utf8_console():
         print()
         print("=" * 100)
         print("M5.3-S2-A-1 Layer 5 — Memory Tag Structure Inspection")

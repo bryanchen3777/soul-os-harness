@@ -37,39 +37,55 @@ class TestFinishLengthTruncateBaseline(unittest.TestCase):
     """驗證現狀 (before 修法 10) — finish_reason=length 沒強制截斷 raw"""
 
     def test_a_baseline_no_safe_truncate_helper(self):
-        """Baseline: proxy 沒有 _safe_truncate_on_length helper
-        修法 10 才會加 (Bry 拍板方向: 抽 helper 容易 unit test)
+        """修法 10 已套用: proxy 有 _safe_truncate_on_length helper
+
+        本測試原本寫成 v1 baseline (斷言 proxy 沒有這個 helper)。
+        Bry 拍板 2026-08-04 23:33 修法 10 之後:
+        - src/llm/proxy.py:2800 `def _safe_truncate_on_length(raw, max_chars=200)`
+        - src/llm/proxy.py:1900 OpenAIBackend.finish_reason=length 分支真的呼叫它
         """
-        self.assertFalse(
+        self.assertTrue(
             hasattr(proxy, "_safe_truncate_on_length"),
-            "v1 baseline 期望 proxy 沒有 _safe_truncate_on_length helper, 修法 10 才會加"
+            "修法 10 (Bry 拍板 2026-08-04 23:33): proxy 應該有 _safe_truncate_on_length "
+            "helper (proxy.py:2800)"
         )
-        print(f"  [v1 baseline] proxy 沒有 _safe_truncate_on_length helper")
+        # 不是只有定義, finish_reason=length 分支真的要呼叫
+        proxy_source = Path(proxy.__file__).read_text(encoding="utf-8")
+        self.assertIn(
+            "raw = _safe_truncate_on_length(raw)", proxy_source,
+            "修法 10: finish_reason=length 分支應該實際呼叫 _safe_truncate_on_length 截斷 raw"
+        )
+        print(f"  [修法 10 已套用] proxy 有 _safe_truncate_on_length helper, "
+              f"且 finish_reason=length 分支有呼叫")
 
     def test_b_baseline_proxy_source_no_method_10(self):
-        """Baseline: proxy source 沒修法 10 注入字眼"""
+        """修法 10 已套用: proxy source 有修法 10 注入字眼 + helper 定義
+
+        本測試原本寫成 v1 baseline (斷言 proxy source 沒「修法 10」/ _safe_truncate_on_length)。
+        Bry 拍板 2026-08-04 23:33 修法 10 之後 proxy.py 內有:
+        - proxy.py:2800 `def _safe_truncate_on_length(...)`
+        - proxy.py:2853 `[修法 10] _safe_truncate_on_length: 最後 {max_chars} 字內找不到標點斷點`
+        """
         proxy_source = Path(proxy.__file__).read_text(encoding="utf-8")
-        # 修法 10 拍板字眼
-        self.assertNotIn(
-            "修法 10", proxy_source,
-            "v1 baseline 期望 proxy source 沒「修法 10」字眼, 修法 10 commit 才加"
-        )
-        # _safe_truncate_on_length 既有 (修法 10 才會加)
-        self.assertNotIn(
-            "_safe_truncate_on_length", proxy_source,
-            "v1 baseline 期望 proxy source 沒 _safe_truncate_on_length 函數, 修法 10 才會加"
-        )
-        # _truncate_repetition 既有 (修法 6 B), 不算修法 10 注入
         self.assertIn(
-            "_truncate_repetition", proxy_source,
-            "修法 6 B _truncate_repetition 既有, v1 baseline 應該有"
+            "修法 10", proxy_source,
+            "修法 10 (Bry 拍板 2026-08-04 23:33): proxy source 應該有「修法 10」註解字眼"
         )
-        # 修法 6 D.1 finish_reason=length 既有 WARNING log, 保留
+        self.assertIn(
+            "def _safe_truncate_on_length", proxy_source,
+            "修法 10: proxy source 應該有 _safe_truncate_on_length 函數定義 (proxy.py:2800)"
+        )
+        # 修法 6 B _truncate_repetition 保留當第二層 (Bry 拍板: 保留)
+        self.assertIn(
+            "def _truncate_repetition", proxy_source,
+            "修法 6 B _truncate_repetition 保留當第二層防護, 應該還在 (proxy.py:2775)"
+        )
+        # 修法 6 D.1 finish_reason=length WARNING log 保留
         self.assertIn(
             "修法 6 D.1", proxy_source,
-            "修法 6 D.1 既有, v1 baseline 應該有"
+            "修法 6 D.1 finish_reason=length WARNING log 保留, 應該還在"
         )
-        print(f"  [v1 baseline] proxy source 沒修法 10 注入字眼")
+        print(f"  [修法 10 已套用] proxy source 有修法 10 註解 + _safe_truncate_on_length 定義")
 
     def test_c_baseline_openai_backend_length_only_logs(self):
         """Baseline: OpenAIBackend.complete 內 finish_reason=length 觸發時只有 WARNING log

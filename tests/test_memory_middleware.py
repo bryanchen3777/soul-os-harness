@@ -189,19 +189,49 @@ async def test_memory_middleware_e2e(tmp_dir: Path) -> Dict[str, Any]:
         logger.info("  ✓ prefetch 成功召回 '台北' 相關事實")
 
         # ── Step 4: 走完整 Bus 鏈條 ──
-        logger.info("\n── Step 4: 完整鏈條（SYSTEM_TICK → INTENT → ENRICHED → LLM → SPEAK）──")
+        # SOUL-TECH-DEBT-001 校準（stale test, class (a)）:
+        # 原斷言靠「SYSTEM_TICK → 角色主動發言」推進整條鏈, 但 M5.7-2
+        # (Bry 拍板) 把 EventType.SYSTEM_TICK 從 agent 的訂閱清單拿掉
+        # (src/agent/consciousness.py:155, 註解「拿掉, 避免 proactive Agency」)。
+        # 實測證據: `[Bus] dispatch system_tick target=broadcast -> []`
+        # —— 0 個 subscriber, 事件進來就沒人理, 之後 AGENT_INTENT / ENRICHED /
+        # SPEAKER_TOKEN_GRANTED / AGENT_SPEAK 全部不會發生。
+        # 主動發言現在改由 SoulScheduler → AGENCY_TRIGGER 走
+        # (M5.2-G), 那條路徑不屬於本測試的記憶層關注點。
+        #
+        # 本測試真正要守的是「MemoryMiddleware 記憶層在完整鏈路上有參與」,
+        # 所以改用**仍然活著的**入口 USER_MESSAGE 推進同一條鏈:
+        # USER_MESSAGE → Agent._fire_intent → AGENT_INTENT →
+        # MemoryMiddleware.enrich → AGENT_INTENT_ENRICHED →
+        # SpeakerTokenManager → SPEAKER_TOKEN_GRANTED → LLMProxy →
+        # AGENT_SPEAK → IOGateway。
+        #
+        # payload 鍵名照 consciousness.py:190-217 的現行契約:
+        #   content       (consciousness.py:190 讀這個; 舊碼用 "text" → content 恆空)
+        #   mode          (預設 "private")
+        #   target_agent  (預設 "agent_yua"; 不給就會被忽略, 因為本測試是 ruka)
+        # "text" 一併帶上給 MemoryMiddleware 的 _pending_user_text（:1 step 用的鍵）。
+        logger.info("\n── Step 4: 完整鏈條（USER_MESSAGE → INTENT → ENRICHED → LLM → SPEAK）──")
         agent_ruka.state.intimacy_level = 60
         await bus.publish(SoulEvent(
-            event_type=EventType.SYSTEM_TICK,
-            source="heartbeat",
+            event_type=EventType.USER_MESSAGE,
+            source="user_bryan",
             target="broadcast",
-            priority=EventPriority.LOW,
-            expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
-            payload={"tick_count": 1, "elapsed_mins": 7.0},
+            priority=EventPriority.HIGH,
+            payload={
+                "content": "我喜歡吃義大利麵, 推薦一家店好嗎?",
+                "text": "我喜歡吃義大利麵, 推薦一家店好嗎?",
+                "mode": "private",
+                "target_agent": "agent_ruka",
+            },
+            session_id="session_phase2_001",
         ))
-        # 給整條鏈條時間：Tick → Agent → AGENT_INTENT → MemoryMiddleware →
-        # AGENT_INTENT_ENRICHED → LLMProxy → AGENT_SPEAK → I/O
-        await asyncio.sleep(0.5)
+        # 給整條鏈條時間：等 bus 佇列清空, 而不是固定 sleep。
+        # （原為 asyncio.sleep(0.5); MemoryMiddleware 首次 enrich 要載 jieba dict
+        #   + 跑 RAG, 實測 >0.5s → teardown 會在 ENRICHED 還沒 publish 出去前
+        #   先把 bus 關掉, re-publish 被丟（bus.py:184-186）, 變成假紅。
+        #   queue.join() 是 bus 自己的背壓語意, stop() 自己也 await 它, bus.py:232。）
+        await asyncio.wait_for(bus._queue.join(), timeout=30)
 
         logger.info(
             f"  Mock LLM 被呼叫 {mock_backend.call_count} 次，"

@@ -1,5 +1,5 @@
 """
-test_short_term_memory_framing_v1.py — 修法 2 baseline: 短期記憶區塊無反框架語句
+test_short_term_memory_framing_v1.py — 修法 2 現況契約: 短期記憶區塊**有**反框架語句
 
 Bry 拍板 2026-08-03 22:21:
 - ruka 8/3 8 條訊息中 7 條 LLM 自創 (把「Bry 最近訊息」當成要回應的對象)
@@ -9,16 +9,18 @@ Bry 拍板 2026-08-03 22:21:
 - Bry 拍板: 在「## Bry 最近訊息」區塊文字本身加反框架語句, 不要再嘗試靠調整區塊順序或距離
   (距離已經證明無效, ruka 那條例子中間隔了 4 個區塊還是被誤讀)
 
-這個 v1 驗證現狀 (before 修法):
-- _build_messages_group 注入的「## Bry 最近訊息」區塊沒有反框架語句
-- 只有「## Bry 最近訊息 (短期記憶)」標題 + bullet list, 沒說明「這是背景參考不代表 Bry 正在對話」
+2026-10-12 校準: 本檔原為「修法前」baseline (斷言反框架語句**不存在**), 但修法早已落地。
+production 正確, 測試過期 —— 校準為驗證現況契約 (不刪測試):
+- proxy.py L860-864 `_build_messages_group` 內 bry_block_lines 首行即
+  「[使用說明] 以下是背景參考, 不代表 Bry 現在正在跟你對話。」
+- 修法 3 (Bry 2026-08-03 23:08) 另有群聊歷史段的 [使用說明] (proxy.py L884-889),
+  與修法 2 同方向: 在資訊本身旁邊加使用說明, 不是靠位置順序。
 
 Mock 範圍:
 - mock _load_bry_recent 回傳 3 條假 Bry user 訊息
 - mock memory.get_group_history 回傳空 (避免 group history 路徑干擾)
 - 直接呼叫 _build_messages_group, 驗證 system prompt 內容
-- 修法前 v1 期望: 第一條 system 訊息沒有「不代表 Bry 現在正在跟你對話」之類的反框架句子
-- 修法後 v2 期望: 包含明確反框架句子
+- 現況期望: 反框架語句存在, 且位於區塊開頭 (緊接 Bry 的 bullet 之前)
 """
 import sys
 import unittest
@@ -45,7 +47,9 @@ class TestShortTermMemoryFramingBaseline(unittest.TestCase):
         self.soul_text = "你是 Ruka。... (Ruka 的人格設定) ..."
 
     def test_baseline_bry_recent_block_has_no_anti_framing(self):
-        """Baseline: 「## Bry 最近訊息」區塊沒有反框架語句, 只有 bullet list"""
+        """校準 (2026-10-12): 「## Bry 最近訊息」區塊**有**反框架語句 (修法 2 已落地)
+        證據: proxy.py L860-864 bry_block_lines 第一段就是 [使用說明] 區塊。
+        """
         # mock _load_bry_recent + memory.get_group_history
         with patch.object(proxy, "_load_bry_recent", return_value=self.fake_bry_recent), \
              patch.object(proxy, "MAX_GROUP", 20):
@@ -69,11 +73,11 @@ class TestShortTermMemoryFramingBaseline(unittest.TestCase):
             self.assertGreaterEqual(len(system_msgs), 1, "應該至少有 1 條 system message")
             first_system = system_msgs[0]["content"]
 
-            # Baseline 期望: 包含「## Bry 最近訊息」標題 + 3 條 bullet, 但沒有反框架語句
+            # 現況契約: 區塊標題 + 3 條 bullet 仍在 (修法 2 只加說明, 沒動資料)
             self.assertIn("## Bry 最近訊息", first_system, "應該有短期記憶區塊標題")
             self.assertIn("叫妳老婆", first_system, "應該有 Bry 最近的訊息")
 
-            # 驗證反框架語句**不存在** (baseline)
+            # 現況契約: 修法 2 的反框架語句**存在** (proxy.py L861-863)
             anti_framing_keywords = [
                 "不代表 Bry 現在正在跟你對話",
                 "背景參考",
@@ -81,12 +85,23 @@ class TestShortTermMemoryFramingBaseline(unittest.TestCase):
                 "除非有主動觸發標記",
             ]
             for keyword in anti_framing_keywords:
-                self.assertNotIn(
+                self.assertIn(
                     keyword, first_system,
-                    f"Baseline (v1) 期望短期記憶區塊「不」包含反框架語句「{keyword}」"
-                    f", 實際 system prompt 開頭: {first_system[:300]!r}"
+                    f"現況: 短期記憶區塊應該包含反框架語句「{keyword}」"
+                    f" (修法 2, proxy.py L861-863), 實際 system prompt: {first_system[:300]!r}"
                 )
-            print(f"[v1 baseline] short-term memory block has no anti-framing text (v2 should add it)")
+            # 強化: 反框架說明必須在 Bry 的 bullet **之前** (修法 2 的做法是
+            # 「在資訊本身旁邊加使用說明」, 不是靠把區塊搬到遠處)
+            marker_pos = first_system.find("## Bry 最近訊息")
+            self.assertLess(
+                first_system.find("[使用說明]"), marker_pos,
+                "反框架說明應該在「## Bry 最近訊息」區塊之前 (Bry 派工原話: 加在資訊本身旁邊)"
+            )
+            self.assertIn(
+                "不要逐條回應", first_system,
+                "反框架說明應該明講不要逐條回應 (ruka 8/3 誤讀的根因)"
+            )
+            print("[v1 校準] short-term memory block HAS anti-framing text (修法 2 已落地)")
             print(f"  system prompt total chars: {len(first_system)}")
 
 

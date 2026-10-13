@@ -82,76 +82,89 @@ class TestM17EventWhitelistBaseline(unittest.TestCase):
         self.scheduler, self.event_record = _make_scheduler_with_whitelist(WHITELIST_RUKA)
 
     def test_a_baseline_event_fires_all_agents(self):
-        """Baseline: _fire_event 從 _all_agents 抽, 沒過 whitelist → 10 隻都觸發
+        """M1.7 已套用: _fire_event 從 _all_agents 抽, 但 filter 過 whitelist → 只觸發 ruka
 
-        模擬場景: 配 whitelist=ruka, 但修法前不過濾, mock 強制 sample 回 10 隻 → 10 隻都觸發
-        修法前: 10 隻 callback 都被呼叫
-        修法後: filter 過 whitelist, 只剩 ruka, 1 隻 callback 被呼叫 (v1 fail 證明修法生效)
+        本測試原本寫成 v1 baseline (期望 10 隻全部被觸發, 即修法前沒過濾)。
+        Bry 拍板 2026-08-07 15:00 M1.7 之後:
+        - src/soul/scheduler.py:936 `candidates = self._get_proactive_agents()`
+        - src/soul/scheduler.py:937 `agents = [a for a in raw_picks if a in candidates]`
+        - src/soul/scheduler.py:1148 `_get_proactive_agents()` = whitelist ∩ _all_agents
+
+        M5.2-I Phase 6 (Bry 拍板 2026-08-08) 之後觸發 = publish AGENCY_TRIGGER,
+        不再呼叫 event callback (scheduler.py:924-927), 所以這裡改驗 publish。
         """
-        async def run():
-            with patch("src.soul.scheduler.random.sample", return_value=list(ALL_AGENTS)):
-                await self.scheduler._fire_event()
-            return self.event_record["called_with"]
+        published = []
 
-        called = asyncio.run(run())
-        # Baseline 期望: 10 隻全部被觸發 (修法前沒 filter)
+        async def fake_publish(agent_id, trigger_type, extra=None):
+            published.append((agent_id, trigger_type))
+
+        async def run():
+            with patch("src.soul.scheduler.random.sample", return_value=list(ALL_AGENTS)), \
+                 patch.object(self.scheduler, "_publish_agency_trigger", fake_publish):
+                await self.scheduler._fire_event()
+            return published
+
+        published = asyncio.run(run())
         self.assertEqual(
-            sorted(called), sorted(ALL_AGENTS),
-            f"Baseline (v1) 期望 _fire_event 觸發全部 10 隻, "
-            f"實際觸發 {len(called)} 隻: {called}"
+            sorted(published), [("agent_ruka", "event")],
+            f"M1.7 (Bry 拍板 2026-08-07 15:00): 配 whitelist=['agent_ruka'] 時 "
+            f"_fire_event 只應該 publish ruka, 實際: {published}"
         )
-        print(f"[v1 baseline] _fire_event 觸發全部 {len(called)} 隻: {sorted(called)}")
+        print(f"[M1.7 已套用] _fire_event 抽 10 隻但只 publish ruka: {published}")
 
     def test_b_baseline_event_ignores_whitelist(self):
-        """Baseline: 即便配了 whitelist=['agent_ruka'], _fire_event 仍會觸發非白名單角色
+        """M1.7 已套用: 抽到非白名單角色 (yua/anna) 全被 filter, 0 隻 publish
 
-        模擬場景: 配 whitelist=ruka, mock sample 強制回 [yua, anna] (非白名單)
-        修法前: 從 _all_agents 抽 2 隻, mock 強制 [yua, anna] 直接被 for 跑 2 次
-        修法後: mock 給的 [yua, anna] 被 filter (ruka 是 candidates), 0 隻觸發
+        本測試原本寫成 v1 baseline (期望 yua+anna 都被觸發, 即修法前不過濾)。
+        Bry 拍板 2026-08-07 15:00 M1.7 之後 scheduler.py:937 過濾掉非 candidates,
+        全部被 filter 掉時走 scheduler.py:938-953 的 silent skip 分支 (只排下次時間)。
         """
-        async def run():
-            with patch("src.soul.scheduler.random.sample", return_value=["agent_yua", "agent_anna"]):
-                await self.scheduler._fire_event()
-            return self.event_record["called_with"]
+        published = []
 
-        called = asyncio.run(run())
-        # Baseline 期望: yua + anna 都被觸發 (即使不在 whitelist)
-        self.assertIn(
-            "agent_yua", called,
-            f"Baseline (v1) 期望 _fire_event 觸發 yua (即使不在 whitelist), 實際: {called}"
+        async def fake_publish(agent_id, trigger_type, extra=None):
+            published.append((agent_id, trigger_type))
+
+        async def run():
+            with patch("src.soul.scheduler.random.sample",
+                       return_value=["agent_yua", "agent_anna"]), \
+                 patch.object(self.scheduler, "_publish_agency_trigger", fake_publish):
+                await self.scheduler._fire_event()
+            return published
+
+        published = asyncio.run(run())
+        self.assertEqual(
+            published, [],
+            f"M1.7: 抽到的 yua/anna 都不在 whitelist, 應該全部被 filter (silent skip), "
+            f"實際 publish: {published}"
         )
-        self.assertIn(
-            "agent_anna", called,
-            f"Baseline (v1) 期望 _fire_event 觸發 anna (即使不在 whitelist), 實際: {called}"
-        )
-        # sanity: ruka 在 whitelist 但 mock 沒抽中, 不該被觸發
-        self.assertNotIn(
-            "agent_ruka", called,
-            f"Baseline (v1) 期望 _fire_event mock 沒抽 ruka, 實際: {called}"
-        )
-        print(f"[v1 baseline] _fire_event 即使 whitelist=ruka, 仍觸發 yua+anna: {called}")
+        print(f"[M1.7 已套用] _fire_event 抽到非白名單 yua/anna → 0 隻 publish (silent skip)")
 
     def test_c_baseline_proxy_source_event_no_whitelist(self):
-        """Baseline: scheduler.py _fire_event 沒用 _get_proactive_agents()"""
+        """M1.7 已套用: scheduler.py _fire_event 用 _get_proactive_agents() 過濾"""
         scheduler_source = Path(
             "C:/Users/bbfcc/.local/bin/soul-os-harness/src/soul/scheduler.py"
         ).read_text(encoding="utf-8")
         # 找 _fire_event 函式
         import re
         match = re.search(r"async def _fire_event.*?(?=async def |\n    # ─)", scheduler_source, re.DOTALL)
-        if match:
-            fire_event_source = match.group(0)
-            # v1 baseline 期望: _fire_event 直接從 self._all_agents 抽
-            self.assertIn(
-                "self._all_agents", fire_event_source,
-                "v1 baseline 期望 _fire_event 引用 self._all_agents (修法前從全名單抽)"
-            )
-            # v1 baseline 期望: 沒用 _get_proactive_agents() (這是 v2 才加的)
-            self.assertNotIn(
-                "_get_proactive_agents", fire_event_source,
-                "v1 baseline 期望 _fire_event 沒用 _get_proactive_agents() (修法後才加)"
-            )
-            print("[v1 baseline] _fire_event 從 self._all_agents 抽, 沒用 _get_proactive_agents()")
+        self.assertIsNotNone(match, "找不到 _fire_event 函式, 邏輯可能變了")
+        fire_event_source = match.group(0)
+        # M1.7 之後: 仍從 self._all_agents 抽 (跟修法 11 heartbeat pattern 對齊)
+        self.assertIn(
+            "self._all_agents", fire_event_source,
+            "M1.7: _fire_event 仍從 self._all_agents 抽 (scheduler.py:934)"
+        )
+        # M1.7 之後: 過濾用 _get_proactive_agents() (scheduler.py:936)
+        self.assertIn(
+            "_get_proactive_agents", fire_event_source,
+            "M1.7 (Bry 拍板 2026-08-07 15:00): _fire_event 應該用 _get_proactive_agents() "
+            "過濾 (scheduler.py:936) — 找不到就是修法被回退"
+        )
+        self.assertIn(
+            "if a in candidates", fire_event_source,
+            "M1.7: _fire_event 應該把 raw_picks 過濾成 candidates 交集 (scheduler.py:937)"
+        )
+        print("[M1.7 已套用] _fire_event 從 self._all_agents 抽 + _get_proactive_agents() 過濾")
 
 
 if __name__ == "__main__":

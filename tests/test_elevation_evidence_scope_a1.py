@@ -148,13 +148,20 @@ def test_a1_same_key_in_same_dimension_is_not_recounted(tmp_path):
 
 
 def test_a2_same_dimension_two_fresh_keys_still_accumulate(tmp_path):
-    """INV-2 不是「全面封鎖」：同維度**兩份新證據** → 仍可升華（N=2）。"""
+    """INV-2 不是「全面封鎖」：同維度**兩份新證據** → 仍可升華（N=2）。
+
+    校準（VALUE-DEDUP-A-1, elevation_adapter.py:353-396）：既有靈魂 s1 的 content
+    必須與新靈魂不同，否則新靈魂（content = 錨點 pattern content,
+    engine.py:516）會被 (agent_id, node_type, content_hash) 冪等去重而**不落盤**
+    （連證據邊一起跳過）→ 這裡測的「K2/K3 新證據被引用」就無從驗證。
+    本測試只探**消化範圍**，故給 s1 一個不同 content。
+    """
     store = tmp_path / "elevation"
     nodes = [
         _node("p1", "pattern", "agent_rem", candidate="value"),
         _node("p2", "pattern", "agent_rem", candidate="value"),
         _node("p3", "pattern", "agent_rem", candidate="value"),
-        _node("s1", "value", "agent_rem"),
+        _node("s1", "value", "agent_rem", content="prior:value"),
     ]
     edges = [
         _edge("e-p1", "p1", "K1", "agent_rem"),
@@ -324,39 +331,49 @@ def test_e1_repeated_elevation_needs_two_fresh_keys_in_same_dimension(tmp_path):
     釘住兩件事：
       * 反重複消化（INV-2）在同維度內持續有效（同一批證據不會被再計一次）；
       * 同維度累積到 2 份**新**證據即可**反覆**升華（不是一次性）。
+
+    校準（VALUE-DEDUP-A-1, elevation_adapter.py:353-396）：每份證據必須 content
+    互異，否則 pattern 落盤被冪等去重、證據永遠累積不起來；且第二次昇華的錨點
+    仍是同一顆 p1（candidates 保持 pids[0], elevation_adapter.py:808-823）→
+    新 value 的 content 與第一顆相同 → **不落盤**（引擎回傳值不變，
+    同檔 363-366 行明載「引擎語意不動（回傳值不變）」）。
     """
     writer = InnerLifeWriter()
     store = tmp_path / "elevation"
 
-    def _consume_one() -> None:
+    def _consume_one(i: int) -> None:
         event = writer.create_event(
             provenance=Provenance(
                 trigger_type=TRIGGER_TYPE_DIARY_NIGHT,
                 actor_id="agent_rem",
                 source_system="narrative",
+                extras={"note": f"n{i}"},
             )
         )
         nodes = run_elevation(event, [], store_dir=store)
         assert len(nodes) == 1 and nodes[0].node_type == "pattern"
 
-    _consume_one()
-    _consume_one()
+    _consume_one(0)
+    _consume_one(1)
     first = elevate_matured_patterns(store_dir=store)
     assert len(first) == 1 and first[0].node_type == "value"
 
     # 第 3 份證據：同維度只累積到 1 份未消化 → 不升（INV-2 未被放寬）
-    _consume_one()
+    _consume_one(2)
     assert elevate_matured_patterns(store_dir=store) == []
 
     # 第 4 份證據：同維度累積到 2 份未消化 → 再次升華（可反覆）
-    _consume_one()
+    _consume_one(3)
     second = elevate_matured_patterns(store_dir=store)
     assert len(second) == 1 and second[0].node_type == "value"
     assert second[0].node_id != first[0].node_id
 
     types = [n["node_type"] for n in load_elevation_nodes(store)]
-    assert types.count("value") == 2
+    # 4 份互異內容的 pattern 全部落盤（冪等去重不影響 evidence 累積本身）
     assert types.count("pattern") == 4
+    # 第二次昇華與第一顆 content 相同 → VALUE-DEDUP-A-1 不落盤，故落盤 value = 1
+    assert types.count("value") == 1
+    assert second[0].node_id not in {n["node_id"] for n in load_elevation_nodes(store)}
 
 
 # ── F. 可觀測性 ─────────────────────────────────────────────────────

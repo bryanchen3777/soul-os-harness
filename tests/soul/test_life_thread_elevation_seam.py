@@ -443,32 +443,88 @@ def test_no_new_timer_no_new_llm_channel():
 
 
 def test_does_not_mutate_data_dir(iso_env, monkeypatch):
-    """執行前後 repo `data/**` 檔案清單與 mtime／size 逐位元一致。"""
+    """執行前後 repo `data/**` 檔案清單與 mtime／size 逐位元一致。
+
+    **為什麼要排除活服務運行時路徑**（TEST-ISOLATION-FIX 補丁, 2026-10-13）：
+
+    本測試原本對 repo `data/**` 做**無排除**的前後快照。而生產服務
+    （Plan A, 常駐）本身會週期性寫入 `data/**`，與 pytest 行程**並行**：
+      - `heartbeats/telegram_channel.json` — 每 30 秒一次
+        （`src/io/channels/telegram.py:300`）
+      - `state/event_loop_alive.json` — 事件迴圈活性心跳
+    只要任一次寫入落在本測試的快照窗內，就會偽紅。
+
+    這與 repo 既有的全庫守門是**同一個病**，且已經有既定修法：
+    `harness/runner.py::_is_mutation_skipped`（TEST-INFRA-DATA-ROOT-GUARD-1 /
+    TEST-INFRA-GUARD-LIVE-WRITER-COVERAGE-1）維護一份全庫共用的
+    「活服務運行時自寫路徑」排除清單。本測試直接複用同一份判斷，
+    不另立一份清單 ⇒ 未來新增線上寫入者時**只需改一處**。
+
+    ⚠️ **排除只作用於「原地變動」那一層**，刻意做成兩層偵測力
+    （見 `_snapshot` docstring）：
+      1. 檔名集合（新增／刪除／改名）—— **0 排除**，牙齒全滿。
+      2. size／mtime —— 才排除活服務自寫路徑。
+    理由：實測本機排除清單涵蓋 6905 個檔中的 6645 個（活服務的
+    heartbeat／agent state／記憶匯出等）。若整層套用排除清單，本測試
+    對 `data/**` 的偵測力會從「全檔」掉到 260 個檔，等於把牙齒鈍化。
+    分層後：新增／刪除任一檔仍 100% 會紅；原地變動則對 260 個
+    非活服務路徑保持偵測。`tests/harness/test_zero_mutation_guard_live_service_paths.py`
+    逐條釘死排除清單內容，本測試不另立一份。
+
+    證據（2026-10-13 實測，本機生產服務運行中）：修正前 31 次單檔重跑
+    失敗 2 次（1/12、1/19），失敗訊息為 `data/** 被改動:[]`
+    —— 集合差為空代表**原地覆寫**（`os.replace` 心跳寫入），
+    正是上面兩條路徑的行為，非新增／刪除檔案。
+    """
+    from harness.runner import _is_mutation_skipped
+
     monkeypatch.setenv(orch.ELEVATION_ENABLED_ENV, "1")
     _seed_completed_with_fact(AGENT)
     _spy_writer_create(monkeypatch)
     _spy_gate_submit(monkeypatch)
 
-    def _snapshot() -> Dict[str, tuple]:
+    def _snapshot() -> tuple:
+        """回傳 (全部檔名集合, 受保護檔的 (size, mtime_ns))。
+
+        **兩層偵測力, 刻意不等價**：
+          1. `names` — repo `data/**` 底下**每個檔案**都進來，**0 排除**。
+             新增／刪除／改名任何檔案都會紅（活服務不會做這三件事，
+             所以這一層完全免疫競爭雜訊，牙齒保持全滿）。
+          2. `guarded` — 只收**未被排除**的檔案，才比對 size／mtime。
+             活服務的「原地覆寫」（`os.replace` 心跳）只會打到這一層，
+             故排除清單只作用於原地變動，不影響第 1 層。
+        """
         data_dir = _REPO_ROOT / "data"
-        snap: Dict[str, tuple] = {}
+        names: set = set()
+        guarded: Dict[str, tuple] = {}
         if data_dir.is_dir():
             for path in sorted(data_dir.rglob("*")):
                 if path.is_file():
+                    rel = path.relative_to(data_dir)
+                    names.add(str(rel))
+                    if _is_mutation_skipped(rel):
+                        continue  # 活服務運行時自寫路徑：原地變動不歸本測試
                     try:
                         st = path.stat()
                     except OSError:
                         continue
-                    snap[str(path.relative_to(data_dir))] = (st.st_size, st.st_mtime_ns)
-        return snap
+                    guarded[str(rel)] = (st.st_size, st.st_mtime_ns)
+        return names, guarded
 
-    before = _snapshot()
-    assert len(before) > 0, "前置：repo data/** 應非空，否則快照無意義"
+    before_names, before_guarded = _snapshot()
+    assert len(before_names) > 0, "前置：repo data/** 應非空，否則快照無意義"
+    assert len(before_guarded) > 0, "前置：受保護檔案應非空，否則快照無意義"
     out = _run([AGENT], MORNING, "morning", llm_caller=_quiet_llm())[AGENT]
-    after = _snapshot()
+    after_names, after_guarded = _snapshot()
 
     assert out.get("elevation_event_created") is True, out
-    assert after == before, (
-        "data/** 被改動："
-        f"{sorted(set(after) ^ set(before))[:10]}"
+    # 第 1 層：檔名集合（0 排除，任何新增／刪除／改名都紅）
+    assert after_names == before_names, (
+        "data/** 檔案清單被改動（新增／刪除／改名）："
+        f"{sorted(after_names ^ before_names)[:10]}"
+    )
+    # 第 2 層：受保護檔的 size／mtime（排除活服務原地覆寫路徑）
+    assert after_guarded == before_guarded, (
+        "data/** 內容／mtime 被改動："
+        f"{sorted(k for k in set(after_guarded) & set(before_guarded) if after_guarded[k] != before_guarded[k])[:10]}"
     )

@@ -49,14 +49,50 @@ _SOUL_TYPES = {"belief", "value", "trait", "essence"}
 # ── helpers ──────────────────────────────────────────────────────────
 
 
-def _make_event(writer: InnerLifeWriter, trigger_type: str, *, actor_id: str):
+def _make_event(
+    writer: InnerLifeWriter,
+    trigger_type: str,
+    *,
+    actor_id: str,
+    extras: dict | None = None,
+):
     return writer.create_event(
         provenance=Provenance(
             trigger_type=trigger_type,
             actor_id=actor_id,
             source_system="narrative",
+            extras=dict(extras or {}),
         ),
     )
+
+
+def _make_distinct_events(
+    writer: InnerLifeWriter,
+    trigger_type: str,
+    *,
+    actor_id: str,
+    count: int,
+    offset: int = 0,
+):
+    """造 ``count`` 條 **內容互異** 的同源事件（extras 帶序號）。
+
+    為什麼需要：``elevation_adapter._event_content`` 只取
+    ``trigger_type + provenance.extras``（elevation_adapter.py:128-139），兩條
+    extras 為空的事件會產出**完全相同**的 pattern content；而
+    ``_persist_result`` 對 (agent_id, node_type, content_hash) 做冪等落盤
+    （VALUE-DEDUP-A-1，elevation_adapter.py:353-396，commit fb7ab63），第二顆
+    同內容 pattern **連同其證據邊**都不落盤 → 獨立證據永遠只有 1。
+    這裡用 extras 讓 content 可區分，才能真正測到「N 份獨立證據」的閘門。
+    """
+    return [
+        _make_event(
+            writer,
+            trigger_type,
+            actor_id=actor_id,
+            extras={"note": f"n{offset + i}"},
+        )
+        for i in range(count)
+    ]
 
 
 def _write_node_types(store_dir: Path) -> list[str]:
@@ -87,33 +123,42 @@ def test_a2_min_evidence_3_two_events_not_enough(tmp_path):
     """min_evidence=3：两条独立 diary 事件 → 独立证据 2 < 3 → 不升。"""
     writer = InnerLifeWriter()
     store_dir = tmp_path / "elevation"
-    for _ in range(2):
-        event = _make_event(writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem")
+    for event in _make_distinct_events(
+        writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem", count=2
+    ):
         run_elevation(event, [], store_dir=store_dir)
 
     elevated = elevate_matured_patterns(store_dir=store_dir, min_evidence=3)
     assert elevated == []
     assert _write_node_types(store_dir) == ["pattern", "pattern"]
 
-    # 第三条达标 → 升
-    event = _make_event(writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem")
-    run_elevation(event, [], store_dir=store_dir)
+    # 第三条达标 → 升（邊界：2 不升 / 3 升；min_evidence 可配仍成立）
+    third = _make_distinct_events(
+        writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem", count=3, offset=2
+    )[0]
+    run_elevation(third, [], store_dir=store_dir)
+    assert _write_node_types(store_dir) == ["pattern", "pattern", "pattern"]
     elevated = elevate_matured_patterns(store_dir=store_dir, min_evidence=3)
     assert len(elevated) == 1
     assert elevated[0].node_type in _SOUL_TYPES
+    # 同 store 用預設 min_evidence=2 → 同一批證據此刻仍不足（3 份皆已被消化）
+    assert elevate_matured_patterns(store_dir=store_dir, min_evidence=3) == []
 
 
 # ── B. 阈值达标：diary → value，agent 归属正确 ────────────────────────
 
 
 def test_b1_two_diary_events_elevate_to_value(tmp_path):
-    """两条独立 diary:night → elevate 产 value（prior 基调），agent 归属该灵魂。"""
+    """两条独立 diary:night → elevate 产 value（prior 基调），agent 归属该灵魂。
+
+    校準（VALUE-DEDUP-A-1, elevation_adapter.py:353-396）：兩條事件必須
+    content 互異，否則第二顆 pattern 連同證據邊被冪等去重 → 永遠升不了。
+    """
     writer = InnerLifeWriter()
     store_dir = tmp_path / "elevation"
-    events = [
-        _make_event(writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem")
-        for _ in range(2)
-    ]
+    events = _make_distinct_events(
+        writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem", count=2
+    )
 
     pattern_ids = []
     for event in events:
@@ -149,8 +194,9 @@ def test_c1_two_dream_events_elevate_to_trait(tmp_path):
     """两条独立 dream:dream → elevate 产 trait（prior 基调）。"""
     writer = InnerLifeWriter()
     store_dir = tmp_path / "elevation"
-    for _ in range(2):
-        event = _make_event(writer, TRIGGER_TYPE_DREAM_DREAM, actor_id="agent_yua")
+    for event in _make_distinct_events(
+        writer, TRIGGER_TYPE_DREAM_DREAM, actor_id="agent_yua", count=2
+    ):
         run_elevation(event, [], store_dir=store_dir)
 
     elevated = elevate_matured_patterns(store_dir=store_dir)
@@ -211,8 +257,9 @@ def test_e1_no_double_elevate_without_new_consume(tmp_path):
     """elevate 后无新 consume 再跑 → 已消化证据不重复计票，不产新节点。"""
     writer = InnerLifeWriter()
     store_dir = tmp_path / "elevation"
-    for _ in range(2):
-        event = _make_event(writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem")
+    for event in _make_distinct_events(
+        writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem", count=2
+    ):
         run_elevation(event, [], store_dir=store_dir)
 
     first = elevate_matured_patterns(store_dir=store_dir)
@@ -232,11 +279,21 @@ def test_f1_agent_isolation(tmp_path):
     """agent_rem 2 条 diary（value 组 2 证据）→ 升；agent_yua 1 条 diary（value 1）→ 不升。"""
     writer = InnerLifeWriter()
     store_dir = tmp_path / "elevation"
-    for _ in range(2):
-        event = _make_event(writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem")
+    for event in _make_distinct_events(
+        writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem", count=2
+    ):
         run_elevation(event, [], store_dir=store_dir)
-    event = _make_event(writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_yua")
-    run_elevation(event, [], store_dir=store_dir)
+    # agent_yua 只有 1 份證據 → 其 value 維度獨立證據 1 < 2 → 不升
+    run_elevation(
+        _make_event(
+            writer,
+            TRIGGER_TYPE_DIARY_NIGHT,
+            actor_id="agent_yua",
+            extras={"note": "y0"},
+        ),
+        [],
+        store_dir=store_dir,
+    )
 
     elevated = elevate_matured_patterns(store_dir=store_dir)
     assert len(elevated) == 1
@@ -253,7 +310,13 @@ def test_f1_agent_isolation(tmp_path):
 
 
 def test_h1_same_event_twice_no_elevate(tmp_path):
-    """同一事件重复 consume（两次）→ 同 (source_id, event_identity) 计 1 独立证据 → 不升。"""
+    """同一事件重复 consume（两次）→ 同 (source_id, event_identity) 计 1 独立证据 → 不升。
+
+    校準（VALUE-DEDUP-A-1, elevation_adapter.py:353-396）：第二顆 pattern content
+    與第一顆相同（同一事件 → content 必然相同），落盤時被 (agent_id, node_type,
+    content_hash) 冪等去重，**連同其證據邊一併跳過**（同檔 389-392 行）。故
+    store 只剩 1 顆 pattern / 1 條證據邊 —— 獨立證據仍為 1 < 2 → 不升。
+    """
     writer = InnerLifeWriter()
     event = _make_event(writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem")
     store_dir = tmp_path / "elevation"
@@ -263,7 +326,14 @@ def test_h1_same_event_twice_no_elevate(tmp_path):
 
     elevated = elevate_matured_patterns(store_dir=store_dir)
     assert elevated == []  # 独立证据 1（同 source_id / 同 event）< 2
-    assert _write_node_types(store_dir) == ["pattern", "pattern"]
+    assert _write_node_types(store_dir) == ["pattern"]
+    # 證據邊也只落 1 條 → 獨立證據計數確為 1（若去重被移除，這裡會變 2 並誤升）
+    edge_records = [
+        json.loads(l)
+        for l in (store_dir / EDGES_FILENAME).read_text(encoding="utf-8").splitlines()
+        if l.strip()
+    ]
+    assert [e["source_id"] for e in edge_records] == [event.event_id]
 
 
 # ── I. 端到端（Gate 路径）：diary/dream 进 elevation + elevate ────────
@@ -276,8 +346,9 @@ def test_i1_gate_submit_two_diary_events_elevates_with_agent(tmp_path):
     writer = InnerLifeWriter(trace_writer=NarrativeTraceWriter())
     gate = SubmissionGate(writer=writer, store_dir=tmp_path / "elevation")
 
-    for _ in range(2):
-        event = _make_event(writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem")
+    for event in _make_distinct_events(
+        writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem", count=2
+    ):
         nodes = gate.submit(event.event_id, agent_id=event.provenance.actor_id)
         assert len(nodes) == 1
         assert nodes[0].node_type == "pattern"  # Gate 只 consume

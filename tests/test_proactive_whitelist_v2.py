@@ -187,8 +187,45 @@ class TestProactiveWhitelistRukaOnly(unittest.TestCase):
         # 重置 scheduler (因為 setUp 已建好, 但要乾淨環境)
         scheduler, _, captured_events_f = _make_scheduler_with_whitelist(WHITELIST_RUKA)
 
+        # SOUL-TECH-DEBT-001 校準（test-owned bug, 非 production defect）:
+        # 本測試只 mock 了 random.choice, 但 `_fire_proactive_dm` 從 whitelist
+        # 閘門到 publish 之間**還多了四道閘門**, 都是後來加的, 本測試不知道:
+        #   G4  靜音時段 23:00-08:00          (scheduler._is_quiet_hours)
+        #   M7-longing 想念門檻 (LONGING_THRESHOLD = 0.3)
+        #   G7b 每角色每日 DM 上限            (DELIVERABILITY-RELEASE-1, 2026-09-13)
+        #   G10 inner-life producer gate + G11 SM-3 Decision（fail-closed, 2026-08-30）
+        # 任一不通過都是 `return` 早退 → 0 AGENCY_TRIGGER, 而本測試斷言 1。
+        # 實測證據（逐一量測）:
+        #   - 排掉時區因素、正午時段仍拿到 0: `_get_agent_longing('agent_ruka')`
+        #     = 0.0035 << 0.3（M7-longing 擋下）。
+        #   - 打開 M7-longing 後仍拿到 0: SM-3 Decision 是 **fail-closed**
+        #     (scheduler.py:303-306「Decision 是 volition 層, 壞掉的 Decision
+        #     絕不能自動放行」), 測試環境沒有 process-global LLMProxy
+        #     → Decision LLM 回 None → do_nothing → not_transmit → 不 publish。
+        #
+        # 這些都是刻意加的 production 閘門（不是 bug）, 所以修的是**測試自己**:
+        # 把它們顯式打開, 讓本測試回到它真正要驗的命題
+        # ——「白名單內的 ruka 會被正確選中並 publish AGENCY_TRIGGER」。
+        # 一律用既有方法當 seam 做 patch, 不改 production、不繞過真實閘門語意。
+        from datetime import datetime
+        from unittest.mock import AsyncMock
+        from src.timezone_utils import get_local_tz
+        from src.soul.scheduler import LONGING_THRESHOLD
+
+        # 白天、非靜音時段（固定 14:00，避開 23:00-08:00 wrap-around）
+        daytime = datetime(2026, 8, 12, 14, 0, 0, tzinfo=get_local_tz())
+
         async def run():
-            with patch("src.soul.scheduler.random.choice", return_value="agent_ruka"):
+            with patch("src.soul.scheduler.random.choice", return_value="agent_ruka"), \
+                 patch("src.soul.scheduler.now_local", return_value=daytime), \
+                 patch.object(scheduler, "_get_agent_longing",
+                              return_value=LONGING_THRESHOLD + 0.5), \
+                 patch.object(scheduler, "_proactive_daily_cap_allows",
+                              return_value=True), \
+                 patch.object(scheduler, "_inner_life_gate_check",
+                              new=AsyncMock(return_value=True)), \
+                 patch.object(scheduler, "_decision_check",
+                              new=AsyncMock(return_value=True)):
                 await scheduler._fire_proactive_dm()
 
         asyncio.run(run())

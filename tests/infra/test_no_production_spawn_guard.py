@@ -170,7 +170,11 @@ ADDRESS_ALLOWLIST: Dict[Tuple[str, int], str] = {
     ("tests/test_identity.py", 11): "pre-existing live HTTP probe of the running service (read-only)",
     ("tests/test_private_chat.py", 29): "pre-existing live probe of the running service (read-only)",
     ("tests/test_private_chat.py", 30): "pre-existing live WS probe of the running service (read-only)",
-    ("tests/test_plan_a_launcher_v1.py", 94): "pre-existing /health probe of the running service (read-only)",
+    # (原 94 → 128) SOUL-TECH-DEBT-001 校準過期 baseline 測試時，該檔案上方淨增
+    # 34 行 docstring 與結構斷言，導致這處**既有** /health 探測往下位移。
+    # 探測程式碼本身未改動（git show HEAD 確認原在第 94 行），僅行號漂移。
+    # 本白名單以 (路徑, 行號) 為鍵，故需同步更新；**大小維持 9 不變**。
+    ("tests/test_plan_a_launcher_v1.py", 128): "pre-existing /health probe of the running service (read-only)",
     ("tests/test_server_ops_python_path_v1.py", 79): "pre-existing /health probe of the running service (read-only)",
     ("tests/clients/test_vc_perf_opt_1.py", 303): "OpenAI-compatible base URL handed to an adapter (never dialled)",
     # -- the address-pattern fixtures of the companion guard
@@ -218,25 +222,33 @@ SUBPROCESS_ALLOWLIST: Dict[Tuple[str, int], str] = {
     ("tests/test_crash_obs3_faulthandler_enable.py", 250):
         "child interpreter running a tmp-written probe that only arms faulthandler and prints; "
         "proves the handler is installed in a real process (utf-8 env forced, 300s timeout)",
-    ("tests/soul/test_life_thread_sim_time.py", 487):
+    ("tests/soul/test_life_thread_sim_time.py", 508):
         "read-only git runner helper (_git_bytes) extracting revision bytes into tmp_path",
-    ("tests/soul/test_life_thread_sim_time.py", 517):
+    ("tests/soul/test_life_thread_sim_time.py", 538):
         "read-only git cat-file -e probe checking commit object availability",
     ("tests/test_epistemic_mind_eh42.py", 327):
         "nested `pytest -q` regression run over 3 sibling test files (read-only, cwd=repo)",
-    ("tests/test_log_backup_fix_v2.py", 244):
+    # (原 244 → 332) SOUL-TECH-DEBT-001 A′ 校準過期部署腳本斷言時，於 test_i
+    # 上方新增 rotation helper 與改寫測試，導致這處**既有**唯讀 Tokenize 探測位移。
+    # 呼叫點本身未改動，純行號漂移；白名單總數不變。
+    ("tests/test_log_backup_fix_v2.py", 332):
         "PowerShell `PSParser::Tokenize` fed the script text on stdin — parses, never executes",
     ("tests/test_m1_5_night_400_fix.py", 200):
         "read-only `git log --oneline --grep=M1.5` commit-marker check",
-    ("tests/test_m3_1_phase_c.py", 762):
+    # (原 762 → 780) SOUL-TECH-DEBT-001 C 類校準 dispatcher priority 斷言時，
+    # 該檔上方淨增行數，導致這處**既有**唯讀 git diff 探測位移。純行號漂移；
+    # 白名單總數不變。
+    ("tests/test_m3_1_phase_c.py", 780):
         "read-only `git diff --stat <file>` frozen-file check",
     ("tests/test_m3_world_awareness.py", 579):
         "nested `pytest -q` regression run over 3 sibling test files, SOUL_OS_DATA_DIR removed from the child env",
     ("tests/test_observability_completeness_1.py", 762):
         "read-only `git diff --name-only HEAD` frozen-contract scope check",
-    ("tests/test_plan_a_launcher_v1.py", 68):
-        "v1 baseline: powershell -File against a path asserted ABSENT (skipTest() runs first when it "
-        "exists, and it does today) — the assertion IS that it fails, so nothing can be launched",
+    ("tests/test_plan_a_launcher_v1.py", 102):
+        "v1 baseline: powershell -File against a path asserted ABSENT (skipTest() at :99-100 runs first "
+        "when it exists, and it does today — verified the guard still precedes the subprocess call) — "
+        "the assertion IS that it fails, so nothing can be launched. (原 68 → 102："
+        "SOUL-TECH-DEBT-001 校準上方過期 baseline 測試後淨增 34 行，純行號漂移。)",
     ("tests/test_ts3_official_mcp_server.py", 108):
         "PID-scoped `taskkill /PID <pid> /T /F` tree cleanup of the npx child this test started",
     ("tests/test_ts3_official_mcp_server.py", 158):

@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from contextlib import contextmanager
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -66,6 +67,50 @@ from src.soul.scheduler import SoulScheduler
 
 
 # ─── Helpers ───────────────────────────────────────────────
+
+#: Bry 2026-08 拍板：主動傳訊收斂為 ruka-only 白名單（scheduler.py:204-206）。
+#: Section C.5 / D.1 / E.2 三支 proactive_dm 測試原本用 `SoulScheduler()`
+#: （`proactive_agents=None` = 不過濾）, 早於該決策 ⇒ 必須改用真實白名單。
+PROACTIVE_WHITELIST = ["agent_ruka"]
+
+
+@contextmanager
+def open_proactive_gates(scheduler, choice):
+    """打開 `_fire_proactive_dm` 從白名單到 publish 之間的**四道**閘門。
+
+    閘門順序（scheduler.py:1432 docstring）:
+      G2 白名單 → G3 冷卻窗 → G4 靜音時段 → G5 放行痕跡 → G6 選角防呆 →
+      G7 想念門檻 → G7b 每日上限 → G9/G9' 活動 enrichment → publish →
+      G10 inner-life gate → G11 SM-3 Decision（**fail-closed**）
+
+    任一不通過都是 `return` 早退 → 0 AGENCY_TRIGGER。這些都是 Bry 刻意加的
+    production 閘門（不是 bug）, 所以修的是**測試自己**：顯式打開, 讓測試
+    回到它真正要驗的命題, 而不是靠真實時鐘／真實 data／真實 LLM 判定。
+    一律用既有方法當 seam 做 patch —— 不改 production、不繞過真實閘門語意。
+
+    Args:
+        scheduler: 目標 SoulScheduler。
+        choice: 讓 `random.choice` 抽到的 agent_id（驗非白名單被擋時用
+            非白名單 id；由 `_fire_proactive_dm` 的 double-insurance 過濾）。
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from src.soul.scheduler import LONGING_THRESHOLD
+    from src.timezone_utils import get_local_tz
+
+    # 白天、非靜音時段（固定 14:00，避開 23:00-08:00 wrap-around）
+    daytime = datetime(2026, 8, 12, 14, 0, 0, tzinfo=get_local_tz())
+
+    with patch("src.soul.scheduler.random.choice", return_value=choice), \
+         patch("src.soul.scheduler.now_local", return_value=daytime), \
+         patch.object(scheduler, "_get_agent_longing",
+                      return_value=LONGING_THRESHOLD + 0.5), \
+         patch.object(scheduler, "_proactive_daily_cap_allows", return_value=True), \
+         patch.object(scheduler, "_inner_life_gate_check",
+                      new=AsyncMock(return_value=True)), \
+         patch.object(scheduler, "_decision_check",
+                      new=AsyncMock(return_value=True)):
+        yield
 
 
 class _CapturingBus:
@@ -101,15 +146,19 @@ class _CapturingBus:
         self.all_published.clear()
 
 
-def make_scheduler_with_agents(agent_ids: List[str]) -> SoulScheduler:
+def make_scheduler_with_agents(agent_ids: List[str],
+                               proactive_agents: Optional[List[str]] = None) -> SoulScheduler:
     """
     建 scheduler 並透過 minimal fix 註冊 agents.
 
     這就是 M6.1-8.1 驗證的 3-line fix:
         for aid in agent_ids:
             scheduler.register(aid)
+
+    `proactive_agents`: Bry 2026-08 ruka-only 白名單；預設 None = 不過濾
+    （保持 Section C.1/C.2/C.3/C.4（diary/dream/event）與 Section D 的原語意）。
     """
-    scheduler = SoulScheduler()
+    scheduler = SoulScheduler(proactive_agents=proactive_agents)
     for aid in agent_ids:
         scheduler.register(aid)
     return scheduler
@@ -122,7 +171,7 @@ def make_scheduler_without_agents() -> SoulScheduler:
     return SoulScheduler()
 
 
-def _isolated_scheduler(agent_ids: List[str]):
+def _isolated_scheduler(agent_ids: List[str], proactive_agents: Optional[List[str]] = None):
     """隔離 data 目錄的 scheduler (Proactive DM 三件修復 #1, 2026-08-29).
 
     原本測試依賴真實 data/ 目錄的 relationships.json (M7-longing 想念達標)
@@ -130,6 +179,10 @@ def _isolated_scheduler(agent_ids: List[str]):
     8/22 (7 天前) → 可送達檢查 skip; 真實 relationships 顯示 Bry 最近活躍
     → 想念 0 → skip。改為隔離目錄 (冷啟動: 無 bryan_last_seen.json → 不 skip)
     + 呼叫方 monkeypatch _get_agent_longing 達標 (隔離目錄無 relationships.json)。
+
+    `proactive_agents`: Bry 2026-08 ruka-only 白名單。預設 None = 不過濾
+    （diary/dream/event 測試要的就是這個）；proactive_dm 測試必須顯式傳
+    `PROACTIVE_WHITELIST`。
 
     Returns:
         (scheduler, tmp): tmp 是 TemporaryDirectory, 呼叫方 finally 清理。
@@ -141,7 +194,7 @@ def _isolated_scheduler(agent_ids: List[str]):
     tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
     os.environ["SOUL_OS_DATA_DIR"] = tmp.name
     reset_data_root()
-    scheduler = make_scheduler_with_agents(agent_ids)
+    scheduler = make_scheduler_with_agents(agent_ids, proactive_agents)
     return scheduler, tmp
 
 
@@ -386,50 +439,58 @@ def test_c4_fire_event_publishes_for_picked_agents():
 
 def test_c5_fire_proactive_dm_publishes_one_per_call():
     """
-    C.5: _fire_proactive_dm() 抽 1 隻角色 (過 whitelist) 並發 AGENCY_TRIGGER
-        (trigger_type="proactive_dm")
+    C.5: _fire_proactive_dm() 抽 1 隻角色 (過 ruka-only whitelist) 並發
+        AGENCY_TRIGGER (trigger_type="proactive_dm")
 
-    注意: _fire_proactive_dm 還要:
-      1. _next_proactive_dm_time 設定 (到過去)
-      2. _last_proactive_dm_time None (cooldown OK)
-      3. 沒在 quiet hours (test 在 12:00 EDT)
+    Bry 2026-08 拍板: 主動傳訊收斂為 **ruka-only 白名單**
+    (scheduler.py:204-206)。本測試原本用 `SoulScheduler()`
+    (`proactive_agents=None` = 不過濾), 早於該決策 ⇒ 現顯式帶白名單。
 
-    Proactive DM 三件修復 #1 (2026-08-29): 用隔離 data 目錄 (冷啟動不 skip)
-    + monkeypatch longing 達標 (隔離目錄無 relationships.json)。
+    `_fire_proactive_dm` 從白名單到 publish 還有四道 Bry 刻意加的閘門
+    (G4 靜音時段 / G7 M7-longing 門檻 / G7b 每日上限 / G10-G11 inner-life +
+    SM-3 Decision fail-closed)。舊測試只擋了 longing 一道, 其餘靠真實時鐘
+    與真實 data 判定 ⇒ 在 23:00-08:00 等時段必然 0 事件。
+    見 `open_proactive_gates`（不繞過真實閘門語意, 只在測試內顯式打開）。
+
+    強化: 同時斷言「ruka 發得出」與「非白名單角色發不出」。
     """
     agent_ids = ["agent_yua", "agent_ruka", "agent_akane"]
-    bus = _CapturingBus()
-    scheduler, tmp = _isolated_scheduler(agent_ids)
-    try:
-        async def _run() -> None:
+
+    async def _fire(choice: str) -> List[SoulEvent]:
+        bus = _CapturingBus()
+        scheduler, tmp = _isolated_scheduler(agent_ids, PROACTIVE_WHITELIST)
+        try:
             scheduler._bus = bus
-            # SM-3 (2026-08-30) 适配: proactive_dm publish 前新增 Decision 检查点
-            # (fail-closed, 无 motive → 不发)。本测试聚焦 whitelist + scheduler
-            # baseline publish, mock 掉 Decision 检查点 (Decision 行为由
-            # test_sm3_motive_decision.py 覆盖)。
-            async def _decision_ok(agent_id):
-                return True
-            scheduler._decision_check = _decision_ok
-            # 設 _next_proactive_dm_time 到過去, cooldown OK
             scheduler._next_proactive_dm_time = datetime.now(timezone.utc) - timedelta(hours=1)
             scheduler._last_proactive_dm_time = None
-            with patch.object(scheduler, "_get_agent_longing", return_value=0.5):
+            with open_proactive_gates(scheduler, choice):
                 await scheduler._fire_proactive_dm()
+            return list(bus.captured_events)
+        finally:
+            del os.environ["SOUL_OS_DATA_DIR"]
+            reset_data_root()
+            tmp.cleanup()
 
-        asyncio.run(_run())
-    finally:
-        del os.environ["SOUL_OS_DATA_DIR"]
-        reset_data_root()
-        tmp.cleanup()
-    # 抽 1 隻 (whitelist=None = 全部), 過 candidates 過濾
-    assert len(bus.captured_events) == 1, (
-        f"C.5 FAIL: 預期 1 個 AGENCY_TRIGGER, "
-        f"實際 {len(bus.captured_events)} 個"
+    # (a) 正向: 白名單內的 ruka → 恰 1 個 AGENCY_TRIGGER, 且 agent_id 是 ruka
+    fired = asyncio.run(_fire("agent_ruka"))
+    assert len(fired) == 1, (
+        f"C.5 FAIL: 預期 ruka 發 1 個 AGENCY_TRIGGER, 實際 {len(fired)} 個"
     )
-    event = bus.captured_events[0]
+    event = fired[0]
     assert event.payload["trigger_type"] == "proactive_dm"
     assert event.payload["reason"] == "scheduler.proactive_dm"
-    assert event.payload["agent_id"] in agent_ids
+    assert event.payload["agent_id"] == "agent_ruka", (
+        f"C.5 FAIL: 白名單 {PROACTIVE_WHITELIST} 內只該 ruka 被觸發, "
+        f"實際 agent_id={event.payload['agent_id']}"
+    )
+
+    # (b) 反向: 非白名單角色即使被 random 抽中, 必須 0 事件
+    for blocked in ("agent_yua", "agent_akane"):
+        blocked_fired = asyncio.run(_fire(blocked))
+        assert blocked_fired == [], (
+            f"C.5 FAIL: {blocked} 不在白名單 {PROACTIVE_WHITELIST}, "
+            f"必須被擋下, 實際發了 {len(blocked_fired)} 個 AGENCY_TRIGGER"
+        )
 
 
 # ─── Section D: Handler Reception ──────────────────────────
@@ -438,6 +499,9 @@ def test_c5_fire_proactive_dm_publishes_one_per_call():
 def test_d1_agency_trigger_handler_receives_proactive_dm():
     """
     D.1: AgencyTriggerHandler.handle_event 收到 trigger_type="proactive_dm" 會 invoke llm_executor
+
+    走 ruka-only 白名單（Bry 2026-08 拍板）。`open_proactive_gates` 說明為何
+    必須顯式打開 G4/G7/G7b/G10-G11 四道閘門（見 test_c5 同款說明）。
     """
     llm_calls: List[str] = []
 
@@ -470,7 +534,8 @@ def test_d1_agency_trigger_handler_receives_proactive_dm():
                 "event_filter": event_filter,
             })
 
-    async def _run() -> None:
+    async def _fire(choice: str) -> List[str]:
+        llm_calls.clear()
         bus = _RecordingBus()
         state = AgencyState(action_cooldown_seconds=0, decision_cooldown_seconds=0)
         handler = AgencyTriggerHandler(state=state, llm_executor=mock_llm_executor)
@@ -479,29 +544,38 @@ def test_d1_agency_trigger_handler_receives_proactive_dm():
             handler=handler.handle_event,
             event_filter={EventType.AGENCY_TRIGGER},
         )
-        scheduler, tmp = _isolated_scheduler(["agent_ruka"])
+        # 同時註冊非白名單角色, 證明「非白名單不會走到 handler」。
+        scheduler, tmp = _isolated_scheduler(
+            ["agent_yua", "agent_ruka"], PROACTIVE_WHITELIST
+        )
         try:
             scheduler._bus = bus
-            # SM-3 (2026-08-30) 适配: mock 掉 Decision 检查点 (同 test_c5)。
-            async def _decision_ok(agent_id):
-                return True
-            scheduler._decision_check = _decision_ok
-            # 觸發 proactive_dm
             scheduler._next_proactive_dm_time = datetime.now(timezone.utc) - timedelta(hours=1)
             scheduler._last_proactive_dm_time = None
-            with patch.object(scheduler, "_get_agent_longing", return_value=0.5):
+            with open_proactive_gates(scheduler, choice):
                 await scheduler._fire_proactive_dm()
         finally:
             del os.environ["SOUL_OS_DATA_DIR"]
             reset_data_root()
             tmp.cleanup()
+        return list(llm_calls)
 
-    asyncio.run(_run())
-    assert len(llm_calls) == 1, (
+    # (a) 正向: 白名單內的 ruka → handler 收到並 invoke llm_executor
+    calls = asyncio.run(_fire("agent_ruka"))
+    assert len(calls) == 1, (
         f"D.1 FAIL: 預期 AgencyTriggerHandler invoke 1 次 llm_executor, "
-        f"實際 {len(llm_calls)} 次"
+        f"實際 {len(calls)} 次"
     )
-    assert llm_calls[0] == "agent_ruka"
+    assert calls[0] == "agent_ruka", (
+        f"D.1 FAIL: 白名單 {PROACTIVE_WHITELIST} 內只該 ruka 進 handler, 實際 {calls}"
+    )
+
+    # (b) 反向: 非白名單的 yua 被 random 抽中也 0 次 invoke（下游 handler 不得啟動）
+    blocked_calls = asyncio.run(_fire("agent_yua"))
+    assert blocked_calls == [], (
+        f"D.1 FAIL: agent_yua 不在白名單 {PROACTIVE_WHITELIST}, "
+        f"不得進到 AgencyTriggerHandler, 實際 invoke {blocked_calls}"
+    )
 
 
 def test_d2_event_handler_receives_event():
@@ -747,7 +821,7 @@ def test_e2_no_telegram_no_llm_call():
     # 1. SoulScheduler 預設沒有 callback (M5.2-O-3: _proactive_dm_callback field 移除)
     # Proactive DM 三件修復 #1 (2026-08-29): 用隔離 data 目錄 (冷啟動不 skip)
     # + monkeypatch longing 達標 (隔離目錄無 relationships.json)
-    scheduler, tmp = _isolated_scheduler(["agent_ruka"])
+    scheduler, tmp = _isolated_scheduler(["agent_ruka"], PROACTIVE_WHITELIST)
     try:
         assert scheduler._heartbeat_callback is None
         # M5.2-O-3: _proactive_dm_callback field 從 scheduler 移除 (compat no-op)
@@ -802,14 +876,10 @@ def test_e2_no_telegram_no_llm_call():
             )
             # 連到 scheduler
             scheduler._bus = rec_bus
-            # SM-3 (2026-08-30) 适配: mock 掉 Decision 检查点 (同 test_c5)。
-            async def _decision_ok(agent_id):
-                return True
-            scheduler._decision_check = _decision_ok
-            # 觸發 proactive_dm
+            # 觸發 proactive_dm（ruka-only 白名單 + 四道閘門顯式打開, 同 test_c5）
             scheduler._next_proactive_dm_time = datetime.now(timezone.utc) - timedelta(hours=1)
             scheduler._last_proactive_dm_time = None
-            with patch.object(scheduler, "_get_agent_longing", return_value=0.5):
+            with open_proactive_gates(scheduler, "agent_ruka"):
                 await scheduler._fire_proactive_dm()
 
         asyncio.run(_run())

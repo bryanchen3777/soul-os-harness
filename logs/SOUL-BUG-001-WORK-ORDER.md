@@ -1,0 +1,95 @@
+# SOUL-BUG-001 — 昇降持久層去重連帶丟棄證據邊，EL-DD-2 閘門結構性不可達
+
+**工單編號**：SOUL-BUG-001
+**嚴重度**：**P0（邏輯致命，生產未爆但時鐘已啟動）**
+**狀態**：APPROVED & OPEN（Bry 核准立案 2026-10-12）｜**測試維持紅燈，嚴禁放水**
+**發現方式**：SOUL-TECH-DEBT-001 C 類深度鑑識
+**引入 commit**：`fb7ab63`（2026-10-11）`feat(elevation): _persist_result idempotent on (agent,node_type,content_hash) (VALUE-DEDUP-A-1)`
+
+---
+
+## 一、現象
+
+`_persist_result`（`src/inner_life/elevation_adapter.py:353-396`）對**所有** node_type 做內容去重，且當節點被判定重複時，**連帶丟棄該節點的全部證據邊**：
+
+```python
+if key in existing:
+    skipped_node_ids.add(rec.get("node_id"))
+    continue
+...
+if skipped_node_ids:
+    edge_records = [
+        e for e in edge_records if e.get("node_id") not in skipped_node_ids
+    ]
+```
+
+## 二、根因鏈
+
+1. `_event_content`（`:128-139`）由 `trigger_type + provenance.extras` 推導 pattern 內容。
+2. 生產事件的 `extras` **近乎恆定**：`scripts/run_server.py:1808` `extras={"slot": slot}`；`:1669-1672` `extras={target_agent_id, all_agents_count}`。
+3. ⇒ 同一 `(agent, trigger, extras)` 產生的 pattern **內容 byte 相同**。
+4. ⇒ 去重後每組只保留 1 個 pattern，其餘連同證據邊被丟棄。
+5. ⇒ `_count_independent_evidence` 永遠無法達到 2 ⇒ **EL-DD-2 昇降閘門（`soul_elevation/engine.py:500-507`，`DEFAULT_ELEVATE_MIN_EVIDENCE=2`）對 `diary:night` / `dream:dream` 結構性不可達**。
+
+**主大腦獨立驗證**（不採信執行者自報）：
+
+```
+$ 掃描 data/elevation/elevation_nodes.jsonl（唯讀）
+總節點: 531   pattern 種類: 462
+  13x  dream:dream: all_agents_count=10; target_agent_id=...
+  11x  dream:dream: all_agents_count=10; target_agent_id=...
+   9x  dream:dream: all_agents_count=10; target_agent_id=...
+   5x  dream:dream: all_agents_count=10; target_agent_id=...
+   5x  dream:event
+```
+
+內容格式本身就是 `trigger:extras` 的直接展開，**證明重複是生產常態而非測試假象**。
+
+## 三、為何是附帶損傷
+
+該去重的原始目標是 **`value` 節點**：`docs/INNER-LIFE-CONSTRUCTABILITY-AUDIT.md:29` 記載 80 個重複 value。套用到 `pattern` 節點並連帶丟棄其證據邊，**不在原始範圍內**。
+
+## 四、時序風險（為何是 P0）
+
+現存重複節點寫入於去重上線**之前**，服務尚未帶新代碼重啟。**真正生效時點＝服務重啟之後**。一旦重啟，昇降機制將靜默停擺——且因為一切照常運行、沒有錯誤、不會有任何告警。
+
+## 五、修復方向（Bry 2026-10-12 裁示）
+
+去重邏輯必須**嚴格限定在 `value` 節點**，或對 `pattern` 的證據邊執行 **Re-parent**（轉移至既有節點）。**絕不可直接丟棄。**
+
+## 六、⚠️ 修復後的連帶影響（必須一併處理）
+
+SOUL-TECH-DEBT-001 已將 `tests/test_elevate_mechanism.py` 與 `tests/test_elevation_evidence_scope_a1.py` 的 6 筆測試校準到「持久層去重」這個**現行語意**。**若本工單修復缺陷，這些斷言必須跟著回退**——否則會把正確行為判為錯誤。
+
+此相依是刻意的：它讓這個取捨變成顯性的，而不是藏在一堆綠燈裡。
+
+## 七、驗收
+
+1. 同一 `(agent, trigger, extras)` 連續 3 次事件，`_count_independent_evidence` 能達到 2 以上並觸發昇降。
+2. `value` 節點去重行為維持（80 個重複 value 不再增長）。
+3. 相依的 6 筆測試依最終裁示調整，且**必須明確記錄調整理由**。
+4. 全庫回歸 `tests/test_elevate_mechanism.py tests/test_elevation_evidence_scope_a1.py` 通過。
+
+## 八、看門狗（Bry 2026-10-13 裁示，已建立並實測）
+
+**`tests/test_soul_bug_watchdogs.py::test_elevation_pattern_evidence_accumulation_must_reach_two`**
+—— `@pytest.mark.xfail(strict=True, reason="SOUL-BUG-001: ...")`
+
+**設計要點（這是本守衛的關價值，別把它改回普通測試）**：
+
+它**刻意使用空的 `extras`**（`extras={}`），也就是 `scripts/run_server.py:1808` 的生產形狀。
+而既有 `tests/test_elevate_mechanism.py` 的 `_make_distinct_events` 給每條事件不同的 extras，
+**那個加工本身就是這個缺陷的藏身處**——它讓 pattern 內容彼此相異，於是繞開了去重。
+
+⇒ 這個守衛與既有測試的差別不是「多測了一些」，而是「**移除了那個加工**」。
+
+實測結果（`--runxfail` 驗證，2026-10-13）：
+```
+AssertionError: 2 條生產形狀事件未觸發昇降 —— 獨立證據未達 2。
+  已落盤 pattern 數=1（預期 2，但去重可能只留 1）
+  已落盤證據邊數=0
+```
+⇒ 缺陷以正確理由失敗，**非假哨兵**。
+
+**修復本工單後**：移除 `xfail` 標記，將本測試轉正為常態回歸。
+`strict=True` 會在修復瞬間噴 XPASS（視為 FAILED）強迫這件事發生。

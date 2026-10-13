@@ -478,11 +478,13 @@ def test_dispatcher_with_middleware_end_to_end():
     End-to-end wire-up: Dispatcher → MiddlewareAsInjector → WorldPerceptionMiddleware
     證明 routing contract 成立, 且 WorldEvent 真的抵達 middleware。
 
-    Note (Bry 派工 Phase B 02:59 + Phase C 09:24):
-    - priority 是 Phase B additive 欄位, 不進 to_payload() / from_payload()
-    - middleware.process_world_event_direct() 走 to_payload() → from_payload() round-trip
-    - 所以 priority 進 middleware state 後會變 0 (default)
-    - Phase C 只驗證 routing contract 成立, priority end-to-end survival 留給 Phase D+
+    Note (Bry 派工 Phase B 02:59 + Phase C 09:24 + M5.4-3.1 2026-08-09 17:43):
+    - priority 是 Phase B additive 欄位
+    - Phase B/C 當時的斷言是「不進 payload」⇒ middleware state 內 priority 會變 0
+    - M5.4-3.1 (commit daf0f78) 已改為 priority 進 payload + from_payload 讀回,
+      讓 M3.2-A priority_boost 在 E2E bus-payload path 上恢復作用 (修 H5)
+    - 因此本 test 的 Phase C 已知缺陷（priority 進 middleware 後被丟掉）已修復:
+      priority=4 現在必須存活到 middleware state
     """
     from src.world.middleware import WorldPerceptionMiddleware
     from src.world.state import WorldPerceptionState
@@ -517,11 +519,12 @@ def test_dispatcher_with_middleware_end_to_end():
     # WorldEvent 真的進了 middleware state
     active = state.get_active_events()
     assert len(active) == 1
-    # 注意: payload round-trip 後 priority 變 0 (Phase B 設計: priority 不進 payload)
     middleware_ev = active[0]
     assert middleware_ev.novelty_id == "e2e_001"
     assert middleware_ev.type == "rain_started"
-    assert middleware_ev.priority == 0  # Phase B payload round-trip 結果
+    # M5.4-3.1 (daf0f78): priority 經 payload round-trip 存活到 middleware state。
+    # 這正是 H5 修復點——先前 priority=4 在此被丟成 0, priority_boost 在 E2E 失效。
+    assert middleware_ev.priority == 4  # M5.4-3.1 payload round-trip 結果
     # 但 dispatcher return 的 event 跟 middleware 內部是不同 object
     # (因為 process_world_event_direct 走 payload round-trip)
     assert e.priority == 4  # Dispatcher 端 priority 保留
@@ -579,8 +582,11 @@ def test_dispatcher_priority_survives_in_dispatcher_layer():
     """
     Phase C 範圍 (Bry 派工 09:24): priority 只 observe, 不 routing.
     確認 priority 在 Dispatcher emit 路徑上是 preserved 的 (observation log + 傳給 injector 的 event).
-    至於 priority 進 middleware state 後變 0 是 Phase B 設計 (payload round-trip),
-    留給 Phase D+ (priority-aware payload 或新 perception model).
+
+    契約演進: Phase C 當時「進 middleware state 後變 0」被記為 Phase B 的
+    payload round-trip 設計, 留給 Phase D+。M5.4-3.1 (commit daf0f78,
+    2026-08-09 17:43) 判定那是 H5 缺陷並修復 —— priority 現已一路存活到
+    middleware state。本 test 已於 2026-10-12 校準到當前 contract。
     """
     from src.world.middleware import WorldPerceptionMiddleware
     from src.world.state import WorldPerceptionState
@@ -618,14 +624,26 @@ def test_dispatcher_priority_survives_in_dispatcher_layer():
     # (2) Dispatcher 進 injector 的 event priority = 42 (middleware 收到前)
     #    因為 adapter 是 pass-through, injector (adapter) 收到的 event 跟 dispatcher return 同一 object
     #    所以 middleware 透過 adapter 拿到的 event 物件是 dispatcher 建的 (priority=42)
-    #    但 process_world_event_direct 內部走 to_payload() → from_payload() round-trip
-    #    所以 middleware state 內 event priority 變 0 (Phase B 設計)
+    #    process_world_event_direct 內部走 to_payload() → from_payload() round-trip
 
     # 我們可以驗證 dispatcher 觀察的 priority = 42 (Phase C contract)
     assert obs[0]["priority"] == 42
 
-    # 注意: state 內 priority 是 0 (這是 Phase B 設計的 trade-off, 不在 Phase C 範圍改)
-    assert state.get_active_events()[0].priority == 0
+    # M5.4-3.1 (daf0f78, 2026-08-09 17:43): Phase C 當年記錄的
+    # 「state 內 priority 是 0」是已知缺陷而非設計 trade-off, 已修復。
+    # priority 現在必須一路存活到 middleware state (H5 修復點)。
+    assert state.get_active_events()[0].priority == 42
+
+    # 邊界: priority=0 (預設) 在同一條 path 上仍是 0 —— round-trip 不發明 priority
+    d0 = WorldEventDispatcher()
+    d0.attach_source(SyntheticWorldEventSource())
+    d0.attach_injector(_MiddlewareAsInjector(middleware))
+    asyncio.run(d0.emit_and_inject(
+        source_id="synthetic", type="x", summary="t",
+        novelty_id="prio_zero",
+    ))
+    assert d0.get_observation_log()[0]["priority"] == 0
+    assert state.get_active_events()[-1].priority == 0
 
 
 def test_dispatcher_emitted_event_reaches_middleware_state():

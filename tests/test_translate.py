@@ -38,6 +38,32 @@ from src.llm.translate import (
 )
 
 
+# ════════════════════════════════════════════════════════════════════
+# 🔴 SOUL-TECH-DEBT-001（stale-test calibration, class (a)）— 本檔現況
+# ════════════════════════════════════════════════════════════════════
+# JP 翻譯 pipeline 已被 Bry 拍板**整條砍掉**（2026-07-22 20:59, rollback）。
+# 見 src/llm/translate.py 檔頭 docstring 第 1-21 行的逐字說明：
+#   - `translate_to_japanese()` body 改成 `return text`（translate.py:145），
+#     CN → CN 直通，**不打 LLM**。
+#   - `translate_to_chinese()` 改成 `return None`（translate.py:317）。
+#   - `api_key / model / timeout` 參數保留只為簽名相容，body 完全不使用。
+# 所以本類裡所有「API 成功 / 快取命中 / think block 抽取」三支舊斷言
+# 描述的是**已被刪除的行為**，本批次校準為釘住「rollback 是徹底的」這個
+# 現行契約，而不是把斷言反轉成「應該翻譯」。
+#
+# 仍保留活著的純函式（無副作用，本檔上半段照測）：
+#   should_translate()            translate.py:57
+#   _extract_japanese_segment()   translate.py:95  ← 仍存在，但 pipeline 不再呼叫它
+#
+# ⚠️ 網路安全（已實測確認，非假設）:
+# 本檔所有 async 測試都用 `patch("src.llm.translate.httpx.AsyncClient")` 把
+# 唯一的出網點封掉，且現在額外斷言「連 client 都不被建構」。
+# 這同時是一道 tripwire：若日後有人把 translate.py 的 client 換成別的符號
+# （例如 `httpx.Client`），這個 patch target 會靜默失效、真實請求會逃出去，
+# 而下面 `mock_client_cls.assert_not_called()` / `post.assert_not_called()`
+# 會立刻變紅擋下來。
+
+
 # ── should_translate 場景 ────────────────────────────────
 
 class TestShouldTranslate:
@@ -155,7 +181,18 @@ class TestTranslateToJapanese:
 
     @pytest.mark.asyncio
     async def test_successful_translation(self):
-        """API 成功 → 回傳日文, 寫快取"""
+        """[已校準] JP rollback 後: 即使 API key 有效且 client 可用, 也**原樣直通**。
+
+        舊版此斷言是「API 成功 → 回傳日文, 寫快取」。該行為已被 Bry 於
+        2026-07-22 20:59 砍掉（translate.py:145 `return text`）。
+        現行為 = 零 LLM 呼叫的 passthrough。
+
+        強化點（原斷言只驗回傳值）:
+          1. 具體現行值: 回傳值必須**逐字等於原文**「你好」。
+          2. 邊界: 不只 `post` 沒被呼叫，連 `httpx.AsyncClient` 都**不該被建構**
+             （`mock_client_cls.assert_not_called()`）—— 這比
+             post-not-called 更強，且能擋下「patch target 漂移」這個靜默失效。
+        """
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "choices": [{"message": {"content": "こんにちは"}}],
@@ -172,25 +209,50 @@ class TestTranslateToJapanese:
 
                 result = await translate_to_japanese("你好")
 
-        assert result == "こんにちは"
-        # 確認寫快取
-        assert _translate_cache.get("你好") == "こんにちは"
+        # 現行契約: 原樣直通（不翻譯）
+        assert result == "你好", (
+            f"JP rollback 後應原樣直通, 實際 {result!r} "
+            f"（若此處變日文, 代表 translate.py 的 rollback 被回退了）"
+        )
+        # 邊界: 連 HTTP client 都不該被建構
+        mock_client_cls.assert_not_called()
+        mock_client.post.assert_not_called()
+        # 快取不該被寫入（rollback 後沒有「翻譯結果」可快取）
+        assert "你好" not in _translate_cache, (
+            f"rollback 後不該寫翻譯快取, 實際內容: {_translate_cache!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_cache_hit_no_api_call(self):
-        """快取命中 → 不打 API"""
+        """[已校準] JP rollback 後: 快取**完全不再被讀取**, 一律原樣直通。
+
+        舊版此斷言是「快取命中 → 回傳快取值」。rollback 之後
+        `translate_to_japanese` 根本不碰 `_translate_cache`
+        （translate.py:128-145 整個 body 只有 `return text`）,
+        快取模組是整條 pipeline 的化石（仍 import、仍存在、但無呼叫者）。
+
+        強化點: 把快取**預先塞滿**再斷言回傳值仍是原文 —— 這同時是
+        「快取對現行行為 0 影響」的邊界證明；若日後有人把快取接回來,
+        本斷言會立刻變紅。
+        """
         _translate_cache["你好"] = "キャッシュ済み"
+        try:
+            with patch.dict(os.environ, {"MINIMAX_API_KEY": "fake-key"}):
+                with patch("src.llm.translate.httpx.AsyncClient") as mock_client_cls:
+                    mock_client = AsyncMock()
+                    mock_client.post = AsyncMock()
+                    mock_client_cls.return_value = mock_client
 
-        with patch.dict(os.environ, {"MINIMAX_API_KEY": "fake-key"}):
-            with patch("src.llm.translate.httpx.AsyncClient") as mock_client_cls:
-                mock_client = AsyncMock()
-                mock_client.post = AsyncMock()
-                mock_client_cls.return_value = mock_client
+                    result = await translate_to_japanese("你好")
 
-                result = await translate_to_japanese("你好")
-
-        assert result == "キャッシュ済み"
-        mock_client.post.assert_not_called()
+            # 現行契約: 快取被忽略, 回原文
+            assert result == "你好", (
+                f"rollback 後不該讀翻譯快取, 應原樣直通; 實際 {result!r}"
+            )
+            mock_client_cls.assert_not_called()
+            mock_client.post.assert_not_called()
+        finally:
+            _translate_cache.clear()
 
     @pytest.mark.asyncio
     async def test_skip_japanese_text(self):
@@ -318,7 +380,19 @@ class TestTranslateToJapanese:
 
     @pytest.mark.asyncio
     async def test_with_think_block_extracts_correctly(self):
-        """LLM 翻譯含 <think> → 正確剝掉, 取日文"""
+        """[已校準] JP rollback 後: think block 抽取在**管線層**不可能發生,
+        但底層 helper `_extract_japanese_segment` 仍完好 —— 兩側都釘死。
+
+        舊版此斷言假設 LLM 會回含 <think> 的內容再由管線剝掉。rollback 後
+        沒有 LLM 呼叫，所以「抽取」這件事在 `translate_to_japanese` 層已無從發生。
+        但 helper 本身（translate.py:95）仍是活程式碼，且 pipeline 不再呼叫它。
+
+        強化點（把原本只驗一條的字串變成雙向契約）:
+          1. 管線層: 即使 backend 備好含 think block 的回應, 結果仍是原文直通,
+             且 client 從未被建構 → 證明抽取迴路真的沒接回去。
+          2. helper 層: `_extract_japanese_segment` 仍正確剝 think block 並
+             抽出日文 → 沒有把仍活著的底層能力一併誤刪。
+        """
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "choices": [{"message": {
@@ -337,7 +411,20 @@ class TestTranslateToJapanese:
 
                 result = await translate_to_japanese("你好")
 
-        assert result == "こんにちは"
+        # (1) 管線層: 不會去讀那個含 think block 的回應
+        assert result == "你好", (
+            f"rollback 後應原樣直通, 不該回 LLM 的 think block 內容; 實際 {result!r}"
+        )
+        mock_client_cls.assert_not_called()
+        mock_client.post.assert_not_called()
+
+        # (2) helper 層: 剝 think block 的能力仍在（pipeline 不呼叫它, 但函式本身沒壞）
+        assert _extract_japanese_segment(
+            "<think>怎麼翻譯...</think>\nこんにちは"
+        ) == "こんにちは"
+        assert _extract_japanese_segment(
+            "<think>用戶在問候,翻譯成日文こんにちは</think>\nこんにちは"
+        ) == "こんにちは"
 
 
 if __name__ == "__main__":

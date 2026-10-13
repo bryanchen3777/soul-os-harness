@@ -443,7 +443,19 @@ class TestQ7TransmissionChain:
                 return None
 
             async def decide(self, motive, agent_id):
-                return SimpleNamespace(transmit=True, reason="test")
+                # SOUL-TECH-DEBT-001 校準（test-owned bug）：DecisionResult 是
+                # src/soul/decision.py:111 的 frozen dataclass，四元欄位為
+                # decision / transmit / reason，且 transmit 是由 decision 推導的
+                # （decision.py:658: transmit=(parsed["decision"] == "transmit")）。
+                # scheduler._decision_check 在 transmit 分支會讀 result.decision
+                # 做 INFO log（scheduler.py:497）；缺欄 → AttributeError → 被
+                # fail-closed 接住（scheduler.py:510-523）回 False，測試看到的是
+                # 「不觸發」而非真正的透傳鏈斷點。
+                # 同檔 test_decision_check_not_transmit_keeps_none（:485）本來就
+                # 帶 decision 欄，這裡是漏給。
+                return SimpleNamespace(
+                    transmit=True, decision="transmit", reason="test"
+                )
 
             def resolve_pending(self, agent_id):
                 return SimpleNamespace(motive_id="m1", target="agent_rem")

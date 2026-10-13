@@ -26,6 +26,7 @@ Mock 範圍:
 - 修法後 v2 期望: 包含明確反框架語句
 """
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -71,65 +72,85 @@ class TestGroupHistoryFramingBaseline(unittest.TestCase):
         self.soul_text = "你是 Miku。... (Miku 的人格設定) ..."
 
     def test_baseline_group_history_no_anti_framing(self):
-        """Baseline: 群聊歷史組裝段 (其他 agent 訊息) 沒有反框架語句
-        LLM 看到 Bry 在群聊罵 mai「你是豬頭」, 沒註明這是 Bry 對 mai 的喇稱,
-        可能誤以為是 Bry 對自己也用這個字 → 模仿用詞
+        """2026-10-12 更新: v1 前提「還沒套修法 3」已過期, 改驗現行生產契約。
+
+        兩處過期:
+        1. 修法 3 本身已套用 —— proxy.py:882-890 現在無條件在 group 歷史組裝前
+           注入 [使用說明] 反框架語句。所以「不得包含反框架語句」是錯的期望。
+        2. 修法 7 (Bry 拍板 2026-08-04 13:24, 修法 3 後一天) 會在 Bry 不在線時
+           過濾 stale 的 Bry user 訊息 (proxy.py:895-900)。原測試沒傳
+           bry_latest_ts (預設 0 = Bry 從未講過話 → 不在線), 那些「豬頭」訊息
+           早被丟掉, 所以 pig_msgs = 0。
+
+        現行契約 (兩種 Bry 在線狀態都要驗, 這才是真正的迴歸防護):
+        - Bry 在線: 「豬頭」訊息進得去 **而且** 反框架語句同時存在
+          → 這正是修法 3 要解決的原始風險, 必須成立
+        - Bry 不在線: stale Bry 訊息被過濾 (修法 7), 但反框架語句仍存在
         """
-        with patch.object(proxy, "_load_bry_recent", return_value=[]), \
-             patch.object(proxy, "MAX_GROUP", 20):
-            fake_memory = MagicMock()
-            fake_memory.get_group_history.return_value = self.fake_group_history
+        anti_framing_keywords = [
+            "不代表 Bry 對你也用",
+            "也不代表你該模仿",
+            "那是那段對話雙方的相處方式",
+        ]
 
-            messages = proxy._build_messages_group(
-                agent_id="agent_miku",
-                soul=self.soul_text,
-                current_input="",  # proactive 觸發
-                memory_context="",
-                memory=fake_memory,
-                mood=0.0,
-                user_id="bryan",
-                current_time="2026-08-02 21:42 週六 晚上 (EDT)",
-            )
-
-            # 找 agent_mai 的 system 角色訊息 (其他 agent 的話)
-            system_msgs_with_others = [
-                m for m in messages
-                if m["role"] == "system" and "agent_mai" in m.get("content", "")
-            ]
-            self.assertGreaterEqual(
-                len(system_msgs_with_others), 0,
-                "可能沒有其他 agent 訊息, 不影響 baseline 驗證"
-            )
-
-            # 合併所有 system 訊息, 找反框架語句
-            all_system_content = "\n".join(
-                m["content"] for m in messages if m["role"] == "system"
-            )
-            # 找包含「豬頭」字眼的訊息
-            pig_msgs = [
-                m for m in messages
-                if "豬頭" in m.get("content", "")
-            ]
-            # Baseline 期望: 至少有「豬頭」字眼訊息 (miku 看到 Bry 罵人), 但沒有反框架
-            self.assertGreater(
-                len(pig_msgs), 0,
-                "Baseline 應該有 Bry 罵人「豬頭」的訊息 (跟查證事實一致)"
-            )
-
-            # 驗證反框架語句**不存在** (baseline)
-            anti_framing_keywords = [
-                "不代表對你也用",
-                "不代表你該模仿",
-                "Bry 對特定對象的喇稱",
-                "Bry 的口頭禪",
-                "那是那段對話雙方的相處方式",
-            ]
-            for keyword in anti_framing_keywords:
-                self.assertNotIn(
-                    keyword, all_system_content,
-                    f"Baseline (v1) 期望群聊歷史「不」包含反框架語句「{keyword}」"
+        def _build(bry_latest_ts):
+            with patch.object(proxy, "_load_bry_recent", return_value=[]), \
+                 patch.object(proxy, "MAX_GROUP", 20):
+                fake_memory = MagicMock()
+                fake_memory.get_group_history.return_value = self.fake_group_history
+                return proxy._build_messages_group(
+                    agent_id="agent_miku",
+                    soul=self.soul_text,
+                    current_input="",  # proactive 觸發
+                    memory_context="",
+                    memory=fake_memory,
+                    mood=0.0,
+                    user_id="bryan",
+                    current_time="2026-08-02 21:42 週六 晚上 (EDT)",
+                    bry_latest_ts=bry_latest_ts,
                 )
-            print(f"[v1 baseline] group history has no anti-framing text (Bry 罵人 豬頭 字眼存在, miku 看得到)")
+
+        # ── 情況 A: Bry 在線 (剛講過話) ──
+        messages_online = _build(int(time.time()))
+        all_system_online = "\n".join(
+            m["content"] for m in messages_online if m["role"] == "system"
+        )
+        pig_msgs_online = [
+            m for m in messages_online if "豬頭" in m.get("content", "")
+        ]
+        self.assertGreater(
+            len(pig_msgs_online), 0,
+            "Bry 在線時 group 歷史應該保留 Bry 說過的「豬頭」字眼 (跟查證事實一致)"
+        )
+        # 修法 3 的核心: LLM 看得到「豬頭」時, 反框架語句必須同時在場
+        for keyword in anti_framing_keywords:
+            self.assertIn(
+                keyword, all_system_online,
+                f"修法 3 期望 Bry 在線時 (「豬頭」字眼可見) 反框架語句「{keyword}」"
+                f"必須同時存在, 否則 LLM 會模仿 Bry 罵人的用詞"
+            )
+
+        # ── 情況 B: Bry 不在線 (bry_latest_ts=0) ──
+        # 修法 7: stale Bry user 訊息被過濾, 但反框架語句仍在
+        messages_offline = _build(0)
+        all_system_offline = "\n".join(
+            m["content"] for m in messages_offline if m["role"] == "system"
+        )
+        self.assertEqual(
+            len([m for m in messages_offline if "豬頭" in m.get("content", "")]), 0,
+            "修法 7 期望 Bry 不在線時過濾 stale Bry user 訊息 (「豬頭」字眼不該出現)"
+        )
+        for keyword in anti_framing_keywords:
+            self.assertIn(
+                keyword, all_system_offline,
+                f"修法 3 期望群聊歷史反框架語句「{keyword}」在 Bry 不在線時依然存在 "
+                f"(因為仍有 agent_mai 的群聊訊息需要框架)"
+            )
+
+        print(
+            "[現行契約] 修法 3 反框架語句在 Bry 在線/不在線兩種狀態下都存在; "
+            "修法 7 在 Bry 不在線時過濾 stale Bry「豬頭」訊息"
+        )
 
 
 if __name__ == "__main__":

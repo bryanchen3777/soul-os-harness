@@ -190,43 +190,57 @@ class TestProactiveTemporalBaseline(unittest.TestCase):
             print(f"[v1 baseline] private 內 system prompt 沒「現在是」字眼")
 
     def test_d_baseline_no_temporal_helpers(self):
-        """Baseline: proxy 沒有 _format_temporal_context / _compute_silence_str helper"""
-        self.assertFalse(
+        """修法 8 已套用: proxy 有 _format_temporal_context / _compute_silence_str helper
+
+        本測試原本寫成 v1 baseline (斷言 proxy 沒有這兩個 helper)。
+        Bry 拍板 2026-08-04 17:18 修法 8 之後:
+        - src/llm/proxy.py:1022 `def _format_temporal_context(event_ts) -> str`
+        - src/llm/proxy.py:1089 `def _compute_silence_str(bry_latest_ts, now)` (修法 8+9)
+        """
+        self.assertTrue(
             hasattr(proxy, "_format_temporal_context"),
-            "Baseline (v1) 期望 proxy 沒有 _format_temporal_context, 修法 8 才加"
+            "修法 8 (Bry 拍板 2026-08-04 17:18): proxy 應該有 _format_temporal_context "
+            "(proxy.py:1022)"
         )
-        self.assertFalse(
+        self.assertTrue(
             hasattr(proxy, "_compute_silence_str"),
-            "Baseline (v1) 期望 proxy 沒有 _compute_silence_str, 修法 8 才加"
+            "修法 8+9: proxy 應該有 _compute_silence_str (proxy.py:1089)"
         )
-        print(f"[v1 baseline] proxy 沒有 _format_temporal_context / _compute_silence_str")
+        print(f"[修法 8 已套用] proxy 有 _format_temporal_context / _compute_silence_str")
 
     def test_e_baseline_proxy_source_no_method_8(self):
-        """Baseline: proxy source 沒有修法 8 注入的明確字眼
-        注意: proxy.py 內已有「現在是」字眼 (silence_timeout prompt L2467),
-        但那不是修法 8 注入的, 修法 8 用更明確的 pattern
-        修法 8 注入的 pattern: 「現在是 2026-」+「EDT」+「（時段）」
-        修法 8 沉默時長: 「距離 Bry 上次跟你說話已經」
+        """修法 8 已套用: proxy source 有修法 8 注入字眼 + helper 定義
+
+        本測試原本寫成 v1 baseline (斷言 proxy source 沒「現在是 2026」/「距離 Bry 上次跟你說話已經」)。
+        Bry 拍板 2026-08-04 17:18 修法 8 之後 proxy.py 內有:
+        - proxy.py:1030 格式註解「現在是 2026-08-04 14:22 EDT（下午）」
+        - proxy.py:1107 / 1109 `距離 Bry 上次跟你說話已經 {X} 小時` / `{days} 天`
         """
         proxy_source = Path(proxy.__file__).read_text(encoding="utf-8")
-        # 修法 8 才會出現的明確字眼 (排除既有 silence_timeout prompt 內的「現在是」)
-        self.assertNotIn(
+        self.assertIn(
             "現在是 2026", proxy_source,
-            "Baseline (v1) 期望 proxy source 沒「現在是 2026」字眼, 修法 8 才加"
+            "修法 8: proxy source 應該有「現在是 2026-... EDT（時段）」注入字眼 (proxy.py:1030)"
         )
-        self.assertNotIn(
+        self.assertIn(
             "距離 Bry 上次跟你說話已經", proxy_source,
-            "Baseline (v1) 期望 proxy source 沒「距離 Bry 上次跟你說話已經」字眼"
+            "修法 8: proxy source 應該有「距離 Bry 上次跟你說話已經 X」注入字眼 "
+            "(proxy.py:1107/1109)"
         )
-        self.assertNotIn(
-            "_format_temporal_context", proxy_source,
-            "Baseline (v1) 期望 proxy source 沒 _format_temporal_context 函式"
+        self.assertIn(
+            "def _format_temporal_context", proxy_source,
+            "修法 8: proxy source 應該有 _format_temporal_context 函式定義 (proxy.py:1022)"
         )
-        self.assertNotIn(
-            "_compute_silence_str", proxy_source,
-            "Baseline (v1) 期望 proxy source 沒 _compute_silence_str 函式"
+        self.assertIn(
+            "def _compute_silence_str", proxy_source,
+            "修法 8+9: proxy source 應該有 _compute_silence_str 函式定義 (proxy.py:1089)"
         )
-        print(f"[v1 baseline] proxy source 沒修法 8 注入字眼 (排除既有 silence_timeout 的「現在是」)")
+        # 修法 8 註解標記 (proxy.py:139)
+        self.assertIn(
+            "修法 8", proxy_source,
+            "修法 8: proxy source 應該有「修法 8」註解字眼 (proxy.py:139/812-815)"
+        )
+        print(f"[修法 8 已套用] proxy source 有「現在是 2026」/「距離 Bry 上次跟你說話已經」"
+              f" + _format_temporal_context / _compute_silence_str 定義")
 
 
 if __name__ == "__main__":

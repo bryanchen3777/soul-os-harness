@@ -590,7 +590,17 @@ class TestSectionH_PrivacyBoundary:
     """H. Trace contains ONLY metadata, no conversation content."""
 
     def test_h1_event_to_dict_has_no_content_field(self):
-        """event_to_dict schema contains exactly the 8 metadata fields per ticket spec."""
+        """event_to_dict schema contains exactly the 9 metadata fields.
+
+        2026-10-12 更新: 原 spec 為 8 欄, M5.15-5 (Bry 派工 2026-08-12 19:14)
+        新增第 9 欄 source_world_event_novelty_id (WorldEvent → InnerLifeEvent
+        跨系統因果橋)。證據:
+          - src/inner_life/event.py:206 欄位定義 (default None)
+          - src/inner_life/serialization.py:114 / :127 event_to_dict 明列該欄
+        該欄是 WorldEvent.novelty_id (自由字串或 None), 屬 metadata 而非對話內容,
+        H 段「trace 只存 metadata、不存 content」的目的不受影響 —— 所以是
+        期望值過期, 不是隱私缺陷。forbidden 清單維持原樣仍為真正的守門點。
+        """
         ev = InnerLifeEvent(
             event_id=_hex_32(),
             session_id="sess-1",
@@ -607,12 +617,15 @@ class TestSectionH_PrivacyBoundary:
             lineage_path="a" * 32,
         )
         d = event_to_dict(ev)
-        # Required fields per ticket spec
+        # Required fields per ticket spec (8 原始 + M5.15-5 第 9 欄)
         expected_keys = {
             "event_id", "session_id", "correlation_id", "parent_event_id",
             "ts", "provenance", "lineage_depth", "lineage_path",
+            "source_world_event_novelty_id",
         }
         assert set(d.keys()) == expected_keys
+        # M5.15-5: 未帶 WorldEvent 觸發時該欄必須是 None (5 個既有 producer 相容)
+        assert d["source_world_event_novelty_id"] is None
         # No content / prompt / response / text / message fields
         forbidden = {
             "content", "text", "message", "prompt", "response",

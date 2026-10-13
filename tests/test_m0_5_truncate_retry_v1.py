@@ -43,8 +43,18 @@ class TestM05Baseline(unittest.TestCase):
         """M0.4 已經從 50 改到 80, M0.5 沿用 80."""
         self.assertEqual(diary_mod.DIARY_MAX_CLEAN_CHARS, 80)
 
-    def test_02_diary_over_80_writes_placeholder_not_truncated(self):
-        """現狀: 81+ chars clean 走 placeholder (整段丟棄), 修法後應截斷保留 LLM 內容."""
+    def test_02_diary_over_80_writes_truncated_llm(self):
+        """現況: 81+ chars clean 走截斷 (保留 LLM 內容), 不是整段丟棄走 placeholder.
+
+        修法 M0.5 (Bry 派工 2026-08-06 21:44): 「把『超過 80 字』的處理方式從整段
+        丟棄改模板, 改成沿用修法 10 那個截斷邏輯」。
+        生產證據: src/soul/diary.py:409-421 —
+            if len(clean) > DIARY_MAX_CLEAN_CHARS:
+                truncated = _safe_truncate_on_length(clean, max_chars=DIARY_MAX_CLEAN_CHARS)
+                return writer.write_entry(..., truncated, source="llm")
+        截斷語義 (src/llm/proxy.py:2836-2856): 取最後 max_chars, 有標點切在最後
+        標點, 沒標點才 fallback 硬切。本例是 100 個「あ」沒標點 → fallback 硬切 80。
+        """
         async def run_test():
             clean_100 = "あ" * 100  # 100 chars
             with tempfile.TemporaryDirectory() as tmp:
@@ -58,14 +68,29 @@ class TestM05Baseline(unittest.TestCase):
                     )
                 self.assertIsNotNone(path)
                 entry = json.loads(path.read_text(encoding="utf-8").strip())
-                # 修法前: 超長 → placeholder (LLM 內容整段丟棄)
-                self.assertEqual(entry["source"], "placeholder")
-                self.assertNotEqual(entry["content"], clean_100,
-                                    "修法前 100 chars 直接被 placeholder 頂替, 不是寫 llm")
+                # M0.5 後: 超長 → 截斷保留 LLM 真實內容, source 仍是 llm
+                self.assertEqual(
+                    entry["source"], "llm",
+                    "M0.5 後 100 chars 應截斷保留 (source=llm), 不是整段 placeholder",
+                )
+                self.assertNotEqual(
+                    entry["content"], clean_100,
+                    "M0.5 後超長內容會被截斷, 不會整段 100 chars 原樣寫入",
+                )
+                self.assertLessEqual(len(entry["content"]), 80)
+                # 截斷取的是 clean 的最後 80 字 (修法 10 語義)
+                self.assertEqual(entry["content"], clean_100[-80:])
         asyncio.run(run_test())
 
-    def test_03_diary_think_only_no_retry(self):
-        """現狀: think_only 直接走 placeholder, 修法後應 retry 一次."""
+    def test_03_diary_think_only_retries_once(self):
+        """現況: think_only 會 retry 一次, retry 仍失敗才寫 placeholder.
+
+        修法 M0.5 A2 (Bry 派工 2026-08-06 21:44): 「think_only 那部分才值得加
+        retry — 這種情況沒東西可搶救, retry 一次是唯一辦法」。
+        生產證據: src/soul/diary.py:391-408 —
+            if not clean:  content = await _call_llm_for_diary(system, user + RETRY_HINT, ...)
+            if not clean:  return writer.write_entry(..., placeholder, source="placeholder")
+        """
         async def run_test():
             think_only = "<think>\nreasoning only\n</think>"
             with tempfile.TemporaryDirectory() as tmp:
@@ -82,16 +107,24 @@ class TestM05Baseline(unittest.TestCase):
                         persona_prompt="test", recent_memories=[],
                         writer=writer,
                     )
-                # 修法前: 1 次 LLM call 就走 placeholder
-                self.assertEqual(call_count["n"], 1, "修法前 think_only 沒 retry, 只 call 1 次")
+                # M0.5 後: 1 次 content + 1 次 retry = 2 次 (只 retry 一次, 不無限迴圈)
+                self.assertEqual(call_count["n"], 2,
+                                 "M0.5 A2 後 think_only 應 retry 一次, 共 call 2 次")
+                # retry 還是 think_only → 才落到 placeholder
+                entry = json.loads(path.read_text(encoding="utf-8").strip())
+                self.assertEqual(entry["source"], "placeholder")
+                self.assertNotIn("<think>", entry["content"])
         asyncio.run(run_test())
 
-    def test_04_dream_event_think_only_no_retry(self):
-        """現狀: write_dream 對 think_only 直接 placeholder, 修法後應 retry.
+    def test_04_dream_event_think_only_retries_once(self):
+        """現況: write_dream 對 think_only retry 一次.
 
         計算 LLM 呼叫次數:
-        - 修法前: 1 次 content + 1 次 impression = 2 次
-        - 修法後: 1 次 content + 1 次 retry + 1 次 impression = 3 次 (retry 真的發生)
+        - M0.5 前: 1 次 content + 1 次 impression = 2 次
+        - M0.5 後: 1 次 content + 1 次 retry + 1 次 impression = 3 次
+        生產證據: src/soul/dream_event.py:572-586 —
+            if not clean_check:  content = await _call_llm_for_dream_event(system, user + RETRY_HINT, ...)
+            if not clean:  fallback placeholder
         """
         async def run_test():
             think_only = "<think>\ndream reasoning\n</think>"
@@ -108,14 +141,20 @@ class TestM05Baseline(unittest.TestCase):
                             agent_id="a1", target_agent_id="a2",
                             all_agents=["a1", "a2"],
                         )
-                # 修法前: 1 次 content + 1 次 impression extraction = 2 次
-                self.assertEqual(call_count["n"], 2,
-                                 "修法前 think_only 沒 retry, 2 次 (1 content + 1 impression)")
-                # 修法後: 應該 3 次 (1 content + 1 retry + 1 impression)
+                # M0.5 後: 1 content + 1 retry + 1 impression = 3 次
+                self.assertEqual(call_count["n"], 3,
+                                 "M0.5 A2 後 dream think_only 應 retry 一次, 共 call 3 次")
         asyncio.run(run_test())
 
-    def test_05_dream_event_over_80_writes_placeholder(self):
-        """現狀: write_dream 對超長 clean 走 placeholder, 修法後應截斷."""
+    def test_05_dream_event_over_80_is_truncated(self):
+        """現況: write_dream 對超長 clean 走截斷 (≤ 80), 不是整段寫入.
+
+        修法 M0.5 A1 (Bry 派工 2026-08-06 21:44): 沿用修法 10 截斷。
+        生產證據: src/soul/dream_event.py:591-596 (dream) / :707-711 (event) —
+            elif len(clean) > DREAM_EVENT_MAX_CLEAN_CHARS:
+                truncated = _safe_truncate_on_length(clean, max_chars=DREAM_EVENT_MAX_CLEAN_CHARS)
+        常數 DREAM_EVENT_MAX_CLEAN_CHARS = 80 (src/soul/dream_event.py:65-67)。
+        """
         async def run_test():
             clean_120 = "あ" * 120  # 120 chars
             with tempfile.TemporaryDirectory() as tmp:
@@ -129,10 +168,10 @@ class TestM05Baseline(unittest.TestCase):
                         )
                 self.assertIsNotNone(path)
                 entry = json.loads(path.read_text(encoding="utf-8").strip())
-                # 修法前: 120 chars 沒截斷, 整段寫 llm
-                # 修法後: 應該被截斷到 80 chars 內
-                self.assertGreater(len(entry["content"]), 80,
-                                   "修法前沒截斷, 120 chars 整段寫進去; 修法後應 ≤ 80")
+                # M0.5 後: 截斷到 80 字內 (修法 10 取最後 80 字, 沒標點 fallback 硬切)
+                self.assertLessEqual(len(entry["content"]), 80)
+                self.assertEqual(entry["content"], clean_120[-80:])
+                self.assertEqual(entry["source"], "llm")
         asyncio.run(run_test())
 
     def test_06_proxy_has_safe_truncate_helper(self):
@@ -149,28 +188,61 @@ class TestM05Baseline(unittest.TestCase):
         # 應該保留結尾的 "。"
         self.assertTrue(truncated.endswith("。") or "。" in truncated)
 
-    def test_07_real_sim_post_m0_4_stats(self):
-        """M0.4 修法後 8/6 sim 真實產出率: 54% (15 llm / 13 placeholder / 0 think_only).
+    def test_07_over_80_rescued_as_llm_and_retry_rescues_think_only(self):
+        """M0.5 的實際價值: 超長截斷救回 + think_only retry 救回 (都算 llm)。
 
-        M0.5 預期:
-        - 截斷 A1 應救回 ~4 條超長 placeholder → llm (約 80→80 chars)
-        - retry A2 應救回 ~8 條 think_only placeholder → 至少 4 條 llm (50% retry 成功率)
-        - 預期真實產出率: 54% + 4 + 4 = 23/28 = 82% 達 Bry 80% 門檻
+        舊版這支是掃 data/soul/agent_rem/diary/2026-08-*.jsonl 抓
+        llm=15 / placeholder=13 / has_think=0 的 8/6 sim 快照。那是 M0.4 修法當天
+        的生產資料快照, data/ 會隨時間累積漂移 (實測已變 54/9/1), 拿它當斷言來源
+        既不穩定也證明不了現行行為。
+
+        改成直接驗現行契約, 而且補上舊版沒驗到的兩件事:
+        - A1 截斷走「句號斷點」分支 (test_02 驗的是沒標點的 fallback 硬切分支)
+        - A2 retry 成功 → 真的救回成 source=llm (test_03 驗的是 retry 仍失敗 → placeholder)
+        生產證據: src/llm/proxy.py:2847-2850 (有標點切在最後標點)、
+                  src/soul/diary.py:391-421 (retry + 截斷都保留 LLM 內容)。
         """
-        workspace = Path("C:/Users/bbfcc/.local/bin/soul-os-harness")
-        diary_dir = workspace / "data" / "soul" / "agent_rem" / "diary"
-        llm, placeholder, think_only, has_think = 0, 0, 0, 0
-        for f in sorted(diary_dir.glob("2026-08-*.jsonl")):
-            for line in f.read_text(encoding="utf-8").splitlines():
-                if not line.strip(): continue
-                e = json.loads(line)
-                if "<think>" in e["content"]: has_think += 1
-                if e.get("source") == "placeholder": placeholder += 1
-                else: llm += 1
-        print(f"\n  [baseline M0.4 後 8/6 sim] LLM: {llm} / placeholder: {placeholder} / think_in_jsonl: {has_think}")
-        self.assertEqual(llm, 15)
-        self.assertEqual(placeholder, 13)
-        self.assertEqual(has_think, 0)
+        # ── A1: 超長且有句號 → 截斷在句號斷點, 不是硬切也不是 placeholder ──
+        # raw 長度 90 + 1 + 40 = 131; 最後 80 字 = 39 個「あ」+「。」+ 40 個「い」
+        punctuated = "あ" * 90 + "。" + "い" * 40
+        # ── A2: 第一次 think_only, retry 回真內容 → 救回 llm ──
+        think_only = "<think>\n只有推理\n</think>"
+        rescued = "起き上がると、窓の外が白くなっていた。"
+
+        async def run_test():
+            with tempfile.TemporaryDirectory() as tmp:
+                writer = diary_mod.DiaryWriter(data_dir=tmp)
+                with patch.object(diary_mod, "_call_llm_for_diary",
+                                  new=AsyncMock(return_value=punctuated)):
+                    path = await diary_mod.generate_diary_entry(
+                        agent_id="a1", slot="morning",
+                        persona_prompt="test", recent_memories=[],
+                        writer=writer,
+                    )
+                self.assertIsNotNone(path)
+                entry = json.loads(path.read_text(encoding="utf-8").strip())
+                self.assertEqual(entry["source"], "llm",
+                                 "M0.5 A1 後超長應截斷保留 (llm), 不是整段 placeholder")
+                self.assertEqual(entry["content"], "あ" * 39 + "。",
+                                 "應截在最後一個句號斷點 (修法 10 語義), 保留 LLM 原句")
+
+            with tempfile.TemporaryDirectory() as tmp:
+                writer = diary_mod.DiaryWriter(data_dir=tmp)
+                replies = [think_only, rescued]
+                with patch.object(diary_mod, "_call_llm_for_diary",
+                                  new=AsyncMock(side_effect=replies)):
+                    path = await diary_mod.generate_diary_entry(
+                        agent_id="a1", slot="night",
+                        persona_prompt="test", recent_memories=[],
+                        writer=writer,
+                    )
+                self.assertIsNotNone(path)
+                entry = json.loads(path.read_text(encoding="utf-8").strip())
+                self.assertEqual(entry["source"], "llm",
+                                 "M0.5 A2 後 retry 拿到真內容, 應救回成 llm 不是 placeholder")
+                self.assertEqual(entry["content"], rescued)
+                self.assertNotIn("<think>", entry["content"])
+        asyncio.run(run_test())
 
 
 if __name__ == "__main__":

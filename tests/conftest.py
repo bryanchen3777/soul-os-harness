@@ -118,3 +118,57 @@ def _isolate_soul_os_data_root(request, tmp_path_factory):
         env_patch.undo()  # Restore SOUL_OS_DATA_DIR and host feature flags.
         # 清快取，避免 tmp 路徑殘留給下一個測試。
         reset_data_root()
+
+
+# SOUL-TECH-DEBT-001 (2026-10-12): 補齊 EventBus 測試基礎。
+#
+# 背景: `tests/test_event_bus.py` 等 6 個檔案宣告 `async def test_x(bus: SoulEventBus)`
+# 但全庫從未定義 `bus` fixture，導致 15 個 ERROR 級聯失敗
+# (`fixture 'bus' not found`)。這與 async 模式是**兩個獨立阻塞**：
+# 實測在 `asyncio_mode=auto` 下這 9 個 ERROR 依然存在。
+#
+# 生命週期設計（為何這樣寫）:
+#   1. fixture 負責 `start()` —— 因為多數測試（test_event_bus.py 的 7 個煙霧測試）
+#      只 `publish()` 從不自行啟動。
+#   2. `SoulEventBus.start()` 本身 idempotent（bus.py:217 有 `if self._running` 守衛），
+#      所以會自行 `await bus.start()` 的測試
+#      （test_event_generation_v1/v2、test_memory_middleware）不會重複啟動。
+#   3. `stop()` 對已停止的 bus 安全（`_running=False` + `if task and not done()` 守衛），
+#      故 fixture 無條件 teardown 亦安全，測試自行 stop 後不會二次爆錯。
+#   4. 本 fixture **不寫入 `data/**`**，與 TEST-ISOLATION-FIX-1 的資料根隔離共存。
+@pytest.fixture
+async def bus():
+    """共用 SoulEventBus 實例（已啟動，測試結束自動優雅停止）。"""
+    from src.eventbus import SoulEventBus
+
+    b = SoulEventBus()
+    await b.start()
+    try:
+        yield b
+    finally:
+        await b.stop()
+
+
+# SOUL-TECH-DEBT-001 (2026-10-12)：以下兩個 fixture 補齊「獨立腳本式測試」的參數缺口。
+#
+# 背景: `test_event_generation_v1.py` / `test_memory_middleware.py` /
+# `test_self_check_v1/v2.py` / `test_timezone_fix_v1/v2.py` 這批檔案的檔頭都寫著
+# 「執行方式：python test_xxx.py」，它們是靠檔尾 `if __name__ == "__main__":`
+# 區塊直接呼叫測試函式並自行餵參數：
+#     tmp_dir      = Path(tempfile.mkdtemp(prefix="soul_os_phase2_"))
+#     project_root = Path(__file__).resolve().parent.parent
+# pytest 跑時沒有 `__main__`，該參數就變成「找不到的 fixture」→ ERROR。
+# 這裡提供**等價語意**，不是為了讓測試變綠而發明新語意：
+#   - `tmp_dir`      ≡ 該測試在 `__main__` 裡用的 tempfile.mkdtemp()，改由 pytest
+#                     的 `tmp_path` 提供（每測試獨立、結束自動清理，不碰 data/**）。
+#   - `project_root` ≡ 該測試在 `__main__` 裡的 Path(__file__).parent.parent，即 repo 根。
+@pytest.fixture
+def tmp_dir(tmp_path):
+    """獨立腳本式測試的暫存資料根（等同該檔 `__main__` 的 tempfile.mkdtemp()）。"""
+    return tmp_path
+
+
+@pytest.fixture
+def project_root() -> Path:
+    """repo 根目錄（等同該檔 `__main__` 的 Path(__file__).resolve().parent.parent）。"""
+    return Path(__file__).resolve().parent.parent

@@ -88,25 +88,50 @@ class TestLogBackupBaseline(unittest.TestCase):
         print("[v1 baseline] Start-SoulOsServer 沒 Move-Item 備份邏輯 (預期: 修法後才有)")
 
     def test_b_no_backup_marker_in_start(self):
-        """v1: Start-SoulOsServer 內沒備份 marker 字串
+        """2026-10-12 更新: 「不得出現備份 marker」的前提已過期。
 
-        Bry 派工原話: 「備份舊 log 為帶時間戳檔名」
-        v1 期望: 沒 server_$ts / server_${ts} / yyyyMMdd 備份檔名 pattern
-        修法後: 應該有 (v1 fail)
+        證據: CRASH-OBS-1 (2026-09-10) 已把備份邏輯套用進
+        Start-SoulOsServer —— server_ops.ps1 內呼叫共用 helper
+        `Backup-Rotate-NohupLogs` (scripts/_nohup_log_rotation.ps1:17),
+        命名統一為 server_nohup.<yyyyMMdd_HHmmss>.<ext>。
+
+        因此「Backup」/「備份」這兩個 marker 現在正當存在於函式內
+        (load helper + 呼叫 rotation + 註解說明), 舊斷言必然失敗。
+
+        現行契約拆成兩部分驗:
+        - 正向: 輪替 helper 確實被呼叫 (方案 B 精神「啟動前保留舊 log」成立)
+        - 反向: 舊的 server_$ts / server_${ts} 命名 pattern 仍不該回來
+          (CRASH-OBS-1 已統一為 server_nohup.<ts>.<ext>)
         """
+
+        # ── 正向: 現行備份/輪替邏輯確實在 Start-SoulOsServer 內 ──
+        self.assertIn(
+            "Backup-Rotate-NohupLogs", self.start_fn_source,
+            "現行契約期望 Start-SoulOsServer 呼叫共用輪替 helper "
+            "Backup-Rotate-NohupLogs (CRASH-OBS-1 2026-09-10), 但沒找到 "
+            "→ 啟動前的 nohup log 保留機制不見了, 回到 truncate 抹掉歷史的舊行為"
+        )
+        self.assertIn(
+            "_nohup_log_rotation.ps1", self.full_source,
+            "server_ops.ps1 應 dot-source 共用 helper "
+            "scripts/_nohup_log_rotation.ps1 (CRASH-OBS-1)"
+        )
+
+        # ── 反向: 舊 server_$ts / server_${ts} 命名不該回來 ──
+        # (命名已統一為 server_nohup.<ts>.<ext>, 舊 pattern 不該再出現)
         for marker in [
             "server_$ts",
             "server_${ts}",
-            "yyyyMMdd",
-            "Backup",
-            "備份",
         ]:
             self.assertNotIn(
                 marker, self.start_fn_source,
-                f"v1 baseline 期望 Start-SoulOsServer 沒備份 marker ({marker}), "
-                f"但找到了 → 修法可能已套用或 v1 寫在修法後"
+                f"現行契約期望 Start-SoulOsServer 不使用舊備份命名 ({marker}) "
+                f"(CRASH-OBS-1 已統一為 server_nohup.<ts>.<ext>)"
             )
-        print("[v1 baseline] Start-SoulOsServer 沒備份 marker (server_$ts / yyyyMMdd / Backup)")
+        print(
+            "[現行契約] Start-SoulOsServer 有輪替 helper (Backup-Rotate-NohupLogs) "
+            "且無舊 server_$ts 命名 (CRASH-OBS-1 2026-09-10)"
+        )
 
     def test_c_full_source_no_log_backup_logic(self):
         """v1: server_ops.ps1 整檔案內沒 log 備份邏輯

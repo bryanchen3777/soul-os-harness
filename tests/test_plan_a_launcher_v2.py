@@ -3,9 +3,19 @@ test_plan_a_launcher_v2.py — Plan A launcher 修法 v2 (after 修法)
 
 Bry 拍板 2026-08-03 23:33: 修 Plan A launcher 啟動路徑問題
 
-修法:
+修法 (v2, 2026-08-03 23:40 定案):
 - 建立 scripts/_start_plan_a.ps1 (原本不存在, git log 完全沒歷史)
-- 跟 server_ops.ps1 一樣明確指定 hermes-agent venv python, 不依賴系統 PATH
+- 跟 server_ops.ps1 一樣明確指定 python, 不依賴系統 PATH
+  (v2 原始修法是 pin hermes-agent venv + uvicorn pre-check)
+
+re-fix (Bry 拍板 2026-08-15 23:33, 兩階段歷史的第二階段):
+- 根因: hermes-agent venv 缺 networkx/telegram/pip → 8/15 22:00 night slot 時
+  server 掛掉 (ModuleNotFoundError: No module named 'networkx' → Application startup failed)
+- 修法: _start_plan_a.ps1 與 server_ops.ps1 一律改釘 soul-os 自己的 .venv
+  (有 networkx/telegram/icalendar 全部依賴)
+- 現況契約 (見 scripts/_start_plan_a.ps1:29 `$python = '...\\soul-os-harness\\.venv\\Scripts\\python.exe'`):
+  啟動用 soul-os .venv, 不是 hermes venv。測試名沿用歷史命名 (hermes_agent_venv),
+  但斷言的是「現行契約 = soul-os .venv」。
 - 加 pre-check: python 存在 + uvicorn 可 import (避免 ModuleNotFoundError)
 - 寫啟動 log 到 data/logs/plan_a_launcher.log
 - exit code 處理: 失敗 exit 1, 成功 exit 0 (讓 watchdog N 計數準確)
@@ -35,8 +45,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 REPO = Path("C:\\Users\\bbfcc\\.local\\bin\\soul-os-harness")
-EXPECTED_PYTHON = r"C:\Users\bbfcc\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe"
+# 現行契約 (Bry 拍板 2026-08-15 23:33 re-fix): soul-os 自己的 .venv。
+# 對應 scripts/_start_plan_a.ps1:29 與 scripts/server_ops.ps1:28 的 $python 綁定。
+EXPECTED_PYTHON = r"C:\Users\bbfcc\.local\bin\soul-os-harness\.venv\Scripts\python.exe"
+# 已被 8/15 re-fix 取代的舊路徑 (hermes venv 缺 networkx 導致崩) — 保留作回歸護欄。
+LEGACY_HERMES_PYTHON = r"C:\Users\bbfcc\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe"
 EXPECTED_SERVER_OPS = REPO / "scripts" / "server_ops.ps1"
+
+
+def _extract_bound_python(source: str) -> str:
+    """抽出 PowerShell 裡真正綁定的 $python = '...' 值 (排除註解行)。"""
+    code = "\n".join(
+        line for line in source.splitlines() if not line.strip().startswith("#")
+    )
+    m = re.search(r"\$python\s*=\s*'([^']+)'", code)
+    if not m:
+        raise AssertionError("找不到 $python = '<path>' 綁定")
+    return m.group(1)
 
 
 class TestPlanALauncherV2(unittest.TestCase):
@@ -52,28 +77,52 @@ class TestPlanALauncherV2(unittest.TestCase):
         self.content = self.start_plan_a.read_text(encoding="utf-8")
 
     def test_v2_uses_hermes_agent_venv_python(self):
-        """v2: python 路徑必須明確指定 hermes-agent venv, 不依賴系統 PATH
-        跟 server_ops.ps1 Start-SoulOsServer L30-54 同類修法
+        """v2 (名沿用歷史): 現行契約 = 明確指定 soul-os .venv python, 不依賴系統 PATH
+
+        證據 scripts/_start_plan_a.ps1:
+        - L29  $python = '...\\soul-os-harness\\.venv\\Scripts\\python.exe'
+        - L58  if (-not (Test-Path $python))  → 存在性 pre-check
+        - L65  & $python -c "import uvicorn ..." → uvicorn pre-check 真的消費 $python
+        - L88  Start-Process -FilePath $python → 啟動真的消費 $python
+        Bry 拍板 2026-08-15 23:33 re-fix: 從 hermes venv 改回 soul-os .venv
+        (hermes venv 缺 networkx → 8/15 22:00 night slot server 崩)。
         """
-        self.assertIn(
-            EXPECTED_PYTHON, self.content,
-            f"v2: _start_plan_a.ps1 必須用 hermes-agent venv python ({EXPECTED_PYTHON}), "
-            f"不依賴系統 PATH. 實際內容前 1000 chars: {self.content[:1000]!r}"
+        bound = _extract_bound_python(self.content)
+        self.assertEqual(
+            bound, EXPECTED_PYTHON,
+            f"v2: _start_plan_a.ps1 的 $python 必須綁 soul-os .venv ({EXPECTED_PYTHON}), "
+            f"實際={bound!r}"
         )
-        # 確認 Start-Process 用 $python 變數 (明確路徑) 不是 'python' (系統 PATH 字串)
-        # 用 regex 找真正的 Start-Process 呼叫, 不是註解裡的字
+        # 迴歸護欄: hermes venv 路徑不得再回來 (那正是 8/15 崩潰根因)
+        self.assertNotIn(
+            LEGACY_HERMES_PYTHON, self.content,
+            f"v2: _start_plan_a.ps1 不得回頭用 hermes venv ({LEGACY_HERMES_PYTHON}) — "
+            f"8/15 re-fix 前正是這條路徑缺 networkx 導致 server 崩"
+        )
+        # 確認 $python 真的被消費: Test-Path + uvicorn pre-check + Start-Process
+        self.assertRegex(
+            self.content, r"Test-Path\s+\$python",
+            "v2: 應該有 Test-Path $python 存在性 pre-check"
+        )
+        self.assertRegex(
+            self.content, r"&\s*\$python\s+-c\s+\"import uvicorn",
+            "v2: uvicorn pre-check 應該真的用 $python 執行 (不是寫死路徑)"
+        )
         match_actual = re.search(r"Start-Process\s+-FilePath\s+(\S+)", self.content)
         self.assertIsNotNone(
-            match_actual,
-            f"v2: 應該有 Start-Process -FilePath <python_path>"
+            match_actual, "v2: 應該有 Start-Process -FilePath <python_path>"
         )
         actual_file_path = match_actual.group(1)
+        self.assertEqual(
+            actual_file_path, "$python",
+            f"v2: Start-Process 必須用 $python 變數 (明確路徑), 實際 file_path={actual_file_path!r}"
+        )
         self.assertNotEqual(
             actual_file_path, "'python'",
             f"v2: Start-Process 不該用系統 PATH 'python' (uvicorn ModuleNotFoundError 同類問題), "
             f"實際 file_path={actual_file_path!r}"
         )
-        print(f"[v2] python 路徑 = {EXPECTED_PYTHON} (跟 server_ops.ps1 意圖一致)")
+        print(f"[v2] python 綁定 = {bound} (Test-Path/uvicorn pre-check/Start-Process 三處都消費 $python)")
 
     def test_v2_has_pre_check_uvicorn_import(self):
         """v2: pre-check 必須驗證 uvicorn 可 import, 避免 ModuleNotFoundError 啟動後才死"""
@@ -139,21 +188,36 @@ class TestPlanALauncherV2(unittest.TestCase):
         print(f"[v2] 失敗 exit 1 + 成功 exit 0 (讓 watchdog N 計數準確)")
 
     def test_v2_consistent_with_server_ops_intent(self):
-        """v2: 跟 server_ops.ps1 啟動意圖一致 (都用 hermes-agent venv python)
-        Bry 派工原話假設: server_ops.ps1 已用 hermes-agent venv
-        查證事實: server_ops.ps1 還是用系統 PATH python (L37: 'python' 不是 hermes-agent venv)
-        Bry 派工原話可能誤判 server_ops 現狀, 但 _start_plan_a 仍應用 hermes-agent venv
-        跟 server_ops.ps1 意圖一致 (Bry 派工原話拍板方向)
+        """v2: 跟 server_ops.ps1 啟動意圖一致
 
-        這個測試不 assertIn server_ops 內容, 只確認 _start_plan_a 用 hermes-agent venv
-        (跟 server_ops 意圖一致, 等待 Bry 確認是否要順便修 server_ops)
+        歷史: 修法當下 (2026-08-03) server_ops.ps1 還停在系統 PATH python, 只有
+        _start_plan_a 單方面 pin hermes venv — 那時本測試只能單邊斷言。
+
+        現況 (Bry 拍板 2026-08-15 23:33 re-fix): 兩個檔案都已改成 soul-os .venv
+        (hermes venv 缺 networkx 導致 8/15 22:00 night slot 崩潰), 所以「對稱」
+        終於成立。改為真正比較兩個檔案的 $python 綁定值必須相等, 且都等於
+        soul-os .venv。若有人把任一邊改回 hermes venv / 系統 PATH, 這裡立刻紅。
+
+        證據: scripts/_start_plan_a.ps1:29, scripts/server_ops.ps1:28
         """
-        self.assertIn(
-            EXPECTED_PYTHON, self.content,
-            f"v2: _start_plan_a.ps1 應該用 hermes-agent venv python"
+        server_ops = EXPECTED_SERVER_OPS.read_text(encoding="utf-8")
+        plan_a_bound = _extract_bound_python(self.content)
+        server_ops_bound = _extract_bound_python(server_ops)
+
+        self.assertEqual(
+            plan_a_bound, server_ops_bound,
+            f"v2: _start_plan_a.ps1 與 server_ops.ps1 的 $python 必須相同, "
+            f"plan_a={plan_a_bound!r} vs server_ops={server_ops_bound!r}"
         )
-        print(f"[v2] _start_plan_a.ps1 用 hermes-agent venv python (跟 server_ops.ps1 啟動意圖一致, "
-              f"雖然 server_ops.ps1 本身還沒改, 等 Bry 確認是否要順便修)")
+        self.assertEqual(
+            plan_a_bound, EXPECTED_PYTHON,
+            f"v2: 兩邊都必須是 soul-os .venv ({EXPECTED_PYTHON}), 實際={plan_a_bound!r}"
+        )
+        self.assertNotIn(
+            LEGACY_HERMES_PYTHON, self.content,
+            f"v2: _start_plan_a.ps1 不得回頭用 hermes venv — 8/15 re-fix 前正是這條路徑缺 networkx 崩潰"
+        )
+        print(f"[v2] _start_plan_a.ps1 與 server_ops.ps1 的 $python 對稱 = {plan_a_bound}")
 
 
 if __name__ == "__main__":

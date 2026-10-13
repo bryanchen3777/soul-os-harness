@@ -48,23 +48,37 @@ class TestProactiveDensityBaseline(unittest.TestCase):
         self.scheduler_source = SCHEDULER_PY.read_text(encoding="utf-8")
         self.run_server_source = RUN_SERVER_PY.read_text(encoding="utf-8")
 
+    # ─────────────────────────────────────────────────────────
+    # 2026-10-12 更新: v1 baseline (120/240) 已被 Bry 方案 C 取代
+    #
+    # 證據: src/soul/scheduler.py:153-154 (Bry 拍板方案 C, 見本檔 docstring L5)
+    #   proactive_dm_min_interval_minutes: int = 180,  # 3 小時 (原 120)
+    #   proactive_dm_max_interval_minutes: int = 300,  # 5 小時 (原 240)
+    # 同一段 (scheduler.py:150-152) 記錄派工動機「24h/4h(平均) = 6 條/天,
+    # 落在 Bry 派工「5-8 條/天」範圍內」—— Bry 8/6 17:12 拍板方案 C
+    # 「間隔拉到 3-5 小時」, 生產值 180/300 才是現行契約。
+    #
+    # 函式名保留 _2h / _4h 歷史標籤 (維持既有 test id 不變), 期望值已更新為
+    # 現行生產契約 180 (3h) / 300 (5h)。
+    # ─────────────────────────────────────────────────────────
+
     def test_a_baseline_proactive_dm_min_default_2h(self):
-        """Baseline: scheduler.py proactive_dm_min_interval_minutes 預設 120 (2h)"""
+        """現行契約: scheduler.py proactive_dm_min_interval_minutes 預設 180 (3h, 方案 C)"""
         sig = inspect.signature(SoulScheduler.__init__)
         self.assertEqual(
-            sig.parameters["proactive_dm_min_interval_minutes"].default, 120,
-            "Baseline (v1) 期望 proactive_dm_min_interval_minutes 預設 120 (2h)"
+            sig.parameters["proactive_dm_min_interval_minutes"].default, 180,
+            "現行契約期望 proactive_dm_min_interval_minutes 預設 180 (3h, Bry 拍板方案 C)"
         )
-        print("[v1 baseline] proactive_dm_min_interval_minutes 預設 120 (2h)")
+        print("[現行契約] proactive_dm_min_interval_minutes 預設 180 (3h, 方案 C, 原 120)")
 
     def test_b_baseline_proactive_dm_max_default_4h(self):
-        """Baseline: scheduler.py proactive_dm_max_interval_minutes 預設 240 (4h)"""
+        """現行契約: scheduler.py proactive_dm_max_interval_minutes 預設 300 (5h, 方案 C)"""
         sig = inspect.signature(SoulScheduler.__init__)
         self.assertEqual(
-            sig.parameters["proactive_dm_max_interval_minutes"].default, 240,
-            "Baseline (v1) 期望 proactive_dm_max_interval_minutes 預設 240 (4h)"
+            sig.parameters["proactive_dm_max_interval_minutes"].default, 300,
+            "現行契約期望 proactive_dm_max_interval_minutes 預設 300 (5h, Bry 拍板方案 C)"
         )
-        print("[v1 baseline] proactive_dm_max_interval_minutes 預設 240 (4h)")
+        print("[現行契約] proactive_dm_max_interval_minutes 預設 300 (5h, 方案 C, 原 240)")
 
     def test_c_baseline_run_server_registers_heartbeat(self):
         """Baseline: run_server.py 有 _heartbeat_callback 函式 + register_heartbeat 呼叫"""

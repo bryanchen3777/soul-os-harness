@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 
 # Ensure project root on sys.path
@@ -32,6 +33,34 @@ from src.memory.v1.loader import (
     derive_query_tags,
     _expand_tag_components,
 )
+
+
+@contextmanager
+def _utf8_console():
+    """在印診斷表期間暫時把 sys.stdout 切到 utf-8, 結束後還原。
+
+    `capsys.disabled()` 會把 sys.stdout 還原成真實主控台 (Windows 繁中 = cp950),
+    印繁中 memory content 會 UnicodeEncodeError, 並**遮蔽真正的斷言失敗**。
+    必須寫成 `with capsys.disabled(), _utf8_console():` —— 順序不能顛倒,
+    因為 _utf8_console 必須作用在 capsys 還原後的那個 stream 上。
+    """
+    stream = sys.stdout
+    orig_encoding = getattr(stream, "encoding", None)
+    orig_errors = getattr(stream, "errors", None)
+    switched = False
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+        switched = True
+    except (AttributeError, ValueError, OSError):
+        pass  # 不支援 reconfigure 的 stream 就維持原樣
+    try:
+        yield
+    finally:
+        if switched and orig_encoding is not None:
+            try:
+                stream.reconfigure(encoding=orig_encoding, errors=orig_errors)
+            except (AttributeError, ValueError, TypeError, OSError):
+                pass
 
 
 # ────────────────────────────────────────────────────────────
@@ -376,21 +405,38 @@ def test_s2_b_4_negative_zero_false_positive(capsys):
     ]
 
     n_eligible = 0
+    offenders = []  # 收集 false positive 證據, 供 SOUL-BUG 定位根因
     for query in negative_queries:
         result = loader.load(derive_query_tags(query), agent_id)
         n_eligible += result["trace"]["eligible_count"]
+        q_components = _expand_tag_components(derive_query_tags(query))
+        for mem in result["eligible_memories"]:
+            hit = q_components & _expand_tag_components(mem.tags)
+            offenders.append(
+                f"query={query!r} matched_memory={mem.content!r} "
+                f"matched_tokens={sorted(hit)} "
+                f"(單一零區分力 token 即通過 MIN_OVERLAP_SHORT_CONTENT=1)"
+            )
 
-    with capsys.disabled():
+    with capsys.disabled(), _utf8_console():
         print()
         print("=" * 80)
         print("M5.3-S2-B B.4 — Negative Corpus (10 irrelevant queries)")
         print(f"Total eligible: {n_eligible} (must be 0)")
         print("=" * 80)
+        for line in offenders:
+            print(f"  {line}")
 
     # Bry 派工: false_positive = 0
+    # NOTE (2026-10-12 裁決): 此斷言維持紅燈 —— 這是真實 production 缺陷,
+    # 不是過期斷言。根因見 SOUL-BUG: loader 的 stopword 只含 per-agent 名字
+    # (_PER_AGENT_NAME_STOPWORDS, src/memory/v1/loader.py:333), 沒有通用
+    # 停用詞/時間詞過濾, 且 MIN_OVERLAP_SHORT_CONTENT=1 (loader.py:350)
+    # 讓單一 token (如「今天」「什麼」) 命中即入選。
     assert n_eligible == 0, (
         f"Negative queries produced {n_eligible} eligible memories. "
-        f"false_positive must be 0 per Bry 派工."
+        f"false_positive must be 0 per Bry 派工.\n"
+        + "\n".join(f"  - {line}" for line in offenders)
     )
 
 
