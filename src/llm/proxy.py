@@ -53,7 +53,7 @@ from src.llm._agent_constants import _JP_AGENT_IDS, is_jp_agent  # noqa: E402
 # TTS 全域開關 (Bry 派工 2026-08-15): /tts on|off 切換是否使用 TTS
 from src.llm.tts_toggle import is_tts_enabled
 # REM-TEXT-1 (2026-09-11): 文字頻道括號動作守門（純函式，src/ 側，不依賴 clients/）
-from src.text_guard import sanitize_text_channel_output
+from src.text_guard import sanitize_legacy_runaway_turn, sanitize_text_channel_output
 
 logger = logging.getLogger("soul_os.llm_proxy")
 
@@ -1518,6 +1518,21 @@ def _build_messages_private(
             # 避免靈魂以為自己在回應 Bry (8/19 起 11 次「嘿嘿～Bryan 主動來找人家啦」)
             continue
         content = m["content"]
+        # REM-LEGACY-CLEANSE (Bry 拍板 2026-10-12): 淨化遺留失控回合。
+        # 寫入端 bug 已由 修法 10 (2026-08-04) + PERSONA-FIX-1 D1 (2026-09-05)
+        # 雙重修補，此處只處理**殘留在磁碟上的歷史汙染**（read-side，只影響 prompt，
+        # 嚴禁回寫 data/conversations/）。與 REM-TEXT-1 的 strip_assistant_parens
+        # 不同：那是 per-agent 風格開關，本項是無條件安全淨化（不設 config gate，
+        # 否則會靜默失效）。觸發門檻 >1,000 字 / 未閉合 JSON 殼，見
+        # src/text_guard.py:sanitize_legacy_runaway_turn 與 logs/ 審計報告 §7。
+        if m.get("role") == "assistant":
+            _legacy_clean = sanitize_legacy_runaway_turn(content)
+            if _legacy_clean != content:
+                logger.warning(
+                    f"[REM-LEGACY-CLEANSE] Sanitized legacy runaway turn "
+                    f"(agent={agent_id}, {len(content)} -> {len(_legacy_clean)} chars)"
+                )
+                content = _legacy_clean
         if strip_assistant_parens and m.get("role") == "assistant":
             # REM-TEXT-1: 私聊歷史中自己講過的話剝除括號動作段（只影響 prompt）
             content = sanitize_text_channel_output(content)

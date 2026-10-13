@@ -79,3 +79,78 @@ def sanitize_text_channel_output(text: str) -> str:
     # 4) 行首孤立半形標點正規化（剝除後殘留的怪異開頭）
     text = _LEADING_ORPHAN_PUNCT_RE.sub("", text)
     return text.strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REM-LEGACY-CLEANSE (2026-10-12): legacy runaway turn 讀取端淨化
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 觸發門檻：>1,000 字元（Bryn SOUL-MEM-001 Phase 0 工單原訂）。
+# 依據: 量測全部 153 個對話檔，正常 assistant 訊息 max ≤ 97 字元（修法 10 於
+# 2026-08-04 以 check_response_length_dist.py 量得 p99=94、0 條 >200），
+# 汙染則為 6,690–6,938 字元。1,000 落在兩者之間的極寬空白帶，不會誤切正常訊息。
+_LEGACY_RUNAWAY_TRIGGER_CHARS = 1000
+
+# 截斷目標：200 字元（對齊修法 10 `_safe_truncate_on_length` 的 Bry 拍板規格）
+_LEGACY_RUNAWAY_KEEP_CHARS = 200
+
+# 未閉合 JSON 殼前綴：同 PERSONA-FIX-1 D1 (`proxy.py:_TEXT_JSON_SHELL_PREFIX`)
+_LEGACY_BROKEN_SHELL_RE = re.compile(r'^\{\s*"text"\s*:\s*"')
+
+# 截斷斷點標點（與修法 10 `_safe_truncate_on_length` 同清單）
+_LEGACY_CUT_POINTS = ("。", "！", "？", "?", "!", "——", "……", "，", ",", ".")
+
+
+def sanitize_legacy_runaway_turn(
+    text: str,
+    trigger_chars: int = _LEGACY_RUNAWAY_TRIGGER_CHARS,
+    keep_chars: int = _LEGACY_RUNAWAY_KEEP_CHARS,
+) -> str:
+    """REM-LEGACY-CLEANSE: 淨化遺留的失控 assistant 回合（純函式、無 IO）。
+
+    背景（SOUL-MEM-001 Phase 0 實測）:
+      `data/conversations/bryan_agent_mahiru_private.json` 內有 3 條各約 6,900
+      字元的 assistant 訊息，佔該檔 97.5%、約 15,848 tokens。根因為 2026-09-03
+      當時 `response_format=json_object` 模式下模型輸出 `{"text": "` 外殼後退化重複、
+      打滿 `max_tokens: 4000` 導致 JSON 字串未閉合即被截斷，而純 text 兜底路徑
+      當時尚未 unwrap 外殼，遂原樣持久化並逐輪重餵。
+
+      該 bug 的**寫入端**已於兩處修補：修法 10（2026-08-04，`finish_reason=length`
+      強制截斷）與 PERSONA-FIX-1 D1（2026-09-05，`_unwrap_text_json_shell`）。
+      汙染檔最後寫入 2026-09-03，全庫 153 個對話檔僅此 1 個命中，且已 38 天未活動。
+      ⇒ 這是**死資料**，不是仍在運作的迴圈。故本函式只做**讀取端**淨化，
+      不新增寫入端防線（避免對已修好的 bug 疊第三道牆）。
+
+    觸發條件（任一）:
+      1. 開頭為 `{"text": "` 外殼且 `json.loads` 失敗（未閉合／半殘 JSON）
+      2. 長度 > `trigger_chars`（遠超正常對話長度）
+
+    動作: 取**最後** `keep_chars` 字元（對齊修法 10 語意：保留尾部、取最後一個
+    完整標點斷點，不硬切字中間），並在前綴移除後才截斷。
+
+    Returns:
+        淨化後的字串；未觸發時原樣回傳（不 strip、不改動，零行為變化）。
+    """
+    if not text:
+        return text
+
+    body = text
+    # 條件 1：未閉合 / 半殘 JSON 殼 → 先剝殼，剝完仍過長則續走條件 2
+    stripped = text.strip()
+    if _LEGACY_BROKEN_SHELL_RE.match(stripped):
+        import json as _json
+
+        try:
+            _json.loads(stripped)
+        except (ValueError, TypeError):
+            body = stripped[_LEGACY_BROKEN_SHELL_RE.match(stripped).end():].strip()
+
+    # 條件 2：異常長度 → 對齊修法 10 截斷語意
+    if len(body) > trigger_chars:
+        tail = body[-keep_chars:]
+        cuts = [tail.rfind(p) + len(p) for p in _LEGACY_CUT_POINTS if tail.rfind(p) >= 0]
+        if cuts:
+            return tail[: max(cuts)]
+        return tail
+
+    return body
