@@ -247,7 +247,7 @@ def format_localized(
     if event_ts.tzinfo is None:
         event_ts = event_ts.replace(tzinfo=timezone.utc)
     local = event_ts.astimezone(get_local_tz(cfg))
-    weekday = _WEEKDAY_CN[local.weekday()]
+    weekday = _weekday_cn(local)
     period = _period_label(local.hour)
     # zoneinfo 物件自己輸出時區名 (e.g. "America/New_York" or "UTC")
     tz_key = local.tzinfo.key
