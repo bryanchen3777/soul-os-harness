@@ -65,10 +65,26 @@ if chrono_payload:
 `src/llm/proxy.py:1555` 定義 `class PromptContext`，`:1568` 有 `chrono_context: str = ""` 插槽，
 `:1596-1598` 有對應的注入邏輯。
 
-但全庫搜尋 `PromptContext(` 於 `src/**` **0 處命中**——這個類別（含 chrono 插槽與注入）
+但全庫（含 `scripts/`、`tests/`）搜尋 `PromptContext(` 於**實例化位置** **0 處命中**——
+`src/` 內只有 `proxy.py:1555` 這一處類別定義本身。這個類別（含 chrono 插槽與注入）
 **沒有任何生產呼叫端**。實際的 prompt 組裝走 `_build_messages_*`，其簽章根本沒有 `chrono_context` 參數。
 
-repo 自己的契約文件 `docs/EH-1-EPISTEMIC-HORIZON-CONTRACT.md:128` 已記錄匯端為死碼。
+repo 自己的契約文件 `docs/EH-1-EPISTEMIC-HORIZON-CONTRACT.md:128` 已記錄
+「`PromptContext`（proxy.py L1329-1385）為死代碼，0 實例化」。
+
+### ⚠️ 這不是沒人發現，而是**已發現並被正式擱置**
+
+`docs/EH-1-EPISTEMIC-HORIZON-CONTRACT.md:357`：
+
+> 不處置 `PromptContext` 死代碼（記錄於 §2.6，**另開工單**）。
+
+`docs/EH-4-EPISTEMIC-MIND-CONTRACT.md:1040` 同樣記載：
+
+> **不處理** `PromptContext` 死代碼 …… （`CLEAN-HERMES-RESIDUE`，EH-1 D4 裁定）
+
+⇒ EH-1 D4 當時承諾的「另開工單」**從未開出**。
+這筆不是未知缺陷，而是**一份被遺忘的承諾**——而它承諾要處理的正是全角色時間感知的匯端。
+本工單即為該承諾的兌現。
 
 ### (d) 唯一讀取 `chrono_context` 的消費端也在空值上運行
 
@@ -119,5 +135,6 @@ temporal_salience / anticipatory_flavor / vulnerability_window / silence_hours �
 
 - `:155` SYSTEM_TICK 註解、`:171-172` 死碼分支：**已逐行讀取確認**。
 - 四個 `_fire_intent` 呼叫點的 `chrono_payload` 內容：**已逐行讀取確認**（上表）。
-- `PromptContext(` 於 `src/**` 0 處實例化：**已全庫 grep 確認**。
+- `PromptContext(` 全庫（含 scripts/tests/docs）0 處實例化，`src/` 僅有類別定義：**已全庫 grep 確認**。
+- `docs/EH-1:128/:357`、`docs/EH-4:1040` 已記載該死代碼並承諾「另開工單」：**已讀取確認**。
 - `proxy.py:3706-3712` 的 `isinstance(ctx, dict)` 恆 False：**已逐行讀取確認**。

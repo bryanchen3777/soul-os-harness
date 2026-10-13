@@ -1,0 +1,1446 @@
+{
+  "measured_at": "2026-10-13T01:11:23.000945+00:00",
+  "repo": "C:\\Users\\bbfcc\\.local\\bin\\soul-os-harness",
+  "safety": "唯讀量測；未啟動伺服器、未發真實請求、未呼叫 _fire_intent、未寫 data/",
+  "token_unit": {
+    "primary": "tok_cjk_aware (CJK 1字≈1token, 其餘 4char≈1token)",
+    "secondary": "tok_chars4 (repo 既有 CHARS_PER_TOKEN=4 慣例)",
+    "caveat": "本機 .venv 無 tiktoken，兩者皆為估算，非真實 tokenizer 計數"
+  },
+  "personas": [
+    {
+      "agent_id": "agent_yua",
+      "path": "personas/agent_yua.md",
+      "chars": 21340,
+      "tok_cjk_aware": 14054,
+      "tok_chars4": 5335
+    },
+    {
+      "agent_id": "agent_ruka",
+      "path": "personas/agent_ruka.md",
+      "chars": 17575,
+      "tok_cjk_aware": 11817,
+      "tok_chars4": 4393
+    },
+    {
+      "agent_id": "agent_aoi",
+      "path": "personas/agent_aoi.md",
+      "chars": 11288,
+      "tok_cjk_aware": 6910,
+      "tok_chars4": 2822
+    },
+    {
+      "agent_id": "agent_rem",
+      "path": "personas/agent_rem.md",
+      "chars": 10640,
+      "tok_cjk_aware": 8119,
+      "tok_chars4": 2660
+    },
+    {
+      "agent_id": "agent_mahiru",
+      "path": "personas/agent_mahiru.md",
+      "chars": 10614,
+      "tok_cjk_aware": 6723,
+      "tok_chars4": 2653
+    },
+    {
+      "agent_id": "agent_akane",
+      "path": "personas/agent_akane.md",
+      "chars": 10216,
+      "tok_cjk_aware": 7483,
+      "tok_chars4": 2554
+    },
+    {
+      "agent_id": "agent_miku",
+      "path": "personas/agent_miku.md",
+      "chars": 9699,
+      "tok_cjk_aware": 5734,
+      "tok_chars4": 2424
+    },
+    {
+      "agent_id": "agent_mai",
+      "path": "personas/agent_mai.md",
+      "chars": 8094,
+      "tok_cjk_aware": 5112,
+      "tok_chars4": 2023
+    },
+    {
+      "agent_id": "agent_anna",
+      "path": "personas/agent_anna.md",
+      "chars": 8028,
+      "tok_cjk_aware": 5197,
+      "tok_chars4": 2007
+    },
+    {
+      "agent_id": "agent_ram",
+      "path": "personas/agent_ram.md",
+      "chars": 6534,
+      "tok_cjk_aware": 3933,
+      "tok_chars4": 1633
+    }
+  ],
+  "history_files": {
+    "conversations": [
+      {
+        "file": "bryan_agent_mahiru_private.json",
+        "chars": 22220,
+        "tok_cjk_aware": 15848,
+        "tok_chars4": 5555,
+        "turns": 17
+      },
+      {
+        "file": "group_chat.json",
+        "chars": 2266,
+        "tok_cjk_aware": 655,
+        "tok_chars4": 566,
+        "turns": 20
+      },
+      {
+        "file": "bryan_agent_ruka_private.json",
+        "chars": 2169,
+        "tok_cjk_aware": 1040,
+        "tok_chars4": 542,
+        "turns": 20
+      },
+      {
+        "file": "1696287850_agent_ruka_private.json",
+        "chars": 2115,
+        "tok_cjk_aware": 1035,
+        "tok_chars4": 528,
+        "turns": 20
+      },
+      {
+        "file": "bryan_agent_akane_private.json",
+        "chars": 2091,
+        "tok_cjk_aware": 844,
+        "tok_chars4": 522,
+        "turns": 19
+      },
+      {
+        "file": "bryan_agent_yua_private.json",
+        "chars": 1928,
+        "tok_cjk_aware": 848,
+        "tok_chars4": 482,
+        "turns": 20
+      },
+      {
+        "file": "1696287850_agent_mahiru_private.json",
+        "chars": 1900,
+        "tok_cjk_aware": 815,
+        "tok_chars4": 475,
+        "turns": 20
+      },
+      {
+        "file": "1696287850_agent_mai_private.json",
+        "chars": 1877,
+        "tok_cjk_aware": 810,
+        "tok_chars4": 469,
+        "turns": 20
+      },
+      {
+        "file": "1696287850_agent_yua_private.json",
+        "chars": 1842,
+        "tok_cjk_aware": 768,
+        "tok_chars4": 460,
+        "turns": 20
+      },
+      {
+        "file": "bryan_test_agent_yua_private.json",
+        "chars": 1813,
+        "tok_cjk_aware": 718,
+        "tok_chars4": 453,
+        "turns": 20
+      },
+      {
+        "file": "1696287850_agent_aoi_private.json",
+        "chars": 1790,
+        "tok_cjk_aware": 759,
+        "tok_chars4": 447,
+        "turns": 20
+      },
+      {
+        "file": "bryan_test_agent_ruka_private.json",
+        "chars": 1779,
+        "tok_cjk_aware": 711,
+        "tok_chars4": 444,
+        "turns": 20
+      },
+      {
+        "file": "bryan_agent_ram_private.json",
+        "chars": 1761,
+        "tok_cjk_aware": 541,
+        "tok_chars4": 440,
+        "turns": 19
+      },
+      {
+        "file": "1696287850_agent_akane_private.json",
+        "chars": 1741,
+        "tok_cjk_aware": 672,
+        "tok_chars4": 435,
+        "turns": 20
+      },
+      {
+        "file": "1696287850_agent_rem_private.json",
+        "chars": 1683,
+        "tok_cjk_aware": 599,
+        "tok_chars4": 420,
+        "turns": 20
+      },
+      {
+        "file": "1696287850_agent_anna_private.json",
+        "chars": 1669,
+        "tok_cjk_aware": 617,
+        "tok_chars4": 417,
+        "turns": 20
+      },
+      {
+        "file": "bryan_agent_anna_private.json",
+        "chars": 1659,
+        "tok_cjk_aware": 888,
+        "tok_chars4": 414,
+        "turns": 11
+      },
+      {
+        "file": "bryan_test_agent_mahiru_private.json",
+        "chars": 1629,
+        "tok_cjk_aware": 689,
+        "tok_chars4": 407,
+        "turns": 20
+      },
+      {
+        "file": "1696287850_agent_miku_private.json",
+        "chars": 1587,
+        "tok_cjk_aware": 516,
+        "tok_chars4": 396,
+        "turns": 20
+      },
+      {
+        "file": "1696287850_agent_ram_private.json",
+        "chars": 1534,
+        "tok_cjk_aware": 509,
+        "tok_chars4": 383,
+        "turns": 20
+      },
+      {
+        "file": "bryan_e_thinkblock_agent_mahiru_private.json",
+        "chars": 1288,
+        "tok_cjk_aware": 503,
+        "tok_chars4": 322,
+        "turns": 20
+      },
+      {
+        "file": "bryan_agent_miku_private.json",
+        "chars": 1139,
+        "tok_cjk_aware": 336,
+        "tok_chars4": 284,
+        "turns": 13
+      },
+      {
+        "file": "bryan_agent_aoi_private.json",
+        "chars": 1126,
+        "tok_cjk_aware": 349,
+        "tok_chars4": 281,
+        "turns": 12
+      },
+      {
+        "file": "bryan_e_option_c_agent_mahiru_private.json",
+        "chars": 1088,
+        "tok_cjk_aware": 467,
+        "tok_chars4": 272,
+        "turns": 16
+      },
+      {
+        "file": "bryan_e_F1F2_agent_mahiru_private.json",
+        "chars": 1055,
+        "tok_cjk_aware": 431,
+        "tok_chars4": 263,
+        "turns": 16
+      },
+      {
+        "file": "bryan_smoke_v24_v2_agent_mahiru_private.json",
+        "chars": 1031,
+        "tok_cjk_aware": 407,
+        "tok_chars4": 257,
+        "turns": 16
+      },
+      {
+        "file": "bryan_agent_mai_private.json",
+        "chars": 986,
+        "tok_cjk_aware": 377,
+        "tok_chars4": 246,
+        "turns": 10
+      },
+      {
+        "file": "bryan_test_dir_c_agent_mahiru_private.json",
+        "chars": 875,
+        "tok_cjk_aware": 471,
+        "tok_chars4": 218,
+        "turns": 10
+      },
+      {
+        "file": "bryan_zh_reg_agent_ruka_private.json",
+        "chars": 788,
+        "tok_cjk_aware": 447,
+        "tok_chars4": 197,
+        "turns": 8
+      },
+      {
+        "file": "bry_check_agent_ram_private.json",
+        "chars": 767,
+        "tok_cjk_aware": 239,
+        "tok_chars4": 191,
+        "turns": 14
+      },
+      {
+        "file": "bryan_test_5x_mahiru_JP_v3_restart_agent_mahiru_private.json",
+        "chars": 709,
+        "tok_cjk_aware": 298,
+        "tok_chars4": 177,
+        "turns": 10
+      },
+      {
+        "file": "bryan_smoke_v24_v2_agent_ram_private.json",
+        "chars": 698,
+        "tok_cjk_aware": 244,
+        "tok_chars4": 174,
+        "turns": 12
+      },
+      {
+        "file": "bryan_e_translation_v2_agent_mahiru_private.json",
+        "chars": 660,
+        "tok_cjk_aware": 272,
+        "tok_chars4": 165,
+        "turns": 10
+      },
+      {
+        "file": "bryan_e_option_j_agent_mahiru_private.json",
+        "chars": 647,
+        "tok_cjk_aware": 257,
+        "tok_chars4": 161,
+        "turns": 10
+      },
+      {
+        "file": "bryan_hotfix11_zh_1784232416_agent_mahiru_private.json",
+        "chars": 625,
+        "tok_cjk_aware": 283,
+        "tok_chars4": 156,
+        "turns": 8
+      },
+      {
+        "file": "bryan_zh_reg_agent_aoi_private.json",
+        "chars": 595,
+        "tok_cjk_aware": 270,
+        "tok_chars4": 148,
+        "turns": 8
+      },
+      {
+        "file": "bryan_smoke_v24_v2_agent_ruka_private.json",
+        "chars": 531,
+        "tok_cjk_aware": 213,
+        "tok_chars4": 132,
+        "turns": 8
+      },
+      {
+        "file": "bryan_zh_reg_agent_yua_private.json",
+        "chars": 495,
+        "tok_cjk_aware": 240,
+        "tok_chars4": 123,
+        "turns": 6
+      },
+      {
+        "file": "bryan_hotfix11_jp_1784232581_agent_mahiru_private.json",
+        "chars": 470,
+        "tok_cjk_aware": 212,
+        "tok_chars4": 117,
+        "turns": 6
+      },
+      {
+        "file": "bryan_test_agent_ram_private.json",
+        "chars": 444,
+        "tok_cjk_aware": 144,
+        "tok_chars4": 111,
+        "turns": 8
+      },
+      {
+        "file": "bryan_zh_reg_agent_rem_private.json",
+        "chars": 431,
+        "tok_cjk_aware": 175,
+        "tok_chars4": 107,
+        "turns": 6
+      },
+      {
+        "file": "bryan_zh_reg_agent_akane_private.json",
+        "chars": 416,
+        "tok_cjk_aware": 170,
+        "tok_chars4": 104,
+        "turns": 6
+      },
+      {
+        "file": "bry_agent_mai_private.json",
+        "chars": 415,
+        "tok_cjk_aware": 179,
+        "tok_chars4": 103,
+        "turns": 6
+      },
+      {
+        "file": "bryan_test_5x_mahiru_JP_agent_mahiru_private.json",
+        "chars": 393,
+        "tok_cjk_aware": 144,
+        "tok_chars4": 98,
+        "turns": 6
+      },
+      {
+        "file": "bryan_agent_rem_private.json",
+        "chars": 388,
+        "tok_cjk_aware": 106,
+        "tok_chars4": 97,
+        "turns": 4
+      },
+      {
+        "file": "bryan_safety_d_n3_agent_mahiru_private.json",
+        "chars": 376,
+        "tok_cjk_aware": 145,
+        "tok_chars4": 94,
+        "turns": 6
+      },
+      {
+        "file": "bry_check_agent_mahiru_private.json",
+        "chars": 373,
+        "tok_cjk_aware": 141,
+        "tok_chars4": 93,
+        "turns": 6
+      },
+      {
+        "file": "bryan_smoke_v24_v2_agent_mai_private.json",
+        "chars": 364,
+        "tok_cjk_aware": 135,
+        "tok_chars4": 91,
+        "turns": 6
+      },
+      {
+        "file": "bryan_smoke_v24_agent_ram_private.json",
+        "chars": 352,
+        "tok_cjk_aware": 117,
+        "tok_chars4": 88,
+        "turns": 6
+      },
+      {
+        "file": "bryan_smoke_v24_v2_agent_anna_private.json",
+        "chars": 350,
+        "tok_cjk_aware": 120,
+        "tok_chars4": 87,
+        "turns": 6
+      },
+      {
+        "file": "bryan_test_agent_akane_private.json",
+        "chars": 348,
+        "tok_cjk_aware": 126,
+        "tok_chars4": 87,
+        "turns": 4
+      },
+      {
+        "file": "bryan_e_translation_agent_mahiru_private.json",
+        "chars": 270,
+        "tok_cjk_aware": 113,
+        "tok_chars4": 67,
+        "turns": 4
+      },
+      {
+        "file": "bryan_test_c1_agent_mahiru_private.json",
+        "chars": 243,
+        "tok_cjk_aware": 89,
+        "tok_chars4": 60,
+        "turns": 4
+      },
+      {
+        "file": "bryan_smoke_v12_all_agent_yua_private.json",
+        "chars": 230,
+        "tok_cjk_aware": 76,
+        "tok_chars4": 57,
+        "turns": 4
+      },
+      {
+        "file": "v16_smoke_agent_mahiru_agent_mahiru_private.json",
+        "chars": 230,
+        "tok_cjk_aware": 76,
+        "tok_chars4": 57,
+        "turns": 4
+      },
+      {
+        "file": "bry_check_agent_mai_private.json",
+        "chars": 228,
+        "tok_cjk_aware": 76,
+        "tok_chars4": 57,
+        "turns": 4
+      },
+      {
+        "file": "bry_check_agent_akane_private.json",
+        "chars": 218,
+        "tok_cjk_aware": 66,
+        "tok_chars4": 54,
+        "turns": 4
+      },
+      {
+        "file": "bry_check_agent_rem_private.json",
+        "chars": 217,
+        "tok_cjk_aware": 59,
+        "tok_chars4": 54,
+        "turns": 4
+      },
+      {
+        "file": "bryan_smoke_v12_all_agent_akane_private.json",
+        "chars": 215,
+        "tok_cjk_aware": 65,
+        "tok_chars4": 53,
+        "turns": 4
+      },
+      {
+        "file": "bry_check_agent_miku_private.json",
+        "chars": 213,
+        "tok_cjk_aware": 60,
+        "tok_chars4": 53,
+        "turns": 4
+      },
+      {
+        "file": "bryan_pi3_ruka_1_agent_ruka_private.json",
+        "chars": 198,
+        "tok_cjk_aware": 103,
+        "tok_chars4": 49,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_ruka_2_agent_ruka_private.json",
+        "chars": 197,
+        "tok_cjk_aware": 104,
+        "tok_chars4": 49,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_yua_1_agent_yua_private.json",
+        "chars": 184,
+        "tok_cjk_aware": 100,
+        "tok_chars4": 46,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_ruka_3_agent_ruka_private.json",
+        "chars": 182,
+        "tok_cjk_aware": 92,
+        "tok_chars4": 45,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_yua_3_agent_yua_private.json",
+        "chars": 178,
+        "tok_cjk_aware": 94,
+        "tok_chars4": 44,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_ruka_0_agent_ruka_private.json",
+        "chars": 177,
+        "tok_cjk_aware": 90,
+        "tok_chars4": 44,
+        "turns": 2
+      },
+      {
+        "file": "bryan_test_retry_v2_agent_mahiru_private.json",
+        "chars": 174,
+        "tok_cjk_aware": 87,
+        "tok_chars4": 43,
+        "turns": 2
+      },
+      {
+        "file": "debug_user_agent_mahiru_private.json",
+        "chars": 173,
+        "tok_cjk_aware": 92,
+        "tok_chars4": 43,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_yua_2_agent_yua_private.json",
+        "chars": 170,
+        "tok_cjk_aware": 83,
+        "tok_chars4": 42,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_mahiru_2_agent_mahiru_private.json",
+        "chars": 168,
+        "tok_cjk_aware": 86,
+        "tok_chars4": 42,
+        "turns": 2
+      },
+      {
+        "file": "bryan_persona_investigation_1_agent_mahiru_private.json",
+        "chars": 165,
+        "tok_cjk_aware": 86,
+        "tok_chars4": 41,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_mahiru_0_agent_mahiru_private.json",
+        "chars": 163,
+        "tok_cjk_aware": 84,
+        "tok_chars4": 40,
+        "turns": 2
+      },
+      {
+        "file": "bryan_persona_investigation_4_agent_mahiru_private.json",
+        "chars": 159,
+        "tok_cjk_aware": 80,
+        "tok_chars4": 39,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_rem_0_agent_rem_private.json",
+        "chars": 159,
+        "tok_cjk_aware": 67,
+        "tok_chars4": 39,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_rem_2_agent_rem_private.json",
+        "chars": 156,
+        "tok_cjk_aware": 68,
+        "tok_chars4": 39,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_rem_3_agent_rem_private.json",
+        "chars": 156,
+        "tok_cjk_aware": 67,
+        "tok_chars4": 39,
+        "turns": 2
+      },
+      {
+        "file": "bryan_persona_investigation_2_agent_mahiru_private.json",
+        "chars": 155,
+        "tok_cjk_aware": 76,
+        "tok_chars4": 38,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_08_agent_mahiru_private.json",
+        "chars": 154,
+        "tok_cjk_aware": 73,
+        "tok_chars4": 38,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_mahiru_1_agent_mahiru_private.json",
+        "chars": 153,
+        "tok_cjk_aware": 74,
+        "tok_chars4": 38,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_04_agent_mahiru_private.json",
+        "chars": 152,
+        "tok_cjk_aware": 73,
+        "tok_chars4": 38,
+        "turns": 2
+      },
+      {
+        "file": "stage3_yua_agent_yua_private.json",
+        "chars": 149,
+        "tok_cjk_aware": 70,
+        "tok_chars4": 37,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_akane_1_agent_akane_private.json",
+        "chars": 148,
+        "tok_cjk_aware": 61,
+        "tok_chars4": 37,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_yua_0_agent_yua_private.json",
+        "chars": 148,
+        "tok_cjk_aware": 65,
+        "tok_chars4": 37,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_akane_2_agent_akane_private.json",
+        "chars": 146,
+        "tok_cjk_aware": 62,
+        "tok_chars4": 36,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long_history_08_agent_mahiru_private.json",
+        "chars": 145,
+        "tok_cjk_aware": 66,
+        "tok_chars4": 36,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_mahiru_3_agent_mahiru_private.json",
+        "chars": 145,
+        "tok_cjk_aware": 66,
+        "tok_chars4": 36,
+        "turns": 2
+      },
+      {
+        "file": "bryan_persona_investigation_0_agent_mahiru_private.json",
+        "chars": 144,
+        "tok_cjk_aware": 66,
+        "tok_chars4": 36,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long_history_04_agent_mahiru_private.json",
+        "chars": 143,
+        "tok_cjk_aware": 65,
+        "tok_chars4": 35,
+        "turns": 2
+      },
+      {
+        "file": "bryan_persona_investigation_3_agent_mahiru_private.json",
+        "chars": 143,
+        "tok_cjk_aware": 65,
+        "tok_chars4": 35,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_akane_0_agent_akane_private.json",
+        "chars": 143,
+        "tok_cjk_aware": 59,
+        "tok_chars4": 35,
+        "turns": 2
+      },
+      {
+        "file": "bryan_smoke_jprollback_agent_mahiru_private.json",
+        "chars": 143,
+        "tok_cjk_aware": 59,
+        "tok_chars4": 35,
+        "turns": 2
+      },
+      {
+        "file": "bryan_test_c1_b21_agent_mahiru_private.json",
+        "chars": 142,
+        "tok_cjk_aware": 63,
+        "tok_chars4": 35,
+        "turns": 2
+      },
+      {
+        "file": "bryan_test_retry_v2_agent_mai_private.json",
+        "chars": 142,
+        "tok_cjk_aware": 61,
+        "tok_chars4": 35,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_05_agent_mahiru_private.json",
+        "chars": 138,
+        "tok_cjk_aware": 60,
+        "tok_chars4": 34,
+        "turns": 2
+      },
+      {
+        "file": "bryan_test_retry_v2_agent_anna_private.json",
+        "chars": 138,
+        "tok_cjk_aware": 60,
+        "tok_chars4": 34,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_17_agent_mahiru_private.json",
+        "chars": 137,
+        "tok_cjk_aware": 57,
+        "tok_chars4": 34,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_10_agent_mahiru_private.json",
+        "chars": 136,
+        "tok_cjk_aware": 57,
+        "tok_chars4": 34,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_akane_3_agent_akane_private.json",
+        "chars": 136,
+        "tok_cjk_aware": 52,
+        "tok_chars4": 34,
+        "turns": 2
+      },
+      {
+        "file": "bryan_pi3_rem_1_agent_rem_private.json",
+        "chars": 136,
+        "tok_cjk_aware": 56,
+        "tok_chars4": 34,
+        "turns": 2
+      },
+      {
+        "file": "bryan_test_retry_v2_agent_ram_private.json",
+        "chars": 136,
+        "tok_cjk_aware": 60,
+        "tok_chars4": 34,
+        "turns": 2
+      },
+      {
+        "file": "v16_smoke_agent_rem_agent_rem_private.json",
+        "chars": 135,
+        "tok_cjk_aware": 55,
+        "tok_chars4": 33,
+        "turns": 2
+      },
+      {
+        "file": "bryan_v26_smoke_agent_mahiru_private.json",
+        "chars": 134,
+        "tok_cjk_aware": 53,
+        "tok_chars4": 33,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_09_agent_mahiru_private.json",
+        "chars": 133,
+        "tok_cjk_aware": 55,
+        "tok_chars4": 33,
+        "turns": 2
+      },
+      {
+        "file": "bryan_v26_smoke_agent_mai_private.json",
+        "chars": 133,
+        "tok_cjk_aware": 52,
+        "tok_chars4": 33,
+        "turns": 2
+      },
+      {
+        "file": "probe_mahiru_1784233156_agent_mahiru_private.json",
+        "chars": 132,
+        "tok_cjk_aware": 51,
+        "tok_chars4": 33,
+        "turns": 2
+      },
+      {
+        "file": "probe_mahiru_1784233225_agent_mahiru_private.json",
+        "chars": 132,
+        "tok_cjk_aware": 50,
+        "tok_chars4": 33,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_03_agent_mahiru_private.json",
+        "chars": 131,
+        "tok_cjk_aware": 53,
+        "tok_chars4": 32,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_13_agent_mahiru_private.json",
+        "chars": 131,
+        "tok_cjk_aware": 53,
+        "tok_chars4": 32,
+        "turns": 2
+      },
+      {
+        "file": "v16_smoke_agent_mai_agent_mai_private.json",
+        "chars": 131,
+        "tok_cjk_aware": 53,
+        "tok_chars4": 32,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long_history_02_agent_mahiru_private.json",
+        "chars": 129,
+        "tok_cjk_aware": 50,
+        "tok_chars4": 32,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_01_agent_mahiru_private.json",
+        "chars": 128,
+        "tok_cjk_aware": 51,
+        "tok_chars4": 32,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_11_agent_mahiru_private.json",
+        "chars": 128,
+        "tok_cjk_aware": 48,
+        "tok_chars4": 32,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_12_agent_mahiru_private.json",
+        "chars": 128,
+        "tok_cjk_aware": 50,
+        "tok_chars4": 32,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long_history_01_agent_mahiru_private.json",
+        "chars": 128,
+        "tok_cjk_aware": 49,
+        "tok_chars4": 32,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_14_agent_mahiru_private.json",
+        "chars": 127,
+        "tok_cjk_aware": 49,
+        "tok_chars4": 31,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_16_agent_mahiru_private.json",
+        "chars": 127,
+        "tok_cjk_aware": 49,
+        "tok_chars4": 31,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long_history_00_agent_mahiru_private.json",
+        "chars": 127,
+        "tok_cjk_aware": 49,
+        "tok_chars4": 31,
+        "turns": 2
+      },
+      {
+        "file": "bryan_smoke_v24_agent_mahiru_private.json",
+        "chars": 127,
+        "tok_cjk_aware": 48,
+        "tok_chars4": 31,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_06_agent_mahiru_private.json",
+        "chars": 126,
+        "tok_cjk_aware": 49,
+        "tok_chars4": 31,
+        "turns": 2
+      },
+      {
+        "file": "stage3_akane_agent_akane_private.json",
+        "chars": 126,
+        "tok_cjk_aware": 49,
+        "tok_chars4": 31,
+        "turns": 2
+      },
+      {
+        "file": "verify_regex_1784234069_agent_mahiru_private.json",
+        "chars": 126,
+        "tok_cjk_aware": 48,
+        "tok_chars4": 31,
+        "turns": 2
+      },
+      {
+        "file": "bryan_smoke_v12_all_agent_mai_private.json",
+        "chars": 125,
+        "tok_cjk_aware": 45,
+        "tok_chars4": 31,
+        "turns": 2
+      },
+      {
+        "file": "bryan_smoke_v12_one_agent_mahiru_private.json",
+        "chars": 124,
+        "tok_cjk_aware": 44,
+        "tok_chars4": 31,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_00_agent_mahiru_private.json",
+        "chars": 122,
+        "tok_cjk_aware": 43,
+        "tok_chars4": 30,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long_history_05_agent_mahiru_private.json",
+        "chars": 122,
+        "tok_cjk_aware": 44,
+        "tok_chars4": 30,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_02_agent_mahiru_private.json",
+        "chars": 121,
+        "tok_cjk_aware": 43,
+        "tok_chars4": 30,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long_history_06_agent_mahiru_private.json",
+        "chars": 121,
+        "tok_cjk_aware": 43,
+        "tok_chars4": 30,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_07_agent_mahiru_private.json",
+        "chars": 120,
+        "tok_cjk_aware": 42,
+        "tok_chars4": 30,
+        "turns": 2
+      },
+      {
+        "file": "bryan_v26_smoke_agent_ram_private.json",
+        "chars": 120,
+        "tok_cjk_aware": 42,
+        "tok_chars4": 30,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long50_15_agent_mahiru_private.json",
+        "chars": 119,
+        "tok_cjk_aware": 41,
+        "tok_chars4": 29,
+        "turns": 2
+      },
+      {
+        "file": "bryan_smoke_v24_agent_mai_private.json",
+        "chars": 119,
+        "tok_cjk_aware": 43,
+        "tok_chars4": 29,
+        "turns": 2
+      },
+      {
+        "file": "bryan_v15_smoke_agent_mahiru_private.json",
+        "chars": 119,
+        "tok_cjk_aware": 40,
+        "tok_chars4": 29,
+        "turns": 2
+      },
+      {
+        "file": "bryan_v26_smoke_agent_anna_private.json",
+        "chars": 119,
+        "tok_cjk_aware": 41,
+        "tok_chars4": 29,
+        "turns": 2
+      },
+      {
+        "file": "bryan_test_agent_mai_private.json",
+        "chars": 118,
+        "tok_cjk_aware": 40,
+        "tok_chars4": 29,
+        "turns": 2
+      },
+      {
+        "file": "bry_check_agent_ruka_private.json",
+        "chars": 118,
+        "tok_cjk_aware": 40,
+        "tok_chars4": 29,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long_history_03_agent_mahiru_private.json",
+        "chars": 117,
+        "tok_cjk_aware": 39,
+        "tok_chars4": 29,
+        "turns": 2
+      },
+      {
+        "file": "bry_check_agent_yua_private.json",
+        "chars": 115,
+        "tok_cjk_aware": 37,
+        "tok_chars4": 28,
+        "turns": 2
+      },
+      {
+        "file": "bryan_test_agent_anna_private.json",
+        "chars": 114,
+        "tok_cjk_aware": 36,
+        "tok_chars4": 28,
+        "turns": 2
+      },
+      {
+        "file": "bryan_test_retry_v2_agent_miku_private.json",
+        "chars": 114,
+        "tok_cjk_aware": 36,
+        "tok_chars4": 28,
+        "turns": 2
+      },
+      {
+        "file": "bry_check_agent_anna_private.json",
+        "chars": 113,
+        "tok_cjk_aware": 36,
+        "tok_chars4": 28,
+        "turns": 2
+      },
+      {
+        "file": "bry_check_agent_aoi_private.json",
+        "chars": 113,
+        "tok_cjk_aware": 34,
+        "tok_chars4": 28,
+        "turns": 2
+      },
+      {
+        "file": "bryan_long_history_07_agent_mahiru_private.json",
+        "chars": 112,
+        "tok_cjk_aware": 34,
+        "tok_chars4": 28,
+        "turns": 2
+      },
+      {
+        "file": "bryan_test_agent_miku_private.json",
+        "chars": 112,
+        "tok_cjk_aware": 36,
+        "tok_chars4": 28,
+        "turns": 2
+      },
+      {
+        "file": "bryan_smoke_v12_all_agent_anna_private.json",
+        "chars": 111,
+        "tok_cjk_aware": 33,
+        "tok_chars4": 27,
+        "turns": 2
+      },
+      {
+        "file": "v16_smoke_agent_miku_agent_miku_private.json",
+        "chars": 111,
+        "tok_cjk_aware": 33,
+        "tok_chars4": 27,
+        "turns": 2
+      },
+      {
+        "file": "v16_smoke_agent_akane_agent_akane_private.json",
+        "chars": 110,
+        "tok_cjk_aware": 33,
+        "tok_chars4": 27,
+        "turns": 2
+      },
+      {
+        "file": "bryan_smoke_v12_all_agent_rem_private.json",
+        "chars": 109,
+        "tok_cjk_aware": 33,
+        "tok_chars4": 27,
+        "turns": 2
+      },
+      {
+        "file": "bryan_smoke_v12_all_agent_miku_private.json",
+        "chars": 107,
+        "tok_cjk_aware": 29,
+        "tok_chars4": 26,
+        "turns": 2
+      },
+      {
+        "file": "bryan_smoke_v12_agent_akane_private.json",
+        "chars": 104,
+        "tok_cjk_aware": 28,
+        "tok_chars4": 26,
+        "turns": 2
+      },
+      {
+        "file": "bryan_CB2_test_agent_mahiru_private.json",
+        "chars": 2,
+        "tok_cjk_aware": 0,
+        "tok_chars4": 0,
+        "turns": 0
+      },
+      {
+        "file": "bryan_C_test_agent_mahiru_private.json",
+        "chars": 2,
+        "tok_cjk_aware": 0,
+        "tok_chars4": 0,
+        "turns": 0
+      },
+      {
+        "file": "bryan_stress2_agent_mahiru_private.json",
+        "chars": 2,
+        "tok_cjk_aware": 0,
+        "tok_chars4": 0,
+        "turns": 0
+      },
+      {
+        "file": "bryan_stress_agent_mahiru_private.json",
+        "chars": 2,
+        "tok_cjk_aware": 0,
+        "tok_chars4": 0,
+        "turns": 0
+      }
+    ]
+  },
+  "projection_blocks": {
+    "_format_life_thread_lines": {
+      "agent_yua": {
+        "chars": 165,
+        "tok_cjk_aware": 125,
+        "tok_chars4": 41
+      },
+      "agent_ruka": {
+        "chars": 165,
+        "tok_cjk_aware": 123,
+        "tok_chars4": 41
+      },
+      "agent_aoi": {
+        "chars": 165,
+        "tok_cjk_aware": 116,
+        "tok_chars4": 41
+      },
+      "agent_rem": {
+        "chars": 165,
+        "tok_cjk_aware": 126,
+        "tok_chars4": 41
+      }
+    },
+    "_format_recent_inner_life": {
+      "agent_yua": {
+        "chars": 323,
+        "tok_cjk_aware": 227,
+        "tok_chars4": 80
+      },
+      "agent_ruka": {
+        "chars": 336,
+        "tok_cjk_aware": 238,
+        "tok_chars4": 84
+      },
+      "agent_aoi": {
+        "chars": 405,
+        "tok_cjk_aware": 271,
+        "tok_chars4": 101
+      },
+      "agent_rem": {
+        "chars": 357,
+        "tok_cjk_aware": 267,
+        "tok_chars4": 89
+      }
+    },
+    "_format_relationship_block": {
+      "agent_yua": {
+        "chars": 0,
+        "tok_cjk_aware": 0,
+        "tok_chars4": 0
+      },
+      "agent_ruka": {
+        "chars": 0,
+        "tok_cjk_aware": 0,
+        "tok_chars4": 0
+      },
+      "agent_aoi": {
+        "chars": 0,
+        "tok_cjk_aware": 0,
+        "tok_chars4": 0
+      },
+      "agent_rem": {
+        "chars": 0,
+        "tok_cjk_aware": 0,
+        "tok_chars4": 0
+      }
+    },
+    "_format_temporal_context": {
+      "agent_yua": {
+        "chars": 0,
+        "tok_cjk_aware": 0,
+        "tok_chars4": 0
+      },
+      "agent_ruka": {
+        "chars": 0,
+        "tok_cjk_aware": 0,
+        "tok_chars4": 0
+      },
+      "agent_aoi": {
+        "chars": 0,
+        "tok_cjk_aware": 0,
+        "tok_chars4": 0
+      },
+      "agent_rem": {
+        "chars": 0,
+        "tok_cjk_aware": 0,
+        "tok_chars4": 0
+      }
+    },
+    "_format_attachment_str": {
+      "agent_yua": {
+        "chars": 23,
+        "tok_cjk_aware": 13,
+        "tok_chars4": 5
+      },
+      "agent_ruka": {
+        "chars": 23,
+        "tok_cjk_aware": 13,
+        "tok_chars4": 5
+      },
+      "agent_aoi": {
+        "chars": 22,
+        "tok_cjk_aware": 13,
+        "tok_chars4": 5
+      },
+      "agent_rem": {
+        "chars": 23,
+        "tok_cjk_aware": 13,
+        "tok_chars4": 5
+      }
+    },
+    "_format_emergent_block": {
+      "agent_yua": {
+        "chars": 323,
+        "tok_cjk_aware": 167,
+        "tok_chars4": 80
+      },
+      "agent_ruka": {
+        "chars": 452,
+        "tok_cjk_aware": 188,
+        "tok_chars4": 113
+      },
+      "agent_aoi": {
+        "chars": 337,
+        "tok_cjk_aware": 178,
+        "tok_chars4": 84
+      },
+      "agent_rem": {
+        "chars": 330,
+        "tok_cjk_aware": 174,
+        "tok_chars4": 82
+      }
+    },
+    "_format_horizon_block": {
+      "agent_yua": {
+        "chars": 0,
+        "tok_cjk_aware": 0,
+        "tok_chars4": 0
+      },
+      "agent_ruka": {
+        "chars": 0,
+        "tok_cjk_aware": 0,
+        "tok_chars4": 0
+      },
+      "agent_aoi": {
+        "chars": 0,
+        "tok_cjk_aware": 0,
+        "tok_chars4": 0
+      },
+      "agent_rem": {
+        "chars": 80,
+        "tok_cjk_aware": 68,
+        "tok_chars4": 20
+      }
+    },
+    "_format_capability_block": {
+      "agent_yua": {
+        "chars": 179,
+        "tok_cjk_aware": 132,
+        "tok_chars4": 44
+      },
+      "agent_ruka": {
+        "chars": 179,
+        "tok_cjk_aware": 132,
+        "tok_chars4": 44
+      },
+      "agent_aoi": {
+        "chars": 179,
+        "tok_cjk_aware": 132,
+        "tok_chars4": 44
+      },
+      "agent_rem": {
+        "chars": 179,
+        "tok_cjk_aware": 132,
+        "tok_chars4": 44
+      }
+    }
+  },
+  "assembled_messages": {
+    "memory_backend": "ok",
+    "agent_yua": {
+      "private": {
+        "n_messages": 12,
+        "role_counts": {
+          "system": 1,
+          "assistant": 10,
+          "user": 1
+        },
+        "tok_cjk_aware_total": 15349,
+        "tok_system": 14916,
+        "tok_non_system": 433,
+        "tok_persona": 14054,
+        "tok_payload_excl_persona": 1295
+      },
+      "group": {
+        "n_messages": 3,
+        "role_counts": {
+          "system": 2,
+          "user": 1
+        },
+        "tok_cjk_aware_total": 14956,
+        "tok_system": 14941,
+        "tok_non_system": 15,
+        "tok_persona": 14054,
+        "tok_payload_excl_persona": 902
+      }
+    },
+    "agent_ruka": {
+      "private": {
+        "n_messages": 12,
+        "role_counts": {
+          "system": 1,
+          "assistant": 10,
+          "user": 1
+        },
+        "tok_cjk_aware_total": 13414,
+        "tok_system": 12769,
+        "tok_non_system": 645,
+        "tok_persona": 11817,
+        "tok_payload_excl_persona": 1597
+      },
+      "group": {
+        "n_messages": 3,
+        "role_counts": {
+          "system": 2,
+          "user": 1
+        },
+        "tok_cjk_aware_total": 12734,
+        "tok_system": 12719,
+        "tok_non_system": 15,
+        "tok_persona": 11817,
+        "tok_payload_excl_persona": 917
+      }
+    },
+    "agent_aoi": {
+      "private": {
+        "n_messages": 18,
+        "role_counts": {
+          "system": 1,
+          "assistant": 16,
+          "user": 1
+        },
+        "tok_cjk_aware_total": 7819,
+        "tok_system": 7679,
+        "tok_non_system": 140,
+        "tok_persona": 6910,
+        "tok_payload_excl_persona": 909
+      },
+      "group": {
+        "n_messages": 3,
+        "role_counts": {
+          "system": 2,
+          "user": 1
+        },
+        "tok_cjk_aware_total": 7747,
+        "tok_system": 7732,
+        "tok_non_system": 15,
+        "tok_persona": 6910,
+        "tok_payload_excl_persona": 837
+      }
+    },
+    "agent_mahiru": {
+      "private": {
+        "n_messages": 18,
+        "role_counts": {
+          "system": 1,
+          "assistant": 16,
+          "user": 1
+        },
+        "tok_cjk_aware_total": 8471,
+        "tok_system": 7552,
+        "tok_non_system": 919,
+        "tok_persona": 6723,
+        "tok_payload_excl_persona": 1748
+      },
+      "group": {
+        "n_messages": 3,
+        "role_counts": {
+          "system": 2,
+          "user": 1
+        },
+        "tok_cjk_aware_total": 7696,
+        "tok_system": 7681,
+        "tok_non_system": 15,
+        "tok_persona": 6723,
+        "tok_payload_excl_persona": 973
+      }
+    }
+  }
+}

@@ -68,9 +68,25 @@ def _weekday_cn(dt: datetime) -> str:
 
 **這正是 Bry 2026-10-03 親手抓到的那個 bug，仍然活著。**
 
-同時注意 `format_localized` 的 docstring（`:235`）自陳「跟 proxy.py `_format_event_timestamp` (L37-71) 邏輯一致」——
-`:201` 的新註解也說「與既有 `_format_event_timestamp` 的用法一致」。
-⇒ **三處文件都宣稱一致，實際不一致。** 這就是它能活到今天的原因。
+同時注意 `format_localized` 的 docstring（`:235`）自陳「跟 proxy.py `_format_event_timestamp` (L37-71) 邏輯一致」，
+而 `:201` 的新註解也說「與既有 `_format_event_timestamp` 的用法一致」。
+
+**主大腦復核補充（2026-10-13）**：這兩處提到的「proxy.py L37-71」**早已不存在**。
+`src/llm/proxy.py:34` 現在只是一行 import alias：
+
+```python
+from src.timezone_utils import format_localized as _format_event_timestamp
+```
+
+⇒ **proxy 裡沒有第二份實作**。`format_localized` 就是全系統唯一的時間戳格式化函式，
+proxy 只是換個名字用。
+
+**影響面因此比看起來更大**：每一次角色發話的 system prompt 時間行、
+每一個事件的時間標，都出自這一個函式。修好它＝一次修好全部；
+不修它＝錯一格的星期會出現在每一句話裡。
+
+⇒ 這也解釋了這個 bug 為何能活到今天：三處文件都宣稱「跟 proxy 一致」，
+而讀者會合理推論「那 proxy 應該是對的、這裡只是複本」——**沒有人去核對 alias 指向誰**。
 
 ## 四、修復（Bry 2026-10-13 裁示：改為呼叫同模組既有的 `_weekday_cn(local)`）
 
@@ -130,6 +146,7 @@ def _weekday_cn(dt: datetime) -> str:
 ## 七、主大腦複核紀錄（2026-10-13）
 
 - `format_localized` 函式簽章（`:228-231`）與 docstring「跟 proxy.py `_format_event_timestamp` (L37-71) 邏輯一致」（`:235`）：**已讀取確認**。
+- `proxy._format_event_timestamp` 只是 `timezone_utils.format_localized` 的 import alias（`proxy.py:34`）：**已讀取確認**，故無第二份實作。
 - `:42` 表以 Sunday=0 排列：**已讀取確認**。
 - `:250` 使用 `_WEEKDAY_CN[local.weekday()]`：**已讀取確認**。
 - `:196-207` 存在 TIME-PERCEPTION-1 的禁令與 `_weekday_cn()`：**已讀取確認**。

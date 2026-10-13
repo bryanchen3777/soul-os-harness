@@ -53,3 +53,26 @@ SOUL-TECH-DEBT-001 曾授權對 B 類加 `skipif`。執行者**主動拒絕**該
 - 路線 A：端點不存在或明確標記 deprecated；對應 E2E 測試移除或改寫為契約斷言；`:171` 死碼清除。
 - 路線 B：`/inject/tick` 觸發 `agent_speak`；E2E 測試通過；`:171` 死碼清除。
 - 兩條路線皆需：全庫回歸通過。
+
+## 七、🔗 與 SOUL-BUG-004 的連動（Bry 2026-10-13 裁示後收斂）
+
+本工單與 [SOUL-BUG-004](SOUL-BUG-004-WORK-ORDER.md) **共享同一個根因位置**
+（`src/agent/consciousness.py:155` 的 SYSTEM_TICK 註解）。
+
+Bry 在 004 工單已明確裁示：
+
+> **不要為了拿時間而把 SYSTEM_TICK 訂閱整個打開**——那會把 M5.7-2 想解決的問題帶回來。
+
+⇒ 這**等同於已排除路線 B 的「直接恢復訂閱」版本**：時間感知必須走替代注入管道
+（scheduler / heartbeat 主動注入），而不是重新訂閱 SYSTEM_TICK。
+
+因此 §四 的兩條路線，收斂為：
+
+- **A′（現行唯一相容路線）**：端點正式除役或標記 deprecated；
+  E2E 測試改寫為「`/inject/tick` 不應再觸發 `agent_speak`」的**契約斷言**（負→正升級）；
+  `:171` 死碼刪除。
+- **仍待 Bry 確認的唯一一點**：`/inject/tick` 端點本身是否要從 `scripts/run_server.py` 移除，
+  抑或保留但明標 deprecated（除供診斷注入 SYSTEM_TICK 外無其他作用）。
+
+⚠️ 004 的子步「接通源端」若改採 scheduler 注入，**不應順帶復活本工單的端點契約**——
+兩件事在程式碼上無交集，僅在設計意圖上有關。

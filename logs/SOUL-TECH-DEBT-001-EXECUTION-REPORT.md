@@ -9,7 +9,9 @@
 
 ## 0. 一句話結論
 
-在**零改動 `src/`、零改動 `personas/`、零白名單擴張、零 skip/xfail 掩蓋**四條紅線下，全庫紅燈由 **120 → 50（−58%）**，其中 **70 筆已清零**，剩餘 50 筆全部有明確歸屬（9 筆待校準 / 9 筆環境耦合 / 32 筆待判定），達成「**零未分類紅燈**」的驗收線一。
+在**零改動 `src/`、零改動 `personas/`、零白名單擴張、零 skip/xfail 掩蓋**四條紅線下，全庫紅燈由 **120 → 7（−94.2%）**，其中 **113 筆已清零**，殘餘 7 筆全部有明確歸屬（5 筆＝已立案生產缺陷 SOUL-BUG-002/003/004/005、2 筆＝順序相依且隔離即綠），達成「**零未分類紅燈**」的驗收線一。
+
+> 本節為最終結論。§7 保留的是校準中途的快照（當時殘餘 50 筆），最終分流見 **§9**。
 
 ---
 
@@ -36,6 +38,12 @@
 | ③ 補 `bus`/`tmp_dir`/`project_root` fixture | 94 | 6258 | **2** | **96** |
 | ④ A 類第一批校準（37 筆） | 58 | 6294 | 2 | **60** |
 | ⑤ A 類第二批校準（7 筆） | **48** | **6304** | **2** | **50** |
+| ⑥ A′／B／C 類四批校準 | 19 | 6327 | 2 | **21** |
+| ⑦ 新浮現 5 筆處理 ＋ 2 支看門狗 | **9** | **6341** | **0** | **9** |
+| **⑧ 最終（全庫，主大腦親跑 `be1b124`）** | **7** | **6343** | **0** | **7** |
+
+**最終（2026-10-13，`be1b124`）：`7 failed, 6343 passed, 23 skipped, 2 xfailed in 684.17s`**
+⇒ **紅燈 120 → 7（−94.2%）**，且 7 筆**全部有明確歸屬**（見 §9），達成 Bry 的「零未分類紅燈」驗收線。
 
 **failed 105 → 48（−57）｜errors 15 → 2（−13）｜passed 6231 → 6304（+73）｜紅燈 120 → 50（−58%）**
 
@@ -186,8 +194,68 @@ A2 抓到**自己寫錯的斷言**（em-dash `——` Bry 刻意保留以維持 
 
 ## 8. 本報告未驗證的事項
 
-- C 類 32 筆**未逐案鑑識**，無法判定真偽。
+- C 類 32 筆**未逐案鑑識**，無法判定真偽。（**已於 §9 更新：32 筆已全部鑑識完畢**）
 - A2 批次執行者**未做變異實驗**（依 AGENTS.md 規則 7，本機無安全隔離環境可還原修法）。抗回退性為結構論證（成對邊界斷言）而非實測。
 - 最終數字為 CJK 口徑估算（沿用 SOUL-MEM-001 §1.1 聲明）。
 - 全庫回歸耗時約 10 分鐘，數字取自 `.venv\Scripts\python.exe`（PATH 上的全域 pytest 為另一個世界）。
 - `tests/clients/test_voice_brain_actions.py` 動畫資產歸屬待裁示，未擅自 skip。
+
+---
+
+## 9. 最終狀態與 7 筆殘餘紅燈的完整歸屬（2026-10-13，主大腦親跑）
+
+### 9.1 定案數字
+
+```
+$ .venv\Scripts\python.exe -m pytest -q tests
+7 failed, 6343 passed, 23 skipped, 2 xfailed, 27 subtests passed in 684.17s
+```
+
+commit：`be1b124`（test-only；`src/`、`data/`、`personas/`、`configs/` 零改動）
+
+### 9.2 七筆逐筆分流（**零未分類**）
+
+| # | 測試 | 歸屬 | 證據 |
+|---|---|---|---|
+| 1 | `test_m5_3_s2_b_normalization.py::test_s2_b_4_negative_zero_false_positive` | **SOUL-BUG-002** | 工單已立案；單 token 零區辨力放行 |
+| 2 | `test_m5_3_s2_retrieval_diagnostic.py::test_s2_a_4_negative_no_false_positive` | **SOUL-BUG-002** | 同一缺陷的另一種回報 |
+| 3 | `test_chrono_integration.py::test_chrono_block_reaches_llm_prompt` | **SOUL-BUG-004** | chrono 到不了 prompt（雙端皆斷） |
+| 4 | `test_timezone_fix_v1.py::test_format_localized_weekday_matches_calendar` | **SOUL-BUG-005** | 星期索引錯一格 |
+| 5 | `test_websocket_e2e.py::test_inject_tick_triggers_agent_speak` | **SOUL-BUG-003** | 端點契約已撤銷 |
+| 6 | `test_m2_0_inner_life_v2.py::test_e_build_messages_group_with_real_inner_life` | **D 類：順序相依** | **隔離執行即綠**（見 9.3） |
+| 7 | `test_self_check_v1.py::test_self_check_v1` | **D 類：順序相依** | **隔離執行即綠**（見 9.3） |
+
+⇒ **5 筆＝已立案的生產缺陷**（002／003／004／005），**2 筆＝測試間狀態污染**。
+**沒有任何一筆屬於「不知道為什麼紅」。**
+
+### 9.3 D 類的證據（主大腦親驗）
+
+```
+$ .venv\Scripts\python.exe -m pytest -q tests/test_m2_0_inner_life_v2.py tests/test_self_check_v1.py
+13 passed in 3.38s
+```
+
+兩檔單獨跑全綠 ⇒ 失敗由**更早的測試遺留全域狀態**造成，非自身邏輯錯誤。
+`pytest-randomly` 未安裝（僅 `pytest` 9.1.1 ＋ `pytest-asyncio` 1.4.0）⇒ 不是隨機順序，是**固定的污染來源**。
+
+⚠️ **未完成的排查**：找出是哪一支測試污染了這兩支，需要整庫二分（每輪約 11 分鐘）。
+本工單不擅自開這條線，已如實記錄為待辦。
+
+### 9.4 看門狗（Bry 2026-10-13 裁示）
+
+`tests/test_soul_bug_watchdogs.py` 兩支 `@pytest.mark.xfail(strict=True)`：
+`test_elevation_pattern_evidence_accumulation_must_reach_two`（SOUL-BUG-001）、
+`test_chrono_context_must_reach_prompt`（SOUL-BUG-004）。
+`--runxfail` 實測兩者皆**因正確理由**失敗，非假哨兵。
+
+### 9.5 一個由本次工作暴露的 repo 衛生紅燈（已隨 commit 解除）
+
+提交前 `tests/infra/test_repo_hygiene_tracked_tests.py::test_every_collectable_test_file_under_tests_is_git_tracked`
+會因 `tests/test_soul_bug_watchdogs.py` 未被追蹤而紅燈。
+⇒ **護欄自己攔到了未提交狀態**，這正是它存在的價值。`be1b124` 提交後解除。
+
+### 9.6 相依性提醒（給未來的修復者）
+
+SOUL-BUG-001 若修復，`tests/test_elevate_mechanism.py` 與 `tests/test_elevation_evidence_scope_a1.py`
+共 6 筆已校準到「持久層去重」現行語意的斷言**必須跟著回退**（工單 §六）。
+同理 SOUL-BUG-005 修復時，`tests/test_timezone_fix_v1.py` 內嵌行號的斷言訊息需一併更新。
