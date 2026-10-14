@@ -398,6 +398,28 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 
 ---
 
+## 0.2 VC 語音通道：Windows 下的進程結構（運維事實，2026-10-14 主大腦實測）
+
+**三個 VC 實例在程序檢查器裡會呈現為 6 個行程，這是正常的，不是重複啟動、也不是孤兒。**
+
+```
+.venv\Scripts\pythonw.exe (stub / launcher)   ──派生──>   uv\...\cpython-3.11\pythonw.exe (真正跑 event loop)
+```
+
+- **stub 自己不監聽任何埠**；埠由 child 持有（`:8765` 茜／`:8766` 麻衣／`:8767` 雷姆）。
+- **啟動必須走 `.venv\Scripts\pythonw.exe`**，不可直接呼叫底層 uv pythonw
+  —— 見 `docs/VC-AUDIT-V1-WORKTICKET.md:161-163`（「禁止直接呼叫底層 uv pythonw.exe（會靜默死亡）」）。
+  走 stub 啟動後，child 落在 uv 解譯器是**預期結果**，不是異常。
+- **停止只需停 child**：stub 會等 child，child 一死 stub 隨即自行退出（實測 2026-10-14：
+  停掉三個 child 後，原本 10/8 起的三個 stub 自動消失，機器上乾淨剩 6 個行程＝3 對）。
+- **PID 對應**：啟動後 `Start-Process` 回報的是 stub PID，**實際 listener PID 是它的 child**，
+  驗證要用 `netstat` 的 socket owner，不要拿 `Start-Process` 的回傳值當服務 PID。
+- ⚠️ **誤判成本很高**：只看「同一組指令出現兩次」就會誤判成雙開，
+  進而可能對錯誤的 PID 動手（見 AGENTS.md 行程安全鐵律）。判讀前先比對 CreationTime
+  （stub 與 child 相差約 1 秒）與 PID 一對一對應。
+
+---
+
 ## 1. CURRENT STATE
 
 ### Active milestone
