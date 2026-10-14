@@ -439,3 +439,47 @@ $ .venv\Scripts\python.exe -m pytest -q tests
 
 已轉綠：`test_format_localized_weekday_matches_calendar`（005 守衛）、
 `test_chrono_block_reaches_llm_prompt`（004 守衛）、`test_extract_and_judge_context_bug`（閘門化）。
+
+### 11.6 重啟後乾跑驗證（Bry 2026-10-14 方案 A：零成本、零請求）
+
+Bry 裁示方案 A——直接呼叫**生產上那支真的**組裝函式，只組裝、不發送。
+探測腳本 `SOUL_OS_DATA_DIR` 重定向至 temp（遵守 Bry 探測硬規則），**未發任何 LLM 請求、未碰 Telegram**。
+
+**① `AgentConsciousness._build_chrono_block()` 實際輸出**（現在 18:08 EDT）：
+
+```
+[CHRONO_SOCIAL_CONTEXT v2.2]
+time_period=evening          ← 正確（18:08 = evening，非 UTC 的 deep_night）
+silence=1.6h
+arrival_deviation=normal
+vulnerability_window=False
+temporal_salience=low
+expression_mode=implicit
+[/CHRONO_SOCIAL_CONTEXT]
+```
+
+沉默 11.7h 時 `temporal_salience` 由 `low` 升為 `medium` ⇒ 參數確實有驅動語意差異。
+
+**② 時間錨點（SOUL-BUG-005）**：`2026-10-14 週三 18:08 America/New_York（傍晚）`；
+跨日交叉檢查 `10-11→週日`、`10-12→週一`、`10-13→週二` 全部正確。
+
+**③ 端到端**：把該字串餵進 `_build_messages_group`，system message **確實含
+`[CHRONO_SOCIAL_CONTEXT v2.2]`**，且出現在 emergent 區塊之後。
+
+**④ 負向對照**：`chrono_context=""` 時 system message 237 字元且**完全不含 CHRONO 字樣**；
+有值時 507 字元，差值 270 ≈ 區塊長度 ⇒「有值才注入、空值零副作用」成立。
+
+### 11.7 一個查證後確認為「誤警」的疑點（如實記錄，避免日後重踩）
+
+乾跑時 `coarse_now_line(now_utc)` 曾輸出「週三。**晚上，剛過十點**」——在 18:08 說「剛過十點」，
+外觀上與剛修好的 UTC 偏移同型。**追查後確認是探測腳本自己的錯覺，非生產缺陷**：
+
+- `coarse_now_line` / `coarse_time_phrase` / `day_position` **直接讀 `dt.hour`，不做時區轉換**
+  （`src/timezone_utils.py:148`、`:217`）——這是既有設計，取值完全信任呼叫端。
+- 生產上僅有的兩個呼叫端 `harness/run_ta2a_gate2.py:123`、`harness/tl12_temporal.py:176`
+  **都先 `.astimezone(LOCAL_TZ)` 再傳入** ⇒ 正確。
+- 預設路徑 `coarse_now_line()` → `now_local()` → `datetime.now(get_local_tz(cfg))` ⇒ 本地，正確。
+- `src/**` 內目前**沒有任何**生產呼叫端使用這三個函式（僅 harness 實驗與測試）。
+
+⇒ **不需修改**。但留下這條注意事項：`coarse_*` 系列是「呼叫端負責時區」的契約，
+未來若有人從 `src/` 內直接傳入 UTC datetime，會重現 SOUL-BUG-004 同型偏移。

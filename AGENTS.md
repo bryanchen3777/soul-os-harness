@@ -87,3 +87,9 @@
    已實測：任意子行程（含其命令列）在一秒內即被記錄。此為**事後歸因**能力，不取代「不得殺行程」的鐵律。
 
 10. **測試數字的口徑：一律以 repo 內 `.venv` 的直譯器為準**（`.venv\Scripts\python.exe -m pytest …`）。PATH 上的**全域** pytest（Python 3.12）是**另一個世界**——實測同一棵樹給出 `4964 collected／17 collection errors`，而 `.venv` 為 `5330 collected／0 errors`。引用「收集數／失敗數／新增數」時**必須同時聲明解釋器**，否則兩個執行者的數字會對不上，回歸差分會被誤判為真差異。此為 2026-09-17 `LIFE-THREAD-M2-EXEC-FUP-1` 實測發現。
+
+11. **🔴 絕對禁止對「執行過 `server_ops.ps1` 的背景 shell／task」呼叫 `task_stop`（2026-10-14 Owner 規定）**。該腳本以 `Start-Process -FilePath $python -NoNewWindow -PassThru`（`scripts/server_ops.ps1:109`）啟動服務，**該 python 的父行程就是跑腳本的那條 shell**；`-NoNewWindow` 讓兩者共用 Console。在某些 Windows Job Object 組態或特定 PowerShell 版本下，`task_stop` **可能連整棵 Process Tree 一起拔掉**——這正是 2026-09-16 事故的形狀（殺掉 trampoline ⇒ 服務行程一起死 ⇒ 生產中斷）。
+    - **「腳本已跑完、wrapper 只是掛著不動」不是收掉它的理由。** 上一輪重啟（2026-10-14）實測收掉後服務僥倖存活，**那是運氣，不是安全性**。
+    - 若因 `-NoNewWindow` 咬住 stdout 而導致 wrapper 不退出：**修 `server_ops.ps1` 的啟動方式**（改用脫離 Console 的啟動、或導向輸出），**不要靠手動砍 wrapper**。
+    - 收掉任何曾拉起子行程的背景 task **之後**，若真的收掉了，必須立刻複查：`server_ops.ps1 status`、`netstat -ano | findstr :8000`、`data/server.pid` 三者一致才算過。
+    - 重啟本身仍走官方 `.\scripts\server_ops.ps1 restart`，且需 Owner 明示授權（主大腦不得自行對生產行程動手）。
