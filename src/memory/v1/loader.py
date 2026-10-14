@@ -180,20 +180,31 @@ class MemoryLoader:
         by_tags: List[Memory] = []
         for m in same_agent:
             mem_components = _expand_tag_components(m.tags) - agent_name_stopwords
-            overlap_count = len(query_components & mem_components)
+            matched = query_components & mem_components
+            # 分級重疊 · Gate 側（SOUL-BUG-002，2026-10-14 Owner 裁示）：
+            # 只有「實質內容詞」能滿足門檻。零區辨力 token（今天／什麼／怎麼…）
+            # 單獨命中時不放行檢索，但仍完整保留在 `matched` 供 trace 觀測。
+            # 實測修復前 agent_rem 有 6 筆這樣的誤召回（什麼×4 今天×2）。
+            #
+            # ⚠️ Boost 側（「低資訊 token 命中實質內容詞時仍作為時間相依特徵參與排序
+            #    加分」）**尚未實作**：本 loader 現行管線只有 overlap 門檻 →
+            #    category confidence 門檻 → eligible，全程沒有任何評分器
+            #    （無 score / rank / sort / weight）。等真的出現評分消費端時再接入，
+            #    在此之前不寫無消費端的死碼。
+            informative = matched - _LOW_INFO_TOKENS
             # 計算 content token 數 (中文每字 1 token, 英文單字 1 token)
             m_content = m.content or ""
             m_content_tokens = (
                 len(_re_overlap.findall(r"[一-鿿]", m_content))
                 + len(_re_overlap.findall(r"\b\w+\b", m_content))
             )
-            # 分層門檻
+            # 分層門檻（Bry §25(b)：機械可量化，不涉及語意判斷）
             threshold_for_mem = (
                 MIN_OVERLAP_SHORT_CONTENT
                 if m_content_tokens < MIN_OVERLAP_CONTENT_BOUNDARY
                 else MIN_OVERLAP_LONG_CONTENT
             )
-            if overlap_count >= threshold_for_mem:
+            if len(informative) >= threshold_for_mem:
                 by_tags.append(m)
 
         # Step 5: 對每筆做 confidence threshold gating + 標 status
@@ -313,7 +324,12 @@ def format_for_prompt(eligible_memories: List[Memory]) -> str:
 # 共享 query/content 字面切詞 (Perplexity Bry §15 拍板)
 # ────────────────────────────────────────────────────────────
 
-# 極簡中英停用詞 (跟 middleware._derive_query_tags 同份, 集中放這裡)
+# 極簡中英**功能詞**停用詞（本模組的切詞階段唯一真相來源）
+# ⚠️ 2026-10-14 更正：舊註解寫「跟 middleware._derive_query_tags 同份」是**過期**的——
+#    `src/memory/middleware.py` 內並無對應常數，本清單只存在於此處。
+#    維持極簡是有意的：這張表只收「語法上不帶語意」的功能詞。
+#    「今天 / 什麼 / 怎麼」這類**高頻但帶語意**的實詞刻意不在這裡，
+#    它們由 `_LOW_INFO_TOKENS` 以不同機制處理（見下）。
 _SHARED_STOPWORDS = {
     "的", "了", "是", "我", "你", "他", "她", "它", "在", "有", "沒", "和", "或",
     "就", "也", "都", "還", "會", "要", "不", "嗎", "吧", "啊", "呢", "的話",
@@ -322,6 +338,31 @@ _SHARED_STOPWORDS = {
     "i", "you", "he", "she", "it", "we", "they", "my", "your", "his", "her",
     "this", "that", "these", "those", "and", "or", "but", "if", "so", "as",
 }
+
+
+# SOUL-BUG-002（2026-10-14，Owner 裁示「分級重疊 · Gate 側」）：低資訊 token 集合。
+#
+# 與 `_SHARED_STOPWORDS` **語意不同，不可合併**：
+#   _SHARED_STOPWORDS = 語法虛詞（的/了/是…）→ 切詞階段直接丟棄，兩端皆不參與。
+#   _LOW_INFO_TOKENS  = 高頻但零區辨力的**實詞**（今天／什麼／怎麼…）→
+#                       切詞階段**必須保留**（它們仍承載語意），只是不得**單獨**
+#                       滿足檢索門檻。否則 query="今天 天氣 怎麼 樣" 會命中
+#                       「Bryan 起得很早 今天」這類與問題無關的記憶。
+#
+# 收錄標準（反作弊：收詞類，不收測試字面）：
+#   ① 時間指示詞——在 Bry 的記憶語料裡幾乎每筆都出現，0 區辨力。
+#   ② 疑問詞——單獨出現時不指向任何特定記憶。
+# 刻意**不收**任何「含實體名詞的複合詞」：實測確認「天氣」並未誤命中任何記憶，
+# 把「今天天氣」這類複合詞塞進來只會像是照著測試字面寫死。
+_LOW_INFO_TOKENS = frozenset({
+    # 時間指示
+    "今天", "今日", "本日", "昨天", "昨日", "明天", "現在", "此刻",
+    "剛剛", "剛才", "最近", "待會", "等一下",
+    # 疑問詞（句末語氣助詞「嗎/呢/啦」刻意不收：它們是語法虛詞，
+    # 已由 _SHARED_STOPWORDS 在切詞階段丟棄，放這裡會讓兩張表語意重疊）
+    "什麼", "怎麼", "怎樣", "怎麼樣", "為什麼", "為啥", "為何",
+    "哪個", "哪裡", "哪些", "誰", "多少", "如何",
+})
 
 
 # Perplexity Bry §18 拍板 (2026-07-02): per-agent high-frequency-name stopword
