@@ -41,7 +41,7 @@ from aiohttp import WSMsgType, web
 
 try:  # pragma: no cover - 導入路徑相容
     from .akane_voice_brain import VC_ASR_SOURCE, AkaneVoiceBrain
-    from .asr_refiner import AsrRefiner, needs_refiner
+    from .asr_refiner import AsrRefiner, local_refine, needs_refiner
     from .env_config import resolve_config
     from .fish_tts_live import DEFAULT_LIVE_ENDPOINT, FishTTSLiveStreamer
     from .stt_service import FishASRService, pcm16_to_wav_bytes
@@ -49,7 +49,7 @@ try:  # pragma: no cover - 導入路徑相容
     from .web_ui import HTML_PAGE, render_html_page
 except ImportError:  # pragma: no cover
     from akane_voice_brain import VC_ASR_SOURCE, AkaneVoiceBrain
-    from asr_refiner import AsrRefiner, needs_refiner
+    from asr_refiner import AsrRefiner, local_refine, needs_refiner
     from env_config import resolve_config
     from fish_tts_live import DEFAULT_LIVE_ENDPOINT, FishTTSLiveStreamer
     from stt_service import FishASRService, pcm16_to_wav_bytes
@@ -694,20 +694,40 @@ class WebSession:
         chars = len(text)
         elapsed_ms = round(((t_asr_done or t_start) - t_start) * 1000)  # ASR 轉錄耗時
         if run_refiner:
-            try:
-                clean = await asyncio.to_thread(self._refiner.refine_speech_text, text)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                clean = ""
-                print(f"[UTT] refiner-exception {exc}")
-                log.exception("[UTT] refiner-exception %s", exc)
+            # VC-ASR-HOMOPHONE-1（2026-10-14）：同音錯字只跑**本地確定性規則**，
+            # 不打遠端 LLM。理由：local_refine() 是純 regex 替換（µs 級、0 網路、0 token），
+            # 而條件閘門 VC-ASR-COND-1 的原始設計意圖是「預設 bypass 省一次 LLM 呼叫」——
+            # 新增 homophone 條件不得把這個意圖反向破壞。
+            homophone_only = reason == "homophone"
+            if homophone_only:
+                try:
+                    clean = local_refine(text)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    clean = ""
+                    print(f"[UTT] homophone-refine-exception {exc}")
+                    log.exception("[UTT] homophone-refine-exception %s", exc)
+            else:
+                try:
+                    clean = await asyncio.to_thread(self._refiner.refine_speech_text, text)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    clean = ""
+                    print(f"[UTT] refiner-exception {exc}")
+                    log.exception("[UTT] refiner-exception %s", exc)
 
             # ── VC-ASR-DIAG-1：原始 → 淨化後 的可觀測性（與決策同一則訊息，不另開行）──
             # 「這句是哪條路徑產出的」（llm / local / drop）取自 Refiner 的唯讀診斷欄位
             # last_refine_path；最終結果為空（含 Refiner 拋例外、無觀測欄位的注入 mock）
             # 一律如實標 drop。raw/refined 只截斷**日誌字串**，送往大腦的 clean 不截斷。
-            path = getattr(self._refiner, "last_refine_path", None)
+            # ⚠️ homophone 分支**不得**讀 last_refine_path：本回合根本沒呼叫
+            #    refine_speech_text()，該欄位會殘留**上一回合**的值（如 "llm"），會誤報。
+            if homophone_only:
+                path = "local"
+            else:
+                path = getattr(self._refiner, "last_refine_path", None)
             if not clean:
                 path = "drop"
             elif path not in ("llm", "local"):

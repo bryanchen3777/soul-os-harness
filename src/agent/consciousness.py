@@ -1923,7 +1923,7 @@ class AgentMai(AgentConsciousness):
             # TIER 2 — Actor Mode（公開場合）
             "actor_mode": "桜島麻衣です。這次的作品，請大家期待。",
             # Anti-Overfitting: 強制換模式
-            "force_variation": "……你剛剛那句我沒聽清楚。再說一次。",
+            "force_variation": "……嗯，你今天找我有什麼事？",
             # Lesson 40: heartbeat / proactive_dm（Mai 式低調行動先於語言）
             "heartbeat":    "嗯。",
             "proactive_dm": "Bry，有話想跟你說。",

@@ -84,8 +84,13 @@ def needs_refiner(raw_text: str) -> tuple[bool, str]:
       3. noise      — 命中既有雜音熔斷器候選特徵（is_noise）
       4. repeat     — 單字元連續重複 ≥ REPEAT_RUN_LIMIT（幻想/口吃標記）
       5. punct-heavy— 標點/非文字符號數 > 文字字元數（格式明顯損毀）
+      6. homophone  — 命中本模組既有的同音錯字規則表（VC-ASR-HOMOPHONE-1，2026-10-14）
     空白輸入 → (False, "empty")：Refiner 無內容可淨化，呼叫端沿用既有空轉錄處理，
     （VC-ASR-COND-1 的 decision 日誌仍會印出 reason=empty）。
+
+    條件 6 的由來：同音錯字是「長度正常、無標點異常」的高信心轉錄，本來會被判成
+    `clear` 直接 bypass，導致**模組職責 #1（同音校準）在生產路徑上形同死碼**——
+    規則表寫得好好的卻永遠不會被呼叫。放在最後是刻意的：既有五個條件的優先序完全不動。
     """
     if not raw_text or not raw_text.strip():
         return False, "empty"
@@ -105,7 +110,37 @@ def needs_refiner(raw_text: str) -> tuple[bool, str]:
     non_core = re.findall(r"[\W_]", raw_text)
     if len(non_core) > len(core):
         return True, "punct-heavy"
+    if _has_homophone_error(raw_text):
+        return True, "homophone"
     return False, "clear"
+
+
+# ─────────────────────────────────────────────────────────────
+# 同音錯字偵測（VC-ASR-HOMOPHONE-1，2026-10-14）
+# ─────────────────────────────────────────────────────────────
+
+def _has_homophone_error(raw_text: str) -> bool:
+    """轉錄是否命中本模組既有的同音錯字規則表。
+
+    **只偵測、不新增規則**：偵測與修補必須共用同一份真相表，否則會出現
+    「偵得到卻修不了」或反之的缺口——那正是本條件要補的洞。
+
+    為什麼需要它（2026-10-14 唯讀審計實測）：
+        needs_refiner("小欠早安")   -> (False, "clear")   # 直接 bypass
+        needs_refiner("排成跑起來") -> (False, "clear")   # 直接 bypass
+        local_refine("小欠早安")    -> "小茜，早安。"       # 規則本身是好的
+    ⇒ 規則從未被呼叫＝死碼。接通後這兩句會回 (True, "homophone")。
+    """
+    text = re.sub(r"\s+", "", raw_text or "")
+    if not text:
+        return False
+    for wrong, _ in HOMOPHONE_PHRASE_FIXES:
+        if wrong in text:
+            return True
+    for wrong, _ in AKANE_ALIAS_PAIR_FIXES:
+        if wrong in text:
+            return True
+    return bool(AKANE_ALIAS_CHAR_RE.search(text))
 
 
 # ─────────────────────────────────────────────────────────────
