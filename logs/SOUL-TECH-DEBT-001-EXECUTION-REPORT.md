@@ -316,7 +316,7 @@ RESULT before=0 after=0
 
 ⇒ **兩臂同樣回 0 facts ⇒ 與 SOUL-BUG-005 修復無因果關係。**（該測試隔離執行亦失敗，屬獨立問題。）
 
-### 10.4 🔴 意外發現：`tests/` 內有一支**無閘門的真實 LLM 呼叫**測試
+### 10.4 🔴 意外發現：`tests/` 內有一支**無閘門的真實 LLM 呼叫**測試 → ✅ 已於 `aa04e33` 加閘門
 
 `tests/test_extract_and_judge_context_bug.py`：
 
@@ -328,7 +328,32 @@ RESULT before=0 after=0
 這與 AGENTS.md 紅線第 5 條「測試不得發真實請求」直接牴觸，也與 §6 處置 `scripts/**` 的理由同一套邏輯
 （當年正是因為一支測試「被收集就發真實請求」而吃到 HTTP 429，才把 15 支改名為 `manual_*.py`）。
 
-**本工單不自行處置**（改測試閘門屬 Bry 的裁示範圍），已登記為待裁示事項。
+**Bry 2026-10-13 裁示：全面批准補上雙重 opt-in 閘門（預設 SKIP）。已實作於 `aa04e33`。**
+
+閘門規格（**不是**照抄 M6 的變數名，而是對齊本 repo `configs/loader.py` 的真實 provider 分支）：
+
+| provider | 需要的 key 環境變數 | 來源 |
+|---|---|---|
+| `ollama`（`configs/default.yaml:104` 目前預設） | `OLLAMA_API_KEY` | `configs/loader.py:148-158` |
+| `claude` | `ANTHROPIC_API_KEY` | `configs/loader.py:166-172` |
+| `minimax` | `MINIMAX_API_KEY` | `configs/loader.py:115-127` |
+| `openai` | `OPENAI_API_KEY` | `configs/loader.py:131-140` |
+| `mock` | 不需要 key | 不接真實 API |
+
+provider 由 `LLM_PROVIDER` env 覆寫 `configs/default.yaml` 的 `llm.provider`。
+
+**雙向實測（未發出任何真實請求）**：
+
+```
+$ pytest -q tests/test_extract_and_judge_context_bug.py -rs
+SKIPPED [1] ... Requires live LLM API access; opt-in with SOUL_TEST_REAL_LLM=1 + OLLAMA_API_KEY (active provider: ollama)
+1 skipped in 0.39s
+
+$ 設 SOUL_TEST_REAL_LLM=1 + OLLAMA_API_KEY=dummy，僅載入模組求值
+opt-in armed = True
+```
+
+⇒ 預設 **SKIPPED**；明文 opt-in 後閘門解鎖。第 2 項只求值模組層級旗標、**未執行測試本體**，故未產生真實請求。
 
 ### 10.5 最終紅燈組成（7 筆，零未分類）
 
@@ -337,4 +362,7 @@ RESULT before=0 after=0
 | 已立案生產缺陷 | **4** | SOUL-BUG-002（×2）、003、004 |
 | 已修復 | 1 | SOUL-BUG-005 ✅ `277a8d9` |
 | P3 技術債（順序相依） | **2** | `TECH-DEBT-P3-01`（Bry 裁示暫不排查） |
-| 🔴 新發現：無閘門真實 LLM 測試 | 1 | `test_extract_and_judge_context_bug`（待 Bry 裁示） |
+| ✅ 已閘門化 | 0 | `test_extract_and_judge_context_bug` 已於 `aa04e33` 加雙重 opt-in，預設 SKIP |
+
+⇒ 下一次全庫回歸的預期結果：**6 failed**（4 筆已立案缺陷＋2 筆 P3 順序相依），
+`skipped` 由 23 增至 24，`passed` 由 6343 增至 6344（該筆由 failed 轉為 skipped/pass 計數變動）。

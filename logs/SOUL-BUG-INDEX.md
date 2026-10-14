@@ -59,6 +59,12 @@ SOUL-TECH-DEBT-001 的測試紀律是**只修測試、絕不動生產代碼**。
 |---|---|---|---|
 | **TECH-DEBT-P3-01** | **測試間全域狀態污染**：`tests/test_m2_0_inner_life_v2.py::test_e_build_messages_group_with_real_inner_life`、`tests/test_self_check_v1.py::test_self_check_v1` 於全庫跑時紅燈，單獨跑全綠 | 隔離執行 `13 passed in 3.38s`；`pytest-randomly` 未安裝 ⇒ 污染源固定，非隨機順序 | **暫不開整庫二分**（每輪 11.5 分鐘、十幾輪＝數小時算力，投產比極低）；等未來排程引進 `pytest-randomly` 或統一清理單元測試 teardown 時一併處理。**業務邏輯與被測功能 100% 健全**，非缺陷。 |
 
+## 已治理的治理類問題（非缺陷，但已違反紅線）
+
+| 問題 | 狀態 | 處置 |
+|---|---|---|
+| `tests/test_extract_and_judge_context_bug.py` **無閘門的真實 LLM 呼叫**（每跑一次全庫發一次真實請求） | ✅ `aa04e33` | 補雙重 opt-in 閘門（`SOUL_TEST_REAL_LLM` + 目前 provider 的 key），**預設 SKIP**；規格對齊 `configs/loader.py` 的真實 provider 分支 |
+
 ---
 
 ## 修復優先序建議（主大腦觀點，非裁示）
