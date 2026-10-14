@@ -12,7 +12,7 @@
 |---|---|---|---|---|
 | [SOUL-BUG-001](SOUL-BUG-001-WORK-ORDER.md) | **P0** | 昇降持久層去重連帶丟證據邊，EL-DD-2 閘門結構性不可達 | OPEN | `xfail(strict=True)` ✅ |
 | [SOUL-BUG-002](SOUL-BUG-002-WORK-ORDER.md) | P1 | SAGE 單一零區辨力 token 即放行檢索 | OPEN | 直接留紅 ✅（但讀生產狀態，見工單 §八） |
-| [SOUL-BUG-003](SOUL-BUG-003-WORK-ORDER.md) | P2 | SYSTEM_TICK 訂閱被 M5.7-2 註解，`:171` 死碼，測試仍期待 `agent_speak` | OPEN | 直接留紅 ✅ |
+| [SOUL-BUG-003](SOUL-BUG-003-WORK-ORDER.md) | **P3** | SYSTEM_TICK 訂閱被 M5.7-2 註解，`:171` 死碼，測試仍期待 `agent_speak` | OPEN（Bry 2026-10-14 下調：**純架構清潔，不影響生產**） | 直接留紅 ✅ |
 | [SOUL-BUG-004](SOUL-BUG-004-WORK-ORDER.md) | **P0** | chrono 時間感知雙端切斷 | **匯端 ✅ 已結案（`f649224`）**；源端維持 Bry 裁示不動 | `xfail` 已解除並轉綠 ✅ |
 | [SOUL-BUG-005](SOUL-BUG-005-WORK-ORDER.md) | ~~P1~~ | `format_localized` 星期索引整組錯一格 | **✅ CLOSED `277a8d9`** | **已轉綠** ✅ |
 
@@ -28,13 +28,24 @@
 `consciousness.py:155` 的 `SYSTEM_TICK` 訂閱**維持註解**（M5.7-2，`95891e8`），
 `_on_tick` 死碼亦未清理。
 
-這**不再是缺陷**：chrono 現在改由 `_fire_intent` 在發言那一刻直接現算，
-不依賴 tick 推播。源端的取捨歸入 [SOUL-BUG-003](SOUL-BUG-003-WORK-ORDER.md) 的裁示範圍
-（端點該除役還是該接線）。
+這**不再是時間感知缺陷**：chrono 改由 `_fire_intent` 在發言那一刻 just-in-time 現算，
+不依賴 tick 推播。源端取捨歸入 [SOUL-BUG-003](SOUL-BUG-003-WORK-ORDER.md)（**已下調 P3**）。
 
 **但有一項連帶收益**：`core.py` 的時區正規化是根治點，
 因此若 Bry 日後決定恢復 SYSTEM_TICK，`heartbeat/engine.py:205` 也會自動拿到正確時鐘，
 不必再改第二次。
+
+---
+
+## 修復優先序（Bry 2026-10-14 更新）
+
+| 順序 | 編號 | 狀態 |
+|---|---|---|
+| 1 | SOUL-BUG-005（星期偏移） | ✅ 已結案 `277a8d9` |
+| 2 | SOUL-BUG-004（時間感知 + 時區） | ✅ 已結案 `f649224` |
+| 3 | SOUL-BUG-002（SAGE 停用詞，需先落實分級重疊裁定） | OPEN |
+| 4 | SOUL-BUG-001（昇降去重，修好會翻轉 6 筆已校準斷言） | OPEN |
+| 5 | SOUL-BUG-003（端點契約） | OPEN — **P3，不影響生產** |
 
 ---
 
