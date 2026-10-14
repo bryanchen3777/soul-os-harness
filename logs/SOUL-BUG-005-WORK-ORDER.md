@@ -1,11 +1,42 @@
 # SOUL-BUG-005 — `timezone_utils.format_localized` 星期索引整組錯一格
 
 **工單編號**：SOUL-BUG-005
-**嚴重度**：**P1（一行可修，影響所有時間感知輸出）**
-**狀態**：APPROVED & OPEN（Bry 裁示立案 2026-10-13）｜**已有刻意留紅的守衛**
+**嚴重度**：P1（一行可修，影響所有時間感知輸出）
+**狀態**：✅ **APPROVED & CLOSED（`277a8d9`，2026-10-13）**
 **發現方式**：SOUL-TECH-DEBT-001 C 類深度鑑識（`tests/test_timezone_fix_v1.py`）
 **守衛**：`tests/test_timezone_fix_v1.py::test_format_localized_weekday_matches_calendar`
-（**直接留紅型守衛**，非 `xfail`；該測試目前就是紅的，屬「零未分類紅燈」中**已分類**的缺陷紅燈）
+——**已於 `277a8d9` 轉綠**
+
+> ## ✅ 結案紀錄（2026-10-13）
+>
+> **修復**：commit `277a8d9`，一行。
+> ```diff
+> -    weekday = _WEEKDAY_CN[local.weekday()]
+> +    weekday = _weekday_cn(local)
+> ```
+> `src/timezone_utils.py:250`。0 新增符號、0 新增邏輯、0 frozen contract 改動。
+>
+> **守衛轉綠實測**：
+> ```
+> $ .venv\Scripts\python.exe -m pytest -q tests/test_timezone_fix_v1.py::test_format_localized_weekday_matches_calendar
+> PASSED  1 passed in 0.10s
+> ```
+>
+> **行為實測**（修復後，UTC 輸入）：
+> ```
+> 2026-08-02（週日）→ "2026-08-02 週日 16:11 America/New_York（下午）"   ← 修復前是「週六」
+> 2026-08-03（週一）→ "2026-08-03 週一 16:11 America/New_York（下午）"   ← 修復前是「週日」
+> 2026-08-05（週三）→ "2026-08-05 週三 10:00 America/New_York（早上）"
+> 2026-10-11（週日）→ "2026-10-11 週日 08:00 America/New_York（早上）"
+> 2026-10-12（週一）→ "2026-10-12 週一 08:00 America/New_York（早上）"
+> ```
+> 探測腳本以 `SOUL_OS_DATA_DIR` 重定向至 temp 目錄執行（遵守 Bry 2026-10-13 新增之探測硬規則）。
+>
+> **相依測試全綠**：`test_timezone_fix_v1 / v2 / test_time_perception_1_coarse /
+> test_ta2_temporal_phenomenology / test_ta1_simulation_day / test_ta1_temporal_orientation`
+> → **135 passed in 1.59s**。
+>
+> **後續**：[SOUL-BUG-004-SINK](SOUL-BUG-004-SINK-WORK-ORDER.md) 匯端專屬工單已備妥，待 Bry 核准。
 
 ---
 

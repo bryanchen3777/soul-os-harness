@@ -1,7 +1,7 @@
 # SOUL-BUG 系列總覽（索引）
 
 **建立**：2026-10-13｜**來源工單**：SOUL-TECH-DEBT-001（C 類深度鑑識）
-**狀態**：5 筆全部 OPEN，**全部刻意留紅 / xfail 守衛中**，**嚴禁放水**。
+**狀態**：**1 筆已 CLOSED（SOUL-BUG-005，`277a8d9`）、4 筆 OPEN，全部有守衛**，**嚴禁放水**。
 **共通性質**：這些不是「環境雜訊」，是會在生產靜默作案的真缺陷——沒有 exception、沒有告警、沒有計數器。
 
 ---
@@ -13,8 +13,14 @@
 | [SOUL-BUG-001](SOUL-BUG-001-WORK-ORDER.md) | **P0** | 昇降持久層去重連帶丟證據邊，EL-DD-2 閘門結構性不可達 | OPEN | `xfail(strict=True)` ✅ |
 | [SOUL-BUG-002](SOUL-BUG-002-WORK-ORDER.md) | P1 | SAGE 單一零區辨力 token 即放行檢索 | OPEN | 直接留紅 ✅（但讀生產狀態，見工單 §八） |
 | [SOUL-BUG-003](SOUL-BUG-003-WORK-ORDER.md) | P2 | SYSTEM_TICK 訂閱被 M5.7-2 註解，`:171` 死碼，測試仍期待 `agent_speak` | OPEN | 直接留紅 ✅ |
-| [SOUL-BUG-004](SOUL-BUG-004-WORK-ORDER.md) | **P0** | chrono 時間感知雙端切斷，全角色時間感知喪失 | OPEN | `xfail(strict=True)` ✅ |
-| [SOUL-BUG-005](SOUL-BUG-005-WORK-ORDER.md) | P1 | `format_localized` 星期索引整組錯一格 | OPEN | 直接留紅 ✅ |
+| [SOUL-BUG-004](SOUL-BUG-004-WORK-ORDER.md) | **P0** | chrono 時間感知雙端切斷，全角色時間感知喪失 | OPEN（[匯端專屬工單](SOUL-BUG-004-SINK-WORK-ORDER.md) 待核准） | `xfail(strict=True)` ✅ |
+| [SOUL-BUG-005](SOUL-BUG-005-WORK-ORDER.md) | ~~P1~~ | `format_localized` 星期索引整組錯一格 | **✅ CLOSED `277a8d9`** | **已轉綠** ✅ |
+
+## ✅ 已結案
+
+| 編號 | 修復 | 驗收 |
+|---|---|---|
+| SOUL-BUG-005 | `src/timezone_utils.py:250` → `_weekday_cn(local)`（**一行**） | 守衛轉綠；相依 6 檔 135 passed；全庫回歸見執行報告 §10 |
 
 ---
 
@@ -44,6 +50,14 @@ SOUL-TECH-DEBT-001 的測試紀律是**只修測試、絕不動生產代碼**。
 - 005 → `src/timezone_utils.py:250`（**一行，唯一低風險者，可優先處理**）
 
 ⇒ 每筆都需要獨立工單獨立驗收，不得併單。
+
+---
+
+## 殘餘技術債（P3，待排程處理）
+
+| 編號 | 內容 | 證據 | 處置（Bry 2026-10-13 裁示） |
+|---|---|---|---|
+| **TECH-DEBT-P3-01** | **測試間全域狀態污染**：`tests/test_m2_0_inner_life_v2.py::test_e_build_messages_group_with_real_inner_life`、`tests/test_self_check_v1.py::test_self_check_v1` 於全庫跑時紅燈，單獨跑全綠 | 隔離執行 `13 passed in 3.38s`；`pytest-randomly` 未安裝 ⇒ 污染源固定，非隨機順序 | **暫不開整庫二分**（每輪 11.5 分鐘、十幾輪＝數小時算力，投產比極低）；等未來排程引進 `pytest-randomly` 或統一清理單元測試 teardown 時一併處理。**業務邏輯與被測功能 100% 健全**，非缺陷。 |
 
 ---
 

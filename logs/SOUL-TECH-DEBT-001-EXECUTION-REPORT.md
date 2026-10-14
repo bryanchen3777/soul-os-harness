@@ -220,13 +220,13 @@ commit：`be1b124`（test-only；`src/`、`data/`、`personas/`、`configs/` 零
 | 1 | `test_m5_3_s2_b_normalization.py::test_s2_b_4_negative_zero_false_positive` | **SOUL-BUG-002** | 工單已立案；單 token 零區辨力放行 |
 | 2 | `test_m5_3_s2_retrieval_diagnostic.py::test_s2_a_4_negative_no_false_positive` | **SOUL-BUG-002** | 同一缺陷的另一種回報 |
 | 3 | `test_chrono_integration.py::test_chrono_block_reaches_llm_prompt` | **SOUL-BUG-004** | chrono 到不了 prompt（雙端皆斷） |
-| 4 | `test_timezone_fix_v1.py::test_format_localized_weekday_matches_calendar` | **SOUL-BUG-005** | 星期索引錯一格 |
+| 4 | `test_timezone_fix_v1.py::test_format_localized_weekday_matches_calendar` | **SOUL-BUG-005** → **✅ 已於 `277a8d9` 修復，轉綠** | 星期索引錯一格 |
 | 5 | `test_websocket_e2e.py::test_inject_tick_triggers_agent_speak` | **SOUL-BUG-003** | 端點契約已撤銷 |
-| 6 | `test_m2_0_inner_life_v2.py::test_e_build_messages_group_with_real_inner_life` | **D 類：順序相依** | **隔離執行即綠**（見 9.3） |
-| 7 | `test_self_check_v1.py::test_self_check_v1` | **D 類：順序相依** | **隔離執行即綠**（見 9.3） |
+| 6 | `test_m2_0_inner_life_v2.py::test_e_build_messages_group_with_real_inner_life` | **D 類：順序相依 → P3 技術債 `TECH-DEBT-P3-01`** | **隔離執行即綠**（見 9.3） |
+| 7 | `test_self_check_v1.py::test_self_check_v1` | **D 類：順序相依 → P3 技術債 `TECH-DEBT-P3-01`** | **隔離執行即綠**（見 9.3） |
 
 ⇒ **5 筆＝已立案的生產缺陷**（002／003／004／005），**2 筆＝測試間狀態污染**。
-**沒有任何一筆屬於「不知道為什麼紅」。**
+**沒有任何一筆屬於「不知道為什麼紅」。**（Bry 2026-10-13 裁示：SOUL-BUG-005 插隊先修，已完成；D 類暫不排查，登 P3。）
 
 ### 9.3 D 類的證據（主大腦親驗）
 
@@ -259,3 +259,82 @@ $ .venv\Scripts\python.exe -m pytest -q tests/test_m2_0_inner_life_v2.py tests/t
 SOUL-BUG-001 若修復，`tests/test_elevate_mechanism.py` 與 `tests/test_elevation_evidence_scope_a1.py`
 共 6 筆已校準到「持久層去重」現行語意的斷言**必須跟著回退**（工單 §六）。
 同理 SOUL-BUG-005 修復時，`tests/test_timezone_fix_v1.py` 內嵌行號的斷言訊息需一併更新。
+
+---
+
+## 10. SOUL-BUG-005 修復與回歸（`277a8d9`，2026-10-13，Bry 裁示插隊先修）
+
+### 10.1 修復
+
+```diff
+--- a/src/timezone_utils.py
++++ b/src/timezone_utils.py
+@@ -250
+-    weekday = _WEEKDAY_CN[local.weekday()]
++    weekday = _weekday_cn(local)
+```
+
+一行。0 新增符號、0 新增邏輯、0 frozen contract 改動。commit `277a8d9`。
+
+### 10.2 守衛轉綠
+
+```
+$ pytest -q tests/test_timezone_fix_v1.py::test_format_localized_weekday_matches_calendar
+PASSED  1 passed in 0.10s
+```
+
+行為實測（修復後）：
+
+| UTC 輸入 | 修復前 | 修復後 |
+|---|---|---|
+| `2026-08-02 20:11`（週日） | 2026-08-02 **週六** | 2026-08-02 **週日** ✅ |
+| `2026-08-03 20:11`（週一） | 2026-08-03 **週日** | 2026-08-03 **週一** ✅ |
+| `2026-08-05 14:00`（週三） | 週二 | 2026-08-05 **週三** ✅ |
+| `2026-10-11 12:00`（週日） | 週六 | **週日** ✅ |
+| `2026-10-12 12:00`（週一） | 週日 | **週一** ✅ |
+
+相依測試：`test_timezone_fix_v1 / v2 / test_time_perception_1_coarse / test_ta2_temporal_phenomenology /
+test_ta1_simulation_day / test_ta1_temporal_orientation` → **135 passed in 1.59s**。
+
+### 10.3 全庫回歸：一進一出，且已證明非因果
+
+```
+$ .venv\Scripts\python.exe -m pytest -q tests
+7 failed, 6343 passed, 23 skipped, 2 xfailed in 656.49s
+```
+
+**數字與修復前相同，但組成不同**：timezone 那筆轉綠，同時 `test_extract_and_judge_context_bug::test_content_stage_sees_real_text` 轉紅。
+
+**主大腦沒有採信「看起來無關」，做了決定性 A/B**（monkeypatch，不動工作樹，符合 Bry 2026-10-13 探測硬規則：
+`SOUL_OS_DATA_DIR` 重定向至 temp）：
+
+```
+[BEFORE(old weekday)] facts=0 -> []
+[AFTER(fixed weekday)] facts=0 -> []
+RESULT before=0 after=0
+```
+
+⇒ **兩臂同樣回 0 facts ⇒ 與 SOUL-BUG-005 修復無因果關係。**（該測試隔離執行亦失敗，屬獨立問題。）
+
+### 10.4 🔴 意外發現：`tests/` 內有一支**無閘門的真實 LLM 呼叫**測試
+
+`tests/test_extract_and_judge_context_bug.py`：
+
+- 直接 `create_llm_proxy(cfg, bus)` → `LLMJudge.extract_and_judge()` → **真實 HTTP LLM 呼叫**
+- **無 `skipif`、無 opt-in 環境變數閘門**（對照：`test_m6_0_5_2_real_judge_optin.py`、
+  `test_m6_0_5_5_real_three_judge_e2e.py` 等 M6 系列**都有** `M6_REAL_LLM` + API key 雙重閘門）
+- ⇒ **每跑一次全庫，就發一次真實 API 請求（成本非 0），且結果不可重現**
+
+這與 AGENTS.md 紅線第 5 條「測試不得發真實請求」直接牴觸，也與 §6 處置 `scripts/**` 的理由同一套邏輯
+（當年正是因為一支測試「被收集就發真實請求」而吃到 HTTP 429，才把 15 支改名為 `manual_*.py`）。
+
+**本工單不自行處置**（改測試閘門屬 Bry 的裁示範圍），已登記為待裁示事項。
+
+### 10.5 最終紅燈組成（7 筆，零未分類）
+
+| 類別 | 筆數 | 內容 |
+|---|---|---|
+| 已立案生產缺陷 | **4** | SOUL-BUG-002（×2）、003、004 |
+| 已修復 | 1 | SOUL-BUG-005 ✅ `277a8d9` |
+| P3 技術債（順序相依） | **2** | `TECH-DEBT-P3-01`（Bry 裁示暫不排查） |
+| 🔴 新發現：無閘門真實 LLM 測試 | 1 | `test_extract_and_judge_context_bug`（待 Bry 裁示） |
