@@ -98,8 +98,17 @@ def build_temporal_context(
     config: PersonaConfig,
     now: datetime | None = None,
 ) -> TemporalContext:
+    # 🔴 時區正規化（SOUL-BUG-004，2026-10-13）：`now` 兩個呼叫端都傳 UTC
+    #    （`heartbeat/engine.py:205`、以及新接通的
+    #    `agent/consciousness.py::_build_chrono_block`），但下面取的是
+    #    `now.hour`，而 `PersonaConfig.timezone` 預設是 America/New_York。
+    #    不轉換的話，全部時段判定與 22:00-04:00 脆弱窗整組慢 4-5 小時
+    #    （紐約 08:00 會被判成 afternoon、20:00 被判成 deep_night）。
+    #    端到端對齊 PersonaConfig.timezone —— 這是根治點，兩個呼叫端都受益。
     if now is None:
         now = datetime.now(config.timezone)
+    else:
+        now = now.astimezone(config.timezone)
     current_hour = now.hour
     time_period = compute_time_period(current_hour)
 

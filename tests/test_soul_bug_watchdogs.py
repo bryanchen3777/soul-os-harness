@@ -45,7 +45,9 @@ node_type 做 `(agent_id, node_type, content_hash)` 冪等去重，且當節點�
 from pathlib import Path
 import json
 
+import contextlib
 import pytest
+from unittest.mock import MagicMock, patch
 
 from src.inner_life import (
     InnerLifeWriter,
@@ -134,45 +136,214 @@ def test_elevation_pattern_evidence_accumulation_must_reach_two(tmp_path):
 # ─────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "SOUL-BUG-004: chrono block is severed at BOTH ends. Source: "
-        "consciousness.py:155 unsubscribes SYSTEM_TICK (M5.7-2 / 95891e8), "
-        "making _on_tick (:341) unreachable and :171 dead code. Sink: "
-        "PromptContext.chrono_context (proxy.py:1568) and its injection "
-        "(proxy.py:1596-1598) are dead code with 0 instantiations. Time "
-        "perception never reaches any LLM prompt, and production logs stay "
-        "silent because the computation still runs and is merely discarded."
-    ),
-)
 def test_chrono_context_must_reach_prompt(tmp_path):
-    """chrono / 時間偏置必須真實流向 LLM 的 system prompt（匯端存在活的注入路徑）。"""
+    """chrono / 時間偏置必須真實流向 LLM 的 system prompt（匯端 + 中段都有活路徑）。
+
+    ⚠️ 2026-10-13 改寫第二道斷言的說明（不是無聲弱化）：
+
+    原斷言是「SYSTEM_TICK 必須仍有活的訂閱者」。**本工單刻意不恢復那個訂閱。**
+    M5.7-2（commit 95891e8）拿掉 EventType.SYSTEM_TICK 的訂閱，是為了避免
+    proactive Agency 重複觸發，屬 Bry 的架構裁決；動它等於回退一項已生效的決策。
+    源端 / `_on_tick` 死碼屬 SOUL-BUG-003 的範圍，本工單不碰。
+
+    因此中段改走「發言當下現算」：`_fire_intent` 在 chrono_payload 缺 chrono_block
+    時呼叫 `_build_chrono_block`（走既有 src/temporal 單一實作）。第二道斷言
+    改成驗這個中段確實接上 —— 這才是本工單修好後應成立的契約。
+
+    註：若日後有人恢復 SYSTEM_TICK 訂閱，這支測試不會因此失敗（那是 SOUL-BUG-003
+    的裁示範圍，不是本工單的驗收條件）。
+    """
     import inspect
 
     from src.llm import proxy as proxy_mod
 
-    # 匯端斷言：live 的 prompt 組裝器必須真的接受並注入 chrono context。
-    builder_params = inspect.signature(proxy_mod._build_messages_group).parameters
-    assert "chrono_context" in builder_params, (
-        "live 的 _build_messages_group 沒有 chrono_context 參數 —— "
-        "時間感知無處注入。這是 SOUL-BUG-004 的預期失敗。"
-        f"（現有參數：{sorted(builder_params)}）"
-    )
+    # 匯端斷言：live 的 prompt 組裝器必須真的接受 chrono context。
+    for builder in (proxy_mod._build_messages_group, proxy_mod._build_messages_private):
+        builder_params = inspect.signature(builder).parameters
+        assert "chrono_context" in builder_params, (
+            f"live 的 {builder.__name__} 沒有 chrono_context 參數 —— "
+            "時間感知無處注入。這是 SOUL-BUG-004 的預期失敗。"
+            f"（現有參數：{sorted(builder_params)}）"
+        )
 
-    # 源端斷言：SYSTEM_TICK 必須仍有活的訂閱者。
+    # 中段斷言：_fire_intent 必須真的在發言當下現算 chrono 區塊（見上方說明）。
     import src.agent.consciousness as consciousness
 
-    src_text = Path(consciousness.__file__).read_text(encoding="utf-8")
-    live_tick_subscription = (
-        "EventType.SYSTEM_TICK" in src_text
-        and not all(
-            ln.strip().startswith("#") or ln.strip().startswith('"')
-            for ln in src_text.splitlines()
-            if "EventType.SYSTEM_TICK" in ln
+    assert hasattr(consciousness.AgentConsciousness, "_build_chrono_block"), (
+        "consciousness 沒有 _build_chrono_block —— 中段沒接上，"
+        "四個活路徑只帶 draft，chrono_context 仍會是空字串。"
+    )
+    fire_intent_src = inspect.getsource(consciousness.AgentConsciousness._fire_intent)
+    assert "_build_chrono_block" in fire_intent_src, (
+        "_build_chrono_block 存在但 _fire_intent 沒呼叫它 —— 中段是半修復。"
+    )
+
+
+async def test_fire_intent_computes_chrono_block_when_absent(tmp_path, monkeypatch):
+    """中段行為：chrono_payload 沒有 chrono_block 時，發言當下現算一次。
+
+    這是 SOUL-BUG-004 的中段修復。四個活路徑（USER_MESSAGE 私聊 / 群聊 /
+    AGENT_SPEAK 跟進）過去都只傳 {"draft": ...}，導致
+    intent_payload["chrono_context"] 恆為 ""，全角色失去時間偏置。
+
+    刻意不碰 SYSTEM_TICK 訂閱（M5.7-2 / 95891e8 的架構裁決，屬 SOUL-BUG-003）。
+    """
+    monkeypatch.setenv("SOUL_OS_DATA_DIR", str(tmp_path / "data"))
+    import src.paths as paths_mod
+
+    paths_mod.reset_data_root()
+
+    import src.agent.consciousness as consciousness
+
+    published = []
+
+    class _FakeBus:
+        async def publish(self, event):
+            published.append(event)
+
+    class _Probe(consciousness.AgentConsciousness):
+        def __init__(self):
+            self.agent_id = "agent_probe"
+            self.bus = _FakeBus()
+            self._pending = False
+            self.state = MagicMock()
+
+        def _should_speak(self, elapsed_mins):
+            return True
+
+        def _build_intent_payload(self, reason, elapsed_mins):
+            return {"text": "probe"}
+
+    agent = _Probe()
+    await agent._fire_intent(
+        reason="silence_timeout",
+        elapsed_mins=42.0,
+        chrono_payload={"draft": "\u4f60\u9084\u5728\u55ce"},
+    )
+
+    assert len(published) == 1
+    payload = published[0].payload
+    chrono_context = payload.get("chrono_context", "")
+    assert chrono_context, (
+        "chrono_context \u4ecd\u662f\u7a7a\u5b57\u4e32 \u2014\u2014 \u4e2d\u6bb5\u6c92\u63a5\u4e0a\u3002"
+        "\u56db\u500b\u6d3b\u8def\u5f91\u53ea\u5e36 draft\uff0c_fire_intent \u5fc5\u9808\u5728\u767c\u8a71\u7576\u4e0b\u73fe\u7b97 chrono \u5340\u584a\u3002"
+    )
+    assert "[CHRONO_SOCIAL_CONTEXT v2.2]" in chrono_context
+    # draft \u4ecd\u7167\u65e7\u900f\u50b3\uff08\u9019\u500b\u4e2d\u6bb5\u4fee\u5fa9\u4e0d\u5f97\u5f71\u97ff\u65e2\u6709 draft \u50b3\u905e\uff09
+    assert payload.get("draft") == "\u4f60\u9084\u5728\u55ce"
+
+    paths_mod.reset_data_root()
+
+
+def _fake_memory():
+    mem = MagicMock()
+    mem.get_group_history.return_value = []
+    mem.get_recent_with_meta.return_value = []
+    mem.conn.execute.return_value.fetchall.return_value = []
+    return mem
+
+
+@contextlib.contextmanager
+def _hermetic_proxy():
+    """把 prompt \u7d44\u88c5\u5668\u6240\u6709\u8b80 data/ \u7684 helper \u63db\u6210\u7a7a\u5b57\u4e32\uff0c\u8b93\u6e2c\u8a66\u5b8c\u5168 hermetic\u3002"""
+    from src.llm import proxy
+
+    names = (
+        "_format_horizon_block",
+        "_format_capability_block",
+        "_format_emergent_block",
+        "_format_relationship_block",
+        "_format_relational_perception_block",
+        "_format_recent_inner_life",
+        "_format_attachment_str",
+        "_format_temporal_anchor",
+        "_load_bry_recent",
+        "_load_self_recent",
+    )
+    with contextlib.ExitStack() as stack:
+        for name in names:
+            stack.enter_context(patch.object(proxy, name, return_value=""))
+        yield proxy
+
+
+_CHRONO_FIXTURE = (
+    "[CHRONO_SOCIAL_CONTEXT v2.2]\n"
+    "time_period=afternoon\n"
+    "silence=2.0h\n"
+    "arrival_deviation=normal\n"
+    "vulnerability_window=False\n"
+    "carryover_worry=0.00\n"
+    "attachment_heat=0.00\n"
+    "reaction_bias=neutral\n"
+    "temporal_salience=low\n"
+    "expression_mode=implicit\n"
+    "[/CHRONO_SOCIAL_CONTEXT]"
+)
+
+
+def test_chrono_context_reaches_system_prompt(tmp_path, monkeypatch):
+    """\u6b63\u5411\uff1achrono_context \u975e\u7a7a\u6642\uff0c\u7fa4\u804a / \u79c1\u804a\u5169\u500b live builder \u90fd\u5fc5\u9808\u6ce8\u5165 system prompt\u3002"""
+    monkeypatch.setenv("SOUL_OS_DATA_DIR", str(tmp_path / "data"))
+    import src.paths as paths_mod
+
+    paths_mod.reset_data_root()
+
+    with _hermetic_proxy() as proxy:
+        common = dict(
+            agent_id="agent_probe",
+            soul="SOUL TEXT",
+            current_input="",
+            memory_context="\u8a18\u61b6\u5167\u5bb9",
+            memory=_fake_memory(),
+            current_time="2026-10-13 15:00 \u4e0b\u5348 (EDT)",
         )
+        group_msgs = proxy._build_messages_group(chrono_context=_CHRONO_FIXTURE, **common)
+        private_msgs = proxy._build_messages_private(chrono_context=_CHRONO_FIXTURE, **common)
+
+    for label, messages in (("group", group_msgs), ("private", private_msgs)):
+        system = "\n".join(m["content"] for m in messages if m["role"] == "system")
+        assert "[CHRONO_SOCIAL_CONTEXT v2.2]" in system, (
+            f"{label} builder \u6c92\u628a chrono_context \u6ce8\u9032 system message \u2014\u2014 "
+            "\u9019\u662f SOUL-BUG-004 \u7684\u9810\u671f\u5931\u6557\uff08\u532f\u7aef\u65b7\u93c8\uff09\u3002"
+        )
+        assert "time_period=afternoon" in system
+        # \u6ce8\u5165\u4f4d\u7f6e\u5951\u7d04\uff1amemory_context \u4e4b\u5f8c\u3001\u5c0d\u8a71\u6b77\u53f2\u4e4b\u524d
+        # \uff08\u5c0d\u9f4a\u5df2\u522a\u9664\u7684 PromptContext \u76f8\u5c0d\u9806\u5e8f\uff09
+        assert system.index("\u4f60\u8a18\u5f97\u4ee5\u4e0b\u9019\u4e9b\u4e8b\u60c5") < system.index(
+            "[CHRONO_SOCIAL_CONTEXT v2.2]"
+        ), f"{label}: chrono \u5340\u584a\u5fc5\u9808\u572d\u5728\u8a18\u61b6\u6bb5\u843d\u4e4b\u5f8c"
+
+    paths_mod.reset_data_root()
+
+
+def test_empty_chrono_context_injects_nothing(tmp_path, monkeypatch):
+    """\u8ca0\u5411\uff1a\u9810\u8a2d chrono_context="" \u6642\u4e0d\u5f97\u591a\u51fa\u4efb\u4f55\u7a7a\u767d/\u54e8\u5175\u6bb5\u843d\uff08\u9632\u300c\u63a5\u7dda\u4f46\u6ce8\u5165\u7a7a\u5b57\u4e32\u300d\uff09\u3002"""
+    monkeypatch.setenv("SOUL_OS_DATA_DIR", str(tmp_path / "data"))
+    import src.paths as paths_mod
+
+    paths_mod.reset_data_root()
+
+    with _hermetic_proxy() as proxy:
+        common = dict(
+            agent_id="agent_probe",
+            soul="SOUL TEXT",
+            current_input="",
+            memory_context="\u8a18\u61b6\u5167\u5bb9",
+            memory=_fake_memory(),
+            current_time="2026-10-13 15:00 \u4e0b\u5348 (EDT)",
+        )
+        default_group = proxy._build_messages_group(**common)
+        explicit_empty_group = proxy._build_messages_group(chrono_context="", **common)
+        default_private = proxy._build_messages_private(**common)
+        explicit_empty_private = proxy._build_messages_private(chrono_context="", **common)
+
+    assert default_group == explicit_empty_group, (
+        "\u9810\u8a2d\u53c3\u6578\u8207\u986f\u5f0f\u50b3\u7a7a\u5b57\u4e32\u7522\u51fa\u4e0d\u540c prompt \u2014\u2014 \u6709\u5077\u5075\u6ce8\u5165\u4e1c\u897f\uff08\u534a\u4fee\u5fa9\uff09\u3002"
     )
-    assert live_tick_subscription, (
-        "沒有任何活程式碼訂閱 EventType.SYSTEM_TICK（僅存在註解字串）—— "
-        "chrono payload 無人消費。這是 SOUL-BUG-004 的預期失敗。"
-    )
+    assert default_private == explicit_empty_private
+    for messages in (default_group, default_private):
+        system = "\n".join(m["content"] for m in messages if m["role"] == "system")
+        assert "[CHRONO_SOCIAL_CONTEXT" not in system
+        assert not system.endswith("\n"), "\u4e0d\u5f97\u591a\u51fa\u7a7a\u884c\u5c3e\u5df4"
+
+    paths_mod.reset_data_root()

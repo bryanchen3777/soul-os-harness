@@ -19,7 +19,7 @@ import json
 import logging
 import re
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -426,6 +426,46 @@ class AgentConsciousness(ABC):
             f" heat={carryover.attachment_heat:.2f}"
         )
 
+    def _build_chrono_block(self, elapsed_mins: float) -> str:
+        """SOUL-BUG-004 中段 (2026-10-13): 在「真的要說話的那一刻」現算 chrono 區塊。
+
+        為什麼不在這裡恢復 SYSTEM_TICK 訂閱：M5.7-2 (commit 95891e8) 拿掉它
+        是為了避免 proactive Agency 重複觸發，屬 Bry 的架構裁決；時間感知
+        不構成回退它的理由（SOUL-BUG-004-SINK 工單 §四-2）。
+
+        走既有單一實作，不重複格式化邏輯：
+          src.temporal.core.build_temporal_context（時間/沉默/脆弱窗/carryover）
+          src.temporal.render.render_temporal_block（渲染成 prompt 字串）
+        與 HeartbeatEngine（src/heartbeat/engine.py:225-233）產 chrono_block
+        是同一條路徑、同一組參數（now 一樣傳 UTC datetime）。
+
+        沉默時長的資料源：elapsed_mins（距上次使用者活動的分鐘數），
+        與 engine.py:206 的 last_user_activity 同一語意，不另造時間來源。
+
+        fail-silent：失敗回 "" = 不注入，時間感知不得成為發言失敗的原因。
+        """
+        from src.temporal.core import build_temporal_context
+        from src.temporal.models import EmotionalCarryover, PersonaConfig
+        from src.temporal.render import render_temporal_block
+
+        try:
+            now = datetime.now(timezone.utc)
+            last_msg_ts = (
+                now - timedelta(minutes=max(float(elapsed_mins or 0.0), 0.0))
+            ).isoformat()
+            chrono_ctx = build_temporal_context(
+                persona_id=self.agent_id,
+                last_msg_ts=last_msg_ts,
+                current_stress=0,
+                carryover=EmotionalCarryover.load(self.agent_id),
+                config=PersonaConfig(persona_id=self.agent_id),
+                now=now,
+            )
+            return render_temporal_block(chrono_ctx)
+        except Exception as exc:  # fail-silent（見 docstring）
+            logger.warning(f"[{self.agent_id}] chrono 區塊計算失敗，跳過注入: {exc}")
+            return ""
+
     async def _fire_intent(  # noqa:ASYNC — needs await for self.bus.publish
         self,
         reason: str,
@@ -444,7 +484,12 @@ class AgentConsciousness(ABC):
         current_mood, _ = emotion_engine.get(self.agent_id)
         intent_payload["mood"] = current_mood
         if chrono_payload:
-            intent_payload["chrono_context"] = chrono_payload.get("chrono_block", "")
+            # SOUL-BUG-004 中段 (2026-10-13): 四個活路徑都只帶 {"draft": ...},
+            # 這裡過去恆取到 "" → 全角色失去時間偏置。現在在「發言的那一刻」現算一次。
+            chrono_block = chrono_payload.get("chrono_block", "")
+            if not chrono_block:
+                chrono_block = self._build_chrono_block(elapsed_mins)
+            intent_payload["chrono_context"] = chrono_block
             # 🔴 關鍵：把 draft 從 chrono_payload 提取出來放進 intent_payload
             # 這樣 LLMProxy 才能正確收到使用者說的話
             if "draft" in chrono_payload:

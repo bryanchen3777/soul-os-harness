@@ -22,7 +22,6 @@ import re
 import sys
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -695,6 +694,7 @@ def _build_messages_group(
     last_interaction_ts: int = 0,  # TA-1 (Bry 拍板 2026-08-30): 跨 session 最後互動 timestamp (conversation_elapsed 資料源)
     motive_target: Optional[str] = None,  # C-3.1 (2026-09-05): transmit 的 motive.target 透傳 (A2A agent-target 注入 [關係感知]); None = 非目標驅動, 0 注入
     strip_assistant_parens: bool = False,  # REM-TEXT-1 (2026-09-11): read-side 破除自我歷史鎖定 — 剝除本 agent 自己的 assistant 歷史括號動作段（只影響 prompt，不寫回 data/）
+    chrono_context: str = "",  # SOUL-BUG-004 匯端: AGENT_INTENT.payload["chrono_context"] (src/temporal/render.py 已渲染字串) 注入插槽; "" = 不注入
 ) -> List[Dict[str, str]]:
     """
     群聊模式的 messages 組裝:
@@ -759,6 +759,13 @@ def _build_messages_group(
         system_parts.append(emergent_block)
     if memory_context.strip():
         system_parts.append(f"\n你記得以下這些事情:\n{memory_context.strip()}")
+    # SOUL-BUG-004 匯端 (2026-10-13): chrono 時間偏置區塊。
+    # 注入位置: memory_context 之後、對話歷史之前 —— 與原本死碼 PromptContext
+    # (proxy.py:1596-1598, 已於本工單刪除) 的相對順序一致, 不改變既有前綴語意。
+    # 值是 src/temporal/render.render_temporal_block 的輸出 (已格式化字串), 直接貼。
+    # fail-silent: 空字串 = 不注入 (零行為變化)。
+    if chrono_context.strip():
+        system_parts.append(f"\n{chrono_context.strip()}")
     # Phase 3 情緒:把 mood 描述注入 system prompt
     mood_desc = emotion_engine.mood_description(mood)
     if mood_desc:
@@ -1343,6 +1350,7 @@ def _build_messages_private(
     reason: str = "user_message",  # 工單 (2026-09-01): proactive 觸發判定 (reason != "user_message" = 主動發起, 非回應 Bry)
     motive_target: Optional[str] = None,  # C-3.1 (2026-09-05): transmit 的 motive.target 透傳 (A2U bryan-target 注入 [關係感知]); None = 非目標驅動, 0 注入
     strip_assistant_parens: bool = False,  # REM-TEXT-1 (2026-09-11): read-side 破除自我歷史鎖定 — 剝除 assistant 歷史括號動作段（只影響 prompt，不寫回 data/）
+    chrono_context: str = "",  # SOUL-BUG-004 匯端: AGENT_INTENT.payload["chrono_context"] (src/temporal/render.py 已渲染字串) 注入插槽; "" = 不注入
 ) -> List[Dict[str, str]]:
     """
     私聊模式的 messages 組裝:
@@ -1393,6 +1401,13 @@ def _build_messages_private(
         system_parts.append(emergent_block)
     if memory_context.strip():
         system_parts.append(f"\n你記得以下這些事情:\n{memory_context.strip()}")
+    # SOUL-BUG-004 匯端 (2026-10-13): chrono 時間偏置區塊。
+    # 注入位置: memory_context 之後、對話歷史之前 —— 與原本死碼 PromptContext
+    # (proxy.py:1596-1598, 已於本工單刪除) 的相對順序一致, 不改變既有前綴語意。
+    # 值是 src/temporal/render.render_temporal_block 的輸出 (已格式化字串), 直接貼。
+    # fail-silent: 空字串 = 不注入 (零行為變化)。
+    if chrono_context.strip():
+        system_parts.append(f"\n{chrono_context.strip()}")
     # Phase 3 情緒:把 mood 描述注入 system prompt
     mood_desc = emotion_engine.mood_description(mood)
     if mood_desc:
@@ -1551,66 +1566,13 @@ def _build_messages_private(
 # 1. Prompt 組裝結構
 # ─────────────────────────────────────────────
 
-@dataclass
-class PromptContext:
-    """
-    LLM 的完整輸入結構。
-    明確分層,讓每個部分的來源清晰。
-
-    system_prompt    : Agent 的人格設定(來自 agents/{id}/persona.md)
-    memory_context   : Memory Middleware 注入的相關記憶(Phase 2 填入)
-    chrono_context   : HeartbeatEngine 注入的時間感知區塊(Phase 3.5 填入)
-    conversation_history : 近期對話紀錄(來自 session 快取)
-    current_intent   : 當前要處理的意圖(來自 AGENT_INTENT payload)
-    """
-    system_prompt: str
-    memory_context: str = ""          # ⭐ Phase 2 插槽:Memory Middleware 填入
-    chrono_context: str = ""          # ⭐ Phase 3.5 插槽:HeartbeatEngine 填入
-    conversation_history: List[Dict[str, str]] = field(default_factory=list)
-    current_intent: str = ""
-
-    def to_messages(self) -> List[Dict[str, str]]:
-        """
-        組裝成 OpenAI-compatible messages 格式。
-
-        最終 system message 結構:
-        ┌─────────────────────────────┐
-        │ [人格設定]                   │  ← persona.md
-        │                             │
-        │ [記憶片段](若有)            │  ← Memory Middleware 注入
-        │ 你記得以下這些事情:          │
-        │ - ...                       │
-        │                             │
-        │ [時間感知](若有)            │  ← HeartbeatEngine 注入(Phase 3.5)
-        │ [CHRONO_SOCIAL_CONTEXT v2.2]│
-        │ ...                         │
-        └─────────────────────────────┘
-        """
-        system_parts = [self.system_prompt.strip()]
-
-        if self.memory_context.strip():
-            system_parts.append(
-                f"\n你記得以下這些事情:\n{self.memory_context.strip()}"
-            )
-
-        # Phase 3.5:chrono 時間感知區塊直接貼(render_temporal_block 輸出已是格式化字串)
-        if self.chrono_context.strip():
-            system_parts.append(f"\n{self.chrono_context.strip()}")
-
-        messages: List[Dict[str, str]] = [
-            {"role": "system", "content": "\n".join(system_parts)}
-        ]
-
-        # 加入對話歷史(最多保留最近 N 輪,防止 context 爆炸)
-        messages.extend(self.conversation_history)
-
-        # 加入當前意圖作為最後一條 user 訊息
-        if self.current_intent.strip():
-            messages.append({"role": "user", "content": self.current_intent})
-
-        return messages
-
-
+# SOUL-BUG-004 (2026-10-13): `class PromptContext` (was proxy.py:1554-1611)
+# is deleted here. It had ZERO instantiations repo-wide, and its
+# chrono_context slot was the sink that never ran.
+# (docs/EH-1-EPISTEMIC-HORIZON-CONTRACT.md 2.6 + EH-4 recorded the dead code
+# and promised a separate ticket - that ticket is this one.)
+# The chrono slot now has exactly ONE home: the live builders
+# _build_messages_group / _build_messages_private (chrono_context kwarg).
 # ─────────────────────────────────────────────
 # 2. 模型後端抽象層
 # ─────────────────────────────────────────────
@@ -3669,6 +3631,13 @@ class LLMProxy:
         reason = event.payload.get("reason", "unknown")
         draft = event.payload.get("draft", "")
         memory_context = event.payload.get("memory_context", "")
+        # SOUL-BUG-004 匯端 (2026-10-13): chrono 時間偏置區塊。
+        # 來源: consciousness._fire_intent → intent_payload["chrono_context"],
+        # 值是 src/temporal/render.render_temporal_block 的輸出 (已渲染字串)。
+        # 修前這裡沒有任何消費端, 就算 payload 有值也無處可插 → 時間感知全角色失效。
+        chrono_context = event.payload.get("chrono_context", "") or ""
+        if not isinstance(chrono_context, str):
+            chrono_context = ""
         # KI-001: 從 event 抽 user_id(從 router/telegram 透傳的 target_user_id)
         # 預設 "bryan" 維持向後相容(既有對話都是 bryan)
         user_id = event.payload.get("target_user_id", "bryan")
@@ -3703,13 +3672,16 @@ class LLMProxy:
             user_message = draft
             logger.info(
                 f"[LLMProxy] proactive draft 注入: {draft[:80]!r}")
-        # Fix Bug 5: user_message 原因時,如果 draft 為空,嘗試從 chrono_context 取
-        if not user_message and reason == "user_message":
-            ctx = event.payload.get("chrono_context", {})
-            if isinstance(ctx, dict) and ctx.get("draft"):
-                user_message = ctx["draft"]
-                logger.info(
-                    f"[LLMProxy] user_message 從 chrono_context 取: {user_message[:80]!r}")
+        # SOUL-BUG-004 (2026-10-13): 原本這裡有一段「Fix Bug 5」fallback
+        # （`if not user_message and reason == "user_message": ctx = payload.get("chrono_context", {});
+        # if isinstance(ctx, dict) and ctx.get("draft")`），已刪除。
+        # 刪除證據:
+        #   1. `chrono_context` 在生產上是 **str**（consciousness._fire_intent 寫入的是
+        #      chrono_block 字串），永遠不是 dict ⇒ isinstance 分支恆 False，從未生效過。
+        #   2. draft 已有兩條活路徑抵達 user_message：上方 Fix Bug 1&2（draft 非空即採用），
+        #      以及 `_fire_intent` 直接寫 `intent_payload["draft"]`。
+        #   3. 保留這段只會讓下一個人誤以為 chrono_context 是 dict，屬「留著當第二份真相」。
+        # chrono_context 現在的唯一語意是「渲染好的時間偏置字串」，由 builders 注入 system prompt。
 
         # --- RAG 注入(Phase 4:跨 session 歷史搜尋,FTS5 trigram OR)---
         # 撈 user 訊息在「其他 session」中的相關對話,拼成 rag_block
@@ -3786,9 +3758,9 @@ class LLMProxy:
             # L1818 的 user_id 已經從 event.payload.get("target_user_id", "bryan") 拿到,
             # 跟 _build_messages_private L230 user_id 預設值對齊, 群聊觸發 fallback "bryan"
             # (跟 _load_private L100 fallback 邏輯一致)。
-            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts, motive_target=motive_target, strip_assistant_parens=strip_assistant_parens)
+            messages = _build_messages_group(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts, motive_target=motive_target, strip_assistant_parens=strip_assistant_parens, chrono_context=chrono_context)
         else:
-            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts, reason=reason, motive_target=motive_target, strip_assistant_parens=strip_assistant_parens)
+            messages = _build_messages_private(agent_id, soul, user_message, memory_context, self._memory, mood=mood, user_id=user_id, current_time=current_time_str, event_ts=event_ts_for_temporal, bry_latest_ts=bry_latest_ts, world_context=world_context, germ_anchor=germ_anchor, last_interaction_ts=last_interaction_ts, reason=reason, motive_target=motive_target, strip_assistant_parens=strip_assistant_parens, chrono_context=chrono_context)
 
         # ── M2 task 3 (Bry + Perplexity 8/2 12:05 派工): proactive draft user → system ──
         # 修法動機: heartbeat / proactive_dm 觸發時, _build_intent_payload 組的 draft
