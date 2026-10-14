@@ -2,8 +2,31 @@
 
 **母工單**：[SOUL-BUG-004](SOUL-BUG-004-WORK-ORDER.md)（P0）
 **本工單**：**只做匯端（sink）**，Bry 2026-10-13 裁示：「先不動它，待 005 修完後，在專屬工單中僅處理匯端，**絕不貿然碰 SYSTEM_TICK 的訂閱架構**。」
-**狀態**：DRAFT，**待 Bry 核准後才開工**
+**狀態**：✅ **APPROVED & CLOSED（`f649224`，2026-10-14）**
 **前置條件**：SOUL-BUG-005 已修（`277a8d9`）✅
+
+> ## ✅ 結案紀錄（2026-10-14，commit `f649224`）
+>
+> **匯端接通時順帶修復了 `src/temporal/core.py` 未正規化 UTC 的 4 小時時區偏移，達成端到端正確性。**
+>
+> 這是 Bry 2026-10-14 追加裁示批准的原地閉環（不切單）。理由：
+> 接通匯端的根本目的不是讓管線通，而是讓 prompt 獲得**正確的**時間感知；
+> 明知是慢 4 小時的鐘卻為了守住邊界原樣送出，等於主動製造角色認知幻覺。
+>
+> 實際交付：
+> - 匯端：`chrono_context` kwarg + 注入（兩個 live builder）、payload 透傳、
+>   **刪除 `PromptContext` 死碼**（0 實例化，EH-1/EH-4 承諾但從未開出的那張工單）、
+>   刪除恆 False 的「Fix Bug 5」死碼。
+> - 中段：`_fire_intent` 在發言那一刻現算 `_build_chrono_block()`，
+>   **沿用既有單一實作** `build_temporal_context` + `render_temporal_block`
+>   （與 `heartbeat/engine.py:225-233` 同參數），未重複實作任何格式化邏輯。
+> - 時區：`build_temporal_context` 加入 `now = now.astimezone(config.timezone)`
+>   一行根治，**同時修好 `heartbeat/engine.py:205` 的潛在隱患**。
+>
+> **SYSTEM_TICK 訂閱確認未動**（`consciousness.py:155` 原樣保留註解），
+> `_on_tick` 死碼亦未動 —— 屬 SOUL-BUG-003 的裁示範圍。
+>
+> 驗收見下方 §九。
 
 ---
 
@@ -110,3 +133,75 @@ if chrono_context.strip():
 - 測試結果（跑了哪些、過幾筆、有無失敗）
 - 看門狗是否已移除 `xfail` 並轉綠
 - 是否踩到 Frozen Contract / 是否觸及 SYSTEM_TICK 訂閱架構（預期答案：否）
+---
+
+## 九、驗收實測（2026-10-14，主大腦親跑）
+
+### 9.1 時鐘對齊（Bry 點名的三個案例）
+
+修復前（UTC 小時直接當本地小時）→ 修復後：
+
+| UTC 輸入 | 紐約本地 | 修復前標籤 | 修復後標籤 |
+|---|---|---|---|
+| `12:00` | 08:00 | `afternoon` ❌ | **`morning`** ✅ |
+| `18:00` | 14:00 | `evening` ❌ | **`afternoon`** ✅ |
+| `00:00` | 20:00 | `deep_night` ❌ | **`evening`** ✅ |
+
+全 24 個 UTC 小時掃描：修復前**每一個**時段標籤都錯；修復後全部與本地一致。
+
+脆弱窗（22:00-04:00 persona 本地）：紐約 18:00（UTC 22:00）**不再**誤判為脆弱窗；
+紐約 23:00（UTC 03:00）正確開啟。
+
+### 9.2 新測試：7 支，且做過變異實驗
+
+`tests/test_temporal_timezone_normalization.py`（7 tests）：
+Bry 點名的三案例 / 全 24 小時掃描 / EDT-EST DST 邊界 / 脆弱窗本地性 / 渲染層同步。
+
+🔴 **變異實驗（Bry 紀律：綠燈不算證據）**：
+以 in-process monkeypatch 把 persona 時區強制回 UTC（＝修復前語意）後重跑
+→ **7 支全紅**；正常情況 **7 支全綠**。
+⇒ 這些斷言是**真守衛**，不是恆真式。
+
+### 9.3 回歸
+
+- `tests/test_temporal_timezone_normalization.py + test_soul_bug_watchdogs.py +
+  test_m6_0_3_validation_d_e_f_g_h + test_m5_3_s2_e_e2e_world_perception +
+  test_m5_3_s2_d_world_awareness + test_chrono_integration + tests/infra +
+  test_tl2_volition + test_m3_2_semantic_enrichment`
+  → **240 passed, 1 xfailed**
+- 護欄 `tests/infra`：白名單數字 `address=9 / kill=1 / subprocess=22` **全數未變**
+- SOUL-BUG-001 看門狗仍為 **XFAIL**（缺陷未修，符合預期）
+- 全庫回歸結果見 `logs/SOUL-TECH-DEBT-001-EXECUTION-REPORT.md` §11
+
+### 9.4 主大腦複核紀錄（不採信執行者自報）
+
+- `consciousness.py:155` 的 `SYSTEM_TICK` 註解**原封不動**：已實測第 150-161 行內容。
+- `PromptContext` 全庫已無實例化（僅剩註解與 2026-07 的 `_backup_*` 舊備份目錄）。
+- 刪除 `dataclass` import 安全：`proxy.py` 已無任何 `dataclass` / `field(` 使用（已 grep）。
+- `_build_chrono_block` 未自造格式化：簽章與 `heartbeat/engine.py:225-233` 逐一比對一致。
+- Worker 曾在 `:3706-3712` 刪除死碼前保留了證據註解，符合「不留第二份真相」的要求。
+- **Worker 誠實回報了三處工單事實不符**（見 §十），主大腦複核後確認成立。
+
+---
+
+## 十、執行者回報的三處「工單事實不符」（主大腦複核後成立，保留記錄）
+
+本次是一張**別人寫的工單**，執行過程中發現工單本身有三處不精確。
+保留這三條是為了讓未來的工單不要再重複犯：
+
+1. **看門狗第二道斷言並非「失敗」，而是「空洞地通過」**。
+   工單說它檢查 `EventType.SYSTEM_TICK` 有無活的訂閱者；實際上 `consciousness.py:171`
+   是一行**非註解的 `elif` 死碼**，讓該斷恆 True。移除 `xfail` 時 pytest 噴出 XPASS(strict)
+   才暴露。⇒ **「測試存在」不等於「測試在測東西」**；`strict=True` 在這裡意外扮演了偵測角色。
+
+2. **`docs/EH-1:128` 引用的行號已過期**。
+   文件說 `PromptContext` 在 `proxy.py L1329-1385`，實際位於 **1554-1611**。
+   ⇒ 文件裡的行號是**會過期的**，不可作為刪除依據（本次以實測行號為準）。
+
+3. **「單一可呼叫函式」其實是一對**。
+   chrono 區塊需要 `build_temporal_context`（建模）+ `render_temporal_block`（渲染）
+   兩個呼叫，與 `heartbeat/engine.py:225-233` 完全同構。工單寫「單一函式」過於簡化。
+   ⇒ 執行者沿用既有一對函式、未自造格式化，這是正確處置。
+
+另外 Worker **刻意沒有「順手修正」UTC 慣例**，而是照實沿用並回報 —— 這個判斷正確：
+沿用既有語意是本工單的邊界，偏移問題屬另一層，交由主大腦裁示後原地閉環。

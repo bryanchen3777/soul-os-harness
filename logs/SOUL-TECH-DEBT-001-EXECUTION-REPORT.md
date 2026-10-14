@@ -366,3 +366,76 @@ opt-in armed = True
 
 ⇒ 下一次全庫回歸的預期結果：**6 failed**（4 筆已立案缺陷＋2 筆 P3 順序相依），
 `skipped` 由 23 增至 24，`passed` 由 6343 增至 6344（該筆由 failed 轉為 skipped/pass 計數變動）。
+---
+
+## 11. SOUL-BUG-004 匯端接通 + 時區正規化（`f649224`，2026-10-14）
+
+### 11.1 一句話
+
+時間感知第一次**真的**抵達 LLM prompt，而且時鐘是對的。
+
+### 11.2 交付內容
+
+| 層 | 內容 |
+|---|---|
+| 匯端 | `_build_messages_group` / `_build_messages_private` 新增 `chrono_context` kwarg，注入位置在 memory_context 之後、歷史之前（＝原死碼的相對位置）；AGENT_INTENT payload 取出並透傳 |
+| 死碼 | **刪除 `PromptContext`**（0 實例化；EH-1:357 / EH-4:1040 承諾卻從未開出的那張工單）、刪除恆 False 的「Fix Bug 5」fallback |
+| 中段 | `_fire_intent` 在發言那一刻現算 `_build_chrono_block()`，**沿用既有單一實作**（`build_temporal_context` + `render_temporal_block`，與 `heartbeat/engine.py:225-233` 同參數） |
+| 時區 | `src/temporal/core.py` 加入 `now = now.astimezone(config.timezone)` **一行根治**，同時修好 heartbeat 潛在隱患 |
+
+**SYSTEM_TICK 訂閱與 `_on_tick` 死碼均未動**（Bry 裁示，屬 SOUL-BUG-003 範圍）。
+
+### 11.3 🔴 為什麼必須原地閉環地順手修時區
+
+Bry 裁示：「接通匯端的根本目的不是讓管線通，而是讓 Prompt 獲得**正確的**時間感知。」
+
+實測（修復前）：兩個呼叫端都傳 UTC `now`，`build_temporal_context`（`core.py:103`）直接取
+`now.hour`，而 `PersonaConfig.timezone` 是 America/New_York ⇒
+
+| UTC 輸入 | 紐約本地 | 修復前 | 修復後 |
+|---|---|---|---|
+| `12:00` | 08:00 | `afternoon` ❌ | **`morning`** ✅ |
+| `18:00` | 14:00 | `evening` ❌ | **`afternoon`** ✅ |
+| `00:00` | 20:00 | `deep_night` ❌ | **`evening`** ✅ |
+
+**24 個 UTC 小時全部標錯**；22:00-04:00 脆弱窗會在紐約 18:00 誤開啟。
+
+關鍵：**因為這區塊從未真正進過 prompt，這個偏移從來沒被觀察到過。**
+我這次是第一次把它送出去 —— 若不修，等於第一次送出一個慢 4 小時的鐘。
+
+### 11.4 新測試 7 支，含**變異實驗**
+
+`tests/test_temporal_timezone_normalization.py`：Bry 點名三案例 / 全 24 小時掃描 /
+EDT-EST DST 邊界 / 脆弱窗本地性 / 渲染層同步。
+
+```
+正常：          7 passed
+變異（強制 persona 時區回 UTC ＝ 修復前語意）：7 failed
+```
+⇒ **真守衛，不是恆真式。**（第一次變異嘗試無效——我 patch 的是原始模組物件而非測試實際引用的函式，
+已修正為直接 patch 測試模組命名空間後重驗。）
+
+### 11.5 全庫回歸（主大腦親跑）
+
+```
+$ .venv\Scripts\python.exe -m pytest -q tests
+5 failed, 6355 passed, 24 skipped, 1 xfailed, 27 subtests passed in 729.33s
+```
+
+| 階段 | failed | passed | skipped | xfailed |
+|---|---|---|---|---|
+| SOUL-BUG-005 修復後（`277a8d9`） | 7 | 6343 | 23 | 2 |
+| live-LLM 測試閘門化（`aa04e33`） | — | — | +1 | — |
+| **SOUL-BUG-004 匯端＋時區（`f649224`）** | **5** | **6355** | **24** | **1** |
+
+**零新增失敗。** 五筆殘餘全部已分類：
+
+| # | 測試 | 歸屬 |
+|---|---|---|
+| 1-2 | `test_m5_3_s2_b_normalization::test_s2_b_4…`、`test_m5_3_s2_retrieval_diagnostic::test_s2_a_4…` | **SOUL-BUG-002**（P1，SAGE 停用詞） |
+| 3 | `test_websocket_e2e::test_inject_tick_triggers_agent_speak` | **SOUL-BUG-003**（P2，端點契約） |
+| 4 | `test_m2_0_inner_life_v2::test_e_build_messages_group…` | **TECH-DEBT-P3-01**（順序相依） |
+| 5 | `test_self_check_v1::test_self_check_v1` | **TECH-DEBT-P3-01**（順序相依） |
+
+已轉綠：`test_format_localized_weekday_matches_calendar`（005 守衛）、
+`test_chrono_block_reaches_llm_prompt`（004 守衛）、`test_extract_and_judge_context_bug`（閘門化）。
