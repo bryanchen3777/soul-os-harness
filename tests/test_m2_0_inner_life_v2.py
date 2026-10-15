@@ -459,41 +459,53 @@ class TestM20InnerLifeInjection(unittest.TestCase):
             def get_group_history(self, limit):
                 return []
 
-        # 先檢查 ruka 真的 diary jsonl 存在
-        ruka_diary = Path(
-            "C:/Users/bbfcc/.local/bin/soul-os-harness/data/soul/agent_ruka/diary"
-        )
+        # 🔴 順序相依根因 (SOUL-TECH-DEBT P3-01 / Bry 2026-10-14 授權修復):
+        # `src/llm/proxy.py:133` 的 `INNER_LIFE_DATA_DIR = str(data_root() / "soul")`
+        # 是 **module import 期就算死的常數**(沒有函式包裹)。
+        # `tests/conftest.py` 的 autouse fixture 每個測試都把 `SOUL_OS_DATA_DIR` 指向
+        # tmp 並 `reset_data_root()` —— 但 `reset_data_root()` **救不回已算好的常數**。
+        # 只要 `src.llm.proxy` 在某個測試的隔離期間才被 import, 這個常數就永久指向那個
+        # tmp 目錄, 之後所有讀「生產 diary」的斷言都會看到空目錄。
+        # → 這支測試要看真實 ruka diary, 必須**顯式把常數釘回真實 data/soul**。
+        # 寫法沿用 tests/test_m3_prompt_integrity.py:117-133 的既有範本
+        # (original_dir / try / finally 還原), 測試結束後不留任何殘影。
+        real_soul_dir = Path(__file__).resolve().parent.parent / "data" / "soul"
+        ruka_diary = real_soul_dir / "agent_ruka" / "diary"
         if not ruka_diary.is_dir():
-            self.skipTest("ruka 沒 diary 資料夾, 跳過 E2E 注入驗證")
+            self.skipTest(f"ruka 沒 diary 資料夾 ({ruka_diary}), 跳過 E2E 注入驗證")
 
-        messages = _build_messages_group(
-            agent_id="agent_ruka",
-            soul="你是瑠夏。",
-            current_input="",
-            memory_context="",
-            memory=MockMemory(),
-        )
-        # 第一個 system message 應該含 inner_life 區塊
-        first_system = next((m for m in messages if m["role"] == "system"), None)
-        self.assertIsNotNone(first_system, "v2 期望 messages 內有 system message")
-        if "[最近內在生活]" not in first_system["content"]:
-            # ruka diary 是空的話, helper 回空, 注入 skip → 也是合法
-            # 但 v2 E2E 期望有 diary 就能注入
-            ruka_files = list(ruka_diary.glob("2026-*.jsonl"))
-            print(f"[v2 E2E] ruka 有 {len(ruka_files)} 天 diary, 但 system message 沒 [最近內在生活]")
-            print(f"[v2 E2E] 可能是 helper 沒讀到, 或內容量太多被截斷, 或 ruka diary 真的空")
-            # 至少驗證 _format_recent_inner_life 直接呼叫有結果
-            from src.llm.proxy import _format_recent_inner_life
-            out = _format_recent_inner_life("agent_ruka")
-            self.assertNotEqual(
-                out, "",
-                f"v2 E2E 期望 ruka helper 直接呼叫回非空, 實際空, "
-                f"但 ruka 已知有 18 天份 diary"
+        original_dir = proxy.INNER_LIFE_DATA_DIR
+        proxy.INNER_LIFE_DATA_DIR = str(real_soul_dir)
+        try:
+            messages = _build_messages_group(
+                agent_id="agent_ruka",
+                soul="你是瑠夏。",
+                current_input="",
+                memory_context="",
+                memory=MockMemory(),
             )
-            self.fail(
-                f"v2 E2E: ruka 有 diary 但 [最近內在生活] 沒注入 → "
-                f"helper 直接呼叫回 {len(out)} chars, 注入邏輯有問題"
-            )
+            # 第一個 system message 應該含 inner_life 區塊
+            first_system = next((m for m in messages if m["role"] == "system"), None)
+            self.assertIsNotNone(first_system, "v2 期望 messages 內有 system message")
+            if "[最近內在生活]" not in first_system["content"]:
+                # ruka diary 是空的話, helper 回空, 注入 skip → 也是合法
+                # 但 v2 E2E 期望有 diary 就能注入
+                ruka_files = list(ruka_diary.glob("2026-*.jsonl"))
+                print(f"[v2 E2E] ruka 有 {len(ruka_files)} 天 diary, 但 system message 沒 [最近內在生活]")
+                print(f"[v2 E2E] 可能是 helper 沒讀到, 或內容量太多被截斷, 或 ruka diary 真的空")
+                # 至少驗證 _format_recent_inner_life 直接呼叫有結果
+                out = proxy._format_recent_inner_life("agent_ruka")
+                self.assertNotEqual(
+                    out, "",
+                    f"v2 E2E 期望 ruka helper 直接呼叫回非空, 實際空, "
+                    f"但 ruka 已知有 {len(ruka_files)} 天份 diary"
+                )
+                self.fail(
+                    f"v2 E2E: ruka 有 diary 但 [最近內在生活] 沒注入 → "
+                    f"helper 直接呼叫回 {len(out)} chars, 注入邏輯有問題"
+                )
+        finally:
+            proxy.INNER_LIFE_DATA_DIR = original_dir
         print(f"[v2 E2E] ruka _build_messages_group 系統 message 真的有 [最近內在生活] 區塊")
 
 

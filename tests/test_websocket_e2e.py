@@ -358,10 +358,44 @@ def _safe_rmtree(path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_inject_tick_triggers_agent_speak():
+async def test_inject_tick_does_not_trigger_agent_speak():
     """
-    使用 /inject/tick 端點注入 SYSTEM_TICK，
-    驗證 Agent -> Intent -> LLM(Mock) -> AGENT_SPEAK -> WebSocket broadcast 完整鏈路。
+    /inject/tick 的**負向契約**（M5.7-2 契約變更，SOUL-BUG-003）。
+
+    契約變更歷史
+    ------------
+    本測試**原本**叫 `test_inject_tick_triggers_agent_speak`，斷言的是正向鏈路：
+    `/inject/tick` 注入 SYSTEM_TICK → Agent → Intent → LLM(Mock) → AGENT_SPEAK
+    → WebSocket broadcast。它從 Bry 派工第一天起就是紅燈
+    （"No agent_speak received after 3 retries"），並在多份 closeout
+    （m5_4_5_7 / m5_4_6_1）被如實記為「pre-existing failure」而擱置。
+
+    真正的根因不是 flaky：M5.7-2（commit `95891e8`）**註解掉**了
+    `src/agent/consciousness.py:155` 對 SYSTEM_TICK 的**唯一**訂閱，
+    並明文列為 constraint M：
+        ❌ 不啟用 SYSTEM_TICK → proactive-agent autonomous execution
+    （該行至今仍是註解狀態。）
+
+    ⇒ SYSTEM_TICK **沒有任何消費者**，`/inject/tick` 因此不可能產生 agent_speak。
+    這不是缺陷，是 Bry 拍板的架構選擇；測試才是過期的那一方。
+
+    為什麼是負向契約而不是刪掉測試
+    ------------------------------
+    `/inject/tick` 端點本身仍然存在（`src/io/gateway.py:634-656`：publish SYSTEM_TICK、
+    `await asyncio.sleep(6.0)`、回 `{"injected": True, ...}`），而且它是**防呆閘門**：
+    哪天有人不小心把 SYSTEM_TICK 的訂閱接回去，這支測試必須立刻轉紅。
+    保留端點 + 斷言「不產生 speak」＝ 把 M5.7-2 的架構約束釘成可執行契約。
+
+    斷言三件事
+    1. HTTP 200
+    2. body `{"injected": true, ...}`（端點本身仍正常運作）
+    3. WS 上收不到任何非空 text 的 agent_speak（契約的核心）
+
+    殘餘 flake 風險（如實揭露）：isolated server 會起 scheduler
+    （`scripts/run_server.py:1303`，`proactive_agents=["agent_ruka"]`），
+    其 `_fire_heartbeat` / `_fire_proactive_dm` 是 30–60 分 / 2–4 小時隨機觸發。
+    本測試觀察窗僅 10 秒 ⇒ 誤觸發機率約 1%。此風險**與原正向測試同源**，
+    不是本次改寫引入的。
     """
     # P0.5 (Bry 派工 2026-08-09 19:48): isolate persistence via SOUL_OS_DATA_DIR
     # TEST-INFRA-ISOLATION-1: server 一律起在自己的 ephemeral 埠，永不碰生產 :8000。
@@ -383,36 +417,52 @@ async def test_inject_tick_triggers_agent_speak():
                 with urllib.request.urlopen(req, timeout=5):
                     pass
 
-                # inject tick — retry 機制（server 冷啟動時 async init 可能還沒完成）
-                received = []
-                for attempt in range(3):
-                    req2 = urllib.request.Request(
-                        f"{server.base_url()}/inject/tick?elapsed_mins=35.0&time_period=morning",
-                        method="POST",
-                    )
-                    with urllib.request.urlopen(req2, timeout=15):
-                        pass
+                # inject tick — 單次即可（負向契約不需要 retry：端點沒有「冷啟動
+                # 還沒 ready」的不確定性，端點內部自己 sleep(6.0) 等管線跑完）
+                req2 = urllib.request.Request(
+                    f"{server.base_url()}/inject/tick?elapsed_mins=35.0&time_period=morning",
+                    method="POST",
+                )
+                with urllib.request.urlopen(req2, timeout=30) as resp:
+                    status = resp.status
+                    body = json.loads(resp.read())
 
-                    # 等最多 8 秒收 agent_speak（忽略 text='' 的過早回應）
-                    deadline = asyncio.get_event_loop().time() + 8
-                    while asyncio.get_event_loop().time() < deadline:
-                        try:
-                            raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
-                            data = json.loads(raw)
-                            txt = data.get('text', '') or ''
-                            print(f"[WS] recv: type={data.get('type')} agent={data.get('agent_id','')} text_len={len(txt)}")
-                            if data.get("type") == "agent_speak" and data.get("text", ""):
-                                received.append(data)
-                                break  # 收到非空 text 才算成功
-                        except asyncio.TimeoutError:
-                            continue
+                print(f"[inject/tick] status={status} body={body}")
 
-                    if received:
+                # 斷言 1+2：端點本身仍正常（端點除役是後續決策，不在本票範圍）
+                assert status == 200, f"/inject/tick 應回 200, 實際 {status}"
+                assert body.get("injected") is True, (
+                    f"/inject/tick 應回 injected=true, 實際 body={body}"
+                )
+
+                # 斷言 3（核心）：SYSTEM_TICK 無訂閱者 ⇒ 不會有 agent_speak。
+                speak_frames = []
+                stub_frames = []
+                deadline = asyncio.get_event_loop().time() + 10
+                while asyncio.get_event_loop().time() < deadline:
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                        data = json.loads(raw)
+                        txt = data.get('text', '') or ''
+                        print(f"[WS] recv: type={data.get('type')} agent={data.get('agent_id','')} text_len={len(txt)}")
+                        if data.get("type") == "agent_speak":
+                            # text='' 是 proxy.py 補發的 stub（is_stub=True），
+                            # IOGateway 本來就 skip 不廣播出來；保守起見分開計數。
+                            (speak_frames if txt else stub_frames).append(data)
+                    except asyncio.TimeoutError:
+                        continue
+                    except websockets.exceptions.ConnectionClosed:
                         break
-                    print(f"[Retry] attempt {attempt+1}/3 no valid agent_speak, retrying...")
-                    await asyncio.sleep(2.0)
 
-                assert len(received) >= 1, "No agent_speak received after 3 retries"
+                assert len(speak_frames) == 0, (
+                    "M5.7-2 契約：SYSTEM_TICK 沒有訂閱者（consciousness.py:155 仍為註解），"
+                    "/inject/tick **不應該**觸發 agent_speak。但收到非空 speak："
+                    f"{speak_frames}"
+                )
+                print(
+                    "[OK] /inject/tick 200 + injected=true，10s 觀察窗內 0 筆非空 agent_speak"
+                    f"（空 stub {len(stub_frames)} 筆不計入）"
+                )
 
         finally:
             if server is not None:

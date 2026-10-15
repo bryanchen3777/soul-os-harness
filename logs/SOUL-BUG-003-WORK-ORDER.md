@@ -2,10 +2,40 @@
 
 **工單編號**：SOUL-BUG-003
 **嚴重度**：**P3（架構清潔，非行為缺陷）**（2026-10-14 由 Bry 自 P2 下調）
-**狀態**：APPROVED & OPEN（Bry 核准立案 2026-10-12）｜**測試維持紅燈，嚴禁放水**
+**狀態**：**部分結案**（Bry 2026-10-14 授權本輪修復 E2E 契約斷言；`:171` 死碼與端點除役**仍未處理**）
 **發現方式**：SOUL-TECH-DEBT-001 B 類 skipif 授權下的**拒絕跳過**（執行者判定為真缺陷而非環境耦合）
-**涉及測試**：`tests/test_websocket_e2e.py::test_inject_tick_triggers_agent_speak`
+**涉及測試**：`tests/test_websocket_e2e.py::test_inject_tick_does_not_trigger_agent_speak`
+（**已改寫**；原名 `test_inject_tick_triggers_agent_speak`）
 **相關決策**：M5.7-2（`95891e8`）constraint M
+
+> ## ✅ 已結案部分：E2E 測試改寫為負向契約斷言（Bry 2026-10-14 授權）
+>
+> **處置路線**：採 §七 的 **A′**，且 Bry 本輪明確指定「**保留端點**、只改測試」——
+> 即端點除役（改 `src/io/gateway.py`）**不在本輪範圍**，`:171` 死碼亦**不在本輪範圍**。
+>
+> **改寫內容**（`tests/test_websocket_e2e.py`）：
+> 1. 函式更名 `test_inject_tick_triggers_agent_speak` → `test_inject_tick_does_not_trigger_agent_speak`
+>    （**名稱如實反映副作用**，沿用 SOUL-BUG-002 命名紀律）。
+> 2. docstring 寫明 M5.7-2 契約變更歷史與 constraint M 出處。
+> 3. 斷言由「正向等 speak」翻轉為**負向契約**：HTTP 200 + `injected is True`
+>    + 觀察窗內 **0 筆非空 `agent_speak`**。
+> 4. 移除原本的 3 次 retry（原測試等不到 speak 時重試，語意上已無意義）。
+>
+> **為何保留端點而不廢除**：端點本身是**防呆閘門**——哪天有人不小心把
+> `consciousness.py:155` 的 SYSTEM_TICK 訂閱接回去，這支測試必須立刻轉紅。
+> 保留端點 + 斷言「不產生 speak」＝ 把 M5.7-2 的架構約束釘成可執行契約。
+>
+> **變異實驗（綠燈不算證據）**：`MUT-A3` 在觀察窗前插一次 `/debug/broadcast`
+> （會真的產生非空 speak）⇒ **轉紅 ✅**，證明 WS 收集迴圈與斷言皆非恆真式。
+>
+> **殘餘 flake 風險（如實揭露）**：isolated server 會起 scheduler
+> （`scripts/run_server.py:1303`，`proactive_agents=["agent_ruka"]`），
+> `_fire_heartbeat` / `_fire_proactive_dm` 為 30–60 分 / 2–4 小時隨機觸發。
+> 本測試觀察窗僅 10 秒 ⇒ 誤觸發機率約 1%。此風險**與原正向測試同源**，
+> 非本次改寫引入。
+>
+> **仍未結案**：`consciousness.py:171` 不可達死碼；`/inject/tick` 端點的最終處置
+> （保留／標 deprecated／除役）仍待 Bry 裁示。
 
 > ## ⬇️ 優先級下調至 P3（Bry 裁示 2026-10-14）
 >
