@@ -76,13 +76,24 @@ def _make_distinct_events(
 ):
     """造 ``count`` 條 **內容互異** 的同源事件（extras 帶序號）。
 
-    為什麼需要：``elevation_adapter._event_content`` 只取
-    ``trigger_type + provenance.extras``（elevation_adapter.py:128-139），兩條
-    extras 為空的事件會產出**完全相同**的 pattern content；而
-    ``_persist_result`` 對 (agent_id, node_type, content_hash) 做冪等落盤
-    （VALUE-DEDUP-A-1，elevation_adapter.py:353-396，commit fb7ab63），第二顆
-    同內容 pattern **連同其證據邊**都不落盤 → 獨立證據永遠只有 1。
-    這裡用 extras 讓 content 可區分，才能真正測到「N 份獨立證據」的閘門。
+    🔴 歷史註記更正（SOUL-BUG-001 修復，2026-10-14）：
+    這個 helper 當初存在的原因，是「繞開缺陷」而非「構造情境」——
+
+        為什麼需要：``_event_content`` 只取 ``trigger_type + provenance.extras``，
+        兩條 extras 為空的事件會產出**完全相同**的 pattern content；而
+        ``_persist_result`` 對 (agent_id, node_type, content_hash) 做冪等落盤
+        （VALUE-DEDUP-A-1，commit fb7ab63），第二顆同內容 pattern **連同其證據邊**
+        都不落盤 → 獨立證據永遠只有 1。這裡用 extras 讓 content 可區分，才能真正
+        測到「N 份獨立證據」的閘門。
+
+    修復後（節點合併 + 邊重綁 + 邊去重），空 extras 的兩條事件已能正確累積到
+    2 份獨立證據 —— 這個繞法**不再必要**，但仍保留：它測的是「N 條**不同命題**」
+    的閘門，與「同一命題多份證據」是兩條不同的路徑。
+
+    ⚠️ 但要誠實記下它的**盲區**：靠這個 helper 的測試（多數）**不覆蓋生產形狀**。
+       生產事件的 extras 近乎恆定（`scripts/run_server.py:1808` ``extras={"slot": slot}``）。
+       真正打生產形狀的是
+       ``tests/test_soul_bug_watchdogs.py::test_elevation_pattern_evidence_accumulation_must_reach_two``。
     """
     return [
         _make_event(
@@ -312,10 +323,20 @@ def test_f1_agent_isolation(tmp_path):
 def test_h1_same_event_twice_no_elevate(tmp_path):
     """同一事件重复 consume（两次）→ 同 (source_id, event_identity) 计 1 独立证据 → 不升。
 
-    校準（VALUE-DEDUP-A-1, elevation_adapter.py:353-396）：第二顆 pattern content
-    與第一顆相同（同一事件 → content 必然相同），落盤時被 (agent_id, node_type,
-    content_hash) 冪等去重，**連同其證據邊一併跳過**（同檔 389-392 行）。故
-    store 只剩 1 顆 pattern / 1 條證據邊 —— 獨立證據仍為 1 < 2 → 不升。
+    🔴 SOUL-BUG-001 修復後語意更正（2026-10-14）：本測試**斷言不變**，但理由已變。
+
+    修復前：第二顆 pattern content 與第一顆相同（同一事件 → content 必然相同），
+    落盤時被 (agent_id, node_type, content_hash) 冪等去重，**連同其證據邊一併跳過**
+    ⇒ store 只剩 1 顆 pattern / 1 條證據邊。
+
+    修復後：節點仍合併（仍只有 1 顆 pattern，VALUE-DEDUP-A-1 不動），但邊改為
+    **重綁 + 依 `(node_id, source_id, inner_life_event_id)` 去重**。因為兩次呼叫
+    帶的是**同一個事件**，該三鍵完全相同 ⇒ 邊收斂，仍只落 1 條。
+
+    ⇒ 「邊只落 1 條」的理由已從「節點跳過連帶丟邊」改為「**同事件重跑去重**」。
+      這兩者必須分清楚：前者是缺陷，後者是冪等保證。
+      跨事件同內容時邊必須**增加**（見
+      `tests/inner_life/test_persist_idempotency.py::test_same_content_second_round_skipped`）。
     """
     writer = InnerLifeWriter()
     event = _make_event(writer, TRIGGER_TYPE_DIARY_NIGHT, actor_id="agent_rem")
@@ -327,7 +348,9 @@ def test_h1_same_event_twice_no_elevate(tmp_path):
     elevated = elevate_matured_patterns(store_dir=store_dir)
     assert elevated == []  # 独立证据 1（同 source_id / 同 event）< 2
     assert _write_node_types(store_dir) == ["pattern"]
-    # 證據邊也只落 1 條 → 獨立證據計數確為 1（若去重被移除，這裡會變 2 並誤升）
+    # 證據邊只落 1 條 —— 原因是**邊層冪等去重**（同一事件的 (source_id,
+    # inner_life_event_id) 三鍵相同），不是節點跳過連帶丟邊。
+    # 若邊去重被移除，這裡會變 2 條並誤升。
     edge_records = [
         json.loads(l)
         for l in (store_dir / EDGES_FILENAME).read_text(encoding="utf-8").splitlines()

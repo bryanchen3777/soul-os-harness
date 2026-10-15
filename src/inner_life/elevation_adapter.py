@@ -28,7 +28,7 @@ import logging
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from soul_elevation import (
     DEFAULT_ELEVATE_MIN_EVIDENCE,
@@ -312,17 +312,29 @@ def _dedup_content_hash(content: Any) -> str:
     return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
 
 
-def _load_existing_dedup_keys(store_dir: Path) -> set:
-    """讀現有 NODES 落檔建 (agent_id, node_type, content_hash) 集合。
+def _load_existing_dedup_index(store_dir: Path) -> Dict[tuple, Optional[str]]:
+    """讀現有 NODES 落檔建 (agent_id, node_type, content_hash) -> canonical node_id 索引。
 
-    fail-open：檔缺失回空集合；讀檔異常（OSError 等）只 warning 並回空集合，
+    SOUL-BUG-001：原版 ``_load_existing_dedup_keys`` 只回 key **集合**，呼叫端只知道
+    「這個 key 已經有人了」，卻無從得知重複節點的證據邊該重綁到**哪一顆**既有節點，
+    只好把邊整批丟棄 ⇒ 跨天獨立證據被銷毀，``min_evidence=2`` 結構性不可達。
+    本函式改回 **key -> canonical_node_id 對照**，讓呼叫端能把邊重綁（rebind）到既有
+    節點上，而不是丟棄（節點冪等本身 100% 保留，VALUE-DEDUP-A-1 不動）。
+
+    canonical 選法（Bry 2026-10-14 拍板「不回溯清倉、只對未來寫入生效」）：
+    同 key 多列時取**檔案順序第一列** —— 確定性、可重現；同一份資料重跑必定綁到
+    同一顆節點。
+
+    壞列（缺 node_id / 解析失敗）→ 記 ``None``，呼叫端據此走 fail-safe（退回丟邊）。
+
+    fail-open：檔缺失回空 dict；讀檔異常（OSError 等）只 warning 並回空 dict，
     絕不 raise（呼叫方因此不跳過，合法產出不受損）。
     """
-    keys: set = set()
+    index: Dict[tuple, Optional[str]] = {}
     path = store_dir / NODES_FILENAME
     try:
         if not path.exists():
-            return keys
+            return index
         with open(path, "r", encoding="utf-8") as fh:
             for line in fh:
                 if not line.strip():
@@ -332,22 +344,80 @@ def _load_existing_dedup_keys(store_dir: Path) -> set:
                 except ValueError:
                     continue
                 try:
-                    keys.add(
-                        (
-                            rec.get("agent_id"),
-                            rec.get("node_type"),
-                            _dedup_content_hash(rec.get("content", "")),
-                        )
+                    key = (
+                        rec.get("agent_id"),
+                        rec.get("node_type"),
+                        _dedup_content_hash(rec.get("content", "")),
                     )
                 except Exception:  # noqa: BLE001 — 單行容錯，不污染整批
                     continue
+                # 檔案順序第一列勝出（確定性 canonical）。已存在但 canonical 為 None
+                # （壞列）而本列 node_id 健康 → 補位，讓重綁仍可進行。
+                if index.get(key) is None:
+                    index[key] = rec.get("node_id")
     except OSError as exc:
         logger.warning("elevation dedup read failed (%s): %s", path, exc)
-        return set()
+        return {}
     except Exception as exc:  # noqa: BLE001 — fail-open：任何異常都不跳過
         logger.warning("elevation dedup read failed (%s): %s", path, exc)
-        return set()
-    return keys
+        return {}
+    return index
+
+
+def _edge_identity(e):
+    """邊的冪等鍵 = ``(node_id, source_id, inner_life_event_id)``。
+
+    🔴 本鍵**必須與引擎的「已消化」消費鍵同構**，否則會寫出引擎根本不計票的重複邊。
+    ``_rebuild_engine_for`` 用 ``(source_id, inner_life_event_id)`` 判定某份證據是否
+    已被同維度的靈魂節點消化；soul_elevation 的 SE-1 契約則以
+    ``evidence_key = (source_id, event_identity)`` 數獨立證據。加上 ``node_id`` 只為
+    「同一份證據可同時支持不同命題」，不影響獨立性計數。
+
+    語意結果（這是 SOUL-BUG-001 能兼容兩種需求的關鍵）：
+      * **同一事件重跑** → 鍵相同 → 收斂 ⇒ 冪等（邊仍 1 條）
+      * **不同事件同內容** → 鍵不同 → 合法累積 ⇒ 打通 ``min_evidence=2``
+
+    ⚠️ 刻意**不含** ``source_type``：Bry 2026-10-14 裁定 —— 同一命題（相同
+    content_hash）若同時由 ``sage_fact`` 與 ``inner_life_event`` 歸納出，應**合併**
+    成一顆 canonical 節點並讓兩種來源的證據邊並存（跨模態雙重印證），而非拆成
+    兩顆重複命題。節點承載命題、出處由邊承載。
+    """
+    return (e.get("node_id"), e.get("source_id"), e.get("inner_life_event_id"))
+
+
+def _dedup_edges(store_dir, edge_records):
+    """對「即將落盤」的證據邊做冪等去重（VALUE-DEDUP-A-1 的邊層補完）。
+
+    已存在於磁碟、或本批之內重複的邊跳過；其餘照寫。
+
+    fail-open：讀檔失敗回原樣（＝不去重），**絕不丟合法產出** —— 去重是保險絲，
+    不是閘門；寧可多寫一條重複邊（引擎端 SE-1 仍會正確計 1），也不要丟證據。
+    """
+    if not edge_records:
+        return edge_records
+    seen = set()
+    path = store_dir / EDGES_FILENAME
+    try:
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    if not line.strip():
+                        continue
+                    try:
+                        seen.add(_edge_identity(json.loads(line)))
+                    except Exception:  # noqa: BLE001 — 單行容錯
+                        continue
+    except Exception as exc:  # noqa: BLE001 — fail-open：不去重
+        logger.warning("elevation edge dedup read failed (%s): %s", path, exc)
+        return list(edge_records)
+    out = []
+    for e in edge_records:
+        key = _edge_identity(e)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(e)
+    return out
 
 
 def _persist_result(
@@ -360,17 +430,33 @@ def _persist_result(
     节点/证据边用 ``dataclasses.asdict`` 序列化为 JSONL，与 soul-elevation 的
     elevation_trace.jsonl（审计 sidecar）并列存放，使「节点 + 证据边」可回查。
 
-    VALUE-DEDUP-A-1 冪等：同 agent 同 node_type 已有相同 content（normalize
-    後 sha256，口徑見 ``_dedup_content_hash``）的節點落盤時跳過 append（僅跳過
-    該 node＋其邊），引擎語意不動（回傳值不變）；讀檔異常則 fail-open（不跳過，
-    只 warning，絕不丟合法產出）。
+    VALUE-DEDUP-A-1 冪等（**節點層，語意完全不變**）：同 agent 同 node_type 已有
+    相同 content（normalize 後 sha256，口徑見 ``_dedup_content_hash``）的節點，
+    落盤時跳過 append。節點數量因此不會膨脹 —— 這是 VALUE-DEDUP-A-1 的核心保證，
+    保留。
+
+    SOUL-BUG-001 修復（Bry 2026-10-14 裁示）：舊版命中重複 key 時，會把該節點
+    ``skipped_node_ids`` 標記後**連同其全部證據邊一併丟棄** ⇒ 跨天的獨立證據被銷毀，
+    ``min_evidence=2`` 結構性不可達。現改為**節點合併 + 邊重綁（edge rebinding）**：
+
+      1. 重複節點仍跳過不寫入（節點冪等 100% 保留）；
+      2. 但把它底下的證據邊的 ``node_id`` **重綁**到既有的 ``canonical_node_id``；
+      3. 邊再依 ``_edge_identity`` 去重（見該函式 docstring 的同構理由）。
+
+    ⇒ 同一批資料重跑仍冪等（節點 1 顆、邊 1 條）；跨天同內容的新事件則讓第 2 條
+    證據邊掛到同一顆 canonical 節點上，使獨立證據自然累積達標。
+
+    fail-safe：canonical 不可知（磁碟上有缺 ``node_id`` 的壞列）→ 該節點的邊**照舊
+    丟棄**，維持 VALUE-DEDUP-A-1 原行為，絕不產生懸空邊。引擎語意不動（回傳值
+    不變）；讀檔異常則 fail-open（不跳過，只 warning，絕不丟合法產出）。
     """
     node_records = [asdict(n) for n in nodes]
     edge_records = [asdict(e) for e in edges]
     if node_records:
-        existing = _load_existing_dedup_keys(store_dir)
+        existing = _load_existing_dedup_index(store_dir)
         fresh_records: list = []
-        skipped_node_ids: set = set()
+        rebind: dict = {}           # 被跳過的 node_id -> canonical node_id
+        unrebindable: set = set()   # canonical 不可知 → 維持舊行為（丟邊）
         for rec in node_records:
             try:
                 key = (
@@ -382,16 +468,33 @@ def _persist_result(
                 fresh_records.append(rec)
                 continue
             if key in existing:
-                skipped_node_ids.add(rec.get("node_id"))
+                canonical = existing[key]
+                node_id = rec.get("node_id")
+                if node_id and canonical == node_id:
+                    pass  # 已是 canonical 本身，邊本來就指對，照留
+                elif node_id and canonical:
+                    rebind[node_id] = canonical  # 證據邊改綁到既有節點
+                else:
+                    unrebindable.add(node_id)     # canonical 不可知 → fail-safe 丟邊
                 continue
-            existing.add(key)
+            existing[key] = rec.get("node_id")
             fresh_records.append(rec)
-        if skipped_node_ids:
+        if rebind:
+            for e in edge_records:
+                canonical = rebind.get(e.get("node_id"))
+                if canonical:
+                    e["node_id"] = canonical
+        if unrebindable:
             edge_records = [
-                e for e in edge_records if e.get("node_id") not in skipped_node_ids
+                e for e in edge_records if e.get("node_id") not in unrebindable
             ]
         if fresh_records:
             _append_jsonl(store_dir / NODES_FILENAME, fresh_records)
+    # 🔴 邊層冪等（SOUL-BUG-001）：刻意**移出** `if node_records:` 區塊 ——
+    # 舊版只有「本批有節點」時才碰邊，無新節點時邊完全不去重。
+    # 鍵與引擎消費鍵同構（見 _edge_identity），故「同事件重跑」收斂、
+    # 「新事件同內容」合法累積。
+    edge_records = _dedup_edges(store_dir, edge_records)
     if edge_records:
         _append_jsonl(store_dir / EDGES_FILENAME, edge_records)
 

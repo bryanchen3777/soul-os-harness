@@ -9,9 +9,9 @@ SOUL-BUG 看門狗（Bry 拍板 2026-10-13）：以 `xfail(strict=True)` 標記�
   ⇒ 杜絕「修好了但沒人知道／沒有驗證」——這正是 SOUL-BUG-001 差點發生的情形。
 
 ---
-# SOUL-BUG-001 — VALUE-DEDUP-A-1 連帶丟棄證據邊，EL-DD-2 閘門結構性不可達
+# SOUL-BUG-001 — ✅ 已修復（Bry 2026-10-14 授權），xfail marker 已移除
 ---
-根因: `src/inner_life/elevation_adapter.py:384-392`（commit `fb7ab63`）對**所有**
+原根因: `src/inner_life/elevation_adapter.py`（commit `fb7ab63`）對**所有**
 node_type 做 `(agent_id, node_type, content_hash)` 冪等去重，且當節點被判定重複時
 **連帶丟棄其全部證據邊**:
     if key in existing:
@@ -25,9 +25,17 @@ node_type 做 `(agent_id, node_type, content_hash)` 冪等去重，且當節點�
 內容，生產事件的 `extras` **近乎恆定**（`scripts/run_server.py:1808` `extras={"slot": slot}`；
 `:1669-1672` `extras={target_agent_id, all_agents_count}`）⇒ 相同內容是常態而非例外。
 
-⚠️ 本測試刻意使用**空的 extras**，也就是生產實況。
-   既有 `test_elevate_mechanism.py` 的 `_make_distinct_events` 刻意給每條事件不同的
-   extras 以繞開此缺陷——那個繞法本身就是這個缺陷的藏身處。
+修法（節點冪等 100% 保留）：**節點合併 + 邊重綁 + 邊去重** —— 重複節點仍不寫入，
+但其證據邊的 `node_id` 改綁到既有 `canonical_node_id`，再依
+`(node_id, source_id, inner_life_event_id)`（與引擎消費鍵同構）去重。
+⇒ 同事件重跑仍收斂（冪等），跨事件同內容則合法累積。
+
+本測試**保留為常態回歸**：它是唯一一支以**生產實況的空 extras** 打到這條路徑的測試。
+`test_elevate_mechanism.py` 的 `_make_distinct_events` 刻意給每條事件不同的 extras
+繞開此路徑——修好之後那些測試已恢復有效，但**它們不再覆蓋生產形狀**。
+
+⚠️ 修復後的正確形狀是「**節點 coalesce 成 1 顆、邊累積 ≥2**」，
+   不是「2 顆 pattern 節點」——下方斷言已依此語意改寫。
 
 ---
 # SOUL-BUG-004 — chrono 區塊雙端切斷，全角色時間感知喪失
@@ -81,23 +89,16 @@ def _prod_shaped_event(writer, trigger_type, actor_id):
 
 
 # ─────────────────────────────────────────────────────────────────────
-# SOUL-BUG-001 看門狗
+# SOUL-BUG-001 看門狗（✅ 已修復 2026-10-14，xfail marker 已依契約移除）
 # ─────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "SOUL-BUG-001: _persist_result (elevation_adapter.py:384-392, commit "
-        "fb7ab63) dedups by (agent_id, node_type, content_hash) for ALL node "
-        "types AND drops the skipped node's evidence edges. Production events "
-        "carry near-constant extras, so repeated patterns are deduped and "
-        "independent evidence can never reach 2 → the EL-DD-2 elevation gate "
-        "is structurally unreachable for diary:night / dream:dream."
-    ),
-)
 def test_elevation_pattern_evidence_accumulation_must_reach_two(tmp_path):
-    """兩條**生產形狀**（extras 相同）的 diary 事件，獨立證據必須累積到 ≥2 並觸發昇降。"""
+    """兩條**生產形狀**（extras 相同）的 diary 事件，獨立證據必須累積到 ≥2 並觸發昇降。
+
+    🔴 SOUL-BUG-001 常態回歸（2026-10-14 修復後移除 xfail）。這是全 repo **唯一**
+    以生產實況（空 extras → 同內容）打到「節點合併 + 邊重綁」路徑的測試。
+    """
     writer = InnerLifeWriter()
     store_dir = tmp_path / "elevation"
 
@@ -108,7 +109,6 @@ def test_elevation_pattern_evidence_accumulation_must_reach_two(tmp_path):
             store_dir=store_dir,
         )
 
-    # 診斷訊息：若失敗，這兩行會直接指出是「節點沒落盤」還是「邊被丟棄」。
     persisted = load_elevation_nodes(store_dir)
     patterns = [n for n in persisted if n.get("node_type") == "pattern"]
     edges_path = Path(store_dir) / EDGES_FILENAME
@@ -118,12 +118,34 @@ def test_elevation_pattern_evidence_accumulation_must_reach_two(tmp_path):
         else []
     )
 
+    # 🔴 Coalescing 形狀斷言：兩條同內容事件 → **節點合併成 1 顆**（VALUE-DEDUP-A-1
+    # 的節點冪等必須保留），但 **2 份獨立證據邊都必須掛在那一顆上**。
+    # 這正是 SOUL-BUG-001 修復前的斷言：pattern 數從來不是重點，
+    # 「兩份證據能否累積到同一顆命題上」才是。
+    assert len(patterns) == 1, (
+        f"兩條同內容生產事件應 coalesce 成 1 顆 pattern 節點（節點冪等），"
+        f"實得 {len(patterns)}"
+    )
+    assert len(edges) >= 2, (
+        f"兩條同內容生產事件應留下 ≥2 條證據邊（跨事件證據累積），實得 {len(edges)}。"
+        f"若為 1，代表邊仍被連帶丟棄 —— SOUL-BUG-001 復發。"
+    )
+    # 兩條邊必須指向同一顆節點，且是兩份相異的獨立證據。
+    edge_node_ids = {e["node_id"] for e in edges}
+    assert edge_node_ids == {patterns[0]["node_id"]}, (
+        f"兩條證據邊應重綁到同一顆 canonical 節點 {patterns[0]['node_id']}，"
+        f"實得 {edge_node_ids}"
+    )
+    identities = {(e["source_id"], e.get("inner_life_event_id")) for e in edges}
+    assert len(identities) == len(edges), (
+        f"證據邊必須是相異的獨立證據，實得 identities={identities}"
+    )
+
     elevated = elevate_matured_patterns(store_dir=store_dir)
     assert elevated, (
-        f"2 條生產形狀事件未觸發昇降 —— 獨立證據未達 2。"
-        f"已落盤 pattern 數={len(patterns)}（預期 2，但去重可能只留 1）；"
-        f"已落盤證據邊數={len(edges)}（預期 ≥2，去重可能連邊一起丟棄）。"
-        f"這是 SOUL-BUG-001 的預期失敗。"
+        f"2 條生產形狀事件未觸發昇降 —— 獨立證據未達 min_evidence=2。"
+        f"已落盤 pattern 數={len(patterns)}（coalescing 後應為 1）；"
+        f"已落盤證據邊數={len(edges)}（應 ≥2）。"
     )
     assert any(
         getattr(n, "node_type", (n.get("node_type") if isinstance(n, dict) else None)) in _SOUL_TYPES

@@ -2,9 +2,52 @@
 
 **工單編號**：SOUL-BUG-001
 **嚴重度**：**P0（邏輯致命，生產未爆但時鐘已啟動）**
-**狀態**：APPROVED & OPEN（Bry 核准立案 2026-10-12）｜**測試維持紅燈，嚴禁放水**
+**狀態**：**✅ CLOSED（Bry 2026-10-14 裁示 A′ 方案並授權施工）**｜xfail 看門狗已轉正為常態回歸
 **發現方式**：SOUL-TECH-DEBT-001 C 類深度鑑識
 **引入 commit**：`fb7ab63`（2026-10-11）`feat(elevation): _persist_result idempotent on (agent,node_type,content_hash) (VALUE-DEDUP-A-1)`
+
+---
+
+## 0. ✅ 結案摘要（Bry 2026-10-14 裁示「節點合併 + 邊重綁 + 邊去重」）
+
+**採 A′ 方案：節點冪等 100% 保留，證據邊改為重綁到 canonical 節點。**
+
+### 樞紐：落盤去重鍵與引擎消費鍵必須同構
+
+| | 鍵 |
+|---|---|
+| 落盤邊去重 | `(node_id, source_id, inner_life_event_id)` |
+| 引擎「已消化」消費鍵（`_rebuild_engine_for`） | `(source_id, inner_life_event_id)` |
+| SE-1 獨立證據鍵（`soul_elevation`） | `(source_id, event_identity)` |
+
+⇒ **同一事件重跑**：三鍵相同 → 收斂 → 邊仍 1 條（冪等守住）
+⇒ **跨事件同內容**：三鍵相異 → 合法累積 → `min_evidence=2` 達標
+
+兩個需求因此在**同一個數學模型**下相容，而非互相妥協。
+
+### 三處程式改動（全在 `src/inner_life/elevation_adapter.py`）
+
+1. `_load_existing_dedup_keys` → **`_load_existing_dedup_index`**：回傳 `key -> canonical_node_id`（原版只回 set，無從得知該綁去哪）。canonical 取**檔案順序第一列**（`setdefault` 語意：已有值為 None 才補位）。
+2. `_persist_result`：`skipped_node_ids` 拆成 `rebind: dict` + `unrebindable: set`。重複節點仍不寫入；邊先 remap `node_id`，再丟 `unrebindable` 的邊（**順序不可反**）。
+3. 新增 `_edge_identity()` / `_dedup_edges()`，並把邊去重**移出 `if node_records:` 區塊**（舊版無新節點時邊完全不去重）。
+
+### 三組變異實驗（全部轉紅，守衛皆非恆真式）
+
+| 變異 | 結果 |
+|---|---|
+| `MUT-1` rebind 退回舊的「丟邊」 | ✅ 4 支轉紅（watchdog + 3 支 persist） |
+| `MUT-2` 停用邊層去重 | ✅ 2 支轉紅（`test_h1` + `test_same_event_reingest_edges_still_deduped`） |
+| `MUT-3` 邊鍵漏掉 `inner_life_event_id` | ⚠️ **首輪未轉紅 → 覆蓋缺口 → 補 `test_same_source_different_event_both_edges_kept` → 復驗轉紅** |
+
+### Bry 裁示的三個邊界
+
+1. **跨 `source_type` 合併**：批准合併。節點承載命題、出處由邊承載；`sage_fact` 與 `inner_life_event` 若產出同一命題，合併為一顆 canonical 並讓兩種來源證據邊並存（跨模態雙重印證）。⇒ `_edge_identity` 刻意**不含** `source_type`。
+2. **生產資料 30 列重複節點**：維持**不清倉、不回溯合併**（`docs/INNER-LIFE-CONSTRUCTABILITY-AUDIT.md:29` 已載明該決策）。修復只對未來寫入生效。
+3. **`test_persist_idempotency.py` 斷言翻轉**：批准。並把 `test_partial_skip_only_dup_node_and_its_edges` **改名為** `test_duplicate_node_coalesced_edges_rebound`——原測試名本身即編碼了缺陷。
+
+### 對「6 筆已校準測試」的自我更正
+
+本工單立案時曾記載「修好會翻轉 6 筆已校準測試」。**該數字錯誤**。實際為 **3 支測試翻轉 ＋ 2 篇 docstring 改寫**；`test_elevate_mechanism.py` 與 `test_elevation_evidence_scope_a1.py` 共 21 支中 20 支與本缺陷無關（前者靠 `_make_distinct_events` 繞開 dedup 分支，後者手寫 JSONL 繞過 `_persist_result`）。
 
 ---
 
