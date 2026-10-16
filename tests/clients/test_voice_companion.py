@@ -143,16 +143,34 @@ def _isolate_session_store(tmp_path, monkeypatch):
 # ─────────────────────────────────────────────────────────────
 
 class TestAsrRefiner:
+    # 【VC-REFINER-2】以下斷言守的是**小茜的**同音規則（欠/小欠/西 → 茜/小茜）。
+    # 角色感知後必須顯式帶上身分才會套用；不帶則正確地只跑通用規則。
+    AKANE = {"id": "agent_akane", "display_name": "黑川茜", "short_name": "茜"}
+
     def test_akane_homophone_recovery(self):
         """「欠...那个...今天好累」→「茜，今天好累。」（錯字 + 贅詞 + 標點）"""
-        assert refine_speech_text("欠...那个...今天好累") == "茜，今天好累。"
+        assert refine_speech_text("欠...那个...今天好累", self.AKANE) == "茜，今天好累。"
 
     def test_more_homophone_and_filler_cases(self):
         assert refine_speech_text("排成记得下午开会") == "排程记得下午开会。"
-        assert refine_speech_text("小欠......想你了") == "小茜，想你了。"
-        assert refine_speech_text("西，你回來啦") == "茜，你回來啦。"
+        assert refine_speech_text("小欠......想你了", self.AKANE) == "小茜，想你了。"
+        assert refine_speech_text("西，你回來啦", self.AKANE) == "茜，你回來啦。"
         assert refine_speech_text("呃...那個...就是說...嗯") is None  # 全贅詞 → 淨化後為空 → DROP
         assert refine_speech_text("嗯，我知道了") == "我知道了。"
+
+    def test_akane_rules_do_not_leak_without_companion(self):
+        """🔴 VC-REFINER-2 負向守衛：不知道自己在跟誰說話時，**不猜**。
+
+        舊實作三個實例共用寫死小茜的表，導致雷姆實例把「小欠」修成「小茜」，
+        甚至把正確的「雷姆」改成「蕾姆」。安全預設是「只跑通用規則」。
+
+        守的是「茜沒有憑空長出來」這個不變量，不綁贅詞／標點正規化的細節。
+        """
+        for raw in ("小欠......想你了", "欠...那个...今天好累", "西，你回來啦"):
+            out = refine_speech_text(raw)
+            assert "茜" not in out, f"無 companion 時不得套用小茜規則：{raw!r} -> {out!r}"
+        # 通用規則仍必須生效（隔離不是「把整個模組關掉」）
+        assert refine_speech_text("排成记得下午开会") == "排程记得下午开会。"
 
     def test_noise_fuse_returns_none(self):
         """純雜音（感嘆詞/嘆氣/咳嗽）熔斷 → None（DROP 不打擾）"""

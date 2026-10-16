@@ -89,8 +89,10 @@ LOCAL_MODE_INPUT = "是是是是是是"
 LOCAL_MODE_CLEAN = "是是是是是是。"
 
 # 長文本（> ASR_LOG_TEXT_LIMIT）：驗日誌截斷 **且** 送往大腦的文字不截斷
+# 【VC-REFINER-2】上限 80 → 200，因此長樣本也必須相應加長，否則測的是「沒超上限」，
+# 等於把截斷行為悄悄停用了——那正是本組測試存在的唯一理由。
 LONG_SENTENCE = "今天天氣很好我們一起去公園散步好嗎我想說的是明天早上九點記得提醒我帶傘出門"
-LONG_LLM_REPLY = LONG_SENTENCE * 3  # 120 字元 > 80
+LONG_LLM_REPLY = LONG_SENTENCE * 6  # 240 字元 > 200
 
 
 # ─────────────────────────────────────────────────────────────
@@ -306,10 +308,16 @@ class TestD1LastRefinePath:
 # ─────────────────────────────────────────────────────────────
 
 class TestD1OutputVerbatimUnchanged:
+    # 【VC-REFINER-2】LOCAL_MODE_EXPECTED 裡的「小欠你好 → 小茜，你好。」是**小茜的**
+    # 同音規則產物。角色感知後，不帶 companion 的呼叫正確地**不該**套用任何角色規則，
+    # 因此這裡顯式給出小茜身分，讓「逐字不變」守的仍是同一組常數——
+    # 守的是行為等價，不是「忘了帶參數」。
+    AKANE_COMPANION = {"id": "agent_akane", "display_name": "黑川茜", "short_name": "茜"}
+
     @pytest.mark.parametrize("raw,expected", LOCAL_MODE_EXPECTED)
     def test_local_mode_output_verbatim(self, raw, expected):
         """未注入 LLM：回傳值必須逐字等於本票前寫死的常數。"""
-        refiner = AsrRefiner(llm_call=None)
+        refiner = AsrRefiner(llm_call=None, config={"companion": self.AKANE_COMPANION})
         assert refiner.refine_speech_text(raw) == expected
 
     @pytest.mark.parametrize("raw,expected", LLM_MODE_EXPECTED)
@@ -323,7 +331,7 @@ class TestD1OutputVerbatimUnchanged:
         """模組級 refine_speech_text()（無狀態預設實例）輸出同樣逐字不變。"""
         from clients.voice_companion.asr_refiner import refine_speech_text as module_refine
 
-        assert module_refine(raw) == expected
+        assert module_refine(raw, self.AKANE_COMPANION) == expected
 
     def test_local_refine_itself_untouched(self):
         """規則式核心 local_refine() 未被本票改動（觀測欄位不得污染它）。"""
@@ -406,9 +414,17 @@ class TestD2RunPathLog:
         assert len(records) == 1
         msg = records[0].getMessage()
         assert msg.startswith(f"[ASR-REFINE] decision=bypass reason=clear chars={len(clear)} conf=none elapsed_ms=")
-        assert "path=" not in msg and "raw=" not in msg and "refined=" not in msg
+        # 【VC-REFINER-2 變更】舊版斷言「不得長出 raw=」，現改為「必須有 raw=」。
+        # 理由是真實考古證據、非風格偏好：2026-10-16 掃描三份 VC 日誌時發現，
+        # 145 個語音回合**全部**是 bypass，而舊格式只印 reason 不印原文 ⇒
+        # 「被 ASR 聽錯卻繞過整個 refiner」的句子在日誌裡完全不可見。高頻錯字
+        # （蚂蚁／仙特塔／裴雷姆／小倩）全部落在這條路徑上，沒有原文就無法考古。
+        assert f"raw='{clear}'" in msg, f"bypass 必須帶原文（VC-REFINER-2），實得：{msg}"
+        # 仍然不得長出 path= / refined=：bypass 沒走任何修補路徑，寫 path 只會說謊。
+        assert "path=" not in msg and "refined=" not in msg
         out = capsys.readouterr().out
         assert f"[ASR-REFINE] decision=bypass reason=clear chars={len(clear)} conf=none elapsed_ms=" in out
+        assert f"raw='{clear}'" in out
 
     def test_refiner_exception_is_logged_as_drop(self, caplog):
         """Refiner 拋例外（web_server 吞掉 → clean='') ⇒ 如實標 path=drop，不殘留舊值。"""
@@ -431,17 +447,23 @@ class TestD2RunPathLog:
 
 class TestD2Truncation:
     def test_truncate_helper_limits_and_marks(self):
-        """截斷只作用於日誌字串：≤80 原樣，>80 取前 80 加 '…'。"""
-        assert ASR_LOG_TEXT_LIMIT == 80
+        """截斷只作用於日誌字串：≤上限原樣，>上限取前 N 字加 '…'。
+
+        ⚠️ 全部引用 ASR_LOG_TEXT_LIMIT，**不寫死 80**（VC-REFINER-2 已把上限
+        調到 200）。寫死常數會讓「調整上限」這類純觀測性調整直接變成紅燈，
+        逼得後人用放寬斷言來消災——那正是本組測試要防的病。
+        """
+        limit = ASR_LOG_TEXT_LIMIT
+        assert limit == 200, "VC-REFINER-2 把上限由 80 調到 200（讓長句可考古）"
         assert _truncate_for_log("短句") == "短句"
-        exactly = "字" * 80
-        assert _truncate_for_log(exactly) == exactly, "剛好 80 字元不得被截"
-        over = "字" * 81
-        assert _truncate_for_log(over) == "字" * 80 + "…"
-        assert len(_truncate_for_log("字" * 500)) == 81
+        exactly = "字" * limit
+        assert _truncate_for_log(exactly) == exactly, f"剛好 {limit} 字元不得被截"
+        over = "字" * (limit + 1)
+        assert _truncate_for_log(over) == "字" * limit + "…"
+        assert len(_truncate_for_log("字" * (limit * 5))) == limit + 1
 
     def test_long_text_truncated_in_log_only(self, caplog, capsys):
-        """長文本：日誌 raw/refined 各截到 80 + '…'；送往大腦的文字必須完整（120 字）。"""
+        """長文本：日誌 raw/refined 各截到上限 + '…'；送往大腦的文字必須完整。"""
         caplog.set_level(logging.INFO, logger="vc.web_server")
         assert len(LONG_LLM_REPLY) > ASR_LOG_TEXT_LIMIT
         refiner = AsrRefiner(llm_call=lambda p: LONG_LLM_REPLY)
@@ -451,16 +473,18 @@ class TestD2Truncation:
         assert len(records) == 1
         msg = records[0].getMessage()
         assert f"raw='{RUN_INPUT}'" in msg, "短的 raw 不應被截"
-        assert f"-> refined='{LONG_LLM_REPLY[:80]}…'" in msg, "refined 應截到 80 字元 + '…'"
+        assert f"-> refined='{LONG_LLM_REPLY[:ASR_LOG_TEXT_LIMIT]}…'" in msg, (
+            f"refined 應截到 {ASR_LOG_TEXT_LIMIT} 字元 + '…'"
+        )
         assert LONG_LLM_REPLY not in msg, "完整長文本不得進日誌"
 
         # 送往大腦的文字完整（未被日誌截斷影響）
         assert seen_user_texts == [LONG_LLM_REPLY]
 
     def test_long_raw_truncated_in_log_and_full_text_reaches_brain(self, caplog):
-        """長 raw（>80）：日誌 raw 截到 80 + '…'，但 Refiner 收到的是完整原文。"""
+        """長 raw：日誌 raw 截到上限 + '…'，但 Refiner 收到的是完整原文。"""
         caplog.set_level(logging.INFO, logger="vc.web_server")
-        long_raw = "是" * 6 + "，" + LONG_SENTENCE * 2
+        long_raw = "是" * 6 + "，" + LONG_SENTENCE * 6
         assert len(long_raw) > ASR_LOG_TEXT_LIMIT
         seen_raws: list[str] = []
 
@@ -476,5 +500,5 @@ class TestD2Truncation:
         records = _refine_records(caplog)
         assert len(records) == 1
         msg = records[0].getMessage()
-        assert f"raw='{long_raw[:80]}…'" in msg
+        assert f"raw='{long_raw[:ASR_LOG_TEXT_LIMIT]}…'" in msg
         assert long_raw not in msg

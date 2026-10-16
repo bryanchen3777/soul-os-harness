@@ -230,7 +230,9 @@ def setup_logging(agent_id: str) -> str:
 
 
 # VC-ASR-DIAG-1：日誌截斷上限（只作用在日誌字串；送往大腦的文字一律不截斷）
-ASR_LOG_TEXT_LIMIT = 80
+# 【VC-REFINER-2】80 → 200：2026-10-16 考古發現日誌是唯一能看到真實 ASR 輸出的地方，
+# 40/80 字的截斷讓長句根本無法考古。200 字足以覆蓋絕大多數語音回合，且仍舊有界。
+ASR_LOG_TEXT_LIMIT = 200
 
 
 def _truncate_for_log(text: str, limit: int = ASR_LOG_TEXT_LIMIT) -> str:
@@ -481,6 +483,10 @@ class WebSession:
         self._ws = ws
         self._config = config
         self._agent_id = (config.get("companion") or {}).get("id", "agent_akane")  # VC-NOREPLY-1：失敗日誌標識
+        # 【VC-REFINER-2】角色身分（整份 companion dict）交給同音規則層。
+        # 舊實作只留 _agent_id 給失敗日誌用，同音規則層完全不知道自己在跟誰說話 ⇒
+        # 8766/8767 也會套用寫死小茜的規則（實測把「雷姆」改寫成「蕾姆」／「茜」）。
+        self._companion = config.get("companion") or None
         self._brain = brain
         self._refiner = refiner
         self._asr = asr
@@ -683,14 +689,16 @@ class WebSession:
             return
         if gen != self._generation:
             return
-        print(f"[UTT] asr-ok text={text[:40]}")  # VC-1.5 診斷日誌
-        log.info("[UTT] asr-ok text=%s", text[:40])
+        # 【VC-REFINER-2】原本硬寫 text[:40]；改走 _truncate_for_log 走統一上限。
+        print(f"[UTT] asr-ok text={_truncate_for_log(text)}")  # VC-1.5 診斷日誌
+        log.info("[UTT] asr-ok text=%s", _truncate_for_log(text))
         await self._send_json({"type": "transcript", "role": "user", "text": text})
 
         # ── VC-ASR-COND-1：條件式 Refiner 執行（預設 Bypass 直通 Voice Brain）──
         # 清晰、高信心的日常完整語句 → 100% Bypass（原始轉錄文本直送 Voice Brain，
         # 每回合維持 1 次 LLM 呼叫）；異常條件（needs_refiner）才 Run Refiner 第二道防線。
-        run_refiner, reason = needs_refiner(text)
+        # 【VC-REFINER-2】帶上 companion，讓 homophone 條件只認當前角色的規則表。
+        run_refiner, reason = needs_refiner(text, self._companion)
         chars = len(text)
         elapsed_ms = round(((t_asr_done or t_start) - t_start) * 1000)  # ASR 轉錄耗時
         if run_refiner:
@@ -701,7 +709,7 @@ class WebSession:
             homophone_only = reason == "homophone"
             if homophone_only:
                 try:
-                    clean = local_refine(text)
+                    clean = local_refine(text, self._companion)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -759,8 +767,15 @@ class WebSession:
                 return
         else:
             clean = text
-            print(f"[ASR-REFINE] decision=bypass reason={reason} chars={chars} conf=none elapsed_ms={elapsed_ms}")
-            log.info("[ASR-REFINE] decision=bypass reason=%s chars=%d conf=none elapsed_ms=%d", reason, chars, elapsed_ms)
+            # 【VC-REFINER-2】bypass 也要記 raw。2026-10-16 考古時最大的發現是：
+            # 「被同音聽錯但因為 reason=clear 而繞過整個 refiner」的句子，在日誌裡
+            # **完全不可見**（那 145 回合全是 bypass，log 只印 reason 不印原文）。
+            # 真正的高頻錯字（蚂蚁/仙特塔/裴雷姆/小倩）全部落在這條路徑上。
+            # 這一行的新增不改變任何行為（僅日誌字串），但讓下一輪考古有對照組。
+            print(f"[ASR-REFINE] decision=bypass reason={reason} chars={chars} conf=none "
+                  f"elapsed_ms={elapsed_ms} raw='{_truncate_for_log(text)}'")
+            log.info("[ASR-REFINE] decision=bypass reason=%s chars=%d conf=none elapsed_ms=%d raw='%s'",
+                     reason, chars, elapsed_ms, _truncate_for_log(text))
         # VC-ASR-CHANNEL-HINT-1：ASR 回合是**唯一**標記通道的呼叫端（打字 fallback 不標）
         await self._run_reply(
             clean, gen=gen, t_start=t_start, t_asr_done=t_asr_done, source=VC_ASR_SOURCE

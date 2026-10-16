@@ -62,6 +62,29 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _default_data_root() -> Path:
+    """SessionStore 的預設資料根。
+
+    🔴 VC-REFINER-2 修正（2026-10-16）：原本一律寫死 `_repo_root()/data`，
+    **繞過了全專案的資料根隔離機制**（`src/paths.py::data_root()`／`SOUL_OS_DATA_DIR`）。
+    實際後果：`tests/conftest.py` 的 autouse fixture 每個測試都把
+    `SOUL_OS_DATA_DIR` 指向 tmp，但本模組不看它 ⇒ **每跑一次測試就把測試對話
+    寫進 Bry 與各角色的真實短期對話檔** `data/sessions/agent_*_user_bryan.json`
+    （2026-10-16 實測：agent_akane / agent_mai / agent_rem 三檔被測試改動，
+    mtime 隨每次 pytest 執行前進），而且下一次執行會讀到上一次的殘留歷史，
+    讓測試變成**執行間相依**。
+
+    這裡採「環境變數優先、否則維持原路徑」的形式：
+      - `SOUL_OS_DATA_DIR` 未設（**生產實況**）→ 回 `_repo_root()/data`，
+        與舊行為逐位元組相同，零生產風險。
+      - 有設（測試 / 沙箱）→ 回該目錄下，於是 autouse fixture 自動生效。
+    """
+    env_root = os.environ.get("SOUL_OS_DATA_DIR", "").strip()
+    if env_root:
+        return Path(env_root).resolve()
+    return _repo_root() / "data"
+
+
 def _estimate_tokens(turns: List[DialogueTurn]) -> int:
     """粗略 token 估算：CJK 為主內容約 1 字 ≈ 1 token，保守取 len//2。"""
     return sum(max(1, len(t.content) // 2) for t in turns)
@@ -73,7 +96,7 @@ class SessionStore:
     def __init__(self, data_dir: Optional[Path] = None):
         self.data_dir = (
             Path(data_dir) if data_dir is not None
-            else _repo_root() / "data" / "sessions"
+            else _default_data_root() / "sessions"
         )
 
     # ── 路徑 ──────────────────────────────────────────────
