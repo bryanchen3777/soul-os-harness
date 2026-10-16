@@ -52,6 +52,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
@@ -358,49 +359,45 @@ def _safe_rmtree(path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_inject_tick_does_not_trigger_agent_speak():
+async def test_inject_tick_endpoint_is_retired():
     """
-    /inject/tick 的**負向契約**（M5.7-2 契約變更，SOUL-BUG-003）。
+    `/inject/tick` 已**除役**（SOUL-BUG-003，Bry 2026-10-16 裁示）。
 
-    契約變更歷史
-    ------------
-    本測試**原本**叫 `test_inject_tick_triggers_agent_speak`，斷言的是正向鏈路：
-    `/inject/tick` 注入 SYSTEM_TICK → Agent → Intent → LLM(Mock) → AGENT_SPEAK
-    → WebSocket broadcast。它從 Bry 派工第一天起就是紅燈
-    （"No agent_speak received after 3 retries"），並在多份 closeout
-    （m5_4_5_7 / m5_4_6_1）被如實記為「pre-existing failure」而擱置。
+    完整沿革（三段契約變更，這支測試的名字變過兩次）
+    --------------------------------------------------
+    1. `test_inject_tick_triggers_agent_speak`（原始）
+       斷言正向鏈路：注入 SYSTEM_TICK → Agent → Intent → LLM(Mock) →
+       AGENT_SPEAK → WS broadcast。從 Bry 派工第一天起就是紅燈。
+       根因不是 flaky：M5.7-2（commit `95891e8`）註解掉
+       `consciousness.py` 對 SYSTEM_TICK 的**唯一**訂閱（constraint M），
+       SYSTEM_TICK 沒有任何消費者。
 
-    真正的根因不是 flaky：M5.7-2（commit `95891e8`）**註解掉**了
-    `src/agent/consciousness.py:155` 對 SYSTEM_TICK 的**唯一**訂閱，
-    並明文列為 constraint M：
-        ❌ 不啟用 SYSTEM_TICK → proactive-agent autonomous execution
-    （該行至今仍是註解狀態。）
+    2. `test_inject_tick_does_not_trigger_agent_speak`（2026-10-14）
+       改為**負向契約**：200 + `injected=true` + 觀察窗內 0 筆非空 speak。
+       當時保留端點的理由是「它是防呆閘門」。
 
-    ⇒ SYSTEM_TICK **沒有任何消費者**，`/inject/tick` 因此不可能產生 agent_speak。
-    這不是缺陷，是 Bry 拍板的架構選擇；測試才是過期的那一方。
+    3. **本版（2026-10-16）**：端點本身被刪除，斷言改為 **404**。
 
-    為什麼是負向契約而不是刪掉測試
-    ------------------------------
-    `/inject/tick` 端點本身仍然存在（`src/io/gateway.py:634-656`：publish SYSTEM_TICK、
-    `await asyncio.sleep(6.0)`、回 `{"injected": True, ...}`），而且它是**防呆閘門**：
-    哪天有人不小心把 SYSTEM_TICK 的訂閱接回去，這支測試必須立刻轉紅。
-    保留端點 + 斷言「不產生 speak」＝ 把 M5.7-2 的架構約束釘成可執行契約。
+    為什麼第 2 版的「防呆閘門」理由不成立
+    ------------------------------------
+    重新盤點後發現，真正的長效釘子是
+    `tests/test_m5_7_2_heartbeat_reactivation.py::
+    test_m1_consciousness_event_filter_excludes_system_tick`
+    —— 它直接 regex `consciousness.py` 的 `register()` event_filter，
+    任何**未註解**的 `SYSTEM_TICK` 都會 `pytest.fail`。不需要伺服器、零副作用。
 
-    斷言三件事
-    1. HTTP 200
-    2. body `{"injected": true, ...}`（端點本身仍正常運作）
-    3. WS 上收不到任何非空 text 的 agent_speak（契約的核心）
+    ⇒ 第 2 版的 e2e 只在「有人重新啟用訂閱**而且同一個 commit 把 test_m1
+      一起改掉**」這種極弱威脅模型下才有意義。
 
-    殘餘 flake 風險（如實揭露）：isolated server 會起 scheduler
-    （`scripts/run_server.py:1303`，`proactive_agents=["agent_ruka"]`），
-    其 `_fire_heartbeat` / `_fire_proactive_dm` 是 30–60 分 / 2–4 小時隨機觸發。
-    本測試觀察窗僅 10 秒 ⇒ 誤觸發機率約 1%。此風險**與原正向測試同源**，
-    不是本次改寫引入的。
+    而端點本身的成本是實實在在的：無認證、無 `SOUL_ENV` gate、
+    publish 完還 `sleep(6.0)` 佔住 handler、無速率限制。
+    （它不是孤例——`/inject/yua` 暴露更嚴重，已於同票加上生產閘門。）
+
+    本測試現在釘住的是**除役這件事本身**：若有人把 `/inject/tick` 加回來，
+    這支測試立刻轉紅。
     """
     # P0.5 (Bry 派工 2026-08-09 19:48): isolate persistence via SOUL_OS_DATA_DIR
     # TEST-INFRA-ISOLATION-1: server 一律起在自己的 ephemeral 埠，永不碰生產 :8000。
-    # Use manual cleanup (not TemporaryDirectory context manager) to handle
-    # Windows file lock race when server subprocess is terminated.
     tmp_data_dir = tempfile.mkdtemp(prefix="test_ws_e2e_")
     server: Optional[_IsolatedServer] = None
     try:
@@ -408,62 +405,24 @@ async def test_inject_tick_does_not_trigger_agent_speak():
         try:
             server.wait_ready(60)
 
-            async with websockets.connect(server.ws_url()) as ws:
-                # fast_forward 35 分鐘（打自己的 server）
-                req = urllib.request.Request(
-                    f"{server.base_url()}/_admin/fast_forward?minutes=35.0",
-                    method="GET",
-                )
-                with urllib.request.urlopen(req, timeout=5):
-                    pass
-
-                # inject tick — 單次即可（負向契約不需要 retry：端點沒有「冷啟動
-                # 還沒 ready」的不確定性，端點內部自己 sleep(6.0) 等管線跑完）
-                req2 = urllib.request.Request(
-                    f"{server.base_url()}/inject/tick?elapsed_mins=35.0&time_period=morning",
-                    method="POST",
-                )
-                with urllib.request.urlopen(req2, timeout=30) as resp:
+            req = urllib.request.Request(
+                f"{server.base_url()}/inject/tick?elapsed_mins=35.0&time_period=morning",
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=15) as resp:
                     status = resp.status
-                    body = json.loads(resp.read())
+                    body = resp.read()[:200]
+            except urllib.error.HTTPError as exc:
+                status = exc.code
+                body = exc.read()[:200]
 
-                print(f"[inject/tick] status={status} body={body}")
-
-                # 斷言 1+2：端點本身仍正常（端點除役是後續決策，不在本票範圍）
-                assert status == 200, f"/inject/tick 應回 200, 實際 {status}"
-                assert body.get("injected") is True, (
-                    f"/inject/tick 應回 injected=true, 實際 body={body}"
-                )
-
-                # 斷言 3（核心）：SYSTEM_TICK 無訂閱者 ⇒ 不會有 agent_speak。
-                speak_frames = []
-                stub_frames = []
-                deadline = asyncio.get_event_loop().time() + 10
-                while asyncio.get_event_loop().time() < deadline:
-                    try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
-                        data = json.loads(raw)
-                        txt = data.get('text', '') or ''
-                        print(f"[WS] recv: type={data.get('type')} agent={data.get('agent_id','')} text_len={len(txt)}")
-                        if data.get("type") == "agent_speak":
-                            # text='' 是 proxy.py 補發的 stub（is_stub=True），
-                            # IOGateway 本來就 skip 不廣播出來；保守起見分開計數。
-                            (speak_frames if txt else stub_frames).append(data)
-                    except asyncio.TimeoutError:
-                        continue
-                    except websockets.exceptions.ConnectionClosed:
-                        break
-
-                assert len(speak_frames) == 0, (
-                    "M5.7-2 契約：SYSTEM_TICK 沒有訂閱者（consciousness.py:155 仍為註解），"
-                    "/inject/tick **不應該**觸發 agent_speak。但收到非空 speak："
-                    f"{speak_frames}"
-                )
-                print(
-                    "[OK] /inject/tick 200 + injected=true，10s 觀察窗內 0 筆非空 agent_speak"
-                    f"（空 stub {len(stub_frames)} 筆不計入）"
-                )
-
+            print(f"[inject/tick retired] status={status} body={body!r}")
+            assert status == 404, (
+                f"/inject/tick 已於 SOUL-BUG-003 除役，應回 404；實際 {status}。"
+                f"若有人把它加回來，請一併評估無認證 + sleep(6.0) 佔用 handler 的暴露面。"
+            )
+            print("[OK] /inject/tick 已除役（404）")
         finally:
             if server is not None:
                 server.close()

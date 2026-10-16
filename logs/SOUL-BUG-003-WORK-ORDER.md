@@ -2,11 +2,45 @@
 
 **工單編號**：SOUL-BUG-003
 **嚴重度**：**P3（架構清潔，非行為缺陷）**（2026-10-14 由 Bry 自 P2 下調）
-**狀態**：**部分結案**（Bry 2026-10-14 授權本輪修復 E2E 契約斷言；`:171` 死碼與端點除役**仍未處理**）
+**狀態**：**✅ CLOSED（Bry 2026-10-16 裁示全部結案）**｜E2E 斷言、端點除役、死碼清理全部完成
 **發現方式**：SOUL-TECH-DEBT-001 B 類 skipif 授權下的**拒絕跳過**（執行者判定為真缺陷而非環境耦合）
-**涉及測試**：`tests/test_websocket_e2e.py::test_inject_tick_does_not_trigger_agent_speak`
-（**已改寫**；原名 `test_inject_tick_triggers_agent_speak`）
+**涉及測試**：`tests/test_websocket_e2e.py::test_inject_tick_endpoint_is_retired`
+（三度更名：`..._triggers_agent_speak` → `..._does_not_trigger_agent_speak` → `..._endpoint_is_retired`）
 **相關決策**：M5.7-2（`95891e8`）constraint M
+
+> ## ✅ 結案摘要（Bry 2026-10-16 全部裁示）
+>
+> 1. **端點除役**：`src/io/gateway.py` 的 `/inject/tick`（原 `:634-656`）**整段刪除**。
+> 2. **E2E 斷言改為「已除役」**：斷言 POST `/inject/tick` 回 **404**。若有人把它加回來立刻轉紅。
+> 3. **`handle_event` 死碼清理**：刪除 `:171-172` 的 `elif SYSTEM_TICK: await self._on_tick(event)`。
+> 4. **`/inject/yua` 加固**：比照 `/_admin/fast_forward`（`:829`）加上
+>    `SOUL_ENV == "production"` → **403** 閘門（原先無認證且會觸發真實付費 LLM 呼叫）。
+> 5. **新守衛**：`test_m1b_handle_event_has_no_dead_system_tick_branch`（AST 掃描）。
+>
+> **為什麼除役而不是保留端點當哨兵**（2026-10-14 的判斷已被 2026-10-16 推翻）：
+> 長效釘子其實一直是
+> `test_m1_consciousness_event_filter_excludes_system_tick`
+> ——它直接 regex `consciousness.py` 的 `register()` event_filter，任何**未註解**的
+> SYSTEM_TICK 都會 fail，**不需要伺服器、零副作用、瞬間完成**。
+> 原先保留 e2e 的理由（當作防呆哨兵）只在「有人重新啟用訂閱**而且同一個 commit
+> 把 test_m1 一起改掉**」這種極弱威脅模型下才有意義，
+> 而端點本身的成本是實實在在的：無認證、無 gate、`sleep(6.0)` 佔住 handler、無速率限制。
+>
+> **刻意保留不動**：`_on_tick`（`:300-347`）與 `_should_speak`（abstract ＋ 10 個 override，
+> 約 1,400 行人格閾值邏輯）。`test_m2_consciousness_on_tick_does_not_publish_agent_intent`
+> 仍直接呼叫 `_on_tick`；刪掉它等於做一次人格決策層移除，不屬本票的死碼清理範圍。
+>
+> **變異實驗（綠燈不算證據，三組全紅）**：
+> - `MUT-A` 把 403 閘門挪進 `try` 內 ⇒ **2 支轉紅**，且行為測試精確重現預言的失效型態：
+>   回 **200** `{"error":"403: disabled in production"}`（`except Exception` 吞掉 HTTPException）。
+> - `MUT-B` 完全移除閘門 ⇒ **2 支轉紅**（實際發出真實 LLM 呼叫）。
+> - `MUT-C` 把 dead elif 塞回 `handle_event` ⇒ `test_m1b` **轉紅**（AST 命中第 20 行）。
+>
+> ⚠️ 第一版 `test_m1b` 用純文字掃描，被自己寫在 `handle_event` docstring 裡的
+> 「`elif SYSTEM_TICK`」說明文字誤判。已改為 **AST `ast.Compare` 掃描** ——
+> docstring 是 `ast.Constant`，天然不會誤判。**這是本票唯一一次「守衛抓到守衛自己」。**
+
+---
 
 > ## ✅ 已結案部分：E2E 測試改寫為負向契約斷言（Bry 2026-10-14 授權）
 >

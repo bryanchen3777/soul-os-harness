@@ -182,7 +182,11 @@ ADDRESS_ALLOWLIST: Dict[Tuple[str, int], str] = {
         "synthetic classifier fixture (a sample source string, not a live address)",
     # -- the production-port red line in the isolated e2e harness: the port value is
     #    asserted against so that the harness REFUSES to dial it.
-    ("tests/test_websocket_e2e.py", 68):
+    # (原 68 → 69) SOUL-BUG-003 2026-10-16：該檔新增一行 `import urllib.error`
+    # （`test_inject_tick_endpoint_is_retired` 需要 `urllib.error.HTTPError` 來接 404），
+    # 使其下方**所有行號整組 +1**。探測程式碼本身未改動，僅行號漂移。
+    # 本白名單以 (路徑, 行號) 為鍵，故需同步更新；**大小維持 9 不變**。
+    ("tests/test_websocket_e2e.py", 69):
         "PRODUCTION_PORT red line: value is compared against to refuse dialling it",
     # NOTE (TEST-INFRA-COLLECTION-LEAK-1 D4): 19 entries used to sit here, one per
     # untracked `tests/_verify_*.py` one-off live driver. Those drivers were
@@ -258,7 +262,9 @@ SUBPROCESS_ALLOWLIST: Dict[Tuple[str, int], str] = {
         "(DEVNULL/PIPE, timeout; module skips itself when npx is unavailable)",
     ("tests/test_watchdog_tg_health.py", 528):
         "`_run_ps` runs a driver.ps1 generated into tmp_path by this very test (Windows PowerShell 5.1)",
-    ("tests/test_websocket_e2e.py", 290):
+    # (原 290 → 291) 與上方 `("tests/test_websocket_e2e.py", 69)` 同一次行號漂移
+    # （該檔新增一行 `import urllib.error`）。spawn 呼叫點的程式碼未改動。
+    ("tests/test_websocket_e2e.py", 291):
         "isolated e2e harness: launches the TEST-ONLY launcher `tests/_ws_e2e_server.py` on an ephemeral "
         "port with a nonce; it refuses the production port and blanks all provider keys + Telegram tokens",
     ("tests/test_work_adapter.py", 381):

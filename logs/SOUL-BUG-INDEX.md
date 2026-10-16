@@ -12,7 +12,7 @@
 |---|---|---|---|---|
 | [SOUL-BUG-001](SOUL-BUG-001-WORK-ORDER.md) | **P0** | 昇降持久層去重連帶丟證據邊，EL-DD-2 閘門結構性不可達 | **✅ CLOSED**（節點合併＋邊重綁＋邊去重） | `xfail` 已解除並轉綠 ✅ 三組變異實驗全紅 |
 | [SOUL-BUG-002](SOUL-BUG-002-WORK-ORDER.md) | P1 | SAGE 單一零區辨力 token 即放行檢索 | **✅ CLOSED `e8aad13`** | **已轉綠** ✅ |
-| [SOUL-BUG-003](SOUL-BUG-003-WORK-ORDER.md) | **P3** | SYSTEM_TICK 訂閱被 M5.7-2 註解，`:171` 死碼，測試仍期待 `agent_speak` | **部分結案**（E2E 已改寫為負向契約斷言、轉綠 ✅）；`:171` 死碼 + 端點除役**仍待裁示** | 負向契約斷言 + `MUT-A3` 變異 ✅ |
+| [SOUL-BUG-003](SOUL-BUG-003-WORK-ORDER.md) | **P3** | SYSTEM_TICK 訂閱被 M5.7-2 註解，`:171` 死碼，測試仍期待 `agent_speak` | **✅ CLOSED**（端點除役＋死碼清理＋`/inject/yua` 加閘門） | 三度更名的 404 契約斷言轉綠；**三組變異實驗全紅** |
 | [SOUL-BUG-004](SOUL-BUG-004-WORK-ORDER.md) | **P0** | chrono 時間感知雙端切斷 | **匯端 ✅ 已結案（`f649224`）**；源端維持 Bry 裁示不動 | `xfail` 已解除並轉綠 ✅ |
 | [SOUL-BUG-005](SOUL-BUG-005-WORK-ORDER.md) | ~~P1~~ | `format_localized` 星期索引整組錯一格 | **✅ CLOSED `277a8d9`** | **已轉綠** ✅ |
 
@@ -24,6 +24,8 @@
 | SOUL-BUG-004（匯端 + 中段 + 時區） | `f649224`：live builders 加 `chrono_context` 插槽並注入；`_fire_intent` 發言那一刻現算 chrono；**刪除 `PromptContext` 死碼**；**`core.py` 時區正規化一行根治** | 時鐘對齊 Bry 指定三案例；新增 7 支測試經**變異實驗**確認是真守衛；240 passed + 1 xfailed |
 | SOUL-BUG-002 | `e8aad13`：`loader.py` 新增 `_LOW_INFO_TOKENS`，計數時扣除低資訊詞 | 6 筆假陽性全數關閉；12 項回歸全過 |
 | SOUL-BUG-001 | `elevation_adapter.py`：**節點合併＋邊重綁＋邊去重**（VALUE-DEDUP-A-1 節點冪等 100% 保留） | 看門狗 `xfail(strict)` 解除後轉綠；**三組變異實驗全轉紅**；新增 5 支單元測試 |
+| SOUL-BUG-003 | `gateway.py` 除役 `/inject/tick`、刪 `consciousness.py` 死碼、`/inject/yua` 加 `SOUL_ENV=production` 403 | 404 契約斷言 + AST 死碼守衛；**三組變異實驗全轉紅** |
+| TECH-DEBT-P3-01 | `git rm tests/test_self_check_v1.py`（與 v2 互為邏輯否定的過期測試，隔離執行時還會空轉假綠） | `test_self_check_v2.py` 為唯一驗收守衛 |
 
 ## ⚠️ SOUL-BUG-004 源端的現況（Bry 裁示維持不動）
 
@@ -47,7 +49,7 @@
 | 2 | SOUL-BUG-004（時間感知 + 時區） | ✅ 已結案 `f649224` |
 | 3 | SOUL-BUG-002（SAGE 停用詞） | ✅ 已結案 `e8aad13` |
 | 4 | SOUL-BUG-001（昇降去重：節點合併＋邊重綁＋邊去重） | ✅ 已結案 |
-| 5 | SOUL-BUG-003（端點契約） | 部分結案 — **P3，不影響生產**；`:171` 死碼待清 |
+| 5 | SOUL-BUG-003（端點契約） | ✅ 已結案 2026-10-16（端點除役、哨兵改由 `test_m1` 免費提供） |
 
 ---
 

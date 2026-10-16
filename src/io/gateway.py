@@ -631,30 +631,6 @@ class IOGateway:
                         break
             return {"interactions": records, "count": len(records)}
 
-        @self.app.post("/inject/tick")
-        async def inject_tick(elapsed_mins: float = 35.0, time_period: str = "morning"):
-            """手動觸發直接注入 SYSTEM_TICK 到 bus，測試 Heartbeat timing"""
-            from src.eventbus.schema import EventPriority, EventType, SoulEvent
-            tick = SoulEvent(
-                event_type=EventType.SYSTEM_TICK,
-                source="manual_inject",
-                target="broadcast",
-                priority=EventPriority.LOW,
-                payload={
-                    "tick_count": 999,
-                    "elapsed_mins": elapsed_mins,
-                    "time_period": time_period,
-                    "vulnerability_window": False,
-                    "silence_hours": round(elapsed_mins / 60.0, 2),
-                    "attachment_heat": 0.3,
-                    "chrono_block": "",
-                },
-            )
-            await self.bus.publish(tick)
-            # 等管線跑完（Agent → Intent → Token → LLM → Speak）
-            await asyncio.sleep(6.0)
-            return {"injected": True, "elapsed_mins": elapsed_mins}
-
         @self.app.get("/debug/broadcast")
         async def debug_broadcast():
             """直接送一條測試訊息繞過 LLM 管線"""
@@ -696,7 +672,21 @@ class IOGateway:
 
         @self.app.get("/inject/yua")
         async def inject_yua():
-            """直接讓 Yua 說句話（走真實 LLM）測試用"""
+            """直接讓 Yua 說句話（走真實 LLM）測試用。
+
+            🔴 SOUL-BUG-003（Bry 2026-10-16 裁示）：本端點無認證，且 publish 的
+            是帶真實 draft 的 AGENT_INTENT ⇒ **每次呼叫都會觸發一次真實付費 LLM
+            呼叫**並 `sleep(8.0)` 佔住 handler。原型是無認證 debug 面，但它是
+            「未被防護的付費出口」中最直接的一個，故比照同檔 `/_admin/fast_forward`
+            的既有條例加上生產閘門。
+
+            ⚠️ 閘門必須放在 `try` **之前**：本函式的 `except Exception` 會把
+            HTTPException 吞成 200 + {"error": ...}，放在 try 內等於沒有防護。
+            """
+            import os as _os
+            if _os.getenv("SOUL_ENV", "dev") == "production":
+                from fastapi import HTTPException
+                raise HTTPException(status_code=403, detail="disabled in production")
             try:
                 from src.eventbus.schema import SoulEvent, EventPriority, EventType
                 intent = SoulEvent(

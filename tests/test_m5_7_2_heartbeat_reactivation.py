@@ -662,6 +662,49 @@ class TestSectionM_NoProactiveAgencyFromSystemTick:
                     f"Found uncommented at: {line!r}"
                 )
 
+    def test_m1b_handle_event_has_no_dead_system_tick_branch(self):
+        """SOUL-BUG-003：`handle_event` 內的 SYSTEM_TICK 分支已刪除（不可達死碼）。
+
+        為什麼需要這條，`test_m1` 不就夠了嗎？
+        --------------------------------------------------
+        `test_m1` 釘的是「`register()` 的 event_filter 不含 SYSTEM_TICK」，
+        也就是**入口**。但 M5.7-2 註解掉入口之後，`handle_event` 裡的
+        `elif SYSTEM_TICK: await self._on_tick(event)` 就成了**不可達死碼** ——
+        它不再造成行為，但會持續誤導維護者以為這條路徑還活著。
+
+        2026-10-16 已刪除該分支。`_on_tick` 本體與 `_should_speak` **刻意保留**
+        （仍被本檔 `test_m2` 直接呼叫；刪掉會連帶讓約 1,400 行人格閾值邏輯
+        全部失去呼叫端，屬人格決策層移除，不在本票範圍）。
+
+        本條守住的是「**不要再把死碼塞回來**」：若有人日後重新接上 SYSTEM_TICK
+        訂閱（或只是單純還原這個 elif），本測試立刻轉紅並指向正確的處理方式
+        （連帶處理 filter 與事件語意），而不是默默恢復一段「看起來能用」的碼。
+
+        ⚠️ 本條走 **AST** 而非純文字掃描：`handle_event` 的 docstring 本身就
+        必須說明「這裡曾經有 SYSTEM_TICK 分支、為什麼被刪」，用文字比對會
+        把這段說明誤判成死碼回歸（第一版就踩到這個坑）。AST 只看真正的
+        比較節點，docstring 是 `ast.Constant`，天然不會誤判。
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        from src.agent.consciousness import AgentConsciousness
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(AgentConsciousness.handle_event)))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Compare) and any(
+                isinstance(c, ast.Attribute) and c.attr == "SYSTEM_TICK"
+                for c in node.comparators
+            ):
+                pytest.fail(
+                    "SOUL-BUG-003：`handle_event` 不該再有 SYSTEM_TICK 的比較分支 — "
+                    f"自 M5.7-2 起它就是不可達死碼（register() filter 已註解掉）。"
+                    f"發現於第 {node.lineno} 行。"
+                    "\n若確實要恢復 proactive execution，請一併重估 M5.7-2 "
+                    "constraint M、_on_tick 的 COOLDOWN 語意與 :300-347 的死碼。"
+                )
+
     def test_m2_consciousness_on_tick_does_not_publish_agent_intent(self, tmp_path):
         """Even if SYSTEM_TICK is delivered to consciousness, _on_tick must not publish AGENT_INTENT.
 

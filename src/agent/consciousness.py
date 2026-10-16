@@ -165,11 +165,24 @@ class AgentConsciousness(ABC):
         self.bus.unsubscribe(self.agent_id)
 
     async def handle_event(self, event: SoulEvent) -> None:
-        """統一事件入口，根據類型分派處理"""
+        """統一事件入口，根據類型分派處理。
+
+        SOUL-BUG-003（2026-10-16）：原本這裡有 `elif SYSTEM_TICK: await self._on_tick(event)`，
+        自 M5.7-2（`95891e8`）把 `register()` 的 event_filter 中的 SYSTEM_TICK 註解掉
+        之後即**不可達**——bus 永遠不投遞該事件。已於本次刪除。
+
+        `_on_tick` 本體（`:300-347`）與 `_should_speak`（abstract + 10 個 override）
+        **刻意保留**：它們仍被 `tests/test_m5_7_2_heartbeat_reactivation.py` 直接呼叫，
+        且刪掉會連帶讓約 1,400 行人格閾值邏輯全部失去呼叫端——那是人格決策層的
+        移除，不屬於本票的死碼清理範圍。日後若要恢復 SYSTEM_TICK，直接把
+        `register()` 的 filter 打開並把本分支加回即可。
+
+        長效約束由 `tests/test_m5_7_2_heartbeat_reactivation.py::
+        test_m1_consciousness_event_filter_excludes_system_tick` 釘住
+        （直接 regex 原始碼，任何未註解的 SYSTEM_TICK 都會 fail）。
+        """
         if event.event_type == EventType.USER_MESSAGE:
             await self._on_user_message(event)
-        elif event.event_type == EventType.SYSTEM_TICK:
-            await self._on_tick(event)
         elif event.event_type == EventType.AGENT_SPEAK:
             # 其他 Agent 說話，可選擇觀察或記錄
             if event.source != self.agent_id:
