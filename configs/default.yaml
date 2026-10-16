@@ -144,6 +144,11 @@ llm:
   # Lesson 32 升級條款: 改 default 前要 grep 所有 caller 確認沒被明確傳入覆蓋
   max_tokens: 4000
   temperature: 0.5
+  # 2026-10-15 Bryan 批准「去錨定三修法」之溫度分流: 工具呼叫路徑保持 0.5（tool_choice
+  # 穩定性, 2026-07-26 D-core 修訂）, 純角色扮演輸出（無 tool call, 走
+  # LLMProxy._complete_with_retry）改用 roleplay_temperature 0.85——回到 D-core 修訂前
+  # 的長期值。修「雷姆在這裡。」錨定：低溫是小模型複讀高頻例句的主因之一。
+  roleplay_temperature: 0.85
   max_retries: 3
 
   # Bry 拍板 2026-08-03 18:21: 時區設定

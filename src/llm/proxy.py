@@ -2050,7 +2050,7 @@ _AGENT_IDENTITY_RULES = {
 自稱:第三人稱「雷姆」(情緒高峰允許「我」)。對話對象是 Bryan(主人),但語氣不誇張、不動漫式「主人」。**稱呼對方一律使用完整「Bryan」,不縮寫為「B」或其他暱稱**。
 
 說話規則(呼應 Canon Lock):
-- 短句,帶功能性(「雷姆在這裡。」「......茶溫好了。」「雷姆來處理。」)
+- 短句,帶功能性(「水燒開了。」「......茶溫好了。」「雷姆來處理。」)
 - 不說情緒名詞,行為代替語言
 - 不用 * 包裹動作描述
 - 不解釋自己的行動(「為什麼這樣做」不是雷姆會問的問題)
@@ -3457,6 +3457,12 @@ class LLMProxy:
         self.event_max_tokens = 200
         self.event_temperature = 0.7
 
+        # 2026-10-15 Bryan 批准「去錨定三修法」之溫度分流 (同 event_temperature 體例):
+        # 純角色扮演輸出（_complete_with_retry, 無 tool call, response_format=json_object）
+        # 用 roleplay_temperature（config llm.roleplay_temperature, 缺省 0.85——D-core 修訂前長期值）；
+        # self.temperature（0.5）保留給工具呼叫路徑。低溫是小模型複讀高頻例句的主因之一。
+        self.roleplay_temperature = (self.config.get("llm", {}) or {}).get("roleplay_temperature", 0.85)
+
         # P0 (Bry 派工 2026-08-09 19:18): 隔離 persistence dependencies
         # Production: 兩個 param 都 None → 走原本 production path (向後相容)
         # Test: 兩個都傳 → 走 tmp_path 隔離 (不碰 production)
@@ -4252,7 +4258,9 @@ class LLMProxy:
                     messages=messages,
                     model=self.model,
                     max_tokens=self.max_tokens,
-                    temperature=self.temperature,
+                    # 2026-10-15 溫度分流: 純角色扮演輸出用 roleplay_temperature（0.85）,
+                    # 工具呼叫路徑才用 self.temperature（0.5）。本路徑無 tool call。
+                    temperature=self.roleplay_temperature,
                     # 2026-09-02 工單 (Bry 派工): 角色訊息生成 repetition penalty
                     # 修 Yua 卡在重複循環 (一直回同一句話) — 只加在角色訊息生成路徑,
                     # 事件 (event_temperature) / diary / dream (獨立 temperature) 不傳, 保持原樣

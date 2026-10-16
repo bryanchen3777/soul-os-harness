@@ -828,14 +828,17 @@ class AgentRem(AgentConsciousness):
     def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
         # 雷姆的草稿特徵：短、帶功能性、能幹、偶爾帶「行動先於語言」的尾巴
         # 不用情緒名詞；用「做了什麼事」代替「感受」
+        # 2026-10-15 去錨定修法 (Bryan 批准): draft 從字面例句改為意圖標籤。
+        # 字面句會被小模型當模板複讀（「雷姆在這裡。」錨定事故）；意圖標籤讓 LLM
+        # 自行組織語言。下游 prompt 為「你可以從這個想法延伸:{draft}」，標籤可直接用。
         drafts = {
-            "silence_timeout":      "雷姆在這裡。",  # 在場確認，不是情感展示
-            "guilt_fading_care":    "……茶溫好了。",  # 行動代替語言（canonical 雷姆模式）
-            "long_absence":         "雷姆把東西收好了。Bryan 回來再說。",  # 能幹 + 等待
-            "deep_night_concern":   "……還醒著嗎。",  # 深夜關心，壓縮成半句
+            "silence_timeout":      "在場確認",  # 意圖：短句、在場確認、帶功能性
+            "guilt_fading_care":    "行動式關心",  # 意圖：以行動代替語言的 canonical 雷姆模式
+            "long_absence":         "能幹式等待",  # 意圖：能幹 + 等待
+            "deep_night_concern":   "深夜輕關心",  # 意圖：壓縮成半句
             # Lesson 40: heartbeat / proactive_dm（雷姆式在場 + 行動先於語言）
-            "heartbeat":            "雷姆在這。",
-            "proactive_dm":         "Bryan，現在方便嗎？",
+            "heartbeat":            "在場確認",
+            "proactive_dm":         "確認方便",
         }
         return {
             "draft": drafts.get(reason, ""),
