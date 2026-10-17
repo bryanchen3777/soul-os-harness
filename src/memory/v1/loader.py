@@ -22,11 +22,12 @@ Bry §12 排除 (硬規則, 不是建議):
 from __future__ import annotations
 
 import json
+import math
 import time
 import uuid
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from .retrieval import Memory, V1Store  # Bry §12 同 v1 記憶系統
 from .schema import Memory as MemoryDataclass  # Bry §12 不混,但 store 用 frozen Memory
@@ -92,20 +93,25 @@ class MemoryLoader:
         self,
         query_tags: List[str],
         agent_id: str,
-        top_k_per_category: int = 3,
+        top_k_per_category: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Bry §12: 跑 retrieve + gating + trace + 回傳 inject-ready 記憶列表。
+        """Bry §12: 跑 retrieve + gating + 分級排序 + trace + 回傳 inject-ready 記憶列表。
 
         Args:
             query_tags: 跟 v1.retrieve 一樣的 tag 過濾
             agent_id: 例如 "agent_rem"
-            top_k_per_category: Bry §12 spec 沒限定細節, 用 3 個 per category 當
-                起始值 (之後 Bry §13 再精細)。
+            top_k_per_category: **SAGE-RANK-1（2026-10-17）** 排序後的最大回傳筆數。
+                `None`（預設）＝ **不截斷，全量回傳**，維持既有生產注入量契約。
+                舊預設值 `3` 從未被任何呼叫端使用（全庫僅簽章與 docstring 提及），
+                若沿用該預設會無預警把注入量砍到 3 筆，故改為 `None`。
+                ⚠️ 命名債：名稱寫 per_category 但實作為「總量上限」，
+                保留原名是為了不破壞可能的外部呼叫端簽章相容性。
+                已登記為待清技術債。
 
         Returns:
             dict with keys:
               - response_id (str, uuid4)
-              - eligible_memories: List[Memory] 給 prompt 注入
+              - eligible_memories: List[Memory] 給 prompt 注入，**已按 Rank 排序**
               - trace: dict structured 包含 candidates / statuses
         """
         response_id = str(uuid.uuid4())
@@ -177,20 +183,35 @@ class MemoryLoader:
         #       overlap 在 component level 計算, 維持 token boundary (jieba 不引入 substring collision).
         # 保留: MIN_OVERLAP 門檻 / is_candidate_eligible / confidence gate / fail_safe 全部不動.
         query_components = _expand_tag_components(query_tags) - agent_name_stopwords
-        by_tags: List[Memory] = []
+
+        # ── SAGE-RANK-1（2026-10-17，Owner 裁示「案 C：Corpus-Local IDF 加權＋Boost 排序」）
+        #
+        # 為什麼需要它：2026-10-17 以 3,307 筆生產記憶實測漏斗，發現真正的瓶頸
+        # **不是**「順序亂」，而是**召回被高 DF 通用詞稀釋**——writer 機械組裝的
+        # phrase-based tags 裡充滿「記得 / 事情 / 對方 / 說話者 / 表示」這類片段。
+        # 實測 agent_yua 一句 query 就命中 39 筆全部通過 overlap 門檻，最後被
+        # confidence 門檻殺到剩 10 筆。手寫的 `_LOW_INFO_TOKENS` 擋不住它們
+        # （那是封閉詞表），純次數加權也擋不住（它們就是「命中很多次」）。
+        # Corpus-local IDF 讓 df 高的通用詞權重自動趨近下界、df=1 的稀有專名
+        # （如「鬼族」「權利」）權重最大，**不必無止境維護手寫停用詞表**。
+        #
+        # 零額外分詞成本：`mem_components` 這一趟本來就要算（給 overlap 用），
+        # df 只是在同一個迴圈裡順帶累加。N = 該 agent 自己的記憶庫大小。
+        token_df: Dict[str, int] = {}
+        corpus_size = len(same_agent)
+
+        # by_tags 現在攜帶 (memory, informative, low_info_hits)，
+        # 因為 ranking 需要 Gate 階段已算出的 token 集合，重算一次就是浪費。
+        by_tags: List[tuple] = []
         for m in same_agent:
             mem_components = _expand_tag_components(m.tags) - agent_name_stopwords
+            for tok in mem_components:
+                token_df[tok] = token_df.get(tok, 0) + 1
             matched = query_components & mem_components
             # 分級重疊 · Gate 側（SOUL-BUG-002，2026-10-14 Owner 裁示）：
             # 只有「實質內容詞」能滿足門檻。零區辨力 token（今天／什麼／怎麼…）
             # 單獨命中時不放行檢索，但仍完整保留在 `matched` 供 trace 觀測。
             # 實測修復前 agent_rem 有 6 筆這樣的誤召回（什麼×4 今天×2）。
-            #
-            # ⚠️ Boost 側（「低資訊 token 命中實質內容詞時仍作為時間相依特徵參與排序
-            #    加分」）**尚未實作**：本 loader 現行管線只有 overlap 門檻 →
-            #    category confidence 門檻 → eligible，全程沒有任何評分器
-            #    （無 score / rank / sort / weight）。等真的出現評分消費端時再接入，
-            #    在此之前不寫無消費端的死碼。
             informative = matched - _LOW_INFO_TOKENS
             # 計算 content token 數 (中文每字 1 token, 英文單字 1 token)
             m_content = m.content or ""
@@ -205,12 +226,17 @@ class MemoryLoader:
                 else MIN_OVERLAP_LONG_CONTENT
             )
             if len(informative) >= threshold_for_mem:
-                by_tags.append(m)
+                by_tags.append((m, informative, matched & _LOW_INFO_TOKENS))
 
         # Step 5: 對每筆做 confidence threshold gating + 標 status
         candidates_with_status: List[Dict[str, Any]] = []
         eligible: List[Memory] = []
-        for m in by_tags:
+        # rank_keys: 與 eligible 平行，第 i 個元素的 key 即第 i 筆記憶的排序鍵。
+        rank_keys: List[tuple] = []
+        for m, informative, low_info_hits in by_tags:
+            # SAGE-RANK-1: Rank / Boost 計分。
+            primary = _primary_score(informative, token_df, corpus_size)
+            boost = RANK_LOW_INFO_BOOST * len(low_info_hits)
             # Perplexity 拍板 (Bry 轉, 2026-07-02): v1.1 schema 加 category/confidence,
             # 既有資料沒有這兩欄位的記憶 → 走 fail-safe (low_confidence) 不注入。
             if m.category is None or m.confidence is None:
@@ -221,6 +247,10 @@ class MemoryLoader:
                     "confidence": m.confidence,
                     "confidence_threshold": None,
                     "status": "rejected_no_v11_metadata",
+                    "informative_hits": len(informative),
+                    "low_info_hits": len(low_info_hits),
+                    "primary_score": primary,
+                    "boost_score": boost,
                 })
                 continue
             th = threshold_for(m.category)
@@ -230,6 +260,13 @@ class MemoryLoader:
             else:
                 status = "selected"
                 eligible.append(m)
+                rank_keys.append((
+                    -primary,
+                    -boost,
+                    -m.confidence,
+                    -(m.created_at or 0.0),
+                    m.memory_id,
+                ))
             candidates_with_status.append({
                 "memory_id": m.memory_id,
                 "category": m.category,
@@ -237,6 +274,10 @@ class MemoryLoader:
                 "confidence": m.confidence,
                 "confidence_threshold": th,
                 "status": status,
+                "informative_hits": len(informative),
+                "low_info_hits": len(low_info_hits),
+                "primary_score": primary,
+                "boost_score": boost,
             })
 
         # Step 6: Bry §12 fail-safe #3 - eligible 空 → 全空 trigger
@@ -245,6 +286,23 @@ class MemoryLoader:
             fail_safe_triggered = "all_rejected_low_confidence"
         else:
             fail_safe_triggered = None
+
+        # ── SAGE-RANK-1 Step 6.5: 分級重疊 · Boost 側（排序）
+        #
+        # 排序鍵由 Bry 2026-10-17 拍板的三段式階層決定：
+        #   ① 主導：稀有實詞的 corpus-local IDF 總和（RANK_IDF_WEIGHT 加權）
+        #   ② 次要：低資訊／時間詞命中數的小幅 Boost
+        #   ③ 平手：confidence → created_at（新→舊）→ memory_id
+        # memory_id 最後保證全序，即使前面四項完全相同也不會有殘餘不確定性。
+        #
+        # 這裡排序**不會**改變任何記憶是否被注入（Gate 在前面已決定），
+        # 只改變它們在 prompt 裡的先後 —— 而 format_for_prompt 是順序透傳的
+        # （AST 凍結，不可改），所以排序結果會 1:1 反映到 system prompt。
+        # 連帶效果：continuity sidecar 的 injection_rank 語意改變（這是預期的）。
+        order = sorted(range(len(eligible)), key=lambda i: rank_keys[i])
+        eligible = [eligible[i] for i in order]
+        if top_k_per_category is not None:
+            eligible = eligible[:top_k_per_category]
 
         # Step 7: 寫 trace
         trace = self._build_trace(
@@ -390,6 +448,58 @@ MIN_OVERLAP_FOR_CANDIDATE = 2  # 保留舊常數, 但 Bry §25 改用分層門�
 MIN_OVERLAP_CONTENT_BOUNDARY = 20
 MIN_OVERLAP_SHORT_CONTENT = 1
 MIN_OVERLAP_LONG_CONTENT = 2
+
+
+# ── SAGE-RANK-1（2026-10-17，Owner 裁示）：分級重疊 · Boost 側計分權重
+#
+# ⚠️ 權重比例是被 Owner 親自校準過的，不要「順手」改動。
+#
+# 陷阱背景：單一 agent 的記憶庫 N ≈ 350~998，ln(N/(1+df)) 的上限只有 ~5~6.5。
+# 若把 confidence 乘 10、low_info 加 1，一筆 conf=0.95 但只命中高頻廢詞
+# 「記得」（idf≈1.2 → 1.2+9.5=10.7）的記憶，會輾壓一筆 conf=0.75 但
+# 精準命中稀有詞「鬼族」（idf≈5.2 → 5.2+7.5=12.7）的記憶。
+# ⇒ IDF 必須是**主導項**，confidence **只當平手破除器**，不進加權和。
+#
+# 三段式階層（Bry 拍板）：
+#   ① 10.0 × Σ idf(t)   —— 主導。因為 _corpus_idf 保底 +1.0，單一實詞命中
+#                          最低貢獻 10.0 分，等於要 10 個低資訊詞命中才追平。
+#   ② 1.0 × 低資訊命中數 —— 次要 Boost，在同實詞權重下把帶時間詞的記憶浮上來。
+#   ③ confidence → created_at → memory_id —— 平手破除。
+RANK_IDF_WEIGHT = 10.0
+RANK_LOW_INFO_BOOST = 1.0
+RANK_IDF_SMOOTHING = 1.0
+
+
+def _corpus_idf(token_df: int, corpus_size: int) -> float:
+    """SAGE-RANK-1: 平滑 corpus-local IDF。
+
+    idf(t) = log((N + 1) / (df + 1)) + 1.0
+
+    - `+1` 平滑：避免 df=0 時除零、也避免 log 0。
+    - `+ RANK_IDF_SMOOTHING` 保底：讓 idf **恆正且 ≥ 1.0**。
+      這是權重比例能成立的前提——若某 token 滿庫都是（df=N），
+      它的權重會塌到 0 甚至負值，那一筆記憶就永遠不可能靠它排前面。
+      保底 1.0 代表「最無區辨力的詞也有 10.0×1.0 的底份」，
+      但因為高 df 的詞會無限多筆互相競爭，仍會被稀有詞壓過去。
+    """
+    return math.log((corpus_size + 1) / (token_df + 1)) + RANK_IDF_SMOOTHING
+
+
+def _primary_score(
+    informative: "Iterable[str]",
+    token_df: Dict[str, int],
+    corpus_size: int,
+) -> float:
+    """SAGE-RANK-1: 主導項分數 = RANK_IDF_WEIGHT × Σ idf(t)。
+
+    ⚠️ `sorted(informative)` **不是多餘的**。set 的迭代順序受 PYTHONHASHSEED
+    影響，而浮點加總不具結合律 —— 3 個以上 term 時，(a+b)+c 與 a+(b+c) 可能差在
+    最後幾個 ulp。若平手時靠分數高低破除，這個差異足以讓排序在不同行程間漂移，
+    違反 Owner 要求的「排序 100% 確定性」。排序輸入即固定求和順序。
+    """
+    return RANK_IDF_WEIGHT * sum(
+        _corpus_idf(token_df.get(tok, 0), corpus_size) for tok in sorted(informative)
+    )
 
 
 def _expand_tag_components(tags: List[str]) -> set:

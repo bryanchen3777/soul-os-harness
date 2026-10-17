@@ -1,7 +1,7 @@
 # SOUL-BUG 系列總覽（索引）
 
 **建立**：2026-10-13｜**來源工單**：SOUL-TECH-DEBT-001（C 類深度鑑識）
-**狀態**：**1 筆已 CLOSED（SOUL-BUG-005，`277a8d9`）、4 筆 OPEN，全部有守衛**，**嚴禁放水**。
+**狀態**：**001／002／003／005 已 CLOSED，004 匯端已結案、源端維持 Bry 裁示不動；006 OPEN**，全部有守衛，**嚴禁放水**。
 **共通性質**：這些不是「環境雜訊」，是會在生產靜默作案的真缺陷——沒有 exception、沒有告警、沒有計數器。
 
 ---
@@ -15,6 +15,40 @@
 | [SOUL-BUG-003](SOUL-BUG-003-WORK-ORDER.md) | **P3** | SYSTEM_TICK 訂閱被 M5.7-2 註解，`:171` 死碼，測試仍期待 `agent_speak` | **✅ CLOSED**（端點除役＋死碼清理＋`/inject/yua` 加閘門） | 三度更名的 404 契約斷言轉綠；**三組變異實驗全紅** |
 | [SOUL-BUG-004](SOUL-BUG-004-WORK-ORDER.md) | **P0** | chrono 時間感知雙端切斷 | **匯端 ✅ 已結案（`f649224`）**；源端維持 Bry 裁示不動 | `xfail` 已解除並轉綠 ✅ |
 | [SOUL-BUG-005](SOUL-BUG-005-WORK-ORDER.md) | ~~P1~~ | `format_localized` 星期索引整組錯一格 | **✅ CLOSED `277a8d9`** | **已轉綠** ✅ |
+| [SOUL-BUG-006](SOUL-BUG-006-WORK-ORDER.md) | **P1** | 昇華候選幾乎不升格，且 value/trait 內容是未抽象化的原始簿記字串 | **🆕 OPEN**（2026-10-17 登記，僅備查未動工） | 待建立 |
+
+## 🆕 SOUL-BUG-006：昇華抽象化與內容去重（2026-10-17 登記）
+
+**登記依據**：`SAGE-RANK-1` 第一階段唯讀診斷的 Part A（靈魂圖譜實證體檢）。
+**裁示**：獨立立票，**排在 `SAGE-RANK-1` 收官之後**，不得併入檢索排序單。
+
+### 三個實測病灶
+
+1. **升格閘門近乎不通。** 候選端產出 value 349／trait 46／belief 357，
+   但圖譜中 `node_type` 只有 value 10／trait 19／belief 1。
+   SOUL-BUG-001 修復上線（2026-10-14 21:15）後新增的 176 顆節點裡
+   **pattern 174、trait 1、belief 1、value 0** —— Bry 點名的
+   rem／mai／akane／ruka／mahiru，修復後新增 value/trait **全部為零**。
+
+2. **value/trait 內容未抽象化。** 現存的 29 顆 value/trait 全部建立於
+   10-06 ～ 10-15 02:05（幾乎都早於修復上線），內容是原始簿記字串：
+   - trait：`dream:dream: all_agents_count=10; target_agent_id=agent_X`
+   - value：`diary:night: narrative=<日文日記原文>; slot=night`
+
+3. **跨日內容重複。** 3 組前 60 字完全相同的節點：
+   ×7（target=akane）／×6（target=rem）／×5（target=yua）。
+   證據邊數量極不均衡：value 掛 28～81 條，trait 僅 2～6 條。
+
+### 為何不能併入 `SAGE-RANK-1`
+
+`SAGE-RANK-1` 修的是**讀取側**（檢索排序），本 bug 在**寫入側**（昇華抽象）。
+SOUL-BUG-001 的邊重綁確實生效（持續產節點＋證據邊、0 重複三元組、0 孤兒邊），
+證明基礎管線是通的；壞掉的是「把原始紀錄昇華成人格層命題」這一步本身。
+
+### 排查時的既有旁證
+
+repo 內註解早就寫下過診斷（`tests/test_m3_world_awareness.py:569-575` 類型：
+「診斷被寫下來」≠「根因被修掉」）——開工前先搜既有註解是否已指出答案。
 
 ## ✅ 已結案
 
