@@ -37,14 +37,27 @@ from src.memory.v1.store import Memory, V1Store
 AGENT = "agent_rank1_test"
 OTHER_AGENT = "agent_rank1_other"
 
-# 高頻通用詞（模擬 writer 機械組裝出來的 phrase tags）
-GENERIC = "記得"
+# 高頻通用詞（df 高 → IDF 低）。
+# ⚠️ SOUL-BUG-007（2026-10-17）把「記得」「喜歡」「說話者」等收進 _LOW_INFO_TOKENS
+#    之後，這些詞**連 Gate 都開不了**，因此本檔的 fixture **不得**用它們當高頻詞，
+#    否則 eligible 會直接歸零、測試測到的東西完全變樣。
+#    （這個衝突真的發生過：BUG-007 上線後本檔 4 支測試轉紅，fixture 必須換詞。）
+#    改用「事情」—— 它正是生產語料裡 df 極高、卻因為帶有實質語意而留在 Gate 外的詞。
+GENERIC = "事情"
+GENERIC2 = "味道"
 # 稀有專有名詞
 RARE = "鬼族"
-# 第二個高頻通用詞（必須與 GENERIC 一起當 filler，才會真的是高 df）
-GENERIC2 = "事情"
 # 低資訊／時間詞（Boost 側的加分來源）
 TIMEWORD = "今天"
+
+
+def _assert_fixture_words_pass_the_gate():
+    """反守衛：fixture 用的高頻詞必須在 Gate 外，否則本檔整組測試失去意義。"""
+    from src.memory.v1.loader import _LOW_INFO_TOKENS
+    for w in (GENERIC, GENERIC2, RARE):
+        assert w not in _LOW_INFO_TOKENS, (
+            f"fixture 詞 {w} 已被收進低資訊池，無法通過 Gate —— 請換一個 fixture 詞"
+        )
 
 
 def _add(store, mid, tags, *, agent=AGENT, confidence=0.8,
@@ -80,6 +93,10 @@ def _ids(loader, query, agent=AGENT):
 
 
 class TestRareWinsOverGeneric:
+    def test_fixture_words_are_actually_reachable(self, tmp_path):
+        """先確認 fixture 詞過得了 Gate —— 否則下面所有斷言都是恆真的。"""
+        _assert_fixture_words_pass_the_gate()
+
     def test_rare_term_ranks_above_high_df_generic(self, tmp_path):
         """`鬼族`（df=1）必須排在 `記得`（df=8）之前。
 

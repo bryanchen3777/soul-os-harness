@@ -1,11 +1,17 @@
 # -*- coding: utf-8 -*-
 """
 tests/memory/test_sage_low_info_gate.py
-SOUL-BUG-002（2026-10-14，Owner 裁示「分級重疊 · Gate 側」）
+SOUL-BUG-002（2026-07-02 起，2026-10-14 Owner 裁示「分級重疊 · Gate 側」）
 
-**沒有任何評分器**：本 loader 的管線是 `overlap 門檻 → category confidence 門檻 → eligible`，
-全程沒有 score / rank / sort / weight。因此「低資訊 token 命中實質內容詞時仍作為時間
-相依特徵參與排序加分」（Boost 側）在本 codebase **沒有消費端**，本次不實作。
+⚠️ **2026-10-17 更新**：本檔開頭原本寫著「沒有任何評分器、Boost 側不實作」——
+   那句話在 SAGE-RANK-1（`c7bff3b`）上線後已經**過期**。loader 現在有
+   corpus-local IDF 主導排序 + 低資訊詞 Secondary Boost。
+   本檔仍然只負責 **Gate 側**；排序側由 `test_sage_rank1_loader_ordering.py` 負責。
+
+⚠️ **2026-10-17 再更新**：SOUL-BUG-007 把 `_LOW_INFO_TOKENS` 從「時間／疑問詞」
+   擴充到「話語支架詞／泛化謂語」，本檔的 token 契約測試因此一併涵蓋新類別。
+   兩票共用同一個常數，但**分工不同**：本檔守「什麼樣的詞不准單獨開門」，
+   BUG-007 守「簡繁字形不得分裂召回」。
 
 本檔釘死兩件事：
 1. **Gate 側有效**：查詢的有效 token 全落在 `_LOW_INFO_TOKENS`（今天／什麼／怎麼…）時，
