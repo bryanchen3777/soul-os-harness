@@ -66,7 +66,59 @@ create_event(extras={target_agent_id, all_agents_count})   ← 只有排程統�
 - `test_no_frozen_contract_file_touched` 的 `allowed` 白名單需納入
   `elevation_adapter.py`（白名單只增一次，且**不得順手放寬**）。
 
-### 已定位的精確程式碼落點（2026-10-17 18:10 補登）
+## ⚠️ Step 1 實作現況（2026-10-17 18:36，**未提交**）
+
+程式碼已寫入工作樹（`src/inner_life/elevation_adapter.py`，+81/-16），
+但**未 commit、未 push、全庫回歸未跑**。HEAD 仍是 `7e8bc7a`。
+**接手者請先讀這裡再動手，不要假設工作樹是乾淨的。**
+
+### 已完成的兩件事
+
+1. **實證核對真實敘事鍵名（前置強制步驟，已完成）**
+   從 `elevation_nodes.jsonl` 的 content 反解出全部 extras 鍵：
+
+   | trigger | 實際鍵名 | 有敘事？ |
+   |---|---|---|
+   | `diary` | `narrative`(290)、`slot`(290)、`origin_type`/`thread_id`/`title`/`sage_fact_id`(各 69) | ✅ 只有 `narrative` |
+   | `world` | `world_novelty_id`/`world_source`/`world_type`(各 353) | ❌ 無 |
+   | `dream` | `all_agents_count`(60)/`target_agent_id`(60) | ❌ 無 |
+
+   ⇒ **`narrative` 是唯一帶人話正文的鍵**。
+   樣本佐證：`今夜は少し冷える。窓の外を見ながら、ブライアンの声が無性に聞きたくなった。`
+
+   🔴 **交叉驗證成功**：repo 內 `tests/inner_life/test_diary_elevation_narrative.py:68`
+   `test_with_narrative_key_content_is_the_narrative` 早已把 `narrative` 當敘事鍵。
+   ⇒ 這個白名單**不是憑想像**寫的，既有契約也證實了它。
+
+2. **消費端改造（已寫入）**
+   - `_NARRATIVE_EXTRA_KEYS = ("narrative",)`（刻意不收 `title`：是標題不是敘事）
+   - `_event_content()`：取不到敘事就回 `""`（舊版回 `trigger_type: k=v; k=v`）
+   - `inner_life_event_to_input()` → 回傳型別改 `Optional`，無敘事回 `None`
+   - `_to_input()` → 回傳型別改 `Optional`，**只有 InnerLifeEvent 分支**可能回 None
+   - `run_elevation`（`:595` 附近）：過濾 None + INFO 日誌記錄 fail-closed 原因
+
+### 🔴 7 支既有測試轉紅 —— 必須分流處理，不可一刀切放寬
+
+| 檔案 | 紅燈 | 性質 | 正確處置 |
+|---|---|---|---|
+| `tests/inner_life/test_diary_elevation_narrative.py::test_without_narrative_yields_label` | 1 | **舊契約，本票刻意要推翻**（`:64` 斷言 `got == "diary:night: slot=night"`） | 更新斷言為「回 `None`／不產節點」，並在 commit 記錄契約變更理由 |
+| 同檔 `::test_with_narrative_key_content_is_the_narrative` | 1 | 斷言 `got.startswith(TRIGGER_TYPE_DIARY_NIGHT)` —— 舊契約要求帶 trigger 前綴 | 改為斷言「等於乾淨敘事正文、不含 `key=` 外殼」 |
+| `tests/test_epistemic_horizon.py::TestVerticalFirewall`（3 支） | 3 | **疑似 fixture starvation**：fixture 事件沒帶 `narrative`，被 fail-closed 全擋 | **先查紅在哪**。若只是 fixture 缺料 → 在 fixture 補 `narrative="test narrative"`，**不得放寬 fail-closed** |
+| `tests/test_elevation_evidence_scope_a1.py::test_e1_...` | 1 | 同上疑慮 | 同上 |
+| `tests/test_soul_bug_watchdogs.py::test_elevation_pattern_evidence_accumulation_must_reach_two` | 1 | 同上疑慮 | 同上 |
+
+🔴 **判別準則（必須先分清楚，否則就是在拆守衛）**：
+- fixture 只是**忘了放敘事** → 補 `narrative` 欄位（正確）
+- 測試**刻意在驗證「無敘事事件」** → 改寫成 fail-closed 專屬守衛（正確）
+- ❌ **絕不可以**因為 fail-closed 讓下游拿不到節點，就把它放寬回去
+
+### 尚待 Owner 拍示的行為變更
+
+**world 與 dream 事件目前 extras 完全沒有敘事（實測）**，所以 fail-closed 會**整批**攔截它們。
+world 本來就永不昇華（P0 修正），但 **world pattern 的供給會停止**。
+這是刻意的行為變更，需 Owner 明確拍板。
+
+---
 
 **消費端要改的三處**（全在 `src/inner_life/elevation_adapter.py`）：
 
