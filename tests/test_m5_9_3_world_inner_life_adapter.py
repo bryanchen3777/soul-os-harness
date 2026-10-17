@@ -762,11 +762,20 @@ class TestSectionP_NoContentAccess:
 
         asyncio.run(_run())
         ev = writer._events[adapter._dedup["content_test"]]
-        # summary is NOT in extras (we only store world_source / world_type / world_novelty_id)
+        # 🔴 SOUL-BUG-006 Step 2（Owner 2026-10-17 裁示採第 2 案）邊界已**刻意修正**：
+        #   舊版前提是「WorldEvent.summary 是 observation text，不是對話內容，
+        #   所以不放進 Provenance」。但 EH-2.1 裁定要求環境事件必須放行昇華鏈，
+        #   而 fail-closed 又要求事件帶真實敘事 —— 兩者逼出本票的解法：
+        #   **由 summary 渲染成自然語言敘事**放進 `narrative`。
+        #
+        #   仍然成立且**未被放寬**的部分：原始 `summary` / `data` 物件一個鍵都沒進
+        #   extras（下方兩條斷言原封不動）。放進去的是**渲染後的句子**，
+        #   不是 observation text 本身。
         assert "summary" not in ev.provenance.extras
         assert "data" not in ev.provenance.extras
         # WorldEvent.summary 是 observation text, not conversation content
         # 5 個現有 producer 也都不存 summary / data text 進 Provenance
+        # → 例外只有 `narrative`：它是**渲染產物**，不是原文轉存。
 
 
 # ────────────────────────────────────────────────────────────────────

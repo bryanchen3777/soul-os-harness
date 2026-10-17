@@ -687,7 +687,23 @@ class TestSectionJ_ProvenanceUnchanged:
         }
 
     def test_j2_provenance_extras_unchanged(self):
-        """J.2: Adapter still uses extras={world_source, world_type, world_novelty_id} (no change)."""
+        """J.2: 3 個既有 extras 鍵不變 ＋ SOUL-BUG-006 Step 2 附加自然語言 `narrative`。
+
+        🔴 **契約變更（2026-10-17，Owner 明示裁示）**
+        舊版逐鍵等值釘死 `{world_source, world_type, world_novelty_id}` 並註明
+        "(no change)"。SOUL-BUG-006 Step 1 已把昇華消費端改為 fail-closed
+        （無 `narrative` ⇒ 不建立節點），而 world 事件實測沒有敘事欄位，
+        會被整批攔截 —— **直接違反 EH-2.1 的 Owner 裁定**（陰晴風雨與主人
+        行程屬共同生活感知邊界，必須放行進昇華鏈，「不得感知閹割」）。
+
+        Owner 裁定採第 2 案：**在生產端為環境事件產出自然語言敘事**。
+        因此 extras 新增 `narrative`（純附加）。
+
+        本測試守的不變量**沒有放寬**：3 個原有鍵仍逐鍵等值釘死，
+        `source_world_event_novelty_id` 仍在 InnerLifeEvent 而非 Provenance。
+        新釘住的是：`narrative` 必須是**自然語言**、不得含 `key=value` 簿記。
+        工單：logs/SOUL-BUG-006-WORK-ORDER.md「Owner 裁示」節。
+        """
         bus, writer, adapter = _production_style_wire(Path("/tmp"))
         we = _make_world_event(type_="calendar_event", novelty_id="j2_calendar")
         async def _run():
@@ -701,11 +717,19 @@ class TestSectionJ_ProvenanceUnchanged:
         # Provenance unchanged
         assert ev.provenance.trigger_type == "world:calendar_event"
         assert ev.provenance.source_system == "narrative"
-        assert ev.provenance.extras == {
+        # 3 個既有鍵逐鍵等值，一個字都沒變
+        assert {k: v for k, v in ev.provenance.extras.items() if k != "narrative"} == {
             "world_source": "calendar",
             "world_type": "calendar_event",
             "world_novelty_id": "j2_calendar",
         }
+        # 🔴 新增釘住：narrative 必須是自然語言，不得是 key=value 簿記
+        narrative = ev.provenance.extras["narrative"]
+        assert narrative
+        for mark in ("world_source=", "world_type=", "="):
+            assert mark not in narrative, (
+                f"narrative 不得含 key=value 簿記 {mark!r}，實得: {narrative!r}"
+            )
         # The new field is on InnerLifeEvent, NOT in Provenance
         assert ev.source_world_event_novelty_id == "j2_calendar"
         assert "source_world_event_novelty_id" not in ev.provenance.extras

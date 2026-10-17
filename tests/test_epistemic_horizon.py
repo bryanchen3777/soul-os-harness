@@ -596,20 +596,6 @@ class TestVerticalFirewall:
         )
         assert nodes == []  # 0 consume / 0 pattern 候選 (不得以 fact 側偷渡)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "SOUL-BUG-006（2026-10-17）未解衝突，待 Owner 裁定 + Step 2 生產端補敘事。\n"
-            "本測試釘的是 EH-2.1 的 Owner 裁定（環境／日程事件必須放行進昇華鏈，"
-            "「不得感知閹割」）；SOUL-BUG-006 的 fail-closed（無敘事不建節點）"
-            "則要求它們**不得**用 key=value 簿記當正文。\n"
-            "兩者唯一衝突點：world 事件的 extras 實測完全沒有敘事欄位"
-            "（world_novelty_id / world_source / world_type），故會被整批攔截。\n"
-            "斷言一個字都沒放寬 —— 只掛 strict xfail 記錄缺陷現況："
-            "strict 保證一旦行為恢復就 XPASS→FAILED，強迫移除本 marker。"
-            "解除路徑：Step 2 讓 world producer 產出真實敘事正文。"
-        ),
-    )
     def test_r1_env_events_allowed_into_elevation(self, iso_env):
         """R1 (EH-2.1 收斂, Owner 裁定): 環境與日程事件 → 放行昇華鏈。
 
@@ -618,7 +604,14 @@ class TestVerticalFirewall:
         （world:calendar_event / world:user_going_outside）屬共同生活（Co-living）
         的感知邊界 —— 可正常 consume 進昇華鏈沉澱環境 Pattern（「這幾天都在下雨,
         主人出門要多加件衣裳」），不得感知閹割與行為回退。submit 與
-        run_elevation（defense-in-depth）雙路徑皆放行。"""
+        run_elevation（defense-in-depth）雙路徑皆放行。
+
+        ✅ xfail 已於 SOUL-BUG-006 Step 2（2026-10-17，Owner 裁示採第 2 案）解除。
+        當時掛 xfail 的原因是：Step 1 的 fail-closed 會把「沒有 `narrative`
+        的事件」整批攔掉，而當時 world 生產端還不產敘事 —— 等於 EH-2.1
+        被自己的修正閹割。現在 `src/world/inner_life_adapter.py` 已用
+        `world_event_narrative()`（確定性、0 LLM）為環境事件產出自然語言敘事，
+        兩份裁定同時成立，故解除並把敘事補進 fixture（= 現在的生產形狀）。"""
         from src.inner_life import SubmissionGate
 
         env_types = [
@@ -634,6 +627,9 @@ class TestVerticalFirewall:
                     trigger_type=trigger_type,
                     actor_id=None,
                     source_system="narrative",
+                    # SOUL-BUG-006 Step 2：這是**現在的生產形狀** ——
+                    # world producer 會附上自然語言敘事（不是 world_source=… 簿記）。
+                    extras={"narrative": "今天下起了雨，主人出門時多加了件外套。"},
                 ),
             )
             # ① submit 路徑: 放行 (producer 合法 + 非外部媒體 → consume 產 pattern 候選)

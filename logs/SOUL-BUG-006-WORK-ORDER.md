@@ -320,3 +320,51 @@ Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers、`submission_ga
 ⚠️ 同一支測試的第二道斷言 `src_changes <= allowed` 使用的是**另一張舊票**的歷史
 許可集，**刻意不擴張** —— 它是工作樹範圍型護衛，commit 後 `git diff HEAD` 為空
 即自動轉綠。
+
+---
+
+# 追加（2026-10-17 晚間續）：Step 1 已 commit，Step 2 已實作
+
+## Step 1 commit：`c3520cb`
+
+全庫 6519 passed / 1 failed（工作樹護衛，commit 後轉綠）/ 1 xfailed / 24 skipped，
+collected **6545 與基線完全對平**，函式層 5684 = 5684。commit 後複查受影響 8 檔：
+**157 passed / 1 xfailed / 0 failed**。
+
+## Step 2 已實作：world 生產端自然語言環境敘事
+
+**新增** `src/world/inner_life_adapter.py`：
+- `_describe_temperature(temp_c)` — 攝氏溫度 → 自然語言形容詞（5 檔溫帶）。
+  非數值回 `""`，**不猜、不發明**。
+- `world_event_narrative(world_event) -> str` — 逐型別句型，**確定性、0 LLM**。
+- `WorldInnerLifeAdapter._build_extras()` — 3 個既有 metadata 鍵**原樣保留**，
+  附加 `narrative`；**敘事為空時不放該鍵**（不放佔位字串）。
+
+**為什麼不用 LLM**：① 這是每個 world 事件都走的熱路徑，走 LLM 等於把成本與延遲
+灌進去；② 環境事實（下雨、幾度、行程）是客觀描述，不需要生成式 creativity；
+③ 同一事件必須永遠得到同一句，否則節點冪等去重（SOUL-BUG-001 修的那條路徑）失效。
+
+**刻意不做的兩件事**：
+1. 不回傳 `weather_temperature_c=20.0` 這種 key=value 簿記 —— 那正是本票的病根
+   （`src/world/elevation_adapter.py::_world_event_content()` 目前就是那個形狀）。
+2. 不把原始 `summary` 綴在句尾當括號註記 —— 等於把 observation text 又搬回圖譜，
+   與 M5.9-3 的邊界衝突。渲染出的句子本身已經完整。
+
+## 契約釘死點的處置（皆附裁示依據，無一處靜默放寬）
+
+| 位置 | 原狀 | 處置 |
+|---|---|---|
+| `test_m5_15_5...::test_j2_provenance_extras_unchanged` | `extras == {3 鍵}` 逐鍵等值，註明 "(no change)" | 改為「3 鍵逐鍵等值不變 ＋ 新增釘住 narrative 必須自然語言、不得含 `=`」 |
+| `test_m5_9_3_world_inner_life_adapter.py:765` | 註解宣稱「我們只存 3 個鍵」；斷言 `summary`／`data` 不在 extras | **斷言原封不動**；更新註解記錄邊界被 Owner 刻意修正（渲染產物 ≠ 原文轉存） |
+| `test_epistemic_horizon.py::test_r1_env_events_allowed_into_elevation` | `xfail(strict=True)` 記錄 EH-2.1 衝突 | **xfail 解除**，fixture 補上敘事（現為生產形狀），斷言一個字未改 |
+
+## 驗證
+
+- 新增 `tests/test_world_event_narrative.py`（16 項）：決定性、取不到不發明、
+  逐型別句型、溫帶邊界（含 `5.0`／`27.0` 兩個臨界值）、非數值拒絕猜測、
+  extras 三鍵不變 + narrative 純附加 + 空時不落鍵，
+  以及**端到端驗收**：環境事件重新在昇華鏈產出節點。
+- **4 組變異實驗全紅**：narrative 鍵永遠存在 / 退回 key=value 風格 /
+  溫度帶整段消失 / 溫帶判定恆空（分別紅 1／1／2／6 支）。
+- 三檔合併 114 passed；三檔＋環境相關 100 passed，xfail 已清空。
+

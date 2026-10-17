@@ -86,7 +86,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventType, SoulEvent
@@ -126,6 +126,92 @@ WORLD_QUALIFYING_TYPES: frozenset = frozenset({
     "rain_started",
     "weather_temp_change",
 })
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 環境敘事渲染（SOUL-BUG-006 Step 2，Owner 2026-10-17 裁示採第 2 案）
+# ─────────────────────────────────────────────────────────────────────
+#
+# 為什麼需要它：昇華消費端 SOUL-BUG-006 Step 1 已改為 fail-closed ——
+# 事件的 extras 若沒有 `narrative`，就不建立任何節點。而 world 事件的
+# extras 實測只有 {world_source, world_type, world_novelty_id} 三個純
+# metadata 鍵（反解 elevation_nodes.jsonl 的 content 得出），於是整批被攔截，
+# **直接違反 EH-2.1 的 Owner 裁定**（陰晴風雨與主人行程屬共同生活的感知
+# 邊界，必須放行進昇華鏈，「不得感知閹割」）。
+#
+# 裁定的唯一正解（Owner 原話方向）：**在生產端為環境事件賦予一段簡短、
+# 具備自然語言描述的敘事字串**，讓它同時滿足 EH-2.1 與 fail-closed。
+#
+# 為什麼是確定性、0 LLM：
+#   - 這是每個 world 事件都會走的路徑，走 LLM 等於把成本與延遲灌進熱路徑；
+#     環境事實（下雨、幾度、行程）是**客觀描述**，不需要生成式 creativity。
+#   - 同一事件必須永遠得到同一句敘事，否則節點冪等去重會失效
+#     （SOUL-BUG-001 修的就是那條路徑）。
+#
+# 🔴 刻意不做的事：不要回傳 `weather_temperature_c=20.0` 這種 key=value 簿記。
+#   `src/world/elevation_adapter.py::_world_event_content()` 目前正是那個形狀
+#   （weather 分支產出 `summary (temperature=20°C, precipitation=0mm)`），
+#   那是簿記不是敘事，本票的病根就在那裡。新的渲染器只產自然語言。
+
+# 氣溫帶 → 自然語言形容詞（Owner 示範句「空氣微冷」的同一套分法）
+_TEMP_BANDS_C: tuple[tuple[float, str], ...] = (
+    (5.0, "寒冷"),
+    (12.0, "微冷"),
+    (20.0, "涼"),
+    (27.0, "溫暖"),
+)
+_TEMP_BANDS_WARM: str = "炎熱"
+
+
+def _describe_temperature(temp_c: Any) -> str:
+    """把攝氏溫度轉成自然語言形容詞。回 "" 給非數值（不猜、不發明）。"""
+    try:
+        value = float(temp_c)
+    except (TypeError, ValueError):
+        return ""
+    for ceiling, word in _TEMP_BANDS_C:
+        if value <= ceiling:
+            return word
+    return _TEMP_BANDS_WARM
+
+
+def world_event_narrative(world_event: WorldEvent) -> str:
+    """把 WorldEvent 渲染成**自然語言**敘事（確定性、0 LLM）。
+
+    Owner 裁示的示範句是「今日氣溫降低，且伴隨陰雨，空氣微冷」——
+    重點在於它是**一句人話**，不是欄位列舉。本函式照這個方向實作：
+    每個 type 一個句型，盡量把可得的客觀細節（氣溫帶、降雨）併進同一句。
+
+    回 "" 給「真的沒有任何可敘述內容」的情況 —— 呼叫端不得硬塞佔位字串，
+    讓消費端的 fail-closed 照常生效。**寧可少一顆節點，也不要假敘事。**
+    """
+    summary = str(getattr(world_event, "summary", "") or "").strip()
+    data = getattr(world_event, "data", None) or {}
+    event_type = str(getattr(world_event, "type", "") or "")
+
+    temp_word = _describe_temperature(data.get("weather_temperature_c"))
+    temp_phrase = ""
+    if temp_word and event_type in ("rain_started", "weather_temp_change"):
+        raw = data.get("weather_temperature_c")
+        temp_phrase = f"，氣溫 {float(raw):g} 度，空氣{temp_word}"
+
+    if event_type == "rain_started":
+        # 🔴 刻意**不**把 summary 綴在後面當括號註記。
+        #   渲染出的句子本身已經完整；綴上原始 summary 等於把 observation text
+        #   又搬回圖譜（與 M5.9-3 的邊界衝突），也讓句子變成半人半簿記。
+        return f"外面下起了雨{temp_phrase}。"
+    if event_type == "weather_temp_change":
+        return f"今天的天氣有變化{temp_phrase}。" if temp_phrase else "今天的天氣有變化。"
+    if event_type == "calendar_event":
+        return f"行程上寫著：{summary}。" if summary else ""
+    if event_type == "user_going_outside":
+        return f"主人出門了：{summary}。" if summary else "主人出門了。"
+    if event_type == "news_event":
+        return f"聽到一則新聞：{summary}。" if summary else ""
+
+    # 未列入白名單的型別：交出 summary 本身（若它像人話）。
+    # 空 summary 就回 ""，不發明。
+    return summary
 
 
 # M5.9-2 v1 dedup max size: bounded FIFO.
@@ -388,6 +474,9 @@ class WorldInnerLifeAdapter:
           - actor_id = None
           - source_system = "narrative"
           - extras = {world_source, world_type, world_novelty_id}
+            ＋ SOUL-BUG-006 Step 2（Owner 2026-10-17 裁示採第 2 案）附加的
+            `narrative`（自然語言環境敘事）。3 個原有鍵**原樣不變**，
+            narrative 為空時**不放該鍵**。
           - session_id / correlation_id / parent_event_id = None
 
         M5.15-5 (Bry 派工 2026-08-12 19:14): Cross-system identity bridge.
@@ -404,11 +493,7 @@ class WorldInnerLifeAdapter:
                 actor_id=None,
                 source_system="narrative",
                 trace_ref=None,
-                extras={
-                    "world_source": str(world_event.source),
-                    "world_type": str(world_event.type),
-                    "world_novelty_id": str(world_event.novelty_id),
-                },
+                extras=self._build_extras(world_event),
             ),
             session_id=None,
             correlation_id=None,
@@ -417,6 +502,26 @@ class WorldInnerLifeAdapter:
             # WorldEvent.novelty_id free string, no 32-hex format, no existence check
             source_world_event_novelty_id=world_event.novelty_id,
         )
+
+    @staticmethod
+    def _build_extras(world_event: WorldEvent) -> dict:
+        """組 InnerLifeEvent 的 extras：3 個原有 metadata 鍵 **原樣保留**，
+        另外附加 SOUL-BUG-006 Step 2 的自然語言 `narrative`。
+
+        - 既有 3 鍵一個字都沒改（M5.15-5 J.2 契約），
+          新增的是**純附加**欄位。
+        - `narrative` 為空時**不放這個鍵**（不放佔位字串），
+          讓消費端 fail-closed 照常生效 —— 那是刻意的，不是漏掉。
+        """
+        extras = {
+            "world_source": str(world_event.source),
+            "world_type": str(world_event.type),
+            "world_novelty_id": str(world_event.novelty_id),
+        }
+        narrative = world_event_narrative(world_event)
+        if narrative:
+            extras["narrative"] = narrative
+        return extras
 
     # ── Dedup helpers (FIFO bounded) ──
 
