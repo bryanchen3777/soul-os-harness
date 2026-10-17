@@ -36,6 +36,7 @@ import os
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+from urllib.parse import urlsplit
 
 try:  # pragma: no cover - import 形狀差異只在缺 src.paths 時發生
     from src.paths import data_root
@@ -62,6 +63,16 @@ BLOCK_CHRONO_OPEN = "[CHRONO_SOCIAL_CONTEXT"
 BLOCK_CHRONO_CLOSE = "[/CHRONO_SOCIAL_CONTEXT]"
 BLOCK_INNER_LIFE = "[最近內在生活]"
 BLOCK_SAGE_MEMORY = "你記得以下這些事情:"
+
+# 被追蹤的標頭 → 邏輯名（`block_order` 用）。
+# ⚠️ 這是**已驗證字面值**的子集，不是整個 prompt 的完整區塊清單：
+#    新增標頭必須先在源碼確認逐字字面值再登錄，**不得臆測**。
+#    （本票第一版的疏失就是憑想像寫了 block_order 而沒有對應實作。）
+_TRACKED_MARKERS = (
+    (BLOCK_SAGE_MEMORY, "sage_memory"),
+    (BLOCK_CHRONO_OPEN, "chrono"),
+    (BLOCK_INNER_LIFE, "inner_life"),
+)
 
 # 測試用注入點：None = 讀環境變數；True/False = 強制覆寫。
 _FORCE_OVERRIDE: Optional[bool] = None
@@ -164,6 +175,51 @@ def _block_presence(system_text: str) -> Dict[str, Dict[str, Any]]:
     return blocks
 
 
+def block_order(system_text: str) -> List[str]:
+    """被追蹤區塊在 system prompt 中的**實際出現順序**（OBS-CHRONO-1.1）。
+
+    以字串 offset 排序，因此它反映的是組裝結果，不是宣告順序——
+    這正是用來驗證「注入順序是否符合契約」的那個訊號。
+    未出現的區塊不會列入（缺席請看 `blocks.<name>.present`）。
+    """
+    hits: List[tuple] = []
+    for marker, name in _TRACKED_MARKERS:
+        idx = system_text.find(marker)
+        if idx >= 0:
+            hits.append((idx, name))
+    return [name for _, name in sorted(hits, key=lambda t: t[0])]
+
+
+def provider_id(backend: Any) -> Optional[str]:
+    """backend 的有效識別值（OBS-CHRONO-1.1）。
+
+    ⚠️ 上一版寫 `getattr(backend, "provider", None)` 恆為 None——因為
+    `OpenAIBackend`／`ClaudeBackend` 都**沒有** `provider` 屬性，
+    真正承載識別資訊的是**類別名**與 `base_url`。
+
+    這裡組成 `<類別名>@<host>`。**刻意只保留 scheme 的主機部分**：
+    `base_url` 若帶 userinfo（`https://user:token@host/…`）或 query，
+    整條寫進 trace 等於洩漏憑證。只留 host:port 是能唯一識別 provider
+    又不洩漏的最小充分資訊。解析失敗時退回類別名——寧可少資訊也不外洩。
+    """
+    if backend is None:
+        return None
+    cls = type(backend).__name__
+    raw = getattr(backend, "base_url", None)
+    if not isinstance(raw, str) or not raw.strip():
+        return cls
+    try:
+        parts = urlsplit(raw.strip())
+        host = parts.hostname or ""
+        if parts.port:
+            host = f"{host}:{parts.port}"
+        if not host:
+            return cls
+        return f"{cls}@{host}"
+    except Exception:
+        return cls
+
+
 def _rotate_if_needed(path: Path) -> None:
     try:
         if path.exists() and path.stat().st_size > MAX_BYTES:
@@ -211,6 +267,7 @@ def trace_prompt(
             "user_prompt_len": len(user_text),
             "user_prompt_sha256_12": _sha12(user_text),
             "blocks": _block_presence(system_text),
+            "block_order": block_order(system_text),
         }
         path = trace_path()
         path.parent.mkdir(parents=True, exist_ok=True)

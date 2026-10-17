@@ -190,6 +190,130 @@ class TestObservabilityGoals:
 
 
 # ─────────────────────────────────────────────────────────────
+# 3b. OBS-CHRONO-1.1：block_order 與 provider（補第一版漏掉的兩個欄位）
+# ─────────────────────────────────────────────────────────────
+
+
+class TestBlockOrder:
+    """block_order 必須反映**實際 offset 順序**，不是宣告順序。"""
+
+    def test_order_follows_text_offsets(self, _isolated_trace):
+        prompt_trace.trace_prompt(
+            _messages(CHRONO_BLOCK + INNER_LIFE_BLOCK + SAGE_BLOCK, "早安"),
+            agent_id="agent_rem", route="roleplay", temperature=0.85,
+        )
+        assert _rows(_isolated_trace)[0]["block_order"] == ["chrono", "inner_life", "sage_memory"]
+
+    def test_order_changes_when_prompt_order_changes(self, _isolated_trace):
+        """🔴 順序守衛：同一批區塊、不同組裝順序 ⇒ 必須報出不同順序。
+
+        這個反向測試才是真的在測「順序有被量到」；只測一個固定順序的話，
+        把 block_order 寫成常數也能全綠。
+        """
+        prompt_trace.trace_prompt(
+            _messages(SAGE_BLOCK + CHRONO_BLOCK + INNER_LIFE_BLOCK, "早安"),
+            agent_id="agent_rem", route="roleplay", temperature=0.85,
+        )
+        assert _rows(_isolated_trace)[0]["block_order"] == ["sage_memory", "chrono", "inner_life"]
+
+    def test_absent_blocks_are_not_listed(self, _isolated_trace):
+        prompt_trace.trace_prompt(
+            _messages("你是一個角色。", "早安"), agent_id="agent_rem",
+            route="roleplay", temperature=0.85,
+        )
+        assert _rows(_isolated_trace)[0]["block_order"] == []
+
+    def test_partial_blocks_only_lists_present_ones(self, _isolated_trace):
+        prompt_trace.trace_prompt(
+            _messages(INNER_LIFE_BLOCK + CHRONO_BLOCK, "早安"),
+            agent_id="agent_rem", route="roleplay", temperature=0.85,
+        )
+        # inner_life 在文字中較早出現 ⇒ 順序必須反映實際 offset
+        assert _rows(_isolated_trace)[0]["block_order"] == ["inner_life", "chrono"]
+
+
+class TestProviderId:
+    class _WithUrl:
+        BASE_URL = "https://api.openai.com/v1/chat/completions"
+
+        def __init__(self, base_url=None):
+            self.base_url = base_url or self.BASE_URL
+
+    class _NoUrl:
+        pass
+
+    def test_class_and_host_are_captured(self):
+        got = prompt_trace.provider_id(self._WithUrl())
+        assert got == "_WithUrl@api.openai.com"
+
+    def test_never_none_for_a_real_backend(self):
+        """死欄位防護：沒有 base_url 也必須給得出類別名。"""
+        got = prompt_trace.provider_id(self._NoUrl())
+        assert got == "_NoUrl", f"provider 不得為 None，實得 {got!r}"
+        assert got is not None
+
+    def test_credentials_are_stripped(self):
+        """🔴 base_url 若含 userinfo / query，不得整條寫進 trace。"""
+        got = prompt_trace.provider_id(
+            self._WithUrl("https://user:SECRET-TOKEN@internal.example.com:8443/v1?key=ALSO-SECRET")
+        )
+        assert "SECRET" not in got
+        assert got == "_WithUrl@internal.example.com:8443"
+
+    def test_ollama_style_local_endpoint(self):
+        assert prompt_trace.provider_id(
+            self._WithUrl("http://localhost:11434/v1/chat/completions")
+        ).endswith("@localhost:11434")
+
+    def test_none_passthrough(self):
+        assert prompt_trace.provider_id(None) is None
+
+
+@pytest.mark.asyncio
+class TestProxyHookProvider:
+    async def test_hook_records_real_provider_not_none(self, spy_backend, _isolated_trace):
+        """🔴 插針層：provider 必須是有效值，而不是上一版的恆 None。"""
+        bus = SoulEventBus()
+        proxy = LLMProxy(bus=bus, backend=spy_backend, model="mock-model")
+        await bus.start()
+        try:
+            await proxy.generate_event_text(
+                messages=[{"role": "system", "content": "世界觀敘事者"}],
+                agent_id="agent_akane",
+            )
+        finally:
+            await bus.stop()
+
+        row = _rows(_isolated_trace)[-1]
+        assert row["provider"] is not None, "provider 不得為 None（第一版的死欄位）"
+        assert "SpyBackend" in row["provider"]
+
+    async def test_hook_records_block_order(self, spy_backend, _isolated_trace):
+        bus = SoulEventBus()
+        proxy = LLMProxy(bus=bus, backend=spy_backend, model="mock-model")
+        await bus.start()
+        try:
+            event = SoulEvent(
+                event_type=EventType.AGENT_INTENT_ENRICHED,
+                source="agent_akane", target="broadcast",
+                priority=EventPriority.NORMAL,
+                payload={
+                    "agent_id": "agent_akane", "reason": "heartbeat",
+                    "draft": "……在喔。", "mood": 0.0, "mode": "group",
+                    "target_user_id": "bryan", "memory_context": "",
+                },
+                session_id="session_obs_chrono_11",
+            )
+            await proxy._handle_event_impl(event)
+        finally:
+            await bus.stop()
+
+        row = _rows(_isolated_trace)[-1]
+        assert "block_order" in row, "插針層必須寫出 block_order 欄位"
+        assert isinstance(row["block_order"], list)
+
+
+# ─────────────────────────────────────────────────────────────
 # 4. schema 與穩健性
 # ─────────────────────────────────────────────────────────────
 

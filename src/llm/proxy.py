@@ -3872,7 +3872,7 @@ class LLMProxy:
                 route=f"roleplay:{reason}",
                 temperature=self.roleplay_temperature,
                 model=self.model,
-                provider=getattr(self.backend, "provider", None),
+                provider=prompt_trace.provider_id(self.backend),
                 mode=mode,
                 reason=reason,
             )
@@ -4390,7 +4390,7 @@ class LLMProxy:
                 route="event",
                 temperature=self.event_temperature,
                 model=self.model,
-                provider=getattr(self.backend, "provider", None),
+                provider=prompt_trace.provider_id(self.backend),
                 mode=None,
                 reason="event_generation",
             )
