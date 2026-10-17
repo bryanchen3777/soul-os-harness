@@ -61,6 +61,12 @@ logger = logging.getLogger("soul_os.llm_proxy")
 # redirect via SOUL_OS_DATA_DIR. Production: defaults to "data/conversations".
 from src.paths import data_root
 
+# OBS-CHRONO-1（Bry 拍板 2026-10-16）：端到端 Prompt / 參數觀測 sidecar。
+# 預設關閉（SOULOS_PROMPT_TRACE=1 才啟用）；啟用時只寫元資料
+# （presence／長度／12 字元 hash／時間中繼資料），**永不寫對話原文**。
+# 觀測失敗不得影響主流程（prompt_trace 內部自行 try/except）。
+from src.observability import prompt_trace
+
 CONV_DIR = data_root() / "conversations"
 CONV_DIR.mkdir(parents=True, exist_ok=True)
 MAX_PERSIST = 20      # 每份 history 最大條數(20 輪 ≈ 40 條)
@@ -3851,6 +3857,26 @@ class LLMProxy:
         )
         logger.debug(f"[LLMProxy] system_prompt_len={sys_msg_len}")
 
+        # ── OBS-CHRONO-1：Prompt / 參數觀測（預設關閉，零 IO）────────────
+        # 落點理由（Bry 2026-10-16 裁示）：Soul OS 有大量 headless 背景流量
+        # （Telegram 機器人、夜間日記/夢境生成、無介面 agent 迴圈），任何依賴
+        # 「有人開著介面」的觀測點都會漏掉背景流量，所以放在**所有後處理完成、
+        # `_complete_with_retry` 送出之前**這一個點——角色扮演與事件生成共用。
+        # 只記元資料；對話原文一律不落盤（哨兵測試鎖死）。
+        if prompt_trace.trace_enabled():
+            prompt_trace.trace_prompt(
+                messages,
+                agent_id=agent_id,
+                # route 用 reason 收斂成可歸因的類別：user_message / heartbeat
+                # 都是「角色自己說話」= roleplay；其餘由事件驅動但仍走同一溫度。
+                route=f"roleplay:{reason}",
+                temperature=self.roleplay_temperature,
+                model=self.model,
+                provider=getattr(self.backend, "provider", None),
+                mode=mode,
+                reason=reason,
+            )
+
         # ── 呼叫 LLM ──────────────────────────────────
         # Phase 5c+ bug fix:try/finally 確保任何失敗路徑(HTTP 529、
         # thinking-only、空 text、exception)都釋放 Speaker Token,
@@ -4354,6 +4380,21 @@ class LLMProxy:
             純文字事件描述 (一句話 + tag), 失敗回 None
         """
         # β2.1 簡化 retry: 1 次 (即 attempt 0 + attempt 1 = 最多 2 次)
+        # OBS-CHRONO-1：事件生成是**另一條**路徑（event_temperature 0.7），
+        # 不在 _handle_event_impl 的觀測點內。要做到「每一次呼叫的 route ＋
+        # temperature 歸因」，這裡必須各插一支，否則 0.7 這條永遠缺席。
+        if prompt_trace.trace_enabled():
+            prompt_trace.trace_prompt(
+                messages,
+                agent_id=agent_id,
+                route="event",
+                temperature=self.event_temperature,
+                model=self.model,
+                provider=getattr(self.backend, "provider", None),
+                mode=None,
+                reason="event_generation",
+            )
+
         for attempt in range(2):
             try:
                 result = await self.backend.complete(

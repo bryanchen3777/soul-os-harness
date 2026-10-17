@@ -139,15 +139,21 @@ llm:
   # 512 → 4000 給 thinking + JSON output 真正夠用的空間
   # max_tokens key 名 loader 內部會轉成 max_completion_tokens (MiniMax 全系列 deprecate max_tokens)
   # 2026-07-26 Bry 拍板 D-core 修訂: temperature 0.85→0.5 (tool_choice 強制呼叫路徑, 越低越穩,
-  # 社群驗證). 7/26 11:08 第一次改 L1603 LLMProxy.__init__ default 沒生效 (loader 從 config
+  # 社群驗證)。7/26 11:08 第一次改 LLMProxy.__init__ default 沒生效 (loader 從 config
   # 餵 keyword arg 0.85 覆蓋 default), 7/26 12:05 v29 silent 撞見才發現, 12:18 修這層
   # Lesson 32 升級條款: 改 default 前要 grep 所有 caller 確認沒被明確傳入覆蓋
   max_tokens: 4000
+  # ⚠️ 2026-10-16 OBS-CHRONO-1 考古更正：本欄位對「角色訊息生成」已**不可達**。
+  #    工具強制路徑（tool_choice）於 2026-08-05 隨 Lesson 32 一併移除，
+  #    角色生成無條件走 `roleplay_temperature`（proxy.py:4263），全檔亦無任何
+  #    依 temperature 分流的 if。`self.temperature` 賦值後從未被讀取（死屬性）。
+  #    保留此行僅為相容舊設定載入；**新調校請改 roleplay_temperature**。
   temperature: 0.5
-  # 2026-10-15 Bryan 批准「去錨定三修法」之溫度分流: 工具呼叫路徑保持 0.5（tool_choice
-  # 穩定性, 2026-07-26 D-core 修訂）, 純角色扮演輸出（無 tool call, 走
-  # LLMProxy._complete_with_retry）改用 roleplay_temperature 0.85——回到 D-core 修訂前
+  # 2026-10-15 Bryan 批准「去錨定三修法」之溫度: 角色扮演輸出（無 tool call, 走
+  # LLMProxy._complete_with_retry）用 roleplay_temperature 0.85——回到 D-core 修訂前
   # 的長期值。修「雷姆在這裡。」錨定：低溫是小模型複讀高頻例句的主因之一。
+  # 事件生成走另一條路徑（event_temperature 0.7, generate_event_text）。
+  # 每次呼叫實際帶了哪個值，可用 SOULOS_PROMPT_TRACE=1 觀測（見 src/observability/prompt_trace.py）。
   roleplay_temperature: 0.85
   max_retries: 3
 
