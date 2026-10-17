@@ -60,6 +60,18 @@ def _make_gate(
     return SubmissionGate(writer=writer, trace_reader=reader, **kwargs)
 
 
+def _with_narrative(extras: dict | None) -> dict:
+    """SOUL-BUG-006（2026-10-17）：確保 fixture 事件帶真實敘事（fail-closed 飼料）。
+
+    敘事由既有 extras 推導 ⇒ 內容互異 / 相同的原有前提完整保留。
+    """
+    out = dict(extras or {})
+    if "narrative" not in out:
+        detail = "、".join(f"{k}={v}" for k, v in sorted(out.items()))
+        out["narrative"] = f"夜裡發生的一件事（{detail}）。" if detail else "夜裡發生的一件事。"
+    return out
+
+
 def _create_event(
     writer: InnerLifeWriter,
     trigger_type: str = TRIGGER_TYPE_DIARY_NIGHT,
@@ -73,7 +85,11 @@ def _create_event(
             trigger_type=trigger_type,
             actor_id=actor_id,
             source_system=source_system,
-            extras=extras or {},
+            # SOUL-BUG-006（2026-10-17）：fail-closed 飼料。生產 diary 事件
+            # 實測 290/290 帶 `narrative`；沒有它事件不會建立節點。
+            # 敘事由既有 extras 推導 ⇒ 各測試「內容互異 / 內容相同」的
+            # 原有前提一個字都沒變。
+            extras=_with_narrative(extras),
         ),
     )
 

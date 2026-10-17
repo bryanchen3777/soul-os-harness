@@ -72,18 +72,37 @@ from src.inner_life.emergent_projection import load_elevation_nodes
 _SOUL_TYPES = {"belief", "value", "trait", "essence"}
 
 
+_PROD_NARRATIVE = "今晚的雨聲很安靜，雷姆把茶放在主人手邊，什麼也沒說。"
+
+
 def _prod_shaped_event(writer, trigger_type, actor_id):
-    """造一條**生產形狀**事件：extras 不帶序號（與 run_server.py 的寫法一致）。
+    """造一條**生產形狀**事件：extras 不帶序號，且**每條完全相同**。
 
     刻意不做 `_make_distinct_events` 那種「每條帶不同 extras」的加工——那正是
-    把本缺陷藏起來的測試慣例。生产上 `extras={"slot": slot}` 之類的值是重複的。
+    把本缺陷藏起來的測試慣例。生产上同一 trigger 的正文會大量重複。
+
+    🔴 2026-10-17（SOUL-BUG-006）修正本 fixture 的前提：
+    這裡原本是 `extras={}`，註解明說「生產形狀：空 extras」。**該前提已過時**——
+    LIFE-THREAD-P1 修好寫入順序後，生產 diary 事件的 extras 實測為
+    `narrative`(290/290) + `slot`(290/290)（反解 `elevation_nodes.jsonl` 得出）。
+    空 extras 已不是生產形狀；而 SOUL-BUG-006 的 fail-closed 會讓它整條被跳過，
+    測試於是「因為錯誤的原因」轉紅。
+
+    本測試要守的不變量是「**相同內容**的兩條事件 → 節點 coalesce 成 1 顆、
+    證據邊累積 ≥2」（SOUL-BUG-001）。改用帶 `narrative` 的真實生產形狀，
+    **內容仍然兩條一模一樣**，守的仍是同一個不變量。
     """
     return writer.create_event(
         provenance=Provenance(
             trigger_type=trigger_type,
             actor_id=actor_id,
             source_system="narrative",
-            extras={},  # ← 生產形狀：內容必然與同 trigger 的其他事件重複
+            extras={
+                # 生產形狀（2026-10-17 實測）：正文 + slot，且不含序號 ⇒
+                # 同 trigger 的事件內容必然重複，正是本測試要打的路徑。
+                "narrative": _PROD_NARRATIVE,
+                "slot": "night",
+            },
         ),
     )
 

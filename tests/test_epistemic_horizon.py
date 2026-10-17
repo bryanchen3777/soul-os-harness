@@ -530,6 +530,10 @@ class TestVerticalFirewall:
                 trigger_type="world:news_event",
                 actor_id=None,
                 source_system="narrative",
+                # 🔴 SOUL-BUG-006（2026-10-17）：刻意帶上敘事，讓本測試**只能**
+                # 由 R1 firewall 解釋 `submit() == []`。若不帶，它會因為
+                # fail-closed（無敘事）而空轉通過 —— 那就守不到任何東西了。
+                extras={"narrative": "新聞裡說某國發射了火箭。"},
             ),
         )
         gate = SubmissionGate(
@@ -551,6 +555,10 @@ class TestVerticalFirewall:
                 trigger_type=TRIGGER_TYPE_DIARY_NIGHT,
                 actor_id=_AGENT_REM,
                 source_system="narrative",
+                # 🔴 SOUL-BUG-006（2026-10-17）：補上敘事飼料。`len(nodes) == 2`
+                # 斷言的是「事件本身也會被 consume」——若事件因無敘事被
+                # fail-closed 掉，這支測試會因為**錯誤的原因**轉紅。
+                extras={"narrative": "雷姆在夜裡陪著主人，什麼也沒多說。"},
             ),
         )
         ext = Fact(subject="雷姆", predicate="聽到", object="新聞：某國發射火箭")
@@ -576,6 +584,10 @@ class TestVerticalFirewall:
                 trigger_type="world:news_event",
                 actor_id=None,
                 source_system="narrative",
+                # 🔴 SOUL-BUG-006（2026-10-17）：帶上敘事，讓 `nodes == []`
+                # **只能**由 R1 阻斷解釋。沒有它，這支 defense-in-depth 守衛會
+                # 因 fail-closed 而假綠 —— 有人拆掉 firewall 它也不會紅。
+                extras={"narrative": "新聞裡說某國發射了火箭。"},
             ),
         )
         lived = Fact(subject="雷姆", predicate="喜歡", object="紅茶")
@@ -584,6 +596,20 @@ class TestVerticalFirewall:
         )
         assert nodes == []  # 0 consume / 0 pattern 候選 (不得以 fact 側偷渡)
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "SOUL-BUG-006（2026-10-17）未解衝突，待 Owner 裁定 + Step 2 生產端補敘事。\n"
+            "本測試釘的是 EH-2.1 的 Owner 裁定（環境／日程事件必須放行進昇華鏈，"
+            "「不得感知閹割」）；SOUL-BUG-006 的 fail-closed（無敘事不建節點）"
+            "則要求它們**不得**用 key=value 簿記當正文。\n"
+            "兩者唯一衝突點：world 事件的 extras 實測完全沒有敘事欄位"
+            "（world_novelty_id / world_source / world_type），故會被整批攔截。\n"
+            "斷言一個字都沒放寬 —— 只掛 strict xfail 記錄缺陷現況："
+            "strict 保證一旦行為恢復就 XPASS→FAILED，強迫移除本 marker。"
+            "解除路徑：Step 2 讓 world producer 產出真實敘事正文。"
+        ),
+    )
     def test_r1_env_events_allowed_into_elevation(self, iso_env):
         """R1 (EH-2.1 收斂, Owner 裁定): 環境與日程事件 → 放行昇華鏈。
 
@@ -652,6 +678,9 @@ class TestVerticalFirewall:
                 trigger_type=TRIGGER_TYPE_DIARY_NIGHT,
                 actor_id=_AGENT_REM,
                 source_system="narrative",
+                # 🔴 SOUL-BUG-006（2026-10-17）：補敘事飼料，讓 `len(nodes) == 3`
+                # 仍是「事件 1 + fact 2」，而非「事件被 fail-closed 掉、只剩 fact 2」。
+                extras={"narrative": "夜裡雷姆把白天不懂的事慢慢想通了。"},
             ),
         )
         f1 = Fact(subject="雷姆", predicate="已理解", object="氣炸鍋的原理")
@@ -685,6 +714,12 @@ class TestVerticalFirewall:
                 trigger_type=TRIGGER_TYPE_DIARY_NIGHT,
                 actor_id=_AGENT_REM,
                 source_system="narrative",
+                # 🔴 SOUL-BUG-006（2026-10-17）：**這支原本是綠的，但已悄悄退化**。
+                # 它的 diary 事件無敘事 ⇒ 被 fail-closed ⇒ 佈局裡少了「事件 1」，
+                # R2/R3 的對稱對照（lived 能升 / assimilated 不升）被削成只剩事實層。
+                # 本斷言不檢查節點數，所以退化不會讓它轉紅 —— 屬「意外綠燈」，
+                # 必須靠**看見**才能補。補上敘事以恢復原佈局。
+                extras={"narrative": "夜裡雷姆陪主人散步，回來時心情很好。"},
             ),
         )
         f1 = Fact(subject="雷姆", predicate="體驗過", object="和主人一起散步的感受")

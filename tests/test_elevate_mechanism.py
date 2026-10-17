@@ -49,6 +49,25 @@ _SOUL_TYPES = {"belief", "value", "trait", "essence"}
 # ── helpers ──────────────────────────────────────────────────────────
 
 
+def _with_narrative(extras: dict | None) -> dict:
+    """SOUL-BUG-006（2026-10-17）：確保 fixture 事件帶真實敘事。
+
+    消費端 fail-closed：extras 沒有 `narrative` ⇒ 事件不建立節點。生產 diary
+    事件實測 290/290 帶 `narrative`，故「無敘事」不是生產形狀，而是 fixture
+    停在舊世界的殘留。
+
+    預設敘事**由既有 extras 推導**，因此 `_make_distinct_events` 那種
+    「每條不同 extras ⇒ 每條不同內容」的既有前提**完整保留**；
+    extras 相同的兩條事件仍會得到相同內容（coalesce 語意不變）。
+    呼叫端已給 `narrative` 時一律不覆蓋。
+    """
+    out = dict(extras or {})
+    if "narrative" not in out:
+        detail = "、".join(f"{k}={v}" for k, v in sorted(out.items()))
+        out["narrative"] = f"夜裡發生的一件事（{detail}）。" if detail else "夜裡發生的一件事。"
+    return out
+
+
 def _make_event(
     writer: InnerLifeWriter,
     trigger_type: str,
@@ -61,7 +80,7 @@ def _make_event(
             trigger_type=trigger_type,
             actor_id=actor_id,
             source_system="narrative",
-            extras=dict(extras or {}),
+            extras=_with_narrative(extras),
         ),
     )
 
@@ -231,6 +250,10 @@ def test_d1_world_events_blocked_from_elevation(tmp_path):
                 trigger_type="world:news_event",
                 actor_id=None,
                 source_system="narrative",
+                # 🔴 SOUL-BUG-006（2026-10-17）：帶上敘事，讓 `nodes == []`
+                # **只能**由垂直防火牆解釋；否則它會因 fail-closed 而假綠，
+                # 有人拆掉 firewall 也不會紅。
+                extras={"narrative": "新聞裡說某國發射了火箭。"},
             ),
         )
         # defense-in-depth: run_elevation fact 入口直接阻斷 (contract §4.3 Checkpoint ②)
@@ -254,6 +277,8 @@ def test_d2_world_event_blocked_even_with_memory_facts(tmp_path):
             trigger_type="world:news_event",
             actor_id=None,
             source_system="narrative",
+            # 同 D1：帶敘事，讓「連 fact 側也不得偷渡」只由防火牆解釋。
+            extras={"narrative": "新聞裡說某國發射了火箭。"},
         ),
     )
     mem = Fact(subject="雷姆", predicate="聽到", object="某國發射火箭")

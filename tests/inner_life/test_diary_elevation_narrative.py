@@ -58,22 +58,40 @@ def _event(extras: dict) -> InnerLifeEvent:
     )
 
 
-def test_without_narrative_yields_label():
-    """Baseline (the bug): only `slot` in extras ⇒ label content."""
+def test_without_narrative_yields_empty_content_fail_closed():
+    """SOUL-BUG-006（2026-10-17，契約改寫）：**沒有**敘事欄位 ⇒ content 為空字串。
+
+    🔴 舊契約在此斷言 `got == "diary:night: slot=night"`，而它自己的 docstring
+    寫的就是 "Baseline (the bug)" —— 它釘住的**正是缺陷本身**（把 key=value
+    簿記外殼當成靈魂節點正文）。SOUL-BUG-006 推翻它：取不到人話敘事就
+    fail-closed，由呼叫端跳過、不建立節點。
+    **寧可少一顆節點，也不要讓垃圾原料進圖譜。**
+    """
     got = _event_content(_event({"slot": "night"}))
-    assert got == "diary:night: slot=night"
-    assert "Bry" not in got
+    assert got == ""
+    # 機器簿記欄位一個字都不該殘留（舊契約的 "slot=night" 形狀）
+    assert "slot=night" not in got
+    assert "diary:night" not in got
 
 
 def test_with_narrative_key_content_is_the_narrative():
-    """After the fix: narrative present ⇒ the real body is what gets elevated."""
+    """修後契約：extras 有 `narrative` ⇒ content **就是**那一整句敘事本身。
+
+    🔴 SOUL-BUG-006 連舊契約的 `got.startswith(TRIGGER_TYPE_DIARY_NIGHT)`
+    （`diary:night: narrative=…` 的機器標籤前綴）也一併推翻：節點正文必須是
+    乾淨的命題，不該再掛著 `diary:night:` 這種前綴 —— 否則它仍是一半簿記。
+    metadata 並未遺失：完整 extras 仍並入 `provenance`（adapter `:182`）。
+    """
     ev = _event({"slot": "night"})
     # frozen dataclass blocks attribute assignment, but extras is a mutable dict
     ev.provenance.extras["narrative"] = NARRATIVE
     got = _event_content(ev)
-    assert NARRATIVE in got
+    assert got == NARRATIVE
     assert "Bry" in got
-    assert got.startswith(TRIGGER_TYPE_DIARY_NIGHT)
+    # 不得再有機器標籤前綴或 key=value 外殼
+    assert not got.startswith(TRIGGER_TYPE_DIARY_NIGHT)
+    assert "slot=night" not in got
+    assert "narrative=" not in got
 
 
 def test_frozen_provenance_still_allows_extras_mutation():

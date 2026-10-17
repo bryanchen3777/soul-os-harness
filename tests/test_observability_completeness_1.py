@@ -783,7 +783,13 @@ class TestBoundedAndFrozenDiscipline:
             "src/world/middleware.py",
             "src/memory/sage/writer.py",
             "src/soul/decision.py",
-            "src/inner_life/elevation_adapter.py",
+            # 🔴 SOUL-BUG-006（Owner 2026-10-17 明示解凍）：`elevation_adapter.py`
+            #   從 frozen_dirs 移除 —— 本票要修的就是它的 content 脫殼。
+            #   這是**更正過時紀錄**，不是放寬：其餘 10 筆凍結全部保留。
+            #   邊界仍由別處守住：`src/memory/sage/writer.py`（Append-Only 唯一
+            #   權威）、Agency 4 stages / TriggerEnvelope / InnerLifeEvent /
+            #   4 handlers 皆仍在表內，未解禁。
+            #   工單：logs/SOUL-BUG-006-WORK-ORDER.md「邊界」節。
         )
         for f in frozen_dirs:
             assert f not in changed, f"不得改動 frozen contract / out-of-scope 檔: {f}"

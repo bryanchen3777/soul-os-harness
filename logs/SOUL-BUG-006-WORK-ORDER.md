@@ -227,3 +227,96 @@ world 本來就永不昇華（P0 修正），但 **world pattern 的供給會停
 - 索引：`logs/SOUL-BUG-INDEX.md`
 - 前置：`logs/SOUL-BUG-001-WORK-ORDER.md`（邊重綁，已結案）
 - 本票由 `SAGE-RANK-1` 第一階段 Part A 診斷衍生
+
+---
+
+# 追加（2026-10-17 晚間）：Step 1 分流定案 ＋ Owner 裁示
+
+## 敘事欄位白名單已實證（非憑想像）
+
+上面「開工時需以真實資料核對」的要求已完成，結論與直覺**不同**：
+
+| 觸發類 | extras 實測鍵 | 有敘事？ |
+|---|---|---|
+| `diary:*` | `narrative`(290) / `slot`(290) / `origin_type`·`thread_id`·`title`·`sage_fact_id`(各 69) | ✅ `narrative` |
+| `world:*` | `world_novelty_id` / `world_source` / `world_type`（各 353） | ❌ |
+| `dream:*` | `all_agents_count`(60) / `target_agent_id`(60) | ❌ |
+
+⇒ `_NARRATIVE_EXTRA_KEYS = ("narrative",)` **單一鍵**。刻意不收 `title`：
+那是標題不是正文，用標題冒充會讓節點語意失真。
+交叉驗證：`tests/inner_life/test_diary_elevation_narrative.py` 早已把 `narrative`
+當敘事鍵使用。
+
+## 紅燈分流（依證據，非推測）
+
+初跑 4 個檔案得 7 支紅燈；**第一次全庫回歸揭露同型紅燈共 28 支** ——
+「7 支」只是局部視角。分流結果：
+
+| 類別 | 支數 | 處置 |
+|---|---|---|
+| 舊契約（斷言釘的就是缺陷本身） | 2 | 改寫斷言＋改名（`test_without_narrative_yields_label` → `..._yields_empty_content_fail_closed`） |
+| fixture 缺料（extras 沒帶敘事） | 26 | 補生產實測存在的 `narrative` 飼料，**斷言一個字未放寬** |
+| 🔴 意外綠燈（原本綠但已被解除武裝） | 2 | 見下 |
+| 工作樹範圍型護衛 | 1 | commit 後自動轉綠；**不擴張 `allowed`** |
+| 真衝突（與 Owner 裁定牴觸） | 1 | `xfail(strict=True)` 記錄，見裁示 |
+
+### 🔴 fail-closed 會靜默解除「斷言空值」的守衛
+
+`test_r1_run_elevation_defense_in_depth` 斷言 `nodes == []`（守 R1 world firewall）。
+引入 fail-closed 後它**仍然綠**，但事件是被「無敘事」丟掉的，不是被 firewall 攔下 ——
+**拆掉 firewall 它也不會紅**。`test_r2_lived_facts_still_elevate` 同型：佈局被削成
+只剩事實層，因斷言不檢查節點數而不紅。
+⇒ 已替兩處 fixture 補敘事，使「唯一的解釋」回到原本守的那道牆。
+**紅燈會自己現身，綠燈不會** —— 這是本次分流最重要的收穫。
+
+## Owner 裁示（2026-10-17）：採第 2 案 — 生產端產真實敘事
+
+針對 EH-2.1（環境／日程事件必須放行進昇華鏈，「不得感知閹割」）與 fail-closed
+的衝突，Bryan 裁定：
+
+1. **EH-2.1 不可妥協** —— 天氣／氣溫／行事曆代表世界觀動態推演，是形塑角色
+   認知與情感反應的重要背景。
+2. **垃圾簿記外殼也不可放行** —— `world_novelty_id`／`world_source` 直接進靈魂
+   圖譜會污染節點品質。
+3. **唯一正解：在生產端為環境事件賦予自然語言的「環境敘事」**
+   （例：把氣溫與天氣動態合成「今日氣溫降低，且伴隨陰雨，空氣微冷」），
+   讓它同時滿足 EH-2.1 精神與消費端 fail-closed。
+
+⇒ `tests/test_epistemic_horizon.py::test_r1_env_events_allowed_into_elevation`
+掛 `xfail(strict=True)`，斷言一個字未放寬；Step 2 落地後必須摘除。
+
+## Step 2 落點（已定位，待開工）
+
+**world 端**：`src/world/inner_life_adapter.py:401-412` `_create_inner_life_event()`
+的 `extras` 目前只有 `{world_source, world_type, world_novelty_id}`。
+⇒ 在此補 `"narrative": <自然語言環境敘事>` 即可自然通過 fail-closed。
+
+⚠️ **既有素材不夠用**：`src/world/elevation_adapter.py:75` 的
+`_world_event_content()` 雖已渲染字串，但 weather 分支產出的是
+`f"{summary} (temperature=20°C, precipitation=0mm)"` —— **仍是半機器簿記**，
+不符合 Bry「自然語言敘事」的要求。需另寫自然語言渲染器（確定性、0 LLM）。
+
+⚠️ **必須更新的契約釘死點**：
+`tests/test_m5_15_5_world_inner_life_identity_bridge.py:704` 以
+`assert ev.provenance.extras == {world_source, world_type, world_novelty_id}`
+**逐鍵等值**釘死 extras 形狀（該測試註解明寫 "J.2: … (no change)"）。
+加入 `narrative` 會使它轉紅 —— 這是**刻意的契約變更**，須連同
+`tests/test_m5_9_3_world_inner_life_adapter.py:765`
+（註解「summary is NOT in extras」）一併更新並註明裁示依據。
+
+**dream 端**：維持原架構（消費端依 `event_id` 反查 `write_dream` 落盤正文），
+零簽章變更、零 Append-Only 邊界破壞。
+
+## Frozen Contract 注意（已更新）
+
+`src/inner_life/elevation_adapter.py` 原本列在
+`tests/test_observability_completeness_1.py::test_no_frozen_contract_file_touched`
+的 `frozen_dirs` 內。Owner 已為本票**明示解凍**該檔（見上方工單「邊界」節），
+故已從 `frozen_dirs` 移除並在原處留下裁示依據註解。
+**其餘 10 筆凍結全部保留**：`src/memory/sage/writer.py`（Append-Only 唯一權威）、
+Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers、`submission_gate.py`、
+`identity_firewall.py`、`producer_gate.py`、`world/middleware.py`、`soul/decision.py`。
+
+⚠️ 同一支測試的第二道斷言 `src_changes <= allowed` 使用的是**另一張舊票**的歷史
+許可集，**刻意不擴張** —— 它是工作樹範圍型護衛，commit 後 `git diff HEAD` 為空
+即自動轉綠。

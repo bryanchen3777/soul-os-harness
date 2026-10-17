@@ -125,18 +125,44 @@ def _ts_to_iso(ts: Any) -> str:
     return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
 
 
-def _event_content(inner_life_event: Any) -> str:
-    """InnerLifeEvent 的「事件内容」。
+# SOUL-BUG-006（2026-10-17，Owner 裁示）：敘事欄位白名單。
+#
+# 🔴 這份清單是**從生產資料實測反推**出來的，不是憑印象寫的。
+# 反解 elevation_nodes.jsonl 的 content 後，全部 extras 鍵只有：
+#   world : world_novelty_id / world_source / world_type（各 353）—— **無敘事**
+#   diary : narrative(290) / slot(290) / origin_type/thread_id/title/sage_fact_id(各 69)
+#   dream : all_agents_count(60) / target_agent_id(60)—— **無敘事**
+# ⇒ **`narrative` 是唯一帶人話正文的鍵**。
+#
+# 刻意**不收** `title`（只出現在 life_thread 衍生事件、共 69 次）：
+# 它是標題不是敘事，用標題冒充正文會讓節點語意失真；寧可少一顆節點。
+_NARRATIVE_EXTRA_KEYS = ("narrative",)
 
-    InnerLifeEvent 是 identity + lineage + provenance，**没有正文文本**（正文留在
-    Memory / Fact 里）。因此事件自身的「内容」取其最忠实的可表达形式：
-    trigger_type + provenance.extras（确定性、无损于可表达的元数据）。
+
+def _event_content(inner_life_event: Any) -> str:
+    """InnerLifeEvent 的「事件內容」：乾淨的人話敘事正文；沒有就回空字串。
+
+    SOUL-BUG-006（2026-10-17）：舊版回 ``trigger_type + provenance.extras``，
+    也就是把 ``diary:night: narrative=…; slot=night`` 這種 **key=value 簿記外殼**
+    當成節點正文 —— 於是靈魂節點的 content 從來不是「一句命題」，
+    而是原始事件的序列化。最糟的是夢境事件：它的 extras 只有
+    ``all_agents_count`` / ``target_agent_id``，於是「今天排了 10 隻 agent、
+    對象是 yua」這種**純排程統計**被沉澱成靈魂的「特質」。
+
+    現在只認 ``_NARRATIVE_EXTRA_KEYS`` 裡真正帶正文的欄位；取不到就回傳 ""，
+    由呼叫端做 **fail-closed**（不建立節點）。這是刻意的 fail-closed：
+    **寧可少一顆靈魂節點，也不要讓垃圾原料進圖譜。**
+
+    metadata 並未遺失：``extras`` 仍完整並入 ``provenance``
+    （見 :182），prior / LLM 後驗照樣讀得到全部欄位。
     """
-    p = inner_life_event.provenance
-    if p.extras:
-        parts = [f"{k}={v}" for k, v in sorted(p.extras.items())]
-        return f"{p.trigger_type}: " + "; ".join(parts)
-    return p.trigger_type
+    extras = getattr(inner_life_event.provenance, "extras", None) or {}
+    if isinstance(extras, dict):
+        for key in _NARRATIVE_EXTRA_KEYS:
+            val = extras.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    return ""
 
 
 def _fact_content(fact: Any) -> str:
@@ -159,18 +185,28 @@ def _fact_agent(fact: Any) -> Optional[str]:
 
 def inner_life_event_to_input(
     inner_life_event: Any, *, agent_id: Optional[str] = None
-) -> ElevationInput:
+) -> Optional[ElevationInput]:
     """把 ``InnerLifeEvent`` 映射成 ``ElevationInput``（source_type="inner_life_event"）。
+
+    🔴 SOUL-BUG-006（2026-10-17）：**回傳型別改為 Optional**。
+    事件若沒有可提取的人話敘事（純排程／系統 metadata），回傳 ``None``，
+    由呼叫端 **fail-closed 跳過**，不送進 ``engine.consume()``。
+    這是「拒絕建立垃圾節點」的唯一落點。
 
     字段映射（照工单关键决策 #3）：
       - event_type  = provenance.trigger_type
-      - content     = trigger_type + provenance.extras（事件自身可表达的内容）
+      - content     = **乾淨的人話敘事正文**（SOUL-BUG-006；舊版是
+                      ``trigger_type + provenance.extras`` 的 key=value 外殼）
       - source_id   = event_id
       - source_type = "inner_life_event"
       - timestamp   = event.ts（已是 ISO 8601 UTC）
       - provenance  = dict（trigger_type / source_system / actor_id / agent_id +
-        extras / identity 元数据）
+        **完整 extras** / identity 元数据）—— metadata 一個都沒少，只有 content 脫殼
     """
+    content = _event_content(inner_life_event)
+    if not content:
+        return None
+
     p = inner_life_event.provenance
     provenance: dict[str, Any] = {
         "trigger_type": p.trigger_type,
@@ -197,7 +233,7 @@ def inner_life_event_to_input(
 
     return ElevationInput(
         event_type=p.trigger_type,
-        content=_event_content(inner_life_event),
+        content=content,
         source_id=inner_life_event.event_id,
         source_type="inner_life_event",
         timestamp=inner_life_event.ts,
@@ -265,11 +301,16 @@ def sage_fact_to_input(fact: Any, *, agent_id: Optional[str] = None) -> Elevatio
     )
 
 
-def _to_input(obj: Any, *, agent_id: Optional[str] = None) -> ElevationInput:
+def _to_input(obj: Any, *, agent_id: Optional[str] = None) -> Optional[ElevationInput]:
     """按对象类型分发映射（adapter 内部分发器，供 run_elevation 使用）。
 
     依据对象是否带 ``event_id``（InnerLifeEvent）、``memory_id``（v1 Memory）、
     ``fact_id``（SAGE Fact）区分，避免在 adapter 里强 import 上游类型。
+
+    🔴 SOUL-BUG-006：回傳型別改為 ``Optional``。**只有 InnerLifeEvent 這一條分支
+    可能回傳 None**（無人話敘事 ⇒ fail-closed）。v1 Memory 與 SAGE Fact 的分支
+    保持原樣：它們的 content 來自 `memory.content` / subject-predicate-object
+    三元組，本身就是正文，不受本次 fail-closed 影響。
     """
     if hasattr(obj, "event_id") and hasattr(obj, "provenance"):
         return inner_life_event_to_input(obj, agent_id=agent_id)
@@ -551,8 +592,32 @@ def run_elevation(
         ]
 
         # 1) 归一化输入：事件 + 全部可见记忆 fact。
-        inputs: List[ElevationInput] = [_to_input(inner_life_event, agent_id=agent_id)]
-        inputs.extend(_to_input(m, agent_id=agent_id) for m in visible_facts)
+        #
+        # 🔴 SOUL-BUG-006（2026-10-17）：fail-closed —— `_to_input` 可能回傳 None
+        # （僅 InnerLifeEvent 無人話敘事時）。這裡**過濾掉 None**，使該事件
+        # 不會進入 `engine.consume()`，也就不會產生垃圾 pattern / trait 節點。
+        #
+        # ⚠️ 副作用（必須知情）：world 與 dream 事件目前 extras **完全沒有敘事**
+        #    （實測：world 只有 world_novelty_id/source/type；dream 只有
+        #     all_agents_count/target_agent_id），故它們會被整批 fail-closed。
+        #    這是刻意的（純排程統計不該進靈魂圖譜），但代表 world pattern 的
+        #    供給會停止 —— world 本來就永不昇華（P0 修正），影響僅限 pattern 層。
+        _event_input = _to_input(inner_life_event, agent_id=agent_id)
+        if _event_input is None:
+            logger.info(
+                "[elevation] fail-closed：事件無人話敘事（extras=%s），不建立節點 "
+                "event_id=%s trigger=%s",
+                sorted((getattr(inner_life_event.provenance, "extras", None) or {}).keys()),
+                getattr(inner_life_event, "event_id", None),
+                getattr(inner_life_event.provenance, "trigger_type", None),
+            )
+        inputs: List[ElevationInput] = (
+            [_event_input] if _event_input is not None else []
+        )
+        inputs.extend(
+            i for i in (_to_input(m, agent_id=agent_id) for m in visible_facts)
+            if i is not None
+        )
 
         # 2) 构造引擎：注入 LLM + soul-elevation 自有 trace writer（写到 data/elevation/）。
         #    EL-OWN-0 传递链：run_elevation(agent_id) → InternalizingEngine(agent_id)，

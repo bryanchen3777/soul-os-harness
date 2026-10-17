@@ -305,6 +305,11 @@ def inject_event(
             "fixture_event_id": event.event_id,
             "fixture_day": str(event.day_index),
             "payload": event.payload,
+            # SOUL-BUG-006（2026-10-17，Owner 裁示採第 2 案：生產端產真實敘事）。
+            # payload 就是這條模擬事件的**人話正文**，把它一併放進 `narrative`，
+            # 昇華消費端才認得這是一段敘事（fail-closed：無 `narrative` 不建節點）。
+            # 純新增欄位，既有 3 個鍵與 `payload` 原文一個字都沒動。
+            "narrative": event.payload,
         },
     )
     inner_event = writer.create_event(

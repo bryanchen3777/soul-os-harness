@@ -347,7 +347,7 @@ def test_e1_repeated_elevation_needs_two_fresh_keys_in_same_dimension(tmp_path):
                 trigger_type=TRIGGER_TYPE_DIARY_NIGHT,
                 actor_id="agent_rem",
                 source_system="narrative",
-                extras={"note": f"n{i}"},
+                extras={"narrative": f"那一天的夜裡，{i}"},
             )
         )
         nodes = run_elevation(event, [], store_dir=store)

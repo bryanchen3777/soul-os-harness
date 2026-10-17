@@ -43,14 +43,24 @@ _ADAPTER_SRC = Path(__file__).resolve().parents[1] / "src" / "inner_life" / "ele
 # ── fixtures ─────────────────────────────────────────────────────────
 
 
+# SOUL-BUG-006（2026-10-17）：消費端 fail-closed —— extras 沒有 `narrative`
+# 就不建立節點。生產 diary 事件實測 **290/290** 都帶 `narrative`
+# （反解 `data/elevation/elevation_nodes.jsonl` 的 content 得出），
+# 所以「無敘事」不是生產形狀，而是這批 fixture 停在舊世界的殘留。
+# 下列常數讓 fixture 回到生產形狀；**各測試要守的不變量一個字都沒放寬**。
+_DEFAULT_NARRATIVE = "雷姆在夜裡陪著主人坐著，什麼也沒多說。"
+
+
 def _make_event(trigger_type: str = "diary:night", extras: dict | None = None) -> "InnerLifeWriter":
     writer = InnerLifeWriter()
+    merged = dict(extras or {})
+    merged.setdefault("narrative", _DEFAULT_NARRATIVE)
     event = writer.create_event(
         provenance=Provenance(
             trigger_type=trigger_type,
             actor_id="agent_rem",
             source_system="narrative",
-            extras=extras or {},
+            extras=merged,
         ),
     )
     return event
@@ -103,7 +113,11 @@ def test_inner_life_event_to_input_mapping():
     assert inp.provenance["agent_id"] == "agent_rem"  # actor_id 落到 agent_id
     assert inp.provenance["inner_life_event_id"] == event.event_id
     assert inp.provenance["world_type"] == "news_event"  # extras 并入 provenance
-    assert inp.content.startswith("diary:night")
+    # 🔴 SOUL-BUG-006（2026-10-17）契約改寫：舊斷言 `inp.content.startswith(
+    # "diary:night")` 釘的是「key=value 外殼帶機器前綴」形狀。
+    # 新契約：content **就是**那一整句敘事本身；完整 extras 仍在 provenance 裡。
+    assert inp.content == _DEFAULT_NARRATIVE
+    assert not inp.content.startswith("diary:night")
 
 
 def test_inner_life_event_to_input_agent_override():
@@ -230,6 +244,7 @@ def test_elevation_observer_wiring_after_write(tmp_path):
             trigger_type="diary:night",
             actor_id="agent_rem",
             source_system="narrative",
+            extras={"narrative": _DEFAULT_NARRATIVE},  # SOUL-BUG-006：fail-closed 飼料
         ),
     )
 
@@ -326,6 +341,7 @@ def _make_non_agent_event() -> "InnerLifeWriter":
             trigger_type="diary:night",
             actor_id=None,
             source_system="narrative",
+            extras={"narrative": _DEFAULT_NARRATIVE},  # SOUL-BUG-006：fail-closed 飼料
         ),
     )
 
@@ -364,6 +380,10 @@ def test_run_elevation_world_event_blocked_defense_in_depth(tmp_path):
             trigger_type="world:news_event",
             actor_id=None,
             source_system="narrative",
+            # 🔴 SOUL-BUG-006（2026-10-17）：帶上敘事，讓 `nodes == []`
+            # **只能**由垂直防火牆解釋；否則它會因 fail-closed 而假綠，
+            # 有人拆掉 firewall 也不會紅。
+            extras={"narrative": "新聞裡說某國發射了火箭。"},
         ),
     )
     nodes = run_elevation(event, [], store_dir=tmp_path / "elevation")
@@ -384,6 +404,9 @@ def test_run_elevation_env_event_allowed_defense_in_depth(tmp_path):
             trigger_type="world:rain_started",
             actor_id=None,
             source_system="narrative",
+            # Owner 2026-10-17 裁示（採第 2 案）：生產端會為環境事件產出真實敘事，
+            # 這裡即那份敘事的形狀 —— 不再是 `world_source=weather` 簿記。
+            extras={"narrative": "外面下起了雨，空氣變得微冷。"},
         ),
     )
     lived = Fact(subject="雷姆", predicate="感知", object="外面下雨了")
@@ -401,6 +424,7 @@ def test_run_elevation_external_world_facts_filtered(tmp_path):
             trigger_type="diary:night",
             actor_id="agent_rem",
             source_system="narrative",
+            extras={"narrative": _DEFAULT_NARRATIVE},  # SOUL-BUG-006：fail-closed 飼料
         ),
     )
     ext = Fact(subject="雷姆", predicate="聽到", object="新聞：某國火箭發射")
@@ -426,6 +450,7 @@ def test_run_elevation_memory_facts_inherit_explicit_agent_id(tmp_path):
             trigger_type="diary:night",
             actor_id="agent_rem",
             source_system="diary",
+            extras={"narrative": _DEFAULT_NARRATIVE},  # SOUL-BUG-006：fail-closed 飼料
         ),
     )
     mem = _make_memory(agent_id="agent_yua")  # memory 自己的 agent 不同
