@@ -15,7 +15,7 @@
 | [SOUL-BUG-003](SOUL-BUG-003-WORK-ORDER.md) | **P3** | SYSTEM_TICK 訂閱被 M5.7-2 註解，`:171` 死碼，測試仍期待 `agent_speak` | **✅ CLOSED**（端點除役＋死碼清理＋`/inject/yua` 加閘門） | 三度更名的 404 契約斷言轉綠；**三組變異實驗全紅** |
 | [SOUL-BUG-004](SOUL-BUG-004-WORK-ORDER.md) | **P0** | chrono 時間感知雙端切斷 | **匯端 ✅ 已結案（`f649224`）**；源端維持 Bry 裁示不動 | `xfail` 已解除並轉綠 ✅ |
 | [SOUL-BUG-005](SOUL-BUG-005-WORK-ORDER.md) | ~~P1~~ | `format_localized` 星期索引整組錯一格 | **✅ CLOSED `277a8d9`** | **已轉綠** ✅ |
-| [SOUL-BUG-006](SOUL-BUG-006-WORK-ORDER.md) | **P1** | 昇華候選幾乎不升格，且 value/trait 內容是未抽象化的原始簿記字串 | **🆕 OPEN**（2026-10-17 登記，僅備查未動工） | 待建立 |
+| [SOUL-BUG-006](SOUL-BUG-006-WORK-ORDER.md) | **P1** | 昇華候選幾乎不升格，且 value/trait 內容是未抽象化的原始簿記字串 | **✅ 診斷完成**（病灶 2 撤銷）／🟡 **程式碼+資料修改留待下一輪** | Owner 已拍板架構（消費端依 event_id 反查敘事，零簽章變更） |
 | [SOUL-BUG-007](SOUL-BUG-007-WORK-ORDER.md) | **P1** | 簡繁字形分裂造成召回損失；無主題的泛化謂語單獨開 Gate 導致離題召回 | **✅ 已實作，待全庫回歸驗收** | 17 項守衛 ＋ 14 組變異全紅 |
 
 ## ✅ SOUL-BUG-007：檢索字形正規化 ＋ 防離題 Gate（2026-10-17）
