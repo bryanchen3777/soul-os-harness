@@ -66,7 +66,30 @@ create_event(extras={target_agent_id, all_agents_count})   ← 只有排程統�
 - `test_no_frozen_contract_file_touched` 的 `allowed` 白名單需納入
   `elevation_adapter.py`（白名單只增一次，且**不得順手放寬**）。
 
-### 為什麼這是「純加法」
+### 已定位的精確程式碼落點（2026-10-17 18:10 補登）
+
+**消費端要改的三處**（全在 `src/inner_life/elevation_adapter.py`）：
+
+| 位置 | 現況 | 要做的事 |
+|---|---|---|
+| `_event_content()` **:128-139** | `parts = [f"{k}={v}" for k,v in sorted(p.extras.items())]` → `f"{trigger_type}: " + "; ".join(parts)`。**這就是 `diary:night: narrative=…; slot=night` 外殼的唯一來源。** | 改成先從 `p.extras` 取敘事欄位；取不到就回傳空字串 |
+| `inner_life_event_to_input()` **:160-173** | docstring `:167` 明寫 `content = trigger_type + provenance.extras` | content 改用 `_event_content()` 的乾淨結果；**敘事為空時回傳 `None`** 作為 fail-closed 訊號 |
+| `_to_input()` **:268-283** | 型別分發器，直接 `return inner_life_event_to_input(...)` | 加一道 `None` 檢查 → **跳過該事件，不送進 `engine.consume()`**（這就是「不寫入垃圾 pattern」的落點） |
+
+⚠️ 改 `_to_input` 的回傳型別（新增 `Optional`）會影響所有呼叫端，
+開工時必須先確認呼叫端只有 `run_elevation` 一處，並且該處有 None 檢查。
+
+**生產端要改的位置**：`scripts/run_server.py:1663-1694`
+（`create_event` → `submission_gate.submit` → `_elevate_check()` → `_writer.write_dream(...)`）。
+`write_dream` 的回傳值在 `:1693` 接收，需確認它回傳的 `Path` 對應哪個 agent 的 diary 檔。
+
+### 敘事欄位的候選鍵名（開工時需以真實資料核對，不可憑想像）
+
+已知 diary 事件帶 `narrative` 與 `slot`；dream 事件**只有** `target_agent_id` 與
+`all_agents_count`（無敘事）。⇒ fail-closed 的判定不能只認 `narrative` 一個鍵名，
+必須列出一組「敘事欄位」白名單，並且**逐一回實資料確認**哪些鍵真的帶人話。
+
+---
 
 `create_event` 的呼叫參數一字不改、執行順序一字不改、`write_dream` 簽章一字不改。
 新增的是「事後取得敘事」的能力，不是「修改既有事件」的能力。
