@@ -37,7 +37,7 @@
   },
   "llm": {
     "endpoint": "https://ollama.com/v1",
-    "model": "deepseek-v4.1-flash"
+    "model": "deepseek-v4.1-flash:1017"
   },
   "memory": {
     "sage_write": {
