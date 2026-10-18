@@ -74,6 +74,64 @@ PLACEHOLDER_TEMPLATES = {
 }
 
 
+# ─────────────────────────────────────────────────────────────
+# SOUL-BUG-011 (Bry 派工 2026-10-18 13:21): Diary raw response sidecar
+# ─────────────────────────────────────────────────────────────
+# 動機: SOUL-BUG-011 的根因至今未定案——日記標題出現「變長度左側截斷」
+# (3～13 字元不等、尾端 `**` 保留)，唯讀掃碼確認日記寫入路徑上沒有任何
+# 可刪除首字元的轉換，且**原始 LLM 回應從未被持久化**，因此無法回溯定案。
+#
+# 與「修 bug」的差別: 這不是修補，是**把觀測端打穿**。下一次觸發時，我們
+# 直接看見未經任何加工的原始字串 —— 若截斷已存在於此，則成因在 diary 管線
+# 上游（provider/transport/模型）；若此處完好而落盤才壞，則是管線自身所為。
+# 與其花算力推演，不如花 15 行程式碼取得第一手證據。
+#
+# ⚠️ 本 sidecar 是**觀測資料，不是產品資料**：
+#   - 絕不參與任何 prompt 組裝、檢索、昇華或生命週期判定；
+#   - 讀取端無任何程式碼消費它（無 consumer = 不可能影響行為）；
+#   - 未來定案並修畢後，可整檔移除而不留任何殘留語意。
+RAW_RESPONSE_SIDECAR_FILENAME = "diary_raw_response.jsonl"
+
+
+def _raw_response_model() -> str:
+    """best-effort 取目前掛著的模型名；取不到回空字串（觀測欄位，不可為空而炸）。"""
+    try:
+        proxy = _find_llm_proxy()
+        model = getattr(getattr(proxy, "config", None), "model", None)
+        return str(model) if model else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _record_raw_response(
+    agent_id: str,
+    slot: str,
+    raw_response: Optional[str],
+) -> None:
+    """把 LLM 回應**原樣**追加到 observability sidecar。
+
+    🔴 Fail-safe 鐵律（Owner 明令）：整段包在 try/except Exception 內。
+    任何磁碟權限、編碼、序列化異常都只 warning，**絕不可阻斷
+    `write_entry()` 的主路徑落盤**——觀測永遠不能改變被觀測的系統行為。
+    """
+    if not raw_response:
+        return
+    try:
+        path = data_root() / "observability" / RAW_RESPONSE_SIDECAR_FILENAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "agent_id": agent_id,
+            "slot": slot,
+            "model": _raw_response_model(),
+            "raw_response": raw_response,
+        }
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[Diary] raw response sidecar write failed (ignored): {exc}")
+
+
 # ───────────────────────────────────────────────────────────
 # LLM 呼叫 (minimax M2.7 via OpenAI endpoint, JP rollback 後)
 # ───────────────────────────────────────────────────────────
@@ -379,6 +437,7 @@ async def generate_diary_entry(
     from src.llm.proxy import _safe_truncate_on_length  # 沿用修法 10 的截斷 helper
     RETRY_HINT = "\n\n（請直接輸出最終內容，不要輸出思考過程。）"
     content = await _call_llm_for_diary(system, user, writer.api_key, agent_id=agent_id)
+    _record_raw_response(agent_id, slot, content)
 
     # M0.2 (2026-08-01 00:35 Perplexity 派工): 抽掉 think block 後檢查 clean
     # 修法動機: LLM 偶爾只回 <think>...</think> 沒實際 diary, raw content non-empty 但 clean empty.
@@ -395,6 +454,7 @@ async def generate_diary_entry(
                 f"(raw {len(content)} chars, clean 0), retry 一次"
             )
             content = await _call_llm_for_diary(system, user + RETRY_HINT, writer.api_key, agent_id=agent_id)
+            _record_raw_response(agent_id, slot, content)
             if content:
                 clean = re.sub(r"^<think>.*?</think>\s*", "", content, flags=re.DOTALL).strip()
         if not clean:
