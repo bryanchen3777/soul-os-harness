@@ -15,8 +15,8 @@
 | [SOUL-BUG-003](SOUL-BUG-003-WORK-ORDER.md) | **P3** | SYSTEM_TICK 訂閱被 M5.7-2 註解，`:171` 死碼，測試仍期待 `agent_speak` | **✅ CLOSED**（端點除役＋死碼清理＋`/inject/yua` 加閘門） | 三度更名的 404 契約斷言轉綠；**三組變異實驗全紅** |
 | [SOUL-BUG-004](SOUL-BUG-004-WORK-ORDER.md) | **P0** | chrono 時間感知雙端切斷 | **匯端 ✅ 已結案（`f649224`）**；源端維持 Bry 裁示不動 | `xfail` 已解除並轉綠 ✅ |
 | [SOUL-BUG-005](SOUL-BUG-005-WORK-ORDER.md) | ~~P1~~ | `format_localized` 星期索引整組錯一格 | **✅ CLOSED `277a8d9`** | **已轉綠** ✅ |
-| [SOUL-BUG-006](SOUL-BUG-006-WORK-ORDER.md) | **P1** | 昇華候選幾乎不升格，且 value/trait 內容是未抽象化的原始簿記字串 | **✅ 診斷完成**（病灶 2 撤銷）／🟡 **程式碼+資料修改留待下一輪** | Owner 已拍板架構（消費端依 event_id 反查敘事，零簽章變更） |
-| [SOUL-BUG-007](SOUL-BUG-007-WORK-ORDER.md) | **P1** | 簡繁字形分裂造成召回損失；無主題的泛化謂語單獨開 Gate 導致離題召回 | **✅ 已實作，待全庫回歸驗收** | 17 項守衛 ＋ 14 組變異全紅 |
+| [SOUL-BUG-006](SOUL-BUG-006-WORK-ORDER.md) | **P1** | 昇華候選幾乎不升格，且 value/trait 內容是未抽象化的原始簿記字串 | **✅ CLOSED `c3520cb`/`8b3a64e`/`429a9e5`/`0308b71`**，四階段全線上線（DEPLOY-RESTART-14/15） | **36 項守衛 ＋ 12 組變異全紅**；全庫 6545 passed / 0 failed（collected 6572 對平）；**世界端已獲生產實證**，夢境端待下一週期 |
+| [SOUL-BUG-007](SOUL-BUG-007-WORK-ORDER.md) | **P1** | 簡繁字形分裂造成召回損失；無主題的泛化謂語單獨開 Gate 導致離題召回 | **✅ CLOSED `399b92c`**，已上線生產 | 17 項守衛 ＋ **14 組變異全紅**；全庫 6521 passed / 0 failed（collected 6527 對平） |
 
 ## ✅ SOUL-BUG-007：檢索字形正規化 ＋ 防離題 Gate（2026-10-17）
 
@@ -46,7 +46,19 @@
 RANK-1 自己的守衛測試有 4 支轉紅——它當初拿「記得」當高頻 fixture 詞。
 已換成「事情」並加上 `_assert_fixture_words_pass_the_gate()` 反守衛。
 
-## 🆕 SOUL-BUG-006：昇華抽象化與內容去重（2026-10-17 登記）
+## ✅ SOUL-BUG-006：昇華抽象化與內容去重（2026-10-17 登記 → 同日四階段結案）
+
+> **結案狀態**：四階段全部實作並上線生產（DEPLOY-RESTART-14／15）。
+> **Step 1** `c3520cb` 消費端 content 脫殼＋fail-closed ／
+> **Step 2** `8b3a64e` world 生產端自然語言環境敘事（確定性、0 LLM）／
+> **Step 3** `429a9e5` 生產圖譜 786→297 節點 ＋ 297 顆原地脫殼 ／
+> **Step 4** `0308b71` 夢境端 A-i 消費端依 `event_id` 反查夢境正文。
+> **供給三本柱**：世界／日程 ✅ 已獲生產實證（「今天的天氣有變化，氣溫 30.6 度，空氣炎熱。」）／
+> 日記 ✅ 全程正常 ／ 夢境 ⏳ 已上線、待下一週期驗證生產實證。
+> 🔴 **診斷修正**：下方「病灶 1／2」已於排查中**部分撤銷** —— 升格閘門實測
+> 100% 正常運作（26 個候選維度組中達標組數 = 組數），原報「349 value 僅 10 升格」
+> 是統計假象（把 753 顆 pattern 節點誤算進 value 組）。真正的根因只有兩個：
+> ① `_event_content()` 回 key=value 序列化外殼；② world／dream 的 extras **沒有敘事欄位**。
 
 **登記依據**：`SAGE-RANK-1` 第一階段唯讀診斷的 Part A（靈魂圖譜實證體檢）。
 **裁示**：獨立立票，**排在 `SAGE-RANK-1` 收官之後**，不得併入檢索排序單。
@@ -113,6 +125,8 @@ repo 內註解早就寫下過診斷（`tests/test_m3_world_awareness.py:569-575`
 | 3 | SOUL-BUG-002（SAGE 停用詞） | ✅ 已結案 `e8aad13` |
 | 4 | SOUL-BUG-001（昇降去重：節點合併＋邊重綁＋邊去重） | ✅ 已結案 |
 | 5 | SOUL-BUG-003（端點契約） | ✅ 已結案 2026-10-16（端點除役、哨兵改由 `test_m1` 免費提供） |
+| 6 | SOUL-BUG-006（昇華抽象化＋內容去重） | ✅ 已結案 2026-10-17（四階段全線上線；夢境生產實證待下一週期） |
+| 7 | SOUL-BUG-007（字形正規化＋防離題 Gate） | ✅ 已結案 2026-10-17（`399b92c`，已上線） |
 
 ---
 
@@ -161,11 +175,15 @@ SOUL-TECH-DEBT-001 的測試紀律是**只修測試、絕不動生產代碼**。
 
 ## 修復優先序建議（主大腦觀點，非裁示）
 
-1. **SOUL-BUG-005**（1 行，風險最低，見 Bry 2026-10-03 親手抓過的同一 bug）
-2. **SOUL-BUG-004 匯端子步**（先只把 `chrono_context` 插槽接回 live 的 prompt 組裝器，不碰源端）
-3. SOUL-BUG-002（需先落實「分級重疊」裁示的 `_GENERIC_STOPWORDS`）
-4. SOUL-BUG-001（修好會翻轉 6 筆已校準測試的斷言，需明確記錄回退理由）
-5. SOUL-BUG-003（需先釐清 M5.7-2 當初要解決的 proactive 重複觸發如何滿足）
+✅ 1–5 全部已結案（SOUL-BUG-005／004 匯端／002／001／003，見上方優先序表）。
+**當前無待修的 P0/P1 SOUL-BUG 票。**
+
+**下一階段候選（需 Bry 選件）**
+| 候選 | 內容 | 產出比 | 風險 |
+|---|---|---|---|
+| **TECH-DEBT-P3-01（可繞過二分）** | `test_m2_0_inner_life_v2.py::test_e_build_messages_group_with_real_inner_life` 單跑全綠／全庫跑必紅 | **高**：根因**早已被診斷並寫在 repo 註解裡**（`tests/test_m3_world_awareness.py:569-575`）—— `src/llm/proxy.py:133` 的 `INNER_LIFE_DATA_DIR` 是**匯入期就算死**的 module-level 常數，`conftest.py` 的 per-test env 隔離救不回它。只要在測試側把該常數釘回它要讀的目錄（範本：`tests/test_m3_prompt_integrity.py:117-133`，**零生產風險**）。**不需要整庫二分** —— Bry 當初裁示擱置的是「二分找污染源」，不是這個解法。 | 高 | 低（僅測試側） |
+| SOUL-BUG-006 夢境生產實證 | 等下一週期自動發生 | 被動 | 無 |
+| SAGE-RANK-1 / SOUL-BUG-007 生產實證 | 需 Bry 真實對話才會產生 trace | 被動 | 無 |
 
 ---
 
