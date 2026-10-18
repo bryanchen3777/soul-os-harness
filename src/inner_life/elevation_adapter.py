@@ -138,6 +138,85 @@ def _ts_to_iso(ts: Any) -> str:
 # 它是標題不是敘事，用標題冒充正文會讓節點語意失真；寧可少一顆節點。
 _NARRATIVE_EXTRA_KEYS = ("narrative",)
 
+# SOUL-BUG-006 Step 4（夢境端 A-i，Owner 2026-10-17 授權）：
+# 反查夢境正文時往回看幾天的 diary 檔。夢境正文在 write_dream 落盤的當天寫入，
+# 而 consume 緊接在 write_dream 之後執行，故正常情況只看當天就找得到；
+# 保留 3 天是為了容忍跨零點與檔名日期與 UTC 落盤時間不一致。
+# **有界**：最多 3 個檔案，且每檔逐行掃描後即停。
+_DREAM_LOOKBACK_DAYS = 3
+
+
+def _dream_narrative_from_diary(inner_life_event: Any) -> str:
+    """依 ``inner_life_event_id`` 反查夢境正文；查不到就回 ""（fail-closed）。
+
+    🔴 為什麼需要這一段（Owner 2026-10-17 拍板的架構）：
+    夢境事件的 ``extras`` 實測只有 ``all_agents_count`` / ``target_agent_id``
+    —— 純排程統計，**沒有敘事**。而 `write_dream()` 是在事件建立**之後**才
+    用 LLM 生成夢境正文並寫入 diary（`data/soul/<dreamer>/diary/<日期>.jsonl`，
+    該筆紀錄帶 `inner_life_event_id`，見 M5.4-5.4）。
+    ⇒ 正文在事件裡從來不存在，consume 端只能**用 event_id 反查剛落盤的那筆**。
+    這是純加法：零簽章變更、零 Append-Only 邊界破壞、零二次 Submit。
+
+    🔴 刻意不做的事：
+      - **不寫回事件**。`InnerLifeWriter` 是 Append-Only 唯一權威、沒有任何
+        update/patch API；這裡只在 consume 當下解析，事件本身一個字都不動。
+      - **不改 InnerLifeEvent 物件**。注意 `SubmissionGate.verify()` 會
+        `writer.get_event(event_id)` **重新撈取** canonical 事件，所以就算在
+        呼叫端改記憶體中的 extras 也不會被看見 —— 反查必須發生在 adapter 內部。
+      - **查不到就回 ""**，交給既有的 fail-closed。絕不拿 target_agent_id
+        之類的 metadata 拼一句假敘事。
+    """
+    import json as _json
+    from datetime import datetime as _dt, timedelta as _td
+    from pathlib import Path as _Path
+
+    try:
+        event_id = getattr(inner_life_event, "event_id", None)
+        dreamer = getattr(getattr(inner_life_event, "provenance", None), "actor_id", None)
+        if not event_id or not dreamer:
+            return ""
+        from src.paths import data_root
+
+        diary_dir = _Path(str(data_root())) / "soul" / str(dreamer) / "diary"
+        if not diary_dir.is_dir():
+            return ""
+        today = _dt.now()
+        for back in range(_DREAM_LOOKBACK_DAYS):
+            day = (today - _td(days=back)).strftime("%Y-%m-%d")
+            path = diary_dir / f"{day}.jsonl"
+            if not path.is_file():
+                continue
+            with path.open(encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or event_id not in line:
+                        continue
+                    try:
+                        entry = _json.loads(line)
+                    except ValueError:
+                        continue
+                    if entry.get("inner_life_event_id") != event_id:
+                        continue
+                    if entry.get("slot") != "dream":
+                        continue
+                    text = entry.get("content")
+                    if isinstance(text, str) and text.strip():
+                        return text.strip()
+    except Exception:  # noqa: BLE001 —— 反查是附加價值，絕不可讓主路徑失敗
+        return ""
+    return ""
+
+
+def _resolve_narrative(inner_life_event: Any) -> str:
+    """決定這次昇華要用的人話敘事：先看 extras，沒有再看夢境 diary 反查。"""
+    content = _event_content(inner_life_event)
+    if content:
+        return content
+    trigger = getattr(getattr(inner_life_event, "provenance", None), "trigger_type", "") or ""
+    if str(trigger).startswith("dream:"):
+        return _dream_narrative_from_diary(inner_life_event)
+    return ""
+
 
 def _event_content(inner_life_event: Any) -> str:
     """InnerLifeEvent 的「事件內容」：乾淨的人話敘事正文；沒有就回空字串。
@@ -184,7 +263,10 @@ def _fact_agent(fact: Any) -> Optional[str]:
 
 
 def inner_life_event_to_input(
-    inner_life_event: Any, *, agent_id: Optional[str] = None
+    inner_life_event: Any,
+    *,
+    agent_id: Optional[str] = None,
+    narrative: Optional[str] = None,
 ) -> Optional[ElevationInput]:
     """把 ``InnerLifeEvent`` 映射成 ``ElevationInput``（source_type="inner_life_event"）。
 
@@ -203,7 +285,7 @@ def inner_life_event_to_input(
       - provenance  = dict（trigger_type / source_system / actor_id / agent_id +
         **完整 extras** / identity 元数据）—— metadata 一個都沒少，只有 content 脫殼
     """
-    content = _event_content(inner_life_event)
+    content = (narrative or "").strip() or _event_content(inner_life_event)
     if not content:
         return None
 
@@ -301,7 +383,12 @@ def sage_fact_to_input(fact: Any, *, agent_id: Optional[str] = None) -> Elevatio
     )
 
 
-def _to_input(obj: Any, *, agent_id: Optional[str] = None) -> Optional[ElevationInput]:
+def _to_input(
+    obj: Any,
+    *,
+    agent_id: Optional[str] = None,
+    narrative: Optional[str] = None,
+) -> Optional[ElevationInput]:
     """按对象类型分发映射（adapter 内部分发器，供 run_elevation 使用）。
 
     依据对象是否带 ``event_id``（InnerLifeEvent）、``memory_id``（v1 Memory）、
@@ -313,7 +400,7 @@ def _to_input(obj: Any, *, agent_id: Optional[str] = None) -> Optional[Elevation
     三元組，本身就是正文，不受本次 fail-closed 影響。
     """
     if hasattr(obj, "event_id") and hasattr(obj, "provenance"):
-        return inner_life_event_to_input(obj, agent_id=agent_id)
+        return inner_life_event_to_input(obj, agent_id=agent_id, narrative=narrative)
     if hasattr(obj, "memory_id") and hasattr(obj, "content"):
         return v1_memory_to_input(obj, agent_id=agent_id)
     if hasattr(obj, "fact_id") and hasattr(obj, "subject"):
@@ -602,7 +689,13 @@ def run_elevation(
         #     all_agents_count/target_agent_id），故它們會被整批 fail-closed。
         #    這是刻意的（純排程統計不該進靈魂圖譜），但代表 world pattern 的
         #    供給會停止 —— world 本來就永不昇華（P0 修正），影響僅限 pattern 層。
-        _event_input = _to_input(inner_life_event, agent_id=agent_id)
+        _event_input = _to_input(
+            inner_life_event,
+            agent_id=agent_id,
+            # SOUL-BUG-006 Step 4（Owner 授權的夢境 A-i 架構）：extras 沒敘事時，
+            # 依 event_id 反查剛由 write_dream 落盤的夢境正文。查不到仍 fail-closed。
+            narrative=_resolve_narrative(inner_life_event),
+        )
         if _event_input is None:
             logger.info(
                 "[elevation] fail-closed：事件無人話敘事（extras=%s），不建立節點 "

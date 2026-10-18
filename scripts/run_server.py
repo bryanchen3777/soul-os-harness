@@ -1660,6 +1660,7 @@ async def lifespan(app: FastAPI):
             失敗隔離: InnerLifeWriter.create_event 失敗 → logger.warning + 不傳 event_id
                       (跟 M5.4-5.6 trace failure isolation 同精神, 失敗不污染主路徑)
             """
+            _event = None
             try:
                 _event = inner_life_writer.create_event(
                     provenance=Provenance(
@@ -1673,15 +1674,6 @@ async def lifespan(app: FastAPI):
                     )
                 )
                 _event_id = _event.event_id
-                # SG-1: 改走 Submission Gate（验证 event_id → consume，只产 pattern）。
-                # EL-OWN-0: 传 agent_id=dreamer（梦者灵魂），让 emergent 属性归属到
-                # 具体灵魂。
-                if submission_gate is not None:
-                    submission_gate.submit(
-                        _event.event_id, agent_id=_event.provenance.actor_id
-                    )
-                    # EL-DD-2: consume 后证据驱动 elevate（独立于 Gate，失败隔离在函数内）
-                    _elevate_check()
             except Exception as _e:
                 logger.warning(
                     f"[DreamHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
@@ -1694,6 +1686,39 @@ async def lifespan(app: FastAPI):
                 dreamer, target_agent_id, all_agents,
                 inner_life_event_id=_event_id,
             )
+
+            # 🔴 SOUL-BUG-006 Step 4（Owner 2026-10-17 授權的夢境 A-i 架構）：
+            # **昇華必須排在 write_dream 之後**。
+            #
+            # 舊順序（submit 在 write_dream 之前）是當初能運作的原因：
+            # 昇華消費端從事件 extras 取正文，而夢境事件的 extras 實測只有
+            # all_agents_count / target_agent_id —— 沒有正文。
+            # SOUL-BUG-006 Step 1 把消費端改為 fail-closed 之後，舊順序就變成
+            # **每次夢境必定被整批攔截**（這就是 dream 供給歸零的原因）。
+            #
+            # 新的取正文路徑：write_dream 剛把夢境正文寫進
+            # data/soul/<dreamer>/diary/<日期>.jsonl（該筆帶 inner_life_event_id），
+            # 消費端依 event_id 反查（見 elevation_adapter._dream_narrative_from_diary）。
+            # 純加法：create_event 仍在 write_dream 之前（M5.4-6.1 完好）、
+            # 每次執行仍恰好 create_event 一次、write_dream 簽章一個字未改。
+            #
+            # 失敗隔離：昇華側任何例外都不得影響夢境主路徑（與 M5.4-5.6 同精神）。
+            if submission_gate is not None and _event is not None:
+                try:
+                    # SG-1: Submission Gate（验证 event_id → consume，只产 pattern）。
+                    # EL-OWN-0: 传 agent_id=dreamer（梦者灵魂），让 emergent 属性归属到
+                    # 具体灵魂。
+                    submission_gate.submit(
+                        _event.event_id, agent_id=_event.provenance.actor_id
+                    )
+                    # EL-DD-2: consume 后证据驱动 elevate（独立于 Gate，失败隔离在函数内）
+                    _elevate_check()
+                except Exception as _e:
+                    logger.warning(
+                        f"[DreamHandler] 昇華失敗 (不影響主路徑): "
+                        f"dreamer={dreamer} target={target_agent_id} "
+                        f"err={type(_e).__name__}: {_e}"
+                    )
 
         _dream_handler = DreamHandler(
             state=None,  # 用預設 AgencyState
