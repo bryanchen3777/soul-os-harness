@@ -952,6 +952,138 @@ def _rebuild_engine_for(
     return engine
 
 
+# ─────────────────────────────────────────────────────────────────────
+# 🔴 SOUL-BUG-009（Owner 2026-10-18）：昇華錨點代表選取（解除靈魂層去重凍結）
+# ─────────────────────────────────────────────────────────────────────
+#
+# 缺陷原委：`engine.elevate(anchor)` 用 **anchor 的 content** 當靈魂節點內容
+# （soul_elevation/engine.py `resolved_content = pattern.content`），而落盤層
+# `_persist_result` 又以 `(agent_id, node_type, sha256(content.strip()))` 去重。
+# 舊寫法恆取 `pids[0]`（候選維度組內**最舊**的 pattern）⇒ 每次升格產出的 content
+# 與既有靈魂節點逐位元相同 ⇒ 被去重丟棄 ⇒ **靈魂層自 2026-10-11 起永久凍結**
+# （實測：10 顆 value 靈魂節點全在 2026-10-11T23:18:19~20 同一批建立，其後每日
+# 新增 29 顆 pattern，靈魂節點數 0 變化）。
+#
+# Owner 裁決（2026-10-18）：錨點**只當代表，不當守門**（職責分離）
+# --------------------------------------------------------------------
+# * **守門**歸組級證據機制全權負責：
+#   - `engine.elevate(min_evidence=...)` 的維度計票；
+#   - 本函式上方的「已消化證據隔離」（VALUE-DEDUP-A-1 / INV-2）—— 被任一靈魂
+#     節點消耗過的證據鍵**根本不參與計票**，且按該維度**所有**靈魂節點扣除；
+#   - EH-2 R1 垂直防火牆與 `agent_id="default"` 整組排除。
+# * **錨點**的唯一職責是挑「最能代表這次昇華、且 content 還沒說過」的內容載體。
+#
+# 曾經走過的兩條死路（都留檔，避免後人重蹈）：
+#
+# 1. 「單顆 pattern 的 evidence degree ≥ 2 才有資格當錨點」（Owner 原提案）。
+#    實測（dry-run 2026-10-18，`data/elevation` 唯讀）**每一顆真實 pattern 的
+#    degree 都恰好是 1**（value 29 顆 × 10 agent 全 deg1；belief 四組 1/2/1/1 亦
+#    全 deg1）—— pattern 按 content 去重合併，而 LLM 敘事幾乎不逐字重複。
+#    照字面執行 ⇒ 16 個真實分組**全部**永久停擺（`default` 那組早已整組排除）。
+#    ⚠️ 但這不代表該條件「結構性不可達」：`tests/test_soul_bug_watchdogs.py::
+#    test_elevation_pattern_evidence_accumulation_must_reach_two` 釘的生產形狀
+#    （兩條相同事件合併成 1 顆 degree=2 的 pattern）**正是** SOUL-BUG-001 的
+#    「節點合併 + 邊重綁」機制所保證的 —— 只量當下資料會把「現在還沒發生」
+#    誤判成「不可能發生」。
+# 2. 「語意重複群集 ≥ 2 才有資格當錨點」。實測會**閹割分散證據的昇華能力**：
+#    證據常分散在多顆 degree==1 的 pattern 上，硬要求單顆錨點自己有多重關聯度
+#    等於逼系統放棄那些分散但總量已達標的證據鏈，直接撞上三條既有契約
+#    （INV-2 / EH R2 / test_r2_lived_facts_still_elevate）。
+#
+# ⚠️ 曾實作過「距上一顆同類靈魂節點建立後，新鮮獨立證據 ≥ K 才動作」的成長閘門
+#   並已拔除。理由（實測，非推測）：K=2 時它與引擎的已消化證據隔離**數值相同
+#   ⇒ 永遠同步觸發**，把整個閘門關掉後全部測試依然全綠（MUT-02 NOT_RED 實證）。
+#   既然無法被變異實驗擊穿，就是無人能稽核的盲腸邏輯 —— 留著只會給未來埋雷。
+#   限流職責因此歸引擎單一事實來源。
+#
+# 淨效果：SOUL-BUG-009 只改「挑誰當代表」，不新增任何門檻、不動任何既有契約
+# （唯一例外：`tests/test_elevation_evidence_scope_a1.py::test_e1` 末行斷言由
+# `types.count("value") == 1` 翻轉為 `== 2`，因為原值釘的正是本缺陷本身）。
+#
+
+def _occupied_soul_contents(
+    engine: Any, agent_id: str, node_type: str
+) -> set:
+    """同 (agent, 目標維度) 既有靈魂節點已佔用的 content（strip 後）。
+
+    這是「去重凍結」的判定依據：``_persist_result`` 以
+    ``(agent_id, node_type, sha256(content.strip()))`` 去重，所以 content 已
+    被佔用 = 再產一顆同樣內容的靈魂節點只會被丟棄（=_persist_result 那條假性
+    冪等路徑）。比對字串而非雜湊值即可，兩者等價且可讀。
+    """
+    return {
+        (n.content or "").strip()
+        for n in engine._nodes.values()
+        if n.node_type == node_type
+        and n.agent_id == agent_id
+        and (n.content or "").strip()
+    }
+
+
+def _select_anchor_representative(
+    patterns: Sequence[ElevationNode],
+    occupied: set,
+) -> Optional[ElevationNode]:
+    """從候選池挑一個 **content 尚未被既有靈魂節點佔用** 的代表。
+
+    🔴 Owner 裁決（2026-10-18）：**錨點只當代表，不當守門。**
+
+    職責分離（Separation of Concerns）——這是此處唯一不引發連帶崩潰的架構：
+
+    - **守門**歸組級證據機制所有：``engine.elevate(min_evidence=...)`` 的維度
+      計票（≥ 獨立證據）、本模組的「已消化證據隔離」（VALUE-DEDUP-A-1 / INV-2，
+      被靈魂節點消耗過的證據鍵根本不參與計票）、EH-2 R1 垂直防火牆與
+      ``agent_id="default"`` 整組排除。
+    - **錨點**的唯一職責是挑「最能代表這次昇華」的內容載體，決定新靈魂節點
+      的文字與 ``parent_node_id``。它**不得**兼任准入把關。
+
+    曾經把「錨點必須具備多重關聯度」做成硬門檻，那是錯的，實測會閹割分散
+    證據的昇華能力：證據常常分散在**多顆 degree == 1** 的 pattern 上
+    （生產實測：value 29 顆 × 10 agent 全部 degree=1），硬要求單顆錨點自己
+    有多重關聯度，等於逼系統放棄那些**分散但總量已達標**的證據鏈。
+    `tests/test_elevation_evidence_scope_a1.py::test_e1_repeated_elevation_needs_two_fresh_keys_in_same_dimension`
+    與 `tests/test_epistemic_horizon.py::TestVerticalFirewall::test_r2_lived_facts_still_elevate`
+    正是釘這個語意的既有契約。
+
+    SOUL-BUG-009 的實際缺陷只有一個：恆取 ``pids[0]`` ⇒ 代表 content 恆等於
+    既有靈魂節點 ⇒ 被去重丟棄 ⇒ **靈魂層永久凍結**（實測：10 顆 value 靈魂
+    節點全在 2026-10-11T23:18:19~20 同一批建立，其後每日新增 29 顆 pattern，
+    靈魂節點數 0 變化）。所以這裡只需保證「**挑一個還沒說過的話**」。
+
+    排序（全部確定性，同輸入必得同輸出）：
+
+    1. 先剔除 content 已被佔用的候選；
+    2. 剩下的取 **最新鮮** 者（``created_ts`` 最大）—— 昇華是「此刻發生的
+       沉澱」，代表句理應來自最新累積的證據，而不是被凍結的那句最舊的；
+    3. 並列時取 ``node_id`` 最小者，保證唯一。
+
+    Returns:
+        有未被佔用的 content 時回該代表；**全部被佔用時回 ``None``** ——
+        這就是冪等性靜默返回（不重複造節點），不是失敗。
+    """
+    fresh = [
+        n for n in patterns if (n.content or "").strip() not in occupied
+    ]
+    if not fresh:
+        return None
+    newest = max(_ts_key(n.created_ts) for n in fresh)
+    return sorted(
+        (n for n in fresh if _ts_key(n.created_ts) == newest),
+        key=lambda n: n.node_id,
+    )[0]
+
+
+def _ts_key(ts: Any) -> str:
+    """節點時間戳的可比鍵；非字串（例如合成節點的 float）一律視為最舊。
+
+    生產上全是固定寬度 UTC ISO 字串，字典序即時間序。
+    ⚠️ 這裡刻意「取 max 再過濾」而不是用一個反向排序鍵塞給 ``sorted()[0]`` ——
+    那種寫法容易把方向寫反（本次就寫反過一次，害得錨點又退回最舊那顆，
+    等於讓去重凍結復活，而兩支測試都只看得出「內容不對」）。
+    """
+    return ts if isinstance(ts, str) else ""
+
+
 def elevate_matured_patterns(
     *,
     store_dir: Optional[Any] = None,
@@ -971,6 +1103,8 @@ def elevate_matured_patterns(
         llm: 可选 ElevationLLM 实现（缺省用 StubElevationLLM，确定性桩；
             elevate 本身不调 LLM，仅在重建注册表时透传给引擎构造）。
         min_evidence: 独立证据阈值（对齐 soul-elevation 默认 2 独立证据）。
+        （限流刻意**不在此参数化**：引擎的「已消化证据隔离」＋ ``min_evidence``
+        已更严格地负责，详见 SOUL-BUG-009 说明与上方注释。）
 
     Returns:
         本次新产出的灵魂节点（belief/value/trait/essence）列表。失败隔离：
@@ -1080,8 +1214,40 @@ def elevate_matured_patterns(
                     if e.node_id in eh2_blocked_patterns and e.valid_until_ts is None:
                         neutralized.append(e)
                         e.valid_until_ts = _EH2_SENTINEL
+                # ── SOUL-BUG-009（Owner 2026-10-18）：代表性锚点取代 pids[0] 死锚点 ──
+                # 锚点的 content 直接成为灵魂节点内容（engine.py:516）。恒取最旧的
+                # `pids[0]` ⇒ 内容与既有灵魂节点逐位元相同 → 被 _persist_result
+                # 去重丢弃 → **灵魂层永久冻结**（实测：10 颗 value 灵魂节点全在
+                # 2026-10-11T23:18:19~20 同一批建立，其后每日新增 29 颗 pattern，
+                # 灵魂节点数 0 变化）。
+                #
+                # ⚠️ 这里**只挑代表，不设闸门**（Owner 裁決：職責分離）。守门归
+                # 引擎全权负责，且已有更严格的实作：
+                #   * `engine.elevate(min_evidence=...)` 的维度计票；
+                #   * 本函数上方的「已消化证据隔离」（VALUE-DEDUP-A-1 / INV-2）
+                #     —— 被任一灵魂节点消耗过的证据键**根本不参与计票**，而且
+                #     是按**该维度所有**灵魂节点扣除，比「只扣最后一颗」更严格。
+                #     因此在本函数另加一个 K=2 的「新鲜键闸门」是**结构性冗余**：
+                #     两者数值相同时永远同步触发，闸门不可能先于引擎挡下任何东西。
+                #     实测（把该闸门整个关掉，全部测试依然全绿）证实了这一点。
+                #     Owner 裁決：拔除冗余，不留无法被变异实验击穿的盲肠逻辑。
+                _anchor = _select_anchor_representative(
+                    [engine._nodes[pid] for pid in pids],
+                    _occupied_soul_contents(engine, agent_id, cand),
+                )
+                if _anchor is None:
+                    for e in neutralized:
+                        e.valid_until_ts = None
+                    logger.info(
+                        f"[elevate] skip agent={agent_id} candidate={cand}: "
+                        f"all {len(pids)} candidate contents already occupied by "
+                        f"existing {cand} soul nodes (idempotent no-op)"
+                    )
+                    continue
                 try:
-                    soul = engine.elevate(pids[0], min_evidence=min_evidence)
+                    soul = engine.elevate(
+                        _anchor.node_id, min_evidence=min_evidence
+                    )
                 except ValueError as exc:
                     # 独立证据不足 → 不升（不提前）。这是常态（多数组未达阈值）。
                     for e in neutralized:
@@ -1102,7 +1268,8 @@ def elevate_matured_patterns(
                 elevated.append(soul)
                 logger.info(
                     f"[elevate] ✓ agent={agent_id} candidate={cand} "
-                    f"patterns={len(pids)} → {soul.node_type} "
+                    f"patterns={len(pids)} anchor={_anchor.node_id[:8]}… "
+                    f"→ {soul.node_type} "
                     f"(min_evidence={min_evidence})"
                 )
             # 只 append 本次新增的边（加载的历史边不重复写，supersede 原地改不动文件）。
@@ -1111,10 +1278,17 @@ def elevate_matured_patterns(
             )
         return elevated
     except Exception as exc:  # noqa: BLE001 — 失败隔离：不影响 consume 主路径
+        # 🔴 帶 traceback。這裡刻意「吞掉一切並回傳 []」是既有契約（不阻斷
+        # consume 主路徑），但代價是**程式層級錯誤會被靜默降級成靈魂層停止生長**。
+        # 實測踩過：刪掉一個區塊後留下 `NameError: name '_fresh' is not defined`
+        # 於 log 行，16 支昇華相關測試全紅、整條靈魂生長線靜默回傳 []，
+        # 唯一線索是一行 warning 裡的 NameError 字樣。沒有 traceback 時，
+        # 「一整條生命線無聲死掉」與「某個外部 IO 失敗一次」看起來一模一樣。
         logger.warning(
             "elevate_matured_patterns failed (不影響主路徑): %s: %s",
             type(exc).__name__,
             exc,
+            exc_info=True,
         )
         return []
 

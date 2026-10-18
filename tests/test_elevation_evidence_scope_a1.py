@@ -371,9 +371,21 @@ def test_e1_repeated_elevation_needs_two_fresh_keys_in_same_dimension(tmp_path):
     types = [n["node_type"] for n in load_elevation_nodes(store)]
     # 4 份互異內容的 pattern 全部落盤（冪等去重不影響 evidence 累積本身）
     assert types.count("pattern") == 4
-    # 第二次昇華與第一顆 content 相同 → VALUE-DEDUP-A-1 不落盤，故落盤 value = 1
-    assert types.count("value") == 1
-    assert second[0].node_id not in {n["node_id"] for n in load_elevation_nodes(store)}
+    # [CONTRACT-UPDATE: SOUL-BUG-009] 原斷言為 == 1。
+    # 它釘住的其實是「第二批具備實質差異的證據進場時，因舊錨點 pids[0] 的
+    # content 雜湊與既有靈魂節點碰撞、被去重機制吞掉」這個**凍結缺陷**
+    # （Bug as Baseline，與當年 test_without_narrative_yields_label 釘死機械
+    # 標籤同一類）。錨點解凍後，兩批各自獨立達標的證據**正確**產出 2 顆
+    # value 節點 —— 這才是符合心智演化預期的真實行為。
+    # 純重複輸入的「真冪等」（同資料重複執行 count 不變）由
+    # tests/inner_life/test_persist_idempotency.py 嚴格把關，兩者職責分離。
+    assert types.count("value") == 2
+    # 兩顆 value 的 content 必須不同 —— 否則就是去重失效或仍在凍結。
+    values = [
+        n["content"] for n in load_elevation_nodes(store)
+        if n["node_type"] == "value"
+    ]
+    assert len(set(values)) == 2, f"第二顆 value 的內容不該與第一顆相同：{values}"
 
 
 # ── F. 可觀測性 ─────────────────────────────────────────────────────

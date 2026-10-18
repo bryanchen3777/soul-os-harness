@@ -24,6 +24,28 @@ repo 內無既有全半形正規化工具，按工單 fallback）。
 - 不同 content / 不同 agent / 不同 node_type 正常落盤。
 - 現有檔損壞 / 缺失時 fail-open 照寫（絕不丟合法產出）。
 - 不動 engine、不動 consumed 去重、不動 anchor、不動 supersede。
+
+🔴 SOUL-BUG-009 契約變更記錄（Owner 2026-10-18 拍板，本檔斷言**未改動**）
+--------------------------------------------------------------------
+SOUL-BUG-009 改的是 `elevate_matured_patterns()` 的**錨點選取**（恆取 `pids[0]`
+→ 群集錨點 + 成長收斂閘門），**沒有動 `_persist_result`**，故本檔所有斷言原封
+不動。但必須把「冪等由誰保證」這件事寫清楚，因為舊實作裡兩者是**糾纏**的：
+
+- **舊狀態（假性冪等）**：`elevate` 每輪都真的產出一顆靈魂節點，只是它的
+  content 恆等於 `pids[0]`（= 既有靈魂節點的 content）→ 被本檔守的
+  ``(agent_id, node_type, content_hash)`` 去重**吞掉**，於是「看起來冪等」。
+  副作用是靈魂層從此**永久凍結**：實測 10 顆 value 靈魂節點全在
+  2026-10-11T23:18:19~20 同一批建立，其後每日新增 29 顆 pattern，靈魂節點數
+  0 變化。也就是說「不重複」是真的，但「不更新」也是真的，而後者沒人發現。
+- **新狀態（新冪等）**：不重複**不再**仰賴去重把新節點吞掉，而是由兩道前置閘門
+  決定要不要動作 —— ① 錨點必須是語意重複出現 ≥2 次的敘事；② 距同
+  `(agent, 維度)` 上一顆靈魂節點建立後，群組獨立證據成長 ≥ 5。
+  本檔守的去重則退居**最後一道防線**：即使閘門放行、即使 content 與既有靈魂
+  相同，落盤仍不得產生第二顆重複靈魂節點。
+- **兩者不可互相替代**：`tests/inner_life/test_soul_bug_009_anchor_policy.py::
+  test_repeated_same_text_does_not_duplicate_soul_content` 釘住「閘門放行也不
+  重複落盤」；`test_anchor_is_not_the_oldest_pattern` 釘住「錨點不得退回最舊那顆」。
+  只留後者會假綠（去重會把退化的錨點結果吞掉，看不出退化）。
 """
 from __future__ import annotations
 

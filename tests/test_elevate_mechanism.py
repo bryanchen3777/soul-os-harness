@@ -290,7 +290,29 @@ def test_d2_world_event_blocked_even_with_memory_facts(tmp_path):
 
 
 def test_e1_no_double_elevate_without_new_consume(tmp_path):
-    """elevate 后无新 consume 再跑 → 已消化证据不重复计票，不产新节点。"""
+    """elevate 后无新 consume 再跑 → 不产第二颗灵魂结构。
+
+    🔴 SOUL-BUG-009 契约变更记录（Owner 2026-10-18 拍板）——**断言未变，
+    但成立的理由变了**，故必须写清楚，否则后人会把「不重复产出」误读成
+    `_persist_result` 去重的作用：
+
+    - **旧状态（假性幂等）**：`elevate_matured_patterns` 照样产出一颗灵魂节点，
+      只是它的 content 恒等于 `pids[0]`（= 既有灵魂节点的 content），于是被
+      `_persist_result` 的 `(agent_id, node_type, content_hash)` 去重**吞掉**。
+      「不重复」是真的，但同一机制也把灵魂层**永久冻结**（实测：10 颗 value
+      灵魂节点全在 2026-10-11T23:18:19~20 同一批建立，其后每日新增 29 颗
+      pattern，灵魂节点数 0 变化）。
+    - **新状态（新幂等）**：不重复改由**前置闸门**保证 —— 距同 `(agent, 维度)`
+      上一颗灵魂节点建立后，组内独立证据成长必须 ≥ `_ELEVATE_MIN_EVIDENCE_GROWTH`
+      (5) 才动作。未达标直接 skip，压根不调用 `engine.elevate`。
+      content 去重退居最后一道防线。
+    - 两者都保留：闸门挡住「不必动作」，去重挡住「动作了也不产生重复灵魂」。
+
+    新增行为的守门测试在
+    `tests/inner_life/test_soul_bug_009_anchor_policy.py`
+    （`test_growth_gate_blocks_second_elevation_below_k` /
+    `test_growth_gate_opens_at_k` / `test_repeated_same_text_does_not_duplicate_soul_content`）。
+    """
     writer = InnerLifeWriter()
     store_dir = tmp_path / "elevation"
     for event in _make_distinct_events(
