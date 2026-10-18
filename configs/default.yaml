@@ -103,13 +103,20 @@ llm:
   # 其他可選：minimax（直連 MiniMax）、claude（直連 Anthropic）、openai、mock（不接真實 API）
   provider: ollama
 
-  # 統一 model 欄位（env LLM_MODEL 會覆蓋）
+  # 統一 model 欄位（env LLM_MODEL 會覆蓋 —— 改這裡不夠，.env 也要同步）
   # Ollama Cloud model 名大小寫敏感：必須用 deepseek-v4.1-flash (小寫)
   # 2026-08-17 Bry 拍板: minimax-m2.7 → deepseek-v4-flash:0731
   #   動機: 時間感知測試 (3 場景 x 4 寫法) 證實 v4 flash 推理能力更強 (沉默時長能轉成情緒, m2.7 做不到)
   # 2026-09-12 切換至 deepseek-v4.1-flash (MODEL-V41-FLASH-1)
-  # .env 通常會設 LLM_MODEL=deepseek-v4.1-flash
-  model: deepseek-v4.1-flash
+  # 2026-10-17 Bry 拍板 (MODEL-V41-FLASH-1017-1): → deepseek-v4.1-flash:1017
+  #   鎖定 10/17 這個日期版，不再隨最新 tag 漂移。
+  #   🔴 切換前已做「鑑別式探測」確認 ID 真的存在，不是端點吞掉未知後綴造成的假 200：
+  #     deepseek-v4.1-flash:1017        → 200 OK
+  #     deepseek-v4.1-flash:9999        → 404 model not found（對照組：假 tag）
+  #     totally-not-a-model:1017        → 404 model not found（對照組：假模型）
+  #   對照組 404 證明端點真的在比對 model 名，故 200 可信。
+  #   ⚠️ 帶引號是刻意的：plain scalar 內含 `:` 有解析風險，引號讓意圖無歧義。
+  model: "deepseek-v4.1-flash:1017"
 
   # provider 對應的備援 model（未指定 LLM_MODEL 時 fallback 用）
   openai_model: gpt-4o-mini
