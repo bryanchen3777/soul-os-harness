@@ -1332,6 +1332,14 @@ def _format_capability_block(agent_id: str) -> str:
         return ""
 
 
+# [DEPRECATED by SOUL-BUG-008] 生產 0 呼叫點。
+# 原唯一的呼叫者是 `_build_messages_group`，SOUL-BUG-008（Owner 2026-10-17 P0
+# 私域外洩修補）已將其整段切除 —— 公開群聊不得再取用 Bry 私聊原文。
+# 保留定義的**唯一**理由：tests/ 下 10 個檔案用
+# `patch.object(proxy, "_load_bry_recent", ...)` mock 它；刪掉定義會讓那些
+# mock 直接 AttributeError，屬 10 檔連帶回歸。
+# Owner 2026-10-18 裁定：暫留標記、拒絕範圍擴張，待專門的測試債清理票統一拔除。
+# ⚠️ 不得重新接回 `_build_messages_group`（那會讓 P0 漏洞復活）。
 def _load_bry_recent(agent_id: str, user_id: str, limit: int = MAX_BRY_RECENT) -> List[Dict[str, str]]:
     """短期記憶 — 從 Bry 跟該 agent 的 private history 撈最近 N 條 Bry user 訊息。
 
