@@ -159,11 +159,11 @@ SOUL-TECH-DEBT-001 的測試紀律是**只修測試、絕不動生產代碼**。
 
 ---
 
-## 殘餘技術債（P3，待排程處理）
+## 殘餘技術債（~~P3~~）—— ✅ 全部結案
 
-| 編號 | 內容 | 證據 | 處置（Bry 2026-10-13 裁示） |
+| 編號 | 內容 | 證據 | 處置 |
 |---|---|---|---|
-| **TECH-DEBT-P3-01** | **測試間全域狀態污染**：`tests/test_m2_0_inner_life_v2.py::test_e_build_messages_group_with_real_inner_life`、`tests/test_self_check_v1.py::test_self_check_v1` 於全庫跑時紅燈，單獨跑全綠 | 隔離執行 `13 passed in 3.38s`；`pytest-randomly` 未安裝 ⇒ 污染源固定，非隨機順序 | **暫不開整庫二分**（每輪 11.5 分鐘、十幾輪＝數小時算力，投產比極低）；等未來排程引進 `pytest-randomly` 或統一清理單元測試 teardown 時一併處理。**業務邏輯與被測功能 100% 健全**，非缺陷。 |
+| **TECH-DEBT-P3-01** | ~~測試間全域狀態污染~~ **✅ 已結案 2026-10-14**（commit `1875191`；原 Bry 2026-10-13 裁示為「暫不開整庫二分」） | 根因：`src/llm/proxy.py:139` 的 `INNER_LIFE_DATA_DIR = str(data_root()/"soul")` 是**匯入期即算死**的 module-level 常數，`conftest.py` 的 autouse per-test 隔離（`reset_data_root()`）**救不回已算好的常數**。原本只需「二分找污染源」，最終走的是測試側釘針，**零生產風險、不需二分**。 | ① `tests/test_self_check_v1.py`（與 v2 互為邏輯否定的過期測試）已 `git rm`；② `test_m2_0_inner_life_v2.py::test_e_build_messages_group_with_real_inner_life` 已用 `original_dir` / `try` / `finally` 還原的釘針，把常數指回真實 `data/soul`（範本 `tests/test_m3_prompt_integrity.py:117-133`）。**2026-10-17 實測複核**：單跑 12 passed；當晚三次全庫回歸（6537 / 6545 passed）**均未出現此紅燈** ⇒ 順序相依已消除。 |
 
 ## 已治理的治理類問題（非缺陷，但已違反紅線）
 
@@ -181,9 +181,14 @@ SOUL-TECH-DEBT-001 的測試紀律是**只修測試、絕不動生產代碼**。
 **下一階段候選（需 Bry 選件）**
 | 候選 | 內容 | 產出比 | 風險 |
 |---|---|---|---|
-| **TECH-DEBT-P3-01（可繞過二分）** | `test_m2_0_inner_life_v2.py::test_e_build_messages_group_with_real_inner_life` 單跑全綠／全庫跑必紅 | **高**：根因**早已被診斷並寫在 repo 註解裡**（`tests/test_m3_world_awareness.py:569-575`）—— `src/llm/proxy.py:133` 的 `INNER_LIFE_DATA_DIR` 是**匯入期就算死**的 module-level 常數，`conftest.py` 的 per-test env 隔離救不回它。只要在測試側把該常數釘回它要讀的目錄（範本：`tests/test_m3_prompt_integrity.py:117-133`，**零生產風險**）。**不需要整庫二分** —— Bry 當初裁示擱置的是「二分找污染源」，不是這個解法。 | 高 | 低（僅測試側） |
+| ~~TECH-DEBT-P3-01~~ | ~~順序相依紅燈~~ **已於 2026-10-14 結案**（見下方殘餘技術債表已改寫） | — | — |
 | SOUL-BUG-006 夢境生產實證 | 等下一週期自動發生 | 被動 | 無 |
 | SAGE-RANK-1 / SOUL-BUG-007 生產實證 | 需 Bry 真實對話才會產生 trace | 被動 | 無 |
+
+> ⚠️ **本節曾誤列 TECH-DEBT-P3-01 為候選（2026-10-17，已更正）**：主大腦依殘餘技術債
+> 表的過時記載提議開工，但該票實於 **2026-10-14** 即已結案（commit `1875191`
+> 「DEPLOY-RESTART-8 登記 … TECH-DEBT-P3-01 上線」）。**提議前應先驗現況，不該只讀索引。**
+> 這是今晚第二次「過時文件比記憶體更不可靠」的實例（前一次是索引謊報 SOUL-BUG-006/007 進度）。
 
 ---
 
