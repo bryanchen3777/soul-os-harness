@@ -477,8 +477,16 @@ class TestProxyInjection(unittest.TestCase):
         self.assertIn("- 體感經驗：", content)
         self.assertIn("- 關係時序：", content)
 
-    def test_group_injects_anchor(self):
-        """群聊路徑注入 TEMPORAL ANCHOR"""
+    def test_group_does_not_inject_anchor(self):
+        """群聊路徑**不**注入 TEMPORAL ANCHOR
+
+        🔴 SOUL-BUG-008 (Owner 2026-10-17 P0 私域外洩修補) 契約翻轉:
+        TA-2 anchor 的「牵挂」三態資格判定複用 M5.13-3 的 **Bry 1:1 親密度
+        band**, 等於把私交程度隱性帶進**公開群聊** prompt —— 連帶還有
+        「時間座標 / 體感經驗 / 關係時序」三行 1:1 私密內容。
+        Owner 裁示: 公開路徑整段切除; `_build_messages_private` 原樣保留
+        (見上方 `test_private_injects_anchor`, 逐字未變)。
+        """
         messages = self._build_group(
             NOW_EVENING,
             current_time=proxy._format_event_timestamp(EVENING_TS),
@@ -486,7 +494,12 @@ class TestProxyInjection(unittest.TestCase):
             last_interaction_ts=LAST_2D,
         )
         content = _system_content(messages)
-        self.assertIn("[TEMPORAL ANCHOR]", content)
+        self.assertNotIn(
+            "[TEMPORAL ANCHOR]", content,
+            "公開群聊 prompt 不得出現 1:1 私密時間錨點 (SOUL-BUG-008)",
+        )
+        self.assertNotIn("- 關係時序：", content)
+        self.assertNotIn("- 體感經驗：", content)
 
     def test_anchor_inside_temporal_block(self):
         """注入位置: 时间区块内 (TA-1 同区)"""

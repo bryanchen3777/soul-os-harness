@@ -17,11 +17,18 @@ Bry 拍板 2026-08-03 22:xx, 修法 2:
 - _build_messages_group 注入的「## Bry 最近訊息」區塊包含反框架語句
 - 區塊結構: [反框架語句] + [## Bry 最近訊息 (短期記憶) 標題] + [bullet list]
 
+🔴 2026-10-17 SOUL-BUG-008 (Owner P0 私域外洩修補) —— 本檔斷言**整體翻轉**:
+「## Bry 最近訊息 (短期記憶)」區塊在公開群聊路徑已被徹底切除。複核發現它
+的資料源是 `_load_bry_recent()` → `_load_private()`, 等於把 Bry 與該角色的
+私聊原文逐字搬進公開 prompt。修法 2 的反框架語句隨區塊一併失效 —— 留著它
+只會製造「修法仍在、內容已死」的幽靈契約。
+
 Mock 範圍:
-- mock _load_bry_recent 回傳 3 條假 Bry user 訊息 (ruka 8/3 20:22 heartbeat 觸發案例)
+- mock _load_bry_recent 回傳 3 條假 Bry user 訊息 (**刻意提供**, 證明即使
+  私域資料可得, 群聊路徑也不會取用)
 - mock memory.get_group_history 回傳空
 - 直接呼叫 _build_messages_group, 驗證 system prompt 內容
-- 修法後 v2 期望: 第一條 system 訊息包含反框架語句關鍵字
+- 現況期望: 私域內容、區塊標題、反框架語句**一律不在** prompt 內
 """
 import sys
 import unittest
@@ -46,8 +53,14 @@ class TestShortTermMemoryFramingV2(unittest.TestCase):
         ]
         self.soul_text = "你是 Ruka。... (Ruka 的人格設定) ..."
 
-    def test_v2_bry_recent_block_has_anti_framing(self):
-        """修法 2: 「## Bry 最近訊息」區塊包含明確反框架語句"""
+    def test_v2_group_has_no_bry_recent_block(self):
+        """🔴 SOUL-BUG-008 (Owner 2026-10-17 P0) 契約翻轉:
+        群聊 prompt **不含**「## Bry 最近訊息」區塊。
+
+        修法 2 的反框架語句是為了讓這個區塊「不被誤讀」而存在; SOUL-BUG-008
+        認定該區塊本身就是 P0 私域外洩 (資料源 `_load_bry_recent()` →
+        `_load_private()`), 於是整段切除。區塊不存在 ⇒ 反框架語句不需要。
+        """
         with patch.object(proxy, "_load_bry_recent", return_value=self.fake_bry_recent), \
              patch.object(proxy, "MAX_GROUP", 20):
             fake_memory = MagicMock()
@@ -66,29 +79,18 @@ class TestShortTermMemoryFramingV2(unittest.TestCase):
 
             system_msgs = [m for m in messages if m["role"] == "system"]
             self.assertGreaterEqual(len(system_msgs), 1, "應該至少有 1 條 system message")
-            first_system = system_msgs[0]["content"]
+            joined = "\n".join(m["content"] for m in system_msgs)
 
-            # 區塊標題 + bullet 仍要存在
-            self.assertIn("## Bry 最近訊息", first_system, "應該有短期記憶區塊標題")
-            self.assertIn("叫妳老婆", first_system, "應該有 Bry 最近的訊息")
+            self.assertNotIn("## Bry 最近訊息", joined, "群聊 prompt 不得有該區塊標題")
+            self.assertNotIn("叫妳老婆", joined, "群聊 prompt 不得洩漏私聊原文")
+            print("[v2 SOUL-BUG-008] group prompt carries zero Bry private content")
 
-            # 修法 2 v2 期望: 包含明確反框架語句
-            anti_framing_keywords = [
-                "不代表 Bry 現在正在跟你對話",  # Bry 拍板範例核心句
-                "背景參考",                       # Bry 拍板範例核心句
-                "不是要立即回應的問題",           # Bry 拍板範例核心句
-                "除非有主動觸發標記",            # 跟 M2 task 3 銜接
-            ]
-            for keyword in anti_framing_keywords:
-                self.assertIn(
-                    keyword, first_system,
-                    f"修法 2 v2 期望短期記憶區塊「包含」反框架語句「{keyword}」, "
-                    f"實際 system prompt 開頭 300 chars: {first_system[:300]!r}"
-                )
-            print(f"[v2] short-term memory block has anti-framing text (Bry 拍板範例句全在)")
+    def test_v2_group_has_no_stale_anti_framing_text(self):
+        """區塊切除後, 反框架語句必須一併消失。
 
-    def test_v2_anti_framing_appears_before_bullets(self):
-        """修法 2: 反框架語句要在 bullets 之前 (LLM 讀到時先看到說明)"""
+        沒有內容就不需要防 LLM 誤讀。若日後有人只把反框架語句加回來 (以為
+        它是獨立功能), 這裡會紅 —— 避免留下「修法仍在、內容已死」的幽靈契約。
+        """
         with patch.object(proxy, "_load_bry_recent", return_value=self.fake_bry_recent), \
              patch.object(proxy, "MAX_GROUP", 20):
             fake_memory = MagicMock()
@@ -106,21 +108,19 @@ class TestShortTermMemoryFramingV2(unittest.TestCase):
             )
 
             first_system = [m for m in messages if m["role"] == "system"][0]["content"]
-            # Bry 派工原話: 在資訊本身旁邊加使用說明 (不是靠位置順序)
-            # 但反框架語句要在 bullets 之前, LLM 讀到 bullet 時已經看過說明
-            anti_framing_pos = first_system.find("不代表 Bry 現在正在跟你對話")
-            bullet_pos = first_system.find("- Bry: 叫妳老婆")
-            self.assertNotEqual(anti_framing_pos, -1, "應該有反框架語句")
-            self.assertNotEqual(bullet_pos, -1, "應該有 bullet")
-            self.assertLess(
-                anti_framing_pos, bullet_pos,
-                f"反框架語句應該在 bullet 之前, "
-                f"反框架 pos={anti_framing_pos}, bullet pos={bullet_pos}"
-            )
-            print(f"[v2] anti-framing text appears before bullets (pos {anti_framing_pos} < {bullet_pos})")
+            stale_keywords = [
+                "不代表 Bry 現在正在跟你對話",
+                "不是要立即回應的問題",
+                "除非有主動觸發標記",
+            ]
+            for keyword in stale_keywords:
+                self.assertNotIn(
+                    keyword, first_system,
+                    f"短期記憶區塊已切除, 反框架語句「{keyword}」不該單獨存在",
+                )
 
-    def test_v2_other_agents_get_same_anti_framing(self):
-        """修法 2: 反框架語句對所有 agent 一致 (不只 ruka)"""
+    def test_v2_no_agent_leaks_bry_private_content(self):
+        """群聊私域隔離對**所有** agent 一致 (爆炸半徑 = 全部 10 隻角色)"""
         for agent_id in ["agent_yua", "agent_akane", "agent_mahiru", "agent_mai"]:
             with patch.object(proxy, "_load_bry_recent", return_value=self.fake_bry_recent), \
                  patch.object(proxy, "MAX_GROUP", 20):
@@ -138,12 +138,14 @@ class TestShortTermMemoryFramingV2(unittest.TestCase):
                     current_time="2026-08-03 20:22 週日 晚上 (EDT)",
                 )
 
-                first_system = [m for m in messages if m["role"] == "system"][0]["content"]
-                self.assertIn(
-                    "不代表 Bry 現在正在跟你對話", first_system,
-                    f"{agent_id} 短期記憶區塊也應該有反框架語句"
+                joined = "\n".join(
+                    m["content"] for m in messages if m["role"] == "system"
                 )
-        print(f"[v2] anti-framing text consistent across 4 agents (yua/akane/mahiru/mai)")
+                self.assertNotIn(
+                    "叫妳老婆", joined,
+                    f"{agent_id} 的群聊 prompt 洩漏了 Bry 私聊原文 (SOUL-BUG-008)"
+                )
+        print("[v2 SOUL-BUG-008] zero private leak across 4 agents (yua/akane/mahiru/mai)")
 
 
 if __name__ == "__main__":

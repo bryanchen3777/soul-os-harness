@@ -430,7 +430,11 @@ _RELATIONSHIP_BAND_CLOSE = 0.7           # 親密
 _RELATIONSHIP_BAND_DEEP_TRUST = 0.9      # 深度信任
 
 
-def _format_relationship_block(agent_id: str) -> str:
+def _format_relationship_block(
+    agent_id: str,
+    *,
+    include_bryan: bool = True,
+) -> str:
     """
     M5.13-3 (Bry 派工 2026-08-11): 將 RelationshipsStore 投影成
     deterministic, bounded, agent-scoped SOCIAL_CONTEXT block.
@@ -463,6 +467,12 @@ def _format_relationship_block(agent_id: str) -> str:
       - confidence 缺失 / 不是 number / < 0.3 (Bry 部分)
       - store read exception (fail-silent)
 
+    🔴 SOUL-BUG-008 (Owner 2026-10-17 裁示, P0 私域外洩修補):
+    ``include_bryan=False`` 時**不投影「你跟 Bry 的關係」**（1:1 私密親密度 band），
+    只保留「你跟其他角色的關係」（角色之間互相認識本來就是公開資訊）。
+    公開頻道（group / Lounge）一律走這個模式 —— 角色的私交情不該讓整個群聊看見。
+    預設 True ⇒ private 路徑行為**逐位元不變**。
+
     Does NOT:
       - 暴露 feeling / impression / interaction_count / timestamps
       - 寫入任何資料 (read-only)
@@ -484,40 +494,49 @@ def _format_relationship_block(agent_id: str) -> str:
         store = manager.get_store(agent_id)
         if store is None:
             return ""
-        # store.get() 內部會走 decay + flush, 但 readers 派工: 「拒絕問, 強制讀」,
-        # 失敗由 RelationshipsStore 自己處理 (備份壞檔), 這裡 try/except 兜底
-        rel = store.get(BRYAN_ENTITY_ID)
-        if not rel or not isinstance(rel, dict):
-            return ""
-        # Defensive: confidence 必須是 number
-        confidence = rel.get("confidence")
-        if not isinstance(confidence, (int, float)):
-            return ""
-        # Defensive: clamp 到 [0.0, 1.0] (malformed data 不爆炸)
-        if confidence < 0.0:
-            confidence = 0.0
-        elif confidence > 1.0:
-            confidence = 1.0
-        # Band mapping (deterministic, ordered from highest to lowest)
-        # M5.13-2 contract (STRICT): `confidence >= 0.3` → 認識.
-        # M5.13-4.2: reverted M5.13-4.1's `round(confidence, 6)` (5e-7 false-promotion
-        # range). The 0.3 boundary decay bug is now fixed in the producer
-        # (src/soul/relationships.py:RelationshipsStore._decay_locked) by
-        # using a per-entry decay anchor (last_interaction_at or
-        # created_at), so freshly-created entries are not subject to
-        # sub-day decay that would push 0.3 to 0.299999... .
-        if confidence >= _RELATIONSHIP_BAND_DEEP_TRUST:
-            band = "深度信任"
-        elif confidence >= _RELATIONSHIP_BAND_CLOSE:
-            band = "親密"
-        elif confidence >= _RELATIONSHIP_BAND_FAMILIAR:
-            band = "熟悉"
-        elif confidence >= _RELATIONSHIP_BAND_MIN_THRESHOLD:
-            band = "認識"
-        else:
-            # 0.0 - < 0.3: 陌生人, 不輸出
-            return ""
-        blocks: List[str] = [f"[你跟 Bry 的關係]\n  熟悉度: {band}"]
+
+        blocks: List[str] = []
+
+        # ── Bry 1:1 親密度 band ──
+        # 🔴 SOUL-BUG-008 (Owner 2026-10-17 P0 私域外洩修補): 公開頻道
+        # (include_bryan=False) 不投影本段 —— 「你跟 Bry 的關係」是 1:1 私密
+        # 參數, 讓整個群聊看見既是隱私外洩也是社交不一致 (其他角色會知道
+        # 說話者跟 Bry 的私交程度)。預設 True ⇒ private 路徑逐位元不變。
+        if include_bryan:
+            # store.get() 內部會走 decay + flush, 但 readers 派工: 「拒絕問, 強制讀」,
+            # 失敗由 RelationshipsStore 自己處理 (備份壞檔), 這裡 try/except 兜底
+            rel = store.get(BRYAN_ENTITY_ID)
+            if not rel or not isinstance(rel, dict):
+                return ""
+            # Defensive: confidence 必須是 number
+            confidence = rel.get("confidence")
+            if not isinstance(confidence, (int, float)):
+                return ""
+            # Defensive: clamp 到 [0.0, 1.0] (malformed data 不爆炸)
+            if confidence < 0.0:
+                confidence = 0.0
+            elif confidence > 1.0:
+                confidence = 1.0
+            # Band mapping (deterministic, ordered from highest to lowest)
+            # M5.13-2 contract (STRICT): `confidence >= 0.3` → 認識.
+            # M5.13-4.2: reverted M5.13-4.1's `round(confidence, 6)` (5e-7 false-promotion
+            # range). The 0.3 boundary decay bug is now fixed in the producer
+            # (src/soul/relationships.py:RelationshipsStore._decay_locked) by
+            # using a per-entry decay anchor (last_interaction_at or
+            # created_at), so freshly-created entries are not subject to
+            # sub-day decay that would push 0.3 to 0.299999... .
+            if confidence >= _RELATIONSHIP_BAND_DEEP_TRUST:
+                band = "深度信任"
+            elif confidence >= _RELATIONSHIP_BAND_CLOSE:
+                band = "親密"
+            elif confidence >= _RELATIONSHIP_BAND_FAMILIAR:
+                band = "熟悉"
+            elif confidence >= _RELATIONSHIP_BAND_MIN_THRESHOLD:
+                band = "認識"
+            else:
+                # 0.0 - < 0.3: 陌生人, 不輸出
+                return ""
+            blocks.append(f"[你跟 Bry 的關係]\n  熟悉度: {band}")
 
         # ── Cross-Agent (2026-08-22): top 3 其他角色的 confidence band ──
         # 資料源: 同一個 RelationshipsStore (store.get_all() 就是讀
@@ -704,7 +723,16 @@ def _build_messages_group(
 ) -> List[Dict[str, str]]:
     """
     群聊模式的 messages 組裝:
-    [system: SOUL] + [system: Bry 最近訊息 (短期)] + [system: 當下時間] + [conversation_history: 群聊 20 條] + [user: 當下訊息]
+    [system: SOUL + 各投影塊] + [system: 當下時間]
+    + [system: 群聊歷史 [使用說明] (修法 3, 僅當 group 內有非 private 訊息)]
+    + [conversation_history: 群聊 20 條, 逐條過濾 is_private] + [user: 當下訊息]
+
+    🔴 SOUL-BUG-008 (Owner 2026-10-17 P0): 這裡**不再**注入
+    「## Bry 最近訊息 (短期記憶)」。原實作用 `_load_bry_recent()` →
+    `_load_private()` 把 Bry 與該角色的私聊原文搬進公開群聊 prompt;
+    同時也不再注入 `_format_attachment_str()` (Bry 1:1 親密度數字) 與
+    `_format_temporal_anchor()` (其「牵挂」資格複用該親密度 band)。
+    私聊路徑 `_build_messages_private` 三者**原樣保留、逐位元不變**。
     """
     group = memory.get_group_history(limit=MAX_GROUP)
     # 修法 7+9 (Bry 拍板 2026-08-04 13:24 / 20:37): 過濾 stale Bry user 訊息
@@ -716,7 +744,9 @@ def _build_messages_group(
     # 修法: bry_latest_ts 由 _handle_event_impl 提前算 (跨 session SQL 查詢)
     # → 過濾 Bry user 訊息 (group 內其他角色訊息保留)
     # 範圍: 只在 _build_messages_group group 歷史組裝這段, 不動 _load_group /
-    # _load_bry_recent / 修法 1 (source_pair) / 修法 2/3 (反框架語句)
+    # 修法 1 (source_pair) / 修法 3 (反框架語句)
+    # (🔴 SOUL-BUG-008: 原註解列舉的 `_load_bry_recent` / 修法 2 已於本次移除 —
+    #  公開路徑不再取用 Bry 私域資料, 故「修法 2 反框架語句」不再有對象。)
     now = int(time.time())
     bry_online = _is_bry_online(bry_latest_ts, now)
     messages: List[Dict[str, str]] = []
@@ -780,7 +810,7 @@ def _build_messages_group(
     # M5.13-3 (Bry 派工 2026-08-11): Relationship context block
     # 注入位置: mood_desc 之後, inner_life 之前 (per M5.13-2 Section 7)
     # 對 THIS agent 對 Bry 的 confidence band, deterministic + bounded + fail-silent
-    relationship_block = _format_relationship_block(agent_id)
+    relationship_block = _format_relationship_block(agent_id, include_bryan=False)
     if relationship_block:
         system_parts.append(f"\n{relationship_block}")
 
@@ -842,45 +872,41 @@ def _build_messages_group(
         silence_str = _compute_silence_str(bry_latest_ts, now)
         if silence_str:
             temporal_block += f"\n{silence_str}"
-            # M7-3 (Bry 拍板 2026-08-18): 思念情感 — 沉默時長行後, 加「依戀」事實
-            # 想念 = 依戀(intimacy) × 沉默時長 (現算, 不持久化)。給事實, LLM 自己推理。
-            attachment_str = _format_attachment_str(agent_id)
-            if attachment_str:
-                temporal_block += f"\n{attachment_str}"
-        # TA-2 (Bry 拍板 2026-09-02): TEMPORAL ANCHOR 三行 (主观时间现象学)
-        # 注入位置: 时间区块内 (TA-1 同区), 作为时间感知的现象学补充
-        # (三态张力: 无感/牵挂/释然, 现象化无数字, 内嵌防 transmit 措辞)
-        anchor_str = _format_temporal_anchor(agent_id, last_interaction_ts, now, event_ts)
-        if anchor_str:
-            temporal_block += f"\n{anchor_str}"
+            # 🔴 SOUL-BUG-008 (Owner 2026-10-17 P0 私域外洩修補):
+            # 原這裡注入 `_format_attachment_str()` =「你對 Bry 的親密度 N/100」
+            # (M7-3 依戀 = intimacy × 沉默時長)。那是 **1:1 私密心智參數**,
+            # 公開頻道不該讓整個群聊看見角色的親密度數字。
+            # 沉默時長行本身只是時間現象 (Bry 多久沒講話), 不是私密內容 ⇒ 保留。
+            #
+            # TA-2 的 `_format_temporal_anchor()` 同步移除：它的「牵挂」三態
+            # 資格判定複用 M5.13-3 的 Bry 親密度 band, 等於把私交程度隱性
+            # 帶進公開 prompt。
+            #
+            # ⇒ private 路徑 (_build_messages_private) 兩者**原樣保留**、
+            #   逐位元不變；這裡只是公開路徑不再取得它們。
         system_parts.append(temporal_block)
 
-    # 短期記憶 — Bry 最近訊息注入 (Bry 拍板 2026-08-02 16:xx, N=3)
-    # 為什麼: 群聊觸發 (proactive) 走這條, 讀 group history 過濾 is_private,
-    # 看不到 Bry 私聊 user 訊息 → 角色會重複問候 (Bry 8/2 14:xx 抓漏路徑)。
-    # 修法: 從 Bry 跟該 agent 的 private history 撈最近 N 條 Bry user 訊息,
-    # 注入 system prompt 開頭, LLM 看到「Bry 最近問過 / 講過什麼」。
-    # 範圍: 只在 _build_messages_group 內, 不動 MemoryMiddleware / scheduler /
-    # consciousness.py。失敗可逆 (拔掉 _load_private 那幾行就恢復)。
-    #
-    # 修法 2 (Bry 拍板 2026-08-03 22:xx): 在 bry_block 開頭加反框架語句
-    # 根因: ruka 8/3 8 條訊息中 7 條 LLM 自創, 把「Bry 最近訊息」當成要回應的對象
-    # 嘗試靠調整區塊順序或距離證明無效 (ruka 那條例子中間隔了 4 個區塊還是被誤讀)
-    # 改在資訊本身旁邊加使用說明, 跟 β2.1 事件背景「請自然反映在訊息中, 不要直接
-    # 複述」的做法一致: 在資訊本身旁邊加使用說明, 不是靠位置順序。
-    bry_recent = _load_bry_recent(agent_id, user_id, limit=MAX_BRY_RECENT)
-    if bry_recent:
-        bry_block_lines = [
-            "\n[使用說明] 以下是背景參考, 不代表 Bry 現在正在跟你對話。"
-            "除非有主動觸發標記明確說明, 否則這不是要立即回應的問題,"
-            "根據上下文需要自然運用即可, 不要逐條回應。",
-            "\n## Bry 最近訊息 (短期記憶)",
-        ]
-        for m in bry_recent:
-            bry_block_lines.append(f"- Bry: {m['content']}")
-        system_parts.append("\n".join(bry_block_lines))
-
     messages.append({"role": "system", "content": "\n".join(system_parts)})
+
+    # ── SOUL-BUG-008 (Owner 2026-10-17, P0 私域外洩修補) ──────────────
+    # 🔴 這裡原本注入 `## Bry 最近訊息 (短期記憶)`：把 **Bry 跟該角色的私聊
+    #    原文逐字**寫進**公開群聊**的 system prompt（`_load_bry_recent()` 讀的是
+    #    `_load_private`，見 :1309）。爆炸半徑 = 10 隻角色每一次群聊發言。
+    #
+    #    當初這段是為了修「角色重複問候」（修法 8，2026-08-02）。但它用
+    #    **把私聊內容搬到公開頻道** 的方式解決，隱私成本遠大於收益 ——
+    #    公開語境應只帶群聊歷史（下面那段本就過濾 is_private）。
+    #
+    #    Owner 裁示：公開路徑徹底切除；私聊路徑 `_build_messages_private`
+    #    完全不受影響（它本來就不注入這段，而是讀自己的 private history）。
+    #
+    #    反向框架語句（修法 2）隨之失效：沒有內容就不需要防 LLM 誤讀。
+    #
+    #    ⚠️ 連帶刪除原本在這裡「重新 join 再 append 一次」的 那行
+    #    `messages.append({... \n".join(system_parts)})` —— 那行的存在意義是
+    #    為了把剛 append 進 system_parts 的 bry_recent 送出。注入一刪，
+    #    它就會把**整份 system prompt 重複注入兩次**。故必須一併移除
+    #    （否則 token 翻倍、且後續對 system_parts 的任何改動都會雙份生效）。
 
     # 群聊歷史(過濾 is_private)
     #

@@ -357,9 +357,22 @@ def _make_mock_memory():
 class TestInjectionIntoBuildMessages(unittest.TestCase):
     """J/K/M. Both _build_messages_group and _build_messages_private wired correctly"""
 
-    def test_group_path_includes_relationship_block(self):
+    def test_group_path_excludes_bryan_relationship_block(self):
+        """🔴 SOUL-BUG-008 (Owner 2026-10-17 P0) 契約翻轉:
+        **群聊**路徑不投影「你跟 Bry 的關係」(1:1 私密親密度 band)，
+        但**仍**投影「你跟其他角色的關係」(角色間互相認識 = 公開資訊)。
+
+        對照組：`test_private_path_includes_relationship_block` 仍然原樣
+        斷言私聊路徑有 Bry band ⇒ 這不是功能刪除，是 scope 分離。
+        """
         from src.llm.proxy import _build_messages_group
         mock_mgr = _make_mock_store(confidence_value=0.85)
+        # 補上 cross-agent 資料，否則「其他角色關係」也會空，
+        # 斷言會因為「整塊都沒了」而看不出到底切對了沒。
+        mock_mgr.get_store.return_value.get_all.return_value = {
+            "user_bryan": {"confidence": 0.85},
+            "agent_mai": {"confidence": 0.62},
+        }
         with patch(
             "src.soul.relationships.get_relationships_manager",
             return_value=mock_mgr,
@@ -372,8 +385,16 @@ class TestInjectionIntoBuildMessages(unittest.TestCase):
                 memory=_make_mock_memory(),
             )
         sys_content = messages[0]["content"]
-        self.assertIn("你跟 Bry 的關係", sys_content)
-        self.assertIn("親密", sys_content)
+        self.assertNotIn(
+            "你跟 Bry 的關係", sys_content,
+            "公開群聊 prompt 不得出現 Bry 1:1 親密度 band (SOUL-BUG-008)",
+        )
+        self.assertNotIn("親密", sys_content)
+        self.assertIn(
+            "你跟其他角色的關係", sys_content,
+            "角色之間的關係是公開資訊，不該被一併砍掉（切除邊界不可擴張）",
+        )
+        self.assertIn("agent_mai", sys_content)
 
     def test_private_path_includes_relationship_block(self):
         from src.llm.proxy import _build_messages_private
@@ -393,10 +414,19 @@ class TestInjectionIntoBuildMessages(unittest.TestCase):
         self.assertIn("你跟 Bry 的關係", sys_content)
         self.assertIn("親密", sys_content)
 
-    def test_group_private_same_relationship_block(self):
-        """Group and private should produce SAME relationship block for same agent"""
+    def test_group_and_private_differ_on_bryan_band_by_design(self):
+        """🔴 SOUL-BUG-008: group 與 private 在 Bry band 上**刻意不等**。
+
+        原契約是「兩條路徑產生**相同**的關係塊」——那正是漏洞本身：
+        1:1 私密親密度被原封不動搬到公開群聊。Owner 裁示後，
+        private 保留 Bry band、group 排除，兩者必然不同。
+        """
         from src.llm.proxy import _build_messages_group, _build_messages_private
         mock_mgr = _make_mock_store(confidence_value=0.4)
+        mock_mgr.get_store.return_value.get_all.return_value = {
+            "user_bryan": {"confidence": 0.4},
+            "agent_mai": {"confidence": 0.62},
+        }
         with patch(
             "src.soul.relationships.get_relationships_manager",
             return_value=mock_mgr,
@@ -415,9 +445,15 @@ class TestInjectionIntoBuildMessages(unittest.TestCase):
         group_match = rel_re.search(group_msgs[0]["content"])
         private_match = rel_re.search(private_msgs[0]["content"])
 
-        self.assertIsNotNone(group_match, "group should have relationship block")
-        self.assertIsNotNone(private_match, "private should have relationship block")
-        self.assertEqual(group_match.group(), private_match.group())
+        self.assertIsNone(
+            group_match, "group 不該有 Bry band（SOUL-BUG-008）"
+        )
+        self.assertIsNotNone(
+            private_match, "private 必須保留 Bry band（零退化不變量）"
+        )
+        # 公開資訊部分兩邊都應有 —— scope 分離不是整塊關係投影停擺
+        self.assertIn("你跟其他角色的關係", group_msgs[0]["content"])
+        self.assertIn("你跟其他角色的關係", private_msgs[0]["content"])
 
     def test_no_relationship_block_when_below_threshold(self):
         """When confidence < 0.3, NO relationship block in either path"""
