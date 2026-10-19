@@ -1,8 +1,22 @@
 # SOUL-BUG-010：生命週期讀取面收斂 ＋ 防線二（Tiered Consumption）（工單 v2）
 
-**狀態**：📋 裁決完備，**待 Owner 就「推翻 datetime.max 哨兵」一點回覆後即可實作**
-**日期**：2026-10-18 初版 → 2026-10-19 依 SOUL-AUDIT-013-RO 覆寫（v2）｜**嚴重度**：P1（架構缺口，非故障）
+**狀態**：✅ **CLOSED**（`704f851` ＋ `89397d5`，已上線生產 DEPLOY-RESTART-18，2026-10-19）
+**日期**：2026-10-18 初版 → 2026-10-19 依 SOUL-AUDIT-013-RO 覆寫（v2）→ 2026-10-19 實作完成｜**嚴重度**：P1（架構缺口，非故障）
 **登記者**：主大腦
+
+> **結案時的三次推翻（留痕）**：
+> ① **哨兵型別**——本工單 v1 步驟與前序裁決主張改用 `datetime.max.replace(tzinfo=timezone.utc)`，
+>    理由是「`_EH2_SENTINEL` 寫入 `Optional[datetime]` 屬型別違規」。**該前提經查證為錯誤**：
+>    `soul-elevation/src/soul_elevation/models.py:176` 明文 `valid_until_ts: Optional[str]`（**str**），
+>    且全庫消費端（`engine.py:446/802/832/1308`）一律 `is None` 恆等比較、零 datetime 算術
+>    ⇒ **字串哨兵本來就型別正確**，改用 `datetime.max` 反而會製造真正的型別違規。
+>    ⇒ Owner 裁決 1（2026-10-19）正式撤銷該修正案，**維持字串哨兵**。
+> ② **端點數量**——v1 宣稱「全庫共 4 條路徑讀節點檔」，實為 **8 處**（1 資料源 ＋ 5 消費端 ＋ 2 不需改），
+>    且 v1 的架構方向（逐條路徑各自套 overlay）被推翻為**單點收斂**（loader 內部套用）。
+> ③ **R3 中和機制**——實作時發現 `EvidenceEdge` 是 **frozen dataclass**，
+>    舊碼的 `e.valid_until_ts = _EH2_SENTINEL` **每次必拋 `FrozenInstanceError`**，
+>    ⇒ **整段 R3 計票隔離從未真正執行過**（生產 0 筆 assimilated fact 掩蓋了它）。
+>    改用 `dataclasses.replace()` 換位法 ＋ `finally` 以（位置＋身分）雙重比對還原。
 
 > **v2 為何推翻 v1**：v1 宣稱「全庫共 4 條路徑讀 `elevation_nodes.jsonl`」。SOUL-AUDIT-013-RO
 > 唯讀審查 + 主大腦二次獨立複核後證實此數字**錯誤且架構方向錯誤**。v1 打算「逐條讀取路徑各自

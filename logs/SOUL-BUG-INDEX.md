@@ -17,6 +17,10 @@
 | [SOUL-BUG-005](SOUL-BUG-005-WORK-ORDER.md) | ~~P1~~ | `format_localized` 星期索引整組錯一格 | **✅ CLOSED `277a8d9`** | **已轉綠** ✅ |
 | [SOUL-BUG-006](SOUL-BUG-006-WORK-ORDER.md) | **P1** | 昇華候選幾乎不升格，且 value/trait 內容是未抽象化的原始簿記字串 | **✅ CLOSED `c3520cb`/`8b3a64e`/`429a9e5`/`0308b71`**，四階段全線上線（DEPLOY-RESTART-14/15） | **36 項守衛 ＋ 12 組變異全紅**；全庫 6545 passed / 0 failed（collected 6572 對平）；**世界端已獲生產實證**，夢境端待下一週期 |
 | [SOUL-BUG-007](SOUL-BUG-007-WORK-ORDER.md) | **P1** | 簡繁字形分裂造成召回損失；無主題的泛化謂語單獨開 Gate 導致離題召回 | **✅ CLOSED `399b92c`**，已上線生產 | 17 項守衛 ＋ **14 組變異全紅**；全庫 6521 passed / 0 failed（collected 6527 對平） |
+| [SOUL-BUG-010](SOUL-BUG-010-WORK-ORDER.md) | **P1** | 生命週期狀態在讀取面完全失效（節點檔 append-only 凍結狀態，唯一對外 API 無過濾）；R3 計票隔離因 frozen dataclass 從未執行過 | **✅ CLOSED `704f851`/`89397d5`**，已上線生產（DEPLOY-RESTART-18） | 20 支守衛全綠 ＋ **7/7 變異全紅**；全庫 6609 passed；16 顆受害節點已隔離 |
+| [SOUL-BUG-011](SOUL-BUG-011-WORK-ORDER.md) | 未登錄 | 日記／夢境輸出被左側截斷吞掉標題與開頭段落（240 筆歷史卡在 78~80 字元區間） | **✅ CLOSED `f91ca66`** | 15 支新守衛 ＋ **4/4 變異全紅**；11 支舊契約留痕解凍；全庫 6593 passed |
+| SOUL-BUG-012（無工單檔） | 未登錄 | `dream:event` 先提交後寫入，使 A-i 反查前提不成立 | **✅ CLOSED `89e2cf1`** | AST 抽函式 ＋ exec 沙箱 5 支守衛 ＋ MUT-01 雙向驗證 |
+| [SOUL-DECAY-FLAKY-AUDIT](SOUL-DECAY-FLAKY-AUDIT.md) | **P3** | `test_m5_13_5_untouched_decay.py` 全庫回歸偶發失敗（環境／時間敏感型 flaky） | 📋 **已立案，待排程**（嚴禁夾帶進 SOUL-BUG-010-B） | 單檔 ×20 全綠；基線 worktree 對照路徑**不可用**（全為 checkout 雜訊） |
 
 ## ✅ SOUL-BUG-007：檢索字形正規化 ＋ 防離題 Gate（2026-10-17）
 
