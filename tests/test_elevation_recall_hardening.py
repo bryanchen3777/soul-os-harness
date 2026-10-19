@@ -515,7 +515,8 @@ def test_go_no_go_no_go_when_superseded_missing():
 def test_go_no_go_no_go_when_hit_rate_below_threshold():
     """命中率未達標 ⇒ NO-GO（門檻邊界）。"""
     nodes, probes = _synthetic_pool_and_probes()
-    probes = [(ALICE, ["主題"])] * 2 + [(ALICE, ["不相干的詞"])] * 18   # 2/20 = 10%
+    # 1/30 = 3.33% < 門檻 5%（2026-10-19 校準後；原 2/20=10% 是針對舊門檻 15% 寫的）
+    probes = [(ALICE, ["主題"])] * 1 + [(ALICE, ["不相干的詞"])] * 29
     verdict = go_no_go(pool_summary(nodes), hit_rate(nodes, probes))
 
     assert hit_rate(nodes, probes)["hit_rate"] < GO_MIN_HIT_RATE
