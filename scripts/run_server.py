@@ -1590,6 +1590,11 @@ async def lifespan(app: FastAPI):
             失敗隔離: InnerLifeWriter.create_event 失敗 → logger.warning + 不 invoke writer
                       (跟 M5.4-5.6 trace failure isolation 同精神, 失敗不污染主路徑)
             """
+            _event_id = None
+            # ── SOUL-BUG-012 段 1：事件建立（失敗隔離）────────────────────────
+            # 原碼把 create_event / submit / elevate 放在同一個 try 內，而日記寫入
+            # 在 try 之外（更晚）。submit() 觸發 Adapter 的 A-i 反查時日記尚未落盤 →
+            # 反查必然落空 → fail-closed 拒絕建節點（26 筆 dream:event 產出 0 顆節點）。
             try:
                 _event = inner_life_writer.create_event(
                     provenance=Provenance(
@@ -1599,23 +1604,34 @@ async def lifespan(app: FastAPI):
                     )
                 )
                 _event_id = _event.event_id
-                # SG-1: 改走 Submission Gate（验证 event_id → consume，只产 pattern）。
-                # EL-OWN-0: 传 agent_id=_event.provenance.actor_id（该灵魂），让
-                # emergent 属性（belief/value/trait/essence）归属到具体灵魂。
-                if submission_gate is not None:
-                    submission_gate.submit(
-                        _event.event_id, agent_id=_event.provenance.actor_id
-                    )
-                    # EL-DD-2: consume 后证据驱动 elevate（独立于 Gate，失败隔离在函数内）
-                    _elevate_check()
             except Exception as _e:
                 logger.warning(
                     f"[EventHandler] InnerLifeEvent 建立失敗 (不影響主路徑): "
                     f"agent_id={agent_id} err={type(_e).__name__}: {_e}"
                 )
-                _event_id = None
+            # ── 段 2：日記落盤（無論段 1 成敗都必須執行）──────────────────────────
+            # 不受 try 保護：與原碼一致，create_event 失敗時仍以 id=None 落盤，
+            # 「事件建立失敗絕不閹割日記生成」的既有合約完整保留。
             _writer = get_dream_event_writer()
             await _writer.write_event(agent_id, inner_life_event_id=_event_id)
+            # ── 段 3：提交流程（日記已落盤，A-i 反查具備物理前提）────────────────
+            # 條件加 _event_id：原碼 submit 位於 create_event 之後，create_event 失敗時
+            # 本就走不到 submit —— 此條件與原行為等價，非新增限制。
+            try:
+                # SG-1: 改走 Submission Gate（验证 event_id → consume，只产 pattern）。
+                # EL-OWN-0: 传 agent_id=_event.provenance.actor_id（该灵魂），让
+                # emergent 属性（belief/value/trait/essence）归属到具体灵魂。
+                if submission_gate is not None and _event_id is not None:
+                    submission_gate.submit(
+                        _event.event_id, agent_id=_event.provenance.actor_id
+                    )
+                    # EL-DD-2: consume 后证据驱动 elevate（独立于 Gate，失败隔离在函数内）
+                    _elevate_check()
+            except Exception as _e:  # noqa: BLE001 — 失败隔离
+                logger.warning(
+                    f"[EventHandler] 提交失敗 (不影響主路徑): "
+                    f"agent_id={agent_id} err={type(_e).__name__}: {_e}"
+                )
 
         _event_handler = EventHandler(
             state=None,  # 用預設 AgencyState
