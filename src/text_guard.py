@@ -23,6 +23,48 @@ from __future__ import annotations
 
 import re
 
+# --------------------------------------------------------------------------- #
+# SOUL-BUG-011：前段保留式優雅截斷（共用 SSOT）
+# --------------------------------------------------------------------------- #
+#: 全專案日記／事件輸出字數上限。
+#: 對齊 `src/llm/proxy.py` 在 `finish_reason == "length"`（退化循環）時所用的
+#: 200 字上限 —— 讓「退化兜底」與「正常輸出」共用同一條界線，消除原本
+#: diary.py(80) / dream_event.py(80) / proxy.py(200) 三處常數分裂。
+DIARY_OUTPUT_MAX_CHARS = 200
+
+#: 句子終止標點（全形 + 半形 + 換行）。Owner 2026-10-18 裁定列舉。
+_SENTENCE_TERMINATORS = "。、！？\n.!?"
+
+
+def graceful_prefix_truncate(text: str, max_chars: int = DIARY_OUTPUT_MAX_CHARS) -> str:
+    """**保留前段**的優雅截斷，嚴禁從左側（取尾段）切斷。
+
+    SOUL-BUG-011 根因：舊路徑用 `_safe_truncate_on_length` 取 raw **最後**
+    max_chars 字，該 helper 語意限縮在 `OpenAIBackend.complete` 內
+    `finish_reason == "length"` 的退化循環；下游卻把它用於**任何**正常輸出，
+    導致日記開頭段落與標題被吃掉（實測 240 筆卡在 78~80 字元）。
+
+    語意（Owner 2026-10-18 裁定）：
+      1. `len(text) <= max_chars` → 原樣返回
+      2. 在 `text[:max_chars]` 內**由後往前**找最後一個句子終止標點
+      3. 找到 → 於該標點處切斷並**保留該標點**（敘事開頭完整保留）
+      4. 前 max_chars 內完全無標點 → 退回 `text[:max_chars]` 字元硬截斷，
+         杜絕無界膨脹（不做語義猜測）
+
+    保留開頭是因為日記是依時序演進的敘事結構，吞噬開頭屬不可接受的語義破壞。
+    """
+    if not text or len(text) <= max_chars:
+        return text
+    window = text[:max_chars]
+    cut = -1
+    for i in range(len(window) - 1, -1, -1):
+        if window[i] in _SENTENCE_TERMINATORS:
+            cut = i
+            break
+    if cut >= 0:
+        return window[: cut + 1]
+    return window
+
 # VC akane_voice_brain._STAGE_PAREN_RE 同語意：括號動作段整段剝離（含內容）
 _STAGE_PAREN_RE = re.compile(r"[（(][^（(）)]*[）)]")
 # VC 星號表情/強調段（單行內）整段剝離

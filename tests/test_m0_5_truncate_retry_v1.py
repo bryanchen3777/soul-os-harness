@@ -40,8 +40,13 @@ class TestM05Baseline(unittest.TestCase):
     """M0.5 修法前的現狀證明."""
 
     def test_01_diary_max_clean_chars_is_80(self):
-        """M0.4 已經從 50 改到 80, M0.5 沿用 80."""
-        self.assertEqual(diary_mod.DIARY_MAX_CLEAN_CHARS, 80)
+        """M0.4 從 50 改到 80；2026-10-18 再由 SOUL-BUG-011 收斂到 200。
+        [SUPERSEDED] 2026-08-06 M0.4/M0.5 baseline（80 chars + 取尾段截斷）
+        於 2026-10-18 被 SOUL-BUG-011 取代（Bry 裁決 / Sidecar 生產實證）。
+        邊界收斂為 DIARY_OUTPUT_MAX_CHARS(200)，且改為**保留前段** +
+        終止標點優雅收尾，消除正常日記開頭段落與標題被吞噬的缺陷。
+        """
+        self.assertEqual(diary_mod.DIARY_MAX_CLEAN_CHARS, 200)
 
     def test_02_diary_over_80_writes_truncated_llm(self):
         """現況: 81+ chars clean 走截斷 (保留 LLM 內容), 不是整段丟棄走 placeholder.
@@ -52,11 +57,16 @@ class TestM05Baseline(unittest.TestCase):
             if len(clean) > DIARY_MAX_CLEAN_CHARS:
                 truncated = _safe_truncate_on_length(clean, max_chars=DIARY_MAX_CLEAN_CHARS)
                 return writer.write_entry(..., truncated, source="llm")
-        截斷語義 (src/llm/proxy.py:2836-2856): 取最後 max_chars, 有標點切在最後
-        標點, 沒標點才 fallback 硬切。本例是 100 個「あ」沒標點 → fallback 硬切 80。
+        [SUPERSEDED] 2026-08-06 M0.4/M0.5 baseline（80 chars + 取尾段截斷）
+        於 2026-10-18 被 SOUL-BUG-011 取代（Bry 裁決 / Sidecar 生產實證）。
+        邊界收斂為 DIARY_OUTPUT_MAX_CHARS(200)，且改為**保留前段** +
+        終止標點優雅收尾，消除正常日記開頭段落與標題被吞噬的缺陷。
+        截斷語義（src/text_guard.graceful_prefix_truncate）: **保留前段**
+        max_chars 字元, 由後往前找最後一個終止標點; 沒標點才 fallback 硬切。
+        本例 260 個「あ」沒標點 → 硬切前 200 字（不再是取最後 200 字）。
         """
         async def run_test():
-            clean_100 = "あ" * 100  # 100 chars
+            clean_100 = "あ" * 260  # 260 chars > 200 上限（舊版是 100）
             with tempfile.TemporaryDirectory() as tmp:
                 writer = diary_mod.DiaryWriter(data_dir=tmp)
                 with patch.object(diary_mod, "_call_llm_for_diary",
@@ -77,9 +87,9 @@ class TestM05Baseline(unittest.TestCase):
                     entry["content"], clean_100,
                     "M0.5 後超長內容會被截斷, 不會整段 100 chars 原樣寫入",
                 )
-                self.assertLessEqual(len(entry["content"]), 80)
-                # 截斷取的是 clean 的最後 80 字 (修法 10 語義)
-                self.assertEqual(entry["content"], clean_100[-80:])
+                self.assertLessEqual(len(entry["content"]), 200)
+                # SOUL-BUG-011: 保留前段（舊版取尾段會吞掉開頭）
+                self.assertEqual(entry["content"], clean_100[:200])
         asyncio.run(run_test())
 
     def test_03_diary_think_only_retries_once(self):
@@ -153,10 +163,14 @@ class TestM05Baseline(unittest.TestCase):
         生產證據: src/soul/dream_event.py:591-596 (dream) / :707-711 (event) —
             elif len(clean) > DREAM_EVENT_MAX_CLEAN_CHARS:
                 truncated = _safe_truncate_on_length(clean, max_chars=DREAM_EVENT_MAX_CLEAN_CHARS)
-        常數 DREAM_EVENT_MAX_CLEAN_CHARS = 80 (src/soul/dream_event.py:65-67)。
+        [SUPERSEDED] 2026-08-06 M0.4/M0.5 baseline（80 chars + 取尾段截斷）
+        於 2026-10-18 被 SOUL-BUG-011 取代（Bry 裁決 / Sidecar 生產實證）。
+        邊界收斂為 DIARY_OUTPUT_MAX_CHARS(200)，且改為**保留前段** +
+        終止標點優雅收尾，消除正常日記開頭段落與標題被吞噬的缺陷。
+        常數 DREAM_EVENT_MAX_CLEAN_CHARS = 200（對齊 diary SSOT）。
         """
         async def run_test():
-            clean_120 = "あ" * 120  # 120 chars
+            clean_120 = "あ" * 260  # 260 chars > 200 上限（舊版是 120）
             with tempfile.TemporaryDirectory() as tmp:
                 writer = de_mod.DreamEventWriter(data_dir=tmp)
                 with patch.object(de_mod, "_call_llm_for_dream_event",
@@ -169,8 +183,8 @@ class TestM05Baseline(unittest.TestCase):
                 self.assertIsNotNone(path)
                 entry = json.loads(path.read_text(encoding="utf-8").strip())
                 # M0.5 後: 截斷到 80 字內 (修法 10 取最後 80 字, 沒標點 fallback 硬切)
-                self.assertLessEqual(len(entry["content"]), 80)
-                self.assertEqual(entry["content"], clean_120[-80:])
+                self.assertLessEqual(len(entry["content"]), 200)
+                self.assertEqual(entry["content"], clean_120[:200])
                 self.assertEqual(entry["source"], "llm")
         asyncio.run(run_test())
 
@@ -202,9 +216,11 @@ class TestM05Baseline(unittest.TestCase):
         生產證據: src/llm/proxy.py:2847-2850 (有標點切在最後標點)、
                   src/soul/diary.py:391-421 (retry + 截斷都保留 LLM 內容)。
         """
-        # ── A1: 超長且有句號 → 截斷在句號斷點, 不是硬切也不是 placeholder ──
-        # raw 長度 90 + 1 + 40 = 131; 最後 80 字 = 39 個「あ」+「。」+ 40 個「い」
-        punctuated = "あ" * 90 + "。" + "い" * 40
+        # ── A1: 超長且有句號 → 保留前段並截在句號斷點, 不是硬切也不是 placeholder ──
+        # [SOUL-BUG-011] 上限 80→200，語意取尾段→保留前段，故輸入同步放大到 251 chars。
+        # 前 200 字 = 150 個「あ」+「。」+ 49 個「い」；由後往前找最後終止標點 = 位置 150 的「。」
+        # ⇒ 結果 = 150 個「あ」+「。」= 151 chars（敘事開頭完整保留）
+        punctuated = "あ" * 150 + "。" + "い" * 100
         # ── A2: 第一次 think_only, retry 回真內容 → 救回 llm ──
         think_only = "<think>\n只有推理\n</think>"
         rescued = "起き上がると、窓の外が白くなっていた。"
@@ -223,8 +239,9 @@ class TestM05Baseline(unittest.TestCase):
                 entry = json.loads(path.read_text(encoding="utf-8").strip())
                 self.assertEqual(entry["source"], "llm",
                                  "M0.5 A1 後超長應截斷保留 (llm), 不是整段 placeholder")
-                self.assertEqual(entry["content"], "あ" * 39 + "。",
-                                 "應截在最後一個句號斷點 (修法 10 語義), 保留 LLM 原句")
+                self.assertEqual(entry["content"], "あ" * 150 + "。",
+                                 "[SOUL-BUG-011] 應保留前段並截在最後一個句號斷點, "
+                                 "保留 LLM 原句開頭")
 
             with tempfile.TemporaryDirectory() as tmp:
                 writer = diary_mod.DiaryWriter(data_dir=tmp)

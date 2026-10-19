@@ -44,6 +44,8 @@ from src.paths import data_root
 # Lesson 38: 與 dream_event.py 共用單一 semaphore 限流
 # (避免 diary 5 + dream 5 疊加超出 provider 上限)
 from src.llm.rate_limiter import LLM_CONCURRENCY_LIMIT
+# SOUL-BUG-011: 共用 SSOT 的前段保留式優雅截斷（src/text_guard.py 為純標準庫，無循環風險）
+from src.text_guard import DIARY_OUTPUT_MAX_CHARS, graceful_prefix_truncate
 
 logger = logging.getLogger("soul_os.soul.diary")
 
@@ -63,7 +65,12 @@ DIARY_MAX_TOKENS = 200
 # M0.4 (2026-08-06 21:30 Bry 拍板): 50 → 80
 # 動機: 8/6 Rem sim 跑出 6 條 placeholder, 全部是「超過 50 字」觸發 (非 LLM 失敗)
 # 50 字對中文 LLM 太嚴格, 放寬到 80 給 LLM 自然表達空間
-DIARY_MAX_CLEAN_CHARS = 80
+# SOUL-BUG-011 (Owner 裁定 2026-10-18): 80 → 200，並改為「前段保留 + 標點優雅收尾」。
+# 動機（22:10 收網 Sidecar 第一手證據）：80 字上限配上「取尾段」的暴力截斷，
+# 是日記標題與開頭段落被吃的真正根因。實測 240 筆 llm 日記卡在 78~80 字元
+# （night p75=80 / morning p75=80），是下游硬砍的物理指紋，非模型巧合。
+# 200 = 對齊 src/llm/proxy.py 在 finish_reason=="length" 時已確立的全專案上限。
+DIARY_MAX_CLEAN_CHARS = DIARY_OUTPUT_MAX_CHARS  # 200
 DIARY_TEMPERATURE = 0.7
 DIARY_RECENT_MEMORIES = 5  # 從 v1 mirror 抽最近 5 條當 context
 
@@ -97,7 +104,9 @@ def _raw_response_model() -> str:
     """best-effort 取目前掛著的模型名；取不到回空字串（觀測欄位，不可為空而炸）。"""
     try:
         proxy = _find_llm_proxy()
-        model = getattr(getattr(proxy, "config", None), "model", None)
+        # SOUL-BUG-011: 模型名存在於 `LLMProxy.model`（proxy.py __init__ self.model），
+        # 不是 `proxy.config.model` —— 原寫法取不到，sidecar `model` 欄位 10/10 為空字串。
+        model = getattr(proxy, "model", None)
         return str(model) if model else ""
     except Exception:  # noqa: BLE001
         return ""
@@ -434,7 +443,7 @@ async def generate_diary_entry(
     #   - 截斷 (A1): 沿用修法 10 _safe_truncate_on_length, max_chars=80, 保留 LLM 真實產出
     #   - retry (A2): think_only 才 retry, 加輕量 hint (「請直接輸出最終內容」)
     #   - 不要做 D 那種嚴格收斂 prompt, 過度收斂會把好例子的空間壓沒
-    from src.llm.proxy import _safe_truncate_on_length  # 沿用修法 10 的截斷 helper
+    from src.text_guard import graceful_prefix_truncate
     RETRY_HINT = "\n\n（請直接輸出最終內容，不要輸出思考過程。）"
     content = await _call_llm_for_diary(system, user, writer.api_key, agent_id=agent_id)
     _record_raw_response(agent_id, slot, content)
@@ -466,13 +475,16 @@ async def generate_diary_entry(
                 agent_id, slot, placeholder, source="placeholder",
                 inner_life_event_id=inner_life_event_id,
             )
-        # M0.5 A1: 超長改截斷, 不再整段丟棄
-        # Bry 8/6 21:44 派工: 保留 LLM 真正寫出來的內容, 只是裁短, 不是整段作廢
+        # SOUL-BUG-011 (Owner 裁定 2026-10-18): 保留 LLM 真正寫出來的內容，
+        # 但**保留前段**（敘事開頭），於最後一個句子終止標點處優雅收尾。
+        # 舊路徑用 `_safe_truncate_on_length` 取 raw 最後 N 字 —— 該 helper 語意限縮在
+        # proxy 層 finish_reason=="length" 的退化循環，下游誤用於正常輸出會吃掉開頭。
         if len(clean) > DIARY_MAX_CLEAN_CHARS:
-            truncated = _safe_truncate_on_length(clean, max_chars=DIARY_MAX_CLEAN_CHARS)
+            truncated = graceful_prefix_truncate(clean, max_chars=DIARY_MAX_CLEAN_CHARS)
             logger.info(
                 f"[Diary] {agent_id} {slot} LLM 輸出超長 "
-                f"({len(clean)} chars > {DIARY_MAX_CLEAN_CHARS}), 截斷到 {len(truncated)} chars (修法 10 pattern)"
+                f"({len(clean)} chars > {DIARY_MAX_CLEAN_CHARS}), "
+                f"前段保留截斷到 {len(truncated)} chars (SOUL-BUG-011)"
             )
             # 截斷後的內容還是要通過 write_entry 的 strip_think 檢查
             return writer.write_entry(

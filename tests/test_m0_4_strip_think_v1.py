@@ -29,6 +29,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.soul import diary as diary_mod
+from src import text_guard  # SOUL-BUG-011 常數 SSOT
 from src.soul import dream_event as de_mod
 
 
@@ -48,11 +49,18 @@ class TestM04Baseline(unittest.TestCase):
           「動機: 8/6 Rem sim 跑出 6 條 placeholder, 全部是「超過 50 字」觸發
             (非 LLM 失敗), 50 字對中文 LLM 太嚴格, 放寬到 80 給 LLM 自然表達空間」
           DIARY_MAX_CLEAN_CHARS = 80
-        這是 Bry 拍板的意圖值, 不是殘留值: diary.py 同段保留 M0.3 的 50 字由來,
-        M0.4 只做「放寬」一個動作, 且 DREAM_EVENT_MAX_CLEAN_CHARS = 80 對齊
-        (src/soul/dream_event.py:65-67)。
+        [SUPERSEDED] 2026-08-06 M0.4/M0.5 baseline（80 chars + 取尾段截斷）
+        於 2026-10-18 被 SOUL-BUG-011 取代（Bry 裁決 / Sidecar 生產實證）。
+        邊界收斂為 DIARY_OUTPUT_MAX_CHARS(200)，且改為**保留前段** +
+        終止標點優雅收尾，消除正常日記開頭段落與標題被吞噬的缺陷。
+        原意圖（超長不該整段作廢）保留；邊界值改為 SSOT 常數。
         """
-        self.assertEqual(diary_mod.DIARY_MAX_CLEAN_CHARS, 80)
+        self.assertEqual(diary_mod.DIARY_MAX_CLEAN_CHARS, 200)
+        self.assertEqual(
+            diary_mod.DIARY_MAX_CLEAN_CHARS,
+            text_guard.DIARY_OUTPUT_MAX_CHARS,
+            "上限必須來自單一事實來源，消除 diary/dream_event/proxy 常數分裂",
+        )
 
     def test_02_diary_write_entry_rejects_think_only(self):
         """現況: write_entry 拿 clean 判斷, think_only 直接拒寫 (return None)。

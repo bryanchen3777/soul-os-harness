@@ -46,6 +46,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
+# SOUL-BUG-011: 共用 SSOT（src/text_guard.py 純標準庫，無循環風險）。
+# 必須是模組層級 —— DREAM_EVENT_MAX_CLEAN_CHARS 在模組層就引用 DIARY_OUTPUT_MAX_CHARS。
+from src.text_guard import DIARY_OUTPUT_MAX_CHARS, graceful_prefix_truncate
+
 logger = logging.getLogger("soul_os.soul.dream_event")
 
 # ───────────────────────────────────────────────────────────
@@ -64,7 +68,10 @@ EVENT_AGENTS_PER_TICK = 2              # Stage 4.3 (Mavis 拍板 2026-07-21 16:3
 
 # M0.5 (Bry 派工 2026-08-06 21:44): clean 字數上限, 跟 diary.py 的 DIARY_MAX_CLEAN_CHARS=80 對齊
 # Bry 派工 A1 截斷邏輯: 沿用修法 10 _safe_truncate_on_length, 保留 LLM 內容裁短到 80 字
-DREAM_EVENT_MAX_CLEAN_CHARS = 80
+# SOUL-BUG-011 (Owner 裁定 2026-10-18): 80 → 200，改為前段保留 + 標點優雅收尾。
+# 舊值 80 搭配「取尾段」的暴力截斷，是事件文本開頭被吃的根因；
+# 200 = 對齊 src/llm/proxy.py 在 finish_reason=="length" 時已確立的全專案上限。
+DREAM_EVENT_MAX_CLEAN_CHARS = DIARY_OUTPUT_MAX_CHARS  # 200
 
 # DREAM-MAXTOKENS-1 (2026-09): reasoning 模型的安全下限。
 # deepseek-v4.1-flash 為 reasoning 模型, 實測單次 reasoning 消耗約 200–360 tokens;
@@ -563,7 +570,7 @@ class DreamEventWriter:
         )
         content = await _call_llm_for_dream_event(system, user, self.api_key, agent_id=agent_id)
         # M0.5 (Bry 派工 2026-08-06 21:44): A1 截斷 + A2 retry (沿用修法 10 _safe_truncate_on_length)
-        from src.llm.proxy import _safe_truncate_on_length
+        from src.text_guard import DIARY_OUTPUT_MAX_CHARS, graceful_prefix_truncate
         RETRY_HINT = "\n\n（請直接輸出最終內容，不要輸出思考過程。）"
         # A2: think_only → retry 一次
         if content:
@@ -590,7 +597,7 @@ class DreamEventWriter:
                 )
             elif len(clean) > DREAM_EVENT_MAX_CLEAN_CHARS:
                 # A1: 截斷, 保留 LLM 內容
-                truncated = _safe_truncate_on_length(clean, max_chars=DREAM_EVENT_MAX_CLEAN_CHARS)
+                truncated = graceful_prefix_truncate(clean, max_chars=DREAM_EVENT_MAX_CLEAN_CHARS)
                 logger.info(
                     f"[DreamEvent] {agent_id} dream LLM 輸出超長 "
                     f"({len(clean)} chars > {DREAM_EVENT_MAX_CLEAN_CHARS}), 截斷到 {len(truncated)} chars"
@@ -680,7 +687,7 @@ class DreamEventWriter:
         )
         content = await _call_llm_for_dream_event(system, user, self.api_key, agent_id=agent_id)
         # M0.5 (Bry 派工 2026-08-06 21:44): A1 截斷 + A2 retry (跟 write_dream 同 pattern)
-        from src.llm.proxy import _safe_truncate_on_length
+        from src.text_guard import DIARY_OUTPUT_MAX_CHARS, graceful_prefix_truncate
         RETRY_HINT = "\n\n（請直接輸出最終內容，不要輸出思考過程。）"
         # A2: think_only → retry
         if content:
@@ -705,7 +712,7 @@ class DreamEventWriter:
                     inner_life_event_id=inner_life_event_id,
                 )
             elif len(clean) > DREAM_EVENT_MAX_CLEAN_CHARS:
-                truncated = _safe_truncate_on_length(clean, max_chars=DREAM_EVENT_MAX_CLEAN_CHARS)
+                truncated = graceful_prefix_truncate(clean, max_chars=DREAM_EVENT_MAX_CLEAN_CHARS)
                 logger.info(
                     f"[DreamEvent] {agent_id} event LLM 輸出超長 "
                     f"({len(clean)} chars > {DREAM_EVENT_MAX_CLEAN_CHARS}), 截斷到 {len(truncated)} chars"
@@ -766,7 +773,7 @@ class DreamEventWriter:
         )
         content = await _call_llm_for_dream_event(system, user, self.api_key, agent_id=agent_id)
         # M0.5 (Bry 派工 2026-08-06 21:44): A1 截斷 + A2 retry (跟 write_event 同 pattern)
-        from src.llm.proxy import _safe_truncate_on_length
+        from src.text_guard import DIARY_OUTPUT_MAX_CHARS, graceful_prefix_truncate
         RETRY_HINT = "\n\n（請直接輸出最終內容，不要輸出思考過程。）"
         # A2: think_only → retry
         if content:
@@ -796,7 +803,7 @@ class DreamEventWriter:
             )
             return result, fallback
         if len(clean) > DREAM_EVENT_MAX_CLEAN_CHARS:
-            clean = _safe_truncate_on_length(clean, max_chars=DREAM_EVENT_MAX_CLEAN_CHARS)
+            clean = graceful_prefix_truncate(clean, max_chars=DREAM_EVENT_MAX_CLEAN_CHARS)
             logger.info(
                 f"[DreamEvent] {agent_id} shared_event LLM 輸出超長, 截斷到 {len(clean)} chars"
             )

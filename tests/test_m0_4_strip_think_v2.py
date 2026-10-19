@@ -37,8 +37,13 @@ class TestM04Fix(unittest.TestCase):
     # 修法 1: DIARY_MAX_CLEAN_CHARS 50 → 80
     # ─────────────────────────────────────────
     def test_01_diary_max_clean_chars_is_80(self):
-        """Bry 拍板: 50 → 80."""
-        self.assertEqual(diary_mod.DIARY_MAX_CLEAN_CHARS, 80)
+        """Bry 拍板: 50 → 80 →（2026-10-18 SOUL-BUG-011）200。
+        [SUPERSEDED] 2026-08-06 M0.4/M0.5 baseline（80 chars + 取尾段截斷）
+        於 2026-10-18 被 SOUL-BUG-011 取代（Bry 裁決 / Sidecar 生產實證）。
+        邊界收斂為 DIARY_OUTPUT_MAX_CHARS(200)，且改為**保留前段** +
+        終止標點優雅收尾，消除正常日記開頭段落與標題被吞噬的缺陷。
+        """
+        self.assertEqual(diary_mod.DIARY_MAX_CLEAN_CHARS, 200)
 
     # ─────────────────────────────────────────
     # 修法 2: write_entry 拒絕 think_only 寫入
@@ -115,13 +120,19 @@ class TestM04Fix(unittest.TestCase):
             self.assertEqual(entry["source"], "llm")
 
     def test_08_diary_85_chars_truncated_in_generate(self):
-        """M0.5 (Bry 派工 2026-08-06 21:44): 85 chars 超 80 上限, 截斷保留 LLM 內容.
+        """M0.5 (Bry 派工 2026-08-06 21:44): 超上限 → 截斷保留 LLM 內容.
 
-        修法前 (M0.4): 85 chars → placeholder
-        修法後 (M0.5): 85 chars → 截斷到 ≤80 chars, 寫 source=llm (沿用修法 10)
+        修法前 (M0.4): 超長 → placeholder
+        修法後 (M0.5): 超長 → 截斷到 ≤上限, 寫 source=llm
+
+        [SUPERSEDED 2026-08-06] 原斷言為「85 chars 超 80 上限」。
+        2026-10-18 SOUL-BUG-011（Bry 裁決 / Sidecar 生產實證）：上限 80→200，
+        且改為**保留前段** + 終止標點優雅收尾。故輸入同步放大到 205 chars，
+        保留原守護意圖「超長不該退化成 placeholder」。
         """
         async def run_test():
-            clean_85 = "あ" * 84 + "。"  # 85 chars, 句號在最後
+            # 205 chars > 200 上限；「。」在位置 204，落在窗口之外 → 硬切到前 200 字
+            clean_85 = "あ" * 204 + "。"
             with tempfile.TemporaryDirectory() as tmp:
                 writer = diary_mod.DiaryWriter(data_dir=tmp)
                 with patch.object(diary_mod, "_call_llm_for_diary",
@@ -135,7 +146,7 @@ class TestM04Fix(unittest.TestCase):
                 entry = json.loads(path.read_text(encoding="utf-8").strip())
                 # M0.5: 超長 → 截斷, 寫 llm
                 self.assertEqual(entry["source"], "llm")
-                self.assertLessEqual(len(entry["content"]), 80)
+                self.assertLessEqual(len(entry["content"]), 200)
                 # placeholder 內容不該出現
                 self.assertNotIn("起牀了", entry["content"])
         asyncio.run(run_test())

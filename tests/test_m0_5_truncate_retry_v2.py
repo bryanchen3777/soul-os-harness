@@ -42,10 +42,16 @@ class TestM05Fix(unittest.TestCase):
     # A1 截斷
     # ─────────────────────────────────────────
     def test_01_diary_over_80_chars_truncated_not_placeholder(self):
-        """A1: 100 chars clean 截斷到 80 chars 內, 寫 source=llm."""
+        """A1: 超上限 clean 截斷到上限內, 寫 source=llm.
+
+        [SUPERSEDED 2026-08-06] 原為「100 chars → 80 chars 內」。
+        2026-10-18 SOUL-BUG-011（Bry 裁決 / Sidecar 生產實證）：上限 80→200，
+        語意改為保留前段 + 終止標點優雅收尾。輸入同步放大，保留原守護意圖。
+        """
         async def run_test():
-            # 100 chars + 句號在 99 位置
-            clean_100 = "あ" * 99 + "。"  # 100 chars
+            # [SOUL-BUG-011] 251 chars > 200；前 200 字 = 150「あ」+「。」+ 49「い」
+            # 由後往前找最後終止標點 = 位置 150 的「。」⇒ 結果 151 chars
+            clean_100 = "あ" * 150 + "。" + "い" * 100
             with tempfile.TemporaryDirectory() as tmp:
                 writer = diary_mod.DiaryWriter(data_dir=tmp)
                 with patch.object(diary_mod, "_call_llm_for_diary",
@@ -60,18 +66,29 @@ class TestM05Fix(unittest.TestCase):
                 # 修法後: 超長 → 截斷, 寫 llm
                 self.assertEqual(entry["source"], "llm",
                                  "A1 截斷應寫 llm, 不是 placeholder")
-                # 截斷後 ≤ 80
-                self.assertLessEqual(len(entry["content"]), 80)
+                # 截斷後 ≤ 200
+                self.assertLessEqual(len(entry["content"]), 200)
                 # 截斷應該保留句號
                 self.assertIn("。", entry["content"])
+                # [SOUL-BUG-011] 截斷結果必須是原文「前綴」，開頭不得被吃掉
+                self.assertTrue(
+                    clean_100.startswith(entry["content"]),
+                    "SOUL-BUG-011: 結果必須是原文前綴（取尾段會讓此斷言失敗）")
         asyncio.run(run_test())
 
     def test_02_diary_truncate_uses_last_punctuation(self):
-        """A1: 截斷找最後一個標點斷點, 沿用修法 10 pattern."""
+        """A1: 截斷找**前段內**最後一個終止標點.
+
+        🔴 [SEMANTIC REVERSAL 2026-10-18 / SOUL-BUG-011]
+        本測試原本逐字碼碼驗證的是**取尾段**語義（舊註解反推 `tail = content[-80:]`
+        與「最晚標點在 tail 位置 50」）。該語意正是 SOUL-BUG-011 的缺陷本體 ——
+        它讓正常日記的標題與開頭段落被吞。Owner 裁決廢棄，現語意為
+        **保留前段 + 前段內最後一個終止標點收尾**。
+        """
         async def run_test():
-            # 100 chars, 在 60 位置有句號, 70 位置有逗號
-            # 修法 10 應該取最晚的標點 (70 + len 標點 = 71)
-            content = "あ" * 60 + "。" + "い" * 9 + "、" + "う" * 29  # 100 chars
+            # 331 chars > 200；前 200 字 = 60「あ」+「。」+ 9「い」+「、」+ 129「う」
+            # 由後往前找最後終止標點 = 位置 70 的「、」⇒ 結果 = content[:71]
+            content = "あ" * 60 + "。" + "い" * 9 + "、" + "う" * 260
             with tempfile.TemporaryDirectory() as tmp:
                 writer = diary_mod.DiaryWriter(data_dir=tmp)
                 with patch.object(diary_mod, "_call_llm_for_diary",
@@ -82,25 +99,24 @@ class TestM05Fix(unittest.TestCase):
                         writer=writer,
                     )
                 entry = json.loads(path.read_text(encoding="utf-8").strip())
-                # 取最晚標點 "、" 在 70 位置, 切到 71 (含標點)
-                # tail 取最後 80 chars: 從 20 開始, 60 個あ + 。 + 9 個い + 、 + 9 個う (80 chars)
-                # 找最晚標點: "。" 在 tail 位置 60, "、" 在 70
-                # 切到 71, 結果 = tail[:71] = 60 個あ + 。 + 9 個い + 、
-                # 但 tail 範圍是 20-99, 所以 tail[:71] 對應原 content 的 20-90 (71 chars)
-                # 不對, 重新算: tail = content[-80:] = content[20:100] = 80 chars
-                # 裡面的 。 在 tail 位置 40 (60-20), 、 在 tail 位置 50 (70-20)
-                # 最晚是 、 在 50, 切到 50 + 1 = 51
-                # truncated = tail[:51]
-                self.assertLessEqual(len(entry["content"]), 80)
-                # 應該以 "、" 結尾 (因為是最晚標點)
+                # [SOUL-BUG-011] 保留前段語意：結果 = content[:71]，以前段內最晚標點「、」收尾
+                self.assertLessEqual(len(entry["content"]), 200)
+                self.assertEqual(entry["content"], content[:71])
                 self.assertTrue(entry["content"].endswith("、") or entry["content"].endswith("。"),
                                 f"應以標點結尾, 實際: {entry['content'][-5:]}")
+                self.assertTrue(entry["content"].startswith("あ" * 60),
+                                "[SOUL-BUG-011] 敘事開頭必須逐字元保留，不得被截掉")
         asyncio.run(run_test())
 
     def test_03_dream_event_over_80_truncated(self):
-        """A1: write_dream 對超長 clean 截斷."""
+        """A1: write_dream 對超長 clean 截斷.
+
+        [SUPERSEDED 2026-08-06] 原為「120 chars → ≤80」。
+        2026-10-18 SOUL-BUG-011：上限 80→200，輸入同步放大。
+        """
         async def run_test():
-            clean_120 = "あ" * 119 + "。"  # 120 chars
+            # [SOUL-BUG-011] 205 chars > 200；「。」在 204，落在窗口外 → 硬切前 200 字
+            clean_120 = "あ" * 204 + "。"
             with tempfile.TemporaryDirectory() as tmp:
                 writer = de_mod.DreamEventWriter(data_dir=tmp)
                 with patch.object(de_mod, "_call_llm_for_dream_event",
@@ -113,13 +129,18 @@ class TestM05Fix(unittest.TestCase):
                 self.assertIsNotNone(path)
                 entry = json.loads(path.read_text(encoding="utf-8").strip())
                 self.assertEqual(entry["source"], "llm")
-                self.assertLessEqual(len(entry["content"]), 80)
+                self.assertLessEqual(len(entry["content"]), 200)
         asyncio.run(run_test())
 
     def test_04_event_over_80_truncated(self):
-        """A1: write_event 對超長 clean 截斷."""
+        """A1: write_event 對超長 clean 截斷.
+
+        [SUPERSEDED 2026-08-06] 原為「120 chars → ≤80」。
+        2026-10-18 SOUL-BUG-011：上限 80→200，輸入同步放大。
+        """
         async def run_test():
-            clean_120 = "あ" * 119 + "。"
+            # [SOUL-BUG-011] 205 chars > 200；「。」在 204，落在窗口外 → 硬切前 200 字
+            clean_120 = "あ" * 204 + "。"
             with tempfile.TemporaryDirectory() as tmp:
                 writer = de_mod.DreamEventWriter(data_dir=tmp)
                 with patch.object(de_mod, "_call_llm_for_dream_event",
@@ -129,7 +150,7 @@ class TestM05Fix(unittest.TestCase):
                 self.assertIsNotNone(path)
                 entry = json.loads(path.read_text(encoding="utf-8").strip())
                 self.assertEqual(entry["source"], "llm")
-                self.assertLessEqual(len(entry["content"]), 80)
+                self.assertLessEqual(len(entry["content"]), 200)
         asyncio.run(run_test())
 
     # ─────────────────────────────────────────
