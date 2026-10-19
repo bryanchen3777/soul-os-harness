@@ -143,3 +143,125 @@ RecallHit = { node_id, node_type, content, lifecycle_state, lineage_path, supers
 - DORMANT 經回憶復活（無此邊；復活唯一通道＝寫側 REINFORCE）。
 - 語義／向量檢索（v1 只做子字串 deterministic 匹配；量大再開票）。
 - 回憶結果自動餵入 prompt（呼叫方語義由實作票定；禁入 EMERGENT block 為鐵律）。
+
+---
+
+## 8. 附錄 A（2026-10-19 實作票 ELEVATION-RECALL-HARDENING-1）
+
+> **§0–§7 逐字保留不改。** 本附錄是**附加**條款，不修改、不覆寫、不重述上面任何
+> 一條契約語意；與 §0–§7 衝突時，以 §0–§7 為準。
+> 實作票：`logs/ELEVATION-RECALL-HARDENING-1-WORK-ORDER.md`。
+
+### 8.1 隔離標記（quarantine）的語意
+
+- **來源標記，不是 lifecycle state。** `lifecycle_state` 的四態語義（active /
+  weakening / dormant / superseded）**完全不受本附錄影響**；隔離是「這顆節點被
+  SOUL-BUG-010 處置過」的**來源標記**，與節點當下的生命週期態是兩件事。
+- **唯一載體＝生命週期 sidecar**（`elevation_lifecycle_events.jsonl`，append-only）；
+  節點檔本身保持位元組不變。標記事件的 `event` 欄位值為 `"quarantine"`。
+- **單點解讀者**：`src/inner_life/lifecycle_overlay.py::load_quarantined_node_ids()`。
+  消費端**不得**自行解讀 sidecar（守門散落到第 N 個消費端正是 SOUL-BUG-009／010
+  的病根）。判定以**最新事件**為準（last-wins，與 overlay 的狀態語意一致）：
+  節點先被隔離、後又發生 transition ⇒ 不再算隔離。
+- 🔴 **與工單 §3.1 的偏離（實作時發現，必須記錄）**：工單原設計把旗標以
+  `merged["quarantined"] = True` 掛在**節點 dict** 上。實作證實**這會讓整條昇華
+  路徑爆掉**——
+  - `src/inner_life/elevation_adapter.py:935` 以 `ElevationNode(**n)` 建引擎；
+  - `ElevationNode` 是外部套件 `soul_elevation` 的 frozen dataclass（欄位固定 18 個）；
+  - 節點 dict 多一個 key ⇒ `TypeError: ElevationNode.__init__() got an unexpected
+    keyword argument 'quarantined'`；
+  - 連帶後果：SOUL-BUG-010 的 M4 守衛轉紅、M3 守衛因例外被吞而**假綠**。
+  而 `src/inner_life/elevation_adapter.py` 不在本票的檔案所有權範圍內（工單 §2
+  「其他檔案一律不得動」）。
+  ⇒ **偏離方案**：隔離資訊改走「**節點 id 集合**」這條獨立通道
+  （`load_quarantined_node_ids()`），**節點 dict 的形狀保持引擎可吃**
+  （守衛 `test_node_dict_stays_engine_constructible` 釘住 `ElevationNode(**node)`
+  必須可建構）。**語意等價**：兩條路徑以同一份 sidecar 事件為真相、都以最新事件
+  為準，守門仍只寫在一處（共用管線 `_recallable_hits`）。
+- 消費端仍可對**節點 dict 自帶**的 `quarantined` 旗標做防禦性擋下（真值即隔離）；
+  兩種來源取**聯集**（寧可多擋不可漏擋）。
+
+### 8.2 `query_recall_by_tags`（新增並存入口，**不取代** `query_recall`）
+
+```text
+query_recall_by_tags(
+    agent_id: str,
+    tags: Sequence[str],
+    state_filter: Optional[Set[str]] = None,
+    *,
+    store_dir: Optional[Any] = None,
+) -> list[RecallHit]
+```
+
+- **回傳形狀與排序與 `query_recall` 相同**（契約 §2.2 六鍵；`created_ts asc +
+  node_id asc`）；失敗靜默（任何例外 → `[]`，絕不 raise）。
+- **過濾條件與隔離守門與 `query_recall` 完全相同**——兩條路徑共用同一個過濾管線
+  `_recallable_hits()`（守門不散落）。
+- **比對語意**：把 query 與 content 各自**正規化**後，任一 tag 命中即算命中
+  （**union**；intersection 在中文內容上會把命中率壓到近 0）。
+  - 正規化：lower()、全形轉半形（NFKC）、去除所有空白、去除所有標點（Unicode
+    類別 `P*`）。
+  - tag 守門：非空 str、正規化後長度 ≥ 2、去重（保留傳入順序）、**上限 12 個**
+    （取傳入順序前 12）。單一字串視為**單一 tag**。
+  - 不做語義排序、不呼叫 LLM、deterministic。
+- 契約 §2.1 的「子字串匹配」**原文保留、仍是 `query_recall` 的比對語意**；
+  本附錄只**新增**一條並存入口，**不修改**契約主文任何一條。
+
+### 8.3 硬不變式：隔離節點**永不**召回
+
+- 被隔離的節點（§8.1）在**任何**檢索路徑下都不可被召回——`query_recall` 與
+  `query_recall_by_tags` 皆然。
+- 守門只寫在共用管線 `_recallable_hits()` 的第 5 步（單點收斂）。
+- 任何命中隔離節點的情況＝硬不變式破裂＝**第二階段接線一律 no-go**。
+
+### 8.4 實測依據（量測口徑寫清楚）
+
+量測工具：`scripts/recall_readiness_cli.py`（唯讀來源＋自建 temp 沙盒；生產
+`data/elevation/*.jsonl` 前後 sha256 不變）。詞元來源 SSOT：
+`src/memory/v1/loader.py::derive_query_tags`（不重寫一份）。
+**探針＝一筆真實 user 訊息**（`data/conversations/*.json` 中 `role == "user"`），
+**單位＝probe**；命中率＝「至少命中 1 顆同 agent 可回憶節點的 probe 數 ÷ probe
+總數」。
+
+**生產圖譜現況（2026-10-19 實測）**：401 顆節點；態分布 active 216 / weakening 167 /
+dormant 18；類型分布 pattern 370 / value 30 / belief 1；隔離 18 顆。
+
+| 量 | 值（分子／分母，單位） |
+|---|---|
+| 可回憶池（非隔離 × 四層 × dormant\|superseded） | **0 顆**（硬化前為 2 顆，且那 2 顆正是被隔離的日文污染節點 ⇒ 守門擋下 `blocked_by_quarantine = 2`） |
+| 詞元級 union 命中率（200 probes） | **0 / 200 = 0.00%** |
+| 契約路徑（整句子字串）命中率（200 probes） | **0 / 200 = 0.00%** |
+
+**「12/59 = 20.34%」的分母拆解（59 probes，忽略 agent 守門）**：
+
+| 分母 | 命中率 | unique 節點 |
+|---|---|---|
+| A. 通道可回憶池（含 agent 守門） | 0/59 = 0.00% | 0 |
+| B. 全部 dormant\|superseded（含 pattern、含隔離） | 7/59 = 11.86% | 3 |
+| C. 全部 401 顆（含 active/weakening） | 11/59 = 18.64% | 8 |
+
+⇒ 工單引用的 20.34% 量的是**忽略 agent 守門、且含非可回憶節點**的分母，
+**不可直接搬到回憶通道**（通道受 §2.1 的 agent 守門與四層限制）。
+
+**受控污染重現（沙盒副本，生產零寫入；注入中文 dormant 節點後的命中率）**：
+
+| 注入顆數 | 可回憶池 | 命中率（分子/分母，單位：probe） |
+|---|---|---|
+| 1 | 1 | **2/200 = 1.00%**（1 顆 unique 節點、2 組命中配對） |
+| 5 | 5 | 5/200 = 2.50%（3 顆 unique） |
+| 20 | 20 | 8/200 = 4.00%（9 顆 unique） |
+| 80 | 80 | 11/200 = 5.50%（33 顆 unique） |
+
+⇒ **「池中有 1 顆中文 dormant 節點」的預期命中率＝1.00%**；
+且命中率在這個量級**飽和**（80 顆也只有 5.50%）⇒ 15% 門檻**在池 = 5～80 顆的
+量級不可達**。這是第二階段接線門檻需要重新校準的**實測證據**（門檻值屬主大腦
+／Owner 裁決，本附錄不擅自修改）。
+
+### 8.5 本附錄**不**做的事
+
+- 不改 §0–§7 任何一條；不改 `PROJECTABLE_NODE_TYPES` /
+  `NON_PROJECTED_LIFECYCLE_STATES`；不製造新 lifecycle state。
+- 不讓 `pattern` 類節點回憶（契約 §2.1 明文）。
+- 不做語意／向量檢索、不呼叫 LLM、不做 FTS5。
+- 不做 prompt 注入（第二階段另開票；本附錄只給判準，不動 prompt 鏈路）。
+

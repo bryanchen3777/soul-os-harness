@@ -35,7 +35,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 logger = logging.getLogger("soul_os.inner_life.lifecycle_overlay")
 
@@ -54,6 +54,11 @@ VALID_LIFECYCLE_STATES: frozenset = frozenset(
 # 語意**不是**「年紀大就沒資格」——見 elevation_adapter 步驟 5 註解：
 # 跨週習慣在 ``weakening`` 區間內仍有完整投票權。
 TERMINAL_OR_DORMANT_LIFECYCLE_STATES: frozenset = frozenset({"dormant", "superseded"})
+
+# 隔離事件的類型標記（SOUL-BUG-010 對截斷污染節點的處置）。
+# 帶這個標記的事件＝該節點被隔離 ⇒ **不得**被回憶召回（否則等於把污染正文
+# 重新帶回對話面，違反隔離裁決的「禁止捏造文字」）。
+QUARANTINE_EVENT = "quarantine"
 
 
 def load_lifecycle_events(store_dir: Optional[Any]) -> List[dict]:
@@ -147,10 +152,45 @@ def apply_lifecycle_overlay(
     return overlaid
 
 
+def load_quarantined_node_ids(store_dir: Optional[Any]) -> Set[str]:
+    """被隔離的節點 id 集合（隔離處置的唯讀查詢面）。
+
+    隔離（quarantine）是 SOUL-BUG-010 對截斷污染節點的處置，**唯一**的合法
+    載體是生命週期 sidecar（append-only）——節點檔本身保持位元組不變。
+
+    本函式是「哪些節點被隔離」的**單一判定點**（single point of convergence）：
+    消費端（回憶檢索）不得自行解讀 sidecar，否則守門會散落到第 N 個消費端
+    ——那正是 SOUL-BUG-009／010 的病根。
+
+    以**最新事件**為準（同 ``_reduce_events`` 的 last-wins 語意）：節點先被
+    隔離、後又發生 transition ⇒ 不再算隔離（與 overlay 的狀態語意一致）。
+
+    ⚠️ **為什麼隔離旗標不掛在節點 dict 上**（ELEVATION-RECALL-HARDENING-1 實作發現）：
+    ``elevation_adapter._rebuild_engine_for`` 以 ``ElevationNode(**n)`` 建引擎，
+    而 ``ElevationNode`` 是外部套件 ``soul_elevation`` 的 frozen dataclass（欄位固定）
+    ——節點 dict 多一個 key 就會 ``TypeError``，整條昇華路徑爆掉（SOUL-BUG-010 的
+    M4 守衛會轉紅，且 M3 會因為例外被吞而**假綠**）。
+    ⇒ 隔離資訊改走「節點 id 集合」這條獨立通道：**節點 dict 的形狀保持引擎可吃**，
+    而隔離判定的單一收斂點仍在本模組（sidecar 的唯一解讀者）。
+
+    失敗隔離：缺檔 → ``set()``；讀失敗 → ``set()``；**絕不 raise**。
+    """
+    if store_dir is None:
+        return set()
+    latest = _reduce_events(load_lifecycle_events(store_dir))
+    return {
+        node_id
+        for node_id, event in latest.items()
+        if event.get("event") == QUARANTINE_EVENT
+    }
+
+
 __all__ = [
     "LIFECYCLE_EVENTS_FILENAME",
+    "QUARANTINE_EVENT",
     "TERMINAL_OR_DORMANT_LIFECYCLE_STATES",
     "VALID_LIFECYCLE_STATES",
     "apply_lifecycle_overlay",
     "load_lifecycle_events",
+    "load_quarantined_node_ids",
 ]
