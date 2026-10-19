@@ -218,6 +218,10 @@ class SoulScheduler:
         self._last_trigger_date: Dict[str, str] = {}  # {f"{agent_id}:{slot}": "YYYY-MM-DD"}
         # 4.2+缺口 1: dream/event 觸發記錄
         self._last_dream_date: Optional[str] = None  # 夢境每天觸發一次
+        # SOUL-BUG-010-B (2026-10-19): 生命週期自動老化的 at-most-once 冪等鍵
+        # （{日期: "YYYY-MM-DD"}）。30s tick 在 night slot 觸發窗內會重入數十次，
+        # 靠此鍵確保每日只評估一次。
+        self._last_lifecycle_eval_date: Optional[str] = None
         self._next_event_time: Optional[datetime] = None  # 下次事件時間
         # M5.2-R-3 (Bry 拍板 2026-08-09): _dream_callback / _event_callback field 移除
         # (0 read / 0 invocation 從 M5.2-I-6 後, setter 仍是 dead code)
@@ -1703,6 +1707,13 @@ class SoulScheduler:
                 #     (agent:slot:date) 落在 orchestrator 內（30s tick 重入同一
                 #     slot 窗不會重複喚醒／重複花費 LLM）；fail-closed 只 log。
                 await self._fire_life_thread_slot(now)
+                # 5.8 SOUL-BUG-010-B (2026-10-19): 生命週期自動老化 — night slot
+                #     檢查鏈 additive 分支（與 _fire_periodic_narrative / _fire_life_thread_slot
+                #     同級）。判據 = 既有 night slot（22:00, _slot_for_time=="night"）；
+                #     0 新定時器 / 0 新事件型別 / 0 新通道。at-most-once 冪等鍵
+                #     (_last_lifecycle_eval_date) 落在 scheduler 內 ⇒ 每日恰好評估一次，
+                #     30s tick 重入同一 slot 窗不會重複評估；fail-closed 只 log。
+                await self._fire_lifecycle_eval(now)
                 # 健康檢查 log
                 if (now.timestamp() - last_health_log) > HEALTH_CHECK_INTERVAL_SECS:
                     next_slot, next_time = self._compute_next_slot(now)
@@ -1838,6 +1849,44 @@ class SoulScheduler:
             await _lt_orchestrator.run_slot_pipeline(list(self._all_agents), now, slot)
         except Exception as e:
             logger.warning(f"[Scheduler] life_thread slot pipeline failed: {e}")
+
+    async def _fire_lifecycle_eval(self, now: datetime) -> None:
+        """
+        SOUL-BUG-010-B (2026-10-19): 生命週期自動老化 — night slot 檢查鏈 additive 分支。
+
+        掛點（沿用本檔既有 additive 分支慣例，見 _fire_periodic_narrative /
+        _fire_life_thread_slot / _fire_world_timer_eval）：
+          - 主循環 30s wake 內、night slot（22:00, ``_slot_for_time``=="night"）
+            檢查窗內，與 ``_fire_all("night")`` / ``_goal_scan_all`` 並列；
+            **0 新定時器 / 0 新事件型別 / 0 新通道**。
+          - at-most-once 冪等鍵（``_last_lifecycle_eval_date``）落在本類別內，
+            30s tick 重入同一 slot 窗**不會重複評估**（每日恰好一次）。
+        fail-closed: 任何異常只 log warning, 不阻斷主循環（與同級分支一致）。
+
+        為何是 scheduler 而不是 run_server.py：
+          DiaryHandler 的 night 路徑是**逐 agent**觸發（10 隻 agent 各跑一次），
+          在那裡接線會讓評估重複執行 10 次；此處是**單一呼叫點**，且本檔既有
+          同類型分支（C-2.1 週期敘事、LIFE-THREAD-M5 生活線頭）都是這樣接的。
+        """
+        if self._slot_for_time(now) != "night":
+            return
+        today = now.date().isoformat()
+        if self._last_lifecycle_eval_date == today:
+            return  # 同日不重複評估（30s tick 重入同一 slot 窗）
+        try:
+            from datetime import timezone as _tz
+
+            from src.inner_life.elevation_adapter import evaluate_lifecycle_all
+
+            self._last_lifecycle_eval_date = today  # 先標記，避免評估內部失敗時重入風暴
+            events = evaluate_lifecycle_all(now_ts=now.astimezone(_tz.utc).isoformat())
+            logger.info(
+                f"[Scheduler] [SOUL-BUG-010-B] 生命週期評估完成: {len(events)} 筆轉變"
+            )
+        except Exception as e:
+            logger.warning(
+                f"[Scheduler] lifecycle eval failed (fail-closed): {type(e).__name__}: {e}"
+            )
 
     def _compute_next_slot(self, now: datetime) -> tuple[str, datetime]:
         candidates = []

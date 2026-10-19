@@ -1,7 +1,10 @@
 # SOUL-BUG-010-B：生命週期自動老化 ＋ night slot 串接（工單 v1，決策完備）
 
-**狀態**：📋 裁決完備，**待 Owner 裁示即可實作**（本輪已完成全部唯讀前置研究）
+**狀態**：✅ **實作完成**（守衛 14 支全綠 ＋ 變異 5/5 全紅；全庫回歸見回報）
 **日期**：2026-10-19｜**嚴重度**：P1（架構缺口）｜**登記者**：主大腦
+**Owner 裁決（2026-10-19）**：核准開工；核准「靈魂節點 ＋ Pattern 候選」雙層評估；
+核准 aoi value 節點追加為第 17 顆隔離（實作時連其逐位元相同的 pattern twin 一併
+隔離為第 18 顆，理由見下）。
 **前序**：SOUL-BUG-010 v2（`704f851` ＋ `89397d5`）已完成「讀取面收斂 ＋ 防線二」，
 本票接手其**刻意延後**的兩件事：`evaluate_lifecycle_all` 與 night slot 接線。
 
@@ -95,8 +98,11 @@
 
 - 該 sidecar 與其 overlay 讀取面**已於 `704f851` 上線並實測生效**（16 顆隔離已驗證）。
 - 本票只需**新增寫入端**：每次評估把轉變以
-  `{ts, node_id, event, lifecycle_state_before, lifecycle_state_after, anchor_ts, reason}`
+  `{ts, node_id, event, lifecycle_state, lifecycle_state_before, lifecycle_state_after, anchor_ts, reason}`
   append 進去。
+  🔴 **`lifecycle_state` 是 overlay 實際讀取的欄位**（`lifecycle_overlay._reduce_events`
+  只認這個 key）—— 只寫 `before`／`after` 會讓整批事件被**靜默忽略**，
+  狀態永遠不生效。實作時正是這個坑被守衛 G3 抓出來。
 - **絕不**改寫 `elevation_nodes.jsonl`。
 - 同一 `node_id` 多筆事件取檔案順序最後一筆（append-only ⇒ 檔案順序即時間序），
   這已是 `lifecycle_overlay._reduce_events` 的既有語意，本票不得改動。
@@ -143,10 +149,28 @@
 - **不做去重**：同一 `node_id` 每天最多一筆轉變（引擎本身逐級、一次一級），
   重複寫入無害且符合 append-only 審計性。
 
-### 步驟 2：`scripts/run_server.py` night slot 接線
+### 步驟 2：night slot 接線
 
-- 在 night slot 區塊加入一次 `evaluate_lifecycle_all()` 呼叫，
-  包在失敗隔離內，**不 await 任何東西**（同步函式，fire-and-forget）。
+> ⚠️ **實作時修正（2026-10-19）**：v1 初稿寫的是「掛在 `scripts/run_server.py` 的 night slot」。
+> 實作時改為**掛在 `src/soul/scheduler.py` 主迴圈的 night slot additive 分支**
+> （`_fire_lifecycle_eval()`），理由有三：
+>   1. `run_server.py` 的 night 路徑是 **DiaryHandler 逐 agent 觸發**（10 隻 agent 各跑一次），
+>      在那裡接線會讓評估**重複執行 10 次**；scheduler 是**單一呼叫點**。
+>   2. 本檔既有同類型分支（C-2.1 週期敘事 `_fire_periodic_narrative`、
+>      LIFE-THREAD-M5 生活線頭 `_fire_life_thread_slot`、
+>      WORLD-EVAL-TIMER-1 `_fire_world_timer_eval`）**全部**是這個形狀：
+>      30s wake 內、slot 檢查窗、0 新定時器 0 新通道、at-most-once 冪等鍵、fail-closed。
+>   3. 30s tick 在 slot 窗內會重入數十次 ⇒ 冪等鍵（`_last_lifecycle_eval_date`）
+>      必須放在**同一個物件**上才收斂得住。
+> 語意完全等價（night slot、每日一次、fire-and-forget、失敗隔離），且更貼合本檔既有慣例。
+
+- 新增 `SoulScheduler._fire_lifecycle_eval(now)`：
+  - 只在 `_slot_for_time(now) == "night"` 觸發；
+  - at-most-once 冪等鍵 `self._last_lifecycle_eval_date`（每日恰好一次）；
+  - 呼叫 `evaluate_lifecycle_all(now_ts=<UTC ISO>)`；
+  - **fail-closed**：整段 `try/except Exception` → `logger.warning`，不阻斷主迴圈。
+- 在 `_run_loop()` 中以 `await self._fire_lifecycle_eval(now)` 並列呼叫
+  （分支編號 5.8，與 5.6／5.7 同級）。
 - 不得改動該槽既有的 `write_event` → `submit` 順序（SOUL-BUG-012 修復）。
 
 ### 步驟 3：守衛（`tests/inner_life/test_soul_bug_010b_lifecycle_eval.py`）
@@ -182,9 +206,28 @@
 ## 驗收（完成的定義）
 
 1. **節點檔位元組不變**：`elevation_nodes.jsonl` 評估前後 sha256 與大小逐位元相同。
-2. **接線當晚的實際效果可預期且已驗算**：依生產現況，正確接線的第一晚
-   **181 顆 pattern 轉 weakening、0 顆 value 轉、0 顆轉 dormant**，
-   **prompt 可見影響為零**。這個數字必須由守衛重現，不得靠推估。
+2. **接線當晚的實際效果可預期且已驗算**：以**生產圖譜的 temp 副本**跑真實引擎
+   （2026-10-19 實測，398 節點 / 904 邊）：
+
+   | 項目 | 實測值 |
+   |---|---|
+   | 第一晚轉變總數 | **167**（全部 `active → weakening`） |
+   | 其中 **pattern** | **167** |
+   | 其中 **value/belief/trait/essence（prompt 可見）** | **0** ✅ |
+   | `dormant` 轉變 | **0**（30 天門檻尚未觸及） |
+   | 誤傷檢查：value `6a92c906b245`（81 條有效邊、持續被重新支持） | **無轉變** ✅ |
+   | 耗時 | **0.070 s** |
+
+   **數字對帳（可重現）**：依原始邊檔算，≥7 天的節點共 **181** 顆（全為 pattern）；
+   其中 **14** 顆已被隔離為 `dormant` ⇒ 引擎對 `dormant` 不發轉移（既不匹配
+   `active→weakening` 也不匹配 `weakening→dormant`）⇒ 181 − 14 = **167**。
+   per-agent 分佈逐項吻合：akane 6／anna 17／aoi 17／mahiru 18／mai 18／miku 18／
+   ram 18／rem 18／ruka 19／yua 18。
+
+   ⇒ **prompt 可見影響為零**。這個數字必須由守衛 G1 重現機制，
+   絕對數值則是當日資料的點測量（圖譜每日成長 ⇒ 會漂移）。
+   ⚠️ 早期版本此處寫「181」，那是**隔離前**且**錨點未修正**時的量；
+   現已更正為 **167**（隔離 14 顆後）。
 3. **錯接線的破壞力被量化並釘住**：若日後有人退回到「直接呼叫引擎」
    （即發現 1 的錯誤接線），守衛必須轉紅 —— 因為那會誤傷 10 顆 value 節點。
 4. **零迴歸**：全庫 `.venv\Scripts\python.exe -m pytest -q tests` 與實作前同數。

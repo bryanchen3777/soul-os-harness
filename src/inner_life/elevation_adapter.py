@@ -1375,6 +1375,194 @@ def elevate_matured_patterns(
         return []
 
 
+# ─────────────────────────────────────────────────────────────────────
+# SOUL-BUG-010-B：生命週期自動老化（evaluate_lifecycle_all）
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _parse_ts(ts: Any) -> Optional[datetime]:
+    """ISO 8601 → datetime；壞值回 None（不 raise）。"""
+    if not isinstance(ts, str):
+        return None
+    try:
+        return datetime.fromisoformat(ts)
+    except (ValueError, TypeError):
+        return None
+
+
+def _support_anchor_by_node(edges: Sequence[dict]) -> Dict[str, str]:
+    """每個節點「仍有效支持邊」的最大 ``valid_from_ts``。
+
+    🔴 這是 SOUL-BUG-010-B 的核心：**衰減錨點必須來自證據邊，不能來自節點欄位**。
+
+    缺陷原委（實測 2026-10-19，生產 398 節點 / 903 邊）：
+      * ``last_support_ts`` **全庫沒有任何寫入者**（grep 只命中 docstring／docs／
+        一支「temporal_phenomenology 不得賦值它」的測試），生產 **398/398 節點的
+        ``last_support_ts == created_ts``** ⇒ 該欄位建檔後從未更新。
+      * 而 ``_rebuild_engine_for`` **不載入靈魂節點自己的邊**（本檔 :898）
+        ⇒ value 節點在引擎裡沒有 active edge，錨點只能落到 ``last_support_ts`` = 建立時間。
+    後果（實測）：直接呼叫 ``engine.evaluate_lifecycle()`` 會把 **10 顆 value 節點**
+    判成 weakening，而它們**仍在被持續重新支持**——value ``6a92c906b245`` 有 81 條
+    仍有效邊橫跨 4 天（10-11 / 10-15 / 10-16 / 10-17），最新支持距今 2.3 天。
+    而 ``weakening`` 投影時會加前綴「我隱約覺得」⇒ 每隻 agent 2~3 顆 value 中的
+    1 顆會被**無理由地軟化**，直接違反 ``prior.py:62``
+    「old ≠ outdated——年齡不是退場理由，**失去支持才是**」。
+
+    正解：由本函式自**原始邊檔**算出真實錨點，於評估前注入引擎（見
+    :func:`evaluate_lifecycle_all`）。節點檔本身**不動**（Append-Only 紅線）。
+    """
+    best: Dict[str, str] = {}
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        if e.get("valid_until_ts") is not None:
+            continue  # 已被取代的邊不算「仍有效支持」
+        nid = e.get("node_id")
+        ts = e.get("valid_from_ts")
+        if not isinstance(nid, str) or not nid or not isinstance(ts, str):
+            continue
+        cur = best.get(nid)
+        if cur is None:
+            best[nid] = ts
+            continue
+        cur_dt, new_dt = _parse_ts(cur), _parse_ts(ts)
+        if cur_dt is None or (new_dt is not None and new_dt > cur_dt):
+            best[nid] = ts
+    return best
+
+
+def _inject_support_anchor(engine: Any, anchor_by_node: Dict[str, str]) -> int:
+    """把真實錨點注入引擎內的 ``ElevationNode.last_support_ts``（僅記憶體）。
+
+    🔴 ``ElevationNode`` 是 **frozen dataclass** ⇒ 不可用屬性賦值，必須
+    ``dataclasses.replace()`` 產生新物件再換回 ``engine._nodes``
+    （與 SOUL-BUG-010 修掉的 R3 同款地雷）。
+
+    節點若**沒有**任何仍有效支持邊 ⇒ 注入 ``None``，讓引擎走優先序 3
+    （``created_ts + grace``），這才是教義要求的兜底；若沿用節點檔裡那個
+    停滯在 ``created_ts`` 的 legacy 值，會把「從未被支持過」誤判成
+    「失去支持恰好 7 天」。
+
+    Returns:
+        實際被更換的節點數。
+    """
+    changed = 0
+    for nid, node in list(engine._nodes.items()):
+        anchor = anchor_by_node.get(nid)
+        if node.last_support_ts == anchor:
+            continue
+        engine._nodes[nid] = replace(node, last_support_ts=anchor)
+        changed += 1
+    return changed
+
+
+def evaluate_lifecycle_all(
+    *,
+    store_dir: Optional[Any] = None,
+    now_ts: Optional[str] = None,
+) -> List[dict]:
+    """生命週期自動老化：評估全部節點並把轉變 append 進 sidecar。
+
+    流程：
+      1. 載入節點（**經 ``load_elevation_nodes``**，即已套 lifecycle overlay）
+         與全部證據邊；
+      2. 由**原始邊檔**算出每個節點的真實衰減錨點（仍有效支持邊的最大
+         ``valid_from_ts``），**在餵入引擎前**注入 ``last_support_ts``；
+      3. 逐 agent 重建引擎並呼叫 ``engine.evaluate_lifecycle()``
+         （狀態機全權歸引擎：逐級轉移／essence 豁免／superseded 終態）；
+      4. 把轉變以事件 dict append 進 ``elevation_lifecycle_events.jsonl``
+         （既有 append-only sidecar，SOUL-BUG-010 已建好且讀取面已上線）；
+      5. 回傳事件清單。
+
+    Append-Only 紅線：**不寫** ``elevation_nodes.jsonl``、不寫任何節點欄位。
+    錨點只存在於記憶體中的 ``ElevationNode`` 物件。
+
+    失敗隔離：整體包 ``try/except Exception`` → warning（帶 traceback）
+    並回傳 ``[]``，**絕不讓生命週期評估中斷任何既有主路徑**。
+    """
+    resolved_dir = _resolve_store_dir(store_dir)
+    try:
+        from .emergent_projection import load_elevation_nodes
+        from .lifecycle_overlay import LIFECYCLE_EVENTS_FILENAME
+
+        nodes = load_elevation_nodes(resolved_dir)
+        edges = _load_edges(resolved_dir)
+        if not nodes:
+            return []
+
+        anchor_by_node = _support_anchor_by_node(edges)
+        agent_ids = sorted({n.get("agent_id", "default") for n in nodes})
+        now_iso = now_ts or datetime.now(timezone.utc).isoformat()
+
+        events: List[dict] = []
+        for agent_id in agent_ids:
+            engine = _rebuild_engine_for(
+                resolved_dir,
+                nodes,
+                edges,
+                agent_id=agent_id,
+                llm=None,
+            )
+            injected = _inject_support_anchor(engine, anchor_by_node)
+            before = {n.node_id: n.lifecycle_state for n in engine._nodes.values()}
+            changed = engine.evaluate_lifecycle(now_ts=now_iso)
+            for node in changed:
+                anchor = None
+                # 盡量記錄引擎實際採用的錨點（引擎私有方法，缺失時退回自算值）
+                anchor_fn = getattr(engine, "_lifecycle_anchor", None)
+                if callable(anchor_fn):
+                    try:
+                        anchor = anchor_fn(node, now_iso)
+                    except Exception:  # noqa: BLE001 — 錨點取不到不影響轉變記錄
+                        anchor = None
+                if anchor is None:
+                    anchor = anchor_by_node.get(node.node_id)
+                events.append({
+                    "ts": now_iso,
+                    "node_id": node.node_id,
+                    "event": "lifecycle_transition",
+                    # 🔴 `lifecycle_state` 是 overlay **實際讀取**的欄位
+                    # （`lifecycle_overlay._reduce_events` 只認這個 key；
+                    #  少它則事件會被整個忽略，狀態永遠不生效）。
+                    #  before/after 保留作審計用。
+                    "lifecycle_state": node.lifecycle_state,
+                    "lifecycle_state_before": before.get(node.node_id, "active"),
+                    "lifecycle_state_after": node.lifecycle_state,
+                    "anchor_ts": anchor,
+                    "reason": "no_new_support_evidence",
+                    "agent_id": agent_id,
+                    "node_type": node.node_type,
+                })
+            logger.info(
+                "[lifecycle] agent=%s injected_anchors=%d transitions=%d",
+                agent_id, injected, len(changed),
+            )
+
+        if events:
+            # `_append_jsonl` 自帶失敗隔離（OSError → warning → False），
+            # 故這裡**主動檢查回傳值**：寫入失敗時明確記 warning，
+            # 否則「評估成功但事件沒落地」會完全靜默。
+            if not _append_jsonl(resolved_dir / LIFECYCLE_EVENTS_FILENAME, events):
+                logger.warning(
+                    "[lifecycle] %d 筆轉變寫入 %s 失敗（事件未落地）",
+                    len(events), LIFECYCLE_EVENTS_FILENAME,
+                )
+            else:
+                logger.info(
+                    "[lifecycle] %d 筆轉變已 append 進 %s",
+                    len(events), LIFECYCLE_EVENTS_FILENAME,
+                )
+        return events
+    except Exception as exc:  # noqa: BLE001 — 失败隔离：不阻断任何主路径
+        logger.warning(
+            "evaluate_lifecycle_all failed (不影響主路徑): %s: %s",
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        return []
+
+
 __all__ = [
     "DEFAULT_ELEVATE_MIN_EVIDENCE",
     "ELEVATION_DIR_NAME",
@@ -1382,6 +1570,7 @@ __all__ = [
     "ElevationNode",
     "ElevationObserver",
     "elevate_matured_patterns",
+    "evaluate_lifecycle_all",
     "inner_life_event_to_input",
     "v1_memory_to_input",
     "sage_fact_to_input",
