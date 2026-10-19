@@ -95,3 +95,7 @@ src/llm/proxy.py.mixed_backup
 # CRASH-DUMP-1: local WER dumps must never enter git
 *.dmp
 data/crash_dumps/
+
+# SOUL-BUG-011 誤提交修正 (2026-10-18): 本檔為 Task Scheduler 入口,
+# 內含硬編碼本機絕對路徑, 不可版控; 實測 git add -A 會誤納入, 故明列忽略。
+scripts/_watchdog_hidden.vbs
