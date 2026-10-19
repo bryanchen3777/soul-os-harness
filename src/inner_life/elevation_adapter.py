@@ -25,7 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
@@ -67,6 +67,10 @@ _EVENT_TYPE_MEMORY_FACT = "memory_fact"
 # world:calendar* / world:user_going_outside* 放行）。origin 常數由
 # src/memory/sage/horizon.py 提供（單一事實來源, 輕量常數, 無重依賴）。
 from .submission_gate import is_world_media_trigger
+# SOUL-BUG-010 防線二：分級消費的終態／休眠集合（單一事實來源於 lifecycle_overlay）。
+# 模組層 import 安全：lifecycle_overlay 是純標準函式庫，不 import 本檔也不 import
+# emergent_projection，故無循環。
+from .lifecycle_overlay import TERMINAL_OR_DORMANT_LIFECYCLE_STATES
 
 _ORIGIN_EXTERNAL_WORLD = "external_world"
 _ORIGIN_ASSIMILATED = "assimilated"
@@ -1191,12 +1195,41 @@ def elevate_matured_patterns(
                                 f"(assimilated 封頂, 禁入 Belief/Value/Trait/Essence)"
                             )
             candidates: dict[str, list[str]] = {}
+            # ── SOUL-BUG-010 防線二（Owner 2026-10-19）：昇華層排除休眠／終態 ──
+            # `engine.elevate()` 按「候選維度」聚合**全部** pattern 的有效證據邊，
+            # 因此一個 pattern 只要還在 `candidates` 裡，它的證據就會被拿去替別的
+            # 維度湊數。`dormant`（30 天無新支持）／`superseded` 的 pattern 若照樣
+            # 計票，等於「陳年廢棄」仍在為新靈魂背書——這就是分級消費要擋的東西。
+            #
+            # 🔴 語意邊界（不可誤讀為「年紀大就沒資格」）：只排除
+            # **dormant / superseded**，**weakening 保留完整投票權**。
+            # `weakening` = 7 天無新支持，人類心智中「週一一次、下週二又一次
+            # （間隔 8 天）」是**標準的長期跨週習慣**；若連它一起排除，系統就只剩
+            # 「一週內密集成癮的短暫衝動」能升格，真正細水長流的習慣永遠升不了格，
+            # 直接推翻 soul-elevation `prior.py:62`「old ≠ outdated——年齡不是退場
+            # 理由，失去支持才是」的立論。
+            #
+            # 狀態來源：`load_elevation_nodes` 的 lifecycle overlay（sidecar）。
+            # sidecar 缺文件時全數缺 `lifecycle_state` → 缺省 active → **本段
+            # 逐位元 no-op**，行為與本票改動前完全相同。
+            quarantined_patterns: list[str] = []
             for nid, node in engine._nodes.items():
                 if node.node_type != "pattern":
                     continue
                 if nid in eh2_blocked_patterns:
                     continue
+                if node.lifecycle_state in TERMINAL_OR_DORMANT_LIFECYCLE_STATES:
+                    quarantined_patterns.append(nid)
+                    continue
                 candidates.setdefault(node.candidate_node_type, []).append(nid)
+            if quarantined_patterns:
+                logger.info(
+                    "[elevate] SOUL-BUG-010 防線二：%d 顆 %s pattern 不再參與昇華計票 "
+                    "(agent=%s)",
+                    len(quarantined_patterns),
+                    "/".join(sorted(TERMINAL_OR_DORMANT_LIFECYCLE_STATES)),
+                    agent_id,
+                )
 
             baseline_edges = len(engine._edges)
             agent_elevated: List[ElevationNode] = []
@@ -1209,11 +1242,27 @@ def elevate_matured_patterns(
                 # 失效 (valid_until_ts 置標), 使其 0 參與計票 / 0 被複製到靈魂節點;
                 # 證據不足 (ValueError, 無副作用) 或異常時還原, 不永久丟失。
                 _EH2_SENTINEL = "_eh2_r3_blocked"
-                neutralized: List[Any] = []
-                for e in engine._edges:
-                    if e.node_id in eh2_blocked_patterns and e.valid_until_ts is None:
-                        neutralized.append(e)
-                        e.valid_until_ts = _EH2_SENTINEL
+                neutralized: List[tuple] = []
+                for _i, _e in enumerate(engine._edges):
+                    if (
+                        _e.node_id in eh2_blocked_patterns
+                        and _e.valid_until_ts is None
+                    ):
+                        # 🔴 SOUL-BUG-010：`EvidenceEdge` 是 **frozen dataclass**
+                        # （soul-elevation `models.py:159`）⇒ 舊碼的
+                        # `e.valid_until_ts = _EH2_SENTINEL` **必然拋
+                        # FrozenInstanceError**，整段 R3 隔離從未真正執行過。
+                        # 而該例外會被最外層 except 接住 → `elevate_matured_patterns`
+                        # 整趟回傳 []，等於**整條靈魂生長線靜默死掉**（正是本函式
+                        # 下方 :1281-1286 註解描述的失效型態）。
+                        # 生產實測（2026-10-19）：10 隻 agent 的 SAGE fact 中
+                        # `origin="assimilated"` 共 **0** 筆 ⇒ 該分支從未被觸發，
+                        # 地雷尚未引爆；一旦有 assimilated fact 就會炸。
+                        # 正解：frozen dataclass 只能用 `replace()` 產生新物件再換位
+                        # （與引擎自身 `_supersede_edges` 同一手法，`engine.py:803`）。
+                        _replacement = replace(_e, valid_until_ts=_EH2_SENTINEL)
+                        engine._edges[_i] = _replacement
+                        neutralized.append((_i, _e, _replacement))
                 # ── SOUL-BUG-009（Owner 2026-10-18）：代表性锚点取代 pids[0] 死锚点 ──
                 # 锚点的 content 直接成为灵魂节点内容（engine.py:516）。恒取最旧的
                 # `pids[0]` ⇒ 内容与既有灵魂节点逐位元相同 → 被 _persist_result
@@ -1231,47 +1280,73 @@ def elevate_matured_patterns(
                 #     两者数值相同时永远同步触发，闸门不可能先于引擎挡下任何东西。
                 #     实测（把该闸门整个关掉，全部测试依然全绿）证实了这一点。
                 #     Owner 裁決：拔除冗余，不留无法被变异实验击穿的盲肠逻辑。
-                _anchor = _select_anchor_representative(
-                    [engine._nodes[pid] for pid in pids],
-                    _occupied_soul_contents(engine, agent_id, cand),
-                )
-                if _anchor is None:
-                    for e in neutralized:
-                        e.valid_until_ts = None
-                    logger.info(
-                        f"[elevate] skip agent={agent_id} candidate={cand}: "
-                        f"all {len(pids)} candidate contents already occupied by "
-                        f"existing {cand} soul nodes (idempotent no-op)"
-                    )
-                    continue
+                #
+                # 🔴 SOUL-BUG-010（Owner 2026-10-19）：`try/finally` 覆蓋範圍前推至
+                # **锚点选取本身**，且**成功路径也必须还原**。原碼兩處缺陷：
+                #   ① `_select_anchor_representative(...)` 在 `try` 之外，其內部
+                #      `[engine._nodes[pid] for pid in pids]` 可拋 KeyError ⇒ 已中和的
+                #      邊永遠留在 sentinel 狀態（上方 `:1210` 註解「不永久丟失」為假）。
+                #   ② 成功路徑（`agent_elevated.append(soul)` 之後）**從不還原**。
+                #      而 `engine` 是 per-agent_id 重建、**跨候選維度重用**
+                #      （`:1157` 建一次，`:1203` 迴圈所有維度共用）⇒ 維度 A 成功昇華
+                #      會讓維度 B/C 的計票少算那些邊。累積且靜默。
+                #   實測規模前提：`engine` 每次呼叫重建、無模組層單例 ⇒ 不會跨呼叫
+                #      永久腐化，僅同趟呼叫內累積。
+                #
+                # ⚠️ 附帶的行為變更（刻意）：`_select_anchor_representative` 拋出的
+                # 異常現在落在**維度級** except（記 warning 後 continue 到下一維度），
+                # 而非直接冒泡到最外層 except 使整趟 `elevate_matured_patterns`
+                # 回傳 []。這與本模組既有「逐維度失敗隔離、不阻斷 consume 主路徑」
+                # 的契約一致，且比「一個維度的壞節點讓整趟昇華歸零」更正確。
                 try:
+                    _anchor = _select_anchor_representative(
+                        [engine._nodes[pid] for pid in pids],
+                        _occupied_soul_contents(engine, agent_id, cand),
+                    )
+                    if _anchor is None:
+                        logger.info(
+                            f"[elevate] skip agent={agent_id} candidate={cand}: "
+                            f"all {len(pids)} candidate contents already occupied by "
+                            f"existing {cand} soul nodes (idempotent no-op)"
+                        )
+                        continue
                     soul = engine.elevate(
                         _anchor.node_id, min_evidence=min_evidence
                     )
+                    agent_elevated.append(soul)
+                    elevated.append(soul)
+                    logger.info(
+                        f"[elevate] ✓ agent={agent_id} candidate={cand} "
+                        f"patterns={len(pids)} anchor={_anchor.node_id[:8]}… "
+                        f"→ {soul.node_type} "
+                        f"(min_evidence={min_evidence})"
+                    )
                 except ValueError as exc:
                     # 独立证据不足 → 不升（不提前）。这是常态（多数组未达阈值）。
-                    for e in neutralized:
-                        e.valid_until_ts = None
                     logger.info(
                         f"[elevate] skip agent={agent_id} candidate={cand}: {exc}"
                     )
                     continue
                 except Exception as exc:  # noqa: BLE001 — 失败隔离
-                    for e in neutralized:
-                        e.valid_until_ts = None
                     logger.warning(
                         f"[elevate] failed agent={agent_id} candidate={cand}: "
                         f"{type(exc).__name__}: {exc}"
                     )
                     continue
-                agent_elevated.append(soul)
-                elevated.append(soul)
-                logger.info(
-                    f"[elevate] ✓ agent={agent_id} candidate={cand} "
-                    f"patterns={len(pids)} anchor={_anchor.node_id[:8]}… "
-                    f"→ {soul.node_type} "
-                    f"(min_evidence={min_evidence})"
-                )
+                finally:
+                    # 唯一還原點：早退（continue）、證據不足、異常、成功四種路徑
+                    # 全部經過這裡，確保「暫時失效」真的是暫時的。
+                    #
+                    # 還原用「位置 + 身分」雙重比對：只把我們自己放進去的那個
+                    # 物件換回原物。若該槽位已被引擎自己改寫（例如
+                    # `_supersede_edges` 的留痕標記），就不動它——避免還原動作
+                    # 反過來抹掉引擎的合法寫入。
+                    for _i, _original, _replacement in neutralized:
+                        if (
+                            _i < len(engine._edges)
+                            and engine._edges[_i] is _replacement
+                        ):
+                            engine._edges[_i] = _original
             # 只 append 本次新增的边（加载的历史边不重复写，supersede 原地改不动文件）。
             _persist_result(
                 resolved_dir, agent_elevated, engine.evidence_edges[baseline_edges:]

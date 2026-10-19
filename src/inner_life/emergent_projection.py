@@ -95,11 +95,22 @@ def load_elevation_nodes(store_dir: Optional[Any] = None) -> List[dict]:
     失败隔离：文件不存在 / 读失败 / 单行解析失败 → 记录 debug 并跳过该行，
     **绝不 raise**（fail-silent，不阻塞 prompt 组装主路径）。
 
+    **SOUL-BUG-010 生命周期 overlay（单点收敛）**：本函数是全库**唯一**的节点读取
+    入口定义，5 个消费端（elevation_adapter 升华 / project_emergent 投影 /
+    elevation_recall 回忆 / goals.seed_provider 种子 / io.gateway 对外 API）
+    全部经由这里取节点。故生命周期状态在此**一次性**叠加，而不是逐个消费端
+    各自处理——散落守门正是 SOUL-BUG-009 的病根，新增第 6 个消费端时必然再漏一次。
+
+    ``elevation_nodes.jsonl`` 是 append-only 权威，生命周期转变无法写回节点本体，
+    因此状态由旁挂 sidecar ``elevation_lifecycle_events.jsonl`` 承载，读时叠加
+    （节点文件位元组不变）。sidecar 缺文件时本函数行为与改动前**逐位元相同**。
+
     Returns:
         list[dict]：每行一个节点 dict（node_id / node_type / content /
         confidence / agent_id / created_ts 等原始字段）；无数据或失败回 []。
     """
-    path = _resolve_store_dir(store_dir) / NODES_FILENAME
+    resolved_dir = _resolve_store_dir(store_dir)
+    path = resolved_dir / NODES_FILENAME
     nodes: List[dict] = []
     if not path.exists():
         return nodes
@@ -119,7 +130,10 @@ def load_elevation_nodes(store_dir: Optional[Any] = None) -> List[dict]:
     except OSError as exc:
         logger.warning("elevation nodes read failed (%s): %s", path, exc)
         return []
-    return nodes
+    # SOUL-BUG-010：生命周期 overlay 单点收敛（纯函数，不原地改本列表元素）。
+    from .lifecycle_overlay import apply_lifecycle_overlay, load_lifecycle_events
+
+    return apply_lifecycle_overlay(nodes, load_lifecycle_events(resolved_dir))
 
 
 def _normalize_lifecycle_state(node: dict) -> str:

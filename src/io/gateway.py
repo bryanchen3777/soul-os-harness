@@ -271,8 +271,9 @@ def _collect_soul_essence(agent_id: str, store_dir=None):
     只讀 elevation store（預設 data_root()/elevation，測試可傳 store_dir 隔離）。
     過濾（對齊 emergent_projection）：
       1. agent_id == 該靈魂（agent_id="default" 的 world node 永不展示）。
-      2. node_type in {belief, value, trait, essence}（pattern 不展示）。
-      3. 缺 node_id / content 的行跳過。
+      2. lifecycle_state ∉ {dormant, superseded}（SOUL-BUG-010；缺欄位 → 照常展示）。
+      3. node_type in {belief, value, trait, essence}（pattern 不展示）。
+      4. 缺 node_id / content 的行跳過。
     排序：created_ts asc + node_id asc（deterministic）。
 
     Returns:
@@ -281,7 +282,10 @@ def _collect_soul_essence(agent_id: str, store_dir=None):
     if store_dir is None:
         store_dir = data_root() / "elevation"
     try:
-        from src.inner_life.emergent_projection import load_elevation_nodes
+        from src.inner_life.emergent_projection import (
+            NON_PROJECTED_LIFECYCLE_STATES,
+            load_elevation_nodes,
+        )
         nodes = load_elevation_nodes(store_dir)
     except Exception as e:
         logger.warning(f"[Soul] 讀 elevation nodes 失敗: {e}")
@@ -292,6 +296,13 @@ def _collect_soul_essence(agent_id: str, store_dir=None):
             continue
         if n.get("agent_id") == "default":
             continue  # world node 永不展示（防查詢者自身是 default 時放行）
+        # 🔴 SOUL-BUG-010：本端點是**唯一**沒有生命週期過濾的對外 API
+        # （SOUL-AUDIT-013-RO 方向 1 實測：其餘 4 個消費端皆有守門）。
+        # dormant / superseded 節點若照樣回傳，等於把已判定失效的靈魂
+        # 重新洩漏到外部查詢面。狀態由 load_elevation_nodes 的 overlay 提供
+        # （缺 lifecycle_state → 不在此集合 → 舊資料照常回傳，additive 相容）。
+        if n.get("lifecycle_state") in NON_PROJECTED_LIFECYCLE_STATES:
+            continue
         ntype = n.get("node_type")
         if ntype not in _SOUL_ESSENCE_TYPES:
             continue  # pattern 及其他未知類型不展示
