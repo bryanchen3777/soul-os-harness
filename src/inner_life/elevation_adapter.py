@@ -461,37 +461,44 @@ def _load_existing_dedup_index(store_dir: Path) -> Dict[tuple, Optional[str]]:
 
     fail-open：檔缺失回空 dict；讀檔異常（OSError 等）只 warning 並回空 dict，
     絕不 raise（呼叫方因此不跳過，合法產出不受損）。
+
+    🔴 SOUL-BUG-010（Owner 2026-10-19 指示「雙軌讀取封堵」）：本函式原本自己
+    ``open(NODES_FILENAME)`` 直讀節點檔，是全庫僅存的**第二條節點讀取路徑**
+    ——即使它當下不消費 ``lifecycle_state``，它仍是一個「側門」：未來任何
+    依賴節點狀態的邏輯若接在此路徑上，就會**繞過** lifecycle overlay 而靜默
+    看到過期狀態。⇒ 收斂到 SSOT loader ``load_elevation_nodes()``，
+    讓全庫**只有一條**節點讀取入口，側門在結構上消失。
+
+    語意等價性已逐條核對（見守衛 test_dedup_index_uses_ssot_loader）：
+      * 檔案順序 → loader 保序（append-only JSONL 逐行 append）        ✓
+      * 壞 JSON 行跳過 → loader 同樣跳過                              ✓
+      * 缺 node_id 的壞列記 ``None`` → loader 原樣回傳該 dict          ✓
+      * 「檔案順序第一列勝出／None 可補位」→ 逐行迭代即可保留          ✓
+      * 缺檔 / OSError → 空 dict（loader 回 ``[]``）                    ✓
+      * overlay 只改 ``lifecycle_state``／``superseded_by``，
+        不動 ``agent_id``／``node_type``／``content`` ⇒ 鍵值不變        ✓
     """
     index: Dict[tuple, Optional[str]] = {}
-    path = store_dir / NODES_FILENAME
+    # lazy import：本檔的既有慣例（見 elevate_matured_patterns 內的同名 import），
+    # 避免與 emergent_projection 形成 import 循環。
+    from .emergent_projection import load_elevation_nodes
+
     try:
-        if not path.exists():
-            return index
-        with open(path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                if not line.strip():
-                    continue
-                try:
-                    rec = json.loads(line)
-                except ValueError:
-                    continue
-                try:
-                    key = (
-                        rec.get("agent_id"),
-                        rec.get("node_type"),
-                        _dedup_content_hash(rec.get("content", "")),
-                    )
-                except Exception:  # noqa: BLE001 — 單行容錯，不污染整批
-                    continue
-                # 檔案順序第一列勝出（確定性 canonical）。已存在但 canonical 為 None
-                # （壞列）而本列 node_id 健康 → 補位，讓重綁仍可進行。
-                if index.get(key) is None:
-                    index[key] = rec.get("node_id")
-    except OSError as exc:
-        logger.warning("elevation dedup read failed (%s): %s", path, exc)
-        return {}
+        for rec in load_elevation_nodes(store_dir):
+            try:
+                key = (
+                    rec.get("agent_id"),
+                    rec.get("node_type"),
+                    _dedup_content_hash(rec.get("content", "")),
+                )
+            except Exception:  # noqa: BLE001 — 單行容錯，不污染整批
+                continue
+            # 檔案順序第一列勝出（確定性 canonical）。已存在但 canonical 為 None
+            # （壞列）而本列 node_id 健康 → 補位，讓重綁仍可進行。
+            if index.get(key) is None:
+                index[key] = rec.get("node_id")
     except Exception as exc:  # noqa: BLE001 — fail-open：任何異常都不跳過
-        logger.warning("elevation dedup read failed (%s): %s", path, exc)
+        logger.warning("elevation dedup read failed (%s): %s", store_dir, exc)
         return {}
     return index
 

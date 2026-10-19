@@ -481,5 +481,73 @@ def test_overlay_never_writes_nodes_file(tmp_path):
     assert (store / NODES_FILENAME).read_bytes() == before
 
 
+# ══ 雙軌讀取封堵：去重索引必須走 SSOT loader ═══════════════════════
+
+
+def _dedup_index(store_dir: Path):
+    from src.inner_life.elevation_adapter import _load_existing_dedup_index
+
+    return _load_existing_dedup_index(store_dir)
+
+
+def test_dedup_index_uses_ssot_loader_not_its_own_open(tmp_path, monkeypatch):
+    """🔴 雙軌讀取封堵：去重索引**不得**自己開檔。
+
+    舊碼 `elevation_adapter._load_existing_dedup_index` 自帶 `open(NODES_FILENAME)`，
+    是全庫僅存的第二條節點讀取路徑。即使它當下不消費 lifecycle_state，
+    它仍是側門：未來任何依賴節點狀態的邏輯接在這條路徑上，就會繞過 overlay
+    靜默看到過期狀態。
+
+    驗證方式不是「看程式碼」，而是**讓 loader 失效**：
+    若索引仍能從檔案算出結果 ⇒ 它沒走 loader ⇒ 守衛轉紅。
+    """
+    store = tmp_path / "s"
+    p = _pattern("agent_rem", "每個禮拜三都會去河堤走一圈")
+    _write(store, [p], [])
+
+    import src.inner_life.emergent_projection as ep
+
+    monkeypatch.setattr(ep, "load_elevation_nodes", lambda *a, **k: [])
+
+    assert _dedup_index(store) == {}, (
+        "去重索引仍能從檔案算出結果 ⇒ 它沒有走 SSOT loader，側門未封堵"
+    )
+
+
+def test_dedup_index_semantics_preserved(tmp_path):
+    """收斂後語意必須逐位元等價：檔案順序第一列勝出、壞列記 None 可補位。"""
+    store = tmp_path / "s"
+    store.mkdir(parents=True)
+    rows = [
+        {"node_id": "n1", "node_type": "value", "agent_id": "agent_rem", "content": "A"},
+        {"node_type": "value", "agent_id": "agent_rem", "content": "B"},  # 壞列：缺 node_id
+        {"node_id": "n3", "node_type": "value", "agent_id": "agent_rem", "content": "A"},
+        {"node_id": "n4", "node_type": "value", "agent_id": "agent_rem", "content": "C"},
+    ]
+    (store / NODES_FILENAME).write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+        encoding="utf-8",
+    )
+    (store / EDGES_FILENAME).write_text("", encoding="utf-8")
+
+    idx = _dedup_index(store)
+    from src.inner_life.elevation_adapter import _dedup_content_hash
+
+    def _entry(content: str):
+        return idx[("agent_rem", "value", _dedup_content_hash(content))]
+
+    # A 的兩列：檔案順序第一列 n1 勝出（n3 不該取代）
+    assert _entry("A") == "n1"
+    # B 只有壞列 ⇒ canonical 為 None
+    assert _entry("B") is None
+    # C 正常
+    assert _entry("C") == "n4"
+
+
+def test_dedup_index_fail_open_on_missing_store(tmp_path):
+    """缺檔 → 空 dict（不 raise）。"""
+    assert _dedup_index(tmp_path / "nonexistent") == {}
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])
