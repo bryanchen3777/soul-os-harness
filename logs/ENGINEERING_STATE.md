@@ -541,6 +541,45 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 上述三點已寫入每日觀測排程的執行注意事項（cron `morning_slot_first_wave_observation` 第 10 項 (a)(b)(c)），並附 2026-10-20 基準讀數（第 10 項 (d)）供逐日差分。
 
 **對 §0.1.19 第 3 點的補充**：該排程第 11 項的累積檔（`%TEMP%\morning_obs\morning_observations.jsonl`）第一列以 2026-10-20 00:00 的基準讀數補建，之後每日 append 一列，供 7 天窗統計。
+
+#### 0.1.21 晨間觀測首日（2026-10-20 08:00 EDT slot）＋ 四項機制澄清
+
+**背景**：§0.1.19 建立每日 08:20 America/New_York 的觀測排程（cron `morning_slot_first_wave_observation`，cronId `a9de9f9d-0571-4307-9c9e-b3d1417aea38`），首次於 2026-10-20 08:20 執行（trigger `scheduled`，delivered）。本節為**主大腦獨立複核**後的定案（含排程自報數字的逐項驗證）。
+
+**① 線頭接縫提交 0 筆 ＝ at-most-once 正確行為（非故障）**。morning slot（08:00:28–08:01:29）10 隻 agent 全部執行完畢，`threads` 合計 **55**、`active` 合計 **20**、`dissolved_candidates=0`、`catchup_invoked=0`；`elevation 事件已提交` = **0** 筆（觸發為 morning 者 0 筆；全日總計 35 筆全部來自昨晚 night slot）。根因在程式碼：`src/soul/life_thread_orchestrator.py` 的 `_ELEVATION_EMITTED` **以 `thread_id` 為鍵（不含 slot、不含 date）**，docstring 明寫「同一 `thread_id` 在本行程只發射一次（**寧可漏、不可重**）」⇒ 昨晚 22:00 night slot 已登記那 35 條線頭，今早 morning 掃到同樣線頭時全被 `continue` 擋下。**這是設計意圖的落實**（避免了同一條線頭在兩個槽各昇華一次）。⚠️ 推論：只要服務未重啟，今晚 22:00 night slot 亦將是 0 筆提交（除非當日有線頭新轉入 completed）——21:17 的重啟正是清空了這張記憶體登記表，才使 22:00 得以完整發射 35 筆。
+
+**② 🔶 「跨槽延遲昇華」的精確化（對 §0.1.19 表述的補充，不改其裁決）**。昨晚 22:00 的 9 value ＋ 4 trait 確由 **22:05 dream slot** 觸發的 `run_elevation` 批次昇華；但今晨 08:00:29 的 `agent_yua` value 走的是**另一條同型路徑**且**在同一輪內完成**：
+
+```
+08:00:29,513 [DiaryHandler] P1 昇華帶入正文 agent_id=agent_yua slot=morning chars=32
+08:00:29,624 [SubmissionGate] consume ✓ event_id=9e2cf2ea5cb3... nodes=1 (pattern only, 不 elevate)
+08:00:29,685 [elevate] ✓ agent=agent_yua candidate=value patterns=34 anchor=238a8088… → value (min_evidence=2)
+```
+
+⇒ **昇華發生於「下一個觸發 `run_elevation` 的批次」，不必是 dream slot**。§0.1.19 的裁決（禁止在接縫內聯 `elevate()`）**維持不變**且理由更強：正因昇華被交給 `run_elevation` 批次，diary 與線頭才能在同一輪匯集、累積 `min_evidence`（`patterns=34` 群組達 2 條證據）後一次昇華。
+
+**③ 🔶 trace 記的是「引擎產出」，不是「已落盤」（長期既存，非新增缺陷）**。12:00Z+ trace 19 筆（18 `node_created` ＋ 1 `node_elevated`）對節點檔只新增 **12** 顆 ⇒ 7 筆 world pattern 未落盤。全歷史統計：**`node_created` 3953 筆中僅 441 筆落盤（落盤率 11.2%）**，未落盤者 `reason` 全為 `internalized`、**`node_id` 互不重複**（⇒ 非 id 碰撞），**最早可追溯至 2026-08-29**。⇒ 用 trace 統計產出量會高估約 **9 倍**；量測時必須同時報「trace 筆數」與「落盤筆數」。昨晚那批 agent 事件為 1:1 全落盤，故 §0.1.18 的對帳不受影響。
+
+**④ Telegram aoi 外部網路逾時的自癒鏈（非程式缺陷）**。13:30:07 `[TG:aoi] poller STALLED: seconds_since_last_poll_success=123.6 (threshold 120s) poll_success_count=5757` → 優雅抑制 → 拆除 → 重建 3 次 → **13:30:43 `poller rebuilt OK (attempt 3/5)`（36 秒自癒）** → **13:40:44 `healthy for >=600s — resetting rebuild counter`**。全日僅 aoi 受影響（STALLED ×1、rebuilt ×1），其餘 9 隻正常。根因為 `httpcore.ReadTimeout`（`api.telegram.org` 逾時），非程式缺陷。
+
+**⑤ 晨間觀測基線（分子／分母／單位）**：
+
+| 項目 | 值 | 口徑 |
+|---|---|---|
+| 節點總數 | **486** | 顆（08:20 量得 485，16:10 復量 486；08:20 後 +17 ＝ 11 agent pattern ＋ 1 value ＋ 1 world pattern ＋ 4 world pattern 未落盤） |
+| 節點增量（08:00 槽） | **+12** | 顆（pattern 11 ＋ value 1） |
+| 標籤型 content | **0** | 顆（核心指標通過） |
+| 門檻一 四起源 | necessity_driven **41**／whim_driven **9**／world_collision **5**／**goal_driven 0** | 顆；分母 55 條線頭（41/55=74.5%、9/55=16.4%、5/55=9.1%、0/55=0%） |
+| 門檻三 連續天數 | anna 34／ram 32／rem 32／yua 32／ruka 18／akane 12／miku 7／aoi 6／mai 5／mahiru 2 | 天（依 `updated_at`；分母 10 隻 agent） |
+| 弱化包裝「我隐约觉得」 | **0** | 筆／10 隻 agent |
+| 老化轉換 | **0** | 筆（sidecar 維持 **185** 筆） |
+| 關鍵反例 `6a92c906b245` | **active** | 節點（sidecar 提及 0 筆） |
+| 節點檔前 282,409 bytes sha256 | `7FD8F3F3BCE474CC09C87617C5DFCA41D2E518153F1356212A4DEF98B744178B` **恆等** | 位元級 |
+| 召回池成熟度 | 池 **0** 顆／命中率 **0/200**／**NO-GO** | 與 §0.1.20 因果鏈一致（等老化供給） |
+
+**⑥ 晨間線頭進展與未推進原因**。8 隻 agent 有線頭推進（`[LifeThreadOrigin] round … created=0 advanced=1~2`，`origin` 全為 `world_collision`），**無一新建**；`agent_mai` 因 `[LifeThread] cap agent=agent_mai active=2 cap=2 (create rejected)` 而 `skipped=1`；`agent_miku`／`agent_aoi` 當日**無 `[LifeThreadOrigin] round` 行**（未被 world_collision 喚醒）⇒ 三者線頭檔 `updated_at` 停在 2026-10-19 02:01Z。另有 **13 筆** `[LifeThreadDissolution] advisory only reason=time_horizon_exceeded`（僅建議，未執行）。⇒ **門檻一的 `goal_driven` 完全缺席（0/55），四起源尚未齊備**；門檻三的 7 天窗對 mai（5）／mahiru（2）仍未達成。
+
+**⑦ 另記（非缺陷，但須知）**：`[IcalCalendarSource] HTTP error … /basic.ics: HTTP Error 404` 於 07:53:33 與 11:43:47 各 1 次；統計 `polls_total=228 / polls_failed=2`（**0.9%**）⇒ **偶發**，非持續失效（`events_emitted=0` 主因是 226 筆 `events_skipped_outside_window`）。`configs/**` 內未檢出 `basic.ics` 字串（來源設定不在 repo 內）。
 ---
 
 ## 0.2 VC 語音通道：Windows 下的進程結構（運維事實，2026-10-14 主大腦實測）
