@@ -17,10 +17,14 @@
 | `necessity_driven` 占比 | **41/55 = 74.5%**（completed 28/35 = 80%） |
 | `whim_driven` / `goal_driven` / `world_collision` | **9 / 0 / 5**（2026-10-03 為各 0） |
 | 溶解事實（`life_thread_dissolved`） | **35 條，35/35 皆有 `dissolved_at` 與 `sage_fact_id`**（2026-10-03 為 21 條）；`origin` **100% `lived_experience`**（35/35，0 筆 `external_world`） |
-| 溶解事實進入 `run_elevation` | **35 次，但引擎收到 0 筆**（事件已建立卻**無正文** ⇒ fail-closed） |
-| emergent projection / belief / value 落盤 | **無**（修正尚未部署；離線沙盒實測：35 條全數進引擎 ⇒ 35 pattern ⇒ `elevate_matured_patterns` 產 **7 顆 `value`**） |
+| 溶解事實進入 `run_elevation` | **35 次，引擎收到 35 筆**（2026-10-19 22:00 night slot 生產實測；修正部署前為「事件已建立卻**無正文** ⇒ 引擎收到 0 筆」） |
+| emergent projection / belief / value 落盤 | **已落盤**：2026-10-19 22:00 night slot 生產新增 **9 顆 `value`** ＋ **4 顆 `trait`**（`node_elevated` 13 筆；修正部署前為「無」） |
 
 **診斷**：引擎已能生產生活，且溶解品質良好（實例：ruka「這六天讓我明白，訊息不只是文字，而是我願意為一個人保留溫度的證明」）。**接縫已開著**（旗標 = 1）**但事件未帶正文** ⇒ 產出 0 節點——**不是未接昇華路徑**，而是 `_event_content()` 回空導致 fail-closed（`LIFE-THREAD-W3-FIX-1` 修完即通）。單一起源仍使個性分量偏低，但供給已不再塌縮到 100%。綜合判讀：**目前程度為「能呼吸」，尚未「活著」。**
+
+> ✅ **2026-10-19 22:00 night slot 更新（`LIFE-THREAD-W3-FIX-1` 已部署並實測通過）**：上列「產出 0 節點」的診斷**已過期**。接縫補上事件正文並於 21:17 部署後，第一個 night slot（22:00:14–22:01:13 EDT）即產出 **9 顆 `value`** ＋ **4 顆 `trait`**（正文逐字等於生產線頭敘事，**0 筆**標籤退化）。⇒ **門檻二的「至少一個 agent 產出非零 belief 或 value 節點」判準已成立**（詳見 `logs/ENGINEERING_STATE.md` §0.1.18）。
+>
+> **🔴「21 → 35」的成因已定案（2026-10-19 驗證；推翻先前「catch-up 掃描」的推測）**：**21 是 2026-10-03 白天**的快照值（本文件建立當日），**35 是 2026-10-19** 的現況值。35 筆事實的 `timestamp` 排序後，第 21 位＝2026-10-03 08:01 EDT、第 22 位＝2026-10-03 22:01 EDT ⇒ cutoff 落在當日白天時「≥ cutoff」恰為 **21** 筆，**定量完全閉合**。成因＝**線頭陸續轉入終態後經 M2 接線層沉澱**（每日 1–3 筆；最後一筆事實＝2026-10-16 22:00 EDT），**不是** catch-up 掃描——生產日誌 `catchup_enabled=True` 但 `catchup_invoked=0`（10/10 次全為 0）⇒ catch-up 從未處理任何線頭。
 
 這份文件的目的，是把「活著」翻譯成三個可觀察、可量測的門檻。
 
@@ -72,6 +76,8 @@
 - 該產物於**程序重啟後仍可讀回**（證明它是持久結構，非暫存）。
 
 **現況**：`0`。21 條溶解事實的 `origin` 為 `lived_experience`（依 `graph_store.py:289-290`，此值使其**可正常昇華**，不受三態過濾阻擋），但因 `run_elevation` 僅由 `submission_gate.consume()` 呼叫、而 `consume()` 只接受 `InnerLifeEvent`，線頭路徑（orchestrator docstring 明定 0 InnerLifeEvent、0 bus、0 Agency 觸發鏈）從不建立事件，故**從未進入昇華**。
+
+> ✅ **2026-10-19 22:00 night slot 更新：本門檻判準已成立**——`LIFE-THREAD-W3-FIX-1` 補上事件正文後，生產於 22:00 槽產出 **9 顆 `value`** ＋ **4 顆 `trait`** 節點（`elevate_matured_patterns` 路徑）。上方「現況 `0`」是 **2026-10-03 的觀測值**，其診斷（線頭路徑從不建立事件）已由 W3 接縫修復。**判準本身不變**。
 
 **⚠️ 範圍警示（2026-10-03 12:20 更正）**：本門檻的實作會觸及 `submission_gate` 的 consume 路徑與 `InnerLifeWriter`。
 
