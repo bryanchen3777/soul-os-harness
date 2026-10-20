@@ -580,6 +580,61 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 **⑥ 晨間線頭進展與未推進原因**。8 隻 agent 有線頭推進（`[LifeThreadOrigin] round … created=0 advanced=1~2`，`origin` 全為 `world_collision`），**無一新建**；`agent_mai` 因 `[LifeThread] cap agent=agent_mai active=2 cap=2 (create rejected)` 而 `skipped=1`；`agent_miku`／`agent_aoi` 當日**無 `[LifeThreadOrigin] round` 行**（未被 world_collision 喚醒）⇒ 三者線頭檔 `updated_at` 停在 2026-10-19 02:01Z。另有 **13 筆** `[LifeThreadDissolution] advisory only reason=time_horizon_exceeded`（僅建議，未執行）。⇒ **門檻一的 `goal_driven` 完全缺席（0/55），四起源尚未齊備**；門檻三的 7 天窗對 mai（5）／mahiru（2）仍未達成。
 
 **⑦ 另記（非缺陷，但須知）**：`[IcalCalendarSource] HTTP error … /basic.ics: HTTP Error 404` 於 07:53:33 與 11:43:47 各 1 次；統計 `polls_total=228 / polls_failed=2`（**0.9%**）⇒ **偶發**，非持續失效（`events_emitted=0` 主因是 226 筆 `events_skipped_outside_window`）。`configs/**` 內未檢出 `basic.ics` 字串（來源設定不在 repo 內）。
+
+#### 0.1.22 Owner STRICT NO-RESTART 裁決 ＋ 門檻一／門檻三口徑重算與更正（2026-10-20 17:10）
+
+**① Owner 裁決（2026-10-20 16:52）：STRICT NO-RESTART**。**拒絕為了「再看一次」而重啟服務、拒絕人為清空 `_ELEVATION_EMITTED`**。理由：那 35 條歷史線頭已物理性昇華完成（9 value ＋ 4 trait 已永久寫入 `elevation_nodes.jsonl`），再發射即為 **Double Submission**，違反 At-Most-Once 工程倫理並造成圖譜權重不真實膨脹。⇒ 線頭→信念的驗收口徑改為「**當前活著的線頭何時自然觸發 completion / dissolution，並以增量形式發射第 36、37 條帶正文的接縫事件**」。
+
+**② 門檻一判準逐條核實（`docs/INNER-LIFE-DEFINITION-OF-DONE.md` §1）**。原判準為**兩條**：
+
+| 判準 | 原文 | 2026-10-20 實測 | 判定 |
+|---|---|---|---|
+| 判準 1 | 任一 7 天滾動窗口內，四種起源的**實際產出數皆大於 0** | necessity 41／whim 9／world_collision 5／**goal_driven 0** | **不成立**（缺 `goal_driven`） |
+| 判準 2 | 任一 7 天窗口內，**單一起源占比 ≤ 80%** | 41/55 = **74.5%** | **成立** ✔ |
+
+⇒ 單一起源已由 100% 降至 74.5%，`whim_driven`（16.4%）與 `world_collision`（9.1%）皆已脫離 0% 荒漠。**分母無污染**：`data\soul\` 下另有 `agent_alice`／`agent_c21`／`agent_germ_01`／`agent_newcomer`／`agent_test`／`agent_yua_test` 六個資料夾，2026-10-20 實測其線頭數**皆為 0** ⇒ 全體 agent 線頭總數 **55** ＝ 10 隻生產 agent 線頭總數 **55**。
+
+**③ 🔶 待 Owner 明文裁定（DoD §5 治理：修改判準需 Owner 明確裁定，不得由實作票順帶調整）**。DoD §1 門檻一「可達性修訂（2026-10-03 11:35，實測後）」載明：判準仍以「四起源皆 >0」為目標，但 `goal_driven` **無法以工程手段達成**（72/72 goal 為 `SUSPENDED`、reason 全為 `bryan_last_seen_timeout`），故門檻一的**實務達成路徑**為：① `whim_driven` 經 W1 接線（工程可解）② `world_collision`（Owner 裁定閾值／評分結構）③ `goal_driven` **須 Bry 在場**方能自然出現（非工程議題）；**「若①②成立，門檻一的工程階段即視為達成」**，`goal_driven` 改列「條件達成」。
+
+🔴 **2026-10-20 16:52 的 Owner 裁決恰好滿足此修訂的三個條件**：① whim 成立（16.4% > 0）② world_collision 成立（9.1% > 0）③ goal_driven 缺席係「Bry 在場語意」所致，屬「正確的留白」而非工程缺陷。⇒ **該修訂的 Owner 確認條件已具備，但 DoD 原文仍寫「此修訂待 Owner 確認，未經確認前原判準仍為 canonical」** ⇒ 需 Bry **明文**裁決「門檻一工程階段達成、`goal_driven` 改列條件達成」後，DoD §1 才能據此更新（主大腦不自行調整判準）。
+
+**④ 🔴 門檻三「連續天數」口徑重算（推翻 §0.1.21 ⑤ 表格之 streak 欄）**。§0.1.21 與觀測排程自報的「anna 34／ram 32／rem 32／yua 32／ruka 18／akane 12／miku 7／aoi 6／mai 5／mahiru 2 天」，其算法實為「**最後一次 `updated_at` 距今幾天**」，**不是**判準 1 所要求的「連續每日推進天數」。
+
+正確算法（fold → 收集 `updated_at` 日期集合 → 對每個日期作為錨點往前連續計數 → 取最大值）之實測（2026-10-20 17:05）：
+
+| agent | 有推進日的總數 | **往回連續最長天數** | 有推進日（UTC） |
+|---|---|---|---|
+| agent_mahiru | 10 | **5** | 09-24、09-30、10-03、10-04、10-05、10-06、10-07、10-13、10-15、10-20 |
+| agent_akane | 7 | **2** | 09-21、09-22、10-03、10-06、10-09、10-17、10-20 |
+| agent_mai | 8 | **2** | 09-21、09-22、09-27、10-01、10-03、10-05、10-19、10-20 |
+| agent_miku | 6 | **2** | 09-21、10-01、10-03、10-15、10-19、10-20 |
+| agent_ram | 5 | 1 | 09-29、10-03、10-11、10-15、10-20 |
+| agent_ruka | 3 | 1 | 09-24、10-12、10-20 |
+| agent_anna | 3 | 1 | 09-21、09-25、10-20 |
+| agent_yua | 1 | 1 | 10-20 |
+| agent_rem | 2 | 1 | 09-27、10-20 |
+| agent_aoi | 2 | 1 | 09-23、10-20 |
+
+⇒ **門檻三判準 1（至少一個 agent 連續 7 天每天都有主動推進）不成立**（最高 mahiru **5** 天）。⇒ §0.1.21 ⑤ 表格之「門檻三 連續天數」一欄**作廢**，以本節為準。
+
+**⑤ 門檻三判準 2（該 7 天內不是同一件事的重複推進）—— 成立**。以各 agent 往回連續窗為窗口，窗口內每日推進者為**不同 `thread_id`、不同標題**（非同一件事重複推進）：
+
+- `agent_mai` 10-19「開けずにいた段ボール」→ 10-20「深夜翻出童星時期的舊場記本」
+- `agent_miku` 10-19「三成の栞と、短い一文」→ 10-20「超市的雞蛋又貴了一點」
+- `agent_akane` 10-17「車窗上的雨之後」→ 10-20「鏡子後面的名字」
+- `agent_mahiru` 10-15「小碗裡那顆有髮絲裂的蛋」→ 10-20「清出電視櫃抽屜放手電筒、電池跟行動電源」＋「通膨下的便當預算重算」
+
+⇒ **門檻三 = 判準 1 不成立（無 agent 連續 7 天每日推進）、判準 2 成立**。即：連續性**供給不足**（瓶頸在推進頻率），而非「同一件事重複七天的假連續」。
+
+**⑥ 今晚 22:00 對帳排程已建立（含一次 cron 系統的時間解析坑）**：
+
+- 每日排程 `night_slot_observation`（cronId `36e57724-0283-4b9d-8445-3bd4a197b080`，`15 22 * * *`，America/New_York，nextRun 2026-10-21 22:15 EDT），11 項量測含 Owner 鎖定的預期口徑。
+- 🔴 **坑（已記錄避免重蹈）**：此 cron 系統對**一次性**時間的解析一律 **+24 小時** —— 無論用 `at`（ISO 字串）、`at`（Unix ms，會被當秒解析）、或 `after`（相對延遲），結果一律落在**明天**同一時刻；**只有 daily `schedule`（五段 cron）的解析正確**。⇒ 今晚 22:15 改以本對話的 `self_reminder`（`self-9412c3aa9a8739de2a2c186191f17cb1`，delay 19140 秒）精準喚醒，於 22:15 EDT 執行對帳。
+- 兩支誤建的一次性排程（`4dccb5c6`／`8ec15f54`）已停用，避免明日與每日排程重複觸發。
+
+**⑦ 量測口徑紀律（新增一條，寫入兩個排程的量測紀律）**：**量測口徑本身要先自我驗證** —— 若算出來的數字與前例差異極大（例如「連續 34 天」但實際只有 1 天有推進），先懷疑自己的算法。本次即是「把『最後一次更新距今幾天』誤當『連續天數』」。
+
+**⑧ 本節未做（依 Owner 指示）**：未重啟、未動任何程式碼、未寫入 `data/**`、未觸發人工事件、未 commit/push 任何非文件變更。
 ---
 
 ## 0.2 VC 語音通道：Windows 下的進程結構（運維事實，2026-10-14 主大腦實測）
