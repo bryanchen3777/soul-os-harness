@@ -645,6 +645,8 @@ should_wake := check_points_due(agent_id) OR world_collision_detected(agent_id)
 | ④ | 路徑 | 事件**必須**經既有 `InnerLifeWriter` 建立（sole canonical creator），並經既有 `submission_gate.submit()` 進入（走 Gate 既有驗證與 consume 路徑）。**嚴禁**直接呼叫消耗鏈、**嚴禁**直接寫 `facts` 表、**嚴禁**新增 `elevate()` 呼叫點 |
 | ⑤ | 失敗方向 | 整段 `try/except`，任何例外只 `logger.warning`，**永不 raise**（不冒泡到 scheduler）；旗標 OFF 或建立失敗 ⇒ 該線頭不產生事件（寧可漏一次，不可重複花費） |
 | ⑥ | 可觀測性 | `summary` 新鍵 `"elevation_event_created": True`（**僅**在真的建立時出現）；同一 `thread_id` 在本行程只發射一次（行程內記憶體集合，不落盤） |
+| ⑦ | **正文（`extras["narrative"]`）** | **必含**：線頭的 `narrative_content`（經歷正文，108–345 字）。這是 `elevation_adapter._NARRATIVE_EXTRA_KEYS` **唯一**接受的鍵 ⇒ **缺它**則 `_event_content()` 回空 ⇒ `inner_life_event_to_input()` 回 `None` ⇒ fail-closed ⇒ **0 節點**（靜默失敗）。**白名單不擴張**（SOUL-BUG-006 維持：刻意只認 `narrative`、刻意不收 `title`） |
+| ⑧ | 感悟（`extras["reflection"]`） | 該 `sage_fact_id` 事實的 `object`（**唯讀**回讀事實庫；查無 ⇒ 空字串；**fail-soft**，任何例外 ⇒ `""`）。**目前不被 `_event_content()` 消費**（白名單刻意不擴張）⇒ **純伴隨 metadata**，**不得**宣稱它影響節點內容 |
 
 #### 不得觸碰（凍結與範圍界線）
 
@@ -657,6 +659,39 @@ should_wake := check_points_due(agent_id) OR world_collision_detected(agent_id)
 #### 可測斷言（見 `tests/soul/test_life_thread_elevation_seam.py` 十項）
 
 旗標缺席 ⇒ 0 事件／0 submit／0 LLM；`completed`＋fact ⇒ 恰 1 事件（`diary:morning`／`diary:night` 依 slot）；`active`／`abandoned` ⇒ 0；trigger ∈ 既有合法集合；呼叫點為 `submission_gate.submit`；`elevate()` 0 呼叫；`submit` 拋例外 ⇒ warning＋正常返回；AST 掃描無新定時器／無新 LLM 通道；執行前後 `data/**` 逐位元一致。
+
+### 4.7 正文與感悟雙鍵（Owner 2026-10-19 裁決 1）
+
+> **背景**：§4.6 開通接縫後，量測（`logs/LIFE-THREAD-ELEVATION-MEAS-1-REPORT.md`）發現
+> **事件根本沒帶正文**：`extras` 只有 metadata（`thread_id`／`sage_fact_id`／`origin_type`／`title`），
+> 而 `elevation_adapter._NARRATIVE_EXTRA_KEYS` 只認 `narrative` ⇒ `_event_content()` 回 `""`
+> ⇒ `inner_life_event_to_input()` 回 `None` ⇒ `inputs = []` ⇒ `engine.consume()` 0 次 ⇒ **0 節點**。
+> **不是被防火牆擋的**（35/35 條通過所有閘門）。
+
+| 鍵 | 內容 | 角色 | 來源 |
+|---|---|---|---|
+| `narrative` | 線頭的**經歷敘事**（`thread["narrative_content"]`；108–345 字，中位 174） | **節點正文的唯一來源**（白名單唯一接受的鍵） | 線頭本體（**零寫入**，線頭已在檔內） |
+| `reflection` | 溶解事實的**感悟**（該 `sage_fact_id` 事實的 `object`；45–141 字，中位 87） | **純伴隨 metadata** —— 白名單刻意不收 ⇒ **不影響節點內容** | 事實庫（**唯讀**回讀，0 INSERT/UPDATE/DELETE） |
+
+**Owner 裁決 2（維持解耦）**：`submit(event_id, (), agent_id=...)` 的**空 tuple 不變** ——
+`fact` **實體**不接入昇華鏈（`sage_fact_id` 仍只是 `extras` 裡的一個 id）。
+
+#### 約束（逐字可指認）
+
+1. **白名單零擴張**：`elevation_adapter._NARRATIVE_EXTRA_KEYS` **必須仍是** `("narrative",)`
+   （SOUL-BUG-006：刻意只認 `narrative`、刻意不收 `title` ——
+   「用標題冒充正文會讓節點語意失真；寧可少一顆節點」）。
+2. **事實回讀只讀且 fail-soft**：`get_fact` 唯讀；查無／鎖住／任何例外 ⇒ `""`，
+   **不得**讓例外冒泡，**不得**寫 `schema_meta`（舊 schema 的庫會被 `GraphStore` 觸發
+   migration ⇒ 開 store 前**必須**確認 `db_path.exists()`）。
+3. **每 agent 每次 `maybe_emit_elevation_events` 呼叫至多開一次 store**（迴圈外 lazy 開、
+   函式尾 `finally` 關）。
+4. **正文 ≠ 標題**：`narrative` 與 `title` **不得**同值（生產 35/35 條皆不同）；
+   以標題冒充正文會讓節點語意失真。
+5. **驗收須區分「事件已建立」與「節點已產出」**：`maybe_emit_elevation_events` 回 `True`
+   但節點數為 0 是**靜默失敗**（量測報告 §4.4 的坑）。
+6. **從 pattern 到 belief／value 需另一個機制** `elevate_matured_patterns`
+   （`elevation_adapter.py:1098`），與 Submission Gate **相互獨立**（Gate 只 consume）。
 
 
 ---

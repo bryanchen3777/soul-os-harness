@@ -71,9 +71,35 @@
 
 **排除**：`active`（還在進行中，不是經歷）、`abandoned`（被放棄，不是經歷）。
 
+> **「溶解事實」的定位（釐清，LIFE-THREAD-W3-FIX-1，2026-10-19）**：
+> `sage_fact_id` 目前**只是 `extras` 裡的一個 id**；**fact 實體並未進入昇華鏈**
+> （`submit(event_id, (), ...)` 傳**空 tuple**）。依 **Owner 裁決 2（維持解耦）**，
+> **維持如此**：事實實體不接入昇華鏈（避免 provenance 重組與去重鍵衝突）。
+> ⇒ 驗收**不可**假設「事實內容會出現在節點裡」。
+
+### 步驟 2b：事件**必須**帶正文（`extras["narrative"]`）——否則 0 節點
+
+> **補正（LIFE-THREAD-W3-FIX-1，Owner 2026-10-19 裁決 1）**：
+> 開通接縫**不等於**產出節點。事件**必須**帶 `extras["narrative"]`（**正文**），
+> 否則 `_event_content()` 回空 ⇒ `inner_life_event_to_input()` 回 `None`
+> ⇒ `inputs = []` ⇒ `engine.consume()` 0 次 ⇒ **0 節點**。
+>
+> - `narrative` ＝ `thread["narrative_content"]`（**經歷**，108–345 字，中位 174）
+>   ⇒ **節點正文的唯一來源**（`elevation_adapter._NARRATIVE_EXTRA_KEYS` **只認** `narrative`）。
+> - `reflection` ＝ 該 `sage_fact_id` 事實的 `object`（**感悟**，45–141 字，中位 87）
+>   ⇒ **唯讀**回讀事實庫；**目前不被 `_event_content()` 消費**（白名單刻意不擴張）
+>   ⇒ **純伴隨 metadata**，**不得**宣稱它影響節點內容。
+> - 🚫 **白名單不得擴張**（SOUL-BUG-006 維持：刻意只認 `narrative`、刻意不收 `title`）。
+
 ### 步驟 3：trigger_type 的選擇（**關鍵決策**）
 
-**使用既有的 `TRIGGER_TYPE_DIARY_MORNING`／`TRIGGER_TYPE_DIARY_NIGHT`（依線頭的 `origin_type` 對應時段），不得新增常數。**
+**使用既有的 `TRIGGER_TYPE_DIARY_MORNING`／`TRIGGER_TYPE_DIARY_NIGHT`（依 **scheduler slot**（morning／night）對應時段），不得新增常數。**
+
+> ⚠️ **文件過期補正（LIFE-THREAD-W3-FIX-1，2026-10-19）**：原文寫「依線頭的 `origin_type`
+> 對應時段」——**那是錯的**。`origin_type` 的實際值域是
+> `necessity_driven`／`whim_driven`／`world_collision`，**不是時段**。
+> 量測實測 35/35 條線頭的 `origin_type` ∈ {`necessity_driven`, `whim_driven`}。
+> 現行實作已用 `_elevation_trigger_for_slot(slot)`：trigger_type 依 **slot** 決定。
 
 理由：① 這是**既有合法 producer**（`:83-90` 已在 `VALID_PRODUCER_TRIGGER_TYPES` 內）；② 生活線頭本來就是 morning／night 兩個時段的產物，語意相符；③ **最小改動**——不碰 `event.py`（M5.4-5.1 frozen）、不碰 `VALID_PRODUCER_TRIGGER_TYPES`。
 
@@ -84,6 +110,14 @@
 事件**必須**經 `InnerLifeWriter` 建立（`submission_gate.py:207-208` 明載其為「sole canonical InnerLifeEvent creator, per M5.4-5.1 frozen」），並經 `submission_gate.submit()` 進入。
 
 **🚫 嚴禁**直接呼叫 `run_elevation`（會繞過 Gate 的六道驗證，違反契約）。**🚫 嚴禁**直接寫 `facts` 表。
+
+> **補正（LIFE-THREAD-W3-FIX-1，2026-10-19）——「只 consume 不 elevate」的另一半**：
+> 從 **pattern** 到 **belief／value** 需**另一個機制**
+> `elevate_matured_patterns`（`elevation_adapter.py:1098`），與 Submission Gate
+> **相互獨立**。Gate 只 consume（產 pattern 候選節點），`elevate()` **永不**被它呼叫；
+> 靈魂層節點（belief／value／trait／essence）由 `elevate_matured_patterns`
+> 依「獨立證據 ≥ `min_evidence`（預設 2）」另行昇華。
+> ⇒ **接縫通電 ≠ 靈魂層立即有節點**（量測：35 pattern → 7 顆 `value`）。
 
 ### 步驟 5：fail-closed 與可觀測性
 
@@ -105,6 +139,15 @@
 4. `git diff -- src/soul/life_thread_dissolution_exec.py` **為空**。
 5. 契約 §4.6 存在且含 Owner 裁定逐字引文。
 6. **未重啟服務、未改任何 `data/**`、未發任何訊息。**
+
+> **⚠️ 產出驗收的補充（補正，LIFE-THREAD-W3-FIX-1，2026-10-19）**：
+> 驗收**必須區分「事件已建立」與「節點已產出」**。
+> `maybe_emit_elevation_events` 回 `True` 只代表**事件建立並 submit 成功**；
+> 若事件**未帶正文**，`_event_content()` 回空 ⇒ fail-closed ⇒ **節點數為 0**，
+> 而生產上**沒有任何指標**會顯示「昇華鏈斷在正文缺失」——
+> 這是**靜默失敗**（量測報告 §4.4）。
+> ⇒ 驗收須**同時**檢查：① `summary["elevation_event_created"]` 為真 **且**
+> ② 昇華節點檔的**增量 > 0**（pattern 或 belief／value 皆可）。
 
 ---
 

@@ -395,6 +395,42 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 3. 門檻一 goal 項無需改定義：新原則下 goal_driven 本就該不依賴 Bryan 可產出，定義維持四起源。
 4. whim/necessity/world_collision＋昇華 consume 路徑本就與 Bryan 無關，不受影響；Bryan→靈魂的影響方向（關係帶/TA-2/impression）維持不變。
 
+#### 0.1.17 生活線頭昇華接縫「正文修復」（LIFE-THREAD-W3-FIX-1，2026-10-19，Owner 裁決 1／2）
+
+**性質**：`src/soul/life_thread_orchestrator.py` **單檔**改動（+124 行）＋ 新測試檔 ＋ 5 處文件過期修正 ＋ 本節登記。**0** `src/inner_life/**` 改動、**0** `src/memory/sage/**` 改動、**0** `.env` 改動、**0** 服務重啟、**0** kill、**0** `data/**` 寫入（唯讀）。**未部署**（部署另需 Owner 授權）。
+
+**① 前置量測（`logs/LIFE-THREAD-ELEVATION-MEAS-1-REPORT.md`，NO-GO）**：生活線頭的「經歷」**從未**變成靈魂的「信念」——**不是被防火牆擋的**（35/35 條通過 R1／fact 層／R3 全部閘門），而是**事件根本沒帶正文**：
+
+- `life_thread_orchestrator.py` 的 `extras` 只有 metadata（`thread_id`／`sage_fact_id`／`origin_type`／`title`）；
+- `elevation_adapter._NARRATIVE_EXTRA_KEYS == ("narrative",)` ⇒ `_event_content()` 回 `""` ⇒ `inner_life_event_to_input()` 回 `None` ⇒ `inputs = []` ⇒ `engine.consume()` **0 次** ⇒ **0 節點**。
+- ⇒ **這是一種靜默失敗**：`maybe_emit_elevation_events` 回 `True`、`summary["elevation_event_created"]` 為真，但昇華節點增量為 **0**，生產上無任何指標會顯示「昇華鏈斷在正文缺失」。
+
+**② 本票修正（Owner 2026-10-19 裁決 1／2）**：
+
+| 決策 | 實作 | 位置 |
+|---|---|---|
+| **裁決 1：雙鍵合流** | `extras["narrative"]` ＝ `thread["narrative_content"]`（**經歷**，108–345 字，中位 174）⇒ **節點正文的唯一來源**（白名單唯一接受的鍵） | `src/soul/life_thread_orchestrator.py:450` |
+| | `extras["reflection"]` ＝ 該 `sage_fact_id` 事實的 `object`（**感悟**，45–141 字，中位 87）⇒ **唯讀**回讀事實庫（fail-soft；查無／鎖住／任何例外 ⇒ `""`）。⚠️ **目前不被 `_event_content()` 消費**（白名單刻意不擴張）⇒ **純伴隨 metadata**，**不得**宣稱它影響節點內容 | `src/soul/life_thread_orchestrator.py:453`；helper `:_open_elevation_store`／`:_elevation_reflection` |
+| **裁決 2：維持解耦** | `submit(event_id, (), agent_id=...)` 的**空 tuple 不變**（fact 實體**不**接入昇華鏈） | `src/soul/life_thread_orchestrator.py:460`（未動） |
+
+**③ 未動的凍結面（逐項可指認）**：`elevation_adapter._NARRATIVE_EXTRA_KEYS`（**仍是** `("narrative",)`）、`src/inner_life/**` 全數、`src/memory/sage/**` 全數（**只呼叫** `get_fact`）、`life_thread_dissolution_exec.py`、`life_thread_wake_gate.py`、`configs/**`、`personas/**`、`data/**`、生產 `.env`。`elevate()` **仍 0 呼叫**。
+
+**④ 驗證（解譯器一律 `.venv\Scripts\python.exe`）**：
+
+- **離線沙盒端到端**（生產真實 **35/35** 條 completed 線頭餵進修好的接縫；來源唯讀、評估在 temp 沙盒）：`run_elevation` 呼叫 **35** 次 ⇒ `engine.consume()` 收到 **35** 筆（原先 **0**）⇒ **35** 顆 pattern ⇒ `elevate_matured_patterns` 產 **7** 顆 `value` 節點（content 為人話散文，**非**中繼標籤）。網路 LLM 呼叫 **0**（僅 deterministic `StubElevationLLM`）。
+- **變異實驗 MUT-W1～W6 全紅**（副本實驗，repo 從未被修改）：移除 `narrative`／`narrative` 填 `title`／`reflection` 填 `title`／`_elevation_reflection` 恆回 `""`／恆回 `title`／白名單擴成 `("narrative","title")` ⇒ **6/6 轉紅**。
+- **受控污染實測**：把某條線頭的 `narrative_content` 換成 `title` ⇒ 該條節點 content **變成標題** ⇒ 守衛能分辨「正文」與「標題」，不會默默通過。
+- **生產零寫入**：沙盒實驗前後，生產 **48** 個檔案（`data/elevation/*.jsonl` 5 ＋ `data/memory/<agent>/graph.sqlite*` 33 ＋ `data/soul/<agent>/life_threads.jsonl` 10）sha256 **0 個變動**。
+- **回歸**：`tests/soul` **1269 passed**；`tests/inner_life` **68 passed**；全庫 `.venv` 回歸 **6694 passed / 2 failed**（兩支皆為「未提交工作樹」假陽性：① 新測試檔尚未 git 追蹤；② `test_observability_completeness_1::test_no_frozen_contract_file_touched` 以 `git diff HEAD` 比對**該票**的許可集，非本票問題；commit 後即轉綠）。
+
+**⑤ 對 §0.1.15（2026-10-06）既有記載的更正（**自報不算證據**，以量測為準）**：該節記載的「26/26 落為 pattern 候選節點」**不成立**——2026-10-19 量測實掃生產 `data/elevation/elevation_nodes.jsonl` 全 401 顆，帶 `thread_id`／`sage_fact_id` provenance 者為 **0** 顆；線頭事件一路 fail-closed 到引擎，**0 顆 pattern**。本節以量測為準覆蓋該項記載。
+
+**⑥ 誠實登記（剩餘風險，**非本票可解**）**：
+
+1. **WAL checkpoint 副作用**：唯讀開啟 per-agent `graph.sqlite`（WAL 模式）若本行程是**最後一個連線**，close 時 SQLite 會把 WAL checkpoint 進主檔 ⇒ **主檔位元組會變**（**邏輯資料不變**：0 INSERT/UPDATE/DELETE、0 `schema_meta` 寫入）。生產服務持有 live `GraphStore` 實例（SAGE-FLUSH-1 的 flush 迴圈只掃既有實例）⇒ 非最後連線 ⇒ 不觸發 checkpoint。此副作用**與既有 `src/soul/decision.py:470-478` 的唯讀慣例同類**。
+2. **接縫通電 ≠ 靈魂層立即有節點**：`7/35 = 20%` 的昇華率是 `elevate()` 的 `min_evidence`（預設 2）分組門檻所致，**不是**內容品質問題。
+3. **本票未部署**：生產旗標 `LIFE_THREAD_ELEVATION_ENABLED=1` 未動、服務未重啟 ⇒ 生產仍為 0 節點；下一個 night slot 才會真正生效。
+
 
 ---
 

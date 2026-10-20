@@ -375,7 +375,22 @@ def maybe_emit_elevation_events(
 
     回傳：本呼叫是否真的建立並提交了 ≥1 個事件（呼叫端據此決定是否寫
     `summary["elevation_event_created"]`）。
+
+    🔴 LIFE-THREAD-W3-FIX-1（Owner 2026-10-19 裁決 1／2）：`extras` 補上
+    **正文雙鍵**——`narrative`（經歷正文）＋ `reflection`（溶解事實的感悟）。
+    修的是「事件根本沒帶正文」：先前 `extras` 只有 metadata（thread_id／
+    sage_fact_id／origin_type／title），而 `elevation_adapter._NARRATIVE_EXTRA_KEYS`
+    只認 `narrative` ⇒ `_event_content()` 回 "" ⇒ fail-closed ⇒ **0 節點**。
+    - `narrative` ＝ `thread["narrative_content"]`（**唯一**被白名單接受的鍵）。
+    - `reflection` ＝ 該 `sage_fact_id` 事實的 `object`（**純伴隨 metadata**：
+      白名單刻意不擴張 ⇒ 它**不影響**節點內容，不得如此宣稱）。
+    - 裁決 2：`submit(event_id, (), agent_id=...)` 的**空 tuple 不變**
+      （fact 實體不接入昇華鏈）。
     """
+    # 事實庫（唯讀）handle：每 agent 每次呼叫**至多開一次**（迴圈內 lazy 開、
+    # 函式尾 `finally` 關）⇒ 多條線頭不會重複開連線。
+    reflection_store: Any = None
+    reflection_store_opened = False
     try:
         if not elevation_enabled():
             return False
@@ -410,6 +425,16 @@ def maybe_emit_elevation_events(
                 provenance_mod = importlib.import_module("src.inner_life.event")
             else:
                 provenance_mod = _elevation_provenance_module()
+            # 感悟回讀（**唯讀**）：事實庫每 agent 每次呼叫**至多開一次**
+            # （第一次需要時才開；函式尾 `finally` 關閉）。
+            if not reflection_store_opened:
+                reflection_store_opened = True
+                reflection_store = _open_elevation_store(agent_id)
+            reflection = (
+                _elevation_reflection(agent_id, str(fact_id), store=reflection_store)
+                if reflection_store is not None
+                else ""
+            )
             provenance = provenance_mod.Provenance(
                 trigger_type=trigger_type,
                 actor_id=agent_id,
@@ -420,6 +445,12 @@ def maybe_emit_elevation_events(
                     "sage_fact_id": str(fact_id),
                     "origin_type": str(thread.get("origin_type") or ""),
                     "title": str(thread.get("title") or ""),
+                    # 🔴 正文（經歷）：`_NARRATIVE_EXTRA_KEYS` 唯一接受的鍵
+                    #   ⇒ **節點正文的唯一來源**（`title` 刻意不被白名單接受）。
+                    "narrative": str(thread.get("narrative_content") or ""),
+                    # 🔴 感悟（溶解事實的 `object`）：**純伴隨 metadata** ——
+                    #   白名單刻意不擴張（SOUL-BUG-006）⇒ 它**不影響**節點內容。
+                    "reflection": reflection,
                 },
             )
             event = writer.create_event(
@@ -441,6 +472,99 @@ def maybe_emit_elevation_events(
             f"(fail-silent): {type(exc).__name__}: {_clip(exc)}"
         )
         return False
+    finally:
+        # 🔴 事實庫一定要關（`GraphStore` 持有 sqlite 連線 ＋ WeakSet 註冊）；
+        #    close 失敗只記 debug，**不可冒泡**（否則會蓋掉回傳值）。
+        if reflection_store is not None:
+            try:
+                reflection_store.close()
+            except Exception as exc:  # noqa: BLE001 — close 失敗不可冒泡
+                logger.debug(
+                    f"[LifeThreadOrchestrator] agent={_clip(agent_id)} "
+                    f"事實庫關閉失敗 (fail-silent): {type(exc).__name__}: {_clip(exc)}"
+                )
+
+
+def _open_elevation_store(agent_id: str) -> Any:
+    """開啟該 agent 的 `graph.sqlite`（**唯讀用途**）；不可用 ⇒ 回 `None`（fail-soft）。
+
+    路徑慣例**沿用 repo 既有寫法**（`src/soul/decision.py:470-478`、
+    `src/soul/life_thread_origins.py:294-299`）：
+    `data_root()/"memory"/<agent_id>/"graph.sqlite"` ⇒ **不重寫一份 schema 知識**。
+
+    🔴 **開 store 前先確認檔案存在**：`GraphStore.__init__` 會 `mkdir` 父層、
+    建 schema，且 schema 非現行版時會寫 `schema_meta` ⇒ 不存在的庫不該被開出來
+    （否則會憑空造出一個空庫）。
+    🔴 `GraphStore` 在 schema 已是現行版本時**不寫入**（MEM-VISIBILITY-C2 修正，
+    `src/memory/sage/graph_store.py:113-118`）⇒ 生產既有庫（version == `_SCHEMA_VERSION`）
+    只讀開啟**不產生寫入**。
+
+    🔴 **以 `importlib` 惰性解析**（與本檔 `_elevation_trigger_for_slot` 同一手法）：
+    `src.memory.sage.*` 是本檔的**禁止 import 前綴**（既有測試
+    `tests/soul/test_life_thread_m5_wiring.py` 以 AST 釘住「orchestrator 0 src.memory.sage」），
+    且本檔頂層 `src.*` import 集合已被釘住為恰 6 個葉模組
+    ⇒ **不得**新增任何形式的 `from src... import`（`ast.walk` 會掃到函式體）。
+    """
+    try:
+        if not agent_id:
+            return None
+        import importlib
+
+        paths_mod = importlib.import_module("src.paths")
+        db_path = paths_mod.data_root() / "memory" / agent_id / "graph.sqlite"
+        if not db_path.exists():
+            return None
+        graph_store_mod = importlib.import_module("src.memory.sage.graph_store")
+        return graph_store_mod.GraphStore(db_path=db_path)
+    except Exception as exc:  # noqa: BLE001 — fail-soft：查不到就沒有感悟
+        logger.debug(
+            f"[LifeThreadOrchestrator] 事實庫開啟失敗 (fail-silent): "
+            f"{type(exc).__name__}: {_clip(exc)}"
+        )
+        return None
+
+
+def _elevation_reflection(agent_id: str, fact_id: str, *, store: Any = None) -> str:
+    """取溶解事實的 `object`（感悟正文）。**純唯讀、fail-soft、永不 raise。**
+
+    - 事實查無 ⇒ **空字串**（不得編造、不得拿別的欄位湊）。
+    - `store` ＝ 已開好的 store（由 `maybe_emit_elevation_events` **每 agent 每次
+      呼叫至多開一次**，函式尾 `finally` 關閉）；`store=None` ⇒ 自行開一次
+      （單次呼叫／測試注入路徑），用完即關。
+    - 只呼叫 `GraphStore.get_fact`（唯讀 SELECT）⇒ **0 寫入、0 schema 變更**。
+
+    ⚠️ `reflection` 目前**不被** `elevation_adapter._event_content()` 消費
+    （白名單刻意只認 `narrative`）⇒ 它是**純伴隨 metadata**，
+    **不得**宣稱它影響節點內容。
+    """
+    if not agent_id or not fact_id:
+        return ""
+    owns_store = False
+    try:
+        if store is None:
+            store = _open_elevation_store(agent_id)
+            if store is None:
+                return ""
+            owns_store = True
+        fact = store.get_fact(str(fact_id))
+        if fact is None:
+            return ""
+        return str(getattr(fact, "object", "") or "")
+    except Exception as exc:  # noqa: BLE001 — fail-soft：查不到就沒有感悟
+        logger.debug(
+            f"[LifeThreadOrchestrator] 感悟回讀失敗 (fail-silent): "
+            f"{type(exc).__name__}: {_clip(exc)}"
+        )
+        return ""
+    finally:
+        if owns_store and store is not None:
+            try:
+                store.close()
+            except Exception as exc:  # noqa: BLE001 — close 失敗不可冒泡
+                logger.debug(
+                    f"[LifeThreadOrchestrator] 事實庫關閉失敗 (fail-silent): "
+                    f"{type(exc).__name__}: {_clip(exc)}"
+                )
 
 
 def _elevation_provenance_module() -> Any:

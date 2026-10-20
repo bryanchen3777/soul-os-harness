@@ -9,18 +9,18 @@
 
 ## 0. 為什麼需要這份文件
 
-2026-10-03 的實測（唯讀 fold，10 個 agent）顯示：
+2026-10-03 的實測（唯讀 fold，10 個 agent）顯示（**2026-10-19 重測校正**，`LIFE-THREAD-W3-FIX-1`）：
 
 | 觀察 | 實測值 |
 |---|---|
-| 線頭總數（依契約 §2.4 正確 fold） | 38（17 active / 21 completed） |
-| `necessity_driven` 占比 | **38/38 = 100%** |
-| `whim_driven` / `goal_driven` / `world_collision` | **各 0** |
-| 溶解事實（`life_thread_dissolved`） | 21 條，21/21 皆有 `dissolved_at` 與 `sage_fact_id` |
-| 溶解事實進入 `run_elevation` | **0** |
-| emergent projection / belief / value 落盤 | **無** |
+| 線頭總數（依契約 §2.4 正確 fold） | **55（20 active / 35 completed）**（2026-10-03 為 38／17／21） |
+| `necessity_driven` 占比 | **41/55 = 74.5%**（completed 28/35 = 80%） |
+| `whim_driven` / `goal_driven` / `world_collision` | **9 / 0 / 5**（2026-10-03 為各 0） |
+| 溶解事實（`life_thread_dissolved`） | **35 條，35/35 皆有 `dissolved_at` 與 `sage_fact_id`**（2026-10-03 為 21 條）；`origin` **100% `lived_experience`**（35/35，0 筆 `external_world`） |
+| 溶解事實進入 `run_elevation` | **35 次，但引擎收到 0 筆**（事件已建立卻**無正文** ⇒ fail-closed） |
+| emergent projection / belief / value 落盤 | **無**（修正尚未部署；離線沙盒實測：35 條全數進引擎 ⇒ 35 pattern ⇒ `elevate_matured_patterns` 產 **7 顆 `value`**） |
 
-**診斷**：引擎已能生產生活，且溶解品質良好（實例：ruka「這六天讓我明白，訊息不只是文字，而是我願意為一個人保留溫度的證明」）。但**單一起源**使個性分量為零，**未接昇華路徑**使經歷無法沉澱成信念。綜合判讀：**目前程度為「能呼吸」，尚未「活著」。**
+**診斷**：引擎已能生產生活，且溶解品質良好（實例：ruka「這六天讓我明白，訊息不只是文字，而是我願意為一個人保留溫度的證明」）。**接縫已開著**（旗標 = 1）**但事件未帶正文** ⇒ 產出 0 節點——**不是未接昇華路徑**，而是 `_event_content()` 回空導致 fail-closed（`LIFE-THREAD-W3-FIX-1` 修完即通）。單一起源仍使個性分量偏低，但供給已不再塌縮到 100%。綜合判讀：**目前程度為「能呼吸」，尚未「活著」。**
 
 這份文件的目的，是把「活著」翻譯成三個可觀察、可量測的門檻。
 
