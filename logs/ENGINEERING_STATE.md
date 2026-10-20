@@ -489,6 +489,27 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 **⑪ 「21 → 35」的成因已定案（推翻先前「catch-up 掃描」的推測）**：**21 是 2026-10-03 白天**的快照值（`docs/INNER-LIFE-DEFINITION-OF-DONE.md` 建立當日），**35 是 2026-10-19** 的現況值。35 筆事實的 `timestamp`（epoch float）排序後，第 21 位＝**2026-10-03 08:01:38 EDT**、第 22 位＝**2026-10-03 22:01:10 EDT** ⇒ cutoff 落在當日白天時「≥ cutoff」恰為 **21** 筆，**定量完全閉合**。成因＝**線頭陸續轉入終態後經 M2 接線層沉澱**（每日 1–3 筆；最後一筆事實＝2026-10-16 22:00:48 EDT，其後 3 天無新增）。**不是 catch-up 掃描**——生產日誌 `catchup_enabled=True` 但 `catchup_invoked=0`（10/10 次全為 0）⇒ catch-up 從未處理任何線頭（其管轄範圍是「已是終態且 `dissolved_at is None`」；而事實的產生路徑是 M2 接線層的「同輪轉入終態」，`life_thread_orchestrator.py:761-771`）。⇒ `logs/LIFE-THREAD-ELEVATION-MEAS-1-REPORT.md` §9 的「catch-up 推測」**已被證偽**（該處僅標註「本票未驗證」故無誤導），canonical 判定以本節為準。
 
 **⑫ `docs/INNER-LIFE-DEFINITION-OF-DONE.md` 同步更新（3 處過期數字，8 added / 2 removed）**：該文件 §0 觀察表與門檻二的「現況 `0`」仍停留在「引擎收到 0 筆／產出無節點／沙盒 7 顆 value」⇒ 已更新為 2026-10-19 22:00 生產實測（引擎收到 **35** 筆、落盤 **9 value ＋ 4 trait**），並附上 ⑪ 的成因定案。**Owner 裁定的三條門檻定義本身逐字未動**（`### 門檻一/二/三` 三個標題、三個「可量測判準」區塊、開頭「Owner 已裁定採納」狀態行、Bry 的裁定原文皆經斷言保留）。
+
+#### 0.1.19 Owner 里程碑判定 ＋ 跨槽延遲昇華裁決（2026-10-19 23:30）
+
+**里程碑判定（Owner）**：**門檻二（經歷能沉澱成信念）在生產環境取得歷史上第一批具文學重量與心靈厚度的物理證據** —— §0.1.18 的 9 顆 `value` 正文 **9/9 逐字等價於生活線頭的真實經歷敘事**、**0 筆標籤退化**、**0 筆機械中繼詞**。本輪連續攻克 **SOUL-BUG-010 → 010-B → 011 → 012 → LIFE-THREAD-W3-FIX-1**（`704f851`／`89397d5`／`c327958`／`f91ca66`／`89e2cf1`／`da5561a`），全庫與生產圖譜達歷史最高純淨度。
+
+**裁決對象**：主大腦提出的下一個工程點——「night slot 產 pattern、dream slot 才昇華 value」的**跨槽延遲**現象。2026-10-19 22:00 槽實測確認：35 筆線頭事件於 22:00:07–22:01:13 建立 **51 顆 pattern**（`node_created`），而 **9 顆 `value` ＋ 4 顆 `trait`**（13 筆 `node_elevated`）**全部**由 **22:05 的 dream slot**（`trigger=dream:dream`）所觸發的 `run_elevation` 批次昇華而來。
+
+**【裁決】維持現狀（KEEP AS-IS），禁止在線頭接縫處內聯呼叫 `elevate()`。**
+
+**理由一（架構教義）**：夜間經歷先沉澱為 Pattern、交由夢想週期批次提煉為 Value，對應「清醒記錄模式、睡眠期整合固化」的神經認知結構，屬**健康的解耦**而非缺陷。
+
+**理由二（防禦契約）**：全庫 `elevate()` 呼叫點鎖死（SOUL-BUG-006 凍結面）。若在 `_fire_life_thread_slot` 內聯觸發將同時觸發三項後果：① 打破 `submission_gate.consume()`「**只消費不昇華**」的唯一原則；② 在 22:00–22:05 窗內與 dream slot 產生**重複計票與寫入競爭**；③ 破壞批次計票的 `min_evidence` 累積效果——**正是因為等到 22:05 匯集當晚日記與線頭，`agent_aoi` 與 `agent_rem` 才累積滿 2 條證據順利產出 `value`**（見 §0.1.18 ④）。
+
+**理由三（唯一健全化方向）**：若擔心「dream slot 因配置關閉 ⇒ pattern 停滯」，正確做法**不是**在線頭處搶跑 `elevate()`，而是讓排程器層級具備**定期、獨立的 `elevation_cron_tick`**（被動背景任務），把「事件攝入」與「模式昇華」從時間線上徹底解耦。🔴 **此為未來選項，本輪不立票、不動碼**（Owner 指示：不進行無謂重啟或動碼）。
+
+**後續動向（Owner 指示，2026-10-19 23:30）**：
+
+1. **維持主服務穩定**：不進行無謂重啟或動碼（生產 `data/server.pid`＝26336、`:8000` socket owner＝9504、VC 12792／7716／16612、`/health`＝200、0 ERROR／0 Traceback）。
+2. **方向 A 第二階段（prompt 接線）維持凍結**：依賴 `scripts/recall_readiness_cli.py` 每日自動偵測召回池成熟度，等防線二自然推進至 30 天門檻、GO 判準自行翻轉。
+3. **門檻一／門檻三長期觀測統計已建排程**：cron **`morning_slot_first_wave_observation`**（cronId `a9de9f9d-0571-4307-9c9e-b3d1417aea38`，每日 **08:20 America/New_York**，task-owned 對話），量測 **11 項**：morning slot 線頭接縫提交數、節點增量與 by_type、正文保真度、**門檻一**四起源分佈、**門檻三**每 agent 連續推進天數、弱化包裝數、老化轉換數與關鍵反例、服務健康、節點檔純附加 sha256、**召回池成熟度 GO／NO-GO 差距**；逐日 append 至 `%TEMP%\morning_obs\morning_observations.jsonl` 供 7 天窗統計。**唯讀量測**：0 repo 改動、0 `data/**` 寫入、0 行程操作、0 synthetic 事件。
+4. **08:00 morning slot 首波特徵**：由上述排程自動記錄並回報（首次執行 2026-10-20 08:20 EDT）。
 ---
 
 ## 0.2 VC 語音通道：Windows 下的進程結構（運維事實，2026-10-14 主大腦實測）
