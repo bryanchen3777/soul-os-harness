@@ -510,6 +510,37 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 2. **方向 A 第二階段（prompt 接線）維持凍結**：依賴 `scripts/recall_readiness_cli.py` 每日自動偵測召回池成熟度，等防線二自然推進至 30 天門檻、GO 判準自行翻轉。
 3. **門檻一／門檻三長期觀測統計已建排程**：cron **`morning_slot_first_wave_observation`**（cronId `a9de9f9d-0571-4307-9c9e-b3d1417aea38`，每日 **08:20 America/New_York**，task-owned 對話），量測 **11 項**：morning slot 線頭接縫提交數、節點增量與 by_type、正文保真度、**門檻一**四起源分佈、**門檻三**每 agent 連續推進天數、弱化包裝數、老化轉換數與關鍵反例、服務健康、節點檔純附加 sha256、**召回池成熟度 GO／NO-GO 差距**；逐日 append 至 `%TEMP%\morning_obs\morning_observations.jsonl` 供 7 天窗統計。**唯讀量測**：0 repo 改動、0 `data/**` 寫入、0 行程操作、0 synthetic 事件。
 4. **08:00 morning slot 首波特徵**：由上述排程自動記錄並回報（首次執行 2026-10-20 08:20 EDT）。
+
+#### 0.1.20 跨機制因果鏈：方向 A 第二階段的 GO 判準，上游供給是生命週期老化（2026-10-19 23:45）
+
+**背景**：Owner §0.1.19 指示方向 A 第二階段「依賴 `recall_readiness_cli.py` 每日自動偵測池成熟度（等待防線二自然推進至 30 天門檻）」。2026-10-19 23:40 首次實跑該工具，取得**跨機制因果鏈**的實證。
+
+**實測（`scripts/recall_readiness_cli.py`，sandbox-only；`production unchanged = True`）**：
+
+| 項目 | 值 | 單位／口徑 |
+|---|---|---|
+| 節點總數 | **469** | 顆 |
+| `by_state` | weakening **167**／dormant **18**／active **284** | 顆 |
+| `by_node_type` | pattern **425**／value **39**／belief **1**／trait **4** | 顆 |
+| `quarantined` | **18** | 顆（隔離 sidecar） |
+| `excluded_pattern` | **425** | 顆（pattern 不在四型內 ⇒ 結構性排除） |
+| `blocked_by_quarantine` | **2** | 顆（四型且命中隔離） |
+| **可回憶池** | **0** | 顆（`recallable_by_state`：dormant 0／superseded 0） |
+| 命中率 token-level | **0/200 = 0.0000** | 命中 unique 節點／probe 筆數 |
+| 命中率 contract path | **0/200 = 0.0000** | 同上（對照組） |
+| **VERDICT** | **NO-GO** | 三項門檻全未達（池 0 < 5、池中 superseded 0 < 1、命中率 0.0000 < 0.05） |
+
+**定案（因果鏈）**：方向 A 第二階段的 GO 判準**不是**靠「隔離減少」或「pattern 升級」達成，而是靠 **SOUL-BUG-010-B 的生命週期老化把 `active` 節點自然轉為 `dormant`／`superseded`**。可回憶池的定義是「非隔離 × 四型（value／belief／trait／essence）× `dormant|superseded`」——現況 **284 顆 `active` 全部不在池內**、425 顆 pattern 被四型排除、18 顆 dormant 中 16 顆是 pattern、2 顆是隔離污染節點。⇒ **兩個機制是串行依賴：010-B（老化）是方向 A（召回）的上游供給。** 今晚 010-B 首個 night slot 的老化轉換 **0 筆**（那 167 顆已是 weakening，其餘 284 顆 `active` 尚未到老化時機）⇒ 池仍為 **0** —— **這是預期且正確的 NO-GO，不是故障**，與 Owner 所述「等待 30 天門檻」完全一致。
+
+**⚠️ 量測語意陷阱（記此以免誤讀）**：
+
+1. `recall_readiness_cli` 在總命中為 **0** 時印出「非隔離命中比例 = 1.0000」——那是 **0/0 的退化值**，**不可**解讀為「隔離 0% 命中已達成」；正確表述是「總命中 0，比率無定義」（與 MEAS-1 報告 C2 的 0/0 同一類問題）。
+2. 該工具在 **VERDICT: NO-GO 時回 exit code 1**（設計行為，**不是崩潰**）⇒ 判定須看 stdout 的 `VERDICT` 段，不是看 exit code。
+3. 首次執行時 jieba 會在 **stderr** 印「Building prefix dict…／Prefix dict has been built successfully.／Loading model from cache…」⇒ **屬正常現象**；PowerShell 5.1 會把 native stderr 併成 error stream，須 stdout／stderr 分流後再讀。
+
+上述三點已寫入每日觀測排程的執行注意事項（cron `morning_slot_first_wave_observation` 第 10 項 (a)(b)(c)），並附 2026-10-20 基準讀數（第 10 項 (d)）供逐日差分。
+
+**對 §0.1.19 第 3 點的補充**：該排程第 11 項的累積檔（`%TEMP%\morning_obs\morning_observations.jsonl`）第一列以 2026-10-20 00:00 的基準讀數補建，之後每日 append 一列，供 7 天窗統計。
 ---
 
 ## 0.2 VC 語音通道：Windows 下的進程結構（運維事實，2026-10-14 主大腦實測）
