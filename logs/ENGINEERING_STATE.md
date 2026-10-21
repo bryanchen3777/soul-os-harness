@@ -777,6 +777,43 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 
 **核心原則（已入冊）**：**開發不等，啟用靠數據。** 程式碼今晚寫完合入，**啟用開關由資料判準決定**（不是日期、不是人工）；生產側資料仍走自然老化，**不催熟、不造假**；沙盒資料**不得**流回生產。
 
+
+#### 0.1.27 DEPLOY-RESTART-21 上線：M2 確定性超期歸檔（Sunset）機制進入生產（2026-10-21 02:11 EDT）
+
+**Owner 裁決**：2026-10-21 02:09 —— 「正式授權執行 `.\scripts\server_ops.ps1 restart`，啟用 M2 確定性超期歸檔（Sunset）機制」（DEPLOY-RESTART-21）。**執行前**：代碼已於 `7a67b0e` 合入 `origin/main`，回歸 6768 passed／24 skipped（唯一紅燈為工作樹範圍型守衛，提交後轉綠）；沙盒已實證門檻三判準 1 於第 7 天 10/10 達 7、0 次誤傷。
+
+**① 執行與即時驗收（60 秒內，全部實測）**
+
+| 檢查項 | 重啟前 | 重啟後 | 判定 |
+|---|---|---|---|
+| `:8000` socket owner | 9504 | **19744** | PASS（PID 已刷新） |
+| `data/server.pid`（trampoline） | 26336 | **10040** | PASS |
+| 舊行程 9504／26336 | 存活 | **皆已退出** | PASS（無孤兒行程） |
+| VC 8765／8766／8767 | 12792／7716／16612 | **12792／7716／16612** | PASS（通訊未受干擾） |
+| `/health` | 200 | **200** `{"status":"ok","connections":0}` | PASS |
+| ERROR／CRITICAL／Traceback | — | **0／0／0** | PASS |
+| 維護鎖 `data\state\watchdog_maintenance.lock` | — | **已清**（watchdog 恢復） | PASS |
+
+**新行程 02:10:31 啟動，命令列＝`…\soul-os-harness\scripts\run_server.py`** ⇒ 自 repo 載入 ⇒ **Sunset 新代碼已上線**。啟動序：`[TG] start summary: 10/10 bots polling` → `所有模組啟動完成` → `Uvicorn running on http://0.0.0.0:8000`。
+
+**② Sunset 首跑尚未發生（重要）**：重啟後 02:10~02:14 量測 —— **sunset 關鍵字 0、M2 生命週期評估 0、全體 active 仍 20**。⇒ M2 只在**排程槽**（08:00／22:00）執行，重啟只跑 elevation 通道。**今日 08:00 morning slot 才是首次觸發點**。
+
+**③ 預期（沙盒實測 ＋ 生產現況）**：對 **7 隻 agent 收束 8 筆**（7 筆 age ≈ 33.4 天 ＋ `agent_mai` 1 筆 age 21.58 天），active 由 2 → 1，解除 `active == cap == 2` 的容量死鎖。條件四項全成立才生效：age > 21 天 ∧ active ≥ cap ∧ 距上次新建 ≥ 3 槽 ∧ 為最舊 active。**age ≤ 21 天的線頭必須 0 次被 sunset（誤傷硬指標）。**
+
+**④ 兩套機制必須分開列（不可混算）**
+
+| 機制 | 路徑 | 落盤位置 | 理由 |
+|---|---|---|---|
+| **Sunset**（新增） | orchestrator 接線層注入 `checkpoints_exhausted=True` ⇒ M2 回 `target=completed`／`reason=checkpoints_exhausted` | **M1 線頭流** `data\soul\<agent>\life_threads.jsonl`（`transitioned`／`dissolved` 事件）＋ SAGE fact | 線頭超期收束，釋放容量位元 |
+| 老化（既有） | `evaluate_lifecycle` 的 age 軸 ≥ 7 天 ⇒ `active→weakening` | `data\elevation\elevation_lifecycle_events.jsonl`（`no_new_support_evidence`） | pattern 型節點的 7 天軟化 |
+
+**⑤ 08:20 排程已加掛首跑觀測**（`morning_slot_first_wave_observation`，cronId `a9de9f9d-…`，`nextRun` = 2026-10-21 08:20 EDT）：四項物理指標（收束筆數＋逐筆四條件對帳／age ≤ 21 天誤傷數／容量釋放後 active 總數／沉澱 LLM 呼叫數與 SAGE fact 增量）＋ 安全紅線（節點檔前 282,409 bytes sha256 恆等、弱化包裝 0）。基準已更新為重啟後實測值：節點 **517**、overlay by_state **active 311／weakening 188／dormant 18**、by_node_type **pattern 462／value 49／belief 1／trait 5**、sidecar **206**、可投影 **53 顆**／正文 **4,204 字**、召回池 **0**。PID 基線已寫入（`:8000` 19744／trampoline 10040／VC 12792／7716／16612）。
+
+**⑥ 成本項（首次量化）**：生產 `.env` 已設 `LIFE_THREAD_CONSOLIDATION_ENABLED=1` ⇒ 生產 sunset **會真的走沉澱路徑** ＝ **每次 sunset 1 次 LLM 呼叫**（本次預估 ≈ 8 次）。配額邊界：3 次／agent／日、200 次／全行程／日 ⇒ 首批佔全域配額 4%。沉澱產出 reflection ＋ fact，**不是靜默刪除**（蔡戈尼張力釋放留痕）。
+
+**⑦ 本次未做**：未改任何 repo 原始碼；未寫入 `data/**`；未觸發任何人工事件；未清空 `_ELEVATION_EMITTED`；**未對執行 `server_ops.ps1` 的背景 shell 呼叫 `task_stop`**（該 wrapper 因 `-NoNewWindow` 咬住 stdout 而保持 running 屬已知預期行為，依 AGENTS.md 第 11 條不得手動砍；重啟本身已由 PID／埠／health 獨立驗證）。
+
+**⑧ 待後續觀察**：Sunset 於 08:00 槽的實際觸發筆數、誤傷數、容量釋放幅度與 LLM 呼叫數，將由 08:20 排程回報；若誤傷 > 0 或收束筆數與預期（8 筆）顯著偏離，須立即回報並檢視條件邊界。
 ---
 
 **① 三戰役的工單與派工**（全部決策完備，全部入庫）
