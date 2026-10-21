@@ -71,10 +71,15 @@ SERVICE_TCP = 8000
 #: wrapper 返回的期限：超過這個時間就算「沒有確定返回」。
 #: 實機在滿載（全庫回歸同時跑）時 powershell 啟動會明顯變慢，故給寬裕的期限。
 WRAPPER_RETURN_TIMEOUT_S = 30.0
+#: 呼叫端等待中繼 launcher 結束的期限（毫秒）。
+RELAY_RETURN_TIMEOUT_MS = 20000
 #: wrapper 返回後多久，服務仍必須存活（守衛 2）。
 SERVICE_SURVIVAL_CHECK_S = 2.0
 #: 沙盒服務的最長存活時間（超過就自行結束，避免留下孤兒行程）。
 SERVICE_MAX_LIFETIME_S = 90.0
+
+#: ``GetFileType`` 的「檔案型別」常數。呼叫端的 stdout 是 pipe ⇒ FILE_TYPE_PIPE。
+FILE_TYPE_PIPE = 0x3
 
 #: 變異實驗用的環境變數名稱。
 MUTATION_ENV = "SOULOS_LAUNCH_MUTATION"
@@ -372,27 +377,44 @@ def _drop_redirects(text: str) -> str:
     )
 
 
-def _apply_mutation(text: str, name: str) -> str:
-    """把指定變異套到腳本文字上（只在 ``SOULOS_LAUNCH_MUTATION`` 有值時啟用）。"""
+def _apply_mutation(state: dict, name: str) -> dict:
+    """把指定變異套到沙盒腳本上（只在 ``SOULOS_LAUNCH_MUTATION`` 有值時啟用）。
+
+    2026-10-21（HANDLE-INHERITANCE）後，生產啟動是**兩層**：
+        呼叫端 → 中繼 launcher → 服務
+    因此變異作用在兩個地方：
+      * 實際啟動呼叫（先從腳本**抽出程式碼區塊**再改，最後寫回腳本文字 ——
+        這樣靜態守衛也看得到變異，而且不會誤傷註解裡出現的字面值）；
+      * ``state["relay_flags"]`` —— 呼叫端啟動中繼 launcher 那一支的額外旗標。
+    """
+    text = state["script"]
+    launch_stmt, pid_stmt = _extract_launch_block(text)
+    new_launch, new_pid = launch_stmt, pid_stmt
+
     if name == "M1_no_new_window_no_redirect":
-        text = _drop_redirects(text)
-        text = re.sub(r"(-PassThru)", r"-NoNewWindow `\n        \1", text, count=1)
+        new_launch = _drop_redirects(new_launch)
+        new_launch = re.sub(r"(-PassThru)", r"-NoNewWindow `\n        \1", new_launch, count=1)
+        # 中繼 launcher 也共用呼叫端的 Console ⇒ 服務（帶 -NoNewWindow）跟著共用
+        # 呼叫端的 Console ⇒ 守衛 5（服務不得與呼叫端共用 Console）轉紅。
+        state["relay_flags"] = "-NoNewWindow "
     elif name == "M2_output_stays_with_caller":
-        text = _drop_redirects(text)
+        new_launch = _drop_redirects(new_launch)
     elif name == "M4_launch_writes_production_pid":
-        text = re.sub(
+        new_pid = re.sub(
             r"(Out-File\s+-Encoding\s+utf8\s+)\$pidFile",
             lambda m: m.group(1) + "'%s'" % PRODUCTION_PID_FILE,
-            text,
+            pid_stmt,
             count=1,
         )
     elif name == "M5_launch_waits_for_service":
-        text = re.sub(r"(-PassThru)", r"-Wait `\n        \1", text, count=1)
+        new_launch = re.sub(r"(-PassThru)", r"-Wait `\n        \1", new_launch, count=1)
     elif name == "M3_service_dies_with_wrapper":
         pass  # M3 改的是沙盒服務的行為，不是腳本文字（見 _replay 的 dies_with_parent）
     else:
         raise AssertionError("未知的變異名稱: %r" % name)
-    return text
+
+    state["script"] = text.replace(launch_stmt, new_launch, 1).replace(pid_stmt, new_pid, 1)
+    return state
 
 
 # ───────────────────────────────────────────────────────────
@@ -420,11 +442,14 @@ kernel32.GetFileType.argtypes = [ctypes.c_void_p]
 kernel32.GetFileType.restype = ctypes.c_uint32
 
 # 「我有沒有繼承呼叫端的 stdout pipe handle？」—— 直接量測，不是推論。
+# ⚠ 2026-10-21（HANDLE-INHERITANCE）修正量測方式：舊版只判斷「handle 是否有效」，
+#   但 handle slot 被別的 handle 占用時 GetFileType 會回 0（FILE_TYPE_UNKNOWN），
+#   舊判斷會誤報成「仍然 VALID」。改報 **FileType 本身**：呼叫端的 stdout 是 pipe
+#   ⇒ 真的繼承到時 GetFileType == FILE_TYPE_PIPE(0x3)；沒繼承到就不會是 PIPE。
 caller_pipe = int(os.environ.get("SOULOS_CALLER_PIPE_HANDLE", "0") or 0)
-inherited = "n/a"
+filetype = 0xFFFFFFFF
 if caller_pipe:
-    ftype = kernel32.GetFileType(ctypes.c_void_p(caller_pipe))
-    inherited = "VALID" if ftype != 0xFFFFFFFF else "absent"
+    filetype = kernel32.GetFileType(ctypes.c_void_p(caller_pipe))
 
 console_buf = (ctypes.c_ulong * 16)()
 console_procs = kernel32.GetConsoleProcessList(console_buf, 16)
@@ -434,9 +459,9 @@ console_hwnd = kernel32.GetConsoleWindow()
 parent = int(os.environ.get("SOULOS_PROBE_WRAPPER_PID", "0") or 0) or os.getppid()
 
 sys.stdout.write(
-    "soulos-launch-probe pid=%d console_procs=%d console_hwnd=%s caller_pipe_in_child=%s "
+    "soulos-launch-probe pid=%d console_procs=%d console_hwnd=%s caller_pipe_filetype=0x%x "
     "dies_with_parent=%s watched_pid=%s\n"
-    % (os.getpid(), console_procs, console_hwnd, inherited, DIES_WITH_PARENT, parent)
+    % (os.getpid(), console_procs, console_hwnd, filetype, DIES_WITH_PARENT, parent)
 )
 sys.stdout.flush()
 sys.stderr.write("soulos-launch-probe-stderr pid=%d\n" % os.getpid())
@@ -470,8 +495,10 @@ def _ps_quote(value: str) -> str:
     return _PS_QUOTE + str(value).replace("'", "''") + _PS_QUOTE
 
 
-def _replay(tmp: Path, script_text: str, dies_with_parent: bool) -> dict:
-    """在沙盒重播生產啟動區塊，回傳量測到的事實。"""
+def _replay(tmp: Path, state: dict, dies_with_parent: bool) -> dict:
+    """在沙盒重播 production 的兩層啟動（呼叫端 → 中繼 launcher → 服務），回傳量測到的事實。"""
+    script_text = state["script"]
+    relay_flags = state.get("relay_flags", "")
     launch_stmt, pid_stmt = _extract_launch_block(script_text)
     variables = {
         "python": sys.executable,
@@ -492,7 +519,7 @@ def _replay(tmp: Path, script_text: str, dies_with_parent: bool) -> dict:
         "child_alive_after_wrapper": None,
         "console_procs": None,
         "console_hwnd": None,
-        "caller_pipe_in_child": None,
+        "caller_pipe_filetype": None,
         "log": "",
         "errlog": "",
         "refused": None,
@@ -509,10 +536,10 @@ def _replay(tmp: Path, script_text: str, dies_with_parent: bool) -> dict:
     service_dir.mkdir(parents=True, exist_ok=True)
     (service_dir / "run_server.py").write_text(SERVICE_PROBE, encoding="utf-8")
 
-    replica = tmp / "replica.ps1"
-    replica.write_text(
+    # ── 中繼 launcher（relay）：內容 = production 的「直接拉起服務」那一支 ──
+    relay = service_dir / "relay.ps1"
+    relay.write_text(
         "$ErrorActionPreference = 'Stop'\n"
-        "$env:SOULOS_PROBE_WRAPPER_PID = \"$PID\"\n"
         "$python = {python}\n"
         "$outLog = {outLog}\n"
         "$errLog = {errLog}\n"
@@ -527,6 +554,38 @@ def _replay(tmp: Path, script_text: str, dies_with_parent: bool) -> dict:
             root=_ps_quote(variables["root"]),
             launch=launch_stmt,
             pidwrite=pid_stmt,
+        ),
+        encoding="utf-8",
+    )
+
+    # ── 呼叫端（replica）：以「不帶 -RedirectStandard*」啟動中繼 launcher ──
+    #    （production 的 server_ops.ps1 走同一條路：不帶 -RedirectStandard* ⇒
+    #      ShellExecute 路徑 ⇒ bInheritHandles=FALSE ⇒ 中繼 launcher 不持有
+    #      呼叫端的 stdout pipe。）
+    replica = tmp / "replica.ps1"
+    replica.write_text(
+        "$ErrorActionPreference = 'Stop'\n"
+        "$env:SOULOS_PROBE_WRAPPER_PID = \"$PID\"\n"
+        "$python = {python}\n"
+        "$outLog = {outLog}\n"
+        "$errLog = {errLog}\n"
+        "$pidFile = {pidFile}\n"
+        "$root = {root}\n"
+        "$relayScript = {relay}\n"
+        "$relay = Start-Process -FilePath (Join-Path $env:SystemRoot "
+        "'System32\\WindowsPowerShell\\v1.0\\powershell.exe') "
+        "-ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $relayScript) "
+        "{relayflags}-PassThru -WorkingDirectory $root\n"
+        "if (-not $relay.WaitForExit({wait_ms})) {{ Write-Host '[replica] relay timeout'; exit 3 }}\n"
+        "exit $relay.ExitCode\n".format(
+            python=_ps_quote(variables["python"]),
+            outLog=_ps_quote(variables["outLog"]),
+            errLog=_ps_quote(variables["errLog"]),
+            pidFile=_ps_quote(variables["pidFile"]),
+            root=_ps_quote(variables["root"]),
+            relay=_ps_quote(str(relay)),
+            relayflags=relay_flags,
+            wait_ms=RELAY_RETURN_TIMEOUT_MS,
         ),
         encoding="utf-8",
     )
@@ -611,12 +670,13 @@ def _replay(tmp: Path, script_text: str, dies_with_parent: bool) -> dict:
             facts["errlog"] = err_path.read_text(encoding="utf-8", errors="replace")
 
         m = re.search(
-            r"console_procs=(\d+)\s+console_hwnd=(\S+)\s+caller_pipe_in_child=(\S+)", facts["log"]
+            r"console_procs=(\d+)\s+console_hwnd=(\S+)\s+caller_pipe_filetype=0x([0-9a-fA-F]+)",
+            facts["log"],
         )
         if m:
             facts["console_procs"] = int(m.group(1))
             facts["console_hwnd"] = int(m.group(2))
-            facts["caller_pipe_in_child"] = m.group(3)
+            facts["caller_pipe_filetype"] = int(m.group(3), 16)
         return facts
     finally:
         # 收工：讓沙盒服務**自行**結束（不送任何終止訊號），並還原環境變數。
@@ -640,13 +700,22 @@ def _replay(tmp: Path, script_text: str, dies_with_parent: bool) -> dict:
 # ───────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="module")
-def script_text() -> str:
-    """生產腳本內容（若設了 ``SOULOS_LAUNCH_MUTATION`` 則套用該變異）。"""
-    text = _read_script()
+def mutation_state() -> dict:
+    """生產腳本內容 ＋ 變異對「啟動中繼 launcher」那一支的額外旗標。
+
+    未設 ``SOULOS_LAUNCH_MUTATION`` 時，測試跑的是**真正的生產檔案**。
+    """
+    state = {"script": _read_script(), "relay_flags": ""}
     mutation = os.environ.get(MUTATION_ENV, "").strip()
     if mutation:
-        text = _apply_mutation(text, mutation)
-    return text
+        state = _apply_mutation(state, mutation)
+    return state
+
+
+@pytest.fixture(scope="module")
+def script_text(mutation_state) -> str:
+    """生產腳本內容（若設了 ``SOULOS_LAUNCH_MUTATION`` 則套用該變異）。"""
+    return mutation_state["script"]
 
 
 @pytest.fixture(scope="module")
@@ -655,11 +724,13 @@ def production_before() -> dict:
 
 
 @pytest.fixture(scope="module")
-def replay(tmp_path_factory, script_text):
-    """在沙盒重播一次生產啟動區塊。"""
+def replay(tmp_path_factory, mutation_state):
+    """在沙盒重播一次 production 的兩層啟動（呼叫端 → 中繼 launcher → 服務）。"""
     tmp = tmp_path_factory.mktemp("soulos_launch_detach")
     mutation = os.environ.get(MUTATION_ENV, "").strip()
-    return _replay(tmp, script_text, dies_with_parent=(mutation == "M3_service_dies_with_wrapper"))
+    return _replay(
+        tmp, mutation_state, dies_with_parent=(mutation == "M3_service_dies_with_wrapper")
+    )
 
 
 # ───────────────────────────────────────────────────────────
@@ -765,26 +836,34 @@ def test_wrapper_returns_deterministically(replay):
     )
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "已知缺口（2026-10-21 實測，待主大腦裁決）：PowerShell 5.1 的 Start-Process "
-        "-RedirectStandardOutput/-RedirectStandardError 走 .NET 的 UseShellExecute=false，"
-        "而 .NET 的 CreateProcess 一律 bInheritHandles=TRUE ⇒ 服務會一併繼承呼叫端的 "
-        "stdout pipe（服務行程內 GetFileType(呼叫端 pipe handle)=VALID），呼叫端要等服務"
-        "退出才收到 EOF。要關掉它必須改變啟動機制（例如以 bInheritHandles=FALSE 建立中繼 "
-        "launcher），超出本票授權範圍，故先標記為已知缺口（xfail）。"
-    ),
-)
 def test_callers_stdout_is_released_while_the_service_lives(replay):
-    """（已知缺口）呼叫端的 stdout 必須在服務仍活著時就收到 EOF。
+    """呼叫端的 stdout 必須在**服務仍活著**時就收到 EOF。
 
-    這正是 2026-10-21 02:10 DEPLOY-RESTART-21 被 600s 牆鐘上限殺掉 wrapper 的成因；
-    目前 PS 5.1 的 Start-Process -RedirectStandard* 無法避免（見 xfail reason）。
+    這正是 2026-10-21 02:10 DEPLOY-RESTART-21 被 600s 牆鐘上限殺掉 wrapper 的成因：
+    .NET 的 ``Start-Process -RedirectStandard*`` 走 ``UseShellExecute=false``，而
+    .NET 的 ``CreateProcess`` 一律 ``bInheritHandles=TRUE`` ⇒ 服務會一併繼承呼叫端的
+    stdout pipe ⇒ 呼叫端要等服務退出才收到 EOF。
+
+    2026-10-21（HANDLE-INHERITANCE）已把缺口關掉：服務改由**中繼 launcher** 拉起，
+    中繼 launcher 以 ShellExecute 路徑（不帶 -RedirectStandard*）建立 ⇒ 不持有呼叫端的
+    pipe ⇒ 服務只繼承中繼 launcher 的 handle。
+
+    量測方式（比舊版更嚴）：舊版只判斷「handle 是否有效」，但 handle slot 被別的
+    handle 占用時 GetFileType 會回 0（FILE_TYPE_UNKNOWN），舊判斷會誤報成「仍然
+    VALID」。現在直接比對 **FileType**：呼叫端的 stdout 是 pipe ⇒ 真的繼承到時
+    GetFileType == FILE_TYPE_PIPE(0x3)。
     """
     assert replay["refused"] is None, replay["refused"]
-    assert replay["caller_pipe_in_child"] != "VALID", (
-        "服務仍持有呼叫端的 stdout pipe handle（caller_pipe_in_child=VALID）"
+    assert replay["child_alive_after_wrapper"], (
+        "服務已經不在了 —— 無法證明「服務活著時呼叫端就收到 EOF」（pid=%r）"
+        % replay["child_pid"]
+    )
+    assert replay["caller_pipe_filetype"] is not None, (
+        "服務沒有回報 handle 層級的量測（log=%r）" % replay["log"]
+    )
+    assert replay["caller_pipe_filetype"] != FILE_TYPE_PIPE, (
+        "服務仍持有呼叫端的 stdout pipe handle"
+        "（GetFileType=0x%x = FILE_TYPE_PIPE）" % replay["caller_pipe_filetype"]
     )
     assert replay["pipe_eof"], (
         "服務仍在存活，但呼叫端的 stdout 沒有收到 EOF（服務仍持有呼叫端的 pipe handle）"

@@ -106,41 +106,73 @@ function Start-SoulOsServer {
         Write-OpsLog "WARN nohup rotation helper not loaded - skip rotation (start anyway)"
     }
 
-    # 啟動：服務不與呼叫端共用 Console（2026-10-21 SERVER-OPS-LAUNCH-DETACH）
+    # 啟動：服務不與呼叫端共用 Console，且**不繼承呼叫端的 stdout pipe**
+    # （2026-10-21 SERVER-OPS-HANDLE-INHERITANCE）
     #
-    # 拿掉 -NoNewWindow 的理由（實測，隔離沙盒 + 無害子行程）：
-    #   Windows PowerShell 5.1 的 Start-Process 若帶 -NoNewWindow，服務會與呼叫端
-    #   **共用同一個 Console**（服務端 GetConsoleProcessList 會數到呼叫端的行程）；
-    #   拿掉之後服務拿到自己的 Console，呼叫端的 console handle 不再被服務掛住。
-    #   （2026-10-21 02:10 DEPLOY-RESTART-21 的 restart 即是被 600s 上限砍掉 wrapper，
-    #   服務僥倖存活）。
-    #
-    # 實測（隔離沙盒 + 無害子行程；守衛測試 tests/infra/test_server_ops_launch_detach.py）：
-    #   拿掉 -NoNewWindow 之後，服務拿到自己的 Console（服務端 GetConsoleProcessList
-    #   只剩自己、console hwnd 與呼叫端不同），輸出照樣由 -RedirectStandardOutput/
-    #   -RedirectStandardError 寫進既有 nohup log（log 檔名與內容格式不變），
-    #   服務則在 wrapper 退出後繼續存活（pid 檔語意不變）。
-    #
-    # ⚠ 尚未關閉的缺口（實測；需回報主大腦裁決，勿自行改啟動機制）：
-    #   只要帶 -RedirectStandardOutput/-RedirectStandardError，PowerShell 5.1 就走
-    #   .NET 的 UseShellExecute=false 路徑，而 .NET 的 CreateProcess 一律以
-    #   bInheritHandles=TRUE 建立子行程 ⇒ **服務會一併繼承呼叫端的 stdout pipe**
-    #   （實測：服務行程內 GetFileType(呼叫端 pipe handle) = VALID）。後果是呼叫端
-    #   （例如 harness 的背景 shell）要等「服務退出」才收得到 stdout 的 EOF，指令看
-    #   起來像「不返回」，最後被牆鐘上限連坐砍掉整棵行程樹（2026-09-16 事故形狀；
+    # 為什麼要多一層「中繼 launcher」（實測根因，勿自行改動機制）：
+    #   .NET 的 Start-Process -RedirectStandardOutput/-RedirectStandardError 走
+    #   UseShellExecute=false，而 .NET 的 CreateProcess 一律以 bInheritHandles=TRUE
+    #   建立子行程 ⇒ 服務會連帶繼承「呼叫端」的 stdout pipe（實測：服務行程內
+    #   GetFileType(呼叫端 pipe handle) = FILE_TYPE_PIPE）。後果：呼叫端（例如
+    #   harness 的背景 shell）要等「服務退出」才收到 stdout 的 EOF ⇒ 指令看起來像
+    #   「不返回」⇒ 被牆鐘上限連坐砍掉整棵行程樹（2026-09-16 生產中斷事故形狀；
     #   2026-10-21 02:10 DEPLOY-RESTART-21 即是被 600s 上限殺掉 wrapper，服務僥倖
-    #   存活）。拿掉 -NoNewWindow **不會**關掉這個缺口（實測：pipe 仍被服務持有）。
-    #   真正要關掉它必須改變啟動機制（例如讓服務由一個以 bInheritHandles=FALSE 建立
-    #   的中繼 launcher 拉起），那已超出本票授權的範圍，故先在此標註，並保留
-    #   tests/infra/test_server_ops_launch_detach.py 內的已知缺口測試（xfail）。
-    $proc = Start-Process -FilePath $python `
-        -ArgumentList "$root\scripts\run_server.py" `
-        -RedirectStandardOutput $outLog `
-        -RedirectStandardError $errLog `
-        -PassThru `
-        -WorkingDirectory $root
-    $proc.Id | Out-File -Encoding utf8 $pidFile
-    Write-OpsLog "[ok] Server started PID=$($proc.Id) python=$python"
+    #   存活）。拿掉 -NoNewWindow **不會**關掉這個缺口（前一票實測）。
+    #
+    # 本票做法（把「直接拉起服務」搬進中繼 launcher 這一層）：
+    #   1. 呼叫端以「**不帶** -RedirectStandard*」的 Start-Process 啟動中繼 launcher
+    #      → PowerShell 5.1 走 ShellExecute 路徑 → CreateProcess 以
+    #      bInheritHandles=FALSE 建立 ⇒ 中繼 launcher **不持有**呼叫端的 pipe。
+    #   2. 中繼 launcher 再以 .NET 導向拉起真正的服務 ⇒ 服務只繼承中繼 launcher 的
+    #      handle（既有 nohup log），**不繼承**呼叫端的 pipe ⇒ 呼叫端立即收到 EOF。
+    #   3. pid 語意不變：中繼 launcher 把服務行程（trampoline）的 pid 寫進 pid 檔
+    #      ⇒ data\server.pid 仍是 launcher pid，:8000 的 socket owner 仍是其子行程。
+    #
+    # 中繼 launcher 就是**本支腳本自己**（以環境變數 SOULOS_LAUNCH_SERVICE_ONLY=1
+    # 進入中繼模式），理由：服務啟動原語必須留在本檔（tests/test_server_ops_python_path_v1.py
+    # 與前一票的守衛都要求：本檔第一個啟動呼叫的 -FilePath 必須是 $python，且須帶
+    # -RedirectStandardOutput $outLog / -RedirectStandardError $errLog / -PassThru）。
+    #
+    # ⚠ 中繼 launcher 的命令列刻意**不含** "run_server.py"：Get-ServerProcess 以
+    #   '*run_server.py*' 比對命令列，若中繼被誤認成服務，start 的「已在執行」判斷
+    #   會誤判成服務還活著。服務腳本路徑由本檔的 $root 推導，不經命令列傳遞。
+    if ($env:SOULOS_LAUNCH_SERVICE_ONLY -eq '1') {
+        # ── 中繼 launcher 模式：直接拉起服務行程（只由中繼 launcher 進入）──
+        $proc = Start-Process -FilePath $python `
+            -ArgumentList "$root\scripts\run_server.py" `
+            -RedirectStandardOutput $outLog `
+            -RedirectStandardError $errLog `
+            -PassThru `
+            -WorkingDirectory $root
+        $proc.Id | Out-File -Encoding utf8 $pidFile
+        Write-OpsLog "[relay] service started PID=$($proc.Id) python=$python"
+        exit 0
+    }
+
+    # ── 一般模式：啟動中繼 launcher（不帶 -RedirectStandard* ⇒ 不繼承呼叫端 pipe）──
+    $env:SOULOS_LAUNCH_SERVICE_ONLY = '1'
+    try {
+        $relay = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
+            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $root 'scripts\server_ops.ps1'), '-Action', 'start') `
+            -PassThru `
+            -WorkingDirectory $root
+    } finally {
+        $env:SOULOS_LAUNCH_SERVICE_ONLY = $null
+    }
+    if (-not $relay.WaitForExit(60000)) {
+        Write-OpsLog "ERROR relay launcher did not exit within 60s - start FAILED"
+        exit 1
+    }
+    if ($relay.ExitCode -ne 0) {
+        Write-OpsLog "ERROR relay launcher exit code $($relay.ExitCode) - start FAILED"
+        exit 1
+    }
+    $serverPid = (Get-Content $pidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if (-not $serverPid) {
+        Write-OpsLog "ERROR pid file was not written by the relay launcher - start FAILED"
+        exit 1
+    }
+    Write-OpsLog "[ok] Server started PID=$serverPid python=$python"
     Write-OpsLog "     Logs: $outLog"
     Write-OpsLog "           $errLog"
     Start-Sleep -Seconds 3
