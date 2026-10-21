@@ -234,6 +234,20 @@ VISION §4.1 逐字：**「線頭是『未解決的心理張力』的在場暫�
 - **觸發條件**：某線頭轉為 `completed` **或** `abandoned`（即 §2.5 的 `transitioned` 事件落地為終態）。
 - **一次且僅一次**：以該線頭 fold 後 `dissolved_at is None` 為前置判斷。已溶解者**不得**二次溶解。
 - **不在終態前溶解**：`active` / `dormant` 永不觸發溶解（張力尚未解除）。
+- **確定性超期歸檔（Deterministic Sunset；LIFE-THREAD-M2-SUNSET）**：另一條**轉入
+  `completed`** 的路徑。當某 agent 的**最舊** `active` 線頭同時滿足**四項條件**：
+  ① `age = (now − created_at) / 86400 > 21` 天（**嚴格大於**；21 天整不算）；
+  ② 該 agent 的 `active` 線頭數 `>=` 它的容量（**容量壓力**：沒有壓力就沒有釋放的
+  必要）；③ 該 agent **連續 ≥ 3 槽未建立任何新線頭**；④ 該線頭是該 agent **最舊**的
+  `active` 線頭（同 `created_at` 時以 `thread_id` 字典序 tiebreak ⇒ 決定性），
+  接線層（`life_thread_orchestrator`）會把它交給**既有**溶解路徑 —— 與其他終態線頭
+  **同一個** `dissolve_hook` ⇒ 產生 reflection ＋ fact ＋ `status=completed`。
+  🔴 **目標狀態只有 `completed`**（§2.2 值域不變：`active / dormant / completed /
+  abandoned`，**無 `archived`**）；**`dormant` 不作為 sunset 目標**（INV-1：`dormant`
+  不催）。**每次評估最多釋放一個位元**（不破壞蔡戈尼效應的精緻感）。
+  🔴 判定**只**由 `src/soul/life_thread_sunset.py` 負責（純函式、0 I/O、0 `src.*`
+  import）；M2 純決策層**零改動** —— `checkpoints_exhausted` 只是「**由呼叫端注入**」
+  的既有接縫，本條款規定**誰**在什麼條件下注入它。
 
 ### 3.2 沉澱：prompt 契約
 

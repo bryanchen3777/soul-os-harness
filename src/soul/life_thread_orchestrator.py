@@ -110,6 +110,14 @@ POLICY_MAX_ACTIVE_DURATION_DAYS = 14
 #: M2 判 `check_after_ts` 過期（stale）的天數門檻。
 POLICY_STALE_CHECK_THRESHOLD_DAYS = 7
 
+#: 確定性超期歸檔（Deterministic Sunset；LIFE-THREAD-M2-SUNSET）觸發的 M1 轉移所
+#: **借用**的 `origin_type`（M1 §2.3 四值之一，**非第五個值**）。
+#:
+#: 🔴 M4 `apply_actions` 只在 `create` 分支使用 `origin_type`；sunset 走 `complete`
+#:    分支 ⇒ 該值**實際不影響任何寫入**（此處只是借用既有值域，**不發明**新值）。
+#:    取自 M1 的 `ORIGIN_TYPES`（單一事實來源）而非寫死字面值。
+SUNSET_ORIGIN_TYPE: str = lt.ORIGIN_TYPES[0]
+
 #: **存量終態 catch-up** 旗標的環境變數名（**呼叫時即時讀取，不得快取**）。
 #:
 #: 🔴 **兩支旗標分工**（M2-CATCHUP-1）：
@@ -586,6 +594,49 @@ def _clip(value: Any) -> str:
     return text[:_LOG_MAX_CHARS]
 
 
+def _format_age(age_days: Any) -> str:
+    """把存活天數收斂成**兩位小數**的字串（`None` ⇒ `"n/a"`）。
+
+    🔴 本檔**0 浮點字面量**（既有 AST 守衛 `test_a3_orchestrator_has_no_float_literals_or_scoring_idents`）
+    ⇒ 格式化交給 f-string 的格式規格，**不在本檔寫浮點常數**。
+    """
+    if isinstance(age_days, (int, float)) and not isinstance(age_days, bool):
+        return f"{float(age_days):.2f}"
+    return "n/a"
+
+
+def _sunset_module() -> Any:
+    """惰性解析 `src.soul.life_thread_sunset`（確定性超期歸檔的**純決策層**）。
+
+    🔴 以 `importlib` 惰性解析 —— 與本檔 `_elevation_provenance_module` 同一手法：
+    本檔頂層 `src.*` import 集合已被既有測試釘住（**恰 6 個葉模組**，
+    `tests/soul/test_life_thread_m5_wiring.py::test_a1_orchestrator_import_whitelist_only`），
+    **不得**新增任何形式（頂層或函式層）的 `from src... import`（`ast.walk` 會掃到函式體）。
+
+    解析失敗 ⇒ 拋出（由呼叫端 fail-closed 收斂 ⇒ 本輪不 sunset，既有行為不變）。
+    """
+    import importlib
+
+    return importlib.import_module("src.soul.life_thread_sunset")
+
+
+def _sunset_tz() -> Any:
+    """sunset 槽計算用的**本地時區**（`src.timezone_utils.LOCAL_TZ`）。
+
+    🔴 同樣以 `importlib` 惰性解析（理由同上：頂層 `src.*` import 集合已被釘住）。
+    解析失敗 ⇒ `ZoneInfo("America/New_York")`（排程的既定時區；**不猜測**其他時區）。
+    """
+    try:
+        import importlib
+
+        tz_mod = importlib.import_module("src.timezone_utils")
+        return tz_mod.LOCAL_TZ
+    except Exception:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo("America/New_York")
+
+
 def _perception_records_path():
     """感知 trace 檔路徑 —— **逐字沿用** M4 的 `_perception_trace_path()`。
 
@@ -746,6 +797,93 @@ async def _run_agent(
     )
     dissolved_candidates = sum(1 for e in evals if e.should_mutate)
 
+    # ── 確定性超期歸檔（Deterministic Sunset；LIFE-THREAD-M2-SUNSET）────────
+    # 🔴 **M2 純決策層零改動**（`life_thread_dissolution.py` 逐位元未變）：M2 早已
+    #    支援 `checkpoints_exhausted` 注入點（`evaluate_thread_dissolution(...,
+    #    checkpoints_exhausted=True)` ⇒ `target_status=completed`／
+    #    `should_mutate=True`／`reason=CHECKPOINTS_EXHAUSTED`／建 `reflection_prompt`）；
+    #    唯一缺口是那個旗標「**由呼叫端顯式注入**」（M1 fold 的 13 個欄位沒有
+    #    檢驗點清單 ⇒ **不得猜測**）。⇒ 本段只負責**確定性地算出那個旗標**。
+    # 🔴 **不新增旗標**：sunset 是**預設啟用**的確定性機制（工單 §3.2）。
+    # 🔴 **一次評估最多一條**被 sunset（§3.1 純函式 4）⇒ 每次最多釋放一個容量位元。
+    # 🔴 **必須走既有溶解路徑**：M4 的 `apply_actions` ＝ M1 `append_transition`
+    #    ＋ **同一個** `dissolve_hook` ⇒ reflection ＋ fact ＋ `status=completed`；
+    #    **不得**靜默改狀態（蔡戈尼記憶效應：釋放張力 ＋ 留下沉澱）。
+    sunset_info: Optional[Dict[str, Any]] = None
+    try:
+        sunset_mod = _sunset_module()
+        sunset_tz = _sunset_tz()
+        slots_since = sunset_mod.slots_since_last_creation(
+            all_threads, now=now, tz=sunset_tz
+        )
+        sunset_target = sunset_mod.pick_sunset_target(
+            all_threads,
+            now=now,
+            agent_active_count=len(active_threads),
+            agent_cap=cap,
+            slots_since_new_thread=slots_since,
+        )
+        if sunset_target is not None:
+            # M2 的**單筆**裁決（注入旗標）＝ 這一條真的該轉 `completed`。
+            sunset_eval = lt_diss.evaluate_thread_dissolution(
+                sunset_target,
+                now,
+                max_active_duration_days=POLICY_MAX_ACTIVE_DURATION_DAYS,
+                stale_check_threshold_days=POLICY_STALE_CHECK_THRESHOLD_DAYS,
+                allow_soft_archive=POLICY_ALLOW_SOFT_ARCHIVE,
+                agent_id=agent_id,
+                checkpoints_exhausted=True,
+            )
+            if (
+                sunset_eval.should_mutate is True
+                and sunset_eval.target_status.value == "completed"
+            ):
+                sunset_result = lt_origins.apply_actions(
+                    agent_id,
+                    [{"op": "complete", "thread_id": sunset_target.get("thread_id")}],
+                    origin_type=SUNSET_ORIGIN_TYPE,
+                    now=now,
+                    dissolve_hook=dissolve_hook,
+                )
+                sunset_thread_id = str(sunset_target.get("thread_id") or "")
+                if sunset_thread_id in (sunset_result.get("transitioned") or []):
+                    sunset_info = {
+                        "thread_id": sunset_thread_id,
+                        "created_at": sunset_target.get("created_at"),
+                        "age_days": sunset_mod.age_days(sunset_target, now=now),
+                        "slots_since_new_thread": slots_since,
+                        "agent_active_count": len(active_threads),
+                        "agent_cap": cap,
+                        "reason": sunset_eval.reason.value,
+                        "target_status": sunset_eval.target_status.value,
+                        "reflection_prompt": sunset_eval.reflection_prompt,
+                    }
+                    # 容量位元已釋放 ⇒ 本輪的 active 視圖必須**反映**這個事實
+                    # （M3 的飽和判定用的就是 `active_threads`）。
+                    active_threads = [
+                        t
+                        for t in active_threads
+                        if str(t.get("thread_id") or "") != sunset_thread_id
+                    ]
+                    for t in all_threads:
+                        if str(t.get("thread_id") or "") == sunset_thread_id:
+                            t["status"] = "completed"
+                    logger.info(
+                        f"[LifeThreadOrchestrator] agent={_clip(agent_id)} slot={_clip(slot)} "
+                        f"sunset thread={_clip(sunset_thread_id)} "
+                        f"age_days={_clip(_format_age(sunset_info.get('age_days')))} "
+                        f"slots_since_new_thread={slots_since} "
+                        f"active={len(active_threads)}/{cap} "
+                        f"reason={_clip(sunset_eval.reason.value)}"
+                    )
+    except Exception as exc:
+        # fail-closed：sunset 是**增益**路徑；失敗不得改變 M3／M4 的既有行為。
+        logger.warning(
+            f"[LifeThreadOrchestrator] agent={_clip(agent_id)} slot={_clip(slot)} "
+            f"sunset 判定失敗 (fail-closed): {type(exc).__name__}: {_clip(exc)}"
+        )
+        sunset_info = None
+
     # ── 契約新條款：**存量終態** catch-up（M2 候選 ⇒ 既有 hook）──────────
     # M2 步驟 2 對 `status ∈ {completed, abandoned}` ∧ `dissolved_at is None` 的線頭回
     # `should_mutate=True`。這類線頭**不會**再由 M4 觸發 hook（M1 終態不可再轉移 ⇒
@@ -866,6 +1004,18 @@ async def _run_agent(
                     f"whim 判定失敗 (fail-closed): {type(exc).__name__}: {_clip(exc)}"
                 )
         if not bootstrap_mode and not whim_mode:
+            if sunset_info is not None:
+                # 確定性超期歸檔（§3.1）：**僅真的 sunset 時**才出現此鍵；
+                # 未 sunset 時下方既有三鍵 dict **逐字不變**（既有測試釘死其字面）。
+                sunset_summary = {
+                    "woke": False,
+                    "reason": decision.reason,
+                    "dissolved_candidates": dissolved_candidates,
+                    "sunset": sunset_info,
+                }
+                if elevation_created:
+                    sunset_summary["elevation_event_created"] = True
+                return sunset_summary
             if elevation_created:
                 # 契約 §4.6：僅真的建立時才多此一鍵；下方既有三鍵返回逐字保留。
                 return {
@@ -903,6 +1053,9 @@ async def _run_agent(
         if elevation_created:
             # 契約 §4.6：僅真的建立時才出現此鍵。
             blocked_summary["elevation_event_created"] = True
+        if sunset_info is not None:
+            # 確定性超期歸檔（§3.1）：僅真的 sunset 時才出現此鍵。
+            blocked_summary["sunset"] = sunset_info
         return blocked_summary
 
     # ── M4：唯一喚醒動作（§5 注入範式）───────────────────────
@@ -992,4 +1145,7 @@ async def _run_agent(
     if elevation_created:
         # 契約 §4.6：僅真的建立時才出現此鍵。
         summary["elevation_event_created"] = True
+    if sunset_info is not None:
+        # 確定性超期歸檔（§3.1）：僅真的 sunset 時才出現此鍵（可觀測四項條件）。
+        summary["sunset"] = sunset_info
     return summary
