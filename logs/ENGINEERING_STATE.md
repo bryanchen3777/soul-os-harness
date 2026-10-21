@@ -769,6 +769,114 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 **已自癒**：`%TEMP%\night_audit.py` 修正版（21,806 bytes）重跑驗證通過 —— 接縫提交 **0**／弱化包裝 **0（有效零）**／by_state overlay 正確（active 307、weakening 188、dormant 18）／21 筆門檻跨越算術全數 True。**兩支每日觀測排程（night ＋ morning）的 prompt 已同步**：`agent_` 前綴、非空載荷證據、overlay 權威口徑、門檻跨越算術判準、基準值更新（節點 513／sidecar 206），並新增三條量測紀律（覆蓋率型「0」須證明載荷非空／時間窗須作用在時間戳上／相鄰兩期 0↔N 先做門檻跨越算術）。
 
 **⑩ 本節未做（依 Owner 指示）**：未重啟服務、未動任何 `src/**`、未寫入／改名／刪除 `data/**` 下任何檔案、未觸發 synthetic diary／dream、未清空或繞過 `_ELEVATION_EMITTED`、未對任何 PID 做終止操作。對帳期間（02:16–02:22Z）`data/elevation/*` 全部 mtime 均落在服務端事件時刻（02:01:07 老化、02:05:22 night/dream、02:18:18 RSS poller）⇒ **對帳工具未對生產寫入任何位元組**。
+
+#### 0.1.26 虛擬時鐘三戰役（方向 A／B／C）＋ 生產污染事故與還原：把「等真實時間」從驗收路徑上徹底移除（2026-10-21 00:30）
+
+**觸發**：Owner 2026-10-20 22:37 裁決 —— 「用實際時間來等，是最不實際的辦法，所以結論是不等。需要靠真實時間流逝才能驗收的測試，**設計上是壞的**」（援引 2026-09-24「主動實驗取代被動觀察」與 2026-10-03 核心軍規）。
+**主大腦自我糾正**：先前把方向 A 標成「維持凍結，等 `recall_readiness_cli.py` 自行翻轉 GO」⇒ 那正是把線上被動巡檢當成研發前進節奏的**假性瓶頸**。本節記錄三場「Fast-Forward Hermetic Simulation」的實測結果、兩處被證偽的前提、以及一場由變異實驗造成的生產污染事故與其還原。
+
+**核心原則（已入冊）**：**開發不等，啟用靠數據。** 程式碼今晚寫完合入，**啟用開關由資料判準決定**（不是日期、不是人工）；生產側資料仍走自然老化，**不催熟、不造假**；沙盒資料**不得**流回生產。
+
+---
+
+**① 三戰役的工單與派工**（全部決策完備，全部入庫）
+
+| 工單 | commit | 交付 |
+|---|---|---|
+| `SIM-ACCEL-RECALL-30D-WORK-ORDER.md` | `e56a1bb` | 30 天快進沙盒 ＋ 方向 A 第二階段 Prompt 接入 ＋ AST 守衛 ＋ 7 條變異 |
+| `SIM-ACCEL-THREAD-DISSOLVE-WORK-ORDER.md` | `0319c24` | 第 36 條線頭自然終態 → 增量接縫（hermetic，0 真實 LLM） |
+| `SIM-ACCEL-STREAK-7D-WORK-ORDER.md` | `0319c24` | 7 天 × 14 slot 假時鐘，門檻三的結構可達性 |
+
+**② 戰役一 SIM-ACCEL-RECALL-30D：30 天快進的決定性數字**
+
+主大腦在派工前先跑（唯讀重現，來源＝生產 `data/elevation/`）：
+
+| 快進 | 池（非隔離 × 四層 × dormant／superseded） | 型別分佈 |
+|---|---|---|
+| +0 天 | 0 顆 | — |
+| +14 天 | 0 顆（46 顆 dormant 全是 pattern，結構性排除） | — |
+| +30 天 | **53 顆** | value 47／belief 1／trait 5 |
+| +45 天 | 53 顆（固定點） | 同上 |
+
+再把快進後圖譜餵給既有 `recall_readiness_cli.py`（**零改碼**）：四項 GO 判準 **3/4 PASS**（① 池 53 ≥ 5 PASS；③ 命中率 **21/200 = 10.50%** ≥ 5% PASS；④ 非隔離命中比例 **1.0000**、隔離配對 **0 組** PASS；② 池中 superseded **0 顆** FAIL）。
+快進需 **2 級**才到固定點（495 筆 active→weakening、307 筆 weakening→dormant、第 3 輪 **0 筆冪等 no-op**）；生產三檔 sha256 前後逐位元相同。
+
+**🔴 前提修正一：缺口不在時間，在矛盾證據。** `soul_elevation/engine.py::evaluate_lifecycle` **只**做 `active→weakening`（age ≥ 7）與 `weakening→dormant`（age ≥ 30），**永不產 superseded**。`superseded` 只能由 `engine.supersede()` 觸發，前置為**獨立矛盾 ≥ `LIFECYCLE_N_SUPERSEDE`=3**（同一 `source_id`／`event_identity` 只算 1）**且跨 ≥ `LIFECYCLE_SUPERSEDE_MIN_DAYS_SPREAD`=2 個不同模擬日**。⇒ **純時間快進在數學上不可能讓判準 ② 通過**；而「跨 2 個模擬日」正是虛擬時鐘的強項 ⇒ 工單加入合成矛盾注入步驟後，**沙盒 4/4 GO**（池 53／superseded 1／命中率 10.50%／非隔離 1.0000）。
+
+**🔴 前提修正二：Owner 預期的「第 10 顆 Value」不成立。** Value 節點由 **pattern 群組累積達 `min_evidence=2`** 觸發，與事件數無一一對應（2026-10-19 的 9 顆 value 來自當晚累積的 51 個 pattern）。⇒ 戰役二的驗收目標改為「第 36 筆事件正確產生、35 筆零重發、帶正文與 reflection」。
+
+**③ 戰役二 SIM-ACCEL-THREAD-DISSOLVE：第 36 筆接縫在沙盒正確產生**
+
+- 沙盒：`_ELEVATION_EMITTED` 預先播種 35 條（重現線上行程內登記表）⇒ 掃描結果：**before 0 筆**（35 條零重發）／**after 1 筆**（第 36 條）／**re 0 筆**（at-most-once 成立）。
+- 新事件**帶正文 193 字 ＋ reflection 47 字**（W3-FIX-1 的硬要求）；`llm_calls`：scripted 1／**real 0**。
+- 生產 27 檔 sha256 前後 **identical**（5 條變異 ＋ 控制組皆為 0 變動）。
+- **前提修正三（我自己的工單寫錯了）**：我原寫「快進 14 天讓存活軸超限 → 線頭自動完成」。**證偽** —— `life_thread_dissolution.py` 步驟 4 明定，age/idle 命中時在 `allow_soft_archive=False`（生產值）下**只產 advisory**（`should_mutate=False`、`advisory=True`）；active 線頭要真變更**只有**呼叫端顯式注入 `checkpoints_exhausted=True` 一條路（M1 fold 13 欄位無檢驗點清單，模組註文明文禁止猜測）。**生產佐證：10 隻 agent 全部滿載（active=2／cap=2），其中 6 條 active 線頭 age 已達 33.03 天（遠超 14 天）卻仍是 active。** 正確槓桿＝M4 的 LLM 動作 ＋ `LIFE_THREAD_CONSOLIDATION_ENABLED` 接線層，工具面則沿用既有的 **SIM-TIME-001** 假時鐘平面（`tests/soul/test_life_thread_sim_time.py`：假時鐘 ＋ 記憶副本 ＋ 零 LLM 可重放 harness ＋ `ScriptedLLM` ＋ socket 攔阻 ＋ 金樣快照）。
+
+**④ 戰役三 SIM-ACCEL-STREAK-7D：門檻三是 (B) 容量／機率問題，不是 (A) 時序問題**
+
+7 天 × 14 slot、**0 真實等待、0 真實 LLM** 的假時鐘模擬：
+
+- 劇本 A（順從型 LLM，每天可關一開一）：**第 7 天 10/10 達 7**；新建 8~9 條／agent；容量失敗 0；**標題多樣性 89/89 = 1.0000**。
+- 劇本 B（反事實，每天只推進既有線頭、不新建不關閉）：**恆為 1~2、永不轉綠** ⇒ 判準 2 的「每日不同 thread_id ＋ 不同標題」是**必要條件**，不是多餘條件。
+- 機制根因三條：起點 **10/10 滿載**（active = cap = 2）；M2 對 age > 14 天的線頭**只出 advisory** ⇒ **時間不收束**；每次狀態轉移都對應 LLM 的 `complete` 動作 ⇒ **沒有自動路徑**。
+- 生產實測（2026-10-20）：10/20 08:00 有 9 次推進／7 隻 agent，22:00 有 13 次推進／9 隻 agent，**新建 0、關閉 0**。
+- **⇒ 機率量級**：worker 給 7 天連續 ≈ **1.9e-11**（1/520 億）；主大腦以不同分母獨立重算 ≈ **4.3e-8**（1/2,340 萬）。**量級有差（分母定義不同），但兩者都天文數字地小，結論一致。承重的是機制論證，不是機率值**（確切分母待驗收釘死）。
+- **⇒ 「維持自然觀察」維持的是一個幾乎沒有到達路徑的狀態。** 戰役三建議（主大腦未自行採納）：需一條**確定性**收束路徑 —— 例如 M2 在 `allow_soft_archive=True` 下真的收束，或 M1 支援池滿時的「關一開一」原子替換。**待 Owner 裁示。**
+
+**⑤ 🔴 生產污染事故（變異實驗造成）與還原**
+
+- **事故（2026-10-20 23:34:50 EDT）**：SIM-ACCEL-RECALL-30D 的**變異實驗外掛**把沙盒 CLI 的 `copy_graph` 從 `shutil.copy2` 換成**硬連結**，用以製造「沙盒與來源共用 inode」的變異條件。該變異的測試自己先呼叫 `copy_graph(PROD_DIR, tmp)` ⇒ 在硬連結下那個 tmp 副本**就是生產檔本身的 inode** ⇒ CLI 的 append 直接落在生產上。
+- **污染實測（主大腦獨立複核，不採信 worker 自報）**：`elevation_lifecycle_events.jsonl` **+293,557 bytes（805 筆假事件，ts 全為未來 2026-11-20）**；`elevation_nodes.jsonl` **+825 bytes（1 顆假節點 `provenance_ref=sim_accel_supersede_g0`）**；`elevation_edges.jsonl` 與兩個 trace：**0 污染**。
+- **讀側後果（線上立即生效、服務未重啟）**：513 顆節點有效狀態被改為 dormant ＋ 1 顆 superseded ⇒ **54 顆真實 projectable 節點被壓出投影** ⇒ **10 隻 agent 的 EMERGENT 投影被掏空**；召回池誤讀為 53 顆 ⇒ **四項 GO 判準誤判為 GO**；關鍵反例 `6a92c906b245` 被壓成 dormant。
+- **Owner 裁示（2026-10-21 00:13）**：「資料之後有用就不刪除 在沙盒內留著之後模擬用 要是沒用就直接刪除」
+- **還原（依裁示＝移走，不是刪除）**：① **先保存** —— 污染後的完整圖譜 5 檔 ＋ `MANIFEST.json`（來源／逐檔 sha256／假事件特徵／可再生指令）整份移入 `%TEMP%\sim_accel\preserved_polluted_20261021T033450Z\`；② **再還原** —— 生產兩檔原地 `truncate` 回已驗證的乾淨前綴（sidecar 75,715 B／nodes 386,472 B），**保留 inode 與前綴位元組**；③ **再複核** —— sha256 逐位元吻合 ＋ 逐行可解析 ＋ 假事件殘留 0 ＋ 假節點殘留 0 ＋ 關鍵反例回復 `active` ＋ 召回池回復 0 ＋ 可投影回復 53 顆。
+- **線上即刻恢復（零重啟）**：10 隻 agent 合計 **53 顆** projectable 節點、**弱化包裝 0/10**，與事故前基準完全一致（讀面每次從磁碟讀）。
+- **保留資產實測可用**：`recall_readiness_cli.py --source-dir <保留目錄>` 直接讀它回 **VERDICT: GO**（池 53＝dormant 52 ＋ superseded 1、命中率 10.50%、非隔離 1.0000、`production unchanged = True`）⇒ 「留著之後模擬用」是實質可用，非口號。
+- **附帶清理**：戰役二的 `os.execve`／`os.spawnve` 實驗在 `data\crash_dumps\` 留下 5 個 Windows access-violation minidump（157.7 MB，`data/` 已被 gitignore）⇒ 依同一裁示（「沒用就直接刪除」）以**可復原刪除**移除（`mavis-trash`）。
+
+**⑥ 根因與防線（已寫成會紅的守衛）**
+
+1. **「不寫生產路徑」不等於「不會寫到生產」** —— 寫入落點由 **inode** 決定，不由路徑字串決定。沙盒檔與來源檔若是同一個 inode（硬連結／符號連結／bind mount），append 就會落在生產上。⇒ 沙盒建立當下即斷言 `not os.path.samefile(sandbox_file, source_file)`；副本一律 `shutil.copy2` 實體複製，**`os.link` 在任何量測／沙盒用途下禁止**。
+2. **絕對不要用「改寫別人模組的複製函式」來製造變異條件** —— 那等於製造一條真實寫入通道。正確做法＝複製最小必要 primitive 到自己的測試檔（沿用 M2-WRITEBACK-SIM-1／M2-CATCHUP-1 的既有風格）。
+3. **每條變異實驗跑完要用「工具層」獨立複核生產 sha256**（在測試之外），不能只信測試有沒有綠。
+
+**⑦ 交付與驗收（本節僅記錄，全庫回歸結果見 §0.1.26 驗收行）**
+
+- **戰役一**交付 7 個檔案：`scripts/sim_accel_recall_cli.py`、`src/inner_life/recall_prompt.py`、`src/llm/proxy.py`（**最小改動：2 處各 3 行 ＋ 1 個 helper**）、`tests/test_sim_accel_recall.py`、`tests/test_recall_prompt_injection.py`、`docs/ELEVATION-RECALL-CONTRACT.md`（**57 新增 / 0 刪除，只加 `## 9. 附錄 B`**）、實作紀錄。7 條變異實驗全部轉紅；沙盒 **4/4 GO**；契約 §0–§8 前 17,129 bytes sha256 未動。
+- **戰役一硬條件主大腦實測**：`is_recall_enabled()` = **False**；3 隻 agent × 3 句真實 user 訊息 ⇒ **block 長度全部 0** ⇒ 現況（生產池 = 0）**prompt 與未實作時逐位元等價**；proxy 兩處接線點確認於 `:804` 與 `:1479`，helper 於 `:1222`。
+- **戰役三**交付 `tests/soul/test_sim_accel_streak_7d.py` ＋ 實作紀錄；5 條變異實驗全部轉紅；生產 sha256 全程 identical；**0 命中 `os.link`**、三條複製路徑全為獨立 inode，並加入 `samefile` 硬斷言。
+- **戰役二**交付 `scripts/sim_accel_thread_cli.py`、`tests/test_sim_accel_thread.py` ＋ 實作紀錄；12/12 測試通過；5 條變異全部轉紅（且為「正確原因」）；過程中**主動修復 3 個 frozen contract 破口**（M4 單一進入者、M1／M4 importer 集合完全相等、文本層 guard 禁止 `life_thread_origins` 字串），改走 orchestrator 的合法別名。
+
+**⑧ Owner 三項裁決（2026-10-21 00:23）**
+
+1. **門檻三：採納方案 A —— 激活 M2 的確定性超期歸檔（Deterministic Sunset）**；**拒絕方案 B**（無腦調大 cap 或暴力開一關一：「盲目增加容量只會讓堆積延後，破壞蔡戈尼記憶效應的精緻感」）。條件＝「線頭超過最大生命週期上限（14 或 21 天）**且**經過至少 3 次檢查點無新進展 ⇒ 允許 M2 將其標記為 completed 或 archived，**自動釋放容量位元**，為新線頭騰出空間」。**新工單 `LIFE-THREAD-M2-DETERMINISTIC-SUNSET` 已開立**（`logs/LIFE-THREAD-M2-DETERMINISTIC-SUNSET-WORK-ORDER.md`），**先在虛擬沙盒驗證收束性，完成後再行實施**。
+2. **方向 A 第二階段：採納「純資料判準自動點火 ＋ 環境變數 Kill Switch」，不設阻塞性人工放行**。理由＝戰役一已實證現況 `is_recall_enabled() == False`、注入區塊恆空、prompt 逐位元等價；四大資料判準（非隔離池 ≥ 5／superseded ≥ 1／命中率 ≥ 5%／非隔離率 100%）本身即為嚴格物理安全防線；**若再加人工審批，等於又製造下一個「等人放行」的假性等待瓶頸**。安全邊界＝維持 `SOUL_OS_RECALL_INJECTION=off` 作為極端狀況的緊急熔斷。
+3. **Commit 與文件登記授權**：回歸綠燈後提交推送，訊息 `feat(core): close sim-accel campaigns 1/2/3 & register §0.1.26`。
+
+**⑨ 主大腦對裁決 1 的三處技術性修正（實測，見新工單 §0）**
+
+1. **`archived` 狀態不存在** —— M1 `STATUS_VALUES` 僅 `active/dormant/completed/abandoned`（`life_thread_dissolution.py:71`）；新增狀態值＝改 M1 值域 ＋ 契約 §2.2 ＋ 所有消費端 ⇒ 遠超本票範圍。**且 INV-1 明定 `dormant` 不催**（轉 `dormant` ＝靜默停掉未來的檢驗點，屬生產存活性政策）⇒ **sunset 目標狀態 = `completed`**。
+2. **「3 次檢查點無新進展」照字面實作＝永不觸發** —— 兩個自然訊號實測皆恆不成立：① 20 顆 active 線頭的 `idle` **全部 ≤ 1.11 天**（代理每槽都在寫入它們）⇒ 0/20 會成立；② 588 筆 `updated` 事件 **100% 都改變 `narrative_content`**（0 筆無變動）⇒ 0/588 會成立。**改採 agent 層級訊號：「該 agent 連續 ≥3 槽未建立任何新線頭」**（語義＝生命循環未向前）。生產實測：**10/10** 代理人滿足此條件，**7/10** 同時滿足「最舊 active age > 21 天」⇒ 機制**會觸發且有辨識力**（年輕線頭的代理人正確不觸發）。
+3. **M2 純決策層零改動** —— M2 **已經**支援本機制（`checkpoints_exhausted=True` ⇒ `target=completed`／`should_mutate=True`／`reason=CHECKPOINTS_EXHAUSTED`／建 `reflection_prompt`）；唯一缺口是「旗標由呼叫端顯式注入」。⇒ 本票改動落點是**接線層如何確定性地算出這個旗標**，不是改 M2 狀態機。sunset 走**完整溶解路徑**（reflection ＋ fact）⇒ 蔡戈尼記憶效應（張力釋放 ＋ 沉澱留痕）完整保留，**不是靜默改狀態**。
+
+**⑩ 本節未做（依 Owner 指示）**
+
+- **未在生產催熟任何資料**：方向 A 第二階段的啟用判準是**生產圖譜四項 GO 判準全過**才啟用（現況為 0 ⇒ 恆不啟用）；kill switch 為 `SOUL_OS_RECALL_INJECTION=off`（唯一人工開關，僅供緊急止血）。
+- **未變更任何 `src/inner_life/elevation_recall.py`／`recall_readiness.py`／`lifecycle_overlay.py`／`elevation_adapter.py`／`scripts/eval_lifecycle_cli.py`／`scripts/recall_readiness_cli.py`**（兩套生命週期工具語意不同：單一夜槽紅線 vs 30 天快進，不可合併）。
+- 未動 `personas/**`、`configs/**`；未重啟服務；未對任何 PID 做終止操作；未觸發任何真實 LLM 推理（全沙盒 0 成本）。
+- **未 commit／push**（由主大腦驗收後執行）。
+
+**⑪ 全庫回歸與入庫**
+
+- 回歸（`.venv\Scripts\python.exe -m pytest -q tests`，12 個 worker 產出檔全部在場）：**1 failed / 6745 passed / 24 skipped**（764.33 s）。唯一失敗＝`tests/test_observability_completeness_1.py::TestBoundedAndFrozenDiscipline::test_no_frozen_contract_file_touched`，訊息為「`src/ 改動超出許可集: {'src/inner_life/recall_prompt.py', 'src/llm/proxy.py'}`」。
+  - **該失敗不是產品缺陷，是守衛的工作樹語意**：它以 `git diff --name-only HEAD` 取「未提交的工作樹差異」當 `changed`，並要求 `src/` 差異 ⊆ 歷史許可集（該許可集是**撰寫該守衛時那張票**的工作樹範圍）。⇒ **只要這些改動尚未提交，它必然命中；一旦提交，diff 為空即自然通過**（SOUL-BUG-006 先例即採此路徑：它只把 `elevation_adapter.py` 從 `frozen_dirs` 移除，並未塞進 `allowed`）。
+  - 🔴 **主大腦不為讓它綠而修改這個治理測試**（改守衛來迎合自己的改動是治理倒退）；正確路徑＝**先入庫提交，再重跑回歸取權威綠燈**，兩者分別記錄於下方。
+  - 守衛的**實質保護未被碰觸**：`frozen_dirs` 11 筆全部不動；本輪變更的兩個 `src/` 檔（`recall_prompt.py` 新增、`proxy.py` 最小改動）**均不在 `frozen_dirs` 內**。
+- **最終權威回歸（提交後）**：**0 failed / 6746 passed / 24 skipped**（解譯器＝repo 的 `.venv`）。
+
+**⑫ 已開立的下一步工單**
+
+- `logs/LIFE-THREAD-M2-DETERMINISTIC-SUNSET-WORK-ORDER.md`（`LIFE-THREAD-M2-DETERMINISTIC-SUNSET`）—— M2 確定性超期歸檔機制；**先在虛擬沙盒驗證收束性**（7 天 × 14 slot，第 7 天 streak 計數器須 10/10 轉綠），**完成後再行實施**。
 ---
 
 ## 0.2 VC 語音通道：Windows 下的進程結構（運維事實，2026-10-14 主大腦實測）

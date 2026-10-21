@@ -269,3 +269,60 @@ dormant，以 **390 筆真實 user 訊息**實測命中率 = **31/390 = 7.95%**�
 - 不做語意／向量檢索、不呼叫 LLM、不做 FTS5。
 - 不做 prompt 注入（第二階段另開票；本附錄只給判準，不動 prompt 鏈路）。
 
+## 9. 附錄 B（2026-10-20 第二階段：方向 A — 回憶接入 prompt）
+
+工單：`logs/SIM-ACCEL-RECALL-30D-WORK-ORDER.md`（SIM-ACCEL-RECALL-30D）。
+
+### 9.1 注入位置
+
+- **獨立 system part**：插在 `MEMORY` 之後、`CHRONO` 之前（語義順序
+  IDENTITY → CAPABILITY → EMERGENT → MEMORY → **RECALL** → CHRONO → 對話歷史）。
+- **禁入 EMERGENT block**（契約 §3.1 的語氣隔離）：EMERGENT 是「你成為什麼」
+  ＝**現在**的自我定義；回憶是「你以前在意過什麼」＝**過去**。兩者混在同一個
+  區塊裡，模型會把「我以前覺得」當成「我現在覺得」。
+- 兩個注入點（群聊 `_build_messages_group` / 私聊 `_build_messages_private`）
+  走**同一個** helper（`src/llm/proxy.py::_format_recall_block`）⇒ 兩處行為一致。
+
+### 9.2 區塊格式
+
+- **獨立標題**（`src/inner_life/recall_prompt.py::RECALL_BLOCK_HEADER`）：
+  「【回憶】（這些是你過去在意過的事，不代表你現在的想法）」——與 MEMORY 區塊的
+  前綴「你記得以下這些事情:」**刻意不同**，兩個語氣必須分得開。
+- **每顆命中一行**，逐字沿用既有呈現層（`elevation_recall.format_recall_hit`，
+  **本附錄不改它一個字**）：
+  - DORMANT →「我以前很在意「X」。」
+  - SUPERSEDED →「我以前覺得「X」，但後來發現「Y」。」（「Y」＝取代者正文，
+    由呼叫端另查；recall 本身不展開遞迴查詢，見 §3.1）。
+- 單一區塊最多 3 顆（呈現層守恆：區塊不能變成 context dump）。
+
+### 9.3 啟用判準：**資料判準**，不是日期判準
+
+- 啟用與否由**生產圖譜本身的成熟度**決定：四項 GO 判準全過才注入
+  （判準定義見 §8.4，門檻由 `src/inner_life/recall_readiness.py` 的常數定義，
+  **本附錄不改任何門檻**）。
+- 四項判準用**同一套純函式**算（`pool_summary` / `hit_rate` / `go_no_go`）——
+  量測面與啟用面**不許各寫一份算法**（漂移＝兩邊講不同的故事）。
+- 行程內快取 TTL 30 分鐘（key ＝ 節點檔 mtime ＋ sidecar mtime ＋ 對話目錄
+  最新 mtime）⇒ 不會每次組 prompt 都重掃 200 筆真實訊息。
+- **唯一人工開關** ＝ 環境變數 `SOUL_OS_RECALL_INJECTION`（`off` / `0` /
+  `false` ⇒ 一律關）。它的用途只有一個：緊急止血；**預設是「自動 ＝ 資料判準」**。
+- 判準未過 ⇒ 區塊為空（**即使有命中**）。這是刻意設計：日期判準會在圖譜還沒長出
+  回憶池時就把「我以前很在意」塞進 prompt（空轉）；人工開關則讓「接上」變成一件
+  靠人記得的事實。
+
+### 9.4 fail-silent
+
+- 任何例外（IO 錯、資料形狀怪、依賴缺）⇒ **空字串** ⇒ prompt 與未實作時
+  **逐位元相同**。
+- 空區塊**不佔位、不換行、不加標點**（注入點是 `if recall_block:` 守著）⇒
+  未啟用時的 prompt 位元組級不變。
+
+### 9.5 附錄 B **不**做的事
+
+- 不改 §0–§8 任何一條；不改呈現層 `format_recall_hit` 一個字。
+- 不做語意／向量檢索、不呼叫 LLM、不發網路請求、不寫任何節點檔／邊檔／sidecar。
+- 不讓 `pattern` 類節點回憶（契約 §2.1 明文）；不召回隔離節點（§8.3 明文）。
+- 不把回憶寫進 EMERGENT block（§9.1 明文）。
+- 不改四項判準的門檻；不為了讓判準過而造假生產資料。
+- 不做「日期到了就開啟」；不做無限制的人工開關。
+

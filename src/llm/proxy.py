@@ -795,6 +795,15 @@ def _build_messages_group(
         system_parts.append(emergent_block)
     if memory_context.strip():
         system_parts.append(f"\n你記得以下這些事情:\n{memory_context.strip()}")
+    # 方向 A 第二階段 (SIM-ACCEL-RECALL-30D): RECALL block —— DORMANT / SUPERSEDED
+    # 的過去式召回。注入位置: MEMORY 之後、CHRONO 之前 (語義順序
+    # IDENTITY → CAPABILITY → EMERGENT → MEMORY → RECALL → CHRONO → 對話歷史)。
+    # 與 EMERGENT 分開是為了守住契約 §3.1 的語氣隔離 (過去 ≠ 現在)。
+    # 啟用判準是資料判準 (生產圖譜四項 GO 判準), 非日期/非人工開關。
+    # fail-silent: 空字串 = 不注入 (現況生產池 = 0 ⇒ prompt 逐位元不變)。
+    recall_block = _format_recall_block(agent_id, current_input)
+    if recall_block:
+        system_parts.append(recall_block)
     # SOUL-BUG-004 匯端 (2026-10-13): chrono 時間偏置區塊。
     # 注入位置: memory_context 之後、對話歷史之前 —— 與原本死碼 PromptContext
     # (proxy.py:1596-1598, 已於本工單刪除) 的相對順序一致, 不改變既有前綴語意。
@@ -1210,6 +1219,26 @@ def _format_emergent_block(agent_id: str) -> str:
         return ""
 
 
+def _format_recall_block(agent_id: str, utterance: str) -> str:
+    """
+    回憶區塊（方向 A 第二階段，SIM-ACCEL-RECALL-30D）: DORMANT / SUPERSEDED 的過去式召回。
+
+    語氣隔離（契約 §3.1）: 回憶是「過去」, 不是現在的信念 ⇒ 走**獨立區塊 + 獨立標題**,
+    **禁入** EMERGENT block（「你成為什麼」＝現在的自我定義）。
+
+    啟用判準是**資料判準**（生產圖譜四項 GO 判準全過才啟用）, 不是日期、不是天數、
+    不是人工開關（唯一人工開關是環境變數 kill switch, 僅供緊急止血）。
+
+    fail-silent: 任何異常 / 未啟用 / 無命中 → 空字串 (prompt 與未實作時完全等價)。
+    """
+    try:
+        from src.inner_life.recall_prompt import format_recall_block
+
+        return format_recall_block(agent_id, utterance)
+    except Exception:  # noqa: BLE001 — 雙重失敗隔離: 回憶缺失不影響 prompt
+        return ""
+
+
 def _format_epistemic_delta(agent_id: str, utterance: str) -> str:
     """
     EH-4 L2 認知差量（本體隱喻錨點 + 當輪關切姿態）讀側投影。
@@ -1441,6 +1470,15 @@ def _build_messages_private(
         system_parts.append(emergent_block)
     if memory_context.strip():
         system_parts.append(f"\n你記得以下這些事情:\n{memory_context.strip()}")
+    # 方向 A 第二階段 (SIM-ACCEL-RECALL-30D): RECALL block —— DORMANT / SUPERSEDED
+    # 的過去式召回。注入位置: MEMORY 之後、CHRONO 之前 (語義順序
+    # IDENTITY → CAPABILITY → EMERGENT → MEMORY → RECALL → CHRONO → 對話歷史)。
+    # 與 EMERGENT 分開是為了守住契約 §3.1 的語氣隔離 (過去 ≠ 現在)。
+    # 啟用判準是資料判準 (生產圖譜四項 GO 判準), 非日期/非人工開關。
+    # fail-silent: 空字串 = 不注入 (現況生產池 = 0 ⇒ prompt 逐位元不變)。
+    recall_block = _format_recall_block(agent_id, current_input)
+    if recall_block:
+        system_parts.append(recall_block)
     # SOUL-BUG-004 匯端 (2026-10-13): chrono 時間偏置區塊。
     # 注入位置: memory_context 之後、對話歷史之前 —— 與原本死碼 PromptContext
     # (proxy.py:1596-1598, 已於本工單刪除) 的相對順序一致, 不改變既有前綴語意。
