@@ -106,11 +106,38 @@ function Start-SoulOsServer {
         Write-OpsLog "WARN nohup rotation helper not loaded - skip rotation (start anyway)"
     }
 
+    # 啟動：服務不與呼叫端共用 Console（2026-10-21 SERVER-OPS-LAUNCH-DETACH）
+    #
+    # 拿掉 -NoNewWindow 的理由（實測，隔離沙盒 + 無害子行程）：
+    #   Windows PowerShell 5.1 的 Start-Process 若帶 -NoNewWindow，服務會與呼叫端
+    #   **共用同一個 Console**（服務端 GetConsoleProcessList 會數到呼叫端的行程）；
+    #   拿掉之後服務拿到自己的 Console，呼叫端的 console handle 不再被服務掛住。
+    #   （2026-10-21 02:10 DEPLOY-RESTART-21 的 restart 即是被 600s 上限砍掉 wrapper，
+    #   服務僥倖存活）。
+    #
+    # 實測（隔離沙盒 + 無害子行程；守衛測試 tests/infra/test_server_ops_launch_detach.py）：
+    #   拿掉 -NoNewWindow 之後，服務拿到自己的 Console（服務端 GetConsoleProcessList
+    #   只剩自己、console hwnd 與呼叫端不同），輸出照樣由 -RedirectStandardOutput/
+    #   -RedirectStandardError 寫進既有 nohup log（log 檔名與內容格式不變），
+    #   服務則在 wrapper 退出後繼續存活（pid 檔語意不變）。
+    #
+    # ⚠ 尚未關閉的缺口（實測；需回報主大腦裁決，勿自行改啟動機制）：
+    #   只要帶 -RedirectStandardOutput/-RedirectStandardError，PowerShell 5.1 就走
+    #   .NET 的 UseShellExecute=false 路徑，而 .NET 的 CreateProcess 一律以
+    #   bInheritHandles=TRUE 建立子行程 ⇒ **服務會一併繼承呼叫端的 stdout pipe**
+    #   （實測：服務行程內 GetFileType(呼叫端 pipe handle) = VALID）。後果是呼叫端
+    #   （例如 harness 的背景 shell）要等「服務退出」才收得到 stdout 的 EOF，指令看
+    #   起來像「不返回」，最後被牆鐘上限連坐砍掉整棵行程樹（2026-09-16 事故形狀；
+    #   2026-10-21 02:10 DEPLOY-RESTART-21 即是被 600s 上限殺掉 wrapper，服務僥倖
+    #   存活）。拿掉 -NoNewWindow **不會**關掉這個缺口（實測：pipe 仍被服務持有）。
+    #   真正要關掉它必須改變啟動機制（例如讓服務由一個以 bInheritHandles=FALSE 建立
+    #   的中繼 launcher 拉起），那已超出本票授權的範圍，故先在此標註，並保留
+    #   tests/infra/test_server_ops_launch_detach.py 內的已知缺口測試（xfail）。
     $proc = Start-Process -FilePath $python `
         -ArgumentList "$root\scripts\run_server.py" `
         -RedirectStandardOutput $outLog `
         -RedirectStandardError $errLog `
-        -NoNewWindow -PassThru `
+        -PassThru `
         -WorkingDirectory $root
     $proc.Id | Out-File -Encoding utf8 $pidFile
     Write-OpsLog "[ok] Server started PID=$($proc.Id) python=$python"
