@@ -819,6 +819,49 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 
 **背景**：§0.1.27 記錄 DEPLOY-RESTART-21 把 M2 確定性超期歸檔（Sunset）機制上線，但當時只說「預期 08:00 槽觸發」。Owner 2026-10-21 17:18 核准「先跑 08:00 槽、後重啟收網」的變更隔離決策。本節記錄**兩件事的實測結果**：① Sunset 在生產的首跑審定；② DEPLOY-RESTART-22（啟動機制解耦）在生產的實機證明。
 
+
+#### 0.1.29 戰役 A（非打擾式行動出口）閉環：自主求知行動 ＋ 話頭掛載隊列；同時登錄 2026-10-20 夜的工程裁決收斂（2026-10-21 00:30）
+
+**Owner 裁決（2026-10-20 17:27／22:37）**：
+- 「線上服務留在背景跑，中央大腦絕不陪著它乾等」⇒ 三條被「假性等待」卡住的主線全部轉入**可控虛擬時鐘沙盒**。
+- 戰役 A（首推·最高槓桿）＝ **非打擾式行動出口**（破解「念頭憋死」）。
+- 戰役 B（D1＋D3 形式化驅動張力）、戰役 C（角色批量落地＋陰影層）為後續序列。
+
+---
+
+**① 三處工程糾偏（主大腦派工前查證所為，全部寫入工單）**
+
+1. **結構核心用 Branching，不用「Agency／自主性」**。依 `docs/NORTH-STAR-AGENCY-ACTION-BOUNDARY-DCG-CONVERGENCE.md`（DCG 收斂 **Round 5/5**）裁決：**「Agency → NOT A CONSTRUCT」**；唯一真新 structural dimension ＝ **Branching（set-valued transition）**；該檔明文不含 implementation／prompt／threshold／evaluator／runtime change。
+2. **原料必須不經過 M7-longing 的 0.3 門檻**。實測 2026-10-21 全日日誌 6,619 行：主動 DM 閘門判定 **28 次**、**對用戶發訊 0 次**；而 M7-longing 的「想念」量測 **19 次全部落在 0.05~0.06**（門檻 `LONGING_THRESHOLD = 0.3`）⇒ **主動 DM 幾乎永遠排不進來**。若新出口的原料也走「想念」通道，**做了就是空轉**。⇒ 觸發來源改取**缺口／張力**狀態空間（`epistemic_appraisal` ＋ `temporal_phenomenology` 的 `STATE_TENSION`），**天然不受 0.3 門檻約束**。
+3. **素材在 Notion SSOT，不在 repo**。`docs/persona-drafts/` **從未進過 git**（LAND-0 工單「素材已入庫」的記載過時）。經 Notion connector（`notion-search`／`notion-fetch`）抓齊 36 份，**在抓取當下**施加單檔門閘（正文恰含 1 個 `^## 陰影條款`）⇒ **24 隻合格／12 隻擱置**（與 LAND-0 逐字一致：beatrice／chizuru／emilia／ichika／itsuki／mami／nagisa／nino／rika／saki／shino／yotsuba）。並發現**批次對應機制**：Notion 頁面標題前綴 ＝ 批次標記（「SOUL.md **新建檔草稿**」＝24 隻含陰影層；「SOUL.md **預寫草稿**」＝12 隻前批）⇒ 流程可全自動化。
+   **Owner 品質裁決（2026-10-20 18:31）**：採納 Notion 版本（接受 100 區塊限制造成的段落合併），**不回溯對話考古**；排版美化另立 LINT-CHORE 票。
+
+**② 戰役 A 的實作與實測（commit `SIM-EPIS-PIGGYBACK-1`）**
+
+- **① 自主求知行動**（`src/inner_life/epistemic_action.py`）：張力 **Branching** 展開為 `MEMORY_RECALL`／`WORLD_VERIFY`／`SELF_REASON` 三條路徑；**只有路徑實際命中證據才閉合**（`evidence is None ⇒ closed=False`，不硬編故事）。三件產出齊備：`epistemic_closure` 事件 ＋ 張力 `resolved` ＋ **可掛載小念頭**。**0 LLM 呼叫**（探測全唯讀）。
+- **② 話頭掛載隊列**（`src/inner_life/piggyback_queue.py`）：FIFO、每 agent ≤ 8 筆、TTL 7 天、話題重疊 ≥ 1 才帶、**一次最多 1 個**、帶出即消耗、**隔離不入隊**。
+- **接線預設關閉**：`SOUL_OS_EPISTEMIC_PIGGYBACK` **缺省＝關閉**（實測：無變數 → False、`off` → False、`1` → True）⇒ 生產 prompt 與行為**逐位元不變**。`src/soul/scheduler.py`／`src/soul/decision.py` 與全部 frozen 面 `git diff` **為空**。
+- **8 條變異實驗全部轉紅**（變異前綠 → 變異後紅 → 檔案以 sha256 還原；殘留 `MUTATION-` ＝ 0）。紅燈例：「對用戶發訊數必須為 0，實得 1」／「想念值低於門檻不得擋住自主求知行動」。
+- **沙盒 10 項守衛（分子／分母／單位）**：① 零打擾 **對用戶發訊 0/2 則**（同時 0/2 對外連線、2/2 閉合成功）② 確實閉合 事件 1/1、resolved 1/1、小念頭 2/2 ③ 不硬閉合 closure **0/1** ④ 掛載 相關 **1/1**、無關 **0/1** ⑤ 過期 **0/1** ⑥ 不重複 第一次 1/1、第二次 **0/1** ⑦ 隔離 入隊 **0/1**、帶出 **0/1** ⑧ 不影響發訊決策 **1/1 組 byte-identical** ⑨ 不經過 0.3 門檻 **1/1 次閉合**（longing＝0.0500）⑩ 生產變更 **0/221**（另全 `data/**` 7,288 檔掃描，識別字命中 **0**）。
+- **守衛品質的一個關鍵處置**：守衛 8 第一次是**盲腸守衛**（變異 7 跑完仍綠，因未走掛載呈現路徑）⇒ **修守衛**（真的呼叫 `format_piggyback_block` 並斷言有產出），**不是改斷言迎合**；修完後變異 7 如實轉紅。
+- **全庫回歸**：`6890 collected / 6866 passed / 24 skipped / 0 failed / 0 errors`（771.24 s；解譯器＝repo `.venv`）。
+
+**③ 已知殘餘問題（誠實登錄）**
+
+1. **張力檢出率＝pack 覆蓋率**：`epistemic_appraisal` 只對「有 pack 的角色」回報缺口（生產**僅 `agent_rem` 一份 pack**）⇒ 多數角色恆靜默。**機制正確，但原料供給未鋪開。**
+2. 話題相關性是**正規化詞元集合交集**（非子字串、非語意）：`手沖` ≠ `手沖壺` ⇒ 召回率低於語意相關（寧可不帶）。
+3. 觸發點是「閒置時」而非「槽後」：本票不得改 `src/soul/scheduler.py` ⇒ 需另開票。
+4. 張力狀態承載是**單一 JSON 檔**（非 append-only）⇒ 多行程併寫會覆寫；正式上線前應改 append-only sidecar。
+5. **本票不部署**；啟用需 Owner 授權，且啟用後會開始寫 `data/inner_life/` 與 `data/elevation/`。
+
+**④ 門檻三的性質裁決（Owner 2026-10-20 17:18）**
+
+**Sunset ＝ 容量保險**（Capacity Insurance，解除 `active == cap == 2` 的物理死鎖，使線頭能正常代謝收束）；**門檻三 ＝ 行為指標**（Behavioral Metric，要求至少一隻 agent 在自然環境中連續 7 天每天有主動推進）。**兩者嚴格分離。** 生產環境**嚴禁**為湊滿 7 天而人為觸發、手動造事件或縮短檢查點間隔；Mahiru（目前 5 天）與各 agent 跑出幾天就是幾天，**忠實記錄，不追求表面速成**。門檻三狀態標記為 ⏳ 待自然累積。
+
+**⑤ 待裁示（兩項）**
+
+1. **戰役 A 的啟用**：`SOUL_OS_EPISTEMIC_PIGGYBACK` 開關（目前缺省關閉）。⚠️ 啟用前建議先解決殘餘問題 1（pack 覆蓋率）與 4（append-only 承載），否則多數角色仍是靜默。
+2. **戰役 C 第二批（12 隻）**：SHADOW-0（Notion `3ef5ab1a-15bb-81bf-bc94-c33cb0833bbb`）補齊陰影層；且第二批落地時**同時**把 `NO_DIARY_AGENTS` 由 `{"agent_ram"}` 擴為 5 筆（**第一批刻意不動**，因為那 4 隻全在擱置名單，提前加入會造成指向未註冊 agent_id 的懸空引用）。
 ---
 
 **① Sunset 首跑（2026-10-21 08:00 EDT morning slot）— 四項審定指標**

@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone, timedelta
@@ -804,6 +805,13 @@ def _build_messages_group(
     recall_block = _format_recall_block(agent_id, current_input)
     if recall_block:
         system_parts.append(recall_block)
+    # SIM-EPIS-PIGGYBACK-1 ②: 話頭掛載區塊 —— 與【回憶】**分開**的獨立區塊。
+    # 注入位置: RECALL 之後、CHRONO 之前（沿用同一條 system_parts 組裝路徑）。
+    # 邊界: 一次最多 1 個；話題無關就不帶；**不影響是否主動發訊的決策**；
+    #       全票旗標預設關閉 ⇒ 生產 prompt 逐位元不變。
+    piggyback_block = _format_piggyback_block(agent_id, current_input)
+    if piggyback_block:
+        system_parts.append(piggyback_block)
     # SOUL-BUG-004 匯端 (2026-10-13): chrono 時間偏置區塊。
     # 注入位置: memory_context 之後、對話歷史之前 —— 與原本死碼 PromptContext
     # (proxy.py:1596-1598, 已於本工單刪除) 的相對順序一致, 不改變既有前綴語意。
@@ -1239,6 +1247,94 @@ def _format_recall_block(agent_id: str, utterance: str) -> str:
         return ""
 
 
+def _format_piggyback_block(agent_id: str, utterance: str) -> str:
+    """
+    話頭掛載區塊（SIM-EPIS-PIGGYBACK-1 ②）：「我自己想通的一點小事」，只在話題相關時順嘴帶一句。
+
+    與 ``_format_recall_block`` 同款的雙重失敗隔離：任何例外 → 空字串（prompt 逐位元不變）。
+    """
+    try:
+        from src.inner_life.recall_prompt import format_piggyback_block
+
+        return format_piggyback_block(agent_id, utterance)
+    except Exception:  # noqa: BLE001 — 雙重失敗隔離: 話頭缺失不影響 prompt
+        return ""
+
+
+# ── SIM-EPIS-PIGGYBACK-1 ①: 背景行動接線（閒置時觸發、不得阻塞）────────────
+#: 背景行動觸發的最小間隔（秒）。背景行動是「慢動作」——每輪組 prompt 都排一次
+#: 只會把它變成雜訊；5 分鐘一次足以覆蓋「閒置 ⇒ 探索一次」的語意。
+#: ⚠️ **逐 agent 計時**（不是全域）：多角色時，全域節流會讓「5 分鐘只有一個角色
+#: 能探索」，其餘角色的張力永遠排不上。
+BACKGROUND_ACTION_MIN_INTERVAL_SECONDS = 300
+
+#: 背景行動的行程內狀態（key＝agent_id；value＝{"last_ts", "running"}）。
+_BACKGROUND_ACTION_STATE: Dict[str, Dict[str, Any]] = {}
+
+
+def _run_background_epistemic_action(
+    agent_id: str, utterance: str, now_ts: int, last_interaction_ts: int
+) -> None:
+    """背景行動本體（在 daemon thread 內跑；**全程不對用戶發任何訊息**）。"""
+    try:
+        from src.inner_life.epistemic_action import run_background_action
+
+        run_background_action(
+            agent_id,
+            utterance=utterance,
+            now=int(now_ts),
+            last_interaction_ts=int(last_interaction_ts),
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-silent
+        logger.debug(
+            "[epistemic-action] 背景行動失敗（fail-silent）：%s: %s", type(exc).__name__, exc
+        )
+    finally:
+        _BACKGROUND_ACTION_STATE.get(agent_id, {})["running"] = False
+
+
+def _maybe_trigger_background_epistemic_action(
+    agent_id: str, utterance: str, *, last_interaction_ts: int = 0
+) -> None:
+    """閒置時觸發一次自主求知行動（**不得阻塞任何既有路徑**）。
+
+    - 全票旗標 ``SOUL_OS_EPISTEMIC_PIGGYBACK`` **預設關閉** ⇒ 生產零行為變化。
+    - 以 daemon thread 執行 ⇒ 呼叫端立即返回（prompt 組裝不被拖慢）。
+    - thread 內全 try/except ⇒ 任何例外都不影響既有路徑。
+    - 🔴 本函式**不**呼叫 ``_publish_agency_trigger``、**不**新增任何發訊分支：
+      自主求知行動是「背景探索」，閉合結果只進既有內在生活通道與話頭槽。
+    """
+    try:
+        from src.inner_life import piggyback_queue
+
+        if not piggyback_queue.feature_enabled():
+            return
+        if not isinstance(agent_id, str) or not agent_id:
+            return
+        if not isinstance(utterance, str) or not utterance.strip():
+            return
+        state = _BACKGROUND_ACTION_STATE.setdefault(
+            agent_id, {"last_ts": 0.0, "running": False}
+        )
+        if state.get("running"):
+            return
+        now_ts = time.time()
+        if now_ts - float(state.get("last_ts") or 0.0) < BACKGROUND_ACTION_MIN_INTERVAL_SECONDS:
+            return
+        state["running"] = True
+        state["last_ts"] = now_ts
+        threading.Thread(
+            target=_run_background_epistemic_action,
+            args=(agent_id, utterance, int(now_ts), int(last_interaction_ts)),
+            name=f"epistemic-action-{agent_id}",
+            daemon=True,
+        ).start()
+    except Exception as exc:  # noqa: BLE001 — fail-silent
+        logger.debug(
+            "[epistemic-action] 背景行動觸發失敗（fail-silent）：%s: %s", type(exc).__name__, exc
+        )
+
+
 def _format_epistemic_delta(agent_id: str, utterance: str) -> str:
     """
     EH-4 L2 認知差量（本體隱喻錨點 + 當輪關切姿態）讀側投影。
@@ -1479,6 +1575,13 @@ def _build_messages_private(
     recall_block = _format_recall_block(agent_id, current_input)
     if recall_block:
         system_parts.append(recall_block)
+    # SIM-EPIS-PIGGYBACK-1 ②: 話頭掛載區塊 —— 與【回憶】**分開**的獨立區塊。
+    # 注入位置: RECALL 之後、CHRONO 之前（沿用同一條 system_parts 組裝路徑）。
+    # 邊界: 一次最多 1 個；話題無關就不帶；**不影響是否主動發訊的決策**；
+    #       全票旗標預設關閉 ⇒ 生產 prompt 逐位元不變。
+    piggyback_block = _format_piggyback_block(agent_id, current_input)
+    if piggyback_block:
+        system_parts.append(piggyback_block)
     # SOUL-BUG-004 匯端 (2026-10-13): chrono 時間偏置區塊。
     # 注入位置: memory_context 之後、對話歷史之前 —— 與原本死碼 PromptContext
     # (proxy.py:1596-1598, 已於本工單刪除) 的相對順序一致, 不改變既有前綴語意。
@@ -3828,6 +3931,13 @@ class LLMProxy:
         # 提前算 last_interaction_ts, 讓 _build_messages_group / _build_messages_private
         # 在時間區塊注入「距離上次互動已經 X 小時/天（上次互動在{period}）」連續性行
         last_interaction_ts = _get_last_interaction_ts(self._memory, agent_id)
+        # SIM-EPIS-PIGGYBACK-1 ①: 背景行動接線 —— 閒置時（組 prompt 的同時）以
+        # daemon thread 觸發一次自主求知行動。**不得阻塞任何既有路徑**、任何例外
+        # 都不影響 prompt 組裝（fail-silent）；旗標預設關閉 ⇒ 生產零行為變化。
+        # 🔴 它不呼叫 _publish_agency_trigger、不新增任何對用戶的發訊分支。
+        _maybe_trigger_background_epistemic_action(
+            agent_id, user_message, last_interaction_ts=last_interaction_ts
+        )
         # M3 Phase 1 (Bry 拍板 2026-08-07 19:40): 從 event.payload 讀 world_context
         # WorldPerceptionMiddleware 在 AGENT_INTENT_ENRICHED → AGENT_INTENT_PERCEIVED 注入
         # 沒 world events 時 = "" (注入 skip, 跟 memory_context 一致)

@@ -756,7 +756,7 @@ class TestBoundedAndFrozenDiscipline:
         assert len(_bounded_line("C" * 1000)) == BOUNDED_LIMIT
 
     def test_no_frozen_contract_file_touched(self):
-        """0 frozen contract：本票只動 3 個非 frozen 檔 + 本測試檔。"""
+        """0 frozen contract：本票只動 allowed 清單裡的非 frozen 檔 + 本測試檔（allowed 逐票更新；永久紅線見 frozen_dirs）。"""
         import subprocess
 
         out = subprocess.run(
@@ -770,6 +770,15 @@ class TestBoundedAndFrozenDiscipline:
             "src/io/channels/router.py",
             "src/soul/scheduler.py",
             "src/agency/inner_life_gate.py",
+            # ── SIM-EPIS-PIGGYBACK-1（2026-10-21）─────────────────────────
+            # 本票只動 4 個非 frozen 檔：兩個新模組 ＋ 兩個接線面。
+            # ⚠️ 這個 allowed 集合是**逐票更新**的（見 cac7c74 / 4af93ef / c3520cb
+            #    的同一個清單被各自擴充）—— 它守的是「本票不得越界」，不是
+            #    「repo 永遠不得改 src/」。frozen_dirs 那段才是永久紅線。
+            "src/inner_life/epistemic_action.py",
+            "src/inner_life/piggyback_queue.py",
+            "src/inner_life/recall_prompt.py",
+            "src/llm/proxy.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

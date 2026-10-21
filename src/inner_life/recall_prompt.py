@@ -58,6 +58,15 @@ MAX_RECALL_BLOCK_HITS = 3
 #: 命中率判準的探針數（單位：probe ＝ 一筆真實 user 訊息）；與量測 CLI 同口徑。
 PROBE_LIMIT = 200
 
+#: 話頭掛載區塊的獨立標題（SIM-EPIS-PIGGYBACK-1）。
+#:
+#: 🔴 **不得**與 ``【回憶】`` 共用前綴——兩者語氣必須分得開：
+#: 回憶是「我以前在意過的事」，話頭是「我後來自己想通、此刻可以順嘴提一句的事」。
+PIGGYBACK_BLOCK_HEADER = (
+    "【話頭】（這是你後來自己想通的一點小事；只有當話題正好相關時才順嘴帶一句，"
+    "不相關就當沒這回事）"
+)
+
 #: 行程內快取（單例；key 未變且 TTL 未到 ⇒ 直接回傳快取值）。
 _ENABLE_CACHE: Dict[str, Any] = {"key": None, "ts": 0.0, "enabled": False, "verdict": None}
 
@@ -346,14 +355,65 @@ def format_recall_block(
         return ""
 
 
+def format_piggyback_block(
+    agent_id: str,
+    utterance: str,
+    *,
+    store_dir: Optional[Any] = None,
+    now: Optional[float] = None,
+) -> str:
+    """話頭掛載區塊（SIM-EPIS-PIGGYBACK-1 ②）。fail-silent：例外 → ``""``。
+
+    - **獨立區塊**：標題與 ``【回憶】`` 分開，**不得**混入回憶、**不得**進
+      EMERGENT block（語氣隔離同款紀律）。
+    - **一次最多 1 個**：挑選由 ``piggyback_queue.pick_for_topic`` 負責
+      （話題 tags 重疊 ≥ 1 才挑、帶出即消耗）。
+    - **無相關話題就不帶**（寧可不帶）。
+    - **預設關閉**：全票旗標 ``SOUL_OS_EPISTEMIC_PIGGYBACK`` 未開 ⇒ 直接回 ``""``
+      ⇒ 生產 prompt 逐位元不變（工單 §4.5）。
+    - **不影響發訊決策**：本函式只是把**已經要發的訊**加上尾巴；它不參與
+      「是否主動發訊」的判斷。
+    """
+    try:
+        if not isinstance(agent_id, str) or not agent_id:
+            return ""
+        if not isinstance(utterance, str) or not utterance.strip():
+            return ""
+        from src.inner_life import piggyback_queue
+
+        if not piggyback_queue.feature_enabled():
+            return ""
+
+        from src.memory.v1.loader import derive_query_tags
+
+        tags = derive_query_tags(utterance)
+        if not tags:
+            return ""
+
+        item = piggyback_queue.pick_for_topic(
+            agent_id, tags, store_dir=store_dir, now=now
+        )
+        if item is None:
+            return ""
+        payload = (item.payload or "").strip()
+        if not payload:
+            return ""
+        return f"{PIGGYBACK_BLOCK_HEADER}\n{payload}"
+    except Exception as exc:  # noqa: BLE001 — fail-silent：prompt 與未實作時等價
+        logger.debug("[piggyback] 區塊組裝失敗（不注入）：%s: %s", type(exc).__name__, exc)
+        return ""
+
+
 __all__ = [
     "MAX_RECALL_BLOCK_HITS",
+    "PIGGYBACK_BLOCK_HEADER",
     "PROBE_LIMIT",
     "RECALL_BLOCK_HEADER",
     "RECALL_ENABLE_CACHE_TTL_SECONDS",
     "RECALL_INJECTION_ENV",
     "RECALL_INJECTION_OFF_VALUES",
     "collect_probe_messages",
+    "format_piggyback_block",
     "format_recall_block",
     "is_recall_enabled",
     "runtime_conversations_dir",
