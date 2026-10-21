@@ -814,6 +814,70 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 **⑦ 本次未做**：未改任何 repo 原始碼；未寫入 `data/**`；未觸發任何人工事件；未清空 `_ELEVATION_EMITTED`；**未對執行 `server_ops.ps1` 的背景 shell 呼叫 `task_stop`**（該 wrapper 因 `-NoNewWindow` 咬住 stdout 而保持 running 屬已知預期行為，依 AGENTS.md 第 11 條不得手動砍；重啟本身已由 PID／埠／health 獨立驗證）。
 
 **⑧ 待後續觀察**：Sunset 於 08:00 槽的實際觸發筆數、誤傷數、容量釋放幅度與 LLM 呼叫數，將由 08:20 排程回報；若誤傷 > 0 或收束筆數與預期（8 筆）顯著偏離，須立即回報並檢視條件邊界。
+
+#### 0.1.28 2026-10-21 08:00 Sunset 首跑審定（生產實證）＋ DEPLOY-RESTART-22：handle 繼承修法的實機證明（2026-10-21 17:25 EDT）
+
+**背景**：§0.1.27 記錄 DEPLOY-RESTART-21 把 M2 確定性超期歸檔（Sunset）機制上線，但當時只說「預期 08:00 槽觸發」。Owner 2026-10-21 17:18 核准「先跑 08:00 槽、後重啟收網」的變更隔離決策。本節記錄**兩件事的實測結果**：① Sunset 在生產的首跑審定；② DEPLOY-RESTART-22（啟動機制解耦）在生產的實機證明。
+
+---
+
+**① Sunset 首跑（2026-10-21 08:00 EDT morning slot）— 四項審定指標**
+
+| 指標 | 實測值 | 分子／分母 | 判定 |
+|---|---|---|---|
+| 確定性收束筆數 | **7 筆** | 分子 7／分母 10 隻生產 agent | 達標（預期 8，偏差原因見 ⑴） |
+| 防誤傷（硬指標） | **0 筆被收束** | 分子 0／分母 7 筆收束（age ≤ 21 天） | **PASS** |
+| 容量位元釋放 | active 合計 **20 → 17** | 分子 17／分母 20 隻；**4 隻（ruka／rem／ram／anna）在同一槽內新建新線頭**（active 回到 2），3 隻（yua／miku／aoi）維持 1 | **達標** |
+| 沉澱完整性 | **7/7 完整** | 分子 7／分母 7：`advisory only` → `dissolution candidate` → `ConsolidationWiring scheduled` → `LifeThreadDissolutionExec consolidated` → `consolidate done` | **達標** |
+| 安全紅線 ① | sha256 = `7FD8F3F3BCE474CC09C87617C5DFCA41D2E518153F1356212A4DEF98B744178B` | 節點檔前 282,409 bytes | **恆等 PASS** |
+| 安全紅線 ② | 弱化包裝 **0** | 可投影 66 顆／正文 5,215 字／其中 weakening 0 顆 | **PASS（載荷非空的有效零）** |
+
+**逐筆收束明細（age_days 全部落在明顯過期組）**：yua `e1c043e9` 33.42d／ruka `39dd946f` 33.42d／rem `d532ae07` 33.42d／ram `364b05d1` 33.42d／anna `661ae92d` 33.41d／miku `7c542bbc` 33.41d／aoi `b93d6910` 33.41d。**sunset 日誌 reason 全部 = `checkpoints_exhausted`**（與老化機制的 `no_new_support_evidence` 分屬兩套路徑，**不混算**）。
+
+**⑴ 與預期的兩處偏差（忠實記錄）**
+- **預期 8 筆、實得 7 筆**：第 8 筆（`agent_mai`，age 21.58d）在 08:00 槽時其最舊 active 線頭僅 **19.93 天**，距 21 天門檻尚差 1.07 天 ⇒ **觸發時點落在 08:00 槽之後**（預計 2026-10-22 槽）。**非缺陷，是時序**。
+- **預期「7 隻 agent active 2→1」、實得 3 隻 1 + 4 隻 2**：sunset 釋放 7 個位元後，**4 隻 agent 在同一槽內即建立新線頭**（ruka `2e26cf3d`／rem `36e22d49`／ram `29bab5da`／anna `69342b97`；線頭分母 55 → 59）⇒ **容量位元確實流動了**，這比「降載後停住」更符合 Sunset 的設計目的。08:20 排程的獨立報告與主大腦的獨立審定**對此一致**。
+
+**⑵ 槽內其他指標**
+- 線頭接縫**恢復運作**：接縫事件提交 **35 筆**（觸發器全部 `diary:morning`）—— 對照 2026-10-19 22:00 的 0 筆。
+- `[elevate] ✓` **4 次**：yua value／ruka value／**ruka belief**／akane value ⇒ **belief 節點首次昇華**（belief 由 1 顆增至 4 顆）。
+- 節點 517 → 554（+37：pattern 24／value 10／belief 3）。
+- 召回池仍 **0**、GO 判準維持 **NO-GO**（`weakening` 不在池內；dormant 18 顆全被隔離）。
+- 關鍵反例 `6a92c906b245` 仍 **active**。
+- M1 事件流：`dissolved` 事件 **42 筆**（35 + 7）**全部帶 `sage_fact_id`** ⇒ 事實寫入完整。
+- 沉澱 LLM 呼叫 **7 次**（每次 sunset 1 次；配額 3 次／agent／日、200 次／全行程／日 ⇒ 佔全域配額 3.5%）。
+- 🔴 **槽內「ERROR/CRITICAL/Traceback = 10」是誤判** —— 10 筆全為 `[Persona] FORMAT_RULES_TEMPLATE 已注入 (len=…, **含 CRITICAL** + 角色日文規則 + 白名單)` 這個 **INFO** 訊息裡的字樣。實為 **0 筆真錯誤**。⇒ 與既有「不要用 `\b(404|400)\b` 數 HTTP 錯誤」同一族的判讀陷阱，已寫入 08:20 排程 prompt。
+
+**⑶ 🔴 誠實揭露：門檻三判準 1 仍為 5 天（mahiru），未轉綠**
+
+Sunset **解除的是「永久卡死」，不是「連續性」本身**：
+- Sunset 只釋放**過期**（>21 天）線頭佔用的位元。**年輕**線頭（如 mahiru 最舊 7.69 天）在滿 21 天前不會被釋放。
+- 今日實證：7 隻中有 **4 隻在釋放後立刻新建**了線頭（機制有效），3 隻未新建 ⇒ **是否新建仍是 agent 的行為決定**。
+- 門檻三判準 1（連續 7 天、每天**不同** thread_id）實測仍 **5 天**（mahiru；akane 2／mai 2／其餘 1）。
+- ⇒ **兩件事是可分離的**：Sunset ＝ **容量保險**（保證不會永久卡死）；連續性 ＝ **行為**（agent 每天主動推進）。Sunset 不會自動把 streak 拉到 7，**也不應宣稱它會**。
+
+---
+
+**② DEPLOY-RESTART-22（2026-10-21 17:22 EDT）— 啟動機制解耦的實機證明**
+
+| 檢查項 | 重啟前 | 重啟後 | 判定 |
+|---|---|---|---|
+| `:8000` socket owner | 19744 | **27280** | PASS |
+| `data/server.pid`（launcher） | 10040 | **20716** | PASS |
+| 舊行程 10040／19744 | 存活 | **皆已安全退出** | PASS（無孤兒） |
+| VC 8765／8766／8767 | 12792／7716／16612 | **12792／7716／16612** | PASS（未受干擾） |
+| `/health` | 200 | **200** `{"status":"ok","connections":0}` | PASS |
+| ERROR／CRITICAL／Traceback | — | **0**（排除 FORMAT_RULES_TEMPLATE 的 INFO 誤判） | PASS |
+| 維護鎖 | — | **已清**（17:22:02 寫入 → 17:22:16 移除，watchdog 恢復） | PASS |
+| python.exe 行程數 | 4 | **4** | PASS |
+
+**★ 決定性實機指標：wrapper 返回耗時 = 14.39 秒**（DEPLOY-RESTART-21 舊機制為「不返回」⇒ 被 harness 的 **600 秒**牆鐘上限殺掉）。
+⇒ **`.NET` 的 `bInheritHandles=TRUE` 導致服務繼承呼叫端 stdout pipe 這個根因，在生產實機上已確認關閉。**
+新拓撲：`20716`（launcher／trampoline，ppid=21096 = 中繼）→ `27280`（真直譯器＝`:8000` socket owner）⇒ **pid 語意不變**（pid 檔＝launcher pid，socket owner＝其子行程）。生產日誌出現 `[relay] service started PID=20716` ⇒ **中繼路徑在生產生效**。
+
+**③ 一項既有行為（非本次改動造成）**：`start` 之後 5 秒的健康探測報「/health failed: 無法連接至遠端伺服器」⇒ **早於服務就緒**。`data\logs\server_ops.log` 顯示**每一次**重啟皆如此（10-19 16:37／10-19 21:17／10-21 02:10／10-21 17:22）⇒ **既有行為，非本次改變**。
+
+**④ 本節未做**：未改任何 repo 原始碼；未寫入 `data/**`（唯讀觀測 ＋ 官方重啟入口）；未觸發任何人工事件；未清空 `_ELEVATION_EMITTED`；**未對執行 `server_ops.ps1` 的背景 task 呼叫 `task_stop`**（依 AGENTS.md 第 11 條）—— 本次該 task **自行正常結束**（14.39 s），不再需要處理 wrapper。
 ---
 
 **① 三戰役的工單與派工**（全部決策完備，全部入庫）
