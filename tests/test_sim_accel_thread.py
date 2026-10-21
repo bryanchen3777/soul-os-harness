@@ -357,6 +357,7 @@ def test_sandbox_run_emits_exactly_one_new_event(sandbox):
     """🔴 變異 M2 的守衛：35 筆歷史線頭零重發，本次只新增 1 個（第 36 筆）。"""
     subject = _subject()
     before = subject.cli.production_sha_snapshot()
+    before_sizes = subject.cli.production_sizes()
 
     report = _run_simulation(subject, sandbox)
 
@@ -380,8 +381,20 @@ def test_sandbox_run_emits_exactly_one_new_event(sandbox):
     assert report["llm_calls"]["m5_scripted"] == 1
 
     # 生產資料逐位元未動。
+    # 🔴 精確口徑（2026-10-21 修正）：線上伺服器會在**真實對話投影**時並行 append
+    #    `elevation/elevation_projection_trace.jsonl`；那是伺服器的合法寫入，
+    #    **不是**沙盒汙染（2026-10-21 實測：窗內 15 筆 emergent_projected 來自線上
+    #    agent_yua/agent_ruka 的真實對話，帶 sim 標記者 0 筆）。
+    #    ⇒ ① 沙盒**不可能寫入**的檔案：位元級必須完全相同（強保護）；
+    #       ② 併發檔：以「新增位元組有無沙盒產物標記」判定；縮短／消失一律違規。
     after = subject.cli.production_sha_snapshot()
-    assert before == after, "沙盒執行不得寫入生產資料"
+    strict_before = {k: v for k, v in before.items()
+                     if k not in subject.cli.SERVER_CONCURRENT_FILES}
+    strict_after = {k: v for k, v in after.items()
+                    if k not in subject.cli.SERVER_CONCURRENT_FILES}
+    assert strict_before == strict_after, "沙盒執行不得寫入生產資料"
+    violations = subject.cli.production_delta_has_sandbox_artifacts(before_sizes)
+    assert not violations, "沙盒執行不得寫入生產資料：%s" % violations
 
 
 def test_seam_without_seeding_emits_all_36(sandbox):

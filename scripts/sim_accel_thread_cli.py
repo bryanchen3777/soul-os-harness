@@ -193,6 +193,80 @@ def production_sha_snapshot(data_dir: Optional[Path] = None) -> Dict[str, str]:
     return snapshot
 
 
+#: 🔴 線上伺服器會在**真實對話投影**時並行 append 的檔案（沙盒程式碼路徑永不寫入）。
+#:
+#: ⇒ 「沙盒執行不得寫入生產資料」**不能**用「整個生產目錄雜湊完全相同」來斷言 ——
+#: 那會把**伺服器的合法併發寫入**誤判成沙盒汙染。
+#: 2026-10-21 實測：回歸窗內 `elevation/elevation_projection_trace.jsonl` 多出 15 筆
+#: `emergent_projected`（agent_yua 10 筆／agent_ruka 5 筆），全部來自線上真實對話的投影，
+#: **帶 sim 標記者 0 筆** ⇒ 那是伺服器寫的，不是沙盒洩漏。
+SERVER_CONCURRENT_FILES = ("elevation/elevation_projection_trace.jsonl",)
+
+#: 沙盒產物的可辨識標記（用於判定「生產檔的新增位元組是否來自沙盒」）。
+SANDBOX_ARTIFACT_MARKERS = (b"sim_accel", b'"sim_', b"sim-thread")
+
+
+def production_sha_snapshot_strict(data_dir: Optional[Path] = None) -> Dict[str, str]:
+    """只含**沙盒不可能寫入**的檔案（排除 `SERVER_CONCURRENT_FILES`）的 sha256 快照。
+
+    這是「沙盒不得寫生產」的**位元級**判準；併發檔改由
+    `production_delta_has_sandbox_artifacts` 以「新增位元組有無沙盒標記」判定。
+    """
+    snapshot = production_sha_snapshot(data_dir)
+    return {k: v for k, v in snapshot.items() if k not in SERVER_CONCURRENT_FILES}
+
+
+def production_sizes(data_dir: Optional[Path] = None) -> Dict[str, int]:
+    """生產檔案的 byte 尺寸快照（用於偵測「被截斷／被清空」）。"""
+    root = Path(data_dir) if data_dir is not None else PRODUCTION_DATA_DIR
+    sizes: Dict[str, int] = {}
+    for sub, pattern in (("soul", "**/life_threads.jsonl"),
+                         ("memory", "**/graph.sqlite"),
+                         ("elevation", "*.jsonl")):
+        base = root / sub
+        if not base.is_dir():
+            continue
+        for path in sorted(base.glob(pattern)):
+            if path.is_file():
+                sizes[path.relative_to(root).as_posix()] = path.stat().st_size
+    return sizes
+
+
+def production_delta_has_sandbox_artifacts(
+    before_sizes: Dict[str, int],
+    data_dir: Optional[Path] = None,
+) -> List[str]:
+    """回報「生產檔的變動是否帶沙盒產物標記」；**只回報違規項**。
+
+    對每個生產檔（以 `before_sizes` 的鍵集合為準）：
+      - **變短或消失** ⇒ 沙盒絕不截斷生產 ⇒ 違規。
+      - **變長** ⇒ 讀取**新增的那一段**位元組；含沙盒標記 ⇒ 違規；不含 ⇒
+        視為**線上伺服器的合法併發寫入**（不是沙盒洩漏），不列為違規。
+    """
+    root = Path(data_dir) if data_dir is not None else PRODUCTION_DATA_DIR
+    findings: List[str] = []
+    for rel, size_before in before_sizes.items():
+        path = root / rel
+        if not path.exists():
+            findings.append("%s: 生產檔消失（沙盒絕不刪除生產檔）" % rel)
+            continue
+        size_now = path.stat().st_size
+        if size_now == size_before:
+            continue
+        if size_now < size_before:
+            findings.append("%s: 生產檔被截斷（%d → %d bytes；沙盒絕不截斷生產）"
+                            % (rel, size_before, size_now))
+            continue
+        tail_len = min(size_now, 8 * 1024 * 1024)
+        with path.open("rb") as handle:
+            handle.seek(size_now - tail_len)
+            tail = handle.read(tail_len)
+        hits = [m.decode() for m in SANDBOX_ARTIFACT_MARKERS if m in tail]
+        if hits:
+            findings.append("%s: 生產檔被寫入且新增位元組含沙盒標記 %s" % (rel, hits))
+    return findings
+
+
 def assert_under_temp(path: Path) -> Path:
     """沙盒必須在 `tempfile.gettempdir()` 之下，否則拒絕執行（工單 §3.2）。"""
     resolved = Path(path).resolve()
