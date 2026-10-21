@@ -709,6 +709,66 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 **教訓（可泛化）**：**比率型指標的分母必須涵蓋「所有會寫入被量測目標的產出事件類型」**，不可只取其中一種。⇒ 看到比率 > 100% 或與鄰近量測矛盾時，先檢查**分母的類型覆蓋是否完整**，再看被測系統。
 
 **未受影響者**：§0.1.21 ①～⑦、§0.1.22 ①～⑥ 的其餘結論（at-most-once 機制、P1 昇華路徑、門檻一／門檻三口徑、Telegram 自癒鏈、Ical 偶發 404）**皆不依賴此比率**，仍屬有效。
+
+#### 0.1.25 2026-10-20 22:00 night slot 對帳：全項 PASS ＋ **7 天老化門檻跨越定案** ＋ 對帳腳本三項量測缺陷自癒（2026-10-20 22:30）
+
+**背景**：§0.1.23 裁定門檻一工程階段達成、§0.1.24 更正落盤率基準後，2026-10-20 22:00 EDT night slot 對帳於 22:15 由排程 `night_slot_observation`（cronId `36e57724-0283-4b9d-8445-3bd4a197b080`，`15 22 * * *` America/New_York）自動喚醒執行。Owner 2026-10-20 22:30 裁決授權本節入庫。**本節為唯讀對帳結果 ＋ 主大腦獨立複核（4 支探針，全部唯讀）後的定案**。觀察窗＝槽後 1 小時（22:00–23:00 EDT ＝ 2026-10-21T02:00Z ~ 03:00Z）。
+
+**① 接縫提交數 = 0 筆（Owner 基準預期成立）**：槽窗內 `elevation 事件已提交` **0 筆**（分子＝日誌行首時間戳落在槽窗內的命中數；分母＝全歷史同類命中 35 筆，**日期分佈 100% 為 2026-10-19**）。10 隻生產 agent 全部 `dissolved_candidates=0`、`catchup_enabled=True catchup_invoked=0`。⇒ **At-Most-Once 壓制有效，第 36 條線頭尚未出現**，無需歸因分析。
+
+**② 新線頭自然終態（Owner 指定的「第 36、37 條」指標）**：(a) fold 後 completed 線頭 **35**／總線頭 55；(b) `predicate='life_thread_dissolved'` 事實 **35**；(c) 差值 **0**。⇒ 今晚無新轉入 completed 的線頭，與 ① 互為印證。
+
+**③ 圖譜演進**：節點總數 **486 → 513**（+27 ＝ 窗內落盤 25 ＋ 槽外 2 顆 world/RSS pattern）；窗內落盤 25 顆＝**pattern 15／value 9／trait 1**；by_agent＝yua 3／ruka 3／akane 3／rem 2／ram 2／mahiru 3／anna 2／mai 3／miku 2／aoi 2。**overlay by_state ＝ active 307／weakening 188／dormant 18**；overlay by_type ＝ pattern 458／value 49／belief 1／trait 5。
+
+**④ 昇華路徑（Owner 指定的「由哪個槽／哪條路徑」已查明）**：
+
+| 槽（本地） | 路徑 | 產出 | 數量 |
+|---|---|---|---|
+| night diary 22:00:07–22:00:20 | P1 昇華帶入正文 → SubmissionGate consume ✓ → `[elevate] ✓ candidate=value patterns=28~44` | value（ruka／akane／rem／ram／mahiru／anna／mai／miku／aoi） | **9 顆** |
+| dream 22:05:08–22:05:22 | DreamHandler → 5 個 dream 事件 → `[elevate] ✓ candidate=trait patterns=2` | pattern ＋ trait（agent_yua） | 5 pattern ＋ **1 trait** |
+
+無 belief 昇華；world 群組被 `[elevate] 跳过 world node group` 擋下（EH-2.1 R1 對稱條款）；agent_yua 的 value 未達標（`insufficient independent evidence: 1 < 2`）。
+
+**⑤ 三項安全紅線（逐項 PASS）**：
+
+| 紅線 | 量測 | 數值 | 判定 |
+|---|---|---|---|
+| ① 純附加位元級 | 節點檔前 282,409 bytes sha256 | `7FD8F3F3BCE474CC09C87617C5DFCA41D2E518153F1356212A4DEF98B744178B` | **PASS**（恆等） |
+| ② 弱化包裝 | 可投影節點 53 顆／正文 4,204 字／weakening 0 顆 | 「我隐约觉得」**0** 次 | **PASS**（有效零，載荷非空） |
+| ③ 老化狀態機 | sidecar 185 → 206；新增 21 筆；關鍵反例 `6a92c906b245` | quarantine 18 ＋ lifecycle_transition 188；反例仍 **active** | **PASS**（詳見 ⑥） |
+
+**⑥ 🔴 21 筆 lifecycle_transition 定案：7 天門檻被跨過，非誤傷、非故障**。引擎門檻 `soul_elevation/prior.py:63` `LIFECYCLE_T_WEAKEN_DAYS = 7`，`_days_between` ＝ 真實經過天數 `(now − anchor).total_seconds() / 86400`。**逐筆算術完全閉合**：
+
+| eval 時點（now_iso） | 21 顆的天數區間 | 跨 7 天門檻 | 轉變數 |
+|---|---|---|---|
+| 昨夜 2026-10-20T02:00:04.236118Z | 6.58257 ~ **6.99978** 天 | 21/21 **< 7** | **0 筆** |
+| 今晚 2026-10-21T02:00:04.236118Z | **7.58257** ~ 7.99978 天 | 21/21 **≥ 7** | **21 筆** |
+
+最接近門檻者昨夜僅差 **1 分 22 秒**（6.99978 天）。⇒ **昨夜 0 筆與今晚 21 筆是同一條確定性規則的兩次取值**，差異全由門檻被跨過解釋。
+
+**誤傷檢查（不可只滿足於「解釋得通」）**：21/21 全為 **pattern** 型、`active → weakening`、reason `no_new_support_evidence`，各自僅 1 條 2026-10-13 的支持邊（8 天無新支持）；**value／belief／trait 被轉 = 0 筆**（pattern 依設計不投影 ⇒ 弱化包裝紅線結構性不受影響）。
+
+**反向對照（010-B 錨點防線物理實證）**：9 顆同為 age ≥ 7 天的 value 節點（anna／aoi／mahiru／mai／miku／ram／rem／ruka／yua）**100% 豁免** —— 其節點檔 `last_support_ts` 為過期的 2026-10-11T23:18，但邊檔最新 `valid_from` 為 **2026-10-17T12:28**（距 eval 3.6 天），靠 SOUL-BUG-010-B 的**邊檔錨點注入**（每 agent `injected_anchors=1`，共 9 顆）覆寫過期欄位才免於誤判。⇒ **生命週期狀態機與錨點保護防線在活體生產環境完全咬合**（亦即 `elevation_adapter.py:1402-1409` 所述「不注入會把 10 顆 value 誤判成 weakening」的防線確實在生效）。
+
+**⑦ 四起源／門檻三／落盤率／召回池**：
+- **四起源**（分母 ＝ 10 隻生產 agent 全部 55 條線頭）：necessity_driven **41（74.5%）**／whim_driven 9（16.4%）／world_collision 5（9.1%）／goal_driven 0（0%）⇒ **判準 2（單一起源 ≤80%）成立**。
+- **門檻三**（①有推進日總數／②往回連續最長天數，兩數字分開）：mahiru 10／**5**、mai 7／2、akane 8／2、anna 4／2、miku 6／2、ram 6／2、yua 2／2、aoi 2／1、rem 2／1、ruka 3／1 ⇒ **判準 1（連續 7 天）仍不成立**（最高 5 天，mahiru）；判準 2 成立；**處置合約維持自然觀察不變**（禁止縮短排程間隔／調整喚醒週期／人為催促）。
+- **trace 落盤率**：槽內 trace **47 筆**（node_created 16／node_elevated 10／node_state_changed 21）vs 節點檔實際落盤 **25 顆** ⇒ **25/26 ＝ 96.2%**（分母＝node_created 16 ＋ node_elevated 10；未落盤那 1 筆＝02:18:18 的 world/RSS 節點，`reason=internalized`，與 §0.1.21／§0.1.24 長既存現象一致）。全歷史維持 **9,230／486 ＝ 5.3%**（約 19 倍高估）。
+- **召回池**：池 **0 顆** ⇒ 方向 A 第二階段維持 NO-GO 與凍結。🔴 **老化轉為 `weakening` 不會讓池長大** —— 池定義為「非隔離 × 四型 × `dormant|superseded`」，`weakening` 不在池內；且實測 dormant 18 顆**全被隔離**（非隔離者 0 顆）。⇒ 方向 A 第二階段的上游供給仍須另尋路徑。
+
+**⑧ 服務維運**：`:8000` socket owner **9504**／trampoline **26336**（`data/server.pid`）；VC 8765／8766／8767 ＝ **12792／7716／16612** 全 LISTENING；`/health` **HTTP 200**；槽後日誌 783 行、**ERROR 0／Traceback 0**。**PID 與 19:07 讀數完全一致 ⇒ 全程無重啟**。
+
+**⑨ 🔴 對帳腳本三項量測缺陷（量測側，非系統）與自癒**。三項缺陷皆屬「量測腳本自身缺陷」，且**各自造成一個假紅燈或假綠燈**：
+
+| # | 缺陷 | 造成的假象 | 修正與證據 |
+|---|---|---|---|
+| 1 | `night_audit.py` §1 掃**整份日誌**再依 `trigger` 名稱過濾，**時間窗形同虛設** | 報「接縫提交 **35 筆**」＝假 FAIL（實為 0） | 時間窗改套在**日誌行首時間戳**上；並加印全歷史命中的**日期分佈**供交叉核對 |
+| 2 | §7② 打 `/api/soul/essence/<裸名>`，而節點檔 `agent_id` 帶 `agent_` 前綴 ⇒ 端點 `n.get("agent_id") != agent_id` 濾掉全部節點 | 回應僅 ~95 bytes、value/belief/trait 全空 ⇒ **無效零** | 改帶前綴（10 隻合計 **15,124 bytes**）＋ 增列 overlay 權威口徑 ＋ 明標「有效零／空載荷假零」 |
+| 3 | §3 `by_state` 直接掃節點 raw `lifecycle_state` 欄位（append-only 流裡該欄位永不回寫） | 報 `{active: 513}` 全 active 假象 | 改走 `apply_lifecycle_overlay` 權威視圖，raw 並列僅供對照 |
+
+**已自癒**：`%TEMP%\night_audit.py` 修正版（21,806 bytes）重跑驗證通過 —— 接縫提交 **0**／弱化包裝 **0（有效零）**／by_state overlay 正確（active 307、weakening 188、dormant 18）／21 筆門檻跨越算術全數 True。**兩支每日觀測排程（night ＋ morning）的 prompt 已同步**：`agent_` 前綴、非空載荷證據、overlay 權威口徑、門檻跨越算術判準、基準值更新（節點 513／sidecar 206），並新增三條量測紀律（覆蓋率型「0」須證明載荷非空／時間窗須作用在時間戳上／相鄰兩期 0↔N 先做門檻跨越算術）。
+
+**⑩ 本節未做（依 Owner 指示）**：未重啟服務、未動任何 `src/**`、未寫入／改名／刪除 `data/**` 下任何檔案、未觸發 synthetic diary／dream、未清空或繞過 `_ELEVATION_EMITTED`、未對任何 PID 做終止操作。對帳期間（02:16–02:22Z）`data/elevation/*` 全部 mtime 均落在服務端事件時刻（02:01:07 老化、02:05:22 night/dream、02:18:18 RSS poller）⇒ **對帳工具未對生產寫入任何位元組**。
 ---
 
 ## 0.2 VC 語音通道：Windows 下的進程結構（運維事實，2026-10-14 主大腦實測）
