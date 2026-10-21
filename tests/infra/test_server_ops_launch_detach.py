@@ -636,6 +636,20 @@ def _replay(tmp: Path, state: dict, dies_with_parent: bool) -> dict:
                 wrapper_exit_s = time.time() - started
             if eof.is_set():
                 pipe_eof_s = time.time() - started
+                # ⚠ 量測順序修正（2026-10-21）：stdout 的 EOF 正是由 wrapper 關閉其
+                #   handle 造成，兩者近乎同時；而 reader thread 可能**先**看到 EOF、
+                #   主執行緒的 WaitForSingleObject 尚未 poll 到結束訊號。滿載（全庫回歸
+                #   同時跑）時這個落後可達數百毫秒 ⇒ 原先立刻 break 會把「正常回傳」
+                #   誤報成「wrapper 沒有結束」。故 EOF 到達時給結束訊號一個寬限期。
+                #   （變異 M5「加 -Wait」仍然會轉紅：那時 wrapper 等服務退出，窗口內
+                #   根本不會有 EOF ⇒ 寬限期分支不會觸發 ⇒ wrapper_exit_s 維持 None。）
+                if wrapper_exit_s is None:
+                    grace_deadline = time.time() + 5.0
+                    while time.time() < grace_deadline:
+                        if _winapi.WaitForSingleObject(pi.hProcess, 50) == _winapi.WAIT_OBJECT_0:
+                            wrapper_exit_s = time.time() - started
+                            break
+                        time.sleep(0.02)
                 break
             if wrapper_exit_s is not None and time.time() - started > wrapper_exit_s + 1.0:
                 # wrapper 已結束；再給 stdout 一秒釋放，之後視為「被別人持有」

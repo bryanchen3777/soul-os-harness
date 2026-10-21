@@ -36,6 +36,18 @@ mock 範圍:
 - 讀 _start_plan_a.ps1 內容, 驗證 python 路徑 / 啟動指令 / pre-check 邏輯
 - 不實際執行 _start_plan_a.ps1 (避免跟現有 server 衝突)
 - 透過模擬 powershell 語法 parse 確認
+
+2026-10-21 SERVER-OPS-PLAN-A-LAUNCH（契約遷移）:
+  Plan A 的啟動機制換掉了 —— 舊機制（_start_plan_a.ps1 自己用
+  `Start-Process -FilePath $python -RedirectStandard* -NoNewWindow` 直啟服務）
+  會讓服務**繼承呼叫端的 stdout pipe** ⇒ 呼叫端要等服務退出才收到 stdout 的
+  EOF ⇒ 指令看起來不返回 ⇒ 被牆鐘上限連坐砍掉整棵行程樹（2026-09-16 事故形狀;
+  2026-10-21 02:10 DEPLOY-RESTART-21 即是被 600s 上限殺掉）。
+  新機制: Plan A 委派給 scripts\server_ops.ps1 的 start 動詞（單一啟動原語）。
+  因此三條斷言跟著遷移（意圖不變, 位置搬家）:
+    * 「啟動呼叫必須用 $python」→ 落到啟動原語 server_ops.ps1 上;
+    * 「Plan A 不得再自己直啟 python」→ 新增的反迴歸護欄;
+    * 位置比對改用「去掉註解後的程式碼」, 避免被註解裡的字面值命中（綠燈是假的）。
 """
 import re
 import sys
@@ -62,6 +74,36 @@ def _extract_bound_python(source: str) -> str:
     if not m:
         raise AssertionError("找不到 $python = '<path>' 綁定")
     return m.group(1)
+
+
+def _strip_comment(line: str) -> str:
+    """去掉行內註解（``#`` 不在字串裡時才視為註解開頭）。"""
+    out = []
+    quote = None
+    for ch in line:
+        if quote:
+            out.append(ch)
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "'\"":
+            quote = ch
+            out.append(ch)
+            continue
+        if ch == "#":
+            break
+        out.append(ch)
+    return "".join(out)
+
+
+def _code_only(source: str) -> str:
+    """只留下可執行程式碼（去掉整行與行內註解）。
+
+    2026-10-21 SERVER-OPS-PLAN-A-LAUNCH（契約遷移）: 舊版斷言直接對**原始文字**做
+    regex, 會被註解裡的字面值命中（例如檔頭記錄舊機制的那段說明）⇒ 綠燈是假的。
+    這一版改成先去掉註解再比對。
+    """
+    return "\n".join(_strip_comment(line) for line in source.splitlines())
 
 
 class TestPlanALauncherV2(unittest.TestCase):
@@ -99,7 +141,7 @@ class TestPlanALauncherV2(unittest.TestCase):
             f"v2: _start_plan_a.ps1 不得回頭用 hermes venv ({LEGACY_HERMES_PYTHON}) — "
             f"8/15 re-fix 前正是這條路徑缺 networkx 導致 server 崩"
         )
-        # 確認 $python 真的被消費: Test-Path + uvicorn pre-check + Start-Process
+        # 確認 $python 真的被消費: Test-Path + uvicorn pre-check
         self.assertRegex(
             self.content, r"Test-Path\s+\$python",
             "v2: 應該有 Test-Path $python 存在性 pre-check"
@@ -108,21 +150,43 @@ class TestPlanALauncherV2(unittest.TestCase):
             self.content, r"&\s*\$python\s+-c\s+\"import uvicorn",
             "v2: uvicorn pre-check 應該真的用 $python 執行 (不是寫死路徑)"
         )
-        match_actual = re.search(r"Start-Process\s+-FilePath\s+(\S+)", self.content)
+        # 2026-10-21 SERVER-OPS-PLAN-A-LAUNCH（契約遷移, 工單 §3.1）:
+        #   Plan A 不再自己以 .NET 導向直啟服務 —— 舊機制會讓服務**繼承呼叫端的
+        #   stdout pipe** ⇒ 呼叫端要等服務退出才收到 EOF ⇒ 被牆鐘上限連坐砍掉整棵
+        #   行程樹（2026-09-16 事故形狀; 2026-10-21 02:10 DEPLOY-RESTART-21 即是被
+        #   600s 上限殺掉）。啟動改為委派給 scripts\server_ops.ps1 的 start 動詞
+        #   （單一啟動原語）。
+        #   因此「啟動呼叫必須用 $python」這條契約**跟著啟動原語搬家**:
+        #     (a) Plan A 端: 不得再出現直啟 python 的呼叫（且必須委派 server_ops.ps1）;
+        #     (b) 啟動原語端（server_ops.ps1）: 第一個 Start-Process 必須仍是
+        #         -FilePath $python（明確路徑, 不靠系統 PATH）。
+        plan_a_code = _code_only(self.content)
+        self.assertNotRegex(
+            plan_a_code, r"Start-Process\s+-FilePath\s+\$python",
+            "v2: _start_plan_a.ps1 不得再自己以 .NET 導向直啟服務 "
+            "（那會讓服務繼承呼叫端的 stdout pipe）—— 啟動必須委派給 server_ops.ps1",
+        )
+        self.assertRegex(
+            plan_a_code, r"server_ops\.ps1",
+            "v2: _start_plan_a.ps1 的啟動必須委派給 scripts\\server_ops.ps1（單一啟動原語）",
+        )
+        server_ops_code = _code_only(EXPECTED_SERVER_OPS.read_text(encoding="utf-8"))
+        match_actual = re.search(r"Start-Process\s+-FilePath\s+(\S+)", server_ops_code)
         self.assertIsNotNone(
-            match_actual, "v2: 應該有 Start-Process -FilePath <python_path>"
+            match_actual, "v2: 啟動原語 server_ops.ps1 應該有 Start-Process -FilePath <python_path>"
         )
         actual_file_path = match_actual.group(1)
         self.assertEqual(
             actual_file_path, "$python",
-            f"v2: Start-Process 必須用 $python 變數 (明確路徑), 實際 file_path={actual_file_path!r}"
+            f"v2: 啟動原語的 Start-Process 必須用 $python 變數 (明確路徑), 實際 file_path={actual_file_path!r}"
         )
         self.assertNotEqual(
             actual_file_path, "'python'",
-            f"v2: Start-Process 不該用系統 PATH 'python' (uvicorn ModuleNotFoundError 同類問題), "
+            f"v2: 啟動原語不該用系統 PATH 'python' (uvicorn ModuleNotFoundError 同類問題), "
             f"實際 file_path={actual_file_path!r}"
         )
-        print(f"[v2] python 綁定 = {bound} (Test-Path/uvicorn pre-check/Start-Process 三處都消費 $python)")
+        print(f"[v2] python 綁定 = {bound} (Test-Path/uvicorn pre-check 三處都消費 $python; "
+              f"啟動原語 server_ops.ps1 的 Start-Process = {actual_file_path})")
 
     def test_v2_has_pre_check_uvicorn_import(self):
         """v2: pre-check 必須驗證 uvicorn 可 import, 避免 ModuleNotFoundError 啟動後才死"""
@@ -130,13 +194,16 @@ class TestPlanALauncherV2(unittest.TestCase):
             "import uvicorn", self.content,
             f"v2: _start_plan_a.ps1 必須有 uvicorn pre-check, 避免啟動後才死"
         )
-        # 用 regex 找真正的 Start-Process 呼叫 (Start-Process -FilePath ...), 避免匹配到註解
-        match = re.search(r"Start-Process\s+-FilePath", self.content)
+        # 用「去掉註解後的程式碼」找真正的 Start-Process 呼叫, 避免匹配到註解
+        # （2026-10-21 SERVER-OPS-PLAN-A-LAUNCH: 檔頭記錄舊機制的說明裡也有
+        #   "Start-Process -FilePath ..." 字面值, 會讓位置比對失真）。
+        code = _code_only(self.content)
+        match = re.search(r"Start-Process\s+-FilePath", code)
         self.assertIsNotNone(
             match, "v2: 應該有 Start-Process -FilePath 呼叫"
         )
         start_pos = match.start()
-        uvicorn_pos = self.content.find("import uvicorn")
+        uvicorn_pos = code.find("import uvicorn")
         self.assertNotEqual(uvicorn_pos, -1, "v2: 應該有 uvicorn pre-check")
         self.assertLess(
             uvicorn_pos, start_pos,
@@ -146,26 +213,39 @@ class TestPlanALauncherV2(unittest.TestCase):
         print(f"[v2] uvicorn pre-check 在 Start-Process 之前 (uvicorn pos={uvicorn_pos} < {start_pos})")
 
     def test_v2_start_process_correct_args(self):
-        """v2: Start-Process 帶正確參數 (hermes-agent venv python + run_server.py + 工作目錄)"""
-        match = re.search(
-            r"Start-Process\s+-FilePath\s+\$python",
-            self.content,
+        """v2: 啟動呼叫帶正確參數（2026-10-21 起: Plan A 委派給 server_ops.ps1 start）"""
+        # 2026-10-21 SERVER-OPS-PLAN-A-LAUNCH（契約遷移, 工單 §3.1）:
+        #   舊斷言要求「_start_plan_a.ps1 自己用 Start-Process -FilePath $python
+        #   啟動 run_server.py」—— 那正是本票要廢除的舊機制（服務會繼承呼叫端的
+        #   stdout pipe）。新契約是「Plan A 委派給 scripts\server_ops.ps1 的
+        #   start 動詞, 由它（單一啟動原語）去啟動 run_server.py」。
+        code = _code_only(self.content)
+        self.assertRegex(
+            code, r"Start-Process\s+-FilePath\s+\(Join-Path\s+\$env:SystemRoot",
+            "v2: Plan A 的啟動必須以 powershell.exe 啟動 server_ops.ps1"
+            "（ShellExecute 路徑 ⇒ 不繼承呼叫端的 stdout pipe）",
         )
-        self.assertIsNotNone(
-            match,
-            f"v2: Start-Process 應該用 $python 變數 (明確路徑), 不該用 'python' (系統 PATH)"
-        )
-        # 確認帶 run_server.py
-        self.assertIn(
-            "run_server.py", self.content,
-            f"v2: 應該啟動 run_server.py"
-        )
+        for token in (
+            "'-NoProfile'", "'-ExecutionPolicy'", "'Bypass'",
+            "'-File'", "$serverOps", "'-Action'", "'start'",
+        ):
+            self.assertIn(
+                token, code,
+                f"v2: 啟動參數必須帶 {token}（實際 code 片段缺漏）",
+            )
         # 確認帶 WorkingDirectory
         self.assertIn(
-            "WorkingDirectory", self.content,
-            f"v2: 應該帶 WorkingDirectory 確保工作目錄正確"
+            "WorkingDirectory", code,
+            "v2: 應該帶 WorkingDirectory 確保工作目錄正確"
         )
-        print(f"[v2] Start-Process 帶 $python + run_server.py + WorkingDirectory (跟 server_ops.ps1 意圖一致)")
+        # 被委派出去的啟動原語必須真的啟動 run_server.py（服務本體）
+        server_ops_code = _code_only(EXPECTED_SERVER_OPS.read_text(encoding="utf-8"))
+        self.assertIn(
+            "run_server.py", server_ops_code,
+            "v2: 啟動原語 server_ops.ps1 必須啟動 run_server.py",
+        )
+        print(f"[v2] Plan A 委派 server_ops.ps1 -Action start "
+              f"(+ WorkingDirectory; 服務本體 run_server.py 由啟動原語拉起)")
 
     def test_v2_logs_to_plan_a_launcher_log(self):
         """v2: 寫啟動 log 到 data/logs/plan_a_launcher.log (跟 watchdog.log 區隔, 方便 Bry 事後核對)"""
