@@ -788,7 +788,9 @@ _M3_IMPORTER_WHITELIST = ("src/soul/life_thread_orchestrator.py",)
 #: 但以「被掃描檔案數 == 實測值」釘死 ⇒ 覆蓋面**無法靜默縮小**
 #: （新增一個檔案就會紅，逼人回來確認它是否引用了 M3）。
 _M3_NON_PY_SCANNED_COUNTS = {
-    "configs": 2,
+    # 2026-10-21：configs/packs/ 新增 roswaal_mansion_ram_v1.yaml（PACK-EXPAND 票）
+    # ⇒ 非 .py 掃描檔 2 → 3。已複核新檔對 M3 的引用命中 = []（0 處）。
+    "configs": 3,
     "clients": 4,
 }
 

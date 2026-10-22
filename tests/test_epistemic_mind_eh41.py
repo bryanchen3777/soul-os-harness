@@ -269,9 +269,14 @@ def test_e_modern_native_agents_bypass_with_zero_appraisal(monkeypatch):
 
 
 def test_e_other_non_modern_agent_without_pack_also_bypasses():
-    """無 pack 的非現代角色（第二個異界角色尚未建包）→ bypass，不誤掛阻力。"""
-    assert load_epistemic_pack("agent_ram") is None
-    assert format_epistemic_horizon_delta("agent_ram", "我用氣炸鍋弄了豆腐，它一直吹熱風") == ""
+    """無 pack 的非現代角色 → bypass，不誤掛阻力。
+
+    2026-10-21（PACK-EXPAND 票）：``agent_ram`` 已建包（roswaal_mansion_ram_v1.yaml），
+    「第二個異界角色尚未建包」的前提已失效 ⇒ 改以同為非現代、且**仍未建包**的
+    ``agent_yue`` 承接同一斷言（已實測三條斷言在其上成立）。
+    """
+    assert load_epistemic_pack("agent_yue") is None
+    assert format_epistemic_horizon_delta("agent_yue", "我用氣炸鍋弄了豆腐，它一直吹熱風") == ""
     assert format_epistemic_horizon_delta("", "我用鐵鍋炒了菜") == ""
 
 
