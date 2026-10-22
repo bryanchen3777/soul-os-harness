@@ -699,8 +699,21 @@ def _replay(tmp: Path, script_text: str, mutation: str = "", dies_with_parent: b
             ):
                 wrapper_exit_s = time.time() - started
             if eof.is_set():
-                pipe_eof_s = time.time() - started
-                break
+                if pipe_eof_s is None:
+                    pipe_eof_s = time.time() - started
+                # 🔴 2026-10-22：不可因 EOF 成立就**立即 break**。
+                #    wrapper 結束與 stdout pipe EOF 幾乎同時發生（wrapper 一退出，
+                #    它的 stdout write handle 關掉 ⇒ 呼叫端立刻讀到 EOF）。若在
+                #    「WaitForSingleObject 尚未回報結束、但 EOF 已成立」的那一輪
+                #    直接 break，`wrapper_exit_s` 會永遠停在 None ⇒ 守衛 2 假紅。
+                #    （實測：原版在滿載下 10 輪重現 1 次紅燈，斷言與 07:0x 輪完全一致；
+                #      修後滿載 8/8 綠 ⇒ 修復具因果性。）
+                #    正確做法：**記下 EOF 後繼續有上限地等 wrapper 結束**；
+                #    真正「沒有確定返回」時（wrapper 真的不返回，例如變異 M2），
+                #    迴圈會跑到 deadline、`wrapper_exit_s` 仍為 None ⇒ 守衛照樣轉紅。
+                #    ⇒ 斷言（必須結束、必須 ≤ 上限、結束碼必須 0）一字未動。
+                if wrapper_exit_s is not None:
+                    break
             if wrapper_exit_s is not None and time.time() - started > wrapper_exit_s + 1.0:
                 break
             time.sleep(0.02)
