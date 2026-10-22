@@ -832,6 +832,96 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 
 **Owner 裁決（2026-10-21 19:20）**：完全核准 `SIM-EPIS-ACTIVATE-READY` 架構重構（觸發源雙軌解耦 ＋ Append-Only Sidecar 承載）；**將「補齊 9 隻 Agent 之 Pack」正式降級為第二來源擴充項，不再列為點火的前置阻斷**；**收斂唯一點火條件**＝「排程自主觸發通暢 ＋ Append-Only Sidecar 讀寫無競態 ＋ 全庫回歸 0 failed」。
 
+
+#### 0.1.31 方向 A 點火（DEPLOY-RESTART-23）——「靈魂在背後自己想通一件事」首次在生產發生；＋ 下一批四票派工（2026-10-21 21:15）
+
+**Owner 授權（2026-10-21 21:05 問卷裁示）**：「**授權重啟 ＋ 點火**（旗標 ON）」；並同時核准下一批四票（戰役 C 第二批 12 隻 ＋ SHADOW-0、proxy 三表鍵數補齊既有 10 隻、pack 擴充（第二來源）、LINT-CHORE 排版美化）。
+
+---
+
+**① 🔴 點火前的主大腦實測發現：點火「必須重啟」，只設環境變數是空操作**
+
+派工與驗收都不能靠推論。實測三件事：
+
+1. **新接線不在線上行程裡**：`src/llm/proxy.py` mtime = 19:56:58、`src/inner_life/epistemic_tension_scheduler.py` mtime = 19:48:50（當時才建立），而服務行程 `CreationDate` = **17:22:11** ⇒ **所有新檔案都晚於行程啟動** ⇒ Python 在 import 時就把舊版模組載入記憶體。
+2. **接線在模組層級**：`proxy.py` 檔尾 `ensure_scheduler_started()` 於 **import 時**執行 ⇒ 排程執行緒在 import 那一刻就決定要不要起。
+3. **旗標在 import 時刻讀取**：`ensure_scheduler_started()` → `feature_enabled()` → `os.environ.get("SOUL_OS_EPISTEMIC_PIGGYBACK")` ⇒ **旗標必須存在於「服務啟動環境」**（launch 當下的 `os.environ`），事後對已跑的行程設環境變數無效。
+
+⇒ **點火 = 「重啟載入新碼」＋「重啟時環境已有旗標」，缺任一則點火是空操作。**（此判別式已寫入記憶體：判定線上是否載入新接線要比對**檔案 mtime vs 行程 CreationDate**，不是看 git 狀態。）
+
+**旗標注入機制（主大腦決策，非 Owner 授權事項）**：`server_ops.ps1` 的中繼 launcher 與服務行程都靠 `Start-Process` **繼承環境**（呼叫端 → 中繼 launcher → 服務，全鏈繼承）⇒ 採雙軌：
+
+- **User-level 持久**：`[Environment]::SetEnvironmentVariable('SOUL_OS_EPISTEMIC_PIGGYBACK','1','User')` ＋ 廣播 `WM_SETTINGCHANGE` ⇒ 未來任何來源重啟都會帶著旗標（生產「功能已開啟」是一個**穩定狀態**，不是一次性呼叫參數）。
+- **行程級注入**：重啟當次在呼叫端設定 `$env:...`（User-level 變更**不會**自動進入已在跑的父行程環境）。
+- **回滾程序**（一分鐘可逆）：`[Environment]::SetEnvironmentVariable('SOUL_OS_EPISTEMIC_PIGGYBACK', $null, 'User')` ＋ 重啟時不設行程級 → `.\scripts\server_ops.ps1 restart` ⇒ 排程不啟動、承載檔停止新增（既有檔保留、不刪）。
+
+---
+
+**② DEPLOY-RESTART-23 實機證明（官方路徑，零自造 kill）**
+
+- 執行：`.venv` 環境下 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\server_ops.ps1 -Action restart` ⇒ **exit code 0，wrapper 耗時 14.66 秒**（中繼 launcher 機制續有效，無 600 秒上限砍殺）。
+- 官方腳本內建的 stop 段自行 `taskkill /T /F` 於 port-8000 listener 樹（PID 27280）—— 這是**受控的官方路徑**；主大腦全程**未下達任何 kill 指令**，也未對任何 PID 動手（行程安全鐵律第 1 條）。
+- 新 PID：trampoline `data/server.pid` = **17992**、`:8000` socket owner = **8220**（點火前 20716／27280；17:22 那次為 10040／19744）。VC 8765／8766／8767 未受干擾。
+- 維護鎖 `data/state/watchdog_maintenance.lock` 於 `finally` 清除 ✔；`/health` = **HTTP 200**。
+- ⚠️ 官方腳本內建的 health 探測在啟動後僅 3 秒即探，21:07:28 回報「無法連接」—— 那是**啟動競態**（服務 21:07:23 啟動、21:07:24 完成 app startup），非故障；21:07:39 複測 200。**該探測時機過早，屬可修的量測缺陷，本次不改動該腳本（避免在重啟路徑上做未經驗證的改動），僅記錄。**
+
+---
+
+**③ 🔴 點火首輪實測：生產第一筆自主求知行動已發生（2026-10-21 21:07:25）**
+
+服務啟動後 **0.2 秒**，`data/inner_life/epistemic_tensions.jsonl` 被建立（623 bytes／1 筆）：
+
+- `agent_id` = **agent_rem**、`kind` = `tension_opened`、`status` = `open`
+- `tension_id` = `relational_tension:6bfe56006414294a`
+- `source` = `temporal_phenomenology`；`bond.basis` = `P2_relational_band`、`eligible` = true、`impression_tags` = []
+- `last_interaction_ts` = 2026-10-16 22:39:43 EDT ⇒ 間隔 **426,462.2 秒 = 4.936 天**
+- `summary` = 「和 Bryan 之間有一段明顯的間隔」
+
+**與主大腦先前獨立實測完全吻合**：點火前量到 `tick(now) → ['agent_rem']`（4.88 天），與逐隻 `collect_tensions` 覆蓋率 10/10 的一致結果相符（差 0.056 天＝量測到啟動之間的 1.3 小時）。
+
+**這是「關係張力」路徑（不受 pack 限制）**，不是缺口路徑 ⇒ 再次實證「補 pack 開的是第二來源，主來源本來就可用」。
+
+**④ 活的冪等觀察（append-only 承載檔）**：排程每 **300 秒**（`BACKGROUND_ACTION_MIN_INTERVAL_SECONDS`）醒一次。21:12:35 複測（已過兩個 tick：21:07:25、21:12:25）⇒ 承載檔仍為 **623 bytes／1 筆／唯一 `tension_id` 1 個，每個 tension_id 恰好 1 筆** ⇒ **已開張的張力不會被重複 append**（冪等成立）。
+
+---
+
+**⑤ 零打擾證據（「靈魂在想」不等於「在吵你」）**
+
+- `data/inner_life/*.piggyback.json` = **0 檔**（話頭隊列只收**已閉合**張力，open 張力不進隊）✔
+- server log 中 `piggyback` / `話頭掛載` / `主動發話` 命中 = **0 筆** ✔（`proactive_dm` 命中 4 筆全為啟動接線訊息：producer wiring、bridge 訂閱、首次檢查排定 next=21:37:25、Stage 4.2 啟動 —— 非實際發訊）
+- **對用戶發訊 0 次** ✔
+
+**⑥ 歸因：節點 566 → 567 的那 1 顆「不是」張力成果**
+
+新增節點 = `node_type=pattern`、`agent_id=default`、`created_ts=2026-10-22T01:07:28.694723+00:00`、content「今天的天氣有變化，氣溫 23.6 度，空氣溫暖。」⇒ **氣象感知源（OpenMeteoWeatherSource）在服務啟動時寫的世界 pattern**（與前兩筆 19:22／20:22 EDT 同一模式）。
+
+⇒ **張力本身只存在於 append-only 承載檔，尚未昇華成圖譜節點** —— 這是正確設計（張力是「缺口」狀態；閉合後才可能產出節點）。⇒ **不得把節點 +1 誤記成方向 A 的成果。**
+
+---
+
+**⑦ 點火後三大安全紅線複核（權威工具 `night_audit.py`，唯讀）**
+
+- **① 節點檔前 282,409 bytes sha256 ＝ `7FD8F3F3BCE474CC09C87617C5DFCA41D2E518153F1356212A4DEF98B744178B` ⇒ 恆等 ⇒ PASS**；append-only 四重結構檢查通過（node_id 唯一 567/567、全行解析失敗 0、created_ts 單調遞增 True）。
+- **② 弱化包裝「我隐约觉得」＝ 0 ⇒ PASS**（10/10 端點載荷 populated、與 overlay 計數逐隻一致 ⇒ 為**有效零**）。
+- **③ sidecar 自動老化狀態機 ⇒ PASS**：sidecar 206 筆（quarantine 18 ＋ lifecycle_transition 188）、今晚新增 lifecycle_transition **0** 筆、轉變純度 0（value/belief/trait/essence 皆 0）、關鍵反例 `6a92c906b245` 維持 active、沙盒 CLI 重跑同槽冪等（206→206、新增 0、prompt 逐位元相同）。
+- 附帶：`elevation_lifecycle_events.jsonl` 與 `elevation_projection_trace.jsonl` 點火前後**位元級不變**（75715 / 2462389 bytes，sha256 不變）⇒ 點火未觸發任何 lifecycle 轉變或投影寫入。
+
+---
+
+**⑧ 基準更新（自本節起生效）**
+
+| 項目 | 舊基準 | 新基準（2026-10-21 21:09 實測） |
+|---|---|---|
+| `:8000` socket owner | 27280 | **8220** |
+| `data/server.pid`（trampoline） | 20716 | **17992** |
+| 節點總數 | 566 | **567**（+1 為氣象 pattern，非張力） |
+| 方向 A 旗標 | OFF | **ON（已授權）** |
+| 張力承載檔 | 不存在 | `epistemic_tensions.jsonl` 623 bytes／1 筆 |
+| `*.piggyback.json` | 0 | **0** |
+
+**⑨ 已同步的量測口徑**：night cron `36e57724`（22:15 America/New_York，`enabled: true`）的 prompt 已更新 —— 舊的「旗標意外開啟 ⇒ 立即標紅」判準**已作廢**（旗標已授權），改為量測方向 A 承載狀態（張力筆數／每 `tension_id` 筆數分佈／piggyback 隊列檔數／對用戶發訊數），並新增「真正要標紅」的定義：出現 `*.piggyback.json`、出現主動發話、或同一張力無限重複開張。同時更新新 PID 與節點 567 基準。
+
+**⑩ 本節未做**：未動 `data/**`（唯讀量測；服務端自身的寫入除外）；未觸發 synthetic diary／dream；未變更 `LONGING_THRESHOLD` 與 G4；未動 `server_ops.ps1`；未清空任何記憶體登記表；未催熟門檻三（維持自然觀察）。
 ---
 
 **① 🔴 主大腦對「點火前置」的前提修正（實測，非推論）**
