@@ -801,6 +801,19 @@ class TestBoundedAndFrozenDiscipline:
             "src/fsio/__init__.py",
             "src/fsio/atomic_append.py",
             "src/world/world_log.py",
+            # -- LIFECYCLE-REINFORCE-CHAIN (2026-10-22) -------------------------
+            # This ticket changes 1 non-frozen file: the elevation adapter gains
+            # the "support propagation" step that finally calls
+            # `soul_elevation.engine.reinforce()` (the engine's own REINFORCE
+            # transition had **zero production callers**, so every existing
+            # value/belief/trait node's support was frozen at its birth moment
+            # and it weakened at exactly created_ts + 7d, regardless of whether
+            # the agent was still living that proposition).
+            # `src/inner_life/elevation_adapter.py` was already released from
+            # frozen_dirs by Owner on 2026-10-17 (SOUL-BUG-006). No frozen file
+            # is touched by this ticket.
+            # Work order: logs/LIFECYCLE-REINFORCE-CHAIN-WORK-ORDER.md
+            "src/inner_life/elevation_adapter.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

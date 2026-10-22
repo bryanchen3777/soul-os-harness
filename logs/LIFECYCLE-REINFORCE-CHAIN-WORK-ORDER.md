@@ -189,3 +189,48 @@
 5. 沙盒 CLI 快跑對帳輸出（含 `eval_error`／`undelivered`／`VERDICT` 與修復前後的轉變數差值）。
 6. **是否踩到 Frozen Contract／是否有意外行為**（若無，明寫「無」）。
 7. 🔴 **必須明確回報**：(a) 傳遞生效的節點數與型別分佈（預期以 value 為主）；(b) **belief／trait 型是否仍無祖先新邊**（若仍為 0，必須明寫「belief 保活需要另一條機制，本票未解決」）；(c) 弱化包裝數的**方向性變化**（預期下降或持平，**不得**以任何方式干預生產來達成）。
+
+---
+
+## 9. 實作結果（2026-10-22 19:0x EDT；Owner 裁示「立即開工」後當輪完成）
+
+### 9.1 改動檔案
+
+| 檔案 | 改動 |
+|---|---|
+| `src/inner_life/elevation_adapter.py` | 新增 `_propagate_support_to_soul_nodes()` ＋ `_PROPAGATION_TARGET_TYPES`（belief/value/trait，**不含 essence**）＋ `_PROPAGATION_MAX_DEPTH=4`；在 `elevate_matured_patterns()` 的候選維度迴圈**之後**、`_persist_result()`**之前**呼叫。資料源是**磁碟邊**（`_rebuild_engine_for` 不載入靈魂節點自己的邊，記憶體裡沒有冪等判準所需的完整視圖）。 |
+| `tests/inner_life/test_lifecycle_reinforce_propagation.py` | **新增**：T1～T6 ＋ 1 條機制不變量，共 7 項。 |
+
+### 9.2 守衛與雙向變異實驗
+
+- 基線 **7 passed**。
+- 變異實驗 **6/6 轉紅**，變異後檔案以 sha256 驗證 **byte-identical 還原**：
+
+| 變異 | 撤掉什麼 | 轉紅 |
+|---|---|---|
+| V1 | 傳遞步驟 | T1/T2/T4/T5/T6 |
+| V2 | `ts=e.get("valid_from_ts")` → `ts=None` | T2 |
+| V3 | 逐節點 try/except 隔離 | T3 |
+| V4 | 去重鍵比對 | T4 |
+| V5 | 「建立之後」時間條件 | T5 |
+| V6 | 傳遞邊與既有複製邊同鍵（被 `_dedup_edges` 吃掉） | T6 |
+
+- 🔴 **V3 第一次是綠的 —— 變異實驗抓到我自己的測試缺陷**：T3 裡我手動給了 OK 節點一條 `src3` 邊，讓「有沒有拿到 src3」這個斷言**自我滿足**，跟傳遞有沒有跑完全無關。**修法是修斷言**（移除那條預置邊），不是放寬守衛、也不是改機制。這條記在這裡，因為它是「守衛必須自我驗證」的活教材。
+- 🔴 **T4 補了雙觀測點**：磁碟上的邊去重（`_dedup_edges`）本來就擋得住重複落盤 ⇒「磁碟只有 1 條」證明不了「傳遞邏輯冪等」。所以 T4 另外釘住 **trace 事件數**（`node_revised / reinforced_only`）：第二次跑**不得**再做一次傳遞工作。V4 就是被這條打紅的。
+
+### 9.3 效果量級（生產圖譜的沙盒副本，**生產 data/ 全程唯讀**）
+
+| 指標 | 實測 |
+|---|---|
+| 實際發生的 `support_propagation` 邊 | **33 筆** |
+| 涵蓋的靈魂節點 | **15 顆**（與 §3.0 預測的 15/112 **完全一致**） |
+| 型別 | **value 33 筆／belief 0／trait 0** |
+| 錨點被刷新 | 15 顆（未變 97 顆） |
+| 弱化時點位移 | **9 顆由 2026-10-27 延後到 2026-10-29（+2 天）**；另 6 顆錨點也刷新但落在同一天 ⇒ 弱化槽不變 |
+
+### 9.4 ⚠️ 誠實的限制（必須連同效果數字一起回報）
+
+1. **本機制恢復的是「機制」，不是那批已經不再被產出的命題。** 2026-10-24 那批 10 顆 legacy value（含關鍵反例 `6a92c906b245`）**完全不受影響** —— 它們的祖先 pattern 自 2026-10-17 起沒有任何新邊 ⇒ 沒有可傳遞的證據。⇒ 那批弱化是**上游內容生成**問題（那些命題已經不再被重複產生），**不是**傳遞鏈能救的。
+2. **belief／trait 型仍然沒有任何傳遞**（祖先無新邊）⇒ 今晚那顆 belief 照樣弱化。**「belief 保活」是另一張票。**
+3. **機制會複合**：每輪 `elevate_matured_patterns()` 都會撈「尚未傳遞過的祖先新邊」⇒ 命題被重新確認的頻率越高，被保活的靈魂節點越多。今天的數字（15 顆 / 33 邊）只是**當期快照**，不得寫成門檻。
+4. **錨點刷新靠的是「邊」不是「節點欄位」**：`elevation_nodes.jsonl` 是 append-only、`_persist_result` 不回寫既有節點欄位 ⇒ `reinforce()` 對記憶體節點的 `last_support_ts`／`confidence` 變更**不會**落盤；但引擎的衰減錨點優先序是「有效支持邊最大 valid_from_ts → last_support_ts → created_ts+grace」⇒ **新邊即足以刷新錨點**，不依賴欄位回寫。`reinforce()` 另發的 `node_state_changed` 是 **trace** 事件（寫 `elevation_trace.jsonl`），**不是** lifecycle sidecar ⇒ 本機制**不改變**生命週期 overlay 的讀側語意。

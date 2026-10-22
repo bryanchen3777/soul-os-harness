@@ -3653,3 +3653,54 @@ ight_audit.py`／`%TEMP%\morning_obs\morning_audit.py`（tz-aware 時戳、retur
 - 未寫任何 `data/**`；未刪／改任何既有 sidecar 歷史（207 筆 `lifecycle_transition` 是歷史事實，不回溯改寫）。
 - 未改生命週期門檻、弱化語意、召回通道、Frozen Contract。
 - 未催熟、未注入 synthetic 事件、未重啟服務。
+
+#### 0.1.39 LIFECYCLE-REINFORCE-CHAIN：支持傳遞鏈落地（Owner 2026-10-22 裁示「立即開票」→ 同輪實作完工）
+
+**Owner 裁決原文要點**
+- 裁示 1（今晚那筆 belief 弱化的定性）＝甲：照實標紅、成因欄寫「機制缺口」、**不擋**今晚那筆、另開票修 REINFORCE 鏈。
+- 裁示 2（修復範圍）＝**立即開票**：下一輪出一份**決策完整**工單（匹配規則＋守衛＋變異實驗）後實作。
+- 追加指示（2026-10-22 18:4x）：「**線上服務自己跑它的，工程端該幹嘛就幹嘛，一分鐘都不等。**」⇒ 工單與實作於同輪完成，未等夜槽。
+
+**本節登錄的內容**
+
+**① 開票（commit `291eace` ＋ `89d305a`）**
+- `logs/LIFECYCLE-REINFORCE-CHAIN-WORK-ORDER.md`（決策完整工單）。
+- 匹配規則**已拍板**（不得由執行者另選）：**祖先 pattern 經 content-hash 重新確認 ⇒ 沿 `parent_node_id` 鏈（≤4 層）把新支持邊傳遞給既有 value/belief/trait**。明確**排除**語意相似比對（召回通道 VERDICT＝NO-GO：池 0 顆、命中率 0/200＝0.0000＜5%）與 content_hash 直接比對靈魂節點（靈魂節點的 content 在昇華時已被改寫，兩層不保證同源）。
+- §3.0 第 0 步唯讀量測：祖先有新支持邊的靈魂型節點 = **15／112（13.4%）**；型別 **value 15／belief 0／trait 0**。
+
+**② 實作（`src/inner_life/elevation_adapter.py`）**
+- 新增 `_propagate_support_to_soul_nodes()` ＋ `_PROPAGATION_TARGET_TYPES`（belief／value／trait，**不含 essence**：essence 在 `engine.evaluate_lifecycle` 中被豁免衰減，錨點無實測意義）＋ `_PROPAGATION_MAX_DEPTH=4`。
+- 落點：`elevate_matured_patterns()` 的候選維度迴圈**之後**、`_persist_result()`**之前** ⇒ `reinforce()` 追加的邊落在 `engine._edges[baseline_edges:]`，由既有 `_persist_result` 一併落盤（**不新增寫入路徑**、不改 append-only 語意）。
+- 資料源用**磁碟邊**而非 `engine._edges`：`_rebuild_engine_for` **不載入靈魂節點自己的邊**（`elevation_adapter.py:940-941`）且會過濾「已消化」證據鍵 ⇒ 記憶體裡沒有冪等判準所需的完整視圖。
+- 冪等：`(target.node_id, source_id, inner_life_event_id)` 對照靈魂節點既有邊；逐節點 try/except 隔離（`SUPERSEDED` 終態會拋 `ValueError`），單一節點失敗**不得**中斷整批。
+- 🔴 **錨點刷新靠的是「邊」不是「節點欄位」**：`elevation_nodes.jsonl` 是 append-only、`_persist_result` 不回寫既有節點欄位 ⇒ `reinforce()` 的 `last_support_ts`／`confidence` 變更**不會**落盤；但引擎衰減錨點優先序是「有效支持邊最大 valid_from_ts → last_support_ts → created_ts+grace」⇒ **新邊即足以刷新錨點**。`reinforce()` 另發的 `node_state_changed` 是 **trace** 事件（寫 `elevation_trace.jsonl`），**不是** lifecycle sidecar ⇒ 本機制**不改變**生命週期 overlay 的讀側語意。
+
+**③ 守衛與雙向變異實驗**
+- 新增 `tests/inner_life/test_lifecycle_reinforce_propagation.py`：T1 傳遞生效／T2 錨點語意（`valid_from_ts` 必須＝重新確認時刻，絕非傳遞當下）／T3 逐節點隔離／T4 冪等去重／T5 邊界不越界／T6 落盤保證 ＋ 1 條機制不變量，共 **7 項**。
+- 變異實驗 **6/6 轉紅**（V1 撤除傳遞步驟／V2 `ts=None`／V3 拿掉隔離／V4 拿掉去重／V5 拿掉「建立之後」時間條件／V6 傳遞邊與複製邊同鍵），變異後檔案以 sha256 驗證 **byte-identical 還原**。
+- 🔴 **V3 第一輪是綠的 —— 變異實驗抓到了守衛自身的缺陷**：T3 原先手動給了 OK 節點一條 `src3` 邊，讓「有沒有拿到 src3」這個斷言**自我滿足**，與傳遞有沒有跑完全無關。**修法是修斷言**（移除預置邊），不是放寬守衛、不是改機制。
+- 🔴 **T4 補了雙觀測點**：磁碟去重（`_dedup_edges`）本來就擋得住重複落盤 ⇒「磁碟只有 1 條」證明不了「傳遞邏輯冪等」；故另外釘住 **trace 事件數**（`node_revised / reinforced_only`）—— 第二次跑不得再做一次傳遞工作。V4 即被此打紅。
+- `tests/test_observability_completeness_1.py` 的 `allowed` 集**逐票**新增 `src/inner_life/elevation_adapter.py`（該檔 2026-10-17 已由 Owner 從 `frozen_dirs` 解凍；本票未動任何 frozen 檔）。
+
+**④ 效果量級（生產圖譜的沙盒副本；生產 `data/**` 全程唯讀）**
+- 實際發生 `support_propagation` 邊 **33 筆**，涵蓋 **15 顆** value 節點 —— 與 §3.0 預測的 15/112 **完全一致**。
+- 錨點被刷新 15 顆（未變 97 顆）；**9 顆的弱化時點由 2026-10-27 延後到 2026-10-29（＋2 天）**，另 6 顆錨點雖刷新但落在同一天 ⇒ 弱化槽不變。
+
+**⑤ ⚠️ 誠實的限制（與效果數字一起回報）**
+- **10-24 那批 10 顆 legacy value（含關鍵反例 `6a92c906b245`）完全不受影響** —— 它們的祖先 pattern 自 2026-10-17 起沒有任何新邊 ⇒ 沒有可傳遞的證據。⇒ 那批弱化是**上游內容生成**問題（那些命題已不再被重複產生），**不是**傳遞鏈能救的。
+- **belief／trait 型仍然 0 筆傳遞** ⇒ 今晚那顆 belief 照樣弱化。**「belief 保活」是另一張票、另一個裁示。**
+- 機制會**複合**（每輪撈「尚未傳遞過的祖先新邊」）⇒ 15／33 只是**當期快照**，不得寫成門檻。
+
+**⑥ 全庫回歸**
+全庫回歸（repo `.venv`）：**7110 passed / 24 skipped / 29 subtests / 0 failed（797.21 s / 13:17）**，exit 0。
+
+第一輪回歸曾出現 2 個 failed，已逐一鑑別（非本票責任，**未放寬任何守衛**）：
+1. `test_no_frozen_contract_file_touched` ＝ **時序假象**：該輪 18:59:58 開跑，而 `allowed` 條目 19:04 才補上 ⇒ pytest 讀到舊版測試檔；補上後單跑 4 passed。
+2. `test_d2_concurrent_same_content_v1_multiplies` ＝ **既存缺陷**：負載下可重現（`v1_count` 8/9 而非 10），**把本票的 adapter 改動整個還原到 HEAD 後同樣負載下仍然失敗**（2/10 輪）⇒ 因果排除本票；已另開 INFRA-V1-MIRROR-APPEND-RACE 票處理。
+
+**未做（明文）**
+- 未動 `soul-elevation` 套件任何檔案（`engine.reinforce()` 語意已完整，只需呼叫）。
+- 未動生命週期門檻、弱化語意、投影語意、召回通道、Frozen Contract。
+- 未寫任何 `data/**`（全欄位唯讀，僅 copy 出沙盒；生產 sidecar 82664 bytes／mtime 2026-10-21 22:04 全程未變）。
+- 未催熟、未注入 synthetic 事件、未重啟服務、未殺行程。
+- **本票尚未上生產**（改動在 repo，需另行決定部署時機；夜槽前不上線）。

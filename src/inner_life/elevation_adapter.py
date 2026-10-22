@@ -1095,6 +1095,193 @@ def _ts_key(ts: Any) -> str:
     return ts if isinstance(ts, str) else ""
 
 
+# ─────────────────────────────────────────────────────────────────────
+# LIFECYCLE-REINFORCE-CHAIN：支持傳遞（Support Propagation）
+# ─────────────────────────────────────────────────────────────────────
+#
+# 缺陷原委（2026-10-22 實測定案，見 logs/LIFECYCLE-REINFORCE-GAP-WORK-ORDER.md）：
+# `soul_elevation.engine.reinforce()` 是引擎早就寫好、語意完整的 REINFORCE 轉換
+# （讓既有信念保活：新支持證據累積 → 強化／重新激活、`last_support_ts` 刷新），
+# 但**生產零呼叫者** —— 全 repo ＋ soul-elevation 套件 `git grep reinforce`，
+# 唯一呼叫者在 `harness/tl4.py:310,316` 參考實作。
+# ⇒ 既有 value/belief/trait 的支持邊**永遠停在昇華那一刻**（`engine.elevate()`
+#   複製出的靈魂邊 `valid_from_ts=now`，`engine.py:559`）⇒ 衰減錨點＝出生時刻
+#   ⇒ **必然**在出生＋7 天弱化（門檻 `LIFECYCLE_T_WEAKEN_DAYS=7`），
+#   **與該 agent 是否仍在過日子無關**。
+#
+# 判準（Owner 2026-10-22 裁示「立即開票」，工單
+# `logs/LIFECYCLE-REINFORCE-CHAIN-WORK-ORDER.md` §3.1 —— 決策已定，不得另選）：
+#   **新經歷要能重新支持既有 value/belief/trait，其唯一證據來源是：該靈魂節點
+#   的祖先 pattern（`parent_node_id` 鏈）在靈魂節點建立之後，又累積到了新的
+#   支持邊。** 而該新邊的產生條件是既有的 content-hash 合併機制
+#   （SOUL-BUG-001）：同一命題被**另一個獨立事件**重複產生 ⇒ 節點合併 ＋
+#   邊重綁 ⇒ pattern 的支持邊 +1。
+#
+# 刻意**不做**語意相似比對：召回通道（方向 A）目前 VERDICT=NO-GO
+# （可回憶池 0 顆、命中率 0/200 = 0.0000 < 5% 門檻）⇒ 不得把靈魂保活掛在
+# 一個已判定 NO-GO 的通道上。也不做 content_hash 直接比對靈魂節點：靈魂節點的
+# content 在昇華時已被改寫（SOUL-BUG-009 修的就是 `pids[0]` 恆取最舊 pattern
+# 導致 content 凍結），兩層 content 不保證同源 ⇒ 只能走 `parent_node_id` 鏈。
+#
+# ⚠️ 錨點刷新**靠的是「邊」不是「節點欄位」**：`elevation_nodes.jsonl` 是
+#    append-only，`_persist_result` 不回寫既有節點的欄位 ⇒ `reinforce()` 對
+#    記憶體節點做的 confidence/stability/last_support_ts 變更**不會**落盤。
+#    但引擎的衰減錨點優先序是「仍有效支持邊最大 valid_from_ts → last_support_ts
+#    → created_ts + grace」⇒ 傳遞出的新邊即足以刷新錨點，不依賴欄位回寫。
+#    （`reinforce()` 另會發 `node_state_changed` / `node_revised` **trace** 事件；
+#    它們寫 `elevation_trace.jsonl`，**不是** lifecycle sidecar ⇒ 生命週期
+#    overlay 的狀態仍以 sidecar 為準，本機制不改變那條讀側。）
+#
+# ─────────────────────────────────────────────────────────────────────
+
+# 可被支持傳遞重新支持的靈魂型節點型別。
+# 刻意**不含 essence**：essence 在 `engine.evaluate_lifecycle` 中被豁免衰減
+# （終極層不老化），它的錨點沒有實測意義；把它拉進來只會製造無法觀測的邊。
+_PROPAGATION_TARGET_TYPES = ("belief", "value", "trait")
+
+# 沿 parent_node_id 鏈回溯祖先 pattern 的最大層數（防環 + 限制傳遞半徑）。
+_PROPAGATION_MAX_DEPTH = 4
+
+
+def _propagate_support_to_soul_nodes(
+    engine: InternalizingEngine,
+    edges: Sequence[dict],
+    *,
+    agent_id: str,
+    max_depth: int = _PROPAGATION_MAX_DEPTH,
+) -> List[dict]:
+    """把「祖先 pattern 的新支持邊」傳遞給既有的 value/belief/trait 節點。
+
+    流程：
+      1. 以**磁碟邊**為準索引：祖先 pattern 的有效支持邊（`valid_until_ts is
+         None`）＋ 靈魂節點自己已持有的邊鍵（冪等判準）。
+         ⚠️ 必須用磁碟邊而非 `engine._edges`：`_rebuild_engine_for` 會**不載入
+         靈魂節點自己的邊**（`elevation_adapter.py:940-941`），且會過濾掉
+         「已消化」的證據鍵 ⇒ 記憶體裡沒有冪等判準所需的完整視圖。
+      2. 對每顆靈魂節點，沿 `parent_node_id` 鏈（≤ ``max_depth`` 層）找祖先
+         pattern，取其**建立之後**的有效支持邊作為候選。
+      3. 候選邊若靈魂節點已持有同一 `(source_id, inner_life_event_id)` ⇒ 跳過
+         （冪等；引擎重跑不得重複累積）。
+      4. 其餘逐邊呼叫 `engine.reinforce(...)`，`ts` 傳**重新確認事件的時刻**
+         （不是傳遞執行的當下）⇒ 衰減錨點被精確刷新到「命題最後一次被確認」
+         的時間。逐節點 try/except 隔離（`SUPERSEDED` 終態會拋 ValueError；
+         單一節點失敗**不得**中斷整批）。
+
+    Returns:
+        每次成功傳遞的結構化記錄（供 log／觀測）。失敗者只記 warning。
+    """
+    soul_nodes = {
+        nid: node
+        for nid, node in engine._nodes.items()
+        if node.node_type in _PROPAGATION_TARGET_TYPES
+    }
+    if not soul_nodes:
+        return []
+
+    # ── 索引（磁碟為準）──
+    pattern_edges: Dict[str, List[dict]] = {}
+    soul_edge_keys: Dict[str, set] = {}
+    for e in edges:
+        if e.get("agent_id") != agent_id:
+            continue
+        nid = e.get("node_id")
+        if not nid or e.get("valid_until_ts") is not None:
+            continue
+        key = (e.get("source_id"), e.get("inner_life_event_id"))
+        if nid in soul_nodes:
+            soul_edge_keys.setdefault(nid, set()).add(key)
+        else:
+            pattern_edges.setdefault(nid, []).append(e)
+
+    records: List[dict] = []
+    for nid, soul in soul_nodes.items():
+        created = soul.created_ts
+        if not created:
+            continue
+
+        # 沿 parent 鏈找祖先 pattern（防環）
+        ancestors: List[str] = []
+        cur = soul.parent_node_id
+        depth = 0
+        seen: set = set()
+        while cur and depth < max_depth and cur not in seen:
+            seen.add(cur)
+            anc = engine._nodes.get(cur)
+            if anc is None:
+                break
+            if anc.node_type == "pattern":
+                ancestors.append(cur)
+            cur = anc.parent_node_id
+            depth += 1
+        if not ancestors:
+            continue
+
+        # 候選：祖先 pattern 在本靈魂節點**建立之後**的有效支持邊
+        candidates: List[tuple] = []
+        for anc_id in ancestors:
+            for e in pattern_edges.get(anc_id, ()):
+                vf = e.get("valid_from_ts")
+                if not vf or not (vf > created):
+                    continue
+                key = (e.get("source_id"), e.get("inner_life_event_id"))
+                if key in soul_edge_keys.get(nid, ()):
+                    continue
+                candidates.append((anc_id, e, key))
+        if not candidates:
+            continue
+
+        propagated = 0
+        last_ts = None
+        for anc_id, e, key in candidates:
+            try:
+                engine.reinforce(
+                    nid,
+                    source_id=e.get("source_id"),
+                    ts=e.get("valid_from_ts"),
+                    source_type=e.get("source_type") or "inner_life_event",
+                    inner_life_event_id=e.get("inner_life_event_id"),
+                    trigger_type="support_propagation",
+                )
+            except Exception as exc:  # noqa: BLE001 — 逐節點失敗隔離，不中斷整批
+                logger.warning(
+                    "[elevate] support_propagation 隔離：target=%s ancestor=%s "
+                    "source_id=%s → %s: %s",
+                    nid[:12],
+                    anc_id[:12],
+                    str(e.get("source_id"))[:12],
+                    type(exc).__name__,
+                    exc,
+                )
+                continue
+            propagated += 1
+            soul_edge_keys.setdefault(nid, set()).add(key)
+            if last_ts is None or str(e.get("valid_from_ts")) > last_ts:
+                last_ts = str(e.get("valid_from_ts"))
+
+        if propagated:
+            rec = {
+                "target_node_id": nid,
+                "target_type": soul.node_type,
+                "target_agent_id": agent_id,
+                "propagated_edge_count": propagated,
+                "ancestor_pattern_ids": list(ancestors),
+                "ancestor_chain_depth": len(ancestors),
+                "last_confirm_ts": last_ts,
+            }
+            records.append(rec)
+            logger.info(
+                "[elevate] ↻ support_propagation agent=%s target=%s type=%s "
+                "edges=%d ancestors=%s last_confirm=%s",
+                agent_id,
+                nid[:12],
+                soul.node_type,
+                propagated,
+                [a[:8] for a in ancestors],
+                last_ts,
+            )
+    return records
+
+
 def elevate_matured_patterns(
     *,
     store_dir: Optional[Any] = None,
@@ -1354,6 +1541,14 @@ def elevate_matured_patterns(
                             and engine._edges[_i] is _replacement
                         ):
                             engine._edges[_i] = _original
+            # ── LIFECYCLE-REINFORCE-CHAIN：支持傳遞（Support Propagation）──
+            # 位置決定：engine.elevate() 之後、_persist_result() 之前。
+            # ⇒ reinforce() 追加的邊落在 engine._edges[baseline_edges:]，由既有的
+            #   _persist_result 一併落盤（不新增寫入路徑、不改 append-only 語意）。
+            # ⇒ 傳遞的判準是「祖先 pattern 在靈魂節點建立之後的新支持邊」，
+            #   那些邊早在上一輪 consume() 時就落盤了（不在本次新增邊裡），
+            #   所以本步驟以**磁碟邊**為準（見 _propagate_support_to_soul_nodes）。
+            _propagate_support_to_soul_nodes(engine, edges, agent_id=agent_id)
             # 只 append 本次新增的边（加载的历史边不重复写，supersede 原地改不动文件）。
             _persist_result(
                 resolved_dir, agent_elevated, engine.evidence_edges[baseline_edges:]
