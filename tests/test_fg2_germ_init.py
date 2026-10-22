@@ -261,7 +261,10 @@ def test_create_agents_propagates_initialization_mode():
     from src.agent.registry import get_agent_class
     cfg = load_config()
     agents = create_agents(cfg, _FakeBus())
-    assert len(agents) == 10
+    # 註冊數隨 LAND-0 落地擴充（10 → 34）：改為對 config 動態取用，
+    # 避免再變陳舊硬編碼（斷言的不變量仍是「每個 enabled agent 都被實例化」）。
+    expected = sum(1 for a in cfg.get("agents", []) if a.get("enabled", True))
+    assert len(agents) == expected, f"應載入 {expected} 隻 enabled agent，實際 {len(agents)}"
     by_id = {a.agent_id: a for a in agents}
     for agent_id in _SEEDED_AGENTS:
         assert by_id[agent_id].initialization_mode == "seeded"

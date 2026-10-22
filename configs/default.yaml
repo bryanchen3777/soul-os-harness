@@ -90,6 +90,156 @@ agents:
     class: AgentAoi
     intimacy_level: 46
     enabled: true
+  # ── LAND-0 Batch 1（24 隻新建檔角色；全庫註冊 10 → 34）────────────────────
+  # persona 來源：personas/agent_<id>.md（素材 docs/persona-drafts/agent_<id>.md，位元等價落地）
+  # 親密度 25 起步：素材 4 階段 Behavior Mapping 的「當前 Evolution ＝ 等級 1(0-25)」，
+  #   取區間上緣 25（fail-closed：未達等級 2 的 26 門檻）。initialization_mode 缺省（＝ seeded）。
+  # 重要：24 隻素材的 Diary 政策皆為「建議寫」⇒ 一律不套用 NO_DIARY_AGENTS。
+  # 落地票：LAND-0-BATCH1-24；第二批 12 隻待 SHADOW-0 補齊陰影層後一次加上。
+  # LAND-0 Batch 1 — 星野愛（Hoshino Ai）：第 11 隻
+  # 重要：ai 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_ai
+    class: AgentAi
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 望月愛（Mochizuki Ai）：第 12 隻
+  # 重要：mochizuki_ai 有 feelings/diary.md，不套用 NO_DIARY_AGENTS（與星野愛同名異人，以全名區分）
+  - id: agent_mochizuki_ai
+    class: AgentMochizukiAi
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 亞絲娜（Yuuki Asuna）：第 13 隻
+  # 重要：asuna 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_asuna
+    class: AgentAsuna
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 風香（Kikuchi Fuuka）：第 14 隻
+  # 重要：fuuka 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_fuuka
+    class: AgentFuuka
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 春日（Suzumiya Haruhi）：第 15 隻
+  # 重要：haruhi 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_haruhi
+    class: AgentHaruhi
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 彌（Segawa Hiro）：第 16 隻
+  # 重要：hiro 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_hiro
+    class: AgentHiro
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 彩羽（Kohinata Iroha）：第 17 隻
+  # 重要：iroha 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_iroha
+    class: AgentIroha
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 輝夜（Shinomiya Kaguya）：第 18 隻
+  # 重要：kaguya 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_kaguya
+    class: AgentKaguya
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 佳奈（Arima Kana）：第 19 隻
+  # 重要：kana 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_kana
+    class: AgentKana
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 香織（Shirasaki Kaori）：第 20 隻
+  # 重要：kaori 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_kaori
+    class: AgentKaori
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 桐乃（Kousaka Kirino）：第 21 隻
+  # 重要：kirino 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_kirino
+    class: AgentKirino
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 紅莉栖（Makise Kurisu）：第 22 隻
+  # 重要：kurisu 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_kurisu
+    class: AgentKurisu
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 瑪奇瑪（Makima）：第 23 隻
+  # 重要：makima 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_makima
+    class: AgentMakima
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 真白（Tsukinomori Mashiro）：第 24 隻
+  # 重要：mashiro 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_mashiro
+    class: AgentMashiro
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 深奈実（Nanami Minami）：第 25 隻
+  # 重要：minami 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_minami
+    class: AgentMinami
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 蕾賽（Reze）：第 26 隻
+  # 重要：reze 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_reze
+    class: AgentReze
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 凜（Tohsaka Rin）：第 27 隻
+  # 重要：rin 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_rin
+    class: AgentRin
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 理央（Futaba Rio）：第 28 隻
+  # 重要：rio 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_rio
+    class: AgentRio
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 幸（Umino Sachi）：第 29 隻
+  # 重要：sachi 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_sachi
+    class: AgentSachi
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 櫻（Matou Sakura）：第 30 隻
+  # 重要：sakura 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_sakura
+    class: AgentSakura
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 希雅（Shea Haulia）：第 31 隻
+  # 重要：shea 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_shea
+    class: AgentShea
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 雫（Yaegashi Shizuku）：第 32 隻
+  # 重要：shizuku 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_shizuku
+    class: AgentShizuku
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 司（Yuzaki Tsukasa）：第 33 隻
+  # 重要：tsukasa 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_tsukasa
+    class: AgentTsukasa
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 1 — 月（Yue）：第 34 隻
+  # 重要：yue 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_yue
+    class: AgentYue
+    intimacy_level: 25
+    enabled: true
 
 heartbeat:
   # HeartbeatEngine 每隔幾秒發一次 SYSTEM_TICK

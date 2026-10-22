@@ -33,13 +33,24 @@ dimension；唯一通過 ISD 的真新 structural dimension ＝ **Branching**。
   ``InnerLifeWriter`` ＋ ``SubmissionGate`` 通道 ⇒ 進 shadow log／SAGE。
 - **fail-silent**：任何例外 → 空結果（不可讓 prompt 組裝失敗）。
 - **deterministic**：同一份資料 ＋ 同一組參數 ⇒ 同一個結果。
-- **只寫自家承載**：張力狀態承載（``epistemic_tensions.json``）與話頭佇列，
-  皆寫在呼叫端指定的 ``store_dir``（生產接線**預設關閉** ⇒ 生產零寫入）。
+- **只寫自家承載**：張力狀態承載（``epistemic_tensions.jsonl``，**append-only**）
+  與話頭佇列，皆寫在呼叫端指定的 ``store_dir``（生產接線**預設關閉** ⇒ 生產零寫入）。
+
+SIM-EPIS-ACTIVATE-READY（張力承載 append-only）
+------------------------------------------------
+張力狀態承載由「單一 JSON 覆寫」改為 **append-only JSONL**（每行一筆事件）：
+多行程併寫時各自寫到檔尾（``O_APPEND`` 語意）⇒ **不再互相覆蓋**。
+讀取語意＝**fold 全部事件、每個 ``tension_id`` 取最後一筆** ⇒ 等價於舊版的
+dict 覆蓋，但寫入面已無覆蓋行為。舊版 ``epistemic_tensions.json`` 仍可讀：
+首次讀取時**一次性**折算成事件寫入 JSONL，舊檔**改名**為 ``.migrated``
+（**不得刪除**）。
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -66,8 +77,49 @@ SOURCE_TEMPORAL_PHENOMENOLOGY = "temporal_phenomenology"
 #: 閉合事件在 ``Provenance.trace_ref`` 的前綴。
 CLOSURE_TRACE_PREFIX = "epistemic_action:"
 
-#: 張力狀態承載檔名（寫在 ``store_dir`` 底下）。
+#: 舊版張力狀態承載檔名（單一 JSON；**唯讀相容**）。
+#:
+#: 🔴 本檔名**不再**作為寫入目標——新承載是 :data:`TENSION_STORE_EVENTS_FILENAME`
+#: 的 append-only 事件檔。舊檔僅供一次性遷移（讀取後改名為 ``.migrated``）。
 TENSION_STORE_FILENAME = "epistemic_tensions.json"
+
+#: 張力狀態承載檔名（**append-only** JSONL；每行一筆事件；寫在 ``store_dir`` 底下）。
+TENSION_STORE_EVENTS_FILENAME = "epistemic_tensions.jsonl"
+
+#: 舊檔遷移後的改名後綴（舊檔**保留**，只改名；**不得刪除**）。
+TENSION_STORE_MIGRATED_SUFFIX = ".migrated"
+
+#: 張力事件的型別（**封閉集合**：不得自行擴充）。
+TENSION_EVENT_OPENED = "tension_opened"
+TENSION_EVENT_RESOLVED = "tension_resolved"
+TENSION_EVENT_THOUGHT_ENQUEUED = "tension_thought_enqueued"
+
+#: 事件型別的封閉集合（讀取時遇到集合外的型別 ⇒ 忽略該筆）。
+TENSION_EVENT_KINDS: Tuple[str, ...] = (
+    TENSION_EVENT_OPENED,
+    TENSION_EVENT_RESOLVED,
+    TENSION_EVENT_THOUGHT_ENQUEUED,
+)
+
+#: 事件欄位的封閉形狀（``ts``／``agent_id``／``tension_id``／``kind``／
+#: ``subject``／``status``／``payload``）。
+TENSION_EVENT_FIELDS: Tuple[str, ...] = (
+    "ts",
+    "agent_id",
+    "tension_id",
+    "kind",
+    "subject",
+    "status",
+    "payload",
+)
+
+#: ``payload`` 內**不是**張力本體的保留欄位（取出張力本體時剔除）。
+TENSION_PAYLOAD_EXTRA_KEYS: Tuple[str, ...] = (
+    "resolved_at",
+    "thought_payload",
+    "thought_tags",
+    "migration_digest",
+)
 
 #: 話頭掛載槽的來源標籤（與 ``piggyback_queue.PIGGYBACK_SOURCE_CLOSURE`` 同值）。
 PIGGYBACK_SOURCE_CLOSURE = "epistemic_closure"
@@ -487,63 +539,271 @@ def default_probes(now: Optional[int] = None) -> Dict[str, Callable[[Tension], P
     }
 
 
-# ── 張力狀態承載（只寫自家檔；生產接線預設關閉）──────────────────────────
-def tension_store_path(store_dir: Optional[Any] = None) -> Path:
-    """張力狀態承載檔路徑。"""
+# ── 張力狀態承載（append-only 事件檔；只寫自家檔；生產接線預設關閉）────────
+def _resolve_store_dir(store_dir: Optional[Any]) -> _FsPath:
+    """承載目錄（未指定 ⇒ 既有預設 ``<data_root>/inner_life``）。"""
     if store_dir is None:
         from src.paths import data_root
 
-        store_dir = _FsPath(data_root()) / "inner_life"
-    return _FsPath(store_dir) / TENSION_STORE_FILENAME
+        return _FsPath(data_root()) / "inner_life"
+    return _FsPath(store_dir)
 
 
-def _load_store(store_dir: Optional[Any]) -> Dict[str, Any]:
+def tension_store_path(store_dir: Optional[Any] = None) -> Path:
+    """張力狀態承載檔路徑（**append-only** 事件檔 ``epistemic_tensions.jsonl``）。"""
+    return _resolve_store_dir(store_dir) / TENSION_STORE_EVENTS_FILENAME
+
+
+def legacy_tension_store_path(store_dir: Optional[Any] = None) -> Path:
+    """舊版單一 JSON 承載檔路徑（**唯讀相容**；遷移後改名保留）。"""
+    return _resolve_store_dir(store_dir) / TENSION_STORE_FILENAME
+
+
+def _make_tension_event(
+    kind: str,
+    tension: Tension,
+    status: str,
+    *,
+    extra: Optional[Mapping[str, Any]] = None,
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """組一筆張力事件（欄位形狀封閉：``TENSION_EVENT_FIELDS``）。"""
+    ts = float(now if now is not None else time.time())
+    payload: Dict[str, Any] = tension.to_dict()
+    if extra:
+        payload.update(dict(extra))
+    return {
+        "ts": ts,
+        "agent_id": tension.agent_id,
+        "tension_id": tension.tension_id,
+        "kind": kind,
+        "subject": tension.subject,
+        "status": status,
+        "payload": payload,
+    }
+
+
+def _append_tension_events(
+    store_dir: Optional[Any], events: Sequence[Mapping[str, Any]]
+) -> bool:
+    """把事件**追加**進承載檔（append-only）。
+
+    - 以 ``ab``（``O_APPEND``）開檔 ⇒ 多行程併寫各自寫到檔尾，**不互相覆蓋**。
+    - **單次** ``write()`` 送出整批位元組 ⇒ 同一行不會被兩個寫入者交錯。
+    - ``flush()`` ＋ ``os.fsync()`` ⇒ 掉電不遺失（末筆可見）。
+    """
+    if not events:
+        return True
     path = tension_store_path(store_dir)
-    try:
-        if not path.exists():
-            return {}
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001 — fail-silent
-        logger.debug("[epistemic-action] 張力承載讀取失敗：%s: %s", type(exc).__name__, exc)
-        return {}
-    if not isinstance(raw, dict):
-        return {}
-    agents = raw.get("agents")
-    return agents if isinstance(agents, dict) else {}
-
-
-def _save_store(store_dir: Optional[Any], store: Mapping[str, Any]) -> bool:
-    path = tension_store_path(store_dir)
-    payload = {"agents": dict(store)}
+    blob = b"".join(
+        (json.dumps(dict(event), ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+        for event in events
+    )
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        tmp.replace(path)
+        with open(path, "ab") as handle:
+            handle.write(blob)
+            handle.flush()
+            os.fsync(handle.fileno())
         return True
     except Exception as exc:  # noqa: BLE001 — fail-silent
         logger.debug("[epistemic-action] 張力承載寫入失敗：%s: %s", type(exc).__name__, exc)
         return False
 
 
-def load_tension_records(agent_id: str, store_dir: Optional[Any] = None) -> List[Dict[str, Any]]:
-    """讀出某 agent 的張力紀錄（``{"tension": {...}, "status": "open"|"resolved"}``）。"""
-    agents = _load_store(store_dir)
-    records = agents.get(agent_id)
-    if not isinstance(records, list):
+def _read_tension_events(store_dir: Optional[Any]) -> List[Dict[str, Any]]:
+    """讀出承載檔的**全部**事件（壞行略過；fail-silent）。"""
+    path = tension_store_path(store_dir)
+    try:
+        if not path.exists():
+            return []
+        raw = path.read_bytes()
+    except Exception as exc:  # noqa: BLE001 — fail-silent
+        logger.debug("[epistemic-action] 張力承載讀取失敗：%s: %s", type(exc).__name__, exc)
         return []
-    return [r for r in records if isinstance(r, dict)]
+    events: List[Dict[str, Any]] = []
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("kind") not in TENSION_EVENT_KINDS:
+            continue
+        events.append(event)
+    return events
+
+
+def _fold_tension_events(
+    events: Sequence[Mapping[str, Any]]
+) -> Dict[str, Dict[str, Any]]:
+    """**fold** 事件序列 ⇒ 每個 ``tension_id`` 取**最後一筆**。
+
+    與舊版「dict 覆蓋」等價（同 id 的最後一筆勝出），但**寫入面**已無覆蓋行為。
+    鍵的順序＝該 ``tension_id`` **首次出現**的順序（與舊版 list 順序一致）。
+    """
+    state: Dict[str, Dict[str, Any]] = {}
+    for event in events:
+        tension_id = event.get("tension_id")
+        if not isinstance(tension_id, str) or not tension_id:
+            continue
+        state[tension_id] = dict(event)
+    return state
+
+
+def _tension_body(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    """從事件 payload 取出**張力本體**（剔除保留的額外欄位）。"""
+    return {
+        key: value
+        for key, value in payload.items()
+        if key not in TENSION_PAYLOAD_EXTRA_KEYS
+    }
+
+
+def _legacy_migrated_target(legacy_path: Path) -> Path:
+    """舊檔改名後的目標路徑（**不覆寫**既有 ``.migrated``）。"""
+    base = legacy_path.with_name(legacy_path.name + TENSION_STORE_MIGRATED_SUFFIX)
+    if not base.exists():
+        return base
+    index = 1
+    while True:
+        candidate = legacy_path.with_name(
+            legacy_path.name + TENSION_STORE_MIGRATED_SUFFIX + f".{index}"
+        )
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def _legacy_tension_events(raw_bytes: bytes, digest: str) -> List[Dict[str, Any]]:
+    """把舊版單一 JSON 承載折算成事件（deterministic：agent 排序 ＋ 原 list 順序）。"""
+    try:
+        raw = json.loads(raw_bytes.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return []
+    if not isinstance(raw, dict):
+        return []
+    agents = raw.get("agents")
+    if not isinstance(agents, dict):
+        return []
+    events: List[Dict[str, Any]] = []
+    for agent_id in sorted(agents):
+        records = agents.get(agent_id)
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            tension = Tension.from_dict(record.get("tension"))
+            if tension is None:
+                continue
+            resolved = record.get("status") == "resolved"
+            extra: Dict[str, Any] = {"migration_digest": digest}
+            if resolved:
+                extra["resolved_at"] = record.get("resolved_at")
+            events.append(
+                _make_tension_event(
+                    TENSION_EVENT_RESOLVED if resolved else TENSION_EVENT_OPENED,
+                    tension,
+                    "resolved" if resolved else "open",
+                    extra=extra,
+                    now=tension.created_at or None,
+                )
+            )
+    return events
+
+
+def migrate_legacy_tension_store(store_dir: Optional[Any] = None) -> bool:
+    """舊版單一 JSON 承載 → append-only 事件檔（**一次性**）。
+
+    - 舊檔**改名**為 ``.migrated``（**不得刪除**）。
+    - 以舊檔內容的 sha256 作為遷移標記 ⇒ 重複呼叫不會重複折算。
+    """
+    legacy_path = legacy_tension_store_path(store_dir)
+    try:
+        if not legacy_path.is_file():
+            return False
+        raw_bytes = legacy_path.read_bytes()
+    except Exception as exc:  # noqa: BLE001 — fail-silent
+        logger.debug("[epistemic-action] 舊承載讀取失敗：%s: %s", type(exc).__name__, exc)
+        return False
+
+    digest = hashlib.sha256(raw_bytes).hexdigest()
+    already = any(
+        isinstance(event.get("payload"), dict)
+        and event["payload"].get("migration_digest") == digest
+        for event in _read_tension_events(store_dir)
+    )
+    if not already:
+        events = _legacy_tension_events(raw_bytes, digest)
+        if events and not _append_tension_events(store_dir, events):
+            return False
+    try:
+        legacy_path.replace(_legacy_migrated_target(legacy_path))
+        return True
+    except Exception as exc:  # noqa: BLE001 — fail-silent
+        logger.debug("[epistemic-action] 舊承載改名失敗：%s: %s", type(exc).__name__, exc)
+        return False
+
+
+def load_tension_records(agent_id: str, store_dir: Optional[Any] = None) -> List[Dict[str, Any]]:
+    """讀出某 agent 的張力紀錄（``{"tension": {...}, "status": "open"|"resolved"}``）。
+
+    讀取語意＝fold 全部事件 ⇒ 每個 ``tension_id`` 取最後一筆。
+    """
+    migrate_legacy_tension_store(store_dir)
+    records: List[Dict[str, Any]] = []
+    for event in _fold_tension_events(_read_tension_events(store_dir)).values():
+        if event.get("agent_id") != agent_id:
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        status = event.get("status")
+        if status not in ("open", "resolved"):
+            status = "resolved"
+        records.append(
+            {
+                "tension": _tension_body(payload),
+                "status": status,
+                "resolved_at": payload.get("resolved_at"),
+            }
+        )
+    return records
 
 
 def save_tension_records(
     agent_id: str, records: Sequence[Mapping[str, Any]], store_dir: Optional[Any] = None
 ) -> bool:
-    """寫回某 agent 的張力紀錄。"""
-    agents = _load_store(store_dir)
-    agents[agent_id] = [dict(r) for r in records]
-    return _save_store(store_dir, agents)
+    """寫回某 agent 的張力紀錄（**append-only 版本**：逐筆追加事件）。
+
+    ⚠️ 語意差異（append-only 的必然結果）：舊版是「整份覆寫」，新版是「追加事件」
+    ⇒ fold 之後的結果與舊版**等價**（同 id 的最後一筆勝出），但**既有事件不被刪除**。
+    """
+    events: List[Dict[str, Any]] = []
+    for record in records or ():
+        if not isinstance(record, dict):
+            continue
+        tension = Tension.from_dict(record.get("tension"))
+        if tension is None:
+            continue
+        resolved = record.get("status") == "resolved"
+        extra: Dict[str, Any] = {}
+        if resolved:
+            extra["resolved_at"] = record.get("resolved_at")
+        events.append(
+            _make_tension_event(
+                TENSION_EVENT_RESOLVED if resolved else TENSION_EVENT_OPENED,
+                tension,
+                "resolved" if resolved else "open",
+                extra=extra,
+            )
+        )
+    return _append_tension_events(store_dir, events)
 
 
 def load_open_tensions(
@@ -561,45 +821,51 @@ def load_open_tensions(
 
 
 def upsert_open_tension(tension: Tension, store_dir: Optional[Any] = None) -> bool:
-    """把一條張力記成「未閉合」（同 id 覆蓋，不重複堆積）。"""
-    records = load_tension_records(tension.agent_id, store_dir)
-    payload = {"tension": tension.to_dict(), "status": "open", "resolved_at": None}
-    for index, record in enumerate(records):
-        existing = record.get("tension")
-        if isinstance(existing, dict) and existing.get("tension_id") == tension.tension_id:
-            records[index] = payload
-            break
-    else:
-        records.append(payload)
-    return save_tension_records(tension.agent_id, records, store_dir)
+    """把一條張力記成「未閉合」（**append-only**：追加一筆 opened 事件）。
+
+    舊版是「同 id 覆寫」；append-only 下同 id 會有多筆事件，但 fold（取最後一筆）
+    的結果**等價**，且**不再互相覆蓋別人的寫入**。
+    """
+    event = _make_tension_event(TENSION_EVENT_OPENED, tension, "open")
+    return _append_tension_events(store_dir, [event])
 
 
 def mark_tension_resolved(
     tension: Tension, store_dir: Optional[Any] = None, now: Optional[float] = None
 ) -> bool:
-    """把一條張力標記 ``resolved``（寫回既有狀態承載）。"""
+    """把一條張力標記 ``resolved``（**append-only**：追加一筆 resolved 事件）。"""
     resolved_at = float(now if now is not None else time.time())
-    records = load_tension_records(tension.agent_id, store_dir)
-    found = False
-    for index, record in enumerate(records):
-        existing = record.get("tension")
-        if isinstance(existing, dict) and existing.get("tension_id") == tension.tension_id:
-            records[index] = {
-                "tension": existing,
-                "status": "resolved",
-                "resolved_at": resolved_at,
-            }
-            found = True
-            break
-    if not found:
-        records.append(
-            {
-                "tension": tension.to_dict(),
-                "status": "resolved",
-                "resolved_at": resolved_at,
-            }
-        )
-    return save_tension_records(tension.agent_id, records, store_dir)
+    event = _make_tension_event(
+        TENSION_EVENT_RESOLVED,
+        tension,
+        "resolved",
+        extra={"resolved_at": resolved_at},
+        now=resolved_at,
+    )
+    return _append_tension_events(store_dir, [event])
+
+
+def record_thought_enqueued(
+    tension: Tension,
+    store_dir: Optional[Any] = None,
+    *,
+    thought_payload: str = "",
+    thought_tags: Sequence[str] = (),
+    now: Optional[float] = None,
+) -> bool:
+    """記錄「閉合後的小念頭已入隊」（**append-only**：追加一筆 thought 事件）。"""
+    event = _make_tension_event(
+        TENSION_EVENT_THOUGHT_ENQUEUED,
+        tension,
+        "resolved",
+        extra={
+            "thought_payload": thought_payload,
+            "thought_tags": list(thought_tags),
+        },
+        now=now,
+    )
+    return _append_tension_events(store_dir, [event])
+
 
 
 # ── 張力來源（只取兩個既有通道）──────────────────────────────────────────
@@ -624,11 +890,11 @@ def _parse_iso_ts(value: Any) -> Optional[int]:
         return None
 
 
-def read_bond_snapshot(agent_id: str) -> Optional[BondSnapshot]:
-    """讀 SG-3 §6.3 羈絆證據（relationships.json 唯讀；缺 entry → ``None``）。
+def _read_bryan_relationship_entry(agent_id: str) -> Optional[Dict[str, Any]]:
+    """讀 relationships.json 裡 Bryan 的 entry（唯讀；缺 entry → ``None``）。
 
-    ⚠️ 鏡像 ``src.soul.temporal_phenomenology._read_bond_evidence``（私有函式）。
-    判定規則逐條對齊；漂移由測試釘死。**只讀、不寫、不建立 entry**。
+    這是 :func:`read_bond_snapshot` 與 :func:`read_last_interaction_ts` 的**單一
+    讀取面**（同一份檔案、同一個 entity key）⇒ 兩者不會讀到不同版本的資料。
     """
     try:
         from src.paths import data_root
@@ -640,7 +906,21 @@ def read_bond_snapshot(agent_id: str) -> Optional[BondSnapshot]:
         data = json.loads(path.read_text(encoding="utf-8"))
         others = data.get("others") if isinstance(data, dict) else None
         entry = others.get(BRYAN_ENTITY_ID) if isinstance(others, dict) else None
-        if not isinstance(entry, dict):
+        return entry if isinstance(entry, dict) else None
+    except Exception as exc:  # noqa: BLE001 — fail-silent
+        logger.debug("[epistemic-action] 關係資料讀取失敗：%s: %s", type(exc).__name__, exc)
+        return None
+
+
+def read_bond_snapshot(agent_id: str) -> Optional[BondSnapshot]:
+    """讀 SG-3 §6.3 羈絆證據（relationships.json 唯讀；缺 entry → ``None``）。
+
+    ⚠️ 鏡像 ``src.soul.temporal_phenomenology._read_bond_evidence``（私有函式）。
+    判定規則逐條對齊；漂移由測試釘死。**只讀、不寫、不建立 entry**。
+    """
+    try:
+        entry = _read_bryan_relationship_entry(agent_id)
+        if entry is None:
             return None
         tags_raw = entry.get("impression_tags")
         impression_tags = (
@@ -666,6 +946,29 @@ def read_bond_snapshot(agent_id: str) -> Optional[BondSnapshot]:
     except Exception as exc:  # noqa: BLE001 — fail-silent
         logger.debug("[epistemic-action] 羈絆證據讀取失敗：%s: %s", type(exc).__name__, exc)
         return None
+
+
+def read_last_interaction_ts(agent_id: str) -> int:
+    """讀某 agent 與 Bryan 的**最後互動**時間（epoch 秒；無 → ``0``）。
+
+    資料源＝relationships.json 的 ``last_interaction_at``（**唯讀**）。
+
+    為什麼不是 memory DB 的 messages 表：排程路徑必須在**沒有任何對話流量**
+    （訊息數 = 0）時也能判定「是否落在張力窗內」⇒ 判斷必須只依賴**關係狀態**
+    本身。關係狀態與羈絆證據同源（同一份 relationships.json）⇒ 兩者一致。
+    """
+    try:
+        entry = _read_bryan_relationship_entry(agent_id)
+        if entry is None:
+            return 0
+        parsed = _parse_iso_ts(entry.get("last_interaction_at"))
+        return int(parsed) if parsed is not None else 0
+    except Exception as exc:  # noqa: BLE001 — fail-silent
+        logger.debug(
+            "[epistemic-action] 最後互動時間讀取失敗：%s: %s", type(exc).__name__, exc
+        )
+        return 0
+
 
 
 def _derive_tags(text: str) -> List[str]:
@@ -915,6 +1218,21 @@ def close_tension(
             "[epistemic-action] 小念頭入隊失敗（fail-closed）：%s: %s", type(exc).__name__, exc
         )
 
+    # ── 產出 2b：把「小念頭已入隊」記進張力承載（append-only 事件）──
+    if enqueued:
+        try:
+            record_thought_enqueued(
+                tension,
+                tension_store_dir,
+                thought_payload=thought_payload,
+                thought_tags=thought_tags,
+                now=float(now_ts),
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-silent（不影響閉合結果）
+            logger.debug(
+                "[epistemic-action] 小念頭事件寫入失敗：%s: %s", type(exc).__name__, exc
+            )
+
     return Closure(
         closed=True,
         tension_id=tension.tension_id,
@@ -1016,9 +1334,17 @@ __all__ = [
     "PIGGYBACK_SOURCE_CLOSURE",
     "SOURCE_EPISTEMIC_APPRAISAL",
     "SOURCE_TEMPORAL_PHENOMENOLOGY",
+    "TENSION_EVENT_FIELDS",
+    "TENSION_EVENT_KINDS",
+    "TENSION_EVENT_OPENED",
+    "TENSION_EVENT_RESOLVED",
+    "TENSION_EVENT_THOUGHT_ENQUEUED",
     "TENSION_KIND_EPISTEMIC_GAP",
     "TENSION_KIND_RELATIONAL",
+    "TENSION_PAYLOAD_EXTRA_KEYS",
+    "TENSION_STORE_EVENTS_FILENAME",
     "TENSION_STORE_FILENAME",
+    "TENSION_STORE_MIGRATED_SUFFIX",
     "BondSnapshot",
     "Closure",
     "Path",
@@ -1028,11 +1354,17 @@ __all__ = [
     "collect_tensions",
     "default_probes",
     "expand_paths",
+    "legacy_tension_store_path",
     "load_open_tensions",
+    "load_tension_records",
     "mark_tension_resolved",
     "memory_probe",
+    "migrate_legacy_tension_store",
     "read_bond_snapshot",
+    "read_last_interaction_ts",
+    "record_thought_enqueued",
     "run_background_action",
+    "save_tension_records",
     "self_reason_probe",
     "should_act",
     "tension_store_path",

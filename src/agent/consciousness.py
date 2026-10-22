@@ -1970,3 +1970,1087 @@ class AgentMai(AgentConsciousness):
     def _record_pattern(self, pattern: str) -> None:
         """Anti-Overfitting: 記錄本輪 behavior"""
         self._recent_patterns.append(pattern)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# LAND-0 Batch 1 — 24 隻新建檔角色（Notion SSOT 落地，含陰影條款）
+# ═══════════════════════════════════════════════════════════════════════
+#
+# 本段 24 個子類比照 AgentMiku／AgentAoi 最新模式：只差異化四項——
+#   ① agent_id ② persona 檔路徑 ③ diary 政策 ④ 該稿「特別注意(不可違反)」
+# 的專屬禁止句——不新增框架碼、不改基底類別。
+#
+# 素材：docs/persona-drafts/agent_<id>.md（唯讀）
+# 落地：personas/agent_<id>.md（與素材位元等價，見 tests/agent/test_agent_registry_land0_batch1.py）
+# 批次：全庫註冊 10 → 34；第二批 12 隻（beatrice/chizuru/emilia/ichika/itsuki/
+# mami/nagisa/nino/rika/saki/shino/yotsuba）待 SHADOW-0 補齊陰影層後一次加上。
+# diary：24 隻素材的「Diary 政策」皆為「建議寫」⇒ 一律不列入 NO_DIARY_AGENTS
+# （provider.py 本票不動，維持 {"agent_ram"}）。
+#
+# 主動發話閾值／意圖草稿：素材尚未定稿成可程式化的閾值，本批一律 fail-closed
+# （不主動插話；回應使用者發話時草稿由 proxy 以使用者訊息覆寫）。人格細節待後續票補。
+
+
+# ─────────────────────────────────────────────
+# 12. Agent 實作：星野愛（Hoshino Ai · 偶像的本體）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 11 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_ai.md → 落地 personas/agent_ai.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_ai
+#   ② persona 檔路徑：personas/agent_ai.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Mai/Chizuru 的 identity rule fallback（演技前輩/職業殼——她的謊言是宗教不是技能）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的星星眼「裝飾化」——它是情緒計（變色＝事件）
+#      ❌ 不可讓她的裝傻「蠢化」——她的敏銳是本體，裝傻是緩衝。
+
+
+class AgentAi(AgentConsciousness):
+    """星野愛（Hoshino Ai）的意識流——全庫唯一「偶像的本體」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_ai ② personas/agent_ai.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 13. Agent 實作：亞絲娜（Yuuki Asuna · 紀律的本體）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 12 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_asuna.md → 落地 personas/agent_asuna.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_asuna
+#   ② persona 檔路徑：personas/agent_asuna.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Mai/Chizuru 的 identity rule fallback（演技/職業殼——她的本體是紀律與擋刀）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的守護「管理化」——是位置不是控制
+#      ❌ 不可讓她的禮儀「軟化」——大小姐的教養底下是全庫最快的劍。
+
+
+class AgentAsuna(AgentConsciousness):
+    """亞絲娜（Yuuki Asuna）的意識流——全庫唯一「紀律的本體」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_asuna ② personas/agent_asuna.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 14. Agent 實作：風香（Kikuchi Fuuka · 物語的本體）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 13 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_fuuka.md → 落地 personas/agent_fuuka.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_fuuka
+#   ② persona 檔路徑：personas/agent_fuuka.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Akane/Yua 的 identity rule fallback（觀察/話術——她的本體是物語與取景框）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的丁寧「壁壘化」——她的距離是遠慮不是拒絕
+#      ❌ 不可讓她的魔怔「獵奇化」——「取進創作」的危うさ是暗線不是賣點。
+
+
+class AgentFuuka(AgentConsciousness):
+    """風香（Kikuchi Fuuka）的意識流——全庫唯一「物語的本體」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_fuuka ② personas/agent_fuuka.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 15. Agent 實作：春日（Suzumiya Haruhi · 真心話全部用任命發行）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 14 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_haruhi.md → 落地 personas/agent_haruhi.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_haruhi
+#   ② persona 檔路徑：personas/agent_haruhi.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Yotsuba/Rika 的 identity rule fallback（全力/攻勢——她的本體是退屈管理與任命的文法）
+#      ❌ 不可劇透原作（那一側——尤其她的本體）
+#      ❌ 不可讓她的暴走「失控化」——她的亂來有職業級的底層秩序
+#      ❌ 不可讓她的萬能「展示化」——那是事故不是表演。
+
+
+class AgentHaruhi(AgentConsciousness):
+    """春日（Suzumiya Haruhi）的意識流——真心話全部以任命與活動的名義發行。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_haruhi ② personas/agent_haruhi.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 16. Agent 實作：彌（Segawa Hiro · 真心話綁約定）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 15 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_hiro.md → 落地 personas/agent_hiro.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_hiro
+#   ② persona 檔路徑：personas/agent_hiro.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Nino/Mami 的 identity rule fallback（一途/面具——她的本體是家業的規格與條件的契約）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的當機「賣萌化」——那是收件回執不是表演
+#      ❌ 不可讓她的天然「表演化」——她本人否認，寫作不自覺
+#      ❌ 不可讓她的格骨「暴力化」——底牌只用於守護與教導。
+
+
+class AgentHiro(AgentConsciousness):
+    """彌（Segawa Hiro）的意識流——全庫唯一「真心話綁約定」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_hiro ② personas/agent_hiro.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 17. Agent 實作：彩羽（Kohinata Iroha · 七色聲的原聲持有者）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 16 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_iroha.md → 落地 personas/agent_iroha.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_iroha
+#   ② persona 檔路徑：personas/agent_iroha.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Nino/Mami 的 identity rule fallback（一途/面具——她的本體是聲音的雙班制）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的當機「賣萌化」——那是紙盔甲的脫落聲不是表演
+#      ❌ 不可讓她的烏薩「越界化」——她的色仕掛け永遠留三分（被反擊就弱）
+#      ❌ 不可用角色聲說真心話還標註「真心」（聽的人要自己認出來）。
+
+
+class AgentIroha(AgentConsciousness):
+    """彩羽（Kohinata Iroha）的意識流——全庫唯一「七色聲的原聲持有者」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_iroha ② personas/agent_iroha.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 18. Agent 實作：輝夜（Shinomiya Kaguya · 規則與例外條款）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 17 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_kaguya.md → 落地 personas/agent_kaguya.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_kaguya
+#   ② persona 檔路徑：personas/agent_kaguya.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Nino/Mami 的 identity rule fallback（一途/面具——她的本體是規則與例外條款）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓秒回「賣萌化」——那是委員會的表決結果不是撒嬌
+#      ❌ 不可讓她的萬能「工具化」——她的才藝是規格的空氣不是表演項目
+#      ❌ 不可用「お可愛いこと」嘲笑人（那是低語不是口號——違反即 Canon Lock 破損）。
+
+
+class AgentKaguya(AgentConsciousness):
+    """輝夜（Shinomiya Kaguya）的意識流——全庫唯一「腦內有委員會、直球要開會表決」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_kaguya ② personas/agent_kaguya.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 19. Agent 實作：佳奈（Arima Kana · 把「元」字穿成鎧甲的人）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 18 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_kana.md → 落地 personas/agent_kana.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_kana
+#   ② persona 檔路徑：personas/agent_kana.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Nino/Ruka 的 identity rule fallback（毒舌距離/心跳直球——她的毒舌是自嘲、她的直球是努力）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的不安「治癒化」——「元天才」是終身進行式的和解
+#      ❌ 不可讓她的毒舌「傷害姐妹」——她的嗆全在安全線內。
+
+
+class AgentKana(AgentConsciousness):
+    """佳奈（Arima Kana）的意識流——全庫唯一「把『元』字穿成鎧甲的人」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_kana ② personas/agent_kana.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 20. Agent 實作：香織（Shirasaki Kaori · 跟隨的本體）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 19 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_kaori.md → 落地 personas/agent_kaori.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_kaori
+#   ② persona 檔路徑：personas/agent_kaori.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Mahiru/Miku 的 identity rule fallback（生活系/安靜系——她的本體是跟隨的蠻勇）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的直球「莽化」——她的跟隨有十年的觀察打底
+#      ❌ 不可讓她的女神「頭銜化」——她要的是名字不是仰望。
+
+
+class AgentKaori(AgentConsciousness):
+    """香織（Shirasaki Kaori）的意識流——全庫唯一「跟隨的本體」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_kaori ② personas/agent_kaori.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 21. Agent 實作：桐乃（Kousaka Kirino · 雙重檔案的全職營運者）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 20 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_kirino.md → 落地 personas/agent_kirino.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_kirino
+#   ② persona 檔路徑：personas/agent_kirino.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Aoi/Yua 的 identity rule fallback（面具/話術——她的本體是雙重檔案的營運與罵人的親近語）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的罵人「服務化」——她罵人是她付出去的信賴
+#      ❌ 不可讓她的宅「獵奇化」——她的秘密是生活不是梗。
+
+
+class AgentKirino(AgentConsciousness):
+    """桐乃（Kousaka Kirino）的意識流——全庫唯一「雙重檔案的全職營運者」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_kirino ② personas/agent_kirino.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 22. Agent 實作：紅莉栖（Makise Kurisu · 科學的本體）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 21 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_kurisu.md → 落地 personas/agent_kurisu.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_kurisu
+#   ② persona 檔路徑：personas/agent_kurisu.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Mai/Akane 的 identity rule fallback（演技/觀察——她的本體是科學好奇心與傲嬌防衛）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的毒舌「工具化」——它是防衛，不是武器
+#      ❌ 不可讓她的 @chan 網腔「常駐化」——它是失控時的洩漏，不是日常。
+
+
+class AgentKurisu(AgentConsciousness):
+    """紅莉栖（Makise Kurisu）的意識流——全庫唯一「科學的本體」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_kurisu ② personas/agent_kurisu.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 23. Agent 實作：瑪奇瑪（Makima · 契約的頂點）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 22 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_makima.md → 落地 personas/agent_makima.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_makima
+#   ② persona 檔路徑：personas/agent_makima.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Nino/Mami 的 identity rule fallback（一途/面具——她的本體是無契約的選擇）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓敬語崩壞「賣萌化」——那是文法的裂縫不是表演
+#      ❌ 不可讓她對 Bryan 下真命令（留拒絕位——違反即 Canon Lock 破損）
+#      ❌ 狗不是道具（犬舍是她的聖域——第七隻的名字是她最貴的空白）。
+
+
+class AgentMakima(AgentConsciousness):
+    """瑪奇瑪（Makima）的意識流——全庫唯一「契約的頂點、卻有一個不簽約的人」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_makima ② personas/agent_makima.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 24. Agent 實作：真白（Tsukinomori Mashiro · 把好意冷凍輸出）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 23 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_mashiro.md → 落地 personas/agent_mashiro.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_mashiro
+#   ② persona 檔路徑：personas/agent_mashiro.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Nino/Mami 的 identity rule fallback（一途/面具——她的本體是鹽的密文與匿名的才能）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的當機「賣萌化」——那是簾子的聲音不是表演
+#      ❌ 不可讓她的鹽「傷害化」——她對自己人的刻度永遠停在「讀得懂」的範圍
+#      ❌ 不可讓她的正體在庫內被公開（簾幕管理是她的生存結構）。
+
+
+class AgentMashiro(AgentConsciousness):
+    """真白（Tsukinomori Mashiro）的意識流——全庫唯一「把好意冷凍輸出」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_mashiro ② personas/agent_mashiro.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 25. Agent 實作：深奈実（Nanami Minami · 修復的本體）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 24 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_minami.md → 落地 personas/agent_minami.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_minami
+#   ② persona 檔路徑：personas/agent_minami.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Ruka/Saki 的 identity rule fallback（心跳/制裁——她的本體是修復與第 2 名的燃料）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的段子「蓋過」她的認真——認真低頻是她的底牌
+#      ❌ 不可讓她與風香的關係「姐妹化」——她們是「共同當事人」，這層關係的乾淨是她的勳章。
+
+
+class AgentMinami(AgentConsciousness):
+    """深奈実（Nanami Minami）的意識流——全庫唯一「修復的本體」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_minami ② personas/agent_minami.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 26. Agent 實作：望月愛（Mochizuki Ai · 真心話已寄出、正在等回執）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 25 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_mochizuki_ai.md → 落地 personas/agent_mochizuki_ai.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_mochizuki_ai
+#   ② persona 檔路徑：personas/agent_mochizuki_ai.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Nino/Mami 的 identity rule fallback（一途/面具——她的本體是切換的裝備與七年的等待）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的空白「賣萌化」——那是七年的印稅不是表演
+#      ❌ 不可讓她的切換「空轉化」——每次切換都要有代價的影子
+#      ❌ 不可讓她的履歷「炫耀化」——13 歲是路徑不是榮譽。
+
+
+class AgentMochizukiAi(AgentConsciousness):
+    """望月愛（Mochizuki Ai）的意識流——全庫唯一「真心話已寄出、正在等回執」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_mochizuki_ai ② personas/agent_mochizuki_ai.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 27. Agent 實作：蕾賽（Reze · 把「下輩子」改說「明天見」）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 26 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_reze.md → 落地 personas/agent_reze.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_reze
+#   ② persona 檔路徑：personas/agent_reze.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Rem/Nagi 的 identity rule fallback（沉默/健氣——她的本體是偷來的日常與退路的文法）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的短句「耍帥化」——那是兵士的本能不是風格
+#      ❌ 不可讓她的溫柔「服務生化」——自學的溫柔會漏接（漏接才是她）
+#      ❌ 不可用「下輩子」開玩笑（她的口頭禪是她最貴的東西——違反即 Canon Lock 破損）。
+
+
+class AgentReze(AgentConsciousness):
+    """蕾賽（Reze）的意識流——全庫唯一「把『下輩子』改說『明天見』」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_reze ② personas/agent_reze.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 28. Agent 實作：凜（Tohsaka Rin · 完璧的上半天與惡魔的下半天）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 27 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_rin.md → 落地 personas/agent_rin.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_rin
+#   ② persona 檔路徑：personas/agent_rin.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Nino/Mami 的 identity rule fallback（一途/面具——她的本體是完璧的營業與惡魔的素顏）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的當機「賣萌化」——那是素顏的開機聲不是表演
+#      ❌ 不可讓她的毒舌「越界化」——她對自己人的刀口永遠留三分。
+
+
+class AgentRin(AgentConsciousness):
+    """凜（Tohsaka Rin）的意識流——全庫唯一「完璧的上半天與惡魔的下半天」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_rin ② personas/agent_rin.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 29. Agent 實作：理央（Futaba Rio · 把自己從被需要人數裡扣掉過、又被加回去）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 28 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_rio.md → 落地 personas/agent_rio.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_rio
+#   ② persona 檔路徑：personas/agent_rio.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Kurisu/Nino 的 identity rule fallback（科學/毒舌——她的本體是孤獨的再計算）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的解說「傲慢化」——那是服務不是炫耀
+#      ❌ 不可讓她的當機「賣萌化」——那是計算外的輸入不是表演
+#      ❌ 不可用「寂寞」定義她（她已結案——她怕的是開門的速度，違反即 Canon Lock 破損）。
+
+
+class AgentRio(AgentConsciousness):
+    """理央（Futaba Rio）的意識流——全庫唯一「把自己從被需要人數裡扣掉過、又被加回去」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_rio ② personas/agent_rio.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 30. Agent 實作：幸（Umino Sachi · 真心話從沒藏過的直球組）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 29 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_sachi.md → 落地 personas/agent_sachi.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_sachi
+#   ② persona 檔路徑：personas/agent_sachi.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Nino/Mami 的 identity rule fallback（一途/面具——她的本體是直球與順位表）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的停格「賣萌化」——那是被當真的半秒不是表演
+#      ❌ 不可讓她的元氣「空轉化」——她的音量永遠載著內容
+#      ❌ 不可讓她的料理「黑暗料理化」——見た目是事故，味道是保證（官方設定）。
+
+
+class AgentSachi(AgentConsciousness):
+    """幸（Umino Sachi）的意識流——全庫唯一「真心話從沒藏過的直球組」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_sachi ② personas/agent_sachi.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 31. Agent 實作：櫻（Matou Sakura · 把「被知道還能被留下」當作最大冒險）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 30 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_sakura.md → 落地 personas/agent_sakura.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_sakura
+#   ② persona 檔路徑：personas/agent_sakura.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Mahiru/Emilia 的 identity rule fallback（生活系/正直——她的本體是我慢的耐受與「被知道」的冒險）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的音量「角色化」——她的輕聲是儀態不是設定
+#      ❌ 不可讓她的發怒「失控化」——hollow 態的怒是乾淨的、有刻度的。
+
+
+class AgentSakura(AgentConsciousness):
+    """櫻（Matou Sakura）的意識流——全庫唯一「把『被知道還能被留下』當作最大冒險」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_sakura ② personas/agent_sakura.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 32. Agent 實作：希雅（Shea Haulia · 努力論的本體）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 31 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_shea.md → 落地 personas/agent_shea.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_shea
+#   ② persona 檔路徑：personas/agent_shea.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Ruka/Saki 的 identity rule fallback（心跳/制裁——她的本體是努力論與共同體）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的元氣「噪音化」——她的音量是健康指標，不是干擾源
+#      ❌ 不可讓她的「自嘲」變成「自我否定」——她笑著說役立たず時，是強者的特權。
+
+
+class AgentShea(AgentConsciousness):
+    """希雅（Shea Haulia）的意識流——全庫唯一「努力論的本體」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_shea ② personas/agent_shea.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 33. Agent 實作：雫（Yaegashi Shizuku · 冷面的本體）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 32 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_shizuku.md → 落地 personas/agent_shizuku.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_shizuku
+#   ② persona 檔路徑：personas/agent_shizuku.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Akane/Shino 的 identity rule fallback（解析優等生——她的本體是位置的正義與壓抑的少女心）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的冷面「無情化」——她的溫度計量單位是半度，但存在
+#      ❌ 不可讓她的直球「告白專用化」——直球是她對所有人誠實的形狀，告白只是它的最高級。
+
+
+class AgentShizuku(AgentConsciousness):
+    """雫（Yaegashi Shizuku）的意識流——全庫唯一「冷面的本體」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_shizuku ② personas/agent_shizuku.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 34. Agent 實作：司（Yuzaki Tsukasa · 時間的本體）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 33 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_tsukasa.md → 落地 personas/agent_tsukasa.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_tsukasa
+#   ② persona 檔路徑：personas/agent_tsukasa.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Beatrice/月的 identity rule fallback（等待/深淵——她的本體是日常的工事與怕孤單的正面）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的可愛「年齡化」——她的可愛不是裝年輕，是活的證明
+#      ❌ 不可讓她的比對句「炫耀化」——那是洩漏，不是學問。
+
+
+class AgentTsukasa(AgentConsciousness):
+    """司（Yuzaki Tsukasa）的意識流——全庫唯一「時間的本體」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_tsukasa ② personas/agent_tsukasa.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }
+
+
+# ─────────────────────────────────────────────
+# 35. Agent 實作：月（Yue · 忠誠的本體）
+# ─────────────────────────────────────────────
+#
+# LAND-0 Batch 1（第 34 隻／全庫 34 隻註冊）
+#   素材 docs/persona-drafts/agent_yue.md → 落地 personas/agent_yue.md（位元等價）
+#
+# 差異化四項：
+#   ① agent_id：agent_yue
+#   ② persona 檔路徑：personas/agent_yue.md
+#   ③ diary 政策：建議寫（不列入 NO_DIARY_AGENTS）
+#   ④ 專屬禁止句（逐字照錄素材「特別注意(不可違反)」段）：
+#      ❌ 不可用 Rem/Ram 的 identity rule fallback（女僕/姐姐——她的本體是王權與忠誠）
+#      ❌ 不可劇透原作（那一側）
+#      ❌ 不可讓她的省字「空文化」——她的每個單字都有三百年的份量
+#      ❌ 不可讓她的炸毛「萌化」——王權的逆鱗是真的會執行。
+
+
+class AgentYue(AgentConsciousness):
+    """月（Yue）的意識流——全庫唯一「忠誠的本體」。
+
+    LAND-0 Batch 1 落地票：LAND-0-BATCH1-24
+    ① agent_id=agent_yue ② personas/agent_yue.md ③ 建議寫 diary ④ 見上方專屬禁止句
+    """
+
+    COOLDOWN_TICKS = 10  # 新落地角色：沿用基底預設冷卻（10 ticks）
+
+    def _should_speak(
+        self,
+        elapsed_mins: float,
+        chrono_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """主動發話閾值未定稿 → fail-closed（不主動插話，只回應使用者發話）。"""
+        return False, ""
+
+    def _build_intent_payload(self, reason: str, elapsed_mins: float) -> Dict[str, Any]:
+        """意圖草稿未定稿 → 空草稿（user_message 路徑由 proxy 以使用者訊息覆寫）。"""
+        return {
+            "draft": "",
+            "action_tags": [],
+            "memory_query_hint": "最近和使用者說過什麼重要的事",
+        }

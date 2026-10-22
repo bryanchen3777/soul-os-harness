@@ -779,6 +779,16 @@ class TestBoundedAndFrozenDiscipline:
             "src/inner_life/piggyback_queue.py",
             "src/inner_life/recall_prompt.py",
             "src/llm/proxy.py",
+            # ── LAND-0-BATCH1-24（2026-10-21）─────────────────────────────
+            # 本票動 3 個非 frozen 檔：24 隻新建檔角色的戶籍落地面
+            # （agent 類別 / 註冊表 / speaker token 分數）。無 frozen 檔。
+            "src/agent/consciousness.py",
+            "src/agent/registry.py",
+            "src/agent/speaker_token.py",
+            # ── SIM-EPIS-ACTIVATE-READY（2026-10-21）──────────────────────
+            # 本票動 2 個非 frozen 檔：排程自主觸發的新模組（+ 既有承載模組
+            # 與 proxy 接線面已由 SIM-EPIS-PIGGYBACK-1 列入）。無 frozen 檔。
+            "src/inner_life/epistemic_tension_scheduler.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

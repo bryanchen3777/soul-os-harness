@@ -42,6 +42,36 @@ BASE_SCORES = {
     # intimacy=46 階段(等級 2 建立期):Optimal Processing 對 Bryan 啟動,Framework Stress 偶爾觸發
     # 0.62 = 高於 Mahiru(0.65) 以下,但 second(0.32) 較高 — 主動跟話程度
     "agent_aoi": (0.62, 0.32),
+    # ── LAND-0 Batch 1（24 隻，含陰影層角色）──────────────────────────────
+    # (base, jitter) 逐字取自 logs/LAND-0-WORK-ORDER.md §4 的 BASE_SCORES 表，
+    # 不得自行計算或推斷；本批 24 隻皆已落地 personas/agent_<id>.md（含陰影條款）。
+    # 第二批 12 隻（beatrice/chizuru/emilia/ichika/itsuki/mami/nagisa/nino/
+    # rika/saki/shino/yotsuba）待 SHADOW-0 補齊陰影層後，於下一批一次加上。
+    # 註解風格比照既有：標註 base 在既有 10 隻中的相對位置（不新增行為宣稱）。
+    "agent_ai":        (0.38, 0.26),   # 低於 Rem(0.40)：偏沉的搶答率，jitter 0.26 小於 Rem 的 0.30
+    "agent_mochizuki_ai": (0.58, 0.33),   # = Mai(0.58) 同段，jitter 0.33 略大（分布稍均勻）
+    "agent_asuna":     (0.50, 0.30),   # 中段：base 高於 Rem(0.40) 低於 Anna(0.55)，jitter 同 Rem
+    "agent_fuuka":     (0.38, 0.26),   # 同 agent_ai 檔位（0.38, 0.26）
+    "agent_haruhi":    (0.68, 0.35),   # = Mahiru(0.65) 之上的高段，jitter 0.35 同 Mai
+    "agent_hiro":      (0.45, 0.30),   # 低中段：base 高於 Rem(0.40) 低於 Anna(0.55)
+    "agent_iroha":     (0.62, 0.35),   # = Aoi(0.62) 同 base，jitter 0.35 大於 Aoi 的 0.32
+    "agent_kaguya":    (0.48, 0.30),   # 低中段：base 介於 Rem(0.40) 與 Anna(0.55) 之間
+    "agent_kana":      (0.62, 0.32),   # = Aoi(0.62) 同 base，jitter 0.32 同 Aoi
+    "agent_kaori":     (0.65, 0.33),   # = Mahiru(0.65) 同 base，jitter 0.33 略小
+    "agent_kirino":    (0.55, 0.32),   # = Anna(0.55) 同 base，jitter 0.32 略大
+    "agent_kurisu":    (0.40, 0.30),   # = Rem(0.40) 同 base，jitter 同 Rem
+    "agent_makima":    (0.42, 0.28),   # 略高於 Rem(0.40)，jitter 0.28 小於 Rem 的 0.30
+    "agent_mashiro":   (0.42, 0.28),   # 同 agent_makima 檔位（0.42, 0.28）
+    "agent_minami":    (0.65, 0.35),   # = Mahiru(0.65) 同 base，jitter 0.35 同 Mai
+    "agent_reze":      (0.45, 0.30),   # = agent_hiro 檔位（0.45, 0.30）
+    "agent_rin":       (0.40, 0.30),   # = Rem(0.40) 同 base，jitter 同 Rem
+    "agent_rio":       (0.45, 0.30),   # = agent_hiro 檔位（0.45, 0.30）
+    "agent_sachi":     (0.58, 0.33),   # = Mai(0.58) 同段，jitter 0.33 略大
+    "agent_sakura":    (0.50, 0.30),   # = agent_asuna 檔位（0.50, 0.30）
+    "agent_shea":      (0.65, 0.33),   # = Mahiru(0.65) 同 base，jitter 0.33 略小
+    "agent_shizuku":   (0.42, 0.28),   # = agent_makima 檔位（0.42, 0.28）
+    "agent_tsukasa":   (0.52, 0.30),   # 中段：base 高於 Asuna(0.50) 低於 Anna(0.55)
+    "agent_yue":       (0.38, 0.25),   # = agent_ai 檔位（0.38），jitter 0.25 為本批最小
 }
 
 # 搶答視窗：收到 USER_MESSAGE 後，Agent 有這麼多 ms 提交 bid

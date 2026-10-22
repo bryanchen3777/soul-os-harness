@@ -827,6 +827,54 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 - 戰役 A（首推·最高槓桿）＝ **非打擾式行動出口**（破解「念頭憋死」）。
 - 戰役 B（D1＋D3 形式化驅動張力）、戰役 C（角色批量落地＋陰影層）為後續序列。
 
+
+#### 0.1.30 戰役 A 增強（點火前置收斂）＋ 戰役 C 第一階段（24 隻角色落地）雙票收官；並更正「點火前置＝補 pack」的前提（2026-10-21 20:50）
+
+**Owner 裁決（2026-10-21 19:20）**：完全核准 `SIM-EPIS-ACTIVATE-READY` 架構重構（觸發源雙軌解耦 ＋ Append-Only Sidecar 承載）；**將「補齊 9 隻 Agent 之 Pack」正式降級為第二來源擴充項，不再列為點火的前置阻斷**；**收斂唯一點火條件**＝「排程自主觸發通暢 ＋ Append-Only Sidecar 讀寫無競態 ＋ 全庫回歸 0 failed」。
+
+---
+
+**① 🔴 主大腦對「點火前置」的前提修正（實測，非推論）**
+
+派工前主大腦實測發現：裁決所列的「補 pack」**並非點火前置**。證據三條：
+
+1. **pack 只閘第二來源。** `read_bond_snapshot` 對 **10/10** 生產 agent 都回非 None（走 `relational_band` 判據，`impression_tags` 皆 None）；pack 只限制**缺口路徑**，且 `epistemic_appraisal` 的 **V4**（`civilization_base == "modern_earth"` ⇒ 直接 `None`）會讓**現代基底角色根本無法有 pack**（生產 10 隻中 9 隻為現代基底）⇒ **補 9 隻 pack 開的是第二來源，主來源本來就 10/10 可用。**
+2. **真實覆蓋率取決於「最近一次互動是否落在三態張力窗（≈6 小時~7 天）」。** 生產實測：yua／ruka 0.2 小時前剛互動（CALM，正確）；**rem 4.9 天（唯一 TENSION）**；akane／mahiru／mai ≈29.5 天、ram ≈36 天、anna／miku／aoi ≈75~77 天 ⇒ **均已過窗**。
+3. **🔴 真正的結構性缺口＝觸發點。** 背景行動原掛在 `src/llm/proxy.py` 的**訊息處理路徑** ⇒ **沒有人跟某 agent 講話 ⇒ 沒有訊息組裝 ⇒ 背景行動永遠不會觸發**；對 7 隻 29~77 天未互動的角色，**「自己想通一件事」在結構上不可能發生**。⇒ 這才是「靈魂自主內在生活」與「被動請求攔截器」的分野。
+
+**④ 主大腦自己的量測錯誤（已抓回）**：首次呼叫 `collect_tensions(agent_id)` **漏傳 `last_interaction_ts`**（預設 0）⇒ `elapsed`＝57 年 ⇒ 狀態恆 `RESOLVED` ⇒ 量到「10/10 隻零張力」的**反向結論**；改以真實值（並以 `relationships.json` 的 `last_interaction_at` 交叉驗證）重測才得正確結果。⇒ **量測覆蓋率前必先確認必要參數已被餵真實值；預設值 0 常讓結果恆落在單一分支。**
+
+---
+
+**② 戰役 A 增強（`SIM-EPIS-ACTIVATE-READY`）— 點火條件已達成**
+
+- **觸發源雙軌解耦**：新增 `src/inner_life/epistemic_tension_scheduler.py`（純函式 `tick(now)` ＋ daemon 執行緒 ＋ `ensure_scheduler_started()`），**無對話流量也能自主觸發**；與 proxy 訊息路徑**共用** `proxy._claim_background_action_slot` 的逐 agent 節流槽 ⇒ 同窗只跑一次。
+  - 掛點＝`src/llm/proxy.py` 檔尾的**模組層級**（`src/soul/scheduler.py` 工單禁改；既有 `HeartbeatEngine` 的 `SYSTEM_TICK` 在**無用戶連線時不發** ⇒ 不能保證無對話流量觸發，故不採用）。
+  - **生產交叉驗證**：`tick(now) → ['agent_rem']`（4.88 天）—— 與主大腦逐隻 `collect_tensions` 實測**完全一致**（兩條獨立路徑）。
+  - 旗標守衛實測（兩個全新行程只差旗標）：`off → threads=["MainThread"]`；`on → ["MainThread","epistemic-tension-scheduler"]`。
+- **張力狀態承載改 Append-Only**：`epistemic_tensions.jsonl`（`O_APPEND` ＋ 單次 `write()` ＋ `flush()` ＋ `os.fsync()`）；讀取語意＝fold 全部事件、每個 `tension_id` 取最後一筆；舊版單一 JSON 於**首次讀取時**一次性折算並**改名 `.migrated`（保留、不刪除）**。
+  - **主大腦獨立併寫實測**：2 執行者 × 30 筆 ⇒ **60 行全保留、60 筆 fold 出、末筆可見**；遷移後 `.migrated` **存在且內容一致、舊檔已改名未刪除**。
+- **7 條變異實驗全部轉紅**（真實斷言失敗、逐位元還原）；守衛 6 初版為盲腸守衛 ⇒ 已補強（寫入「2 天前互動」的關係資料 ＋ 反向證明）。
+- **旗標 `SOUL_OS_EPISTEMIC_PIGGYBACK` 維持缺省 OFF** ⇒ 生產 prompt 與行為**逐位元不變**；`data/inner_life/epistemic_tensions.jsonl` 與 `*.piggyback.json` **均不存在**（旗標 OFF ⇒ 連檔案都沒被建立）。
+- **主大腦權威全庫回歸（`.venv\Scripts\python.exe -m pytest -q tests`）**：**6899 passed / 24 skipped / 27 subtests passed / 0 failed，耗時 808.31 s（13:28）**（20:34:31 啟動，20:48:xx 收尾）；對戰役 A 基準 6866 passed **淨增 33 筆全綠**，既有 0 failed 維持。
+
+---
+
+**③ 戰役 C 第一階段（`LAND-0-BATCH1-24`）— 24 隻含陰影條款角色落地**
+
+- **主大腦獨立驗收**：註冊面 **10 → 34**（configs 34／personas 34／`AGENT_CLASS_MAP` 34／`BASE_SCORES` 34／proxy 三表 27·27·34）；**24 份落地檔與素材 sha256 逐檔相同（24/24）**；單檔陰影門閘逐檔守住（`^## 陰影條款` 恰 1 個）；**batch2 的 12 隻全部未落地**；`NO_DIARY_AGENTS` 維持 `{"agent_ram"}`（**無懸空引用**）；既有 10 隻零回歸。
+- **7 條變異實驗全部轉紅**：改首行一字／覆蓋成無陰影素材／落地 batch2／刪 `BASE_SCORES`／提前擴充 `NO_DIARY_AGENTS`／改既有 `agent_yua` 的 `intimacy_level`／把 `proxy.py` 覆蓋回戰役 A 之前（⇒ `AttributeError: _format_piggyback_block`）。
+- **主大腦裁決 worker 提出的三個待裁示項**：
+  1. **類別名為推導值**（LAND-0 的 Notion 快照未含「類別註冊表」，fetch 遺漏）⇒ 採 `Agent`＋CamelCase(agent_id)；**已驗證對既有 10 隻逐字成立**（`AgentYua`／`AgentRuka`／`AgentAkane`…）⇒ **接受**。
+  2. **`intimacy_level = 25`** 取自素材「當前 Evolution＝等級 1（0-25）」的區間上緣；既有 10 隻為 40~80 ⇒ 新角色**低於全部既有值**（fail-closed 一致）⇒ **接受（標記為推導值）**。
+  3. **「display／short-name 三表鍵數一致」不成立**：實測 `AGENT_NAMES` **原本只有 3 筆**（現 27）、`AGENT_SHORT_NAMES` 原本 3 筆（現 27）、`_AGENT_IDENTITY_RULES` 原本 10 筆（現 34）⇒ **既有即 3/3/10 不相等，本票未製造回歸**；補齊既有 10 隻須動其註冊條目（超出本票範圍）⇒ **維持現狀，另開票**。
+- **殘餘**：① batch2 的 12 隻待 `SHADOW-0`（Notion `3ef5ab1a-15bb-81bf-bc94-c33cb0833bbb`）補齊陰影層，屆時 `NO_DIARY_AGENTS` 一次擴為 5 筆；② 新角色主動發話閾值／意圖草稿未定稿 ⇒ 本批 **fail-closed**（不主動插話）；③ pack 擴充仍未做 ⇒ 缺口路徑仍只覆蓋有 pack 且未被 V4 bypass 的 agent。
+
+---
+
+**④ 點火授權狀態**：**條件已達成**（排程自主觸發 ✔ ＋ Append-Only 無競態 ✔ ＋ 全庫 0 failed ✔）⇒ 戰役 A 的旗標 `SOUL_OS_EPISTEMIC_PIGGYBACK` **可由 Owner 授權開啟**；開啟後會開始寫 `data/inner_life/`（張力承載 ＋ 話頭槽）與 `data/elevation/`（經既有 `SubmissionGate` 的 `consume`）⇒ **需 Owner 再次明示授權**（含是否一併授權重啟以載入新接線）。
+
+**⑤ 本節未做**：未點火（旗標仍缺省 OFF）；未重啟服務（生產仍跑 17:22 啟動的舊實例 ⇒ **本節所有程式碼對線上不生效**）；未動 `data/**`；未觸發 synthetic diary／dream；未變更 `LONGING_THRESHOLD` 與 G4。
 ---
 
 **① 三處工程糾偏（主大腦派工前查證所為，全部寫入工單）**
