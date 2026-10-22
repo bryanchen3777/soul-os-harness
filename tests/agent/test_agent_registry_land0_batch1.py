@@ -216,7 +216,8 @@ def test_guard1_consciousness_subclasses_differentiate_four_items():
 # ─────────────────────────────────────────────────────────────
 
 
-def test_guard2_total_registration_is_34():
+def test_guard2_total_registration_is_46():
+    """全庫註冊數 = 46（Batch 1 的 34 ＋ Batch 2 的 12；LAND-0-BATCH2-12 起）。"""
     from src.agent.registry import AGENT_CLASS_MAP
     from src.agent.speaker_token import BASE_SCORES
 
@@ -224,11 +225,11 @@ def test_guard2_total_registration_is_34():
     config_agents = _config_agents()
     persona_files = sorted(PERSONAS_DIR.glob("agent_*.md"))
 
-    assert len(config_agents) == 34, f"configs agents 應 34 筆，實際 {len(config_agents)}"
-    assert len(AGENT_CLASS_MAP) == 34, f"AGENT_CLASS_MAP 應 34 筆，實際 {len(AGENT_CLASS_MAP)}"
-    assert len(BASE_SCORES) == 34, f"BASE_SCORES 應 34 筆，實際 {len(BASE_SCORES)}"
-    assert len(identity) == 34, f"_AGENT_IDENTITY_RULES 應 34 筆，實際 {len(identity)}"
-    assert len(persona_files) == 34, f"personas/ 應 34 份，實際 {len(persona_files)}"
+    assert len(config_agents) == 46, f"configs agents 應 46 筆，實際 {len(config_agents)}"
+    assert len(AGENT_CLASS_MAP) == 46, f"AGENT_CLASS_MAP 應 46 筆，實際 {len(AGENT_CLASS_MAP)}"
+    assert len(BASE_SCORES) == 46, f"BASE_SCORES 應 46 筆，實際 {len(BASE_SCORES)}"
+    assert len(identity) == 46, f"_AGENT_IDENTITY_RULES 應 46 筆，實際 {len(identity)}"
+    assert len(persona_files) == 46, f"personas/ 應 46 份，實際 {len(persona_files)}"
 
     # 既有 10 隻必須仍在（不得被本票擠掉）
     for agent_id in EXISTING_10:
@@ -258,16 +259,41 @@ def test_guard2_display_and_short_name_maps_are_consistent():
 
 
 def test_guard3_persona_files_are_byte_identical_to_drafts():
-    """24 份落地檔與素材位元級相同（最強驗收條件）。"""
+    """24 份落地檔與素材**語意**逐位元相同（最強驗收條件）。
+
+    🔴 LINT-CHORE-34 起（2026-10-21）：落地檔已做排版正規化（把行內 ` • ` 分隔序列
+    拆成獨立 list item），而素材 `docs/persona-drafts/**` 是**唯讀 SSOT**（含未拆的
+    原始排版）⇒ 兩者**位元必然不同**、但**語意必須相同**。
+    「persona ≡ 素材（位元）」與「persona 已正規化」是**互斥**的兩條要求，
+    因此本守衛改比「**兩側都正規化後**的位元」—— 這個寫法在兩種素材狀態下都成立
+    （未正規化時 normalize 是位元級 no-op，正規化後則吸收掉排版差異）。
+    同一不變式的獨立實作見 `tests/persona/test_persona_format.py::test_guard2_semantic_equivalence_to_sssot_draft`。
+    """
+    import importlib.util as _ilu
+
+    _spec = _ilu.spec_from_file_location(
+        "_npf", REPO_ROOT / "scripts" / "normalize_persona_format.py"
+    )
+    _npf = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_npf)
+
+    def _strip_shadow(text: str) -> str:
+        out = []
+        for line in text.splitlines(keepends=True):
+            if line.startswith(SHADOW_HEADING):
+                break
+            out.append(line)
+        return "".join(out)
+
     for agent_id in BATCH1_IDS:
         draft = DRAFTS_DIR / f"{agent_id}.md"
         landed = PERSONAS_DIR / f"{agent_id}.md"
         assert draft.is_file(), f"素材缺檔：{draft.name}"
         assert landed.is_file(), f"落地缺檔：{landed.name}"
-        draft_bytes = draft.read_bytes()
-        landed_bytes = landed.read_bytes()
-        assert draft_bytes == landed_bytes, (
-            f"{agent_id}: 落地檔與素材位元不同"
+        _a = _strip_shadow(_npf.normalize_markdown(landed.read_text(encoding="utf-8")))
+        _b = _strip_shadow(_npf.normalize_markdown(draft.read_text(encoding="utf-8")))
+        assert _a == _b, (
+            f"{agent_id}: 正規化後與素材語意不逐位元相同"
             f"（draft sha256={_sha256(draft)} / landed sha256={_sha256(landed)}）"
         )
 
@@ -294,42 +320,45 @@ def test_guard4_drafts_of_batch1_all_have_exactly_one_shadow_clause():
 
 
 # ─────────────────────────────────────────────────────────────
-# 守衛 5：batch2 未落地
+# 守衛 5：batch2 已落地（LAND-0-BATCH2-12 起由「未落地」翻轉為「已落地且註冊完成」）
 # ─────────────────────────────────────────────────────────────
 
 
-def test_guard5_batch2_not_landed():
-    """第二批 12 隻的 personas 檔必須不存在（陰影門閘未過）。"""
+def test_guard5_batch2_landed():
+    """第二批 12 隻的 personas 檔必須存在（陰影門閘已過、落地完成）。"""
     for agent_id in BATCH2_IDS:
-        assert not (PERSONAS_DIR / f"{agent_id}.md").exists(), f"batch2 {agent_id} 已被落地"
-        assert not (DRAFTS_DIR / f"{agent_id}.md").is_file() or True
+        assert (PERSONAS_DIR / f"{agent_id}.md").is_file(), f"batch2 {agent_id} 未落地"
 
 
-def test_guard5_batch2_not_registered_anywhere():
+def test_guard5_batch2_registered_everywhere():
     from src.agent.registry import AGENT_CLASS_MAP
     from src.agent.speaker_token import BASE_SCORES
 
-    _, short, identity = _proxy_tables()
+    display, short, identity = _proxy_tables()
     config_agents = {a["id"] for a in _config_agents()}
     class_names = {v.__name__ for v in AGENT_CLASS_MAP.values()}
 
     for agent_id in BATCH2_IDS:
-        assert agent_id not in config_agents, f"batch2 {agent_id} 已進 configs"
-        assert agent_id not in BASE_SCORES, f"batch2 {agent_id} 已進 BASE_SCORES"
-        assert agent_id not in short, f"batch2 {agent_id} 已進 short-name map"
-        assert agent_id not in identity, f"batch2 {agent_id} 已進 identity rules"
+        assert agent_id in config_agents, f"batch2 {agent_id} 未進 configs"
+        assert agent_id in BASE_SCORES, f"batch2 {agent_id} 未進 BASE_SCORES"
+        assert agent_id in short, f"batch2 {agent_id} 未進 short-name map"
+        assert agent_id in display, f"batch2 {agent_id} 未進 display-name map"
+        assert agent_id in identity, f"batch2 {agent_id} 未進 identity rules"
+        expected_cls = "Agent" + "".join(w.capitalize() for w in agent_id[len("agent_"):].split("_"))
+        assert expected_cls in class_names, f"batch2 {agent_id} 未進 AGENT_CLASS_MAP（{expected_cls}）"
 
 
 # ─────────────────────────────────────────────────────────────
-# 守衛 6：NO_DIARY_AGENTS 未被提前擴充
+# 守衛 6：NO_DIARY_AGENTS = 5 筆（Batch 2 起一次加上 4 隻）
 # ─────────────────────────────────────────────────────────────
 
 
-def test_guard6_no_diary_agents_not_expanded_early():
-    """provider.py 的 NO_DIARY_AGENTS 必須維持 {"agent_ram"}（第二批才一次加上 4 隻）。"""
+def test_guard6_no_diary_agents_expanded_to_5():
+    """provider.py 的 NO_DIARY_AGENTS = {agent_ram, agent_beatrice, agent_mami, agent_nino, agent_saki}。"""
     from src.memory.sage.provider import NO_DIARY_AGENTS
 
-    assert NO_DIARY_AGENTS == {"agent_ram"}, f"NO_DIARY_AGENTS 被提前擴充：{NO_DIARY_AGENTS}"
+    expected = {"agent_ram", "agent_beatrice", "agent_mami", "agent_nino", "agent_saki"}
+    assert NO_DIARY_AGENTS == expected, f"NO_DIARY_AGENTS 不符：{NO_DIARY_AGENTS}"
 
 
 # ─────────────────────────────────────────────────────────────

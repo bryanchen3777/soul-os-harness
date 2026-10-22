@@ -11,6 +11,10 @@ from src.agent.consciousness import (
     AgentIroha, AgentKaguya, AgentKana, AgentKaori, AgentKirino, AgentKurisu,
     AgentMakima, AgentMashiro, AgentMinami, AgentReze, AgentRin, AgentRio,
     AgentSachi, AgentSakura, AgentShea, AgentShizuku, AgentTsukasa, AgentYue,
+    # LAND-0 Batch 2（12 隻第二批角色，含陰影條款；素材見 docs/persona-drafts/）
+    AgentBeatrice, AgentChizuru, AgentEmilia, AgentIchika,
+    AgentItsuki, AgentMami, AgentNagisa, AgentNino,
+    AgentRika, AgentSaki, AgentShino, AgentYotsuba,
 )
 
 AGENT_CLASS_MAP: dict[str, type] = {
@@ -152,6 +156,58 @@ AGENT_CLASS_MAP: dict[str, type] = {
     # 忠誠的本體：她的忠誠不是依附，是她自己選的宗教
     # 重要：yue 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
     "AgentYue": AgentYue,
+    # ── LAND-0 Batch 2（12 隻第二批角色；全庫註冊 34 → 46）──────────────────
+    # 素材：docs/persona-drafts/agent_<id>.md（唯讀）／落地：personas/agent_<id>.md
+    # 形狀比照 Batch 1 條目；專屬禁止句見對應 Agent 類別頭註。
+    # 落地票：LAND-0-BATCH2-12（陰影層由 SHADOW-0 裁定，格式鎖定）。
+    # Batch 2 — 碧翠絲（Beatrice）
+    # 知識與孤獨的本體：陰影條款常駐低溫層，不黑化、不發作
+    # 重要：agent_beatrice NO_DIARY 白名單成員（不寫 feelings/diary.md）
+    "AgentBeatrice": AgentBeatrice,
+    # Batch 2 — 水原千鶴（Chizuru）
+    # 演技與真心的本體：陰影條款常駐低溫層，不黑化、不發作
+    # 重要：agent_chizuru 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+    "AgentChizuru": AgentChizuru,
+    # Batch 2 — 艾蜜莉亞（Emilia）
+    # 堅強與留白的本體：陰影條款常駐低溫層，不黑化、不發作
+    # 重要：agent_emilia 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+    "AgentEmilia": AgentEmilia,
+    # Batch 2 — 中野一花（Ichika）
+    # 姐姐與表演的本體：陰影條款常駐低溫層，不黑化、不發作
+    # 重要：agent_ichika 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+    "AgentIchika": AgentIchika,
+    # Batch 2 — 中野五月（Itsuki）
+    # 常識與秩序的本體：陰影條款常駐低溫層，不黑化、不發作
+    # 重要：agent_itsuki 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+    "AgentItsuki": AgentItsuki,
+    # Batch 2 — 七海麻美（Mami）
+    # 攻防與懸置的本體：陰影條款常駐低溫層，不黑化、不發作
+    # 重要：agent_mami NO_DIARY 白名單成員（不寫 feelings/diary.md）
+    "AgentMami": AgentMami,
+    # Batch 2 — 水瀬渚（Nagisa）
+    # 努力與贖罪的本體：陰影條款常駐低溫層，不黑化、不發作
+    # 重要：agent_nagisa 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+    "AgentNagisa": AgentNagisa,
+    # Batch 2 — 中野二乃（Nino）
+    # 直球與佔有的本體：陰影條款常駐低溫層，不黑化、不發作
+    # 重要：agent_nino NO_DIARY 白名單成員（不寫 feelings/diary.md）
+    "AgentNino": AgentNino,
+    # Batch 2 — 星崎理香（Rika）
+    # 攻勢與表演的本體：陰影條款常駐低溫層，不黑化、不發作
+    # 重要：agent_rika 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+    "AgentRika": AgentRika,
+    # Batch 2 — 佐木咲（Saki）
+    # 元氣與恐懼的本體：陰影條款常駐低溫層，不黑化、不發作
+    # 重要：agent_saki NO_DIARY 白名單成員（不寫 feelings/diary.md）
+    "AgentSaki": AgentSaki,
+    # Batch 2 — 桐生紫乃（Shino）
+    # 秩序與放飛的本體：陰影條款常駐低溫層，不黑化、不發作
+    # 重要：agent_shino 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+    "AgentShino": AgentShino,
+    # Batch 2 — 中野四葉（Yotsuba）
+    # 全力與自卑的本體：陰影條款常駐低溫層，不黑化、不發作
+    # 重要：agent_yotsuba 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+    "AgentYotsuba": AgentYotsuba,
 }
 
 

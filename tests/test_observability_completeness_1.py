@@ -789,6 +789,10 @@ class TestBoundedAndFrozenDiscipline:
             # 本票動 2 個非 frozen 檔：排程自主觸發的新模組（+ 既有承載模組
             # 與 proxy 接線面已由 SIM-EPIS-PIGGYBACK-1 列入）。無 frozen 檔。
             "src/inner_life/epistemic_tension_scheduler.py",
+            # ── LAND-0-BATCH2-12（2026-10-21）──────────────────────────────
+            # 本票動 1 個非 frozen 檔：12 隻第二批角色的 NO_DIARY 白名單擴充
+            # （src/memory/sage/provider.py 的 NO_DIARY_AGENTS 由 1 筆 → 5 筆）。無 frozen 檔。
+            "src/memory/sage/provider.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

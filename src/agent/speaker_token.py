@@ -72,6 +72,22 @@ BASE_SCORES = {
     "agent_shizuku":   (0.42, 0.28),   # = agent_makima 檔位（0.42, 0.28）
     "agent_tsukasa":   (0.52, 0.30),   # 中段：base 高於 Asuna(0.50) 低於 Anna(0.55)
     "agent_yue":       (0.38, 0.25),   # = agent_ai 檔位（0.38），jitter 0.25 為本批最小
+    # ── LAND-0 Batch 2（12 隻第二批角色；含陰影層角色）──────────────────────
+    # (base, jitter) 依各自素材的語氣／音調描述推導（素材「待實作登記」段的
+    # Speaker Token 預估 ＋ Language Fingerprint 音量描述），數值風格比照既有 34 隻。
+    # 註解風格比照既有：標註 base 在既有數值中的相對位置（不新增行為宣稱）。
+    "agent_beatrice":  (0.30, 0.20),   # 素材「建議低於 Emilia、與 Ram 相當——圖書館回報模式」→ 同 Ram 檔位 (0.30, 0.20)
+    "agent_chizuru":   (0.52, 0.30),   # 素材「預估中間檔——她話不多不少，回覆速度是全庫最快檔」→ 中段，base 高於 Rem(0.40) 低於 Anna(0.55)
+    "agent_emilia":    (0.58, 0.33),   # 素材「預估高於 Rem/Ram——她話多」→ 高於 Rem(0.40)，與 Mai(0.58) 同 base，jitter 0.33 略大
+    "agent_ichika":    (0.60, 0.32),   # 素材「預估中高——她話不少，但會看時機收」→ 中高段，base 略低於 Aoi(0.62)，jitter 0.32 同 Aoi
+    "agent_itsuki":    (0.50, 0.30),   # 素材「預估中——話不多不少，句句完整」→ 中段，同 Asuna(0.50) base，jitter 0.30 同 Rem
+    "agent_mami":      (0.35, 0.25),   # 素材「恆定低值＋事件觸發」＋冷面觀眾位 → 低段，base 高於 Ram(0.30) 低於 Rem(0.40)，jitter 0.25
+    "agent_nagisa":    (0.45, 0.30),   # 素材「預估中低——該說才說，說了就是短句」→ 低中段，base 高於 Rem(0.40) 低於 Asuna(0.50)
+    "agent_nino":      (0.52, 0.30),   # 素材「預估中——該說才說，說就大聲」→ 中段，base 與 Chizuru(0.52) 同，jitter 0.30 同 Rem
+    "agent_rika":      (0.62, 0.35),   # 素材「預估高——鏡頭內外兩套音量」→ 高段，base 高於 Aoi(0.62) 低於 Haruhi(0.68)
+    "agent_saki":      (0.68, 0.38),   # 素材「預估高——全庫音量前三」→ 高段，base 與 Haruhi(0.68) 同，jitter 0.38 為本批最大
+    "agent_shino":     (0.50, 0.30),   # 素材「預估中——句句完整，話不多不少」→ 中段，同 Asuna(0.50) base，jitter 0.30
+    "agent_yotsuba":   (0.72, 0.40),   # 素材「預估高——全庫最大聲」→ 本批最高，base 高於 Haruhi(0.68) 低於 Ruka(0.75)，jitter 0.40 同 Yua
 }
 
 # 搶答視窗：收到 USER_MESSAGE 後，Agent 有這麼多 ms 提交 bid

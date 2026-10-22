@@ -240,7 +240,85 @@ agents:
     class: AgentYue
     intimacy_level: 25
     enabled: true
-
+  # ── LAND-0 Batch 2（12 隻第二批角色；全庫註冊 34 → 46）────────────────────
+  # persona 來源：personas/agent_<id>.md（素材 docs/persona-drafts/agent_<id>.md 逐字
+  #   ＋ 追加「## 陰影條款(Shadow Clauses · Owner 裁定 2026-10-04)」段）
+  # 親密度 25 起步：與 Batch 1 同一推導（素材 4 階段 Behavior Mapping 的
+  #   「當前 Evolution ＝ 等級 1(0-25)」取區間上緣 25，fail-closed）。
+  #   initialization_mode 缺省（＝ seeded）。
+  # 落地票：LAND-0-BATCH2-12。
+  # LAND-0 Batch 2 — 碧翠絲（Beatrice）：第 35 隻
+  # 重要：agent_beatrice NO_DIARY 白名單成員（不寫 feelings/diary.md）
+  - id: agent_beatrice
+    class: AgentBeatrice
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 2 — 水原千鶴（Chizuru）：第 36 隻
+  # 重要：agent_chizuru 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_chizuru
+    class: AgentChizuru
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 2 — 艾蜜莉亞（Emilia）：第 37 隻
+  # 重要：agent_emilia 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_emilia
+    class: AgentEmilia
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 2 — 中野一花（Ichika）：第 38 隻
+  # 重要：agent_ichika 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_ichika
+    class: AgentIchika
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 2 — 中野五月（Itsuki）：第 39 隻
+  # 重要：agent_itsuki 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_itsuki
+    class: AgentItsuki
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 2 — 七海麻美（Mami）：第 40 隻
+  # 重要：agent_mami NO_DIARY 白名單成員（不寫 feelings/diary.md）
+  - id: agent_mami
+    class: AgentMami
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 2 — 水瀬渚（Nagisa）：第 41 隻
+  # 重要：agent_nagisa 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_nagisa
+    class: AgentNagisa
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 2 — 中野二乃（Nino）：第 42 隻
+  # 重要：agent_nino NO_DIARY 白名單成員（不寫 feelings/diary.md）
+  - id: agent_nino
+    class: AgentNino
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 2 — 星崎理香（Rika）：第 43 隻
+  # 重要：agent_rika 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_rika
+    class: AgentRika
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 2 — 佐木咲（Saki）：第 44 隻
+  # 重要：agent_saki NO_DIARY 白名單成員（不寫 feelings/diary.md）
+  - id: agent_saki
+    class: AgentSaki
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 2 — 桐生紫乃（Shino）：第 45 隻
+  # 重要：agent_shino 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_shino
+    class: AgentShino
+    intimacy_level: 25
+    enabled: true
+  # LAND-0 Batch 2 — 中野四葉（Yotsuba）：第 46 隻
+  # 重要：agent_yotsuba 有 feelings/diary.md，不套用 NO_DIARY_AGENTS
+  - id: agent_yotsuba
+    class: AgentYotsuba
+    intimacy_level: 25
+    enabled: true
 heartbeat:
   # HeartbeatEngine 每隔幾秒發一次 SYSTEM_TICK
   # 設太短會在 CI / 開發機壓力大；建議 60s 為生產預設，1-5s 為本地開發

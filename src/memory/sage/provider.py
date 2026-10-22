@@ -42,7 +42,11 @@ logger = logging.getLogger("soul_os.sage")
 # 任務書「Ram 沒有 feelings/diary.md」：soul-os-harness 的 SAGE 對應語意為
 # 「Ram 的對話不寫入 graph.sqlite facts」，情感狀態由 emotional-state.json 表達。
 # 注意：其他 agent 的 sync_turn/post_reply_commit 行為不受影響（回歸測試必跑）。
-NO_DIARY_AGENTS: set[str] = {"agent_ram"}
+# LAND-0 Batch 2（LAND-0-BATCH2-12）：依各角色素材「待實作登記」的 Diary 政策行擴充為 5 筆——
+#   agent_ram（既有）／agent_beatrice（建議 NO_DIARY，同 Ram）／agent_mami（建議不寫）／
+#   agent_nino（建議不寫）／agent_saki（建議不寫）。
+#   ⚠️ agent_emilia 素材寫的是「建議寫日記（學習日記風格）——與 Ram 的 NO_DIARY 相反」⇒ 不在此名單。
+NO_DIARY_AGENTS: set[str] = {"agent_ram", "agent_beatrice", "agent_mami", "agent_nino", "agent_saki"}
 
 # EH-3/3.1 (Write-Side Assimilation): 句法定義標記 — 使用者本輪文本需含「解釋／定義性」
 # 句法才觸發 assimilated 打標。純句法詞, 0 hardcoded tech keywords（無「插電／機器／

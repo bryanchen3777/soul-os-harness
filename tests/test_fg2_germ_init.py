@@ -133,8 +133,10 @@ def test_build_germ_anchor():
     assert "你是" not in anchor[handle_idx:]
 
     # AGENT_NAMES 未註冊的 id → 沿用原 id（設計 §3.2: AGENT_NAMES.get(agent_id, agent_id)）
-    anchor_fallback = _build_germ_anchor("agent_rem")
-    assert "You are agent_rem. Your name identifies continuity" in anchor_fallback
+    # 註：probe id 必須是「不在 AGENT_NAMES 的 id」。LAND-0 Batch 2 起 agent_rem 等
+    #     既有角色已補進 AGENT_NAMES，故此處改用本檔既有的合成 id agent_germ_01。
+    anchor_fallback = _build_germ_anchor("agent_germ_01")
+    assert "You are agent_germ_01. Your name identifies continuity" in anchor_fallback
 
 
 def test_germ_mode_default_seeded_when_not_germ():
