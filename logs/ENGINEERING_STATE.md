@@ -3590,3 +3590,66 @@ GOV-1 exhaustively reviewed M5.13, M5.14, M6.0 closeouts for stale next-work-ite
 
 
 
+
+#### 0.1.38 Owner 裁決（2026-10-22 17:2x EDT）：生命週期老化鏈的三處假綠已修 ＋ 靈魂型節點「跨日支持＝0」機制缺口定案 ＋ 立即開票 REINFORCE 鏈
+
+**Owner（Bryan）裁決原文要點**
+- **裁示 1（今晚那筆 belief 弱化的定性）＝甲**：照實標紅、**成因欄寫「機制缺口」**、**不擋**今晚那筆（擋＝改生產行為＋壓制機制，違反「不催熟」處置合約）、另開票修 REINFORCE 鏈。
+- **裁示 2（修復範圍）＝立即開票**：下一輪出一份**決策完整**工單（匹配規則＋守衛＋變異實驗）後實作。
+
+**本回合（11:30～17:30 EDT）完成的三組結論**
+
+**① 三處量測缺陷 ⇒ 對帳報假綠（已修，commit `82c5ee8`，已入庫 `origin/main`）**
+
+| # | 缺陷 | 後果 | 修法 |
+|---|---|---|---|
+| A | `%TEMP%` 兩支 audit 腳本以 `strftime("%Y-%m-%dT%H:%M:%S")` 傳 **naive（無時區）** 時戳 | 引擎 `_days_between` 拋 `TypeError` ⇒ 被 `evaluate_lifecycle_all` 的 fail-closed 吞掉回 `[]` ⇒ CLI 判「0 筆＝冪等 no-op＝**PASS**」 | CLI **在評估開始前硬拒** naive 時戳（exit 2、不產任何 VERDICT） |
+| B | 關鍵反例比對用 `==` 比 **12 字元前綴** vs 真實 **32 字元完整 id** | 守衛 ③「關鍵反例不得被轉」**完全空轉**（舊單元測試餵假 id `"KEY"` ⇒ 測試綠但守衛空轉） | 改為**前綴語意** |
+| C | `⇒ 紅線 ③ 總判定：PASS` **硬編碼** | 即使 CLI 回 FAIL 也照印 PASS | 改由實測證據計算 ＋ 逐條拆解印出 |
+
+- 對照實測（同一張生產圖譜、同一支 CLI）：naive ⇒ `225→225` ＋ PASS ＋ stderr 有 TypeError；`Z` ⇒ `225→249` ＋ FAIL。⇒ **晨槽報告「沙盒重跑 225→225 VERDICT PASS」是假綠**（真值 24 筆新轉變、含 1 筆 belief）。
+- 端到端實證（缺陷 B）：`2026-10-25T02:00:00Z` 關鍵反例 `6a92c906b245` **真的會被轉 1 次** ⇒ 舊守衛報 0（**漏報真紅燈**）、修完報 1（正確觸發 ③）。
+- 另補同一類的**第三個出口**：`evaluate_lifecycle_all` 回傳了 events 但 sidecar 寫入失敗 ⇒ 同樣是假 no-op ⇒ 改用**結構性比對**（`undelivered = len(events) − len(new_events)`）抓。
+- 驗證：新增 12 項守衛、**4/4 變異實驗全部轉紅**（M1 naive 硬拒／M2 前綴比對／M3 例外可視／M4 未落地結構檢查）、變異後檔案以 sha256 驗證 byte-identical 還原；全庫回歸 **7102 passed / 24 skipped / 29 subtests / 0 failed（783.23 s，repo `.venv`）**。
+- **未動** `src/`／`personas/`／`configs/`／`data/`；未殺行程、未重啟服務。
+
+**② 機制缺口定案（推翻「正常收割收斂」的原本判讀）**
+
+- **量測**：節點 708（pattern 596／value 103／belief 4／trait 5）、邊 1554。**value／belief／trait 合計 112 顆，其中「有建檔日之後的支持邊」的節點數 = 0。**
+- 跨日回訪機制本身**沒死**（pattern 跨日邊 10-19→10-22 ＝ 9→13→38→82）；死的是「**既有 value／belief／trait 被新事件重新支持**」這條路。
+- **根因（雙證據）**：(a) `soul_elevation.engine.reinforce()`（引擎裡「讓既有信念保活」的正式轉換，`soul-elevation/src/soul_elevation/engine.py:1047`）**在生產零呼叫者** —— 全 repo ＋ soul-elevation 套件 `git grep reinforce`，唯一呼叫者在 `harness/tl4.py:310,316`（該處註解即設計意圖：「喂經歷 → consume（pattern 候選）＋ **reinforce 當前 durable belief**」）；(b) `engine.elevate()` 把被聚合 pattern 的邊 supersede 掉（`engine.py:546-547`），且複製出的靈魂節點邊 **`valid_from_ts=now`（昇華時刻）**（`engine.py:559`）⇒ **靈魂節點的衰減錨點必然＝出生時刻**，與該 agent 是否仍在過日子無關。
+- **為什麼不是「正常收斂」**：`prior.py:62` 的原則是「old ≠ outdated——年齡不是退場理由，失去支持才是」；實際長成的是「**命題是否還在被支持根本無從表達**」⇒ 112 顆按 `created_ts + 7d` **排隊**弱化，時點與經歷密度無關。
+- 釐清一處易誤判：10-15/16/17 那批 value 的跨日邊**不是真支持** —— 那是 SOUL-BUG-009 修復前靈魂層凍結（`pids[0]` 恆取最舊 pattern）的邊重綁副產物，命題 content 從 10-11 起未變。
+
+**③ 今晚槽的精確預告（生產圖譜唯讀 ＋ 正確時鐘親測）**
+
+| 評估時鐘 | 轉變 | by node_type | weak_prefix | key_node_transitions |
+|---|---|---|---|---|
+| **2026-10-23T02:00:00Z（＝2026-10-22 22:00 EDT）** | **24** | pattern 23／**belief 1** | **0 → 1** | 0 |
+| 2026-10-25T02:00:00Z | 75 | pattern 65／value 9／belief 1 | 0 → 10 | **1** |
+| 2026-10-30T02:00:00Z | 483 | pattern 373／value 101／trait 5／belief 4 | 0 → 110 | 1 |
+
+今晚那筆 ＝ `agent_mahiru` 的 belief `57392ccdb3dd411e846f352e19d22e76`：建檔 2026-10-15T02:05:08Z、支持邊 2 條都在建檔當日 ⇒ 錨點＝建檔時刻 ⇒ +7 天 ＝ 2026-10-22T02:05:08Z ⇒ 今晚的槽在其後 ⇒ **必然轉弱化**；prompt 正文 865 → 872 字。
+
+**本回合交出的交付物**
+- `logs/LIFECYCLE-REINFORCE-GAP-WORK-ORDER.md`（根因定案與完整量測證據）。
+- `logs/LIFECYCLE-REINFORCE-CHAIN-WORK-ORDER.md`（**Owner 裁示立即開票**的決策完整工單：匹配規則＝「祖先 pattern 經 content-hash 重新確認 ⇒ 沿 `parent_node_id` 鏈傳遞」，**明確排除**語意相似比對〔召回通道 VERDICT＝NO-GO〕與 content_hash 直接比對靈魂節點；守衛 T1～T6 ＋ 雙向變異實驗 V1～V6；第 0 步先量測「祖先有新邊的比例」，若為 0 則停止實作）。
+- `scripts/eval_lifecycle_cli.py` ＋ `tests/test_eval_lifecycle_cli.py`（commit `82c5ee8`）。
+- `%TEMP%
+ight_audit.py`／`%TEMP%\morning_obs\morning_audit.py`（tz-aware 時戳、returncode 必現、紅線③改為實測計算）—— 唯讀量測工具，不在 repo。
+
+**兩支每日常駐 cron 的口徑已同步更新（schedule／timezone／enabled／sessionId／nextRun 一律未動）**
+- 夜槽 `36e57724`（22:15 EDT）：新增「機制缺口已定案」專項 ＋ 判定規則（弱化包裝＝1 **照實標紅**但成因欄寫「機制缺口」；**不得**寫成「正常收割收斂」、**不得**靜默改判 PASS、**不得**為了消紅動任何程式碼／資料）。
+- 晨槽 `a9de9f9d`（08:20 EDT）：投影將**永久**帶 1 個「我隐约觉得」⇒ 弱化包裝基線位移為 **1**（＝1 不標紅但須註明成因；>1 才標紅；=0 標「與預期不符」）；老化型別判準改為「**value/belief/trait 被轉的每一筆都必須能逐筆歸因到『已跨 7 天門檻且無新支持邊』並附門檻跨越算術**」，無法歸因者才是真的誤傷。
+
+**值守排程（複核後仍有效，不需重新 arm）**
+- cron `36e57724-0283-4b9d-8445-3bd4a197b080`（`15 22 * * *` America/New_York，enabled，nextRun＝2026-10-22 22:15 EDT）
+- self_reminder `self-15dd91b88e74c7439fbcb26a57390e1e`（once，2026-10-22 22:25:37 EDT；複核時回 `SELF_REMINDER_EXISTS` ＝ 原有那支仍在）
+
+**生產現況複核（2026-10-22 17:26 EDT）**
+`/health` 200；`data/server.pid` 21776；`:8000` socket owner 25496；python 行程恰 4 隻（2 hindsight ＋ 2 production）⇒ **零測試殘留**；節點 **709**（12:48 EDT 時為 708 ⇒ 下午新增 1 顆，sidecar 仍 225）、張力承載 623 bytes、piggyback 0 檔；`origin/main` ＝ `82c5ee8`、工作樹乾淨。
+
+**未做（明文）**
+- 未寫任何 `data/**`；未刪／改任何既有 sidecar 歷史（207 筆 `lifecycle_transition` 是歷史事實，不回溯改寫）。
+- 未改生命週期門檻、弱化語意、召回通道、Frozen Contract。
+- 未催熟、未注入 synthetic 事件、未重啟服務。
