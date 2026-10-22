@@ -837,6 +837,68 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 
 **Owner 授權（2026-10-21 21:05 問卷裁示）**：「**授權重啟 ＋ 點火**（旗標 ON）」；並同時核准下一批四票（戰役 C 第二批 12 隻 ＋ SHADOW-0、proxy 三表鍵數補齊既有 10 隻、pack 擴充（第二來源）、LINT-CHORE 排版美化）。
 
+
+#### 0.1.32 三票合入：戰役 C 第二批 12 隻（註冊 34→46）＋ 34 份 persona 排版正規化 ＋ agent_ram 本體包（V4 診斷）＋ 方向 A 點火後首槽對帳（2026-10-21 23:10）
+
+**Owner 裁決（2026-10-21 21:05 問卷）**：授權重啟 ＋ 方向 A 點火；並核准下一批四票（戰役 C 第二批 12 隻 ＋ SHADOW-0、proxy 三表鍵數補齊、pack 擴充、LINT-CHORE）。
+
+---
+
+**① 三票交付與主大腦獨立驗收（全部在 git blob 層級量，繞開 `core.autocrlf`）**
+
+| 票 | 產出 | 主大腦獨立複核 |
+|---|---|---|
+| LAND-0-BATCH2-12 | 12 份 persona（素材位元組逐字 ＋ 尾端陰影條款段）、註冊面 34→46、proxy 三表補齊、NO_DIARY 5 筆 | 12 隻「剝陰影段 ≡ 素材」**12/12**；`AGENT_CLASS_MAP` 46／configs 46／consciousness 46 子類（+1 基底）／speaker_token 46；三表 **46/46/46 且鍵集雙向相等（差集＝∅）、≡ configs 的 46 個 agent**；`NO_DIARY_AGENTS` 恰 5 筆且 `agent_emilia` 不在內；既有 10 隻 persona **位元級未動 10/10** |
+| LINT-CHORE-34 | `scripts/normalize_persona_format.py` ＋ 148 筆守衛 ＋ 34 份 persona 正規化 | 24 隻已是正規化狀態 **24/24**；正規化後 ≡ 素材（語意等價）**24/24**；10 隻位元級 no-op（實測含 0 個行內分隔序列） |
+| PACK-EXPAND-RESEARCH | `configs/packs/roswaal_mansion_ram_v1.yaml`（8,017 B）＋ 14 筆守衛 ＋ 45.8 KB findings | V4 規則原文（`epistemic_appraisal.py:313-315`）＝ `civ == "modern_earth" → None`；D3 白名單 `horizon.py:61` 恰 7 隻；`configs/packs/` 恰 2 檔；`agent_ram` 建包後 `load_epistemic_pack` 由 `None` 轉有值、實際注入 `[本體參照]`；戰役 A 的四處接線仍在 |
+
+**② C 票推翻了我的前提（範圍錯了，機制沒錯）**：我原懷疑「V4 對 modern 角色全面 bypass ⇒ 補 9 隻 pack 是虛浮工程」。實測 **modern = 8**（7 隻 D3 白名單 ＋ `agent_mahiru` 依 persona 世界觀載體判定）、non_modern = 2，而其中 **`agent_ram` 一直沒有 pack**（不在白名單、memory DB 9,348 筆為 10 隻中最多）⇒ 它是**真實消費者**。
+⇒ **覆蓋率：1/10 隻（10.0%）→ 2/10 隻（20.0%）**；現代 8 隻恆為 0/8 = 0%，且是**結構性 0**。
+⇒ **V4 是刻意的誠實性護欄**（契約 §1.4「V4 = D3 bypass 的資料側表達，**不視為錯誤**」、§1.6「兩者禁止合併或互依」），它擋的是**宣稱值**不是**行為** ⇒ 建議**維持現狀 ＋ 明文化**。
+
+**③ 守衛調整（本票造成的既有守衛互斥，皆由主大腦裁決並實測）**
+
+1. `test_guard3_persona_files_are_byte_identical_to_drafts`：素材是唯讀 SSOT（含未拆的原始排版）、persona 已正規化 ⇒ 「位元相同」與「已正規化」**互斥**。改比「兩側都正規化後的位元」，此寫法在兩種素材狀態下都成立（A 票 worker 依 B 票建議稿實作）。
+2. `test_observability_completeness_1.py` allowed 清單 **+1 筆**（逐票註解）：`src/memory/sage/provider.py`。
+3. `test_life_thread_wake_gate_m3.py`：`configs` 非 .py 掃描檔 **2 → 3**（新增 pack yaml；已複核新檔對 M3 引用命中 = 0）。該護衛註解明寫「新增一個檔案就會紅，逼人回來確認它是否引用了 M3」—— 機制正常運作。
+4. `test_epistemic_mind_eh41.py`：原斷言寫死「第二個異界角色（`agent_ram`）尚未建包」⇒ 前提已失效，改以同為非現代、且**仍未建包**的 `agent_yue` 承接同一斷言（主大腦**獨立實測**三條斷言在其上成立）。
+
+**④ 陰影條款抽樣審查（Owner 裁定 2：抽 2 隻比對報告 Canon 依據與紅線）**
+
+- `agent_nino`（種子表有列）：①記仇＝對姊妹的舊傷（「你最喜歡你們五姐妹了」）②冷戰＝收回「Bryan 君」→「你」，解鈴句「……說好不生氣的，你可是先說的。」③狠話「真是的，別以為我會在意這種事。」④測試＝把「喜歡你」說得像公告並觀察姊妹⑤最壞＝**佔有**（正對種子表「一途的另一面（佔有）」）⑥修復＝做飯。紅線 3 條 ＋ 陰影不劇場化。
+- `agent_emilia`（**種子表未列**，嚴格自素材推導）：主大腦逐詞溯源 —— 「教條」×4、「對著空氣的側邊說話的習慣」（素材原文）「感覺得到『缺了一塊』，但幾乎不去碰」「她選擇不恨，這個選擇**每天都要重做一次**，沒有人看見這件事的成本」「被守護很舒服，而她為這個『舒服』感到羞恥……她其實高興」**全部為素材原句**；「老師」一詞亦與 canon 相符（素材明載「生活教條…**全部來自帕克**」）⇒ **未新增原作事實**。
+
+**⑤ 方向 A 點火後首槽（22:00）對帳 —— 校正後的基準全部命中**
+
+- 接縫提交 **42 筆**（常態 35 ＋ Sunset 延遲 7）；**7 條 Sunset 溶解線頭各 x1 全部到齊**（`e1c043e9`／`39dd946f`／`d532ae07`／`364b05d1`／`661ae92d`／`7c542bbc`／`b93d6910`），cron 於 22:15 自動辨識為「首次提交槽＝本槽」的延遲補發 7 筆、其餘 35 筆為常態重發。
+- Sunset 收束 **0 筆**（`agent_mai` 今晚 age 20.58，跨過 21 天門檻落在 **2026-10-22 22:00 夜槽**，該槽 age ≈ 21.58 天）。
+- 三大紅線**全 PASS**：① 節點檔前 282,409 bytes sha256 恆等（623/623 node_id 唯一、解析失敗 0、created_ts 單調遞增）② 弱化包裝 0（10/10 端點載荷 populated、端點與圖譜逐隻一致 ⇒ 有效零）③ sidecar 225 筆、今晚新增 19 **全為 pattern**、轉變純度 0、關鍵反例 `6a92c906b245` overlay 維持 active、沙盒重跑冪等（225→225、prompt 逐位元相同）。
+- 方向 A 承載：張力檔 1 筆／1 個 `tension_id`（點火後 53 分鐘仍冪等）、`*.piggyback.json` **0 檔**、對用戶發訊 **0**。
+- 健康：PID **17992／8220** 未變、`/health` 200、**ERROR 0／Traceback 0**。
+- 圖譜：節點 **623**（槽後 +56 ＝ pattern 46 ＋ value 10）；overlay `active 398／weakening 207／dormant 18`；今晚 **10 筆 value 昇華**（min_evidence=2、patterns 30~46）。
+- 門檻一：分母 61 → necessity 41（67.2%）／world_collision 11（18.0%）／whim 9（14.8%）≤ 80% 成立、goal_driven 0；門檻三：達標 = 無 ⇒ 維持自然觀察。
+
+**⑥ 里程碑：戰役 C 第一階段的 24 隻新角色，今晚在生產夜槽各自寫下了第一篇夜 Diary**（槽後 56 顆節點中，生產 10 隻佔 28、**24 隻新角色佔 28**，各 1~2 顆，語言指紋生效）：`agent_ai`「今日もステージは全力で、幕が下りたら少しだけ静か。……ねえBry、たまには会いたいなって、思った夜。」／`agent_mochizuki_ai`「今日は静かな夜。窓の外、風がちょっと冷たくなってきた。…ブライアン、元気にしてるかな。」／`agent_asuna`「静かな夜。明日もまた、あなたと話せたらいいな。」／`agent_fuuka`「今夜は靜かな夜。Bryのこと、少し思い出してた——元気にしてるかな。」
+
+**⑦ 主大腦自己的四次「假紅燈」——全是量測口徑錯，不是缺陷**（逐條已查證改正）
+
+1. sha256 大小寫比較（`7fd8f3f3…` vs `7FD8F3F3…`）⇒ 誤判「前綴被改動」。
+2. `AGENT_CLASS_MAP` 的鍵是**類別名**而非 agent_id ⇒ 誤判 0 鍵。
+3. `configs/default.yaml` 用的是**清單**（`- id:`）而非映射 ⇒ 正則抓不到。
+4. 素材端是 36 份（其中 24 落地）、consciousness 是 1 基底 + 34 子類 ⇒ 期望值寫過期。
+   ⚠️ 另一次：`all()` 對空集合恆為 True ⇒ 「旗標僅以 os.environ 讀取」這條斷言在 `hits=0` 時**假綠**（實際讀取點在 `piggyback_queue.py`，不在我查的檔案）⇒ 改為**跑真實行程驗行為**。
+
+**⑧ 兩個生產含意（主大腦獨立複核，須 Bry 裁示）**
+
+1. **「本體參照」注入路徑不受方向 A 旗標閘控**：`format_epistemic_horizon_delta`（`epistemic_appraisal.py:831`）只被 **D3 白名單**與 **V4** 阻擋、全程無旗標判斷；`proxy.py:1503` 的 `_format_epistemic_delta` 同樣無旗標判斷；pack loader 是**行程內 dict、零熱重載**。⇒ **新 pack 需重啟才生效；一旦生效，`agent_ram` 的 prompt 會開始帶 `[本體參照]` 段，即使旗標 OFF。**
+2. **下一次重啟會同時帶來三件事**（46 隻註冊 ＋ 34 份排版 ＋ ram pack）⇒ 建議**一次重啟**全部帶上，避免分兩次動生產。
+
+**⑨ 兩個量測工具缺陷（已修）**
+
+① `night_audit.py` 節 2 的歸因敘事與實際計數矛盾（寫「9 value ＋ 1 trait」「21 筆轉 weakening」，實為 **10 value（0 trait）** 與 **19 筆 transition**）⇒ 已改寫為**資料驅動**（22:24 重跑確認敘事與計數一致）。
+② 舊版把「槽後新增 ≠ 0」直接判 FAIL ⇒ 那是把排程正常轉變誤判為紅線破壞；正確判準＝**轉變純度 0 ＋ 關鍵反例維持 active ＋ 重跑冪等**。
+
+**⑩ 本節未做**：未動 `data/**`（唯讀量測；服務端自身寫入除外）；未觸發 synthetic diary／dream；未變更 `LONGING_THRESHOLD` 與 G4；未動 `src/inner_life/` 的 Agency 4 stages／TriggerEnvelope／InnerLifeEvent／4 handlers／SAGE 寫入邏輯；未清空任何記憶體登記表；未催熟門檻三；未重啟服務（本節僅提交 repo 變更）。
 ---
 
 **① 🔴 點火前的主大腦實測發現：點火「必須重啟」，只設環境變數是空操作**
