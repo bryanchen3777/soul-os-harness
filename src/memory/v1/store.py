@@ -22,6 +22,9 @@ Constitution:
 import json
 from pathlib import Path
 from typing import List, Optional
+
+from src.fsio.atomic_append import append_bytes
+
 from .schema import Memory
 
 
@@ -42,9 +45,27 @@ class V1Store:
         self.store_file = self.agent_dir / "memories.jsonl"
 
     def add(self, memory: Memory) -> None:
-        """append 一筆。"""
-        with open(self.store_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(memory.to_dict(), ensure_ascii=False) + "\n")
+        """append 一筆。
+
+        🔴 INFRA-V1-MIRROR-APPEND-RACE（Owner 2026-10-22 裁示「核准改採 Binary
+        Append，全面收斂為 LF-only」）：本路徑**有實測的併發寫入者**
+        （D2 測試：10 個執行緒同時 append），而 Windows text-mode 的
+        ``open(path, "a")`` **不是原子追加** ⇒ 整筆無痕跡消失
+        （實測：負載下 ``v1_count`` = 8/9 而非 10）。
+
+        ⇒ 改走 ``src.fsio.atomic_append.append_bytes``：**二元寫入（⇒ LF-only，
+        消滅 text-mode newline translation）＋ 行程內互斥 ＋ Windows 核心層
+        ``FILE_APPEND_DATA`` 原子追加**（跨行程安全）。
+
+        ⚠️ 為什麼不直接用 ``open(path, "ab")``：Windows 上 CPython 的
+        ``open(path, "ab")`` 走 MSVCRT ``_O_APPEND``，CRT 會用「該 handle 自己
+        快取的檔案大小」seek 到 EOF ⇒ 兩個 handle 各自快取到同一個過期大小 ⇒
+        **後者整筆覆蓋前者**。**「二元」不等於「原子」** —— 那正是
+        INFRA-CONCURRENT-APPEND-MUTEX 票實測定案的根因（見
+        ``src/fsio/atomic_append.py`` 檔頭）。
+        """
+        payload = (json.dumps(memory.to_dict(), ensure_ascii=False) + "\n").encode("utf-8")
+        append_bytes(self.store_file, payload)
 
     def all(self) -> List[Memory]:
         """全量讀回(給 retrieval 用)。"""

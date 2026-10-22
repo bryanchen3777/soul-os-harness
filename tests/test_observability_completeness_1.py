@@ -814,6 +814,21 @@ class TestBoundedAndFrozenDiscipline:
             # is touched by this ticket.
             # Work order: logs/LIFECYCLE-REINFORCE-CHAIN-WORK-ORDER.md
             "src/inner_life/elevation_adapter.py",
+            # -- INFRA-V1-MIRROR-APPEND-RACE (2026-10-22) ---------------------
+            # This ticket changes 1 non-frozen file: the memory v1 mirror store's
+            # append path moves from text-mode `open(path, "a")` to the proven
+            # atomic primitive (`src/fsio/atomic_append.append_bytes`).
+            # Reason (measured 2026-10-22): Windows text-mode append is NOT
+            # atomic - MSVCRT `_O_APPEND` seeks to EOF using each handle's own
+            # CACHED file size => concurrent writers overwrite each other =>
+            # whole records vanish (D2 test: v1_count = 8/9 instead of 10 under
+            # load). This also falsifies the earlier scoping assumption that the
+            # ~25 text-mode append points were "single-writer paths".
+            # Binary write also removes the text-mode newline translation =>
+            # the file becomes clean LF-delimited JSONL (Owner ruling).
+            # `src/memory/sage/writer.py` stays FROZEN (Append-Only authority).
+            # Work order: logs/INFRA-V1-MIRROR-APPEND-RACE-WORK-ORDER.md
+            "src/memory/v1/store.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

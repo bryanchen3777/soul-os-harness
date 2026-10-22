@@ -3704,3 +3704,50 @@ ight_audit.py`／`%TEMP%\morning_obs\morning_audit.py`（tz-aware 時戳、retur
 - 未寫任何 `data/**`（全欄位唯讀，僅 copy 出沙盒；生產 sidecar 82664 bytes／mtime 2026-10-21 22:04 全程未變）。
 - 未催熟、未注入 synthetic 事件、未重啟服務、未殺行程。
 - **本票尚未上生產**（改動在 repo，需另行決定部署時機；夜槽前不上線）。
+
+#### 0.1.40 INFRA-V1-MIRROR-APPEND-RACE：memory v1 mirror 併寫整筆遺失（Owner 裁示「核准改採 Binary Append，全面收斂為 LF-only」→ 同輪修復）
+
+**Owner 裁決原文要點（2026-10-22 19:3x EDT）**
+- 【裁決：核准改採 Binary Append，全面收斂為 LF-only】。決策依據：Step 59.2（Commit `edff462`）世界日誌行界安全重構已拍板「Windows text-mode newline translation 是並發 append 丟失與撕裂的溫床；所有 JSONL／日誌追加一律改採二進位追加 ＋ 單一 LF 結尾」。
+- 前置要求：19:35 的 LIFECYCLE-REINFORCE-CHAIN 推送完成後**立即開立並推進**本票，徹底消滅「偶發讓回歸翻紅」的併發地雷。
+
+**本節登錄的內容**
+
+**① 缺陷（2026-10-22 19:1x 實測重現，經全庫回歸發現）**
+- `src/memory/v1/store.py::V1Store.add()` 原本用 **text-mode** `open(path, "a")` 追加。
+- 🔴 **併發整筆遺失**：Windows text mode 底下，MSVCRT `_O_APPEND` 在每次寫入前用「**該 handle 自己快取的檔案大小**」seek 到 EOF ⇒ 先後開啟的 handle 各自快取到**同一個過期大小** ⇒ 寫到同一偏移 ⇒ **後者整筆覆蓋前者**。樣態：可完整解析、**零損壞行**、寫入全部回傳成功。
+- 實測（CPU 負載、4 個自終止 burner）：含 REINFORCE 改動時 12 輪 **6 輪失敗**（`v1_count` ＝ 8/9 而非 10）；**把 REINFORCE 的 adapter 改動整個還原到 HEAD 後，同樣負載下仍然失敗**（2/10 輪）⇒ **既存缺陷，因果排除本輪 REINFORCE 票**。
+- 🔴 **推翻了上一輪的範圍前提**：P1 票 INFRA-CONCURRENT-APPEND-MUTEX 當時把「約 25 處 text-mode append 點」列為 out-of-scope，理由是「**單寫入者路徑**」——**本測試證明該前提對 `memory/v1/store.py` 不成立**（10 個併發寫入者）。這是**第三個**同類承載檔（前兩個：張力承載檔、世界日誌，已於 2026-10-22 修復）。
+
+**② 修法（含一項必要的技術修正）**
+- 改走 `src.fsio.atomic_append.append_bytes()`：**二元寫入（⇒ LF-only）＋ 行程內互斥 ＋ Windows 核心層 `FILE_APPEND_DATA` 原子追加**（跨行程安全）。
+- ⚠️ **為什麼不直接用 `open(path,"ab")`**：**「二元」不等於「原子」**。Windows 上 CPython 的 `open(path,"ab")` 走 MSVCRT `_O_APPEND`，本身就不是原子追加（INFRA-CONCURRENT-APPEND-MUTEX 票實測定案：現況寫法 30 輪中 10 輪遺失 33.3%）。用純 `open(path,"ab")` 會**符合裁示的字面**（binary ＋ LF-only）卻**不消滅那顆併發地雷**——而裁示的**目的**正是消滅它。⇒ 原語同時滿足裁示的兩個面向。
+
+**③ 守衛（`tests/memory/test_v1_store_atomic_append.py`，新增 4 項）**
+- **T1** LF-only 位元組斷言（**確定性**）：不得出現 `\r\n`；每行恰以一個 `\n` 結尾；檔案以 `\n` 結尾。舊的 text-mode 寫法在 Windows 必產 CRLF ⇒ 必定轉紅。
+- **T2** 結構守衛（AST，**確定性**）：`V1Store.add` 不得使用 text-mode `open(...,"a"/"at")`，必須走 `append_bytes`。
+- **T3** 併發完整性：8 執行緒 × 25 次 append ⇒ 完整行數 == 200（負載敏感型）。
+- **T4** 可解析性：每行皆合法 JSON 且欄位完整 ⇒ 不得 torn write。
+- 設計要點：T3 本身負載敏感（無負載時舊寫法也可能綠）⇒ 必須由 **T1／T2 這兩條不依賴負載的確定性守衛**補上牙齒。
+
+**④ 雙向變異實驗（2/2 轉紅，檔案 sha256 驗證 byte-identical 還原）**
+| 變異 | 無負載 | 負載下 | 既有 D2 守衛 | 結論 |
+|---|---|---|---|---|
+| **M1** 還原 text-mode `open(...,'a')` | **3 failed**（T1／T2／T3）**確定性轉紅** | 3 failed | 🔴 紅 | 舊寫法被三條守衛抓到 |
+| **M2** 換成 `open(...,'ab')`（**二元但非原子**） | 1 failed（**只有 T2**）；**T1 維持綠** | 1 failed | 🔴 **紅** | 🔴 **證明「LF-only 守衛不足以證明併發安全」**；且**二元非原子在負載下 D2 仍掉筆** ⇒ 地雷沒熄滅 ⇒ 原子原語是**必要**的，不是繞路 |
+
+**⑤ 效果**
+- 負載下（4 burner）新守衛 T3 與既有 D2 守衛：**0 失敗**（僅 M1／M2 變異下會紅）。
+- 檔案格式：**LF-only**（`\r\n` 歸零）。
+
+**⑥ 邊界與未做（明文）**
+- **只修 `src/memory/v1/store.py`**（有實測併發證據的那 1 處）。
+- **同子系統另外兩個 text-mode append 點未動**：`src/memory/v1/log_exporter.py:24`、`src/memory/v1/loader.py:355` —— 尚無併發寫入證據，且位於熱路徑（原子原語每次寫入含一次 `FlushFileBuffers`）⇒ **需先釐清寫入者模型**，不因「全面收斂」四字就一併改寫。已列為待裁示。
+- **repo 內其餘 21 處 text-mode append 點未動**（同 P1 票的 out-of-scope 範圍）。
+- `src/memory/sage/writer.py`（Append-Only 唯一權威）**維持凍結**，未動。
+- 未動 `data/**`、未重啟服務、未殺行程、未催熟。
+
+**⑦ 全庫回歸**
+全庫回歸（repo `.venv`）：**7114 passed / 24 skipped / 29 subtests / 0 failed（806.04 s / 13:26）**，exit 0。
+
+回歸期間**生產 `data/**` 零寫入**（elevation 各檔 mtime 全早於本次施工，唯一變動的 `elevation_projection_trace.jsonl` 為線上服務自身的投影寫入）；`/health` 200、python 行程恰 4 隻。
