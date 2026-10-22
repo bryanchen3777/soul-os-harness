@@ -40,11 +40,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import shutil
 import sys
 import tempfile
 import time
+import traceback
+from datetime import datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -143,6 +146,70 @@ def _same(a: Path, b: Path) -> bool:
         return os.path.normcase(str(a)) == os.path.normcase(str(b))
 
 
+# ── 評估時鐘：必須 tz-aware ────────────────────────────────────────────────
+# 🔴 2026-10-22 實測事故（假綠來源）：`--simulated-time` 若給 **naive** 時間戳
+# （`2026-10-23T02:00:00`，無時區），`soul_elevation.engine._days_between` 會拿
+# offset-aware 的 anchor 去減 offset-naive 的 now ⇒ `TypeError: can't subtract
+# offset-naive and offset-aware datetimes`。該例外被 `evaluate_lifecycle_all` 的
+# fail-closed `except` 吞掉並回傳 `[]` ⇒ CLI 看到「0 筆新轉變但圖非空」⇒ 判成
+# **冪等 no-op ⇒ VERDICT: PASS**。⇒ **假綠**（真值是 14 筆新轉變）。
+#
+# ⇒ 修法不是「多印一個警告」，是**移除能力**：naive 時間戳在**評估開始前**就被
+# 硬拒（exit 2），CLI 結構上不可能再進入「0 筆 ⇒ PASS」這條路徑。
+def _parse_simulated_time(raw: str):
+    """解析 `--simulated-time`。
+
+    回傳 ``(iso_string, None)`` 或 ``(None, error_message)``。
+
+    **必須是 tz-aware**：naive 時間戳會讓生命週期評估在引擎內拋 TypeError，
+    而 fail-closed 會把它偽裝成「0 筆轉變 = 冪等 no-op = PASS」。
+    """
+    if raw is None:
+        return None, None
+    text = str(raw).strip()
+    if not text:
+        return None, "評估時鐘不得為空字串"
+    normalized = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        return None, "評估時鐘不是合法的 ISO 8601：%r（%s）" % (raw, exc)
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        return None, (
+            "評估時鐘必須帶時區（tz-aware）：%r 沒有時區資訊。"
+            "引擎的衰減算術需要 offset-aware 錨點；naive 會讓評估拋 TypeError，"
+            "並被 fail-closed 偽裝成『0 筆轉變 = PASS』的假綠。"
+            "請改用 UTC 形式，例如 2026-10-23T02:00:00+00:00。" % raw
+        )
+    return parsed.isoformat(), None
+
+
+def _matches_key_node(node_id, key_node) -> bool:
+    """節點 id 是否命中關鍵反例。
+
+    🔴 2026-10-22 實測缺陷：`DEFAULT_KEY_NODE = "6a92c906b245"` 是 **12 字元前綴**，
+    而真實事件的 ``node_id`` 是 **32 字元完整 id**（`6a92c906b245458cb0c4c64ea214f2eb`）。
+    舊碼用 `e.get("node_id") == key_node` 精確比對 ⇒ 在真實資料上**恆為 False**，
+    守衛 ③「關鍵反例不得被轉」**完全空轉**（單元測試餵的是假 id `"KEY"`，故測試綠）。
+    ⇒ 比對改為**前綴語意**：任一方向為另一方的前綴即命中。
+    """
+    if not node_id or not key_node:
+        return False
+    a, b = str(node_id), str(key_node)
+    return a == b or a.startswith(b) or b.startswith(a)
+
+
+class _WarningCollector(logging.Handler):
+    """收集評估期間的 WARNING 記錄（用來區分「真的 no-op」與「評估拋例外」）。"""
+
+    def __init__(self):
+        super().__init__(level=logging.WARNING)
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+
 def assess(
     *,
     new_events: list,
@@ -152,6 +219,8 @@ def assess(
     weak_after: int,
     graph_nodes: int = 0,
     soul_types: tuple = SOUL_TYPES,
+    eval_error: str = "",
+    undelivered: int = 0,
 ) -> list:
     """**純函式**：依四項準則回傳失敗清單（空清單 = 全過）。
 
@@ -164,8 +233,20 @@ def assess(
         （本機 2026-10-19 實例：那 167 顆 pattern 已在 sidecar 裡是 weakening，
         重跑不會再降一級 ⇒ 今晚 22:00 的預期結果就是 0 筆。）
     ⇒ `graph_nodes` 必須傳入，才能分辨這兩者。
+
+    ⚠️ **第三種成因（2026-10-22 實測新增）**：**評估本身拋了例外**。`evaluate_lifecycle_all`
+    是 fail-closed 的（`except Exception` → warning → 回 `[]`），於是「評估失敗」與
+    「冪等 no-op」在回傳值上**長得一模一樣**（都是 0 筆）。⇒ 呼叫端必須把例外
+    **顯式帶進來**（`eval_error`），否則就會出現「CLI 報 PASS，實際上根本没評估」
+    的假綠。
     """
     fails = []
+    if eval_error:
+        fails.append("⓪ 生命週期評估拋例外（fail-closed 回 []，不可判為 no-op PASS）：%s"
+                     % eval_error)
+    if undelivered:
+        fails.append("⓪ 轉變未落地（評估回傳 %d 筆，但 sidecar 只增加 %d 筆）"
+                     % (undelivered, 0))
     by_type = {}
     to_state = {}
     for e in new_events:
@@ -183,7 +264,7 @@ def assess(
     for bad in ("dormant", "superseded"):
         if to_state.get(bad):
             fails.append("② 轉變目標含 %s" % bad)
-    key_hits = [e for e in new_events if e.get("node_id") == key_node]
+    key_hits = [e for e in new_events if _matches_key_node(e.get("node_id"), key_node)]
     if key_hits:
         fails.append("③ 關鍵反例 %s 被轉變 %d 次" % (key_node, len(key_hits)))
     if prompt_diffs:
@@ -216,6 +297,15 @@ def main(argv=None) -> int:
         print("[refuse] 來源目錄不存在：%s" % source, file=sys.stderr)
         return 2
 
+    # 🔴 評估時鐘必須 tz-aware —— **在評估開始前**就硬拒，不讓它進入
+    # 「0 筆轉變 ⇒ 冪等 no-op ⇒ PASS」這條假綠路徑。
+    simulated_time, clock_error = _parse_simulated_time(args.simulated_time)
+    if clock_error:
+        print("[refuse] 評估時鐘無效：%s" % clock_error, file=sys.stderr)
+        print("[refuse] 判定中止（不評估、不產報告）——寧可沒有結果，也不要假綠。",
+              file=sys.stderr)
+        return 2
+
     sandbox = Path(tempfile.mkdtemp(prefix="lifecycle_cli_sandbox_"))
     try:
         # 🔴 結構性保證：寫入目標只有 sandbox，且必須位於 temp 之下。
@@ -233,13 +323,40 @@ def main(argv=None) -> int:
         before_events = read_jsonl(sidecar)
         before_prompt = prompt_snapshot(sandbox, agents)
 
-        t0 = time.perf_counter()
-        events = evaluate_lifecycle_all(store_dir=sandbox, now_ts=args.simulated_time)
-        elapsed = time.perf_counter() - t0
+        # 🔴 捕捉評估期間的 fail-closed 警告：`evaluate_lifecycle_all` 把例外吞掉
+        # 回傳 `[]`，與「真的冪等 no-op」在回傳值上無法區分 ⇒ 必須從日誌把
+        # 真相撈出來，否則 CLI 會對「根本没評估」報 PASS。
+        adapter_logger = logging.getLogger("soul_os.inner_life.elevation_adapter")
+        collector = _WarningCollector()
+        adapter_logger.addHandler(collector)
+        try:
+            t0 = time.perf_counter()
+            events = evaluate_lifecycle_all(store_dir=sandbox, now_ts=simulated_time)
+            elapsed = time.perf_counter() - t0
+        finally:
+            adapter_logger.removeHandler(collector)
+
+        eval_error = ""
+        for rec in collector.records:
+            try:
+                msg = rec.getMessage()
+            except Exception:
+                msg = str(rec.msg)
+            if "evaluate_lifecycle_all failed" in msg:
+                tb = ""
+                if rec.exc_info:
+                    tb = "".join(traceback.format_exception(*rec.exc_info))
+                eval_error = "%s | %s" % (msg, tb.strip())
+                break
 
         after_events = read_jsonl(sidecar)
         after_prompt = prompt_snapshot(sandbox, agents)
         new_events = after_events[len(before_events):]
+
+        # 🔴 結構性檢查：評估**回傳**了轉變、但 sidecar 沒增加 ⇒ 轉變沒落地
+        #    （`_append_jsonl` 寫入失敗時 adapter 只發 warning，不會回 0）。
+        #    ⇒ 沒有這條，「0 筆新轉變」又會被誤判成冪等 no-op。
+        undelivered = max(0, len(events) - len(new_events))
 
         by_type = {}
         to_state = {}
@@ -284,6 +401,8 @@ def main(argv=None) -> int:
             weak_before=weak_total_before,
             weak_after=weak_total_after,
             graph_nodes=graph_nodes,
+            eval_error=eval_error,
+            undelivered=undelivered,
         )
 
         result = {
@@ -291,7 +410,7 @@ def main(argv=None) -> int:
             "source_dir": str(source),
             "source_is_repo_production": _same(source, repo_store_dir()),
             "sandbox_dir": str(sandbox),
-            "simulated_time": args.simulated_time,
+            "simulated_time": simulated_time,
             "elapsed_seconds": round(elapsed, 4),
             "agents": agents,
             "sidecar_before": len(before_events),
@@ -303,10 +422,14 @@ def main(argv=None) -> int:
             "soul_type_transitions": {t: by_type.get(t, 0) for t in SOUL_TYPES},
             "graph_nodes": graph_nodes,
             "graph_state_distribution": state_dist,
-            "no_op_note": (not new_events and graph_nodes > 0),
+            "no_op_note": (not new_events and graph_nodes > 0 and not eval_error
+                           and not undelivered),
+            "eval_error": eval_error,
+            "undelivered_transitions": undelivered,
             "key_node": args.key_node,
             "key_node_transitions": len([e for e in new_events
-                                         if e.get("node_id") == args.key_node]),
+                                         if _matches_key_node(e.get("node_id"),
+                                                             args.key_node)]),
             "weak_prefix_before": weak_total_before,
             "weak_prefix_after": weak_total_after,
             "prompt_diffs": prompt_diffs,
@@ -324,7 +447,10 @@ def main(argv=None) -> int:
                 "source_dir (唯讀)    = %s" % source,
                 "  來源=repo 生產目錄  = %s" % result["source_is_repo_production"],
                 "sandbox_dir (唯一寫入)= %s" % sandbox,
-                "simulated_time       = %s" % (args.simulated_time or "(real now)"),
+                "simulated_time       = %s" % (simulated_time or "(real now)"),
+                "eval_error           = %s" % (eval_error or "無（評估正常完成）"),
+                "undelivered          = %d 筆（評估回傳但 sidecar 未增加 ⇒ 轉變沒落地）"
+                % undelivered,
                 "elapsed_seconds      = %s" % result["elapsed_seconds"],
                 "sidecar  %d -> %d   (新增 %d 筆轉變)"
                 % (result["sidecar_before"], result["sidecar_after"], result["transitions"]),
@@ -356,7 +482,8 @@ def main(argv=None) -> int:
             "- 來源（唯讀）：`%s`" % source,
             "- 來源是否為 repo 生產目錄：%s" % result["source_is_repo_production"],
             "- 沙盒：`%s`" % sandbox,
-            "- 評估時鐘：%s" % (args.simulated_time or "(real now)"),
+            "- 評估時鐘：%s" % (simulated_time or "(real now)"),
+            "- 評估例外：%s" % (eval_error or "無（評估正常完成）"),
             "- 耗時：%.4f 秒" % elapsed,
             "- sidecar：%d → %d（新增 %d 筆）"
             % (result["sidecar_before"], result["sidecar_after"], result["transitions"]),

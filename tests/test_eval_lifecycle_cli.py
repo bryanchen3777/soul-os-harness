@@ -34,6 +34,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import logging
 import pathlib
 import tempfile
 import unittest
@@ -309,6 +310,186 @@ class TestNoServerNoNetwork(unittest.TestCase):
                         writes.append((node.lineno, name, mode))
         self.assertLessEqual(len(writes), 1,
                              "CLI 的寫入點應只有報告檔一處：%s" % writes)
+
+
+class TestSimulatedTimeMustBeTzAware(unittest.TestCase):
+    """🔴 守衛 4（2026-10-22）：naive 評估時鐘必須被**硬拒**，不得進入假綠路徑。
+
+    實測事故（2026-10-22 11:30 EDT 值守複核）：
+    `--simulated-time 2026-10-23T02:00:00`（naive）⇒ 引擎 `_days_between` 拿
+    offset-aware anchor 減 offset-naive now ⇒ `TypeError` ⇒ 被
+    `evaluate_lifecycle_all` 的 fail-closed `except` 吞掉回 `[]` ⇒ CLI 判
+    「0 筆新轉變但圖非空 = 冪等 no-op」⇒ **VERDICT: PASS（假綠）**。
+    對照組（同一張生產圖譜）：naive ⇒ 225→225／PASS；`Z` ⇒ 225→239／FAIL。
+    """
+
+    def test_naive_clock_is_refused_with_nonzero_exit(self):
+        with tempfile.TemporaryDirectory(prefix="cli_guard_") as td:
+            src = _synthetic_graph(pathlib.Path(td))
+            rc, out, err = _run_cli("--source-dir", str(src),
+                                   "--simulated-time", "2026-10-23T02:00:00")
+            self.assertEqual(rc, 2, "naive 時鐘必須以 2 退出：%s / %s" % (out[-400:], err[-400:]))
+            self.assertIn("tz-aware", err)
+            self.assertIn("時區", err)
+
+    def test_refused_run_produces_no_verdict_at_all(self):
+        """**關鍵**：被拒絕的執行不得輸出任何 VERDICT —— 寧可沒有結果，也不要假綠。"""
+        with tempfile.TemporaryDirectory(prefix="cli_guard_") as td:
+            src = _synthetic_graph(pathlib.Path(td))
+            rc, out, err = _run_cli("--source-dir", str(src),
+                                   "--simulated-time", "2026-10-23T02:00:00")
+            self.assertNotIn("VERDICT", out, "被拒絕的執行不得產生 VERDICT：%s" % out[-400:])
+            self.assertEqual(rc, 2)
+
+    def test_tz_aware_clock_is_accepted(self):
+        """帶時區的時鐘（含 `Z` 形式）必須照常評估。"""
+        for raw in ("2026-10-23T02:00:00+00:00", "2026-10-23T02:00:00Z"):
+            with self.subTest(raw=raw):
+                with tempfile.TemporaryDirectory(prefix="cli_guard_") as td:
+                    src = _synthetic_graph(pathlib.Path(td))
+                    rc, out, err = _run_cli("--source-dir", str(src),
+                                           "--simulated-time", raw, "--json")
+                    self.assertEqual(rc, 0, out[-400:] + err[-400:])
+                    data = json.loads(out[out.index("{"):out.rindex("}") + 1])
+                    self.assertEqual(data["verdict"], "PASS", str(data.get("failures")))
+                    self.assertEqual(data["transitions"], 1)
+
+    def test_garbage_clock_is_refused(self):
+        with tempfile.TemporaryDirectory(prefix="cli_guard_") as td:
+            src = _synthetic_graph(pathlib.Path(td))
+            rc, out, err = _run_cli("--source-dir", str(src),
+                                   "--simulated-time", "not-a-timestamp")
+            self.assertEqual(rc, 2, out[-300:] + err[-300:])
+            self.assertIn("ISO 8601", err)
+
+
+class TestKeyNodePrefixMatching(unittest.TestCase):
+    """🔴 守衛 5（2026-10-22）：關鍵反例比對必須是**前綴語意**。
+
+    實測缺陷：`DEFAULT_KEY_NODE = "6a92c906b245"` 是 **12 字元前綴**，真實事件的
+    `node_id` 是 **32 字元完整 id**（`6a92c906b245458cb0c4c64ea214f2eb`）。舊碼用
+    `==` 精確比對 ⇒ 守衛 ③ 在真實資料上**恆為 False（完全空轉）**。
+    舊單元測試餵的是假 id `"KEY"`（精確比對成立）⇒ 測試綠但守衛空轉。
+
+    端到端實證（拿生產圖譜跑 `2026-10-25T02:00:00Z`）：關鍵反例**真的會被轉**
+    1 次 —— 舊守衛報 0（漏報真紅燈），修完後報 1（正確觸發 ③）。
+    """
+
+    REAL_FULL_ID = "6a92c906b245458cb0c4c64ea214f2eb"
+    REAL_PREFIX = "6a92c906b245"
+
+    def test_full_32char_id_is_matched_by_12char_prefix(self):
+        fails = CLI.assess(
+            new_events=[{"node_id": self.REAL_FULL_ID, "node_type": "pattern",
+                         "lifecycle_state": "weakening"}],
+            prompt_diffs=[], key_node=self.REAL_PREFIX,
+            weak_before=0, weak_after=0, graph_nodes=708)
+        self.assertTrue(any("關鍵反例" in f for f in fails),
+                        "完整 id 必須被前綴命中（舊碼會漏）: %s" % fails)
+
+    def test_exact_id_still_matches(self):
+        fails = CLI.assess(
+            new_events=[{"node_id": "KEY", "node_type": "pattern",
+                         "lifecycle_state": "weakening"}],
+            prompt_diffs=[], key_node="KEY",
+            weak_before=0, weak_after=0, graph_nodes=399)
+        self.assertTrue(any("關鍵反例" in f for f in fails), fails)
+
+    def test_unrelated_node_does_not_match(self):
+        fails = CLI.assess(
+            new_events=[{"node_id": "ffffffffffffffffffffffffffffffff",
+                         "node_type": "pattern", "lifecycle_state": "weakening"}],
+            prompt_diffs=[], key_node=self.REAL_PREFIX,
+            weak_before=0, weak_after=0, graph_nodes=708)
+        self.assertFalse(any("關鍵反例" in f for f in fails),
+                         "無關節點不得誤判為關鍵反例: %s" % fails)
+
+    def test_cli_result_counts_key_node_transitions_by_prefix(self):
+        """端到端：CLI 的 `key_node_transitions` 必須用前綴比對計算。"""
+        with tempfile.TemporaryDirectory(prefix="cli_guard_") as td:
+            src = _synthetic_graph(pathlib.Path(td))
+            node_id = json.loads(
+                (src / "elevation_nodes.jsonl").read_text(encoding="utf-8").strip()
+            )["node_id"]
+            prefix = node_id[:12]
+            rc, out, err = _run_cli("--source-dir", str(src), "--key-node", prefix,
+                                   "--json")
+            data = json.loads(out[out.index("{"):out.rindex("}") + 1])
+            self.assertEqual(data["key_node_transitions"], 1,
+                             "前綴比對必須數到那筆轉變：%s" % data)
+            self.assertTrue(any("關鍵反例" in f for f in data["failures"]), data)
+
+
+class TestEvaluationExceptionIsVisible(unittest.TestCase):
+    """🔴 守衛 6（2026-10-22）：**「評估失敗」不得被偽裝成「冪等 no-op」**。
+
+    `evaluate_lifecycle_all` 是 fail-closed 的（`except Exception` → warning → 回 `[]`），
+    與「真的 0 筆轉變」在回傳值上**長得一模一樣**。⇒ CLI 必須從日誌把例外撈出來，
+    否則會出現「CLI 報 PASS，實際上根本没評估」。
+    """
+
+    def _run_with_failing_evaluation(self, td):
+        src = _synthetic_graph(pathlib.Path(td))
+        original = CLI.evaluate_lifecycle_all
+
+        def _fake_fail(store_dir=None, now_ts=None):
+            logger = logging.getLogger("soul_os.inner_life.elevation_adapter")
+            try:
+                raise TypeError("can't subtract offset-naive and offset-aware datetimes")
+            except Exception as exc:
+                logger.warning(
+                    "evaluate_lifecycle_all failed (不影響主路徑): %s: %s",
+                    type(exc).__name__, exc, exc_info=True)
+            return []
+
+        CLI.evaluate_lifecycle_all = _fake_fail
+        try:
+            return _run_cli("--source-dir", str(src), "--json")
+        finally:
+            CLI.evaluate_lifecycle_all = original
+
+    def test_eval_exception_makes_verdict_fail(self):
+        with tempfile.TemporaryDirectory(prefix="cli_guard_") as td:
+            rc, out, err = self._run_with_failing_evaluation(td)
+            self.assertNotEqual(rc, 0, "評估拋例外時不得回 0")
+            data = json.loads(out[out.index("{"):out.rindex("}") + 1])
+            self.assertEqual(data["verdict"], "FAIL", str(data))
+            self.assertTrue(data["eval_error"], "eval_error 必須非空")
+            self.assertTrue(any("拋例外" in f for f in data["failures"]), data["failures"])
+
+    def test_eval_exception_disables_no_op_note(self):
+        """例外發生時不得標成「冪等 no-op」——那是假綠的說辭。"""
+        with tempfile.TemporaryDirectory(prefix="cli_guard_") as td:
+            rc, out, err = self._run_with_failing_evaluation(td)
+            data = json.loads(out[out.index("{"):out.rindex("}") + 1])
+            self.assertFalse(data["no_op_note"], data)
+
+    def test_undelivered_transitions_are_flagged(self):
+        """🔴 評估回傳了轉變、但 sidecar 沒增加 ⇒ 轉變沒落地 ⇒ 必須 FAIL。
+
+        這是「0 筆新轉變」的**第三種成因**：`evaluate_lifecycle_all` 回傳了 events，
+        但 `_append_jsonl` 寫入失敗（adapter 只發 warning，不回 0）⇒ sidecar 增量 0
+        ⇒ 舊邏輯會判成「冪等 no-op = PASS」。
+        """
+        with tempfile.TemporaryDirectory(prefix="cli_guard_") as td:
+            src = _synthetic_graph(pathlib.Path(td))
+            original = CLI.evaluate_lifecycle_all
+
+            def _fake_return_events_but_write_nothing(store_dir=None, now_ts=None):
+                return [{"node_id": "x" * 32, "node_type": "pattern",
+                         "lifecycle_state": "weakening"}]
+
+            CLI.evaluate_lifecycle_all = _fake_return_events_but_write_nothing
+            try:
+                rc, out, err = _run_cli("--source-dir", str(src), "--json")
+            finally:
+                CLI.evaluate_lifecycle_all = original
+            data = json.loads(out[out.index("{"):out.rindex("}") + 1])
+            self.assertEqual(data["undelivered_transitions"], 1, data)
+            self.assertNotEqual(rc, 0, "轉變沒落地時不得回 0")
+            self.assertEqual(data["verdict"], "FAIL", str(data))
+            self.assertTrue(any("未落地" in f for f in data["failures"]), data["failures"])
+            self.assertFalse(data["no_op_note"], data)
 
 
 class TestNamingHygiene(unittest.TestCase):
