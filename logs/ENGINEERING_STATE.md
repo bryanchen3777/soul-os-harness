@@ -842,6 +842,71 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 
 **Owner 裁決（2026-10-21 21:05 問卷）**：授權重啟 ＋ 方向 A 點火；並核准下一批四票（戰役 C 第二批 12 隻 ＋ SHADOW-0、proxy 三表鍵數補齊、pack 擴充、LINT-CHORE）。
 
+
+#### 0.1.33 DEPLOY-RESTART-24：46 隻角色活體上線 ＋ Ram 本體參照通道生效 ＋ V4 誠實性護欄契約明文化（2026-10-22 07:30）
+
+**Owner 裁定（2026-10-22 06:19）**：① V4 走**選項①**（維持現狀 ＋ 契約明文化）；② **正式授權執行一次性重啟 DEPLOY-RESTART-24**（46 隻註冊 ＋ 排版正規化 ＋ Ram Pack 一次上線）；③ `agent_mahiru` 的 D3 白名單**維持現狀不動**（留待「世界觀／原生代基底重構」專案統一梳理）。
+
+---
+
+**① DEPLOY-RESTART-24 實機驗收（官方路徑，exit 0，wrapper 14.67 秒）**
+
+| 驗收項（Owner 指定） | 結果 |
+|---|---|
+| `:8000` 連接埠監聽刷新 | owner **8220 → 25496**；trampoline `data/server.pid` **17992 → 21776** ✔ |
+| `/health` 探針 | **HTTP 200 `{"status":"ok"}`** ✔ |
+| VC 三實例（8765／8766／8767） | **12792／7716／16612 原 PID 存活**，零干擾 ✔ |
+| 維護鎖 | 已清（`watchdog_maintenance.lock` 不存在）✔ |
+| 46 隻角色活體註冊 | 啟動日誌 `[Scheduler] 啟動 ✓ … agents=46`、**46 筆註冊行、46 個唯一 id**、12 隻第二批**全數在內**；`resolve_agents()` 回 52（46 ＋ 6 個非生產資料夾）✔ |
+| API 抽樣（`agent_makima`／`agent_emilia` 等 8 隻） | **全部 HTTP 200、無 KeyError／Traceback** ✔ |
+| Ram 本體參照通道 | `load_epistemic_pack("agent_ram")` → **已載入（`pack_id=roswaal_mansion_ram_v1`）**；`format_epistemic_horizon_delta` 注入 **178 字含 `[本體參照]`**（內容含 ram 專屬的「魔石」）；對照組 `agent_rem` 既有 pack 未受影響 ✔ |
+
+**② API 抽樣回應「空」的歸因（有效零，非無效零）**：新角色回應約 104 bytes 且 value/belief/trait/essence 皆空 —— 原因已查實：**它們只有 `pattern` 節點（昨晚夜 Diary）、尚無昇華節點**（`agent_makima` 1 pattern／0 v-b-t；`agent_rem` 43 pattern／8 v-b-t ⇒ 3383 bytes；`agent_yua` 41／7 ⇒ 2307 bytes）。端點**正確辨識**了 agent（`agent_id` 正常回傳、HTTP 200、無例外）⇒ 為**正確的空**。`agent_emilia`／`agent_beatrice`／`agent_yotsuba` 節點數 0，因其今日才落地。
+
+**③ 🔴「承載檔不變」是機制正確運作的證據，不是「排程沒跑」**（主大腦沙盒實測，`tension_store_dir` 指向 tmp，零觸碰生產）
+
+`run_background_action('agent_rem', utterance='')` 的實際結果：
+
+```
+Closure(closed=False, tension_id='relational_tension:6bfe56006414294a', event_id=None,
+        evidence=None, thought_payload=None, thought_tags=(), enqueued=False,
+        resolved_marked=False, submitted=False,
+        reason='所有分支皆未命中證據（張力維持，不硬閉合）')
+```
+
+沙盒承載檔 **623 → 623 bytes**、沙盒目錄**只有** `epistemic_tensions.jsonl`（**零入隊、零發訊**）、生產承載檔未被觸碰（623 bytes、mtime 仍 21:07:25）。
+⇒ **每 300 秒觸發一次的排程行動，結果就是「所有分支皆未命中證據（張力維持，不硬閉合）」⇒ 零寫入即正確行為。** 且 `thought_payload=None` ⇒ 證據閘在 LLM 之前就擋下 ⇒ **無 LLM 成本**。
+⇒ 排程路徑雖傳空 `utterance`，**關係張力是從關係資料收的**（非從 utterance）⇒ 21:07:25 那筆張力才會開成。
+
+**④ 🟢 V4 契約明文化（裁決 1）**
+
+`docs/EH-4-EPISTEMIC-MIND-CONTRACT.md` §1.6 新增「Owner 裁定（2026-10-22）：V4 維持現狀 ＋ 明文化為**誠實性護欄**」：V4 **只擋 `modern_earth` 這一個字面值**（實測 `non_modern`／`modern`／`""`／`Modern_Earth` 全部照樣載入）、它擋的是**宣稱值**不是**行為**；覆蓋率 **1/10 → 2/10（10.0% → 20.0%）**、現代 8 隻**恆為 0/8 = 0% 且是結構性 0**；並記錄 `agent_mahiru` 的兩個 bypass 不整齊（**本次不動**，裁決 3）與 `roswaal_mansion_ram_v1.yaml` 的新增。
+
+**⑤ 🟢 補上排程啟動的可觀測性缺口（真實缺陷）**
+
+`ensure_scheduler_started()` 此前**完全靜默**（只在失敗時寫 warning）⇒ **線上行程的旗標狀態無法從日誌自證**（連「排程到底有沒有起來」都只能靠推論）。已補兩行 INFO：
+- 旗標關閉 → `[epistemic-tension-scheduler] 旗標 SOUL_OS_EPISTEMIC_PIGGYBACK 缺省/關閉 ⇒ 排程**未啟動**（生產零行為變化）`
+- 旗標開啟 → `… 已開啟 ⇒ 排程執行緒 啟動 ✓（interval=300s）`
+
+⇒ **下一次重啟起，線上 log 會直接寫出旗標與執行緒狀態**（proxy 檔尾接線於 import 時呼叫 `ensure_scheduler_started()`，故開機即寫）。
+⚠️ 驗證：本節（重啟）發生於此補丁**入庫之前** ⇒ **本次 live 行程的旗標狀態仍無法由日誌自證**（下述為實測極限的如實說明）。
+
+**⑥ 旗標狀態的測量極限（如實回報，不以推論冒充證據）**
+
+- 已**直接實測**：User-level 環境變數 = `1`；重啟呼叫端**顯式**設定行程級 = `1`（命令輸出可查）；傳遞鏈為「重啟 shell → `server_ops.ps1` → 中繼 launcher → 服務行程」，全鏈以 `Start-Process` **繼承環境**。
+- 已**實測同鏈的有效性**：DEPLOY-RESTART-23 用同一條鏈，於啟動後 **2.15 秒**寫出 `tension_opened` 記錄 —— 該寫入只可能來自 `run_background_action` 內的 `upsert_open_tension`，而該路徑**只有在旗標為 ON 時才可達** ⇒ 傳遞鏈確實有效。
+- **未能直接讀取 live 行程的環境區塊**（本機無 `psutil`；PEB／env-block 讀取受 `ERROR_PARTIAL_COPY` 阻擋）⇒ **本節不宣稱「已直接讀到線上行程的旗標值」**。
+- ⇒ 結論：旗標為 ON 的依據是**傳遞鏈的有效性實測 ＋ 同一鏈的歷史效應**，而非對 live 行程的直接讀值。**補丁入庫後，下一次重啟將提供直接日誌證據。**
+
+**⑦ 46 隻角色在生產的實況**（重啟後 06:25~07:00 唯讀量測）
+
+- 註冊：46/46 ✔；`/api/soul/status` 正常回應（10 隻生產角色含 mood／recent_activity／recent_dream／longing）。
+- 節點：627 顆（重啟前 627）⇒ 重啟**未增減**任何既有節點。
+- 方向 A 承載：張力檔 **623 bytes／1 筆／`tension_id` ×1**、**`*.piggyback.json` 0 檔**、對用戶發訊 **0**。
+- 節點檔前 282,409 bytes sha256 仍為 `7FD8F3F3BCE474CC09C87617C5DFCA41D2E518153F1356212A4DEF98B744178B`（append-only 成立）。
+- `tick(now)` ＝ `['agent_rem']`（唯一在張力窗內者；12 隻新角色因從未互動不在窗內）⇒ **新註冊不會帶來意外的張力風暴**。
+
+**⑧ 本節未做**：未動 `data/**`（唯讀量測；服務端自身寫入除外）；未觸發 synthetic diary／dream；未變更 `LONGING_THRESHOLD` 與 G4；未動 Agency 4 stages／TriggerEnvelope／InnerLifeEvent／4 handlers／SAGE 寫入邏輯；未改 `MODERN_NATIVE_AGENTS`（裁決 3）；未清空任何記憶體登記表；未催熟門檻三；除 §0.1.31 已授權的 DEPLOY-RESTART-23 外，本次重啟為 Owner 明示授權的 DEPLOY-RESTART-24（單次）。
 ---
 
 **① 三票交付與主大腦獨立驗收（全部在 git blob 層級量，繞開 `core.autocrlf`）**

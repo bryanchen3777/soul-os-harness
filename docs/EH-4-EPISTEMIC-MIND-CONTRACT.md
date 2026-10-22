@@ -318,6 +318,18 @@ forbidden_output_terms:
 
 > **注意（與既有白名單的關係）**：`MODERN_NATIVE_AGENTS`（`src/memory/sage/horizon.py:61-69`）**不動**、不取代。兩者是**兩個獨立的 bypass**：白名單在讀側（D3），`civilization_base: modern_earth` 在資料側（L1）。實作階段**禁止**把兩者合併或讓其中一方依賴另一方（避免單點失效導致 7 位現代原生角色被誤掛阻力）。
 
+> #### 🟢 Owner 裁定（2026-10-22）：V4 維持現狀 ＋ 明文化為「誠實性護欄」
+>
+> **裁定**：採**選項①**——**維持 V4 規則不動**，並在本契約把它明文化為**誠實性邊界防禦（Honesty Guardrail）**，**不是**系統缺陷。
+>
+> **工程定性**：`epistemic_appraisal` 的 V4（`civ == "modern_earth"` → 直接回 `None`）**只擋 `modern_earth` 這一個字面值**（實測：`non_modern`／`modern`／`""`／`Modern_Earth` 全部照樣載入）。它擋的是**宣稱值**不是**行為** ⇒ 強行給現代角色塞 pack 只會製造**虛浮的機械語句**（把「現代背景角色」硬套上「異界靈魂本體參照」）。
+>
+> **實測覆蓋率（2026-10-22 實測，見 `logs/PACK-EXPAND-FINDINGS.md`）**：核心 10 隻生產 agent 中，有 pack 且會被生產路徑消費者 **1/10 → 2/10（10.0% → 20.0%）**（`agent_rem` ＋ `agent_ram`）。**現代基底 8 隻的覆蓋率恆為 0/8 = 0%，且是結構性 0**（V4 全面 bypass）——這正是設定該有的分佈。
+>
+> **已知不整齊（本次不動，另案處理）**：`agent_mahiru` 依 persona 世界觀載體（公園／傘／粥／神社／聖誕／模特兒）判定為 `modern_earth`，但**不在** `MODERN_NATIVE_AGENTS`（7 隻）名單內 ⇒ 兩個 bypass 對她的判定不一致。**今日行為中性**（V4 已擋），屬 Frozen Contract 的常數集合，**待「世界觀／原生代基底重構」專案統一梳理**，不在此時引入非必要的常數抖動。
+>
+> **附帶產出**：§1.5 的 Pilot 實例包（`agent_rem`）之外，2026-10-22 新增 `configs/packs/roswaal_mansion_ram_v1.yaml`（`agent_ram`）——**同屬 roswaal_mansion 世界觀**，故其 `native_basis` 含「魔力耗竭／鬼族的體力／公館的爐火／他人的魔力」等 Pilot 專屬項。
+
 ---
 
 ## 2. L2 認知評估與結構差量映射（Epistemic Appraisal Pipeline）

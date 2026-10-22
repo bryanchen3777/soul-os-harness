@@ -343,8 +343,32 @@ def ensure_scheduler_started() -> bool:
     缺省關閉 ⇒ 回傳 ``False`` 且**不啟動任何執行緒**（生產零行為變化）。
     """
     if not feature_enabled():
+        # 🔴 可觀測性：先前此路徑**完全靜默**（只在失敗時寫 warning）⇒ 線上行程
+        # 的旗標狀態無法從日誌確認（連「排程到底有沒有起來」都只能靠推論）。
+        # 這裡補一行 INFO：旗標關閉本身就是一個需要被看見的事實。
+        logger.info(
+            "[epistemic-tension-scheduler] 旗標 %s 缺省/關閉 ⇒ 排程**未啟動**"
+            "（生產零行為變化）",
+            _piggyback_queue.FEATURE_ENV,
+        )
         return False
-    return start_scheduler_thread()
+    started = start_scheduler_thread()
+    # 🔴 同理：啟動成功也必須留痕，否則「排程是否活著」無從自證。
+    # ⚠️ `min_interval_seconds()` 內含 `from src.llm.proxy import ...`，而本函式會在
+    # **proxy 模組層級**被呼叫（檔尾接線）⇒ 那一刻 proxy 尚在 import 中 ⇒ 取常數可能
+    # 拋例外。`start_scheduler_thread` 內部本就有 try/except 保護；**這裡也必須自己
+    # 保護**，否則一行日誌就能讓開機接線整條失敗（旗標明明是開的，排程卻沒起來）。
+    try:
+        _interval = "%ss" % min_interval_seconds()
+    except Exception:  # noqa: BLE001 — 日誌絕不可影響啟動
+        _interval = "?"
+    logger.info(
+        "[epistemic-tension-scheduler] 旗標 %s 已開啟 ⇒ 排程執行緒 %s（interval=%s）",
+        _piggyback_queue.FEATURE_ENV,
+        "啟動 ✓" if started else "啟動失敗 ✗",
+        _interval,
+    )
+    return started
 
 
 __all__ = [
