@@ -57,6 +57,8 @@ from datetime import datetime, timezone
 from pathlib import Path as _FsPath
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from src.fsio.atomic_append import append_bytes
+
 logger = logging.getLogger("soul_os.inner_life.epistemic_action")
 
 # ── 路徑種類（Branching 的分支）────────────────────────────────────────────
@@ -588,7 +590,14 @@ def _append_tension_events(
 ) -> bool:
     """把事件**追加**進承載檔（append-only）。
 
-    - 以 ``ab``（``O_APPEND``）開檔 ⇒ 多行程併寫各自寫到檔尾，**不互相覆蓋**。
+    - 🔴 2026-10-22（INFRA-CONCURRENT-APPEND-MUTEX）：**舊版的 ``open(path,"ab")``
+      在 Windows 上並非原子追加** —— 它走 MSVCRT 的 ``_O_APPEND``，CRT 會用「該 handle
+      自己快取的檔案大小」seek 到 EOF；兩個先後開啟的 handle 各自快取到同一個（過期）
+      大小 ⇒ 寫到同一偏移 ⇒ **後者整筆覆蓋前者**（可完整解析、零損壞行 ⇒ 看起來像
+      「整筆無痕跡消失」）。實測：30 輪併寫中 10 輪遺失（33.3%）。
+    - 現改走 ``src.fsio.atomic_append.append_bytes``：**行程內互斥鎖 ＋ 平台原生原子追加**
+      （Windows 用 ``CreateFileW(access=FILE_APPEND_DATA)``，核心層保證落在真正的檔尾，
+      跨行程也安全）；**不持有長命 handle**（無 handle 生命週期管理）。
     - **單次** ``write()`` 送出整批位元組 ⇒ 同一行不會被兩個寫入者交錯。
     - ``flush()`` ＋ ``os.fsync()`` ⇒ 掉電不遺失（末筆可見）。
     """
@@ -601,10 +610,7 @@ def _append_tension_events(
     )
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "ab") as handle:
-            handle.write(blob)
-            handle.flush()
-            os.fsync(handle.fileno())
+        append_bytes(path, blob)
         return True
     except Exception as exc:  # noqa: BLE001 — fail-silent
         logger.debug("[epistemic-action] 張力承載寫入失敗：%s: %s", type(exc).__name__, exc)

@@ -1581,16 +1581,28 @@ class TestSectionH_LfOnlyShardBytes:
     def test_h2_writer_opens_the_shard_in_binary_mode(self, tmp_path, monkeypatch):
         """H.2 (a) (mutation teeth M1): writer **不依賴** text-mode newline translation。
 
-        攔截 ``builtins.open``，記錄 writer 對 shard 實際使用的 ``mode`` /
-        ``newline``，斷言是 **binary mode**（``"b" in mode``）。這條證據與目前
-        OS 的預設 newline 行為無關 ⇒ 就算本機「剛好」輸出 LF 也不算通過。
+        攔截 writer 對 shard 的**寫入通道**，斷言是 **binary/raw**（不是 text mode）。
+        這條證據與目前 OS 的預設 newline 行為無關 ⇒ 就算本機「剛好」輸出 LF 也不算通過。
+
+        🔴 2026-10-22（INFRA-CONCURRENT-APPEND-MUTEX）：append 路徑已改走共用原語
+        ``src.fsio.atomic_append``（Windows：``CreateFileW(access=FILE_APPEND_DATA)``
+        ＋ raw bytes；POSIX：``open(path,"ab")``）⇒ **不再必然**經過 ``builtins.open``。
+        ⇒ **不變式不變**（shard 必須以 binary/raw 方式寫入），**觀察點擴充成兩條通道**：
+          ① ``builtins.open``（POSIX 路徑）⇒ 斷言 mode 含 ``b``／``a`` 且未傳 newline；
+          ② ``atomic_append.append_bytes``（Windows 路徑）⇒ 斷言寫入的是 raw bytes、
+             不含 CR、以單一 LF 結尾（LF-only 位元組契約的結構性證據）。
         """
         import builtins
+
+        from src.fsio import atomic_append
+        from src.world import world_log as wl
 
         directory = tmp_path / "world_log_open_capture"
         shard = directory / _FIXED_SHARD
         real_open = builtins.open
         shard_calls: List[Tuple[str, Any]] = []
+        append_calls: List[bytes] = []
+        real_append = atomic_append.append_bytes
 
         def recording_open(file, mode="r", *args, **kwargs):
             fh = real_open(file, mode, *args, **kwargs)
@@ -1602,12 +1614,25 @@ class TestSectionH_LfOnlyShardBytes:
                 shard_calls.append((mode, kwargs.get("newline")))
             return fh
 
+        def recording_append(path, blob):
+            try:
+                is_shard = Path(path) == shard
+            except TypeError:  # pragma: no cover - defensive
+                is_shard = False
+            if is_shard:
+                append_calls.append(bytes(blob))
+            return real_append(path, blob)
+
         monkeypatch.setattr(builtins, "open", recording_open)
+        monkeypatch.setattr(wl, "append_bytes", recording_append)
         path = _write_lf_probe(directory, ["binary mode evidence"])
         monkeypatch.undo()
 
         assert path == shard
-        assert shard_calls, "writer 必須對 shard 呼叫 builtins.open（本攔截未命中）"
+        assert shard_calls or append_calls, (
+            "writer 必須對 shard 走原子追加通道"
+            "（builtins.open 或 atomic_append.append_bytes）——本攔截未命中"
+        )
         modes = [mode for mode, _ in shard_calls]
         assert all("b" in mode for mode in modes), (
             "writer 必須以 binary mode 開啟 shard（Step 59.2 拍板：binary append）"
@@ -1621,6 +1646,10 @@ class TestSectionH_LfOnlyShardBytes:
         assert all(
             newline is None for _, newline in shard_calls
         ), f"binary append 不得傳 newline 參數：{shard_calls}"
+        # 通道②：raw bytes 必須是 LF-only（不是 text-mode 轉換出來的）
+        for blob in append_calls:
+            assert b"\r" not in blob, "shard 寫入必須是 LF-only（不得含 CR）"
+            assert blob.endswith(b"\n"), "shard 寫入必須以單一 LF 結尾"
 
     def test_h3_output_bytes_are_independent_of_os_linesep(self, tmp_path, monkeypatch):
         """H.3 (b) (mutation teeth M1): patch ``os.linesep`` ⇒ 輸出 sha256 不變。

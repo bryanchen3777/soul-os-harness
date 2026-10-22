@@ -793,6 +793,14 @@ class TestBoundedAndFrozenDiscipline:
             # 本票動 1 個非 frozen 檔：12 隻第二批角色的 NO_DIARY 白名單擴充
             # （src/memory/sage/provider.py 的 NO_DIARY_AGENTS 由 1 筆 → 5 筆）。無 frozen 檔。
             "src/memory/sage/provider.py",
+            # -- INFRA-CONCURRENT-APPEND-MUTEX (2026-10-22) ---------------------
+            # This ticket changes 3 non-frozen files: one new atomic-append primitive
+            # (package + module) + one binary-append carrier (world log).
+            # `src/inner_life/epistemic_action.py` (the tension carrier) is already
+            # listed under SIM-EPIS-PIGGYBACK-1. No frozen file.
+            "src/fsio/__init__.py",
+            "src/fsio/atomic_append.py",
+            "src/world/world_log.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

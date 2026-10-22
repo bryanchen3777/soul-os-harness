@@ -117,6 +117,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from src.fsio.atomic_append import append_bytes
+
 logger = logging.getLogger("soul_os.world.world_log")
 
 
@@ -507,8 +509,10 @@ class WorldLogWriter:
             # byte**。這裡刻意用 binary append，讓輸出「在構造上」不經過 text
             # mode 的 newline translation ⇒ Windows 不會產生 ``\r\n``，且跨平台
             # 逐位元相同（不依賴 os.linesep / newline 參數語意）。
-            with open(path, "ab") as fh:
-                fh.write((line + RECORD_TERMINATOR).encode("utf-8"))
+            # 🔴 2026-10-22（INFRA-CONCURRENT-APPEND-MUTEX）：Windows 上
+            # ``open(path,"ab")`` 不是原子追加（MSVCRT ``_O_APPEND`` 用每 handle
+            # 各自快取的檔案大小 seek 到 EOF ⇒ 併發寫入互相覆蓋）。改走平台原子追加。
+            append_bytes(path, (line + RECORD_TERMINATOR).encode("utf-8"))
         except Exception as exc:
             logger.warning(
                 f"[WorldLog] 寫入失敗 (不影響主路徑): "

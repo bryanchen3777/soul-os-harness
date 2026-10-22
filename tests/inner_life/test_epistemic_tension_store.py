@@ -48,17 +48,32 @@ def _tension(
 
 # ── 守衛 1：append-only ＋ 末筆可見 ＋ 掉電不遺失 ──────────────────────────
 def test_guard1_tension_store_is_append_only_and_durable(tmp_path, monkeypatch):
-    """N 筆寫入 ⇒ 檔內 N 行（不再互相覆蓋）；fold 出來的最後狀態正確；append 必須 fsync。"""
+    """N 筆寫入 ⇒ 檔內 N 行（不再互相覆蓋）；fold 出來的最後狀態正確；append 必須有持久化屏障。"""
     store = tmp_path / "tensions"
 
-    fsync_calls: list[int] = []
+    # 🔴 2026-10-22（INFRA-CONCURRENT-APPEND-MUTEX）：append 路徑已改走
+    #    ``src.fsio.atomic_append``，持久化屏障依平台不同
+    #    （Windows：``FlushFileBuffers``；POSIX：``os.fsync``）。
+    #    ⇒ **不變式不變**（append 必須有掉電不遺失的持久化屏障），
+    #    只是**觀察點跟著實作走**（不是放寬：屏障沒被呼叫照樣轉紅）。
+    durability_calls: list[object] = []
     real_fsync = os.fsync
 
     def _spy_fsync(fd):
-        fsync_calls.append(fd)
+        durability_calls.append(("fsync", fd))
         return real_fsync(fd)
 
     monkeypatch.setattr(os, "fsync", _spy_fsync)
+    if os.name == "nt":
+        from src.fsio import atomic_append
+
+        real_flush = atomic_append._k32.FlushFileBuffers
+
+        def _spy_flush(handle):
+            durability_calls.append(("flush", handle))
+            return real_flush(handle)
+
+        monkeypatch.setattr(atomic_append._k32, "FlushFileBuffers", _spy_flush)
 
     n = 5
     for index in range(n):
@@ -95,8 +110,8 @@ def test_guard1_tension_store_is_append_only_and_durable(tmp_path, monkeypatch):
         last_line = handle.read().splitlines()[-1]
     assert json.loads(last_line)["kind"] == ea.TENSION_EVENT_RESOLVED
 
-    # 掉電不遺失：append 路徑必須呼叫 os.fsync
-    assert fsync_calls, "append 路徑必須呼叫 os.fsync（掉電不遺失）"
+    # 掉電不遺失：append 路徑必須有持久化屏障（Windows=FlushFileBuffers / POSIX=os.fsync）
+    assert durability_calls, "append 路徑必須有持久化屏障（掉電不遺失）"
 
 
 # ── 守衛 2：多執行者併寫不互相覆寫 ─────────────────────────────────────────
