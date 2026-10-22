@@ -852,6 +852,174 @@ Owner 裁定 2026-10-11：① diary 衍生 value 不計入門檻二 ② (a)(b) �
 
 **狀態：診斷完成、修法未定案、主大腦已把未經驗證的改動迴退。** 本節記錄**為什麼**沒直接修。
 
+
+#### 0.1.35 Owner 裁決（2026-10-22）：P1 票 INFRA-CONCURRENT-APPEND-MUTEX 開立 ＋ Calendar 404 定性（09:2x）
+
+**Owner（Bryan）裁決原文要點**
+
+1. **裁決 1 — Windows Append-Only 併寫競爭處置（拒絕長期容忍 Flaky）**：
+   - 「**開立 P1 票 INFRA-CONCURRENT-APPEND-MUTEX，排入工程修復**」。
+   - 拒絕放寬與駝鳥心態：「綠燈不能靠放寬斷言，紅燈也不能長期貼上『環境問題』標籤忽視；
+     隨機翻紅的測試會持續侵蝕全庫回歸的可信度」。
+   - 架構方案定調（輕量互斥鎖，**拒絕過度工程**）：「不採用過於繁瑣脆弱的 Win32 長命 C Handle
+     生命週期管理；改在所有核心 Append 寫入點（append_record 等）加掛**行程內雙層互斥鎖**
+     （asyncio.Lock ＋ threading.Lock），若涉及跨行程則輔以輕量級檔案鎖（如 portalocker ／
+     跨行程 mutex）」。
+   - 實施原則：「徹底消除 Windows 併寫時的 Buffer Flush 競態，使
+     `test_guard2_concurrent_appends_keep_every_record` 與 stdout 釋放測試在滿載時
+     **100% 穩定綠燈**」。
+2. **裁決 2 — Google Calendar 私人 ICS 404 處置**：「**定性為外部配置失效，不改動代碼，
+   由 Owner 決定是否換 URL**」。若 Bry 希望行事曆事件重新進場參與世界感知與碰撞，
+   只需在 `.env` 更新 `CALENDAR_ICS_URL`；若暫不需，系統會持續安全跳過，
+   對靈魂的日常生活零不良影響。
+
+**主大腦的裁決 2 落實（不需改代碼）**
+
+- 日誌顯示系統對該 404 實施了**優雅的異常捕捉與隔離（Fail-Quiet）**：未拋 Traceback、
+  未干擾主感知事件流，架構防護正常（`[IcalCalendarSource] HTTP error … HTTP Error 404`
+  為 WARNING 級）。
+- **歷史筆數**（證明是既有長期問題、非本輪回歸）：10-20 輪 6 筆、10-21 輪 3 筆、
+  10-22 06:23 重啟前 3 筆、10-22 晨槽 1 筆。
+- 已寫入夜槽 cron `36e57724` 口徑：標為「既有外部配置問題，**不必**標紅」。
+
+**主大腦對裁決 1 的執行方式（含一處依實證的調整，理由見 §0.1.36）**
+
+- 工單本體：**`logs/INFRA-CONCURRENT-APPEND-MUTEX-WORK-ORDER.md`**（決策完整）。
+- 落點：新增 `src/fsio/atomic_append.py`（行程內互斥鎖 ＋ **Win32 核心層原子追加**
+  `FILE_APPEND_DATA`）＋ 張力承載（`src/inner_life/epistemic_action.py`）與世界日誌
+  （`src/world/world_log.py`）接線 ＋ 新守衛 `tests/inner_life/test_atomic_append.py`（15 項）。
+- **asyncio.Lock 那一層刻意不加**，理由：`append_bytes` 內部無任何 `await`
+  ⇒ 同一 event loop 上的兩個 coroutine 不可能交錯 ⇒ asyncio lock 不帶來額外保證，
+  卻會引入「lock 綁定特定 loop」的跨 loop 風險。真正需要序列化的是**多執行緒**
+  ⇒ `threading.Lock` 才是正確的那一層（Owner 要的「行程內互斥鎖」已由它滿足）。
+
+
+#### 0.1.36 INFRA-CONCURRENT-APPEND-MUTEX：根因定案 ＋ 修法 ＋ 守衛（含雙向變異實驗）（2026-10-22 10:0x）
+
+**狀態：已修、已驗、待 commit。** 本節是 §0.1.34「未修復」的續篇：**根因已由實測定案**
+（前次診斷有兩處誤判，本節一併更正），修法已落地，守衛已雙向驗證。
+
+
+#### 0.1.37 stdout 釋放守衛：觀測迴圈的競態修復（不是生產缺陷，是量測缺陷）（2026-10-22 10:1x）
+
+**狀態：已修、已雙向驗證。** 這是 §0.1.34 ⑥ 記錄的第二條 flaky。**它與併寫缺陷無關**
+（機制完全不同），且**不是生產缺陷**——是**測試的觀測迴圈提前放棄收集證據**。
+
+---
+
+**① 症狀**
+
+`tests/infra/test_server_ops_handle_inheritance.py::test_callers_stdout_is_released_while_the_service_lives`
+在滿載下紅，斷言為「wrapper 行程沒有結束（沒有確定返回）」（`replay["wrapper_exit_s"] is None`）。
+同一份程式碼在 22:53 輪是綠的、07:0x 輪紅 ⇒ 負載敏感。
+
+**② 真因（讀碼得出，非猜測）**
+
+觀測迴圈原本長這樣：
+
+```
+if eof.is_set():
+    pipe_eof_s = time.time() - started
+    break                      # ← 🔴 這裡
+```
+
+wrapper 結束與 stdout pipe EOF **幾乎同時發生**（wrapper 一退出，它的 stdout write handle
+關掉 ⇒ 呼叫端立刻讀到 EOF）。若在「`WaitForSingleObject` 尚未回報結束、但 EOF 已成立」的
+那一輪直接 `break`，`wrapper_exit_s` 就會**永遠停在 `None`** ⇒ 守衛 2 假紅。
+⇒ **斷言本身不需要改**（必須結束、必須 ≤ 上限、結束碼必須 0，三條一字未動）；
+要改的是「提早放棄收集證據」的迴圈。
+
+**③ 修法**
+
+改成「**記下 EOF 後，繼續有上限地等 wrapper 結束**」：EOF 成立時先記 `pipe_eof_s`，
+只有**同時**觀察到 `wrapper_exit_s` 才 `break`。真正「沒有確定返回」時（wrapper 真的不返回，
+例如變異 M2），迴圈會跑到 deadline、`wrapper_exit_s` 仍為 `None` ⇒ **守衛照樣轉紅**。
+
+**④ 雙向驗證（同一份壓測腳本、同一負載）**
+
+| 情境 | 結果 |
+|---|---|
+| **修好後**，滿載（12～14 條 burn 行程）連跑 8 輪 | **8/8 全綠**（每輪 7 passed，約 3.5 s） |
+| **修好後**，變異 M2（`M2_relay_waits_for_service`） | **轉紅**（守衛仍抓得住「wrapper 真的不返回」）⇒ **守衛沒有被改鬆** |
+| **反向實驗：把修復還原**，滿載連跑 10 輪 | **A10 紅燈**，斷言與 07:0x 輪**完全一致** ⇒ 修復具**因果性**（不是運氣） |
+
+**⑤ 其他兩條 flaky 的處置（不放寬）**
+
+| flaky | 處置 |
+|---|---|
+| `test_guard2_concurrent_appends_keep_every_record` | **已修**（§0.1.36）：根因＝MSVCRT `_O_APPEND` 非原子；修法＝行程內互斥 ＋ 核心層原子追加；新增確定性守衛 A2 |
+| `test_callers_stdout_is_released_while_the_service_lives` | **已修**（本節）：觀測迴圈提前 `break`；斷言未動；M2 變異仍紅 |
+
+**⑥ 本節未做**：未動 `scripts/server_ops.ps1`（生產啟動路徑無需改——生產 wrapper 14.66 s
+正常返回，缺陷在沙盒重播的觀測迴圈）；未改任何斷言的門檻；未放寬任何守衛；未重啟服務。
+
+---
+
+**① 🔴 根因（實測定案，非推論）**
+
+Windows 上 CPython 的 `open(path, "ab")` **不是原子追加**：它走 MSVCRT 的 `_O_APPEND`，
+CRT 在每次寫入前用「**該 handle 自己快取的檔案大小**」seek 到 EOF。兩個先後開啟的 handle
+各自快取到**同一個（過期）大小** ⇒ 寫到同一偏移 ⇒ **後者整筆覆蓋前者**。
+樣態：可完整解析、**零損壞行**、`write()` 全部回傳成功 ⇒ 看起來像「整筆無痕跡消失」。
+
+**② 前次診斷的兩處誤判（本節更正）**
+
+| 誤判 | 為何錯 | 正解 |
+|---|---|---|
+| 「四種寫法（`O_APPEND`／`stat`／`SEEK_END`／讀檔算長度）全失敗 ⇒ 需長命 handle」 | 那四種寫法**本身就是錯的**：它們用過期 metadata 算寫入位置 | Windows 正解＝**核心層追加**（`FILE_APPEND_DATA`）或同一個長命 handle；互斥鎖＋核心層追加已足夠 |
+| 「可能只是**讀取視圖**過期，資料其實在磁碟上 ⇒ 修讀端就好」 | 用 `os.fstat(fd).st_size`（handle-based，權威）量出**檔案本身就短**（10698 vs 應有 10880），且 1.5 s 後重讀**完全不收斂** | 真遺失；「讀到視圖收斂為止」的重試**完全無效**（settled == immediate） |
+
+**③ 量測證據鏈（全部可重現）**
+
+| 量測 | 結果 | 備註 |
+|---|---|---|
+| 真遺失 vs 讀視圖過期（`os.fstat(fd).st_size` vs `os.path.getsize`） | **真遺失**（兩者一致地短） | 只有 handle-based fstat 能分辨 |
+| 現況寫法，6 個**獨立行程**真實 CPU 負載、30 輪、每輪 2 執行緒 × 30 筆 | **10/30 輪遺失（33.3%）** | 每輪丟 1～3 筆 |
+| 行程內互斥 ＋ `open(path,"ab")`，同條件 | **30/30 全對** | Owner 裁決方向有效 |
+| 行程內互斥 ＋ Win32 `FILE_APPEND_DATA`，同條件 | **30/30 全對** | 另給跨行程原子性 |
+| 行程內互斥 ＋ `fstat`/`lseek` 自算偏移 | 8/8 輪檔案大小**多 60 bytes** | 不可用 |
+| 實測「卡住」的堆疊（`sys._current_frames()`） | 卡在 `with open(...)` 的 close/flush 與 `os.fsync` | Win32 flush 等併發寫入者 |
+| ⚠️ 量測負載產生器的陷阱 | 純 Python burn **執行緒**會搶 GIL，讓被觀察執行緒看起來「卡住 5 秒」 | 那是**我造出來的假象** |
+| ⚠️ 實驗閉包捕傳 bug | 迴圈內 `def worker(): ... path ...` 讓舊輪殘留執行緒寫進新輪檔案 | 量到 70 行 > 60；迴圈變數須當參數傳入 |
+
+**④ 修法（Owner 裁決方向，已落地）**
+
+- 新增 `src/fsio/atomic_append.py`：`append_bytes()` ＝ **行程內 `threading.Lock`** ＋
+  **平台原生原子追加**（Windows：`CreateFileW(access=FILE_APPEND_DATA)` ＋ `WriteFile`
+  ＋ `FlushFileBuffers` ＋ `CloseHandle`，開檔帶 `FILE_SHARE_DELETE`；其他平台維持
+  `open(path,"ab")`）。
+- **不持有長命 handle** ⇒ 無 handle 生命週期管理（Owner 明確拒絕的過度工程）。
+- 接線：`src/inner_life/epistemic_action.py::_append_tension_events`（張力承載）、
+  `src/world/world_log.py::WorldLogWriter.write`（世界日誌）。
+- **被證偽的 docstring 已更正**（舊文宣稱 `ab` 開檔 ⇒ 併寫不互相覆蓋，在 Windows 上是錯的）。
+- **Out of Scope（票上明列）**：約 25 個 text-mode append 點（`diary.py`／`life_threads.py`／
+  `trace.py`／`middleware.py`／…）**本票不動** —— 它們是**單寫入者**路徑（每 agent 自己的檔案、
+  排程循序寫入），無併發寫入者；原語已備妥，未來若出現多寫入者路徑可一鍵套用。
+
+**⑤ 守衛與雙向變異實驗**
+
+- 新增 `tests/inner_life/test_atomic_append.py`（**15 項**）：
+  A1 結構（生產路徑必須真的走 `append_bytes`）／A2 結構（Windows 必須走核心層原子追加）／
+  B ×12 行為（每輪 60 行、60 個可解析且 tension_id 唯一、**檔案位元組數 == 各紀錄位元組數之和**、
+  無 CR）／C 位元組契約（世界日誌 LF-only）。
+- **守衛 1（既有）的不變式不變、觀察點升級**：原守衛斷言「append 路徑必須呼叫 `os.fsync`」；
+  現 append 走共用原語 ⇒ 持久化屏障依平台不同（Windows＝`FlushFileBuffers`／POSIX＝`os.fsync`）
+  ⇒ 觀察點跟著實作走。**屏障沒被呼叫照樣轉紅**（不是放寬）。
+- **雙向變異實驗**：`SOULOS_APPEND_MUTATION=legacy_crt_append` ⇒
+  正常：**15 passed**；變異：**A2 轉紅**（確定性）。
+  ⚠️ 既有 `test_guard2` 在**無負載**下**不會**被變異打紅（實測變異下仍 6 passed）
+  ⇒ 它是**弱偵測器**，真正抓得住回歸的是 A2（結構守衛）與 B（行為守衛，滿載下 12 輪
+  ≈ 99.2% 偵測率）。**沒有把守衛放寬**，而是補上確定性那一道。
+- **世界日誌既有守衛 H.2（`tests/world/test_world_log_phase_a.py`）的觀察點擴充**：
+  原守衛攔截 `builtins.open` 斷言「shard 必須以 binary mode 開啟」；改走核心層追加後
+  **Windows 路徑不再經過 `builtins.open`** ⇒ 觀察點擴充成兩條通道
+  （① `builtins.open`（POSIX）⇒ 斷言 mode 含 `b`／`a` 且未傳 newline；
+  ② `atomic_append.append_bytes`（Windows）⇒ 斷言寫入的是 raw bytes、不含 CR、以單一 LF 結尾）。
+  **不變式不變**（shard 必須以 binary/raw 寫入、不依賴 text-mode newline translation），
+  且 M1 變異牙齒**更完整**（text-mode 開檔 → 通道①紅；text-mode 位元組 → 通道②紅）。
+- `tests/test_observability_completeness_1.py` 的 `allowed` 逐票更新（+3 檔；
+  `src/inner_life/epistemic_action.py` 早已在表內）；`frozen_dirs` **10 筆凍結全部保留**。
+
 ---
 
 **① 事件**
