@@ -842,6 +842,13 @@ class TestBoundedAndFrozenDiscipline:
             # Work order: logs/FEAT-SCHEMA-CONTRADICTION-RFC-WORK-ORDER.md
             # （沙盒唯讀探針；不接引擎寫入路徑、旗標預設不存在、無生產副作用）
             "src/inner_life/contradiction_probe.py",
+            # -- CAMPAIGN-B-P2 (2026-10-23) ------------------------------------
+            # This ticket changes 1 non-frozen file: the new tension-driven
+            # thinking layer (Phase 2 sandbox prototype). It touches **no** frozen
+            # contract file, wires **nothing** into the production trigger path,
+            # and has no LLM path at all (the thinker is a deterministic mock).
+            # Work order: logs/CAMPAIGN-B-P2-D1-THINKING-LOOP-SANDBOX-WORK-ORDER.md
+            "src/inner_life/tension_thinking.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

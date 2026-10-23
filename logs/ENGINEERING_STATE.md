@@ -4296,6 +4296,37 @@ M5／M6 首跑**意外全綠**（守衛失守）。根因：舊 fixture 的合�
 `.venv\Scripts\python.exe -m pytest -q tests` ＝ **7207 passed / 0 failed / 24 skipped / 32 subtests**，841.54 s（0:14:01），exit 0（基線 7202 ＋ 本次新增守衛 5 筆＝7207，數字自洽）。
 ⇒ 本次合入範圍 3 檔：`scripts/eval_lifecycle_cli.py`、`tests/test_eval_lifecycle_cli.py`、`logs/ENGINEERING_STATE.md`；`src/**` 與 `data/**` **零改動**；變異 M1～M14 共 14 條全紅且 repo 檔 sha256 與變異前逐位元相同。
 
+---
+
+#### 0.1.55 CAMPAIGN-B-P2（戰役一）D1 張力驅動思考閉環沙盒 ＋ 兩項跨票發現（2026-10-23 19:0x EDT）
+
+**Owner 2026-10-23 18:4x 裁定**：值守由排程完全接管，開啟週末主線施工；主大腦拍板**先開戰役一**（理由見 §0.1.55.1）。
+
+**本票成果**：`logs/CAMPAIGN-B-P2-D1-THINKING-LOOP-SANDBOX-WORK-ORDER.md`（工單，18.9 KB，決策完整）→ 4 檔實作 → 合入主幹。
+- **新模組** `src/inner_life/tension_thinking.py`（246 行）：`build_thinking_prompt()`（五段模板、決定性、資料列只取**識別子欄位白名單**、最多 20 列、單值 120 字元上限）＋ `Thinker` Protocol ＋ `DeterministicMockThinker`（**每次思考只消解 1 個缺口** ＝「部分消解」的具體語意）＋ `NullThinker` 對照組。
+- **閉環擴充** `tension_closure_loop.py`（+127/−18）：`drive_loop(..., *, thinker=None)`（keyword-only ＋ 預設，既有呼叫相容）＋ 階段 1.5（思考提詞→Thinker→ThinkOutcome）＋ 階段 2 依 outcome 分流（`resolved` / **`partially_resolved`**）＋ working_state 新增 6 欄（`open_gap_count_before`／`partial_resolution`／`remaining_gap_count`／`decided`／`thinker`／`think_prompt_sha256`），Phase 1 的 7 欄一個字沒動。
+- **守衛** `tests/inner_life/test_tension_closure_loop.py`（+531/−9）：**P2-T1～P2-T16** ＋ 既有 Phase 1 13 筆 ＝ **29 筆全綠**。既有斷言僅調整 1 處**期望值**（`status == "resolved"` → `"partially_resolved"`，因該槽有 2 個缺口而 mock 只消解 1 個）＝ 等值斷言、**未刪未弱化**。
+- **變異 M1～M7 全紅**（主大腦獨立重跑：`ALL MUTATIONS RED = True`、`REPO FILE SHA256 == BASELINE = True`、harness exit 0）；採**「改副本」安全模式**（repo 檔全程不被寫入）。
+- **全庫回歸**：**7223 passed / 0 failed / 24 skipped / 32 subtests**（主大腦獨立重跑；基線 7207 ＋ 新增 16 ＝ 7223 自洽）。
+- **不燒 LLM** 以 AST 層結構性保證：新模組不得 import `src.llm`／`httpx`／`requests`／`socket`／`subprocess`／`urllib`／`asyncio`（守衛 P2-T15／P2-T16）。
+- **Frozen 零觸碰**：`frozen_dirs` 11 筆 identical；`allowed` 21→22（**僅 +1**：`src/inner_life/tension_thinking.py`）；`tension_scoring.py` 零改動（sha256 `B5452EF8E2E8639…` 與 HEAD 相同）⇒ **衰減門檻 24h／7d 未動**。
+
+**🔴 跨票發現一：生產讀取端對 `partially_resolved` 是 fail-open（主大腦自行實測）**
+`src/inner_life/epistemic_action.py:772-774` ⇒ `if status not in ("open","resolved"): status = "resolved"`（**封閉集合外的值被默默當成「已消解」**）；且 `load_open_tensions`（:820）只收 `status == "open"` ⇒ `partially_resolved` 會**同時**被誤判為已消解**且**從未閉合佇列中消失。
+⇒ **任何把 `partially_resolved` 寫進生產的接線（Phase 3／戰役二）必須先補讀取端**，否則是**靜默損失未消解張力**。本票僅沙盒（旗標預設 OFF）⇒ 現無影響。**此條列為戰役二／Phase 3 的強制前置。**
+
+**🔴 跨票發現二：生產排程器的 Goal 主循環自 14:31 起持續 fail-closed（主大腦自查發現）**
+`[Goal] 主循环扫描异常 (fail-closed): OperationalError: database is locked` ×**2／分鐘**，**2026-10-23 14:31 → 19:19 連續 573 筆**（10/22 20:41 起至 14:31 為 **0 筆**）。
+⚠️ **歸因更正（誠實記錄）**：主大腦一度以 16:43–16:52 的窗口懷疑是「全庫回歸搶鎖」造成，**實測分佈後推翻**——警告橫跨兩次回歸之間的**空檔期**仍在 ⇒ **不是回歸造成的**，是今天 14:31 起就存在的**生產既有狀況**（其餘排程路徑正常：16:48 `proactive_dm 觸發`、16:50 `下次事件: 2026-10-24 00:03` 皆有）。fail-closed ⇒ 不崩潰，但 **Goal 主循環這段期間等同停擺**。⇒ **需 Owner 裁示是否立案**（SAGE/graph DB 的 WAL 鎖競爭：90 個 store 的 flush ＋ 3 個 voice companion 行程）。
+
+**§0.1.55.1 戰役一／戰役二的排序裁定（主大腦拍板，附 repo 內證據）**
+- **先開戰役一**。戰役二（Belief 語意回憶與保活）**排在 10/24 夜槽實測簽收之後**，且需 Owner 明確重開「方向 A」。
+- **證據**（`src/inner_life/elevation_adapter.py:1109-1121`）：① 「支持邊」的**唯一合法來源**已被 2026-10-22 工單（LIFECYCLE-REINFORCE-CHAIN §3.1，註「決策已定，不得另選」）定為「祖先 pattern 在靈魂節點建立之後累積到的新支持邊」，而新邊的產生條件是**既有的 content-hash 合併機制**；② 該處**刻意不做語意相似比對**，召回通道（方向 A）當時 **VERDICT=NO-GO（可回憶池 0 顆、命中率 0/200 = 0.0000 < 5% 門檻）** ⇒ **明文禁止把靈魂保活掛在語意相似比對上**。
+- ⇒ 戰役二的核心命題（「語意對齊 + 合法產出合約支持邊」）**正撞在這兩道既有裁定上** ⇒ 它不是「蓋新機制」，而是「推翻兩項裁定」⇒ 必須 Owner 層級重開。
+- ⇒ 戰役二的**真正第一步是資料面**：召回通道為什麼是 **0 顆可回憶池**（SAGE 寫入門檻？召回查詢條件？資料本來就沒有？）⇒ 這是它的前置裁定，10/24 觀測後處理。
+- ⇒ 排序的機制耦合理由：戰役二若產生了新的 `support_propagation` 邊，就會改變「祖先新邊＝0」這個狀態，而它正是 10/24 預期退役判準的**四條件之一** ⇒ 先動它會讓 10/24 的 `weak 1 → 10` 基準不可信、退役白名單可能失效 ⇒ **兩件事都驗不成**。
+
+
 
 
 
