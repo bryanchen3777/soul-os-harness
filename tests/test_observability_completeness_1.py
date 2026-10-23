@@ -829,6 +829,16 @@ class TestBoundedAndFrozenDiscipline:
             # `src/memory/sage/writer.py` stays FROZEN (Append-Only authority).
             # Work order: logs/INFRA-V1-MIRROR-APPEND-RACE-WORK-ORDER.md
             "src/memory/v1/store.py",
+            # -- CAMPAIGN-B-P1 (2026-10-22) ------------------------------------
+            # This ticket changes 3 non-frozen files: the new drive-scoring /
+            # closure-loop modules (Phase 1 sandbox prototype). It touches **no**
+            # frozen contract file and wires **nothing** into the production
+            # trigger path (`src/llm/proxy.py`, `epistemic_tension_scheduler.py`
+            # and every scheduler stay untouched; the new flag defaults OFF).
+            # Work order: logs/CAMPAIGN-B-D1-D3-TENSION-DRIVER-WORK-ORDER.md
+            "src/inner_life/drive_profile.py",
+            "src/inner_life/tension_scoring.py",
+            "src/inner_life/tension_closure_loop.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

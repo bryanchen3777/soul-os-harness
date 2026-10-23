@@ -172,7 +172,7 @@ drive_loop(agent_id: str, now: int, store_dir: Path) -> ClosureTrace
 | 4 | `tests/inner_life/test_drive_profile.py` | 新增 |
 | 5 | `tests/inner_life/test_tension_scoring.py` | 新增 |
 | 6 | `tests/inner_life/test_tension_closure_loop.py` | 新增 |
-| 7 | `tests/test_observability_completeness_1.py` | **逐票**更新 `allowed` 集合（新增 3 筆：`src/inner_life/drive_profile.py`、`src/inner_life/tension_scoring.py`、`src/inner_life/tension_closure_loop.py`）；**不得**動 `frozen_dirs`（10 筆全保留） |
+| 7 | `tests/test_observability_completeness_1.py` | **逐票**更新 `allowed` 集合（新增 3 筆：`src/inner_life/drive_profile.py`、`src/inner_life/tension_scoring.py`、`src/inner_life/tension_closure_loop.py`）；**不得**動 `frozen_dirs`（11 筆全保留（主大腦勘地誤記為 10 筆，2026-10-22 22:0x 由 worker 回報並經主大腦實測更正：`src/agency/stages.py`、`trigger_handler.py`、`event_handler.py`、`dream_handler.py`、`diary_handler.py`、`src/inner_life/submission_gate.py`、`src/social/identity_firewall.py`、`src/social/producer_gate.py`、`src/world/middleware.py`、`src/memory/sage/writer.py`、`src/soul/decision.py`）） |
 
 > **提醒**：新增 collectable 測試檔**必須先 `git add`**，否則 `tests/infra/test_repo_hygiene_tracked_tests.py` 會紅（由主大腦在合入時統一處理；執行者**不得** `git add`／`git commit`／`git push`）。
 
@@ -248,7 +248,7 @@ drive_loop(agent_id: str, now: int, store_dir: Path) -> ClosureTrace
 - `src.soul.temporal_phenomenology.classify_temporal_state` 的三態窗常數（**不得**另立）
 - `proxy.BACKGROUND_ACTION_MIN_INTERVAL_SECONDS`（**不得**另立）
 - `Motive` 的 frozen 5 欄位契約與 target 值域（D2 裁定）
-- `tests/test_observability_completeness_1.py` 的 `frozen_dirs`（10 筆全保留）
+- `tests/test_observability_completeness_1.py` 的 `frozen_dirs`（11 筆全保留（主大腦勘地誤記為 10 筆，2026-10-22 22:0x 由 worker 回報並經主大腦實測更正：`src/agency/stages.py`、`trigger_handler.py`、`event_handler.py`、`dream_handler.py`、`diary_handler.py`、`src/inner_life/submission_gate.py`、`src/social/identity_firewall.py`、`src/social/producer_gate.py`、`src/world/middleware.py`、`src/memory/sage/writer.py`、`src/soul/decision.py`））
 
 ---
 
