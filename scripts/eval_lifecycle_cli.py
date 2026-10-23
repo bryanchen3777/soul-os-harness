@@ -42,6 +42,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -67,6 +68,25 @@ COPY_FILES = (NODES_FILENAME, EDGES_FILENAME, LIFECYCLE_EVENTS_FILENAME)
 
 SOUL_TYPES = ("belief", "value", "trait", "essence")
 DEFAULT_KEY_NODE = "6a92c906b245"
+
+# ── 預期退役集合（Owner 2026-10-23 裁定：選項乙「改判準」）────────────────
+# 語意：2026-10-11 建立的 Legacy Value 節點，因從未再被日常 Pattern 背書
+# （last_support_ts == created_ts、祖先 support_propagation 邊＝0），
+# 隨生命週期自然代謝而轉入 weakening —— 這是**預期代謝**，不是破線。
+# 🔴 下列基線是 Owner 核准的「指定集合」；規則推導結果**不得超出**它。
+EXPECTED_RETIREMENT_DATE = "2026-10-11"
+EXPECTED_RETIREMENT_BASELINE = frozenset({
+    "0b398afedf30486baa75047028b3319d",  # agent_akane
+    "24bad790f8954dc2ae4711c4c1c6ffac",  # agent_aoi
+    "56391bd5ce154d9f8ee09ef40280ec71",  # agent_miku
+    "60a2d5e453914ac3bbbbc02cb549b076",  # agent_yua
+    "6a92c906b245458cb0c4c64ea214f2eb",  # agent_mahiru  ★關鍵反例
+    "7fcf5557b1994fd1977973f7dcdf5a38",  # agent_ram
+    "8dd335036f21453b85c72d17eaf5b303",  # agent_rem
+    "9f9b13498c334268aaf2e95429bd2228",  # agent_ruka
+    "a8b48b0210e74363b506f5750d61d125",  # agent_mai
+    "d0df567934274a9697feff6d1b0d9af5",  # agent_anna
+})
 
 
 # ── 路徑 ──────────────────────────────────────────────────────────────────
@@ -210,6 +230,87 @@ class _WarningCollector(logging.Handler):
         self.records.append(record)
 
 
+def expected_retirement_set(nodes: list, edges: list) -> set:
+    """推導「預期退役集合」。
+
+    四條件全滿足、缺一不可：
+      1. node_type == "value"
+      2. created_ts 的日期部分 == EXPECTED_RETIREMENT_DATE
+      3. last_support_ts == created_ts（建立後從未再被背書）
+      4. 沒有任何 trigger_type == "support_propagation" 的邊指向它（祖先支持邊＝0）
+
+    🔴 **不得**引入任何時間門檻算術（不得出現 timedelta／天數比較）——
+    衰減門檻是凍結的，本判準只認「建立日 + 從未背書」這個**結構性事實**。
+    """
+    supported = {e.get("node_id") for e in edges
+                 if isinstance(e, dict) and e.get("trigger_type") == "support_propagation"}
+    out = set()
+    for n in nodes:
+        if not isinstance(n, dict) or n.get("node_type") != "value":
+            continue
+        created = n.get("created_ts") or ""
+        if not isinstance(created, str) or created[:10] != EXPECTED_RETIREMENT_DATE:
+            continue
+        if (n.get("last_support_ts") or "") != created:
+            continue
+        nid = n.get("node_id")
+        if not nid or nid in supported:
+            continue
+        out.add(nid)
+    return out
+
+
+def baseline_violation(expected: set) -> list:
+    """推導集合若超出 Owner 核准的基線 ⇒ 規則被放寬 ⇒ **執行期自我否決**。
+
+    這是「規則不得被悄悄放寬」的**執行期**保險（不只靠 CI）。
+    """
+    extra = sorted(x for x in expected if x not in EXPECTED_RETIREMENT_BASELINE)
+    if extra:
+        return ["⓪ 預期退役集合超出核准基線（規則被放寬）：%s" % extra]
+    return []
+
+
+# 🔴 弱化語氣裝飾的還原：`X` ⇒ `我隐约觉得「X」`（投影層渲染，見
+#    `emergent_projection.project_emergent`）。去掉裝飾後即可比較「正文本身」
+#    有沒有被改動。
+_WEAKENING_DECORATION_RE = re.compile(re.escape(WEAKENING_TONE_PREFIX) + r"「(.*?)」")
+
+
+def strip_weakening_decoration(text: str) -> str:
+    """把弱化語氣裝飾還原（`我隐约觉得「X」` ⇒ `X`）。
+
+    用途：判斷「投影正文的差異是否**只**來自弱化裝飾」。
+    🔴 這是**比較用**的正規化，不是判定規則本身。
+    """
+    if not text:
+        return ""
+    return _WEAKENING_DECORATION_RE.sub(r"\1", text)
+
+
+def prompt_diff_is_expected(diff: dict, expected_count: int,
+                            before_block: str, after_block: str) -> bool:
+    """某個 agent 的投影正文差異是否**完全由預期代謝解釋**。
+
+    🔴 為什麼需要這條（2026-10-23 實測）：弱化節點的投影會把 `X` 渲染成
+    `我隐约觉得「X」`（+7 字元）⇒ **只要**有 value 轉入 weakening，該 agent 的
+    投影正文就**必然**逐位元不同 ⇒ ④ 的比較必然報差異。10/24 夜槽實測：
+    9 筆白名單 value 轉入 weakening ⇒ 9 個 agent 的正文各多一個弱化前綴。
+    ⇒ 那不是破線，是預期代謝的正常投影後果。
+
+    放行條件（缺一不可，缺一 ⇒ 仍然是破線）：
+      1. 該 agent 確實有預期代謝命中（`expected_count > 0`）
+      2. 弱化前綴的增量 == 該 agent 的預期代謝命中數
+      3. 去掉弱化語氣裝飾後，before/after 正文**逐位元相同**
+    ⇒ 多出／少了前綴、正文被改動、命中數對不上 ⇒ **一律仍然報破線**。
+    """
+    if expected_count <= 0:
+        return False
+    if (diff.get("after_weak", 0) - diff.get("before_weak", 0)) != expected_count:
+        return False
+    return strip_weakening_decoration(before_block) == strip_weakening_decoration(after_block)
+
+
 def assess(
     *,
     new_events: list,
@@ -221,6 +322,7 @@ def assess(
     soul_types: tuple = SOUL_TYPES,
     eval_error: str = "",
     undelivered: int = 0,
+    expected_retirement: frozenset = frozenset(),
 ) -> list:
     """**純函式**：依四項準則回傳失敗清單（空清單 = 全過）。
 
@@ -239,6 +341,13 @@ def assess(
     「冪等 no-op」在回傳值上**長得一模一樣**（都是 0 筆）。⇒ 呼叫端必須把例外
     **顯式帶進來**（`eval_error`），否則就會出現「CLI 報 PASS，實際上根本没評估」
     的假綠。
+
+    🔴 **預期代謝（Owner 2026-10-23 裁定「改判準」）**：
+    `expected_retirement` 內的 value 節點轉入 `weakening` ⇒ 分類為
+    **EXPECTED_METABOLISM**（不是破線、不計入關鍵反例）；其餘任何靈魂類
+    （belief/value/trait/essence，含非白名單的 value）或未知類型轉變 ⇒ **破線**。
+    弱化包裝的**允許增量 ＝ EXPECTED_METABOLISM 的筆數**（等於則不報）。
+    目標狀態 `dormant` / `superseded` **一律是破線**（退役＝弱化，不是休眠/取代）。
     """
     fails = []
     if eval_error:
@@ -247,29 +356,58 @@ def assess(
     if undelivered:
         fails.append("⓪ 轉變未落地（評估回傳 %d 筆，但 sidecar 只增加 %d 筆）"
                      % (undelivered, 0))
-    by_type = {}
-    to_state = {}
-    for e in new_events:
-        by_type[e.get("node_type")] = by_type.get(e.get("node_type"), 0) + 1
-        to_state[e.get("lifecycle_state")] = to_state.get(e.get("lifecycle_state"), 0) + 1
-
     if not new_events and graph_nodes <= 0:
         fails.append("① 沒有任何轉變產生，且圖為空（評估無圖可算）")
-    soul_hits = {t: by_type.get(t, 0) for t in soul_types if by_type.get(t, 0)}
+
+    # ── 分類每一筆新轉變（Owner 2026-10-23「改判準」）────────────────────
+    #   pattern          ⇒ 正常演化，永遠不是破線
+    #   value→weakening
+    #     且在預期退役集合內 ⇒ EXPECTED_METABOLISM（預期代謝，不是破線）
+    #   其餘靈魂類／未知類型 ⇒ UNEXPECTED ⇒ 破線
+    expected_ids = set(expected_retirement or ())
+    expected_count = 0
+    soul_hits = {}
+    non_pattern = {}
+    bad_target = {}
+    key_hits = []
+    for e in new_events:
+        ntype = e.get("node_type")
+        state = e.get("lifecycle_state")
+        nid = e.get("node_id")
+        is_expected = (ntype == "value" and state == "weakening" and nid in expected_ids)
+        if is_expected:
+            # EXPECTED_METABOLISM：預期代謝 ⇒ 不是破線，也不計入關鍵反例。
+            expected_count += 1
+        else:
+            # 🔴 目標狀態一律檢查：退役＝弱化，不是休眠/取代（**即使在預期退役集合內**）。
+            if state in ("dormant", "superseded"):
+                bad_target[state] = bad_target.get(state, 0) + 1
+            if ntype != "pattern":
+                if ntype in soul_types:
+                    soul_hits[ntype] = soul_hits.get(ntype, 0) + 1
+                non_pattern[ntype] = non_pattern.get(ntype, 0) + 1
+        # 🔴 關鍵反例：只有**不屬於**預期代謝的轉變才報破線。
+        if _matches_key_node(nid, key_node) and not is_expected:
+            key_hits.append(e)
+
     if soul_hits:
         fails.append("② 靈魂結構誤傷：%s" % soul_hits)
-    non_pattern = {k: v for k, v in by_type.items() if k != "pattern"}
     if non_pattern:
         fails.append("② 出現非 pattern 轉變：%s" % non_pattern)
     for bad in ("dormant", "superseded"):
-        if to_state.get(bad):
+        if bad_target.get(bad):
             fails.append("② 轉變目標含 %s" % bad)
-    key_hits = [e for e in new_events if _matches_key_node(e.get("node_id"), key_node)]
     if key_hits:
         fails.append("③ 關鍵反例 %s 被轉變 %d 次" % (key_node, len(key_hits)))
-    if prompt_diffs:
-        fails.append("④ Prompt 投影正文改變：%s" % prompt_diffs)
-    if weak_after != weak_before:
+    # 🔴 只報「**無法由預期代謝解釋**」的投影差異（判定見
+    #    `prompt_diff_is_expected`）：預期代謝造成的弱化裝飾是正常投影後果，
+    #    不是破線；任何其餘的正文改變仍然是破線。
+    unexplained_diffs = [d for d in prompt_diffs
+                         if not d.get("explained_by_expected_metabolism")]
+    if unexplained_diffs:
+        fails.append("④ Prompt 投影正文改變：%s" % unexplained_diffs)
+    # 🔴 弱化包裝的允許增量 ＝ EXPECTED_METABOLISM 的筆數（等於則不報）。
+    if weak_after - weak_before != expected_count:
         fails.append("④ 弱化包裝計數 %d → %d" % (weak_before, weak_after))
     return fails
 
@@ -318,6 +456,11 @@ def main(argv=None) -> int:
         copy_graph(source, sandbox)
         sidecar = sandbox / LIFECYCLE_EVENTS_FILENAME
         nodes = read_jsonl(sandbox / NODES_FILENAME)
+        edges = read_jsonl(sandbox / EDGES_FILENAME)
+        # 🔴 預期退役集合（Owner 2026-10-23「改判準」）：四條件推導 ＋ 基線自我否決。
+        #    `baseline_violation` 是**執行期**保險：規則若被放寬，CLI 會自己喊 FAIL。
+        expected_retirement = expected_retirement_set(nodes, edges)
+        baseline_fails = baseline_violation(expected_retirement)
         agents = agent_ids(nodes)
 
         before_events = read_jsonl(sidecar)
@@ -353,6 +496,21 @@ def main(argv=None) -> int:
         after_prompt = prompt_snapshot(sandbox, agents)
         new_events = after_events[len(before_events):]
 
+        # 🔴 本次「命中」的預期代謝（白名單內 value 轉入 weakening）。
+        #    與 `expected_retirement`（集合）分開報：集合是「誰有資格」，
+        #    命中是「這次真的轉了幾筆」—— 弱化包裝的允許增量看的是命中數。
+        expected_hits = [e for e in new_events
+                         if e.get("node_type") == "value"
+                         and e.get("lifecycle_state") == "weakening"
+                         and e.get("node_id") in expected_retirement]
+        # 每個 agent 各自命中幾筆（用來判斷投影差異能否被預期代謝**完全解釋**）
+        node_agent = {n.get("node_id"): n.get("agent_id")
+                      for n in nodes if isinstance(n, dict)}
+        expected_by_agent = {}
+        for e in expected_hits:
+            ag = node_agent.get(e.get("node_id"))
+            expected_by_agent[ag] = expected_by_agent.get(ag, 0) + 1
+
         # 🔴 結構性檢查：評估**回傳**了轉變、但 sidecar 沒增加 ⇒ 轉變沒落地
         #    （`_append_jsonl` 寫入失敗時 adapter 只發 warning，不會回 0）。
         #    ⇒ 沒有這條，「0 筆新轉變」又會被誤判成冪等 no-op。
@@ -371,13 +529,19 @@ def main(argv=None) -> int:
                 prompt_diffs.append({"agent": a, "error": b.get("error") or aft.get("error")})
                 continue
             if b.get("block") != aft.get("block"):
-                prompt_diffs.append({
+                diff = {
                     "agent": a,
                     "before_len": b.get("len"),
                     "after_len": aft.get("len"),
                     "before_weak": b.get("weak_prefix_count"),
                     "after_weak": aft.get("weak_prefix_count"),
-                })
+                }
+                # 🔴 這筆差異能否**完全由預期代謝解釋**（弱化裝飾是正常投影後果，
+                #    不是破線；無法解釋者仍然是破線 —— 見 `prompt_diff_is_expected`）。
+                diff["explained_by_expected_metabolism"] = prompt_diff_is_expected(
+                    diff, expected_by_agent.get(a, 0),
+                    b.get("block") or "", aft.get("block") or "")
+                prompt_diffs.append(diff)
 
         weak_total_before = sum(v.get("weak_prefix_count", 0) for v in before_prompt.values())
         weak_total_after = sum(v.get("weak_prefix_count", 0) for v in after_prompt.values())
@@ -394,7 +558,7 @@ def main(argv=None) -> int:
             state_dist = {}
         graph_nodes = sum(state_dist.values())
 
-        fails = assess(
+        fails = list(baseline_fails) + list(assess(
             new_events=new_events,
             prompt_diffs=prompt_diffs,
             key_node=args.key_node,
@@ -403,7 +567,8 @@ def main(argv=None) -> int:
             graph_nodes=graph_nodes,
             eval_error=eval_error,
             undelivered=undelivered,
-        )
+            expected_retirement=expected_retirement,
+        ))
 
         result = {
             "mode": "sandbox-only",
@@ -420,6 +585,8 @@ def main(argv=None) -> int:
             "by_node_type": by_type,
             "by_to_state": to_state,
             "soul_type_transitions": {t: by_type.get(t, 0) for t in SOUL_TYPES},
+            "expected_retirement": sorted(expected_retirement),
+            "expected_retirement_count": len(expected_retirement),
             "graph_nodes": graph_nodes,
             "graph_state_distribution": state_dist,
             "no_op_note": (not new_events and graph_nodes > 0 and not eval_error
@@ -433,6 +600,9 @@ def main(argv=None) -> int:
             "weak_prefix_before": weak_total_before,
             "weak_prefix_after": weak_total_after,
             "prompt_diffs": prompt_diffs,
+            "prompt_diffs_unexplained": len(
+                [d for d in prompt_diffs
+                 if not d.get("explained_by_expected_metabolism")]),
             "verdict": "FAIL" if fails else "PASS",
             "failures": fails,
         }
@@ -440,6 +610,18 @@ def main(argv=None) -> int:
         if args.json:
             print(json.dumps(result, ensure_ascii=True, indent=2))
         else:
+            # 🔴 預期退役集合明細（Owner 2026-10-23「改判準」）
+            retirement_lines = [
+                "預期退役集合（EXPECTED_METABOLISM）= %d 筆" % len(expected_retirement),
+            ]
+            node_info = {n.get("node_id"): n for n in nodes if isinstance(n, dict)}
+            for _nid in sorted(expected_retirement):
+                _info = node_info.get(_nid) or {}
+                retirement_lines.append(
+                    "  %s  type=%s  agent=%s"
+                    % (_nid, _info.get("node_type", "?"), _info.get("agent_id", "?")))
+            retirement_lines.append(
+                "本次命中（轉入 weakening）= %d 筆" % len(expected_hits))
             lines = [
                 "=" * 74,
                 "LIFECYCLE OFFLINE EVAL (CLI) — mode=sandbox-only",
@@ -456,16 +638,19 @@ def main(argv=None) -> int:
                 % (result["sidecar_before"], result["sidecar_after"], result["transitions"]),
                 "by_node_type         = %s" % by_type,
                 "by_to_state          = %s" % to_state,
-                "soul_type_counts     = %s   (value/belief/trait/essence 必須全 0)"
-                % result["soul_type_transitions"],
+                "soul_type_counts     = %s   (非預期代謝者必須全 0；本次預期退役命中 %d 筆)"
+                % (result["soul_type_transitions"], len(expected_hits)),
+                *retirement_lines,
                 "graph_nodes          = %d   state_dist=%s" % (graph_nodes, state_dist),
                 "no_op_note           = %s" % (
                     "是（0 筆新轉變，但圖非空 ⇒ 冪等 no-op，非失敗）"
                     if result["no_op_note"] else "否"),
-                "key_node %s transitions = %d  (必須 0)"
+                "key_node %s transitions = %d  (非預期代謝時必須 0)"
                 % (args.key_node, result["key_node_transitions"]),
                 "weak_prefix  %d -> %d" % (weak_total_before, weak_total_after),
                 "prompt_diffs         = %s" % (prompt_diffs or "無（所有 agent 正文逐位元相同）"),
+                "prompt_diffs_unexplained = %d 筆（只有這些會觸發 ④；可由預期代謝解釋者不報）"
+                % result["prompt_diffs_unexplained"],
                 "",
                 "VERDICT: %s" % result["verdict"],
             ]
@@ -489,11 +674,18 @@ def main(argv=None) -> int:
             % (result["sidecar_before"], result["sidecar_after"], result["transitions"]),
             "- 轉變類型分布：%s" % by_type,
             "- 轉變目標狀態：%s" % to_state,
-            "- 靈魂結構轉變（必須全 0）：%s" % result["soul_type_transitions"],
-            "- 關鍵反例 `%s` 轉變次數（必須 0）：%d"
+            "- 預期退役集合（EXPECTED_METABOLISM）：%d 筆%s"
+            % (len(expected_retirement),
+               ("（" + ", ".join(sorted(expected_retirement)) + "）")
+               if expected_retirement else ""),
+            "- 本次命中（轉入 weakening）：%d 筆" % len(expected_hits),
+            "- 靈魂結構轉變（**非預期代謝者**必須全 0）：%s" % result["soul_type_transitions"],
+            "- 關鍵反例 `%s` 轉變次數（**非預期代謝時**必須 0）：%d"
             % (args.key_node, result["key_node_transitions"]),
             "- 弱化包裝計數：%d → %d" % (weak_total_before, weak_total_after),
             "- Prompt 正文差異：%s" % (prompt_diffs or "無"),
+            "- Prompt 正文差異（**無法由預期代謝解釋** ⇒ 觸發 ④）：%d 筆"
+            % result["prompt_diffs_unexplained"],
             "- **判定：%s**" % result["verdict"],
             "",
             "## 各 agent 投影（評估前 → 評估後）",

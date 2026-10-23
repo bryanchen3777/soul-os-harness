@@ -35,6 +35,7 @@ import importlib.util
 import io
 import json
 import logging
+import os
 import pathlib
 import tempfile
 import unittest
@@ -42,7 +43,27 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-CLI_PATH = REPO_ROOT / "scripts" / "eval_lifecycle_cli.py"
+# 🔴 變異實驗的載入點覆寫（**僅允許**指向 %TEMP% 下的副本）。
+#
+# 為什麼需要這個鉤子（2026-10-23 主大腦實測）：
+#   變異 harness 若「in-place 改 repo 檔 → 測試 → 位元還原」，還原步驟**可能失敗**
+#   （實測：`OSError: [Errno 22] Invalid argument`）⇒ repo 檔會**殘留在變異狀態**
+#   （一個可被誤 commit 的損壞工作樹）。⇒ harness 改為：
+#   「複製到 %TEMP% → 改**副本** → 用本變數載入副本」，
+#   repo 檔全程不必被寫入 ⇒ **沒有東西需要還原，也沒有東西會還原失敗**。
+#
+# 🔴 安全邊界：覆寫路徑必須在 %TEMP% 之下 ⇒ CI／生產永遠載入 repo 的真檔，
+#    這個鉤子無法被用來把守衛測試指向 repo 外的任意程式。
+_CLI_OVERRIDE = os.environ.get("SOUL_OS_EVAL_CLI_PATH")
+if _CLI_OVERRIDE:
+    _override_path = pathlib.Path(_CLI_OVERRIDE).resolve()
+    _temp_root = pathlib.Path(tempfile.gettempdir()).resolve()
+    if _temp_root not in _override_path.parents:
+        raise RuntimeError(
+            "SOUL_OS_EVAL_CLI_PATH 只能指向 TEMP 根目錄下的副本（收到：" + str(_override_path) + "）")
+    CLI_PATH = _override_path
+else:
+    CLI_PATH = REPO_ROOT / "scripts" / "eval_lifecycle_cli.py"
 PROD_DIR = REPO_ROOT / "data" / "elevation"          # repo 內的實體生產目錄
 PROD_SIDECAR = PROD_DIR / "elevation_lifecycle_events.jsonl"
 
@@ -209,6 +230,302 @@ class TestAssessIsNotVacuous(unittest.TestCase):
             new_events=[{"node_id": "p1", "node_type": "pattern", "lifecycle_state": "weakening"}],
             prompt_diffs=[], key_node="KEY", weak_before=0, weak_after=3, graph_nodes=399)
         self.assertTrue(any("弱化包裝" in f for f in fails), fails)
+
+
+# ── 預期退役集合的合成圖（Owner 2026-10-23 裁定「改判準」）──────────────
+#
+# 🔴 核准基線的 10 顆 id **寫死於此**（不引用 CLI 的常數）⇒ 可反向釘死
+#    `EXPECTED_RETIREMENT_BASELINE` 常數本身有沒有被改動。
+_RETIREMENT_BASELINE_IDS = (
+    "0b398afedf30486baa75047028b3319d",   # agent_akane
+    "24bad790f8954dc2ae4711c4c1c6ffac",   # agent_aoi
+    "56391bd5ce154d9f8ee09ef40280ec71",   # agent_miku
+    "60a2d5e453914ac3bbbbc02cb549b076",   # agent_yua
+    "6a92c906b245458cb0c4c64ea214f2eb",   # agent_mahiru ★關鍵反例
+    "7fcf5557b1994fd1977973f7dcdf5a38",   # agent_ram
+    "8dd335036f21453b85c72d17eaf5b303",   # agent_rem
+    "9f9b13498c334268aaf2e95429bd2228",   # agent_ruka
+    "a8b48b0210e74363b506f5750d61d125",   # agent_mai
+    "d0df567934274a9697feff6d1b0d9af5",   # agent_anna
+)
+# 三顆「近似不合規」節點：各自**只缺一個條件**，且 id **不在**核准基線內
+# ⇒ 只要有人把某個條件移除，它們就會被誤抓進退役集合 ⇒ 守衛必須轉紅。
+_NEAR_MISS_DATE = "f" * 32        # 條件 2：建立日不同
+_NEAR_MISS_SUPPORT = "e" * 32     # 條件 3：last_support 較晚
+_NEAR_MISS_EDGE = "d" * 32        # 條件 4：有 support_propagation 邊指向
+_NOT_VALUE = "c" * 32             # 條件 1：node_type 不是 value
+
+
+def _value_node(node_id, created_ts, last_support_ts=None, node_type="value"):
+    return {
+        "node_id": node_id,
+        "node_type": node_type,
+        "agent_id": "agent_test",
+        "created_ts": created_ts,
+        "last_support_ts": last_support_ts or created_ts,
+        "stability": 0.3,
+        "lifecycle_state": "active",
+    }
+
+
+def _retirement_graph(all_compliant=False):
+    """合成圖：10 顆四條件全合規 ＋ 3 顆近似不合規（各缺一個條件）。
+
+    `all_compliant=True` ⇒ 把 3 顆近似節點都補成合規 ⇒ 推導結果**必然超出**
+    核准基線 ⇒ 必須被 `baseline_violation()`（執行期自我否決）抓到。
+    """
+    created = "2026-10-11T08:00:00+00:00"
+    nodes = [_value_node(nid, created) for nid in _RETIREMENT_BASELINE_IDS]
+    edges = []
+    nodes.append(_value_node(_NEAR_MISS_DATE, "2026-10-10T08:00:00+00:00"))
+    nodes.append(_value_node(_NEAR_MISS_SUPPORT, created,
+                              last_support_ts="2026-10-12T08:00:00+00:00"))
+    nodes.append(_value_node(_NEAR_MISS_EDGE, created))
+    edges.append({"node_id": _NEAR_MISS_EDGE, "trigger_type": "support_propagation"})
+    if all_compliant:
+        nodes[10]["created_ts"] = created
+        nodes[11]["last_support_ts"] = created
+        edges[:] = []
+    # 條件全對但 node_type 不是 value ⇒ 永遠不得被推導出來
+    nodes.append(_value_node(_NOT_VALUE, created, node_type="belief"))
+    return nodes, edges
+
+
+class TestExpectedMetabolism(unittest.TestCase):
+    """Owner 2026-10-23 裁定「改判準」：區分「預期生命週期代謝」與「意外破線」。
+
+    放行必須**有界**：只有「核准基線 10 顆 ＋ 四條件全滿足 ＋ 轉入 weakening」
+    才算預期代謝；任何超出 ⇒ 破線（一票否決）。
+    """
+
+    def test_retirement_set_derivation_is_exact(self):
+        """四條件推導：合成圖（10 顆合規 ＋ 3 顆近似不合規）⇒ **恰好**那 10 顆。"""
+        nodes, edges = _retirement_graph()
+        derived = CLI.expected_retirement_set(nodes, edges)
+        self.assertEqual(
+            derived, set(_RETIREMENT_BASELINE_IDS),
+            "推導結果必須恰好等於核准的 10 顆（近似不合規的 3 顆不得被誤抓）：%s"
+            % sorted(derived))
+        self.assertEqual(
+            set(CLI.EXPECTED_RETIREMENT_BASELINE), set(_RETIREMENT_BASELINE_IDS),
+            "CLI 的核准基線常數被改動了（基線是 Owner 指定的集合，不可動）")
+
+    def test_retirement_set_never_exceeds_baseline(self):
+        """推導結果不得超出核准基線；一旦超出，執行期自我否決必須抓到。"""
+        nodes, edges = _retirement_graph()
+        derived = CLI.expected_retirement_set(nodes, edges)
+        self.assertTrue(
+            derived <= set(CLI.EXPECTED_RETIREMENT_BASELINE),
+            "推導結果必須 ⊆ 核准基線：%s" % sorted(derived))
+        self.assertEqual(
+            CLI.baseline_violation(derived), [],
+            "正常推導結果不得觸發基線自我否決")
+        # 把 3 顆近似節點都補成合規 ⇒ 推導結果必然超出基線 ⇒ 必須被自我否決抓到
+        nodes2, edges2 = _retirement_graph(all_compliant=True)
+        derived2 = CLI.expected_retirement_set(nodes2, edges2)
+        self.assertFalse(
+            derived2 <= set(CLI.EXPECTED_RETIREMENT_BASELINE),
+            "這個圖刻意讓規則超出基線，測試資料有問題")
+        self.assertTrue(
+            CLI.baseline_violation(derived2),
+            "超出核准基線（＝規則被放寬）必須被 baseline_violation 擋下：%s"
+            % sorted(derived2))
+
+    def test_whitelisted_value_weakening_is_expected_not_failure(self):
+        """白名單 value 轉入 weakening ⇒ 預期代謝 ⇒ assess() 不得回任何失敗項。"""
+        wid = _RETIREMENT_BASELINE_IDS[0]
+        fails = CLI.assess(
+            new_events=[{"node_id": wid, "node_type": "value",
+                         "lifecycle_state": "weakening"}],
+            prompt_diffs=[], key_node="KEY",
+            weak_before=0, weak_after=1, graph_nodes=399,
+            expected_retirement=frozenset({wid}))
+        self.assertEqual(fails, [], "白名單 value 的弱化是預期代謝，不是破線：%s" % fails)
+
+    def test_non_whitelisted_value_weakening_fails(self):
+        """**非**白名單的 value 弱化 ⇒ 必須報「靈魂結構誤傷」。"""
+        fails = CLI.assess(
+            new_events=[{"node_id": "a" * 32, "node_type": "value",
+                         "lifecycle_state": "weakening"}],
+            prompt_diffs=[], key_node="KEY",
+            weak_before=0, weak_after=1, graph_nodes=399,
+            expected_retirement=frozenset(_RETIREMENT_BASELINE_IDS))
+        self.assertTrue(any("靈魂結構誤傷" in f for f in fails),
+                        "非白名單的 value 弱化必須報破線：%s" % fails)
+
+    def test_trait_or_essence_change_fails(self):
+        """trait / essence 異動 ⇒ 必須報破線（即使傳入 expected_retirement）。"""
+        fails = CLI.assess(
+            new_events=[{"node_id": "t" * 32, "node_type": "trait",
+                         "lifecycle_state": "weakening"},
+                        {"node_id": "s" * 32, "node_type": "essence",
+                         "lifecycle_state": "weakening"}],
+            prompt_diffs=[], key_node="KEY",
+            weak_before=0, weak_after=0, graph_nodes=399,
+            expected_retirement=frozenset(_RETIREMENT_BASELINE_IDS))
+        self.assertTrue(any("靈魂結構誤傷" in f for f in fails),
+                        "trait/essence 異動必須報破線：%s" % fails)
+
+    def test_key_node_in_retirement_set_is_not_a_break(self):
+        """關鍵反例若在預期退役集合內且轉入 weakening ⇒ 不報「關鍵反例」。"""
+        wid = "6a92c906b245458cb0c4c64ea214f2eb"
+        fails = CLI.assess(
+            new_events=[{"node_id": wid, "node_type": "value",
+                         "lifecycle_state": "weakening"}],
+            prompt_diffs=[], key_node="6a92c906b245",
+            weak_before=0, weak_after=1, graph_nodes=399,
+            expected_retirement=frozenset({wid}))
+        self.assertFalse(any("關鍵反例" in f for f in fails),
+                         "預期退役集合內的關鍵反例不得報破線：%s" % fails)
+        self.assertEqual(fails, [], "預期代謝不該有任何失敗項：%s" % fails)
+
+    def test_key_node_outside_retirement_set_still_fails(self):
+        """同一顆 id，若**未**列入預期退役集合 ⇒ 必須報「關鍵反例」。"""
+        wid = "6a92c906b245458cb0c4c64ea214f2eb"
+        fails = CLI.assess(
+            new_events=[{"node_id": wid, "node_type": "value",
+                         "lifecycle_state": "weakening"}],
+            prompt_diffs=[], key_node="6a92c906b245",
+            weak_before=0, weak_after=1, graph_nodes=399)
+        self.assertTrue(any("關鍵反例" in f for f in fails),
+                        "未列入預期退役集合的關鍵反例必須報破線：%s" % fails)
+
+    def test_dormant_target_in_retirement_set_still_fails(self):
+        """白名單 id 轉入 dormant ⇒ 仍算破線（退役＝弱化，不是休眠/取代）。"""
+        wid = _RETIREMENT_BASELINE_IDS[0]
+        fails = CLI.assess(
+            new_events=[{"node_id": wid, "node_type": "value",
+                         "lifecycle_state": "dormant"}],
+            prompt_diffs=[], key_node="KEY",
+            weak_before=0, weak_after=0, graph_nodes=399,
+            expected_retirement=frozenset({wid}))
+        self.assertTrue(any("轉變目標含" in f for f in fails),
+                        "白名單內的 dormant 仍必須報破線：%s" % fails)
+
+    def test_weak_prefix_delta_must_equal_expected_count(self):
+        """預期退役 1 筆但弱化包裝增量是 2 ⇒ 必須報「弱化包裝計數」。"""
+        wid = _RETIREMENT_BASELINE_IDS[0]
+        fails = CLI.assess(
+            new_events=[{"node_id": wid, "node_type": "value",
+                         "lifecycle_state": "weakening"}],
+            prompt_diffs=[], key_node="KEY",
+            weak_before=0, weak_after=2, graph_nodes=399,
+            expected_retirement=frozenset({wid}))
+        self.assertTrue(any("弱化包裝" in f for f in fails),
+                        "增量 2 ≠ 預期退役 1 筆 ⇒ 必須報：%s" % fails)
+
+    def test_weak_prefix_delta_zero_with_no_expected_is_ok(self):
+        """0 預期退役、weak 0 → 0 ⇒ 無失敗項。"""
+        fails = CLI.assess(
+            new_events=[{"node_id": "p" * 32, "node_type": "pattern",
+                         "lifecycle_state": "weakening"}],
+            prompt_diffs=[], key_node="KEY",
+            weak_before=0, weak_after=0, graph_nodes=399)
+        self.assertEqual(fails, [], "無預期退役且無增量 ⇒ 不該有失敗項：%s" % fails)
+
+    def test_baseline_violation_is_self_checking(self):
+        """推導集合含一顆不在基線的 id ⇒ `baseline_violation()` 必須報非空。"""
+        extra = "9" * 32
+        self.assertNotIn(extra, CLI.EXPECTED_RETIREMENT_BASELINE)
+        fails = CLI.baseline_violation({extra})
+        self.assertTrue(fails, "超出核准基線（＝規則被放寬）必須被自我否決抓到")
+        self.assertTrue(any("基線" in f for f in fails), fails)
+        self.assertEqual(CLI.baseline_violation(set(CLI.EXPECTED_RETIREMENT_BASELINE)), [],
+                         "核准基線本身不得被自我否決")
+
+    def test_cli_does_not_import_decay_thresholds(self):
+        """🔴 衰減門檻凍結：判準層不得引入時間門檻算術或另一個 repo 的模組。
+
+        若有人日後「順手」把衰減門檻複製一份進判準層（例如「距今超過 N 天
+        就算預期退役」），本守衛必須立刻轉紅。
+        """
+        src = CLI_PATH.read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        offenders = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    low = a.name.lower()
+                    if "timedelta" in low or "soul_elevation" in low:
+                        offenders.append(("import", a.name, node.lineno))
+            elif isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                if "soul_elevation" in mod.lower():
+                    offenders.append(("from-import", mod, node.lineno))
+                for a in node.names:
+                    if "timedelta" in a.name.lower():
+                        offenders.append(("from-import", "%s.%s" % (mod, a.name),
+                                          node.lineno))
+            elif isinstance(node, ast.Name):
+                if "timedelta" in node.id.lower():
+                    offenders.append(("name", node.id, node.lineno))
+            elif isinstance(node, ast.Attribute):
+                if node.attr.lower() in ("days", "timedelta"):
+                    offenders.append(("attribute", node.attr, node.lineno))
+        self.assertEqual(offenders, [],
+                         "判準層不得含時間門檻算術／另一個 repo 的衰減門檻：%s" % offenders)
+
+    def test_prompt_diff_carveout_is_bounded(self):
+        """🔴 ④ 的放行邊界：只有「**完全由預期代謝解釋**」的投影差異才放行。
+
+        2026-10-23 實測：弱化節點的投影會把 `X` 渲染成 `我隐约觉得「X」`
+        ⇒ 只要有 value 轉入 weakening，該 agent 的正文就必然逐位元不同。
+        ⇒ 放行必須**窄**：命中數、弱化前綴增量、去裝飾後的正文三者都要對上。
+        """
+        prefix = CLI.WEAKENING_TONE_PREFIX
+        before = "「A」\nB"
+        after = "「A」\n%s「B」" % prefix
+        diff = {"agent": "agent_x", "before_len": len(before),
+                "after_len": len(after), "before_weak": 0, "after_weak": 1}
+        # 完全由預期代謝解釋 ⇒ 放行
+        self.assertTrue(CLI.prompt_diff_is_expected(diff, 1, before, after),
+                        "只差弱化裝飾的投影差異必須被視為可解釋")
+        # 命中數 0 ⇒ 不放行（沒有預期代謝卻有正文差異 ⇒ 破線）
+        self.assertFalse(CLI.prompt_diff_is_expected(diff, 0, before, after),
+                         "無預期代謝的正文差異不得放行")
+        # 弱化前綴增量對不上命中數 ⇒ 不放行
+        self.assertFalse(CLI.prompt_diff_is_expected(diff, 2, before, after),
+                         "前綴增量與命中數不符不得放行")
+        # 正文被改動（非弱化裝飾）⇒ 不放行
+        self.assertFalse(CLI.prompt_diff_is_expected(
+            diff, 1, before, "「A」\n%s「C」" % prefix),
+            "正文被改動不得放行")
+        # assess()：可解釋者不報、不可解釋者報
+        events = [{"node_id": "p" * 32, "node_type": "pattern",
+                   "lifecycle_state": "weakening"}]
+        fails_ok = CLI.assess(
+            new_events=events,
+            prompt_diffs=[dict(diff, explained_by_expected_metabolism=True)],
+            key_node="KEY", weak_before=0, weak_after=0, graph_nodes=399)
+        self.assertEqual(fails_ok, [], "可解釋的投影差異不該報破線：%s" % fails_ok)
+        fails_bad = CLI.assess(
+            new_events=events,
+            prompt_diffs=[dict(diff, explained_by_expected_metabolism=False)],
+            key_node="KEY", weak_before=0, weak_after=0, graph_nodes=399)
+        self.assertTrue(any("Prompt" in f for f in fails_bad),
+                        "不可解釋的投影差異必須報破線：%s" % fails_bad)
+
+    def test_no_src_module_imports_scripts_package(self):
+        """變異 in-place 才安全的前提：`src/**` 內不得 import `scripts/`。"""
+        hits = []
+        src_root = REPO_ROOT / "src"
+        for p in sorted(src_root.rglob("*.py")):
+            try:
+                tree = ast.parse(p.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError) as exc:
+                hits.append((str(p), "unreadable: %s" % exc))
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for a in node.names:
+                        if a.name == "scripts" or a.name.startswith("scripts."):
+                            hits.append((str(p), node.lineno, a.name))
+                elif isinstance(node, ast.ImportFrom):
+                    mod = node.module or ""
+                    if mod == "scripts" or mod.startswith("scripts."):
+                        hits.append((str(p), node.lineno, mod))
+        self.assertEqual(hits, [],
+                         "src/** 不得 import scripts/（變異 in-place 才安全）：%s" % hits)
 
 
 class TestCliHasNoInPlaceWritePath(unittest.TestCase):

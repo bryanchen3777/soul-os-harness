@@ -4180,3 +4180,82 @@ REINFORCE 傳遞鏈已於 2026-10-22 20:41 部署（`2e6dd19`）⇒ 靈魂節點
 仍會弱化的是**祖先新邊 = 0** 的那批 legacy value（含關鍵反例）⇒ 預期 **10 顆**集體弱化、
 弱化包裝基線由 1 升至約 10。
 🔴 **零干預紀律**（Owner 裁決 2／3）：**嚴禁人為偽造 Pattern 邊、嚴禁手動消紅**，照實記錄生命週期代謝。
+
+> ⚠️ 2026-10-23 更正：接縫期望模型已修正（見 §0.1.53）——「42 常態」實為重啟造成的全量重發。
+
+#### 0.1.53 REFACTOR-LIFECYCLE-CLI-EXPECTED-METABOLISM：**改判準**（預期生命週期代謝 vs 意外破線）＋ 接縫期望模型更正（2026-10-23 14:xx EDT）
+
+**🔴 接縫期望模型更正（§0.1.52 的「46 = 42 常態 + 4 一槽延遲補發」是錯的）**
+真相＝`_ELEVATION_EMITTED` 是**行程內記憶體**的 at-most-once 登記表（`src/soul/life_thread_orchestrator.py:172`，契約 §4.6）⇒ 服務**重啟後首槽**會把當期**全部**線頭重發一次；無重啟的槽只發「上一槽發射時刻之後新完成、且尚未發射過」的線頭。
+⇒ 歷史的 35／35／42／42 全是「**重啟後首槽的全量重發**」，不是「常態」。
+**正確期望模型**＝「接縫(槽) ＝ 上一槽發射時刻之後新完成、且尚未發射過的線頭數」；2026-10-23 晨槽 ＝ **4**（實測 4）。
+**集合閉包**：期望 48 ＝ 本槽發射 4 ＋ 上一槽已發射 42 ＋ 窗口後新完成 2。
+
+**本次裁定（Owner 2026-10-23）**：採納「**選項（乙）改判準**」（否決「只改判讀」——會誘發告警疲勞、摧毀守門價值）。
+- **預期退役集合語意（四條件，缺一不可）**：① `node_type == "value"`；② 建立日 == `2026-10-11`；③ `last_support_ts == created_ts`（建立後從未再被背書）；④ 沒有任何 `trigger_type == "support_propagation"` 的邊指向它（祖先支持邊＝0）。
+- **核准基線 10 顆 id**：`0b398afedf30486baa75047028b3319d`(akane)／`24bad790f8954dc2ae4711c4c1c6ffac`(aoi)／`56391bd5ce154d9f8ee09ef40280ec71`(miku)／`60a2d5e453914ac3bbbbc02cb549b076`(yua)／`6a92c906b245458cb0c4c64ea214f2eb`(mahiru ★關鍵反例)／`7fcf5557b1994fd1977973f7dcdf5a38`(ram)／`8dd335036f21453b85c72d17eaf5b303`(rem)／`9f9b13498c334268aaf2e95429bd2228`(ruka)／`a8b48b0210e74363b506f5750d61d125`(mai)／`d0df567934274a9697feff6d1b0d9af5`(anna)。
+- **執行期自我否決**（`baseline_violation()`）：推導集合若超出核准基線 ⇒ CLI **自己**喊 FAIL（⓪）⇒ 規則不得被悄悄放寬（不只靠 CI）。
+- **一票否決**：任何**非**白名單內的 Value 弱化、或任何 Trait/Essence 異動、或 `dormant`／`superseded` 目標 ⇒ `VERDICT: FAIL` ＋ exit code 1（退役＝弱化，不是休眠/取代）。
+- **弱化包裝增量** ＝ EXPECTED_METABOLISM 的筆數（等於則不報）。
+
+**10/24 22:00 EDT 夜槽預期**：9 筆 value 弱化屬**預期代謝**（weak_prefix 1 → 10）⇒ CLI `VERDICT: PASS`（改判準前為 FAIL / exit 1）。
+🔴 **零干預紀律**（Owner 裁決 2／3）：**嚴禁偽造 Pattern 邊、嚴禁手動消紅、嚴禁為了讓純度歸零而動任何衰減門檻**（衰減門檻凍結；判準層不得引入時間門檻算術，守衛 `test_cli_does_not_import_decay_thresholds` 會轉紅）。
+
+**工程證據（2026-10-23 實測）**
+
+| 項目 | 結果 |
+|---|---|
+| 守衛測試 | 既有 32 筆 ＋ 工單指定新增 13 筆 ＋ 1 筆（④ 放行邊界補充）＝ **46 筆全綠** |
+| 變異 M1～M11 | **全部轉紅**；每條變異後 repo 檔案 sha256 與變異前**逐位元相同** |
+| 沙盒實測 `2026-10-24T02:00Z`（10/23 夜槽） | +17 全 pattern／預期退役 0／weak_prefix 1 → 1／**PASS** / exit 0 |
+| 沙盒實測 `2026-10-25T02:00Z`（10/24 夜槽） | +48（pattern 39 ＋ **value 9**）／預期退役集合 10 筆、命中 9 筆／weak_prefix 1 → **10**／**PASS** / exit 0 |
+| 沙盒實測 `2026-10-23T12:00Z`（10/23 晨槽） | +7 全 pattern／預期退役 0／weak_prefix 1 → 1／**PASS** / exit 0 |
+| 全庫回歸 | `.venv\Scripts\python.exe -m pytest -q tests` ＝ **7202 passed / 0 failed / 24 skipped / 32 subtests**（854.38 s / 14:14），exit code 0（基線 7188 ＋ 工單指定 13 ＋ ④ 放行邊界補充 1） |
+
+**🔴 兩條「主大腦推論、待 Owner 裁示」條款（執行者照做並標註，非 Owner 逐字裁定）**
+1. **關鍵反例在預期退役集合內時不報破線**（工單步驟 3 的推論條款，依 Owner 2026-10-22 裁示「10 顆 legacy value（含關鍵反例 `6a92c906`）集體弱化」推得）。
+2. **④ Prompt 投影正文改變：只放行「完全由預期代謝解釋」的差異** —— 2026-10-23 實測：弱化節點的投影把 `X` 渲染成 `我隐约觉得「X」`（+7 字元）⇒ 只要有 value 轉入 weakening，該 agent 的投影正文就**必然**逐位元不同 ⇒ 10/24 夜槽的 9 筆預期代謝**必然**觸發 ④。工單步驟 3 第 1 點「保留原檢查不動：…`prompt_diffs`（④）」與驗收第 4 條（三槽皆 PASS）**互斥**；實測改判準**前**（HEAD `bbcc17a`）該槽失敗清單有 **5 項**（② 靈魂結構誤傷／② 出現非 pattern 轉變／③ 關鍵反例／④ Prompt 正文改變／④ 弱化包裝計數），工單只列了其中 2 項。⇒ 採「窄放行」：命中數 > 0 **且** 弱化前綴增量 == 命中數 **且** 去弱化裝飾後正文逐位元相同，三者全中才不報；任何其餘正文改變**仍然是破線**（守衛 `test_prompt_diff_carveout_is_bounded`）。
+
+**本輪未做（明文）**：未改 `src/**`（`git diff --name-only HEAD` 無任何 `src/` 檔案）；未改 `soul-elevation` repo；未動任何衰減門檻；未動 `tests/test_observability_completeness_1.py` 的 `allowed`／`frozen_dirs`；未改 `%TEMP%\morning_obs\morning_audit.py`；未寫 `data/**`；未重啟服務；未殺任何行程；未動 `_ELEVATION_EMITTED`；未 `git add`／`commit`／`push`。
+
+---
+
+#### 0.1.53.1 主大腦獨立複核 ＋ 兩處就地修正（2026-10-23 14:xx EDT）
+
+**主大腦獨立複核（不採信執行者口頭回報，逐項自行重跑）**
+
+| 項目 | 執行者回報 | 主大腦獨立重跑 |
+|---|---|---|
+| 守衛測試 | 46 筆全綠 | **同**：`46 passed, 5 subtests`（`.venv` 直譯器） |
+| 變異 M1～M11 | 全紅、位元還原 | **同**：`ALL MUTATIONS RED = True` ＋ `REPO FILE SHA256 == BASELINE = True` |
+| 三槽沙盒實測 | 全 PASS | **同**：10/23 夜槽 PASS（+17 全 pattern）／**10/24 夜槽 PASS（+48＝pattern 39＋value 9；預期退役集合 10 筆、命中 9 筆；weak_prefix 1→10；key_node transitions＝1 屬預期代謝；prompt_diffs 9 筆但 unexplained＝0）**／10/23 晨槽 PASS（+7 pattern） |
+| 四欄相容 | 格式未變 | **同**：`eval_error`／`undelivered`／`sidecar`／`VERDICT` 四欄齊現；晨槽工具 grep 的 8 個 key（`sidecar`／`soul_type_counts`／`key_node`／`weak_prefix`／`prompt_diffs`／`VERDICT`／`state_dist`／`eval_error`）**全部仍可命中** |
+| 全庫回歸 | 7202 passed / 0 failed（854.38 s） | **同**：`7202 passed, 24 skipped, 32 subtests`，766.91 s，exit 0（`.venv\Scripts\python.exe -m pytest -q tests`） |
+| Frozen 範圍 | 無 src/、無 data/ | **同**：`git diff --name-only HEAD` 僅 4 個檔 |
+| 守衛測試是否虛胖 | —— | **否**：逐條檢視斷言——`test_dormant_target_in_retirement_set_still_fails` 斷言的是**特定訊息**「轉變目標含」（故 M8 只移除該訊息也會轉紅）；`test_prompt_diff_carveout_is_bounded` 含 4 個否定案例把放行邊界釘死 |
+
+**🔴 修正一：變異 harness 的「就地還原」不可靠 ⇒ 改為「改副本，repo 檔全程不寫入」**
+
+- **事故**：主大腦獨立重跑 v1 harness（in-place 改 repo 檔 → 跑測試 → 位元還原）時，**還原步驟以 `OSError: [Errno 22] Invalid argument` 失敗** ⇒ repo 檔 `scripts/eval_lifecycle_cli.py` **殘留在 M11 變異狀態**（sha256 `6D700114…`，內含 `timedelta` 惡意片段）。已自 `%TEMP%\expected_metabolism_mutations\_cli_backup.py` 位元還原（sha256 `52CEF8E9…` 恆等，M11 片段已消失）。
+- **根因**：v1 harness 必須靠「寫回」來還原 ⇒ 寫回本身是**會失敗的 IO 操作**，而在還原成功前 repo 檔就是**變異狀態**（一個可被誤 commit 的損壞工作樹）。
+- **修正**：harness v2 改為「複製到 %TEMP% → 改**副本** → 以 `SOUL_OS_EVAL_CLI_PATH` 指向副本跑測試」⇒ **repo 檔全程不必被寫入**，沒有東西需要還原，也沒有東西會還原失敗。重跑結果：`ALL MUTATIONS RED = True`、`REPO FILE SHA256 == BASELINE = True`。
+- **配套**：守衛測試檔新增**僅限 %TEMP%** 的載入點覆寫（`SOUL_OS_EVAL_CLI_PATH`；非 %TEMP% 路徑一律 `RuntimeError` 拒絕，已實測）⇒ CI／生產永遠載入 repo 的真檔，該鉤子無法被用來把守衛測試指向 repo 外的任意程式。
+- **可泛化判別式**：**變異實驗的驗收目標不只是「變異要轉紅」，還包括「repo 工作樹在任何時刻都不該處於變異狀態」**。in-place 變異把「還原成功」當成前提，而還原正是會失敗的那一步 ⇒ 把變異對象移到副本上，這個不變量直接消失。
+
+**🔴 修正二：報告標籤與判定互相矛盾（誠實性）**
+
+- **現象**：10/24 夜槽報告同時印出 `soul_type_counts = {'value': 9}` ＋ 標籤「（value/belief/trait/essence 必須全 0）」、`key_node transitions = 1` ＋ 標籤「（必須 0）」，**而 VERDICT ＝ PASS**。標籤與判定互相矛盾 ⇒ 未來讀者（或夜槽 cron session）會誤讀為破線——正是 Owner 所憂的「未來真崩塌混入同槽將無從察覺」的溫床。
+- **修正**：3 處標籤改為「**非預期代謝者**必須全 0」／「**非預期代謝時**必須 0」，並在 stdout 補「本次預期退役命中 N 筆」。
+- **不動**：四欄名稱／位置／格式；CLI 既有 JSON 欄位（含 `undelivered_transitions`）；晨槽／夜槽工具 grep 的 8 個 key（已實測全部仍命中）。
+
+**🔴 執行者誠實揭露、本工單承認的兩處工單缺陷（非執行者過失）**
+
+1. **工單步驟 3「保留 `prompt_diffs`（④）不動」與驗收第 4 條「三槽皆 PASS」互斥**：弱化投影把 `X` 渲染成 `我隐约觉得「X」`（+7 字元）⇒ 只要有 value 轉入 weakening，該 agent 正文必然逐位元不同 ⇒ ④ 必然觸發。實測改判準**前**（HEAD `bbcc17a`）10/24 夜槽失敗清單有 **5 項**（②×2／③／④ Prompt／④ 弱化計數），工單只列了 2 項。⇒ 採「窄放行」：`prompt_diff_is_expected()` 三條件（命中數 > 0 **且** 弱化前綴增量 == 命中數 **且** 去弱化裝飾後正文逐位元相同），三者全中才不報；其餘正文改變**仍然是破線**（守衛 `test_prompt_diff_carveout_is_bounded`）。
+2. **`test_retirement_set_never_exceeds_baseline` 的字面斷言無法成立**：「把 3 顆近似節點都做成合規 ⇒ 推導結果 ⊆ 基線」與「M1／M2 必須轉紅（要求它們不在基線內）」互斥。⇒ 改寫為「正常圖 ⊆ 基線 ＋ 超出基線時 `baseline_violation()` 必須抓到」，語意與「放行可被推翻」一致。
+
+**🔴 最終合入閘門回歸（於上述兩處修正落地後，主大腦獨立執行）**
+`.venv\Scripts\python.exe -m pytest -q tests` ＝ **7202 passed / 0 failed / 24 skipped / 32 subtests**，751.68 s（0:12:31），exit 0（測試數自洽：基線 7188 ＋ 工單指定 13 ＋ ④ 放行邊界補充 1 ＋ 載入點覆寫 0 筆新增測試）。
+⇒ 合入範圍最終為 4 檔（`scripts/eval_lifecycle_cli.py` +214/−22、`tests/test_eval_lifecycle_cli.py` +318/−1、`logs/ENGINEERING_STATE.md` +74/−0、工單 +396/−0），`src/**` 與 `data/**` **零改動**。
+
+
+
