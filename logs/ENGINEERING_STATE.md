@@ -4037,3 +4037,26 @@ ight_audit.py`／`%TEMP%\morning_obs\morning_audit.py`（tz-aware 時戳、retur
 **另一類假陽性**：**53** 筆「CRITICAL」關鍵字命中中有 **52 筆是 INFO 級行的字面 token**、33 筆「Traceback」命中中 **28 筆是無 level 欄位的 traceback 內文** ⇒ 仍須**按 level 欄位解析**，不可用裸關鍵字統計（`Select-String` 另預設大小寫不敏感）。
 
 **本輪未做（明文）**：未改 `src/`／`personas/`／`configs/`／`data/`（僅改 `tests/test_eval_lifecycle_cli.py` ＋ 本條狀態）；未重啟、未動任何行程、未殺任何 PID；未觸發 synthetic 事件；未催熟門檻；未對弱化包裝做任何消紅處置（Owner 裁決 2／3：嚴禁人為製造假 Pattern 邊、嚴禁人為干預）。
+
+#### 0.1.48 夜槽（2026-10-22 22:00 EDT）驗收結案：兩張部署票**生產驗收完成**（2026-10-22 22:41 EDT）
+
+**全庫回歸（主大腦獨立複核，修補時間炸彈後）**＝ **7154 passed / 0 failed / 24 skipped / 32 subtests passed，806.07 s（13:26）**，回歸 exit code **0**（`.venv\Scripts\python.exe -m pytest -q tests`）。
+（預期 7152 ＋ 本輪新增的 2 道時間無關性守衛 ＝ 7154，數字自洽。）
+
+**DEPLOY-RESTART-25（commit `2e6dd19`）兩張票的生產驗收結果**
+| 票 | 驗收項 | 生產實測 | 判定 |
+|---|---|---|---|
+| LIFECYCLE-REINFORCE-CHAIN | 支持傳遞鏈落地 | `support_propagation` 邊 **33（部署首跑）→ 48（本槽 +15）**，涵蓋靈魂節點 **15 顆不變**；本槽 15 條 `valid_from_ts` 全落 `2026-10-23T02:00:59Z–02:01:37Z` | **PASS** |
+| INFRA-V1-MIRROR-APPEND-RACE | v1 原子追加 | 部署後新增 **32 行**（`agent_ruka` +4／`agent_yua` +28，寫入時點 22:13:31／22:14:02），**含 CRLF = 0 行 ⇒ 100% LF-only**；歷史 **CRLF 4271 筆完全不動** | **PASS** |
+| 兩票共同 | 弱化包裝 | **0→1**（`agent_mahiru` belief `57392ccdb3dd411e846f352e19d22e76`）⇒ **照實標紅**；成因「機制缺口：Belief 缺乏日常 Pattern 背書」；REINFORCE 對它零影響（祖先新邊＝0） | **如預期，屬機制缺口而非部署失效** |
+| 兩票共同 | 關鍵反例 | `6a92c906b245458cb0c4c64ea214f2eb` sidecar 事件 **0 筆**、overlay 有效狀態 **active** | **PASS** |
+| 兩票共同 | 安全紅線 | 節點檔前 **282,409 bytes** SHA-256 **恆等**；PID 全未變動（trampoline 26980／`:8000` 19440／VC 12792・7716・16612）；python 回歸後回到 **4 隻**（2 hindsight ＋ 2 production，零殘留）；槽期間 ERROR/CRITICAL 級行 **0** | **PASS** |
+| 兩票共同 | 接縫 | **42 筆**（日誌獨立重數）⇒ 與累計 46 的差額 4 條＝本槽溶解的一槽延遲（3 Sunset ＋ 1 自然完成） | **PASS（不變量閉環）** |
+
+⇒ **兩張部署票的生產驗收完成。** 接縫「42 vs 46」的正解與弱化包裝的權威口徑已在 §0.1.47 詳述（前者為一槽延遲機制、**非故障**；後者端點數恆 0 為**假零**，改以投影層為紅線口徑）。
+
+**下一步已知事件**：`2026-10-24 22:00 EDT` 夜槽將有 **10 顆 legacy value**（含關鍵反例 `6a92c906b245`）集體弱化 ⇒ 弱化包裝基線將由 1 升至約 10。依 Owner 裁決 3（上游生活內容自然演進 Life Narrative Drift）**嚴禁人為干預**，且裁決 2 **嚴禁人為製造假 Pattern 邊**。⇒ 2026-10-23 晨槽（08:00 EDT）預期接縫 **46**（42 常態 ＋ 4 延遲補發）、弱化包裝基線 **1**（＝1 屬已知基線位移不標紅，>1 才異常，=0 標「與預期不符」）。
+
+**本輪未做（明文）**：未改 `src/`／`personas/`／`configs/`／`data/`；未重啟、未動任何行程、未殺任何 PID；未觸發 synthetic 事件；未催熟門檻；未對弱化包裝做任何消紅處置。
+
+**仍在進行**：`FEAT-SCHEMA-CONTRADICTION` RFC 專票（`logs/FEAT-SCHEMA-CONTRADICTION-RFC-WORK-ORDER.md`，worker `bg_cee13eee`）—— 沙盒原型 `src/inner_life/contradiction_probe.py` 與守衛 `tests/inner_life/test_contradiction_probe.py` 已落檔（22:33／22:36），**尚未 commit、合入待主大腦複核變異證據**。
