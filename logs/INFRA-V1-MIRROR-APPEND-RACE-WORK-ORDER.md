@@ -88,3 +88,41 @@ def add(self, memory: Memory) -> None:
 
 1. **是否開票把 `src/memory/v1/` 另外兩個 append 點一併收斂**（需先量化它們的寫入者模型與熱路徑成本）。
 2. **repo 內其餘 21 處 text-mode append 點的盤點方式**（逐點寫入者模型盤點 vs 一次性全換原子原語）。
+
+---
+
+## 8. 追加：寫入者模型盤點＋生產現況（2026-10-22 20:0x，純唯讀量測）
+
+### 8.1 寫入者模型（讀碼，非推測）
+
+| append 點 | 呼叫鏈 | 執行緒模型 | 併發風險 |
+|---|---|---|---|
+| **`src/memory/v1/store.py:46`** | `provider.py:655`／`:630` → `loop.run_in_executor(...)` → `write_turn` → `extract_and_write` → `_mirror_extraction` → `v1_store.add()`（`writer.py:725`） | **concurrent.futures 執行緒** | 🔴 **高 —— 本票已修** |
+| `src/memory/v1/loader.py:355` ＋ `src/memory/middleware.py:254` | `MemoryMiddleware` → `loader.load()` → `_append_trace`；**兩者寫同一個檔** `data/memory/loader_trace.jsonl` | 同一 event loop 執行緒、同**步**寫入（`open`→`write` 之間無 await 點 ⇒ 同 loop 上不可能交錯） | 🟡 **低**（實測損壞行 0） |
+| `src/memory/v1/log_exporter.py:24` | **全 repo 唯一呼叫者 = `scripts/run_v1_experiment.py:97`**（手動實驗腳本、單執行緒） | 無生產呼叫者 | ⚪ **無** |
+
+⇒ **關鍵佐證**：同一子系統的 `GraphStore` 早就為同一個成因加了 `threading.RLock`（KI-008，2026-08-29：「sqlite 連線（`check_same_thread=False`）被多執行緒併發存取（prefetch 走 `asyncio.to_thread` 讀 ＋ `write_turn` 走 `run_in_executor` 寫）→ sqlite3 C 擴展記憶體損壞 → ACCESS VIOLATION」）。⇒ **v1 鏡像就是那條寫入路徑上唯一沒被保護的環節** ⇒ 本票的修復**不是理論防禦，是補上同一條路徑上已被證實存在的執行緒競爭**。
+
+### 8.2 生產現況（唯讀實測）
+
+| 生產承載檔 | 行數 | CRLF | 損壞行 | 備註 |
+|---|---|---|---|---|
+| `data/memory/*/memories.jsonl`（10 隻 agent） | **4271** | **10/10 檔全 CRLF** | 0 | 本票修的是**寫入端**；歷史 4271 筆維持 CRLF（append-only 不可回溯改寫） |
+| `data/memory/loader_trace.jsonl` | 2725 | 全 CRLF | **0** | ⇒ 實測未觀察到 torn write，與「同 loop 同步寫入」一致 |
+| `data/inner_life/trace.jsonl` | 6795 | 全 CRLF | 0 | |
+| `data/world/perception_trace.jsonl` | 35350 | 全 CRLF | 0 | |
+| `data/inner_life/epistemic_tensions.jsonl` | 1 | **0（全 LF）** | 0 | ⭐ **交叉驗證**：上輪已改用二進位寫入 ⇒ 「binary ⇒ LF-only」轉換**確實生效** |
+
+### 8.3 收斂 LF-only 的**後果**（必須知情）
+
+- append-only 檔的**歷史 CRLF 無法回溯改寫**（這正是 `src/memory/sage/writer.py` 被列為 Append-Only 唯一權威並凍結的原因）⇒ 「全面收斂為 LF-only」**只能對新寫入生效**，v1 `memories.jsonl` 將變成**新舊混存**（前 4271 筆 CRLF ＋ 新行 LF）。
+- 🔴 **讀取端不受影響（已驗）**：`V1Store.all()` 用 `open(..., "r", encoding="utf-8")` ＋ `for line in f` ＋ `strip()` ⇒ Python **universal newlines** 把 `\r\n` 與 `\n` 一律視為行結尾 ⇒ 混存檔可正常讀回。
+- ⇒ **但**：任何**逐位元**依賴 `\r\n` 分行的下游工具都會看到混存。目前 repo 內**無**這類讀取器（已 grep 確認 `memories.jsonl` 的讀取點皆走 `V1Store.all()`）。
+- ⚠️ 提醒：上輪 `src/world/world_log.py` 的 LF-only 位元組斷言守衛是**該檔專屬**的；v1 store 另立 T1 守衛（已寫），兩者互不干涉。
+
+### 8.4 盤點結論（給裁示用）
+
+- **併發風險已證實且已修**：1 處（`memory/v1/store.py`）。
+- **無風險**：1 處（`log_exporter.py`，無生產呼叫者）。
+- **低風險但有 CRLF 債務**：2 處（`loader.py` ＋ `middleware.py`，同一檔、同 loop 同步寫入、實測 0 損壞行）。
+- **repo 其餘 21 處**：本次未盤點（逐點需各自判定寫入者模型）。
