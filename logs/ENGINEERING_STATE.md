@@ -3924,3 +3924,36 @@ ight_audit.py`／`%TEMP%\morning_obs\morning_audit.py`（tz-aware 時戳、retur
 - **既有 PID 基線（20:41 重啟後，夜槽不得變動）**：trampoline `data\server.pid`＝**26980**、`:8000` socket owner＝**19440**（parent 26980）、VC `:8765`／`:8766`／`:8767`＝**12792**／**7716**／**16612**；python 恰 **4** 隻（2 hindsight ＋ 2 production，零測試殘留）。
 
 **本輪未做（明文）**：**主大腦**未改 `src/`／`personas/`／`configs/`／`data/`（僅新增 `logs/` 兩份檔）；未重啟、未動任何行程、未殺任何 PID；未觸發 synthetic 事件；未催熟任何門檻；未對弱化包裝做任何「消紅」處置（Owner 裁決 2／3：嚴禁人為製造假 Pattern 邊、嚴禁人為干預）。派工中的 worker **僅**依 CAMPAIGN-B-P1 工單 §2.4 修改那 7 個檔案，**未合入、未部署**（合入須待主大腦複核變異證據與全庫回歸）。
+
+#### 0.1.45 CAMPAIGN-B-P1 合入（戰役 B Phase 1：D1＋D3 形式化驅動張力）＋ 變異實驗主大腦獨立複核（2026-10-22 22:05 EDT）
+
+**合入**：`1119ea5`（已推 `origin/main`）。工單 `logs/CAMPAIGN-B-D1-D3-TENSION-DRIVER-WORK-ORDER.md`（§0.1.44 開票）。前作 `6dbe8ab`。
+
+**交付（7 檔，與工單 §2.4 精確一致，`git status --porcelain` 實測）**
+`src/inner_life/drive_profile.py`（9,361 B）／`src/inner_life/tension_scoring.py`（14,870 B）／`src/inner_life/tension_closure_loop.py`（17,653 B）／`tests/inner_life/test_drive_profile.py`／`test_tension_scoring.py`／`test_tension_closure_loop.py`／`tests/test_observability_completeness_1.py`（`allowed` **+10 行**＝3 筆新模組 ＋ 7 行說明）。
+
+**主大腦獨立複核（非 worker 自報）**
+- 檔案面：`git diff --name-only HEAD` 僅 1 個 tracked 檔（observability），新增 6 個 untracked；**合入後工作樹乾淨**。
+- 新測試：`pytest -q tests/inner_life/test_{drive_profile,tension_scoring,tension_closure_loop}.py` ⇒ **38 passed / 0 failed（0.70 s）**。
+- **變異 M1～M5 由主大腦用 worker 的 harness（`%TEMP%\campaign_b_mutation_harness.py`）獨立重跑 ⇒ 全紅且位元還原**（`ALL_RED=True`，每條 `restore identical=True`）：M1（資訊缺口恆 0）⇒ T4 紅 `assert 1 == 2`；M2（加權總分＋權重常數）⇒ T5 紅（乘法／浮點常數／權重命名三條獨立斷言全中，`[0.2, 0.8]`）；M3（自訂窗 12h/30d）⇒ T6 紅（`<24h`／`>=7d` 兩側皆錯，且 bucket↔state 由 1:1 變 4:3）；M4（放寬隔離檢查）⇒ T10 紅（閉環**真的寫進**隔離 tmp）；M5（解析 fallback）⇒ T3 紅（`agent_rem` 回傳 D1 而非 `[]`）。
+- 結構性複核：`tension_scoring.py` 內**無乘法、無浮點常數、無權重命名識別字**（AST 層面亦由 T5 釘死）；`decay_bucket` 經 `classify_temporal_state` 委派導出（**未另立窗常數**）；`sort_scores` 走字典序 `_sort_key`；`tension_closure_loop.py` 開關 `SOUL_OS_TENSION_DRIVE_LOOP`（預設 OFF）＋寫入目標須位於 `tempfile.gettempdir()` 之下。
+- `frozen_dirs` 實測 **11 筆**（`src/agency/` 5 ＋ `submission_gate.py` ＋ `identity_firewall.py` ＋ `producer_gate.py` ＋ `world/middleware.py` ＋ `src/memory/sage/writer.py` ＋ `src/soul/decision.py`）**未動**；🔴 **主大腦開票時誤記為「10 筆」，已更正工單**（worker 回報的是對的，11 筆）——此處留痕以免後續再誤用該數字。
+- repo hygiene 守衛：`tests/infra/test_repo_hygiene_tracked_tests.py` ⇒ **8 passed**（worker 那輪的唯一紅燈＝3 個新測試檔未 `git add`，已由主大腦 `git add` 解決）。
+
+**實測值（分子／分母／單位）**
+- **驅動解析**：**3 筆／3**（`agent_akane`），逐字＋行號：D1 `理解驅動`／`不理解他人 = 存在焦慮上升`／`→「如果我無法理解你，我就沒有資格待在你身邊。」`（66→68）；D2 `被需要驅動`／`被忽略（而非被拒絕）= 自我價值下降`／`→ 對方沒有來找她，比對方直接拒絕她更讓她動搖。`（70→72）；D3 `邊界修復驅動`／`崩潰後自動尋找「錨點」`／`→ 她不等別人把她撈起來；她會自己找一件確定的事，然後繼續走。`（74→76）。
+- **三因子**（`agent_akane`，now＝epoch 1792719281＝21:29 EDT）：① 資訊缺口 **63 筆／64 個 active 線頭**（檔案共 76 列）② 未決矛盾 **0 筆** ③ `释然`／`>=7d`（last_interaction_at 2026-09-22T04:00Z，elapsed≈30 天）。
+- **閉環沙盒**（tmp）：`working_state.jsonl` **1 筆**（7 欄位齊全；`drives_touched=["D1","D3"]`）／沙盒 `epistemic_tensions.jsonl` **1 筆**（頂層欄位集合 == 生產 `TENSION_EVENT_FIELDS`）。
+
+**🔴 本輪最關鍵的發現（影響 Phase 2 設計）**
+**因子②「未決矛盾」在生產上是**恆 0**——`data/soul/**` 全 944 個 JSONL **無一含 `contradiction` 欄位**。⇒ 生產上只有 **D1** 會產生張力，**D3 恆 0**；工單明禁「改用別的來源頂替」（不得借 SAGE 矛盾偵測頂替），worker **確實沒有頂替**，而是照實回報。
+⇒ **「D3＋D1 合併」在 Phase 1 只跑通了 D1 那一半**。D3 要能真的生根，需要**先有可觀測的矛盾資料面**（新增欄位屬資料面擴充，**須另開票並經 Owner 裁示**，不得在本票夾帶）。
+⇒ 另：`agent_akane` 的 `last_interaction_at` 距今 **≈30 天** ⇒ 該角色目前恆落在 `释然／>=7d` 桶；**「D3 恆 0 ＋ D1 獨撐」是否就是 Phase 1 該得的分佈**，須待 Phase 2 矛盾資料面到位後再驗。
+
+**Frozen Contract 零觸碰（自證）**：`personas/**`、`configs/**`、`src/llm/proxy.py`、`src/inner_life/epistemic_tension_scheduler.py`、`src/soul/temporal_phenomenology.py`、`src/soul/motive.py`、`src/memory/sage/**` 零改動；新模組**未接**任何排程器／handler，旗標預設 OFF ⇒ **生產零行為變化**（`src/` 新檔為新增模組，服務行程未重啟 ⇒ 線上仍是舊代碼）。
+
+**全庫回歸（獨立複核）**：worker 那輪 **7151 passed / 1 failed / 24 skipped**（13:21，唯一紅燈＝新測試未 `git add`）。主大腦已另開**背景任務 `bg_8984f475-d32a-4aca-9a09-eb28fafde287`**：**等 22:00 夜槽生產靜默（連續 150 秒無 `data/` 檔案變動）後才自動跑全庫回歸**，避免與生產槽爭 CPU；預期 **7152 passed / 0 failed**。結果將由 §0.1.46 登錄。
+
+**夜槽觸發紀錄**：`2026-10-22 22:00:22,09x` 46 隻角色全數 `[Scheduler] ✓ 觸發 agent_* night (AGENCY_TRIGGER published)`。六項最終簽收由 companion cron `c282a716`（22:20 EDT）＋後備 `self-cd0946165`（≈22:52 EDT）兩層完成。
+
+**本輪未做（明文）**：未重啟、未動任何行程、未殺任何 PID；未寫入 `data/**`（worker 實測：本票可觸及面 87 檔差異 0；全樹 32 changed ＋ 3 added 全為生產服務自身活動且帶生產 provenance）；未觸發 synthetic 事件；未催熟門檻；未對弱化包裝做任何消紅處置。
