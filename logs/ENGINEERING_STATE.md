@@ -4257,5 +4257,46 @@ REINFORCE 傳遞鏈已於 2026-10-22 20:41 部署（`2e6dd19`）⇒ 靈魂節點
 `.venv\Scripts\python.exe -m pytest -q tests` ＝ **7202 passed / 0 failed / 24 skipped / 32 subtests**，751.68 s（0:12:31），exit 0（測試數自洽：基線 7188 ＋ 工單指定 13 ＋ ④ 放行邊界補充 1 ＋ 載入點覆寫 0 筆新增測試）。
 ⇒ 合入範圍最終為 4 檔（`scripts/eval_lifecycle_cli.py` +214/−22、`tests/test_eval_lifecycle_cli.py` +318/−1、`logs/ENGINEERING_STATE.md` +74/−0、工單 +396/−0），`src/**` 與 `data/**` **零改動**。
 
+---
+
+#### 0.1.54 關鍵反例退役條款**正式核准** ＋ 豁免邊界精確化（退役窗時間下界）（2026-10-23 16:xx EDT）
+
+**Owner 裁定（逐字）**
+- 「正式核准此條款。」——「節點 `6a92c906b245458cb0c4c64ea214f2eb` 作為關鍵反例的合約使命，是檢驗在未滿 14 天衰減週期前『不得提前早衰』；而 10/24 夜槽到達 14 天門檻時，它本就屬於那 10 顆建立於 2026-10-11 且缺乏日常支持邊的 Legacy Value 之一。當它隨著整批節點自然步入退役時，若 CLI 仍以未分流的舊規則報警，將直接扼殺『區分預期代謝與意外破線』的重構初衷。」
+- 「此項豁免的防禦邊界必須精準鎖定：僅當該節點落在推導出的退役白名單集合內、且轉變狀態嚴格為 `weakening` 時方得免除報警；**若其在 10/24 槽前提前異動**，或轉入 `dormant` 與 `superseded`，CLI 仍必須堅決熔斷報警。」
+
+**🔴 裁定落地時發現的缺口（主大腦獨立複核補齊）**
+前一版實作（commit `f0da220`）的 `is_expected` 只檢查「在白名單內 ＋ state 嚴格為 `weakening`」，**沒有時間下界** ⇒ 關鍵反例若在 10/24 槽**之前**提前弱化，也會被當成預期代謝而放行 ⇒ **不滿足本次裁定的「提前異動必須熔斷」條款**。已補上。
+
+**實作（`scripts/eval_lifecycle_cli.py`）**
+- 新增常數 `EXPECTED_RETIREMENT_NOT_BEFORE = "2026-10-25T02:00:00+00:00"`（＝ 10/24 22:00 EDT 槽）。
+  🔴 這是 Owner 核准的「**退役窗**」常數，**不是**衰減門檻：判準層仍不做任何「距今 N 天」型算術（守衛 `test_cli_does_not_import_decay_thresholds` 仍轉紅於 M11）。
+- 新增純函式 `is_expected_metabolism(event, expected_ids, not_before)`：**四條件全中**才成立——① `node_type == "value"` ② `lifecycle_state == "weakening"`（嚴格）③ `node_id` 在推導出的退役集合內 ④ **轉變時刻 ≥ 退役窗下界**。時刻不可解析或無時區 ⇒ **不放行**（fail-closed）。
+- 新增純函式 `select_expected_hits(events, expected_ids, not_before)`：與 predicate **同源**（`assess()` 與 `main()` 都只呼叫它們，不再各自實作條件）。
+- `assess()` 新增 kwarg `retirement_not_before`（預設＝該常數）；`main()` 的「本次命中」改用 `select_expected_hits()`。
+- stdout 新增可 grep 的 ASCII 欄位 `expected_hits = N`；JSON 新增 `expected_hits_count`。
+
+**守衛測試（+5 筆，全檔共 51 筆全綠）**
+`test_retirement_before_approved_slot_is_a_break`（提前早衰必須報破線）／`test_retirement_at_or_after_approved_slot_is_expected`（退役窗內＝預期代謝）／`test_dormant_is_never_expected_even_after_approved_slot`（dormant／superseded 永不豁免）／`test_select_expected_hits_agrees_with_predicate`（命中與 predicate 同源）／`test_retirement_window_constant_is_declared`（退役窗常數不得被改）。
+
+**變異（新增 M12～M14；M1～M14 共 14 條全紅，repo 檔 sha256 byte-identical）**
+M12 移除退役窗時間下界（提前早衰被誤放行）⇒ 轉紅 `test_retirement_before_approved_slot_is_a_break`；M13 放寬預期代謝的狀態條件（dormant 也算）⇒ 轉紅 `test_dormant_is_never_expected_even_after_approved_slot`；M14 `select_expected_hits` 繞過 predicate（各自實作條件）⇒ 轉紅 `test_select_expected_hits_agrees_with_predicate`。
+🔴 M4／M5／M6 的錨點因本次重構（分類搬進 helper）而失效 ⇒ 已重錨到 helper 的對應條件。
+
+**🔴 守衛失守事件（主大腦實測發現並修掉）**
+M5／M6 首跑**意外全綠**（守衛失守）。根因：舊 fixture 的合成事件**沒有 `ts` 欄位**，而新規則對「時刻不可解析」採 fail-closed ⇒ 變異根本走不到被改的那個條件（白名單／型別檢查在時刻檢查之後）。⇒ 補上 `ts`（退役窗內的 `2026-10-25T02:00:22.072571+00:00`）後，M5／M6 才真的轉紅。
+**可泛化判別式**：**新增 fail-closed 前置條件時，既有守衛測試的合成 fixture 可能因缺該欄位而「意外全綠」** ⇒ 變異實驗是唯一能發現這類盲區的手段；fixture 必須與生產事件**同形**（欄位齊備），否則守衛是在測自己造的空殼。
+
+**沙盒複驗（加時間下界後，三槽仍全 PASS）**
+10/23 夜槽（`2026-10-24T02:00:00Z`）＝ PASS（+17 全 pattern／weak 1→1）；**10/24 夜槽（`2026-10-25T02:00:00Z`）＝ PASS（+48＝pattern 39＋value 9／預期退役集合 10 筆、命中 9 筆／weak 1→10／key_node transitions 1 屬預期代謝／prompt_diffs 9 筆但 unexplained ＝ 0）**；10/23 晨槽 ＝ PASS（+7 pattern）。
+
+**零干預紀律（Owner 裁決 2／3）**：未偽造任何 Pattern 邊、未手動消紅、未為了讓純度歸零而動任何程式碼／資料／門檻；`src/**` 與 `data/**` 零改動；未重啟服務、未動任何行程。
+
+**🔴 最終合入閘門回歸（退役窗下界落地後，主大腦獨立執行）**
+`.venv\Scripts\python.exe -m pytest -q tests` ＝ **7207 passed / 0 failed / 24 skipped / 32 subtests**，841.54 s（0:14:01），exit 0（基線 7202 ＋ 本次新增守衛 5 筆＝7207，數字自洽）。
+⇒ 本次合入範圍 3 檔：`scripts/eval_lifecycle_cli.py`、`tests/test_eval_lifecycle_cli.py`、`logs/ENGINEERING_STATE.md`；`src/**` 與 `data/**` **零改動**；變異 M1～M14 共 14 條全紅且 repo 檔 sha256 與變異前逐位元相同。
+
+
+
 
 

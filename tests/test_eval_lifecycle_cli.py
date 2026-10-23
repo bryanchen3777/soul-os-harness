@@ -254,6 +254,10 @@ _NEAR_MISS_DATE = "f" * 32        # 條件 2：建立日不同
 _NEAR_MISS_SUPPORT = "e" * 32     # 條件 3：last_support 較晚
 _NEAR_MISS_EDGE = "d" * 32        # 條件 4：有 support_propagation 邊指向
 _NOT_VALUE = "c" * 32             # 條件 1：node_type 不是 value
+#: 退役窗**內**的轉變時刻（10/24 22:00 EDT ＝ 2026-10-25T02:00:00Z 起）。
+#: 🔴 合成事件**必須**帶 ts：判準層對「時刻不可解析」採 fail-closed（不放行），
+#:    沒有 ts 的 fixture 會讓「白名單／型別」類變異走不到被改的那個條件 ⇒ 守衛失守。
+_RETIREMENT_TS = "2026-10-25T02:00:22.072571+00:00"
 
 
 def _value_node(node_id, created_ts, last_support_ts=None, node_type="value"):
@@ -336,7 +340,8 @@ class TestExpectedMetabolism(unittest.TestCase):
         wid = _RETIREMENT_BASELINE_IDS[0]
         fails = CLI.assess(
             new_events=[{"node_id": wid, "node_type": "value",
-                         "lifecycle_state": "weakening"}],
+                         "lifecycle_state": "weakening",
+                         "ts": "2026-10-25T02:00:22.072571+00:00"}],
             prompt_diffs=[], key_node="KEY",
             weak_before=0, weak_after=1, graph_nodes=399,
             expected_retirement=frozenset({wid}))
@@ -346,7 +351,7 @@ class TestExpectedMetabolism(unittest.TestCase):
         """**非**白名單的 value 弱化 ⇒ 必須報「靈魂結構誤傷」。"""
         fails = CLI.assess(
             new_events=[{"node_id": "a" * 32, "node_type": "value",
-                         "lifecycle_state": "weakening"}],
+                         "lifecycle_state": "weakening", "ts": _RETIREMENT_TS}],
             prompt_diffs=[], key_node="KEY",
             weak_before=0, weak_after=1, graph_nodes=399,
             expected_retirement=frozenset(_RETIREMENT_BASELINE_IDS))
@@ -357,9 +362,9 @@ class TestExpectedMetabolism(unittest.TestCase):
         """trait / essence 異動 ⇒ 必須報破線（即使傳入 expected_retirement）。"""
         fails = CLI.assess(
             new_events=[{"node_id": "t" * 32, "node_type": "trait",
-                         "lifecycle_state": "weakening"},
+                         "lifecycle_state": "weakening", "ts": _RETIREMENT_TS},
                         {"node_id": "s" * 32, "node_type": "essence",
-                         "lifecycle_state": "weakening"}],
+                         "lifecycle_state": "weakening", "ts": _RETIREMENT_TS}],
             prompt_diffs=[], key_node="KEY",
             weak_before=0, weak_after=0, graph_nodes=399,
             expected_retirement=frozenset(_RETIREMENT_BASELINE_IDS))
@@ -371,7 +376,8 @@ class TestExpectedMetabolism(unittest.TestCase):
         wid = "6a92c906b245458cb0c4c64ea214f2eb"
         fails = CLI.assess(
             new_events=[{"node_id": wid, "node_type": "value",
-                         "lifecycle_state": "weakening"}],
+                         "lifecycle_state": "weakening",
+                         "ts": "2026-10-25T02:00:22.072571+00:00"}],
             prompt_diffs=[], key_node="6a92c906b245",
             weak_before=0, weak_after=1, graph_nodes=399,
             expected_retirement=frozenset({wid}))
@@ -384,7 +390,7 @@ class TestExpectedMetabolism(unittest.TestCase):
         wid = "6a92c906b245458cb0c4c64ea214f2eb"
         fails = CLI.assess(
             new_events=[{"node_id": wid, "node_type": "value",
-                         "lifecycle_state": "weakening"}],
+                         "lifecycle_state": "weakening", "ts": _RETIREMENT_TS}],
             prompt_diffs=[], key_node="6a92c906b245",
             weak_before=0, weak_after=1, graph_nodes=399)
         self.assertTrue(any("關鍵反例" in f for f in fails),
@@ -395,19 +401,91 @@ class TestExpectedMetabolism(unittest.TestCase):
         wid = _RETIREMENT_BASELINE_IDS[0]
         fails = CLI.assess(
             new_events=[{"node_id": wid, "node_type": "value",
-                         "lifecycle_state": "dormant"}],
+                         "lifecycle_state": "dormant", "ts": _RETIREMENT_TS}],
             prompt_diffs=[], key_node="KEY",
             weak_before=0, weak_after=0, graph_nodes=399,
             expected_retirement=frozenset({wid}))
         self.assertTrue(any("轉變目標含" in f for f in fails),
                         "白名單內的 dormant 仍必須報破線：%s" % fails)
 
+    # ── 退役窗（時間下界）：Owner 2026-10-23 裁示核准 ────────────────────
+    #   「僅當該節點落在推導出的退役白名單集合內、且轉變狀態嚴格為 weakening
+    #    時方得免除報警；**若其在 10/24 槽前提前異動**，或轉入 dormant 與
+    #    superseded，CLI 仍必須堅決熔斷報警。」
+
+    def test_retirement_before_approved_slot_is_a_break(self):
+        """🔴 提前早衰：白名單 value 在核准退役槽**之前**轉入 weakening ⇒ 必須報破線。"""
+        wid = _RETIREMENT_BASELINE_IDS[0]
+        early = {"node_id": wid, "node_type": "value", "lifecycle_state": "weakening",
+                 "ts": "2026-10-24T02:00:22.072571+00:00"}   # 10/23 22:00 槽（早於 10/24 槽）
+        self.assertFalse(
+            CLI.is_expected_metabolism(early, frozenset({wid})),
+            "早於核准退役槽的弱化不得被歸類為預期代謝")
+        fails = CLI.assess(
+            new_events=[early], prompt_diffs=[], key_node="KEY",
+            weak_before=0, weak_after=1, graph_nodes=399,
+            expected_retirement=frozenset({wid}))
+        self.assertTrue(any("靈魂結構誤傷" in f for f in fails),
+                        "提前早衰必須報破線：%s" % fails)
+
+    def test_retirement_at_or_after_approved_slot_is_expected(self):
+        """退役窗之內（10/24 22:00 EDT ＝ 2026-10-25T02:00:00Z 起）的弱化 ⇒ 預期代謝。"""
+        wid = _RETIREMENT_BASELINE_IDS[0]
+        onslot = {"node_id": wid, "node_type": "value", "lifecycle_state": "weakening",
+                  "ts": "2026-10-25T02:00:22.072571+00:00"}   # 10/24 22:00 槽
+        self.assertTrue(CLI.is_expected_metabolism(onslot, frozenset({wid})),
+                        "核准退役槽的弱化必須被視為預期代謝")
+        fails = CLI.assess(
+            new_events=[onslot], prompt_diffs=[], key_node="KEY",
+            weak_before=0, weak_after=1, graph_nodes=399,
+            expected_retirement=frozenset({wid}))
+        self.assertEqual(fails, [], "退役窗內的弱化是預期代謝，不是破線：%s" % fails)
+
+    def test_dormant_is_never_expected_even_after_approved_slot(self):
+        """dormant／superseded 即使在集合內且在退役窗之後 ⇒ 仍不是預期代謝。"""
+        wid = _RETIREMENT_BASELINE_IDS[0]
+        for state in ("dormant", "superseded"):
+            ev = {"node_id": wid, "node_type": "value", "lifecycle_state": state,
+                  "ts": "2026-10-25T02:00:22.072571+00:00"}
+            self.assertFalse(CLI.is_expected_metabolism(ev, frozenset({wid})),
+                             "%s 不得被視為預期代謝" % state)
+            fails = CLI.assess(
+                new_events=[ev], prompt_diffs=[], key_node="KEY",
+                weak_before=0, weak_after=0, graph_nodes=399,
+                expected_retirement=frozenset({wid}))
+            self.assertTrue(any("轉變目標含" in f for f in fails),
+                            "%s 必須報破線：%s" % (state, fails))
+
+    def test_select_expected_hits_agrees_with_predicate(self):
+        """main() 的「本次命中」與 predicate 必須同源（不得各自實作條件）。"""
+        wid = _RETIREMENT_BASELINE_IDS[0]
+        early = {"node_id": wid, "node_type": "value", "lifecycle_state": "weakening",
+                 "ts": "2026-10-24T02:00:22.072571+00:00"}
+        onslot = {"node_id": wid, "node_type": "value", "lifecycle_state": "weakening",
+                  "ts": "2026-10-25T02:00:22.072571+00:00"}
+        pat = {"node_id": "p" * 32, "node_type": "pattern", "lifecycle_state": "weakening",
+               "ts": "2026-10-25T02:00:22.072571+00:00"}
+        events = [early, onslot, pat]
+        ids = frozenset({wid})
+        hits = CLI.select_expected_hits(events, ids)
+        self.assertEqual([e["ts"] for e in hits], [onslot["ts"]],
+                         "只允許退役窗之後的弱化命中：%s" % [e["ts"] for e in hits])
+        for e in events:
+            self.assertEqual(e in hits, CLI.is_expected_metabolism(e, ids),
+                             "select_expected_hits 與 predicate 對 %s 的判定不一致" % e["ts"])
+
+    def test_retirement_window_constant_is_declared(self):
+        """核准退役窗是 Owner 宣告值，不得被悄悄改動或移除。"""
+        self.assertEqual(
+            CLI.EXPECTED_RETIREMENT_NOT_BEFORE, "2026-10-25T02:00:00+00:00",
+            "核准退役窗（10/24 22:00 EDT ＝ 2026-10-25T02:00:00Z）不得被改動")
+
     def test_weak_prefix_delta_must_equal_expected_count(self):
         """預期退役 1 筆但弱化包裝增量是 2 ⇒ 必須報「弱化包裝計數」。"""
         wid = _RETIREMENT_BASELINE_IDS[0]
         fails = CLI.assess(
             new_events=[{"node_id": wid, "node_type": "value",
-                         "lifecycle_state": "weakening"}],
+                         "lifecycle_state": "weakening", "ts": _RETIREMENT_TS}],
             prompt_diffs=[], key_node="KEY",
             weak_before=0, weak_after=2, graph_nodes=399,
             expected_retirement=frozenset({wid}))

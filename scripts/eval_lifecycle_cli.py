@@ -88,6 +88,15 @@ EXPECTED_RETIREMENT_BASELINE = frozenset({
     "d0df567934274a9697feff6d1b0d9af5",  # agent_anna
 })
 
+# 🔴 預期退役的**時間下界**（Owner 2026-10-23 裁示核准）。
+#    語意：10 顆 Legacy Value 的**合約退役槽** ＝ 2026-10-24 22:00 EDT
+#    ＝ 2026-10-25T02:00:00Z。⇒ **早於**此槽的弱化是「提前早衰」，
+#    必須熔斷報警，**不得**用「預期代謝」放行。
+#    🔴 這是 Owner 核准的「退役窗」常數，**不是**衰減門檻：
+#    判準層仍不得做任何「距今 N 天」型算術（守衛
+#    `test_cli_does_not_import_decay_thresholds` 會轉紅）。
+EXPECTED_RETIREMENT_NOT_BEFORE = "2026-10-25T02:00:00+00:00"
+
 
 # ── 路徑 ──────────────────────────────────────────────────────────────────
 def runtime_store_dir() -> Path:
@@ -311,6 +320,50 @@ def prompt_diff_is_expected(diff: dict, expected_count: int,
     return strip_weakening_decoration(before_block) == strip_weakening_decoration(after_block)
 
 
+def is_expected_metabolism(event, expected_ids, not_before=EXPECTED_RETIREMENT_NOT_BEFORE):
+    """某一筆新轉變是否屬「預期生命週期代謝」（Owner 2026-10-23「改判準」）。
+
+    四條件**全中**才成立（缺一 ⇒ 不是預期代謝 ⇒ 破線）：
+      1. `node_type == "value"`
+      2. `lifecycle_state == "weakening"`（**嚴格**；dormant／superseded 一律不是）
+      3. `node_id` 落在推導出的預期退役集合內
+      4. **轉變時刻 ≥ 核准的退役窗下界**（`EXPECTED_RETIREMENT_NOT_BEFORE`）——
+         早於該槽的弱化是「提前早衰」，必須熔斷報警。
+
+    🔴 時刻不可解析或無時區 ⇒ **不放行**（fail-closed）：
+       判準層不做任何「距今 N 天」型算術，只比對**宣告式時刻常數**。
+    """
+    if not isinstance(event, dict):
+        return False
+    if event.get("node_type") != "value":
+        return False
+    if event.get("lifecycle_state") != "weakening":
+        return False
+    if event.get("node_id") not in (expected_ids or ()):
+        return False
+    if not_before:
+        try:
+            dt = datetime.fromisoformat(str(event.get("ts") or ""))
+            bound = datetime.fromisoformat(str(not_before))
+        except Exception:
+            return False
+        if dt.tzinfo is None or bound.tzinfo is None:
+            return False
+        if dt < bound:
+            return False
+    return True
+
+
+def select_expected_hits(events, expected_ids, not_before=EXPECTED_RETIREMENT_NOT_BEFORE):
+    """本次「命中」的預期代謝（白名單內 value 在退役窗之後轉入 weakening）。
+
+    🔴 與 `is_expected_metabolism` **同源**（不得各自實作條件）——
+       守衛 `test_select_expected_hits_agrees_with_predicate` 會轉紅。
+    """
+    return [e for e in (events or [])
+            if is_expected_metabolism(e, expected_ids, not_before)]
+
+
 def assess(
     *,
     new_events: list,
@@ -323,6 +376,7 @@ def assess(
     eval_error: str = "",
     undelivered: int = 0,
     expected_retirement: frozenset = frozenset(),
+    retirement_not_before: str = EXPECTED_RETIREMENT_NOT_BEFORE,
 ) -> list:
     """**純函式**：依四項準則回傳失敗清單（空清單 = 全過）。
 
@@ -362,8 +416,9 @@ def assess(
     # ── 分類每一筆新轉變（Owner 2026-10-23「改判準」）────────────────────
     #   pattern          ⇒ 正常演化，永遠不是破線
     #   value→weakening
-    #     且在預期退役集合內 ⇒ EXPECTED_METABOLISM（預期代謝，不是破線）
-    #   其餘靈魂類／未知類型 ⇒ UNEXPECTED ⇒ 破線
+    #     且在預期退役集合內
+    #     且轉變時刻 ≥ 核准的退役窗下界 ⇒ EXPECTED_METABOLISM（預期代謝）
+    #   其餘靈魂類／未知類型／提前早衰 ⇒ UNEXPECTED ⇒ 破線
     expected_ids = set(expected_retirement or ())
     expected_count = 0
     soul_hits = {}
@@ -374,7 +429,7 @@ def assess(
         ntype = e.get("node_type")
         state = e.get("lifecycle_state")
         nid = e.get("node_id")
-        is_expected = (ntype == "value" and state == "weakening" and nid in expected_ids)
+        is_expected = is_expected_metabolism(e, expected_ids, retirement_not_before)
         if is_expected:
             # EXPECTED_METABOLISM：預期代謝 ⇒ 不是破線，也不計入關鍵反例。
             expected_count += 1
@@ -496,13 +551,11 @@ def main(argv=None) -> int:
         after_prompt = prompt_snapshot(sandbox, agents)
         new_events = after_events[len(before_events):]
 
-        # 🔴 本次「命中」的預期代謝（白名單內 value 轉入 weakening）。
+        # 🔴 本次「命中」的預期代謝（白名單內 value 轉入 weakening **且在退役窗之後**）。
         #    與 `expected_retirement`（集合）分開報：集合是「誰有資格」，
         #    命中是「這次真的轉了幾筆」—— 弱化包裝的允許增量看的是命中數。
-        expected_hits = [e for e in new_events
-                         if e.get("node_type") == "value"
-                         and e.get("lifecycle_state") == "weakening"
-                         and e.get("node_id") in expected_retirement]
+        #    🔴 與 `assess()` 的分類**同源**（同一個 `is_expected_metabolism`）。
+        expected_hits = select_expected_hits(new_events, expected_retirement)
         # 每個 agent 各自命中幾筆（用來判斷投影差異能否被預期代謝**完全解釋**）
         node_agent = {n.get("node_id"): n.get("agent_id")
                       for n in nodes if isinstance(n, dict)}
@@ -587,6 +640,7 @@ def main(argv=None) -> int:
             "soul_type_transitions": {t: by_type.get(t, 0) for t in SOUL_TYPES},
             "expected_retirement": sorted(expected_retirement),
             "expected_retirement_count": len(expected_retirement),
+            "expected_hits_count": len(expected_hits),
             "graph_nodes": graph_nodes,
             "graph_state_distribution": state_dist,
             "no_op_note": (not new_events and graph_nodes > 0 and not eval_error
@@ -641,6 +695,7 @@ def main(argv=None) -> int:
                 "soul_type_counts     = %s   (非預期代謝者必須全 0；本次預期退役命中 %d 筆)"
                 % (result["soul_type_transitions"], len(expected_hits)),
                 *retirement_lines,
+                "expected_hits         = %d" % len(expected_hits),
                 "graph_nodes          = %d   state_dist=%s" % (graph_nodes, state_dist),
                 "no_op_note           = %s" % (
                     "是（0 筆新轉變，但圖非空 ⇒ 冪等 no-op，非失敗）"
