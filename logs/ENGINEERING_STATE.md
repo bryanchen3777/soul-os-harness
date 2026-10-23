@@ -3995,3 +3995,45 @@ ight_audit.py`／`%TEMP%\morning_obs\morning_audit.py`（tz-aware 時戳、retur
 - **槽觸發紀錄**：`2026-10-22 22:00:22,09x` 46 隻角色全數 `[Scheduler] ✓ 觸發 agent_* night`。
 
 **本輪未做（明文）**：未改 `src/`／`personas/`／`configs/`／`data/`（本輪僅新增 `logs/` 一份工單 ＋ 本條狀態）；未重啟、未動任何行程、未殺任何 PID；未觸發 synthetic 事件；未催熟門檻；未對弱化包裝做任何消紅處置（Owner 裁決 2／3）。
+
+#### 0.1.47 夜槽（2026-10-22 22:00 EDT）六項核定最終簽收 ＋ 兩處量測缺陷修正（2026-10-22 22:28 EDT）
+
+**槽觸發**：`2026-10-22 22:00:22,09x` 46 隻角色全數 `[Scheduler] ✓ 觸發 agent_* night`；`data/elevation` 最後寫入 **22:13:29**（槽生產已靜默）。
+
+**六項核定（主大腦獨立複核，非僅轉錄報告）**
+
+| # | 核定項 | 結果 | 複核方式 |
+|---|---|---|---|
+| ① | Sunset 確定性收束 | **3 筆** ★`agent_anna` `d589bc50-dce8-4bb2-aab9-18bc8665e288`、★`agent_mai` `5a2c646d-54a4-4bff-a43e-d0526c56e79a`、★`agent_rem` `03311d0f-0a73-4f3f-89b2-aca4d2196270` | 報告「期望值拆解」段列出本槽溶解集合；orchestrator log 佐證 anna/mai/rem `active 2→1` |
+| ② | 接縫事件發射 | **42 筆**（per-agent：akane 6／anna 3／aoi 2／mahiru 9／mai 6／miku 5／ram 5／rem 2／ruka 3／yua 1） | **主大腦自 `data/server_nohup.err` 以 `2026-10-22 22:0x ... elevation 事件已提交` 獨立重數＝42**，與槽前 21:0x 的 42 筆分布**逐隻相同** |
+| ③ | 弱化包裝計數 | **0→1（照實標紅）**；`agent_mahiru` belief `57392ccdb3dd411e846f352e19d22e76`；sidecar `ts=2026-10-23T02:00:22.072571+00:00`、`reason=no_new_support_evidence`、`anchor_ts=2026-10-15T02:05:08.959391+00:00` | **投影層量測＝1**（`分布=[('agent_mahiru',1)]`、投影正文 16,223 字元）＋ overlay 實測全體 weakening 靈魂型＝**1**（僅此一筆） |
+| ④ | 關鍵反例 | `6a92c906b245` sidecar 事件 **0 筆**、overlay 有效狀態 **active** ⇒ PASS | 獨立讀 sidecar ＋ overlay |
+| ⑤ | CLI 四欄 | `returncode=0`／`eval_error=無`／`undelivered=0`／`VERDICT: PASS`（冪等重跑：sidecar 252→252、`weak_prefix 1→1`、`key_node transitions=0`） | **eval_error 空且 undelivered=0 ⇒ 這是合法 no-op，不是假綠** |
+| ⑥ | v1 原子追加 ＋ 支持傳遞 | **新追加行 32 筆全為 LF-only**（`agent_ruka` 4 ＋ `agent_yua` 28），**CRLF 仍 4271 筆不動**（歷史債未動、新行 100% LF-only）；`support_propagation` **33→48 筆（＋15）**，涵蓋節點仍 **15 顆** | 逐檔 bytes 實測反推 |
+
+**槽後資料基線**：節點 **712→793**、邊 **1597→1791**、sidecar **225→252（＋27＝pattern 26 ＋ belief 1）**；轉變純度 `value/belief/trait/essence`＝**1（belief）⇒ 紅線 ③ FAIL（照實標紅，不掩飾）**；節點檔前 **282,409 bytes** SHA-256 ＝ `7FD8F3F3BCE474CC09C87617C5DFCA41D2E518153F1356212A4DEF98B744178B` **恆等**。
+**PID 未變動**：trampoline `data/server.pid`＝**26980**、`:8000` owner＝**19440**（parent 26980）、VC `:8765`／`:8766`／`:8767`＝**12792**／**7716**／**16612**；python 恰 **4** 隻（2 hindsight ＋ 2 production，零測試殘留）。
+
+**🔴 修正一：「接縫 42 vs 期望 46」的正解（量測口徑，不是故障）**
+42 ≠ 46 的差額 **4 條**＝**本槽內溶解、接縫時尚未具備 `sage_fact_id` ⇒ 一槽延遲**者：`03311d0f`(rem)／`5a2c646d`(mai)／`d589bc50`(anna)＝**3 條 Sunset 目標** ＋ `b3eba984`(mahiru)＝**1 條自然完成**。報告自帶「未解釋缺席 = 0 條」。
+⇒ **「Sunset 溶解 ⇒ 一槽延遲補發」機制閉環**，報告的 FAIL 標籤屬過嚴（拿「累計 completed」對「本槽提交」）。⇒ **2026-10-23 晨槽接縫預期 = 42 常態 ＋ 4 延遲補發 = 46**。
+
+**🔴 修正二：弱化包裝的量測儀器（端點＝假零）**
+`/api/soul/essence/<agent>` 的 payload＝`essence`（**原始 content**）＋ `projection`（**只有 `projected_node_ids` 清單、無文字**）⇒ **結構上不可能出現** `WEAKENING_TONE_PREFIX="我隐约觉得"`（`src/inner_life/emergent_projection.py:70`，只在**投影時**套上）⇒ **端點數恆 0＝假零，不能當紅線判準**。
+⇒ 22:15 的 `night_audit.py` 已在該處標註並**新增投影層量測**（`format_emergent_block(record_trace=False)` 唯讀）⇒ 投影層＝**1**。**主大腦另以獨立 overlay 實測交叉驗證＝1**（兩條路徑一致）。
+⇒ 同時修掉 22:15 報告 ② 段那行誤導性的「弱化包裝總數 = 0 ⇒ PASS」。
+
+**🔴 修正三：守衛的「時間炸彈」（`tests/test_eval_lifecycle_cli.py`）**
+全庫回歸（主大腦獨立跑）＝ **2 failed / 7152 passed / 24 skipped / 738.86s**，失敗的是 `TestSimulatedTimeMustBeTzAware::test_tz_aware_clock_is_accepted`（2 個 subtest）⇒ `data["transitions"]` 期望 1、實得 **0**。
+**根因（實測四組對照釘死）**：測試把 `--simulated-time` 寫死 `2026-10-23T02:00:00Z`，而合成 fixture 的時間戳用「**真實 now − 10 天**」；引擎弱化門檻為 **10 整日**（`_days_between` 取整日）⇒ 真實時鐘一越過 22:00 EDT，elapsed 掉到 **9.98 天 → 取整 9 < 10 → 不轉弱** ⇒ 守衛「必紅」。對照組：`真實now−10d`⇒0 筆、**`模擬時鐘−10d`⇒1 筆**、`模擬時鐘−30d`⇒1 筆、`模擬時鐘−7.5d`⇒0 筆。
+⇒ **這是守衛缺陷，不是生產缺陷**（生產端 22:00 槽的 CLI 實跑＝24 筆轉變，行為正常）。
+**修法（改 fixture，不改斷言、不放寬門檻）**：① 合成節點的時間戳**一律由「評估時鐘」推導**（新增 `_SIMULATED_CLOCK` ＋ `_synthetic_graph(root, ref=...)`）② stale 天數 10→**30 天**（遠大於 10 天門檻 ⇒ 對整日取整與時鐘漂移免疫）③ **新增兩道守衛**：`test_fixture_is_anchored_to_evaluation_clock_not_wall_clock`（釘死錨點契約 ＋ 不得貼近真實 now）＋ `test_transition_is_stable_across_evaluation_clocks`（三個評估時鐘都必須轉 1 筆）。
+**附帶修掉同一處的 tz 陷阱**：`_ISO` 裡的 `+00:00` 在 `strptime` 下是**字面量**（不掛 tzinfo）⇒ 與 aware 相減 TypeError（與 11:30 那起引擎事故同型）⇒ 改用 `datetime.fromisoformat`。
+**複核**：目標檔 **32 passed ＋ 5 subtests passed**；變異 **M1～M4 全紅且各自命中正確守衛**（新守衛不再汙染訊號）、位元還原 `byte-identical = True`。全庫回歸重跑中。
+
+**🔴 修正四：`[TG:rem]` Telegram poller 停頓（槽前事件，已自癒）**
+`data/server_nohup.err` 真實 **ERROR 12 ＋ CRITICAL 1**（大小寫敏感）全部來自 `[soul_os.channels.telegram] [TG:rem]`，時窗 **21:13:46 – 21:15:14 EDT**（**槽前 45 分鐘**）：`poller STALLED: updater.running=True but no successful getUpdates — seconds_since_last_poll_success=120.2 (threshold 120s)` → rebuild 1/5～5/5 全失敗 → `CRITICAL: 5 consecutive rebuilds without 600s healthy window — slow retry mode (never gives up; supervisor stays alive)`。
+**已自癒**：21:20:14 `poller rebuilt OK (attempt 6/5)` → 21:30:15 `healthy for >=600s — resetting rebuild counter`；**21:15:30 之後 ERROR/CRITICAL ＝ 0** ⇒ **槽期間（22:00–22:28）零錯誤**。
+**另一類假陽性**：**53** 筆「CRITICAL」關鍵字命中中有 **52 筆是 INFO 級行的字面 token**、33 筆「Traceback」命中中 **28 筆是無 level 欄位的 traceback 內文** ⇒ 仍須**按 level 欄位解析**，不可用裸關鍵字統計（`Select-String` 另預設大小寫不敏感）。
+
+**本輪未做（明文）**：未改 `src/`／`personas/`／`configs/`／`data/`（僅改 `tests/test_eval_lifecycle_cli.py` ＋ 本條狀態）；未重啟、未動任何行程、未殺任何 PID；未觸發 synthetic 事件；未催熟門檻；未對弱化包裝做任何消紅處置（Owner 裁決 2／3：嚴禁人為製造假 Pattern 邊、嚴禁人為干預）。

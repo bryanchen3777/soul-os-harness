@@ -74,14 +74,34 @@ def _load_cli():
 CLI = _load_cli()
 
 
-def _iso(days_ago: float) -> str:
-    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime(_ISO)
+# 🔴 合成 fixture 的時間錨點（2026-10-22 22:3x 實測事故修正）
+#
+# 真實事故（**時間炸彈**）：測試把 `--simulated-time` 寫死 `2026-10-23T02:00:00Z`，
+# 而合成節點的時間戳用「真實 now − 10 天」⇒ 引擎弱化門檻是 **10 整日**
+# （`_days_between` 取整日）⇒ 真實時鐘一旦越過 22:00 EDT，elapsed 掉到 9.98 天
+# ⇒ 取整 9 < 10 ⇒ 不轉弱 ⇒ 守衛「必紅」。實測：22:00 EDT 前綠、22:00 EDT 後紅
+# （全庫回歸 `2 failed / 7152 passed`）。
+#
+# 修正：合成 fixture 的時間戳**一律由評估時鐘推導**，不得用真實 now。
+_SIMULATED_CLOCK = datetime(2026, 10, 23, 2, 0, 0, tzinfo=timezone.utc)
+# 合成節點「多久沒被支持」。取 30 天（遠大於引擎 10 天門檻）⇒ 對評估時鐘的
+# 微小漂移免疫，不會再卡在門檻邊界（整日取整會讓 9.99 天掉到 9）。
+_SYNTHETIC_STALE_DAYS = 30.0
 
 
-def _synthetic_graph(root: pathlib.Path) -> pathlib.Path:
-    """建立一個**合成**來源圖譜：1 顆 10 天沒人支持的 pattern ⇒ 應轉 weakening。
+def _iso(days_ago: float, ref=None) -> str:
+    base = ref if ref is not None else datetime.now(timezone.utc)
+    return (base - timedelta(days=days_ago)).strftime(_ISO)
+
+
+def _synthetic_graph(root: pathlib.Path, ref=None) -> pathlib.Path:
+    """建立一個**合成**來源圖譜：1 顆長期沒人支持的 pattern ⇒ 應轉 weakening。
 
     合成（而非複製生產）才能讓「來源是否被寫入」成為可判定的觀察量。
+
+    🔴 `ref` = **評估時鐘**（`--simulated-time` 對應的 instant）。時間戳一律由它推導，
+    **不得**用真實 now —— 否則守衛會變成時間炸彈（見 `_SIMULATED_CLOCK` 註解）。
+    `ref=None` 時退回真實 now（僅供「不帶 `--simulated-time`」的測試使用）。
     """
     store = root / "synthetic_graph"
     store.mkdir(parents=True, exist_ok=True)
@@ -94,8 +114,8 @@ def _synthetic_graph(root: pathlib.Path) -> pathlib.Path:
         "confidence": 0.5,
         "stability": 0.0,
         "valence": "neutral",
-        "created_ts": _iso(10.0),
-        "last_support_ts": _iso(10.0),
+        "created_ts": _iso(_SYNTHETIC_STALE_DAYS, ref),
+        "last_support_ts": _iso(_SYNTHETIC_STALE_DAYS, ref),
         "lineage_depth": 0,
         "lineage_path": [],
         "parent_node_id": None,
@@ -346,13 +366,51 @@ class TestSimulatedTimeMustBeTzAware(unittest.TestCase):
         for raw in ("2026-10-23T02:00:00+00:00", "2026-10-23T02:00:00Z"):
             with self.subTest(raw=raw):
                 with tempfile.TemporaryDirectory(prefix="cli_guard_") as td:
-                    src = _synthetic_graph(pathlib.Path(td))
+                    src = _synthetic_graph(pathlib.Path(td), ref=_SIMULATED_CLOCK)
                     rc, out, err = _run_cli("--source-dir", str(src),
                                            "--simulated-time", raw, "--json")
                     self.assertEqual(rc, 0, out[-400:] + err[-400:])
                     data = json.loads(out[out.index("{"):out.rindex("}") + 1])
                     self.assertEqual(data["verdict"], "PASS", str(data.get("failures")))
                     self.assertEqual(data["transitions"], 1)
+
+    def test_fixture_is_anchored_to_evaluation_clock_not_wall_clock(self):
+        """🔴 時間炸彈守衛（2026-10-22 22:00 EDT 實測事故）：合成 fixture 的時間戳
+        必須由**評估時鐘**推導，不得貼近真實 now。
+
+        真實事故：fixture 用「真實 now − 10 天」而評估時鐘寫死 `2026-10-23T02:00:00Z`
+        ⇒ 真實時鐘越過評估時鐘後 elapsed 掉到 9.98 天（整日取整 9 < 10 門檻）
+        ⇒ 守衛從「綠」變成「必紅」。本測試把錨點契約釘死。
+        """
+        with tempfile.TemporaryDirectory(prefix="cli_guard_") as td:
+            src = _synthetic_graph(pathlib.Path(td), ref=_SIMULATED_CLOCK)
+            node = json.loads(
+                (src / "elevation_nodes.jsonl").read_text(encoding="utf-8").strip()
+            )
+            expected = _iso(_SYNTHETIC_STALE_DAYS, _SIMULATED_CLOCK)
+            self.assertEqual(node["last_support_ts"], expected)
+            self.assertEqual(node["created_ts"], expected)
+            real_now = datetime.now(timezone.utc)
+            # 🔴 用 fromisoformat 解析（`strptime` 會把 `_ISO` 裡的 "+00:00" 當**字面量**
+            # 而不掛 tzinfo ⇒ 與 aware 相減會 TypeError —— 與 2026-10-22 11:30 那起
+            # 引擎事故同型，勿退回去用 strptime）。
+            parsed = datetime.fromisoformat(node["last_support_ts"])
+            self.assertIsNotNone(parsed.tzinfo, "合成節點的時間戳必須帶時區")
+            gap = abs((parsed - real_now).total_seconds())
+            self.assertGreater(gap, 86400.0,
+                               "合成節點時間戳貼近真實 now ⇒ 又是時間炸彈：%s" % node["last_support_ts"])
+
+    def test_transition_is_stable_across_evaluation_clocks(self):
+        """同一張 fixture 在多個評估時鐘下都必須轉 1 筆 ⇒ 結果不受真實時鐘綁定。"""
+        for raw in ("2026-10-23T02:00:00Z", "2026-10-24T02:00:00Z", "2026-11-23T02:00:00Z"):
+            with self.subTest(raw=raw):
+                with tempfile.TemporaryDirectory(prefix="cli_guard_") as td:
+                    src = _synthetic_graph(pathlib.Path(td), ref=_SIMULATED_CLOCK)
+                    rc, out, err = _run_cli("--source-dir", str(src),
+                                           "--simulated-time", raw, "--json")
+                    self.assertEqual(rc, 0, out[-400:] + err[-400:])
+                    data = json.loads(out[out.index("{"):out.rindex("}") + 1])
+                    self.assertEqual(data["transitions"], 1, str(data))
 
     def test_garbage_clock_is_refused(self):
         with tempfile.TemporaryDirectory(prefix="cli_guard_") as td:
