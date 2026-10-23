@@ -126,3 +126,31 @@ def add(self, memory: Memory) -> None:
 - **無風險**：1 處（`log_exporter.py`，無生產呼叫者）。
 - **低風險但有 CRLF 債務**：2 處（`loader.py` ＋ `middleware.py`，同一檔、同 loop 同步寫入、實測 0 損壞行）。
 - **repo 其餘 21 處**：本次未盤點（逐點需各自判定寫入者模型）。
+
+---
+
+## 9. repo 內 24 處 text-mode append 的風險分級（2026-10-22 20:0x）
+
+### 9.1 已逐一驗證的（讀碼確認執行緒模型）
+
+| append 點 | 承載檔 | 寫入者模型 | 判定 |
+|---|---|---|---|
+| `memory/v1/store.py:46` | `data/memory/*/memories.jsonl` | **`provider.py:655/:630` → `loop.run_in_executor`** | 🔴 **多執行緒 ⇒ 競態** ⇒ **已修** |
+| `memory/v1/log_exporter.py:24` | `data/memory_v1/retrieval.log.jsonl` | **全 repo 唯一呼叫者 = `scripts/run_v1_experiment.py:97`**（手動腳本） | ⚪ **無生產呼叫者** ⇒ 不動 |
+| `memory/v1/loader.py:355` ＋ `memory/middleware.py:254` | `data/memory/loader_trace.jsonl`（**兩個寫入點、同一檔**） | 同一 event loop 執行緒、同**步**寫入（`open`→`write` 之間無 await 點） | 🟡 低；實測 2725 行**損壞行 0** |
+| `inner_life/trace.py:115` | `data/inner_life/trace.jsonl`（**canonical InnerLifeEvent trace**） | `run_server.py` 的 4 個 `create_event` 呼叫點（proactive DM／dream event／dream dream／diary）**全在 async handler 內** ⇒ event loop | 🟢 **單執行緒** ⇒ 無競態 |
+| `inner_life/elevation_adapter.py:427` | `data/elevation/*`（含**純附加紅線**凍結的節點檔） | `elevate_matured_patterns` 的**唯一**生產呼叫者是 `run_server.py::_elevate_check()`，由 4 個 async handler 呼叫 ⇒ event loop | 🟢 **單執行緒** ⇒ 無競態 |
+
+### 9.2 其餘 19 處（同一 event loop 架構下，風險推定為低）
+
+`observability/prompt_trace.py:275`｜`inner_life/emergent_projection.py:202`｜`io/gateway.py`（9 處 `trace.log`，WebSocket gateway 為 async）｜`memory/continuity.py:332`｜`memory/shadow.py:151`｜`world/trace.py:52`｜`soul/capability.py:115`｜`soul/decision_trace.py:111`｜`soul/motive.py:311`｜`soul/tool_registry.py:777`｜`work/persistence.py:108`｜`work/store.py:237`｜`llm/proxy.py:2105`（LLM 4xx 錯誤 log，**唯一需再確認者**：LLM 呼叫可能在 `to_thread` 內 ⇒ 多執行緒；且屬**錯誤路徑**，寫入量極小）。
+
+### 9.3 結論與建議（可裁示）
+
+**技術上「全面收斂為 LF-only」可行，但工程上不划算**：
+1. 真正有競態的**只有 1 處**（`memory/v1/store.py`）⇒ **已修**。
+2. 其餘 23 處是**單執行緒或無生產呼叫者** ⇒ 轉換**不消除任何已知缺陷**，只會讓檔案變成**新舊混存**（歷史 CRLF 不可回溯改寫）＋ 製造審計噪音。
+3. `data/elevation/*` 的位元組格式**被純附加紅線凍結**（前 282,409 bytes 的 SHA-256 是常數）⇒ 該路徑**不應**轉換（雖然只轉換寫入端不影響前綴，但混存會讓「純附加」的可讀性變差）。
+4. 讀取端全部走 universal newlines（`open(..., "r", encoding="utf-8")` ＋ `for line in f`）⇒ CRLF 與 LF **本來就相容** ⇒ CRLF 債務目前**無實際危害**，只是格式不統一。
+
+⇒ **建議：只保留本次這 1 處修復**（風險已證實、已修、已驗），其餘維持 text mode；`llm/proxy.py:2105` 列入「若將來該 log 成長到需要，再單獨評估」。**若要全面收斂，應另開一張純格式票，不與併發修復混在一起。**
