@@ -3803,3 +3803,44 @@ ight_audit.py`／`%TEMP%\morning_obs\morning_audit.py`（tz-aware 時戳、retur
 - 未改任何程式碼（本次為裁示登錄與定性更新，純文件）。
 - 未寫 `data/**`、未重啟服務、未殺行程、未催熟、未人為製造任何 Pattern 邊。
 - 覆寫歷史 canonical 條目（§0.1.38 保留原樣；本節以新增方式記錄定性演進）。
+
+#### 0.1.42 7 天窗累積檔：欄位語意漂移的查核與修訂（2026-10-22 20:3x，純唯讀量測 ＋ 一處欄位更正）
+
+**背景**：今晚 22:15 前的主動複核（不等待排程）——檢查 7 天窗統計所依賴的
+`%TEMP%\morning_obs\morning_observations.jsonl` 是否健康。
+
+**① 檔案健康度：全綠**
+- 6 列、**0 不可解析行**、**0 mojibake**（notes 中文可正常顯示）、**0 重複 (date, slot)**、以單一 LF 結尾。
+- 欄位聯集 **115 個**（`total_nodes`／`by_node_type`／`by_state`／`seam_submitted`／`weak_wrapper_count`／`lifecycle_new_transitions`／`node_delta`／`node_delta_by_type`／`origin_distribution`／`streaks`／`health`／`go_gap_*` 等）⇒ **7 天窗所需資料俱全**。
+
+**② 🔴 發現並修訂一處錯值（已備份、已回讀驗證、已留稽核軌跡）**
+- 「2026-10-21 night」那一列的 `measured_at` = **2026-10-22T16:27:52** ⇒ 它是**當日補建的重現列**，不是當時的快照。
+- 其 `total_nodes` 填的是**補建當下**的檔案筆數 **708**，而 10-21 夜槽（2026-10-22T02:00Z）當下的真值是 **623**。
+- **真值來源＝append-only 節點檔的 `created_ts`（可證重建，非猜測）**：
+  槽窗 `[2026-10-22T02:00Z, 03:00Z)` 新增 **56** 筆（pattern 46／value 10）；槽末總數（`created_ts < 03:00Z`）= **623**。
+- 交叉核對：同一套反推法算出的 10-20 morning／10-20 night／10-21 morning／10-22 morning = **485／513／554／708**，與累積檔**逐項相符** ⇒ 只有那一列錯。
+- **修訂內容（只動該列的三個節點計數欄位，其餘欄位逐位元不動）**：
+  `total_nodes` **708 → 623**；`node_delta`（56）與 `node_delta_by_type`（pattern 46／value 10）**原即正確，未動**。
+  ⇒ ⚠️ **本節修正前一版敘述過大**：受污染的只有「總數」序列的**一個點**，**逐日增量曲線本來就是乾淨的**。
+- `notes` 末端已追加可稽核的更正說明；原檔備份於
+  `%TEMP%\morning_obs\morning_observations.BAK.jsonl`。
+
+**③ 🔴 欄位語意在歷史上漂移（未改資料，已記錄，供 7 天窗消費者注意）**
+- `node_delta` 的定義**在腳本版本之間變過**：
+  - 現行 `night_audit.py:682` = **槽窗內新增**（`len(new_nodes)`，`created_ts ∈ 槽窗`）；
+  - 另有一欄 `node_delta_vs_prev_row`（`:684`）= **總量差**（`len(nodes) - 前一列 total_nodes`）；
+  - 但**早期幾列**（例：10-20 morning 的 16）是用「**距前一列基準**」的算法算的，而同期槽窗內只有 11 筆。
+- ⇒ **同一欄位名在不同列承載不同算法** ⇒ **不可直接把歷史上各列的 `node_delta` 當成同一口徑的序列做差分**。
+- **權威做法**：逐槽節點增量一律**由 append-only 節點檔的 `created_ts` 重算**（唯一真相來源），
+  工具：`%TEMP%\night_obs\reconstruct_node_counts.py`（唯讀；輸出每槽「槽內新增／槽末總數／by_type」）。
+- 🔴 **同時記住本專案既有的紀律**：「**槽總量差 ≠ 槽增量**」——append-only 檔在槽窗外也會被寫
+  （重啟 bootstrap、其他時段事件）⇒ 兩者必須分開報，不可混算。
+
+**④ 今晚的列不受影響（已查證）**
+- `night_audit.py` 於 **22:15 EDT 量測（距槽 15 分鐘）** ⇒ `total_nodes` ≈ 槽末值、`node_delta` = 槽窗值
+  ⇒ **今晚追加的列由建構方式即正確**，此問題僅存在於**歷史補建列**。
+
+**⑤ 本輪未做（明文）**
+- 未改任何 repo 檔案（本次為 `%TEMP%` 累積檔的**單一欄位**修訂 ＋ 文件）。
+- 未重寫歷史各列的 `node_delta`（各列原始算法不可考，**猜測性改寫會製造假數據**）⇒ 改以「一律重算」規範處理。
+- 未寫 `data/**`、未重啟服務、未殺行程、未催熟。
