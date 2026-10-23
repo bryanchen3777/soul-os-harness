@@ -3957,3 +3957,41 @@ ight_audit.py`／`%TEMP%\morning_obs\morning_audit.py`（tz-aware 時戳、retur
 **夜槽觸發紀錄**：`2026-10-22 22:00:22,09x` 46 隻角色全數 `[Scheduler] ✓ 觸發 agent_* night (AGENCY_TRIGGER published)`。六項最終簽收由 companion cron `c282a716`（22:20 EDT）＋後備 `self-cd0946165`（≈22:52 EDT）兩層完成。
 
 **本輪未做（明文）**：未重啟、未動任何行程、未殺任何 PID；未寫入 `data/**`（worker 實測：本票可觸及面 87 檔差異 0；全樹 32 changed ＋ 3 added 全為生產服務自身活動且帶生產 provenance）；未觸發 synthetic 事件；未催熟門檻；未對弱化包裝做任何消紅處置。
+
+#### 0.1.46 Owner 裁定登錄：驅動形式化**不擴**至 46 隻 ＋ 矛盾資料面另立 RFC 專票；戰役 B Phase 1 驗收核定（2026-10-22 22:20 EDT）
+
+**Owner 裁定（2026-10-22 22:1x，兩項）**
+1. **驅動形式化堅決不擴展至 46 隻** ——「嚴格劃清邊界，46 隻角色的語意定義屬於『世界觀／原生代基底重構』範疇，**與引擎演算法開發必須解耦**。Phase 1 維持以 `agent_akane` 作為唯一規範標桿，**禁止將領域文本補齊混入機制驗證工單**。」
+2. **矛盾資料面准予另立 RFC 專票** `FEAT-SCHEMA-CONTRADICTION` ——「D3 不可長期處於資料飢餓狀態，但擴充生產 Schema 涉及資料契約變更。准予另開專屬架構票，**先於沙盒中明確定義矛盾探針來源與欄位形態，嚴禁在未經審定的情況下直接向生產 JSONL 追加欄位**。」
+
+**戰役 B Phase 1 驗收核定（Owner 2026-10-22 22:1x）**：Commit `46339f5` 的落盤成果**完全符合工程防禦標準** —— 變異 M1～M5 **嚴格全紅**（斷言、字典序權重、沙盒隔離三維度均如期捕捉，且完成位元級精準還原）；**無侵入性保證確立**（排程開關預設關閉、**完全委派現有時間態判定、未建立第二套衰減規則**）；**誠實揭露邊界**（未決矛盾數量如實回報為零，**未擅自挪用 SAGE 矛盾偵測代打**）。⇒ **CAMPAIGN-B-P1 結案**（實作 `1119ea5`、狀態 `46339f5`、開票 `6dbe8ab`）。
+
+**🔴 主大腦對裁定 2 的技術修正（字面 vs 目的）——本票因此「零 schema 變更」**
+裁定 2 預設「擴充生產 Schema 涉及資料契約變更」。**實測推翻此前提**：
+
+| 量測項 | 實測結果（唯讀） |
+|---|---|
+| `elevation_nodes.jsonl` 欄位 | **793/793 節點皆含 `contradiction_pressure`**（節點總數已由 712 增至 793，槽內仍在長） |
+| 欄位形態 | `contradiction_pressure: tuple = ()`（`soul_elevation/models.py:130`）；元素 `ContradictionRecord`（`models.py:85-89`）**只留「來源引用＋時間」**（`source_id`／`ts`／`event_identity`／`provenance_ref`），**不複製證據正文** |
+| 引擎 API | `record_contradiction()`（`engine.py:990`）、`_count_independent_contradictions()`（`:195`）、`_contradiction_spread_days()`（`:215`）**早已存在且語意完整** |
+| 生產實況 | `contradiction_pressure` **793/793 皆為 `[]`** |
+
+⇒ **不需要新增任何欄位** ⇒ 這**更**符合裁定 2 的目的（既然不必擴充，就不碰資料契約）⇒ 本票**零生產 JSONL 變更**。
+⇒ 🔴 **真正的缺口是引擎內部的結構性死鎖**：`record_contradiction()` 的**唯一**呼叫點是 `engine.supersede()`（`engine.py:1176-1184`），而 `supersede()` 的觸發門檻正是「獨立矛盾證據數 ≥ `LIFECYCLE_N_SUPERSEDE`（其他層 3）／essence ≥ 5」**且**「跨 ≥ `LIFECYCLE_SUPERSEDE_MIN_DAYS_SPREAD`（2）個不同模擬日」（`engine.py:1155-1159`、`:1187-1203`）⇒ **矛盾要靠 supersede 產生，supersede 要靠矛盾才可能** ⇒ 累積器永遠 `[]` ⇒ `supersede()` 永遠拋 `ValueError`。
+⇒ **與 `reinforce()` 完全同構**（引擎早有、語意完整、生產零呼叫者）⇒ 真正的工單不是「加欄位」，而是「**誰來餵它**」。
+
+**開票**：`logs/FEAT-SCHEMA-CONTRADICTION-RFC-WORK-ORDER.md`（15,676 bytes，決策完整）。範圍 **4 檔**（RFC 文件 ＋ `src/inner_life/contradiction_probe.py` 沙盒原型 ＋ 守衛 ＋ 實作紀錄）。
+- **探針規格（決策已定）**：候選矛盾＝同一 agent、同 lineage 根、`N'.content != N.content`（逐位元不等）、且證據邊 `valid_from_ts > N.created_ts` 且 `valid_until_ts is None`；**欄位形態沿用既有 `ContradictionRecord`（零新增）**；計數與跨日判定**沿用引擎既有 `_count_independent_contradictions()`／`_contradiction_spread_days()`**；門檻**沿用** `LIFECYCLE_*`（不得新增／調低）。
+- **沙盒必答 Q1～Q6**（候選矛盾組數、agent／node_type／時間分佈、**Q1＝0 也要寫成因且不得放寬判準**、能否達既有門檻、與 33 條 `support_propagation` 邊是否重疊、`agent_akane` 單獨列出）。
+- **守衛 T1～T6 ＋ 變異 M1～M4**（含「原型不得呼叫 `record_contradiction`」的 T6／M4）。
+- **嚴禁**：不寫 `data/**`、不新增任何欄位、不接引擎寫入路徑、不改 Phase 1 三模組、不改 `soul-elevation`（唯讀）、不部署。
+- **Phase 2 落地**（在 `elevation_adapter` 接 `engine.record_contradiction()` 以解死鎖、並讓因子②改接本探針）**須 Owner 審定後另開工單**，本票不夾帶。
+
+**本票交付物中的「字面 vs 目的」處理原則（留痕）**：裁定 2 的字面是「另立專票定義矛盾探針來源**與欄位形態**」；實測顯示欄位形態**已存在**，故本票的第二項交付物改為「**沿用並闡明既有欄位形態 ＋ 零變更聲明**」——**滿足裁示目的且不偏離字面**（字面要求的兩項交付都在，欄位形態那一項的答案是「已存在、沿用、零新增」）。
+
+**夜槽守備（Owner 核定「當前的調度策略符合系統防護要求」）**
+- **避讓策略合規**：全庫回歸任務 `bg_8984f475` 延後至**磁碟靜默 150 秒後**執行，杜絕 CPU／I/O 競爭對生產槽的干擾。
+- **簽收清單待命**：靜候 22:20 companion cron（`c282a716`）回傳六項核心指標（LF-only 追加、支持傳遞計數、弱化包裝計數）。
+- **槽觸發紀錄**：`2026-10-22 22:00:22,09x` 46 隻角色全數 `[Scheduler] ✓ 觸發 agent_* night`。
+
+**本輪未做（明文）**：未改 `src/`／`personas/`／`configs/`／`data/`（本輪僅新增 `logs/` 一份工單 ＋ 本條狀態）；未重啟、未動任何行程、未殺任何 PID；未觸發 synthetic 事件；未催熟門檻；未對弱化包裝做任何消紅處置（Owner 裁決 2／3）。
