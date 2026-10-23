@@ -3891,3 +3891,36 @@ ight_audit.py`／`%TEMP%\morning_obs\morning_audit.py`（tz-aware 時戳、retur
 - 未對 `task_stop` 觸碰任何執行過 `server_ops.ps1` 的背景 shell／task。
 - 未動 `data/**`（重啟前後節點／sidecar／張力／SHA-256 全部一致）；未催熟、未注入 synthetic 事件。
 - 未改動生命週期門檻、弱化語意、召回通道、Frozen Contract。
+
+#### 0.1.44 戰役 B Phase 1 開票（主線候選 A：D1＋D3 形式化驅動張力）＋ 夜槽值守三重武裝（2026-10-22 21:30 EDT）
+
+**Owner 指示（2026-10-22 21:2x）**：主線候選 A ＝「【Phase 1】D3＋D1 合併：含時驅動評分＋短期閉環沙盒原型。形式化定義驅動張力（資訊缺口、未決矛盾、時間衰減窗口）。在沙盒中跑通『張力驅動思考 → 思考消解張力 → 更新 working state』的短期思考閉環。」主線候選 B（語意回憶通道成熟度）**維持不動**——Owner 裁決 2 已令其靜待方向 A 回憶召回池自然成熟（30 天自然老化），**不得**人為催熟。
+
+**🔴 主大腦現況勘地（唯讀實測，`.venv` 直譯器，21:3x EDT；數字皆由 bytes／行數反推）**
+
+| 量測項 | 實測結果 | 意涵 |
+|---|---|---|
+| D1／D2／D3 真實身分 | **不是專案代號，是 persona 的「三個不可變驅動」**；唯一完整者 `personas/agent_akane.md:64-76`（D1 理解驅動／D2 被需要驅動／D3 邊界修復驅動，各含觸發行＋效應行） | 「D3＋D1 合併」＝ **把角色的兩條不可變驅動形式化成可程式讀取的張力驅動源** |
+| 驅動結構覆蓋率 | 全庫 grep `^\*\*D[123] ` 命中 **4 處，全在 agent_akane.md**；`agent_rem.md` 有 4 處「驅動」但**無 D 標號**（散文），`agent_ruka`／`agent_kaori` 各 1 處 | **46 隻中僅 1 隻**可解析 ⇒ Phase 1 鎖定**單角色＝agent_akane** |
+| persona 驅動解析器 | `src/` 內 grep「不可變」只命中 frozen dataclass 與契約文案 ⇒ **零解析能力**，驅動目前只存在於散文 | 解析器是硬前提 |
+| 現有張力機制 | `epistemic_tension_scheduler.py`：**純時間驅動、角色零差異**；三態窗 `CALM_MAX_ELAPSED_SEC=24h`／上界 7 天；判定**委派** `temporal_phenomenology.classify_temporal_state`（「**不得**另立一套規則」）；節流沿用 `proxy.BACKGROUND_ACTION_MIN_INTERVAL_SECONDS`；承載 `epistemic_tensions.jsonl` 623 B／1 筆／`relational_tension:6bfe56006414294a`／agent_rem；`*.piggyback.json` **0 檔** | 「含時」骨架已存在，**「含義」缺席** |
+| 資訊缺口／未決矛盾的資料面 | `epistemic_appraisal.py` 是**認知評估**（epistemic horizon L2 差量，走 `configs/packs/` ＋ D3 白名單 ＋ V4 bypass，pack 為行程內 dict 零熱重載）⇒ **不是張力評分，不可挪用** | 兩因子目前**無可觀測來源** ⇒ 本票須鎖到既有資料面，**不得新造語意模型** |
+| working state | `src/` 內 grep `working_state\|working state` ＝ **0 命中** ⇒ Bry 閉環第三段是**全新語義** | `motive.py` 是「想告訴 Bry 的意圖」（frozen 5 欄位 ＋ target 值域 D2 裁定 ＋ `motive_trace.jsonl`）⇒ **不得冒用**；本票另建 append-only 承載 |
+
+**開票**：`logs/CAMPAIGN-B-D1-D3-TENSION-DRIVER-WORK-ORDER.md`（決策完整，20,322 bytes）。
+- **做法已定**：① `drive_profile.py` 唯讀解析 persona 驅動（標題 `**<code> — <label>**`，觸發行＝第一非空行、效應行＝第二非空行；**禁止** fallback／模板／預設）② `tension_scoring.py` 純函式三因子評分，**排序用字典序、禁止加權總分與自造權重／門檻常數**（D1 ⇐ `info_gap_count>0`、D3 ⇐ `unresolved_count>0`、**D2 判準不足不參與**並須明寫）③ `tension_closure_loop.py` 沙盒三段閉環，**開關預設 OFF**、**寫入目標必須由呼叫端建立且位於 temp 之下**（不拿「兩個可能漂移的值相等」當唯一守門條件，2026-10-19 事故教訓）。
+- **範圍**：7 個檔案（3 新模組 ＋ 3 新測試 ＋ `test_observability_completeness_1.py` 的 `allowed` 逐票更新，`frozen_dirs` 10 筆全保留）。**不改** `personas/**`／`configs/**`／`data/**`；**不接**任何生產觸發路徑、**不呼叫 LLM**、**不重啟**、**不部署**（Phase 2 才接，需 Owner 授權）。
+- **守衛**：T1～T10；**變異 M1～M5 必須每條轉紅**（M1 資訊缺口恆 0／M2 加權總分／M3 自訂衰減窗／M4 寫生產 store_dir／M5 解析 fallback）；變異 harness 放 `%TEMP%`（`tests/**` 禁 `subprocess.*`，R5 護欄）。
+- **派工**：worker `bg_754f8cbb-329f-4b0b-8378-c4a11d67d85a`（背景執行；**worker 不得** `git add`／`commit`／`push`；由主大腦統一合入）。
+
+**待 Owner 裁示一項（不阻擋本票）**：是否把「驅動形式化」擴為 **46 隻全補**。主大腦建議**不擴**——屬「世界觀／原生代基底重構」專案領域（§0.1.33 已把 `agent_mahiru` 的 D3 白名單掛在該處待統一梳理），避免與人格內容專案搶同一塊地。
+
+**夜槽值守三重武裝（2026-10-22 20:57 EDT 佈防）**
+- **事件**：`self_reminder`（排定 22:25:47 EDT）**提早 88 分鐘**於 **20:57 EDT** 觸發 ⇒ 目標事件（22:00 EDT 夜槽＝2026-10-23T02:00:00Z）**尚未發生**，`report_2026-10-22.txt` 不存在是**正常**而非量測失敗。
+- **處置（不閒等）**：把等待窗口轉成**槽前基線**（PID／節點 712／sidecar 225／邊 1597／張力 623 B／SHA-256 `7FD8F3F3…744178B` 恆等／`/health` 200／ERROR·CRITICAL·Traceback 全 0）＋**槽前預測值**。
+- **槽前預測（沙盒 CLI，唯讀來源＋自建沙盒，評估時鐘 2026-10-23T02:00:00+00:00）**：sidecar **225→249**（新增 **24** 筆＝pattern 23 ＋ belief 1）、`by_to_state` 全為 weakening、**weak_prefix 0→1**（`agent_mahiru` belief `57392ccdb3dd411e846f352e19d22e76`）、**key_node `6a92c906b245` transitions ＝ 0**、prompt `agent_mahiru` **865→872**、`eval_error`＝無、`undelivered`＝0、**`VERDICT: FAIL`、exit code 1**（VERDICT FAIL 的設計行為，**非崩潰**，也不是「0 筆＝冪等 no-op＝PASS」）。⇒ 與 Bry 預告的 0→1 逐位元吻合。
+- **Sunset 四條件（21:00 重算，與 20:33 一致）**：**3 筆**＝`agent_anna` `d589bc50` age 22.9991／slots 3、`agent_mai` `5a2c646d` age 21.5826／slots 35、`agent_rem` `03311d0f` age 24.9992／slots 3（皆 active 2／cap 2）；正確排除 `agent_aoi`（age 29.00 但 slots 2＜3）、`agent_yua`（age 35.00 但 slots 1＜3）。**接縫期望 42**（completed 42 筆全部有 `sage_fact_id`）。
+- **三重武裝**：① 常駐夜槽 cron `36e57724`（nextRun 實測＝**2026-10-22 22:15 EDT**，active；schedule／timezone／enabled／session 全未動）② **新增 companion cron `c282a716`**（`night_slot_v1_format_and_propagation_check`，**22:20 EDT**，nextRun 實測＝22:20，綁定本 session）⇒ 查 v1 `memories.jsonl` 新追加行是否 LF-only（部署前基準 CRLF 4271／LF-only 0）、`support_propagation` 邊數（部署首跑 **33** 筆，槽後應 **≥33**）、並做**六項最終簽收** ③ 後備 `self_reminder` `self-599b56b5`（≈22:50 EDT，內建「槽未發生 ⇒ 不下結論並重新排程」分支）。
+- **既有 PID 基線（20:41 重啟後，夜槽不得變動）**：trampoline `data\server.pid`＝**26980**、`:8000` socket owner＝**19440**（parent 26980）、VC `:8765`／`:8766`／`:8767`＝**12792**／**7716**／**16612**；python 恰 **4** 隻（2 hindsight ＋ 2 production，零測試殘留）。
+
+**本輪未做（明文）**：**主大腦**未改 `src/`／`personas/`／`configs/`／`data/`（僅新增 `logs/` 兩份檔）；未重啟、未動任何行程、未殺任何 PID；未觸發 synthetic 事件；未催熟任何門檻；未對弱化包裝做任何「消紅」處置（Owner 裁決 2／3：嚴禁人為製造假 Pattern 邊、嚴禁人為干預）。派工中的 worker **僅**依 CAMPAIGN-B-P1 工單 §2.4 修改那 7 個檔案，**未合入、未部署**（合入須待主大腦複核變異證據與全庫回歸）。
