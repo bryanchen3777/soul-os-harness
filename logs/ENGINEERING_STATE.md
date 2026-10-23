@@ -4091,3 +4091,20 @@ ight_audit.py`／`%TEMP%\morning_obs\morning_audit.py`（tz-aware 時戳、retur
 - **選項 C**：**引入「兄弟表述」的產生機制** —— 讓同一 pattern 再次昇華時**保留**舊表述（而非只 supersede 邊）⇒ 產生 depth=2 同血統兄弟 ⇒ 「同一命題的新舊表述」才成為可觀測資料 ⇒ **改的是引擎核心語意，高風險架構變更**。
 
 **本輪未做（明文）**：未改 `personas/`／`configs/`／`data/`；未重啟、未動任何行程、未殺任何 PID；未觸發 synthetic 事件；未催熟門檻；**未代 Owner 裁決 D3 的架構選項**；未為讓 Q1 ≠ 0 而放寬任何判準或調低任何門檻。
+
+#### 0.1.50 FEAT-SCHEMA-CONTRADICTION 合入後全庫回歸（主大腦獨立複核）＝ **7184 passed / 0 failed / 24 skipped / 32 subtests，716.28 s（11:56）**，exit code **0**（2026-10-22 23:08 EDT）
+
+**解譯器**：`repo 的 .venv\Scripts\python.exe`（`-m pytest -q tests`）。**0 failed**，無任何紅燈需歸因。
+**數字自洽**：前一回歸 7154（修時間炸彈後）＋ RFC 新增 30 筆守衛 ＝ **7184**。
+
+⇒ **FEAT-SCHEMA-CONTRADICTION 專票驗收完成**：工單 §2.4 的 4 檔（`docs/FEAT-SCHEMA-CONTRADICTION-RFC.md`／`src/inner_life/contradiction_probe.py`／`tests/inner_life/test_contradiction_probe.py`／`logs/FEAT-SCHEMA-CONTRADICTION-IMPLEMENTATION.md`）＋ `allowed` 逐票新增一筆；守衛 T1～T6（30 passed）；變異 M1～M4 主大腦獨立重跑全紅且位元還原；**零生產寫入、零 schema 變更、零引擎接線**。
+⇒ 本票**刻意停在 RFC 階段**：D3 的架構選項（A 誠實收斂／B 重評語意判定／C 兄弟表述機制）**待 Owner 裁決**，主大腦未代裁。
+
+**本日（2026-10-22）主線收網狀態**
+- 夜槽（22:00 EDT）六項核定**全數簽收**（弱化包裝 0→1 照實標紅＝機制缺口；接縫 42 ＋ 4 條一槽延遲；v1 新增 32 行 100% LF-only；`support_propagation` 48 筆；關鍵反例維持 active；CLI 四欄 `rc=0`／`eval_error=無`／`undelivered=0`／`VERDICT=PASS`＝真冪等 no-op）。
+- **DEPLOY-RESTART-25 兩張票生產驗收完成**（LIFECYCLE-REINFORCE-CHAIN、INFRA-V1-MIRROR-APPEND-RACE）。
+- **本輪修掉三處量測缺陷**：弱化包裝的端點假零（改以投影層為紅線口徑）、接縫期望過嚴（扣除一槽延遲者）、CLI 守衛的「時間炸彈」（fixture 時間戳改由評估時鐘推導 ＋ 新增兩道時間無關性守衛）。
+- **一處主動更正**：§0.1.46 的「結構性死鎖」描述不精確 ⇒ 更正為「**無呼叫者 ＋ 無衝突判準**」（`record_contradiction()` 在門檻判定**之前**寫入 ⇒ 累積器可累積）。
+- **一項待 Owner 裁決**：D3 的架構選項（見上）。主大腦建議 **A 誠實收斂**（放寬判準會用**假矛盾餵飽引擎 supersede 門檻** ⇒ 等於讓 D3 誤殺活著的命題）。
+
+**本輪未做（明文）**：未改 `personas/`／`configs/`／`data/`；未重啟、未動任何行程、未殺任何 PID；未觸發 synthetic 事件；未催熟門檻；未對弱化包裝做任何消紅處置；未代 Owner 裁決架構選項。
