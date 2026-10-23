@@ -3844,3 +3844,50 @@ ight_audit.py`／`%TEMP%\morning_obs\morning_audit.py`（tz-aware 時戳、retur
 - 未改任何 repo 檔案（本次為 `%TEMP%` 累積檔的**單一欄位**修訂 ＋ 文件）。
 - 未重寫歷史各列的 `node_delta`（各列原始算法不可考，**猜測性改寫會製造假數據**）⇒ 改以「一律重算」規範處理。
 - 未寫 `data/**`、未重啟服務、未殺行程、未催熟。
+
+#### 0.1.43 DEPLOY-RESTART-25：兩張票正式部署上生產（Owner 2026-10-22 20:4x 明示核准，槽前執行）
+
+**Owner 裁決原文要點**
+- **正式核准即刻執行 DEPLOY-RESTART-25**，在今晚 22:00 槽前完成重啟部署。
+- **推翻「等 22:00 槽後再重啟」的延遲建議**，理由三條：
+  1. **Belief 弱化基線依然純淨** —— 實測已證明該 belief（`57392ccdb3dd…`）祖先新邊數為 **0** ⇒ REINFORCE 對它**完全不生效** ⇒ 現在上線，今晚該 belief **依然會準確弱化**（弱化包裝 0→1）⇒ **完全不干擾機制缺口的驗證**。
+  2. **提前封死今晚的丟筆地雷** —— v1 `store.py:46` 在線上仍處於多執行緒競態的舊代碼；今晚 22:00 槽會觸發 10 隻 Agent 同時寫入記憶日誌 ⇒ 立即部署可保護今晚的夜間記憶日誌不發生併發遺失。
+  3. **夜槽直接升格為首跑驗收** —— 距 22:00 尚有約 1h20m，重啟僅 14 秒，具備充裕冷卻穩定期。
+
+**執行紀錄**
+- **前置安全查核**（執行前完成）：① VC 三實例 **不是 `python.exe`**（`Get-CimInstance` 的 python 清單僅 hindsight ×2 ＋ server ×2）⇒ `Get-ServerProcess`（比對 `*run_server.py*`）**不可能誤殺 VC**；② `Stop-SoulOsServer` 只殺「:8000 listener 樹」與「匹配 `run_server.py` 的 python」；③ restart 動作自帶 watchdog 維護鎖（寫鎖 → stop → 2s → start → 解鎖）。
+- **啟動方式**：以**獨立中繼終端**執行 `scripts\server_ops.ps1 restart`（`Start-Process powershell -NoProfile -ExecutionPolicy Bypass -File … -Action restart`，**不帶** `-RedirectStandard*` ⇒ 走 ShellExecute 路徑 ⇒ `bInheritHandles=FALSE` ⇒ **不繼承呼叫端的 stdout pipe** ⇒ 呼叫端立即收到 EOF，不會被牆鐘上限連坐砍樹；這正是 SERVER-OPS-HANDLE-INHERITANCE 的既定機制）。
+- **耗時 14 秒**（20:41:43 watchdog 鎖 → 20:41:57 解鎖），與 Owner 預估一致。
+
+**檢查點驗收（全部通過）**
+
+| 檢查點 | 部署前 | 部署後 | 判定 |
+|---|---|---|---|
+| trampoline（`data\server.pid`） | 21776 | **26980** | ✔ 已刷新 |
+| `:8000` socket owner | 25496 | **19440**（parent 26980） | ✔ 父子結構正確 |
+| VC 三實例 `:8765/8766/8767` | 12792／7716／16612 | **12792／7716／16612** | ✔ **原 PID 存活，未受影響** |
+| `/health` | 200 | **200 `{"status":"ok"}`** | ✔ |
+| python 行程數 | 4 | **4** | ✔ 零殘留 |
+| 純附加紅線（前 282,409 bytes SHA-256） | `7FD8F3F3…744178B` | **`7FD8F3F3…744178B`** | ✔ **逐位元恆等** |
+| 節點／sidecar／張力 | 712／225／623 B | **712／225／623 B** | ✔ 生產資料零破壞 |
+| 新服務 err log（尾 40 行） | — | **ERROR／CRITICAL／Traceback 命中 0**；`Application startup complete.` ✔ | ✔ |
+
+**部署探針結果（`%TEMP%\night_obs\deploy_state_probe.py`）**
+- **mode=code（結構性證據）**：repo HEAD `0b3d446` 工作樹 CLEAN；磁碟上 `_propagate_support_to_soul_nodes`（`elevation_adapter.py`）與 `append_bytes`（`memory/v1/store.py`）**皆存在**；服務行程（PID 26980 parent 15100／19440 parent 26980）**由本 repo 的 `run_server.py` 啟動** ⇒ **新代碼已載入**。
+- **mode=runtime（運行期證據）**：**`support_propagation` 邊 = 33 筆，涵蓋 15 顆靈魂節點** ⇒ **REINFORCE 於新程式碼第一次跑生長路徑時一次補齊**（catch-up 成立：證據這幾天一直躺在磁碟上，未流失）。邊檔總數 1563 → **1597**（33 傳遞 ＋ 1 筆 `world:rain_started` 正常服務寫入）。
+- **adapter 結構化稽核日誌落在 `data\server_nohup.err`（15 筆，每顆靈魂節點一筆）**，含 `agent`／`target`／`type`／`edges`／`ancestors`／`last_confirm`。
+
+**生產實測的錨點位移（與沙盒預測逐位元吻合）**
+- 舊錨點＝**節點建立時刻**（如 `2026-10-20T02:05:16`）⇒ 舊弱化時點 `2026-10-27`。
+- 新錨點＝**今天晨槽的重新確認時刻**（`2026-10-22T12:00:xx`）⇒ 新弱化時點 `2026-10-29`。
+- ⇒ **9 顆 value 延後 2 天（10-27 → 10-29）；6 顆（10-22 建檔）弱化槽本來就是 10-29、不變。** 合計 33 條支持邊、15 顆節點。
+
+**v1 原子追加的運行期訊號（預期尚未出現）**
+- 生產 10 隻 agent 的 `memories.jsonl` 目前 **CRLF 4271 筆／LF-only 0 筆** ⇒ **尚無新寫入**（服務重啟後到目前尚未有記憶寫入）⇒ 待今晚 22:00 槽觸發記憶寫入後，**新追加行應轉為 LF-only**（歷史 4271 筆維持 CRLF，append-only 不可回溯改寫）。
+- ⇒ 這是 22:15 對帳的新增觀測項：**v1 `memories.jsonl` 是否出現 LF-only 新行**。
+
+**本輪未做（明文）**
+- 未以非官方方式殺任何行程（重啟全走 `scripts\server_ops.ps1`，其 stop 只針對 :8000 listener 樹與 `run_server.py`）。
+- 未對 `task_stop` 觸碰任何執行過 `server_ops.ps1` 的背景 shell／task。
+- 未動 `data/**`（重啟前後節點／sidecar／張力／SHA-256 全部一致）；未催熟、未注入 synthetic 事件。
+- 未改動生命週期門檻、弱化語意、召回通道、Frozen Contract。
