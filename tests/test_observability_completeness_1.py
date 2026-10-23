@@ -839,6 +839,9 @@ class TestBoundedAndFrozenDiscipline:
             "src/inner_life/drive_profile.py",
             "src/inner_life/tension_scoring.py",
             "src/inner_life/tension_closure_loop.py",
+            # Work order: logs/FEAT-SCHEMA-CONTRADICTION-RFC-WORK-ORDER.md
+            # （沙盒唯讀探針；不接引擎寫入路徑、旗標預設不存在、無生產副作用）
+            "src/inner_life/contradiction_probe.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",
