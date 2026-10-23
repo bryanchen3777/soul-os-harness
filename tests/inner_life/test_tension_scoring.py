@@ -106,12 +106,14 @@ class TestT4FactorsAreAuditable:
     def test_t4_counts_match_the_defined_filters(self, sandbox_rows):
         _write_threads("agent_akane", sandbox_rows)
         scores = ts.score_tensions("agent_akane", FAKE_NOW, soul_dir=None)
-        assert len(scores) == 2, "D1 與 D3 應同時產出（D3＋D1 合併）"
+        # 🔴 Owner 裁定 A（2026-10-22）：D3 已自評分目標移除 ⇒ 只剩 D1 一條。
+        assert len(scores) == 1, "裁定 A 後僅 D1 一條（D3 已自評分目標移除）"
         by_code = {s.drive_code: s for s in scores}
         assert by_code["D1"].info_gap_count == 2, "缺口＝active＋無 fact＋≥24h"
+        # 未決矛盾仍作為**觀測因子**誠實回報（此處合成資料有 1 筆），
+        # 但**不驅動**任何張力 ⇒ 不會產生 D3 張力。
         assert by_code["D1"].unresolved_count == 1, "矛盾＝有 contradiction 欄位且為真值"
-        assert by_code["D3"].info_gap_count == 2
-        assert by_code["D3"].unresolved_count == 1
+        assert "D3" not in by_code, "D3 不得再成為張力驅動目標（Owner 裁定 A）"
 
     def test_t4_source_rows_point_back_to_the_data_plane(self, sandbox_rows):
         _write_threads("agent_akane", sandbox_rows)
@@ -163,18 +165,20 @@ class TestT5LexicographicOrdering:
         ]
 
     def test_t5_unresolved_then_info_gap_then_drive_code(self):
+        # 排序函式對 drive_code 字串是**泛用**的；此處用 D2 作為第二個 code 字串
+        # （D3 已自驅動目標移除，用它會誤導讀者以為 D3 仍是目標）。
         scores = [
-            _score(STATE_TENSION, 1, 1, "D3"),
+            _score(STATE_TENSION, 1, 1, "D2"),
             _score(STATE_TENSION, 2, 0, "D1"),
             _score(STATE_TENSION, 2, 5, "D1"),
-            _score(STATE_TENSION, 2, 5, "D3"),
+            _score(STATE_TENSION, 2, 5, "D2"),
         ]
         ordered = ts.sort_scores(scores)
         assert [(s.unresolved_count, s.info_gap_count, s.drive_code) for s in ordered] == [
             (2, 5, "D1"),
-            (2, 5, "D3"),
+            (2, 5, "D2"),
             (2, 0, "D1"),
-            (1, 1, "D3"),
+            (1, 1, "D2"),
         ]
 
     def test_t5_score_tensions_returns_sorted_scores(self):
@@ -184,7 +188,7 @@ class TestT5LexicographicOrdering:
         ]
         _write_threads("agent_akane", rows)
         scores = ts.score_tensions("agent_akane", FAKE_NOW, soul_dir=None)
-        assert [s.drive_code for s in scores] == ["D1", "D3"]
+        assert [s.drive_code for s in scores] == ["D1"]
 
 
 class TestT5NoWeightedTotal:
@@ -304,3 +308,69 @@ class TestT6ThreeStateWindowConsistency:
             ts.DECAY_BUCKET_RESOLVED,
         }
         assert states == {STATE_CALM, STATE_TENSION, STATE_RESOLVED}
+
+
+# ── T11：D3 已自評分目標移除（Owner 裁定 A，2026-10-22）────────────────────
+class TestT11D3RemovedFromScoringTargets:
+    """🔴 守衛 T11：**D3 不得再作為張力驅動目標**（Owner 裁定 A「誠實收斂」）。
+
+    裁定理由（實測四條「什麼算衝突」判準路徑）：兩條恆 0；唯一非 0 的一條
+    **48/48 來自 `support_propagation` 邊**，且其內容是**跨日生活切片而非邏輯衝突**
+    ⇒ 放寬判準會用**假矛盾餵飽引擎 supersede 門檻** ⇒ **誤殺活著的命題**
+    ⇒ **寧可誠實移除 D3，也不做假矛盾**。
+
+    本守衛是該裁定的**可執行化身**：任何人想把 D3 塞回評分目標，這裡立刻轉紅。
+    """
+
+    def test_t11_active_drive_targets_is_d1_only(self):
+        assert ts.ACTIVE_DRIVE_TARGETS == ("D1",), (
+            "張力驅動目標集合必須只有 D1（裁定 A）：%s" % (ts.ACTIVE_DRIVE_TARGETS,)
+        )
+        assert "D3" not in ts.ACTIVE_DRIVE_TARGETS
+
+    def test_t11_no_d3_score_even_when_contradiction_data_exists(self):
+        """合成資料**有**未決矛盾（足以讓舊版產出 D3）⇒ 仍不得有 D3 張力。"""
+        rows = [
+            _row("gap-1", age_hours=30),
+            _row("gap-2", age_hours=48, contradiction="與舊推論衝突"),
+        ]
+        _write_threads("agent_akane", rows)
+        scores = ts.score_tensions("agent_akane", FAKE_NOW, soul_dir=None)
+        codes = [s.drive_code for s in scores]
+        assert codes == ["D1"], "裁定 A 後只允許 D1 一條張力：%s" % (codes,)
+        assert ts.DRIVE_BOUNDARY_REPAIR not in codes
+
+    def test_t11_score_tensions_source_never_references_d3(self):
+        """AST 層：``score_tensions`` 內**不得**引用 ``DRIVE_BOUNDARY_REPAIR``。"""
+        tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
+        fn = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "score_tensions":
+                fn = node
+                break
+        assert fn is not None, "找不到 score_tensions"
+        hits = {
+            n.id
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Name) and n.id == "DRIVE_BOUNDARY_REPAIR"
+        }
+        assert not hits, (
+            "score_tensions 不得引用 DRIVE_BOUNDARY_REPAIR（D3 已自評分目標移除）"
+        )
+
+    def test_t11_closure_loop_drives_touched_excludes_d3(self):
+        """閉環的 ``drives_touched`` 也不得列入 D3（觀測因子很大也不行）。"""
+        from src.inner_life import tension_closure_loop as tcl
+
+        score = ts.TensionScore(
+            agent_id="agent_akane",
+            drive_code="D1",
+            temporal_state=STATE_TENSION,
+            decay_bucket=ts.DECAY_BUCKET_TENSION,
+            info_gap_count=2,
+            unresolved_count=5,  # 觀測因子很大，但 D3 已非驅動目標
+            source_rows=[],
+        )
+        touched = tcl._drives_touched(score)
+        assert touched == ["D1"], "drives_touched 只允許 D1：%s" % (touched,)
+        assert "D3" not in touched

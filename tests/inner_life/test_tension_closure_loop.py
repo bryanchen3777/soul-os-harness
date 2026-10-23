@@ -142,7 +142,9 @@ class TestT7ClosureIsObservable:
         assert row["agent_id"] == "agent_akane"
         assert row["resolved_tension_id"] == trace.tension_id
         assert row["drive_code"] == trace.drive_code
-        assert row["drives_touched"] == ["D1", "D3"]
+        # 🔴 裁定 A（2026-10-22）後 drives_touched 只含 D1（D3 已自驅動目標移除，
+        # 即使未決矛盾數 > 0 也不列入）。
+        assert row["drives_touched"] == ["D1"]
         assert row["open_gap_count_after"] == 1
         assert row["open_contradiction_count_after"] == 1
         assert row["ts"] == FAKE_NOW
@@ -164,10 +166,11 @@ class TestT7ClosureIsObservable:
         assert event["payload"]["drive_snapshot"]["unresolved_count"] == 1
 
     def test_t7_top1_tension_is_the_lexicographic_first(self, sandbox_store, enabled):
-        """字典序：牵挂 > 释然 > 无感；同狀態且同計數 ⇒ **drive_code 決定**（D1<D2<D3）。
+        """字典序：牵挂 > 释然 > 无感；同狀態且同計數 ⇒ **drive_code 決定**。
 
-        ⚠️ D1 與 D3 由**同一組三因子**驅動 ⇒ 兩條張力的 unresolved／info_gap 計數
-        完全相同 ⇒ 排序的最後一級 tie-break（``drive_code``）才是分水嶺 ⇒ D1 在前。
+        ⚠️ 裁定 A（2026-10-22）後**只有 D1** 會成為張力驅動目標 ⇒ 本槽的 top-1 恆為 D1；
+        未決矛盾仍作為**觀測因子**被誠實回報（``unresolved_count == 1``），但**不驅動**
+        任何張力。
         """
         _seed_sandbox_data()
         trace = tcl.drive_loop("agent_akane", FAKE_NOW, sandbox_store)

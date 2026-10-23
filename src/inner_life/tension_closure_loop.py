@@ -32,8 +32,9 @@ working state 欄位（固定）
 ``agent_id``、``ts``、``resolved_tension_id``、``drive_code``、``drives_touched``、
 ``open_gap_count_after``、``open_contradiction_count_after``。
 
-- ``drives_touched`` ＝ 本次快照中**有未解項**的驅動代碼（D1 有缺口／D3 有矛盾），
-  依 D1→D3 固定序；``drive_code`` ＝ 本次**實際消解**的那一條。
+- ``drives_touched`` ＝ 本次快照中**有未解項的張力驅動目標**（Phase 1 **僅 D1**；D3 已自
+  驅動目標移除，Owner 裁定 A 2026-10-22 ⇒ 未決矛盾數即使 > 0 也不列入）；``drive_code``
+  ＝ 本次**實際消解**的那一條。
 - ``open_*_after`` ＝ 消解後的未解筆數：本次消解的那個因子 −1，另一因子不變
   （Phase 1 的 prototype 消解語意；**不**回寫 life_threads ⇒ 線頭檔不變）。
 """
@@ -50,7 +51,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.inner_life.drive_profile import load_drive_profile
 from src.inner_life.tension_scoring import (
-    DRIVE_BOUNDARY_REPAIR,
     DRIVE_INFO_GAP,
     TensionScore,
     score_tensions,
@@ -392,9 +392,9 @@ def drive_loop(agent_id: str, now: int, store_dir: Any) -> Optional[ClosureTrace
     # ⑦ 更新 working state（寫沙盒；新承載）。
     drives_touched = _drives_touched(top)
     gap_after = max(0, top.info_gap_count - (1 if top.drive_code == DRIVE_INFO_GAP else 0))
-    contradiction_after = max(
-        0, top.unresolved_count - (1 if top.drive_code == DRIVE_BOUNDARY_REPAIR else 0)
-    )
+    # D3 已非張力驅動目標（Owner 裁定 A，2026-10-22）⇒ 消解 D1 **不會**減少未決矛盾數
+    #（該因子自裁定起僅為觀測值，誠實回報、不驅動任何張力）。
+    contradiction_after = int(top.unresolved_count)
     working_path = Path(store_dir) / WORKING_STATE_FILENAME
     row = _working_state_row(
         agent_id,
@@ -423,12 +423,14 @@ def drive_loop(agent_id: str, now: int, store_dir: Any) -> Optional[ClosureTrace
 
 
 def _drives_touched(top: TensionScore) -> List[str]:
-    """本次快照中有未解項的驅動代碼（D1→D3 固定序）。"""
+    """本次快照中有未解項的**張力驅動目標**（Phase 1 **僅 D1**）。
+
+    🔴 D3 已自驅動目標移除（Owner 裁定 A，2026-10-22）⇒ ``unresolved_count`` 即使 > 0
+    也**不得**列入 ``drives_touched``（守衛 T7／T11 釘死）。
+    """
     touched: List[str] = []
     if top.info_gap_count > 0:
         touched.append(DRIVE_INFO_GAP)
-    if top.unresolved_count > 0:
-        touched.append(DRIVE_BOUNDARY_REPAIR)
     return touched
 
 

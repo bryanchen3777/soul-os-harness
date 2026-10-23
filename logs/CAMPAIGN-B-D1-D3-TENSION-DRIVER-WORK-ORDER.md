@@ -268,3 +268,35 @@ drive_loop(agent_id: str, now: int, store_dir: Path) -> ClosureTrace
 
 - 本票鎖定**單角色（`agent_akane`）**閉環原型。是否把「驅動形式化」擴為 **46 隻全補**，主大腦建議**不擴**——該項屬「世界觀／原生代基底重構」專案（§0.1.33 已把 `agent_mahiru` 的 D3 白名單掛在該處待統一梳理），避免與人格內容專案搶同一塊地。
 - 若 Owner 裁定要擴，本票的 §2.1（解析規則）**不需改**，只需補資料；但那是**另一張票**，不得併入本票。
+
+---
+
+## 附錄 A — 🏛 裁定 A 收斂後的工程變更（Owner 2026-10-22 23:1x）
+
+**Owner 裁定**：D3 架構選項**採納選項 A（誠實收斂）** ⇒ **D3 自本票的張力驅動評分目標中移除**，
+Phase 1 聚焦於**具備真實資料面的 D1**（資訊缺口 ＋ 時間態衰減）。否決選項 B（不引進外部高成本判定）
+與選項 C（不破壞單子靈魂語意）。Belief／Trait 長效保活回歸既定「方向 A」。
+
+**本工單 §2.2「驅動對應」段的 D3 條目已被此附錄取代**（canonical 不覆寫：本文為工單，
+以附錄追加；`logs/ENGINEERING_STATE.md` §0.1.49／§0.1.51 為狀態記錄）。
+
+**實際變更（主大腦執行，非 worker）**
+
+| # | 檔案 | 變更 |
+|---|---|---|
+| 1 | `src/inner_life/tension_scoring.py` | 移除 `score_tensions()` 的 **D3 分支**；新增 **`ACTIVE_DRIVE_TARGETS = ("D1",)`**；`DRIVE_BOUNDARY_REPAIR` 保留為**參考常數**並註明不得再驅動張力；`unresolved_count` 保留為**觀測因子**（誠實回報恆 0）但**不再驅動**任何張力；模組 docstring 更新 |
+| 2 | `src/inner_life/tension_closure_loop.py` | `_drives_touched()` **只回 D1**（未決矛盾數 > 0 也不列入）；`open_contradiction_count_after` ＝ 觀測值原樣（D3 已非目標 ⇒ 消解 D1 不減少它）；移除 `DRIVE_BOUNDARY_REPAIR` import |
+| 3 | `tests/inner_life/test_tension_scoring.py` | T4 改為「僅 D1 一條」；T5 的合成排序 code 由 `D3` 改 `D2`（排序函式對字串泛用，但用 D2 免誤導）；**新增 T11 負向守衛**（4 項） |
+| 4 | `tests/inner_life/test_tension_closure_loop.py` | `drives_touched == ["D1"]`；T7 docstring 更新 |
+
+**新增守衛 T11（D3 不得回歸）＝ 裁定的可執行化身**
+1. `ACTIVE_DRIVE_TARGETS == ("D1",)` 且不含 `"D3"`；
+2. **合成資料含未決矛盾**（足以讓舊版產出 D3）⇒ `score_tensions` 仍只回 `["D1"]`；
+3. **AST 層**：`score_tensions` 函式內不得引用 `DRIVE_BOUNDARY_REPAIR`；
+4. 閉環 `drives_touched` 即使 `unresolved_count = 5` 也只含 `["D1"]`。
+
+**變異證據（主大腦獨立重跑）**：**M1～M5 全紅**（收斂未破壞原守衛）＋ **M6 新增全紅**——
+M6＝「把 D3 塞回評分目標」，**T11 命中 2 筆** ⇒ 守衛是**活的**。每次變異後 sha256 驗證位元還原一致。
+
+**生產影響：零。** 這三個模組在 2026-10-22 20:41 的 DEPLOY-RESTART-25 **之後**才合入
+（`1119ea5`），線上服務行程**未重啟** ⇒ 從未載入過這些模組 ⇒ 本次收斂**不需部署、不需重啟**。

@@ -25,9 +25,15 @@ CAMPAIGN-B-P1 §2.2（工單：logs/CAMPAIGN-B-D1-D3-TENSION-DRIVER-WORK-ORDER.m
 
 驅動對應（Phase 1）
 ------------------
-- ``D1``（理解驅動）⇐ ``info_gap_count > 0``
-- ``D3``（邊界修復驅動）⇐ ``unresolved_count > 0``
-- 兩者皆 0 ⇒ 無張力。
+- ``D1``（理解驅動）⇐ ``info_gap_count > 0`` ⇒ **Phase 1 唯一具備真實資料面的驅動目標**。
+- ``D3``（邊界修復驅動）**已自評分目標移除**（Owner 裁定 A，2026-10-22 23:1x）。實測四條
+  「什麼算衝突」判準路徑：兩條恆 0；唯一非 0 的一條 48/48 來自 ``support_propagation`` 邊
+  且內容是**跨日生活切片而非邏輯衝突** ⇒ 放寬判準會用**假矛盾餵飽引擎 supersede 門檻**
+  ⇒ **誤殺活著的命題** ⇒ **寧可誠實移除，不做假矛盾**。
+- ⇒ **張力驅動目標集合恆為 ``("D1",)``**（見 ``ACTIVE_DRIVE_TARGETS``），
+  並由守衛 **T11** 釘死「D3 不得回歸」。
+- ``unresolved_count`` 仍作為**觀測因子**保留於快照與稽核軌跡（誠實回報其值，含
+  「來源不存在 ⇒ 恆 0」的實情），但**不再**驅動任何張力。
 - ``D2``（被需要驅動）**不參與評分**：D2 的觸發語意「被忽略」需要「外部互動缺席」
   的判斷，而 Phase 1 的資料面只有 agent 自身視角 ⇒ **判準不足 ⇒ 不做**
   （工單 §2.2 明文；**不得假裝三條驅動都參與**）。
@@ -56,9 +62,16 @@ from src.soul.temporal_phenomenology import (
 
 logger = logging.getLogger("soul_os.inner_life.tension_scoring")
 
-# ── 驅動代碼（Phase 1 只評 D1／D3；D2 不參與）────────────────────────────
+# ── 驅動代碼 ────────────────────────────────────────────────────────────
 DRIVE_INFO_GAP = "D1"
+#: D3（邊界修復驅動）**保留為參考常數，但已自張力驅動目標移除**
+#: （Owner 裁定 A 收斂，2026-10-22）。**不得**再拿它來驅動張力；守衛 T11 會在
+#: D3 回歸時轉紅。
 DRIVE_BOUNDARY_REPAIR = "D3"
+
+#: **張力驅動目標集合**（Phase 1 唯一具備真實資料面的驅動）。
+#: 守衛 T11 釘死此集合 == ("D1",)。
+ACTIVE_DRIVE_TARGETS: Tuple[str, ...] = (DRIVE_INFO_GAP,)
 
 # ── 時間衰減窗口的三個標籤（值由上游三態映射而來）─────────────────────────
 DECAY_BUCKET_CALM = "<24h"
@@ -302,8 +315,11 @@ def score_tensions(
 ) -> List[TensionScore]:
     """評分某 agent 的驅動張力（**純函式、唯讀、零 LLM**）。
 
-    回傳 0～2 條：``D1``（有資訊缺口時）與 ``D3``（有未決矛盾時），
-    依字典序排列。兩者皆 0 ⇒ 回傳 ``[]``（無張力）。
+    回傳 **0～1 條：僅 ``D1``**（有資訊缺口時）。**Owner 裁定 A（2026-10-22）後 D3 已自
+    評分目標移除** ⇒ **不會**再產出 D3 張力（守衛 T11 釘死）。無缺口 ⇒ 回傳 ``[]``（無張力）。
+
+    ``unresolved_count`` 仍作為**觀測因子**被記錄於快照與稽核軌跡（誠實回報其值，含
+    「來源不存在 ⇒ 恆 0」的實情），但**不驅動**任何張力。
     """
     now_ts = int(now)
     rows = _read_life_thread_rows(agent_id, soul_dir)
@@ -336,6 +352,12 @@ def score_tensions(
     source_rows: List[Dict[str, Any]] = [_source_row(row, "info_gap") for row in gap_rows]
     source_rows.extend(_source_row(row, "unresolved") for row in unresolved_rows)
 
+    # 🔴 只有 D1 會成為張力驅動目標。
+    #    D3（邊界修復驅動）**已自評分目標移除**（Owner 裁定 A，2026-10-22 23:1x）：
+    #    實測四條「什麼算衝突」判準路徑，兩條恆 0、唯一非 0 的一條 48/48 來自
+    #    `support_propagation` 邊且內容是跨日生活切片而非邏輯衝突 ⇒ 放寬判準會用
+    #    **假矛盾餵飽引擎 supersede 門檻** ⇒ 誤殺活著的命題 ⇒ 寧可誠實移除。
+    #    ⇒ 這裡**不得**再出現 `drive_code=DRIVE_BOUNDARY_REPAIR`（守衛 T11 會轉紅）。
     scores: List[TensionScore] = []
     if gap_rows:
         scores.append(
@@ -349,22 +371,11 @@ def score_tensions(
                 source_rows=list(source_rows),
             )
         )
-    if unresolved_rows:
-        scores.append(
-            TensionScore(
-                agent_id=agent_id,
-                drive_code=DRIVE_BOUNDARY_REPAIR,
-                temporal_state=temporal_state,
-                decay_bucket=bucket,
-                info_gap_count=len(gap_rows),
-                unresolved_count=len(unresolved_rows),
-                source_rows=list(source_rows),
-            )
-        )
     return sort_scores(scores)
 
 
 __all__ = [
+    "ACTIVE_DRIVE_TARGETS",
     "DECAY_BUCKET_CALM",
     "DECAY_BUCKET_RESOLVED",
     "DECAY_BUCKET_TENSION",

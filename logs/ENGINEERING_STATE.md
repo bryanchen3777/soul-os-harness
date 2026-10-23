@@ -4108,3 +4108,44 @@ ight_audit.py`／`%TEMP%\morning_obs\morning_audit.py`（tz-aware 時戳、retur
 - **一項待 Owner 裁決**：D3 的架構選項（見上）。主大腦建議 **A 誠實收斂**（放寬判準會用**假矛盾餵飽引擎 supersede 門檻** ⇒ 等於讓 D3 誤殺活著的命題）。
 
 **本輪未做（明文）**：未改 `personas/`／`configs/`／`data/`；未重啟、未動任何行程、未殺任何 PID；未觸發 synthetic 事件；未催熟門檻；未對弱化包裝做任何消紅處置；未代 Owner 裁決架構選項。
+
+#### 0.1.51 Owner 裁定登錄：採納**選項 A（誠實收斂）** —— D3 自張力驅動評分目標移除（2026-10-22 23:2x EDT）
+
+**Owner 裁定（2026-10-22 23:1x，逐字要點）**
+> 「**堅決拒絕**為了讓模組『跑得起來』而人為放寬衝突判準（O-2）。實測顯示那 48 組候選邊 100% 屬於
+> 支持傳遞邊，內容描繪的是跨日的生活切片而非邏輯衝突；若強行認定為矛盾，將以假矛盾餵飽 supersede
+> 門檻，直接導致系統**誤殺活著的命題**。」
+> 工程處置：① **將 D3 從 CAMPAIGN-B 張力驅動評分目標中明確移除**，Phase 1 聚焦於具備真實資料面的
+> **D1（資訊缺口與時間態衰減）**；② **不引進外部高成本判定**（否決選項 B）、**不破壞單子靈魂語意**
+> （否決選項 C）；③ **Belief 與 Trait 節點的長效保活，回歸既定的方向 A**（等待真實回憶召回池隨時間
+> 自然成熟），**不走任何捷徑**。
+
+**工程處置（主大腦執行，非 worker）**
+| # | 檔案 | 變更 |
+|---|---|---|
+| 1 | `src/inner_life/tension_scoring.py` | 移除 `score_tensions()` 的 **D3 分支**；新增 **`ACTIVE_DRIVE_TARGETS = ("D1",)`**；`DRIVE_BOUNDARY_REPAIR` 保留為**參考常數**（註明不得再驅動張力）；`unresolved_count` 保留為**觀測因子**（誠實回報恆 0）但**不再驅動**任何張力 |
+| 2 | `src/inner_life/tension_closure_loop.py` | `_drives_touched()` **只回 D1**（未決矛盾數 > 0 也不列入）；`open_contradiction_count_after` ＝ 觀測值原樣；移除 `DRIVE_BOUNDARY_REPAIR` import |
+| 3 | `tests/inner_life/test_tension_scoring.py` | T4 改為「僅 D1 一條」；T5 合成排序 code 由 `D3` 改 `D2`（排序函式對字串泛用，改用 D2 免誤導）；**新增 T11 負向守衛（4 項）** |
+| 4 | `tests/inner_life/test_tension_closure_loop.py` | `drives_touched == ["D1"]`；T7 docstring 更新 |
+
+**🔴 新增守衛 T11＝裁定的「可執行化身」**（讓「誠實收斂」在程式碼層**不可被悄悄推翻**）
+1. `ACTIVE_DRIVE_TARGETS == ("D1",)` 且不含 `"D3"`；
+2. **合成資料含未決矛盾**（足以讓舊版產出 D3）⇒ `score_tensions` 仍只回 `["D1"]`；
+3. **AST 層**：`score_tensions` 函式內**不得**引用 `DRIVE_BOUNDARY_REPAIR`；
+4. 閉環 `drives_touched` 即使 `unresolved_count = 5` 也只含 `["D1"]`。
+
+**變異證據（主大腦獨立重跑）**：**M1～M5 全紅**（收斂未破壞原守衛，每條位元還原 `identical=True`）＋ **M6 新增全紅**——M6＝「把 D3 塞回評分目標」⇒ **T11 命中 2 筆**（`test_t11_no_d3_score_even_when_contradiction_data_exists` ＋ `test_t11_score_tensions_source_never_references_d3`）⇒ 守衛是**活的**。
+
+**殘留引用稽核**：`DRIVE_BOUNDARY_REPAIR` 全庫僅餘 4 處——**參考常數定義**（`tension_scoring.py:70`）、**註解**（`:360`）、**`__all__` 匯出**（`:382`）、**T11 守衛斷言**；**無任何活的使用**。模組匯入自證：`ACTIVE_DRIVE_TARGETS = ('D1',)`。
+
+**全庫回歸（收斂後，主大腦獨立複核）**：**7188 passed, 24 skipped, 32 subtests passed in 811.20s (0:13:31)**（`.venv\Scripts\python.exe -m pytest -q tests`）。
+
+**🔴 生產影響＝零**：這三個模組在 2026-10-22 20:41 的 DEPLOY-RESTART-25 **之後**才合入（`1119ea5`），線上服務行程**未重啟** ⇒ **從未載入過這些模組** ⇒ 本次收斂**不需部署、不需重啟、不需 Owner 部署授權**。
+
+**文件同步（canonical 不覆寫，以追加記錄）**
+- `logs/CAMPAIGN-B-D1-D3-TENSION-DRIVER-WORK-ORDER.md` **附錄 A**：裁定 A 的工程變更、檔案清單、T11 規格、變異證據（**明文取代工單 §2.2 的 D3 條目**）。
+- `docs/FEAT-SCHEMA-CONTRADICTION-RFC.md` **§5.4**：裁決記錄 ⇒ **Phase 2 不進行**（不動 `elevation_adapter.py`、不接 `engine.record_contradiction()`、不部署）；O-1／O-2／O-3 **全數結案**（O-2 明確否決）；§5.5 標記「已因裁定 A 而不適用」；§1.1 的「結構性死鎖」描述維持 §0.1.49 的更正（累積器可累積，真缺口是**無呼叫者 ＋ 無衝突判準**）。沙盒原型與守衛**保留在 repo**，作為未來若重評衝突判準時的可重跑基準。
+
+**Belief／Trait 長效保活**：回歸既定「方向 A」（等待真實回憶召回池隨時間自然成熟，30 天自然老化）⇒ **不催熟、不製造假 Pattern 邊**（Owner 裁決 2／3）。
+
+**本輪未做（明文）**：未改 `personas/`／`configs/`／`data/`；未重啟、未動任何行程、未殺任何 PID；未觸發 synthetic 事件；未催熟門檻；未對弱化包裝做任何消紅處置；**未放寬任何判準以讓數字變好看**。
