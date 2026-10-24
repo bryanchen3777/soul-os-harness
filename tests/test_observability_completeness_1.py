@@ -870,6 +870,19 @@ class TestBoundedAndFrozenDiscipline:
             # contract constants -- never hard-coded.
             # Work order: logs/FEAT-SUPERSEDED-ACCUMULATOR-PIPELINE-WORK-ORDER.md
             "src/inner_life/contradiction_accumulator_prototype.py",
+            # -- FEAT-ISOLATED-DATA-ROOT-FACTORY (2026-10-24) -------------------
+            # This ticket changes 1 non-frozen file: `src/paths.py` gains the
+            # controlled-isolation factory (`isolated_data_root()` + the
+            # data-root-derived constant registry). It touches **no** frozen
+            # contract file; `check_store_dir()` is not even in `src/`, and the
+            # two path-not-injectable production interfaces
+            # (`format_working_state_lines_production()` /
+            # `drive_loop_async_production()`) keep their exact signatures
+            # (pinned by the new guard file's sha256 + signature assertions).
+            # The factory refuses to start outside pytest (no
+            # `PYTEST_CURRENT_TEST`) => it cannot become a production path.
+            # Work order: logs/FEAT-ISOLATED-DATA-ROOT-FACTORY-WORK-ORDER.md
+            "src/paths.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

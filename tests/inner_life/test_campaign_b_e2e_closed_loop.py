@@ -19,6 +19,10 @@
 
 邊界（工單 §2.5）：
   * **只新增本檔**；不改 ``src/**``、不改既有守衛檔。
+    ⚠️ FEAT-ISOLATED-DATA-ROOT-FACTORY（2026-10-24）之後**本檔已被改寫**：
+    沙盒隔離改用 ``src.paths.isolated_data_root()``（單一入口），**不再**手動
+    monkeypatch 10 個 import 期資料根常數 ⇒ 覆寫數 **10 → 0**。
+    （``src/**`` 的改動只限 ``src/paths.py`` 的工廠本體。）
   * 0 subprocess / 0 os.spawn* / 0 os.system / 0 os.popen（R5 護欄）。
   * 0 啟動伺服器 / 0 綁 :8000 / :8765-8767 / 0 對生產發真實請求。
   * 0 真實 LLM 呼叫 / 0 外部 API / 0 網路。
@@ -41,14 +45,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
-import src.agent.emotion as emotion_module  # noqa: E402
-import src.llm.tts_toggle as tts_toggle_module  # noqa: E402
-import src.memory.store as memory_store_module  # noqa: E402
 import src.paths as paths  # noqa: E402
-import src.soul.diary as diary_module  # noqa: E402
 from src.inner_life import tension_closure_loop as tcl  # noqa: E402
 from src.inner_life import tension_thinking as tt  # noqa: E402
 from src.llm import proxy  # noqa: E402
+from src.paths import isolated_data_root  # noqa: E402
 
 # ── 測試常量（固定值 ⇒ 零 wall-clock 相依）───────────────────────────────
 #: 被驅動的角色（Phase 1 的驅動剖面只解析得出 ``agent_akane``）。
@@ -139,29 +140,40 @@ class _Sandbox:
 def sandbox(tmp_path: Path) -> _Sandbox:
     """把整條鏈路的資料面指向**本次測試的沙盒**（0 生產讀、0 生產寫）。
 
-    🔺 **逐項**覆寫下列「import 期擷取資料根」的常數（盤點結果見下）——
-    每一個都是 ``data_root()`` 在**匯入期**求值成常數，之後改環境變數**不會**
-    跟著變（``data_root()`` 是行程期快取單例）：
+    🔺 **單一入口**（FEAT-ISOLATED-DATA-ROOT-FACTORY）：本檔**不再**手動
+    monkeypatch 任何「import 期算死」的資料根常數 ⇒ 改用
+    :func:`src.paths.isolated_data_root`（受控隔離環境上下文工廠）。
 
-    ==========================  ==================================  ==========
-    常數                        實際來源（實讀）                    本票處理
-    ==========================  ==================================  ==========
-    ``src.paths.data_root``     函式本身（**呼叫期**取屬性）          覆寫為沙盒
-    ``proxy.INNER_LIFE_DATA_DIR``  ``data_root() / "soul"``         覆寫為沙盒
-    ``proxy.CONV_DIR``            ``data_root() / "conversations"`` 覆寫為沙盒
-    ``proxy._GROUP_FILE``         ``CONV_DIR / "group_chat.json"``   覆寫為沙盒
-    ``emotion.DB_PATH``           ``data_root() / "memory.db"``      覆寫為沙盒
-    ``memory.store.DB_PATH``      ``data_root() / "memory.db"``      覆寫為沙盒
-    ``tts_toggle._STATE_DIR``     ``data_root() / "state"``          覆寫為沙盒
-    ``tts_toggle._STATE_FILE``    ``_STATE_DIR / "tts_toggle.json"`` 覆寫為沙盒
-    ``diary.DEFAULT_DIARY_ROOT``  ``data_root() / "soul"``           覆寫為沙盒
-    ==========================  ==================================  ==========
+    工廠一次就替換掉**盤點清單裡的全部 12 個** import 期資料根常數
+    （單一事實來源：``src/paths.py::DERIVED_DATA_ROOT_CONSTANTS``）：
 
-    🔺 另覆寫 ``tension_closure_loop._production_data_root``：因為
-    ``check_store_dir()`` 會拿「生產資料根」與 ``store_dir`` 比對，而本檔把
-    ``data_root()`` 指向沙盒 ⇒ 若不覆寫，守門會拿**沙盒跟自己比**，
-    於是**沙盒也會被拒絕**（守門語意反轉）。覆寫後守門比對的是**真實 repo
-    ``data/``** ⇒ 生產路徑**照樣被擋**（E2E-T6 有斷言釘死這件事）。
+    ===========================  ==============================  ==========================
+    模組                         屬性                            相對於資料根的子路徑
+    ===========================  ==============================  ==========================
+    ``src.agent.emotion``        ``DB_PATH``                    ``memory.db``
+    ``src.io.channels.router``   ``_STATE_DIR``                 ``state``
+    ``src.io.channels.router``   ``_LAST_TG_USER_FILE``         ``state/last_tg_user.json``
+    ``src.io.channels.router``   ``_BRYAN_LAST_SEEN_FILE``      ``state/bryan_last_seen.json``
+    ``src.io.channels.router``   ``_OUTBOX_FILE``               ``state/outbox.json``
+    ``src.llm.proxy``            ``CONV_DIR``                   ``conversations``
+    ``src.llm.proxy``            ``INNER_LIFE_DATA_DIR``        ``soul``
+    ``src.llm.proxy``            ``_GROUP_FILE``                ``conversations/group_chat.json``
+    ``src.llm.tts_toggle``       ``_STATE_DIR``                 ``state``
+    ``src.llm.tts_toggle``       ``_STATE_FILE``                ``state/tts_toggle.json``
+    ``src.memory.store``         ``DB_PATH``                    ``memory.db``
+    ``src.soul.diary``           ``DEFAULT_DIARY_ROOT``         ``soul``
+    ===========================  ==============================  ==========================
+
+    🔺 工廠另外把「**預設參數**捕捉」一併換掉（``MemoryStore.__init__`` 的
+    ``db_path``／``EmotionEngine.__init__`` 的 ``db_path``／
+    ``DiaryWriter.__init__`` 的 ``data_dir``）—— 那些值在 import 期就綁進簽章，
+    只換模組屬性**不夠**。
+
+    🔺 **生產守門語意不變**：隔離期間 ``check_store_dir()`` 仍拿**真實生產根**
+    比對（工廠把 ``tension_closure_loop._production_data_root`` 指向
+    ``src.paths.production_data_root()``）⇒ 若不這樣做，守門會「拿沙盒跟自己比」
+    ⇒ **語意反轉**（沙盒也會被拒絕）；覆寫後生產路徑**照樣被擋**
+    （E2E-T6 有斷言釘死這件事）。
 
     🔺 **旗標**：``drive_loop_async()`` 的**第一道**閘門是 ``feature_enabled()``；
     OFF ⇒ 回 ``None``、0 檔案 ⇒ **鏈路不可能閉環**。故本檔在**測試行程內**
@@ -178,21 +190,11 @@ def sandbox(tmp_path: Path) -> _Sandbox:
     # 與既有 P5-① 守衛檔同款做法：不佔用 ``monkeypatch`` fixture ⇒ 不改變
     # 既有 fixture 的 setup/teardown 順序。
     mp = pytest.MonkeyPatch()
-    mp.setattr(paths, "data_root", lambda: data_root)
-    mp.setattr(proxy, "INNER_LIFE_DATA_DIR", str(data_root / "soul"))
-    mp.setattr(proxy, "CONV_DIR", data_root / "conversations")
-    mp.setattr(proxy, "_GROUP_FILE", data_root / "conversations" / "group_chat.json")
-    mp.setattr(emotion_module, "DB_PATH", data_root / "memory.db")
-    mp.setattr(memory_store_module, "DB_PATH", data_root / "memory.db")
-    mp.setattr(tts_toggle_module, "_STATE_DIR", data_root / "state")
-    mp.setattr(
-        tts_toggle_module, "_STATE_FILE", data_root / "state" / "tts_toggle.json"
-    )
-    mp.setattr(diary_module, "DEFAULT_DIARY_ROOT", str(data_root / "soul"))
-    mp.setattr(tcl, "_production_data_root", lambda: REPO_ROOT / "data")
     mp.setenv(tcl.FEATURE_ENV, "1")
     try:
-        yield _Sandbox(data_root=data_root, store_dir=store_dir, mp=mp)
+        # 🔺 唯一動作：把**所有**資料根衍生常數統一置換到沙盒，退出時必還原。
+        with isolated_data_root(data_root):
+            yield _Sandbox(data_root=data_root, store_dir=store_dir, mp=mp)
     finally:
         mp.undo()
 

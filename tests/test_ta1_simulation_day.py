@@ -269,7 +269,14 @@ class TestRealMemoryDb(unittest.TestCase):
     def test_real_db_get_bry_latest_ts(self):
         """真實 memory.db: _get_bry_latest_ts 取到真實值 (>0), 沉默時長行可注入"""
         from src.memory.store import MemoryStore
-        memory = MemoryStore()
+        # 🔺 **顯式**傳入本類自帶的生產路徑。
+        #    FEAT-ISOLATED-DATA-ROOT-FACTORY（2026-10-24）起，
+        #    ``MemoryStore.__init__`` 的**預設參數**會被隔離機制重指向
+        #    pytest 的 tmp 資料根 ⇒ 隱式的 ``MemoryStore()`` 讀到的是**空沙盒**，
+        #    本測試「刻意要讀真實 production db」的語意會被靜默抽掉。
+        #    本測試的意圖**就是**讀真實 db（見類別 docstring「production data 只讀」），
+        #    故必須顯式指定路徑，而不是放寬斷言。
+        memory = MemoryStore(db_path=self.DB_PATH)
         try:
             bry_latest_ts = proxy._get_bry_latest_ts(memory, "agent_yua")
             self.assertGreater(bry_latest_ts, 0,

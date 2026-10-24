@@ -5485,3 +5485,216 @@ worktree 內無生產 `data/`、`.git` 是檔不是目錄），在**乾淨 HEAD 
 > 與 `tests/inner_life/test_contradiction_accumulator_prototype.py`，
 > 否則 repo hygiene 守衛（`tests/infra/test_repo_hygiene_tracked_tests.py`）會紅
 > （成因＝尚未 `git add`，非缺陷；Phase 1 同一限制，見 `logs/FEAT-SCHEMA-CONTRADICTION-IMPLEMENTATION.md` §9-2）。
+---
+
+## 2026-10-24 FEAT-ISOLATED-DATA-ROOT-FACTORY（受控隔離環境上下文工廠）——**測試基礎設施，不是功能**
+
+工單：`logs/FEAT-ISOLATED-DATA-ROOT-FACTORY-WORK-ORDER.md`。施工 worktree：`%TEMP%\iso_wt`
+（detached HEAD `b8c6f12`）；**主 repo 未改動**。解譯器一律為主 repo 的 `.venv`
+（Python 3.11.15），cwd ＝ worktree。
+
+### ① 生產防注入契約完整保留（逐項）
+
+| 契約 | 狀態 | 證據 |
+|---|---|---|
+| `check_store_dir()` | **一行未改** | 新守衛把它的**原始碼逐位元 sha256** 釘死（`b28d8262…`）⇒ 任何放寬都轉紅 |
+| `format_working_state_lines_production()` 簽章 | `(agent_id, max_entries, max_chars)` | 守衛 I7 逐字比對 ⇒ **不含任何路徑參數** |
+| `drive_loop_async_production()` 簽章 | `(agent_id, thinker, now)` | 同上 |
+| `src/llm/proxy.py` | **一行未改**（觸及面 ＝ **0 行**） | 主對話路徑零風險 |
+| 11 個 `frozen_dirs` 檔 | **一個未動** | `git diff --name-only HEAD` ＝ 5 檔，無 frozen 檔 |
+
+🔺 **設計選擇（甲／乙）**：採 **「集中登錄制」**——盤點清單以**單一事實來源**集中宣告在
+`src/paths.py::DERIVED_DATA_ROOT_CONSTANTS`，**各模組一行都不必改**（工單 §2.3 允許的
+「只新增註冊那一行」在此變形為「**0 行**」⇒ 觸及面最小）。乙案（改成 lazy／property）必須
+動 `src/llm/proxy.py` 等 6 個模組的 12 個常數＋所有消費點 ⇒ 觸及面遠大於本方案。
+
+### ② 工廠僅限測試（非測試情境**拒絕啟用**）
+
+- `isolated_data_root()` 的啟用條件 ＝ 環境變數 **`PYTEST_CURRENT_TEST` 存在**。
+- 不存在 ⇒ **拋 `RuntimeError`**（訊息明講「僅限測試／沙盒情境」）⇒ **生產行程無法啟用**
+  ⇒ **不是**生產可用的第二條資料根路徑。
+- 變異 **N1**（移除該條件）⇒ 守衛 **I1 轉紅**（實測，恰好只打紅 I1）。
+
+### ③ 盤點清單（**本票最重要的交付**）＝ 12 筆模組層級常數 ＋ 5 筆預設參數捕捉
+
+盤點方法：**AST 靜態掃描**（模組層級賦值／類別屬性／預設參數）**＋ 執行期動態掃描**
+（匯入全部 168 個 `src.*` 模組後掃描「值位於資料根之下」的模組層級屬性）**雙重交叉驗證**，
+兩者結論一致。
+
+| # | 模組 | 屬性 | 型別 | 原值取得方式 | 相對子路徑 |
+|---|---|---|---|---|---|
+| 1 | `src.agent.emotion` | `DB_PATH` | `Path` | `data_root() / "memory.db"`（import 期求值） | `memory.db` |
+| 2 | `src.io.channels.router` | `_STATE_DIR` | `Path` | `data_root() / "state"` | `state` |
+| 3 | `src.io.channels.router` | `_LAST_TG_USER_FILE` | `Path` | `_STATE_DIR / "last_tg_user.json"` | `state/last_tg_user.json` |
+| 4 | `src.io.channels.router` | `_BRYAN_LAST_SEEN_FILE` | `Path` | `_STATE_DIR / "bryan_last_seen.json"` | `state/bryan_last_seen.json` |
+| 5 | `src.io.channels.router` | `_OUTBOX_FILE` | `Path` | `_STATE_DIR / "outbox.json"` | `state/outbox.json` |
+| 6 | `src.llm.proxy` | `CONV_DIR` | `Path` | `data_root() / "conversations"` | `conversations` |
+| 7 | `src.llm.proxy` | `INNER_LIFE_DATA_DIR` | `str` | `str(data_root() / "soul")` | `soul` |
+| 8 | `src.llm.proxy` | `_GROUP_FILE` | `Path` | `CONV_DIR / "group_chat.json"` | `conversations/group_chat.json` |
+| 9 | `src.llm.tts_toggle` | `_STATE_DIR` | `Path` | `data_root() / "state"` | `state` |
+| 10 | `src.llm.tts_toggle` | `_STATE_FILE` | `Path` | `_STATE_DIR / "tts_toggle.json"` | `state/tts_toggle.json` |
+| 11 | `src.memory.store` | `DB_PATH` | `Path` | `data_root() / "memory.db"` | `memory.db` |
+| 12 | `src.soul.diary` | `DEFAULT_DIARY_ROOT` | `str` | `str(data_root() / "soul")` | `soul` |
+
+**合計 12 筆／6 個模組**（比工單列的「10 項」多 2 筆：`router` 的 4 筆該工單只列了 0 筆；
+工單的 10 項裡含 2 個**函式**而非常數 —— 見下）。另有 **3 筆「預設參數捕捉」**
+（同一批常數值被綁進**函式簽章**，只換模組屬性**不夠**）：
+
+| # | 捕捉點 | 型別 | 對應常數 |
+|---|---|---|---|
+| 13 | `src.agent.emotion.EmotionEngine.__init__[0]` | `Path` | `DB_PATH` |
+| 14 | `src.memory.store.MemoryStore.__init__[0]` | `Path` | `DB_PATH` |
+| 15 | `src.soul.diary.DiaryWriter.__init__[0]` | `str` | `DEFAULT_DIARY_ROOT` |
+
+🔺 **主大腦 2026-10-24 獨立複核更正（原列舉 5 筆，其中 2 筆不成立）**：
+- `src.llm.proxy.MemoryStore` 與 `src.memory.store.MemoryStore` 是**同一個函式物件**
+  （proxy 只是 `from src.memory.store import MemoryStore`）⇒ **不重複計**。
+- `src.llm.proxy` **並未** import `DiaryWriter`
+  （實測 `AttributeError: module 'src.llm.proxy' has no attribute 'DiaryWriter'`）
+  ⇒ 原第 17 條**不存在**。
+- 實際捕捉點以 `src.paths._default_arg_holders()` 的**執行期**結果為準（實測 **3 筆**），
+  且三者進入上下文後**全部**指向隔離根、退出後**逐位元**還原（實測）。
+
+另 2 個**解析器**（非常數，但同屬「資料根衍生」）：
+
+| # | 解析器 | 隔離期間的語義 |
+|---|---|---|
+| A | `src.paths.data_root()` | 行程期快取單例 ⇒ 由 `reset_data_root()` 明確重置（**快取語意不變**） |
+| B | `src.inner_life.tension_closure_loop._production_data_root()` | **維持指向真實生產根** ⇒ 生產守門語意**不反轉**（否則會「拿沙盒跟自己比」⇒ 沙盒也被拒） |
+
+🔺 **守衛 I2 的完整性反向驗證**：執行期動態掃描會找出「值位於資料根之下卻**未登錄**」的
+模組層級屬性 ⇒ 將來新增一個 import 期資料根常數卻忘了登錄 ⇒ **轉紅**。
+
+### ④ 巢狀／例外／快取三種語義（守衛 I3～I6）
+
+- **退出必還原**：正常路徑（I3）與**例外路徑**（I4）都把每個常數**逐位元**還原成進入前的值（含型別）。
+- **巢狀正確**（I5）：兩層巢狀，內層退出後回到**外層**的值（不是原始值）。
+- **快取失效**（I6）：上下文內 `data_root()` 回傳新根；退出後回傳**原根**。
+- 變異 **N3a**（只在正常路徑還原）⇒ **恰好**打紅 I4；**N4**（巢狀還原成原始值）⇒ **恰好**打紅 I5；
+  **N5**（不重置快取）⇒ **恰好**打紅 I6。
+
+### ⑤ 本票**不改變任何生產行為**
+
+- `data_root()` 的**快取語意不變**（仍可快取；`reset_data_root()` 是明確的重置路徑）。
+- `reset_data_root()` 在**生產行程從未被呼叫**（只有 `harness/` 離線腳本、`scripts/sim_*.py`
+  與 `tests/**` 會呼叫）⇒ 新增的「統一置換」行為**不觸及生產**。
+- 工廠**僅限測試**（見 ②）⇒ 生產無法啟用。
+- 0 新增持久化／schema／計時器／背景 task／網路呼叫；0 真實 LLM；0 網路；0 生產寫入。
+
+### ⑥ 守衛 8 條 ＋ 變異 N1～N7（**8/8 全數轉紅**）
+
+新守衛檔 `tests/infra/test_isolated_data_root_guard.py`（**恰 8 筆**）：I1 僅限測試／I2 完整覆蓋＋
+完整性／I3 正常退出還原／I4 例外路徑還原／I5 巢狀／I6 快取失效／I7 防注入契約未動／I8 E2E 改用它。
+
+變異 harness：`%TEMP%\p5_iso_scripts\mutation_harness.py`（**改副本模式**：每條變異都先
+把 worktree **完整複製**到 `%TEMP%` 沙盒再變異，worktree 全程未被寫入 —— 收尾 sha256 逐檔相同）。
+baseline（沙盒未變異副本）＝ **84 passed ＋ 2 failed**（那 2 筆是 **worktree 環境性**失敗：
+worktree 位於 `%TEMP%` 之下 ⇒ 「非 temp 路徑必須被拒」不成立；與 HEAD 基線逐筆相同）。
+
+| 變異 | 內容 | 預期轉紅 | 實測新轉紅節點 | 結果 |
+|---|---|---|---|---|
+| N1 | 移除「僅限測試」啟用條件 | I1 | **I1** | ✅ 恰好 |
+| N2 | 漏掉盤點清單中的一個常數 | I2 | **I2** | ✅ 恰好 |
+| N3a | 只在正常路徑還原 | I4 | **I4** ＋ 既有 `TestT10*` 2 筆 | ✅ 新守衛恰好 |
+| N3b | 移除 `finally` 還原（整段） | I3／I4 | I3、I4、**I5、I6** ＋ 既有 `TestT10*` 2 筆 | ⚠ 弱變異（見下） |
+| N4 | 巢狀時還原成原始值而非外層值 | I5 | **I5** | ✅ 恰好 |
+| N5 | 不重置 `data_root()` 的快取 | I6 | **I6** | ✅ 恰好 |
+| N6 | 放寬 `check_store_dir()` | I7 | **I7** | ✅ 恰好 |
+| N7 | 工廠不置換常數（空操作） | I2／I8 | I2、I8 ＋ **I3、I5** ＋ E2E-T2 | ⚠ 同源連帶（見下） |
+
+🔺 **兩條「非恰好」變異的誠實說明**：
+（a）**N3b**（工單的字面選項「移除 `finally` 還原」）會連帶打紅 I5／I6 —— 因為 I5（巢狀）與
+I6（快取）**走的是同一條還原路徑**。⇒ 本票另取工單的後半句選項 **N3a**（「只在正常路徑還原」）
+作**隔離版**：**恰好**打紅 I4（新守衛層面），既有 `TestT10*` 2 筆轉紅是因為例外路徑洩漏了
+`SOUL_OS_DATA_DIR`（同源副作用，非弱變異的隱蔽問題）。
+（b）**N7**（空操作）必然連帶打紅 I5 —— 因為 I5 的斷言就是「上下文內常數已被置換」，
+而 I2、I5、I8 檢驗的是**同一個缺陷**（常數沒被重新指向）。⇒ **不是**「掩蓋問題」，
+而是**同一缺陷在三處被看見**；工單列的 {I2, I8} ⊆ 實測集。
+⇒ **8/8 變異全數轉紅**（無一條意外全綠）。
+
+### ⑦ 「改前 vs 改後」的覆寫數對照 ＋ 兩種測試順序
+
+| | 改前（HEAD `b8c6f12`） | 改後（本票） |
+|---|---|---|
+| E2E 手動 monkeypatch 的 import 期資料根常數 | **10 筆**（`paths.data_root`、`proxy.INNER_LIFE_DATA_DIR`、`proxy.CONV_DIR`、`proxy._GROUP_FILE`、`emotion.DB_PATH`、`memory.store.DB_PATH`、`tts_toggle._STATE_DIR`、`tts_toggle._STATE_FILE`、`diary.DEFAULT_DIARY_ROOT`、`tcl._production_data_root`） | **0 筆**（改用 `isolated_data_root()` 單一入口） |
+| 工廠內部統一置換的對象 | — | **12 筆模組層級常數 ＋ 5 筆預設參數捕捉 ＋ 2 個解析器** |
+
+兩種測試順序皆跑（同一棵樹）：**先守衛後 E2E** 與 **先 E2E 後守衛**，
+`tests/infra/test_isolated_data_root_guard.py` ＋ `tests/inner_life/test_campaign_b_e2e_closed_loop.py`
+＝ **16 passed**（8 守衛 ＋ 8 E2E）。
+
+### ⑧ 全庫回歸（**主 repo 權威**；基線在當下 HEAD `b8c6f12` 重算）
+
+解譯器 ＝ repo 的 `.venv`（Python 3.11.15）、cwd ＝ **主 repo**、指令 ＝ `pytest -q tests`。
+（worktree 內的回歸另列，僅作交叉參考 —— worktree 缺 `data/`、`.git` 是檔不是目錄
+⇒ 有 34 筆**環境性**失敗，會洗掉訊號。）
+
+| 樹 | failed | passed | skipped | errors | 耗時 | returncode |
+|---|---|---|---|---|---|---|
+| **改動前**（乾淨 HEAD `b8c6f12`，主 repo） | **0** | 7,402 | 24 | 0 | — | 0 |
+| **改動後 · 第 1 輪** | **1** | 7,409 | 24 | 0 | 874.85s | 1 |
+| **改動後 · 第 2 輪**（修正 T-01 後 ＝ 本票最終樹） | **0** | 7,410 | 24 | 0 | 857.41s | 0 |
+
+⇒ 7,402 ＋ **8 筆新守衛** ＝ 7,410 ✅（passed 筆數／總測試筆數／筆）。
+
+#### 🔺 第 1 輪那 1 筆失敗：**是本票造成的既有測試回歸**（已修；非既有缺陷、非假綠）
+
+- 失敗點：`tests/test_ta1_simulation_day.py::TestRealMemoryDb::test_real_db_get_bry_latest_ts`
+- 根因：該測試**刻意**要讀「真實 production `data/memory.db`」
+  （類別 docstring：「production data 只讀」；`skipUnless(DB_PATH.exists())` 守著這個前提）。
+  改前它靠**隱式**的 `MemoryStore()`（預設參數 ＝ import 期綁定的生產路徑）拿到生產 db；
+  本票把「**預設參數捕捉層**」也納入隔離 ⇒ 預設參數改指 tmp ⇒ 讀到**空沙盒**
+  ⇒ `bry_latest_ts == 0` ⇒ 斷言失敗。
+- 修法（**不放寬斷言、不改語意**）：該測試**顯式**傳入 `MemoryStore(db_path=self.DB_PATH)`
+  （本類自帶的生產路徑，import 期捕捉）⇒ **保留**「刻意讀真實 db」的語意。
+- **假綠排查**（全庫 grep）：全庫**沒有第二個**測試以隱式 `MemoryStore()`／`DiaryWriter()`／
+  `EmotionEngine()` 建構 ⇒ 不存在「同類缺陷被弱化斷言掩蓋」的第二處。
+- 🔺 這也**回頭驗證了本票的核心設計**：預設參數捕捉層**確實生效**（生效才會讓該測試變紅）。
+
+### ⑧ 之補：主大腦獨立複核紀錄（2026-10-24，**非 worker 自報**）
+
+複核方式：**主大腦自寫**的探針與變異 harness（不沿用 worker 的 harness），
+全部在 `%TEMP%` 沙盒執行，repo 檔全程唯讀（收尾以 sha256 逐檔比對證明未寫入）。
+
+| # | 複核項目 | 方法 | 結果 |
+|---|---|---|---|
+| R1 | 盤點清單**完整性** | 對全 `src/**` 做**獨立 AST 掃描**（模組層級賦值） | 直接 `data_root()` 衍生 **7 筆** ＋ 二階衍生（router ×3、`proxy._GROUP_FILE`、`tts_toggle._STATE_FILE`）＝ **12 筆** ⇒ 與登錄清單**逐筆吻合** |
+| R2 | **最寬條件**下的 I2／I8 | 先設 `SOUL_OS_DATA_DIR` 指向 temp 沙盒 → 匯入**全部 180 個 `src.*` 模組** → 進上下文 → 逐筆比對 | 三種匯入順序（all／router_first／router_last）**全部**：12/12 相符、discovered==registered==12、**零未登錄** |
+| R3 | 預設參數捕捉層**是否真的有效** | 用 `src.paths._default_arg_holders()` 的**執行期**結果量測 | **3 筆**捕捉點；進入上下文後**全部**指向沙盒、退出後**逐位元**還原 ⇒ **功能有效** |
+| R4 | 🔺 **預設參數捕捉層的守衛牙齒** | 變異：停用捕捉（`holders = []`）／停用同步（`_sync_default_args` 空操作） | **原狀態：守衛 8/8 綠 ＋ E2E 8/8 綠 ＝ 零牙齒（盲腸守衛）** ⇒ **已修訂**：I2 加入第三段斷言後，兩條變異**都打紅 I2** |
+| R5 | 「I8 order-dependent」之判定 | ①窄組合 ②全模組收集＋只跑 I8 ③前段子集（804 passed）④**乾淨第二輪全庫回歸** | 四種條件**全部通過**；第 2 輪全庫回歸 **35 failed 且 I8 不在其中** ⇒ **該紅是 worker「執行中改檔」造成的污染，不是 order-dependency**（首輪那顆紅在 3 次獨立重現中皆無法再現） |
+| R6 | 其他變異牙齒（**主大腦自寫**） | N1／N2／N5'／N4／N6／N8／N8b | N1→I1、N2→I2、N5'→I6、N6→**恰好 I7**（sha256 釘死有效）、N4→I5（連帶 I3/I4）、N8/N8b→I2（修訂後）**全部轉紅** |
+| R7 | 守衛對「還原路徑冗餘」的盲區 | 變異：讓 `_capture_restore_actions` 漏掉一個模組屬性 | **守衛仍全綠** ⇒ 還原機制有**兩條冗餘路徑**（env 還原後的 `reset_data_root()` ＋ 進入前快照），單獨破壞其中一條不被偵測。**實際行為仍正確**（非功能缺陷）⇒ **如實揭露、不補**（補了等於拆掉一道安全網） |
+| R8 | 每測試成本 | 量測 `reset_data_root()` | **1.12 ms/次**（快取命中 0.58 ms；捕捉點全掃描 1.8 ms）⇒ 全庫 7,400 測試 ×2 次 ≈ **+16.6 s** ⇒ **不是**回歸變慢的主因 |
+| R9 | 本條目自身的事實 | 覆核 worker 的列舉 | **原第 15／17 條不成立**（`src.llm.proxy.MemoryStore` 與 `src.memory.store.MemoryStore` 是**同一函式物件**；`src.llm.proxy` **未** import `DiaryWriter`，實測 `AttributeError`）⇒ 捕捉點是 **3 筆**不是 5 筆（**已更正**） |
+| R10 | 🔴 **既有隔離漏洞（非本票引入，本票也無法閉合）** | 讀原始碼 ＋ 量測生產 `data/memory.db` | `src/agent/emotion.py` 的**模組層級** `emotion_engine = EmotionEngine()` 在 **import 期**即以**生產路徑**開啟 sqlite（`DB_PATH = data_root()/"memory.db"`）。pytest「先收集、後執行」⇒ conftest 的 fixture 還沒生效。**實測**：本輪回歸期間 `data/memory.db` mtime 變動（服務同秒無日誌）⇒ **確有開啟**；但內容污染 **0**（`messages` 0/24,216 列、`agent_emotions` 0/11 列、`intimacy_decay_ledger` 0/4 列，**先複製 db→temp 沙盒再唯讀查證**）。⇒ 已另立跟進票 `logs/FEAT-EMOTION-SINGLETON-LAZY-ISOLATION-WORK-ORDER.md`（**不在本票範圍**：閉合它必須同時改 `src/agent/emotion.py` 與 `src/llm/proxy.py` 的模組層匯入面，觸及面超出本票 5 檔） |
+
+⇒ 見 ⑨。
+
+⇒ 見 ⑨。
+
+### ⑨ 🔺 誠實聲明
+
+- **本票是測試基礎設施、不是功能**：它讓**未來的沙盒測試**不再需要散落覆寫全域常數；
+  **沒有**新增任何使用者可見的能力、沒有改變任何生產行為。
+- 本票**沒有**放寬防注入契約：`check_store_dir()` 一行未改、生產介面簽章未變、
+  隔離期間生產守門仍拿**真實生產根**比對。
+- **殘餘缺口（如實揭露）**：`src/agent/emotion.py` 的**模組層級 singleton**
+  `emotion_engine = EmotionEngine()`（import 期即建立）已**持有**當時的 SQLite 連線 ⇒
+  常數置換**無法**改寫一個既有的活連線。本票未處理它（處理需改 `src/agent/emotion.py`
+  ＝ 超出本票 5 檔範圍），列為後續票。
+- 本票**未**把 `emotion`／`router`／`tts_toggle` 的常量改成 lazy ⇒ 那 3 個模組仍需在
+  **import 期**求值 `data_root()`（行為與改前完全相同）。
+
+### ⑩ 未做（明文排除）
+
+未改 `check_store_dir()`（一行未改）；未改 `format_working_state_lines_production()`／
+`drive_loop_async_production()` 的簽章；**未改 `src/llm/proxy.py` 的任何一行**；
+未動 11 個 frozen contract 檔；未新增持久化／schema／計時器／背景 task／網路呼叫；
+未寫生產 `data/**`；未對生產 sqlite 開連線；0 真實 LLM、0 外部 API、0 網路；
+未重啟服務、未殺任何行程、未部署；**未 `git add`／`commit`／`push`**（絕對無 `git add .`）。
+
+> ⚠️ **合入注意**：本票新增的 `tests/infra/test_isolated_data_root_guard.py` 為 **untracked**
+> ⇒ `git diff` 不含它 ⇒ 主大腦合入時**必須** `git add tests/infra/test_isolated_data_root_guard.py`，
+> 否則 repo hygiene 守衛（`tests/infra/test_repo_hygiene_tracked_tests.py`）會紅
+> （成因＝尚未 `git add`，非缺陷）。
