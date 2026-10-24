@@ -1543,6 +1543,37 @@ Sunset **解除的是「永久卡死」，不是「連續性」本身**：
 
 ---
 
+## 0.3 VC 語音通道：TTS/ASR 的模型選擇機制（2026-10-24 主大腦實測釘死）
+
+**Fish Audio 的模型是用 HTTP header `model` 選的，不是 JSON body 欄位；而且 header 缺或拼錯不會報錯，會安靜 fallback。**
+
+| 端點 | 選擇機制 | header 缺／拼錯的後果 | 2026-10-24 前的實際狀況 |
+|---|---|---|---|
+| `POST /v1/tts` | **header** `model`（enum: `s1`／`s2-pro`／`s2.1-pro`／`s2.1-pro-free`／`drama-3`） | 不報錯 → 靜默用 `s2.1-pro` | VC 把 `model` 放 **body**（OpenAPI 的 body schema 無此欄位）⇒ 一直被忽略；因預設值恰好等於設定值，長期無人在意 |
+| `POST /v1/asr` | **header** `model`（enum: `transcribe-1`／`transcribe-1-pro`） | 不報錯 → 靜默用 `transcribe-1` | VC **完全沒送 model header** ⇒ 一直跑 `transcribe-1` |
+
+- 文字端主服務本來就正確（`src/llm/fish_tts_handler.py:441-444` 用 header 送 `s2.1-pro-free`）；
+  **VC 的 `fish_tts_streamer.py` 是全庫唯一把 model 放 body 的地方**，已改正（2026-10-24）。
+- **判別實測（同一段 text、同一音色，只換 header）**：`drama-3` → `<whisper>` 指令真的生效
+  （RMS 1359／成聲比 0.275，氣音）；`s2.1-pro` → 正常成聲（RMS 3195／0.676）；
+  拼錯的 `drama_3` → **安靜退回** `s2.1-pro`（RMS 3149／0.794）。API 回應**不會**回報實際使用的模型，
+  只能靠這種行為差異或計費紀錄驗證 ⇒ **改完 model 必須驗證，不能只看「沒報錯」**。
+- **`transcribe-1-pro` 的輸出差異**：① 會在 `text` 前綴 `<|speaker:N|>`（`transcribe-1` 不會）
+  ⇒ `stt_service.strip_speaker_markers()` 清除，維持 VC 的純轉錄文字契約；
+  ② 預設保留 `[laughter]`／`[高興]` 等情緒標記 ⇒ 送 `tag_audio_events=false` 移除
+  （**此欄位只有 pro 接受，`transcribe-1` 收到會 400 `invalid_parameter`**，故程式只在 pro 模式送出）。
+  延遲實測（2.4 秒中文音訊）：pro 0.28s vs 舊 0.27s ⇒ **無額外延遲**，timeout 維持 10s。
+- **現況（2026-10-24 設定）**：三個 VC 實例 TTS = `drama-3`、ASR = `transcribe-1-pro`
+  （`clients/voice_companion/config.json` ＋ `profiles/mai.json` ＋ `profiles/rem.json`，
+  啟動日誌會印 `model=` 與 `asr_model=`）。
+- **定價（Owner 拍板事項）**：`drama-3` $50/M UTF-8 bytes（2026-11-12 前推廣價 $10/M）、
+  `s2.1-pro` $15/M、`s2.1-pro-free` $0/M。VC 換 drama-3 ⇒ **單價約為 s2.1-pro 的 3.3 倍**
+  （推廣期則約 0.67 倍）。
+- **生效路徑**：VC 三實例（:8765／:8766／:8767）必須重啟才會讀到新設定，
+  官方路徑 `.\scripts\vc_ops.ps1 restart`（以埠的 socket owner 為準，不猜 PID）。
+
+---
+
 ## 1. CURRENT STATE
 
 ### Active milestone
@@ -4978,3 +5009,181 @@ A 組＝HEAD(`85b0ab7`) 乾淨樹；B 組＝**同一棵樹** ＋ 本票改動（
 - **未 commit／push／git add**；未修改工單；主 repo 的 `data/` 與 `logs/` 全程唯讀。
 - 🔴 **本票未實作任何修復** —— §② 建議 3 條全部只是建議，**實作另開票**。
 - 仍未解（報告 §⑧）：池非空後命中率是否 ≥ 5%（池 = 0 時命中必然 = 0，**無法反推**）；工單 §0「10 顆 Legacy Value」與本次量得 9 顆的歸屬差異；CLI 快照（1053 @ ~16:03Z）與整合快照（1054 @ 16:05:53Z）相差 1 顆（線上服務並行新增，池數字同為 0）；`quarantine` 事件為何同時寫 `dormant`（涉 frozen contract，本票不動）。
+
+---
+
+## 0.1.67 CAMPAIGN-B 全鏈路確定性 E2E 封頂（Capstone E2E；**鏈路在沙盒閉環；生產資料面仍未通**）（2026-10-24 12:0x-13:2x EDT）
+
+> 🔺 **編號說明**：本條目在 worktree（HEAD `85b0ab7`）上寫成 §0.1.64；
+> 但 **main 已於本票施工期間前進到 `a70fa5a`（P5-② 已合入並佔用 §0.1.64）**
+> ⇒ 併入 main 時**改用 §0.1.67**（main 上 §0.1.67 為空號）。
+
+**工單**：`logs/CAMPAIGN-B-E2E-CLOSED-LOOP-WORK-ORDER.md`。
+**依賴**：Phase 1～4 ＋ P5-①（`85b0ab7`）已合入 main；P5-②（資料面）**另票**。
+**施工位置**：worktree `C:\Users\bbfcc\AppData\Local\Temp\e2e_wt`（HEAD `85b0ab7`）；**主 repo 未改動**。
+
+### ① 本票證明的是什麼（**工單 §4.5 五點，釘死**）
+
+1. **本票證明的是「鏈路在沙盒中閉環」**——單一確定性場景跑完
+   「產生 D1 資訊缺口張力 → `drive_loop_async()` → 呼叫 MockThinker → 寫入 `working_state.jsonl`
+   → `proxy.py` 讀取並注入到 Prompt」整條鏈路，且**逐位元一致**（prompt 正文 ≡ 唯讀介面讀回行）
+   與**確定性**（同一組輸入連跑兩次 ⇒ prompt **byte-identical**）。
+2. **真實 LLM 路徑已由 P5-② 以 1 次受限呼叫驗證**（ollama／deepseek-v4.1-flash:1017）。
+   兩者**互補、不可混為一談**：本票＝**接線面 ＋ 沙盒閉環 ＋ 確定性**（0 真實 LLM）；
+   P5-②＝**真實模型的一次受限推理**。本票**不**證明真實 LLM 的行為。
+3. **生產上旗標仍缺省 OFF**（`SOUL_OS_TENSION_DRIVE_LOOP` **不在**生產 `.env`；程式碼缺省 OFF）
+   ⇒ `data/inner_life/working_state.jsonl` 在生產**仍不存在**（實測：生產 `data/inner_life/`
+   只有 `epistemic_tensions.jsonl` 1,245 bytes 與 `trace.jsonl`）
+   ⇒ **「角色已能感知思考狀態」在生產仍不成立**。
+4. **守衛 8 條**（E2E-T1～E2E-T8，每項一函式）＋ **變異 M1～M8 全數轉紅**（0 ABORT、0 意外全綠）。
+5. **0 真實 LLM 呼叫、0 網路、0 生產寫入**（另 0 kill、0 重啟、0 部署、0 `git add`／commit／push）。
+
+### ② 沙盒隔離的實際做法（**工單 §2.2 的決定性前提**）
+
+P5-① 的代理注入走**生產唯讀面** `format_working_state_lines_production()`，而
+`proxy.py` 的 `INNER_LIFE_DATA_DIR` 是**匯入期擷取的模組常數** ⇒ 不處理就會讀生產、
+且**測試順序會影響結果**。⇒ 本檔用 `pytest.MonkeyPatch`（**自建實例**，與 P5-① 守衛檔同款，
+不佔用 `monkeypatch` fixture ⇒ 不改變既有 fixture 的 setup/teardown 順序）覆寫下列常數：
+
+| # | 常數 | 實讀來源 | 覆寫為 |
+|---|---|---|---|
+| 1 | `src.paths.data_root` | 函式本身（**呼叫期**取屬性 ⇒ 覆寫生效） | 沙盒資料根 `tmp_path/"data"` |
+| 2 | `proxy.INNER_LIFE_DATA_DIR` | `data_root() / "soul"` | 沙盒 `…/data/soul` |
+| 3 | `proxy.CONV_DIR` | `data_root() / "conversations"` | 沙盒 `…/data/conversations` |
+| 4 | `proxy._GROUP_FILE` | `CONV_DIR / "group_chat.json"` | 沙盒 `…/data/conversations/group_chat.json` |
+| 5 | `src.agent.emotion.DB_PATH` | `data_root() / "memory.db"` | 沙盒 `…/data/memory.db` |
+| 6 | `src.memory.store.DB_PATH` | `data_root() / "memory.db"` | 沙盒 `…/data/memory.db` |
+| 7 | `src.llm.tts_toggle._STATE_DIR` | `data_root() / "state"` | 沙盒 `…/data/state` |
+| 8 | `src.llm.tts_toggle._STATE_FILE` | `_STATE_DIR / "tts_toggle.json"` | 沙盒 `…/data/state/tts_toggle.json` |
+| 9 | `src.soul.diary.DEFAULT_DIARY_ROOT` | `data_root() / "soul"` | 沙盒 `…/data/soul` |
+| 10 | `src.inner_life.tension_closure_loop._production_data_root` | 函式（**呼叫期**取 `src.paths.data_root`） | **真實 repo `data/`**（見 ②-註） |
+
+- **盤點依據**：`grep -rn "^\s*[A-Z_0-9]+\s*[:=].*data_root\(\)" src/` ＋ 對鏈路所觸及模組的
+  `sys.modules` 全量掃描（import 期求值成常數者）⇒ 上表 10 項即是**全部**。
+  （`src.io.channels.router._STATE_DIR` **未被本鏈路 import** ⇒ 無需覆寫；
+  `soul_elevation.DEFAULT_TRACE_PATH` 是**相對字面量**、非 `data_root()` 推導，且不在鏈路上。）
+- ②-註（第 10 項，**工單未列、必須說明**）：`check_store_dir()` 拿「生產資料根」與 `store_dir`
+  比對；若只覆寫第 1 項，守門會拿**沙盒跟自己比** ⇒ **沙盒也被拒絕** ⇒ 鏈路根本跑不起來
+  （守門語意反轉）。覆寫第 10 項後，守門比對的是**真實 repo `data/`** ⇒
+  **生產路徑照樣被擋**（E2E-T6 以 `check_store_dir(<repo data/inner_life>) is False` 釘死這件事）。
+  🔺 **未改 `src/**` 任何一行**：這是**測試內的執行期覆寫**，不是檔案改動。
+- **與測試順序無關的證明**：四種順序各跑一次，結果**逐字相同**
+  ① 新 E2E 檔單獨 ② E2E→P5-①→Phase4 ③ Phase4→P5-①→E2E ④ 新 E2E 檔 8 支**倒序** node id
+  ⇒ 皆 **8 passed**，合併跑恆為 **91 passed ＋ 2 筆既有環境性失敗**（見 ⑥）。
+
+### ③ 守衛 8 條（`tests/inner_life/test_campaign_b_e2e_closed_loop.py`，**恰 8 筆**）
+
+| 編號 | 內容 | 關鍵斷言 |
+|---|---|---|
+| E2E-T1 | **全鏈路閉環** | 張力 → `drive_loop_async` → `working_state.jsonl` 落地（1 筆、13 欄齊備、`decided=False`、`remaining_gap_count=1`）→ 張力事件（`partially_resolved`）→ group prompt 含 `[思考狀態]` 且正文非空 |
+| E2E-T2 | **注入位置** | group 路徑：`[最近內在生活]` < `[思考狀態]` < world_context（以**字元索引**比對） |
+| E2E-T3 | **逐位元一致** | prompt 正文 ≡ `format_working_state_lines()` 讀回行（**bytes 相同**）≡ 固定格式 `- [2023-11-14 張力未解] 還有 1 個未解的問題（已想過 50%）` |
+| E2E-T4 | **確定性** | 同輸入連跑兩次 ⇒ group／private prompt **byte-identical**（`sha256` ＋ bytes 長度皆同）；兩次閉環的工作狀態記錄**逐位元相同** |
+| E2E-T5 | **零網路／零真實 LLM** | AST：本檔 ＋ 5 個鏈路模組 ＋ `proxy._format_working_state_block` 均無 `requests`/`httpx`/`urllib`/…；執行期：`LLMThinker.__init__` 被改成**一建構就爆**；MockThinker 呼叫計數 **＝ 1**；記錄的 `think_prompt_sha256` ＝ mock **實際送出** prompt 的 sha256 |
+| E2E-T6 | **沙盒隔離** | 沙盒檔案集**恰為**預期 5 個檔；生產 `data/inner_life/` 檔名集不變；**生產 `working_state.jsonl` 仍不存在**（決定性）；`check_store_dir(<生產路徑>) is False`（沙盒覆寫**未**放寬守門） |
+| E2E-T7 | **兩條路徑皆注入** | group 與 private 都含 `[思考狀態]`，且兩者正文**逐位元相同** |
+| E2E-T8 | **旗標與預算不受影響** | 既有 Phase 4 守衛檔**未被削弱**（EOL 正規化 sha256 ＋ 70 筆函式數）；async 閉環仍跑得通；生產路徑仍被拒（回 `None`、0 檔案）；同步 thinker 仍**明確 raise `TypeError`**；區塊預算（≤3 行／每行 ≤60／總 ≤200）不變；旗標**缺省 OFF** |
+
+### ④ 變異 M1～M8（**逐條轉紅**；harness 採**改副本**模式）
+
+harness：`%TEMP%\e2e_harness\run_mutations.py`（**repo/worktree 檔全程不寫入**；每條變異在
+`%TEMP%\e2e_harness\mutants\<M>\` 的**全新副本**上進行）。baseline＝**新 E2E 檔 8/8 全綠**
+＋ 既有守衛檔與未變異副本**完全一致**（2 筆既有環境性失敗，見 ⑥）。
+
+| # | 變異（落點） | 應轉紅 | 實得 |
+|---|---|---|---|
+| M1 | 代理**不注入**該區塊（`src/llm/proxy.py`） | E2E-T1 | ✅ T1 轉紅（另 T2／T3／T7／T8 連鎖紅） |
+| M2 | 注入位置移到 world_context **之後**（`src/llm/proxy.py`） | E2E-T2 | ✅ **僅 T2 轉紅** |
+| M3 | 注入正文與讀回行**不一致**（`src/llm/proxy.py`） | E2E-T3 | ✅ **僅 T3 轉紅** |
+| M4 | 組裝帶入非確定性（wall-clock 時間戳；`src/llm/proxy.py`） | E2E-T4 | ✅ **僅 T4 轉紅** |
+| M5 | 鏈路引入網路呼叫（`import httpx`；`src/inner_life/tension_thinking.py`） | E2E-T5 | ✅ **僅 T5 轉紅** |
+| M6 | 寫入落在**生產**路徑（去掉沙盒覆寫 ＋ 拆掉生產守門；新測試檔 ＋ `tension_closure_loop.py`） | E2E-T6 | ✅ T6 轉紅（另 T1／T2／T3／T7／T8 連鎖紅） |
+| M7 | 只讓 group 路徑注入（private 不注入；`src/llm/proxy.py`） | E2E-T7 | ✅ **僅 T7 轉紅** |
+| M8 | 動 `drive_loop_async()` 的沙盒語意（忽略呼叫端 `store_dir`；`src/inner_life/tension_closure_loop.py`） | E2E-T8 ＋ 既有 70 | ✅ T8 轉紅 ＋ 既有 `TestP5T3`／`TestP5T4`／`TestP5T5` 紅 |
+
+**收尾 sha256 對帳（worktree 原檔，前後相同 ⇒ 副本模式無回寫）**：
+`src/llm/proxy.py` `287dad13…60ac0`、`src/inner_life/tension_closure_loop.py` `cbed0c9e…bd67d`、
+`src/inner_life/tension_thinking.py` `d8d5c620…6e958`、`tests/inner_life/test_campaign_b_e2e_closed_loop.py`
+`40c384da…28e7c` ⇒ **4/4 全部相同**。
+🔺 M6 的受控副作用（寫入）發生在 **`%TEMP%` 內的副本** `data/inner_life/` 之下，**不是生產**。
+
+### ⑤ 逐位元證據（prompt 正文 ＝ 讀回行 ＋ 兩次組裝 sha256 相同）
+
+```
+讀回行（format_working_state_lines，sandbox）：
+  '- [2023-11-14 張力未解] 還有 1 個未解的問題（已想過 50%）'
+prompt 內的 [思考狀態] 正文（group）：
+  '- [2023-11-14 張力未解] 還有 1 個未解的問題（已想過 50%）'
+prompt 內的 [思考狀態] 正文（private）：
+  '- [2023-11-14 張力未解] 還有 1 個未解的問題（已想過 50%）'
+讀回行 sha256    = 4f0cbd8daadbdc2de53ebd06c9750117f33a9c668524c734b04507a76c9612e6
+prompt 正文 sha256 = 4f0cbd8daadbdc2de53ebd06c9750117f33a9c668524c734b04507a76c9612e6  ⇒ 相同
+兩次組裝：group   bf3d06e43840059dab529b5d78421d2e7afa3ca8e94aaea3a8c9e97f2db8f3e2（1,637 bytes）＝同
+          private 1dae31aa14839cb628e290dddfa0b84f563ed8bf54c4e70a2fbf0f65372d9745（1,148 bytes）＝同
+MockThinker 呼叫次數 = 1
+```
+
+### ⑥ 實作範圍（**恰 2 檔**）＋ 驗收實測
+
+| 檔 | 動什麼 | numstat |
+|---|---|---|
+| `tests/inner_life/test_campaign_b_e2e_closed_loop.py` | **新增**（727 行／**恰 8 筆**守衛；35,256 bytes；LF-only、UTF-8、無 BOM） | `727 0`（新增檔） |
+| `logs/ENGINEERING_STATE.md` | **追加**本條目（canonical 不覆寫） | `+178 −0`（追加） |
+
+- **定向**：新 E2E 檔 **8 passed / 0 failed**（單獨執行 `8 passed in 1.94s`，pytest returncode＝**0**），
+  實測耗時 **1.9～2.1 秒**（目標 < 5 秒 ✅）。
+- **既有守衛**（worktree 口徑）：`tests/inner_life/test_tension_closure_loop.py` 70 筆 ＋
+  `tests/inner_life/test_p5_working_state_context.py` 15 筆 ＝ **85 筆**；
+  合併執行＝ **83 passed ＋ 2 failed**（rc=1）。**那 2 筆是 worktree 環境性失敗、與本票無關**：
+  ① `TestT10RejectsProductionStoreDir::test_t10_store_dir_outside_temp_is_rejected`
+  （worktree 位於 `%TEMP%` 之下 ⇒ `REPO_ROOT/not_a_sandbox` 被誤判為 temp 之下）
+  ② `TestP2T12SandboxIsolation::test_p2_t12_production_files_are_byte_identical_after_the_loop`
+  （worktree 內無生產 `data/` ⇒ 對帳基準為空 ⇒ 守衛自陳「假紅」）
+  —— **兩者與 §0.1.63 記錄的完全相同**（該節已單獨在主 repo 實測全綠）。
+- **全庫回歸（worktree；前後差分口徑）**：解譯器＝**repo 的 `.venv`**
+  （`C:\Users\bbfcc\.local\bin\soul-os-harness\.venv\Scripts\python.exe`，Python 3.11）。
+
+  | 樹 | failed | passed | skipped | errors | 耗時 | pytest returncode |
+  |---|---|---|---|---|---|---|
+  | **改動前**（乾淨 worktree，HEAD `85b0ab7`） | 33 | 7,241 | 44 | 10 | 712.07s（0:11:52） | 1 |
+  | **改動後**（本票最終樹） | 33 | **7,249** | 44 | 10 | **679.61s（0:11:19）** | 1 |
+
+  ⇒ **passed ＋8 ＝ 本票新增的 8 筆守衛**；**failed／errors 數量與集合逐筆相同**（新增 **0**、消失 **0**）。
+  ⇒ 失敗集合已用**乾淨副本**（移除本票新增測試檔後）複核：那 5 筆
+  （`test_agent_registry_land0_batch1`／`test_zero_mutation_guard_live_service_paths`／
+  `test_repo_hygiene_tracked_tests` ×3）在**沒有本票新增檔**時**一樣紅** ⇒ 與本票無關。
+  （33 failed＋10 errors 全部是 **worktree 環境性失敗**：無生產 `data/`、`.git` 是檔不是目錄、
+  worktree 位於 `%TEMP%` 之下；§0.1.63 已逐條記錄同一組失敗在**主 repo 全綠**。）
+
+### ⑦ 🔺 工單內部矛盾／缺資訊之標示（**照做並回報，未自行改選解法**）
+
+1. **§2.2(2) 的路徑寫法與實讀不符**：工單寫「`src.llm.proxy.INNER_LIFE_DATA_DIR` → 沙盒的
+   **`inner_life`** 目錄」；**實讀**該常數＝`data_root() / "soul"`（diary 在 `soul/<agent>/diary/`）。
+   ⇒ 依工單自身的「**以實讀為準**」子句採 `…/data/soul`。
+2. **§2.2 的字面配方會讓守門語意反轉**：只覆寫 `src.paths.data_root` ⇒
+   `check_store_dir()` 拿**沙盒跟自己比** ⇒ **沙盒也被拒絕** ⇒ `drive_loop_async()` 回 `None`
+   ⇒ 鏈路**不可能閉環**。⇒ 追加覆寫 `_production_data_root`（見 ②-註）；守門對**真實生產**仍完整有效。
+3. **「不得把旗標打開」與 `_prepare_loop()` 的第一道閘門衝突**：`feature_enabled()` OFF ⇒ 回 `None`
+   ⇒ 鏈路不可能閉環。⇒ 採**測試行程內**開啟（`monkeypatch.setenv`，測試結束自動還原）；
+   生產服務是**另一行程、另一份環境** ⇒ **生產行為零改變**；且旗標在程式碼與生產 `.env` 仍缺省 OFF
+   （E2E-T8 釘死）。既有 Phase 1～4 守衛檔（85 筆）本來就用同一做法（`enabled` fixture）。
+4. **§5 的數字已過期**：工單寫「既有 97 筆／回歸 7324 passed」；**實測當下基線＝85 筆／7,241 passed**
+   （工單 §4.4 已要求「基線必須在合入當下重算」⇒ 依實測值回報，未沿用工單寫死的數字）。
+5. **新增測試檔未被 git 追蹤**（工單禁止 `git add`）⇒ 主大腦合入時**必須**
+   `git add tests/inner_life/test_campaign_b_e2e_closed_loop.py`，否則 repo hygiene 守衛
+   `tests/infra/test_repo_hygiene_tracked_tests.py::test_every_collectable_test_file_under_tests_is_git_tracked`
+   會紅（與 §0.1.63 記錄的同一條限制）。
+6. **🔺 `src/**` 的觀察（只回報、不修）**：`format_working_state_lines_production()` 的路徑
+   **不可注入**（P5-① 的設計），而 `check_store_dir()` 又拒絕 `data_root()` 之下的路徑
+   ⇒ **「生產唯讀面」與「沙盒寫入面」在路徑上互斥**，本票只能靠測試內覆寫 `data_root()` 才得以閉環。
+   這是**設計面的張力**（非缺陷），建議後續票在 P5-② 接生產排程時一併裁示。
+
+### ⑧ 未做（明文排除）
+
+未改 `src/**`（**一行未改**）；未改既有守衛檔（`test_tension_closure_loop.py`／
+`test_p5_working_state_context.py`／`test_p5_data_plane_guard.py`——後者在當下 worktree **尚不存在**）；
+未動 11 個 frozen contract 檔；未寫 `data/**`（worktree 的 `data/` 僅 gitignored 的本機產物）；
+未重啟、未部署、未 kill 任何行程、未 commit／push／**git add**；
+0 真實 LLM 呼叫、0 外部 API、0 網路；未把旗標打開在生產；
+未做 A/B 對照實驗；未製造 synthetic 張力事件到生產。
+
