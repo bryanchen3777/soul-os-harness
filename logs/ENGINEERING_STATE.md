@@ -4326,6 +4326,75 @@ M5／M6 首跑**意外全綠**（守衛失守）。根因：舊 fixture 的合�
 - ⇒ 戰役二的**真正第一步是資料面**：召回通道為什麼是 **0 顆可回憶池**（SAGE 寫入門檻？召回查詢條件？資料本來就沒有？）⇒ 這是它的前置裁定，10/24 觀測後處理。
 - ⇒ 排序的機制耦合理由：戰役二若產生了新的 `support_propagation` 邊，就會改變「祖先新邊＝0」這個狀態，而它正是 10/24 預期退役判準的**四條件之一** ⇒ 先動它會讓 10/24 的 `weak 1 → 10` 基準不可信、退役白名單可能失效 ⇒ **兩件事都驗不成**。
 
+---
+
+#### 0.1.56 BUG-EPISTEMIC-PARTIALLY-RESOLVED 落地（Owner 三步序列之**第二步**，讀取端 fail-open 隱患拔除）（2026-10-23 20:0x EDT）
+
+**Owner 裁定原話**：「在 Phase 3 接線前，拔除 `epistemic_action.py` 的 Fail-Open 隱患……擴充生產讀取端狀態枚舉，明確支援 `partially_resolved`。確保 `load_open_tensions` 正確納入 `partially_resolved`，保留未消解張力的生命週期。補齊對應的守衛測試與反向變異。」
+
+**三個缺陷與修法**（`src/inner_life/epistemic_action.py`，+50/−9）
+| 缺陷 | 位置 | 修法 |
+|---|---|---|
+| A **fail-open 靜默吞噬** | `:772-774`（`status not in ("open","resolved") ⇒ status="resolved"`） | 改 **fail-closed**：集合外 status **保留原值 ＋ 告警**（`logger.warning`），**不再靜默視為已消解** |
+| B **未消解張力掉落佇列** | `:820-821`（`load_open_tensions` 只收 `status=="open"`） | 改收 **`open` 與 `partially_resolved`** ⇒ 部分消解的張量**留在未閉合佇列**（可被下一輪重新推演） |
+| C **寫回降級** | `:800`（`save_tension_records` 只認 `status=="resolved"`） | `partially_resolved` **原樣保留**（不降級成 `open`） |
+
+**狀態枚舉（封閉集合）**：`TENSION_STATUSES = ("open", "resolved", "partially_resolved")`；`TENSION_EVENT_KINDS`（事件**型別**）**不變**（`tension_opened`／`tension_resolved`／`tension_thought_enqueued`）✔
+
+**🔴 保留 payload 鍵擴充（9 個）**：`resolved_at`／`thought_payload`／`thought_tags`／`migration_digest`（既有 4 個）＋ **`partial_resolution`／`remaining_gap_count`／`decided`／`reason`（Phase 2 的 4 個）** ＋ **`drive_snapshot`** ⇒ 目的：讓**張力本體恆為 13 個正規欄位**（`Tension` 的既有契約），Phase 2 的 extras 不污染本體。
+⇒ 🔴 **主大腦撤回原工單「`TENSION_PAYLOAD_EXTRA_KEYS` 不得變更」這條禁止**——該禁止正是 extras 寫回遺失的直接原因；已改為明確要求並補完。
+⇒ `load_tension_records()` 的記錄**一級欄位**暴露 4 個 extras ⇒ Phase 3 可直接讀取，**不必**依賴 `load_open_tensions`（後者回傳 `Tension` 物件，本質上拿不到 extras）。
+
+**主大腦獨立複核（自行重跑，不採信執行者回報）**
+- 守衛：**37 passed**（既有 27 ＋ 新增 10：P3-T1～T9 ＋ 1 筆補強）；另 6 個受影響／範圍守衛檔合計 **132 passed**。
+- 變異：**M1～M5 全部轉紅**（M1→P3-T1／M2→P3-T3／M3→P3-T2+T5／M4→P3-T7+T9／M5→P3-T9）、**repo 檔 sha256 逐位元相同**、harness exit 0。
+- **決定性生產實測**：拿**真實生產事件**（`data/inner_life/epistemic_tensions.jsonl`）的 payload（13 鍵）過新版 `_tension_body` ⇒ body **恰為 13 個正規欄位**、無多餘鍵 ⇒ 保留鍵擴充**不會污染真實資料**的張力本體。
+- 範圍：`git diff --name-only HEAD` **恰好 2 檔**；`allowed` 不需變更（`epistemic_action.py` 已在表內）、`frozen_dirs` 11 筆零觸碰、`tests/**` 零新建。
+- `data/**`：7814 檔、新增 0／刪除 0／變更 6（**全部是服務端 runtime 檔**）；**90 秒零操作間隔**實測：期間不跑任何測試、同類檔案**自行又變動 3 個** ⇒ 漂移來自線上服務、與本次工作無關；**118 個 tension／elevation 檔 sha256 逐位元相同**。
+- 生產行為：`data/**/*.jsonl` 中 `partially_resolved` 命中 **0 筆** ⇒ **今日生產零變化**。
+- **全庫回歸**（主大腦獨立執行，合入閘門）：**7233 passed / 0 failed / 24 skipped / 32 subtests**，776.60 s（0:12:56），exit 0（基線 7223 ＋ 本票 10 ＝ 7233 自洽）。
+
+**主大腦裁示與待裁項（留痕）**
+1. **P3-T2 加強斷言 → 核准**：原工單對 M3 的字面預測（純值斷言轉紅）在 fail-closed 下不成立；worker 改為**新增加強斷言**（「`partially_resolved` 必須是已辨識狀態、不得被讀成未知值而告警」）⇒ **未弱化**，且讓 M3 的原意成立。
+2. **未知 status 是否進未閉合佇列 → 暫不裁，列為 Phase 3 架構選項**：值面已 fail-closed（不視為已消解）⇒ 語意安全；進佇列會讓未知狀態被無限重推演。production 目前未知狀態 **0 筆** ⇒ 今日無行為差異。
+3. **`partially_resolved` 帶 `resolved_at` → 核准**（與 `resolved` 路徑一致，讀取端能統一處理「消解時刻」）。
+4. **排程器連動 → 核准**：`epistemic_tension_scheduler.py:132` 呼叫 `load_open_tensions` ⇒ 部分消解的張力會被重新提案（正合本意）；且未動排程器、production 0 筆 ⇒ 行為不變。
+5. **主大腦自己的探針錯過一次（誠實記錄）**：第一次探針跑出「讀回 0 記錄」，差點誤判成程式缺陷——實為**我的探針寫錯檔名**（用了 legacy 的 `TENSION_STORE_FILENAME`，讀取端其實用 `TENSION_STORE_EVENTS_FILENAME`）⇒ 程式沒錯；worker 走真實寫入路徑的 P3-T1/T2 才是權威。
+
+---
+
+#### 0.1.57 INCIDENT-GOAL-DB-LOCKED 勘查結論（Owner 三步序列之**第一步**；**補丁未合 main**，2026-10-23 20:0x EDT）
+
+**Owner 裁定原話**：「即刻立案派工排查 SAGE / Goal DB 的 SQLite 鎖死問題……定位根因並提出最小修復補丁，**禁止盲目重啟服務掩蓋現場**。」
+
+**症狀**：`_goal_scan_all()` 每次迭代都失敗 ⇒ **Goal 主循環 100% 停擺**。**首現 14:31:32.383**（主大腦工單原寫 14:32:02.554，worker 以日誌實測**更正為早 30.2 秒**）→ 19:43 仍持續，**302 個分鐘桶零缺口、600 筆告警全部來自同一個 logger**；此前 10/22 20:41 → 14:31 為 **0 筆**。其餘排程路徑正常（`proactive_dm`、`下次事件`、SAGE flush、TTS）⇒ fail-closed 不崩潰，但 Goal 掃描等同停擺。
+
+**根因分兩層（嚴格區分已證明／未證明）**
+| 層 | 命題 | 狀態 |
+|---|---|---|
+| **層 1** | **放大器**：`scheduler._goal_scan_all()` 的 `try/except` 包在 **46-agent 迴圈之外** ⇒ **一個 agent 撞鎖就中止其餘 45 個** ⇒ 單點故障被放大成 100% 停擺；且告警字串**不含 agent_id、不含 traceback** ⇒ 600 筆告警**無法定位** | **已證明（程式碼層級 ＋ 可重現的守衛測試）** |
+| **層 2** | **觸發源**：某個 agent 的 graph.sqlite 存取在 14:31:32 後每 30 s 拋鎖 | **未能證明** |
+
+**層 2 的三組探針（收斂結果）**
+- 探針 A（寫鎖探針，**只 `BEGIN IMMEDIATE` ＋ 立即 `ROLLBACK`**）：**12/12 樣本 × 50 個候選檔 ⇒ 0 次命中** ⇒ **鎖不在檔案層**（外部可見的寫鎖不存在）。
+- 探針 B（重演 Goal 路徑「完全相同的開檔序列」＝ `connect(timeout=10.0)` → `PRAGMA journal_mode=WAL` → … → `SELECT * FROM goals`）：**46 個 agent DB × 12/12 樣本 ⇒ 0 次 "database is locked"**；唯一失敗的是 `sage` 庫且其錯誤是 `no such table: goals`（**另一個錯誤**，與本事故無關）。
+- 沙盒重播（生產 `data/memory/**` 59.1 MB 整份複製、單一行程）：**0 失敗** ⇒ **資料本身不是觸發源**。
+- ⇒ **鎖在服務行程內部的連線狀態**（高度可能，**未證明**）；**外部探針抓不到 ⇒ 行程外無法清除 ⇒ 需一次重啟**。
+- 間接徵候（**未證實**）：WAL 長期不 checkpoint（`agent_yua` 5.86 MB、多數 4.12 MB、mtime 停在 03:34:57）⇒ wal-index 被長命讀取快照釘住 ⇒ 可能為 `SQLITE_BUSY_SNAPSHOT`（Python 訊息同為 "database is locked"、**不重試、不佔檔案寫鎖 ⇒ 外部探針抓不到**）。
+- 關鍵事實：**Goal 路徑穩態不做任何寫入**（只有 `PRAGMA journal_mode=WAL` ＋ SELECT）⇒ 撞鎖位置必然是**讀取陳述本身或連線開啟**。
+
+**最小修復補丁（detached worktree `%TEMP%\goal_patch_wt`，**未合 main**；3 檔 +128/−12 ＋ 新增守衛檔 `tests/infra/test_goal_db_locked_guard.py` 7 條）**
+- **P1 `scheduler.py::_goal_scan_all`**：把 `try/except` 由「迴圈外」下沉到「**每個 agent 內**」＋ 告警加入 `agent={agent_id}` 與 `exc_info=True` ⇒ 故障隔離由「整輪」細化到「單 agent」（**可用性增加**），fail-closed 契約不變。
+- **P2 `graph_store.py`（自癒保險絲）**：P2a 鎖錯誤 ⇒ **重建連線並重試一次**（寫入語句皆 `INSERT OR REPLACE`／`UPDATE` 冪等）；P2b 顯式 `PRAGMA busy_timeout=10000`（**不改** `timeout=10.0`）；P2c `flush()` commit 失敗 ⇒ **明確 rollback** ＋ pending 歸零 ＋ 重拋（`flush_all_live()` 的 `except: continue` 會**靜默吞掉** flush 失敗 ⇒ 若不 rollback，壞連線會**永久持有寫鎖**且無任何告警 ⇒ **這是「永久鎖」最直接的機制性缺口**）。
+- **P3 `memory/store.py:29`**：顯式 `PRAGMA busy_timeout=5000`（**等值**，只是把隱含值寫成契約；**不改** `delete` journal mode）。
+- **未動的契約**：`graph_store.py` 的 `timeout=10.0`／`journal_mode=WAL`／`synchronous=NORMAL`／`cache_size=-8000`／`temp_store=MEMORY`／`_BATCH_SIZE=20`、`emotion.py` 的 `BUSY_TIMEOUT_MS=5000` 與 `_WRITE_LOCK` 語意、`frozen_dirs` 全部、任何衰減門檻 ⇒ **0 變更**。
+- **主大腦獨立複核**：變異 harness **M1～M6 全紅**、受保護檔案 sha256 前後逐位元相同、exit 0 ✔；CWD＝worktree 時行為守衛 **T1～T4 全綠**（補丁有效）；T5／T5b 為 **AST 錨點路徑相依**（解析到 import 來源的檔案 ⇒ 必須在「打補丁的 src 為被 import 的 src」的上下文才綠；合進 main 後即滿足）。
+
+**重啟計畫（只出方案，**未執行**）**：備份（`data/memory/*/graph.sqlite{,-wal,-shm}` ＋ `data/memory.db` → `data/_incident_backup_<ts>/`，**這是唯一能保住未 checkpoint WAL 的手段**）→ 記錄現場 golden trace → **授權後** `.\scripts\server_ops.ps1 restart`（只用這條路徑）→ 三一致複核（`status` ＋ `netstat :8000` ＋ `server.pid`）→ 驗證層 1 已修（10 分鐘內 `[Goal] 主循环扫描异常` 應為 0 筆）→ 觀察 30 分鐘驗證層 2 是否復發。**會丟**：每 store ≤19 筆未 commit 的 facts（正常情況 ≈0）、進行中的 LLM／TTS。**不會丟**：已落盤的 WAL（重啟時 SQLite 自動 recovery）、`data/**/*.jsonl`、sidecar。
+
+**🔴 待 Owner 裁示（5 項）**：① **重啟授權與時機**（建議 23:00 EDT 之後，避開 22:00 夜槽）；② **補丁是否合入 main**（含 P2a 的取捨：重建連線會丟該 store ≤19 筆未 commit 批次，**刻意**用「寧可丟未落盤批次，也不讓壞連線永久持鎖」）；③ 層 2 若重啟後 30 分鐘內復發 ⇒ 啟動逐 agent 二分定位（補丁已讓告警帶 `agent_id` ＋ traceback ⇒ 定位成本由「5 小時無解」降到「1 分鐘」）；④ **WAL 未 checkpoint** 另開一票（獨立長期健康問題）；⑤ **`data/memory.db` 仍是 `delete` journal 模式**（rollback-journal 下寫者會擋住整個檔案，`emotion.py` 與 `store.py` 兩條寫入路徑共用它）另案處理。
+
+
 
 
 

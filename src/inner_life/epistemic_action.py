@@ -103,6 +103,16 @@ TENSION_EVENT_KINDS: Tuple[str, ...] = (
     TENSION_EVENT_THOUGHT_ENQUEUED,
 )
 
+#: 張力狀態（**封閉集合**：讀取時遇到集合外的值 ⇒ 不靜默視為已消解，保留原值並告警）。
+TENSION_STATUS_OPEN = "open"
+TENSION_STATUS_RESOLVED = "resolved"
+TENSION_STATUS_PARTIALLY_RESOLVED = "partially_resolved"
+TENSION_STATUSES: Tuple[str, ...] = (
+    TENSION_STATUS_OPEN,
+    TENSION_STATUS_RESOLVED,
+    TENSION_STATUS_PARTIALLY_RESOLVED,
+)
+
 #: 事件欄位的封閉形狀（``ts``／``agent_id``／``tension_id``／``kind``／
 #: ``subject``／``status``／``payload``）。
 TENSION_EVENT_FIELDS: Tuple[str, ...] = (
@@ -115,12 +125,34 @@ TENSION_EVENT_FIELDS: Tuple[str, ...] = (
     "payload",
 )
 
+#: Phase 2 思考結果的 4 個欄位（**保留 payload 鍵**；同時由記錄的**一級欄位**暴露）。
+#:
+#: - ``partial_resolution`` ＝ 本回合消解的比例（float）
+#: - ``remaining_gap_count`` ＝ 思考後仍開著的資訊缺口數（int）
+#: - ``decided`` ＝ 是否**完全**消解（bool）
+#: - ``reason`` ＝ 判定理由（str）
+TENSION_RESOLUTION_EXTRA_KEYS: Tuple[str, ...] = (
+    "partial_resolution",
+    "remaining_gap_count",
+    "decided",
+    "reason",
+)
+
 #: ``payload`` 內**不是**張力本體的保留欄位（取出張力本體時剔除）。
+#:
+#: 🔴 2026-10-23（BUG-EPISTEMIC-PARTIALLY-RESOLVED 追加）：Phase 2 的思考結果
+#: （4 欄）與驅動快照（``drive_snapshot``）一併登錄為保留鍵 ⇒ **張力本體恆為
+#: ``Tension`` 的 13 個正規欄位**（既有契約），extras 不得污染本體；它們改由
+#: 記錄的一級欄位暴露（見 :func:`load_tension_records`）。
+#: ⚠️ 既有 4 個保留鍵（``resolved_at``／``thought_payload``／``thought_tags``／
+#: ``migration_digest``）**不得移除或改名**。
 TENSION_PAYLOAD_EXTRA_KEYS: Tuple[str, ...] = (
     "resolved_at",
     "thought_payload",
     "thought_tags",
     "migration_digest",
+) + TENSION_RESOLUTION_EXTRA_KEYS + (
+    "drive_snapshot",
 )
 
 #: 話頭掛載槽的來源標籤（與 ``piggyback_queue.PIGGYBACK_SOURCE_CLOSURE`` 同值）。
@@ -757,9 +789,18 @@ def migrate_legacy_tension_store(store_dir: Optional[Any] = None) -> bool:
 
 
 def load_tension_records(agent_id: str, store_dir: Optional[Any] = None) -> List[Dict[str, Any]]:
-    """讀出某 agent 的張力紀錄（``{"tension": {...}, "status": "open"|"resolved"}``）。
+    """讀出某 agent 的張力紀錄（``{"tension": {...}, "status": "open"|"resolved"|
+    "partially_resolved", "resolved_at": ..., <4 個思考結果欄位>}``）。
 
     讀取語意＝fold 全部事件 ⇒ 每個 ``tension_id`` 取最後一筆。
+
+    🔴 狀態是**封閉集合**（``TENSION_STATUSES``）：讀到集合外的值 ⇒ **保留原值**
+    ＋ **告警**（fail-closed）—— 不得靜默當成「已消解」，否則尚未消解的張力會被
+    宣告消解而永久蒸發。
+
+    🔴 Phase 2 的思考結果（``partial_resolution``／``remaining_gap_count``／
+    ``decided``／``reason``）是**記錄的一級欄位**：它們已被剔除出張力本體
+    （``Tension`` 只有 13 個正規欄位），所以**只能**從這裡讀。
     """
     migrate_legacy_tension_store(store_dir)
     records: List[Dict[str, Any]] = []
@@ -770,13 +811,25 @@ def load_tension_records(agent_id: str, store_dir: Optional[Any] = None) -> List
         if not isinstance(payload, dict):
             continue
         status = event.get("status")
-        if status not in ("open", "resolved"):
-            status = "resolved"
+        if status not in TENSION_STATUSES:
+            logger.warning(
+                "[epistemic-action] 未知張力狀態 %r（tension_id=%s）⇒ 保留原值，**不視為已消解**",
+                status,
+                event.get("tension_id"),
+            )
         records.append(
             {
                 "tension": _tension_body(payload),
                 "status": status,
                 "resolved_at": payload.get("resolved_at"),
+                # 🔴 Phase 2 的思考結果：**記錄一級欄位**暴露（extras 已被剔除出
+                # 張力本體，消費者不必依賴「本體裡夾帶」）。
+                # 缺值時為 ``None``（**不臆造** ``decided=False`` ——「沒有記錄」
+                # 與「明確未決」是兩件事）；讀取端一律用 ``.get()`` ⇒ 不會 KeyError。
+                "partial_resolution": payload.get("partial_resolution"),
+                "remaining_gap_count": payload.get("remaining_gap_count"),
+                "decided": payload.get("decided"),
+                "reason": payload.get("reason"),
             }
         )
     return records
@@ -797,15 +850,34 @@ def save_tension_records(
         tension = Tension.from_dict(record.get("tension"))
         if tension is None:
             continue
-        resolved = record.get("status") == "resolved"
+        status = record.get("status")
+        resolved = status == TENSION_STATUS_RESOLVED
+        partially_resolved = status == TENSION_STATUS_PARTIALLY_RESOLVED
         extra: Dict[str, Any] = {}
-        if resolved:
+        if resolved or partially_resolved:
             extra["resolved_at"] = record.get("resolved_at")
+        # 🔴 Phase 2 的思考結果必須**往返存活**：``Tension.to_dict()`` 只輸出 13 個
+        # 正規欄位（不含這 4 欄）⇒ 寫回時必須**從記錄把它們帶進 payload**，
+        # 否則一次往返就把它們抹掉（部分消解的進度會消失）。
+        # ⚠️ 用 ``is not None`` 判斷（不是 truthiness）⇒ ``decided=False`` 會被寫出。
+        for _key in TENSION_RESOLUTION_EXTRA_KEYS:
+            _value = record.get(_key)
+            if _value is not None:
+                extra[_key] = _value
+        # 🔴 「部分消解」必須**原樣保留**：事件仍是既有的 ``tension_resolved``，
+        # 但 status **不得**被降級成 ``open``（否則部分消解在往返中被抹平，
+        # 未消解的缺口會被宣告成「還沒開始」）。
+        if partially_resolved:
+            event_kind = TENSION_EVENT_RESOLVED
+            event_status = TENSION_STATUS_PARTIALLY_RESOLVED
+        else:
+            event_kind = TENSION_EVENT_RESOLVED if resolved else TENSION_EVENT_OPENED
+            event_status = TENSION_STATUS_RESOLVED if resolved else TENSION_STATUS_OPEN
         events.append(
             _make_tension_event(
-                TENSION_EVENT_RESOLVED if resolved else TENSION_EVENT_OPENED,
+                event_kind,
                 tension,
-                "resolved" if resolved else "open",
+                event_status,
                 extra=extra,
             )
         )
@@ -815,10 +887,17 @@ def save_tension_records(
 def load_open_tensions(
     agent_id: str, store_dir: Optional[Any] = None
 ) -> List[Tension]:
-    """讀出某 agent 仍**未閉合**的張力（供下一輪重新推演）。"""
+    """讀出某 agent 仍**未閉合**的張力（供下一輪重新推演）。
+
+    🔴 「部分消解」（``partially_resolved``）**仍未閉合** ⇒ 必須留在佇列裡，
+    否則它會從未閉合清單消失（未消解的張力永久蒸發）。
+    """
     out: List[Tension] = []
     for record in load_tension_records(agent_id, store_dir):
-        if record.get("status") != "open":
+        if record.get("status") not in (
+            TENSION_STATUS_OPEN,
+            TENSION_STATUS_PARTIALLY_RESOLVED,
+        ):
             continue
         tension = Tension.from_dict(record.get("tension"))
         if tension is not None:
@@ -1348,6 +1427,11 @@ __all__ = [
     "TENSION_KIND_EPISTEMIC_GAP",
     "TENSION_KIND_RELATIONAL",
     "TENSION_PAYLOAD_EXTRA_KEYS",
+    "TENSION_RESOLUTION_EXTRA_KEYS",
+    "TENSION_STATUSES",
+    "TENSION_STATUS_OPEN",
+    "TENSION_STATUS_PARTIALLY_RESOLVED",
+    "TENSION_STATUS_RESOLVED",
     "TENSION_STORE_EVENTS_FILENAME",
     "TENSION_STORE_FILENAME",
     "TENSION_STORE_MIGRATED_SUFFIX",
