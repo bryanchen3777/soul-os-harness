@@ -142,15 +142,25 @@ def apply_revision(engine, target, *, source_type="inner_life_event") -> bool:
 
 ### ⑥ 本模組的硬性禁令（AST 守衛）
 
-**不得** import：`src.llm`（含 `src.llm.proxy`）、`httpx`、`requests`、`socket`、`subprocess`、`urllib`、`asyncio`
-（與 `src/inner_life/tension_thinking.py` 的 P2-T15 同款禁令）⇒ **本片 0 LLM 成本是結構性保證，不是註解**。
+**不得** import：`src.llm`（含 `src.llm.proxy`）、`httpx`、`requests`、`socket`、`subprocess`、`urllib`、`asyncio`、
+**`soul_elevation`**（含 `soul_elevation.engine`）
+（與 `src/inner_life/tension_thinking.py` 的 P2-T15 同款禁令；並比既有序號器的
+`tests/inner_life/test_contradiction_accumulator_prototype.py` 的 S3 守衛**再嚴一格**）
+⇒ **本片 0 LLM 成本是結構性保證，不是註解**。
+
+🔺 **為什麼連 `soul_elevation` 都不能 import**：`engine.revise()` 是**對注入物件的 duck-typed 方法呼叫**
+（`apply_revision(engine, target)` 的 `engine: Any`）⇒ **本來就不需要 import 引擎**；
+而既有 S3 守衛（`ENGINE_WRITE_CALLS = {"record_contradiction", "supersede"}` ＋ 禁 import `soul_elevation.engine`）
+代表 repo 對「引擎寫路徑」的既有嚴格度 ⇒ 本模組**沿用同款嚴格度**（且更嚴：連型別都不引入）。
+🔺 `revise` **不在** `ENGINE_WRITE_CALLS` 名單內 ⇒ 呼叫 `engine.revise()` 本身**不違反任何既有守衛**；
+本條只是把邊界寫死，避免 worker 誤以為被擋而繞路。
 
 ---
 
 ## 驗收（完成的定義）
 
 - **守衛 I1～I9 全綠**（9 筆）。
-- **雙向變異 M1～M9 全數轉紅**（0 ABORT、0 意外全綠）。
+- **雙向變異 M1～M10 全數轉紅**（0 ABORT、0 意外全綠）。
 - **全庫回歸**（repo 的 `.venv`、主 repo 權威）：**0 failed**，且 passed 數 ＝ 基線 ＋ 9（新增守衛）。
 - **生產零寫入證據**：本票全程**不讀寫** `data/**`（沙盒測試用 `tmp_path`）⇒ 回歸前後生產
   `data/elevation/` 的檔案清單與 sha256 **不變**。
@@ -168,11 +178,20 @@ def apply_revision(engine, target, *, source_type="inner_life_event") -> bool:
 | **I4** | 對象限制 | `essence` 與 `pattern` **永不**出現在 `select_revision_targets()` 的結果內（首批排除，保守邊界） |
 | **I5** | no-op 邊界 | 無新成熟 pattern、或新 pattern 內容與既有內容**正規化後相同** ⇒ **零回傳**（不製造無意義改寫） |
 | **I6** | 引擎接線 fail-closed | 引擎拋 `ValueError` ⇒ `apply_revision()` 回 `False` 且**不中斷**呼叫端；**不得重試**（以計數假引擎斷言呼叫次數 ＝ 1） |
-| **I7** | **零 LLM 成本（結構性）** | AST 檢查本模組**不得** import `src.llm`／`httpx`／`requests`／`socket`／`subprocess`／`urllib`／`asyncio` |
+| **I7** | **零 LLM 成本（結構性）** | AST 檢查本模組**不得** import `src.llm`／`httpx`／`requests`／`socket`／`subprocess`／`urllib`／`asyncio`／**`soul_elevation`** |
 | **I8** | **掛載契約對齊** | AST 檢查 `elevation_adapter.elevate_matured_patterns()` 函式體內確有 `nodes`／`edges`／`engine` 三個可用名稱 ⇒ **下一片掛載不需重構**；且本模組簽章的輸入型別與之一致 |
 | **I9** | **血緣形狀** | 以**確定性假引擎**（記錄呼叫參數）跑完整路徑 ⇒ `revise()` 被呼叫時：`node_id` ＝ 舊節點 id、`new_confidence` ＝ 舊 confidence、`provenance` 含舊 source_ids、`source_ids` 含新 source_ids；且**不得**呼叫 `record_contradiction`／`supersede`／`reinforce` |
 
-### 變異 M1～M9（**每條必須恰好打紅預期的那一個守衛**）
+#### I9 的假引擎：**沿用 repo 既有樣式，不要重造**
+
+- 既有可參照：**`tests/test_c31_relational_expression.py:441`** 的 `class _FakeEngine:`
+  （用 `SimpleNamespace` ＋ 明確方法模擬被注入物件）⇒ 本票的假引擎**同款**即可。
+- 假引擎只需**記錄** `revise()` 的呼叫參數（`node_id`／`new_content`／`new_confidence`／
+  `valence`／`provenance`／`source_ids`／`source_type`）與呼叫次數 ⇒ 供 I6（呼叫次數 ＝ 1）
+  與 I9（參數形狀）斷言使用。
+- 🔺 假引擎**不得**真的 import `soul_elevation`（I7 同款禁令）⇒ 用 `SimpleNamespace` 模擬即可。
+
+### 變異 M1～M10（**每條必須恰好打紅預期的那一個守衛**）
 
 | # | 變異 | 預期轉紅 |
 |---|---|---|
@@ -185,6 +204,10 @@ def apply_revision(engine, target, *, source_type="inner_life_event") -> bool:
 | M7 | 本模組 `import src.llm.proxy` | I7 |
 | M8 | I8 的 AST 檢查被放寬（移除 `engine` 名稱檢查） | I8 |
 | M9 | `apply_revision` 傳給 `revise()` 的 `node_id` 改成新 id（自我引用） | I9 |
+| M10 | 本模組 `from soul_elevation.engine import ElevationNode`（引入引擎型別） | I7 |
+
+> 🔺 **M10 的必要性**：`revise` 不在既有 `ENGINE_WRITE_CALLS` 名單內 ⇒ 只靠既有守衛**抓不到**
+> 「本模組開始 import 引擎型別」這個退化 ⇒ 必須由本票的 I7 自己釘死。
 
 ### 變異 harness 紀律
 
@@ -224,7 +247,7 @@ def apply_revision(engine, target, *, source_type="inner_life_event") -> bool:
 
 - 改動檔案清單（逐檔 numstat）。
 - 守衛 I1～I9 逐筆結果（筆數／分母／單位）。
-- 變異 M1～M9 **逐條**（轉紅的是哪一個守衛；有 ABORT 必須明寫）。
+- 變異 M1～M10 **逐條**（轉紅的是哪一個守衛；有 ABORT 必須明寫）。
 - 全庫回歸數字（passed／failed／skipped／耗時／returncode）＋ 解譯器＝repo 的 `.venv`。
 - 生產零寫入證據（`data/elevation/` 檔案清單與 sha256 前後對照）。
 - repo 檔 sha256 前後不變的證明。
