@@ -41,6 +41,17 @@ CAMPAIGN-B-P2 §3.1（工單：logs/CAMPAIGN-B-P2-D1-THINKING-LOOP-SANDBOX-WORK-
   不自帶 API key；任何失敗（預算用盡／例外／空回應／不可解析／幻覺數字）
   一律 **fail-closed**（不消解、不拋例外）。
 - **零檔案 I/O**：提示詞建構只看傳入的 :class:`~src.inner_life.tension_closure_loop.ThinkRequest`。
+
+Phase 5-②（新增；工單：logs/CAMPAIGN-B-P5-2-DATA-PLANE-WORK-ORDER.md）
+------------------------------------------------------------------------
+- **薄接線**：:func:`build_llm_thinker_from_config` —— 以既有設定（``cfg`` ＋ bus）
+  組出真實 :class:`LLMThinker`（模型名稱**只**取自既有設定；預算
+  ``max_tokens=400``／``max_calls=1``／``max_retries=0`` 為**字面值**）。
+- 🔴 **禁令仍然成立**：本模組**仍不 import** ``src.llm``（含 ``src.llm.proxy``）、
+  ``httpx``、``requests``、``socket``、``subprocess``、``urllib``、``asyncio``
+  （守衛 P2-T15 以 AST 把關）⇒ 網路呼叫仍**只**發生在既有 ``LLMProxy`` 內部。
+  （Phase 5-② 的接線以**延遲 import** 既有正規工廠
+  ``configs.loader.create_llm_proxy`` 取得 proxy ⇒ **不新增**任何 HTTP 客戶端。）
 """
 from __future__ import annotations
 
@@ -597,6 +608,45 @@ class LLMThinker:
         return _with_prompt_sha(parse_llm_outcome(text, req), self.last_prompt_sha256)
 
 
+def build_llm_thinker_from_config(
+    cfg: Dict[str, Any],
+    bus: Any,
+    *,
+    calls: Optional[Dict[str, Any]] = None,
+) -> LLMThinker:
+    """（Phase 5-② 新增）以**既有設定**組出真實 :class:`LLMThinker`（薄接線）。
+
+    🔴 **模型名稱只能來自既有設定**：取 ``create_llm_proxy`` 內部解析出的
+    ``proxy.model``（即 ``cfg["llm"]["model"]`` 及其既有 provider fallback）
+    ⇒ 本函式**不硬編碼任何模型字串**。
+    🔴 **預算硬上限**（**字面值**、不可由環境變數改變）：``max_tokens=400``／
+    ``max_calls=1``／``max_retries=0``（後者 ⇒ proxy 層**恰好 1 次 HTTP 嘗試**）。
+    🔴 **不新增網路路徑**：本函式**不 import** httpx／requests／urllib、
+    **不**自建 HTTP 客戶端 ⇒ 網路呼叫仍只發生在既有 ``LLMProxy.generate_text`` 內部。
+    🔴 **可注入共用計數器**：``calls`` 讓呼叫端（排程器）跨多個 thinker 實例
+    共用同一份預算計數 ⇒ 每日真實呼叫次數**跨實例**仍為上限 1。
+    """
+    # 🔴 延遲 import：既有正規工廠（工單 §2.3 指定）；**不** import ``src.llm``。
+    from configs.loader import create_llm_proxy
+
+    proxy = create_llm_proxy(cfg, bus)
+
+    # 模型名稱：只從既有設定／既有 proxy 解析結果取（**不硬編碼**）。
+    model = str(getattr(proxy, "model", "") or "")
+    if not model:
+        llm_cfg = cfg.get("llm") if isinstance(cfg, dict) else {}
+        model = str((llm_cfg or {}).get("model") or "")
+
+    return LLMThinker(
+        proxy,
+        model=model,
+        max_tokens=400,
+        max_calls=1,
+        max_retries=0,
+        calls=calls,
+    )
+
+
 __all__ = [
     "MAX_FIELD_CHARS",
     "MAX_REASON_CHARS",
@@ -611,6 +661,7 @@ __all__ = [
     "NullThinker",
     "ThinkOutcome",
     "Thinker",
+    "build_llm_thinker_from_config",
     "build_llm_thinking_prompt",
     "build_thinking_prompt",
     "parse_llm_outcome",

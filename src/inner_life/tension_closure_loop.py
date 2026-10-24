@@ -53,6 +53,24 @@ Phase 4（新增；工單：logs/CAMPAIGN-B-P4-ASYNC-THINKING-LOOP-WORK-ORDER.md
   （**Phase 5-① 新增**：**路徑不可注入**的生產唯讀介面，供 ``proxy.py`` 接線）。
   兩者共用同一份格式化核心 :func:`_read_working_state_lines`。
 
+Phase 5-②（新增；工單：logs/CAMPAIGN-B-P5-2-DATA-PLANE-WORK-ORDER.md）
+------------------------------------------------------------------------
+- **生產寫入面**：:func:`drive_loop_async_production` —— 把 Phase 4 的 async 閉環接到
+  一個**旗標預設關閉**的排程觸發點，用真實
+  :class:`~src.inner_life.tension_thinking.LLMThinker` 跑一次思考，產出
+  ``<data_root>/inner_life/working_state.jsonl``（P5-① 的讀取面在旗標開啟後才有東西可讀）。
+- 🔴 **路徑不可注入**：``store_dir`` **不在簽章裡**，由本函式內部從
+  ``src.paths.data_root()`` 推導 ⇒ 呼叫端無法指定任何路徑。
+- 🔴 **只寫 working_state**：寫入目標**只有** ``working_state.jsonl``；
+  ``epistemic_tensions.jsonl``／``trace.jsonl``／任何其他生產檔**不得**被建立或修改。
+- 🔴 **共用同一核心**：階段 1（:func:`_prepare_loop_common`）與階段 2／3
+  （:func:`_finish_loop`）與沙盒路徑**同一份** ⇒ 同一輸入、同一 outcome ⇒
+  兩條路徑寫出的 working_state **逐位元相同**（不是兩套語意、兩個真相來源）。
+- 🔴 **fail-silent**：旗標關閉／thinker 不合格／解析失敗／寫入失敗／thinker 例外
+  ⇒ 一律回 ``None``，**不得** raise。
+- 🔴 **旗標缺省關閉**：:func:`feature_enabled` 缺省 ``False`` ⇒ 生產上
+  ``working_state.jsonl`` **仍不存在**（「角色已能感知思考狀態」在生產仍不成立）。
+
 working state 欄位（固定）
 --------------------------
 Phase 1（既有 7 欄）：``agent_id``、``ts``、``resolved_tension_id``、``drive_code``、
@@ -464,29 +482,21 @@ def _reported_prompt_sha(outcome: Any) -> str:
     return str(getattr(outcome, "think_prompt_sha256", "") or "")
 
 
-def _prepare_loop(
+def _prepare_loop_common(
     agent_id: str,
     now: int,
     store_dir: Any,
     thinker_name: str,
 ) -> Optional[_PreparedLoop]:
-    """階段 1（取張力）＋ 階段 1.5 的前半（組 ``ThinkRequest`` 與提示詞）。
+    """階段 1（取張力）＋ 階段 1.5 的前半（組 ``ThinkRequest`` 與提示詞）的**共用核心**。
 
-    回傳 ``None`` 的情形（**皆不寫任何檔案**）：旗標關閉；``store_dir`` 不合格；
-    該 agent 沒有可解析的驅動剖面；沒有任何張力；top-1 張力的驅動代碼不在剖面內。
+    🔴 **CAMPAIGN-B-P5-②**：本函式是「旗標閘 ＋ 沙盒隔離閘」**之後**的全部決定性內容。
+    沙盒路徑（:func:`_prepare_loop`）與生產路徑（:func:`drive_loop_async_production`）
+    **共用同一份** ⇒ 同一輸入 ⇒ 同一份決定性內容（不是兩套語意、兩個真相來源）。
 
-    🔴 **同步與 async 兩條路徑共用本函式** ⇒ 同一輸入 ⇒ 同一份決定性內容。
+    回傳 ``None`` 的情形（**皆不寫任何檔案**）：該 agent 沒有可解析的驅動剖面；
+    沒有任何張力；top-1 張力的驅動代碼不在剖面內。
     """
-    # ① 旗標（**最先**；OFF ⇒ 0 讀 0 寫）。
-    if not feature_enabled():
-        return None
-
-    # ② 沙盒隔離（雙條件；fail-closed）。
-    allowed, reason = check_store_dir(store_dir)
-    if not allowed:
-        logger.debug("[tension-closure-loop] 拒絕執行：%s", reason)
-        return None
-
     # ③ 驅動剖面（唯讀；本票僅 agent_akane 可解析）。
     profile = load_drive_profile(agent_id)
     if profile is None:
@@ -544,24 +554,61 @@ def _prepare_loop(
     )
 
 
-def _finish_loop(prepared: _PreparedLoop, outcome: ThinkOutcome) -> Optional[ClosureTrace]:
+def _prepare_loop(
+    agent_id: str,
+    now: int,
+    store_dir: Any,
+    thinker_name: str,
+) -> Optional[_PreparedLoop]:
+    """階段 1（取張力）＋ 階段 1.5 的前半（組 ``ThinkRequest`` 與提示詞）。
+
+    回傳 ``None`` 的情形（**皆不寫任何檔案**）：旗標關閉；``store_dir`` 不合格；
+    該 agent 沒有可解析的驅動剖面；沒有任何張力；top-1 張力的驅動代碼不在剖面內。
+
+    🔴 **同步與 async 兩條路徑共用本函式** ⇒ 同一輸入 ⇒ 同一份決定性內容。
+    """
+    # ① 旗標（**最先**；OFF ⇒ 0 讀 0 寫）。
+    if not feature_enabled():
+        return None
+
+    # ② 沙盒隔離（雙條件；fail-closed）。
+    allowed, reason = check_store_dir(store_dir)
+    if not allowed:
+        logger.debug("[tension-closure-loop] 拒絕執行：%s", reason)
+        return None
+
+    return _prepare_loop_common(agent_id, now, store_dir, thinker_name)
+
+
+def _finish_loop(
+    prepared: _PreparedLoop,
+    outcome: ThinkOutcome,
+    *,
+    write_tension_event: bool = True,
+) -> Optional[ClosureTrace]:
     """階段 2（分流）＋ 階段 3（寫 working state）—— **同步與 async 共用**。
 
     🔴 寫入**只**發生在 ``prepared.store_path`` 與 ``prepared.working_path``
     （皆在沙盒 ``store_dir`` 之下 ⇒ 生產路徑結構上不可達）。
+
+    🔴 **CAMPAIGN-B-P5-②**：``write_tension_event``（keyword-only、預設 ``True``）
+    ＝ 是否寫出**張力事件**。沙盒路徑維持 ``True``（既有語意**一字未改**）；
+    生產路徑傳 ``False`` ⇒ **只**寫 ``working_state.jsonl``，
+    ``epistemic_tensions.jsonl``／``trace.jsonl``／其他生產檔**結構上不可達**。
     """
     # 階段 2：思考消解張力（寫沙盒；欄位形狀與生產一致）。
-    event = _tension_event(
-        prepared.agent_id,
-        prepared.score,
-        prepared.tension_id,
-        prepared.resolved_at,
-        prepared.last_interaction_ts,
-        prepared.bond_payload,
-        outcome,
-    )
-    if not _append_jsonl(prepared.store_path, event):
-        return None
+    if write_tension_event:
+        event = _tension_event(
+            prepared.agent_id,
+            prepared.score,
+            prepared.tension_id,
+            prepared.resolved_at,
+            prepared.last_interaction_ts,
+            prepared.bond_payload,
+            outcome,
+        )
+        if not _append_jsonl(prepared.store_path, event):
+            return None
 
     # 階段 3：更新 working state（寫沙盒；新承載）。
     drives_touched = _drives_touched(prepared.score)
@@ -724,6 +771,86 @@ async def drive_loop_async(
         return None
     outcome = await thinker.think(prepared.request, prepared.prompt)
     return _finish_loop(prepared, outcome)
+
+
+async def drive_loop_async_production(
+    agent_id: str,
+    *,
+    thinker: Any,
+    now: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """（Phase 5-② 新增）**生產寫入面**：把一次張力驅動思考的結果寫進生產 working state。
+
+    🔴 **路徑不可注入**：``store_dir`` **不在簽章裡**，由本函式內部從
+    ``src.paths.data_root()`` 推導 ⇒ 呼叫端無法指定任何路徑。
+    🔴 **只寫 working_state**：寫入目標**只有**
+    ``<data_root>/inner_life/working_state.jsonl``；``epistemic_tensions.jsonl``／
+    ``trace.jsonl``／任何其他生產檔**不得**被建立或修改。
+    🔴 **共用同一核心**：階段 1（:func:`_prepare_loop_common`）與階段 2／3
+    （:func:`_finish_loop`）與沙盒路徑**同一份** ⇒ 同一輸入、同一 outcome ⇒
+    兩條路徑寫出的 working_state **逐位元相同**（不是兩套語意、兩個真相來源）。
+    🔴 **fail-silent**：旗標關閉／thinker 不合格／解析失敗／寫入失敗／thinker 例外
+    ⇒ 一律回 ``None``，**不得** raise（不讓思考失敗污染排程主循環）。
+    🔴 **旗標缺省關閉**：:func:`feature_enabled` 缺省 ``False`` ⇒ 生產上
+    ``working_state.jsonl`` **仍不存在**（「角色已能感知思考狀態」在生產仍不成立）。
+    """
+    try:
+        # ① 旗標（**最先**；OFF ⇒ 0 讀 0 寫 0 呼叫）。
+        if not feature_enabled():
+            return None
+
+        # ② 只接受 async thinker（與 :func:`drive_loop_async` 同一契約；不合 ⇒ 回 None）。
+        if thinker is None or not _thinker_is_async(thinker):
+            logger.debug("[tension-closure-loop] 生產路徑拒絕非 async thinker")
+            return None
+
+        # ③ 生產路徑（**不可注入**；由 data_root() 推導）。
+        from src.paths import data_root
+
+        store_dir = Path(data_root()) / "inner_life"
+
+        ts = (
+            int(now)
+            if now is not None
+            else int(datetime.now(tz=timezone.utc).timestamp())
+        )
+
+        # ④ 階段 1（與沙盒路徑**同一份**核心）。
+        prepared = _prepare_loop_common(agent_id, ts, store_dir, type(thinker).__name__)
+        if prepared is None:
+            return None
+
+        # ⑤ 階段 1.5：真的想一次（唯一的 await 點）。
+        outcome = await thinker.think(prepared.request, prepared.prompt)
+
+        # ⑥ 階段 2／3：**只**寫 working_state（不寫張力事件）。
+        trace = _finish_loop(prepared, outcome, write_tension_event=False)
+        if trace is None:
+            return None
+
+        return {
+            "agent_id": trace.agent_id,
+            "drive_code": trace.drive_code,
+            "tension_id": trace.tension_id,
+            "resolved_at": trace.resolved_at,
+            "working_state_path": trace.working_state_path,
+            "drives_touched": list(trace.drives_touched),
+            "open_gap_count_after": trace.open_gap_count_after,
+            "open_contradiction_count_after": trace.open_contradiction_count_after,
+            "partial_resolution": float(trace.partial_resolution),
+            "remaining_gap_count": int(trace.remaining_gap_count),
+            "decided": bool(trace.decided),
+            "thinker": str(prepared.thinker_name),
+            "think_prompt_sha256": str(trace.think_prompt_sha256),
+            "wrote_tension_event": False,
+        }
+    except Exception as exc:  # noqa: BLE001 — fail-silent（不讓思考失敗冒泡）
+        logger.warning(
+            "[tension-closure-loop] 生產驅動失敗（fail-silent）：%s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return None
 
 
 def _drives_touched(top: TensionScore) -> List[str]:
@@ -943,6 +1070,7 @@ __all__ = [
     "check_store_dir",
     "drive_loop",
     "drive_loop_async",
+    "drive_loop_async_production",
     "feature_enabled",
     "format_working_state_lines",
     "format_working_state_lines_production",

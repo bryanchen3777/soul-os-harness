@@ -4777,3 +4777,144 @@ repo 不在 temp 之下）實測**全綠（2 passed / rc=0）**，證實其失�
 2. **P6-T11 同理**：Phase 4 守衛檔的釘死 sha 改為正規化雜湊；且釘死值更新為**本票修正後**的內容（見第 3 點）。
 3. **既有守衛 `P5-T12` 的競態假紅（Phase 4 遺留，非本票引入）**：原斷言快照**整棵** `data/` 樹的位元組再前後比對，但**線上服務仍在活著**並持續改寫 `data/`（實測 8 輪重複中第 3 輪抓到 `data/state/event_loop_alive.json` 心跳檔被改寫）⇒ 與**其他 actor** 的寫入競態而假紅（主大腦的 P5-① 合入閘門即因此誤報一次失敗）。⇒ 改為比對**介面實際可能寫入的面**（`<store_dir>/working_state.jsonl` 的位元組）＋ **store_dir 的目錄項目集合**（有無新建檔／目錄）—— 兩者都不受「他人改寫其他檔案」影響，且**更精確**對準「這個介面寫不寫生產」；「介面有無任何寫入」另由 **AST 純度守衛 P6-T9** 與 **P5-T11**（沙盒 store 不得被改動）結構性保證。**牙齒已驗證**：內容被寫／新建檔／新建目錄三種情況全部會轉紅，無寫入時通過。
 4. 修正後連跑 4 輪「85 筆合併」全綠（原本會間歇假紅）⇒ 競態已消除。
+
+## 0.1.64 CAMPAIGN-B Phase 5 第二段（P5-②）張力驅動思考 資料面接線（**寫入面就緒；旗標缺省 OFF ⇒ 生產資料面仍未通**）（2026-10-24 10:2x EDT）
+
+**工單**：`logs/CAMPAIGN-B-P5-2-DATA-PLANE-WORK-ORDER.md`。
+**依賴**：Phase 3（`aa3ff39`）／Phase 4（`61957a0`）／P5-①（`85b0ab7`）已合入 main。
+**施工位置**：worktree `%TEMP%\p5b_wt`（detached HEAD `85b0ab7`）；**主 repo 未改動**。
+
+### ① 🔺 Owner 的兩項裁定（原文要點）
+
+1. **真實 LLM 預算（Owner 2026-10-24 10:1x 核准）**：**1 個 agent × 1 次呼叫**／
+   **上限 400 Tokens**／**零重試**／**模型與通道完全沿用 `proxy.py` 既有配置**／
+   **禁止任何額外計費呼叫**。
+   ⇒ 本票的接線 helper 對這三個預算參數**寫死字面值**
+   （守衛 **P7-T8** 以 AST 釘死：不得由環境變數或參數放寬）；
+   排程器另有**每日 1 個 agent／單輪 1 個 agent／每 agent 每日 1 次**三道上限。
+2. **WAL 治理不單獨重啟（Owner 2026-10-24）**：補丁**合入主幹後不重啟服務**，
+   待主線累積至下一階段或**排程維護窗口**再生效。
+   ⇒ 本票**同樣不重啟、不部署**；新排程分支隨**下一次服務重啟**才具備生效條件。
+
+### ② 本票的契約變更（canonical 留痕）
+
+🔺 **本票是第一次允許寫入生產 `data/inner_life/working_state.jsonl` 這個「新承載」的例外**，
+且**只限單一檔案**：`data/inner_life/working_state.jsonl`（append-only；欄位形狀＝P5-① 唯讀面所讀的同一形狀）。
+（🔺 精確說明：`data/inner_life/` **本身**早就有生產寫入者——`epistemic_tensions.jsonl`／`trace.jsonl`
+由既有模組寫入；**本票新增的是 `working_state.jsonl` 這個檔的生產寫入權**，
+實測 `working_state.jsonl` 在 `src/**` 內**只被** `tension_closure_loop.py` 引用
+⇒ 本票是它唯一的寫入者。）
+此寫入面與 P5-① 的**生產唯讀面**（`format_working_state_lines_production()`）**對稱**：
+讀面（`85b0ab7`）已上線；寫面（本票）以**旗標預設 OFF** 的方式落地。
+
+- **唯一寫入點**：`drive_loop_async_production()`（`src/inner_life/tension_closure_loop.py`）——
+  **路徑不可注入**（由 `src.paths.data_root()` 內部推導為 `<data_root>/inner_life`）、
+  **只寫 `working_state.jsonl`**（`epistemic_tensions.jsonl`／`trace.jsonl`／其他生產檔
+  **不得**被建立或修改）、**fail-silent**（解析／寫入／thinker 例外 ⇒ 回 `None`，不 raise）。
+- **既有沙盒契約一字未改**：`drive_loop()`／`drive_loop_async()`／`check_store_dir()`／
+  `format_working_state_lines()` 的語意**原封不動**。
+  沙盒與生產**共用同一份**決定性核心（`_prepare_loop_common()` ＋ `_finish_loop()`）
+  ⇒ 同一輸入、同一 outcome ⇒ 兩條路徑寫出的 working_state **逐位元相同**
+  （不是兩套語意、兩個真相來源）。
+- `_finish_loop()` 新增 keyword-only `write_tension_event`（**預設 `True`**）
+  ⇒ 沙盒路徑行為**一字未改**；生產路徑傳 `False` ⇒ 結構上不可能寫張力事件。
+
+### ③ 旗標缺省 OFF ＋ 生效條件
+
+- 旗標：`SOUL_OS_TENSION_DRIVE_LOOP`（`src/inner_life/tension_closure_loop.py` 的 `FEATURE_ENV`），
+  **缺省 OFF** ⇒ `feature_enabled()` 回 `False` ⇒ 生產上**不讀任何生產路徑、不寫任何檔案、
+  不呼叫 LLM、不載入設定**（守衛 **P7-T1** 以行為＋AST 釘死）。
+- 排程掛點：`src/soul/scheduler.py` 的 `_fire_tension_drive_loop(now)`，掛在**既有 30s wake**
+  內（與 `_goal_scan_all()`／`_fire_world_timer_eval()`／`_fire_lifecycle_eval()`／
+  `_fire_wal_checkpoint()` 同級）⇒ **0 新定時器／0 新 tick／0 新 task／0 新 sleep**
+  （守衛 **P7-T10** 以 AST 釘死）。
+- **生效條件（全部須成立）**：① 環境變數 `SOUL_OS_TENSION_DRIVE_LOOP` 為非 off 值；
+  ② **服務重啟**（本票不重啟）；③ 該角色有可解析的驅動剖面（目前僅 `agent_akane`）
+  且有**過 24h 門檻的 active 資訊缺口**；④ 落在既有 night slot（22:00 ±60s）檢查窗內。
+- **預算閘（Owner 核准值）**：冪等鍵 `agent_id:YYYY-MM-DD` ＋ 單輪上限 ＋ 每日名額
+  ＋ **跨 thinker 實例共用**的呼叫計數器 ⇒ 每日真實 LLM 呼叫**上限 1 次**。
+
+### ④ 守衛 12 筆 ＋ 變異 M23～M32
+
+- **守衛**：`tests/inner_life/test_p5_data_plane_guard.py`（**新增**；**恰 12 筆**
+  P7-T1～P7-T12，每項一函式）⇒ 新守衛 **12/12 全綠**。
+- **變異**：**M23～M32 共 10 條全數轉紅**（0 ABORT、0 意外全綠）；harness 採**改副本**模式
+  （repo／worktree 檔全程不寫入），收尾印出被測檔 sha256 與初始值**逐位元相同**。
+- 🔺 本檔**不使用** `subprocess`／`os.spawn*`／`os.system`／`os.popen`
+  （R5 護欄白名單大小鎖死 22，本票**未擴張**）。
+
+### ⑤ 真實 LLM 驗收
+
+- **worker 端真實 LLM 呼叫 = 0**（`calls["attempted"]` 全程為 0；守衛檔內 0 真實 provider 構造點）。
+- 驗收腳本已交付：`%TEMP%\p5b_harness\acceptance_real_llm.py`
+  （**由主大腦執行恰好一次**；worker 不得執行）。腳本自帶硬上限：**1 個 agent／1 次呼叫／
+  `max_tokens=400`／`max_retries=0`／`store_dir` 位於 `%TEMP%` 之下（零生產寫入）／失敗**不重試**。
+- 🔺 **實測數字（主大腦執行，2026-10-24 11:1x EDT；恰好 1 次）**：
+  - provider＝`ollama`；model＝`deepseek-v4.1-flash:1017`（**完全沿用既有設定**；本機 provider ⇒ **零外部計費**）。
+  - `calls` 全計數＝`{"attempted": 1, "succeeded": 1, "failed": 0, "budget_exhausted": 0, "max_calls": 1, "max_retries": 0, "max_tokens": 400}` ⇒ **恰好 1 次**、無重試、無失敗。
+  - 耗時 1.25 s；agent＝`agent_akane`（當期唯一有可解析驅動剖面者）。
+  - 沙盒寫入目標＝`%TEMP%\p5b_accept\data\inner_life\working_state.jsonl`（**450 bytes**）；沙盒該目錄**只有** `working_state.jsonl` ⇒ 張力事件檔**結構上不可達**。
+  - 生產零寫入：**主大腦自取的獨立基準**比對一致 —— `data/inner_life/epistemic_tensions.jsonl` 1,245 bytes／sha `956BA3A6…`、`trace.jsonl` 3,747,708 bytes／sha `50E16157…`（執行前後**逐位元相同**）、`working_state.jsonl` **仍不存在**。
+  - 產出 record：`decided=false`／`drive_code=D1`／`open_gap_count_before=66` → `after=65`／`remaining_gap_count=65`／`partial_resolution=0.01515…`／`think_prompt_sha256=0ba4c638b49e02c2d080c235fcc8ed2ef2b59fdc8037878d18fa60530f85df78`／`ts=1792855853.0`。
+  - **read-back（P5-① 沙盒讀取面 `format_working_state_lines`）**＝`- [2026-10-24 張力未解] 還有 65 個未解的問題（已想過 2%）` ⇒ 與由 record 重算的預期行**逐位元一致** ✔（資料面端到端成立）。
+  - 單次執行保護：驗收 marker 已生成（`%TEMP%\p5b_accept\ACCEPTANCE_ALREADY_RAN.json`）⇒ 重跑會被拒絕，避免重複計費。
+
+### ⑥ 🔺 誠實聲明
+
+**旗標缺省 OFF ⇒ 生產上 `data/inner_life/working_state.jsonl` 仍不存在，
+「角色已能感知思考狀態」在生產仍不成立。**
+本票成立的是「**寫入面已就緒**、有專屬守衛釘死、路徑不可注入、預算有界」，
+**不是**「生產資料面已通」。
+開啟旗標後的風險：**每日 1 次真實 LLM 呼叫**（成本非 0）＋ 當日會寫入 1 筆 working_state
+（首次寫入會**建立** `data/inner_life/working_state.jsonl`）。
+
+### 實作範圍（5 檔）
+
+| 檔 | 動什麼 |
+|---|---|
+| `src/inner_life/tension_closure_loop.py` | 抽出共用核心 `_prepare_loop_common()`（沙盒與生產共用）＋ `_finish_loop()` 新增 keyword-only `write_tension_event`（預設 `True`＝既有語意不變）＋ **新增** `drive_loop_async_production()`（路徑不可注入／只寫 working_state／fail-silent）＋ `__all__` |
+| `src/inner_life/tension_thinking.py` | **新增薄接線** `build_llm_thinker_from_config()`（沿用 `configs.loader.create_llm_proxy`；預算 400／1／0 為**字面值**；**不硬編碼**模型名稱；**不**自建 HTTP 客戶端）＋ `__all__` |
+| `src/soul/scheduler.py` | **新增 additive 分支** `_fire_tension_drive_loop(now)`（旗標閘 ＋ night slot ＋ at-most-once 冪等鍵 ＋ 單輪／每日上限 ＋ fail-silent）＋ `__init__` 的冪等狀態 ＋ `_run_loop` 的 additive 掛點 |
+| `tests/inner_life/test_p5_data_plane_guard.py` | **新增**守衛 12 筆（P7-T1～P7-T12） |
+| `logs/ENGINEERING_STATE.md` | **追加**本條目（canonical 不覆寫） |
+
+### 全庫回歸（**A/B 同一環境**；fail-set 逐筆差分口徑）
+
+解譯器＝**repo 的 `.venv`**：`C:\Users\bbfcc\.local\bin\soul-os-harness\.venv\Scripts\python.exe`（Python 3.11）。
+A/B 組＝**同一棵樹** `%TEMP%\p5b_base_wt`（worktree 的一次性副本；**兩組環境完全相同**）：
+A 組＝HEAD(`85b0ab7`) 乾淨樹；B 組＝**同一棵樹** ＋ 本票改動（含新增守衛檔）。
+
+| 組 | failed | passed | skipped | errors | subtests | 耗時 | pytest returncode |
+|---|---|---|---|---|---|---|---|
+| A：改動前 | 36 | 7,236 | 46 | 10 | 32 passed | 644.60s (0:10:44) | 1 |
+| B：改動後 | 36 | **7,248** | 46 | 10 | 32 passed | 643.12s (0:10:43) | 1 |
+
+⇒ **passed ＋12 ＝ 本票新增的 12 筆守衛**；**失敗＋錯誤集合逐筆完全相同**
+（46 筆 failed+errors：新增 **0**、消失 **0**；已用 JUnit XML `set` 差分逐筆核對，
+見 `%TEMP%\p5b_harness\compare_junit.py`）。
+
+🔺 **同一份樹（worktree `%TEMP%\p5b_wt` 本身）的前後差分**（最終樹）：
+
+| 樹 | failed | passed | skipped | errors | subtests | 耗時 | pytest returncode |
+|---|---|---|---|---|---|---|---|
+| 改動前（HEAD `85b0ab7`） | 33 | 7,241 | 44 | 10 | 32 passed | 645.85s (0:10:46) | 1 |
+| 改動後（最終樹） | 33 | **7,253** | 44 | 10 | 32 passed | 637.98s (0:10:37) | 1 |
+
+⇒ **passed ＋12 ＝ 本票新增的 12 筆守衛**；failed+errors **43 筆，新增 0、消失 0**
+（JUnit XML `set` 差分逐筆核對）。
+
+🔺 **口徑說明**：worktree／副本位於 `%TEMP%` 之下 ⇒ `check_store_dir()` 的「非 temp 之下」
+條件對其旁路徑不成立；worktree 無生產 `data/**` ⇒ 資料相依守衛的對帳基準為空（守衛自陳假紅）。
+⇒ 這 2 類失敗在**改動前／改動後完全相同**（A/B 逐筆相同）。
+另：副本無 `.git`（`.git` 是檔案的 worktree 特性）⇒ 3 筆 git 相依測試在 A/B **兩組都失敗**、互相抵銷。
+
+### 未做（明文排除）
+
+未改 `src/llm/proxy.py`／`configs/loader.py`／`src/inner_life/tension_scoring.py`／
+`scripts/run_server.py`／任何 frozen contract 檔；未改 `drive_loop()`／`drive_loop_async()`／
+`check_store_dir()`／`format_working_state_lines()`／`format_working_state_lines_production()`
+的既有語意；**未開旗標**；未寫 `data/**`；未部署、未重啟、未 kill 行程、
+未 commit／push／**git add**。
+🔺 本票新增的 collectable 測試檔在 worktree 內**未被 git 追蹤**（worker 不得 `git add`），
+主大腦合入時需 `git add tests/inner_life/test_p5_data_plane_guard.py`，否則 repo hygiene
+守衛會紅。

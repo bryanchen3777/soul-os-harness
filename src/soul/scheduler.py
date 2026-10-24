@@ -222,6 +222,14 @@ class SoulScheduler:
         # （{日期: "YYYY-MM-DD"}）。30s tick 在 night slot 觸發窗內會重入數十次，
         # 靠此鍵確保每日只評估一次。
         self._last_lifecycle_eval_date: Optional[str] = None
+        # CAMPAIGN-B Phase 5-② (2026-10-24): 張力驅動思考 資料面接線。
+        # at-most-once 冪等鍵（{f"{agent_id}:{YYYY-MM-DD}": "YYYY-MM-DD"}）：
+        # 30s tick 在 night slot 觸發窗內會重入數十次，靠此鍵確保每日每個 agent
+        # 只被驅動一次（不重複評估、不重複花費 LLM）。
+        self._tension_drive_done: Dict[str, str] = {}
+        # 當日共用的 LLM 呼叫計數器（跨 thinker 實例 ⇒ 每日真實呼叫上限 1）。
+        self._tension_drive_calls: Dict[str, Any] = {}
+        self._tension_drive_calls_day: Optional[str] = None
         self._next_event_time: Optional[datetime] = None  # 下次事件時間
         # M5.2-R-3 (Bry 拍板 2026-08-09): _dream_callback / _event_callback field 移除
         # (0 read / 0 invocation 從 M5.2-I-6 後, setter 仍是 dead code)
@@ -1720,6 +1728,12 @@ class SoulScheduler:
                 #     0 新定時器 / 0 新 tick / 0 新 task / 0 新 sleep；
                 #     fail-silent（例外只 log warning，不阻斷主循環）。
                 await self._fire_wal_checkpoint()
+                # 5.10 CAMPAIGN-B-P5-② (2026-10-24): 張力驅動思考 資料面接線 — 掛既有
+                #     30s wake 的 additive 分支（與 _goal_scan_all / _fire_world_timer_eval
+                #     / _fire_lifecycle_eval / _fire_wal_checkpoint 同級）。
+                #     0 新定時器 / 0 新 tick / 0 新 task / 0 新 sleep；
+                #     fail-silent（例外只 log warning，不阻斷主循環）。
+                await self._fire_tension_drive_loop(now)
                 # 健康檢查 log
                 if (now.timestamp() - last_health_log) > HEALTH_CHECK_INTERVAL_SECS:
                     next_slot, next_time = self._compute_next_slot(now)
@@ -1767,6 +1781,89 @@ class SoulScheduler:
             logger.warning(
                 "[Scheduler] WAL checkpoint 巡檢失敗（已隔離，不阻斷主循環）",
                 exc_info=True,
+            )
+
+    async def _fire_tension_drive_loop(self, now: datetime) -> None:
+        """CAMPAIGN-B Phase 5-② (2026-10-24): 張力驅動思考 — 資料面接線。
+
+        掛點（沿用本檔既有 additive 分支慣例，見 _fire_periodic_narrative /
+        _fire_life_thread_slot / _fire_lifecycle_eval / _fire_wal_checkpoint）：
+          - 主循環 30s wake 內、night slot（22:00, ``_slot_for_time``=="night"）
+            檢查窗內，與 ``_fire_all("night")`` / ``_goal_scan_all`` 並列；
+            **0 新定時器 / 0 新 tick / 0 新 task / 0 新 sleep**。
+          - at-most-once 冪等鍵（``agent_id:YYYY-MM-DD``）落在本類別內 ⇒
+            30s tick 重入同一 slot 窗**不會重複評估、不會重複花費 LLM**。
+        fail-closed: 任何異常只 log warning, 不阻斷主循環（與同級分支一致）。
+
+        🔴 **旗標預設關閉**：``SOUL_OS_TENSION_DRIVE_LOOP`` 缺省 OFF ⇒ 本分支
+        **完全不動**（0 讀 0 寫 0 LLM 0 設定載入）⇒ 生產上 ``working_state.jsonl``
+        **仍不存在**（「角色已能感知思考狀態」在生產仍不成立）。
+        🔴 **預算**（Owner 2026-10-24 核准）：每日最多 **1 個 agent** 完成思考、
+        每輪最多處理 **1 個 agent**、每日最多 **1 次**真實 LLM 呼叫
+        （共用呼叫計數器**跨 thinker 實例**生效 ⇒ 當日額度用盡後不再送出）。
+        🔴 **寫入面路徑不可注入**：目標由
+        :func:`~src.inner_life.tension_closure_loop.drive_loop_async_production`
+        內部從 ``data_root()`` 推導 ⇒ 排程器無法指定任何路徑。
+        """
+        try:
+            from src.inner_life import tension_closure_loop as _tcl
+
+            # ① 旗標閘（**最先**；OFF ⇒ 0 讀 0 寫 0 呼叫 0 設定載入）。
+            if not _tcl.feature_enabled():
+                return
+
+            # ② night slot 閘（既有 22:00 檢查窗；其他時段完全不動）。
+            if self._slot_for_time(now) != "night":
+                return
+
+            today = now.date().isoformat()
+
+            # ③ 三道上限（互相獨立、各自可被守衛觀察）：
+            #    a) 每個 agent 每日最多 1 次（at-most-once 冪等鍵）；
+            #    b) 每日最多 1 個 agent（今日名額已被**另一個** agent 用掉 ⇒ 不再嘗試）；
+            #    c) 單輪最多處理 1 個 agent。
+            for agent_id in list(self._all_agents):
+                key = f"{agent_id}:{today}"
+                if self._tension_drive_done.get(key) == today:
+                    continue  # a) 同一 agent 今日已處理（冪等鍵）⇒ 換下一個
+                if any(
+                    other != key and day == today
+                    for other, day in self._tension_drive_done.items()
+                ):
+                    return  # b) 今日名額已被另一個 agent 用掉（每日最多 1 個 agent）
+                self._tension_drive_done[key] = today  # 先標記，避免 30s tick 重入風暴
+
+                # ④ 當日共用呼叫計數器（跨 thinker 實例 ⇒ 每日真實呼叫上限 1）。
+                if self._tension_drive_calls_day != today:
+                    self._tension_drive_calls = {}
+                    self._tension_drive_calls_day = today
+
+                # ⑤ 組真實 thinker（旗標閘已過 ⇒ 這裡才會觸及既有設定與 proxy）。
+                from configs.loader import load_config
+
+                from src.inner_life import tension_thinking as _tt
+
+                cfg = load_config()
+                thinker = _tt.build_llm_thinker_from_config(
+                    cfg, self._bus, calls=self._tension_drive_calls
+                )
+
+                # ⑥ 真的驅動一次（路徑不可注入 ⇒ 寫入目標由 data_root() 推導）。
+                result = await _tcl.drive_loop_async_production(
+                    agent_id,
+                    thinker=thinker,
+                    now=int(now.timestamp()),
+                )
+                if result is not None:
+                    logger.info(
+                        f"[Scheduler] [CAMPAIGN-B-P5-②] {agent_id} 張力驅動思考完成："
+                        f"decided={result.get('decided')} "
+                        f"remaining={result.get('remaining_gap_count')}"
+                    )
+                return  # c) 單輪上限：最多處理 1 個 agent
+        except Exception as e:
+            logger.warning(
+                f"[Scheduler] tension drive loop failed (fail-closed): {type(e).__name__}: {e}"
             )
 
     async def _goal_scan_all(self) -> None:
