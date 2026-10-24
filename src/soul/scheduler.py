@@ -1738,13 +1738,25 @@ class SoulScheduler:
           0 新定时器 / 0 新 tick / 0 新 sleep / 不参与决策（装配只在 _decision_check 内,
           1HB1S 拓扑不变）。
         fail-closed: 任何异常只 log warning, 不阻断主循环。
+
+        GOAL-DB-LOCKED-1 (2026-10-23): **per-agent 故障隔离**。
+          事故: 2026-10-23 14:31:32 起 600 笔 `[Goal] 主循环扫描异常 (fail-closed):
+          OperationalError: database is locked`（14:31→19:32, 每 30 秒 2 笔,
+          302/302 分钟桶无一例外）⇒ Goal 主循环 100% 停摆。
+          根因之一: 原本 try/except 包在 **整个 for 循环之外** ⇒ 任何 **一个** agent
+          撞锁就把 **其余 45 个 agent** 的扫描一起中止（单点故障放大成全局停摆）。
+          修法: try/except 下沉到 **每个 agent**；fail-closed 契约不变（仍只 log
+          warning, 仍不阻断主循环），但 **一个 agent 的锁不再吃掉其他 agent 的扫描**。
+          同时把 agent_id 与 traceback 写进日志 —— 事故期间日志既无 agent_id 也无
+          traceback，5 小时 600 笔告警无法定位到具体 agent（见
+          logs/INCIDENT-GOAL-DB-LOCKED.md §3）。
         """
         if not self._all_agents:
             return
-        try:
-            from src.goals.motive_provider import GoalMotiveProvider
-            from src.goals.seed_provider import GoalSeedProvider
-            for agent_id in self._all_agents:
+        for agent_id in self._all_agents:
+            try:
+                from src.goals.motive_provider import GoalMotiveProvider
+                from src.goals.seed_provider import GoalSeedProvider
                 provider = GoalMotiveProvider.for_agent(agent_id)
                 provider.apply_interrupt_signals()
                 provider.scheduled_wakeup_scan()
@@ -1758,10 +1770,12 @@ class SoulScheduler:
                 # fail-closed 不阻断主循环。
                 from src.social.relation_settlement import settle_relations
                 settle_relations(agent_id)
-        except Exception as e:
-            logger.warning(
-                f"[Goal] 主循环扫描异常 (fail-closed): {type(e).__name__}: {e}"
-            )
+            except Exception as e:
+                logger.warning(
+                    f"[Goal] 主循环扫描异常 (fail-closed): agent={agent_id} "
+                    f"{type(e).__name__}: {e}",
+                    exc_info=True,
+                )
 
     def set_world_eval_hook(
         self, hook: Optional[Callable[[], Awaitable[int]]]

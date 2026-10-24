@@ -27,6 +27,11 @@ class MemoryStore:
     def __init__(self, db_path: Path = DB_PATH):
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        # GOAL-DB-LOCKED-1 (2026-10-23): **顯式** busy_timeout。
+        # 上面沒有 timeout= 引數 ⇒ busy_timeout 倚賴 Python 預設 5.0 s（隱含值）。
+        # 這裡把它寫成顯式契約（對齊 src/agent/emotion.py:370 的既有做法），
+        # 等值不變（5000 ms），只是不再倚賴直譯器預設。
+        self.conn.execute("PRAGMA busy_timeout=5000")
         self._init_schema()
 
     def close(self) -> None:

@@ -17,9 +17,22 @@ from .models import Fact
 
 logger = logging.getLogger("soul_os.sage.graph_store")
 
-# 每累積 N 次寫入才 commit（WAL 模式下安全）
+#: 每累積 N 次寫入才 commit（WAL 模式下安全）
 _BATCH_SIZE = 20
 _SCHEMA_VERSION = 9
+
+#: GOAL-DB-LOCKED-1 (2026-10-23): 鎖錯誤判定。
+#: sqlite 的「被鎖」在 Python 層有兩種外觀：
+#:   * SQLITE_BUSY (5)      → "database is locked"
+#:   * SQLITE_BUSY_SNAPSHOT (517) → 同一個 5 → 同一句 "database is locked"
+#: 兩者皆為 sqlite3.OperationalError；此處以訊息關鍵字判定（不依賴 errno 常量）。
+def _is_lock_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
+#: GOAL-DB-LOCKED-1: 不得自癒重試的方法（失敗必須往上拋，否則資料遺失會變靜默成功）。
+_NO_SELFHEAL_METHODS = frozenset({"flush", "close"})
 
 
 def _locked(method):
@@ -29,11 +42,35 @@ def _locked(method):
     存取（prefetch 走 asyncio.to_thread 讀 + write_turn 走 run_in_executor 寫，
     同一個 GraphStore 連接無鎖）→ sqlite3 C 擴展記憶體損壞 → ACCESS VIOLATION。
     所有 sqlite + networkx graph 操作以 RLock 串行化。
+
+    GOAL-DB-LOCKED-1 (2026-10-23): **鎖錯誤自癒 + 重試一次**。
+      事故: 一條被鎖住的連線會讓「每一次」後續存取都拋
+      `OperationalError: database is locked`（100% 停擺，非間歇）。
+      修法: 捕捉鎖錯誤 → 重建連線（close + 重新 open）→ 重試該方法 **一次**。
+      語意安全性: 本類所有寫入語句皆為 INSERT OR REPLACE / UPDATE（冪等），
+      且鎖錯誤發生在寫入「尚未生效」的狀態 ⇒ 重試不會重複套用副作用。
+      非鎖錯誤照舊上拋（0 語意變更）。
     """
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
         with self._lock:
-            return method(self, *args, **kwargs)
+            try:
+                return method(self, *args, **kwargs)
+            except sqlite3.OperationalError as e:
+                if not _is_lock_error(e):
+                    raise
+                # flush / close 是生命週期方法：失敗必須往上拋讓呼叫端（flush_all_live）
+                # 看得到，否則「commit 失敗 → rollback → 重建連線 → pending 歸零」會把
+                # 資料遺失變成靜默成功。
+                if method.__name__ in _NO_SELFHEAL_METHODS:
+                    raise
+                dropped = self._reopen_connection()
+                logger.warning(
+                    f"[GraphStore] 鎖錯誤自癒: 重建連線後重試一次 "
+                    f"method={method.__name__} db={self.db_path} "
+                    f"dropped_pending={dropped} err={e}"
+                )
+                return method(self, *args, **kwargs)
     return wrapper
 
 
@@ -90,7 +127,42 @@ class GraphStore:
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.execute("PRAGMA cache_size=-8000")   # 8MB cache
             self._conn.execute("PRAGMA temp_store=MEMORY")
+            # GOAL-DB-LOCKED-1 (2026-10-23): **顯式** busy_timeout。
+            # timeout=10.0 本身已把 busy_timeout 設成 10000 ms，但那是「隱含」的
+            # 連線參數；此處寫成顯式契約（與 src/agent/emotion.py:370 同款做法），
+            # **不改變既有 timeout=10.0 的契約值**（值相同，只是明寫）。
+            self._conn.execute("PRAGMA busy_timeout=10000")
         return self._conn
+
+    def _reopen_connection(self) -> int:
+        """GOAL-DB-LOCKED-1: 重建被鎖住的連線；回傳被丟棄的 pending 筆數。
+
+        為什麼必須重建而不是只 rollback：SQLITE_BUSY_SNAPSHOT（= "database is
+        locked"）代表「本連線的讀取快照已過期」，rollback **不能** 讓它復原；
+        唯一能脫離的途徑是換一條新連線。
+
+        語意影響：舊連線上 **尚未 commit** 的批次（_pending_writes）在 close 時
+        會被 sqlite 回滾 ⇒ 該批資料遺失（最多 _BATCH_SIZE-1 = 19 筆 facts）。
+        這是「寧可丟失未落盤批次，也不讓一條壞掉的連線永久持有寫鎖」的取捨；
+        回傳值讓呼叫端可以誠實回報丟了多少。
+        """
+        dropped = self._pending_writes
+        try:
+            if self._conn is not None:
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                self._conn.close()
+        except Exception:
+            pass
+        self._conn = None
+        self._pending_writes = 0
+        try:
+            self._get_conn()
+        except Exception:
+            return dropped
+        return dropped
 
     def _init_db(self) -> None:
         conn = self._get_conn()
@@ -900,9 +972,34 @@ class GraphStore:
 
     @_locked
     def flush(self) -> None:
-        """強制 commit 所有 pending writes"""
+        """強制 commit 所有 pending writes
+
+        GOAL-DB-LOCKED-1 (2026-10-23): **commit 失敗必須 rollback**。
+          事故模式: commit 拋 "database is locked" 時，舊實作讓例外直接往外冒，
+          `_pending_writes` 仍 > 0 ⇒ 這條連線的寫交易 **永遠保持開啟** ⇒
+          它永久持有該 agent graph.sqlite 的寫鎖 ⇒ 任何其他連線（含 Goal 掃描
+          自己的 motive/seed 兩條連線）都再也寫不進去 ⇒ 100% 停擺。
+          而 flush_all_live() 的 `except Exception: continue` 會把這個失敗
+          **靜默吞掉** ⇒ 現場沒有任何告警。
+          修法: commit 失敗 → 明確 rollback（釋放寫鎖）→ 把 pending 歸零
+          （那批資料已回滾，保留計數只會讓 flush 迴圈反覆假裝「有 pending」）→
+          重拋例外（讓 flush_all_live 的既有 except 仍能記錄/吞掉，行為不變）。
+        """
         if self._conn and self._pending_writes > 0:
-            self._conn.commit()
+            try:
+                self._conn.commit()
+            except Exception:
+                dropped = self._pending_writes
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                self._pending_writes = 0
+                logger.warning(
+                    f"[GraphStore] flush commit 失敗已回滾（釋放寫鎖）: "
+                    f"db={self.db_path} dropped_pending={dropped}"
+                )
+                raise
             self._pending_writes = 0
 
     @classmethod

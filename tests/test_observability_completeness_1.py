@@ -849,6 +849,16 @@ class TestBoundedAndFrozenDiscipline:
             # and has no LLM path at all (the thinker is a deterministic mock).
             # Work order: logs/CAMPAIGN-B-P2-D1-THINKING-LOOP-SANDBOX-WORK-ORDER.md
             "src/inner_life/tension_thinking.py",
+            # -- GOAL-DB-LOCKED-1 (2026-10-23) -------------------------------
+            # This ticket changes 2 non-frozen files: the SAGE graph store's
+            # connection self-heal (P2) and the v1 memory store's explicit
+            # busy_timeout (P3). It touches **no** frozen contract file --
+            # `src/memory/sage/writer.py` (the Append-Only authority) stays
+            # frozen and untouched, as do the Agency 4 stages / TriggerEnvelope
+            # / InnerLifeEvent / 4 handlers.
+            # Work order: logs/INCIDENT-GOAL-DB-LOCKED-WORK-ORDER.md
+            "src/memory/sage/graph_store.py",
+            "src/memory/store.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",
