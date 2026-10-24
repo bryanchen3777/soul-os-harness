@@ -6167,3 +6167,46 @@ Owner 2026-10-24 對 G-3 裁定「單次呼叫上限 300 Tokens」。主大腦�
 - **不**改 `configs/loader.py`／`src/llm/proxy.py`（本條為**事實澄清與契約釐死**，非實作）。
 - **不**改任何門檻常數、**不**動 `soul-elevation`、**不**碰 frozen 紅線 11 檔。
 - **不**產生真實 LLM 呼叫（0 成本）、**不**寫 `data/**`、不重啟服務、不殺行程。
+
+## 0.1.75 派工前的引用審計 ＋ 工單收緊 ＋ 明晨自動派工票（2026-10-24 18:3x EDT）
+
+Owner 核定 G-1＋G-2 工單與 Token 成本邊界修正入庫後，主大腦在**派工前**做了三件準備。
+
+### ① 引用審計（**工單不會在明早第一個循環卡住**）
+
+把兩份新交付物裡的**每個 `file:line` 與符號引用**對回真實原始碼（唯讀，零改動）：
+
+| 項目 | 檢查數 | 不符 | 結果 |
+|---|---|---|---|
+| 行號級引用（檔案＋行號＋該行必須含的子字串） | **30** | **0** | ✅ 全部逐字命中 |
+| 符號級引用（檔案內必須存在的字串） | **15** | **0** | ✅ 全部存在 |
+
+涵蓋 repo 內（`elevation_adapter.py:869/1285/650/732/1301/1360/1318/1319/1355`、
+`src/llm/proxy.py:2095/2314`、`configs/loader.py:199`、`scripts/run_server.py:663/685`）
+與外部套件 `soul-elevation`（`engine.py:641/709-711/719/990/1018-1020/1140/1177-1178/1199/1217`、
+`llm.py:60/66/71`）。
+
+### ② 工單收緊（**消除 worker 的兩個剩餘決策**）
+
+| # | 收緊內容 | 理由 |
+|---|---|---|
+| S1 | **I7 的 AST 禁令加入 `soul_elevation`**（含 `soul_elevation.engine`），並新增 **變異 M10** | `engine.revise()` 是**對注入物件的 duck-typed 方法呼叫** ⇒ **本來就不需要 import 引擎**；而既有 S3 守衛（`ENGINE_WRITE_CALLS = {record_contradiction, supersede}` ＋ 禁 import `soul_elevation.engine`）代表 repo 對「引擎寫路徑」的嚴格度 ⇒ 本模組沿用同款嚴格度且更嚴（連型別都不引入）。🔺 `revise` **不在** `ENGINE_WRITE_CALLS` 名單內 ⇒ 呼叫 `revise()` **不違反任何既有守衛**；本條只是把邊界寫死，避免 worker 誤以為被擋而繞路 |
+| S2 | **I9 的假引擎指明沿用既有樣式**：`tests/test_c31_relational_expression.py:441` 的 `class _FakeEngine:`（`SimpleNamespace` ＋ 明確方法） | 工單原本只寫「確定性假引擎」⇒ 屬**未定義的自由度**；repo 已有同款樣式 ⇒ 指給 worker，**不必重造輪子** |
+
+⇒ 變異數由 M1～M9 擴為 **M1～M10**（工單三處引用同步更新，已複驗殘留 0 處）。
+
+### ③ 明晨**自動**派工票（不依賴主大腦 session 存活）
+
+| 票 | cron_id | 觸發 | 內容 |
+|---|---|---|---|
+| `battle2_g1_g2_dispatch_2026-10-25_0830` | `187c37ae-eaef-41ac-9832-f59158a254a0` | **2026-10-25 08:30 EDT** | **條件式**派工：① 重啟窗口報告 `restart_window_report.json` 的 `result == "OK"` ② 圖譜達新穩定態（**overlay 視圖**算 lifecycle_state 分佈；`superseded` 應仍為 0；弱化需**逐筆可歸因**）③ 服務健康（重啟後 ERROR/CRITICAL/locked/Traceback 皆 0、`/health` 200）④ 主幹含 `b7d6ef5` 與 `8531339` 且工作樹全空 ⇒ **四道全過才派 worker**；任一不過 ⇒ **不派工**，只回報實際數字 |
+
+- 🔺 圖譜狀態**由本票自己算**（`load_elevation_nodes` → `apply_lifecycle_overlay`）⇒
+  **不依賴任何其他票的產物**（與重啟窗口同一設計原則）。
+- 🔺 與既有晨槽票（08:20 EDT）**不衝突**：晨槽票做例行巡檢，本票 10 分鐘後做**條件式派工判斷**。
+
+### 本條目**不**做的事
+
+- **不**改任何 `src/**`／`tests/**`（本輪只有工單與 canonical 的文件性改動）。
+- **不**重啟服務、不殺行程、不寫生產 `data/**`、0 真實 LLM 呼叫、0 外部 API。
+- **不**提前派工（派工只在明晨前提全過時由排程票執行）。
