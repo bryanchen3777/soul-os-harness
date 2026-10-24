@@ -48,8 +48,10 @@ Phase 4（新增；工單：logs/CAMPAIGN-B-P4-ASYNC-THINKING-LOOP-WORK-ORDER.md
 - **稽核錨點語意變更**（工單 §2.3）：``think_prompt_sha256`` 從「Phase 2 提示詞的
   sha256」改為「**本次思考實際送出的** prompt 的 sha256」⇒ **由送出者回報**
   （``ThinkOutcome.think_prompt_sha256``），**接收者不得自行重算**。
-- **唯讀上下文接口**：:func:`format_working_state_lines`（**本票不接線**；接線是
-  Phase 5 的事 ⇒ 不得接進 ``proxy.py`` 或任何 prompt 組裝路徑）。
+- **唯讀上下文接口**：:func:`format_working_state_lines`（**沙盒專用**；過
+  :func:`check_store_dir` 的守門）＋ :func:`format_working_state_lines_production`
+  （**Phase 5-① 新增**：**路徑不可注入**的生產唯讀介面，供 ``proxy.py`` 接線）。
+  兩者共用同一份格式化核心 :func:`_read_working_state_lines`。
 
 working state 欄位（固定）
 --------------------------
@@ -756,7 +758,7 @@ def _bond_payload(agent_id: str) -> Dict[str, Any]:
     }
 
 
-# ── 唯讀上下文接口（Phase 4；**不接線**）────────────────────────────────
+# ── 唯讀上下文接口（Phase 4 沙盒 ＋ Phase 5-① 生產唯讀）─────────────────
 def _date_label(raw_ts: Any) -> str:
     """working state 記錄的日期標籤（``YYYY-MM-DD``）。
 
@@ -788,47 +790,20 @@ def _safe_float(value: Any) -> float:
         return 0.0
 
 
-def format_working_state_lines(
+def _read_working_state_lines(
     agent_id: str,
     store_dir: Any,
     *,
     max_entries: int = 5,
     max_chars: int = 60,
 ) -> List[str]:
-    """把 working_state 的最新狀態轉成**唯讀**的內在生活風格行。
+    """共享唯讀核心（**不做路徑守門**；守門由兩個公開介面各自負責）。
 
-    格式**對齊**既有 Inner Life 區塊（``src/llm/proxy.py`` 的
-    ``_format_recent_inner_life()``）：``- [<日期> <標籤>] <摘要 截斷至 60 字>``。
+    本體自 ``format_working_state_lines()`` 原樣搬移，**逐字元不得改動**。
 
-    🔴 **唯讀**：只讀 ``store_dir`` 下的 ``working_state.jsonl``；**不得**寫、
-    **不得** append、**不得** checkpoint（守衛 P5-T11 以位元組對帳釘死）。
-
-    🔴 **不接線**：本函式**只是確定性接口**，供 Phase 5 注入角色的 Inner Life；
-    **本票不得**把它接進 ``proxy.py`` 或任何 prompt 組裝路徑。
-
-    行為（工單 §2.4，逐條）：
-
-    1. ``store_dir`` 必須先過 :func:`check_store_dir` 的既有雙條件；不合格 ⇒
-       **回空 list**（**不得** raise、**不得**寫入生產）。
-    2. 檔案不存在／無有效記錄 ⇒ **回空 list**（fail-silent，絕不 raise）。
-    3. 取**最後一筆有效記錄**（壞行跳過、不 raise）；該筆 ``decided is True``
-       （已想完 ⇒ 無未解張力）⇒ **回空 list**。
-    4. 否則回**一條**：
-       ``"- [{YYYY-MM-DD} 張力未解] 還有 {remaining_gap_count} 個未解的問題（已想過 {partial_resolution:.0%}）"``
-       （日期取該筆 ``ts``；``remaining_gap_count``／``partial_resolution`` 缺值時
-       以 ``0``／``0.0`` 代入）。
-    5. 整行**截斷至** ``max_chars``（60）⇒ 切到 ``max_chars - 3`` 再加 ``...``
-       （與 ``proxy.py`` 既有截斷語意同款）。
-    6. ``max_entries`` ＝ 上限（預設 5）；目前只輸出 1 條，但**介面必須支援上限語意**。
-
-    🔴 **不得**呼叫 LLM、**不得**連網。
+    🔺 搬移規則（工單 §2.2.1）：縮排維持 4 空白、行內容逐位元不變 ⇒ Phase 4 的
+    變異錨點 M11／M12／M13 仍能逐位元命中。
     """
-    # ① 隔離守門（與閉環同一套雙條件）；不合格 ⇒ 空 list（不 raise）。
-    allowed, reason = check_store_dir(store_dir)
-    if not allowed:
-        logger.debug("[tension-closure-loop] 唯讀介面拒絕：%s", reason)
-        return []
-
     path = Path(store_dir) / WORKING_STATE_FILENAME
     if not path.is_file():
         return []
@@ -879,6 +854,82 @@ def format_working_state_lines(
     return [line][: max(0, int(max_entries))]
 
 
+def format_working_state_lines(
+    agent_id: str,
+    store_dir: Any,
+    *,
+    max_entries: int = 5,
+    max_chars: int = 60,
+) -> List[str]:
+    """（Phase 4 契約，**語意完全不變**）沙盒 store_dir 的唯讀上下文行。
+
+    把 working_state 的最新狀態轉成**唯讀**的內在生活風格行。
+
+    格式**對齊**既有 Inner Life 區塊（``src/llm/proxy.py`` 的
+    ``_format_recent_inner_life()``）：``- [<日期> <標籤>] <摘要 截斷至 60 字>``。
+
+    🔴 **唯讀**：只讀 ``store_dir`` 下的 ``working_state.jsonl``；**不得**寫、
+    **不得** append、**不得** checkpoint（守衛 P5-T11 以位元組對帳釘死）。
+
+    🔴 **不接線**：本函式**只是確定性接口**（**沙盒專用**）；Phase 5-① 的 prompt
+    組裝走的是 :func:`format_working_state_lines_production`，**不是**本函式 ⇒
+    本函式**不得**接進 ``proxy.py`` 或任何 prompt 組裝路徑。
+
+    行為（工單 §2.4，逐條）：
+
+    1. ``store_dir`` 必須先過 :func:`check_store_dir` 的既有雙條件；不合格 ⇒
+       **回空 list**（**不得** raise、**不得**寫入生產）。
+    2. 檔案不存在／無有效記錄 ⇒ **回空 list**（fail-silent，絕不 raise）。
+    3. 取**最後一筆有效記錄**（壞行跳過、不 raise）；該筆 ``decided is True``
+       （已想完 ⇒ 無未解張力）⇒ **回空 list**。
+    4. 否則回**一條**：
+       ``"- [{YYYY-MM-DD} 張力未解] 還有 {remaining_gap_count} 個未解的問題（已想過 {partial_resolution:.0%}）"``
+       （日期取該筆 ``ts``；``remaining_gap_count``／``partial_resolution`` 缺值時
+       以 ``0``／``0.0`` 代入）。
+    5. 整行**截斷至** ``max_chars``（60）⇒ 切到 ``max_chars - 3`` 再加 ``...``
+       （與 ``proxy.py`` 既有截斷語意同款）。
+    6. ``max_entries`` ＝ 上限（預設 5）；目前只輸出 1 條，但**介面必須支援上限語意**。
+
+    🔴 **不得**呼叫 LLM、**不得**連網。
+    """
+    # ① 隔離守門（與閉環同一套雙條件）；不合格 ⇒ 空 list（不 raise）。
+    allowed, reason = check_store_dir(store_dir)
+    if not allowed:
+        logger.debug("[tension-closure-loop] 唯讀介面拒絕：%s", reason)
+        return []
+    return _read_working_state_lines(
+        agent_id, store_dir, max_entries=max_entries, max_chars=max_chars
+    )
+
+
+def format_working_state_lines_production(
+    agent_id: str,
+    *,
+    max_entries: int = 5,
+    max_chars: int = 60,
+) -> List[str]:
+    """（Phase 5 新增）生產 working_state 的唯讀上下文行。
+
+    🔴 **路徑不可注入**：``store_dir`` **不在簽章裡**，由本函式內部從
+    ``src.paths.data_root()`` 推導 ⇒ 呼叫端無法指定任何路徑。
+    🔴 **唯讀**：只讀 ``<data_root>/inner_life/working_state.jsonl``；
+    **不得**寫、**不得** append、**不得** checkpoint（守衛 P6-T14 以位元組對帳釘死）。
+    🔴 **fail-silent**：解析失敗／檔案不存在／壞行 ⇒ 回空 list，**不得** raise。
+    """
+    try:
+        from src.paths import data_root
+
+        store_dir = Path(data_root()) / "inner_life"
+    except Exception as exc:  # noqa: BLE001 — fail-silent
+        logger.debug(
+            "[tension-closure-loop] 生產資料根解析失敗：%s: %s", type(exc).__name__, exc
+        )
+        return []
+    return _read_working_state_lines(
+        agent_id, store_dir, max_entries=max_entries, max_chars=max_chars
+    )
+
+
 __all__ = [
     "FEATURE_ENV",
     "FEATURE_OFF_VALUES",
@@ -894,4 +945,5 @@ __all__ = [
     "drive_loop_async",
     "feature_enabled",
     "format_working_state_lines",
+    "format_working_state_lines_production",
 ]

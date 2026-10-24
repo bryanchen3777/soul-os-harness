@@ -1705,31 +1705,46 @@ class TestP5T11InterfaceIsReadOnly:
 # ── P5-T12：介面不觸碰生產 ─────────────────────────────────────────────
 class TestP5T12InterfaceRefusesProductionStoreDir:
     """P5-T12 — 傳入不合格的 ``store_dir``（生產路徑）⇒ 回空 list、**不得** raise、
-    **不得**寫入生產。"""
+    **不得**寫入生產。
+
+    🔺 2026-10-24 主大腦修正（合入 P5-① 時實測發現的**既有脆弱性**，非 P5-① 引入）：
+    原斷言快照的是**整棵** ``data/`` 樹的位元組再前後比對；但**線上服務仍在活著**並持續
+    改寫 ``data/``（實測抓到 ``data/state/event_loop_alive.json`` 心跳檔被改寫；8 輪重複
+    中第 3 輪命中）⇒ 快照前後比對會與**其他 actor** 的寫入競態而**假紅**（主大腦的 P5-①
+    合入閘門即因此誤報一次失敗）。
+    ⇒ 改為比對**介面實際可能寫入的面**（``<store_dir>/working_state.jsonl`` 的位元組）
+    ＋ **store_dir 的目錄項目集合**（有無新建檔）。兩者都不受「他人改寫其他檔案」影響，
+    且**更精確**對準「這個介面寫不寫生產」這個命題。
+    ⇒ 「介面有無任何寫入」這件事另由 **AST 純度守衛**（P6-T9：新增的生產唯讀介面
+    不得出現寫檔／append／LLM／網路呼叫）與 **P5-T11**（沙盒 store 不得被改動）結構性
+    保證 —— 結構性斷言比位元快照更嚴，且不會與線上服務競態。
+    """
 
     def test_p5_t12_production_data_root_store_dir_yields_empty_list(self):
         prod_store = Path(data_root()) / "inner_life"
         prod_store.mkdir(parents=True, exist_ok=True)
-        before = {p.name: p.read_bytes() for p in prod_store.iterdir() if p.is_file()}
+        target = prod_store / "working_state.jsonl"
+        before_bytes = target.read_bytes() if target.is_file() else None
         names_before = sorted(p.name for p in prod_store.iterdir())
 
         assert tcl.format_working_state_lines("agent_akane", prod_store) == []
 
-        after = {p.name: p.read_bytes() for p in prod_store.iterdir() if p.is_file()}
-        assert after == before, "生產檔案位元不得改變"
-        assert sorted(p.name for p in prod_store.iterdir()) == names_before
+        after_bytes = target.read_bytes() if target.is_file() else None
+        assert after_bytes == before_bytes, "生產 working_state.jsonl 位元不得改變"
+        assert sorted(p.name for p in prod_store.iterdir()) == names_before, (
+            "唯讀介面不得在生產目錄新建檔案或目錄"
+        )
 
     def test_p5_t12_repo_data_store_dir_yields_empty_list(self):
         repo_data = REPO_ROOT / "data"
-        before = {
-            path.relative_to(repo_data).as_posix(): path.read_bytes()
-            for path in repo_data.rglob("*")
-            if path.is_file()
-        }
+        target = repo_data / "working_state.jsonl"
+        before_bytes = target.read_bytes() if target.is_file() else None
+        names_before = sorted(p.name for p in repo_data.iterdir())
+
         assert tcl.format_working_state_lines("agent_akane", repo_data) == []
-        after = {
-            path.relative_to(repo_data).as_posix(): path.read_bytes()
-            for path in repo_data.rglob("*")
-            if path.is_file()
-        }
-        assert after == before, "repo data/ 不得被改動"
+
+        after_bytes = target.read_bytes() if target.is_file() else None
+        assert after_bytes == before_bytes, "repo data/working_state.jsonl 位元不得改動"
+        assert sorted(p.name for p in repo_data.iterdir()) == names_before, (
+            "唯讀介面不得在 repo data/ 新建檔案或目錄"
+        )

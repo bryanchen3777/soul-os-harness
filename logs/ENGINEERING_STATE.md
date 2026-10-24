@@ -4638,3 +4638,142 @@ M5／M6 首跑**意外全綠**（守衛失守）。根因：舊 fixture 的合�
 - 定向：`tests/infra/test_wal_governance_guard.py` 8 筆 ＋ `tests/test_observability_completeness_1.py` 37 筆 ⇒ **45 筆全綠**。
 - 變異 harness（主 repo 版）：baseline 綠、**M1～M9 全數轉紅（9/9）**、repo 檔 sha256 執行前後不變、EXIT=0。
 - 全庫回歸：**7289 passed / 24 skipped / 32 subtests passed / failed=0 / errors=0 / pytest returncode=0**（12:46）。🔺 該回歸執行於**更正前**的樹，與最終樹的差異為**純註解／docstring**（AST 結構不變：43 個 def/class 完好；註解非 AST 節點、docstring 僅字串常數；守衛檔於收集期已 import），**零 runtime 行為影響**。
+
+## 0.1.63 CAMPAIGN-B Phase 5（P5-①）張力思考狀態 唯讀上下文接線（**接線面完成；資料面未通**）（2026-10-24 03:2x-04:0x EDT）
+
+**工單**：`logs/CAMPAIGN-B-P5-THINKING-CONTEXT-WIRING-WORK-ORDER.md`（v2）。
+**依賴**：Phase 4（`61957a0`）已合入 main。
+
+### ① 🔺 主大腦對 Phase 4↔Phase 5 互斥的裁示（**契約變更，canonical 留痕**）
+
+Phase 4 的 `format_working_state_lines()` 契約**原封不動**（仍是**沙盒專用**、仍過 `check_store_dir()`）；
+本票**在同一模組額外新增**一個「生產唯讀」介面 `format_working_state_lines_production()`，
+專供 `proxy.py` 的接線使用。**這是契約變更，必須留 canonical 痕跡，不能只存在工單裡。**
+
+- **共享核心**：兩者共用同一份格式化核心 `_read_working_state_lines()`。
+  搬移規則＝自 `path = Path(store_dir) / WORKING_STATE_FILENAME` 起至
+  `return [line][: max(0, int(max_entries))]` 止，**逐位元搬移、縮排維持 4 空白**。
+  ⇒ Phase 4 的變異錨點 **M11／M12／M13 仍逐位元命中**（實測：三者在新檔各命中 **1** 次；
+  `git diff` 顯示共享核心本體是**未改動的 context 行**，非 +/- 行）。
+- **為何不動 Phase 4 契約**：Phase 4 交付物已被主大腦獨立複核並核准（70 筆守衛＋變異 M8～M13 全紅）
+  ⇒ 不重新改寫、不重新驗證已核准的契約；且生產唯讀介面的**唯一呼叫者就是 proxy.py 接線**
+  ⇒ 兩者同票落地，不產生「已出貨但無呼叫者」的懸空 API。
+
+### ② `check_store_dir()` 的三重拒絕語意 ＋ 守門適用範圍的重新界定
+
+`check_store_dir(store_dir)` 對 `store_dir` 有**三重 fail-closed 拒絕**：
+① 解析後位於**生產資料根**（`src.paths.data_root()`）之下；② 位於 **repo `data/`** 之下；
+③ **不在 temp 之下**。⇒ **傳入生產路徑必然回空 list。**
+
+**守門適用範圍隨「呼叫語意」重新界定**（這是本票的設計關鍵）：
+
+| 介面 | 呼叫語意 | 守門 | 結果 |
+|---|---|---|---|
+| `format_working_state_lines(agent_id, store_dir)` | **沙盒**（Phase 4 契約） | 過 `check_store_dir()` | 對生產路徑回 `[]`（**守門未放寬**） |
+| `format_working_state_lines_production(agent_id)` | **生產唯讀**（Phase 5-① 新增） | **不做路徑守門**；路徑**不可注入**，由函式內部從 `src.paths.data_root()` 推導 | 呼叫端無法指定任何路徑 ⇒ 守門無從繞過 |
+
+理由：守門存在的目的是「**沙盒寫入不得觸碰生產**」。唯讀的生產介面**不寫任何東西**
+（守衛 P6-T14 以位元組對帳釘死），且**路徑不可注入**（守衛 P6-T15 以 `inspect.signature` 釘死）
+⇒ 不存在「指定別的路徑」這個攻擊面。**`check_store_dir()` 一行未改**（守衛 M22 證明移除即轉紅）。
+
+### ③ 🔴 本票**未接資料面**（`data/inner_life/working_state.jsonl` 仍不存在）
+
+實測（2026-10-24）：生產 `data/inner_life/` 只有 `epistemic_tensions.jsonl`（1,245 bytes）與
+`trace.jsonl`；**`working_state.jsonl` 不存在**。本票**不接** `drive_loop_async()`、**不接**排程器、
+**不產生** working_state（那是 P5-② 的事）⇒ **「角色已能感知思考狀態」尚不成立**。
+本票成立的只有「**接線面**正確，且無資料時 prompt 逐位元不變」。
+
+**P5-② 待裁示項**：真實 LLM 預算（**須 Owner 核准**）；working_state 的產生者與排程掛點；
+以及本票新增的生產唯讀介面何時隨服務重啟而生效。
+
+### ④ 守衛 15 筆 ＋ 變異 M14～M22
+
+- **守衛**：`tests/inner_life/test_p5_working_state_context.py`（**新增**，699 行／**恰 15 筆**
+  P6-T1～P6-T15，每項一函式）⇒ 新守衛 **15/15 全綠**。
+  既有 `tests/inner_life/test_tension_closure_loop.py` **70 筆**仍全綠（見下方回歸口徑說明）。
+- **變異**：**M14～M22 共 9 條全數轉紅**（0 ABORT、0 意外全綠）；harness 採**改副本**模式
+  （repo／worktree 檔全程不寫入），收尾印出 3 個 worktree 檔的 sha256 與初始值**逐位元相同**。
+- **P6-T11 的實作限制已遵守**：**未**用 `subprocess` 跑另一個 pytest（`tests/**` 禁用
+  `subprocess`／`os.spawn*`／`os.system`／`os.popen`；R5 護欄白名單大小鎖死 22，本票未擴張）。
+  「70 筆實際全綠」由**驗收層級**的合併執行證成，不是新檔內的一個測試。
+
+### ⑤ 成本與副作用
+
+**真實 LLM 呼叫 0 次、0 外部 API、0 網路、0 生產寫入、0 kill、0 重啟、0 部署。**
+0 啟動伺服器、0 綁 `:8000`／`:8765-8767`、0 對生產發真實請求。
+
+### 實作範圍（4 檔）
+
+| 檔 | 動什麼 |
+|---|---|
+| `src/inner_life/tension_closure_loop.py` | 抽出共享核心 `_read_working_state_lines()`（逐位元搬移）＋ 新增 `format_working_state_lines_production()`（路徑不可注入）＋ `__all__` |
+| `src/llm/proxy.py` | 新增 `_format_working_state_block()` helper（雙重失敗隔離、有界 ≤3 行／每行 ≤60／總 ≤200、0 洩漏）＋ group／private **兩條**路徑於 `[最近內在生活]` 之後、`world_context` 之前注入 |
+| `tests/inner_life/test_p5_working_state_context.py` | **新增**守衛 15 筆 |
+| `logs/ENGINEERING_STATE.md` | **追加**本條目（canonical 不覆寫） |
+
+### 驗收實測（以最終樹量測）
+
+- **生產等價（byte-identity）**：以生產現況（無 working_state 檔）組 prompt，與**未實作**版本
+  逐位元相同 ——
+  group `sha256=e13c004fd2a4b3acb919572c7e3d2fec68c79bcf18c2490d476e2cd8dd3a382d`（**1,663 bytes**／4 msgs）；
+  private `sha256=35e14ad57374242ef33ff5226537f6ed25ac8416872ce6fdcf86b1042621e0cf`（**1,174 bytes**／2 msgs）。
+  （golden 由 `%TEMP%\p5_harness\gen_golden.py` 在**改動 `proxy.py` 之前**量得；連跑 3 次、
+  每次不同 tmp 資料根結果一致 ⇒ 與 wall-clock 無關。）
+- **沙盒守門未放寬**：`check_store_dir(<生產 inner_life 路徑>)` ⇒ `allowed=False`,
+  `reason='store_dir 位於生產資料根之下'`；`format_working_state_lines('agent_test', <生產路徑>)` ⇒ **`[]`**（len=0）。
+- **Phase 4 錨點仍命中**：M11／M12／M13 的錨點在搬移後的新檔中**各命中 1 次**（逐位元比對）。
+- **定向執行**：新守衛 **15/15 全綠**（單獨執行 `15 passed in 1.75s`，pytest returncode=**0**）；
+  與既有 70 筆合併執行 ⇒ **85 筆 collected**（83 passed ＋ 2 筆**環境性**失敗，見下）。
+
+### 全庫回歸（worktree；**前後差分**口徑）
+
+解譯器＝**repo 的 `.venv`**：`C:\Users\bbfcc\.local\bin\soul-os-harness\.venv\Scripts\python.exe`（Python 3.11）。
+
+| 樹 | failed | passed | skipped | errors | subtests | 耗時 | pytest returncode |
+|---|---|---|---|---|---|---|---|
+| **改動前**（乾淨 worktree，HEAD `1aca261`） | 33 | 7,226 | 44 | 10 | 32 passed | 745.24s (0:12:25) | 1 |
+| **改動後**（本票最終樹） | 33 | **7,241** | 44 | 10 | 32 passed | 721.31s (0:12:01) | 1 |
+
+⇒ **passed ＋15 ＝ 本票新增的 15 筆守衛**；**失敗集合逐筆完全相同**
+（43 筆 failed+errors，新增 **0**、消失 **0**；已用 `set` 差分逐筆核對）。
+
+### 🔺 回歸口徑說明（worktree 環境限制，非本票缺陷）
+
+🔺 **worktree 內跑全庫必定出現 33 failed ＋ 10 errors 的環境性失敗**，原因是
+**worktree 沒有生產 `data/**`**（`data/` 被 gitignore，worktree 內僅 4 個檔），
+且 **worktree 本身位於 `%TEMP%` 之下** ⇒ `check_store_dir()` 的「非 temp 之下」條件對
+worktree 旁的路徑不成立。⇒ 這 2 類失敗在**改動前**的乾淨 worktree 上**完全相同**
+（失敗集合逐筆相同），**新增失敗 0**。
+
+🔺 工單 §5 寫的「全庫預期 7296 passed」**已過期**：worktree HEAD `1aca261` 已含
+FEAT-SQLITE-WAL-GOVERNANCE（§0.1.62 記錄 7289 passed），故本票的期望值應為 **7289 ＋ 15 ＝ 7304**；
+而 §0.1.62 記錄的 7289 是**主 repo**（有生產 `data/`）的數字，與 worktree 口徑不可直接相減。
+
+🔺 下列 2 筆最容易被誤判為本票缺陷者，已單獨在**主 repo**（未改動、有生產 `data/`、
+repo 不在 temp 之下）實測**全綠（2 passed / rc=0）**，證實其失敗純屬 worktree 環境：
+- `TestP2T12SandboxIsolation::test_p2_t12_production_files_are_byte_identical_after_the_loop`
+  （worktree 內無生產 `data/` ⇒ 對帳基準為空 ⇒ 守衛自陳「假紅」）
+- `TestT10RejectsProductionStoreDir::test_t10_store_dir_outside_temp_is_rejected`
+  （worktree 位於 `%TEMP%` 之下 ⇒ `REPO_ROOT/not_a_sandbox` 被誤判為 temp 之下）
+
+🔺 repo hygiene 守衛 `tests/infra/test_repo_hygiene_tracked_tests.py` 在 worktree 內為
+**3 筆失敗**（非工單預期的 1 筆）：`.git` 在 worktree 是**檔案**而非目錄
+⇒ `REPO_ROOT/.git/index` 不存在 ⇒ 該守衛的 git index 讀取器直接 `FileNotFoundError`。
+**改動前／改動後同樣 3 筆**；在主 repo 實測 **8 passed / rc=0**。
+🔺 另：本票新增的 collectable 測試檔在 worktree 內**未被 git 追蹤**（worker 不得 `git add`），
+主大腦合入時需 `git add tests/inner_life/test_p5_working_state_context.py`。
+
+### 未做（明文排除）
+
+未接 `drive_loop_async()`；未接排程器；未產生 working_state（P5-② 另票，須 Owner 核准真實 LLM 預算）；
+未改 `src/inner_life/tension_thinking.py`；未改 `check_store_dir()`；未放寬 `format_working_state_lines()`
+的沙盒守門；未動 11 個 frozen contract 檔（守衛 P6-T10 以 sha256 釘死）；未部署、未重啟、
+未 commit／push／**git add**（🔺 新增的 collectable 測試檔在 worktree 內**未被 git 追蹤**，
+主大腦合入時需 `git add tests/inner_life/test_p5_working_state_context.py`，否則 repo hygiene
+守衛會紅）。
+
+**🔺 主大腦於合入閘門中發現並修正的三處守衛缺陷（2026-10-24 04:00～04:15 EDT）**
+1. **P6-T10 釘死的工作副本 sha256 不穩**：`src/agency/stages.py`／`trigger_handler.py` 在**主 repo 工作副本是 LF、在 worktree 是 CRLF**（repo 內行尾本身是混的）⇒ 以原始位元組釘死 sha 會在換 checkout 時**假紅**。⇒ 改為以**換行正規化後的文字**為基準（`read_text()` 的 universal newlines），11 筆期望值重算；**牙齒已驗證**：單字元變動必轉紅、LF vs CRLF 雜湊相同。
+2. **P6-T11 同理**：Phase 4 守衛檔的釘死 sha 改為正規化雜湊；且釘死值更新為**本票修正後**的內容（見第 3 點）。
+3. **既有守衛 `P5-T12` 的競態假紅（Phase 4 遺留，非本票引入）**：原斷言快照**整棵** `data/` 樹的位元組再前後比對，但**線上服務仍在活著**並持續改寫 `data/`（實測 8 輪重複中第 3 輪抓到 `data/state/event_loop_alive.json` 心跳檔被改寫）⇒ 與**其他 actor** 的寫入競態而假紅（主大腦的 P5-① 合入閘門即因此誤報一次失敗）。⇒ 改為比對**介面實際可能寫入的面**（`<store_dir>/working_state.jsonl` 的位元組）＋ **store_dir 的目錄項目集合**（有無新建檔／目錄）—— 兩者都不受「他人改寫其他檔案」影響，且**更精確**對準「這個介面寫不寫生產」；「介面有無任何寫入」另由 **AST 純度守衛 P6-T9** 與 **P5-T11**（沙盒 store 不得被改動）結構性保證。**牙齒已驗證**：內容被寫／新建檔／新建目錄三種情況全部會轉紅，無寫入時通過。
+4. 修正後連跑 4 輪「85 筆合併」全綠（原本會間歇假紅）⇒ 競態已消除。

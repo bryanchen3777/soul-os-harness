@@ -968,6 +968,13 @@ def _build_messages_group(
             f"## 你的最近內在生活\n{inner_life}\n"
         )
 
+    # CAMPAIGN-B Phase 5（P5-①）張力思考狀態（唯讀）——「你尚未想通的事」。
+    # 注入位置: inner_life 之後, world_context 之前（工單 §2.4）。
+    # fail-silent: 任何例外 → 空字串 ⇒ prompt 逐位元不變（生產目前無 working_state）。
+    working_state = _format_working_state_block(agent_id)
+    if working_state:
+        system_parts.append(working_state)
+
     # M3 Phase 1 (Bry 拍板 2026-08-07 19:40): 世界感知注入
     # 注入位置: inner_life 之後, 當下時間 (含 chrono-social) 之前
     # 派工精神: 「Inner Life → World Context → Chrono-Social」
@@ -1369,6 +1376,38 @@ def _format_piggyback_block(agent_id: str, utterance: str) -> str:
         return format_piggyback_block(agent_id, utterance)
     except Exception:  # noqa: BLE001 — 雙重失敗隔離: 話頭缺失不影響 prompt
         return ""
+
+
+def _format_working_state_block(agent_id: str) -> str:
+    """P5-① 張力思考狀態（唯讀）。雙重失敗隔離：任何例外 → ""（prompt 逐位元不變）。"""
+    try:
+        from src.inner_life.tension_closure_loop import (
+            format_working_state_lines_production,
+        )
+
+        lines = format_working_state_lines_production(agent_id)
+    except Exception:  # noqa: BLE001 — 雙重失敗隔離：思考狀態缺失不影響 prompt
+        return ""
+    if not lines:
+        return ""
+
+    # 有界：最多 3 行、每行 ≤60 字元、總字元 ≤200（超長截斷並加省略號）。
+    header = "\n[思考狀態] 以下是你最近尚未想通的事。\n"
+    footer = "\n"
+    budget = 200 - len(header) - len(footer)
+    bounded: List[str] = []
+    for raw in list(lines)[:3]:
+        line = str(raw)
+        if len(line) > 60:
+            line = line[: 60 - 3] + "..."
+        if line:
+            bounded.append(line)
+    if not bounded:
+        return ""
+    body = "\n".join(bounded)
+    if len(body) > budget:
+        body = body[: max(0, budget - 3)] + "..."
+    return header + body + footer
 
 
 # ── SIM-EPIS-PIGGYBACK-1 ①: 背景行動接線（閒置時觸發、不得阻塞）────────────
@@ -1792,6 +1831,13 @@ def _build_messages_private(
             f"不要逐條複述或解釋, 也不要重複 tag。\n"
             f"## 你的最近內在生活\n{inner_life}\n"
         )
+
+    # CAMPAIGN-B Phase 5（P5-①）張力思考狀態（唯讀）——「你尚未想通的事」。
+    # 注入位置: inner_life 之後, world_context 之前（工單 §2.4；與 group 路徑對齊）。
+    # fail-silent: 任何例外 → 空字串 ⇒ prompt 逐位元不變（生產目前無 working_state）。
+    working_state = _format_working_state_block(agent_id)
+    if working_state:
+        system_parts.append(working_state)
 
     # M7-continuity (Bry 拍板 2026-08-18): 角色近期發言注入。
     # 對稱 _load_bry_recent 的「Bry 最近訊息」, 這裡注入「角色自己最近講過的話」,
