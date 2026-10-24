@@ -42,6 +42,7 @@ from aiohttp import WSMsgType, web
 try:  # pragma: no cover - 導入路徑相容
     from .akane_voice_brain import VC_ASR_SOURCE, AkaneVoiceBrain
     from .asr_refiner import AsrRefiner, local_refine, needs_refiner
+    from .drama3_markup import strip_drama3_markup
     from .env_config import resolve_config
     from .fish_tts_live import DEFAULT_LIVE_ENDPOINT, FishTTSLiveStreamer
     from .stt_service import FishASRService, pcm16_to_wav_bytes
@@ -50,6 +51,7 @@ try:  # pragma: no cover - 導入路徑相容
 except ImportError:  # pragma: no cover
     from akane_voice_brain import VC_ASR_SOURCE, AkaneVoiceBrain
     from asr_refiner import AsrRefiner, local_refine, needs_refiner
+    from drama3_markup import strip_drama3_markup
     from env_config import resolve_config
     from fish_tts_live import DEFAULT_LIVE_ENDPOINT, FishTTSLiveStreamer
     from stt_service import FishASRService, pcm16_to_wav_bytes
@@ -903,6 +905,9 @@ class WebSession:
                     )
                     return
                 reply = (reply or "").strip()
+                # drama-3 表演標記（Owner 2026-10-24）：TTS 用帶標記的原文（引擎演出），
+                # 顯示／記憶用乾淨版（前端不該看到 [方向指示]，記憶也不該累積標記）。
+                reply_display = strip_drama3_markup(reply)
                 if not reply:
                     # VC-NOREPLY-1：LLM 回傳空值而無法產生回覆 → 失敗可見化（不得靜默）
                     # （此分支已通過 drain 前後的世代守衛，task_gen == self._generation）
@@ -920,7 +925,7 @@ class WebSession:
                 if reply:
                     companion_id = (self._config.get("companion") or {}).get("id", "agent_akane")
                     role_name = companion_id.replace("agent_", "")
-                    await self._send_json({"type": "transcript", "role": role_name, "text": reply})
+                    await self._send_json({"type": "transcript", "role": role_name, "text": reply_display})
                     # VC-AVATAR-04：回合結尾殘留動作兜底檢查
                     final_actions = getattr(self._brain, "last_extracted_actions", [])
                     for act in final_actions:
@@ -944,7 +949,7 @@ class WebSession:
                         log.warning("[AVATAR] emotion dispatch failed: %s", e)
                     if task_gen == self._generation:  # 本世代正常結束 → 寫入對話記憶（被 barge-in 打斷的半截回覆不入記憶）
                         self._history.append({"role": "user", "content": user_text})
-                        self._history.append({"role": "assistant", "content": reply})
+                        self._history.append({"role": "assistant", "content": reply_display})
                         cap = self.MAX_HISTORY_TURNS * 2
                         if len(self._history) > cap:
                             self._history = self._history[-cap:]
@@ -954,13 +959,13 @@ class WebSession:
                         if _ss is not None:
                             try:
                                 _ss.append_turn(companion_id, "user_bryan", "user", user_text, "voice")
-                                _ss.append_turn(companion_id, "user_bryan", "assistant", reply, "voice")
+                                _ss.append_turn(companion_id, "user_bryan", "assistant", reply_display, "voice")
                             except Exception:
                                 pass
                         # VC-UNIFY-1：語音回合結束 → SAGE 記憶背景入庫（fire-and-forget，
                         # 不 await、0 阻塞音訊串流；task 內部 fail-silent，不中斷語音服務）。
                         try:
-                            self._brain.schedule_sage_commit(user_text, reply)
+                            self._brain.schedule_sage_commit(user_text, reply_display)
                         except Exception:
                             pass
                 t_done = time.perf_counter()

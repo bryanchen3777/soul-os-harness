@@ -311,15 +311,15 @@ class TestPoolAdapter:
 
 class TestPersonaBudget:
     def test_constant_value_is_owner_specified(self):
-        assert MAX_PERSONA_CHARS == 2500, "MAX_PERSONA_CHARS 必須為 Owner 指定值 2500"
+        assert MAX_PERSONA_CHARS == 4000, "MAX_PERSONA_CHARS 必須為 Owner 指定值 4000（2026-10-24 裁定）"
 
     def test_longer_than_budget_truncated_exactly(self, tmp_path):
-        """> 2500 ⇒ 恰好截到 2500（以字元為單位）。
+        """> 4000 ⇒ 恰好截到 4000（以字元為單位）。
 
         輸入長度與期望值皆為**硬編碼字面值**（不引用受測常數）：
         常數被改回 6000 時本測試必須紅（VC-PERF-OPT-1 變異驗證 (b) 的判紅點）。
         """
-        body = "".join("角" if i % 2 else "色" for i in range(3000))
+        body = "".join("角" if i % 2 else "色" for i in range(5000))
         p = tmp_path / "persona_long.md"
         p.write_text(body, encoding="utf-8")
 
@@ -327,26 +327,26 @@ class TestPersonaBudget:
         prefix = avb.AKANE_VOICE_INVARIANTS + "\n\n"
         assert prompt.startswith(prefix)
         excerpt = prompt[len(prefix):]
-        assert len(excerpt) == 2500, f"必須恰好截到 2500，實得 {len(excerpt)}"
-        assert excerpt == body[:2500]
-        assert len(prompt) == len(prefix) + 2500
+        assert len(excerpt) == 4000, f"必須恰好截到 4000，實得 {len(excerpt)}"
+        assert excerpt == body[:4000]
+        assert len(prompt) == len(prefix) + 4000
         # 非 ASCII 不得產生非法 Unicode（可正常 round-trip 編碼回 UTF-8）
         assert prompt.encode("utf-8").decode("utf-8") == prompt
 
     def test_real_persona_file_is_budgeted(self):
-        """實際出貨 persona（agent_mai.md，8094 字元）確實被 2500 預算截斷。"""
+        """實際出貨 persona（agent_mai.md，8094 字元）確實被 4000 預算截斷。"""
         path = REPO_ROOT / "personas" / "agent_mai.md"
         if not path.is_file():  # pragma: no cover - 檔案缺失時不誤判
             pytest.skip("personas/agent_mai.md 不存在")
         raw = path.read_text(encoding="utf-8")
-        assert len(raw) > 2500, "前提：實檔長度必須大於預算"
+        assert len(raw) > 4000, "前提：實檔長度必須大於預算"
         excerpt = build_system_prompt(str(path))[len(avb.AKANE_VOICE_INVARIANTS) + 2:]
-        assert len(excerpt) == 2500
-        assert excerpt == raw[:2500]
+        assert len(excerpt) == 4000
+        assert excerpt == raw[:4000]
 
     def test_shorter_or_exact_budget_untouched(self, tmp_path):
-        """<= 2500 ⇒ 原樣（邊界值 2500 亦不得被切）。"""
-        for size in (2499, 2500):
+        """<= 4000 ⇒ 原樣（邊界值 4000 亦不得被切）。"""
+        for size in (3999, 4000):
             body = "あ" * size
             p = tmp_path / f"persona_{size}.md"
             p.write_text(body, encoding="utf-8")
@@ -383,7 +383,7 @@ class TestPersonaBudget:
             for t in node.targets if isinstance(t, ast.Name)
             if isinstance(getattr(node, "value", None), ast.Constant)
         }
-        assert constants["MAX_PERSONA_CHARS"] == 2500
+        assert constants["MAX_PERSONA_CHARS"] == 4000
 
     def test_akane_invariants_not_compensated(self):
         """不得為補償而改動 AKANE_VOICE_INVARIANTS（Owner 已知並核准人設變薄）。"""

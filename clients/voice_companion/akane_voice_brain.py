@@ -28,9 +28,29 @@ from typing import Callable, Iterable, Iterator, List, Optional
 try:
     from .agent_roster import display_names
     from .session_store import SessionStore
+    from .drama3_markup import (
+        MAX_DIRECTIONS_PER_REPLY,
+        is_allowed_tag,
+        is_valid_direction,
+        markup_spans,
+        protect_drama3_markup,
+        restore_drama3_markup,
+        strip_drama3_markup,
+        supports_drama3_markup,
+    )
 except ImportError:  # 直接以檔案執行（非套件）時
     from agent_roster import display_names
     from session_store import SessionStore
+    from drama3_markup import (
+        MAX_DIRECTIONS_PER_REPLY,
+        is_allowed_tag,
+        is_valid_direction,
+        markup_spans,
+        protect_drama3_markup,
+        restore_drama3_markup,
+        strip_drama3_markup,
+        supports_drama3_markup,
+    )
 
 logger = logging.getLogger("soul_os.vc_brain")
 
@@ -47,9 +67,10 @@ VC_LLM_TIMEOUT = (5, 60)
 VC_HTTP_POOL_CONNECTIONS = 4
 VC_HTTP_POOL_MAXSIZE = 8
 
-# Persona 預算（字元）：原為硬編碼 6000，收緊以壓縮每回合 system prompt 長度。
-# 壓縮角色人設厚度是 Owner 已知並核准的取捨（不得改動此數值補償）。
-MAX_PERSONA_CHARS = 2500
+# Persona 預算（字元）：原為硬編碼 6000，VC-PERF-OPT-1 收緊至 2500；
+# 2026-10-24 Owner 裁示提到 4000（理由：前 2500 字元是身世史／記憶映射準則／原作錨點，
+# 不是「怎麼說話」的部分； drama-3 能演出情緒後，角色厚度對表現力的影響變大）。
+MAX_PERSONA_CHARS = 4000
 
 # 空內容守門日誌標記（唯一可 grep）
 VC_LLM_EMPTY_MARKER = "[VC-LLM-EMPTY]"
@@ -108,6 +129,21 @@ AKANE_VOICE_INVARIANTS = """【語音輸出守門（Voice Output Invariants，�
 5. 語音對話格式：句子要短、自然、適合即時朗讀；一次只說一兩句。
 6. 沉默比話更清楚：寧可話少，不要長篇。
 7. 嚴禁替 Bryan 回答問題或替他做決定；你是陪伴者，不是代答者。"""
+
+# drama-3 表演標記規則（Owner 2026-10-24 裁示開放；僅在模型支援時附加）
+# 本段**優先於**上方第 1 條的「[ ] 嚴禁」：方括號從「Markdown 禁令」中開出例外，
+# 但只給「方向指示」一種用途，模型標籤與 Markdown 禁令仍然有效。
+AKANE_DRAMA3_MARKUP_RULES = """【語音表演標記（drama-3 專屬；引擎會演出來，不會被唸出來）】
+你可以用下列標記表達語氣與情緒——它們由語音引擎「演出」，不是被唸出：
+- 方向指示（方括號）：[像是在强忍着眼泪，却努力笑着]、[shaky breath]、[small laugh]
+- 配對標籤：<whisper>…</whisper>、<emphasis>…</emphasis>、<soft>…</soft>、
+  <fast>…</fast>、<slow>…</slow>、<stress>…</stress>、<forceful>…</forceful>
+用法：
+1. 整句最多 1 個方向指示；配對標籤最多 1 組，且只框住關鍵的幾個字。
+2. 寧可不用：語氣能靠標點與節奏說清楚時就不要加標記；標記不是裝飾。
+3. 不要在標記裡寫動作描述——動作是全形括號（托下巴思考）的用途。
+4. 除上述標記外，仍嚴禁任何 Markdown、XML 標籤與其他標記符號。
+5. 語言標籤不必自己寫：系統會自動處理。"""
 
 AKANE_LAYER3_PERSONA = """# 黑川茜（Kurokawa Akane）
 你是黑川茜，Bryan 的 AI 語音伴侶。Bryan 位於 Layer 3（現役）——你對他的分析已經結束，
@@ -510,10 +546,15 @@ class StreamingVoiceSanitizer:
     暫存隨後丟棄；若緩衝區字元超過 max_suppress（防未閉合異常），則安全釋放。
     """
 
-    def __init__(self, max_suppress: int = 50, agent_id: Optional[str] = None):
+    def __init__(self, max_suppress: int = 50, agent_id: Optional[str] = None,
+                 allow_drama3: bool = False):
         self.max_suppress = max_suppress
         # VC-AVATAR-05：角色簽名動作字典的查表鍵（None ⇒ 僅用基礎字典）
         self.agent_id = agent_id
+        # drama-3 表演標記（Owner 2026-10-24）：開啟時，允許的配對標籤與方向指示原樣保留
+        self.allow_drama3 = allow_drama3
+        self._dir_buf: List[str] = []      # 方括號方向指示緩衝（跨 token）
+        self._dir_count = 0                # 已放行的方向指示數量（上限 MAX_DIRECTIONS_PER_REPLY）
         self._bracket_stack: List[str] = []
         self._in_star = False
         self._suppress_buf: List[str] = []
@@ -642,9 +683,17 @@ class StreamingVoiceSanitizer:
                         raw = "".join(self._lt_buf)
                         self._in_tag = False
                         self._lt_buf = []
+                        tag_name = self._parse_tag_name(raw)
+                        # drama-3 表演標記（Owner 2026-10-24）：允許的配對／語言標籤
+                        # 原樣輸出，且**不進入區塊抑制態** ⇒ 內文照常保留給引擎演出。
+                        if (self.allow_drama3 and tag_name
+                                and is_allowed_tag(tag_name)
+                                and not raw.rstrip().endswith("/>")):
+                            out.append(raw)
+                            continue
                         if not self._tag_closing:
                             self._enter_xml_block(
-                                self._parse_tag_name(raw),
+                                tag_name,
                                 self_closing=raw.rstrip().endswith("/>"),
                             )
                 continue
@@ -672,6 +721,41 @@ class StreamingVoiceSanitizer:
 
             if ch == "<":
                 self._lt_buf = ["<"]
+                continue
+
+            # ── drama-3 方向指示（方括號）：緩衝到 `]` 再判定 ────────────
+            # 舊行為：`[` 會被當成括號動作段的開頭 ⇒ 內容整段抑制（不唸出）。
+            # drama-3 開啟時：合法的方向指示原樣保留（引擎會演出來），
+            # 非法或超過上限者**走回舊行為**（抑制內容、照舊抽動作關鍵字）。
+            if self._dir_buf:
+                self._dir_buf.append(ch)
+                if ch == "]":
+                    raw = "".join(self._dir_buf)
+                    self._dir_buf = []
+                    content = raw[1:-1]
+                    if (self._dir_count < MAX_DIRECTIONS_PER_REPLY
+                            and is_valid_direction(content)):
+                        self._dir_count += 1
+                        out.append(raw)
+                    else:
+                        # 非合法方向或超過上限 ⇒ 維持舊行為：走括號抑制（內容不唸出）。
+                        # ⚠️ 不可再 push 括號堆疊：`]` 已在這裡被吃掉，若留下堆疊，
+                        #    後續所有字元都會被誤判成「抑制區間」而整段消失（2026-10-24 實測）。
+                        self._suppress_buf.append("[")
+                        self._suppress_buf.extend(list(content))
+                        self._suppress_buf.append("]")
+                        self._process_closed_suppression()
+                elif len(self._dir_buf) > self.max_suppress:
+                    # 安全閥：未閉合且超長 ⇒ 當一般文字釋放（去掉方括號）
+                    raw = "".join(self._dir_buf)
+                    self._dir_buf = []
+                    for c in raw:
+                        if c not in MARKDOWN_CHARS:
+                            out.append(c)
+                continue
+
+            if self.allow_drama3 and ch == "[":
+                self._dir_buf = ["["]
                 continue
 
             if ch == "\n":
@@ -765,6 +849,13 @@ class StreamingVoiceSanitizer:
 
     def flush(self) -> str:
         out: List[str] = []
+        if self._dir_buf:
+            # 未閉合的方向指示（串流結束）⇒ 當一般文字釋放（去掉方括號）
+            raw = "".join(self._dir_buf)
+            self._dir_buf = []
+            for c in raw:
+                if c not in MARKDOWN_CHARS:
+                    out.append(c)
         if self._suppress_buf and len(self._suppress_buf) > self.max_suppress:
             for c in self._suppress_buf:
                 if c not in MARKDOWN_CHARS:
@@ -788,8 +879,11 @@ class StreamingVoiceSanitizer:
 
 
 def contains_markdown_chars(text: str) -> bool:
-    """審計：輸出是否含有任何守門符號。"""
-    return any(ch in text for ch in MARKDOWN_CHARS)
+    """審計：輸出是否含有任何守門符號（drama-3 允許的表演標記不算違規）。"""
+    if not text:
+        return False
+    probe = strip_drama3_markup(text)
+    return any(ch in probe for ch in MARKDOWN_CHARS)
 
 
 def _strip_xml_artifacts(text: str) -> str:
@@ -805,7 +899,7 @@ def _strip_xml_artifacts(text: str) -> str:
     return out
 
 
-def sanitize_voice_output(text: str) -> str:
+def sanitize_voice_output(text: str, allow_drama3: bool = False) -> str:
     """守門淨化：移除動作/表情段（*…*、（…）含內容）、Markdown/括號符號與行首條列點。
 
     VC-BRAIN-STRIP-XML-TOOL-TAGS-01：額外剝離 XML/HTML 風格標籤與偽工具區塊
@@ -815,7 +909,20 @@ def sanitize_voice_output(text: str) -> str:
     注意順序：XML 剝離必須在字元狀態機**之前**對原始輸入執行。
     狀態機（feed/flush）處理標籤時只抑制標籤本身與區塊內文，
     區塊內容已在此步驟整段移除，避免殘留被唸出。
+
+    allow_drama3=True（Owner 2026-10-24 裁示）：drama-3 表演標記（配對標籤與方向指示）
+    必須**留到 TTS**（引擎會演出來）⇒ 先保護（換成惰性佔位符）、照舊剝除其餘、最後還原。
+    模型不支援 drama-3 時一律走舊行為（標記會被唸出來 ⇒ 必須剝除）。
     """
+    if allow_drama3:
+        masked, segments = protect_drama3_markup(text)
+        out = _strip_xml_artifacts(masked)
+        sanitizer = StreamingVoiceSanitizer(allow_drama3=True)
+        out = sanitizer.feed(out) + sanitizer.flush()
+        out = _BULLET_RE.sub(r"\1", out)
+        out = restore_drama3_markup(out, segments)
+        return out.strip()
+
     out = _strip_xml_artifacts(text)
     sanitizer = StreamingVoiceSanitizer()
     out = sanitizer.feed(out) + sanitizer.flush()
@@ -827,10 +934,13 @@ def sanitize_voice_output(text: str) -> str:
 # Persona 組裝
 # ─────────────────────────────────────────────────────────────
 
-def build_system_prompt(persona_file: Optional[str] = None) -> str:
+def build_system_prompt(persona_file: Optional[str] = None, allow_drama3: bool = False) -> str:
     """守門規則 + Persona 摘要。persona_file 給定且可讀時以其內容為 Persona 主體。
 
-    Persona 以**字元**為單位截斷至 MAX_PERSONA_CHARS（VC-PERF-OPT-1：原值 6000 已收緊）。
+    Persona 以**字元**為單位截斷至 MAX_PERSONA_CHARS（VC-PERF-OPT-1：6000→2500；
+    2026-10-24 Owner 裁示 → 4000）。
+
+    allow_drama3=True ⇒ 附加 drama-3 表演標記規則（Owner 2026-10-24 裁示開放）。
     """
     excerpt = AKANE_LAYER3_PERSONA
     if persona_file:
@@ -840,7 +950,10 @@ def build_system_prompt(persona_file: Optional[str] = None) -> str:
                 excerpt = text[:MAX_PERSONA_CHARS]  # 控制 token 量（VC-PERF-OPT-1 預算）
         except OSError:
             pass
-    return AKANE_VOICE_INVARIANTS + "\n\n" + excerpt
+    invariants = AKANE_VOICE_INVARIANTS
+    if allow_drama3:
+        invariants = invariants + "\n\n" + AKANE_DRAMA3_MARKUP_RULES
+    return invariants + "\n\n" + excerpt
 
 
 # ─────────────────────────────────────────────────────────────
@@ -889,8 +1002,16 @@ class ClauseSplitter:
         """找最早一個「標點位置 + 1 ≥ min_chars」的切點（回傳 exclusive end）。
 
         同一標點連續出現（如「……」、「？？」）視為一個整體，整段吞入子句。
+
+        drama-3（Owner 2026-10-24）：切點**不得落在表演標記內**
+        （方向指示內含「，」、配對標籤內含「。」）⇒ 否則會送出未閉合的標籤。
         """
         cuts = [i for i, ch in enumerate(text) if ch in self.SPLITTERS and i + 1 >= self.min_chars]
+        if not cuts:
+            return None
+        protected = markup_spans(text)
+        if protected:
+            cuts = [i for i in cuts if i not in protected]
         if not cuts:
             return None
         start = min(cuts)
@@ -1183,7 +1304,12 @@ class AkaneVoiceBrain:
     ):
         self.config = config or {}
         self.agent_id = agent_id
-        self.persona = persona or build_system_prompt(persona_file)
+        # drama-3 表演標記是否開放（Owner 2026-10-24）：**由模型決定**——
+        # 只有會「演出」標記的模型才允許標記留到 TTS；其他模型會把標記唸出來 ⇒ 一律剝除。
+        self.drama3_enabled = supports_drama3_markup(
+            (self.config.get("fish_audio") or {}).get("model", "")
+        )
+        self.persona = persona or build_system_prompt(persona_file, allow_drama3=self.drama3_enabled)
         self.splitter = ClauseSplitter()
         self.llm_stream = llm_stream
         if self.llm_stream is None:
@@ -1357,7 +1483,7 @@ class AkaneVoiceBrain:
             yield "我在。說說看。"
             return
         self._last_extracted_actions: List[str] = []
-        sanitizer = StreamingVoiceSanitizer(agent_id=self.agent_id)
+        sanitizer = StreamingVoiceSanitizer(agent_id=self.agent_id, allow_drama3=self.drama3_enabled)
         for token in self.llm_stream(messages):
             cleaned = sanitizer.feed(token)
             if cleaned:
@@ -1373,7 +1499,7 @@ class AkaneVoiceBrain:
         return list(getattr(self, "_last_extracted_actions", []))
 
     def _guarded(self, text: str) -> str:
-        result = sanitize_voice_output(text).strip()
+        result = sanitize_voice_output(text, allow_drama3=self.drama3_enabled).strip()
         return result if result else "……"
 
     # ── VC-UNIFY-1 寫側：SAGE 記憶背景入庫（Fire-and-Forget，0 阻塞音訊）────
