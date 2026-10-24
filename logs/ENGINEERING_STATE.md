@@ -4430,6 +4430,168 @@ M5／M6 首跑**意外全綠**（守衛失守）。根因：舊 fixture 的合�
 **其他事實留痕**：① 工單 §3 的 P4-T11 寫「working_state 的 4 個 extras 含 `reason`」與凍結欄位集不符（`WORKING_STATE_FIELDS` **無** `reason`；`reason` 在**張力事件 payload**）⇒ 本次斷言事件 payload 的 4 個 extras ＋ working state 的 `partial_resolution`／`remaining_gap_count`／`decided`／`open_gap_count_after`；② `LLMThinker` 傳 `max_retries=0` 給 `generate_text`（工單 §2.3 的呼叫面未列，但 §5／Owner 核准「禁重試」⇒ 用 proxy 自身的開關實現）；③ `model` 參數僅作**稽核標記**（`generate_text` 不接受 model；實際模型由 proxy 既有設定決定）；④ **worktree 基線的兩處環境佈建**（非程式缺陷）：worktree 的 `data/` 是空的 ⇒ `P2-T12` 的對帳基準恆空而恆紅 ⇒ 已把生產的 47 個唯讀對帳檔**複製**進 worktree 的（gitignored）`data/`（生產端 sha256 前後 0 變動）；worktree 位於 `%TEMP%` 之下 ⇒ `T10` 的「store_dir 不在 temp 之下」前提不成立 ⇒ harness 以 `TEMP/TMP` 指向 `%TEMP%\p3_sandbox_tmp`（worktree 之外）⇒ 整檔全綠（主大腦獨立複核確認：主 repo 綠，非 Phase 3 缺陷）。
 
 
+#### 0.1.60 CAMPAIGN-B-P4（戰役一）Phase 4：async 思考閉環 ＋ 稽核錨點修正 ＋ 動機管線前置接口（2026-10-23 22:4x EDT）
+
+**工單**：`logs/CAMPAIGN-B-P4-ASYNC-THINKING-LOOP-WORK-ORDER.md`
+**執行環境**：detached worktree `%TEMP%\p4_wt`（HEAD `580a347` ＋ **Phase 3 補丁為起點**，
+依工單 §0「出發點＝Phase 3 已交付的現況」）。**未 commit、未 push、未 `git add`**。
+
+**三個目標的落點**
+
+| 目標 | 落點 | 狀態 |
+|---|---|---|
+| ① 補齊 async 閉環（不阻塞 Event Loop） | `src/inner_life/tension_closure_loop.py`：`drive_loop_async()` ＋ 抽出共用核心 `_prepare_loop()`／`_finish_loop()`／`_run_loop()` | 完成 |
+| ② 稽核錨點語意變更（**由送出者回報**） | `src/inner_life/tension_thinking.py`：`ThinkOutcome.think_prompt_sha256` ＋ 三個思考器回報 ＋ `tension_closure_loop.py` 改為**取自 outcome**（不重算） | 完成 |
+| ③ 動機管線前置接口（**唯讀上下文**） | `src/inner_life/tension_closure_loop.py`：`format_working_state_lines()`（**本票不接線**） | 完成 |
+
+**🔴 工單內部矛盾（已依工單自身的前置裁示解決，**需主大腦追認**）**
+
+工單 §2.3 要求「`ThinkOutcome` 新增欄位 `think_prompt_sha256`」＋「`DeterministicMockThinker`／`LLMThinker` 填入它送出的 sha」，
+但 §1 的可動檔案清單與 §5.1 明文禁止動 `src/inner_life/tension_thinking.py`（`ThinkOutcome` 就住在那裡）。
+
+裁示依據（**Phase 3 自己的交接**，`ENGINEERING_STATE` §0.1.58 裁示 3）：
+> 「`think_prompt_sha256` 記的是 Phase 2 提示詞 → 接受，列為 **Phase 4 強制前置** … ⇒ **Phase 4 必須改記 `LLMThinker.last_prompt_sha256`**，
+> 否則稽核軌跡指錯對象；**本票不改**（會動第 4 檔）。」
+
+⇒ 該欄位**本來就是 Phase 4 的活**（Phase 3 為了 3 檔硬上限而交出來）。本票因此**必須**動 `tension_thinking.py`
+（第 5 檔，與 §5.1 字面衝突）。**§2.3 與 P5-T5／P5-T6 無法在不動該檔的前提下成立**（`ThinkOutcome` 沒有欄位 ⇒
+「未填時預設 `""`」與「outcome 填入送出者的 sha」都無從成立）⇒ 本票以**工單自身的前置裁示**為準，採最小改動落地。
+
+**改動檔案（4 檔）**
+
+| 檔案 | 性質 |
+|---|---|
+| `src/inner_life/tension_closure_loop.py` | async 閉環 ＋ 共用核心 ＋ 稽核錨點 ＋ 唯讀接口 |
+| `src/inner_life/tension_thinking.py` | `ThinkOutcome` 新欄位 ＋ 三個思考器回報（§2.3） |
+| `tests/inner_life/test_tension_closure_loop.py` | 守衛 **P5-T1～P5-T12** |
+| `logs/ENGINEERING_STATE.md` | 本節 |
+
+（工單本體 `logs/CAMPAIGN-B-P4-ASYNC-THINKING-LOOP-WORK-ORDER.md` **未動**。）
+
+**共用核心的形狀（與工單 §2.1 的差異，理由隨附）**
+
+工單 §2.1 把共享核心畫成單一的 `def _run_loop(agent_id, now, store_dir, outcome_provider)`。
+**同步的 `_run_loop` 無法 `await`** ⇒ async 路徑不可能共用同一個函式本體。本票因此把核心拆成
+`_prepare_loop()`（階段 1：取張力、組請求、組提示詞）＋ `_finish_loop()`（階段 2／3：分流、寫 working state），
+並保留 `_run_loop(agent_id, now, store_dir, outcome_provider, *, thinker_name="")` 作為**同步路徑**的共享核心。
+`drive_loop()` ＝ `_run_loop(..., outcome_provider=<同步 thinker>)`；`drive_loop_async()` ＝ `_prepare_loop()` → `await think()` → `_finish_loop()`。
+**兩條路徑共用同一份決定性內容 ⇒ 輸出逐位元相同**（守衛 P5-T4 以**位元組**比對）。
+
+**兩條路徑的互斥（各自明確 raise，不靜默）**
+
+- `drive_loop()` 收到 **async** thinker ⇒ `TypeError`（訊息指明改用 `drive_loop_async()`）⇒ **不建立任何檔案**（檢查在最前面）。
+- `drive_loop_async()` 收到**同步** thinker ⇒ `TypeError`（訊息指明「請改用 `drive_loop()` 或傳入 async thinker」）。
+- `drive_loop_async(thinker=None)` ⇒ `TypeError`（沒有預設的 async thinker ⇒ 不猜）。
+- 判定只看**宣告**（`inspect.iscoroutinefunction(thinker.think)`）⇒ Phase 3 的同步橋接器 `_SyncLLMThinkerBridge`（`def think` 內 `asyncio.run`）仍走**同步**路徑 ✔。
+
+**稽核錨點（語意變更）**
+
+- `ThinkOutcome.think_prompt_sha256: str = ""`（**帶預設值** ⇒ 既有構造呼叫相容）。
+- `DeterministicMockThinker`／`NullThinker` 回報**它送出的** Phase 2 提示詞 sha256 ⇒ **與舊行為逐位元相同**（同步路徑零行為變化）。
+- `LLMThinker` 回報 `last_prompt_sha256`（**它實際送出的** LLM 提示詞）⇒ 稽核軌跡不再指回 Phase 2 模板。
+  預算用盡（**根本沒送**）⇒ 誠實留白 `""`（不假裝送過）。
+- 接收者（閉環）**只讀 outcome**（`getattr(outcome, "think_prompt_sha256", "")`）⇒ **不重算**。
+- `working_state` 欄位數 **維持 13**（是**語意**變更，不是新增欄位）。
+
+**唯讀接口 `format_working_state_lines(agent_id, store_dir, *, max_entries=5, max_chars=60)`**
+
+六條行為（工單 §2.4）：① `store_dir` 先過既有雙條件守門，不合格 ⇒ 空 list（不 raise）；
+② 檔案不存在／無有效記錄 ⇒ 空 list；③ 取最後一筆有效記錄（壞行跳過），`decided is True` ⇒ 空 list；
+④ 否則回一條 `- [{YYYY-MM-DD} 張力未解] 還有 {n} 個未解的問題（已想過 {p:.0%}）`；
+⑤ 整行截斷至 60（切到 57 再加 `...`，與 `proxy.py` 同款）；⑥ `max_entries` 上限語意（目前 1 條）。
+**不呼叫 LLM、不連網、不寫入**；**本票不接線**（不得接進 `proxy.py` 或任何 prompt 組裝路徑）。
+
+🔴 **一處必要的adaptation**：工單 §2.4 寫「日期取該筆 `ts` 的前 10 字元」，但生產 `working_state.jsonl` 的 `ts` 是
+**epoch 秒（數字）**（`str(1700000000.0)[:10]` ＝ `"1700000000"`，不是日期）。而 P5-T9 要求輸出格式是
+`- [YYYY-MM-DD 張力未解] …` ⇒ 本票對 **數字型 `ts` 轉 UTC 日期**、**字串型 `ts` 取前 10 字元**（與 `proxy.py` 同款），
+取不到時用 `????-??-??`（與 `proxy.py` 的 fallback 同款）。
+
+**Phase 5 的接線前置（本票只給接口，不接線）**
+
+1. `format_working_state_lines()` 是**唯讀**接口（不寫、不 append、不 checkpoint）⇒ Phase 5 接進
+   `proxy.py` 的 Inner Life 區塊時，**不得**讓它成為任何寫入路徑的一環。
+2. 格式已**對齊**既有 `_format_recent_inner_life()`（`- [日期 標籤] 摘要`、≤5 條、≤60 字、fail-silent）⇒
+   Phase 5 只需把回傳的行**併入既有區塊**，不必另創一套格式。
+3. `store_dir` 必須是**沙盒**（過 `check_store_dir()` 雙條件）⇒ Phase 5 的接線點若拿到生產路徑，
+   介面**回空 list**（不 raise、不寫）⇒ **失效時是靜默降級，不是崩潰**。
+4. `drive_loop_async()` 需要**注入** async thinker（無預設）⇒ Phase 5 的呼叫端必須自行提供
+   （例如 `LLMThinker(proxy, ...)`）⇒ **不得**在接線點偷偷建預設。
+5. 兩條路徑的**互斥**（各自 `TypeError`）在 Phase 5 仍然成立：接線端若拿到同步 thinker 卻呼叫
+   `drive_loop_async()` ⇒ 會**立刻炸**（不靜默降級）⇒ Phase 5 的接線點必須依 thinker 的**宣告**分流。
+
+**驗收數字**
+
+- **守衛檔全綠**：`.venv\Scripts\python.exe -m pytest -q tests/inner_life/test_tension_closure_loop.py` ⇒ **70 passed / 0 failed**（2.16 s）。
+  - 既有守衛 **49 筆全綠**（Phase 1 13 ＋ Phase 2 16 ＋ Phase 3 20）＝ 同步路徑行為**逐位元不變**的證據。
+  - 新增守衛 **21 筆全綠**（P5-T1～P5-T12 共 12 個守衛編號、21 個測試函數）。
+  - 收集數：70 ＝ 既有 49 ＋ 新增 21（`--collect-only` 逐筆核對）。
+- **P5-T5 稽核錨點實測**（同一沙盒快照）：Phase 2 提示詞 451 字元／sha256 `a10e002ab6474921…`；送出者回報並實際記錄的 sha256 `054559bd749a889b…` ⇒ **兩者不同**（接收者**未**重算）；`ClosureTrace.think_prompt_sha256` 同為 `054559bd749a889b…`；working state 欄位數 **13**（不變）。
+- **P5-T9 介面輸出實測**：`- [2023-11-14 張力未解] 還有 1 個未解的問題（已想過 50%）`（長度 40 ≤ 60）。
+- **介面六條行為實測**：無檔案 ⇒ `[]`；已想完（`decided=True`）⇒ `[]`；未解 ⇒ 1 行；壞行（`{not json` ＋ `}}`）⇒ **跳過壞行**、仍回 1 行；只讀（P5-T11 位元組對帳）⇒ 呼叫前後**位元不變**、不新建檔；不合格 `store_dir`（生產資料根／repo `data/`）⇒ `[]`、不 raise。
+
+**變異 M8～M13（工單 §4）**
+
+| # | 變異 | 轉紅的測試 | 結果 |
+|---|---|---|---|
+| M8 | `drive_loop()` 對 async thinker 靜默忽略 | `test_p5_t1_sync_loop_rejects_async_thinker_and_writes_nothing` | ✅ 1 紅 |
+| M9 | `drive_loop_async()` 對同步 thinker 靜默忽略 | `test_p5_t2_async_loop_rejects_sync_thinker_and_writes_nothing` | ✅ 1 紅 |
+| M10 | `think_prompt_sha256` 改回記 Phase 2 prompt 的 sha256 | `test_p5_t5_working_state_records_the_sender_reported_sha`、`test_p5_t5_sync_path_takes_the_same_sender_reported_value`、`test_p5_t6_existing_call_sites_still_work_end_to_end` | ✅ 3 紅 |
+| M11 | 介面在檔案不存在時 raise | `test_p5_t7_interface_returns_empty_list_when_no_file_exists` | ✅ 1 紅 |
+| M12 | 介面漏掉 `decided` 判斷 | `test_p5_t8_decided_record_yields_empty_list` | ✅ 1 紅 |
+| M13 | 介面函式寫入 working state | `test_p5_t11_interface_does_not_modify_any_file` | ✅ 1 紅 |
+
+**6/6 條變異全部轉紅**（合計 8 筆測試轉紅）。
+- **baseline ＝ 整個守衛檔全綠**：每條變異跑之前都重跑 baseline（**70 passed / 0 紅**，非「只跑部分測試」的假 baseline）⇒ 恆紅的守衛沒有冒充有效證據。
+- **repo 檔全程唯讀**：變異跑完後 `src/inner_life/tension_thinking.py` 與 `src/inner_life/tension_closure_loop.py` 的 sha256 **前後逐位元相同**（`d8d5c620…`／`9dfa1034…`）。
+- harness 位置：`%TEMP%\p4_harness\mutation_harness.py`（**不在 `tests/**`**，⇒ 不觸 R5 護欄）；採「改副本 ＋ `SOUL_OS_P2_MODULE_OVERRIDE_DIR`」模式；覆寫目錄必須位於重導的 temp 之下（守衛模組的 fail-closed 規則）。
+
+**凍結與紅線**
+
+- **`git diff --name-only HEAD`（worktree `%TEMP%\p4_wt`）＝ 恰好 4 檔**：
+  ```
+  logs/ENGINEERING_STATE.md
+  src/inner_life/tension_closure_loop.py
+  src/inner_life/tension_thinking.py
+  tests/inner_life/test_tension_closure_loop.py
+  ```
+  （🔴 與工單 §1 的成員**不同**：§1 第 4 檔是「工單本體（執行者不要改）」，本票改的是 `tension_thinking.py` ⇒ 見下方「需裁示」第 1 條。）
+- **`src/llm/proxy.py` 零改動**：`git diff --numstat -- src/llm/proxy.py` ⇒ **空輸出**。
+- **`allowed` 集合零改動**：`git diff --numstat -- tests/test_observability_completeness_1.py` ⇒ **空輸出**（且本票不新增 `src/**` 檔 ⇒ 本來就**不必**動 `allowed`；`tension_thinking.py`／`tension_closure_loop.py` 早已在 `allowed` 內）。
+- **`frozen_dirs` 11 筆零改動**：`git diff --numstat -- <11 個 frozen 檔>` ⇒ **空輸出**。
+- **主 repo 工作樹**：`git status --short` ⇒ 只有 `?? logs/CAMPAIGN-B-P4-ASYNC-THINKING-LOOP-WORK-ORDER.md`（**未追蹤的工單本體**；sha256 `6b039740bc4fbe5d…`、14262 bytes、**執行者未修改**）⇒ 本票**未動主 repo 任何檔案**、**未在主 repo 跑 pytest**。
+- **`data/**` 位元組對帳**：主 repo `data/`（7824 檔）前後 manifest digest **不同** ⇒ 逐檔比對：**16 檔**在 22:12–22:47 之間被改動，全部是**生產服務自己的即時產物**（`elevation/elevation_{edges,nodes,trace}.jsonl`＝22:00 夜槽演化輸出、`crash_dumps/.last_collected.txt`、`logs/watchdog.log`、`state/event_loop_alive.json`（`last_alive_at=2026-10-24T02:43:04Z`）、`state/post_580a347_counter.json`、`heartbeat_trace.log`、`heartbeats/telegram_channel.json`、`server_nohup.{log,err}`、`world/perception_trace.jsonl`、`world/world_log/2026-10-24.jsonl`、`inner_life/trace.jsonl`、`memory/*/graph.sqlite-shm`）；**0 新增／0 刪除**（皆為 append 型寫入）。
+  - **控制實驗（決定性）**：在**完全沒有本票的任何行程在跑**的情況下，連續兩次 manifest 相隔 75 s ⇒ **仍有 6 檔被改**（同一組：`crash_dumps/.last_collected.txt`／`heartbeat_trace.log`／`heartbeats/telegram_channel.json`／`logs/watchdog.log`／`server_nohup.err`／`state/post_580a347_counter.json`）⇒ **寫入者是生產服務，不是本票**。
+  - **本票／閉環唯一會碰的生產檔全部未變**：`data/inner_life/epistemic_tensions.jsonl`、`data/soul/*/life_threads.jsonl`（46 檔）、`data/elevation/elevation_lifecycle_events.jsonl` ⇒ **位元不變**。
+  - **結構性理由**：測試行程的 `data_root()` 由 conftest 的 autouse fixture 指向**隔離 tmp**（含 `reset_data_root()`）⇒ 與主 repo 的 `data/` 不同的路徑；且閉環的所有寫入都必須先過 `check_store_dir()` 的雙條件（不在生產資料根之下 ∧ 不在 repo `data/` 之下 ∧ 位於 temp 之下）⇒ **本票的程式碼在結構上不可達主 repo 的 `data/`**。
+
+**未做（明文排除）與待裁示**
+
+**未做（明文排除）**：未 `git add`／`git commit`／`git push`（主大腦處理）；未部署；未重啟服務；未殺任何行程；**未把 `format_working_state_lines()` 接進 `proxy.py` 或任何 prompt 組裝路徑**（Phase 5 的事）；未接排程器／handler；未新增生產寫入路徑；**0 次真實 LLM 呼叫**（Owner 額度已用完）；**未跑全庫回歸**（工單 §5.5；由主大腦在合入前跑）。
+
+**未解決疑點 / 需主大腦裁示**
+
+1. 🔴 **工單 §1／§5.1 與 §2.3 互相矛盾，本票動了第 5 檔**（`src/inner_life/tension_thinking.py`）。
+   - 矛盾點：§2.3 要求 `ThinkOutcome` 新增 `think_prompt_sha256` 欄位、`DeterministicMockThinker`／`LLMThinker` 填入送出者的 sha；而 `ThinkOutcome` 就住在 §5.1 明文禁止改動的 `tension_thinking.py` 裡。
+   - **裁示依據（工單自身的前置交接）**：`ENGINEERING_STATE` §0.1.58 裁示 3 明文寫「`think_prompt_sha256` … 列為 **Phase 4 強制前置** … ⇒ **Phase 4 必須改記 `LLMThinker.last_prompt_sha256`** …；**本票不改**（會動第 4 檔）」⇒ 該欄位本來就是 Phase 4 的活（Phase 3 為 3 檔硬上限而交出）。
+   - **若不動該檔，§2.3 與 P5-T5／P5-T6 無法成立**：`ThinkOutcome` 沒有欄位 ⇒ 「未填時預設 `""`」與「outcome 填入送出者的 sha」都無從成立；且 Phase 3 既有�� `LLMThinker` 回傳的是**無該欄位**的 `ThinkOutcome` ⇒ 真實 LLM 路徑的稽核錨點會永遠留白（等於沒修）。
+   - ⇒ 本票以**最小改動**落地（新增 1 個帶預設值的欄位 ＋ 3 個思考器回報 ＋ 接收者改讀 outcome），**需主大腦追認**。
+
+2. 🔴 **`_run_loop()` 的形狀與工單 §2.1 的示意不同**（本票拆成 `_prepare_loop()` ＋ `_finish_loop()` ＋ `_run_loop()`）。
+   - 理由：**同步函式無法 `await`** ⇒ async 路徑不可能共用同一個函式本體。若硬塞，async 路徑只能「在同步函式裡跑 event loop」⇒ 那就**阻塞 Event Loop**（§2.2 明文禁止）。
+   - 本票的形狀仍滿足工單 §8 的**核心不變量**：兩條路徑共用同一份決定性內容（`_prepare_loop`）與同一份寫入邏輯（`_finish_loop`）⇒ **輸出逐位元相同**（P5-T4 以**位元組**比對兩條路徑寫出的 2 個檔案）。
+
+3. 🔴 **§2.4「日期取該筆 `ts` 的前 10 字元」在生產資料上不成立** ⇒ 本票做了必要的 adaptation。
+   - 事實：生產 `working_state.jsonl` 的 `ts` 是 **epoch 秒（數字）** ⇒ `str(1700000000.0)[:10]` ＝ `"1700000000"`（**不是日期**）；而 P5-T9 要求輸出格式是 `- [YYYY-MM-DD 張力未解] …`。
+   - 本票做法：**數字型 `ts` ⇒ 轉 UTC 日期**；**字串型 `ts`（ISO）⇒ 取前 10 字元**（與 `proxy.py` 同款）；取不到 ⇒ `????-??-??`（與 `proxy.py` 的 fallback 同款）。
+   - ⇒ 需主大腦確認這是預期語意（否則 Phase 5 接線時會拿到數字型日期）。
+
+4. **`format_working_state_lines()` 的 `agent_id` 參數**：工單未定義其過濾語意 ⇒ 本票採**軟過濾**（記錄帶 `agent_id` 且與查詢不符 ⇒ 跳過該筆、繼續往前找；欄位缺漏則不判）。請主大腦確認或指定。
+
+5. **`drive_loop_async(thinker=None)` 的行為**：工單只指定「傳入同步 thinker ⇒ raise」，未指定 `None` ⇒ 本票採**明確 raise**（沒有預設的 async thinker ⇒ 不猜；訊息指明改用 `drive_loop()`）。請主大腦確認。
+
+6. **worktree 基線是「HEAD ＋ Phase 3 補丁」**（工單 §0 的出發點）⇒ worktree 的 `git diff --name-only HEAD` 同時含 Phase 3 與 Phase 4 的改動。已另備**只含 Phase 4** 的補丁檔 `%TEMP%\p4_harness\p4_phase4_patch.diff`（Phase 3 補丁為基底；已驗證可乾淨套用且套用後與 worktree **逐位元相同**）⇒ 主大腦可「先套 Phase 3、再套 Phase 4」。
+
+
 
 
 

@@ -1238,3 +1238,498 @@ class TestP4T12NoRealNetworkPath:
         assert len(backend.calls) == 1, "P4 守衛期間只允許 script backend 呼叫"
         assert thinker.calls["attempted"] == 1
         assert thinker.calls["succeeded"] == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# CAMPAIGN-B-P4 §3 — 守衛測試 P5-T1～P5-T12
+# （工單：logs/CAMPAIGN-B-P4-ASYNC-THINKING-LOOP-WORK-ORDER.md）
+#
+# 🔴 坑 #1：合成 fixture 必須**與生產事件同形**（欄位齊備）——否則守衛會
+#    「意外全綠」⇒ 變異失守而無人察覺。
+# 🔴 坑 #3：本檔的「載入點覆寫」只接受 %TEMP% 之下（見 P2_MODULE_OVERRIDE_ENV）。
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _p5_fake_sent_sha(prompt: str) -> str:
+    """假思考器「**實際送出**」的提示詞 sha（**刻意不同於** Phase 2 提示詞的 sha）。
+
+    🔴 為什麼要刻意不同：守衛 P5-T5 要能分辨「錨點來自**送出者**」與「接收者
+    **自行重算**」⇒ 兩者必須產生**不同**的值，否則守衛會「意外全綠」。
+    """
+    return hashlib.sha256(("P5-SENT::" + prompt).encode("utf-8")).hexdigest()
+
+
+class _P5SyncFakeThinker:
+    """**同步**假思考器（零成本、零網路）；回報「實際送出」的 sha。"""
+
+    def __init__(
+        self,
+        *,
+        decided: bool = False,
+        remaining_gap_count: int = 1,
+        partial_resolution: float = 0.5,
+    ) -> None:
+        self.decided = bool(decided)
+        self.remaining_gap_count = int(remaining_gap_count)
+        self.partial_resolution = float(partial_resolution)
+        #: 收到的提示詞（可稽核「閉環組了什麼」）。
+        self.seen_prompts: List[str] = []
+
+    def think(self, req: Any, prompt: str) -> Any:
+        self.seen_prompts.append(prompt)
+        return tt.ThinkOutcome(
+            partial_resolution=self.partial_resolution,
+            remaining_gap_count=self.remaining_gap_count,
+            decided=self.decided,
+            reason="p5_fake_outcome",
+            think_prompt_sha256=_p5_fake_sent_sha(prompt),
+        )
+
+
+class _P5AsyncFakeThinker:
+    """**async** 假思考器（零成本、零網路）；回報「實際送出」的 sha。
+
+    🔴 與同步版**刻意同名**（見檔尾的 ``__name__`` 指派）：working state 的
+    ``thinker`` 欄位記的是**類別名** ⇒ 兩條路徑必須用**同名**的思考器，
+    守衛 P5-T4 的「逐位元相同」才比的是**資料面**而不是標籤。
+    """
+
+    def __init__(
+        self,
+        *,
+        decided: bool = False,
+        remaining_gap_count: int = 1,
+        partial_resolution: float = 0.5,
+    ) -> None:
+        self.decided = bool(decided)
+        self.remaining_gap_count = int(remaining_gap_count)
+        self.partial_resolution = float(partial_resolution)
+        self.seen_prompts: List[str] = []
+
+    async def think(self, req: Any, prompt: str) -> Any:
+        self.seen_prompts.append(prompt)
+        return tt.ThinkOutcome(
+            partial_resolution=self.partial_resolution,
+            remaining_gap_count=self.remaining_gap_count,
+            decided=self.decided,
+            reason="p5_fake_outcome",
+            think_prompt_sha256=_p5_fake_sent_sha(prompt),
+        )
+
+
+# 🔴 同名（見 class docstring）：兩條路徑的 ``thinker`` 欄位才會相同。
+_P5AsyncFakeThinker.__name__ = _P5SyncFakeThinker.__name__
+
+
+def _p5_working_state_row(
+    *,
+    agent_id: str = "agent_akane",
+    ts: float = FAKE_NOW,
+    decided: bool = False,
+    remaining_gap_count: int = 1,
+    partial_resolution: float = 0.5,
+    **overrides: Any,
+) -> Dict[str, Any]:
+    """**與生產同形**的 working state 記錄（🔴 坑 #1：欄位齊備，13 欄）。"""
+    row: Dict[str, Any] = {
+        "agent_id": agent_id,
+        "ts": float(ts),
+        "resolved_tension_id": "drive_tension:0123456789abcdef",
+        "drive_code": "D1",
+        "drives_touched": ["D1"],
+        "open_gap_count_after": int(remaining_gap_count),
+        "open_contradiction_count_after": 1,
+        "open_gap_count_before": 2,
+        "partial_resolution": float(partial_resolution),
+        "remaining_gap_count": int(remaining_gap_count),
+        "decided": bool(decided),
+        "thinker": "DeterministicMockThinker",
+        "think_prompt_sha256": "0" * 64,
+    }
+    row.update(overrides)
+    assert set(row.keys()) == set(tcl.WORKING_STATE_FIELDS), "fixture 必須欄位齊備（同形）"
+    return row
+
+
+def _p5_write_working_state(
+    store: Path,
+    rows: List[Dict[str, Any]],
+    *,
+    raw_lines: Optional[List[str]] = None,
+) -> Path:
+    """把 working state 記錄寫進沙盒（**測試端**寫入；生產同形：append-only JSONL、LF）。"""
+    path = store / tcl.WORKING_STATE_FILENAME
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        for raw in raw_lines or []:
+            handle.write(raw + "\n")
+    return path
+
+
+# ── P5-T1：同步路徑拒絕 async thinker ───────────────────────────────────
+class TestP5T1SyncLoopRejectsAsyncThinker:
+    """P5-T1 — ``drive_loop()`` 收到 async thinker ⇒ **raise** ``TypeError``
+    且**不得**建立任何檔案。"""
+
+    def test_p5_t1_sync_loop_rejects_async_thinker_and_writes_nothing(
+        self, tmp_path, enabled
+    ):
+        _seed_sandbox_data()
+        store = tmp_path / "p5_t1_store"
+        store.mkdir(parents=True, exist_ok=True)
+        with pytest.raises(TypeError) as excinfo:
+            tcl.drive_loop("agent_akane", FAKE_NOW, store, thinker=_P5AsyncFakeThinker())
+        message = str(excinfo.value)
+        assert "drive_loop_async" in message, message
+        assert list(store.iterdir()) == [], "拒絕時不得建立任何檔案"
+
+
+# ── P5-T2：async 路徑拒絕同步 thinker ───────────────────────────────────
+class TestP5T2AsyncLoopRejectsSyncThinker:
+    """P5-T2 — ``drive_loop_async()`` 收到同步 thinker ⇒ **raise** ``TypeError``
+    且**不得**建立任何檔案。"""
+
+    async def test_p5_t2_async_loop_rejects_sync_thinker_and_writes_nothing(
+        self, tmp_path, enabled
+    ):
+        _seed_sandbox_data()
+        store = tmp_path / "p5_t2_store"
+        store.mkdir(parents=True, exist_ok=True)
+        for thinker in (tt.DeterministicMockThinker(), tt.NullThinker(), _P5SyncFakeThinker()):
+            with pytest.raises(TypeError) as excinfo:
+                await tcl.drive_loop_async("agent_akane", FAKE_NOW, store, thinker=thinker)
+            message = str(excinfo.value)
+            assert "drive_loop" in message, message
+            assert list(store.iterdir()) == [], "拒絕時不得建立任何檔案"
+
+
+# ── P5-T3：async 端到端 ────────────────────────────────────────────────
+class TestP5T3AsyncEndToEnd:
+    """P5-T3 — 注入假 async thinker ⇒ 沙盒 ``working_state.jsonl`` **+1**、
+    ``epistemic_tensions.jsonl`` **+1**、事件狀態分流正確。"""
+
+    async def test_p5_t3_async_loop_writes_one_row_and_one_event(self, sandbox_store, enabled):
+        _seed_sandbox_data()  # 2 個資訊缺口
+        thinker = _P5AsyncFakeThinker(decided=False, remaining_gap_count=1)
+        trace = await tcl.drive_loop_async(
+            "agent_akane", FAKE_NOW, sandbox_store, thinker=thinker
+        )
+        assert trace is not None, "async 閉環應產出 trace"
+
+        rows = _read_jsonl(sandbox_store / tcl.WORKING_STATE_FILENAME)
+        assert len(rows) == 1, f"working state 應恰好 1 筆，實得 {len(rows)}"
+        events = _read_jsonl(sandbox_store / tcl.TENSION_STORE_FILENAME)
+        assert len(events) == 1, f"沙盒張力承載應恰好 1 筆，實得 {len(events)}"
+
+        row = rows[0]
+        assert set(row.keys()) == set(tcl.WORKING_STATE_FIELDS), row.keys()
+        assert row["partial_resolution"] == pytest.approx(0.5)
+        assert row["remaining_gap_count"] == 1
+        assert row["decided"] is False
+
+        event = events[0]
+        assert set(event.keys()) == set(TENSION_EVENT_FIELDS), event.keys()
+        assert event["status"] == "partially_resolved"
+        assert event["payload"]["decided"] is False
+        assert event["payload"]["remaining_gap_count"] == 1
+        assert event["payload"]["partial_resolution"] == pytest.approx(0.5)
+        assert event["payload"]["reason"] == "p5_fake_outcome"
+
+    async def test_p5_t3_async_loop_routes_a_decided_outcome_to_resolved(
+        self, sandbox_store, enabled
+    ):
+        _seed_sandbox_data()
+        thinker = _P5AsyncFakeThinker(decided=True, remaining_gap_count=0, partial_resolution=1.0)
+        trace = await tcl.drive_loop_async(
+            "agent_akane", FAKE_NOW, sandbox_store, thinker=thinker
+        )
+        assert trace is not None
+        events = _read_jsonl(sandbox_store / tcl.TENSION_STORE_FILENAME)
+        assert len(events) == 1
+        assert events[0]["status"] == "resolved"
+        assert events[0]["payload"]["decided"] is True
+        rows = _read_jsonl(sandbox_store / tcl.WORKING_STATE_FILENAME)
+        assert rows[0]["decided"] is True
+        assert rows[0]["remaining_gap_count"] == 0
+
+
+# ── P5-T4：兩路徑產出逐位元相同 ─────────────────────────────────────────
+class TestP5T4BothPathsAreByteIdentical:
+    """P5-T4 — 同一輸入、同一 outcome ⇒ 同步路徑與 async 路徑寫出的
+    working_state ／張力事件**逐位元相同**。"""
+
+    async def test_p5_t4_sync_and_async_paths_write_byte_identical_files(
+        self, tmp_path, enabled
+    ):
+        _seed_sandbox_data()
+        sync_store = tmp_path / "p5_t4_sync"
+        sync_store.mkdir(parents=True, exist_ok=True)
+        async_store = tmp_path / "p5_t4_async"
+        async_store.mkdir(parents=True, exist_ok=True)
+
+        sync_trace = tcl.drive_loop(
+            "agent_akane", FAKE_NOW, sync_store, thinker=_P5SyncFakeThinker()
+        )
+        async_trace = await tcl.drive_loop_async(
+            "agent_akane", FAKE_NOW, async_store, thinker=_P5AsyncFakeThinker()
+        )
+        assert sync_trace is not None and async_trace is not None
+
+        for name in (tcl.WORKING_STATE_FILENAME, tcl.TENSION_STORE_FILENAME):
+            sync_bytes = (sync_store / name).read_bytes()
+            async_bytes = (async_store / name).read_bytes()
+            assert sync_bytes == async_bytes, (
+                f"{name} 兩條路徑必須逐位元相同\n"
+                f"sync={sync_bytes!r}\nasync={async_bytes!r}"
+            )
+        # trace 也必須逐位元相同（**除路徑欄位**——兩條路徑用的是不同的沙盒目錄，
+        # 路徑不同是**設計使然**，不是資料面差異）。
+        sync_dict = dict(sync_trace.to_dict())
+        async_dict = dict(async_trace.to_dict())
+        for key in ("tension_store_path", "working_state_path"):
+            sync_dict.pop(key, None)
+            async_dict.pop(key, None)
+        assert sync_dict == async_dict, "trace（除路徑欄位外）也必須逐位元相同"
+
+
+# ── P5-T5：稽核錨點（由送出者回報）────────────────────────────────────
+class TestP5T5AuditAnchorComesFromTheSender:
+    """P5-T5 — ``working_state.think_prompt_sha256`` ＝ **thinker 回報的** sha256
+    ⇒ **不得**是 Phase 2 提示詞的 sha256（接收者不得自行重算）。"""
+
+    async def test_p5_t5_working_state_records_the_sender_reported_sha(
+        self, sandbox_store, enabled
+    ):
+        _seed_sandbox_data()
+        thinker = _P5AsyncFakeThinker()
+        await tcl.drive_loop_async("agent_akane", FAKE_NOW, sandbox_store, thinker=thinker)
+
+        rows = _read_jsonl(sandbox_store / tcl.WORKING_STATE_FILENAME)
+        assert len(rows) == 1
+        recorded = rows[0]["think_prompt_sha256"]
+
+        sent_prompt = thinker.seen_prompts[0]
+        assert sent_prompt, "閉環必須把提示詞交給思考器"
+        expected = _p5_fake_sent_sha(sent_prompt)
+        phase2_sha = hashlib.sha256(sent_prompt.encode("utf-8")).hexdigest()
+
+        assert recorded == expected, "錨點必須是**送出者回報**的 sha256"
+        assert recorded != phase2_sha, "不得是 Phase 2 提示詞的 sha256（指錯對象）"
+        assert len(recorded) == 64
+        int(recorded, 16)  # 必須是合法 hex
+
+    async def test_p5_t5_sync_path_takes_the_same_sender_reported_value(
+        self, sandbox_store, enabled
+    ):
+        _seed_sandbox_data()
+        thinker = _P5SyncFakeThinker()
+        tcl.drive_loop("agent_akane", FAKE_NOW, sandbox_store, thinker=thinker)
+        rows = _read_jsonl(sandbox_store / tcl.WORKING_STATE_FILENAME)
+        assert rows[0]["think_prompt_sha256"] == _p5_fake_sent_sha(thinker.seen_prompts[0])
+
+
+# ── P5-T6：ThinkOutcome 相容性 ─────────────────────────────────────────
+class TestP5T6ThinkOutcomeCompatibility:
+    """P5-T6 — 未填 ``think_prompt_sha256`` 時（預設 ``""``）**不得** raise
+    既有呼叫點。"""
+
+    def test_p5_t6_think_outcome_without_the_sha_field_defaults_to_empty(self):
+        outcome = tt.ThinkOutcome(
+            partial_resolution=0.5,
+            remaining_gap_count=1,
+            decided=False,
+            reason="legacy_call_site",
+        )
+        assert outcome.think_prompt_sha256 == ""
+        assert outcome.reason == "legacy_call_site"
+
+    def test_p5_t6_existing_call_sites_still_work_end_to_end(self, sandbox_store, enabled):
+        _seed_sandbox_data()
+
+        class _LegacyThinker:
+            """**不填**新欄位的舊式思考器（模擬既有呼叫點）。"""
+
+            def think(self, req: Any, prompt: str) -> Any:
+                return tt.ThinkOutcome(
+                    partial_resolution=0.5,
+                    remaining_gap_count=1,
+                    decided=False,
+                    reason="legacy_thinker",
+                )
+
+        trace = tcl.drive_loop("agent_akane", FAKE_NOW, sandbox_store, thinker=_LegacyThinker())
+        assert trace is not None, "未填新欄位不得 raise"
+        rows = _read_jsonl(sandbox_store / tcl.WORKING_STATE_FILENAME)
+        assert len(rows) == 1
+        # 送出者未回報 ⇒ 誠實留白（不猜、不重算）。
+        assert rows[0]["think_prompt_sha256"] == ""
+
+    def test_p5_t6_working_state_field_count_is_unchanged(self):
+        assert len(tcl.WORKING_STATE_FIELDS) == 13, "欄位數維持 13（語意變更，不是新增欄位）"
+        assert "think_prompt_sha256" in tcl.WORKING_STATE_FIELDS
+
+
+# ── P5-T7：介面：無檔案 ────────────────────────────────────────────────
+class TestP5T7InterfaceWithoutFile:
+    """P5-T7 — 檔案不存在 ⇒ 回**空 list**（不得 raise、不得建立檔案）。"""
+
+    def test_p5_t7_interface_returns_empty_list_when_no_file_exists(self, tmp_path):
+        store = tmp_path / "p5_t7_store"
+        store.mkdir(parents=True, exist_ok=True)
+        assert tcl.format_working_state_lines("agent_akane", store) == []
+        assert list(store.iterdir()) == [], "唯讀介面不得建立任何檔案"
+
+    def test_p5_t7_interface_returns_empty_list_when_the_file_is_empty(self, tmp_path):
+        store = tmp_path / "p5_t7_empty_store"
+        store.mkdir(parents=True, exist_ok=True)
+        (store / tcl.WORKING_STATE_FILENAME).write_text("", encoding="utf-8")
+        assert tcl.format_working_state_lines("agent_akane", store) == []
+
+
+# ── P5-T8：介面：已想完 ────────────────────────────────────────────────
+class TestP5T8InterfaceWithDecidedRecord:
+    """P5-T8 — 該筆 ``decided=True`` ⇒ 回**空 list**。"""
+
+    def test_p5_t8_decided_record_yields_empty_list(self, tmp_path):
+        store = tmp_path / "p5_t8_store"
+        store.mkdir(parents=True, exist_ok=True)
+        _p5_write_working_state(
+            store,
+            [
+                _p5_working_state_row(decided=False, remaining_gap_count=2),
+                _p5_working_state_row(decided=True, remaining_gap_count=0, partial_resolution=1.0),
+            ],
+        )
+        assert tcl.format_working_state_lines("agent_akane", store) == []
+
+
+# ── P5-T9：介面：未解張力 ──────────────────────────────────────────────
+class TestP5T9InterfaceWithUnresolvedTension:
+    """P5-T9 — ``decided=False`` ⇒ 回**一行**、格式 ``- [YYYY-MM-DD 張力未解] …``、
+    長度 ≤ 60。"""
+
+    def test_p5_t9_unresolved_record_yields_one_formatted_line(self, tmp_path):
+        store = tmp_path / "p5_t9_store"
+        store.mkdir(parents=True, exist_ok=True)
+        _p5_write_working_state(
+            store,
+            [
+                _p5_working_state_row(
+                    decided=False, remaining_gap_count=3, partial_resolution=0.25
+                )
+            ],
+        )
+        lines = tcl.format_working_state_lines("agent_akane", store)
+        assert len(lines) == 1, f"應恰好 1 行，實得 {lines}"
+        line = lines[0]
+        expected_date = datetime.fromtimestamp(FAKE_NOW, tz=timezone.utc).strftime("%Y-%m-%d")
+        assert line == f"- [{expected_date} 張力未解] 還有 3 個未解的問題（已想過 25%）", line
+        assert len(line) <= 60, f"長度 {len(line)} 不得大於 60"
+
+    def test_p5_t9_long_lines_are_truncated_to_max_chars(self, tmp_path):
+        store = tmp_path / "p5_t9_long_store"
+        store.mkdir(parents=True, exist_ok=True)
+        _p5_write_working_state(
+            store,
+            [
+                _p5_working_state_row(
+                    decided=False,
+                    remaining_gap_count=123456789012345678901234567890,
+                    partial_resolution=0.123456,
+                )
+            ],
+        )
+        line = tcl.format_working_state_lines("agent_akane", store)[0]
+        assert len(line) == 60, f"截斷後長度應為 60，實得 {len(line)}"
+        assert line.endswith("..."), line
+
+    def test_p5_t9_max_entries_caps_the_output(self, tmp_path):
+        store = tmp_path / "p5_t9_cap_store"
+        store.mkdir(parents=True, exist_ok=True)
+        _p5_write_working_state(
+            store, [_p5_working_state_row(decided=False, remaining_gap_count=1)]
+        )
+        assert tcl.format_working_state_lines("agent_akane", store, max_entries=0) == []
+        assert len(tcl.format_working_state_lines("agent_akane", store, max_entries=5)) == 1
+
+
+# ── P5-T10：介面：壞行 ─────────────────────────────────────────────────
+class TestP5T10InterfaceSkipsBadLines:
+    """P5-T10 — 檔案含壞行 ⇒ 跳過該行、不 raise。"""
+
+    def test_p5_t10_bad_lines_are_skipped_without_raising(self, tmp_path):
+        store = tmp_path / "p5_t10_store"
+        store.mkdir(parents=True, exist_ok=True)
+        _p5_write_working_state(
+            store,
+            [_p5_working_state_row(decided=False, remaining_gap_count=4)],
+            raw_lines=["{not json at all", "[1, 2, 3]", '"a string"', "null"],
+        )
+        lines = tcl.format_working_state_lines("agent_akane", store)
+        assert len(lines) == 1, f"壞行應被跳過，實得 {lines}"
+        assert "還有 4 個未解的問題" in lines[0]
+
+    def test_p5_t10_a_file_with_only_bad_lines_yields_empty_list(self, tmp_path):
+        store = tmp_path / "p5_t10_only_bad_store"
+        store.mkdir(parents=True, exist_ok=True)
+        _p5_write_working_state(store, [], raw_lines=["{not json", "}}}", "[]"])
+        assert tcl.format_working_state_lines("agent_akane", store) == []
+
+
+# ── P5-T11：介面只讀 ───────────────────────────────────────────────────
+class TestP5T11InterfaceIsReadOnly:
+    """P5-T11 — 呼叫前後 ``working_state.jsonl`` 與 ``epistemic_tensions.jsonl``
+    **位元不變**。"""
+
+    def test_p5_t11_interface_does_not_modify_any_file(self, tmp_path):
+        store = tmp_path / "p5_t11_store"
+        store.mkdir(parents=True, exist_ok=True)
+        _p5_write_working_state(
+            store, [_p5_working_state_row(decided=False, remaining_gap_count=1)]
+        )
+        tension_path = store / tcl.TENSION_STORE_FILENAME
+        tension_path.write_text('{"kind": "tension_resolved"}\n', encoding="utf-8")
+
+        before = {p.name: p.read_bytes() for p in store.iterdir() if p.is_file()}
+        assert set(before) == {tcl.WORKING_STATE_FILENAME, tcl.TENSION_STORE_FILENAME}
+
+        lines = tcl.format_working_state_lines("agent_akane", store)
+        assert len(lines) == 1
+
+        after = {p.name: p.read_bytes() for p in store.iterdir() if p.is_file()}
+        assert after == before, "唯讀介面不得改動任何位元組"
+        assert set(after) == set(before), "唯讀介面不得建立新檔案"
+
+
+# ── P5-T12：介面不觸碰生產 ─────────────────────────────────────────────
+class TestP5T12InterfaceRefusesProductionStoreDir:
+    """P5-T12 — 傳入不合格的 ``store_dir``（生產路徑）⇒ 回空 list、**不得** raise、
+    **不得**寫入生產。"""
+
+    def test_p5_t12_production_data_root_store_dir_yields_empty_list(self):
+        prod_store = Path(data_root()) / "inner_life"
+        prod_store.mkdir(parents=True, exist_ok=True)
+        before = {p.name: p.read_bytes() for p in prod_store.iterdir() if p.is_file()}
+        names_before = sorted(p.name for p in prod_store.iterdir())
+
+        assert tcl.format_working_state_lines("agent_akane", prod_store) == []
+
+        after = {p.name: p.read_bytes() for p in prod_store.iterdir() if p.is_file()}
+        assert after == before, "生產檔案位元不得改變"
+        assert sorted(p.name for p in prod_store.iterdir()) == names_before
+
+    def test_p5_t12_repo_data_store_dir_yields_empty_list(self):
+        repo_data = REPO_ROOT / "data"
+        before = {
+            path.relative_to(repo_data).as_posix(): path.read_bytes()
+            for path in repo_data.rglob("*")
+            if path.is_file()
+        }
+        assert tcl.format_working_state_lines("agent_akane", repo_data) == []
+        after = {
+            path.relative_to(repo_data).as_posix(): path.read_bytes()
+            for path in repo_data.rglob("*")
+            if path.is_file()
+        }
+        assert after == before, "repo data/ 不得被改動"

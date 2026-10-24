@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
 if TYPE_CHECKING:  # pragma: no cover — 僅供型別檢查（執行期不匯入 ⇒ 無循環相依）
@@ -86,12 +86,21 @@ class ThinkOutcome:
     remaining_gap_count : int    思考後仍開著的資訊缺口數
     decided : bool               是否已「想完」（缺口全消）
     reason : str                 機器可讀的原因碼
+    think_prompt_sha256 : str    **本次思考實際送出的 prompt** 的 sha256（64 hex）
+
+    🔴 **CAMPAIGN-B-P4 §2.3（語意變更）**：``think_prompt_sha256`` 從「Phase 2 提示詞
+    的 sha256」改為「**本次思考實際送出的** prompt 的 sha256」。
+    稽核錨點必須**由送出者回報**（:class:`DeterministicMockThinker` 回報它送出的
+    Phase 2 提示詞；:class:`LLMThinker` 回報 ``last_prompt_sha256``＝它送出的 LLM
+    提示詞）⇒ **接收者（閉環）不得自行重算**（重算＝指回 Phase 2 模板＝指錯對象）。
+    帶預設值 ``""`` ⇒ 既有構造呼叫**相容**（未回報者＝誠實留白，不是猜測）。
     """
 
     partial_resolution: float
     remaining_gap_count: int
     decided: bool
     reason: str
+    think_prompt_sha256: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -99,7 +108,23 @@ class ThinkOutcome:
             "remaining_gap_count": int(self.remaining_gap_count),
             "decided": bool(self.decided),
             "reason": str(self.reason),
+            "think_prompt_sha256": str(self.think_prompt_sha256),
         }
+
+
+def _prompt_sha256(prompt: str) -> str:
+    """提示詞的 sha256（**送出者**用；接收者不得重算 ⇒ 此函式只供思考器呼叫）。"""
+    return hashlib.sha256(str(prompt).encode("utf-8")).hexdigest()
+
+
+def _with_prompt_sha(outcome: ThinkOutcome, sha256: str) -> ThinkOutcome:
+    """把**送出者**知道的提示詞 sha256 附在 outcome 上（送出者回報 ⇒ 接收者不重算）。
+
+    🔴 sha256 為空（**根本沒送出任何提示詞**，例如預算用盡）⇒ 誠實留白。
+    """
+    if not sha256:
+        return outcome
+    return replace(outcome, think_prompt_sha256=str(sha256))
 
 
 # ── 提示詞建構 ───────────────────────────────────────────────────────────
@@ -204,6 +229,10 @@ class DeterministicMockThinker:
 
     🔴 同一輸入兩次 :meth:`think` 必須**完全相同**（守衛 P2-T7）—— 不得引入
     ``id()``／``time()``／``hash()``／物件雜湊等非確定性成分。
+
+    🔴 **CAMPAIGN-B-P4 §2.3**：本思考器**回報它送出的**提示詞 sha256（送出者回報
+    ⇒ 稽核錨點才不會指錯對象）。Mock 送出的就是 Phase 2 提示詞 ⇒ 值與舊行為
+    **逐位元相同**（同步路徑零行為變化）。
     """
 
     def think(self, req: "ThinkRequest", prompt: str) -> ThinkOutcome:
@@ -214,6 +243,7 @@ class DeterministicMockThinker:
                 remaining_gap_count=0,
                 decided=True,
                 reason="no_open_info_gap",
+                think_prompt_sha256=_prompt_sha256(prompt),
             )
         remaining = gap_count - 1
         return ThinkOutcome(
@@ -221,6 +251,7 @@ class DeterministicMockThinker:
             remaining_gap_count=remaining,
             decided=(remaining == 0),
             reason="resolved_one_info_gap",
+            think_prompt_sha256=_prompt_sha256(prompt),
         )
 
 
@@ -228,6 +259,9 @@ class NullThinker:
     """不消解（**對照組**）：``partial_resolution=0.0``、
     ``remaining_gap_count=req.info_gap_count``、``decided=False``、
     ``reason="null_thinker"``。
+
+    🔴 **CAMPAIGN-B-P4 §2.3**：同樣**回報它送出的**提示詞 sha256（與 Mock 同款
+    ⇒ 同步路徑的 working_state 逐位元不變）。
     """
 
     def think(self, req: "ThinkRequest", prompt: str) -> ThinkOutcome:
@@ -239,6 +273,7 @@ class NullThinker:
             remaining_gap_count=gap_count,
             decided=False,
             reason="null_thinker",
+            think_prompt_sha256=_prompt_sha256(prompt),
         )
 
 
@@ -471,6 +506,11 @@ class LLMThinker:
       直接回 fail-closed（``reason="llm_call_budget_exhausted"``）；
     - ``max_tokens``（預設 400）＝ 每次呼叫的輸出上限；
     - ``max_retries``（預設 0）＝ **禁止重試**（傳給 proxy ⇒ 恰好 1 次 HTTP 嘗試）。
+
+    🔴 **CAMPAIGN-B-P4 §2.3（稽核錨點）**：本思考器回傳的 outcome 一律帶
+    ``think_prompt_sha256``＝**它實際送出的** LLM 提示詞的 sha256（即
+    :attr:`last_prompt_sha256`）⇒ 稽核軌跡不再指回 Phase 2 模板。
+    預算用盡（**根本沒送**）⇒ 誠實留白 ``""``（不假裝送過）。
     """
 
     def __init__(
@@ -535,19 +575,26 @@ class LLMThinker:
             )
         except Exception:  # noqa: BLE001 — fail-closed（不讓例外冒泡到呼叫端）
             self.calls["failed"] = int(self.calls.get("failed", 0)) + 1
-            return _fail_closed_outcome(gap_count, "llm_call_failed")
+            return _with_prompt_sha(
+                _fail_closed_outcome(gap_count, "llm_call_failed"), self.last_prompt_sha256
+            )
 
         if raw is None:
             self.calls["failed"] = int(self.calls.get("failed", 0)) + 1
-            return _fail_closed_outcome(gap_count, "llm_call_failed")
+            return _with_prompt_sha(
+                _fail_closed_outcome(gap_count, "llm_call_failed"), self.last_prompt_sha256
+            )
 
         text = str(raw).strip()
         if not text:
             self.calls["failed"] = int(self.calls.get("failed", 0)) + 1
-            return _fail_closed_outcome(gap_count, "llm_parse_failed")
+            return _with_prompt_sha(
+                _fail_closed_outcome(gap_count, "llm_parse_failed"), self.last_prompt_sha256
+            )
 
         self.calls["succeeded"] = int(self.calls.get("succeeded", 0)) + 1
-        return parse_llm_outcome(text, req)
+        # 🔴 CAMPAIGN-B-P4 §2.3：**送出者回報**它實際送出的提示詞 sha256。
+        return _with_prompt_sha(parse_llm_outcome(text, req), self.last_prompt_sha256)
 
 
 __all__ = [
