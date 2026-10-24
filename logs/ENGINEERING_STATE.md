@@ -4918,3 +4918,63 @@ A 組＝HEAD(`85b0ab7`) 乾淨樹；B 組＝**同一棵樹** ＋ 本票改動（
 🔺 本票新增的 collectable 測試檔在 worktree 內**未被 git 追蹤**（worker 不得 `git add`），
 主大腦合入時需 `git add tests/inner_life/test_p5_data_plane_guard.py`，否則 repo hygiene
 守衛會紅。
+
+## 0.1.66 RECALL-POOL-ZERO-DIAGNOSIS：可回憶池 0 顆根因唯讀解剖（**三個假設全部量化；池 0 不是門檻問題，是產出端結構性缺口**）（2026-10-24 12:0x-12:2x EDT）
+
+**工單**：`logs/RECALL-POOL-ZERO-DIAGNOSIS-WORK-ORDER.md`（9,183 bytes；唯讀，未修改）。
+**交付**：`logs/RECALL-POOL-ZERO-DIAGNOSIS-REPORT.md`（新增，worktree 內）。
+**性質**：**純唯讀診斷**。**本票 0 程式變更**（`src/**` 一行未動）⇒ **未跑全庫回歸**（無程式變更即無回歸對象）。
+**量測時刻**：2026-10-24T16:05:53Z；入口＝既有唯讀工具 `scripts/recall_readiness_cli.py`（`sandbox-only` 模式）＋ 整合量測 `%TEMP%\recall_diag_final.py` → `%TEMP%\recall_diag_final.json`。
+**執行環境**：worktree `C:\Users\bbfcc\AppData\Local\Temp\recall_diag_wt`（detached HEAD `85b0ab7`）；生產資料一律用主 repo 絕對路徑 `...\soul-os-harness\data`。
+**代碼一致性**：worktree `85b0ab7` vs 主 repo `7facd88` 差一個 commit（P5-②），已逐檔比對 `git diff 85b0ab7..7facd88 -- src/inner_life/ src/sage/ scripts/recall_readiness_cli.py` ⇒ 僅 `tension_closure_loop.py`／`tension_thinking.py` 變動，**召回與 SAGE 路徑逐位元相同** ⇒ 量測結論對生產有效。
+
+### ① 結論摘要（池為什麼是 0）
+
+**不是任何一道召回門檻太苛刻，而是生產圖譜裡不存在任何一顆「四層 × 可召回狀態 × 非隔離」的節點。**
+
+- 全圖 **1054** 顆節點中，四層（`value`／`belief`／`trait`／`essence`）只有 **227** 顆；其餘 **827** 顆是 `pattern`（結構性不可召回，78.46%）。
+- 這 227 顆裡 **224** 顆 `active`、**1** 顆 `weakening`、**2** 顆 `dormant`；池只認 `dormant | superseded`。
+- 那 2 顆 `dormant` **恰好**是 SOUL-BUG-010 隔離處置產生的 2 顆 `value`（`quarantine` 事件把 `lifecycle_state` 同時寫成 `dormant`）⇒ 隔離閘門再砍一次 ⇒ **`dormant ∩ clean = 0`**。
+- 全圖 `superseded` = **0**，且**結構性不可達**：`record_contradiction()` 的唯一呼叫點在 `engine.supersede()` 內（`soul_elevation/engine.py:1178`），而 `supersede()` 以「矛盾證據數達門檻」為前提 ⇒ 累積器恆空 ⇒ 死鎖（專案內已載明：`src/inner_life/contradiction_probe.py:11-13`；Phase 1 只定義不落地）。
+- ⇒ **池 = 0 顆，且在現行接線下無法靠等待自然長大。**
+
+**三個假設的逐條結論：**
+
+| 假設 | 結論 | 關鍵數字（分子／分母／單位） |
+|---|---|---|
+| **H-A** SAGE Fact 存入門檻過高 | **不成立** | facts 實寫 **2132 筆**（E 母體）／分 agent：yua 856、ruka 646、anna 214、rem 138、mai 120、akane 99、mahiru 43、miku 5、ram 5、aoi 3、mami 1、minami 1、shino 1；分 source：inference 1971／user 161；分 origin：`lived_experience` 2132/2132（100%）；distinct predicate **886** 種（1 字 78／2 字 306／3 字 179 種）。**寫入門檻只有 schema 驗證（`writer.py:358-362`）＋ 去重合併（`writer.py:386-394`），無任何數值門檻。** 差距在寫入之後：facts 只貢獻 **41／2275 = 1.80%** 的證據邊，且 41 條邊的 predicate **41/41 全是 `life_thread_dissolved`**、目標節點 `pattern` 23／`belief` 18／**`value` 0／`trait` 0**。 |
+| **H-B** 召回 SQL／向量過濾太苛刻 | **不成立** | 實際 WHERE 逐條：world(`default`) 103／他 agent per-query／`node_type` 非四層 **827**（78.46%）／欄位殘缺 **0**／隔離 **18**（四層內 2）／狀態非 `dormant|superseded` **1036**（98.29%）。**向量相似度門檻：不存在**（`src/inner_life/` 全目錄 grep 只命中 `trace_reader.py` 的「No embeddings, no vector search」說明）；**score 門檻：不存在**（純字串比對，無排序截斷）。**排除量最大的一條 ＝ `excluded_pattern`（827 顆／78.46%）**，但對四層池不具決定性；**對池具決定性的是狀態閘門**。**反事實**：拿掉隔離閘門 → 池 **2**（仍 < 5）；拿掉型別閘門 → 池 **0**；拿掉狀態閘門 → 池 225。⇒ 最寬鬆而語意仍成立時也只有 2 顆 < `GO_MIN_RECALLABLE_POOL = 5`。 |
+| **H-C** 線頭／對話從未寫入候選表 | **部分成立** | 線頭 **1064 筆**（45 agent，F 母體），依召回實際欄位／型別定義（`node_id` ＋ `node_type ∈ 四層` ＋ `content: str` ＋ `agent_id ≠ "default"`）可成候選者 **0／1064**（`node_type` 欄位出現數 = 0）⇒ **直接路徑根本沒接（schema 不相容）**。但**間接路徑接了且已生效**：`src/soul/life_thread_consolidation_wiring.py:313-314`（`consume(sage_fact_to_input(...))` → `_persist_result(...)`）；數據佐證：線頭 1064 → `life_thread_dissolved` 事實 **51**（4.79%）→ elevation 邊 **41**（80.39%，`source_id` 41/41 命中 live fact_id）。**對話則是根本沒接**：`data/conversations/` 153 檔／886 筆（user 391），`write_turn` 以 `source="user"` 寫入 **161** 筆 facts ⇒ 產生 **0** 條 elevation 邊；圖譜 `trigger_type` 全清（diary:night 986／diary:morning 963／world:weather_temp_change 97／world:rain_started 84／support_propagation 69／dream:dream 35／memory_fact 41）**無任何 conversation 類 trigger**。 |
+
+**排除原因分佈（池級，互斥；母體＝1054 顆）**：`excluded_pattern` **827**（78.46%）＞ `excluded_state_active` **224**（21.25%）＞ `blocked_by_quarantine` **2**（0.19%）＞ `excluded_state_weakening` **1**（0.09%）⇒ **`recallable` = 0（0.00%）**。邊際分佈：pattern 827／active 783／weakening 253／quarantined 18／可召回狀態 18／**superseded 0**。
+
+**既有 CLI 三項輸出 ＋ 門檻差距**（`recall_readiness_cli.py`，stdout 已實體分流）：
+
+| 項目 | 輸出 | 門檻 | 差距 |
+|---|---|---|---|
+| 可回憶池 | **0** 顆 | `GO_MIN_RECALLABLE_POOL = 5` | 差 **5** 顆 |
+| 池中 `superseded` | **0** 顆 | `GO_MIN_SUPERSEDED = 1` | 差 **1** 顆 |
+| 命中率（token-level） | **0／200 = 0.0000** | `GO_MIN_HIT_RATE = 0.05` | 差 **5.00** 個百分點 |
+| 非隔離命中比例 | `1.0000` | 1.0 | 🔴 **無定義（0/0 退化值）** |
+
+- **判定：stdout `VERDICT: NO-GO`**；exit code = **1** ＝ 設計行為（NO-GO ⇒ exit 1），非崩潰；判定以 VERDICT 段為準。
+- 🔴 `non_quarantined_hit_ratio = 1.0000` 來自 `src/inner_life/recall_readiness.py:230`（`ratio = (non_quarantined / match_pairs) if match_pairs else 1.0`），本次 `match_pairs = 0` ⇒ 是**硬寫的 0/0 退化值**；正確表述為「總命中 0，比率無定義」，**不可**解讀為「隔離 0% 命中已達成」。
+- stdout／stderr 分流：PowerShell 5.1 會把 native stderr 併進 error stream ⇒ 改用 `Start-Process -RedirectStandardOutput/-RedirectStandardError` 實體分流。stderr 共 4 行，**全部是 jieba 首次載入的正常訊息**（`Building prefix dict…`／`Prefix dict has been built successfully.`／`Loading model from cache…`／`Loading model cost 0.490 seconds.`），**不是錯誤**。
+
+**生產零寫入證據**：對帳母體＝**1244** 個路徑（`data/memory/*/graph.sqlite` ＋ `-wal` ＋ `-shm`、`data/soul/**`、`data/elevation/elevation_nodes.jsonl` ＋ `elevation_lifecycle_events.jsonl`）的 `sha256`／`size`／`mtime_ns` 逐檔比對 ⇒ **變動 0 個檔案（`changed = []`，`production unchanged = True`）**；CLI 自身兩檔對帳亦皆 `True`（`a1cd6a2b04faf9fb`／`b5ed3b852aaf453e` 前后一致）。**刻意不比對整棵 `data/` 樹**（線上服務會並行寫 `data/inner_life/trace.jsonl` 等 ⇒ 整樹比對必然 flaky）。**未對生產 sqlite 開任何連線（含 `mode=ro`）** —— 一律先複製 `graph.sqlite` ＋ `-wal` ＋ `-shm` 到 `tempfile.mkdtemp()` 沙盒再查。
+
+### ② 對戰役二的建議
+
+1. **戰役二的前提尚未成立，且缺的不是調參而是「路徑存在」。** 戰役二的核心是「以前覺得 A，後來發現 B」⇒ 需要池內有 `superseded` 節點；而 `superseded` 現況 = **0 顆**且**結構性不可達**（`record_contradiction()` 唯一呼叫點在 `supersede()` 內 ⇒ 累積器恆空）。⇒ 現在開戰役二＝建在未通的地基上。
+2. **今晚 22:00 夜槽不會改善池。** 依錨點量測，**9 顆** Legacy Value（anna／aoi／mahiru／mai／miku／ram／rem／ruka／yua）的 `days_since_anchor` = 7.15–7.17 天，剛好跨過 `LIFECYCLE_T_WEAKEN_DAYS = 7` ⇒ 會轉 `active → weakening`；但 `weakening` **不在** `RECALLABLE_LIFECYCLE_STATES = {dormant, superseded}` ⇒ **池仍為 0**。（衰減路徑真正能產出非隔離 `dormant` 的最早時點＝**2026-11-16/17（UTC）**：227 顆四層節點的 `days_since_anchor` 分布為 <7d **215**／7-14d **10**／14-30d **0**／≥30d **0**，而 `LIFECYCLE_T_DORMANT_DAYS = 30`。）
+3. **建議順序**（三條最小修復點**只建議不實作**）：① 補 `superseded` 的生產路徑＝`contradiction_probe` Phase 2（**唯一**能把 superseded 從 0 變 ≥1 的路徑；`LIFECYCLE_N_SUPERSEDE = 3`／`SUPERSEDE_MIN_DAYS_SPREAD = 2`／`ESSENCE_N_SUPERSEDE = 5` 屬契約**不得調低**）→ ② 由主大腦＋Owner 裁示池的可召回狀態集合是否納入 `weakening`（**frozen contract 級語意變更**；一處常數集合、不碰寫入路徑、可立刻讓池 = 9 ≥ 5）→ ③ 解耦 `quarantine` 事件的 `dormant` 語意（**不建議**為此調低 `T_DORMANT_DAYS`，那會混淆「失去支持」與「年齡」，違反 `prior.py:62`）⇒ 三項 GO 條件（池 ≥ 5 且 superseded ≥ 1 且命中率 ≥ 5%）全綠後再啟動戰役二。
+4. **不得**用「手動消紅」「偽造邊」「放寬判準讓它出數字」過 GO 閘門（Owner 2026-10-23 裁定：告警疲勞比假紅更壞）。
+
+### ③ 邊界 ＋ 未做（明文排除）
+
+- **0 寫入生產**（`data/**` 未寫／未改名／未刪除；1244 路徑位元組對帳全同）。
+- **0 LLM 呼叫／0 網路／0 合成事件／0 清表／0 重置登錄表**；未跑 `scripts/manual_*.py`；未重啟服務；未 kill 行程。
+- **0 `src/**` 改動** ⇒ **本票 0 程式變更 ⇒ 未跑全庫回歸**。
+- **未 commit／push／git add**；未修改工單；主 repo 的 `data/` 與 `logs/` 全程唯讀。
+- 🔴 **本票未實作任何修復** —— §② 建議 3 條全部只是建議，**實作另開票**。
+- 仍未解（報告 §⑧）：池非空後命中率是否 ≥ 5%（池 = 0 時命中必然 = 0，**無法反推**）；工單 §0「10 顆 Legacy Value」與本次量得 9 顆的歸屬差異；CLI 快照（1053 @ ~16:03Z）與整合快照（1054 @ 16:05:53Z）相差 1 顆（線上服務並行新增，池數字同為 0）；`quarantine` 事件為何同時寫 `dormant`（涉 frozen contract，本票不動）。
