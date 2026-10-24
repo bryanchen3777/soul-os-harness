@@ -6252,3 +6252,72 @@ Owner 2026-10-24 18:3x 指令：「週末醒著的時候，絕不進入被動等
 - **不**改任何 `src/**`／`tests/**`（本輪只有派工與排程調整；worker 在各自的 worktree 施工）。
 - **不**重啟服務、不殺行程、不寫生產 `data/**`、0 真實 LLM 呼叫、0 外部 API。
 - **不**提前合入（合入仍待主大腦獨立複核）。
+
+## 0.1.77 兩條離線線的進度與**失敗分類**（2026-10-24 19:0x EDT）
+
+### ① C-lite 第一輪**失敗** —— 分類為**基礎設施層**，不是設計或程式失敗
+
+- task `bg_385c306a-8cdf-4450-9eff-2d70f096f562` **status＝failed**
+- 失敗訊息逐字：`LLM request timed out: no response from the provider within 300000ms.
+  Raise it with MCODE_LLM_FIRST_EVENT_TIMEOUT_MS (milliseconds, 0 disables) or the host's per-model firstEventTimeoutMs.`
+- 🔺 **發生位置＝survey 階段**（worker 最後一步仍在讀 hygiene 守衛的 index 解析）⇒ **一行程式都還沒寫**。
+- 實況：`%TEMP%\cjudge_wt` worktree **已建立但乾淨無檔案**（`git status --short` 空）⇒ **零殘留、零污染**。
+
+⇒ **分類判準（可重用）**：子代理失敗必須先分三類，再決定處置 ——
+① **基礎設施層**（模型逾時／provider 故障／環境掛掉）⇒ **原樣重派**，工單與設計**不動**；
+② **設計層**（工單自相矛盾／規格不足）⇒ **改工單**再派；
+③ **程式層**（守衛紅／變異沒轉紅／回歸紅）⇒ **改交付**。
+**把 ① 誤判成 ② 是最壞的處置**（會為了掩蓋一個環境故障而改壞一個沒錯的工單）。
+
+### ② 處置：**原樣重派**，並把上一輪燒掉的 survey 預先答掉
+
+- 重派 task：`bg_7616e396-68fd-4061-8aa6-f02468c0bd7b`（同一 worktree `%TEMP%\cjudge_wt`，**可重用**）。
+- 🔺 **重點改善**：上一輪 worker 把預算花在 survey（讀契約／canonical 尾段／兩個既有原型／AST 守衛樣式／
+  LLM-judge 慣例／共用計數器慣例／hygiene 守衛的 index 解析）⇒ **本輪把這些答案全部寫進派工指令**：
+  - 共用計數器的既有慣例＝`src/inner_life/tension_thinking.py`（`self.calls` dict：
+    `attempted`／`succeeded`／`failed`／`budget_exhausted`；預算判斷＝
+    `if int(self.calls.get("attempted", 0)) >= self.max_calls:` → `budget_exhausted += 1` → fail-closed）；
+  - AST 守衛樣式＝`tests/inner_life/test_contradiction_accumulator_prototype.py` 的
+    `test_s3_module_never_touches_engine_write_paths()`（`ast.walk` 找 `ast.Attribute`／`ast.Import`／`ast.ImportFrom`）；
+  - canonical 追加格式＝追加 `## 0.1.NN`（不得覆寫）；
+  - worktree **已存在且乾淨**（可直接用；壞掉才 `worktree remove` 後重建）；
+  - 明確加一句「**不要反覆 survey**；上述已給全部答案 ⇒ 直接寫碼」。
+
+### ③ A 線（G-1＋G-2）**早期預審**（主大腦親讀當前產出，worker 仍在跑）
+
+| # | 預審項 | 結果 |
+|---|---|---|
+| P1 | **I7 直接匯入** | ✅ 乾淨：僅 `dataclasses`／`typing`／`elevation_adapter`；**無** `src.llm`／`httpx`／`requests`／`socket`／`subprocess`／`urllib`／`asyncio`／`soul_elevation` |
+| P2 | **F5** | ✅ `return float(old_node["confidence"])` ＝ **逐位元**保留 |
+| P3 | **G-2** | ✅ provenance 五鍵齊全（`old_node_id`／`old_content`／`old_confidence`／`old_source_ids`／`new_source_ids`） |
+| P4 | **守衛筆數** | ✅ **恰 9 筆**（`test_i1`…`test_i9`） |
+| P5 | **fail-closed** | ✅ `apply_revision` 只 catch `ValueError`；**未**呼叫 `record_contradiction`／`supersede`／`reinforce`（G-3 專屬） |
+| P6 | 🔺 **`old_content` 的取法**（worker 的設計**優於**工單原寫法） | 工單的 `RevisionTarget` 固定欄位**不含** `old_content`，而 G-2 的 provenance **必含**它 ⇒ worker **從注入的引擎 `engine.get_node()` 取回舊節點** ⇒ 簽章**零偏離**工單，且 provenance 描述的是**引擎當下真正的舊節點**而非選擇器快照（血緣不會因快照過期而失真）。主大腦已實測 `elevation_adapter._rebuild_engine_for` **L932-935 確實**把該 agent 的**全部**節點（含 soul node）載進 `engine._nodes` ⇒ `get_node()` 對本路徑可用 ✅ |
+
+⇒ 🔺 **已即時 steer（趁 worker 未收工）兩項**：
+1. **fail-closed 邊界要「自覺地」定案**：主大腦實測 `soul_elevation/engine.py:292-297` ——
+   `engine.get_node()` 找不到時拋的是 **`KeyError`**（不是 `ValueError`）⇒ 而 `apply_revision` 只 catch `ValueError`
+   ⇒ 舊節點若不在引擎註冊表，`KeyError` 會**冒泡**而非回 `False`。
+   ⇒ 要求 worker 二選一並**寫進 docstring 與 canonical**：**(甲)** 明確 catch `KeyError` 歸為 fail-closed
+   （**但不得擴大 catch 範圍**）／**(乙)** 保持只 catch `ValueError` 並明寫「`KeyError` 在正確接線下
+   **理論上不可達**（`_rebuild_engine_for` L932-935），真發生代表呼叫端配對錯誤，**應當冒泡**以免掩蓋接線錯誤」。
+   **主大腦傾向（乙）**（冒泡比靜默更能暴露接線錯誤）。
+2. **一項揭露要求**：本模組 `from src.inner_life.elevation_adapter import _node_candidate_dimension`
+   ⇒ **間接**觸及 `soul_elevation`（`elevation_adapter` 模組層匯入 `StubElevationLLM`）⇒
+   I7 守的是**直接匯入**層級 ⇒ **合規**；且 `soul_elevation` 純 Python、import 期 0 成本 0 檔案 I/O ⇒
+   **0 LLM 成本仍成立**。⇒ 要求在模組 docstring 與 canonical **各寫一句揭露**；
+   **不得**為了「零間接依賴」而複製 `_node_candidate_dimension` 的實作（⇒ 重造輪子，違背工單「沿用既有函式」）。
+
+### ④ 主大腦已備妥**獨立複核 harness**（不等 worker 自報）
+
+`%TEMP%\iso_diag\review_revchain.py`（唯讀主大腦自寫，**改副本、repo 不動**）：R1 檔案範圍（必須恰 3 檔）／
+R2 frozen 紅線 ＋ `elevation_adapter.py` 必須未動／R3 守衛恰 9 筆且全綠／R4 直接匯入禁令 ＋ F5 ＋ G-2 五鍵 ＋
+無 G-3 專屬呼叫／R5 **主大腦自寫的 4 條變異**（F5 改成 0.5／丟掉 `old_source_ids`／引入 `soul_elevation`／
+移除 `except ValueError`）必須**各自恰好**打紅／R6 worktree sha256 前後不變。
+⇒ worker 一回報即可**立刻**獨立複核，不採信自報數字。
+
+### 本條目**不**做的事
+
+- **不**改任何 `src/**`／`tests/**`（本輪只有派工、steer 與 canonical 追加）。
+- **不**重啟服務、不殺行程、不寫生產 `data/**`、0 真實 LLM 呼叫、0 外部 API。
+- **不**因 C-lite 的**基建層**失敗而改動任何工單或設計。
