@@ -5698,3 +5698,146 @@ I6（快取）**走的是同一條還原路徑**。⇒ 本票另取工單的後�
 > ⇒ `git diff` 不含它 ⇒ 主大腦合入時**必須** `git add tests/infra/test_isolated_data_root_guard.py`，
 > 否則 repo hygiene 守衛（`tests/infra/test_repo_hygiene_tracked_tests.py`）會紅
 > （成因＝尚未 `git add`，非缺陷）。
+
+---
+
+## 0.1.69 FEAT-GRAPHSTORE-WRITE-CONTENTION：行程內寫鎖競爭（**量測先行**；機制已釐清 ＋ **離線**修正已實作；**生產尚未套用**）（2026-10-24 15:3x-19:0x EDT）
+
+本票把 2026-10-24 10:36 的 8 筆 `database is locked` 從「症狀」追到「**誰持鎖、持多久、為什麼不 commit**」，
+並依量測實作**對症**的修正。完整報告：`logs/FEAT-GRAPHSTORE-WRITE-CONTENTION-REPORT.md`。
+**一句話**：同一個 `data/memory/<agent>/graph.sqlite` 在**同一行程內**被**多個 `GraphStore` 實例**開啟；
+未滿批的寫交易**持續持有該 DB 的寫鎖**，而持鎖者要等 **15s 的 flush 週期**才 commit —— 但等方的預算只有
+**10s 的 `busy_timeout`** ⇒ 等方**必定輸**、且「鎖撐過 10 秒才浮現」。
+
+### ① 機制全鏈（**實測**，不是推測）
+
+1. **C2「讀取不變寫者」已實作**（`graph_store.py:200-211`：schema 已是現行版本時跳過 `schema_meta` 的 INSERT ＋ commit）
+   ⇒ 「開庫變寫者」**不是**本次觸發源。
+2. **同一 DB 檔的多條連線**：`@_locked` 是 **per-instance** 的 `RLock` ⇒ 同一 DB 檔的**兩個實例互不知情**。
+3. **未滿批的寫交易不 commit**（`graph_store.py:492-495 / 545-548 / 576-579 / 641-644 / 779-782`）
+   ⇒ `_pending_writes` 只在 `>= batch_size(20)` 才 `conn.commit()` ⇒ **該連線持續持有該 DB 的寫鎖**。
+4. ⇒ **跨連線互擋**：另一條連線寫同一個 DB ⇒ 進入 sqlite 的 busy 等待。
+5. ⇒ **busy_timeout(10s) 耗盡才浮現**：等方在持鎖者 commit（**15s**）**之前**就超時（差 5～7s）。
+6. ⇒ **自癒重試再燒一個 10s 視窗**（`graph_store.py` 的 `_locked` 裝飾器：鎖錯誤 ⇒ 重建連線 ⇒ 重試一次）
+   ⇒ **寫鎖被連續持有 ≈20.7 秒**。
+
+### ② 實例數／持鎖時長的實測（**分子／分母／單位**）
+
+| 量 | 分子 | 分母 | 單位 | 來源 |
+|---|---|---|---|---|
+| 行程內 live `GraphStore` 實例數 | **48** | **90**（筆 flush 樣本，100% 皆 48） | 個實例 | 既有埋點 `flush_all_live()` 的 INFO 摘要行（`data/server_nohup.err`） |
+| 磁碟上的 agent DB 路徑數 | 50 | — | 條路徑 | `data/memory/` 的 agent 目錄數 |
+| 同一路徑上**長期**實例數（會對話的 agent） | **2** | 2 | 個實例／路徑 | `motive_provider`（34 agent）∩ `SAGELiteProvider`（2 agent）＝ 2（`agent_yua`、`agent_ruka`） |
+| 同一路徑上**短期**實例數 | ≤3 | — | 個實例／路徑 | `narrative_sublimator` / `decision.py` / `life_thread_orchestrator`（每次呼叫即開即關） |
+| **10:36 撞鎖的 agent** | **2** | 2 | 個 agent | `database is locked` 的 `db=` 路徑 |
+| **撞鎖 agent ⊆ 「同路徑 ≥2 實例」的 agent** | **2** | 2 | 個（**100% 吻合**） | 上兩列的交集 |
+| **寫鎖連續持有時間** | **≈20.7**（`agent_yua`）／**≈20.6**（`agent_ruka`） | — | 秒 | 第一次失敗 10:36:00.934 ＋ 自癒重試至 10:36:11.661 |
+| 持鎖者 pending（未滿批） | **3** | 20（batch_size） | 筆 | 沙盒 M-3 實測 |
+| `busy_timeout` | 10000 | — | ms | `graph_store.py:252`（明文 PRAGMA） |
+| SAGE flush 週期 | **15.0** | — | s | `scripts/run_server.py:2072`（**> busy_timeout 10s ＝ 不對稱的根因**） |
+
+**M-3 沙盒重現（本票關鍵關卡，已通過）**：兩個實例同 DB ⇒ `database is locked`，
+**持鎖時長 10.601s**、逃逸總耗時 **21.217s** ⇒ **與生產日誌（10.0s／20.7s）相差 ≤0.5s** ⇒ 機制成立。
+raw sqlite baseline 4 次獨立量測：10.681／10.548／10.619／10.633 s（mean ≈10.62s）⇒ **持鎖時長 ≈ busy_timeout 的量級**。
+
+### ③ 修正選型 ＋ 被否決的選項及理由
+
+**採用：候選乙 ＋ 候選丙** —— 行程內「同一 DB 路徑」設一個仲裁器（`_PathArbiter`，key ＝ 正規化後的 DB 路徑）；
+**任何寫入前**先找出「同一路徑上**其它實例**裡持有開啟中寫交易者」（`_pending_writes > 0`）⇒ **請它立刻 `commit`**
+（有界等待 2.0s）⇒ 寫鎖被釋放 ⇒ **本次寫入不必撞 sqlite 的 busy_timeout**。
+
+| 選項 | 處置 | 理由 |
+|---|---|---|
+| **候選甲**（同一 DB 路徑單一實例／單一連線） | ❌ **否決** | 🔺 與**既有守衛**互斥：`tests/test_graph_store_c2_read_open.py:74` 斷言「同一路徑上的第二個實例**看不到** writer 未 commit 的列（**快照隔離**）」，該檔自述「**C2 不讓 Reader 看見 Writer 尚未 commit 的列 — 那不是 bug**」。共用連線 ⇒ 快照隔離消失 ⇒ **既有守衛轉紅**；工單 §4.5／§5 要求既有守衛不得被削弱。⇒ **標示此工單內部張力**（見報告 §9），改採乙＋丙。 |
+| **候選乙**（交易生命週期有界） | ✅ **採用（併入）** | 直接對症：把「等方輸在 10s < 15s」的不對稱消掉。**只在競爭時**才提前 commit ⇒ 無競爭路徑的批次效能與可見性語意**逐位元不變**。 |
+| **候選丙**（有界等待的 per-DB-path 鎖） | ✅ **採用（併入）** | 等待上界 2.0s ＋ fail-closed ⇒ **不排隊、30s tick 不疊加**；同時解決 `@_locked` 是 per-instance 的缺口。 |
+| ❌ **提高 `busy_timeout`**（Owner 分支之一） | ❌ **否決** | 現值**已是 10000ms**；且治標不治本（持鎖者仍 15s 才放鎖，調大只是等更久）。 |
+| ❌ **無界外部 mutex**（Owner 分支之二） | ❌ **否決** | 互斥只序列化**呼叫者**、**無法讓持有者加速**；且 30s tick 會疊加 ⇒ 把「快速失敗（資料安全）」變成「慢慢排隊」。 |
+
+### ④ 為什麼 **`busy_timeout` 維持 10000**（不得提高）
+
+1. **現值已是 10000ms**（`timeout=10.0` 與明文 PRAGMA 同值）—— 提高它需要**改一個既有明文契約**。
+2. 🔺 **在 asyncio 行程裡，sqlite 的 busy 等待是「同步阻塞」事件迴圈** ⇒ 調大＝讓事件迴圈停更久
+   ⇒ 可能把「一個 agent 寫失敗」升級為「**整個行程停頓**」。
+3. **它解決不了根因**：持鎖者仍要 15s 才 commit ⇒ 調到 30s 只是把等方的失敗推後，
+   而且 30s tick 可能疊加 ⇒ **比撞鎖更糟**。
+⇒ **維持 10000 不動**（W6 守衛 ＋ 變異 P5 把它釘死）。
+
+### ⑤ fail-closed ＋ 有界等待
+
+- 仲裁等待上界：**`_PATH_ARBITER_WAIT_SECS = 2.0s`**（**遠小於** busy_timeout 10s）。
+- 取不到（持鎖者忙／commit 失敗）⇒ **fail-closed**：丟出 `GraphStoreWriteBusy`（`Exception` 子類）
+  ⇒ 排程器的 per-agent `except Exception` **仍能隔離它** ⇒ 主循環不中斷（W7 守衛）。
+- **不排隊**：等不到就放棄，不會讓 30s tick 疊加（W4 守衛）。
+- 仲裁的 commit 失敗路徑**額外**做 rollback ＋ pending 歸零（與 `flush()` 的既有語意一致）⇒ 寫鎖被釋放、資料不留半吊子。
+
+### ⑥ 守衛 ＋ 變異（**8 筆 / 7 條，每條恰好打紅預期的那一個**）
+
+新守衛 `tests/infra/test_graph_store_write_contention_guard.py`：**W1** 沙盒重現（機制敏感度）／
+**W2** 同實例 `@_locked` 仍序列化／**W3** 修正有效（21.2s → 0.000155s）／**W4** 有界等待 ＋ fail-closed／
+**W5** 共享生命週期（close 不得關掉別人的連線）／**W6** 既有契約未動／**W7** fail-silent／**W8** 0 新副作用。
+
+變異實驗（**改副本模式**，worktree 檔全程不寫入，收尾 sha256 與初始值相同）：
+**P1→W3、P2→W4、P3→W7、P4→W5、P5→W6、P6→W8、P7→W2 —— 全部 RED-OK**（其餘 7 筆仍綠）。
+
+### ⑦ 全庫回歸（**基線在當下 HEAD `b8c6f12` 重算**）
+
+解譯器＝**repo 的 `.venv`**（Python 3.11.15）；兩輪皆為 `pytest -q tests`；cwd＝各自的 tree。
+基線樹＝**worktree 的完整複製**（含 `data/`、`personas/`、`clients/`、`configs/`、`.git`），
+但 `src/memory/sage/graph_store.py` 以 `git show HEAD:…` **逐位元還原**、且不含本票新增的守衛檔。
+
+| 樹 | failed | passed | skipped | errors | 耗時 | returncode |
+|---|---|---|---|---|---|---|
+| **改動前**（乾淨 HEAD `b8c6f12` 完整複製） | 48 | **7,284** | 80 | 11 | 770.5s（0:12:48） | 1 |
+| **改動後**（本票最終樹） | 48 | **7,292** | 80 | 11 | **779.3s（0:12:57）** | 1 |
+
+⇒ **passed ＋8 ＝ 本票新增的 8 筆守衛**（工單 §4.5 的「基線 ＋ 8 筆」✅）；
+**failed／errors／skipped 逐項相同**；**失敗／錯誤名稱逐筆比對：新增 0、消失 0**
+⇒ **既有守衛未被削弱**（4 檔定向守衛另跑：**22 passed**）。
+🔴 那 48 failed ＋ 11 errors **全部是 worktree 環境性失敗**（`.git` 是檔不是目錄 ⇒ 以 git index
+為基準的守衛無法解析），在**乾淨 HEAD 的基線回歸裡逐筆相同**；本票新增的 2 個 untracked 檔
+**未**增加任何新失敗。
+
+### ⑧ 🔺 誠實聲明
+
+- 本票是**機制釐清 ＋ 離線修正**；**生產尚未套用** —— 修正要**重啟服務**才生效，且**須 Owner 授權重啟**。
+  本票**未**重啟、**未**部署、**未**殺任何行程、**未**寫生產。
+- **不宣稱已消除**行程內寫鎖競爭：本修正消除的是「**同一行程內、同一 DB 路徑、多實例**」這一類
+  （已量測：21.217s → 0.000155s）；若根因在**更上層**（例如**外部行程**的長時間未提交寫入者），
+  **不保證**能避免未來同型事件。
+- 本修正**不**處理**跨行程**競爭；`busy_timeout` 仍是 10s 的明文契約。
+- M-2 的「持鎖者身分」是**由證據鏈推得**（同一路徑的另一實例 ＋ 無外部程序 ＋ 該實例在鎖窗口內有寫入），
+  **不是**生產埋點直接讀出的 ⇒ **最小侵入的 log-only 埋點設計**留待主大腦審定（**本票未自行上線**）。
+
+### ⑨ 未做（明文排除）
+
+未提高 `busy_timeout`；未引入無界排隊；未動 `src/memory/sage/writer.py`（frozen）；未動 11 個 `frozen_dirs` 檔；
+未改 schema 契約／`_SCHEMA_VERSION`／`flush()` 的 rollback 語意；未動 `scripts/run_server.py`（flush 週期 15s 未動）；
+未新增定時器／背景 task／額外連線；未重啟、未部署、未寫生產（`data/**` 唯讀觀測）、0 真實 LLM、0 網路、
+0 對生產 sqlite 的新連線；未 `git add`／`commit`／`push`（**絕對無** `git add .`）；
+未處理召回池／superseded 主線（另一票）。
+
+> ⚠️ **合入注意**：本票新增的 `tests/infra/test_graph_store_write_contention_guard.py` 為 **untracked**
+> ⇒ `git diff` 不含它 ⇒ 主大腦合入時**必須**
+> `git add tests/infra/test_graph_store_write_contention_guard.py`，否則 repo hygiene 守衛
+> （`tests/infra/test_repo_hygiene_tracked_tests.py`）會紅（成因＝尚未 `git add`，非缺陷）。
+> 另：`logs/FEAT-GRAPHSTORE-WRITE-CONTENTION-REPORT.md` 同樣是新增檔，需一併 `git add`。
+
+### 主大腦獨立複核（2026-10-24 17:2x EDT，**非 worker 自報**）
+
+複核方式：**主大腦自寫**的變異 harness（**不沿用** worker 的 P1～P7），全部在 `%TEMP%` 沙盒
+（「**改副本**」模式，repo／worktree 檔全程不寫入；收尾以 sha256 逐檔比對證明未寫入）。
+
+| # | 複核項目 | 方法 | 結果 |
+|---|---|---|---|
+| W1 | 修正**確實有效**（牙齒） | 變異 **MA**：`_arbiter_prepare_write()` 變成空操作 | **恰好打紅 W3**（無額外紅）✅ |
+| W2 | **fail-silent**（牙齒） | 變異 **MD**：`GraphStoreWriteBusy` 改繼承 `BaseException` ⇒ `except Exception` 抓不到 | **恰好打紅 W7**（無額外紅）✅ |
+| W3 | `close()` 的仲裁登記 | 變異 **MC**：移除 `self._arbiter.discard(self)` | 守衛**仍全綠** ⇒ 但**行為等價**（`WeakSet` 弱引用在物件回收時自動移除）⇒ **非缺陷，是冗餘行**；**不補**（補了等於製造無意義的約束） |
+| W4 | 🔺 **候選甲的互斥性**（架構張力） | 讀既有 `tests/test_graph_store_c2_read_open.py` | 同路徑第二實例在 writer commit 前**必須看不到未提交列**（`cnt == 0` → flush 後 `cnt == 1`）⇒ **候選甲（共用連線／單一實例）會讓這條既有契約轉紅** ⇒ worker 選 **乙＋丙**（保留各自連線 ＋ 寫入前請持鎖者立刻 commit）是**唯一相容解** ✅ |
+| W5 | 🔺 **跨執行緒安全**（關鍵） | 讀 `graph_store.py`：匯入 ＋ 連線參數 ＋ 鎖覆蓋 | `weakref` **已匯入** ✅（未匯入會是整個模組 NameError）；`sqlite3.connect(..., check_same_thread=False)`；**所有寫入方法皆 `@_locked`** ⇒ 仲裁器是在**持鎖者的 RLock 保護下** commit ⇒ 跨執行緒安全 ✅ |
+| W6 | R5 邊界 | 獨立掃描新守衛檔 | **0 subprocess / 0 `os.spawn*` / 0 `os.system` / 0 `os.popen` / 無埠號 / 無啟服務 / 無殺行程** ✅（唯一命中是 docstring 的宣稱字串） |
+| W7 | 新守衛筆數與內容 | 讀檔 | **8 筆（W1～W8）**；**W7 是 `async def`**（簡單的 `def test_` 掃描會漏掉它）⇒ 全 8 筆皆存在 ✅ |
+| W8 | 生產狀態 | 讀 `data/server_nohup.err` ＋ 行程觀察 | **生產未被套用**（未重啟；trampoline PID 8796／`:8000` owner 20568 不變）⇒ 修正**僅在 code**，待夜槽後重大窗口統一上線 ✅ |
+| W9 | 報告與生產日誌的**一致性** | 交叉比對 | 報告稱「10:36 寫鎖連續持有 ≈20.7s（10.0s ＋ 10.7s）」與主大腦先前在生產日誌實測的 8 筆 `database is locked` ＋ 2 筆 `[Goal] 主循环扫描异常` 時序**吻合** ✅ |
+
+⇒ **獨立複核結論：修正本體與守衛成立，可合入 `main`；但生產套用仍須走夜槽後的重大窗口。**

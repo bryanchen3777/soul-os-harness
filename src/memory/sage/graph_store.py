@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -44,6 +45,104 @@ _WAL_CKPT_BUSY_TIMEOUT_MS = 200
 #: 每輪最多處理幾個 live store（**有界**）。0 新排程器計時器 ⇒ 掛既有排程器
 #: 30s wake（`scheduler.py` 的 `SoulScheduler._run_loop` additive 分支）。
 _WAL_CKPT_LIMIT_PER_ROUND = 8
+
+
+#: FEAT-GRAPHSTORE-WRITE-CONTENTION (2026-10-24): 行程內寫入仲裁參數。
+#:
+#: 問題（**實測**，見 logs/FEAT-GRAPHSTORE-WRITE-CONTENTION-REPORT.md）:
+#:   同一個 `data/memory/<agent>/graph.sqlite` 在**同一個行程內**會被多個
+#:   `GraphStore` 實例開啟（生產實測: 48 個 live 實例 / 50 個 agent DB 路徑）。
+#:   未滿批的寫交易（`_pending_writes < batch_size` ⇒ 不 commit）會**持續持有
+#:   該 DB 的寫鎖** ⇒ 另一條連線寫同一個 DB 會一路等到 `busy_timeout`(10s)
+#:   耗盡 ⇒ `database is locked`。2026-10-24 10:36 實測: 寫鎖被**連續持有
+#:   ≥20.7 秒**（自癒重試又燒掉第二個 10s 視窗）。
+#:
+#: 修法（候選乙＋丙）: **寫入前先請「同一路徑上其它實例」立刻 commit**
+#:   ⇒ 寫鎖被釋放 ⇒ 本次寫入不必撞 sqlite 的 busy_timeout。
+#:   🔴 所有等待都**有界**（`_PATH_ARBITER_WAIT_SECS`）且 **fail-closed**
+#:      （取不到就放棄本次寫入、丟出可處理例外）⇒ 排程器 30s tick 不會疊加。
+#:   🔴 **不提高 busy_timeout**（維持 10000 的明文契約）：asyncio 行程裡 sqlite 的
+#:      busy 等待是**同步阻塞**事件迴圈 ⇒ 調大只會讓事件迴圈停更久。
+_PATH_ARBITER_WAIT_SECS = 2.0
+
+
+class GraphStoreWriteBusy(RuntimeError):
+    """寫入仲裁失敗（**fail-closed**）。
+
+    取不到同一路徑的寫入仲裁 ⇒ **放棄本次寫入**（不排隊、不等超過上界）。
+    繼承 `Exception` ⇒ 排程器的 per-agent `except Exception` 仍能隔離它
+    （沿用既有 fail-closed 慣例），不會冒泡成主循環中斷。
+    """
+
+
+class _PathArbiter:
+    """同一 DB 路徑在**行程內**的寫入仲裁（候選乙＋丙）。
+
+    只做兩件事:
+      1. 登記「哪些 GraphStore 實例正在使用這個 DB 路徑」（**弱引用** ⇒ 不阻止 GC）。
+      2. 讓寫入者找出「別的實例裡誰持有開啟中的寫交易」，並請它立刻 commit。
+
+    🔴 **它不是一把會排隊的鎖**：本身不阻塞任何呼叫。真正的等待發生在
+       「請持鎖者 commit」那一步，而那一步**有界**且 **fail-closed**。
+    """
+
+    __slots__ = ("key", "_lock", "_stores", "__weakref__")
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+        self._lock = threading.Lock()
+        self._stores: "weakref.WeakSet[GraphStore]" = weakref.WeakSet()
+
+    def add(self, store: "GraphStore") -> None:
+        with self._lock:
+            self._stores.add(store)
+
+    def discard(self, store: "GraphStore") -> None:
+        with self._lock:
+            self._stores.discard(store)
+
+    def holders_except(self, store: "GraphStore") -> list["GraphStore"]:
+        """回傳「同一路徑上、**其它**實例、持有開啟中寫交易」的那些實例。
+
+        `_pending_writes > 0` ⇔ 該連線的寫交易仍開啟（仍持有該 DB 的寫鎖）。
+        """
+        with self._lock:
+            stores = list(self._stores)
+        out: list[GraphStore] = []
+        for s in stores:
+            if s is store:
+                continue
+            try:
+                if s._pending_writes > 0:
+                    out.append(s)
+            except Exception:  # pragma: no cover - 實例已被回收
+                continue
+        return out
+
+
+#: DB 路徑 → 仲裁器（**弱引用**：沒有實例用到的路徑會自動回收，不留洩漏）。
+_PATH_ARBITERS: "dict[str, weakref.ReferenceType[_PathArbiter]]" = {}
+_PATH_ARBITERS_LOCK = threading.Lock()
+
+
+def _db_path_key(db_path: Path) -> str:
+    """DB 路徑的仲裁鍵（正規化：絕對路徑 + 大小寫不敏感）。"""
+    try:
+        return os.path.normcase(str(Path(db_path).resolve()))
+    except Exception:
+        return os.path.normcase(str(db_path))
+
+
+def _arbiter_for(db_path: Path) -> _PathArbiter:
+    """取得（必要時建立）該 DB 路徑的行程內仲裁器。"""
+    key = _db_path_key(db_path)
+    with _PATH_ARBITERS_LOCK:
+        ref = _PATH_ARBITERS.get(key)
+        arb = ref() if ref is not None else None
+        if arb is None:
+            arb = _PathArbiter(key)
+            _PATH_ARBITERS[key] = weakref.ref(arb)
+        return arb
 
 
 def _locked(method):
@@ -105,6 +204,10 @@ class GraphStore:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.batch_size = batch_size
+        # FEAT-GRAPHSTORE-WRITE-CONTENTION: 登記到「同一 DB 路徑」的行程內仲裁器
+        # ⇒ 寫入前能找出同一路徑上「其它實例」持有的開啟中寫交易，並請它 commit。
+        self._arbiter = _arbiter_for(db_path)
+        self._arbiter.add(self)
         self.graph: nx.MultiDiGraph = nx.MultiDiGraph()
         self._conn: Optional[sqlite3.Connection] = None
         self._pending_writes: int = 0
@@ -178,6 +281,59 @@ class GraphStore:
         except Exception:
             return dropped
         return dropped
+
+    # ── FEAT-GRAPHSTORE-WRITE-CONTENTION: 行程內寫入仲裁 ───────────
+
+    def _arbiter_prepare_write(self) -> None:
+        """寫入前: 請「同一路徑上其它實例」釋放它持有的寫鎖。
+
+        為什麼需要（**實測**，見報告 §2／§3）:
+          同一個 DB 檔在行程內會被多個 `GraphStore` 實例開啟；別的實例未滿批的
+          寫交易會**持續持有該 DB 的寫鎖** ⇒ 本實例的寫入會一路撞到
+          `busy_timeout`(10s) 耗盡 ⇒ `database is locked`
+          （2026-10-24 10:36: 寫鎖被連續持有 ≥20.7s）。
+
+        修法: 寫入前先請持鎖者**立刻 commit**（有界等待）⇒ 寫鎖被釋放 ⇒
+        本次寫入不必等 sqlite 的 busy_timeout。
+
+        🔴 **fail-closed**: 請不到（持鎖者忙／commit 失敗）⇒ **放棄本次寫入**
+        並丟出可處理例外（`GraphStoreWriteBusy`）—— **不排隊、不無限等待**
+        ⇒ 排程器 30s tick 不會疊加。
+        """
+        for holder in self._arbiter.holders_except(self):
+            holder._release_write_lock_for(self)
+
+    def _release_write_lock_for(self, contender: "GraphStore") -> None:
+        """被請求者: 立刻 commit 掉自己開啟中的寫交易，釋放該 DB 的寫鎖。
+
+        🔴 等待**有界**（`_PATH_ARBITER_WAIT_SECS`）: 拿不到自己的鎖就
+        fail-closed（不排隊）。
+        🔴 commit 失敗 ⇒ rollback ＋ pending 歸零（與 `flush()` 的既有語意一致:
+        GOAL-DB-LOCKED-1）⇒ 寫鎖被釋放、資料不留在半吊子狀態。
+        """
+        if not self._lock.acquire(timeout=_PATH_ARBITER_WAIT_SECS):
+            raise GraphStoreWriteBusy(
+                f"[GraphStore] 寫入仲裁失敗（fail-closed）: 取不到寫鎖 "
+                f"db={self.db_path} contender={contender.db_path} "
+                f"wait_secs={_PATH_ARBITER_WAIT_SECS}"
+            )
+        try:
+            if self._pending_writes > 0 and self._conn is not None:
+                try:
+                    self._conn.commit()
+                except Exception as exc:
+                    try:
+                        self._conn.rollback()
+                    except Exception:
+                        pass
+                    self._pending_writes = 0
+                    raise GraphStoreWriteBusy(
+                        f"[GraphStore] 寫入仲裁失敗（fail-closed）: commit 失敗 "
+                        f"db={self.db_path} err={exc}"
+                    ) from exc
+                self._pending_writes = 0
+        finally:
+            self._lock.release()
 
     def _init_db(self) -> None:
         conn = self._get_conn()
@@ -467,6 +623,9 @@ class GraphStore:
 
     @_locked
     def add_fact(self, fact: Fact) -> str:
+        # FEAT-GRAPHSTORE-WRITE-CONTENTION: 寫入前先仲裁
+        # （請同一路徑上其它實例釋放寫鎖；fail-closed ⇒ 不排隊）。
+        self._arbiter_prepare_write()
         # LS-2 修復 (2026-09-05): INSERT 清單補上 confidence 列（DDL v4 即有該列，
         # 清單漏列 → 實際寫入恆為 DB 默認 1.0，自訂值如 0.85 寫不進去）。
         # 向後兼容：Fact.confidence 默認 1.0，未傳時寫 1.0 與原行為逐字節一致；
@@ -513,6 +672,7 @@ class GraphStore:
         """
         if origin is None and horizon_state is None and learned_at is None:
             return False
+        self._arbiter_prepare_write()
         conn = self._get_conn()
         assignments: list[str] = []
         params: list[Any] = []
@@ -568,6 +728,7 @@ class GraphStore:
                 break
         if not found:
             return False
+        self._arbiter_prepare_write()
         conn = self._get_conn()
         conn.execute(
             "UPDATE facts SET weight = ? WHERE fact_id = ?",
@@ -584,6 +745,7 @@ class GraphStore:
         for u, v, k, data in list(self.graph.edges(keys=True, data=True)):
             if data.get("fact_id") == fact_id:
                 self.graph.remove_edge(u, v, k)
+                self._arbiter_prepare_write()
                 conn = self._get_conn()
                 conn.execute(
                     "DELETE FROM facts WHERE fact_id = ?", (fact_id,)
@@ -620,6 +782,7 @@ class GraphStore:
         """
         if at_time is None:
             at_time = time.time()
+        self._arbiter_prepare_write()
         conn = self._get_conn()
         row = conn.execute(
             "SELECT invalidated_at FROM facts WHERE fact_id = ?", (fact_id,)
@@ -767,6 +930,7 @@ class GraphStore:
         """
         from src.goals.models import Goal  # 延迟 import 避免包级循环
 
+        self._arbiter_prepare_write()
         conn = self._get_conn()
         conn.execute(
             """INSERT OR REPLACE INTO goals
@@ -823,6 +987,7 @@ class GraphStore:
         """
         from src.goals.models import validate_goal_transition  # 延迟 import
 
+        self._arbiter_prepare_write()
         conn = self._get_conn()
         row = conn.execute(
             "SELECT state FROM goals WHERE goal_id = ?", (goal_id,)
@@ -883,6 +1048,7 @@ class GraphStore:
         for u, v, k, data in self.graph.edges(keys=True, data=True):
             if data.get("fact_id") == fact_id:
                 self.graph[u][v][k]["is_anchor"] = is_anchor
+                self._arbiter_prepare_write()
                 conn = self._get_conn()
                 conn.execute(
                     "UPDATE facts SET is_anchor = ? WHERE fact_id = ?",
@@ -959,6 +1125,7 @@ class GraphStore:
             return {"imported": 0, "skipped": 0}
 
         if overwrite:
+            self._arbiter_prepare_write()
             conn = self._get_conn()
             conn.execute("DELETE FROM facts")
             conn.commit()
@@ -1148,6 +1315,10 @@ class GraphStore:
             self._conn = None
         # SAGE-FLUSH-1: 不再活躍（close 語意不變，僅註冊表維護）
         GraphStore._live_stores.discard(self)
+        # FEAT-GRAPHSTORE-WRITE-CONTENTION: 只退出「同路徑仲裁」的登記。
+        # 🔴 **不得**連帶銷毀共用狀態：同一路徑上其它實例仍在用它的仲裁器
+        #    （否則它們會回到「兩條連線互撞」的舊機制）。
+        self._arbiter.discard(self)
 
     @_locked
     def vacuum(self) -> None:
@@ -1182,6 +1353,7 @@ class GraphStore:
         evolution._merge 應透過此方法寫入，不得直接操作 DB。
         """
         import json
+        self._arbiter_prepare_write()
         conn = self._get_conn()
         result = conn.execute(
             "UPDATE facts SET merge_reason = ? WHERE fact_id = ?",
