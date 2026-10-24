@@ -4394,6 +4394,41 @@ M5／M6 首跑**意外全綠**（守衛失守）。根因：舊 fixture 的合�
 
 **🔴 待 Owner 裁示（5 項）**：① **重啟授權與時機**（建議 23:00 EDT 之後，避開 22:00 夜槽）；② **補丁是否合入 main**（含 P2a 的取捨：重建連線會丟該 store ≤19 筆未 commit 批次，**刻意**用「寧可丟未落盤批次，也不讓壞連線永久持鎖」）；③ 層 2 若重啟後 30 分鐘內復發 ⇒ 啟動逐 agent 二分定位（補丁已讓告警帶 `agent_id` ＋ traceback ⇒ 定位成本由「5 小時無解」降到「1 分鐘」）；④ **WAL 未 checkpoint** 另開一票（獨立長期健康問題）；⑤ **`data/memory.db` 仍是 `delete` journal 模式**（rollback-journal 下寫者會擋住整個檔案，`emotion.py` 與 `store.py` 兩條寫入路徑共用它）另案處理。
 
+---
+
+#### 0.1.58 CAMPAIGN-B-P3（戰役一）Phase 3 接線：真實 LLM 思考器（**「LLM 說了不算」**）（2026-10-23 21:1x EDT）
+
+**工單**：`logs/CAMPAIGN-B-P3-LLM-THINKING-WIRING-WORK-ORDER.md`（選項甲；決策完整）。**執行位置**：detached worktree `%TEMP%\p3_wt`（**未合 main**）。**git diff `--name-only HEAD` 恰好 3 檔**：`src/inner_life/tension_thinking.py`、`tests/inner_life/test_tension_closure_loop.py`、`logs/ENGINEERING_STATE.md`。
+
+**三個新增符號**（既有 `build_thinking_prompt()` 與 `DeterministicMockThinker` **一個字都沒動**）
+| 符號 | 語意 |
+|---|---|
+| `build_llm_thinking_prompt(req) -> str` | 既有五段（ROLE／CONTEXT／FACTORS／GAPS／ASK）**逐位元沿用** ＋ 第六段 `OUTPUT`（要求單一 JSON 物件、四個固定欄位、明寫「不得臆造」）。**決定性**（同輸入 ⇒ 逐位元相同）。 |
+| `parse_llm_outcome(text, req) -> ThinkOutcome` | 抽 JSON（容忍 ` ```json ` 包裹與雜訊，取**第一個可解析物件**）⇒ 型別校驗 ⇒ **幻覺護欄（4 條規則／5 個檢查點）** ⇒ 組 outcome。**fail-closed 優先**：解析失敗 ⇒ `llm_parse_failed`；型別／護欄不符 ⇒ `llm_outcome_invalid`（`partial=0.0`／`decided=False`／缺口全開；**未新增 reason 代碼**）。`reason` 空字串 ⇒ `llm_outcome`，長度上限 64。 |
+| `LLMThinker(proxy, *, model, max_tokens=400, max_calls=1, calls=None, max_retries=0)` | **async** `think(req, prompt)`；只經由**注入的** proxy（**不 import `src.llm`**、不自建 HTTP、不自帶 key）；預算用盡 ⇒ 不再呼叫 ⇒ `llm_call_budget_exhausted`；proxy 例外／`None`／空字串 ⇒ `llm_call_failed`／`llm_parse_failed`（**例外不冒泡**）；`calls` 計數字典可稽核；`last_prompt_sha256` 可稽核「實際送了什麼」。 |
+
+**守衛測試**：守衛檔 **49 passed / 0 failed**（既有 Phase 1 **13** ＋ Phase 2 **16** ＋ 新增 P4 **20** 筆／13 個編號 P4-T1～P4-T13）。**變異 M1～M7 全轉紅**（baseline ＝ **整檔 49 全綠**，差分基準）：M1→`test_p4_t5_the_resolved_guard_must_exist_as_an_explicit_check`；M2→`test_p4_t6_remaining_or_total_above_the_actual_gap_count_fails_closed` ＋ `test_p4_t6_the_remaining_and_total_guards_must_exist`；M3→`test_p4_t4_unparsable_response_fails_closed`；M4→`test_p4_t9_budget_exhaustion_stops_further_calls`；M5→`test_p4_t10_proxy_exception_is_contained`；M6→`test_p4_t1…` ＋ `test_p4_t2_llm_prompt_keeps_the_five_existing_sections_verbatim` ＋ `test_p4_t11…`；**M7**→`test_p4_t13_not_decided_but_zero_remaining_is_rejected`。**repo 檔 sha256 前後逐位元相同**（harness：`%TEMP%\p3_harness\mutation_harness.py`，**改副本**模式，repo 檔全程唯讀）。
+
+**幻覺護欄（4 條規則／5 個檢查點）的具體輸入 → fail-closed**（缺口數 = 2；**全部回 `reason="llm_outcome_invalid"`**）
+| 規則 | 檢查點 | 輸入 | 結果 |
+|---|---|---|---|
+| ① | `resolved > gap` | `{"resolved_gap_count": 3, "remaining_gap_count": 0, "decided": true, "reason": "all_done"}` | `llm_outcome_invalid`／`partial=0.0`／`decided=False`／`remaining=2` |
+| ②／③ | `remaining > gap`／`resolved+remaining > gap` | `{"resolved_gap_count": 0, "remaining_gap_count": 3, …}`；`{"resolved_gap_count": 2, "remaining_gap_count": 1, …}` | 同上（`llm_outcome_invalid`） |
+| ④-a | `decided=True` 但仍有缺口 | `{"resolved_gap_count": 1, "remaining_gap_count": 1, "decided": true, …}` | 同上 |
+| ④-b | `decided=False` 卻 `remaining=0`（**自相矛盾**） | `{"resolved_gap_count": 1, "remaining_gap_count": 0, "decided": false, "reason": "contradiction"}` | 同上（`partial=0.0`／`decided=False`／`remaining=2`） |
+
+**零真實呼叫證明**：全部 P4 守衛以 **script backend**（假 LLM 通道，**不 import `src.llm`**）驅動 ⇒ 呼叫計數 **1/1**（`attempted=1`、`succeeded=1`）；AST 斷言：`tension_thinking.py` 的 import 集合＝`{__future__, dataclasses, hashlib, json, src.inner_life.tension_closure_loop, typing}` ⇒ **無** `httpx`／`requests`／`urllib`／`socket`／`subprocess`／`src.llm`／`asyncio`（P2-T15 原守衛仍綠）。
+
+**真實 LLM 驗收（1 agent × 1 呼叫；Owner 已核准 `max_calls=1`／`max_tokens=400`／`retries=0`；**額度已用完，本票禁止第二次**）**：**已執行**。provider `ollama`、model `deepseek-v4.1-flash:1017`（**沿用** `configs/default.yaml` ＋ `.env` 既有設定，未另立模型）；輸入＝**真實生產快照**（`agent_akane` 線頭 78 列 ⇒ `info_gap_count=64`，唯讀複製進沙盒）。結果：`partial_resolution=0.015625`（=1/64）／`remaining_gap_count=63`／`decided=false`／`reason="one_gap_resolved"` ⇒ 通過全部護欄（1≤64、63≤64、1+63=64≤64、decided=false ⇒ remaining≥1 ✔）。**用量**：`prompt=1497`／`completion=259`／`total=1756` tokens；耗時 1.14 s；`calls.attempted=1`（**禁重試生效**，`max_retries=0`）。**零生產寫入**：驗收行程自匯入起即 `SOUL_OS_DATA_DIR` 指向自建沙盒 ⇒ proxy 的 `MemoryStore`／`CONV_DIR` 全落在沙盒（沙盒 `memory.db` 40960 B 已生成）；主 repo `data/**` 在該時窗內的 mtime 變動全部是**線上服務 runtime 檔**（heartbeat／server_nohup／elevation trace／tts mp3），與本行程無關。
+
+**🔴 四項裁示（主大腦 2026-10-23 21:2x EDT 已裁定）**
+1. **`drive_loop_async()` 未實作 → 接受**（工單內部矛盾：§2.3 要求新增 async 閉環變體，但它要動 `tension_closure_loop.py`＝**第 4 檔**，與 §1「恰好 3 檔」衝突）⇒ 本次依 3 檔硬上限，**只在測試檔**放同步橋接器 `_SyncLLMThinkerBridge`（`asyncio.run`）⇒ **生產 async 閉環移入 Phase 4 票**（Phase 4 須動 `tension_closure_loop.py`）。
+2. **護欄 ① ② 在數學上被 ③ 蘊含（`resolved+remaining ≤ gap` 且兩者 ≥ 0 ⇒ 單獨移除 ① 或 ② 行為不變）→ 接受 AST 存在性斷言作法**：行為等價時 AST 存在性斷言是唯一能區分 ①②③ 的手段 ⇒ P4-T5／P4-T6 各加一道 `_gt_check_lefts` 結構性斷言；**公開契約 `reason="llm_outcome_invalid"` 未變**。
+3. **`think_prompt_sha256` 記的是 Phase 2 提示詞 → 接受，列為 Phase 4 強制前置**（同一真實快照實測：Phase 2 提示詞 2428 字元／sha256 `8fe5d587…` vs 實際送出 2943 字元／sha256 `cc8631a3…`；LLM 提示詞以 Phase 2 提示詞為前綴 ⇒ 五段逐位元保留）⇒ Phase 4 必須改記 `LLMThinker.last_prompt_sha256`，否則稽核軌跡指錯對象；**本票不改**（會動第 4 檔）。
+4. **`decided=False` 卻 `remaining_gap_count==0`（LLM 自相矛盾）→ 裁示加護欄、fail-closed**（理由與 ①②③ 同源：自相矛盾的回應不可信）⇒ 本次新增**護欄 ④-b**（`not decided and remaining == 0` ⇒ `llm_outcome_invalid`／`partial=0.0`／`decided=False`／`remaining=req.info_gap_count`）＋ 守衛 **P4-T13**（拒收案例 ＋ **反向**案例：`decided=True` ＋ `remaining=0` 仍合法通過）＋ 變異 **M7**（移除 ④-b ⇒ `test_p4_t13_not_decided_but_zero_remaining_is_rejected` 轉紅）。🔴 **reason 代碼未新增**（仍為 `llm_outcome_invalid`；下游解析面零擴張）。
+
+**其他事實留痕**：① 工單 §3 的 P4-T11 寫「working_state 的 4 個 extras 含 `reason`」與凍結欄位集不符（`WORKING_STATE_FIELDS` **無** `reason`；`reason` 在**張力事件 payload**）⇒ 本次斷言事件 payload 的 4 個 extras ＋ working state 的 `partial_resolution`／`remaining_gap_count`／`decided`／`open_gap_count_after`；② `LLMThinker` 傳 `max_retries=0` 給 `generate_text`（工單 §2.3 的呼叫面未列，但 §5／Owner 核准「禁重試」⇒ 用 proxy 自身的開關實現）；③ `model` 參數僅作**稽核標記**（`generate_text` 不接受 model；實際模型由 proxy 既有設定決定）；④ **worktree 基線的兩處環境佈建**（非程式缺陷）：worktree 的 `data/` 是空的 ⇒ `P2-T12` 的對帳基準恆空而恆紅 ⇒ 已把生產的 47 個唯讀對帳檔**複製**進 worktree 的（gitignored）`data/`（生產端 sha256 前後 0 變動）；worktree 位於 `%TEMP%` 之下 ⇒ `T10` 的「store_dir 不在 temp 之下」前提不成立 ⇒ harness 以 `TEMP/TMP` 指向 `%TEMP%\p3_sandbox_tmp`（worktree 之外）⇒ 整檔全綠（主大腦獨立複核確認：主 repo 綠，非 Phase 3 缺陷）。
+
 
 
 

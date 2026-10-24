@@ -27,6 +27,7 @@ CAMPAIGN-B-P2 §3.3 P2-T1～P2-T16 — 張力驅動思考（沙盒；**不燒 LL
 from __future__ import annotations
 
 import ast
+import asyncio
 import hashlib
 import importlib.util
 import inspect
@@ -34,6 +35,7 @@ import json
 import os
 import sys
 import tempfile
+import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -802,3 +804,437 @@ class TestP2T16ClosureLoopHasNoLlmProxy:
         assert not _imports_any(names, "src.llm.proxy"), (
             f"{path.name} 不得 import src.llm.proxy"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# CAMPAIGN-B-P3 §3 — 守衛測試 P4-T1～P4-T12
+# （工單：logs/CAMPAIGN-B-P3-LLM-THINKING-WIRING-WORK-ORDER.md）
+#
+# 🔴 零真實呼叫：P4 守衛全部以 **script backend**（假 LLM 通道）驅動
+#    ⇒ 零網路、零成本、可重現（AST 斷言見 P4-T12）。
+# 🔴 幻覺護欄：LLM 說了不算 —— resolved／remaining／decided 全部受**實際缺口數**約束。
+# ═══════════════════════════════════════════════════════════════════════
+
+#: Phase 2 提示詞的**逐位元基準**（sha256；2026-10-23 釘住 ``build_thinking_prompt`` 未變動）。
+PHASE2_PROMPT_SHA256 = "d37bf79274ef5bd636a1ffae31b117f011bc970ea1c001f1747266518268f5c0"
+
+#: 2 個缺口、LLM 消解 1 個的**合法**回應（script backend 回放用）。
+VALID_OUTCOME_2_GAPS = (
+    '{"resolved_gap_count": 1, "remaining_gap_count": 1, '
+    '"decided": false, "reason": "llm_one_gap_left"}'
+)
+
+
+class _ScriptBackend:
+    """**零成本**的假 LLM 通道（script backend）：記錄呼叫、可回放預設回應。
+
+    🔴 **不 import** ``src.llm``（避免載入 proxy 的排程接線副作用）⇒ 只以
+    **介面契約**模擬：``generate_text(messages, agent_id=, max_tokens=, **kwargs)``
+    —— 與 :class:`~src.llm.proxy.LLMProxy` 的呼叫面一致。
+    """
+
+    def __init__(
+        self,
+        responses: Optional[List[Any]] = None,
+        raises: Optional[BaseException] = None,
+    ) -> None:
+        self.calls: List[Dict[str, Any]] = []
+        self._responses = list(responses or [])
+        self._raises = raises
+
+    async def generate_text(
+        self,
+        messages: List[Dict[str, str]],
+        agent_id: str = "system",
+        max_tokens: int = 200,
+        **kwargs: Any,
+    ) -> Any:
+        self.calls.append(
+            {
+                "messages": messages,
+                "agent_id": agent_id,
+                "max_tokens": max_tokens,
+                "kwargs": kwargs,
+            }
+        )
+        if self._raises is not None:
+            raise self._raises
+        if self._responses:
+            return self._responses.pop(0)
+        return None
+
+
+class _SyncLLMThinkerBridge(tt.LLMThinker):
+    """把 **async** 的 ``LLMThinker.think()`` 橋接成**同步** Thinker（沙盒接線用）。
+
+    🔴 為什麼需要：``LLMProxy.generate_text`` 是 async ⇒ ``LLMThinker.think()``
+    必須是 async（工單 §2.3）⇒ 既有**同步** ``drive_loop()`` 無法直接 await。
+    本橋接器**只存在於測試檔**：生產的 async 閉環變體（``drive_loop_async``）
+    需要動 ``tension_closure_loop.py``（第 4 檔）⇒ 不在本票範圍
+    （工單 §7.3：``git diff --name-only HEAD`` 恰好 3 檔）。
+    """
+
+    def think(self, req: Any, prompt: str) -> Any:  # type: ignore[override]
+        return asyncio.run(tt.LLMThinker.think(self, req, prompt))
+
+
+def _gt_check_lefts(func: Any) -> List[str]:
+    """AST 層：函式內所有 ``<左> > gap_count`` 比較的左側原始碼。
+
+    用途：把**每一道幻覺護欄的存在性**釘死。
+    🔴 為什麼需要「存在性」斷言：護欄 ③（``resolved + remaining > gap``）在數學上
+    **蘊含**護欄 ①② ⇒ 單純移除 ① 或 ② 時**行為不變** ⇒ 只靠行為斷言無法證明
+    「那條變異本身」被轉紅 ⇒ 必須另外以結構性斷言證明檢查真的在程式碼裡。
+    """
+    source = textwrap.dedent(inspect.getsource(func))
+    tree = ast.parse(source)
+    lefts: List[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+            continue
+        if not isinstance(node.ops[0], ast.Gt):
+            continue
+        for comparator in node.comparators:
+            if isinstance(comparator, ast.Name) and comparator.id == "gap_count":
+                lefts.append(ast.unparse(node.left))
+    return lefts
+
+
+# ── P4-T1：LLM 提示詞含 OUTPUT 段 ─────────────────────────────────────
+class TestP4T1LlmPromptHasOutputSection:
+    """P4-T1 — LLM 提示詞必含**六段**標題 ＋ **四個** JSON 欄位名。"""
+
+    def test_p4_t1_llm_prompt_carries_six_sections_and_four_json_fields(self):
+        req = _make_request()
+        prompt = tt.build_llm_thinking_prompt(req)
+        assert len(tt.LLM_PROMPT_SECTIONS) == 6
+        positions: List[int] = []
+        for section in tt.LLM_PROMPT_SECTIONS:
+            assert section in prompt, f"LLM 提示詞缺段落：{section}"
+            positions.append(prompt.index(section))
+        assert positions == sorted(positions), "六段標題必須依序出現"
+        for field in ("resolved_gap_count", "remaining_gap_count", "decided", "reason"):
+            assert field in prompt, f"OUTPUT 段缺欄位：{field}"
+        assert "JSON 物件" in prompt, "OUTPUT 段必須要求單一 JSON 物件"
+        assert "不得臆造" in prompt, "OUTPUT 段必須禁止臆造外部事實"
+
+
+# ── P4-T2：既有提示詞零變動 ───────────────────────────────────────────
+class TestP4T2Phase2PromptUnchanged:
+    """P4-T2 — ``build_thinking_prompt()`` 與 Phase 2 基準**逐位元相同**。"""
+
+    def test_p4_t2_phase2_prompt_is_byte_identical_to_the_pinned_baseline(self):
+        req = _make_request()
+        prompt = tt.build_thinking_prompt(req)
+        digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        assert digest == PHASE2_PROMPT_SHA256, "Phase 2 提示詞逐位元變動了"
+
+    def test_p4_t2_llm_prompt_keeps_the_five_existing_sections_verbatim(self):
+        req = _make_request()
+        base = tt.build_thinking_prompt(req)
+        llm_prompt = tt.build_llm_thinking_prompt(req)
+        assert llm_prompt.startswith(base), "既有五段必須逐位元保留"
+        assert llm_prompt[len(base) :].startswith("\n\nOUTPUT"), "第六段必須接在五段之後"
+
+
+# ── P4-T3：解析成功 ───────────────────────────────────────────────────
+class TestP4T3ParseSuccess:
+    """P4-T3 — 合法 JSON ⇒ outcome 正確且型別正確。"""
+
+    def test_p4_t3_valid_json_is_parsed_into_the_expected_outcome(self):
+        req = _make_request(info_gap_count=2)
+        outcome = tt.parse_llm_outcome(VALID_OUTCOME_2_GAPS, req)
+        assert outcome.partial_resolution == pytest.approx(0.5)
+        assert outcome.remaining_gap_count == 1
+        assert outcome.decided is False
+        assert outcome.reason == "llm_one_gap_left"
+        assert isinstance(outcome.partial_resolution, float)
+        assert isinstance(outcome.remaining_gap_count, int)
+        assert not isinstance(outcome.remaining_gap_count, bool)
+        assert isinstance(outcome.decided, bool)
+
+    def test_p4_t3_fenced_json_and_zero_gap_case(self):
+        req = _make_request(info_gap_count=2)
+        fenced = "```json\n" + VALID_OUTCOME_2_GAPS + "\n```"
+        assert tt.parse_llm_outcome(fenced, req) == tt.parse_llm_outcome(
+            VALID_OUTCOME_2_GAPS, req
+        )
+        empty = _make_request(info_gap_count=0, source_rows=[])
+        outcome = tt.parse_llm_outcome(
+            '{"resolved_gap_count": 0, "remaining_gap_count": 0, '
+            '"decided": true, "reason": "none"}',
+            empty,
+        )
+        assert outcome.partial_resolution == 1.0
+        assert outcome.decided is True
+        assert outcome.remaining_gap_count == 0
+
+
+# ── P4-T4：解析失敗 fail-closed ───────────────────────────────────────
+class TestP4T4ParseFailureFailsClosed:
+    """P4-T4 — 非 JSON／空字串 ⇒ fail-closed（``llm_parse_failed``）。"""
+
+    def test_p4_t4_unparsable_response_fails_closed(self):
+        req = _make_request(info_gap_count=3)
+        for text in ("", "   ", "not json at all", '{"resolved_gap_count": ', "[1, 2, 3]"):
+            outcome = tt.parse_llm_outcome(text, req)
+            assert outcome.partial_resolution == 0.0, text
+            assert outcome.decided is False, text
+            assert outcome.reason == "llm_parse_failed", text
+            assert outcome.remaining_gap_count == req.info_gap_count, text
+
+
+# ── P4-T5：幻覺護欄 ①（resolved 不得大於實際缺口數）────────────────────
+class TestP4T5HallucinatedResolvedCountFailsClosed:
+    """P4-T5 — ``resolved_gap_count > info_gap_count`` ⇒ fail-closed。"""
+
+    def test_p4_t5_resolved_above_the_actual_gap_count_fails_closed(self):
+        req = _make_request(info_gap_count=2)
+        text = (
+            '{"resolved_gap_count": 3, "remaining_gap_count": 0, '
+            '"decided": true, "reason": "all_done"}'
+        )
+        outcome = tt.parse_llm_outcome(text, req)
+        assert outcome.reason == "llm_outcome_invalid"
+        assert outcome.partial_resolution == 0.0
+        assert outcome.decided is False
+        assert outcome.remaining_gap_count == req.info_gap_count
+
+    def test_p4_t5_the_resolved_guard_must_exist_as_an_explicit_check(self):
+        """🔴 護欄 ① 的**存在性**（行為斷言無法與護欄 ③ 區分）。"""
+        lefts = _gt_check_lefts(tt.parse_llm_outcome)
+        assert "resolved" in lefts, f"幻覺護欄 ① 不在程式碼裡：{lefts}"
+
+
+# ── P4-T6：幻覺護欄 ②／③（remaining 與合計不得超額）──────────────────
+class TestP4T6HallucinatedRemainingCountFailsClosed:
+    """P4-T6 — ``remaining > info_gap_count`` 或 ``resolved+remaining > info_gap_count``
+    ⇒ fail-closed。"""
+
+    def test_p4_t6_remaining_or_total_above_the_actual_gap_count_fails_closed(self):
+        req = _make_request(info_gap_count=2)
+        too_many_remaining = (
+            '{"resolved_gap_count": 0, "remaining_gap_count": 3, '
+            '"decided": false, "reason": "x"}'
+        )
+        too_many_total = (
+            '{"resolved_gap_count": 2, "remaining_gap_count": 1, '
+            '"decided": false, "reason": "x"}'
+        )
+        for text in (too_many_remaining, too_many_total):
+            outcome = tt.parse_llm_outcome(text, req)
+            assert outcome.reason == "llm_outcome_invalid", text
+            assert outcome.partial_resolution == 0.0, text
+            assert outcome.decided is False, text
+            assert outcome.remaining_gap_count == req.info_gap_count, text
+
+    def test_p4_t6_the_remaining_and_total_guards_must_exist(self):
+        """🔴 護欄 ②／③ 的**存在性**。"""
+        lefts = _gt_check_lefts(tt.parse_llm_outcome)
+        assert "remaining" in lefts, f"幻覺護欄 ② 不在程式碼裡：{lefts}"
+        assert "resolved + remaining" in lefts, f"幻覺護欄 ③ 不在程式碼裡：{lefts}"
+
+
+# ── P4-T7：decided=True 但仍有缺口 ⇒ fail-closed ──────────────────────
+class TestP4T7DecidedWithRemainingFailsClosed:
+    """P4-T7 — ``decided is True`` 但 ``remaining_gap_count != 0`` ⇒ fail-closed。"""
+
+    def test_p4_t7_decided_true_with_open_gaps_fails_closed(self):
+        req = _make_request(info_gap_count=2)
+        text = (
+            '{"resolved_gap_count": 1, "remaining_gap_count": 1, '
+            '"decided": true, "reason": "done"}'
+        )
+        outcome = tt.parse_llm_outcome(text, req)
+        assert outcome.reason == "llm_outcome_invalid"
+        assert outcome.partial_resolution == 0.0
+        assert outcome.decided is False
+        assert outcome.remaining_gap_count == req.info_gap_count
+
+
+# ── P4-T8：型別錯誤 ⇒ fail-closed ─────────────────────────────────────
+class TestP4T8TypeErrorsFailClosed:
+    """P4-T8 — bool 冒充 int／float 冒充 int／負數／decided 非 bool／reason 非 str／
+    欄位缺漏 ⇒ 一律 fail-closed。"""
+
+    def test_p4_t8_wrong_types_or_missing_fields_fail_closed(self):
+        req = _make_request(info_gap_count=2)
+        cases = [
+            # bool 冒充 int
+            '{"resolved_gap_count": true, "remaining_gap_count": 1, "decided": false, "reason": "x"}',
+            # float 冒充 int
+            '{"resolved_gap_count": 1.0, "remaining_gap_count": 1, "decided": false, "reason": "x"}',
+            # 負數
+            '{"resolved_gap_count": -1, "remaining_gap_count": 1, "decided": false, "reason": "x"}',
+            # decided 非 bool
+            '{"resolved_gap_count": 1, "remaining_gap_count": 1, "decided": "false", "reason": "x"}',
+            # reason 非 str
+            '{"resolved_gap_count": 1, "remaining_gap_count": 1, "decided": false, "reason": 7}',
+            # 欄位缺漏（reason）
+            '{"resolved_gap_count": 1, "remaining_gap_count": 1, "decided": false}',
+            # 欄位缺漏（remaining）
+            '{"resolved_gap_count": 1, "decided": false, "reason": "x"}',
+        ]
+        for text in cases:
+            outcome = tt.parse_llm_outcome(text, req)
+            assert outcome.reason == "llm_outcome_invalid", text
+            assert outcome.partial_resolution == 0.0, text
+            assert outcome.decided is False, text
+            assert outcome.remaining_gap_count == req.info_gap_count, text
+
+
+# ── P4-T9：呼叫預算 ───────────────────────────────────────────────────
+class TestP4T9CallBudgetIsEnforced:
+    """P4-T9 — ``max_calls`` 用盡後**不再呼叫**（script backend 計數不增加）
+    且回 fail-closed（``llm_call_budget_exhausted``）。"""
+
+    async def test_p4_t9_budget_exhaustion_stops_further_calls(self):
+        backend = _ScriptBackend(responses=[VALID_OUTCOME_2_GAPS, VALID_OUTCOME_2_GAPS])
+        thinker = tt.LLMThinker(backend, model="script-model", max_calls=1, max_tokens=400)
+        req = _make_request(info_gap_count=2)
+        first = await thinker.think(req, tt.build_llm_thinking_prompt(req))
+        assert first.reason == "llm_one_gap_left"
+        assert len(backend.calls) == 1
+
+        second = await thinker.think(req, tt.build_llm_thinking_prompt(req))
+        assert second.reason == "llm_call_budget_exhausted"
+        assert second.partial_resolution == 0.0
+        assert second.decided is False
+        assert second.remaining_gap_count == req.info_gap_count
+        assert len(backend.calls) == 1, "預算用盡後不得再呼叫"
+        assert thinker.calls["budget_exhausted"] == 1
+        assert thinker.calls["attempted"] == 1
+
+
+# ── P4-T10：失敗不污染 ────────────────────────────────────────────────
+class TestP4T10FailureDoesNotEscape:
+    """P4-T10 — proxy 拋例外 ⇒ ``think()`` 回 fail-closed，**不拋出**。"""
+
+    async def test_p4_t10_proxy_exception_is_contained(self):
+        backend = _ScriptBackend(raises=RuntimeError("boom"))
+        thinker = tt.LLMThinker(backend, model="script-model", max_calls=1)
+        req = _make_request(info_gap_count=2)
+        outcome = await thinker.think(req, tt.build_llm_thinking_prompt(req))
+        assert outcome.partial_resolution == 0.0
+        assert outcome.decided is False
+        assert outcome.reason == "llm_call_failed"
+        assert outcome.remaining_gap_count == req.info_gap_count
+        assert len(backend.calls) == 1
+
+    async def test_p4_t10_none_and_empty_responses_fail_closed(self):
+        cases = ((None, "llm_call_failed"), ("", "llm_parse_failed"), ("   ", "llm_parse_failed"))
+        for response, expected in cases:
+            backend = _ScriptBackend(responses=[response])
+            thinker = tt.LLMThinker(backend, model="script-model", max_calls=1)
+            req = _make_request(info_gap_count=2)
+            outcome = await thinker.think(req, tt.build_llm_thinking_prompt(req))
+            assert outcome.reason == expected, repr(response)
+            assert outcome.partial_resolution == 0.0, repr(response)
+            assert outcome.decided is False, repr(response)
+            assert outcome.remaining_gap_count == req.info_gap_count, repr(response)
+
+
+# ── P4-T11：接線面（script backend → 閉環）────────────────────────────
+class TestP4T11LlmThinkerDrivesTheClosureLoop:
+    """P4-T11 — 以假 backend 回傳合法 JSON ⇒ 閉環產出 ``partially_resolved`` 事件
+    ＋ working state 的 partial_resolution／remaining_gap_count／decided 正確
+    （``reason`` 欄位屬於**事件 payload**，working state 的固定欄位集不含它）。"""
+
+    def test_p4_t11_llm_thinker_drives_the_closure_loop_end_to_end(
+        self, sandbox_store, enabled
+    ):
+        _seed_sandbox_data()  # 2 個資訊缺口
+        backend = _ScriptBackend(responses=[VALID_OUTCOME_2_GAPS])
+        thinker = _SyncLLMThinkerBridge(
+            backend, model="script-model", max_calls=1, max_tokens=400
+        )
+        assert isinstance(thinker, tt.LLMThinker)
+        trace = tcl.drive_loop("agent_akane", FAKE_NOW, sandbox_store, thinker=thinker)
+        assert trace is not None
+
+        events = _read_jsonl(sandbox_store / tcl.TENSION_STORE_FILENAME)
+        assert len(events) == 1, f"沙盒張力承載應恰好 1 筆，實得 {len(events)}"
+        event = events[0]
+        payload = event["payload"]
+        assert event["status"] == "partially_resolved"
+        assert payload["partial_resolution"] == pytest.approx(0.5)
+        assert payload["remaining_gap_count"] == 1
+        assert payload["decided"] is False
+        assert payload["reason"] == "llm_one_gap_left"
+
+        rows = _read_jsonl(sandbox_store / tcl.WORKING_STATE_FILENAME)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["partial_resolution"] == pytest.approx(0.5)
+        assert row["remaining_gap_count"] == 1
+        assert row["decided"] is False
+        assert row["open_gap_count_before"] == 2
+        assert row["open_gap_count_after"] == 1
+        assert row["thinker"] == "_SyncLLMThinkerBridge"
+
+        # 呼叫面：只有 1 次、system+user 兩段、user 必含 OUTPUT 段、禁重試。
+        assert len(backend.calls) == 1
+        sent = backend.calls[0]
+        assert [m["role"] for m in sent["messages"]] == ["system", "user"]
+        assert "OUTPUT" in sent["messages"][1]["content"]
+        assert sent["max_tokens"] == 400
+        assert sent["kwargs"].get("max_retries") == 0
+
+
+# ── P4-T13：decided ⇔ remaining 必須一致（自相矛盾不可信）──────────────
+class TestP4T13DecidedMustMatchRemaining:
+    """P4-T13 — ``decided is False`` 卻宣稱「一個缺口都不剩」⇒ fail-closed
+    （Owner 裁示 2026-10-23 21:2x：自相矛盾的回應不可信）。
+
+    🔴 反向測試：``decided=True`` ＋ ``remaining=0`` 仍**合法通過**
+    （「想完了」與「零剩餘」是一致組合，不被本護欄誤殺）。
+    """
+
+    def test_p4_t13_not_decided_but_zero_remaining_is_rejected(self):
+        req = _make_request(info_gap_count=2)
+        # 🔴 本輸入只被護欄 ④-b 擋下（① 1≤2、② 0≤2、③ 1+0=1≤2 全通過）。
+        text = (
+            '{"resolved_gap_count": 1, "remaining_gap_count": 0, '
+            '"decided": false, "reason": "contradiction"}'
+        )
+        outcome = tt.parse_llm_outcome(text, req)
+        assert outcome.reason == "llm_outcome_invalid"
+        assert outcome.partial_resolution == 0.0
+        assert outcome.decided is False
+        assert outcome.remaining_gap_count == req.info_gap_count
+
+    def test_p4_t13_decided_true_with_zero_remaining_is_accepted(self):
+        """反向：``decided=True`` ＋ ``remaining=0`` ⇒ 合法（不得被誤殺）。"""
+        req = _make_request(info_gap_count=2)
+        text = (
+            '{"resolved_gap_count": 2, "remaining_gap_count": 0, '
+            '"decided": true, "reason": "all_done"}'
+        )
+        outcome = tt.parse_llm_outcome(text, req)
+        assert outcome.reason == "all_done"
+        assert outcome.partial_resolution == pytest.approx(1.0)
+        assert outcome.decided is True
+        assert outcome.remaining_gap_count == 0
+
+
+# ── P4-T12：零真實呼叫 ────────────────────────────────────────────────
+class TestP4T12NoRealNetworkPath:
+    """P4-T12 — 全部 P4 守衛執行期間**不得**有任何真實網路呼叫
+    ⇒ script backend 計數 ＋ AST 斷言（無 httpx／requests／urllib／socket／
+    subprocess／src.llm import）。"""
+
+    def test_p4_t12_thinking_module_has_no_network_import_path(self):
+        path = _effective_module_path(tt)
+        names = _imported_module_names(path)
+        for banned in ("src.llm", "httpx", "requests", "urllib", "socket", "subprocess"):
+            assert not _imports_any(names, banned), f"{path.name} 不得 import {banned}"
+
+    async def test_p4_t12_script_backend_is_the_only_call_path(self):
+        backend = _ScriptBackend(responses=[VALID_OUTCOME_2_GAPS])
+        thinker = tt.LLMThinker(backend, model="script-model", max_calls=1)
+        req = _make_request(info_gap_count=2)
+        outcome = await thinker.think(req, tt.build_llm_thinking_prompt(req))
+        assert outcome.reason == "llm_one_gap_left"
+        assert len(backend.calls) == 1, "P4 守衛期間只允許 script backend 呼叫"
+        assert thinker.calls["attempted"] == 1
+        assert thinker.calls["succeeded"] == 1
