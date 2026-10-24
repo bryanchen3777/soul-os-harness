@@ -1,4 +1,9 @@
-# 工單：FEAT-EMOTION-SINGLETON-LAZY-ISOLATION（測試隔離漏洞：收集期即以生產路徑開啟 sqlite）
+# 工單：BUG-EMOTION-IMPORT-SIDE-EFFECT（架構治理：收集期即以生產路徑開啟 sqlite）
+
+> 🔺 **Owner 2026-10-24 17:5x EDT 核定命名**：本票原名 `FEAT-EMOTION-SINGLETON-LAZY-ISOLATION`，
+> Owner 裁定改以 **`BUG-EMOTION-IMPORT-SIDE-EFFECT`** 立號，並明定
+> **列為後續清理項目、不干擾今晚 22:00 夜槽與隨後的重啟窗口**。
+> （⇒ 本票**不得**在 2026-10-25 12:20 EDT 晨槽前被排進任何重啟窗口。）
 
 > 狀態：**待裁示**（主大腦 2026-10-24 於 FEAT-ISOLATED-DATA-ROOT-FACTORY 驗收期間量測發現）
 > 來源：`logs/ENGINEERING_STATE.md` §2026-10-24 FEAT-ISOLATED-DATA-ROOT-FACTORY ⑧ 之補 R10

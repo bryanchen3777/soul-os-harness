@@ -5841,3 +5841,104 @@ raw sqlite baseline 4 次獨立量測：10.681／10.548／10.619／10.633 s（me
 | W9 | 報告與生產日誌的**一致性** | 交叉比對 | 報告稱「10:36 寫鎖連續持有 ≈20.7s（10.0s ＋ 10.7s）」與主大腦先前在生產日誌實測的 8 筆 `database is locked` ＋ 2 筆 `[Goal] 主循环扫描异常` 時序**吻合** ✅ |
 
 ⇒ **獨立複核結論：修正本體與守衛成立，可合入 `main`；但生產套用仍須走夜槽後的重大窗口。**
+
+## 0.1.70 Owner 裁定落定（2026-10-24 17:5x EDT）：寫鎖修正 ＋ WAL 治理**合併單一重啟窗口**；夜間認知預算防禦上限；戰役二時序；既有漏洞定性
+
+本條目記錄 Owner 2026-10-24 的四項裁定，以及主大腦的落地與獨立複核結果。
+
+### ① 重啟窗口與項目合併裁定（已落地）
+
+- **核准**：把「**寫鎖競爭修正（`111c9ed`）**」與「**WAL 治理（`1aca261`）**」合併為**同一個重啟窗口**。
+  理由（Owner）：兩者在物理層面互為因果依賴 —— 寫鎖修正縮短未滿批交易的鎖持有時間，
+  恰好排除長時間持鎖對 `wal_checkpoint(TRUNCATE)` 獨佔鎖的干擾；拆分重啟只會造成
+  無謂的進程抖動與觀測斷裂。
+- **執行時段**：**2026-10-24 23:15 ～ 23:30 EDT**（今晚 22:00 夜槽演化與 22:44 獨立複核
+  全數落盤之後）。
+- **重啟前必須建立 WAL 快照備份**；重啟**只能**走官方 `.\scripts\server_ops.ps1 restart`。
+- 🔺 **主大腦已排程並武裝**：
+  - 排程票：`post_night_slot_restart_window_2026-10-24_2322`
+    （cron_id `faf9606e-952f-439e-9fda-a08a63b54bdb`，`runAtMs=1792898520000`
+    ＝ **2026-10-24 23:22 EDT**，落在 Owner 核准窗內；排於 22:44 獨立複核窗與
+    23:13:20 的寫鎖觀察票之後）。
+  - 執行器：`C:\Users\bbfcc\.local\bin\soul-os-harness-backups\restart_window.py`
+    （**持久化在 repo 外** ⇒ 不受 `%TEMP%` 清理影響）。
+  - **不依賴任何其他票的產物**：執行器**自帶**獨立複核（見下「Phase 0 閘門」）。
+
+#### 執行器的 fail-closed 結構（主大腦自寫，非即興操作）
+
+| Phase | 內容 | 不過時 |
+|---|---|---|
+| 0 前置閘門 | ①主幹同時含 `111c9ed` 與 `1aca261` ②`HEAD == origin/main` ③`/health == 200` ④旗標 `SOUL_OS_TENSION_DRIVE_LOOP` 未設定且 `data/working_state.jsonl` 不存在 ⑤**夜槽窗（當日 22:00–22:40）有日誌行且 ERROR/CRITICAL/locked/Traceback/Goal 異常全為 0** | **不重啟**，rc=1 |
+| 1 WAL 快照 | `shutil.copy2` **唯讀**複製 47 個 live store 的 `graph.sqlite`/`-wal`/`-shm` ＋ `data/memory.db`（**140 檔**）到 **repo 外**的 `…\soul-os-harness-backups\wal-<ts>\`，逐檔 sha256 驗證 | **不重啟**，rc=1 |
+| 2 重啟 | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\server_ops.ps1 -Action restart`，**絕不**加 `-RedirectStandard*` | 逾時 300s ⇒ **不 kill**，只回報 |
+| 3 重啟後複查 | `/health == 200`、新 pid ≠ 舊 pid、`:8000` owner、`data/server.pid` 三者一致、`server_ops.ps1 status` | rc=3，需人工檢查 |
+| 4 觀察 30 分 | 每 60s 取樣：累積 ERROR/CRITICAL/locked/Traceback/Goal 異常 ＋ live `-wal` 位元組總和 | — |
+
+🔺 **兩個實測修正（演練時抓到的真缺陷）**：
+1. **`data/server.pid` 帶 BOM**（PowerShell `Out-File -Encoding utf8` 寫入 ⇒ 讀到 `"﻿8796"`）
+   ⇒ pid 比對會字串不相等 ⇒ 已加 `strip("\ufeff")`。
+2. **「空窗＝假綠」**：夜槽窗若因時段算錯而落在沒有日誌行的區間，總行數為 0 會被誤判成
+   「無異常」⇒ 已加守門：**窗內總行數為 0 ⇒ 判為「窗算錯」並擋下**。
+   （演練實證：17:37 跑 `--gates-only` ⇒ 因落到 10/23 的空窗而被擋、rc=1 ⇒ 守衛有效。）
+
+🔺 **備份位置刻意在 repo 外**：治理的生效判準母體是「live `data/memory/*/graph.sqlite-wal`」
+⇒ 把備份放進 `data/memory/` 會讓全樹 glob 把備份算進來、**洗掉訊號**
+（這是 WAL 診斷已記錄的坑，見 §0.1.62）。
+
+#### WAL 快照備份（已於裁定當下先行建立一次，證明流程可用）
+
+- 路徑：`C:\Users\bbfcc\.local\bin\soul-os-harness-backups\wal-20261024T213332Z\`
+- 母體：**47 個 live store**；`-wal` **46 檔 / 51,534,432 bytes**；全部 140 檔 / 62,364,256 bytes
+- 驗證：**逐檔 sha256 來源 == 副本，140/140 相符**
+- 🔺 與治理票基準（50,768,112 bytes）差 **+766,320 bytes** ＝ 服務持續寫入所致（非治理失效）。
+
+### ② 夜間認知預算防禦上限（Owner 裁定 **與既有實作完全一致 ⇒ 零程式改動**）
+
+Owner 裁定：旗標在重啟後**維持預設關閉**；未來啟用時，每晚成本防禦邊界為
+**1 Agent × 1 次呼叫**、**單次 ≤400 Tokens**、**禁重試（retries=0）**、超額或解析失敗
+**Fail-Closed 熔斷**、**嚴格沿用 `configs.loader.create_llm_proxy` 既有配置（禁止繞過代理層）**。
+
+主大腦逐條比對 `src/inner_life/tension_thinking.py` 的 `build_llm_thinker_from_config()`：
+
+| Owner 裁定 | 實作（`tension_thinking.py:640-647`） | 結論 |
+|---|---|---|
+| 1 agent × 1 call | `max_calls=1`（**字面值**，不可由環境變數改變） | ✅ 一致 |
+| ≤400 tokens | `max_tokens=400`（**字面值**） | ✅ 一致 |
+| 禁重試 | `max_retries=0` ⇒ proxy 層**恰好 1 次 HTTP 嘗試** | ✅ 一致 |
+| 沿用既有代理配置、禁繞過 | `from configs.loader import create_llm_proxy`（**延遲 import**）→ `create_llm_proxy(cfg, bus)`；模型名只取自 `proxy.model`，**不硬編碼** | ✅ 一致 |
+| Fail-Closed 熔斷 | 預算用盡 → `llm_call_budget_exhausted`；例外 → `llm_call_failed`；空回應 → `llm_parse_failed`；解析/幻覺失敗 → `llm_parse_failed`（**全部不消解、不拋例外**） | ✅ 一致 |
+| 旗標預設 OFF | `SOUL_OS_TENSION_DRIVE_LOOP` 缺省 OFF ⇒ 重啟後**不產生主動呼叫** | ✅ 一致 |
+
+⇒ **本項裁定不需要任何程式改動**；執行器的 Phase 0 閘門亦會實測「旗標未設定 ＋
+`working_state.jsonl` 不存在」作為放行前提。
+
+### ③ 戰役二開闢時序
+
+- **定於今晚夜槽與重啟窗口驗收完成後正式開打**（2026-10-25 重啟窗口驗收後）。
+- 前提（Owner）：今晚 22:00 夜槽將在物理層面確立 **10 顆 Legacy Value** 自然轉入弱化狀態
+  ⇒ 圖譜生命週期分佈達到新穩定態 ⇒ 待 23:xx 重啟解障並驗收 WAL 截斷後，
+  即可在**純淨基線**上啟動 **G-1／G-2／G-3** 的上游認知修訂鏈路施工。
+
+### ④ 既有漏洞防護與審查核定
+
+- ✅ **拔除預設參數捕捉層的盲腸斷言、補全真實防禦牙齒** —— 已完成（I2 加入第三段斷言，
+  新變異 N8／N8b 由「全綠」轉為**打紅 I2**）。
+- ✅ **修正 `TestRealMemoryDb` 的依賴路徑** —— 已完成（顯式傳入真實 production 路徑；
+  不放寬斷言、不改語意；全庫 grep 確認無第二處同類假綠）。
+- ✅ **新暴露的導入期連線漏洞** —— Owner 核准另立架構治理工單，
+  **定名 `BUG-EMOTION-IMPORT-SIDE-EFFECT`**（原檔名 `FEAT-EMOTION-SINGLETON-LAZY-ISOLATION`
+  已 `git mv` 更名為 `logs/BUG-EMOTION-IMPORT-SIDE-EFFECT-WORK-ORDER.md`），
+  **列為後續清理項目、不干擾今晚重啟** ⇒ **不得**排進 2026-10-25 12:20 EDT 晨槽前的任何重啟窗口。
+- 該漏洞的量測事實（主大腦實測，維持有效）：回歸期間 `data/memory.db` mtime 確有變動
+  （服務同秒無日誌）⇒ **確有以生產路徑開啟**；但**內容污染 ＝ 0**
+  （`messages` 0/24,216 列、`agent_emotions` 0/11 列、`intimacy_decay_ledger` 0/4 列，
+  先複製 db→temp 沙盒再唯讀查證）。
+
+### ⑤ 主幹與生產現況（2026-10-24 17:5x EDT）
+
+- 主幹：`HEAD == origin/main == 111c9ed`（`7a3ccb4` Track B → `111c9ed` 寫鎖修正），**零落差**。
+- 回歸（repo 的 `.venv`、主 repo 權威）：Track B 後 **7,410 passed / 0 failed**（857.41s）；
+  寫鎖修正後 **7,418 passed / 0 failed**（906.20s）⇒ 7,402 基線 ＋ 8 ＋ 8 ＝ 7,418 ✅。
+- 生產：服務自 **2026-10-23 23:03:14** 起未重啟（trampoline PID 8796／`:8000` owner 20568／
+  `/health` 200）；全檔 level 統計 **INFO 20,466／DEBUG 4／WARNING 180／ERROR 0／CRITICAL 0**；
+  近 4 小時 **locked 0／Traceback 0**。
