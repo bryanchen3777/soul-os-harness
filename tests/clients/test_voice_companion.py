@@ -408,8 +408,12 @@ class TestAkaneVoiceBrain:
 # ─────────────────────────────────────────────────────────────
 
 class TestFishTTSStreamer:
-    def test_payload_contains_text_reference_model_and_bearer(self):
-        """Payload 正確包含 text/reference_id/format/model，Header 帶 Bearer Token"""
+    def test_payload_contains_text_reference_and_model_is_sent_as_header(self):
+        """Payload 為 text/reference_id/format；模型走 HTTP header `model`（body 無此欄位）。
+
+        2026-10-24 實測釘死：Fish OpenAPI 的 /v1/tts 只把 model 定義為 header 參數，
+        body 放 model 會被伺服器忽略 ⇒ 換成 drama-3 時會安靜 fallback 到 s2.1-pro。
+        """
         session = FakeSession()
         streamer = FishTTSStreamer(api_key="fish-key-123", voice_id="akane-voice-9", model="s2.1-pro-free", session=session)
         audio = streamer.synthesize("你好，Bryan。")
@@ -422,10 +426,26 @@ class TestFishTTSStreamer:
             "text": "你好，Bryan。",
             "reference_id": "akane-voice-9",
             "format": "mp3",
-            "model": "s2.1-pro-free",
         }
         assert call["headers"]["Authorization"] == "Bearer fish-key-123"
         assert call["headers"]["Content-Type"] == "application/json"
+        assert call["headers"]["model"] == "s2.1-pro-free"
+        # body 不得再帶 model（會被忽略且造成「以為換了模型」的假象）
+        assert "model" not in call["json"]
+
+    def test_model_header_uses_configured_drama3(self):
+        """設定 drama-3 ⇒ header 必須是 drama-3（拼錯會靜默 fallback，無法由回應察覺）"""
+        session = FakeSession()
+        streamer = FishTTSStreamer(api_key="k", voice_id="v", model="drama-3", session=session)
+        streamer.synthesize("你好")
+        assert session.calls[0]["headers"]["model"] == "drama-3"
+
+    def test_empty_model_omits_header(self):
+        """model 為空 ⇒ 不送 model header（走伺服器預設 s2.1-pro），不得送空字串"""
+        session = FakeSession()
+        streamer = FishTTSStreamer(api_key="k", voice_id="v", session=session)
+        streamer.synthesize("你好")
+        assert "model" not in session.calls[0]["headers"]
 
     def test_http_error_raises_fish_tts_error(self):
         session = ErrSession()
@@ -681,12 +701,56 @@ class TestFishASRService:
         call = session.calls[0]
         assert call["url"] == self.ASR_URL
         assert call["headers"]["Authorization"] == "Bearer asr-key-1"
-        assert call["data"] == {"language": "zh"}
+        # 預設模型 = transcribe-1-pro ⇒ 附帶 pro 專屬欄位 tag_audio_events=false
+        assert call["headers"]["model"] == "transcribe-1-pro"
+        assert call["data"] == {"language": "zh", "tag_audio_events": "false"}
         assert call["timeout"] == 10.0
         fname, fdata, ftype = call["files"]["audio"]
         assert fname == "speech.wav"
         assert fdata == b"RIFF....WAVE-data"
         assert ftype == "audio/wav"
+
+    def test_model_is_sent_as_header_transcribe_1_pro(self):
+        """ASR 模型走 HTTP header `model`（body 無此欄位）；預設 = transcribe-1-pro。
+
+        2026-10-24 實測：header 缺 → 伺服器安靜改用 transcribe-1 計費且不報錯。
+        """
+        session = FakeASRSession(payload={"text": "你好"})
+        svc = FishASRService(api_key="k", session=session)
+        svc.transcribe(b"wav")
+        call = session.calls[0]
+        assert call["headers"]["model"] == "transcribe-1-pro"
+        assert "model" not in call["data"]
+
+    def test_pro_only_field_tag_audio_events_sent_only_for_pro(self):
+        """tag_audio_events 只有 transcribe-1-pro 接受；transcribe-1 收到會 400 invalid_parameter"""
+        pro = FakeASRSession(payload={"text": "你好"})
+        FishASRService(api_key="k", session=pro, model="transcribe-1-pro").transcribe(b"wav")
+        assert pro.calls[0]["data"] == {"language": "zh", "tag_audio_events": "false"}
+
+        std = FakeASRSession(payload={"text": "你好"})
+        FishASRService(api_key="k", session=std, model="transcribe-1").transcribe(b"wav")
+        assert std.calls[0]["data"] == {"language": "zh"}
+        assert std.calls[0]["headers"]["model"] == "transcribe-1"
+
+    def test_speaker_markers_are_stripped_from_transcript(self):
+        """transcribe-1-pro 會在 text 前綴 <|speaker:0|> ⇒ VC 契約要求純轉錄文字"""
+        session = FakeASRSession(payload={"text": "<|speaker:0|> 你好。 <|speaker:1|> 再見。"})
+        svc = FishASRService(api_key="k", session=session)
+        out = svc.transcribe(b"wav")
+        assert out == "你好。 再見。"
+        assert "speaker" not in out
+
+    def test_single_speaker_text_without_marker_unchanged(self):
+        session = FakeASRSession(payload={"text": "今天天氣真好。"})
+        svc = FishASRService(api_key="k", session=session)
+        assert svc.transcribe(b"wav") == "今天天氣真好。"
+
+    def test_from_config_reads_asr_model(self):
+        cfg = {"fish_audio": {"api_key": "k", "voice_id": "v", "asr_model": "transcribe-1-pro"}}
+        svc = FishASRService.from_config(cfg)
+        assert svc.model == "transcribe-1-pro"
+        assert FishASRService.from_config({"fish_audio": {}}).model == "transcribe-1-pro"
 
     def test_transcribe_non200_returns_empty(self):
         session = FakeASRSession(payload={}, status_code=500)

@@ -1539,6 +1539,11 @@ def test_report(sim_root, clock, capsys, world_records):
     summary_b = summarize_scenario(run_b)
     text = render_report(run_a, run_b, summary_a, summary_b, baseline_b)
     with capsys.disabled():
-        print(text)
+        # 以 UTF-8 位元組寫出報告：Windows 主控台預設 ANSI 碼頁（cp950）無法編碼報告中的
+        # 標點，print() 會丟 UnicodeEncodeError 假紅（2026-10-24 實測：
+        # 同一測試在 PYTHONIOENCODING=utf-8 下 1 passed / 預設碼頁下 UnicodeEncodeError）。
+        # 報告內容仍是同一份 text（assert 檢查的也是它）。
+        sys.stdout.buffer.write(text.encode("utf-8", errors="replace"))
+        sys.stdout.buffer.flush()
     assert "劇本 A" in text and "劇本 B" in text
     assert "容量動態模型" in text and "機率表" in text

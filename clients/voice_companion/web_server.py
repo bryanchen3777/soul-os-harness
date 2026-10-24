@@ -1450,10 +1450,11 @@ def main(argv: Optional[list] = None) -> int:
     api_key = fa.get("api_key") or ""
     api_key_desc = f"{api_key[:4]}…(len={len(api_key)})" if api_key else "(未設定)"
     log.info(
-        "startup agent_id=%s display_name=%s tts_mode=%s voice_id=%s model=%s "
+        "startup agent_id=%s display_name=%s tts_mode=%s voice_id=%s model=%s asr_model=%s "
         "host=%s port=%s scheme=%s config=%s log_file=%s api_key=%s",
         agent_id, display_name, fa.get("mode", "live"), fa.get("voice_id", ""),
-        fa.get("model", ""), host, port, scheme, config_path or "(default config.json)",
+        fa.get("model", ""), fa.get("asr_model", ""), host, port, scheme,
+        config_path or "(default config.json)",
         log_path, api_key_desc,
     )
     if https:

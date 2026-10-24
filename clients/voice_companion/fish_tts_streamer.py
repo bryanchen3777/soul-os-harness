@@ -3,6 +3,14 @@ fish_tts_streamer.py — Fish Audio TTS 串流播放器 + Barge-in 打斷（VC-1
 
 - POST https://api.fish.audio/v1/tts，Headers: Authorization: Bearer <api_key>
 - Payload: {"text": clause_text, "reference_id": voice_id, "format": "mp3"}
+- 🔺 模型選擇走 **HTTP header `model`**（2026-10-24 實測釘死）：
+  Fish Audio OpenAPI 的 `/v1/tts` 只把 `model` 定義為 header 參數
+  （enum: s1 / s2-pro / s2.1-pro / s2.1-pro-free / drama-3），
+  request body schema **沒有 model 欄位** ⇒ 放 body 會被伺服器忽略。
+  且 header 缺或拼錯**不會報錯**，會安靜 fallback 到 s2.1-pro。
+  實測對照（同一段 text + 同一音色）：header drama-3 → `<whisper>` 指令生效
+  （RMS 1359／成聲比 0.275）；header s2.1-pro → 正常成聲（RMS 3195／0.676）；
+  header 拼錯 drama_3 → 安靜退回 s2.1-pro（RMS 3149／0.794）。
 - 多執行緒播放佇列（enqueue → 播放執行緒依序播）
 - Barge-in：interrupt() → 立即停止音訊輸出 + 清空佇列 + 取消排隊中的請求
 
@@ -16,6 +24,12 @@ import logging
 import queue
 import threading
 from typing import List, Optional
+
+# 相對/絕對導入相容（支援 python -m 與直接執行兩種方式；見 akane_live.py 的同款慣例）
+try:  # pragma: no cover - 導入路徑相容
+    from .lang_tags import apply_language_tags, supports_language_tags
+except ImportError:  # pragma: no cover
+    from lang_tags import apply_language_tags, supports_language_tags
 
 DEFAULT_ENDPOINT = "https://api.fish.audio/v1/tts"
 
@@ -112,19 +126,29 @@ class FishTTSStreamer:
         return self._session
 
     def synthesize(self, clause_text: str) -> bytes:
-        """呼叫 Fish Audio TTS，回傳 mp3 bytes。取消旗標已設 → 直接放棄。"""
+        """呼叫 Fish Audio TTS，回傳 mp3 bytes。取消旗標已設 → 直接放棄。
+
+        語言標籤（drama-3）：模型支援時，自動把基底語言與外文片段交替包上語言標籤
+        （依據見 lang_tags.py 的 108 次實測）。不支援的模型（s2.1-pro 等）維持原樣，
+        否則 <english>…</english> 會被當一般文字唸出來。
+        """
         if self._cancel_event.is_set():
             return b""
+        if supports_language_tags(self.model):
+            clause_text = apply_language_tags(clause_text)
         payload = {
             "text": clause_text,
             "reference_id": self.voice_id,
             "format": "mp3",
-            "model": self.model,
         }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        # 模型選擇＝HTTP header（body 無此欄位；放 body 會被忽略且靜默 fallback）。
+        # 與主服務 src/llm/fish_tts_handler.py 的既有做法一致。
+        if self.model:
+            headers["model"] = self.model
         session = self._ensure_session()
         resp = session.post(self.endpoint, json=payload, headers=headers, timeout=30)
         if resp.status_code != 200:

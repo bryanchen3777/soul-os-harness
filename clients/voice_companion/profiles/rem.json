@@ -12,7 +12,8 @@
     "endpoint": "https://api.fish.audio/v1/tts",
     "asr_endpoint": "https://api.fish.audio/v1/asr",
     "tts_ws_endpoint": "wss://api.fish.audio/v1/tts/live",
-    "model": "s2.1-pro",
+    "model": "drama-3",
+    "asr_model": "transcribe-1-pro",
     "mode": "rest",
     "live_format": "pcm"
   },
