@@ -6007,3 +6007,64 @@ Owner 備案寫 WAL 截斷治理「徹底解決 -wal 高達 50.7 MB 永久堆積
 
 - 主幹：`HEAD == origin/main == 391158c`（`74b02f0..391158c` 已推 origin），**零落差**。
 - 本回合零真實 LLM 呼叫、零外部計費、零生產寫入（服務未重啟）。
+
+## 0.1.72 戰役二施工前的前置量測（2026-10-24 18:2x EDT）：六條決定性事實 ＋ 切片順序結論
+
+本條目是**戰役二的施工前量測**（唯讀；零程式改動、零 LLM 呼叫、零生產寫入）。
+目的：在今晚夜槽與重啟窗口資料落盤**之前**，把「G-1／G-2／G-3 的真實機制」量清楚，
+讓明天的工單**建立在事實上而非推測上**。
+
+### 量測方法
+
+- 全 `src/**` 以 `revise(`／`record_contradiction(`／`supersede(`／`reinforce(` 逐檔掃描**實際呼叫點**。
+- 讀外部套件 `C:\Users\bbfcc\.local\bin\soul-elevation\src\soul_elevation\engine.py`／
+  `llm.py` 的 API 本體與門檻邏輯（**repo 外，不可改**）。
+- 讀生產接線 `src/inner_life/elevation_adapter.py`／`src/inner_life/firewall_wiring.py`／
+  `scripts/run_server.py` 的 LLM 注入路徑。
+
+### 六條決定性事實
+
+| # | 事實 | 證據 |
+|---|---|---|
+| **F1** | 🔴 **`src/` 內對 `engine.revise()`／`record_contradiction()`／`supersede()`／`reinforce()` 的實際呼叫點＝ 0 筆**。四個 API 只在 `contradiction_probe.py`／`contradiction_accumulator_prototype.py` 的 **docstring** 裡被提及 | 全 `src/**` 掃描；grep 命中的 13 個檔案中，命中字串全部落在 docstring／註解 |
+| **F2** | 🔴 **死鎖是「3 天長」，不是結構性不可達**：`supersede()` **先把 `source_ids` 寫進累積器**（`engine.py:1176-1184`，內部呼叫 `record_contradiction`），**再**做門檻判定（L1188-1211）。⇒ 第一次呼叫必然 `ValueError`（`spread=1 < 2`），**但累積器已被播種**；第 2、3 天各帶**新的 source_id** 再呼 ⇒ `independent` 累到 3 且 `spread` 到 3 ⇒ **第 3 次成功** | `engine.py:1176-1211` |
+| **F3** | 🔴 **同一 `source_id` 跨日重呼**會被 `(source_id, event_identity=None)` 去重（`record_contradiction` 的冪等鍵，`engine.py:1018-1020`；`supersede()` 固定傳 `event_identity=None`）⇒ **必須每次給不同 `source_id`**，否則 spread 永遠停在 1 天 | `engine.py:1018-1020`／`1178-1184` |
+| **F4** | ✅ **生產的昇華路徑今天用的是確定性樁、不是真實 LLM** ⇒ **戰役二 ＝ 0 LLM 成本**：`run_elevation(llm=None)`（`elevation_adapter.py:650,732`）與 `elevate_matured_patterns(llm=None)`（`:1301,1360`）缺省都用 `StubElevationLLM()`；`FirewalledSubmissionGate` 在 `scripts/run_server.py:663` 建構時**沒有傳 `llm`** ⇒ 整條 SubmissionGate ＋ elevate 路徑都是樁 | `elevation_adapter.py:650,732,1301,1360`／`run_server.py:663` |
+| **F5** | 🔴 **樁的 `classify()` 回傳 `confidence = 0.5`（固定）**、`content` 原樣通過、`node_type = prior_node_type`（`llm.py:60-71`）⇒ 生產的 `revise()` **必須顯式傳 `new_confidence`**，否則會把樁的 0.5 **寫進真實 belief**（＝生產造假值，不可接受） | `soul_elevation/llm.py:60-71`／`engine.py:719` |
+| **F6** | 🔴 **`revise()` 是唯一產出 `lineage_depth ≥ 2` 的 API**，且它對**不同對象**語意不同：對 `pattern` ⇒ `prior_for_llm = old.candidate_node_type` ⇒ 產出**候選 pattern**（**不是靈魂血統**）；對 `belief/value/trait` ⇒ 產出**同層**靈魂結構（reconsolidation，depth=2）✔；對 `essence` ⇒ 保守邊界（valence 反轉 ＋ ≥2 條新獨立證據 ＋ confidence delta 超 0.3，否則只 `_reinforce`、**不改 lineage**） | `engine.py:661-704`／`707-746` |
+
+### 由此得出的切片順序結論（主大腦裁定）
+
+- **G-1 ＋ G-2（同源修訂鏈路）＝ 戰役二第一片**：
+  - `revise()` 是唯一產出 depth ≥ 2 的 API（F6）⇒ **不做 G-1/G-2，`lineage_depth` 永遠是 1**。
+  - 對象必須是**已被消化的 soul node**（`belief/value/trait`），**不是 pattern**、**首批排除 essence**（F6）⇒ 否則改寫不會產生靈魂血統。
+  - **G-2「舊 Source 承接」的機制落點**（不需新增任何常數）：
+    `revise()` 的 `provenance` 參數會被引擎 `merged.setdefault("old_node_id"/"old_content"/"old_confidence")`
+    補上舊節點上下文 ⇒ **呼叫端必須把舊節點的 evidence `source_ids` 一併放進 `provenance`**，
+    否則「重估」只看得到新內容、看不到血統；同時 `source_ids` 要帶**新證據**的 source
+    ⇒ 引擎才會為新節點 N' 追加新證據邊。
+  - 「同族」的**既有**表達＝**候選維度**（`_node_candidate_dimension()`，`elevation_adapter.py:869`）
+    ⇒ 不新增常數、不偽造邊。
+  - 插入點＝**既有的證據驅動迴圈** `elevate_matured_patterns()`（`elevation_adapter.py:1285`，
+    由 `scripts/run_server.py:685` 的 `_elevate_check()` 觸發）⇒ 該檔**不在** frozen 紅線 11 檔內。
+  - ✅ **零 LLM 成本**（F4）⇒ **不需要新的花錢裁示**。
+- **G-3（召回池：`superseded ≠ 0`）＝ 戰役二第二片，且需先做一個裁示**：
+  - G-3 的技術路徑已被 F2／F3 釐死（跨 3 個不同日、各帶不同 source_id 的 `supersede()` 呼叫鏈）。
+  - 🔴 **但「跨日矛盾的 `source_id` 從哪來」尚未有誠實判準**：
+    現有證據模型裡**沒有**「互相矛盾」的語意欄位；而判定矛盾需要**語意判斷**
+    ⇒ 要麼用**真實 LLM 語意判斷**（**涉花錢 ⇒ 須 Owner 裁示**），
+    要麼用**結構性代理**（風險＝**偽造矛盾邊**，Owner 已明文凍結禁止）。
+  - ⇒ **G-3 必須在「矛盾來源判準」被裁示後才開打**；**不得**為了讓 `superseded ≠ 0`
+    而把任何來源硬塞成「矛盾」。
+  - 💡 順帶確認：G-3 **不依賴** G-1/G-2（`supersede()` 對 depth-1 節點即可，門檻只看
+    矛盾數／跨日／essence 額外條件）⇒ 兩條路徑**互相獨立**，可分片推進。
+
+### 本條目**不**做的事
+
+- **不**改任何 `src/**`（本輪純量測）。
+- **不**碰 frozen 紅線 11 檔（agency 5／`src/inner_life/submission_gate.py`／
+  `src/social/identity_firewall.py`／`src/social/producer_gate.py`／`src/world/middleware.py`／
+  `src/memory/sage/writer.py`／`src/soul/decision.py`）。
+- **不**改外部套件 `soul-elevation`（repo 外）。
+- **不**動生產資料、不重啟服務、不殺行程、0 真實 LLM 呼叫、0 外部 API。
+- **不**替 G-3 的「矛盾來源判準」預先下結論（⇒ 升級成裁示項）。
