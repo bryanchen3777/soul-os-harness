@@ -1670,6 +1670,59 @@ Sunset **解除的是「永久卡死」，不是「連續性」本身**：
 
 ---
 
+## 0.5 VC 模型退回 Runbook（Owner 2026-10-24 要求：隨時能退回 s2.1-pro）
+
+**一句話退回**：
+
+```powershell
+.\scripts\vc_model.ps1 rollback -Restart
+```
+
+**只對帳、不改設定**：
+
+```powershell
+.\scripts\vc_model.ps1 status
+```
+
+`status` 會並列「三份設定的值」與「三實例**實際生效**的值（讀啟動日誌）」，
+不一致時直接標示 ⚠️ ⇒ **「設定改了」與「真的換了模型」不再會分家**。
+
+### 0.5.1 為什麼是腳本而不是手改 JSON（三個真實陷阱）
+
+1. **拼錯會靜默 fallback**：模型是 HTTP header 選的，header 缺或拼錯**不報錯**。
+   手改 JSON 打錯一個字（例如 `drama_3`）⇒ 設定看起來改了，實際退回 s2.1-pro，
+   而且你會以為自己在用 drama-3。⇒ 腳本在**寫入前**用官方白名單擋下拼錯。
+2. **模型名就是功能開關**：drama-3 專屬能力全部以模型名為條件
+   （`supports_language_tags()` / `supports_drama3_markup()`）。
+   ⇒ **退回只需改模型名**，程式、護欄、設定其餘部分都不必動。
+3. **只能改 `fish_audio` 區塊**：設定檔裡的 `llm.model` 是 **LLM 模型**
+   （`deepseek-v4.1-flash:1017`），與 TTS 無關；模糊取代會把它一起換掉。
+
+### 0.5.2 退回 s2.1-pro 之後，**哪些能力會自動關閉**（逐項）
+
+| 能力 | 開關 | 退回後 |
+|---|---|---|
+| 語言標籤自動注入（`<chinese>`/`<english>`） | `supports_language_tags()` | **關閉**（不再送標籤，避免 s2.1-pro 把標記唸出來） |
+| 表演標記白名單（方向指示／配對標籤留到 TTS） | `supports_drama3_markup()` | **關閉**（守門回到舊行為：標記整段吃掉） |
+| prompt 的 drama-3 規則段 | `build_system_prompt(allow_drama3=…)` | **不再附加**（`AKANE_VOICE_INVARIANTS` 本體不變） |
+| ASR 模型 | 設定檔 `asr_model` | **不動**（除非另外給 `-AsrModel`） |
+| persona 預算 4000 | `MAX_PERSONA_CHARS` | **不動**（與模型無關，是獨立裁定） |
+
+### 0.5.3 實作與守衛
+
+- 白名單與編輯邏輯的**單一事實來源**＝`clients/voice_companion/model_registry.py`
+  （`lang_tags.py` / `drama3_markup.py` 都從它 import；`scripts/vc_model.ps1` 委派它執行，
+  **ps1 不得內嵌模型名清單**——靜態守衛見 `tests/clients/test_vc_model_registry.py`）。
+- 實測驗證（2026-10-24）：同值寫入後三份設定 **sha256 完全不變**（無格式 churn）、
+  `git diff` 為空（`llm.model` 未被誤傷）、拼錯 `drama_3` **在寫入前被擋**。
+- ⚠️ **`.ps1` 必須存成 UTF-8 with BOM**：PowerShell 5.1 讀無 BOM 的腳本會用 ANSI(cp950)
+  解碼 ⇒ 中文全毀、腳本解析失敗（本輪實踩）。既有 `vc_ops.ps1` 開頭有 BOM 即為此故。
+- 改了設定**沒重啟＝實例仍在跑舊模型** ⇒ 腳本預設不重啟，並明講要跑哪條指令（不做無聲 no-op）。
+- 重啟屬生產動作，需 Owner 授權；重啟路徑仍是 `scripts/vc_ops.ps1`（以 socket owner 為準）。
+
+---
+
+## 1. CURRENT STATE
 
 ### Active milestone
 

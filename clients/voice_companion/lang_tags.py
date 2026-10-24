@@ -29,8 +29,14 @@ from __future__ import annotations
 import re
 from typing import List, Tuple
 
+try:  # pragma: no cover - 導入路徑相容
+    from .model_registry import MODELS_WITH_LANGUAGE_TAGS
+except ImportError:  # pragma: no cover
+    from model_registry import MODELS_WITH_LANGUAGE_TAGS
+
 # 只有 drama-3 支援語言標籤；s2.1-pro 等模型會把 <english> 當一般文字唸出來。
-MODELS_WITH_LANGUAGE_TAGS = frozenset({"drama-3"})
+# 白名單的單一事實來源＝model_registry.py（勿在此另立一份）。
+MODELS_WITH_LANGUAGE_TAGS = MODELS_WITH_LANGUAGE_TAGS
 
 # 語言 → drama-3 標籤名
 _LANG_TAGS = {

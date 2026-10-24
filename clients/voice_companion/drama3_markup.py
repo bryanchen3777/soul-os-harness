@@ -28,6 +28,11 @@ from __future__ import annotations
 import re
 from typing import List, Tuple
 
+try:  # pragma: no cover - 導入路徑相容
+    from .model_registry import MODELS_WITH_DRAMA3_MARKUP
+except ImportError:  # pragma: no cover
+    from model_registry import MODELS_WITH_DRAMA3_MARKUP
+
 # drama-3 配對標籤（官方文件列舉）
 DRAMA3_PAIRED_TAGS = frozenset({
     "whisper", "emphasis", "soft", "fast", "slow", "stress", "forceful",
@@ -41,7 +46,8 @@ DRAMA3_LANG_TAGS = frozenset({
 ALLOWED_TAGS = DRAMA3_PAIRED_TAGS | DRAMA3_LANG_TAGS
 
 # 支援表演標記的模型（只有它會「演出」標記；其他模型會把標記唸出來）
-MODELS_WITH_DRAMA3_MARKUP = frozenset({"drama-3"})
+# 白名單的單一事實來源＝model_registry.py（勿在此另立一份）。
+MODELS_WITH_DRAMA3_MARKUP = MODELS_WITH_DRAMA3_MARKUP
 
 # 整句最多幾個方向指示（LLM 濫用 ⇒ tag soup；1 個是保守值）
 MAX_DIRECTIONS_PER_REPLY = 1
