@@ -1714,6 +1714,12 @@ class SoulScheduler:
                 #     (_last_lifecycle_eval_date) 落在 scheduler 內 ⇒ 每日恰好評估一次，
                 #     30s tick 重入同一 slot 窗不會重複評估；fail-closed 只 log。
                 await self._fire_lifecycle_eval(now)
+                # 5.9 FEAT-SQLITE-WAL-GOVERNANCE (2026-10-24): WAL 治理 — 掛既有
+                #     30s wake 的 additive 分支（與 _goal_scan_all / _fire_world_timer_eval
+                #     / _fire_lifecycle_eval 同級）。
+                #     0 新定時器 / 0 新 tick / 0 新 task / 0 新 sleep；
+                #     fail-silent（例外只 log warning，不阻斷主循環）。
+                await self._fire_wal_checkpoint()
                 # 健康檢查 log
                 if (now.timestamp() - last_health_log) > HEALTH_CHECK_INTERVAL_SECS:
                     next_slot, next_time = self._compute_next_slot(now)
@@ -1729,6 +1735,39 @@ class SoulScheduler:
             except Exception as e:
                 logger.exception(f"[Scheduler] 主迴圈錯誤 (繼續跑): {e}")
                 await asyncio.sleep(30)
+
+    async def _fire_wal_checkpoint(self) -> None:
+        """FEAT-SQLITE-WAL-GOVERNANCE (2026-10-24): WAL 治理 — 回收 `-wal` 殘留空間。
+
+        動機（**實測**，見本票報告 §③ E1/E2/E7）：SQLite 的 `-wal` 檔大小是
+        **歷史高水位** —— PASSIVE checkpoint 只把頁面回寫進 DB 檔、**不縮短
+        `-wal` 檔**（實測 6,147,072 → 6,147,072 bytes，delta **+0**）。而
+        GraphStore 的連線與 process 同壽命 ⇒「最後一條連線關閉時刪檔」永不
+        發生 ⇒ 46 個 agent DB 的 `-wal` 永遠停在 4~6 MB 的殘留空間。
+        ⇒ 以 `wal_checkpoint(TRUNCATE)` 定期截斷回收。
+
+        🔴 **0 新定時器 / 0 新 tick / 0 新 task**：掛在**既有** 30s wake
+        （`_run_loop`）的 additive 分支，與 `_goal_scan_all` / `_fire_world_timer_eval`
+        同級。
+        🔴 **fail-silent**：例外只 log warning，**不阻斷主循環**；checkpoint 取不到
+        鎖（busy=1）只記錄、**不重試**（下一輪 30s 再試）。
+        🔴 **有界**：每輪最多處理 8 個 live store（輪轉覆蓋全部）。
+        🔴 0 新持久化 / 0 新 schema / 0 LLM / 0 網路 / 0 新 DDL。
+        """
+        try:
+            from src.memory.sage.graph_store import GraphStore
+
+            stats = GraphStore.checkpoint_all_live()
+            if stats.get("n_truncated", 0) > 0:
+                logger.info(
+                    f"[Scheduler] WAL checkpoint: {stats['n_truncated']} 個 store 的 "
+                    f"-wal 已截斷回收（busy={stats.get('n_busy', 0)}）"
+                )
+        except Exception:
+            logger.warning(
+                "[Scheduler] WAL checkpoint 巡檢失敗（已隔離，不阻斷主循環）",
+                exc_info=True,
+            )
 
     async def _goal_scan_all(self) -> None:
         """

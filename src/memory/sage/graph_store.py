@@ -34,6 +34,17 @@ def _is_lock_error(exc: BaseException) -> bool:
 #: GOAL-DB-LOCKED-1: 不得自癒重試的方法（失敗必須往上拋，否則資料遺失會變靜默成功）。
 _NO_SELFHEAL_METHODS = frozenset({"flush", "close"})
 
+#: FEAT-SQLITE-WAL-GOVERNANCE (2026-10-24): WAL 治理參數。
+#:
+#: `_WAL_CKPT_BUSY_TIMEOUT_MS` —— checkpoint 期間的**暫時** busy_timeout。
+#:   200ms ⇒ 拿不到鎖就**快速放棄**（SQLite 回 busy=1），**不拖慢**既有排程器
+#:   30s wake（取不到鎖只記錄、不重試；下一輪 30s 再試）。
+_WAL_CKPT_BUSY_TIMEOUT_MS = 200
+
+#: 每輪最多處理幾個 live store（**有界**）。0 新排程器計時器 ⇒ 掛既有排程器
+#: 30s wake（`scheduler.py` 的 `SoulScheduler._run_loop` additive 分支）。
+_WAL_CKPT_LIMIT_PER_ROUND = 8
+
 
 def _locked(method):
     """Decorator: 以 self._lock 串行化方法執行（RLock 可重入）。
@@ -85,6 +96,10 @@ class GraphStore:
     # flush_all_live() 供 scripts/run_server.py 每 15s 掃描呼叫既有 flush()。
     # 只註冊「已存在」的實例，掃描絕不實例化任何新 store。
     _live_stores: "weakref.WeakSet[GraphStore]" = weakref.WeakSet()
+
+    #: FEAT-SQLITE-WAL-GOVERNANCE: WAL checkpoint 的輪轉游標（讓「有界」
+    #: 的每輪處理視窗輪流覆蓋全部 live store，而不是固定前 N 個）。
+    _wal_ckpt_cursor: int = 0
 
     def __init__(self, db_path: Path, batch_size: int = _BATCH_SIZE):
         self.db_path = db_path
@@ -1028,6 +1043,102 @@ class GraphStore:
                     exc_info=True,
                 )
         return n_live, n_flushed
+
+    # ── WAL 治理（FEAT-SQLITE-WAL-GOVERNANCE, 2026-10-24）──────────
+
+    def checkpoint_wal(self) -> tuple[int, int, int]:
+        """以 **TRUNCATE** 模式 checkpoint，把本 DB 的 `-wal` 檔截斷回收。
+
+        為什麼必須 TRUNCATE 而不是 PASSIVE（**實測**，見本票報告 §③ E1/E2/E7）：
+          PASSIVE 只把頁面回寫進 DB 檔，**不會縮短 `-wal` 檔** ——
+          實測 6,147,072 bytes → 6,147,072 bytes（delta **+0 bytes**）。
+          而 `-wal` 檔大小是**歷史高水位**（WAL 被重啟後檔案不縮）⇒ 46 個
+          agent DB 的 `-wal` 會永遠停在 4~6 MB 的殘留空間。
+          SQLite 只有兩種情況會縮小 `-wal`：
+            (1) `wal_checkpoint(TRUNCATE)`；
+            (2) **最後一條連線關閉**時刪檔。
+          GraphStore 的連線與 process 同壽命 ⇒ (2) 永不發生 ⇒ 只有 (1) 能回收。
+
+        🔴 **刻意不用 `@_locked`**：該裝飾器在鎖錯誤時會走 `_reopen_connection()`
+        → **rollback 掉尚未 commit 的 pending writes**（資料遺失）。checkpoint
+        是**回收空間**的旁路動作，絕不能以丟資料為代價 ⇒ 這裡手動取鎖 +
+        全例外攔截（fail-silent）。
+
+        回傳 `(busy, log, checkpointed)`；無連線或例外 ⇒ `(-1, -1, -1)`。
+        `busy=1` 代表「有讀者／寫者擋住」⇒ **只記錄、不重試**（下一輪再試）。
+        """
+        with self._lock:
+            conn = self._conn
+            if conn is None:
+                return (-1, -1, -1)
+            prev_timeout: Optional[int] = None
+            try:
+                row = conn.execute("PRAGMA busy_timeout").fetchone()
+                prev_timeout = int(row[0]) if row else None
+                conn.execute("PRAGMA busy_timeout=%d" % _WAL_CKPT_BUSY_TIMEOUT_MS)
+                try:
+                    res = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                finally:
+                    if prev_timeout is not None:
+                        conn.execute("PRAGMA busy_timeout=%d" % prev_timeout)
+                if res is None:
+                    return (-1, -1, -1)
+                return (int(res[0]), int(res[1]), int(res[2]))
+            except Exception:
+                logger.warning(
+                    "[GraphStore] wal_checkpoint(TRUNCATE) 失敗（已隔離）: db=%s",
+                    self.db_path,
+                    exc_info=True,
+                )
+                return (-1, -1, -1)
+
+    @classmethod
+    def checkpoint_all_live(
+        cls,
+        limit: int = _WAL_CKPT_LIMIT_PER_ROUND,
+    ) -> dict[str, int]:
+        """掃描 live store 並逐一把 `-wal` 截斷回收（**有界**、fail-silent）。
+
+        0 新排程器計時器：呼叫端是**既有**排程器 30s wake（`scheduler.py` 的
+        `SoulScheduler._run_loop` additive 分支 ⇒ `await self._fire_wal_checkpoint()`）。
+        🔺 註：本函式**不是**由 `scripts/run_server.py` 的 15s flush 迴圈呼叫
+        （該檔不在本票範圍內）；早期草稿曾如此描述，**已更正**。
+
+        只掃描**已存在**的實例（WeakSet 迭代）—— 絕不因掃描而實例化新 store。
+        每個實例各自 try/except：單一失敗不中斷其他、也不向外拋。
+        0 新持久化 / 0 新 schema / 0 LLM / 0 網路。
+        """
+        stores = list(cls._live_stores)
+        n = len(stores)
+        stats = {
+            "n_live": n,
+            "n_scanned": 0,
+            "n_truncated": 0,
+            "n_busy": 0,
+            "n_err": 0,
+        }
+        if n == 0 or limit <= 0:
+            return stats
+        start = cls._wal_ckpt_cursor % n
+        picked = [stores[(start + i) % n] for i in range(min(limit, n))]
+        cls._wal_ckpt_cursor = (start + len(picked)) % n
+        for store in picked:
+            stats["n_scanned"] += 1
+            try:
+                busy, _log, _ckpt = store.checkpoint_wal()
+            except Exception:
+                stats["n_err"] += 1
+                logger.warning(
+                    "checkpoint_all_live: checkpoint %s 失敗（已隔離，不中斷其他實例）",
+                    getattr(store, "db_path", "?"),
+                    exc_info=True,
+                )
+                continue
+            if busy == 1:
+                stats["n_busy"] += 1
+            elif busy == 0:
+                stats["n_truncated"] += 1
+        return stats
 
     @_locked
     def close(self) -> None:

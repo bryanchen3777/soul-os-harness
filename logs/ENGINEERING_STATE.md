@@ -4597,3 +4597,44 @@ M5／M6 首跑**意外全綠**（守衛失守）。根因：舊 fixture 的合�
 
 
 
+
+## 0.1.62 FEAT-SQLITE-WAL-GOVERNANCE：WAL 堆積治理（診斷結論 **C-B**；採 TRUNCATE checkpoint；**需重啟才生效**）（2026-10-24 02:3x-02:5x EDT）
+
+**診斷結論 C-B（主大腦獨立複核 B1）**
+- **真正成因＝`-wal` 檔是「歷史高水位」，SQLite 從不主動縮小**：全庫 `src/` 的 `wal_checkpoint` 呼叫數 = **0**；`GraphStore` 連線與 process 同壽命 ⇒ 最後一條連線永不關閉。46 檔合計 50,768,112 bytes 中約 **19,837,744 bytes（39.1%）是純殘留空間**。
+- 🔺 **推翻了先前對 Owner 說過的一個推論**：「重啟前後 `-wal` 位元節數幾乎等量 ⇒ 乾淨關閉未 checkpoint」**不成立** —— 位元節數**結構性不反映 WAL 活動**（實測：服務自己在 03:38~03:39Z 對 `agent_yua` 觸發檢查點＋WAL 重啟：主檔 344,064→376,832 bytes、salt `f9b829a6`→`f9b829a7`，而 `-wal` 仍 6,147,072 bytes）。**位元節數不變 ≠ 未 checkpoint。**
+- **H1（長讀快照釘住檢查點）機制成立且已重現**（事故備份 wal-index：mxFrame=1274、nBackfill=944、read marks [944,1274] ⇒ 330 frames／1,351,680 bytes 未回填），但**未能指認具體長讀點** ⇒ 不滿足 C-A。
+- ⇒ 對母事故 `INCIDENT-GOAL-DB-LOCKED` **層 2 是「收斂而非定案」**：切斷了「WAL 大 ⇒ 長讀擋 checkpoint ⇒ 寫入鎖死前因」這條推理鏈；層 2 的寫鎖持有者**至今仍無證據**。
+
+**TRUNCATE 偏離工單原訂 PASSIVE 的理由與實測數字**
+- PASSIVE **不縮檔**（E2／E7 delta = **+0 bytes**）⇒ 依工單字面實作會得到「治理跑了但 4~6 MB 一點沒少」的**假修復**。
+- TRUNCATE 實測 **6,147,072 → 0 bytes（6.0 ms）**，且**有讀者時回 busy=1 且不截檔**（安全的 fail-fast）。
+- ⇒ 依 Owner 既定原則（**改判準而非放寬判準**；守門必須是可執行的判準差異）採 TRUNCATE。
+
+**實作範圍（4 檔）**
+- `src/memory/sage/graph_store.py`（+109）：新增 `checkpoint_wal()` ＋ `checkpoint_all_live(limit=8)` ＋ 2 常數。
+- `src/soul/scheduler.py`（+39）：**掛既有 30s wake** 的 additive 分支 `await self._fire_wal_checkpoint()` ⇒ **0 新計時器**、**0 新背景 task**、fail-silent、**每輪有界 8**。
+- `tests/infra/test_wal_governance_guard.py`（**新增**，349 行／8 條守衛）。
+- `logs/ENGINEERING_STATE.md`（本條目）。
+- 🔴 **不使用 `@_locked`**（其 `_reopen_connection()` 會 rollback 尚未落盤的寫入）⇒ 不在守衛路徑引入回滾風險。
+
+**守衛與變異**
+- 守衛 **8 條**：baseline **8/8 全綠**；變異 **M1～M9 全數轉紅**（0 ABORT、0 意外全綠；M5／M6／M9 首跑意外全綠是**守衛不足**，已收緊後重跑轉紅）。
+- 回歸對照：乾淨基線 33F/7177P vs worktree 33F/**7185**P ⇒ **+8 通過、新增失敗 0、失敗集合完全相同**。
+
+**🔴 需重啟才生效 ＋ 生效觀察判準（含母體口徑）**
+- 服務自 **2026-10-23 23:03:23** 起未再重啟 ⇒ 本治理程式碼進 main 後**不會**立即生效。
+- 生效判準＝**`-wal` 位元節數下降**（**不是**「有 log」）。🔺 **母體必須先釘死**：全樹 `data/**/*-wal` glob 得 286 檔／104,700,640 bytes，但其中 **46 檔／50,768,112 bytes 是事故備份**（`data/_incident_backup_20261024T030255Z/`，永久凍結）＋ **193 檔／3,164,416 bytes 是 8/9 歷史備份**（`data/memory.backup-20260809/`）⇒ **真正該看的口徑是「47 檔 live `data/memory/*/graph.sqlite-wal` 的總和」**，重啟前基準 = **50,768,112 bytes**（與 B1 診斷當時逐位元相同 ⇒ 自 23:03 重啟後位元組數未變）。基準檔：`%TEMP%\night_obs\wal_baseline_20261024T0140.json`。
+- 備份目錄屬**只回報不清理**的生產狀態 ⇒ 量測腳本須在不動它們的前提下算出正確母體。
+
+**未做（明文排除）**：未部署；**未重啟服務**（⇒ 修復暫不生效）；未殺任何行程；未寫 `data/**`；未動 `src/memory/sage/writer.py` 與其餘 10 個 frozen 檔；未改 `journal_mode`；**真實 LLM 呼叫 0 次、0 外部 API**；未跑 `scripts\manual_*.py`。
+
+**🔺 主大腦合入前獨立複核（逐行讀 `git diff`，非只信守衛結果）發現並已修正的三件事**
+1. **工單內部互斥**：工單 §3「可讀（唯讀）」把 `src/soul/scheduler.py` 列為「**本票只讀、不改**」，但 §5 步驟 5 明文要求「**優先掛既有 30s wake（`scheduler.py` 的 additive 分支慣例）**」⇒ 同一張票自相矛盾。**裁示：以 §5 為準**（它才是實際實作，也是票面背景指定的 +39 行／30s wake），並已就地修正 §3 的清單讓規格自洽。
+2. **註解與 docstring 漂移，且與實作互相矛盾**：`graph_store.py` 的 3 處註解 ＋ 守衛檔 2 處檔頭都寫「呼叫端是**既有 15s flush 迴圈**（`scripts/run_server.py` 的 `_sage_flush_loop`）」，但實際呼叫端是 `scheduler.py` 的 **30s wake**（而 `scripts/run_server.py` **不在本票 4 檔範圍內**）。⇒ 已更正為「排程器既有 30s wake（`SoulScheduler._run_loop` additive 分支 ⇒ `await self._fire_wal_checkpoint()`）」，並在 docstring 留下「早期草稿曾如此描述，已更正」的註記。
+3. **「守衛全綠但規格自相矛盾」的盲區**：守衛的**斷言本身是正確的**（`test_T2_checkpoint_is_wired_into_existing_scheduler_wake` 明寫「必須掛在既有 30s wake（`Scheduler._run_loop`）」），錯的只是敘述 ⇒ **守衛測的是行為、錯的是敘述，兩者可以同時成立而規格仍然爛掉**。⇒ 可操作判準：**合入前必須逐行讀實作本體，不能只信守衛結果**；找出「程式碼說它掛在哪」與「程式碼實際掛在哪」的落差，是抓工單互斥最有效的一刀。
+
+**更正後的證據（以最終樹重跑）**
+- 定向：`tests/infra/test_wal_governance_guard.py` 8 筆 ＋ `tests/test_observability_completeness_1.py` 37 筆 ⇒ **45 筆全綠**。
+- 變異 harness（主 repo 版）：baseline 綠、**M1～M9 全數轉紅（9/9）**、repo 檔 sha256 執行前後不變、EXIT=0。
+- 全庫回歸：**7289 passed / 24 skipped / 32 subtests passed / failed=0 / errors=0 / pytest returncode=0**（12:46）。🔺 該回歸執行於**更正前**的樹，與最終樹的差異為**純註解／docstring**（AST 結構不變：43 個 def/class 完好；註解非 AST 節點、docstring 僅字串常數；守衛檔於收集期已 import），**零 runtime 行為影響**。
