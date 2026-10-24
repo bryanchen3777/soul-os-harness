@@ -5335,3 +5335,153 @@ MockThinker 呼叫次數 = 1
 0 真實 LLM 呼叫、0 外部 API、0 網路；未把旗標打開在生產；
 未做 A/B 對照實驗；未製造 synthetic 張力事件到生產。
 
+
+
+## 0.1.68 FEAT-SUPERSEDED-ACCUMULATOR-PIPELINE：解鎖 `superseded` 死鎖鏈路的**離線原型**（**分支乙：規格候選仍 = 0；正規路徑可行，缺口在「同源不同版命題」的上游事件來源**）（2026-10-24 14:3x-19:0x EDT）
+
+> 工單：`logs/FEAT-SUPERSEDED-ACCUMULATOR-PIPELINE-WORK-ORDER.md`
+> 報告（完整量測）：`logs/FEAT-SUPERSEDED-ACCUMULATOR-PIPELINE-REPORT.md`
+> 量測時點：2026-10-24T18:38:20.583454+00:00｜解譯器：repo `.venv`（Python 3.11.15）
+> 施工位置：`%TEMP%\sup_wt`（detached HEAD `c9ec5e8`）——**主 repo 一行未改**
+
+### ① 結論摘要（**分支判定 = 乙**）
+
+**正規路徑（解開 `superseded` 死鎖鏈路）可行，但上游缺口不在 Phase 2 的「接線」，而在更上游。**
+
+| 項 | 值 | 單位／分母 |
+|---|---|---|
+| 規格候選矛盾（Q1 分子） | **0** | 組 |
+| 符合前提的 `(N, e)` 配對（Q1 分母） | **364** | 組 |
+| 篩選鏈：→ 同 agent＋同 `source_id` | **69／364** | 組／組 |
+| 篩選鏈：→ ＋**同一 lineage 根** | **0／69** | 組／組 |
+| 以引擎既有計數器達門檻的節點 | **0／227** | 顆靈魂節點 |
+
+⇒ **唯一清零點仍是「同一 lineage 根」** ⇒ **死鎖不會因規格判準而解除**。
+
+### ② 與 Phase 1 基線（793／1791）逐項對照：**前提未變**
+
+| 項 | Phase 1 | 本票（1056／2277） | 變化 |
+|---|---|---|---|
+| 節點／邊 | 793／1791 | **1056／2277** | ＋33.2%／＋27.1% |
+| 靈魂節點 | 136 | **227** | ＋66.9% |
+| `E(N)` 配對（分母） | 343 | **364** | ＋6.1% |
+| **規格候選（分子）** | **0** | **0** | **不變** |
+| `lineage_depth` 分佈（靈魂） | `{1:136}` | **`{1:227}`** | **不變（仍全 1）** |
+| 父節點型別（靈魂） | `{pattern:136}` | **`{pattern:227}`** | **不變（仍全 pattern）** |
+| 父為靈魂節點者 | 0 | **0** | **不變** |
+| 相異 lineage 根／總數 | 136／136 | **227／227** | **不變（仍 1:1）** |
+| 近門配對 | 48 | **69** | ＋43.8% |
+| 近門配對用 `support_propagation` | 48／48 | **69／69** | **不變（仍 100%）** |
+| `lineage_depth ≥ 2`（全體） | （未量） | **0／1056** | 🔴 新量測 |
+| `parent → 靈魂節點`（全體） | （未量） | **0／1056** | 🔴 新量測 |
+| `contradiction_pressure` 非空 | （未量） | **0／1056** | 🔴 累積器恆空 |
+
+### ③ 🔺 上游缺口（**誰該產出 revise 鏈、為什麼在生產上沒發生**）
+
+- **能產出 revise 鏈的機制只有兩個**：`engine.revise()`（`soul_elevation/engine.py:641`，
+  產 `parent_node_id = old`／`lineage_depth = old + 1`）與 `engine.supersede()`（`engine.py:1140`）。
+- **兩個在生產上都是 0 呼叫點**：`src/inner_life/elevation_adapter.py` 只呼叫
+  `consume()`／`elevate()`／`reinforce()`；全 repo `git grep revise(` 只命中文件敘述。
+  ⇒ **不是被條件擋掉，是路徑根本不存在**。
+- **事件來源也沒有**：生產鏈（記憶／日記／夢／世界事件 → pattern → 昇華 → 靈魂節點）
+  **只會新增節點、從不改寫既有命題** ⇒ 「同源不同版命題」在生產上**不可能出現**。
+- 🔴 **一個命名陷阱（已抓到）**：`elevation_trace.jsonl` 有 **69 筆 `node_revised`**，
+  但**全部 69 筆**都是 `reason = "reinforced_only"`、`parent_node_id = null`、
+  `lineage_depth = 1` ⇒ 全部來自 **`engine.reinforce()`**（`engine.py:1122`），
+  **不是** `engine.revise()`（`engine.py:777`，該處會寫 `parent_node_id = old.node_id`）。
+  **只 grep `node_revised` 會誤判「revise 鏈已存在」。**
+- 🔴 **以現行探針判準，`supersede()` 產生的鏈結構上無法回饋給探針**
+  （舊節點被標 `superseded` ⇒ 探針排除；新節點的邊 `valid_from_ts == created_ts` ⇒ 不在 `E(N)` 內）
+  ⇒ **走 `revise()` 這條路是唯一可能**。
+
+### ④ 最小上游缺口（**只描述、不實作**）—— 沙盒形狀量測（真實引擎 `revise()` ＋ 真實探針）
+
+| 形狀 | 內容 | 探針候選 |
+|---|---|---|
+| A | 現行生產形狀（兩顆靈魂節點各有自己的 pattern 根） | **0** 組 |
+| B | **真實 `engine.revise()`** 產出的 revise 鏈 | **0** 組 |
+| C | revise 鏈 ＋ revise **之後**落在新版本的支援邊，且其 `source_id` **與舊版共用** | **1** 組 |
+| D | revise 鏈 ＋ revise 後的支援邊，但 `source_id` **不**與舊版共用 | **0** 組 |
+| E | revise 鏈 ＋ **3 條**共用 source、**分屬 3 個不同模擬日**的支援邊 | **3** 組 |
+
+**形狀 E 的 A-3 判定器輸出：獨立矛盾數 3／3、跨模擬日數 3／2 ⇒ 達門檻＝是。**
+⇒ **正規路徑可行**：**不必放寬任何判準、不必調低任何門檻**，只要生產上真的出現形狀 E 的資料。
+
+**上游缺口的最小工程形狀（三件，缺一不可）**：
+
+| # | 缺口 | 現況 |
+|---|---|---|
+| **G-1** | 產生 revise 鏈的**呼叫點**（把既有命題改寫成新版本，父＝靈魂節點） | `engine.revise()` **零生產呼叫點** |
+| **G-2** | **舊 `source_id` 的承接**（讓同一來源同時掛在舊版與新版上） | `revise()` **不**承接舊 `source_ids` |
+| **G-3** | **改寫後的跨日再支持事件**（`valid_from_ts > N'.created_ts` 且跨 ≥2 個模擬日） | 生產無此事件 |
+
+### ⑤ 本票的工程交付
+
+| 檔案 | 動作 | 行數／bytes |
+|---|---|---|
+| `src/inner_life/contradiction_accumulator_prototype.py` | **新增**（A-3 累積器饋入判定器） | 179 行／10,525 bytes |
+| `tests/inner_life/test_contradiction_accumulator_prototype.py` | **新增**（守衛**恰 6 筆** S1～S6） | 248 行／12,508 bytes |
+| `logs/FEAT-SUPERSEDED-ACCUMULATOR-PIPELINE-REPORT.md` | **新增**（完整量測報告） | — |
+| `logs/ENGINEERING_STATE.md` | **追加**本條目 | — |
+| `tests/test_observability_completeness_1.py` | **修改**（`allowed` 逐票新增 1 筆） | `+11 −0` |
+
+**判定器的硬性要求**（逐條自證見報告 §5.2）：**零門檻常數**（模組內**零數值常數**，
+門檻一律 `int(getattr(prior, "LIFECYCLE_*"))`）｜**零 IO／零 LLM**｜**不寫引擎狀態**
+（零呼叫 `record_contradiction()`／`supersede()`、零 import `soul_elevation.engine`）｜**確定性**。
+
+### ⑥ 守衛 6 筆 ＋ 變異 M1～M6（**每條都恰好打紅預期的那一個守衛**）
+
+| 變異 | 轉紅的守衛 | 摘要 |
+|---|---|---|
+| M1 硬編碼門檻 | S1 | `1 failed, 5 passed` |
+| M2 加入檔案讀取 | S2 | `1 failed, 5 passed` |
+| M3 引用引擎寫入路徑 | S3 | `1 failed, 5 passed` |
+| M4 同一 `source_id` 重複計數 | S4 | `1 failed, 5 passed` |
+| M5 跨日門檻永遠視為達標 | S5 | `1 failed, 5 passed` |
+| M6 輸出加入時間戳 | S6 | `1 failed, 5 passed` |
+| （補充）M5-variant 跨日**計數**永遠回門檻值 | S4＋S5 | `2 failed, 4 passed` |
+
+Baseline＝**6 passed / 0 failed / 0 errors**（rc=0）；harness 最終判定
+`ALL_MUTATIONS_RED_AND_RESTORED=True`；被測檔收尾 sha256 與初始值相同。
+
+🔴 **M6 的真實陷阱（已處理，實測）**：本機 Windows `datetime.now()` 的時鐘粒度 ≈ **15.6 ms**
+（**2000 次連續呼叫轉移 0 次**；`time.time_ns()` 同樣 0/1999）⇒ 純時間戳會讓
+「兩次呼叫取到同一值」⇒ **S6 意外全綠**。M6 因此另掛單調序號（`itertools.count()`，
+1999/1999 唯一）⇒ **保證**轉紅。
+
+### ⑦ 全庫回歸（**基線在當下 HEAD 重算**；前後差分口徑）
+
+解譯器＝**repo 的 `.venv`**（Python 3.11.15）、cwd＝`%TEMP%\sup_wt`、兩輪皆為 `pytest -q tests`。
+
+| 樹 | failed | passed | skipped | errors | 耗時 | returncode |
+|---|---|---|---|---|---|---|
+| **改動前**（乾淨 HEAD `c9ec5e8`） | 33 | **7,333** | 44 | 10 | 707.16s（0:11:47） | 1 |
+| **改動後**（本票最終樹） | 33 | **7,339** | 44 | 10 | **679.32s（0:11:19）** | 1 |
+
+⇒ **passed ＋6 ＝ 本票新增的 6 筆守衛**（工單 §5 的「基線 ＋ 6 筆」✅）；
+**failed／errors 的數量與集合逐筆相同**（失敗名逐筆比對：**新增 0、消失 0**）⇒ **既有守衛未被削弱**。
+🔴 那 33 failed ＋ 10 errors **全部是 worktree 環境性失敗**（worktree 位於 `%TEMP%` 之下、
+worktree 內無生產 `data/`、`.git` 是檔不是目錄），在**乾淨 HEAD 的基線回歸裡逐筆相同**；
+本票新增的 2 個 untracked 檔**未**增加任何新失敗。
+
+### ⑧ 🔺 誠實聲明
+
+- **本票不讓生產召回池長大**：旗標／接線不動生產；生產 `superseded` 節點仍 ＝ **0**，召回池仍 ＝ **0**。
+- 本票回答的是「**正規路徑是否可行、在哪個上游**」⇒ **戰役二是否開打仍等今晚 22:00 夜槽觀測與 Owner 裁示**；
+  本票**不**構成開打授權。
+- §4 形狀 A～E 的所有節點／邊皆為**合成資料（機制示範）**，**不得**用於任何過閘門宣稱。
+- **未放寬**「同一 lineage 根」判準、**未**調低任何門檻、**未**偽造矛盾邊過閘門。
+
+### ⑨ 未做（明文排除）
+
+未實作 Phase 2 的引擎接線；未實作 G-1／G-2／G-3 任何一件（**只描述**）；未改引擎（repo 外，零寫入）；
+未改 `contradiction_probe.py`（一行未改）／`elevation_recall.py` 的狀態集合／`tension_closure_loop.py`／
+排程器；未動 11 個 frozen contract 檔；未寫 `data/**`；未對生產 sqlite 開連線（含 `mode=ro`）；
+0 真實 LLM、0 外部 API、0 網路；未重啟、未部署、未殺任何行程；
+未 `git add`／`commit`／`push`（**絕對無** `git add .`）；未做 A/B 對照實驗；未製造 synthetic 事件到生產。
+
+> ⚠️ **合入注意**：本票新增的 2 個檔案為 **untracked** ⇒ `git diff` 不含它們
+> ⇒ 主大腦合入時**必須** `git add src/inner_life/contradiction_accumulator_prototype.py`
+> 與 `tests/inner_life/test_contradiction_accumulator_prototype.py`，
+> 否則 repo hygiene 守衛（`tests/infra/test_repo_hygiene_tracked_tests.py`）會紅
+> （成因＝尚未 `git add`，非缺陷；Phase 1 同一限制，見 `logs/FEAT-SCHEMA-CONTRADICTION-IMPLEMENTATION.md` §9-2）。

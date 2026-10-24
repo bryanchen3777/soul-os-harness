@@ -859,6 +859,17 @@ class TestBoundedAndFrozenDiscipline:
             # Work order: logs/INCIDENT-GOAL-DB-LOCKED-WORK-ORDER.md
             "src/memory/sage/graph_store.py",
             "src/memory/store.py",
+            # -- FEAT-SUPERSEDED-ACCUMULATOR-PIPELINE (2026-10-24) -------------
+            # This ticket changes 1 non-frozen file: the new "contradiction
+            # accumulator feed-in decider" (sandbox prototype). It touches **no**
+            # frozen contract file, wires **nothing** into the production trigger
+            # path, never calls `engine.record_contradiction()` /
+            # `engine.supersede()`, and has no LLM / file-IO / network path at all
+            # (its 6 guards pin all of those structurally). The thresholds it
+            # reports are read from `soul_elevation.prior` -- the engine's own
+            # contract constants -- never hard-coded.
+            # Work order: logs/FEAT-SUPERSEDED-ACCUMULATOR-PIPELINE-WORK-ORDER.md
+            "src/inner_life/contradiction_accumulator_prototype.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",
