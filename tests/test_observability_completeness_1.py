@@ -883,6 +883,14 @@ class TestBoundedAndFrozenDiscipline:
             # `PYTEST_CURRENT_TEST`) => it cannot become a production path.
             # Work order: logs/FEAT-ISOLATED-DATA-ROOT-FACTORY-WORK-ORDER.md
             "src/paths.py",
+            # 戰役二 G-1＋G-2：同源修訂鏈路（**離線原型**；**尚未掛載**到
+            # `elevation_adapter.py` ⇒ 生產行為 0 變化；0 LLM 成本）
+            # Work order: logs/CAMPAIGN-B-BATTLE2-G1-G2-REVISION-CHAIN-WORK-ORDER.md
+            "src/inner_life/revision_chain.py",
+            # 戰役二 G-3：Mock 判定器沙盒原型（**只做與「預濾」無關的部分**；
+            # 未接真實 LLM、未呼叫 record_contradiction／supersede）
+            # Contract: logs/CAMPAIGN-B-BATTLE2-G3-SEMANTIC-JUDGMENT-CONTRACT.md
+            "src/inner_life/contradiction_judge_prototype.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

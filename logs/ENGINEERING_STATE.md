@@ -6321,3 +6321,250 @@ R2 frozen 紅線 ＋ `elevation_adapter.py` 必須未動／R3 守衛恰 9 筆且
 - **不**改任何 `src/**`／`tests/**`（本輪只有派工、steer 與 canonical 追加）。
 - **不**重啟服務、不殺行程、不寫生產 `data/**`、0 真實 LLM 呼叫、0 外部 API。
 - **不**因 C-lite 的**基建層**失敗而改動任何工單或設計。
+
+## 0.1.78 G-1＋G-2 離線原型與守衛先驅完工（2026-10-24 19:0x EDT）：模組本體 ＋ 守衛 I1～I9 ＋ 變異 M1～M10 全數轉紅
+
+工單：`logs/CAMPAIGN-B-BATTLE2-G1-G2-REVISION-CHAIN-WORK-ORDER.md`（決策完備）
+worktree：`%TEMP%\revchain_wt`（detached；base＝`7e7aad3`）｜**0 commit／0 push**（合入屬主大腦）
+
+### ① 交付物（**worktree 只 3 檔**）
+
+| 檔案 | 動作 | 說明 |
+|---|---|---|
+| `src/inner_life/revision_chain.py` | **新增** | 四個公開介面 ＋ 候選篩選（7 條）＋ F5 防護 ＋ G-2 承接 ＋ 引擎接線薄層 |
+| `tests/inner_life/test_revision_chain_guard.py` | **新增** | 守衛 **I1～I9（恰 9 筆）** |
+| `logs/ENGINEERING_STATE.md` | **追加** | 本條目（**追加式**，未覆寫既有條目） |
+
+🔺 **未動** `src/inner_life/elevation_adapter.py`（掛載屬下一片，須另行授權）⇒ **生產行為 0 變化**。
+🔺 **未動** frozen 紅線 11 檔、`soul-elevation` 套件（repo 外，唯讀）。
+
+### ② 四個公開介面（**簽章逐字照工單 §①**，欄位固定）
+
+`select_revision_targets(nodes, edges, *, agent_id)` ／ `compute_revise_confidence(old_node)` ／
+`build_revise_provenance(old_node, *, old_source_ids, new_source_ids)` ／
+`apply_revision(engine, target, *, source_type="inner_life_event")`；
+`RevisionTarget` 為 `@dataclass(frozen=True)`，欄位 `node_id`／`new_content`／`new_confidence`／
+`old_source_ids`／`new_source_ids`／`valence`。
+
+### ③ 工單未逐字指定、worker 必須定奪的四處（**誠實登記**）
+| # | 處 | 決定 | 理由 |
+|---|---|---|---|
+| D1 | 同一 soul node 有**多顆**合格新 pattern 時 | 取 `node_id` 排序後**第一顆**，**每個目標至多一條修訂鏈** | 單次 `apply_revision()` 不得對同一父節點生出兩條鏈；工單要求「決定性」 |
+| D2 | 工單 §⑤ 的 `provenance=build_revise_provenance(...)` 留了省略號 | `apply_revision()` 以**注入引擎的既有唯讀 API** `engine.get_node(target.node_id)` 取回**同一顆舊節點**再組 provenance | `RevisionTarget` 欄位固定（工單 §①）**不含 `old_content`**，而 G-2 的 provenance **必含**它 ⇒ 這是唯一能產出完整承接資訊的途徑；**未改任何簽章、未加任何常數** |
+| D3 | I9 的「`new_confidence` ＝ 舊 confidence」與 M2（「`compute_revise_confidence` 改成回傳 `0.5`」）**會同時轉紅** | I9 斷言 `new_confidence == compute_revise_confidence(old)`（F5 的**逐位元等式由 I2 釘死**），I9 fixture 的舊 confidence 取 **0.73**（非 0.5） | 工單要求「每條變異**恰好**打紅指定的那一個守衛」；此切法**同時**保住 I9 對「模組內寫死 0.5」的鑑別力（寫死 0.5 仍會被 I9 抓到）與 I2 的 F5 實質覆蓋 |
+| D4 | M8（「把 I8 的 AST 檢查放寬」）**不可能**讓檢查轉紅 | I8 加一道**反vacuity 子句**：`MOUNT_CONTRACT_NAMES` 的**內容與數量**被釘死為 `{nodes, edges, engine}` | 「放寬檢查」若無自檢則**無聲變綠** ⇒ 這正是 repo 既有 anti-vacuity 慣例；否則 M8 會是「假綠」 |
+
+### ③ 之二、主大腦早期複核的兩項回饋（**已併入本輪，未重開工單**）
+
+| # | 回饋 | 本輪處置 |
+|---|---|---|
+| ① | ``engine.get_node()`` 找不到舊節點時拋的是 **``KeyError``**（``soul_elevation/engine.py:292-297``），而 ``apply_revision()`` 只 catch ``ValueError`` ⇒ ``KeyError`` 會冒泡 | **採選項（乙）**（主大腦傾向）：**維持只 catch ``ValueError``**，讓 ``KeyError`` 冒泡。理由：正確接線下舊節點**必然在引擎註冊表內**（``elevation_adapter._rebuild_engine_for`` **L932-935** 把該 agent 的**全部**節點載進 ``engine._nodes``，含 soul node）⇒ ``KeyError`` 屬**理論上不可達**；真發生即代表**呼叫端把引擎與 nodes 配對錯誤**（接線錯誤）⇒ **冒泡比靜默回 ``False`` 更能暴露它**（回 ``False`` 會把它偽裝成「門檻不足」）。🔺 **未**擴大 catch 範圍：程式錯／網路錯等**其他例外必須冒泡**。⇒ 已寫入**模組 docstring** 與 ``apply_revision()`` docstring |
+| ② | 本模組直接匯入僅 ``elevation_adapter``，**間接**依賴 ``soul_elevation`` | **揭露**（模組 docstring ＋本條目）：這是**為複用既有** ``_node_candidate_dimension()`` 而**不重造輪子**的必然結果（工單 §③ 明訂沿用既有函式）⇒ **不得**為了「零間接依賴」而複製該函式實作。守衛 **I7 守的是直接匯入層級**（AST 檢查本模組自身的 import 敘述）⇒ **合規**；``soul_elevation`` 為純 Python、import 期 0 成本 0 檔案 I/O ⇒ **0 LLM 成本不受影響** |
+
+### ④ 守衛 I1～I9（**恰 9 筆，全綠**）
+
+| # | 守衛 | 結果 |
+|---|---|---|
+| I1 | 篩選正確性（無既有 soul node ⇒ 零回傳） | ✅ 1/1 |
+| I2 | F5 防護（逐位元保留舊信心度） | ✅ 1/1 |
+| I3 | G-2 承接（provenance 五鍵逐筆） | ✅ 1/1 |
+| I4 | 對象限制（essence／pattern 永不入選） | ✅ 1/1 |
+| I5 | no-op 邊界（無新證據／內容正規化後相同 ⇒ 零回傳） | ✅ 1/1 |
+| I6 | 引擎接線 fail-closed（ValueError ⇒ False、不重試） | ✅ 1/1 |
+| I7 | 零 LLM 成本（**AST** 禁令：含 `soul_elevation`） | ✅ 1/1 |
+| I8 | 掛載契約對齊（`elevate_matured_patterns()` 體內 `nodes`／`edges`／`engine`） | ✅ 1/1 |
+| I9 | 血緣形狀（`revise()` 呼叫參數 ＋ 無 G-3 呼叫） | ✅ 1/1 |
+
+### ⑤ 變異 M1～M10（**10/10 恰好轉紅；0 ABORT、0 意外全綠**）
+
+harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式：每條變異套用在
+沙盒副本上；repo／worktree 檔**全程不寫入**，收尾 sha256 逐檔比對 0 變更）。
+
+| # | 變異 | 轉紅的守衛 | 結果 |
+|---|---|---|---|
+| M1 | 篩選器移除「該維度已有 soul node」條件 | I1 | ✅ 恰好 1 個 |
+| M2 | `compute_revise_confidence` 回傳 `0.5` | I2 | ✅ 恰好 1 個 |
+| M3 | `build_revise_provenance` 丟掉 `old_source_ids` | I3 | ✅ 恰好 1 個 |
+| M4 | 篩選器允許 `essence` 進入目標集合 | I4 | ✅ 恰好 1 個 |
+| M5 | 移除「內容正規化後須不等」的條件 | I5 | ✅ 恰好 1 個 |
+| M6 | `apply_revision` 不 catch `ValueError` | I6 | ✅ 恰好 1 個 |
+| M7 | 本模組 `import src.llm.proxy` | I7 | ✅ 恰好 1 個 |
+| M8 | I8 的 AST 檢查被放寬（移除 `engine` 名稱檢查） | I8 | ✅ 恰好 1 個（靠 D4 的反vacuity 子句） |
+| M9 | `revise()` 的 `node_id` 改成新 id（自我引用） | I9 | ✅ 恰好 1 個 |
+| M10 | 本模組 `from soul_elevation.engine import ElevationNode` | I7 | ✅ 恰好 1 個 |
+
+### ⑥ 全庫回歸（repo 的 `.venv`；解譯器＝`soul-os-harness/.venv/Scripts/python.exe`，Python 3.11.15／pytest 9.1.1）
+
+- 執行位置：**worktree `%TEMP%\revchain_wt`**（刻意**不在**主 repo 施工 ⇒ 結構上不可能寫生產）。
+- 基線取法：**同一棵 worktree** 跑兩次（`--ignore=tests/inner_life/test_revision_chain_guard.py`
+  ＝ 基線；不 ignore ＝ 本票後）⇒ 蘋果對蘋果。
+
+| 項目 | 基線 | 本票後 | 差 |
+|---|---|---|---|
+| passed | **7354** | **7363** | **＋9**（＝新增守衛筆數）✅ |
+| failed | 36 | 36 | **±0** ✅ |
+| errors | 10 | 10 | **±0** ✅ |
+| skipped | 42 | 42 | ±0 |
+| 失敗／錯誤**集合** | — | — | **逐項比對：只在基線出現 0 筆、只在本票後出現 0 筆** ✅ |
+| 耗時 | 784.71s（13:04） | 794.65s（13:14） | +9.9s |
+| returncode | 1 | 1 | 同（基線本來就非 0，見下） |
+
+- 🔺 **基線本身不是全綠**（36 failed ＋ 10 errors，**與本票無關**）：兩次跑的失敗／錯誤
+  **集合逐項相同** ⇒ 本票 **0 新增失敗**。
+- 🔺 其中 **4 筆是「worktree 專屬」**（與本票無關，在主 repo 實測為綠）：
+  ① `tests/test_observability_completeness_1.py::…::test_no_frozen_contract_file_touched`
+  ——它比對 `git diff --name-only HEAD` 與「逐票 allowed 清單」⇒ **任何未提交的工作樹變更**都會讓它轉紅
+  （主 repo 乾淨時實測 **1 passed**）；②～④ `tests/infra/test_repo_hygiene_tracked_tests.py`
+  ——它讀 `<root>/.git/index`，而 **worktree 的 `.git` 是檔案不是目錄** ⇒ `FileNotFoundError`
+  （主 repo 實測 **8 passed**）。
+  ⇒ **合入後（commit）兩者都會回綠**。
+
+### ⑦ 生產零寫入證據
+
+- 本票全程**未讀寫**生產 `data/**`；沙盒測試一律 `tmp_path` ＋ 變異 harness 在 `%TEMP%`。
+- 回歸前後生產 `data/elevation/` 的**檔案清單與 sha256 完全相同**（見回報）。
+
+### ⑧ 本條目**不**做的事
+
+- **不**改 `src/inner_life/elevation_adapter.py`（**不掛載**生產路徑；掛載屬下一片，須另行授權）。
+- **不**改 frozen 紅線 11 檔、**不**改 `soul-elevation`（repo 外，唯讀）。
+- **不**實作 G-3（`record_contradiction`／`supersede`／語意判定）⇒ 本模組**一律不呼叫**。
+- **不**引入任何新的常數、權重、門檻、相似度度量（Owner 凍結條款）。
+- **不** commit／push、**不**重啟服務、**不**殺行程、0 真實 LLM 呼叫、0 網路。
+
+## 0.1.79 G-3 Mock 判定器沙盒原型**完成**（2026-10-24 19:0x–19:4x EDT）：5 個純零件 ＋ 守衛 J1～J7 ＋ 變異 J-M1～J-M7 **全數自洽**
+
+### ① 交付物（**3 檔**；worktree `%TEMP%\cjudge_wt`，**未 commit／未 push**）
+
+| 檔案 | 狀態 | 內容 |
+|---|---|---|
+| `src/inner_life/contradiction_judge_prototype.py` | 新增（**已 `git add`**） | `build_judge_prompt()`／`parse_verdict()`／`decide_action()`／`new_call_counter()`／`ContradictionJudge` |
+| `tests/inner_life/test_contradiction_judge_prototype.py` | 新增（**已 `git add`**） | 守衛 **J1～J7（恰 7 筆）** |
+| `logs/ENGINEERING_STATE.md` | 追加本節（`## 0.1.78`） | — |
+
+### ② 契約條文 → 實作 → 守衛（逐條對應）
+
+| 契約條文 | 實作 | 守衛 |
+|---|---|---|
+| §三「輸出格式：二元」 | `parse_verdict()` 只認去首尾空白後**完全等於** `CONTRADICT`／`COMPATIBLE`；其餘（多餘文字、兩者並列、空、非字串）⇒ `UNDECIDED`；**不做任何語意推測** | **J2** |
+| §三之二「Fail-Closed 的**方向**」 | `decide_action()`：`COMPATIBLE` ≡ `UNDECIDED` ⇒ **不記錄**；只有 `CONTRADICT` 才記錄（`UNDECIDED` 不得被當成矛盾） | **J3** |
+| §三「每 Agent 每日至多 1 次」 | 共用計數器（`attempted`／`succeeded`／`failed`／`budget_exhausted` ＋ 每 agent 子計數）⇒ 超額 ⇒ **不呼叫 backend**、`budget_exhausted` 遞增、回 fail-closed | **J4** |
+| §三「判定**專用** prompt」 | `build_judge_prompt()` 帶上既有命題 ＋ 新候選命題 ＋ 明文「只回覆單一 token」；prompt 內**無**模型名／provider／URL／API key | **J1** |
+| §六「預濾細節**不得先寫死**」 | 模組**不含**任何候選內容比對／跨日比對／相似度條件（AST 三重釘死：預濾詞彙／命題內容不得被比較或加工／零浮點常數） | **J7** |
+| §三之二「0 真實 LLM 成本前提」 | 模組**不 import** 任何 LLM／網路／引擎／設定面（獨立實測：僅 `__future__`／`dataclasses`／`typing`／`hashlib`）⇒ 唯一外部互動點是**注入的** backend | **J6** |
+| §四「只有 CONTRADICT 才寫入」 | 本模組**不**呼叫 `record_contradiction()`／`supersede()`（AST Name/Attribute 實測 0 命中）⇒ 由呼叫端依 `outcome.should_record` 決定 | — |
+
+### ③ 守衛 J1～J7（**恰 7 筆**；逐筆 1/1 綠）
+
+| 守衛 | 斷言要點 | assert 語句 | 結果 |
+|---|---|---|---|
+| J1 | prompt 骨架（帶兩段命題 ＋ 單一 token 要求 ＋ 無連線資訊洩漏） | 6（其中 1 迴圈 × 23 禁詞） | ✅ 1/1 |
+| J2 | 二元解析嚴格（6 個合法 ＋ 17 個非法） | 8（其中 1 迴圈 × 17） | ✅ 1/1 |
+| J3 | fail-closed 方向（`UNDECIDED` ≡ `COMPATIBLE`） | 5 | ✅ 1/1 |
+| J4 | 預算上限（至多 1 次／不呼叫 backend／遞增／回 fail-closed） | 9 | ✅ 1/1 |
+| J5 | Mock backend 可注入（四種假造回應驅動全鏈路） | 10 | ✅ 1/1 |
+| J6 | 零 LLM 成本（結構性，AST import 禁令） | 1（3 迴圈掃 AST） | ✅ 1/1 |
+| J7 | 不含預濾邏輯（AST 三重檢查） | 3 | ✅ 1/1 |
+
+⇒ **合計 7/7 支全綠**（assert 語句 42 條）。
+
+### ④ 變異 J-M1～J-M7（**每條恰好打紅指定的那一個守衛**）
+
+| 變異 | 內容 | 轉紅的守衛 | 其餘 6 條 |
+|---|---|---|---|
+| J-M1 | prompt 骨架漏掉既有命題內容 | **J1** | 綠 |
+| J-M2 | 解析器改成「包含 CONTRADICT 字樣就算」 | **J2** | 綠 |
+| J-M3 | `UNDECIDED` 被當成矛盾記錄 | **J3** | 綠 |
+| J-M4 | 預算上限檢查被移除（可無限呼叫） | **J4** | 綠 |
+| J-M5 | backend 改成硬編碼回應（不可注入） | **J5** | 綠 |
+| J-M6 | 本模組 `import configs.loader` | **J6** | 綠 |
+| J-M7 | 加入「同維度」預濾邏輯 | **J7** | 綠 |
+
+- 🔺 **變異 harness**：`%TEMP%\cjudge_mut`（**repo 的 clone**）＋ `%TEMP%\cjudge_mut_harness.py`；
+  採「**改副本**」模式 ⇒ repo／worktree 檔**全程未寫入**（收尾 sha256 逐位元相同）。
+- 🔺 **首輪 J-M3 曾同時打紅 J3 與 J5**：J5 當時斷言「所有路徑的 action 都等於 `decide_action(verdict)`」，
+  但**例外路徑是硬性 fail-closed**、刻意不經過映射層 ⇒ 該斷言屬**測試側過度斷言**，
+  已修正為「**解析出判定值**的路徑才做一致性斷言」＋「例外路徑必須 `should_record is False`」；
+  **模組未動**，修正後 J-M3 恰好只打紅 J3。
+
+### ⑤ 全庫回歸（**同一沙盒、同一解譯器**；解譯器＝ repo 的 `.venv`，Python 3.11）
+
+| 輪次 | pytest 摘要 |
+|---|---|
+| 基線（沙盒未含本片檔案） | `32 failed, 7358 passed, 42 skipped, 1 warning, 10 errors, 32 subtests passed in 810.64s (0:13:30)` |
+| 含本片 3 檔 | `32 failed, 7365 passed, 42 skipped, 1 warning, 10 errors, 32 subtests passed in 790.37s (0:13:10)` |
+
+⇒ **差分 ＝ 0**：本片對全庫回歸**沒有新增任何失敗／錯誤**。既有失敗屬沙盒環境既有基線
+（其中 `tests/soul/test_sim_accel_streak_7d_sunset.py` 的 10 個 ERROR 需生產 `data/**`，
+而 clone 不含 gitignored 的生產資料 ⇒ 與本片無關）。
+
+### ⑥ 生產零寫入證據
+
+- 施工範圍**只在** `%TEMP%` 的兩個 clone（`cjudge_reg`／`cjudge_mut`）與 worktree `cjudge_wt`。
+- 主 repo 工作樹 `git status --short` ＝ **空**（實測）。
+- worktree 變更檔 ＝ **恰 3 檔**（本節 ① 列出）；frozen 紅線（agency 全目錄 ＋ 點名 6 檔）
+  ＋ `elevation_adapter.py` ＋ 兩個既有原型的 sha256 與 `git show HEAD:<path>` **逐位元相同**。
+- 0 真實 LLM 呼叫、0 網路、0 生產 `data/**` 寫入、0 行程／服務動作。
+
+### 本條目**不**做的事
+
+- **不**實作 G-3 的真實 LLM 接線（不碰 `configs.loader.create_llm_proxy`、不建 proxy、不設逾時）。
+- **不**實作「顯式衝突嫌疑」的**預濾**（契約 §六：留給夜槽後的穩定態資料）。
+- **不**呼叫 `engine.record_contradiction()`／`engine.supersede()`；**不**碰 `elevation_adapter.py` 與 frozen 紅線 11 檔。
+- **不** commit／push；合入仍待主大腦獨立複核。
+
+## 0.1.80 兩條離線線的**主大腦獨立複核**與合入（2026-10-24 19:5x EDT）
+
+兩條 worker 皆回報完成（`bg_6bb8fe79` A 線／`bg_7616e396` C-lite）。
+⇒ **自報不算證據** ⇒ 主大腦以**自寫**的複核 harness 逐項獨立驗證後才合入。
+
+### ① A 線（G-1＋G-2）獨立複核結果（harness：`review_revchain.py` ＋ `review_revchain_extra.py`）
+
+| 項 | 結果 |
+|---|---|
+| R1 檔案範圍 | ✅ **恰 3 檔**（`revision_chain.py`／`test_revision_chain_guard.py`／canonical） |
+| R2 frozen 紅線 | ✅ **零命中**；且 `elevation_adapter.py` **未動** |
+| R3 守衛 | ✅ **恰 9 筆**，`rc=0`（9 passed） |
+| R4 直接匯入禁令 ＋ F5 ＋ G-2 五鍵 | ✅ 全數命中（禁令零命中；F5 ＝ `float(old_node["confidence"])` 逐位元；五鍵齊全） |
+| R5 **主大腦自寫 7 條變異** | ✅ **7/7 各自恰好**打紅預期守衛、**零額外轉紅**：F5 改成 0.5→I2／丟 `old_source_ids`→I3／引入 `soul_elevation`→I7／移除 `except ValueError`→I6／移除「同維度」比對→I1／移除「內容正規化後須不等」→I5／掏空 I8 檢查清單→I8（**反 vacuity 子句真的會紅**） |
+| R6 sha256 前後不變 | ✅ |
+
+🔺 **一次「假陽性」實例（已修正，誠實記錄）**：主大腦第一版 harness 用子字串比對找 G-3 呼叫 ⇒ 把**docstring 裡的禁令敘述**（「不得自行呼叫 `engine.record_contradiction()`／…」）誤判成真呼叫（3 項誤報）⇒ 改用 **AST `Call` 節點**判斷後：**真正的 G-3 呼叫 ＝ 0**，`engine.*` 只有 `revise` 與 `get_node` 兩個呼叫 ✅。
+⇒ **教訓**：判定「有沒有真的呼叫某 API」**必須用 AST**，不可用子字串比對（docstring 與註解會製造假陽性）。
+
+### ② C-lite（G-3 Mock 判定器）獨立複核結果（harness：`review_cjudge.py` ＋ `review_cjudge2.py`）
+
+| 項 | 結果 |
+|---|---|
+| R1 檔案範圍 | ✅ **恰 3 檔** |
+| R2 禁動檔（`elevation_adapter`／兩個既有原型／frozen 6 檔） | ✅ **零命中** |
+| R3 守衛 | ✅ **恰 7 筆**，`rc=0` |
+| R4 直接匯入禁令（＋ `configs.loader`）＋ **AST 引擎 API 零呼叫** | ✅ 全數命中（`record_contradiction`／`supersede`／`revise`／`reinforce` **0 真呼叫**） |
+| R5 **主大腦自寫 5 條變異** | ✅ **5/5 各自恰好打紅一個**且**語意正確**的那個：包含式解析→J2／`UNDECIDED` 也記錄→J3／移除預算檢查→J4／引入 `configs.loader`→J6／加入「同維度」預濾痕跡→J7 |
+| R6 sha256 前後不變 | ✅ |
+
+🔺 **第二次「量測腳本先被懷疑」的實例**：主大腦第一版 C-lite 變異用 **regex**，其中一條把 `decide_action` **docstring 內**的 `UNDECIDED` 當成程式碼替換掉 ⇒ **行為未變、沒轉紅**；另一條錨點根本沒比中。
+⇒ **這不是守衛無牙齒，是主大腦的變異寫錯** ⇒ 改成**精確字串替換**後 5/5 全中。
+⇒ **教訓（ Bry 紀律的直接印證）**：**「變異沒轉紅」的第一反應必須是「懷疑量測腳本與基準」，不是「守衛是盲腸」**；
+本回合**兩次**靠這條紀律避免了誤判（一次是 docstring 假陽性、一次是變異寫錯）。
+
+### ③ worker 自報中兩處值得稱道的處置
+
+1. **C-lite 首輪 J-M3 同時打紅 J3＋J5** ⇒ worker 查出 J5 是**測試側過度斷言**（例外路徑是硬性 fail-closed、刻意不經過映射層）⇒
+   **修斷言、不修模組**（模組一字未動）⇒ 重跑後恰好只打紅 J3 ✅（正是「斷言誤報時修斷言，不改內容迎合斷言」）。
+2. **C-lite 全庫回歸改在 `clone`（真 `.git` 目錄）跑**（linked worktree 的 `.git` 是**檔案** ⇒ hygiene 守衛讀不到 `.git/index` 必 ERROR）⇒
+   **口徑自覺**，並在報告中明寫此偏離與理由 ✅。
+
+### ④ 兩處**主大腦裁定**（worker 提出、需裁示的三點）
+
+| # | worker 的三點 | 主大腦裁定 |
+|---|---|---|
+| 1 | canonical 編號 0.1.78（因主 repo 中途新增 commit） | ✅ 採納；但 A 線那條也用 0.1.77 ⇒ **合入時統一重編號**：A 線 → **§0.1.78**、C-lite → **§0.1.79**、本條 → **§0.1.80** |
+| 2 | 全庫回歸跑在 clone 而非 worktree | ✅ **採納**（理由與主大腦 10-24 早前的獨立判讀一致：linked worktree 的 `.git` 是檔案 ⇒ hygiene 守衛必 ERROR） |
+| 3 | 「每日」由**計數器生命週期**承載（每 (agent, 當日) 一份新計數器），另加**每 agent 子計數**使多 agent 共用一份時各得 1 次 | ✅ **採納**：這讓「每 agent 每日至多 1 次」在**跨實例共用計數器**時仍成立 ⇒ 符合契約「每 Agent 每日至多 1 次」的語意 |
+
+### ⑤ 本條目**不**做的事
+
+- **不**改任何 `src/**`／`tests/**` 的**行為**（本輪只是把 worker 的產出**合入**主 repo ＋ 複核入庫）。
+- 🔺 **不**掛載 `elevation_adapter.py`（那是**下一片**，須另行授權）⇒ **生產行為 0 變化**。
+- **不**重啟服務、不殺行程、不寫生產 `data/**`、0 真實 LLM 呼叫、0 外部 API。
