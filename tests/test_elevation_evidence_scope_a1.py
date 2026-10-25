@@ -337,6 +337,13 @@ def test_e1_repeated_elevation_needs_two_fresh_keys_in_same_dimension(tmp_path):
     仍是同一顆 p1（candidates 保持 pids[0], elevation_adapter.py:808-823）→
     新 value 的 content 與第一顆相同 → **不落盤**（引擎回傳值不變，
     同檔 363-366 行明載「引擎語意不動（回傳值不變）」）。
+
+    🔺 FEAT-MOUNT-REVISION-CHAIN-ELEVATION（2026-10-25，Owner 核定）改變了
+    第 3 份證據的**結果形狀**：修訂鏈接線後它**不再被丟棄**（這正是 G-1/G-2 要
+    修的「證據被吃掉」），而是對既有命題做**同源修訂**（depth-2）。
+    ⇒ 本測試釘住的**不變式**不變：① 不憑 1 份未消化證據**新昇**第二顆 depth-1
+    命題節點（INV-2 未被放寬）；② 反覆昇華仍需 2 份新證據；③ 新增的機制斷言＝
+    修訂是 depth-2、接在既有命題之下、confidence 逐位元繼承、且是新節點。
     """
     writer = InnerLifeWriter()
     store = tmp_path / "elevation"
@@ -358,9 +365,28 @@ def test_e1_repeated_elevation_needs_two_fresh_keys_in_same_dimension(tmp_path):
     first = elevate_matured_patterns(store_dir=store)
     assert len(first) == 1 and first[0].node_type == "value"
 
-    # 第 3 份證據：同維度只累積到 1 份未消化 → 不升（INV-2 未被放寬）
+    # 第 3 份證據：同維度只累積到 1 份未消化 ⇒ **不新昇**（INV-2 未被放寬：
+    # 不會憑 1 份證據生出第二顆 depth-1 命題節點）。
+    #
+    # 🔺 FEAT-MOUNT-REVISION-CHAIN-ELEVATION（2026-10-25，Owner 核定）改變了
+    #    這一步的**結果形狀**：修訂鏈接線後，這份證據**不再被丟棄**，而是讓既有
+    #    命題節點走**同源修訂**（產 depth-2 節點）⇒ 回傳值由 `[]` 變成
+    #    「depth-2 修訂節點」。
+    #    ⇒ 契約釘的是**機制**（不新昇、不重複消化、confidence 逐位元繼承、
+    #      lineage 接在既有命題之下），**不是**舊的「空結果」。
     _consume_one(2)
-    assert elevate_matured_patterns(store_dir=store) == []
+    third = elevate_matured_patterns(store_dir=store)
+    assert len(third) == 1 and third[0].node_type == "value", (
+        "第 3 份證據不得憑空生出新的 depth-1 命題節點，"
+        "只允許對既有命題做同源修訂")
+    assert third[0].lineage_depth == 2, (
+        "同源修訂必須是 depth-2（不是新昇）")
+    assert third[0].parent_node_id == first[0].node_id, (
+        "修訂必須接在既有命題節點之下（同一血緣）")
+    assert third[0].confidence == first[0].confidence, (
+        "信心度必須逐位元繼承（F5），不得重新計算")
+    assert third[0].node_id != first[0].node_id, (
+        "修訂是**新節點**（depth-2），不得就地改寫既有節點")
 
     # 第 4 份證據：同維度累積到 2 份未消化 → 再次升華（可反覆）
     _consume_one(3)
@@ -379,13 +405,24 @@ def test_e1_repeated_elevation_needs_two_fresh_keys_in_same_dimension(tmp_path):
     # value 節點 —— 這才是符合心智演化預期的真實行為。
     # 純重複輸入的「真冪等」（同資料重複執行 count 不變）由
     # tests/inner_life/test_persist_idempotency.py 嚴格把關，兩者職責分離。
-    assert types.count("value") == 2
+    #
+    # 🔺 [CONTRACT-UPDATE: FEAT-MOUNT-REVISION-CHAIN-ELEVATION]（2026-10-25，
+    #    Owner 核定）：第 3 份證據改走**同源修訂** ⇒ 落盤的 value 節點由
+    #    2 顆變 **3 顆**（2 顆 depth-1 ＋ 1 顆 depth-2 修訂）。
+    #    ⇒ 這裡不只改數字，**釘住結構**：depth 排序必須是 [1, 1, 2]
+    #    （不得再多一層、不得少了修訂）；**去重不變式不變**（內容互異）。
+    assert types.count("value") == 3
+    soul_nodes = [n for n in load_elevation_nodes(store)
+                  if n["node_type"] == "value"]
+    depths = sorted(int(n.get("lineage_depth") or 0) for n in soul_nodes)
+    assert depths == [1, 1, 2], (
+        "落盤的 value 必須是 2 顆 depth-1 ＋ 1 顆 depth-2 同源修訂：%s" % depths)
     # 兩顆 value 的 content 必須不同 —— 否則就是去重失效或仍在凍結。
     values = [
         n["content"] for n in load_elevation_nodes(store)
         if n["node_type"] == "value"
     ]
-    assert len(set(values)) == 2, f"第二顆 value 的內容不該與第一顆相同：{values}"
+    assert len(set(values)) == 3, f"每顆 value 的內容都該互異：{values}"
 
 
 # ── F. 可觀測性 ─────────────────────────────────────────────────────

@@ -6867,3 +6867,53 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
 
 **不**改 `src/**`（引擎仍是衰減門檻的凍結權威）、**不**改衰減門檻、**不**放寬任何條件（四條件／自我否決／一票否決／三態契約全數維持）、**不**偽造邊、**不**手動消紅、**不**在禁跑窗內跑全庫回歸、**不**殺行程、**不**寫生產。
 
+
+## 0.1.87 G-1/G-2 掛載 `elevation_adapter.py` 完成並通過主大腦獨立複核（2026-10-25 10:0x–10:5x EDT）
+
+### ① 工單與落地點（**與字面描述不同，依實測釘死**）
+
+- 工單：**`FEAT-MOUNT-REVISION-CHAIN-ELEVATION`**（Owner 2026-10-25 核定命名），獨立開票，僅允許在 `src/inner_life/elevation_adapter.py` 的 `elevate_matured_patterns()` 內接入。
+- 🔺 **掛載點＝分支 B（`except ValueError` → 獨立證據不足，L1518-1523）**，**不是**字面描述的「同維度已有 Soul Node」分支 A（內容被佔用，L1500-1506）。
+  - 理由（08:30 驗收票沙盒四場景實測）：選擇器的條件 5 要求內容「正規化後**不等**」，而 A 的觸發前提就是內容相同 ⇒ **A 永遠選不到目標 ⇒ 掛在 A ＝ 功能 no-op**（`select_revision_targets()` 回 0 個目標）。
+  - 「被吃掉」的生產語意＝**分支 B 及其同源情境 D**（既有 soul node 已消化 K1、新 pattern 帶 K1+K2）⇒ 該顆 pattern 的新證據本來會被 `continue` 丟棄，掛載後改由既有 soul node 的**修訂鏈**吸收（產 depth-2 節點）。
+  - **分支 A 維持原行為（idempotent no-op），並由 G5 守衛鎖死。**
+- 實際 API：`revision_chain.apply_revision(engine, target, *, source_type="inner_life_event") -> bool`（Owner 訊息中的 `process_revision` 在交付物中**不存在**，以程式碼為準）。
+
+### ② 實作要點（`src/inner_life/elevation_adapter.py`，+234／−1）
+
+1. **掛載區塊整段位於 `try/finally` 之外**（finally 是「位置＋身分雙重比對」的唯一還原點，必須先還原中性化的邊）；分支 B 只置旗標 `_revision_pending`，真正的 `apply_revision()` 呼叫在還原之後。
+2. **例外邊界**：新增 `class _RevisionWiringError(KeyError)` ⇒ `apply_revision()` 拋 `KeyError`（舊節點不在引擎註冊表＝**接線錯誤**，非「門檻不足」）時包成它並在最外層 `except _RevisionWiringError: raise` **冒泡**，**不被寬鬆 except 吞掉**（G10）。理由與原型的 fail-closed 契約一致：被吞掉會被偽裝成「門檻不足」⇒ 整條修訂鏈靜默停擺而無人察覺。`ValueError` 由 `apply_revision` 內部吃掉回 `False` ⇒ 維持原行為（G14）。
+3. **INV-2 證據隔離**：per-維度 `revision_assigned` 記錄本輪已配給的 `source_id`；新節點只掛「尚未被同維度消化、且本輪尚未配給」的來源（G9）。
+4. **選擇器保證不被架空**：「每個目標至多一條修訂鏈」由選擇器條件 7 保證，掛載端**不另設**第二套去重。
+5. **零真實 LLM 成本**：`engine.revise()` 在生產走既有 `StubElevationLLM`（`scripts/run_server.py:685` 無參數建構）；掛載路徑無任何直接 LLM 呼叫（G11 以 `ast.Call` 判定，非子字串比對）。
+
+### ③ 守衛與變異（**主大腦獨立複核，不採信自報**）
+
+- 新檔 `tests/inner_life/test_elevation_revision_mount.py`（856 行）：**14 條守衛 G1–G14 ＋ 1 條 meta（守衛筆數恆等於 14）**，`.venv` 直譯器 ⇒ **15 passed / 0 failed**；既有 `tests/inner_life/test_revision_chain_guard.py`（I1–I9）**仍 9 passed**。
+- **主大腦自寫的兩條變異（獨立於 worker 的 10 條）**，皆以 `%TEMP%` 副本 ＋ `SOUL_OS_ELEVATION_ADAPTER_PATH` 載入，**repo 檔全程零寫入**：
+  - **M2'**（掛載不套用任何修訂：`_applied = False`）⇒ **10 支轉紅**（G1／G3／G6／G8／G9／G10／G11／G12／G13／G14）。
+  - **M7'**（注入**死碼**直接 LLM 呼叫）⇒ **精準 1 支轉紅**（`test_g11_mount_path_has_no_direct_llm_call`）⇒ AST 守衛連死碼都不放過。
+- **檔案範圍核驗（主大腦實測）**：`src/inner_life/revision_chain.py` 的 sha256 與 `HEAD` **完全相同**（`692c91f50889c88b…`）⇒ 原型未被改動；`tests/test_observability_completeness_1.py` 的 `allowed` 清單**早已包含** `src/inner_life/elevation_adapter.py`（:816）⇒ **不需**更新觀護衛白名單（該守衛 1 passed）。
+- 四場景（worker 沙盒實測）：A＝選擇器**未被觸發**、投影不變（no-op）；B＝1 個目標、產 depth-2（confidence 0.73）；C＝選擇器未被觸發、引擎自產 depth-1 sibling（不影響）；D＝1 個目標、產 depth-2、且新節點**只掛 K2**（K1 被 G9 排除）。
+
+### ④ 既有守衛 `test_e1_repeated_elevation_needs_two_fresh_keys_in_same_dimension` 的契約更新（**必須知會**）
+
+- 全庫回歸第一次跑出 **2 failed**：① `tests/infra/test_repo_hygiene_tracked_tests.py`（新增 collectable 測試檔未 `git add` ⇒ 已 `git add` 修正）；② **`tests/test_elevation_evidence_scope_a1.py::test_e1_repeated_elevation_needs_two_fresh_keys_in_same_dimension`**（**真的行為回歸**）。
+- 根因（主大腦實測，`%TEMP%\e1_probe.py`）：該守衛原本釘住「同維度只累積到 1 份未消化 ⇒ `elevate_matured_patterns()` 回傳 `[]`」。而**修訂鏈接線的整個用意就是讓這份證據不再被丟棄** ⇒ 掛載後該步驟改為**對既有命題做同源修訂**。
+  - 實測（掛載後，同維度連續 4 份證據）：第 2 份 ⇒ depth-1 value（parent＝pattern）；**第 3 份 ⇒ depth-2 value（parent＝第一顆 value、confidence 0.5 逐位元繼承、stability 0.6）**；第 4 份 ⇒ 引擎原生路徑的 depth-1 value。落盤＝4 pattern ＋ **3 value**（depth 排序 `[1, 1, 2]`），三顆 content **互異**。
+- ⇒ **判定：被改變的是守衛的「結果形狀」，不是它的不變式。** 該守衛真正要釘的三件事**全部保留**：① 不憑 1 份未消化證據**新昇**第二顆 depth-1 命題節點（INV-2 未被放寬）；② 反覆昇華仍需 2 份新證據；③ **去重不變式**（每顆 value 的 content 互異）。**新增**的機制斷言＝修訂必須是 **depth-2**、接在既有命題之下（同一血緣）、**confidence 逐位元繼承**、且是**新節點**（不得就地改寫）。
+- ⇒ 守衛已改寫為**釘結構而非只改數字**：`types.count("value") == 3` ＋ `sorted(lineage_depth) == [1, 1, 2]` ＋ `len(set(values)) == 3`。
+- 🔺 **這是掛載帶來的生產行為變更，必須知會**：**第 3 份證據現在會改寫既有命題的內容**（深度-2），而掛載前它被丟棄。⇒ 這正是 G-1/G-2 要修的「證據被吃掉」；但它也代表**命題的更新頻率會上升**（不再需要累積到第 2 份新證據才動）。
+
+### ⑤ 已知且**刻意保留**的後果（提報知會）
+
+1. **投影面行為變更（Owner 2026-10-25 待裁定項，我已把它寫成驗收條件＋守衛 G12）**：分支 B 會產 depth-2 soul node ⇒ **EMERGENT 多一句**，靈魂的可見命題改變。
+   - **過渡狀態**：父節點仍會被投影（`revise()` 不寫 lifecycle sidecar ⇒ 父節點未被標 `SUPERSEDED` ⇒ lineage 降維未生效）⇒ G12 把此形狀寫死，以便日後 conscious 更新。
+   - 🔺 **掛載合入後不重啟**，靜候下一個常規維護窗口載入 ⇒ 在該窗口之前仍可喊停。
+2. **生產量的量級**：分支 B＝「該維度只有 1 份未消化證據」⇒ 生產上每顆新 pattern 落單都會觸發一次修訂 ⇒ depth-2 節點與 EMERGENT 投影的增量 ≈ 新 pattern 速率（程式註解引用約 29 顆 value pattern／日／agent）⇒ 建議**首個維護窗口先觀察增量**再談限流。
+3. **修訂目標的挑選**：選擇器依 `node_id`（隨機 uuid）排序 ⇒ 連續修訂可能掛在 depth-1 兄弟而非沿 depth-2 續鏈；「優先最深 lineage」屬後續決策，本票未做。
+4. **`elevate_matured_patterns()` 不再保證不 raise**：理論上不可達的接線錯誤會冒泡（依原型 fail-closed 契約與 G10 規格）；`scripts/run_server.py:902`（world adapter 的 `handle_event`）**沒有** try/except（另三個呼叫點有）⇒ 屬本票範圍外，列為後續加固候選。
+
+### ⑤ 本條目的邊界
+
+**不**改 `revision_chain.py`（原型不動，sha 已核）、**不**改引擎與門檻常數、**不**新增 LLM 呼叫途徑、**不**新增寫入面（仍只寫 `elevation_nodes.jsonl`／`elevation_edges.jsonl`）、**不**偽造邊、**不**手動消紅、**不**重啟服務、**不**寫生產 `data/**`（僅唯讀量測）。

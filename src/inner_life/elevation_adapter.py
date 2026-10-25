@@ -1282,6 +1282,22 @@ def _propagate_support_to_soul_nodes(
     return records
 
 
+# ─────────────────────────────────────────────────────────────────────
+# 🔺 FEAT-MOUNT-REVISION-CHAIN-ELEVATION：修訂鏈接線錯誤（必須冒泡）
+# ─────────────────────────────────────────────────────────────────────
+#
+# ``revision_chain.apply_revision()`` 只 catch ``ValueError``（引擎門檻不足）。
+# ``KeyError``（舊節點不在引擎註冊表）代表**接線錯誤**（引擎與 nodes 配對錯了），
+# 不是「門檻不足」⇒ 必須冒泡；否則會被本模組既有的「失敗隔離」吞掉、偽裝成
+# 「門檻不足」，讓整條修訂鏈**靜默停擺**卻看起來像正常跳過。
+#
+# 🔺 為什麼是 ``KeyError`` 的子類：修訂鏈的接線錯誤在語意上就是「找不到舊節點」，
+# 讓它留在 KeyError 家族 ⇒ 呼叫端（與守衛）仍可用 ``except KeyError`` 抓到，
+# 「必須冒泡」這件事在**型別上**可被外部觀察（不必知道本類別的名字）。
+class _RevisionWiringError(KeyError):
+    """修訂鏈接線錯誤（``KeyError`` 家族）——必須冒泡，不得被失敗隔離吞掉。"""
+
+
 def elevate_matured_patterns(
     *,
     store_dir: Optional[Any] = None,
@@ -1307,6 +1323,11 @@ def elevate_matured_patterns(
     Returns:
         本次新产出的灵魂节点（belief/value/trait/essence）列表。失败隔离：
         异常时记录 warning 并返回 []（不 raise，不阻断 consume 主路径）。
+
+    🔺 **唯一的例外**：修訂鏈的接線錯誤（``_RevisionWiringError``，
+    ``KeyError`` 家族）**必須冒泡**（FEAT-MOUNT-REVISION-CHAIN-ELEVATION 的
+    G10）——它代表「引擎與 nodes 配對錯了」，不是「門檻不足」；被失敗隔離吞掉
+    的話會被偽裝成正常跳過 ⇒ 整條修訂鏈靜默停擺而無人察覺。
     """
     if not isinstance(min_evidence, int) or min_evidence < 1:
         raise ValueError(f"min_evidence must be a positive int, got {min_evidence!r}")
@@ -1427,6 +1448,14 @@ def elevate_matured_patterns(
 
             baseline_edges = len(engine._edges)
             agent_elevated: List[ElevationNode] = []
+            # 🔺 修訂鏈接線（FEAT-MOUNT-REVISION-CHAIN-ELEVATION）的唯讀快取：
+            #   「邊依 node_id 索引」＋「各維度已被消化掉的 source_id」。
+            #   惰性計算（只有真的走到分支 B 才算）⇒ 無異常時**逐位元 no-op**。
+            revision_edges_by_node: Optional[Dict[str, List[dict]]] = None
+            revision_consumed: Optional[Dict[str, set]] = None
+            # 本輪已配給新節點的 source（per 維度）⇒ INV-2：新證據不得同時
+            # 掛到兩顆同維度靈魂節點。
+            revision_assigned: Dict[str, set] = {}
             for cand, pids in candidates.items():
                 if not pids:
                     continue
@@ -1492,6 +1521,11 @@ def elevate_matured_patterns(
                 # 而非直接冒泡到最外層 except 使整趟 `elevate_matured_patterns`
                 # 回傳 []。這與本模組既有「逐維度失敗隔離、不阻斷 consume 主路徑」
                 # 的契約一致，且比「一個維度的壞節點讓整趟昇華歸零」更正確。
+                # 🔺 FEAT-MOUNT-REVISION-CHAIN-ELEVATION：分支 B 的修訂鏈旗標。
+                #   這裡**只豎旗標**；真正的 ``apply_revision()`` 呼叫放在
+                #   try/finally **之外**（finally 是唯一還原點；且寬鬆 except
+                #   不得吞掉接線錯誤 ⇒ G10）。
+                _revision_pending = False
                 try:
                     _anchor = _select_anchor_representative(
                         [engine._nodes[pid] for pid in pids],
@@ -1520,7 +1554,11 @@ def elevate_matured_patterns(
                     logger.info(
                         f"[elevate] skip agent={agent_id} candidate={cand}: {exc}"
                     )
-                    continue
+                    # 🔺 修訂鏈接線（FEAT-MOUNT-REVISION-CHAIN-ELEVATION）：
+                    #   分支 B ＝「新證據湊不滿門檻、這顆 pattern 的新證據本來
+                    #   會被 ``continue`` 丟棄」的位置 ⇒ 改走修訂鏈（既有 soul
+                    #   node 吸收新證據 ⇒ 產 depth-2 節點）。
+                    _revision_pending = True
                 except Exception as exc:  # noqa: BLE001 — 失败隔离
                     logger.warning(
                         f"[elevate] failed agent={agent_id} candidate={cand}: "
@@ -1541,6 +1579,195 @@ def elevate_matured_patterns(
                             and engine._edges[_i] is _replacement
                         ):
                             engine._edges[_i] = _original
+                # ── 🔺 修訂鏈接線（FEAT-MOUNT-REVISION-CHAIN-ELEVATION）──
+                #
+                # 位置紀律（不可改判）：
+                #  * **掛載點＝分支 B**（獨立證據不足 ⇒ 這顆 pattern 的新證據
+                #    本來會被 ``continue`` 丟棄）——這就是「被吃掉」的生產語意。
+                #  * 本區塊在 **try/finally 之外**：finally 是「唯一還原點」
+                #    （必須先還原被中性化的邊）；且寬鬆的 ``except Exception``
+                #    **不得**吞掉修訂鏈的接線錯誤 ⇒ ``KeyError`` 一路冒泡（G10）。
+                #  * **分支 A 維持原行為**（內容已被同維度 soul node 佔用 ⇒
+                #    idempotent no-op）：選擇器的條件 5 要求內容「正規化後不等」，
+                #    而 A 的觸發前提就是內容相同 ⇒ A 永遠選不到目標（掛在 A
+                #    ＝ 功能 no-op）。
+                if not _revision_pending:
+                    continue
+                # (a) 遲延 import：``revision_chain`` 反向 import 本模組的
+                #     ``_node_candidate_dimension`` ⇒ 模組層 import 會成環。
+                from src.inner_life import revision_chain
+
+                # (b) 已消化證據（**source_id 粒度**）——與 ``_rebuild_engine_for``
+                #     的「已消化證據隔離」同源。粒度取 source_id 的理由：引擎的
+                #     獨立證據計數口徑本來就是「同 source_id 只算 1 份」；而
+                #     ``revise()`` 產生的新邊不帶 ``inner_life_event_id``
+                #     ⇒ 若用 (source_id, event_id) 比對會對不上、冪等性會失效。
+                if revision_edges_by_node is None:
+                    revision_edges_by_node = {}
+                    for _e in edges:
+                        revision_edges_by_node.setdefault(
+                            str(_e.get("node_id")), []
+                        ).append(_e)
+                    revision_consumed = {}
+                    for _n in nodes:
+                        if _n.get("agent_id") != agent_id:
+                            continue
+                        if _n.get("node_type") not in SOUL_NODE_TYPES:
+                            continue
+                        _dim = _node_candidate_dimension(_n)
+                        _bucket = revision_consumed.setdefault(_dim, set())
+                        for _e in revision_edges_by_node.get(
+                            str(_n.get("node_id")), ()
+                        ):
+                            _bucket.add(_e.get("source_id"))
+
+                # (c) 候選 pattern：**只限本候選維度組** ⇒ 不在候選集／未成熟
+                #     的 pattern 不得驅動修訂（G1）。另外要求它至少有一個
+                #     source_id **尚未被同維度靈魂節點消化** ⇒ 已消化過的
+                #     pattern 不得再驅動一次修訂（G9 / G13 冪等）。
+                _group_ids = {str(pid) for pid in pids}
+                _eligible_pattern_ids = set()
+                for _n in nodes:
+                    if _n.get("node_type") != "pattern":
+                        continue
+                    if _n.get("agent_id") != agent_id:
+                        continue
+                    if str(_n.get("node_id")) not in _group_ids:
+                        continue
+                    _p_sources = {
+                        _e.get("source_id")
+                        for _e in revision_edges_by_node.get(
+                            str(_n.get("node_id")), ()
+                        )
+                        if _e.get("valid_until_ts") is None
+                    }
+                    _p_consumed = revision_consumed.get(
+                        _node_candidate_dimension(_n), set()
+                    )
+                    if _p_sources - _p_consumed:
+                        _eligible_pattern_ids.add(str(_n.get("node_id")))
+                if not _eligible_pattern_ids:
+                    logger.debug(
+                        "[elevate] ↻ revision skip agent=%s candidate=%s: "
+                        "候選組的 pattern 證據已被同維度靈魂節點消化（不重複消化）",
+                        agent_id,
+                        cand,
+                    )
+                    continue
+
+                # (d) 選擇器輸入：**同一份**節點／邊快照（不重新讀檔、不另建
+                #     真相）；只把 pattern 集合收斂到「本候選維度組 × 尚未被
+                #     消化」，靈魂節點原樣保留（選擇器要靠它們當修訂目標）。
+                _selector_nodes = [
+                    _n
+                    for _n in nodes
+                    if _n.get("node_type") != "pattern"
+                    or str(_n.get("node_id")) in _eligible_pattern_ids
+                ]
+                _targets = revision_chain.select_revision_targets(
+                    _selector_nodes, edges, agent_id=agent_id
+                )
+                if not _targets:
+                    logger.debug(
+                        "[elevate] ↻ revision skip agent=%s candidate=%s: "
+                        "選擇器無目標（同維度無既有 soul node／內容未更新／"
+                        "證據非新）",
+                        agent_id,
+                        cand,
+                    )
+                    continue
+                # (e) 套用選擇器回傳的目標（依 node_id 排序 ⇒ 決定性）。
+                #     🔺「每個目標至多一條修訂鏈」由**選擇器**保證（工單 §②
+                #     條件 7：同一目標只取第一顆合格 pattern）⇒ 掛載端**不**另設
+                #     一套去重（否則選擇器的保證會被悄悄架空）。
+                #     INV-2：新證據不得同時掛到兩顆同維度靈魂節點 ⇒ 本輪已配給
+                #     的 source 記在 ``revision_assigned``，後續目標拿不到就
+                #     fail-closed（維持原行為）。
+                for _target in _targets:
+                    _target_node = next(
+                        (
+                            _n
+                            for _n in nodes
+                            if str(_n.get("node_id")) == _target.node_id
+                        ),
+                        None,
+                    )
+                    _target_dim = (
+                        _node_candidate_dimension(_target_node)
+                        if _target_node is not None
+                        else str(cand)
+                    )
+                    # (f) G9：新節點的 source_ids 不得重複計入目標節點的既有證據
+                    #     集合 ⇒ 只掛「尚未被同維度消化、且本輪尚未配給」的 source。
+                    _taken = set(revision_consumed.get(_target_dim, set()))
+                    _taken |= revision_assigned.get(_target_dim, set())
+                    _new_source_ids = tuple(
+                        _sid for _sid in _target.new_source_ids if _sid not in _taken
+                    )
+                    if not _new_source_ids:
+                        logger.info(
+                            "[elevate] ↻ revision skip agent=%s candidate=%s "
+                            "target=%s: 新證據已被同維度靈魂節點消化"
+                            "（fail-closed，不做部分寫入）",
+                            agent_id,
+                            cand,
+                            _target.node_id[:12],
+                        )
+                        continue
+                    _effective_target = replace(
+                        _target, new_source_ids=_new_source_ids
+                    )
+                    # (g) 接線薄層：fail-closed、不重試、不迴圈、**不呼叫 LLM**。
+                    _node_ids_before = set(engine._nodes)
+                    try:
+                        _applied = revision_chain.apply_revision(
+                            engine, _effective_target, source_type="inner_life_event"
+                        )
+                    except KeyError as exc:
+                        # 🔺 接線錯誤（舊節點不在引擎註冊表）⇒ **必須冒泡**（G10）：
+                        #     不得被本模組的「失敗隔離」吞掉、也不得只記 warning。
+                        raise _RevisionWiringError(
+                            f"revision wiring error: agent={agent_id} "
+                            f"target={_effective_target.node_id!r}: {exc}"
+                        ) from exc
+                    if not _applied:
+                        # 引擎門檻不足（``ValueError`` 已被 ``apply_revision`` 內部
+                        # 吃掉）⇒ 維持原行為（不升、不改任何節點／邊；fail-closed）。
+                        logger.info(
+                            "[elevate] ↻ revision not applied agent=%s candidate=%s "
+                            "target=%s（引擎門檻不足 ⇒ 維持原行為）",
+                            agent_id,
+                            cand,
+                            _effective_target.node_id[:12],
+                        )
+                        continue
+                    _new_node_ids = [
+                        _nid for _nid in engine._nodes if _nid not in _node_ids_before
+                    ]
+                    if not _new_node_ids:
+                        logger.warning(
+                            "[elevate] ↻ revision produced no node agent=%s target=%s",
+                            agent_id,
+                            _effective_target.node_id[:12],
+                        )
+                        continue
+                    _new_node = engine._nodes[_new_node_ids[0]]
+                    revision_assigned.setdefault(_target_dim, set()).update(
+                        _new_source_ids
+                    )
+                    agent_elevated.append(_new_node)
+                    elevated.append(_new_node)
+                    logger.info(
+                        "[elevate] ↻ revision agent=%s candidate=%s target=%s → %s "
+                        "depth=%d new_content_len=%d new_sources=%d",
+                        agent_id,
+                        cand,
+                        _effective_target.node_id[:12],
+                        _new_node.node_id[:12],
+                        _new_node.lineage_depth,
+                        len(_new_node.content or ""),
+                        len(_new_source_ids),
+                    )
             # ── LIFECYCLE-REINFORCE-CHAIN：支持傳遞（Support Propagation）──
             # 位置決定：engine.elevate() 之後、_persist_result() 之前。
             # ⇒ reinforce() 追加的邊落在 engine._edges[baseline_edges:]，由既有的
@@ -1554,6 +1781,12 @@ def elevate_matured_patterns(
                 resolved_dir, agent_elevated, engine.evidence_edges[baseline_edges:]
             )
         return elevated
+    except _RevisionWiringError:
+        # 🔺 修訂鏈接線錯誤（``KeyError`` 家族）——**必須冒泡**（G10）：
+        #   不得被下面的「失敗隔離」吞掉、也不得只記 warning。理由：它代表
+        #   **接線錯誤**（引擎與 nodes 配對錯了），不是「門檻不足」；被吞掉的
+        #   話會被偽裝成正常跳過 ⇒ 整條修訂鏈靜默停擺而無人察覺。
+        raise
     except Exception as exc:  # noqa: BLE001 — 失败隔离：不影响 consume 主路径
         # 🔴 帶 traceback。這裡刻意「吞掉一切並回傳 []」是既有契約（不阻斷
         # consume 主路徑），但代價是**程式層級錯誤會被靜默降級成靈魂層停止生長**。
