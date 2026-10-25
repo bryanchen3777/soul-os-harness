@@ -388,16 +388,64 @@ EXPECTED_RETIREMENT_COHORTS = (
         "date": "2026-10-25",
         "not_before": "2026-11-02T02:00:00+00:00",
         "nodes": frozenset({
+            "09c71aa58cc44e05b25a18c6a9596224",  # agent_anna
             "0e529801f5934c2ba677a9730cf30f78",  # agent_saki
+            "10299061190c423bba68b6abc0d7176b",  # agent_hiro
+            "18d364aa36024e23ab09201ca97cbb16",  # agent_kaori
+            "1d702a43aad64f7dbe5a916f16ffc093",  # agent_mai
+            "1e3bbe7519064153a8351d603c5bd70c",  # agent_mami
+            "1f765268aae94692a639e206f98c2189",  # agent_aoi
             "2b17043395ab40a5b1c5c7110cd14e9e",  # agent_chizuru
+            "3098cfcdaa8c4e92bb1531a462f12892",  # agent_mahiru
+            "36a215fc302644508f0e1e6bb45602b5",  # agent_nagisa
+            "3ad4dff5be3243fc94988e5525570aa1",  # agent_kana
+            "3d43520e22d54442a4e51c9246a36056",  # agent_sachi
+            "3dd101fd398b4951af4de627b3c22b9c",  # agent_rem
             "45ef23d0b9f9496582275b0d7e4727f7",  # agent_ichika
+            "4632818ecaa1451c80e2fe8d47e090d1",  # agent_minami
+            "4bf82edbe66e409d878a20f279e3cb83",  # agent_ruka
+            "508691f8cb004a9a8d5d992b5bc8b16b",  # agent_shea
+            "53f0941e71124800a07c89d2d1d39073",  # agent_ram
             "54d1bb4641d6470e9108802eb6f509e3",  # agent_itsuki
             "562da36870304901b1678d55bf12eb89",  # agent_yotsuba
+            "56c48338fedf499a898976e80b276c26",  # agent_akane
+            "5c378fe6744144059e42983659d54ed5",  # agent_shizuku
+            "5f2a73d780b64828a08d80704fbf6a43",  # agent_mochizuki_ai
+            "64325480fb4142ac9f71f4626518368d",  # agent_shino
+            "6af32e9f66a74d8ea2b1eb7efb71451f",  # agent_mahiru
             "6b84b711d59d400c84d98c4d874dcb79",  # agent_beatrice
+            "6eb5f9fe2838440eb8d19ee4c8fc9b8b",  # agent_ruka
             "71d2a537da2d4aac9b99b1775cf73480",  # agent_nagisa
+            "749fc75cfab7426d93b152da460bc8cb",  # agent_iroha
+            "76af1963e27a4f3fadbf34036aa7a1fc",  # agent_asuna
+            "794eb4bbf4274ba088b2565e278f50ba",  # agent_rem
+            "79895f76e6974bc8b66a13cdba0d2be3",  # agent_tsukasa
+            "8355312eb8dd4287b6cd160d224105a2",  # agent_reze
             "8b7f652769f74b0494293c2cae70257d",  # agent_rika
+            "8b9efdc2bb4c4b1899ebb896bb492632",  # agent_rin
+            "951d0c15a6e64980ada70762e7f72b38",  # agent_aoi
+            "9744adc262b54fd19fd9096e1d4121da",  # agent_kurisu
+            "a38e2c8796374456aea2ccc9d75555cb",  # agent_ram
+            "a8eba6894291418c9766cba104183cb2",  # agent_ai
+            "ab3e42207be74138a939e9a343ada635",  # agent_mashiro
             "af3c7ff2cddd4f51a1ffdc013eb223ee",  # agent_nino
+            "b0a1690de9f6480a9ee2d86c8a3caddd",  # agent_rio
+            "b2c0a39cd50548f7a066427c340df0e3",  # agent_sakura
+            "bd3f6189e5a94cb1b3124cc5deb83c6d",  # agent_kaguya
+            "c04da567cf1c4c24ada5e59e45ba8568",  # agent_akane
+            "c3b2c9f7553e40479b7c35099c636e1a",  # agent_anna
+            "c4373ede472d4d389a27f48f4a1a597b",  # agent_rika
             "c6fe3abd5e3141d58ec92968be1c451d",  # agent_emilia
+            "c9e4661a9d724eaf93092bdd15c852f4",  # agent_mai
+            "ca1c549638dd4411aca9a16b653e1666",  # agent_shino
+            "ca57e6819f604b2da487e659989942cb",  # agent_miku
+            "d24984280011439d8923050c3078f549",  # agent_yue
+            "d34e42aafb184e669a5bd129b3a48ee2",  # agent_miku
+            "e461c1449cc94b80b6ec2169560a8c66",  # agent_haruhi
+            "f844dc4a6f2c46479fef90c099cb3046",  # agent_kirino
+            "fa243a4f6db14fbfb46a9a07420f12f4",  # agent_makima
+            "fc1fc5f5b1f847b6bb3d754437f2188a",  # agent_fuuka
+            "fd4412d7218746ff8e6238c7135c4ffb",  # agent_yua
         }),
     },
 )
@@ -583,8 +631,25 @@ def approved_retirement_ids(cohorts=None) -> set:
     return out
 
 
+def _created_after(created: str, not_after) -> bool:
+    """節點的建立時刻是否**晚於**評估時鐘。
+
+    ⚠️ 時刻不可解析或無時區 ⇒ 回 **False**（＝保守**包含**該節點）⇒
+    自我否決只可被收緊、不可被放寬（fail-closed）。
+    """
+    try:
+        dt = datetime.fromisoformat(str(created))
+        bound = (not_after if isinstance(not_after, datetime)
+                 else datetime.fromisoformat(str(not_after)))
+        if dt.tzinfo is None or bound.tzinfo is None:
+            return False
+        return dt > bound
+    except Exception:
+        return False
+
+
 def expected_retirement_sets_by_cohort(nodes: list, edges: list,
-                                        cohorts=None) -> dict:
+                                        cohorts=None, *, not_after=None) -> dict:
     """**逐 cohort** 推導「四條件全中」的節點集合（建立日 → 集合）。
 
     每個 cohort 的四條件（**不得**放寬、**不得**加任何時間算術）：
@@ -592,6 +657,14 @@ def expected_retirement_sets_by_cohort(nodes: list, edges: list,
       2. created_ts 的日期部分 == 該 cohort 的 `date`
       3. last_support_ts == created_ts（建立後從未再被背書）
       4. 沒有任何 trigger_type == "support_propagation" 的邊指向它（祖先支持邊＝0）
+
+    🔴 `not_after`＝**評估時鐘上界**（2026-10-25 主大腦修正 B）：推導集合必須只含
+    「在評估時刻**已經存在**」的節點。
+    ⇒ 理由（實測）：用「過去的槽時刻」評估「已成長的圖」時，圖裡晚於該時刻的
+    新節點會被算進推導集合 ⇒ 逐 cohort 自我否決（推導 ⊆ 核准）因**圖的成長**而
+    破裂 ⇒ 對**尚未發生的槽**假紅（2026-10-25 晨槽實測：48 顆建立於 12:00Z 的
+    value 節點晚於評估時鐘 02:00Z ⇒ 誤判 FAIL/exit 1）。
+    ⇒ 這是**時序一致性**要求，不是放寬判準：四條件不變、自我否決不變。
 
     🔴 這是**規則的自我描述**，用來證明「規則沒有被悄悄放寬」；
     **不是** expected 的必要條件（見 `classify_soul_retirements`）。
@@ -608,6 +681,8 @@ def expected_retirement_sets_by_cohort(nodes: list, edges: list,
             created = n.get("created_ts") or ""
             if not isinstance(created, str) or created[:10] != date:
                 continue
+            if not_after is not None and _created_after(created, not_after):
+                continue          # 晚於評估時鐘 ⇒ 當時尚未存在 ⇒ 不列入推導
             if (n.get("last_support_ts") or "") != created:
                 continue
             nid = n.get("node_id")
@@ -661,7 +736,8 @@ def baseline_violation(expected, cohorts=None) -> list:
                 continue
             extra = sorted(x for x in (derived or ()) if x not in approved)
             if extra:
-                msgs.append("⓪ cohort %s 的預期退役集合超出核准基線（規則被放寬）：%s"
+                msgs.append("⓪ cohort %s 的預期退役集合超出核准基線"
+                            "（規則被放寬 **或台帳待刷新**——新成員已入圖但未入台帳）：%s"
                             % (date, extra))
         return msgs
     extra = sorted(x for x in (expected or ()) if x not in approved_all)
@@ -1100,7 +1176,12 @@ def main(argv=None) -> int:
         #       的核准清單（推導較小是正常的：核准清單通常還包含「被背書過才退役」
         #       的成員，那 9 顆不會被四條件推導出來）。
         expected_retirement = approved_retirement_ids()
-        derived_by_cohort = expected_retirement_sets_by_cohort(nodes, edges)
+        # 🔺 評估時鐘上界（2026-10-25 主大腦修正 B）：推導集合只含「在評估時刻
+        #   **已經存在**」的節點 ⇒ 用過去的槽時刻評估「已成長的圖」時，不會把
+        #   未來才存在的節點算進去（否則自我否決會因圖的成長而假紅）。
+        _clock_bound = simulated_time or datetime.now().astimezone().isoformat()
+        derived_by_cohort = expected_retirement_sets_by_cohort(
+            nodes, edges, not_after=_clock_bound)
         expected_derived = set()
         for _s in derived_by_cohort.values():
             expected_derived |= _s

@@ -1281,5 +1281,101 @@ class TestThreeWayRetirementClassification(unittest.TestCase):
                          "pattern 轉變不屬於任何一類（正常演化）")
 
 
+class TestEvaluationClockConsistency(unittest.TestCase):
+    """**時序一致性**（2026-10-25 主大腦修正 B）：推導集合必須只含
+    「在評估時刻**已經存在**」的節點。
+
+    理由（實測，非推測）：用「過去的槽時刻」評估「已成長的圖」時，圖裡晚於
+    該時刻的新節點會被算進推導集合 ⇒ 逐 cohort 自我否決（「推導 ⊆ 核准」）
+    因**圖的成長**而破裂 ⇒ 對**尚未發生的槽**假紅。2026-10-25 晨槽實測：
+    48 顆建立於 `2026-10-25T12:00Z` 的 value 節點晚於評估時鐘 `02:00Z`
+    ⇒ 自我否決誤判 ⇒ `VERDICT: FAIL` / exit 1（四條件、四條件推導、自我否決
+    本身**都沒有**被放寬）。
+
+    ⚠️ 時序過濾只作用於**推導集合**（規則的自我描述）；
+    **不是** expected 的資格來源（那仍是台帳核准清單）。
+    """
+
+    CLOSED_COHORT = "2026-10-25"   # 建立日已過 ⇒ 成員集合不再變動 ⇒ 穩定不變量
+
+    def _cohort(self, date=None):
+        date = date or self.CLOSED_COHORT
+        for c in CLI.EXPECTED_RETIREMENT_COHORTS:
+            if c["date"] == date:
+                return c
+        raise AssertionError("台帳沒有 cohort %s" % date)
+
+    def _prod_jsonl(self, name):
+        path = pathlib.Path(PROD_DIR) / name
+        if not path.exists():
+            return []
+        out = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                pass
+        return out
+
+    def test_nodes_created_after_the_clock_are_not_derived(self):
+        wid = "a" * 32
+        nodes = [_value_node(wid, "2026-10-25T12:00:06+00:00")]
+        derived = CLI.expected_retirement_sets_by_cohort(
+            nodes, [], cohorts=[self._cohort()], not_after="2026-10-25T12:00:00+00:00")
+        self.assertNotIn(wid, derived[self.CLOSED_COHORT],
+                         "晚於評估時鐘建立的節點不得進入推導集合（時序一致性）")
+
+    def test_nodes_created_at_or_before_the_clock_are_derived(self):
+        wid = "b" * 32
+        nodes = [_value_node(wid, "2026-10-25T11:59:59+00:00")]
+        derived = CLI.expected_retirement_sets_by_cohort(
+            nodes, [], cohorts=[self._cohort()], not_after="2026-10-25T12:00:00+00:00")
+        self.assertIn(wid, derived[self.CLOSED_COHORT])
+
+    def test_no_clock_means_no_filter(self):
+        wid = "c" * 32
+        nodes = [_value_node(wid, "2026-10-25T12:00:06+00:00")]
+        derived = CLI.expected_retirement_sets_by_cohort(
+            nodes, [], cohorts=[self._cohort()])
+        self.assertIn(wid, derived[self.CLOSED_COHORT],
+                      "未給時鐘時不得過濾（舊 API 相容）")
+
+    def test_clock_comparison_is_fail_closed(self):
+        """時鐘比較本身必須 fail-closed：不可解析／無時區 ⇒ 一律視為「不晚於」。
+
+        ⇒ 自我否決只可收緊不可放寬（時刻無法判定的節點必須留在推導集合裡）。"""
+        clock = "2026-10-25T12:00:00+00:00"
+        self.assertTrue(CLI._created_after("2026-10-25T12:00:06+00:00", clock),
+                        "明確晚於時鐘者必須判為 True")
+        self.assertFalse(CLI._created_after("2026-10-25T11:59:59+00:00", clock))
+        self.assertFalse(CLI._created_after("not-a-timestamp", clock),
+                         "時刻不可解析 ⇒ 保守視為不晚於")
+        self.assertFalse(CLI._created_after("2026-10-25T12:00:00", clock),
+                         "無時區的建立時刻不得被判為晚於時鐘")
+
+    def test_closed_cohort_is_fully_reconciled_with_the_graph(self):
+        """已封閉的 cohort：四條件推導集合必須與核准清單**完全相等**。
+
+        該 cohort 的建立日已過 ⇒ 不會再有成員加入 ⇒ 這是穩定不變量。
+        （2026-10-25 的 48 顆是晨槽 08:00 EDT 新建的，台帳已於同日刷新。）"""
+        prod_nodes = self._prod_jsonl("elevation_nodes.jsonl")
+        prod_edges = self._prod_jsonl("elevation_edges.jsonl")
+        if not prod_nodes:
+            self.skipTest("生產圖譜不可讀（CI 環境）")
+        derived = CLI.expected_retirement_sets_by_cohort(
+            prod_nodes, prod_edges, cohorts=[self._cohort()])[self.CLOSED_COHORT]
+        approved = set(self._cohort()["nodes"])
+        self.assertEqual(set(derived), approved,
+                         "cohort %s 的核准清單必須與四條件推導集合完全相等"
+                         % self.CLOSED_COHORT)
+        self.assertEqual(CLI.baseline_violation(
+            {self.CLOSED_COHORT: set(derived)},
+            cohorts=[self._cohort()]), [],
+            "已封閉 cohort 不得觸發自我否決（台帳與圖必須已對帳）")
+
+
 if __name__ == "__main__":
     unittest.main()
