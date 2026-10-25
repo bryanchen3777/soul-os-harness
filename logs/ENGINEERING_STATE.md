@@ -6568,3 +6568,78 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
 - **不**改任何 `src/**`／`tests/**` 的**行為**（本輪只是把 worker 的產出**合入**主 repo ＋ 複核入庫）。
 - 🔺 **不**掛載 `elevation_adapter.py`（那是**下一片**，須另行授權）⇒ **生產行為 0 變化**。
 - **不**重啟服務、不殺行程、不寫生產 `data/**`、0 真實 LLM 呼叫、0 外部 API。
+
+## 0.1.81 合入前守衛檢查清單（**由本回合一次實測教訓抽出**，2026-10-24 20:0x EDT）
+
+本回合把兩條離線線合入主 repo 時，**漏掉**了「觀護衛 src 白名單逐票更新」這一步，
+被主大腦在重跑回歸前抓到 ⇒ 順手把「合入前必查清單」**制度化**，避免下一次靠運氣。
+
+### ① 這次實際踩到的坑
+
+- 兩張票合入 **2 個新增的 `src/inner_life/*.py`**（`revision_chain.py`／`contradiction_judge_prototype.py`）
+  ⇒ `tests/test_observability_completeness_1.py` 的 `allowed` 集合（**逐票更新**的 src 白名單）
+  **不含**它們 ⇒ `test_no_frozen_contract_file_touched` 的 `src_changes <= allowed` 會失敗。
+- 🔺 **關鍵細節**：該 `allowed` 是**測試執行期**求值的**局部變數**（**不是** import 期）
+  ⇒ **事後補上也不會影響已在跑的那輪回歸** ⇒ **那輪必然紅一格**
+  ⇒ 與其跑完再重跑，**不如先修再跑**（省一輪 14 分鐘）。
+  ⇒ 主大腦的處置：**停掉那輪回歸 → 更新 `allowed` → 重跑**（第一輪只跑了 5 分鐘）。
+
+### ② 🔺 合入前必查清單（**四項，逐項核對**）
+
+| # | 項目 | 核對方式 |
+|---|---|---|
+| 1 | **新 `src/` 檔 ⇒ 觀護衛白名單逐票更新** | `Select-String 'tests/test_observability_completeness_1.py'` 找 `allowed` 集合，**逐條新增** ＋ 註明工單來源；再跑該守衛確認綠 |
+| 2 | **新 collectable 測試檔 ⇒ 必須先 `git add`** | `git add -- <具名檔>`（**禁** `git add .`）；repo hygiene 守衛會驗 |
+| 3 | **frozen 紅線 11 檔未動** | `git diff --name-only` **逐筆核對**（不採信自報）；另外 `git show HEAD:<path>` 與工作樹逐檔 sha256 相同 |
+| 4 | **canonical 只追加、節號不重號** | 合併多條 worker 的 canonical 追加時**統一重編號**；合併後**掃描重號**（本回合：A 線 §0.1.77→§0.1.78、C-lite §0.1.78→§0.1.79、本條 §0.1.80 → 掃描結果「重複節號＝無」） |
+
+### ③ 本回合另外兩條**量測紀律**的實例（皆非產品缺陷）
+
+| # | 現象 | 真相 | 教訓 |
+|---|---|---|---|
+| 1 | 主大腦第一版複核 harness 報「出現 G-3 專屬呼叫」3 項 | **假陽性**：用子字串比對，把 **docstring 裡的禁令敘述**（「不得自行呼叫 `engine.record_contradiction()`／…」）誤判成真呼叫 | 判定「有沒有真的呼叫某 API」**必須用 AST `Call` 節點**，不可用子字串比對（docstring 與註解會製造假陽性）⇒ 改用 AST 後：**真呼叫＝0**，`engine.*` 只有 `revise` 與 `get_node` |
+| 2 | 主大腦第一版 C-lite 變異「沒轉紅」2 條 | **變異寫錯**：regex 把 `decide_action` **docstring 內**的 `UNDECIDED` 當程式碼替換掉 ⇒ 行為未變；另一條錨點根本沒比中 | 「變異沒轉紅」的第一反應必須是**懷疑量測腳本與基準**，不是「守衛是盲腸」；改用**精確字串替換**後 **5/5** 命中 |
+
+⇒ 兩次都靠「先懷疑量測腳本」避免了誤判 ⇒ **本回合沒有任何一次「變異沒轉紅」被誤判成守衛缺陷**。
+
+### ④ 本條目**不**做的事
+
+- **不**改任何產品行為；僅新增合入流程的檢查清單（制度化）。
+- **不**重啟服務、不殺行程、不寫生產 `data/**`、0 真實 LLM 呼叫、0 外部 API。
+
+## 0.1.82 生產事件記錄：Telegram poller 三 agent 同時 STALLED → **自癒成功**（2026-10-24 18:00～18:29 EDT）
+
+主大腦於 19:5x 的例行生產健康複查中**發現**（先前 15:04 的觀察窗尚未涵蓋這段）⇒ 依值守紀錄如實記錄。
+
+### ① 時間線（逐筆取自 `data/server_nohup.err`）
+
+| 時刻 | 事件 |
+|---|---|
+| **18:00:44** | `[TG:yua] poller STALLED: updater.running=True but no successful getUpdates — seconds_since_last_poll_success=124.2`（門檻 120s） |
+| 18:00:49 | `telegram.ext.Updater` ERROR：`Error while calling get_updates one more time to mark all fetched updates` |
+| 18:00:56 ～ 18:02:12 | `[TG:yua] rebuild attempt 1/5 ～ 5/5 failed` ⇒ `last_error=Traceback … telegram.error.TimedOut: Timed out`；teardown 冪等警告（`This Application is not running!`） |
+| **18:02:12** | `[TG:yua] CRITICAL: 5 consecutive rebuilds without 600s healthy window — slow retry mode: retrying every 300s (never gives up; supervisor s…)` |
+| **18:12:51／18:12:52** | `[TG:rem]`／`[TG:ruka]` **也** STALLED（123.4s／122.5s）⇒ **三個 poller 在 12 分鐘內相繼中招** |
+| **18:14:18／18:14:20** | `[TG:rem]`／`[TG:ruka]` CRITICAL（同一 slow-retry 條款）⇒ **共 3 筆 CRITICAL** |
+| **18:17:13** | `[TG:yua] healthy for >=600s — resetting rebuild counter` ✅ |
+| **18:19:19／18:19:20** | `[TG:rem]`／`[TG:ruka] poller rebuilt OK (attempt 6/5)` ✅ |
+| **18:29:20** | `[TG:rem]`／`[TG:ruka] healthy for >=600s — resetting rebuild counter` ✅ ⇒ **重建計數器全部歸零** |
+
+### ② 定性
+
+- **根因類別＝瞬時網路／外部 API 超時**：`getUpdates` 超過 120 s 未回 ⇒ `telegram.error.TimedOut: TimedOut`。
+  🔺 **三個 poller 在 12 分鐘內相繼中招** ⇒ **系統性事件**（Telegram 端或本地連線／IO），**不是**單一 agent 的程式缺陷。
+- **自癒機制**（既有 supervisor 設計）**首次在本窗被實際驗證並成功**：
+  重建 ×5 失敗 → slow-retry（每 300s、**永不放棄**）→ attempt 6/5 重建成功 → 600s 健康窗 → 計數器歸零。
+- **零影響**：`/health` 全程 **200**；服務**未重啟**（trampoline PID 8796／`:8000` owner 20568 未變）；
+  近 4 小時 `database is locked` ＝ 0；無 `[Goal] 主循环扫描异常`；無資料損毀。
+- 🔺 **誠實揭露（本事件的唯一未解項）**：事件窗（18:00～18:14）與**多輪全庫回歸並行**的時段重疊
+  （worker 的 worktree 回歸 ＋ 主大腦的主 repo 回歸同時在跑）⇒ **本機負載是可能的推力**。
+  ⚠️ **未證實**（無 CPU／網路取樣佐證），但**不能排除** ⇒
+  ⇒ **操作規則（已寫入派工指令、並在本條目制度化）**：
+  **22:00 ～ 01:00 EDT 期間不得跑全庫回歸**（涵蓋今晚 22:00 生產夜槽 ＋ 23:22 重啟窗口）；
+  定向測試（單一守衛檔）不受此限。
+  ⇒ 🔺 也代表：**Telegram poller 的 120 s poll 成功門檻是一個對本機負載敏感的參數**；
+  若未來再見同型 STALLED，**第一嫌疑是本機負載**（而非 Telegram 帳號或網路）⇒ 屆時先查回歸窗。
+- **本條目不隱瞞**：這是本回合**唯一**的生產紅燈；它發生在主大腦值守期間，屬**主大腦未能即時察覺**，
+  係因觀察窗只覆蓋到 15:04 ⇒ **值守覆蓋需要延伸到夜槽前**（已由 23:13／23:22／08:20 三張排程票涵蓋）。
