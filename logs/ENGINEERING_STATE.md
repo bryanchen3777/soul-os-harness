@@ -6688,3 +6688,48 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
 - **不**改任何測試的 skip 條件（那是**另一張治理票**：把 import 期寫 `os.environ` 的 50+ 個模組
   改成 fixture 內設定 ＋ teardown 還原 ⇒ 才能讓 skip 數穩定）。
 - **不**重跑、不重啟、不動生產、不殺行程、0 真實 LLM 呼叫。
+
+## 0.1.84 生產事件記錄（第二次）：Telegram poller 再度 STALLED（21:12–21:21）⇒ **🔺 推翻 §0.1.82 的歸因**
+
+### ① 事件（逐筆取自 `data/server_nohup.err`）
+
+| 時刻 | 事件 |
+|---|---|
+| 21:12:43 | `[TG:aoi] poller STALLED`（`updater.running=True` 但無成功 `getUpdates`） |
+| 21:12:48 | `telegram.ext.Updater` ERROR（`Error while calling get_updates …`） |
+| 21:14:19 ／ 21:14:24 | `[TG:mai] poller STALLED` ＋ Updater ERROR |
+| 21:14:30 ～ 21:15:02 | `[TG:mai] rebuild attempt 1/5 ～ 3/5 failed`，`last_error=telegram.error.TimedOut: Timed out`；teardown 冪等警告 |
+| **21:15:10** | `[TG:mai] poller rebuilt OK (attempt 4/5)` ✅ |
+| 21:20:53 ／ 21:20:59 | `[TG:rem] poller STALLED` ＋ Updater ERROR（`TimedOut`） |
+| **21:21:03** | `[TG:rem] poller rebuilt OK (attempt 1/5)` ✅ |
+| 21:22:51 ／ 21:25:11 ／ 21:31:03 | `[TG:aoi]`／`[TG:mai]`／`[TG:rem]` `healthy for >=600s — resetting rebuild counter` ✅ |
+
+⇒ **近 90 分鐘 ERROR／CRITICAL ＝ 12**（全部是 TG poller 類）；**CRITICAL ＝ 0**（未觸發 slow-retry）
+⇒ **完全自癒**，服務未重啟（pid 8796／`:8000` owner 20568）、`/health` 200、`locked 0`。
+
+### ② 🔺 對 §0.1.82 的**歸因修正**（主大腦自我推翻）
+
+§0.1.82 寫「事件窗與多輪全庫回歸並行 ⇒ **本機負載是可能的推力**（未證實，但不能排除）」。
+**本次事件提供了反證**：
+
+- 21:12–21:21 期間，主大腦**沒有跑任何重活**：最後一輪全庫回歸 20:25 結束，
+  其後只有唯讀查核（日誌解析）與一次排程更新。
+- ⇒ **本機負載**在這次**不是必要條件** ⇒ §0.1.82 的「負載＝可能誘因」**過度歸因**，必須降級。
+- ⇒ **修正後的歸因**：**主因類別 ＝ 對外連線／Telegram API 可達性**（`getUpdates` 逾時 120 s，
+  兩次事件的錯誤**完全相同**：`telegram.error.TimedOut: Timed out`）；
+  **本機負載至多是加重因子**（它能解釋第一次事件的三個 poller **同時**中招，但不能解釋第二次
+  在低負載時仍發生）。
+- ⇒ §0.1.83 中「高負載窗口同時造成 ①相依測試跳過 ②Telegram 逾時」的**合併歸因**，
+  現降級為「**兩者共享『外部可達性』這個更上游的因**；負載只是 ①的可靠成因，對 ② 只是加重因子」。
+
+### ③ 對今晚窗口的意義（**不變更任何排程**）
+
+- **23:22 重啟窗口照常執行**：重啟會**重建全部 poller 與連線** ⇒ 對「連線層級的失聯」是有效處置
+  （比讓 poller 自己慢慢重建更乾淨）；且重啟**不依賴** TG。
+- 🔺 **但**：若 23:22 之前 TG poller 仍在 slow-retry，**重啟本身會清掉那個狀態** ⇒ 對今晚反而有利。
+- ⇒ **本條目不改任何排程、不改任何程式碼**；僅修正歸因與留下可稽核的證據。
+
+### ④ 本條目**不**做的事
+
+- **不**重啟服務、**不**殺行程、**不**寫生產 `data/**`、0 真實 LLM 呼叫。
+- **不**在 22:00–01:00 禁跑窗內跑任何全庫回歸（§0.1.81／§0.1.83 的規則不變）。
