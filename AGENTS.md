@@ -72,8 +72,15 @@
 - 輸出四項對帳：
   1. **sidecar 增量**（新增幾筆轉變）；
   2. **轉變類型純度** —— value/belief/trait/essence 的轉變數必須 **恆等於 0**；
+     **唯一例外**：Owner 核准台帳內的 Legacy Value 退役（＝預期代謝）。
+     判定為**三態**：`PASS`(exit 0)／`FAIL`(exit 1，真破線)／`PENDING_COHORT`(exit 3，
+     未核准的退役批次 —— **不是**破線、**不是** PASS，必須回報並由主大腦依實測核准）。
+     台帳見 `scripts/eval_lifecycle_cli.py` 的 `EXPECTED_RETIREMENT_COHORTS`
+     （每筆＝建立日 ＋ 核准節點集合 ＋ 最早可退役槽；**CLI 不得自行核准**）。
+     （2026-10-23 Owner 裁示「改判準」＋ 2026-10-25 台帳化；見 canonical §0.1.53／§0.1.54／§0.1.85。）
   3. **關鍵反例節點**狀態（必須維持 active，不得轉 weakening）；
-  4. **Prompt 投影正文逐位元比較**（「我隐约觉得」弱化包裝增量必須 0）。
+  4. **Prompt 投影正文逐位元比較** —— 去掉弱化裝飾（「我隐约觉得」）後正文必須**逐位元相同**；
+     弱化包裝增量必須 **等於 expected ＋ pending 的筆數**（等於 ⇒ 預期投影後果；不等 ⇒ 破線）。
 - **0 筆新轉變但圖非空 ⇒ 冪等 no-op，不是失敗**（該轉的都已經轉過了）。這兩種「0 筆」
   必須分開判讀，否則會把 no-op 誤報成「評估沒觸發」。
 - **不需要**在服務內部開熱觸發端點：`evaluate_lifecycle_all()` 是純 disk→disk 函式

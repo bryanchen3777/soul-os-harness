@@ -6733,3 +6733,98 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
 
 - **不**重啟服務、**不**殺行程、**不**寫生產 `data/**`、0 真實 LLM 呼叫。
 - **不**在 22:00–01:00 禁跑窗內跑任何全庫回歸（§0.1.81／§0.1.83 的規則不變）。
+﻿
+## 0.1.85 生命週期 CLI 的「預期退役 cohort 台帳」＋ 三分類判定；值守鏈基準去日期化（2026-10-24 23:3x–2026-10-25 00:0x EDT）
+
+### ① 觸發與發現（**主大腦實測，非推測**）
+
+- 10/24 夜槽之後，主大腦用核准的離線沙盒 CLI（`scripts/eval_lifecycle_cli.py --simulated-time …`；來源唯讀、唯一寫入目標＝自建 temp 沙盒）**先量下一個槽會怎樣判**：
+
+| 模擬時刻 | 對應槽 | 新增轉變 | value 轉變 | weak_prefix | CLI 判定 |
+|---|---|---|---|---|---|
+| `2026-10-25T12:00:00Z` | 10/25 晨槽 | 14（全 pattern） | 0 | 10 → 10 | **PASS** / exit 0 |
+| `2026-10-26T02:00:00Z` | 10/25 夜槽 | 36（pattern 27 ＋ **value 9**） | 9 | 10 → **19** | **FAIL** / exit 1 |
+
+- 那 9 筆 value 轉變**全部屬 `2026-10-18` cohort**（9 顆：agent_akane／anna／mahiru／mai／miku／ram／rem／ruka／yua），結構事實與 Owner 核准的 `2026-10-11` cohort **完全同構**（value ＋ `last_support_ts == created_ts` ＋ 無 `support_propagation` 祖先邊），但**不在核准白名單** ⇒ CLI 判 FAIL，並把四項全部列為破線（② 靈魂結構誤傷 `{'value': 9}`／② 出現非 pattern 轉變／④ Prompt 正文改變 9 筆／④ 弱化包裝計數 10 → 19）。
+- **根因**：CLI 的「預期代謝」判準是**單一批次常數**（`EXPECTED_RETIREMENT_DATE = "2026-10-11"` ＋ 10 顆核准白名單 ＋ 退役窗下界 `2026-10-25T02:00:00+00:00`），而生產圖譜**每天都在產生新 cohort**（實測「value ＋ 建立後從未被背書」的推導集合：10/11: 10、10/18: 10、10/19: 10、10/20: 1、10/21: 19、10/22: 38、10/23: 46、10/24: 58、10/25: 10；全庫 value 節點 223 顆）；引擎弱化門檻是 `LIFECYCLE_T_WEAKEN_DAYS=7`（整日取整）⇒ **每個夜槽都會有一批 cohort 跨門檻**。
+  ⇒ 單一批次白名單是一台**結構性的假紅產生器**：每天夜槽再炸一次，而它其實是 Owner 親自宣告過的「預期代謝」。
+- Owner 2026-10-23 裁定（§0.1.53／§0.1.54）：採「**改判準**」（工具須能區分「預期代謝」vs「意外破線」），**否決「只改判讀」**——把 FAIL 人為視為預期而忽略會誘發**告警疲勞**、摧毀守門價值；判準：**放行必須有界、可被推翻、不留死角**；附：**衰減門檻凍結、禁偽造邊、禁手動消紅**。
+  ⇒ 本次改造＝把 §0.1.53／§0.1.54 的「四條件 ＋ 白名單」從**單一批次**泛化為**可持續維護的 cohort 台帳**，且**不放寬任何條件**。
+
+### ② 改造（`scripts/eval_lifecycle_cli.py`；**不碰 `src/**`**）
+
+1. **cohort 台帳** `EXPECTED_RETIREMENT_COHORTS`（每筆＝建立日 ＋ 核准節點集合 ＋ 最早可退役槽 `not_before`）：`2026-10-11`（Owner 原核准，**直接引用既有常數**、不重新手打 id）＋ `2026-10-18` ～ `2026-10-25`（8 批；節點清單與 `not_before` **全部由主大腦沙盒實測**得出）。
+2. **expected 的判定基準＝核准清單**（`node_id` ∈ 台帳 ＋ value ＋ 嚴格 weakening ＋ `ts ≥ 該 cohort 的 not_before`）；**四條件只用於推導與自我否決**（`baseline_violation()` 逐 cohort 檢查「推導 ⊆ 核准」）。
+   - 🔺 **為什麼不能把四條件當 expected 的必要條件**：同一 cohort 的成員**並非全部「從未被背書」**——實測 `2026-10-20` 批 10 顆中只有 1 顆從未被背書，其餘 9 顆**先被背書、後來連那個支持也滿 7 天才退役**（所以同一批會分批在不同槽退役、顆數隨時間長大）。若要求四條件全中，這 9 顆會被判破線 ⇒ 又回到假紅。⇒ **推論：推導 ⊊ 核准是正常且允許的**（既有守衛 `test_retirement_set_never_exceeds_baseline` 的方向「推導 ⊆ 核准」不變）。
+3. **三分類判定**：`PASS`(exit 0)／`FAIL`(exit 1，真破線)／**`PENDING_COHORT`(exit 3，未核准的退役批次)**。pending 為**窄版四條件同構**判準（建立日不在台帳且結構同構）⇒ **不架空 §0.1.53 的「一票否決」**（非白名單內的 Value 弱化仍判 FAIL）；未核准的新 cohort 由值守鏈回報、主大腦依實測核准，**CLI 不得自行核准**。
+   - 弱化包裝允許增量與 Prompt 正文窄放行改以「expected ＋ pending」計數，但**三條件不變**（命中數 > 0 ＋ 弱化前綴增量 == 命中數 ＋ 去弱化裝飾後正文逐位元相同）⇒ 既有守衛 `test_prompt_diff_carveout_is_bounded` 仍綠。
+   - exit 2 保留給既有「硬拒絕」（時戳無時區等），**不挪用**。
+4. **實測到的 cohort 退役時程**（沙盒逐槽量測，供台帳 `not_before`）：`10-18→2026-10-26T02Z`、`10-19→10-27T02Z`、`10-20→10-28T02Z`、`10-21→10-29T02Z`、`10-22→10-30T02Z`、`10-23→10-31T02Z`、`10-24→11-01T02Z`、`10-25→11-02T02Z`。
+5. **不動的東西**：衰減門檻（引擎 `LIFECYCLE_T_WEAKEN_DAYS`）、`2026-10-11` cohort 的 10 顆 id 與其 `not_before`、`EXPECTED_RETIREMENT_DATE`／`EXPECTED_RETIREMENT_BASELINE`／`EXPECTED_RETIREMENT_NOT_BEFORE` 三個既有常數、既有 51 支守衛的斷言強度。
+
+### ②-6 守衛與變異實驗（**主大腦獨立複核**）
+
+- **守衛數量（客觀計數：以 `git show HEAD:tests/test_eval_lifecycle_cli.py` 比對）**：既有 **51** 支**一字未改、未刪、未放寬** ＋ 新增 **12** 支 ＝ **63 支**；`.venv\Scripts\python.exe -m pytest -q tests\test_eval_lifecycle_cli.py` ⇒ **63 passed / 0 failed / 0 skipped**（含 5 個 subtest）。
+  - 新增守衛涵蓋：(a) 台帳結構 ＋ 涵蓋實測 9 批；(b) 逐 cohort 自我否決（純函式 ＋ 端到端 FAIL）；(c) `2026-10-18` 已核准 → expected；(d) 未核准同構 → pending ＋ exit 3；(e) 非同構 → breaks ＋ exit 1；(f) `dormant`／`superseded` → breaks；(g) 提前早衰 → breaks；(h) pending 時 stdout／報告含 `pending_cohorts` ＋ 核准指示。
+  - `assess()` 的回傳型別做成 `list` 子類（`AssessmentResult`）⇒ 既有守衛的 `assertEqual(fails, [])` 契約**零變動**。
+- **變異實驗：六條全部轉紅，且由主大腦在 `%TEMP%` 副本上獨立重跑複核**（harness：複製 → 改副本 → `SOUL_OS_EVAL_CLI_PATH` 指向副本 → 跑同一支守衛；repo 檔全程零寫入）：
+
+| 變異 | 主大腦實測 | 轉紅的守衛 |
+|---|---|---|
+| M1 移除 `2026-10-18` 批次 | **6 failed** | `test_approved_cohort_value_retirement_is_expected` ＋ 5 支 |
+| M2 pending 併進 expected | **4 failed** | `test_unapproved_isomorphic_retirement_is_pending_with_exit_3` ＋ 3 支 |
+| M3 pending 併進 breaks | **4 failed** | 同上 ＋ 3 支 |
+| M4 自我否決改比聯集 | **1 failed** | `test_ledger_self_negation_catches_per_cohort_overflow` |
+| M5 移除 `not_before` 退役窗下界 | **3 failed** | `test_retirement_before_cohort_not_before_is_a_break` ＋ 2 支既有 |
+| M6 放寬 prompt 窄放行 | **1 failed** | `test_prompt_diff_carveout_is_bounded`（既有） |
+| M7 放寬目標狀態檢查（dormant／superseded 會被當成預期代謝） | **3 failed** | `test_dormant_is_never_expected_even_after_approved_slot`（既有）＋ `test_dormant_target_in_retirement_set_still_fails` ＋ `test_dormant_or_superseded_target_is_always_a_break` |
+
+- **生產完整性（主大腦獨立複核）**：`data/elevation/elevation_nodes.jsonl` 的**前 282,409 bytes** SHA-256 仍是 `7fd8f3f3…`（⇒ 仍為 append-only）；CLI 跑前跑後 `elevation_lifecycle_events.jsonl` 的 SHA-256 **逐位元相同**（⇒ 判定層不寫生產）；工作樹僅 `scripts/eval_lifecycle_cli.py` ＋ `tests/test_eval_lifecycle_cli.py` 兩檔，行尾已還原為 repo 慣用的 **CRLF**。
+
+### ②-7 主大腦追認與知會（worker 回報的待裁示項）
+
+1. **追認**：`2026-10-18` cohort 的核准清單含 **10 顆**（比實測退役聯集多 `9110a6de74f6…`／agent_aoi）。理由：該節點是 SOUL-BUG-010 的 quarantine 受害者（sidecar 內為 `dormant`）⇒ **永遠不會**轉 weakening、任何量測槽都不會出現；但它符合四條件推導 ⇒ 若不列入，逐 cohort 自我否決會因「推導 ⊋ 核准」誤報 FAIL。**不放寬任何實際退役**（`dormant` ≠ `weakening`，永遠不會命中 expected）。
+2. **知會（對值守鏈無影響，已實測確認）**：CLI 報告欄位 `expected_retirement` 的語意由「四條件推導集（10）」改為「**台帳核准清單聯集（223）**」，並新增 `expected_retirement_derived`／`pending_cohorts`／`pending_retirements_count`／`exit_code`。⇒ 已用 grep 確認**值守鏈沒有任何一張票讀 `expected_retirement_count`**（票面只讀 `returncode`／`eval_error`／`undelivered`／`VERDICT` 四欄）⇒ **無需改票**。
+3. **知會（既有行為變更）**：「沙盒不在 temp 之下」的內部錯誤原先回 exit 3，現改回 **2**（硬拒絕），以免與 `PENDING_COHORT` 撞碼；exit 2 的語意不變。
+4. **刻意保留的嚴格性**：新 cohort 若含「被背書過才退役」的成員且當晚未入台帳 ⇒ 判 **breaks／FAIL（exit 1）** 而非 pending ⇒ §0.1.53 的「一票否決」**未被架空**；台帳維護責任因此留在夜槽值守端（每日一次核准）。
+
+### ②-8 連帶修正：`AGENTS.md` 的 Hard Gate 條款已過期（就地改正）
+
+`AGENTS.md`（2026-10-19 寫入）對 CLI 沙盒快跑的描述是：「**轉變類型純度** —— value/belief/trait/essence 的轉變數必須 **恆等於 0**」＋「『我隐约觉得』弱化包裝增量必須 0」。⇒ 該條款在 **2026-10-23 Owner 裁示「改判準」之後就已與實作不符**（當時只加了單一批次的預期代謝豁免，條文未同步），今晚台帳化後差距更大：**10/25 夜槽會有 9 筆核准的 value 轉變、弱化包裝增量 9** ⇒ 照舊條文判讀會**把合規槽誤判為破線**。
+
+⇒ 就地改正（僅改描述，**不改任何行為**）：條款 2 補上「唯一例外＝Owner 核准台帳內的 Legacy Value 退役（＝預期代謝）」與**三態**判定（`PASS` 0／`FAIL` 1／`PENDING_COHORT` 3，CLI 不得自行核准）；條款 4 改為「去弱化裝飾後正文逐位元相同」＋「弱化包裝增量必須 **等於 expected ＋ pending 筆數**」。並註明 canonical §0.1.53／§0.1.54／§0.1.85 為出處。
+
+### ②-9 全庫回歸（Hard Gate 第四項）
+
+- **回歸（`.venv` 直譯器，2026-10-25 01:0x EDT，禁跑窗解除後執行）**：`7446 passed, 24 skipped, 32 subtests passed in 714.59s (0:11:54)`。
+  ⇒ 四項 Hard Gate 全綠（AST 守衛 ＋ 雙向變異 ＋ 全庫回歸 ＋ CLI 沙盒快跑）⇒ 本工單 **ACCEPTED**，合入 `main`。
+- 回歸口徑：failed／errors 是硬閘門、passed 次之、**skipped 不可作口徑**（skip 數由執行期條件決定，同一棵樹可能漂移）。
+
+### ③ 值守鏈的結構性修正（同一晚完成）
+
+1. **08:30 驗收票的殘留判準**：該票 `session_target_mode=new`（每次跑都開新對話）⇒ 旁掛校正票**進不了它的上下文**，只能改 prompt 本體。而殘留句「弱化筆數與『夜槽預期 10 顆 Legacy Value』的對帳」是 **10/24 專用**（10/25 晨槽基線已位移）⇒ **會造成假紅**。
+   - 做法：完整規格落檔 `C:\Users\bbfcc\.local\bin\soul-os-harness-backups\acceptance_spec_2026-10-25.md`（4,952 bytes、SHA-256 `fceffad8807a6d2c2e4279f237126a825eb093139cff9bee975b58c90509aa6e`，由原 prompt **程式化套用 5 處編輯**，unified diff 逐行可查）；cron prompt 改為 795 字的**指標 prompt**（回讀 SHA-256 `6de510962f1b8efb90645b8bbce0ce47ff6db1aa13241de03b7e98ebe9db20ae`，**逐位元相同**）。
+   - 順帶釘死**掛載目標**：`src/inner_life/elevation_adapter.py`（樹中另有 `src/world/elevation_adapter.py`，**不是**目標；實測 `elevate_matured_patterns` 只出現在前者）。
+2. **三張 daily 票的日期綁定**：daily 票的 prompt 帶著「某日槽預期＝X」的寫死數字 ⇒ 每過一天就過期（10/26 起即失效）。
+   - 建立三張**每日**基準校正票（`session.mode=sessionId` 綁在被校正票的**同一個 session**，於對應槽前 6～10 分鐘送達）：`42f6e874`（每日 08:10 → 晨槽 session `mvs_beaa59c4b…`）、`558a97a8`（每日 22:05 → 夜槽 session `mvs_7945637717…`）、`a4df0220`（每日 22:14 → v1 槽 session `mvs_1e4d1cd477…`）。
+   - 內容＝「所有寫死的期望數字只適用於它自己那個日期，今日槽一律以當期生產現況**現場重算**」＋ **CLI 三態判讀條款**（exit 3 不是破線、exit 1 **不得自行改判**、只回報結構證據供裁示）＋ 寫鎖修正已上線後的「槽內 locked 預期 0 筆」。
+   - 🔺 **機制前提已實測**（不是假設）：校正票與被校正票**跑在同一個 session**，校正票先 2～10 分鐘送達——10/24 實例：`1dc336cf` 08:12 → `a9de9f9d` 08:20；`6700a49e` 22:12 → `36e57724` 22:15；`40a9ba1b` 22:18 → `c282a716` 22:20 ⇒ **session 注入成立**。
+3. **CLI run 的 prompt 是在觸發時刻烘焙進 `delivery_input_json` 的** ⇒ 回寫 definition 對**已建立的 run** 無效；要趕上當日槽，修正必須在該槽觸發時刻**之前**落地。
+
+### ④ 23:18 重啟窗口：正式閉環（報告檔已產出）
+
+`C:\Users\bbfcc\.local\bin\soul-os-harness-backups\restart_window_report.json`（10,761 bytes、23:48:40 寫入）⇒ **`result == "OK"`**：
+- **閘門**：HEAD == origin/main == `93070cf`、`health` 200、`missing_commits=[]`、旗標 OFF、`working_state_exists=false`、夜槽窗（22:00–22:40）4,900 行／ERROR 0／CRITICAL 0／locked 0／Goal 異常 0／Traceback 0。
+- **重啟**：`restart_rc=0`；新 trampoline `data\server.pid`＝**26376**（mtime 2026-10-24 23:18:29）、`:8000` socket owner＝**3448**（啟動 23:18:29）。
+- **WAL 治理**：重啟前 46 檔／**51,769,272 bytes** → 觀察窗結束 **0 bytes** ⇒ `wal_delta_bytes = −51,769,272`；30 分鐘觀察窗 INFO 69 筆，**ERROR／CRITICAL／locked／Traceback／Goal 異常全 0**。
+- **備份**：`wal-20261025T031818Z`。
+
+### ⑤ 維運責任（未結項）
+
+- **台帳必須隨新 cohort 延長**：cohort 每天生成 ⇒ 台帳核准是**每日一次**的例行核准動作（夜槽量測出待核准清單 → 主大腦依實測核准）。未核准前，新 cohort 命中時 CLI 會判 `PENDING_COHORT`（窄版同構者）或 `FAIL`（一票否決者）⇒ **值守票必須照報結構證據，不得自行改判**（Owner 10/23 裁定：否決「只改判讀」）。
+- **10/25 08:30 的掛載就緒度判定**仍是「是否開下一片（掛載 `elevation_adapter.py`）」的裁決前提（掛載＝改生產行為，票本身不得自行掛載或合入）。
+- 仍在佇列：`G-3` 預濾細節、方案 B（emotion 導入期連線治理）、50+ 個 import 期寫 `SOUL_OS_DATA_DIR` 的測試模組治理、`support_propagation` 夜槽 0 筆。
+
+### ⑥ 本條目的邊界
+
+**不**改 `src/**`（引擎是凍結的衰減權威，CLI 只是裁判）、**不**改衰減門檻、**不**偽造邊、**不**手動消紅、**不**在禁跑窗（22:00–01:00）內跑全庫回歸、**不**殺任何行程、**不**寫生產 `data/**`、0 真實 LLM 呼叫。

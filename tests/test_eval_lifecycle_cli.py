@@ -955,5 +955,331 @@ class TestNamingHygiene(unittest.TestCase):
                          "manual_ 前綴另有語意（原本的 test_*.py 改名而來），勿混用")
 
 
+# ── 預期退役 cohort 台帳 ＋ 三分類判定（Owner 2026-10-25）──────────────────
+#
+# 🔴 **為什麼需要「台帳」而不是單一 cohort**：
+# 生產圖譜裡「建立後從未被背書的 value」**每天都在產生新 cohort**
+# （10/11: 10 顆、10/18: 10 顆、10/19: 10 顆、10/20: 1 顆、10/21: 19 顆、
+# 10/22: 38 顆、10/23: 46 顆、10/24: 58 顆、10/25: 10 顆）
+# ⇒ 單一 cohort 白名單是一台**結構性的假紅產生器**（每個 night slot 都會再炸
+# 一次，而它其實是 Owner 親自宣告過的「預期代謝」）。
+#
+# 🔴 **三分類**（Owner 2026-10-23 裁定「改判準」的延伸）：
+#   expected（已核准）→ pending（結構同構但**未核准**）→ breaks（真破線）
+# ⚠️ pending **不是**「任何未被核准的 value 弱化」——那會架空一票否決；
+#    pending 必須滿足**窄版四條件同構**（見 `_is_pending_retirement`）。
+
+#: 合成 fixture 的評估時鐘（固定 ⇒ 不受真實時鐘漂移影響）。
+_LEDGER_CLOCK = "2026-10-23T02:00:00+00:00"
+#: 一個**不在台帳內**的建立日（台帳涵蓋 2026-10-11 與 2026-10-18～10-25）。
+_PENDING_CREATED = "2026-10-01T08:00:00+00:00"
+#: 台帳**有**的建立日，但節點不在核准清單內（⇒ 觸發逐 cohort 自我否決）。
+_ROGUE_LEDGER_DATE = "2026-10-19"
+
+
+def _synthetic_value_graph(root: pathlib.Path, created_ts: str,
+                           last_support_ts: str = None,
+                           node_id: str = None,
+                           content: str = "清晨的第一口空氣") -> pathlib.Path:
+    """合成圖：1 顆 **value** 節點（建立後從未被背書）⇒ 會在評估時鐘前轉 weakening。
+
+    `last_support_ts` 給另一個值 ⇒ 節點「曾被背書過」⇒ 結構**不同構**
+    ⇒ 依判準必須是 **breaks**（不是 pending）。
+    """
+    store = root / "synthetic_value_graph"
+    store.mkdir(parents=True, exist_ok=True)
+    node = {
+        "node_id": node_id or uuid.uuid4().hex,
+        "node_type": "value",
+        "content": content,
+        "agent_id": "agent_ledger",
+        "candidate_node_type": None,
+        "confidence": 0.5,
+        "stability": 0.3,
+        "valence": "neutral",
+        "created_ts": created_ts,
+        "last_support_ts": last_support_ts or created_ts,
+        "lineage_depth": 0,
+        "lineage_path": [],
+        "parent_node_id": None,
+        "provenance_ref": None,
+        "lifecycle_state": "active",
+        "superseded_by": None,
+    }
+    (store / "elevation_nodes.jsonl").write_text(
+        json.dumps(node, ensure_ascii=False) + "\n", encoding="utf-8")
+    (store / "elevation_edges.jsonl").write_text("", encoding="utf-8")
+    return store
+
+
+class TestRetirementCohortLedger(unittest.TestCase):
+    """守衛：預期退役 cohort 台帳的**結構**與**自我否決**。"""
+
+    def test_ledger_structure_is_valid(self):
+        """(a) 每個 cohort 都有 date / nodes / not_before；date 唯一；節點非空；
+        `not_before` 必須帶時區；同一節點不得跨 cohort 重複。"""
+        cohorts = CLI.EXPECTED_RETIREMENT_COHORTS
+        self.assertTrue(cohorts, "台帳不得為空")
+        dates = []
+        seen_nodes = set()
+        for c in cohorts:
+            for key in ("date", "nodes", "not_before"):
+                self.assertIn(key, c, "cohort 缺少 %s：%s" % (key, c))
+            date = c["date"]
+            dates.append(date)
+            self.assertTrue(c["nodes"], "cohort %s 的 nodes 不得為空" % date)
+            # not_before 必須帶時區（判準層只比對宣告式時刻常數）
+            parsed = datetime.fromisoformat(str(c["not_before"]))
+            self.assertIsNotNone(parsed.tzinfo,
+                                 "cohort %s 的 not_before 必須帶時區：%s"
+                                 % (date, c["not_before"]))
+            # 節點不得跨 cohort 重複（否則「逐節點的時間下界」會有歧義）
+            overlap = seen_nodes & set(c["nodes"])
+            self.assertEqual(overlap, set(),
+                             "節點不得同時出現在多個 cohort：%s" % sorted(overlap))
+            seen_nodes |= set(c["nodes"])
+        self.assertEqual(len(dates), len(set(dates)),
+                         "cohort 的 date 必須唯一：%s" % dates)
+
+    def test_ledger_covers_the_measured_cohorts(self):
+        """台帳必須涵蓋主大腦實測到的 9 批 cohort（10/11 ＋ 10/18～10/25）。
+
+        ⚠️ 只檢查「⊇」（允許日後追加新 cohort），不檢查「＝」。
+        """
+        dates = {c["date"] for c in CLI.EXPECTED_RETIREMENT_COHORTS}
+        measured = {"2026-10-11", "2026-10-18", "2026-10-19", "2026-10-20",
+                    "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24",
+                    "2026-10-25"}
+        self.assertTrue(measured <= dates,
+                        "台帳缺少實測到的 cohort：%s" % sorted(measured - dates))
+
+    def test_ledger_self_negation_catches_per_cohort_overflow(self):
+        """(b) 逐 cohort 的自我否決：某 cohort 的推導集合超出**該 cohort** 的
+        核准清單 ⇒ `baseline_violation()` 必須非空。
+
+        🔴 這個 fixture 是**刻意**挑的：違規節點在**聯集**層面是合法的
+        （它被核准在另一個 cohort 底下）⇒ 只有「逐 cohort」檢查抓得到。
+        ⇒ 若有人把逐 cohort 檢查改成聯集檢查，本守衛必須轉紅。
+        """
+        node_id = "a" * 32
+        nodes = [_value_node(node_id, "2026-10-18T08:00:00+00:00")]
+        edges = []
+        custom = (
+            {"date": "2026-10-11", "not_before": "2026-10-25T02:00:00+00:00",
+             "nodes": frozenset({node_id})},      # 核准在 10-11 這批底下
+            {"date": "2026-10-18", "not_before": "2026-10-26T02:00:00+00:00",
+             "nodes": frozenset()},               # 但推導落在 10-18 這批
+        )
+        derived = CLI.expected_retirement_sets_by_cohort(nodes, edges, cohorts=custom)
+        self.assertEqual(derived.get("2026-10-18"), {node_id},
+                         "推導必須落在 2026-10-18 這批（測試資料有問題）")
+        self.assertEqual(derived.get("2026-10-11"), set(),
+                         "2026-10-11 這批不該推導出任何節點")
+        fails = CLI.baseline_violation(derived, cohorts=custom)
+        self.assertTrue(fails, "推導超出該 cohort 的核准清單 ⇒ 必須被自我否決抓到")
+        self.assertTrue(any("2026-10-18" in f for f in fails), fails)
+        # 聯集語意抓不到這個違規 ⇒ 證明「逐 cohort 檢查」不可被聯集檢查取代。
+        self.assertEqual(CLI.baseline_violation({node_id}, cohorts=custom), [],
+                         "聯集語意抓不到逐 cohort 的違規（這正是必須逐 cohort 檢查的原因）")
+
+    def test_ledger_self_negation_makes_the_cli_fail(self):
+        """(b, 端到端) 一顆「落在台帳建立日、卻不在核准清單內」的合規 value
+        ⇒ 逐 cohort 自我否決 ⇒ `VERDICT: FAIL` ＋ exit 1。"""
+        with tempfile.TemporaryDirectory(prefix="cli_guard_") as td:
+            src = _synthetic_value_graph(
+                pathlib.Path(td), "%sT08:00:00+00:00" % _ROGUE_LEDGER_DATE)
+            rc, out, err = _run_cli("--source-dir", str(src),
+                                    "--simulated-time", _LEDGER_CLOCK, "--json")
+            data = json.loads(out[out.index("{"):out.rindex("}") + 1])
+            self.assertEqual(data["verdict"], "FAIL", str(data))
+            self.assertEqual(rc, 1, out[-500:] + err[-500:])
+            self.assertTrue(any("基線" in f for f in data["failures"]),
+                            "必須報「推導超出核准基線」：%s" % data["failures"])
+
+
+class TestThreeWayRetirementClassification(unittest.TestCase):
+    """守衛：expected / pending / breaks 三分類。"""
+
+    def _approved_node(self, cohort_date="2026-10-18"):
+        """取台帳裡某個 cohort 的**第一顆**核准節點（不手抄 id）。"""
+        for c in CLI.EXPECTED_RETIREMENT_COHORTS:
+            if c["date"] == cohort_date:
+                return sorted(c["nodes"])[0]
+        raise AssertionError("台帳沒有 cohort %s" % cohort_date)
+
+    def test_approved_cohort_value_retirement_is_expected(self):
+        """(c) 已核准 cohort（2026-10-18）內的 value 轉變 ⇒ **expected**
+        （不是 pending、不是 break、不是失敗）。"""
+        wid = self._approved_node("2026-10-18")
+        nodes = [_value_node(wid, "2026-10-18T08:00:00+00:00")]
+        edges = []
+        event = {"node_id": wid, "node_type": "value", "lifecycle_state": "weakening",
+                 "ts": "2026-10-26T02:00:22.072571+00:00"}
+        expected, pending, breaks = CLI.classify_soul_retirements(
+            [event], nodes, edges)
+        self.assertEqual(expected, [event],
+                         "已核准 cohort 的 value 弱化必須是 expected：%s" % expected)
+        self.assertEqual(pending, [], "已核准的不得被算成 pending")
+        self.assertEqual(breaks, [], "已核准的不得被算成破線")
+        fails = CLI.assess(
+            new_events=[event], prompt_diffs=[], key_node="KEY",
+            weak_before=0, weak_after=1, graph_nodes=399,
+            expected_retirement=CLI.approved_retirement_ids(),
+            elevation_nodes=nodes, elevation_edges=edges)
+        self.assertEqual(list(fails), [], "已核准 cohort 的退役不得報任何失敗項：%s"
+                         % list(fails))
+
+    def test_unapproved_isomorphic_retirement_is_pending_with_exit_3(self):
+        """(d) 台帳**沒有的** cohort 的同構 value 轉變 ⇒ **pending**
+        ⇒ `VERDICT: PENDING_COHORT` ＋ exit code **3**（不是 0、不是 1）。"""
+        with tempfile.TemporaryDirectory(prefix="cli_guard_") as td:
+            src = _synthetic_value_graph(pathlib.Path(td), _PENDING_CREATED)
+            rc, out, err = _run_cli("--source-dir", str(src),
+                                    "--simulated-time", _LEDGER_CLOCK, "--json")
+            data = json.loads(out[out.index("{"):out.rindex("}") + 1])
+            self.assertEqual(data["verdict"], "PENDING_COHORT", str(data))
+            self.assertEqual(rc, 3, "未核准的退役批次必須以 3 退出：%s / %s"
+                             % (out[-800:], err[-400:]))
+            self.assertEqual(data["failures"], [],
+                             "pending 不得被混進破線清單：%s" % data["failures"])
+            self.assertEqual(data["pending_retirements_count"], 1, str(data))
+            self.assertEqual(data["pending_cohorts"][0]["date"], "2026-10-01",
+                             str(data["pending_cohorts"]))
+            self.assertEqual(data["pending_cohorts"][0]["count"], 1, str(data))
+
+    def test_non_isomorphic_retirement_is_a_break_with_exit_1(self):
+        """(e) **非同構**的 value 轉變（曾被背書過 ⇒ `last_support_ts !=
+        created_ts`）⇒ **breaks** ⇒ `VERDICT: FAIL` ＋ exit 1。
+
+        🔴 這是刻意的嚴格性：pending 的判準是**窄版四條件同構**；
+        「被背書過才退役」的成員若未獲核准 ⇒ 一票否決（FAIL），不是 pending。
+        """
+        with tempfile.TemporaryDirectory(prefix="cli_guard_") as td:
+            src = _synthetic_value_graph(
+                pathlib.Path(td), _PENDING_CREATED,
+                last_support_ts="2026-10-10T08:00:00+00:00")
+            rc, out, err = _run_cli("--source-dir", str(src),
+                                    "--simulated-time", _LEDGER_CLOCK, "--json")
+            data = json.loads(out[out.index("{"):out.rindex("}") + 1])
+            self.assertEqual(data["verdict"], "FAIL", str(data))
+            self.assertEqual(rc, 1, "非同構的 value 弱化必須以 1 退出：%s / %s"
+                             % (out[-800:], err[-400:]))
+            self.assertTrue(any("靈魂結構誤傷" in f for f in data["failures"]),
+                            "非同構的 value 弱化必須報靈魂結構誤傷：%s" % data["failures"])
+            self.assertEqual(data["pending_retirements_count"], 0, str(data))
+
+    def test_dormant_or_superseded_target_is_always_a_break(self):
+        """(f) dormant／superseded 目標 ⇒ 一律 breaks（即使節點在核准清單內）。"""
+        wid = self._approved_node("2026-10-18")
+        nodes = [_value_node(wid, "2026-10-18T08:00:00+00:00")]
+        edges = []
+        for state in ("dormant", "superseded"):
+            event = {"node_id": wid, "node_type": "value",
+                     "lifecycle_state": state,
+                     "ts": "2026-10-26T02:00:22.072571+00:00"}
+            expected, pending, breaks = CLI.classify_soul_retirements(
+                [event], nodes, edges)
+            self.assertEqual(expected, [], "%s 不得被視為 expected" % state)
+            self.assertEqual(pending, [], "%s 不得被視為 pending" % state)
+            self.assertEqual(breaks, [event], "%s 必須是破線" % state)
+            fails = CLI.assess(
+                new_events=[event], prompt_diffs=[], key_node="KEY",
+                weak_before=0, weak_after=0, graph_nodes=399,
+                expected_retirement=CLI.approved_retirement_ids(),
+                elevation_nodes=nodes, elevation_edges=edges)
+            self.assertTrue(any("轉變目標含" in f for f in fails),
+                            "%s 必須報破線：%s" % (state, list(fails)))
+
+    def test_retirement_before_cohort_not_before_is_a_break(self):
+        """(g) 提前早衰：已核准 cohort 的 value 在**該 cohort 的 `not_before`
+        之前**轉變 ⇒ breaks（既有守衛只覆蓋 10/11 那批）。"""
+        wid = self._approved_node("2026-10-18")
+        nodes = [_value_node(wid, "2026-10-18T08:00:00+00:00")]
+        edges = []
+        early = {"node_id": wid, "node_type": "value", "lifecycle_state": "weakening",
+                 "ts": "2026-10-25T02:00:22.072571+00:00"}   # 早於 10-18 的退役槽
+        self.assertFalse(
+            CLI.is_expected_metabolism(early, frozenset({wid})),
+            "早於該 cohort 核准退役槽的弱化不得被歸類為預期代謝")
+        expected, pending, breaks = CLI.classify_soul_retirements(
+            [early], nodes, edges)
+        self.assertEqual(expected, [], "提前早衰不得算成 expected")
+        self.assertEqual(pending, [], "提前早衰不得算成 pending")
+        self.assertEqual(breaks, [early], "提前早衰必須是破線")
+        fails = CLI.assess(
+            new_events=[early], prompt_diffs=[], key_node="KEY",
+            weak_before=0, weak_after=1, graph_nodes=399,
+            expected_retirement=CLI.approved_retirement_ids(),
+            elevation_nodes=nodes, elevation_edges=edges)
+        self.assertTrue(any("靈魂結構誤傷" in f for f in fails),
+                        "提前早衰必須報破線：%s" % list(fails))
+
+    def test_pending_state_prints_cohorts_and_approval_hint(self):
+        """(h) pending 狀態下，stdout 與報告檔都必須含 `pending_cohorts`
+        與可執行的核准指示（CLI **不得**自行核准）。"""
+        with tempfile.TemporaryDirectory(prefix="cli_guard_") as td:
+            src = _synthetic_value_graph(pathlib.Path(td), _PENDING_CREATED)
+            report = pathlib.Path(td) / "report.md"
+            rc, out, err = _run_cli("--source-dir", str(src),
+                                    "--simulated-time", _LEDGER_CLOCK,
+                                    "--report", str(report))
+            self.assertEqual(rc, 3, out[-800:] + err[-400:])
+            self.assertIn("pending_cohorts", out,
+                          "stdout 必須列出 pending_cohorts：%s" % out[-800:])
+            self.assertIn("EXPECTED_RETIREMENT_COHORTS", out,
+                          "stdout 必須指出核准位置：%s" % out[-800:])
+            body = report.read_text(encoding="utf-8")
+            self.assertIn("pending_cohorts", body,
+                          "報告檔必須列出 pending_cohorts")
+            self.assertIn("核准指示", body, "報告檔必須含核准指示")
+            self.assertIn("EXPECTED_RETIREMENT_COHORTS", body,
+                          "報告檔必須指出核准位置")
+
+    def test_assess_result_exposes_pending_retirements(self):
+        """`assess()` 的結果必須攜帶 pending 清單（且仍是 list ⇒ 既有守衛相容）。"""
+        wid = self._approved_node("2026-10-18")
+        nodes = [_value_node(wid, "2026-10-18T08:00:00+00:00"),
+                 _value_node("b" * 32, _PENDING_CREATED)]
+        edges = []
+        event = {"node_id": "b" * 32, "node_type": "value",
+                 "lifecycle_state": "weakening",
+                 "ts": "2026-10-26T02:00:22.072571+00:00"}
+        result = CLI.assess(
+            new_events=[event], prompt_diffs=[], key_node="KEY",
+            weak_before=0, weak_after=1, graph_nodes=399,
+            expected_retirement=CLI.approved_retirement_ids(),
+            elevation_nodes=nodes, elevation_edges=edges)
+        self.assertIsInstance(result, list, "assess() 必須仍回傳 list（既有守衛相容）")
+        self.assertEqual([e["node_id"] for e in result.pending_retirements],
+                         ["b" * 32])
+        self.assertEqual(list(result), [], "pending 不得報失敗項：%s" % list(result))
+
+    def test_classification_is_exclusive_and_covers_pattern(self):
+        """三分類必須**互斥**；`pattern` 轉變不屬於任何一類（正常演化）。"""
+        wid = self._approved_node("2026-10-18")
+        nodes = [_value_node(wid, "2026-10-18T08:00:00+00:00"),
+                 _value_node("b" * 32, _PENDING_CREATED)]
+        edges = []
+        approved = {"node_id": wid, "node_type": "value",
+                    "lifecycle_state": "weakening",
+                    "ts": "2026-10-26T02:00:22.072571+00:00"}
+        pending_ev = {"node_id": "b" * 32, "node_type": "value",
+                      "lifecycle_state": "weakening",
+                      "ts": "2026-10-26T02:00:22.072571+00:00"}
+        breaking = {"node_id": "c" * 32, "node_type": "trait",
+                    "lifecycle_state": "weakening",
+                    "ts": "2026-10-26T02:00:22.072571+00:00"}
+        pattern_ev = {"node_id": "d" * 32, "node_type": "pattern",
+                      "lifecycle_state": "weakening",
+                      "ts": "2026-10-26T02:00:22.072571+00:00"}
+        expected, pending, breaks = CLI.classify_soul_retirements(
+            [approved, pending_ev, breaking, pattern_ev], nodes, edges)
+        self.assertEqual([e["node_id"] for e in expected], [wid])
+        self.assertEqual([e["node_id"] for e in pending], ["b" * 32])
+        self.assertEqual([e["node_id"] for e in breaks], ["c" * 32])
+        self.assertEqual(len(expected) + len(pending) + len(breaks), 3,
+                         "pattern 轉變不屬於任何一類（正常演化）")
+
+
 if __name__ == "__main__":
     unittest.main()
