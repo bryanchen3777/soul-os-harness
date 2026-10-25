@@ -256,6 +256,8 @@ EVENT_DRIVEN_WRITER_PATHS = (
     # D1-8 修正 fnmatch `**` 非遞迴的缺口：根層 mp3 必須被涵蓋
     ("tts/foo.mp3", "data/tts/ **根層** mp3（新樣式 tts/*.mp3 的唯一目的）"),
     ("tts/agent_mai/20260916T022755_624898.mp3", "嵌套 mp3（舊樣式 tts/**/*.mp3 仍須有效）"),
+    # D1-9 服務的世界事件日誌（src/world/world_log.py:497-499；每 UTC 日一個 shard）
+    ("world/world_log/2026-10-25.jsonl", "服務的世界事件日誌 shard（append-only）"),
 )
 
 #: D3-2 負向對照（牙齒必須還在咬）：與上面**同目錄**、但服務不會寫的路徑 ⇒ 必須 skip=False。
@@ -267,6 +269,8 @@ NEGATIVE_CONTROL_PATHS = (
     ("agents/agent_x/mood.json", "agents/<id>/ 下的其他 json 不得被 skip"),
     ("tts/chime.wav", "tts/ 根層非 mp3 不得被 skip"),
     ("tts/root_audio.ogg", "tts/ 根層非 mp3 不得被 skip"),
+    ("world/world_log/notes.yaml", "world_log/ 底下的非 jsonl 不得被 skip"),
+    ("world/perception_other.jsonl", "world/ 底下但非 world_log/ 的 jsonl 不得被 skip"),
 )
 
 

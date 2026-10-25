@@ -154,6 +154,16 @@ _MUTATION_SKIP_PATTERNS = (
     #   src/llm/fish_tts_handler.py:408），同類檔案不該因深度不同而有不同待遇
     #   ⇒ **同時保留** `tts/**/*.mp3` 並新增本條。
     "tts/*.mp3",
+    # 精確收窄 (D1-9)：服務的**世界事件日誌**（每 UTC 日一個 shard、append-only）。
+    #   呼叫端：src/world/world_log.py:497-499（WorldLogWriter.write → atomic_append），
+    #   上游＝world 事件管線（src/world/middleware.py 的 world event 發佈 ＋
+    #   src/world/source/*.py 的 adapter-first 寫入）。
+    #   節奏：事件驅動（每個合格 world event 一筆）⇒ 服務活著就會寫。
+    #   ⚠️ 只涵蓋 `world/world_log/` **底下的 *.jsonl shard**（與該模組自己的
+    #   retention 邊界一致）⇒ **不得**放寬成 `world/` 整目錄。
+    #   2026-10-25 實測：全庫回歸期間此檔被活體服務改動一次 ⇒ 守門偽紅
+    #   （diff 只含此一個服務寫入檔、added 為空 ⇒ 非 harness 污染）。
+    "world/world_log/*.jsonl",
 )
 
 

@@ -174,6 +174,9 @@ def test_skip_sets_shape_locked():
         "agents/*/emotional-state.json",
         "agents/*/carryover.json",
         "tts/*.mp3",
+        # TEST-INFRA-GUARD-LIVE-WRITER-COVERAGE-1（事件驅動寫入者，D1-9）:
+        # 服務的世界事件日誌 shard（每 UTC 日一個檔，append-only）。
+        "world/world_log/*.jsonl",
     )
 
 

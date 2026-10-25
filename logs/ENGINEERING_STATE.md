@@ -6917,3 +6917,28 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
 ### ⑤ 本條目的邊界
 
 **不**改 `revision_chain.py`（原型不動，sha 已核）、**不**改引擎與門檻常數、**不**新增 LLM 呼叫途徑、**不**新增寫入面（仍只寫 `elevation_nodes.jsonl`／`elevation_edges.jsonl`）、**不**偽造邊、**不**手動消紅、**不**重啟服務、**不**寫生產 `data/**`（僅唯讀量測）。
+
+## 0.1.88 測試基建補洞：活體寫入者 allowlist 漏了世界事件日誌（守門偽紅根因）（2026-10-25 11:1x EDT）
+
+### ① 觸發與歸因（實測）
+
+- 全庫回歸第二次跑出 1 筆紅燈：`tests/harness/test_tl11_commitment_narrative.py::TestD2DeterminismA7::test_repo_production_data_zero_mutation`。
+- 失敗訊息（完整）：`production data 被污染: {'world/world_log/2026-10-25.jsonl': ('7109766c…', 'a410ed78…')} []`
+  ⇒ **整個 `data/` 根只有這一個檔案被改動**、且 `added` 為空 ⇒ **不是 harness 污染**（harness 寫區在 `data/time_lapse/`，且該場景用隔離 env）。
+- 該檔的寫入者是**活體服務**：`src/world/world_log.py`（`WorldLogWriter.write` → `atomic_append`；落盤位置 `data_root()/world/world_log/<UTC YYYY-MM-DD>.jsonl`），上游＝world 事件管線（`src/world/middleware.py` 的 world event 發佈 ＋ `src/world/source/*.py` 的 adapter-first 寫入）⇒ **服務活著就會寫**。
+- 🔺 **根因不是「誰污染了生產」，而是守門的排除清單漏了這個活體寫入者**：`harness/runner.py::_MUTATION_SKIP_PATTERNS` 是全庫共用的「活服務運行時自寫路徑」allowlist（`TEST-INFRA-DATA-ROOT-GUARD-1` / `TEST-INFRA-GUARD-LIVE-WRITER-COVERAGE-1` 的產物）。它已涵蓋 `world/perception_trace.jsonl`、`inner_life/trace.jsonl`、三個 elevation 檔、`tts`、`state`、`conversations`、`agents`、`soul/*`…**唯獨漏了 `world/world_log/`** ⇒ 服務一寫世界事件，守門就偽紅（與被測改動無關，屬**環境性偽紅**）。
+
+### ② 修正（三處同步，依該治理的既有慣例）
+
+1. `harness/runner.py::_MUTATION_SKIP_PATTERNS` 新增 `"world/world_log/*.jsonl"`，附寫入者、呼叫端、節奏，以及「只涵蓋 `world/world_log/` 底下的 `*.jsonl` shard（與該模組自己的 retention 邊界一致）⇒ **不得**放寬成 `world/` 整目錄」的邊界說明。
+2. `tests/harness/test_zero_mutation_guard_live_service_paths.py::test_skip_sets_shape_locked`：**精確相等鎖**（tuple `==`）同步新增同一條。該鎖的設計前提就是「任何新增／刪除／改名都會紅，逼迫改動者顯式面對本鎖」⇒ 新增樣式**必須**同步（本次即照此執行，非事後補）。
+3. `tests/harness/test_infra_data_root_guard.py` §5 **雙向**覆蓋：正向新增真實檔名 `world/world_log/2026-10-25.jsonl`（必須 `skip=True`）；**負向**新增兩條同層未知檔（`world/world_log/notes.yaml`、`world/perception_other.jsonl`）⇒ 必須仍 `skip=False` ⇒ 證明**沒有**整目錄 glob 放寬、牙齒還在咬。
+
+### ③ 這**不是**「放寬守衛」
+
+- 該守衛的**意圖**（其 docstring 明載）是「run 前後 data 逐檔 hash 0 diff」，而其排除清單的設計前提就是「**跳過 harness 寫區與活服務運行時路徑**」⇒ 本次是**把漏掉的一個活體寫入者補齊**，不是新增豁免面。
+- 檢測力**未降**：`data/elevation/*`、`data/memory/*`、`data/conversations/*`、`data/soul/*`、`data/world/*`（除 `world_log/` 的 `*.jsonl`）等 harness 可能污染的區塊**全部仍在比對範圍內**；負向對照證明同層／同目錄的未知檔仍被守。
+
+### ④ 邊界
+
+**不**改任何 `src/**`、**不**改守衛的比對邏輯、**不**放寬成整目錄 skip、**不**動 harness 寫區（`data/time_lapse/`）、**不**寫生產 `data/**`（本條目只讀生產檔以定位寫入者）。
