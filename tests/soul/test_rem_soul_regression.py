@@ -481,8 +481,13 @@ def test_matrix_c_is_materially_smaller_than_a():
     a_bytes = SOUL_A.stat().st_size
     c_bytes = PERSONA_C.stat().st_size
     assert c_bytes < a_bytes, f"C 沒有比 A 小: {c_bytes} vs {a_bytes}"
-    assert c_bytes <= a_bytes * 0.50, (
-        f"C 壓縮率不足（目標 ≤50% of A）: {c_bytes}/{a_bytes}"
+    # 🔱 2026-10-26 Owner 裁定（FEAT-PERSONA-REM-NATURAL-PRO-DROP-1）：
+    #    雷姆人格因授權修訂（主語省略／去口癖化）增加 564 bytes
+    #    ⇒ 50% 粗代理被撐破（50.90%）。**真 acceptance 不變**：
+    #    character density 驗收（test_matrix_character_density_improves）
+    #    仍為紅線，密度未下降。
+    assert c_bytes <= a_bytes * 0.52, (
+        f"C 壓縮率不足（上限 ≤52% of A）: {c_bytes}/{a_bytes}"
     )
 
 
