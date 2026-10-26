@@ -7006,9 +7006,31 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
 
 本條目**未改動 repo 任何檔案**（被修的是 repo 外的常駐腳本 `soul-os-harness-backups\ledger_refresh.py`）；**不**重啟服務、**不**殺行程、**不**寫生產 `data/**`（預演全程在 `%TEMP%` 副本上）。
 
-## 0.1.?? 值守端日常台帳刷新（cohort 2026-10-25 封閉後，自動）
+## 0.1.91 值守端日常台帳刷新（cohort 2026-10-25 封閉後，自動）
 
 - 封閉 cohort：`2026-10-25`（UTC 建立日過完才封閉）⇒ 核准集合補齊至 **58 顆**（四條件量測：value ＋ 建立日 == cohort date ＋ last_support_ts == created_ts ＋ 無 support_propagation 祖先邊）。
 - 下一槽沙盒快跑：`2026-10-27T02:00:00+00:00` ⇒ `PASS`（exit 0）。
 - 守衛：`tests/test_eval_lifecycle_cli.py` 全綠（exit 0）。
 - 自動刷新機制：每日 20:40 EDT（= 00:40Z，UTC 日封閉後）執行。
+## 0.1.92 值守端每日台帳刷新機制的三處修補（20:40 首刷實測後）
+
+- **條號指派**：8f44cdd 留下的 `## 0.1.??` 佔位標題由主大腦指派為 **§0.1.91**（正文逐字未改）。
+- **觸發**：2026-10-25 20:40 EDT 首次自動刷新（cron `f197c501`）實際執行成功（commit `8f44cdd`，雙閘門全綠：守衛 exit 0 ＋ 下一槽沙盒 `PASS` exit 0），但**只改 canonical +7 行、台帳檔零變更**（missing=0；cohort `2026-10-25` 的 58 顆核准集合早在 §0.1.86 即已入帳）⇒ 原 commit 訊息「補齊至 58 顆」會被誤讀成「新增 58 顆」，且條號寫死 `## 0.1.??` 會每日累積重號條目。
+- **修補（repo 外常駐腳本 `soul-os-harness-backups\ledger_refresh.py`，未動 repo 任何檔案）**：
+  ① **條號動態取號**：只替「尚未編號的佔位標題」編號（依文件順序接在最高編號之後），**已編號條目一律不動**；新條目取下一個可用號碼。
+  ② **delta 實數入帳**：commit 訊息與 canonical 條目寫出**本次實際新增幾顆**；「台帳檔案變更」看**整體** delta（非只看封閉 cohort）⇒ 不再出現「維持 58 顆」被讀成「新增 58 顆」。
+  ③ `rewrite_entry` 兩處既有缺陷：多餘逗號造成每次真重寫 **57 行純格式 churn**；**尾逗號被吃掉**（對 tuple **非最後一筆**的 cohort 會造成兩元素間缺逗號 ⇒ **SyntaxError** ⇒ `compile()` 拋錯、整個刷新失效）。
+- **預演（temp repo replica，git 命令全被攔截，repo 與生產零寫入）**：delta=0 ／ 最後一筆 delta=1 ／ **中段 cohort** delta=1 三案例全 `rc=0`、gate1 綠、gate2 `VERDICT: PASS`、**重寫後台帳逐位元還原（diff=0）**。
+- **預演自身的兩個假紅**（量測腳本缺陷，非被測對象）：① 傳 `cwd=None` 使 CLI 找不到生產圖譜；② `SOUL_OS_DATA_DIR` 指的是**資料根**（呼叫端會再接 `elevation/`）。
+
+## 0.1.93 雷姆靈魂文件主語省略與去口癖化修訂（FEAT-PERSONA-REM-NATURAL-PRO-DROP-1）
+
+- **目標**：拔除 LLM 把第三人稱「雷姆」過擬合成句首發語詞／狀態回報口癖（「雷姆在……」「雷姆正在……」），回歸日系能幹女僕的自然主語省略（pro-drop）。
+- **修改檔案（唯一）**：`personas/agent_rem.md`，四處精確修訂：① 第六節自稱規則改為「自稱與主語規則」；② 第十節模式一改為可省略主語並補三句示範；③ 第十節模式四的「雷姆來處理」改為「現在處理／放著就好」；④ 第十三節新增「機械式自稱口癖」禁例列（涵蓋「雷姆在／正在／覺得……」三種樣態）。
+- **結構完整性**：19 章 ＋ 2 道守門段（文字頻道輸出守門 / VC-2.4 / Canon Lock）不變；CRLF 335 行、孤行 LF 0、無 BOM；diff +4 −3（單檔）。
+- **測試**：指定兩檔 `tests/test_observability_completeness_1.py` ＋ `tests/clients/test_voice_companion.py` ＝ **175 passed**（repo `.venv`）；受影響六檔 ＝ **394 passed**；全庫回歸（見下）。
+- **連帶的守衛基準重釘（Owner 2026-10-26 裁示授權）**：
+  ① `tests/agent/test_agent_registry_land0_batch1.py`、`tests/persona/test_persona_format.py` 的 `agent_rem` sha256 常數重釘為新工作樹 CRLF 形式 `04f971aa…`（原值 `17b4fff4…` 為**工作樹 CRLF 形式**而非 blob 形式 ⇒ 基準與 checkout 慣例綁定，屬設計脆弱點，列觀察）。
+  ② `tests/fixtures/fg2_seeded_persona_baseline.json` 的 `agent_rem` 內容重建（`load_persona()` 輸出，差異經比對恰為本次四處）。
+  ③ `tests/soul/test_rem_soul_regression.py` 的 C 壓縮率上限由 **50% 放寬至 52%**（新增 564 bytes ⇒ 50.90%；**真 acceptance `test_matrix_character_density_improves` 不變**，密度未下降）。
+- **未動（工單範圍外，供後續票）**：第十節模式二（第 193 行「雷姆早就知道了。」「Bryan 說的話，雷姆都記著的。」）與文字頻道守門第 321 行「雷姆來。」仍為自稱示範，與新禁例的風格存在張力。
