@@ -7005,3 +7005,10 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
 ### ④ 邊界
 
 本條目**未改動 repo 任何檔案**（被修的是 repo 外的常駐腳本 `soul-os-harness-backups\ledger_refresh.py`）；**不**重啟服務、**不**殺行程、**不**寫生產 `data/**`（預演全程在 `%TEMP%` 副本上）。
+
+## 0.1.?? 值守端日常台帳刷新（cohort 2026-10-25 封閉後，自動）
+
+- 封閉 cohort：`2026-10-25`（UTC 建立日過完才封閉）⇒ 核准集合補齊至 **58 顆**（四條件量測：value ＋ 建立日 == cohort date ＋ last_support_ts == created_ts ＋ 無 support_propagation 祖先邊）。
+- 下一槽沙盒快跑：`2026-10-27T02:00:00+00:00` ⇒ `PASS`（exit 0）。
+- 守衛：`tests/test_eval_lifecycle_cli.py` 全綠（exit 0）。
+- 自動刷新機制：每日 20:40 EDT（= 00:40Z，UTC 日封閉後）執行。
