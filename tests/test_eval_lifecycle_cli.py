@@ -1379,3 +1379,240 @@ class TestEvaluationClockConsistency(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Owner 2026-10-27 裁定「白名單型別中立化」＋人工審核入帳＋逐節點下界
+#   （工單：logs/FEAT-LIFECYCLE-CLI-TYPE-NEUTRAL-WORK-ORDER.md）
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# 裁定的三個支點（守衛 T1～T11 逐條釘死）：
+#   1. 判定層**不再硬寫** `node_type == "value"` ⇒ 改以「**台帳記載的型別**」為依歸。
+#   2. belief／trait／essence **嚴禁自動入帳** ⇒ 未入帳者一律 **pending（待審）**，
+#      由 Engineering Brain 與 Owner 人工審核核准後**補丁**入帳。
+#   3. 逐節點下界（`bounds`）= 引擎自己的衰減門檻（last_support_ts + 7 天）
+#      ⇒ 台帳不可能與引擎矛盾；**7 天門檻本身一字不改**。
+#
+#: 本票人工審核核准入帳的 4 顆 trait（cohort 2026-10-20）。
+_TRAIT_IDS = (
+    "575efe6b68ef42bf8a904c1eac0561dd",   # agent_ram
+    "57c164011e3e4065bdcd05b6eeaa9c28",   # agent_akane
+    "c43b515f2fdb4ac0bc2855c60d59c2c9",   # agent_rem
+    "ee1ac76f4f25435fa55f3a231641108c",   # agent_ruka
+)
+#: 本票補丁的 9 顆 value（cohort 2026-10-21；建立後**從未被背書**⇒ 真實退役槽早一槽）。
+_BOUND_VALUE_IDS = (
+    "4244023c2cc84e41ad3704205cd86da7",
+    "4660ce03240b40e2bf5bc2b4a691a892",
+    "4b5002620cba442790db2134d42d1b64",
+    "58b56251b6944e19a931f81c25cf1a6f",
+    "8377645589c24fd4ad57cc3e2be748e3",
+    "9c5f79823c88489987c72e38949fc33f",
+    "a2d208ad228e4f2ba92c5d6e16463c67",
+    "fc85b012e7604e0cb1d2fbd228c6f4c2",
+    "42b15eebec354f61ab2c46bdfdbdd09f",
+)
+
+
+class TestTypeNeutralLedger(unittest.TestCase):
+    """T1～T11：型別中立化 + 人工審核入帳 + 逐節點下界（Owner 2026-10-27 裁定）。"""
+
+    # ── T1：台帳結構（types / bounds 的鍵值合法性）──────────────────────
+    def test_t1_ledger_types_and_bounds_are_well_formed(self):
+        """`types` 的鍵 ⊆ 同 cohort 的 `nodes`、值 ∈ 靈魂型；
+        `bounds` 的鍵 ⊆ 同 cohort 的 `nodes`、值必須帶時區。"""
+        for c in CLI.EXPECTED_RETIREMENT_COHORTS:
+            nodes = set(c.get("nodes") or ())
+            for nid, t in (c.get("types") or {}).items():
+                self.assertIn(nid, nodes,
+                              "types 的鍵必須是同 cohort 的節點：%s" % nid)
+                self.assertIn(t, CLI.SOUL_TYPES, "未知的記載型別：%s" % t)
+            for nid, b in (c.get("bounds") or {}).items():
+                self.assertIn(nid, nodes,
+                              "bounds 的鍵必須是同 cohort 的節點：%s" % nid)
+                dt = datetime.fromisoformat(str(b))
+                self.assertIsNotNone(dt.tzinfo, "逐節點下界必須帶時區：%s" % b)
+
+    # ── T2：型別中立（記載為 trait 的節點，其 trait 弱化 ⇒ expected）────
+    def test_t2_trait_recorded_in_ledger_is_expected(self):
+        """台帳記載為 trait ⇒ trait 弱化是**預期代謝**，不得再被當破線。"""
+        nid = _TRAIT_IDS[0]
+        ev = {"node_id": nid, "node_type": "trait",
+              "lifecycle_state": "weakening", "ts": "2026-10-28T02:00:28Z"}
+        self.assertTrue(CLI.is_expected_metabolism(ev, {nid}, None),
+                        "台帳記載為 trait 的節點，trait 弱化應為 expected")
+
+    # ── T3：型別不符不得放行（fail-closed）──────────────────────────────
+    def test_t3_type_mismatch_is_not_expected(self):
+        """台帳記載 trait 的節點，若事件型別是 value ⇒ **不得**放行。"""
+        nid = _TRAIT_IDS[0]
+        ev = {"node_id": nid, "node_type": "value",
+              "lifecycle_state": "weakening", "ts": "2026-10-28T02:00:28Z"}
+        self.assertFalse(CLI.is_expected_metabolism(ev, {nid}, None),
+                         "台帳記載 trait 的節點，value 事件不得被放行（fail-closed）")
+
+    # ── T4：非 value 未入帳 ⇒ pending（**不是** breaks）──────────────────
+    def test_t4_unapproved_non_value_is_pending_not_break(self):
+        """belief／trait／essence 嚴禁自動入帳 ⇒ 未入帳者一律 pending（待審）。"""
+        nid = "9" * 32
+        created = "2026-10-21T02:00:10+00:00"
+        nodes = [_value_node(nid, created, node_type="trait")]
+        ev = {"node_id": nid, "node_type": "trait",
+              "lifecycle_state": "weakening", "ts": "2026-10-28T02:00:28Z"}
+        exp, pend, brk = CLI.classify_soul_retirements([ev], nodes, [])
+        self.assertEqual([e["node_id"] for e in pend], [nid],
+                         "未入帳的 trait 弱化必須是 pending（待審）")
+        self.assertEqual(brk, [], "未入帳的 trait 弱化不得算破線：%s" % brk)
+        self.assertEqual(exp, [], "未入帳的 trait 弱化不得算 expected：%s" % exp)
+
+    # ── T5：value 的一票否決條款必須保留 ───────────────────────────────
+    def test_t5_value_from_reviewed_date_stays_a_break(self):
+        """value 弱化且其**建立日已在台帳內** ⇒ 仍是 **breaks**（不得被 pending 架空）。"""
+        nid = "8" * 32
+        created = "2026-10-19T02:00:10+00:00"      # 台帳涵蓋的建立日
+        nodes = [_value_node(nid, created)]
+        ev = {"node_id": nid, "node_type": "value",
+              "lifecycle_state": "weakening", "ts": "2026-10-27T02:00:28Z"}
+        exp, pend, brk = CLI.classify_soul_retirements([ev], nodes, [])
+        self.assertEqual([e["node_id"] for e in brk], [nid],
+                         "value 且建立日已在台帳內 ⇒ 必須是破線（一票否決條款）")
+        self.assertEqual(pend, [], "value 的一票否決條款不得被 pending 架空")
+        self.assertEqual(exp, [], "未入帳的 value 不得算 expected")
+
+    # ── T6：非 value 不得被自動推導進核准集合 ──────────────────────────
+    def test_t6_non_value_is_never_auto_derived(self):
+        """四條件推導**只推導 value** ⇒ belief／trait／essence 只能人工入帳。"""
+        trait_id = "7" * 32
+        nodes = [_value_node(trait_id, "2026-10-18T08:00:00+00:00", node_type="trait"),
+                 _value_node("6" * 32, "2026-10-18T08:00:00+00:00")]
+        for date, found in CLI.expected_retirement_sets_by_cohort(nodes, []).items():
+            self.assertNotIn(trait_id, found,
+                             "四條件推導不得推導出非 value（%s）：%s" % (date, found))
+
+    # ── T7：型別不得開小灶（trait 與 value 共用同一 cohort 級下界）──────
+    def test_t7_no_type_specific_not_before(self):
+        """型別**不得**影響下界：同一 cohort 內 trait 與 value 的下界走**同一條規則**。
+
+        🔴 2026-10-27 主大腦修正：台帳下界改為「**引擎自己的衰減門檻**」
+        （錨點＝支持邊的 max(valid_from_ts)／last_support_ts／created+grace，
+        下界＝錨點＋7 天）⇒ trait 與 value 都用同一條規則 ⇒ 型別不開小灶。
+        兩層驗證：
+          ① **合成**：同 cohort 內一顆 trait 與一顆 value（同一 not_before）
+             ⇒ 兩者的下界必須**完全相同**；
+          ② **結構**：判準層的下界選擇**不得**引用 `node_type`
+             （若引用，型別就會影響下界）。
+        """
+        nid_trait = "2" * 32
+        nid_value = "1" * 32
+        cohort = [{"date": "2026-10-21",
+                   "not_before": "2026-10-29T02:00:00+00:00",
+                   "nodes": frozenset({nid_trait, nid_value}),
+                   "types": {nid_trait: "trait"}}]
+        bounds = CLI.retirement_bounds(cohort)
+        self.assertEqual(str(bounds.get(nid_trait)), str(bounds.get(nid_value)),
+                         "同 cohort 內 trait 與 value 的下界必須相同（型別不得開小灶）")
+        tree = ast.parse(CLI_PATH.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "retirement_bounds":
+                used = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+                self.assertNotIn("node_type", used,
+                                 "下界選擇不得依型別分支（retirement_bounds 不得引用 node_type）")
+
+    # ── T8：pending 必須**大聲回報** ──────────────────────────────────
+    def test_t8_pending_is_loudly_reported(self):
+        """(a) 待審事件必須逐節點出現在 `pending_cohort_groups`；
+        (b) CLI 的三態必須把 pending 映射到 **exit 3** 且報告含 `pending_cohorts`。"""
+        nid = "5" * 32
+        created = "2026-10-21T02:00:10+00:00"
+        nodes = [_value_node(nid, created, node_type="trait")]
+        ev = {"node_id": nid, "node_type": "trait",
+              "lifecycle_state": "weakening", "ts": "2026-10-28T02:00:28Z"}
+        _exp, pend, _brk = CLI.classify_soul_retirements([ev], nodes, [])
+        groups = CLI.pending_cohort_groups(pend, nodes)
+        self.assertTrue(any(nid in g["node_ids"] for g in groups),
+                        "待審事件必須逐節點出現在 pending_cohort_groups：%s" % groups)
+        src = CLI_PATH.read_text(encoding="utf-8")
+        self.assertIn("pending_cohorts", src, "報告必須含 pending_cohorts（可稽核）")
+        self.assertIn("PENDING_COHORT", src, "三態必須含 PENDING_COHORT")
+        tree = ast.parse(src)
+        main_fn = next(n for n in tree.body
+                       if isinstance(n, ast.FunctionDef) and n.name == "main")
+        seg = ast.get_source_segment(src, main_fn) or ""
+        self.assertIn("elif pending_retirements:", seg,
+                      "pending 必須獨立成態（exit 3），不得靜默算成 PASS 或破線")
+
+    # ── T9：本票交付物守衛（4 顆 trait 入帳 ＋ 9 顆逐節點下界）───────────
+    def test_t9_four_traits_and_nine_bounds_are_enrolled(self):
+        """4 顆 trait 必須**逐節點**入帳且記載型別為 trait；9 顆 value 必須有逐節點下界。"""
+        types = {}
+        bounds = {}
+        enrolled = set()
+        for c in CLI.EXPECTED_RETIREMENT_COHORTS:
+            enrolled |= set(c.get("nodes") or ())
+            for nid, t in (c.get("types") or {}).items():
+                types[nid] = t
+            for nid, b in (c.get("bounds") or {}).items():
+                bounds[nid] = b
+        for nid in _TRAIT_IDS:
+            self.assertIn(nid, enrolled,
+                          "%s 必須在台帳的 nodes 內（＝已入帳）" % nid)
+            self.assertEqual(types.get(nid), "trait",
+                             "%s 必須已入帳且記載型別為 trait" % nid)
+        for nid in _BOUND_VALUE_IDS:
+            self.assertIn(nid, bounds, "%s 必須有逐節點下界" % nid)
+        # 🔴 筆數**不釘死**（台帳的逐節點下界會隨引擎錨點演進而增補；
+        #    釘死筆數只會製造無謂的紅燈）⇒ 改驗「每筆下界都合法且帶時區」。
+        for nid, b in bounds.items():
+            dt = datetime.fromisoformat(str(b))
+            self.assertIsNotNone(dt.tzinfo, "逐節點下界必須帶時區：%s" % b)
+            self.assertIn(nid, enrolled, "逐節點下界的鍵必須是已入帳的節點：%s" % nid)
+
+    # ── T10：門檻凍結（判準層不得做「距今 N 天」型算術）────────────────
+    def test_t10_judgment_layer_has_no_decay_arithmetic(self):
+        """判準層只比對**宣告式時刻常數** ⇒ 不得出現 timedelta 算術。"""
+        tree = ast.parse(CLI_PATH.read_text(encoding="utf-8"))
+        targets = ("is_expected_metabolism", "_is_pending_retirement",
+                   "retirement_bounds", "approved_node_types",
+                   "expected_retirement_sets_by_cohort")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name in targets:
+                used = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+                self.assertNotIn("timedelta", used,
+                                 "%s 不得做「距今 N 天」型算術（門檻凍結）" % node.name)
+
+    # ── T11：逐節點下界必須生效，且**保留提前早衰的牙** ───────────────
+    def test_t11_per_node_bound_is_honored_and_keeps_teeth(self):
+        """(a) `retirement_bounds` 必須採用逐節點下界（優先於 cohort 級）；
+        (b) 早於下界 1 秒的轉變**不得**放行（提前早衰仍會熔斷）。"""
+        nid = "4" * 32
+        cohort = [{"date": "2026-10-21",
+                   "not_before": "2026-10-29T02:00:00+00:00",
+                   "nodes": frozenset({nid}),
+                   "bounds": {nid: "2026-10-28T02:00:10.879012+00:00"}}]
+        bounds = CLI.retirement_bounds(cohort)
+        self.assertEqual(str(bounds.get(nid)), "2026-10-28T02:00:10.879012+00:00",
+                         "逐節點下界必須優先於 cohort 級 not_before")
+        ev = {"node_id": nid, "node_type": "value",
+              "lifecycle_state": "weakening", "ts": "2026-10-28T02:00:10.879011Z"}
+        self.assertFalse(CLI.is_expected_metabolism(ev, {nid}, bounds),
+                         "早於下界 1 秒 ⇒ 提前早衰 ⇒ 不得放行")
+        ev2 = dict(ev, ts="2026-10-28T02:00:10.879012Z")
+        self.assertTrue(CLI.is_expected_metabolism(ev2, {nid}, bounds),
+                        "恰好等於下界 ⇒ 可放行")
+    # ── T12：pending 的四條件同構（**無** support_propagation 祖先邊）────
+    def test_t12_support_propagation_edge_blocks_pending(self):
+        """有 support_propagation 祖先邊 ⇒ 形狀不符 ⇒ **不得**算 pending。
+
+        🔴 這條守衛是補上來的**盲點**：2026-10-27 主大腦跑變異實驗時發現，
+        「移除 pending 的 support 邊條件」**沒有任何守衛轉紅**（既有守衛只覆蓋
+        推導路徑，沒覆蓋 pending 路徑）⇒ 該條件先前是無牙的。
+        """
+        nid = "3" * 32
+        created = "2026-10-21T02:00:10+00:00"
+        nodes = [_value_node(nid, created, node_type="trait")]
+        edges = [{"node_id": nid, "trigger_type": "support_propagation"}]
+        ev = {"node_id": nid, "node_type": "trait",
+              "lifecycle_state": "weakening", "ts": "2026-10-28T02:00:28Z"}
+        _exp, pend, brk = CLI.classify_soul_retirements([ev], nodes, edges)
+        self.assertEqual(pend, [], "有 support_propagation 祖先邊 ⇒ 不得算 pending")
+        self.assertEqual([e["node_id"] for e in brk], [nid],
+                         "形狀不符 ⇒ 應為破線：%s" % brk)
