@@ -227,3 +227,45 @@ harness 規格同 A5（%TEMP%、只改副本、repo 唯讀、sha256 前后比對
 5. 明晚槽預測（CLI 以 `2026-10-28T02:00:28Z` 跑的 VERDICT 與四項對帳數字）
 6. 有沒有踩到 Frozen Contract／意外行為
 7. 未做的部分與原因
+
+---
+
+## 實作後補記（2026-10-27 17:3x EDT，主大腦）
+
+本工單開立後，實作過程中**實測挖出第三個結構缺口**，其修法需要**擴充本工單的 A 段**。
+（canonical 為 as-built 記錄：`logs/ENGINEERING_STATE.md` §0.1.97。）
+
+### 新增缺口③：cohort 級 `not_before` 對部分成員**晚一槽** ⇒ 假紅
+
+- **量到的引擎真相**（`soul-elevation/src/soul_elevation/engine.py`，外部凍結套件，**未改動**）：
+  - 衰減錨點 `_lifecycle_anchor()` 優先序＝①該節點**仍有效支持邊**（`valid_until_ts is None`）
+    的 `max(valid_from_ts)` ②`last_support_ts` ③`created_ts + grace(3 天)`。
+    ⇒ **實測：台帳成員的錨點幾乎全部來自支持邊**；節點的 `last_support_ts` 欄位**不是**錨點。
+  - 衰減條件＝`(now − anchor) / 86400 ≥ LIFECYCLE_T_WEAKEN_DAYS(7)` ⇒ **精確下界＝錨點＋7 天**。
+  - cohort 級 `not_before` 的既定規則是「建立日＋8 天 @02:00Z」＝**近似值** ⇒ 對「錨點較早」的
+    成員**晚一槽** ⇒ 被誤判成「提前早衰」＝**假紅**。
+  - **實測例**：cohort `2026-10-21` 的 9 顆 value 在 2026-10-28T02:00:28Z 槽弱化，而其 cohort
+    下界寫在 2026-10-29T02:00:00Z ⇒ 若不修，明晚槽會是 **FAIL（9 筆假紅）**。
+- **修法（擴充 A 段）**：台帳新增選用鍵 `"bounds"`（節點 id → 該節點**引擎自己的衰減門檻**）；
+  `retirement_bounds()` 優先採用逐節點下界（未記載者沿用 cohort 級）⇒ 台帳不可能再與引擎矛盾，
+  且**不放寬任何門檻**（下界＝引擎門檻本身）。已依引擎錨點重算並補丁 **297 筆**。
+  **判準層仍不做任何「距今 N 天」型算術**（下界是宣告式時刻常數）。
+- **A 段的守衛清單因此由 T1～T10 擴為 T1～T12**（T7 改為「型別不得影響下界」、
+  新增 T12「support 邊阻擋 pending」；T9 改為不釘死筆數）。
+- **A6 的變異清單由 TM-1～TM-8 擴為 TM-1～TM-9**（新增 TM-9：移除 trait 的型別記載）。
+
+### 刷新器（A6 之外，repo 外工具）的修正
+
+`soul-os-harness-backups/ledger_refresh.py`（**不受版控**，已備份 `.bak-20261027`）：
+**F1** 保留 `"types"`／`"bounds"` 區塊與節點註解；**F2** 新 cohort 的 `not_before` fallback
+由誤植的 `2026-01-01` 改回**建立日＋8 天 @02:00Z**；**F3** 逐節點下界改用**引擎錨點**
+（新增 `engine_anchors()` 複刻 `_lifecycle_anchor`；舊版用 `last_support_ts` 算 ⇒ 會寫出與
+引擎衝突的下界）；**F5** 節點註解的**附註**保留（避免遺失 `★dormant⇒永不退役` 之類說明）。
+**冪等驗證**：以刷新器的 `rewrite_entry()` 對 9 個 cohort 逐位元重寫 ⇒ 輸出與 committed 檔案
+**逐位元相同**（常量式種子 cohort `2026-10-11` 例外，刷新器 `main` 明確不重寫它）
+⇒ 20:40 的每日刷新**不會產生 churn**。
+
+### 不在本工單範圍（另列追蹤票）
+
+刷新器**納入版控**（目前不受版控 ⇒ 修正只存在於磁碟；且它使用 `subprocess` ⇒ 進 repo 會撞
+`tests/infra/test_no_production_spawn_guard.py` 的 R5，須一併處理）。
