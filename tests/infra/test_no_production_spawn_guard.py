@@ -133,7 +133,13 @@ PYTEST_DEFAULT_PYTHON_FILES: Tuple[str, ...] = ("test_*.py", "*_test.py")
 #: (``tests/test_private_chat.py`` 31/32 → 29/30 after the ``--server`` spawn path
 #: was deleted; ``tests/test_infra_no_pattern_process_kill.py`` 398 → 425 after the
 #: D3 assertion was inverted). No dead rule is left behind.
-EXPECTED_ADDRESS_ALLOWLIST_SIZE = 9
+#
+# 2026-10-27（G-3 收尾夜的回歸對帳）9 → 7：移除 `tests/test_identity.py`
+# 的 2 筆條目。移除理由不是「已修好」，而是那 2 筆的理由**本來就是錯的**：
+# 該檔案會對生產服務送出 `USER_MESSAGE`（寫生產對話／記憶、跑真實 LLM），
+# 不是 read-only。現已把硬寫位址移除、改由環境變數明確指定目標（能力移除），
+# 並新增 tests/infra/test_live_service_probes_are_opt_in.py 釘住這條規則。
+EXPECTED_ADDRESS_ALLOWLIST_SIZE = 7
 EXPECTED_KILL_ALLOWLIST_SIZE = 1
 
 
@@ -166,8 +172,6 @@ ADDRESS_ALLOWLIST: Dict[Tuple[str, int], str] = {
     # -- pre-existing tracked tests that probe the already-running service on the
     #    production port (read-only; they were green/red at baseline exactly as
     #    they are now — this ticket neither creates nor fixes them).
-    ("tests/test_identity.py", 10): "pre-existing live WS probe of the running service (read-only)",
-    ("tests/test_identity.py", 11): "pre-existing live HTTP probe of the running service (read-only)",
     ("tests/test_private_chat.py", 29): "pre-existing live probe of the running service (read-only)",
     ("tests/test_private_chat.py", 30): "pre-existing live WS probe of the running service (read-only)",
     # (原 94 → 128) SOUL-TECH-DEBT-001 校準過期 baseline 測試時，該檔案上方淨增
