@@ -7034,3 +7034,24 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
   ② `tests/fixtures/fg2_seeded_persona_baseline.json` 的 `agent_rem` 內容重建（`load_persona()` 輸出，差異經比對恰為本次四處）。
   ③ `tests/soul/test_rem_soul_regression.py` 的 C 壓縮率上限由 **50% 放寬至 52%**（新增 564 bytes ⇒ 50.90%；**真 acceptance `test_matrix_character_density_improves` 不變**，密度未下降）。
 - **未動（工單範圍外，供後續票）**：第十節模式二（第 193 行「雷姆早就知道了。」「Bryan 說的話，雷姆都記著的。」）與文字頻道守門第 321 行「雷姆來。」仍為自稱示範，與新禁例的風格存在張力。
+
+## 0.1.94 矛盾預濾器與語意判定接線（FEAT-CONTRADICTION-PREFILTER-WIRING）
+
+- **工單目標**：解開「召回池中 superseded 永遠為 0」的最後一哩工程。確立**結構預濾器**（純函式、以確定性規則篩出具顯式衝突嫌疑的候選配對，把無關演化徹底隔絕在 LLM 之外），並把「語意判定 ⇒ 累積器 ⇒ supersede」串成一條可接線的鏈路。
+- **五檔改動（本次 commit）**：
+  | 檔案 | 型別 | 行數 |
+  |---|---|---|
+  | `src/inner_life/contradiction_prefilter.py` | 新增 | 252 |
+  | `src/inner_life/contradiction_judge_prototype.py` | 擴充 | +328／−1 |
+  | `src/inner_life/elevation_adapter.py` | 擴充 | +152 |
+  | `tests/inner_life/test_contradiction_prefilter_guard.py` | 新增 | 475 |
+  | `tests/test_observability_completeness_1.py` | 更新 | +11（觀護衛白名單追加新模組） |
+- **七道結構篩選條件（缺一不可）**：①同 Agent（`soul_node.agent_id == pattern.agent_id`）；②靈魂節點型別 ∈ {belief, value, trait}（排除 essence 與 pattern）；③同候選維度（沿用既有 `_node_candidate_dimension`，**不另立維度**）；④內容正規化後不等（`normalize_content`）；⑤嚴格跨日（UTC 日期字串不等，日期字串取不到 ⇒ 剔除）；⑥未見新證據（該 Pattern 的 source_ids 尚未出現在該靈魂節點的歷史證據集內）；⑦確定性排序＋**每 Agent 每輪至多 1 組**（依 `(soul_node.node_id, pattern.node_id)` 字典序升序）。
+- **預算與 fail-closed 契約**：每 Agent 每日**至多 1 次**語意判定（`MAX_CALLS_PER_AGENT=1`，熔斷回 `REASON_BUDGET_EXHAUSTED`）；prompt 字元上限 `MAX_PROMPT_CHARS=1200`（超限 ⇒ `REASON_COST_LIMIT`）；**任何例外／逾時／非 CONTRADICT／解析失敗一律映射 `ACTION_NO_RECORD`**（寧可漏記矛盾，絕不誤記矛盾）；`backend=None` ⇒ **嚴格 no-op**（不評估、不呼叫、不寫引擎）。
+- **守衛與變異實驗**：`tests/inner_life/test_contradiction_prefilter_guard.py` 共 10 筆守衛 K1～K10（基線 **10 passed**，解譯器＝repo `.venv`）。變異實驗 K-M1～K-M8 由**主大腦自寫 harness** 獨立複核（只改 `%TEMP%` 副本、每次改動前斷言副本 sha256 與原檔不同、結束後以原始 bytes 還原並比對 repo 目標檔 sha256）⇒ **八條全數精準轉紅**：K-M1→K2、K-M2→K3、K-M3→K4、K-M4→K5、K-M5→K7、K-M6→K8、K-M7→K10、K-M8→**K9＋K10**（K-M8 多紅一筆屬預期，因省略 `record_contradiction` 會同時斷掉 supersede 的累積來源 ⇒ 如實記錄）。⇒ **K1～K10 不是盲腸守衛**。
+- **全庫回歸**：7479 passed / 0 failed / 24 skipped / 32 subtests passed（961.38s ＝ 0:16:01，exit 0；解譯器＝repo .venv\Scripts\python.exe -m pytest -q）
+- **未做事項（明確不在本票）**：
+  - **生產 backend 接線不在本票**：`scripts/run_server.py` 未動 ⇒ production 目前仍是 `backend=None` 的**嚴格 no-op**（零真實 LLM 消耗、零行為變化）。真實 backend 接入屬另開工單。
+  - **hook 未落盤新節點／sidecar**：`elevate_matured_patterns()` 的矛盾分支只走引擎的 `record_contradiction()`／`supersede()`，尚未把新節點與 sidecar 事件落盤 ⇒ 接真實 backend 前必須補齊，否則會出現「已判定但無落盤」的不一致。
+  - 掛載載入窗口：本票與 G-1/G-2 修訂鏈掛載同落 `elevation_adapter.py` ⇒ 兩者會在同一窗口一起生效，**建議分窗**（避免觀測訊號混淆）。
+  - 本 commit **不含** `scripts/eval_lifecycle_cli.py` 的台帳刷新改動（20:40 值守刷新產物，屬另一張票；且其 cohort `2026-10-26` 的 `not_before` 欄位待修）。
