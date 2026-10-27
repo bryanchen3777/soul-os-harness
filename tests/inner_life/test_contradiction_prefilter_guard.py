@@ -1,6 +1,6 @@
 """tests/inner_life/test_contradiction_prefilter_guard.py — 矛盾預濾器與接線層守衛（K1～K10）。
 
-工單：FEAT-SUPERSEDED-CONTRADICTION-PIPELINE（2026-10-26；「召回池 superseded 恆 0」的最後一哩）
+工單：FEAT-CONTRADICTION-PREFILTER-WIRING（2026-10-27；「召回池 superseded 恆 0」的最後一哩）
 
 這支守衛釘死三件事：
 

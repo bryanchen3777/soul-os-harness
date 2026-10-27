@@ -1,6 +1,6 @@
 """src/inner_life/contradiction_prefilter.py — 矛盾候選的「結構預濾器」（純函式、唯讀、零 LLM）。
 
-工單：FEAT-SUPERSEDED-CONTRADICTION-PIPELINE（2026-10-26；「召回池 superseded 恆 0」的最後一哩）
+工單：FEAT-CONTRADICTION-PREFILTER-WIRING（2026-10-27；「召回池 superseded 恆 0」的最後一哩）
 
 為什麼需要這個模組
 ------------------

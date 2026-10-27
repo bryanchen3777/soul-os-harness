@@ -1892,7 +1892,7 @@ def elevate_matured_patterns(
                         len(_new_node.content or ""),
                         len(_new_source_ids),
                     )
-            # ── 矛盾判定 Hook（FEAT-SUPERSEDED-CONTRADICTION-PIPELINE）──
+            # ── 矛盾判定 Hook（FEAT-CONTRADICTION-PREFILTER-WIRING）──
             #
             # 位置紀律：本區塊在**候選維度迴圈之外**、修訂鏈分支 B 之外 ⇒ 與既有
             # 分支**互不干擾**（不共用 try/finally、不動既有旗標、不改既有輸出）。
