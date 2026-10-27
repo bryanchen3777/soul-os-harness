@@ -448,6 +448,59 @@ EXPECTED_RETIREMENT_COHORTS = (
             "fd4412d7218746ff8e6238c7135c4ffb",  # agent_yua
         }),
     },
+    {
+        "date": "2026-10-26",
+        "not_before": "2026-11-03T02:00:00+00:00",
+        "nodes": frozenset({
+            "009b435f55034f15950c29e310474d85",  # agent_shino
+            "019e44e71980436595c054830d292659",  # agent_sachi
+            "05a620145730455da68a86df65790c04",  # agent_rin
+            "11af7cb8447f4208b98352341e0878e8",  # agent_miku
+            "1815f94b359a47ae807781902f386c95",  # agent_shea
+            "26cedfd48c88476fad5955f5bf10339e",  # agent_emilia
+            "2a35bddd4c7f40e89050bb053f4f34d3",  # agent_akane
+            "30d40df310c74b8e91f5282c9dcb29fd",  # agent_yue
+            "31ac1ca97f4e45aa8235b0c75282e882",  # agent_mai
+            "3aec608dc31d466c9c0d66fa2e93530f",  # agent_kaguya
+            "3e7aef3e71e041f992338c27c6032b60",  # agent_kaori
+            "3ed7a663c4ab4c49a581a10811556792",  # agent_mochizuki_ai
+            "4034513ee577440aa40799682c1fbf3e",  # agent_mahiru
+            "48aaa8aba73344079a39e965379e587c",  # agent_hiro
+            "4e6ae50609da4212b9909430eec2df8c",  # agent_tsukasa
+            "59777d94b38a451b9b951b0a44afbde7",  # agent_sakura
+            "5eb4e011129d4c3495bfa43e3bdf9899",  # agent_iroha
+            "5fabbf8030dc49b7bad7d5b86b76392c",  # agent_rio
+            "628224704c114a50b5fd01d0792cf1cf",  # agent_rem
+            "6eb1b0ae9ca8412a85c10cc767dd12ea",  # agent_reze
+            "78894255019248c0b6924bcc687d0579",  # agent_fuuka
+            "78e945cc688e45b4a96ea0cd3f105a69",  # agent_ram
+            "79a2f0646f4e401e8ccf2c2bac46a657",  # agent_haruhi
+            "80424fbb3df04e80b52720776265cf62",  # agent_ichika
+            "849ac1fb43b94e9abe52d1fc33c2d170",  # agent_kurisu
+            "8a599a3094e3472cbdb1c2ff26fd9631",  # agent_chizuru
+            "9afbede1c6dc44ac8322f1351ec1fe32",  # agent_kirino
+            "9b2013d7af3b4287a90b9c49096069a4",  # agent_nagisa
+            "9f19bc7d30e8430da43bc83914aa6d4a",  # agent_kana
+            "a2ab1df0a19f4c35a007a6d4d9283032",  # agent_aoi
+            "ac27ba3e85a849daae4dfaf137b47749",  # agent_ai
+            "b3a52413a0fe43349ff819fcbfd12d9b",  # agent_ruka
+            "b3cf2e691a6e4ea4974954cf36344187",  # agent_makima
+            "b63e6d49c6544a4dbf18c1a1893e56e8",  # agent_yua
+            "c88f55acc11e48c99ff3d0214b28ec5a",  # agent_beatrice
+            "caf74e05fd0141288921da911f4f13c7",  # agent_asuna
+            "d4ec11238f7b49638a8112d551bba04e",  # agent_minami
+            "da602f46d5784deab42a5e641c578fa3",  # agent_rika
+            "e16a775c926448ef91c64d3ca7893ff6",  # agent_nino
+            "e63dc8b15f4545baa6fb2db1b9ebf7c7",  # agent_itsuki
+            "e6ad2f93f44544cda6eefd61274791de",  # agent_anna
+            "e91e41779c1b4d26a3987c90a9b5449e",  # agent_mami
+            "ef8c220ffe924f7590638b35497a5453",  # agent_shizuku
+            "f410ef169e4d4e6fb6df13eaff8b6aad",  # agent_saki
+            "fa8a1325a9754a098b1f75ee8c950dc9",  # agent_yotsuba
+            "fe375a48d8574aa092ae4c1e33136fb8",  # agent_mashiro
+        }),
+    },
+
 )
 
 
