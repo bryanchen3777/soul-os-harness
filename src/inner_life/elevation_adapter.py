@@ -1298,11 +1298,129 @@ class _RevisionWiringError(KeyError):
     """修訂鏈接線錯誤（``KeyError`` 家族）——必須冒泡，不得被失敗隔離吞掉。"""
 
 
+def _independent_evidence_count(edges: Sequence[dict]) -> int:
+    """獨立證據數（SE-1 口徑：同 source_id 或同事件身分 ⇒ 只算 1 份）。
+
+    🔺 口徑與引擎 ``_count_independent_evidence`` 同源 ⇒ 本模組**不另立**
+    「成熟」定義，否則「引擎覺得成熟」與「本模組覺得成熟」會漂移。
+    """
+    seen_sources: set = set()
+    seen_events: set = set()
+    count = 0
+    for e in edges:
+        source_id = str(e.get("source_id"))
+        event_id = e.get("inner_life_event_id")
+        if source_id in seen_sources:
+            continue
+        if event_id is not None and str(event_id) in seen_events:
+            continue
+        seen_sources.add(source_id)
+        if event_id is not None:
+            seen_events.add(str(event_id))
+        count += 1
+    return count
+
+
+def _run_contradiction_hook(
+    *,
+    engine: Any,
+    nodes: Sequence[dict],
+    edges: Sequence[dict],
+    agent_id: str,
+    candidates: Dict[str, List[str]],
+    backend: Any,
+    calls: Optional[Dict[str, Any]],
+    min_evidence: int,
+) -> int:
+    """矛盾判定 Hook：每 agent 至多 1 組候選 → 判定 → 累積器 → supersede。
+
+    🔺 為什麼這樣切：預濾是**純函式**（挑候選）、接線是**有副作用**（寫引擎）
+    ⇒ 兩者分離 ⇒ 預濾可被守衛測試獨立驗證；接線失敗可被失敗隔離包住。
+
+    Returns:
+        實際送進判定器的候選數（0 或 1）。
+    """
+    # (a) 遲延 import：本模組被 ``contradiction_prefilter`` 反向 import
+    #     （預濾器要重用本模組的維度函式）⇒ 模組層 import 會成環。
+    from src.inner_life.contradiction_judge_prototype import ContradictionPipeline
+    from src.inner_life.contradiction_prefilter import select_conflict_candidate_pairs
+
+    # (b) 成熟 pattern：候選維度組（已過 EH-2 R3 與 lifecycle 隔離）且該組的
+    #     獨立證據數達 min_evidence（與 ``engine.elevate()`` 的成熟定義同源）。
+    #     以**磁碟邊**計票 ⇒ 不受本輪 elevate 改寫邊狀態的影響。
+    valid_edges_by_node: Dict[str, List[dict]] = {}
+    for e in edges:
+        if e.get("valid_until_ts") is not None:
+            continue
+        valid_edges_by_node.setdefault(str(e.get("node_id")), []).append(e)
+    matured_ids: set = set()
+    for _dim, _pids in candidates.items():
+        _group_edges: List[dict] = []
+        for _pid in _pids:
+            _group_edges.extend(valid_edges_by_node.get(str(_pid), ()))
+        if _independent_evidence_count(_group_edges) >= min_evidence:
+            matured_ids.update(str(_pid) for _pid in _pids)
+    if not matured_ids:
+        return 0
+
+    def _with_sources(node: dict) -> dict:
+        """節點 ＋ 其**既有**證據集合（淺拷貝；不動原 dict）。"""
+        copied = dict(node)
+        copied["source_ids"] = tuple(
+            str(e.get("source_id"))
+            for e in valid_edges_by_node.get(str(node.get("node_id")), ())
+        )
+        return copied
+
+    _soul_nodes = [
+        _with_sources(n)
+        for n in nodes
+        if n.get("agent_id") == agent_id and n.get("node_type") in SOUL_NODE_TYPES
+    ]
+    _patterns = [_with_sources(n) for n in nodes if str(n.get("node_id")) in matured_ids]
+    if not _soul_nodes or not _patterns:
+        return 0
+
+    # (c) 預濾（純函式、決定性）：每 agent 至多 1 組。
+    _pair = (select_conflict_candidate_pairs(_soul_nodes, _patterns).get(agent_id)
+             or [])
+    if not _pair:
+        return 0
+    _soul_node, _pattern = _pair[0]
+
+    # (d) 接線（注入式 backend；backend 為 None ⇒ 整條鏈路 no-op）。
+    _pipeline = ContradictionPipeline(
+        engine=engine,
+        backend=backend,
+        calls=calls,
+        agent_id=agent_id,
+    )
+    _outcome = _pipeline.run(
+        soul_node=_soul_node,
+        candidate_pattern=_pattern,
+        ts=_utcnow_iso(),
+    )
+    logger.info(
+        "[elevate] ↻ contradiction agent=%s soul=%s pattern=%s verdict=%s "
+        "recorded=%s superseded=%s reason=%s",
+        agent_id,
+        str(_soul_node.get("node_id"))[:12],
+        str(_pattern.get("node_id"))[:12],
+        _outcome.verdict,
+        _outcome.recorded,
+        _outcome.superseded,
+        _outcome.reason,
+    )
+    return 1
+
+
 def elevate_matured_patterns(
     *,
     store_dir: Optional[Any] = None,
     llm: Any = None,
     min_evidence: int = DEFAULT_ELEVATE_MIN_EVIDENCE,
+    contradiction_backend: Optional[Any] = None,
+    contradiction_calls: Optional[Dict[str, Any]] = None,
 ) -> List[ElevationNode]:
     """证据驱动的 elevate（独立于 Submission Gate 的机制）。
 
@@ -1319,6 +1437,12 @@ def elevate_matured_patterns(
         min_evidence: 独立证据阈值（对齐 soul-elevation 默认 2 独立证据）。
         （限流刻意**不在此参数化**：引擎的「已消化证据隔离」＋ ``min_evidence``
         已更严格地负责，详见 SOUL-BUG-009 说明与上方注释。）
+        contradiction_backend: **注入式**矛盾判定 backend（``Callable[[str], str]``）。
+            缺省 ``None`` ⇒ 矛盾判定 Hook **整段跳過**（不評估、不呼叫 LLM、不寫
+            引擎、不改既有輸出）⇒ 生产默认零行为变化、零 LLM 成本。
+            🔺 本模组**不得**自建真实 LLM 连接（真实 backend 的注入由后续票负责）。
+        contradiction_calls: 矛盾判定的预算计数器（跨实例共用；每 (agent, 当日)
+            一份，由调用端提供）。缺省 ``None`` ⇒ 该次调用自建一份。
 
     Returns:
         本次新产出的灵魂节点（belief/value/trait/essence）列表。失败隔离：
@@ -1767,6 +1891,34 @@ def elevate_matured_patterns(
                         _new_node.lineage_depth,
                         len(_new_node.content or ""),
                         len(_new_source_ids),
+                    )
+            # ── 矛盾判定 Hook（FEAT-SUPERSEDED-CONTRADICTION-PIPELINE）──
+            #
+            # 位置紀律：本區塊在**候選維度迴圈之外**、修訂鏈分支 B 之外 ⇒ 與既有
+            # 分支**互不干擾**（不共用 try/finally、不動既有旗標、不改既有輸出）。
+            #
+            # 🔺 **預設零行為變化**：backend 未注入 ⇒ 整段跳過（不評估、不呼叫 LLM、
+            #    不寫引擎）。真實 backend 的注入由後續票負責（本模組**不得**自建
+            #    LLM 連線 ⇒ 成本護欄）。
+            if contradiction_backend is not None:
+                try:
+                    _run_contradiction_hook(
+                        engine=engine,
+                        nodes=nodes,
+                        edges=edges,
+                        agent_id=agent_id,
+                        candidates=candidates,
+                        backend=contradiction_backend,
+                        calls=contradiction_calls,
+                        min_evidence=min_evidence,
+                    )
+                except Exception as exc:  # noqa: BLE001 — 失敗隔離（不阻斷主路徑）
+                    logger.warning(
+                        "[elevate] contradiction hook failed agent=%s: %s: %s",
+                        agent_id,
+                        type(exc).__name__,
+                        exc,
+                        exc_info=True,
                     )
             # ── LIFECYCLE-REINFORCE-CHAIN：支持傳遞（Support Propagation）──
             # 位置決定：engine.elevate() 之後、_persist_result() 之前。

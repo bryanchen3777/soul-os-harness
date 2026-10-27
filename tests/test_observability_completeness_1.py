@@ -891,6 +891,17 @@ class TestBoundedAndFrozenDiscipline:
             # 未接真實 LLM、未呼叫 record_contradiction／supersede）
             # Contract: logs/CAMPAIGN-B-BATTLE2-G3-SEMANTIC-JUDGMENT-CONTRACT.md
             "src/inner_life/contradiction_judge_prototype.py",
+            # -- FEAT-CONTRADICTION-PREFILTER-WIRING (2026-10-27) ------------------
+            # This ticket adds 1 non-frozen file: the structural prefilter
+            # (pure function / zero LLM) that feeds the contradiction pipeline.
+            # It touches **no** frozen contract file. The pipeline itself lives
+            # in `src/inner_life/contradiction_judge_prototype.py` (listed
+            # above) and the adapter hook in
+            # `src/inner_life/elevation_adapter.py` (listed above) stays
+            # **default-off** (the backend is injected by the caller =>
+            # production behaviour unchanged, zero LLM cost).
+            # Predecessor ticket: FEAT-SUPERSEDED-ACCUMULATOR-PIPELINE (2026-10-24)
+            "src/inner_life/contradiction_prefilter.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

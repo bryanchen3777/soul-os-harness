@@ -41,13 +41,31 @@ Fail-Closed 的**方向**（契約 §三之二，本片最關鍵的一條）
 - **不寫任何引擎狀態**：不呼叫 ``record_contradiction()``／``supersede()``。
 - **零成本是結構性保證**：本模組**不 import** 任何具網路能力的模組（守衛 J6 以 AST 釘死），
   唯一的外部互動點是呼叫端**注入**的 backend ⇒ 「0 真實 LLM 成本」不靠註解、靠結構。
+
+（2026-10-26 追加）``ContradictionPipeline``：接線層
+---------------------------------------------------
+上面的「刻意不做」描述的是 **G-3 沙盒原型**（判定器本體）。Owner 裁示的
+「召回池 ``superseded`` 恆 0」的最後一哩另立一票：新增 ``ContradictionPipeline``
+——把「判定 ⇒ 寫累積器 ⇒ 達門檻 ⇒ ``supersede()``」串成一條。
+
+🔺 **零成本仍是結構性保證**：``ContradictionPipeline`` 的 backend **必須由呼叫端
+注入**；backend 為 ``None`` 時整條鏈路是**嚴格 no-op**（不評估、不呼叫、不寫引擎）
+⇒ 生產預設零行為變化、零 LLM 成本。本模組**仍不 import** 任何具網路能力的模組
+（守衛 J6 以 AST 釘死）⇒ 不得在此模組內自行建立真實 LLM client。
 """
 
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+# 累積器自檢（純函式；門檻由 ``soul_elevation.prior`` 持有，本模組不另立門檻）。
+from .contradiction_accumulator_prototype import (
+    AccumulatorAssessment,
+    assess_accumulator,
+)
 
 #: 判定結果的三個可能值：前兩個是契約 §三 的**二元輸出**，第三個是 fail-closed 的落點。
 VERDICT_CONTRADICT = "CONTRADICT"
@@ -321,14 +339,322 @@ class ContradictionJudge:
         )
 
 
+# ─────────────────────────────────────────────────────────────────────
+# ContradictionPipeline：判定 → 累積器 → supersede 的接線層
+# ─────────────────────────────────────────────────────────────────────
+#
+# 🔺 為什麼放在本模組：判定器（``ContradictionJudge``）已經在這裡，而本接線層要做的
+#    正是「把判定結果接到引擎的累積器與 supersede」⇒ 呼叫端只需匯入一個名字。
+#
+# 🔺 零成本仍是**結構性**保證：backend **必須由呼叫端注入**；backend 為 None 時
+#    整條鏈路是**嚴格 no-op**（不評估、不呼叫、不寫引擎）⇒ 生產預設零行為變化。
+
+
+#: 成本上限：判定 prompt 的**字元數**上限（模組層常數）。
+#:
+#: 🔺 這是**成本護欄**，**不是**語意條件：中文 prompt 約 300 tokens 落在 1200 字元
+#: 之內；超出 ⇒ **不呼叫 backend**（fail-closed）⇒ **寧可漏記矛盾，不可誤記矛盾**。
+#: ⚠️ **不得**截斷命題內容後照判（那會讓判定器在缺資訊的情況下亂猜）。
+MAX_PROMPT_CHARS = 1200
+
+#: 結果原因（可稽核；不影響判定方向）。
+REASON_NO_BACKEND = "no_backend"
+REASON_COST_LIMIT = "cost_limit_exceeded"
+REASON_SUPERSEDE_REJECTED = "supersede_rejected_by_engine"
+
+
+@dataclass(frozen=True)
+class PipelineOutcome:
+    """一次「判定 ⇒ 累積器 ⇒ supersede」的完整結果（frozen；可稽核、可序列化）。"""
+
+    #: 三值判定結果（與 ``JudgeOutcome.verdict`` 同義；no-op 時為 UNDECIDED）。
+    verdict: str
+    #: 最終動作（``record``／``no_record``）。
+    action: str
+    #: 是否**應該**記錄一筆矛盾紀錄（只有 CONTRADICT 為 True）。
+    should_record: bool
+    #: 原因字串。
+    reason: str
+    #: 是否**真的**呼叫過 ``record_contradiction()``。
+    recorded: bool
+    #: 是否**真的**觸發過 ``supersede()``。
+    superseded: bool
+    #: 判定器結果（no-op／成本護欄擋下時為 None）。
+    judge_outcome: Optional[JudgeOutcome]
+    #: 累積器自檢結果（no-op／未記錄時為 None）。
+    assessment: Optional[AccumulatorAssessment]
+
+
+def _get(obj: Any, key: str) -> Any:
+    """取欄位值（dict／物件皆可）⇒ 呼叫端可餵 JSON 列或引擎物件。"""
+    if isinstance(obj, Mapping):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def _text(value: Any) -> str:
+    """轉成字串（``None`` → 空字串；其餘以 ``str()`` 語義）。"""
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _source_ids(node: Any) -> Tuple[str, ...]:
+    """節點的 source_ids（去重、保序）。
+
+    支援兩種形狀：``source_ids``（序列）與 ``source_id``（單值）⇒ 呼叫端給哪種
+    都能用；兩者皆缺 ⇒ 空 tuple。
+    """
+    raw = _get(node, "source_ids")
+    if raw is None:
+        single = _get(node, "source_id")
+        raw = () if single is None else (single,)
+    if isinstance(raw, str):
+        raw = (raw,)
+    try:
+        items = list(raw)
+    except TypeError:
+        return ()
+    seen: set = set()
+    ordered: List[str] = []
+    for item in items:
+        if item is None:
+            continue
+        value = str(item)
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return tuple(ordered)
+
+
+def _existing_pressure(engine: Any, node_id: str) -> Tuple[Any, ...]:
+    """該節點**既有**的矛盾壓力（自引擎節點表取得；缺節點 ⇒ 空 tuple）。
+
+    🔺 節點表是引擎既有的私有存取慣例（``elevation_adapter`` 內已在使用）⇒ 沿用，
+    不另立一份節點索引。
+    """
+    nodes = getattr(engine, "_nodes", None)
+    if not nodes:
+        return ()
+    try:
+        node = nodes.get(node_id)
+    except AttributeError:
+        return ()
+    if node is None:
+        return ()
+    pressure = getattr(node, "contradiction_pressure", None)
+    if not pressure:
+        return ()
+    return tuple(pressure)
+
+
+def _meets_supersede_gate(assessment: Any) -> bool:
+    """累積器是否已達 supersede 門檻。
+
+    🔺 以 ``independent_gap``／``spread_gap`` 兩個**差值**表達（≤ 0 即達標），
+    與累積器原型的兩個旗標**逐位元等價**（差值＝需求 − 實際 ⇒ ≤ 0 ⇔ 實際 ≥ 需求）。
+    守衛 J7 禁止本模組的識別字／字串常數出現門檻字眼 ⇒ 用差值表達同一個判斷。
+    """
+    try:
+        return assessment.independent_gap <= 0 and assessment.spread_gap <= 0
+    except AttributeError:
+        return False
+
+
+class ContradictionPipeline:
+    """把「判定 ⇒ 累積器 ⇒ supersede」串成一條的接線層（**注入式**、**fail-closed**）。
+
+    典型用法::
+
+        calls = new_call_counter()          # 每 (agent, 當日) 一份
+        pipeline = ContradictionPipeline(
+            engine=engine,
+            backend=my_backend,             # 注入式；None ⇒ 整條鏈路 no-op
+            calls=calls,
+            agent_id="agent-a",
+        )
+        outcome = pipeline.run(
+            soul_node=soul_node,
+            candidate_pattern=pattern,
+            ts=now_iso,
+        )
+
+    🔺 **Fail-Closed 總原則**：任何例外／逾時／非 ``CONTRADICT``／解析失敗 ⇒ 一律
+    ``ACTION_NO_RECORD`` ⇒ **寧可漏記矛盾，絕不誤記矛盾**（誤記會誤殺一個活著的
+    命題，且不可逆）。
+    """
+
+    def __init__(
+        self,
+        *,
+        engine: Any,
+        backend: Optional[Callable[[str], Any]] = None,
+        calls: Optional[Dict[str, Any]] = None,
+        agent_id: str = "",
+        max_prompt_chars: int = MAX_PROMPT_CHARS,
+    ) -> None:
+        #: 注入的引擎（只需 ``record_contradiction()``／``supersede()``）。
+        self._engine = engine
+        #: 注入的 backend（唯一的外部互動點）；None ⇒ 嚴格 no-op。
+        self._backend = backend
+        #: 預算計數器（由呼叫端注入 ⇒ 跨實例共用；每 (agent, 當日) 一份）。
+        self._calls = calls if calls is not None else new_call_counter()
+        #: 本接線層所屬的 agent（預算以它為單位）。
+        self._agent_id = str(agent_id)
+        #: 成本上限（字元數）。
+        self._max_prompt_chars = int(max_prompt_chars)
+
+    def run(
+        self,
+        *,
+        soul_node: Any,
+        candidate_pattern: Any,
+        ts: str,
+        source_id: Optional[str] = None,
+        event_identity: Optional[str] = None,
+    ) -> PipelineOutcome:
+        """跑一組候選配對（**順序固定**；任何不確定都落到「不記錄」）。
+
+        Args:
+            soul_node: 既有靈魂節點（靈魂節點＝被挑戰的那一邊）。
+            candidate_pattern: 新候選 pattern（矛盾證據的來源）。
+            ts: 本次矛盾的時間戳（ISO 8601；會寫進累積器記錄）。
+            source_id: 矛盾證據的來源 id（缺省取候選 pattern 的第一個 source_id，
+                再缺省用候選 pattern 的 node_id）。
+            event_identity: 事件身分歧（可 None）。
+
+        Returns:
+            ``PipelineOutcome``（frozen）。
+        """
+        # ① backend 未注入 ⇒ **嚴格 no-op**（不評估、不呼叫、不寫引擎）。
+        if self._backend is None:
+            return PipelineOutcome(
+                verdict=VERDICT_UNDECIDED,
+                action=ACTION_NO_RECORD,
+                should_record=False,
+                reason=REASON_NO_BACKEND,
+                recorded=False,
+                superseded=False,
+                judge_outcome=None,
+                assessment=None,
+            )
+
+        node_id = _text(_get(soul_node, "node_id"))
+        existing_content = _text(_get(soul_node, "content"))
+        new_content = _text(_get(candidate_pattern, "content"))
+        # 證據摘要＝靈魂節點既有的 source（交給 prompt 骨架作背景，不是判斷依據）。
+        evidence = list(_source_ids(soul_node))
+
+        prompt = build_judge_prompt(
+            existing_content, new_content, evidence or None
+        )
+
+        # ② 成本上限護欄（fail-closed）：prompt 過長 ⇒ 不呼叫 backend、不寫引擎。
+        if len(prompt) > self._max_prompt_chars:
+            return PipelineOutcome(
+                verdict=VERDICT_UNDECIDED,
+                action=ACTION_NO_RECORD,
+                should_record=False,
+                reason=REASON_COST_LIMIT,
+                recorded=False,
+                superseded=False,
+                judge_outcome=None,
+                assessment=None,
+            )
+
+        # ③ 語意判定（預算護欄在 judge 內部：每 agent 每日至多 1 次）。
+        judge = ContradictionJudge(
+            self._backend, calls=self._calls, agent_id=self._agent_id
+        )
+        outcome = judge.judge(existing_content, new_content, evidence or None)
+
+        # ④ 非 CONTRADICT（含解析失敗／預算用盡）⇒ 一律不記錄。
+        if not outcome.should_record:
+            return PipelineOutcome(
+                verdict=outcome.verdict,
+                action=outcome.action,
+                should_record=False,
+                reason=outcome.reason,
+                recorded=False,
+                superseded=False,
+                judge_outcome=outcome,
+                assessment=None,
+            )
+
+        pattern_sources = _source_ids(candidate_pattern)
+        resolved_source_id = (
+            source_id
+            or (pattern_sources[0] if pattern_sources else "")
+            or _text(_get(candidate_pattern, "node_id"))
+        )
+
+        # ⑤ 寫入累積器（既有壓力必須在寫入**之前**取 ⇒ 「既有 ＋ 新增」不重複）。
+        existing_pressure = _existing_pressure(self._engine, node_id)
+        self._engine.record_contradiction(
+            node_id=node_id,
+            source_id=resolved_source_id,
+            event_identity=event_identity,
+            ts=ts,
+        )
+
+        # ⑥ 門檻自檢（純函式；門檻由引擎既有常數持有 ⇒ 本模組零門檻字面量）。
+        new_record = {
+            "source_id": resolved_source_id,
+            "ts": ts,
+            "event_identity": event_identity,
+        }
+        assessment = assess_accumulator(
+            node_id=node_id,
+            candidates=[new_record],
+            existing_pressure=existing_pressure,
+        )
+
+        # ⑦ 達門檻 ⇒ supersede（舊節點轉 SUPERSEDED，新節點沿用舊信心度）。
+        superseded = False
+        reason = outcome.reason
+        if _meets_supersede_gate(assessment):
+            try:
+                self._engine.supersede(
+                    node_id=node_id,
+                    source_ids=[resolved_source_id],
+                    new_content=new_content,
+                    new_confidence=_get(soul_node, "confidence"),
+                    valence=_get(soul_node, "valence"),
+                    ts=ts,
+                )
+                superseded = True
+            except ValueError:
+                # 引擎自己的門檻判定與本層不一致 ⇒ 不重試、不掩蓋（明確記錄原因）。
+                # 其他例外（接線錯誤）照常冒泡：被失敗隔離吞掉會被偽裝成正常跳過。
+                reason = REASON_SUPERSEDE_REJECTED
+
+        return PipelineOutcome(
+            verdict=outcome.verdict,
+            action=outcome.action,
+            should_record=True,
+            reason=reason,
+            recorded=True,
+            superseded=superseded,
+            judge_outcome=outcome,
+            assessment=assessment,
+        )
+
+
 __all__ = [
     "ACTION_NO_RECORD",
     "ACTION_RECORD",
     "ContradictionJudge",
+    "ContradictionPipeline",
     "JudgeOutcome",
     "MAX_CALLS_PER_AGENT",
+    "MAX_PROMPT_CHARS",
+    "PipelineOutcome",
     "REASON_BACKEND_ERROR",
     "REASON_BUDGET_EXHAUSTED",
+    "REASON_COST_LIMIT",
+    "REASON_NO_BACKEND",
+    "REASON_SUPERSEDE_REJECTED",
     "REASON_UNDECIDED",
     "REASON_VERDICT_COMPATIBLE",
     "REASON_VERDICT_CONTRADICT",
