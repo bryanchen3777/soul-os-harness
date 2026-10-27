@@ -7111,3 +7111,30 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
 - **全庫回歸**：7504 passed / 0 failed / 27 skipped / 32 subtests passed（解譯器＝repo `.venv` 直譯器），899.55s，exit 0；回歸窗（2026-10-27 19:11:06 起，服務日誌 136 行）內生產命中 **0**（`bryan_test`／`[Gateway]`／`USER_MESSAGE`／`WS raw msg`／Traceback／ERROR／CRITICAL／`database is locked` 全部 0）；生產 `data/memory.db` 的 mtime 與 sha256 **逐位元未變**
 - **生產零寫入證據**：本輪回歸窗內生產 `data/memory.db` 的 mtime 與 sha256 **逐位元未變**（回歸前基準 17:36:23／`1e8e38d2…`）；回歸窗內生產命中（`bryan_test`／`[Gateway]`／`USER_MESSAGE`／`WS raw msg`／Traceback／ERROR／CRITICAL）＝ **0**。
 - **未做（明確記帳）**：`src/memory/store.py` 的 `DB_PATH`、`src/memory/sage/**`、11 筆凍結契約檔、生產行為語意、重啟與行程操作——工單 Out of Scope 全部未碰；**`src/agent/consciousness.py` 與 `src/io/gateway.py` 仍是模組層匯入 `emotion_engine`** ⇒ 因連線已惰性化，import 期不再有任何資料庫動作（僅建立無副作用的引擎物件）⇒ 依工單範圍未改；第三棒 FEAT-TEST-ENV-ISOLATION-CLEANUP（50+ 測試模組 import 期環境變數治理）**仍未做**。
+
+## 0.1.99 更正 §0.1.98 的一項不精確陳述：生產 `data/memory.db` 的 mtime／sha **確實變了**——但那不是測試端寫的
+
+- **更正對象**：§0.1.98（commit `3ba8f50`／`50de411`）與該 commit 訊息中「生產零寫入證據」一節寫的
+  「本輪回歸窗內生產 `data/memory.db` 的 mtime 與 sha256 **逐位元未變**（回歸前基準 17:36:23／`1e8e38d2…`）」。
+  ⇒ **該陳述不成立**：本輪回歸窗內生產 `data/memory.db` 的 mtime 由 `2026-10-27 17:36:23` 變成 **`19:22:48`**
+  （sha256 `1e8e38d2…` → `0a49e65c…`）。**已更正。**
+- **歸因（實測，非推測）**：服務日誌在 **19:22:04** 有明確紀錄——
+  `[Scheduler] 💬 proactive_dm 觸發: agent_ruka (whitelist=['agent_ruka'])` 與
+  `[M7-longing] agent_ruka 想念 0.15 < 0.3, 排 30 min 後再查`
+  ⇒ **生產服務端主動 DM** ⇒ 該路徑寫入 `memory.db` 的 `messages`／FTS 表（`memory.db` 是共用 DB）
+  ⇒ ⇒ **19:22:48 的 mtime 變化來自服務端，不是測試端**。
+- **更強、且才是本票驗收重點的指標**：`agent_emotions` 表的 `updated_at` 分佈
+  - **修正前**那輪全庫回歸窗（2026-10-27 17:24:51–17:39:41 EDT ＝ 21:24:51–21:39:41 UTC）內有 **3 筆寫入**：
+    `agent_x` @ 21:27:27.933996Z、`agent_yua` @ 21:33:49.590171Z、`agent_ruka` @ 21:35:00.609724Z
+    ⇒ 其中 **`agent_x` 是測試專用 agent 名** ⇒ ⇒ **修正前，測試套件確實寫入過生產 `agent_emotions`**。
+  - **修正後**那輪全庫回歸窗（2026-10-27 19:11:06–19:26:07 EDT ＝ 23:11:06–23:26:07 UTC）內
+    `agent_emotions` 寫入 **0 筆** ⇒ ⇒ ⇒ **修正有效**。
+  - ⇒ ⇒ **⇒⇒ 正確的驗收指標是「情緒表的寫入筆數」：3 筆 → 0 筆**（不是 memory.db 檔的 mtime／sha——
+    該檔由**服務端**在無使用者互動時也會寫入（proactive DM），因此檔案層面不可能「逐位元未變」）。
+- **不誤導的表述**：①「收集期對生產 DB **開啟連線並嘗試 DDL**」是**機制事實**（守衛 G1 以
+  `sqlite3.connect` 呼叫次數＝0 證明修正後不再如此）；②「實際寫入檔案」只在 schema 需要變更時才發生
+  ⇒ ⇒ **不能**宣稱「修正前測試已寫入生產 memory.db 檔」；③ 可宣稱的是上面那條**可量測的**：
+  修正前 `agent_emotions` 有 3 筆測試端寫入、修正後 0 筆。
+- **不變的結論**：本票的驗收重點「**測試不得以測試身分觸碰生產**」由服務日誌層面證實——回歸窗內
+  `bryan_test`／`[Gateway] 連線`／`USER_MESSAGE`／`WS raw msg`／Traceback／ERROR／CRITICAL／`database is locked`
+  全部 **0**；且 `agent_emotions` 寫入 0 筆。
