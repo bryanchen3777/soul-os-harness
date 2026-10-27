@@ -96,3 +96,55 @@ pytest 的執行順序是「**先收集（import 全部測試模組）→ 再跑
 - 變異結果（每條變異轉紅哪一個守衛）
 - 生產零寫入證據（mtime + sha256 前後對照）
 - 是否有踩到 Frozen Contract / 意外行為
+"""
+---
+
+## 實作後補記（2026-10-27 19:xx EDT，主大腦）
+
+Owner 2026-10-27「第二棒，開工」＝本工單**核准執行**。以下記錄**實際落地內容**、
+**相對於原設計的兩項補強**、以及**被既有守衛機制連帶要求同步更新的清單**。
+（canonical 為 as-built 記錄：`logs/ENGINEERING_STATE.md` §0.1.98。）
+
+### 補強一：連線本身也必須惰性（否則工單的驗收條件不成立）
+
+原工單只要求「`emotion_engine` 延遲建立」。但 `EmotionEngine.__init__(self, db_path: Path = DB_PATH)`
+的**預設參數在 def 時求值** ⇒ 若 `DB_PATH` 仍是模組層級常數，import 期仍會呼叫 `data_root()`；
+而 `__init__` 內的 `sqlite3.connect` + `_init_schema()` 也會在**第一次建立引擎**時立刻發生
+⇒ 測試模組在 collection 期的 `from src.agent.emotion import emotion_engine`
+仍會在收集期開啟 sqlite 連線 ⇒ ⇒ **工單的「收集期不得開啟生產 sqlite」不成立**。
+
+⇒ 實際落地為三層惰性：`DB_PATH`（模組 `__getattr__`）、`emotion_engine`（延遲建立）、
+**連線**（`conn` 屬性首次取用時才 connect ＋ 建 schema，並保留 setter）。
+
+### 補強二：模組內部不得以全域名引用 `emotion_engine`（潛在 NameError）
+
+Python 的全域名查找**不會**走模組層的 `__getattr__`（PEP 562 只攔到模組屬性存取）
+⇒ 模組內部若直接用全域名 `emotion_engine`，只要沒有人先做過 `module.emotion_engine`，
+就會 **NameError**；而該處的 `except Exception` 會把錯誤吞掉
+⇒ **親密衰減靜默失效且無人知**。
+⇒ 內部一律用新增的 `_engine()`（守衛 **G7** 釘死；變異 **V3** 驗證）。
+
+### 被既有守衛機制連帶要求同步更新的清單
+
+1. `src/paths.py::DERIVED_DATA_ROOT_CONSTANTS`：移除 `src.agent.emotion.DB_PATH`
+   （已不再是 import 期資料根常數）⇒ 12→11 筆、6→5 模組。
+2. `tests/infra/test_isolated_data_root_guard.py`：「預設參數捕捉點」移除 emotion 一筆
+   （`__init__` 預設參數已改為 `None`）⇒ 3→2 筆。
+   **連帶效果**：emotion 的資料根改在**首次取用**時解析 ⇒ 自動跟著隔離根走。
+3. `tests/test_m7_3_longing.py`（2 處）與 `tests/test_m7_continuity_self_turn.py`（1 處）：
+   patch 接縫由 `src.llm.proxy` 模組改為**來源模組** `src.agent.emotion`
+   （proxy 改為呼叫點局部匯入後，原接縫失效 ⇒ `AttributeError`）。
+4. `tests/test_intimacy_growth_2.py`（2 處）：「旗標 OFF ⇒ 零持久寫入」的基準改為
+   **先建立連線再取**（語意不變，斷言未放寬）。
+5. `tests/test_observability_completeness_1.py`：`allowed` **逐票更新** → 加 `src/agent/emotion.py`。
+
+### 守衛與變異
+
+G1～G8（`tests/infra/test_emotion_singleton_isolation_guard.py`）；變異 **V1／V2／V3 三條全數精準轉紅**
+（harness 在 `%TEMP%` 山影樹執行，**不動 repo**；變異前後 repo 檔案 sha256 不變）。
+
+### 量測混淆的一個實例（值得記）
+
+G1 最初斷言「import 後資料根目錄不存在」⇒ **失敗**。根因：`reset_data_root()` **本身**就會建立
+資料根 ⇒ 「目錄存在與否」不是 import 的指標 ⇒ 改為量「sandbox 內有沒有 `memory.db`」
+＋「`sqlite3.connect` 呼叫次數」⇒ 才是真正的指標。
