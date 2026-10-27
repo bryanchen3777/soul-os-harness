@@ -8,8 +8,18 @@ Soul OS - Private Chat 端到端测试
 3. Akane 响应私聊
 4. 历史正确隔离（Yua 的历史不包含 Ruka 的内容）
 
-前置条件: server 必须在 localhost:8000 运行
-    python scripts/run_server.py
+🔺 2026-10-27（FEAT-LIFECYCLE-CLI-TYPE-NEUTRAL B 段）—— 預設離線（opt-in）
+本檔原本硬寫線上服務位址，**完全沒有任何 opt-in 閘門** ⇒ pytest 每次全庫回歸都可能
+直連生產服務、送出 USER_MESSAGE ⇒ 寫生產對話／記憶、跑**真實 LLM 推理**（成本非 0）。
+現已改為：
+  · 目標位址由環境變數 `SOUL_OS_LIVE_SERVICE_BASE_URL` 提供，**預設空字串**
+    ⇒ 環境未設定時「沒有目標」⇒「沒有能力」（AGENTS.md 行程安全鐵律 12）；
+  · `pytest.mark.skipif` 同時要求 `SOUL_OS_LIVE_PRIVATE_CHAT` 與
+    `SOUL_OS_LIVE_SERVICE_BASE_URL` 皆有值才跑 ⇒ 預設 skip。
+
+前置条件: 明確授權一個**隔離**實例（不得指向生產服務），且該實例必須已在運行
+    $env:SOUL_OS_LIVE_SERVICE_BASE_URL = "http://localhost:8765"
+    $env:SOUL_OS_LIVE_PRIVATE_CHAT = "1"
 
 用法:
     python tests/test_private_chat.py
@@ -18,28 +28,32 @@ Soul OS - Private Chat 端到端测试
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 import urllib.request
 from pathlib import Path
 
+import pytest
 import websockets
 
 ROOT = Path(__file__).resolve().parent.parent
-SERVER_URL = "http://localhost:8000"
-WS_URL = "ws://localhost:8000/ws"
 
-# NOTE (TEST-INFRA-RENAME-PROPAGATION-1, D2): `os` and `pytest` are imported here,
-# *below* the two address constants, and deliberately not in the import block above.
-# `tests/infra/test_no_production_spawn_guard.py` (R3) allowlists those two literals by
-# (file, **line number**) — inserting any line above them shifts them and turns that
-# guard red, while its allowlist is size-locked and `tests/infra/**` is out of scope for
-# this ticket.  Importing here keeps every line above byte-identical to HEAD.
-import os  # noqa: E402
-import pytest  # noqa: E402
+#: 線上服務目標。**預設空字串** ⇒ 環境未設定時沒有目標、沒有能力。
+#: （`os` 必須在這之前 import —— 位址常數現在於模組層級就讀取環境變數。）
+LIVE_BASE = os.environ.get("SOUL_OS_LIVE_SERVICE_BASE_URL", "")
+SERVER_URL = LIVE_BASE
+WS_URL = (
+    LIVE_BASE.replace("http://", "ws://").replace("https://", "wss://") + "/ws"
+    if LIVE_BASE
+    else ""
+)
 
 
 def wait_for_server(timeout=25):
+    if not SERVER_URL:
+        # 沒有授權目標 ⇒ 沒有東西可探（不得對任何位址發請求）。
+        return False
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -98,8 +112,12 @@ async def send_and_wait(text, agent_id, mode, participants=None, timeout=15):
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(
-    not os.environ.get("SOUL_OS_LIVE_PRIVATE_CHAT"),
-    reason="需要一個已在運行的服務；預設 skip，避免測試打生產 :8000",
+    not (
+        os.environ.get("SOUL_OS_LIVE_PRIVATE_CHAT")
+        and os.environ.get("SOUL_OS_LIVE_SERVICE_BASE_URL")
+    ),
+    reason="需要明確授權線上服務（SOUL_OS_LIVE_PRIVATE_CHAT + "
+           "SOUL_OS_LIVE_SERVICE_BASE_URL）；預設 skip，避免測試打生產服務",
 )
 async def test_private_yua():
     print("\n  [Test 1] Yua 私聊响应...")
@@ -112,8 +130,12 @@ async def test_private_yua():
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(
-    not os.environ.get("SOUL_OS_LIVE_PRIVATE_CHAT"),
-    reason="需要一個已在運行的服務；預設 skip，避免測試打生產 :8000",
+    not (
+        os.environ.get("SOUL_OS_LIVE_PRIVATE_CHAT")
+        and os.environ.get("SOUL_OS_LIVE_SERVICE_BASE_URL")
+    ),
+    reason="需要明確授權線上服務（SOUL_OS_LIVE_PRIVATE_CHAT + "
+           "SOUL_OS_LIVE_SERVICE_BASE_URL）；預設 skip，避免測試打生產服務",
 )
 async def test_private_ruka():
     print("\n  [Test 2] Ruka 私聊响应...")
@@ -126,8 +148,12 @@ async def test_private_ruka():
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(
-    not os.environ.get("SOUL_OS_LIVE_PRIVATE_CHAT"),
-    reason="需要一個已在運行的服務；預設 skip，避免測試打生產 :8000",
+    not (
+        os.environ.get("SOUL_OS_LIVE_PRIVATE_CHAT")
+        and os.environ.get("SOUL_OS_LIVE_SERVICE_BASE_URL")
+    ),
+    reason="需要明確授權線上服務（SOUL_OS_LIVE_PRIVATE_CHAT + "
+           "SOUL_OS_LIVE_SERVICE_BASE_URL）；預設 skip，避免測試打生產服務",
 )
 async def test_private_akane():
     print("\n  [Test 3] Akane 私聊响应...")
@@ -140,8 +166,12 @@ async def test_private_akane():
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(
-    not os.environ.get("SOUL_OS_LIVE_PRIVATE_CHAT"),
-    reason="需要一個已在運行的服務；預設 skip，避免測試打生產 :8000",
+    not (
+        os.environ.get("SOUL_OS_LIVE_PRIVATE_CHAT")
+        and os.environ.get("SOUL_OS_LIVE_SERVICE_BASE_URL")
+    ),
+    reason="需要明確授權線上服務（SOUL_OS_LIVE_PRIVATE_CHAT + "
+           "SOUL_OS_LIVE_SERVICE_BASE_URL）；預設 skip，避免測試打生產服務",
 )
 async def test_history_isolation():
     print("\n  [Test 4] 历史隔离验证...")
@@ -216,6 +246,11 @@ def main():
     if args.mock:
         print("  [mock] 假設已在運行的 server 使用 mock LLM"
               "（本檔不會啟動任何行程，--mock 僅為說明用途）")
+
+    if not LIVE_BASE:
+        print("  [ERROR] 未設定 SOUL_OS_LIVE_SERVICE_BASE_URL ⇒ 沒有授權目標，"
+              "不探測任何服務（預設離線）")
+        sys.exit(1)
 
     success = asyncio.run(run_tests(None))
     sys.exit(0 if success else 1)

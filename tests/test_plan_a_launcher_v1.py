@@ -28,7 +28,12 @@ mock 範圍:
 - v1: 模擬 Plan A 啟動 _start_plan_a.ps1 (不存在), 確認 powershell.exe 找不到檔案立刻退出
 - v1 透過 subprocess.run 啟動 powershell.exe -File <不存在的檔案>, 確認 exit code != 0
 - 不觸碰現有 server (PID 23512)
+
+🔺 2026-10-27（FEAT-LIFECYCLE-CLI-TYPE-NEUTRAL B 段）—— /health 探針改為 opt-in:
+- 目標由環境變數 `SOUL_OS_LIVE_SERVICE_BASE_URL` 提供（**預設空字串**）
+- 未設定時 `self.skipTest(...)` ⇒ 預設離線、不對任何服務發請求（不是失敗）
 """
+import os
 import subprocess
 import sys
 import unittest
@@ -38,6 +43,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 REPO = Path("C:\\Users\\bbfcc\\.local\\bin\\soul-os-harness")
+
+#: 線上服務目標。**預設空字串** ⇒ 環境未設定時沒有目標、沒有能力。
+#: 🔺 2026-10-27（FEAT-LIFECYCLE-CLI-TYPE-NEUTRAL B 段）：本檔原本硬寫生產服務
+#: 位址且**沒有任何 opt-in 閘門** ⇒ 每次全庫回歸都直連生產服務。現改為由環境變數
+#: 明確授權（預設空字串），未設定時以 `self.skipTest(...)` 跳過（不是失敗）。
+LIVE_BASE = os.environ.get("SOUL_OS_LIVE_SERVICE_BASE_URL", "")
 
 
 class TestPlanALauncherV1(unittest.TestCase):
@@ -120,21 +131,34 @@ class TestPlanALauncherV1(unittest.TestCase):
         print(f"[v1 baseline] Plan A 啟動不存在的 _start_plan_a.ps1 失敗 (exit={proc.returncode})")
 
     def test_baseline_existing_server_not_affected(self):
-        """v1 baseline: 驗證現有 server (PID 23512) 還活著, Plan A 失敗不影響它
-        跟 Bry 派工原話「不主動 kill 現在活著的 server」對齊
+        """v1 baseline: 驗證「**被明確授權的**目標」/health 可達；Plan A 失敗不影響它
+        跟 Bry 派工原話「不主動 kill 現在活著的 server」對齊。
+
+        🔺 2026-10-27（FEAT-LIFECYCLE-CLI-TYPE-NEUTRAL B 段）：本檔原本硬寫生產服務
+        位址、**沒有任何 opt-in 閘門** ⇒ 每次全庫回歸都直連生產服務。現改為：
+          · 目標由 `SOUL_OS_LIVE_SERVICE_BASE_URL` 提供（**預設空字串**）
+            ⇒ 環境未設定時沒有目標、沒有能力；
+          · 沒有授權目標時 `self.skipTest(...)` ⇒ 預設離線、無從探測（**不是失敗**：
+            沒有目標就沒有東西可探）。
         """
+        if not LIVE_BASE:
+            self.skipTest(
+                "未設定 SOUL_OS_LIVE_SERVICE_BASE_URL ⇒ 沒有授權目標，無從探測"
+                "（預設離線；這不是失敗）"
+            )
         import httpx
         try:
-            r = httpx.get("http://127.0.0.1:8000/health", timeout=5)
+            r = httpx.get(f"{LIVE_BASE}/health", timeout=5)
             self.assertEqual(
                 r.status_code, 200,
-                f"現有 server 應該還活著, /health = {r.status_code}"
+                f"授權目標的 /health 應該可達, /health = {r.status_code}"
             )
-            print(f"[v1 baseline] 現有 server PID 23512 還活著, /health = 200 (Plan A 模擬失敗沒影響)")
+            print(f"[v1 baseline] 授權目標 {LIVE_BASE} 的 /health = 200 "
+                  f"(Plan A 模擬失敗沒影響)")
         except Exception as e:
             self.fail(
-                f"v1 baseline: 現有 server 應該還活, 但 /health 失敗: {e}. "
-                f"如果 server 真的死了, 這個 mock test 跟 Bry 派工原話假設衝突"
+                f"v1 baseline: 授權目標 {LIVE_BASE} 的 /health 失敗: {e}. "
+                f"若目標真的不可達, 這個 mock test 跟 Bry 派工原話假設衝突"
             )
 
 

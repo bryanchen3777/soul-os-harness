@@ -139,7 +139,17 @@ PYTEST_DEFAULT_PYTHON_FILES: Tuple[str, ...] = ("test_*.py", "*_test.py")
 # 該檔案會對生產服務送出 `USER_MESSAGE`（寫生產對話／記憶、跑真實 LLM），
 # 不是 read-only。現已把硬寫位址移除、改由環境變數明確指定目標（能力移除），
 # 並新增 tests/infra/test_live_service_probes_are_opt_in.py 釘住這條規則。
-EXPECTED_ADDRESS_ALLOWLIST_SIZE = 7
+#
+# 2026-10-27（FEAT-LIFECYCLE-CLI-TYPE-NEUTRAL B 段）7 → 3：再移除 4 筆條目
+# —— `tests/test_private_chat.py` ×2、`tests/test_plan_a_launcher_v1.py` ×1、
+# `tests/test_server_ops_python_path_v1.py` ×1。移除理由**不是「已修好」**，而是
+# 「這 4 個探針已改為 env 驅動 opt-in」：目標位址改由環境變數
+# `SOUL_OS_LIVE_SERVICE_BASE_URL` 提供且**預設空字串**
+# ⇒ 環境未設定時「沒有目標」⇒「沒有能力」（能力移除，不是加條件比較）；
+# 測試本身以 skip 閘門釘住同一個 env ⇒ 預設 skip、不發任何請求。
+# 同時由 tests/infra/test_live_service_probes_are_opt_in.py 的 R1/R2/R4 把這條
+# 規則釘住（遞迴追蹤模組常數 ＋ 掃描 tests/** 全部程式碼字串常數 ＋ http 目標）。
+EXPECTED_ADDRESS_ALLOWLIST_SIZE = 3
 EXPECTED_KILL_ALLOWLIST_SIZE = 1
 
 
@@ -164,22 +174,18 @@ class ScanResult(NamedTuple):
 # Allowlists — explicit, reasoned, size-locked
 # ───────────────────────────────────────────────────────────
 #
-# These are *pre-existing* sites that this ticket is not authorised to change
-# (scope: only add tests/infra/** and tests/integration/**). Every entry carries a
-# reason, and both lists are size-locked below, so neither can grow silently.
+# These are the *only* tolerated hard-coded production addresses in the scanned
+# tree. Every entry carries a reason, and the list is size-locked below, so
+# neither can grow silently. Note that **none** of them is a live connection:
+# each one exists either to be handed to an adapter that never dials it, or to
+# be compared against so that the code REFUSES to dial it.
+#
+# 2026-10-27（FEAT-LIFECYCLE-CLI-TYPE-NEUTRAL B 段）：移除 4 筆（2 個私聊探針位址
+# ＋ 2 個 /health 探針位址）—— 理由見上方
+# `EXPECTED_ADDRESS_ALLOWLIST_SIZE` 的說明：那 4 個探針已改為 env 驅動 opt-in。
 
 ADDRESS_ALLOWLIST: Dict[Tuple[str, int], str] = {
-    # -- pre-existing tracked tests that probe the already-running service on the
-    #    production port (read-only; they were green/red at baseline exactly as
-    #    they are now — this ticket neither creates nor fixes them).
-    ("tests/test_private_chat.py", 29): "pre-existing live probe of the running service (read-only)",
-    ("tests/test_private_chat.py", 30): "pre-existing live WS probe of the running service (read-only)",
-    # (原 94 → 128) SOUL-TECH-DEBT-001 校準過期 baseline 測試時，該檔案上方淨增
-    # 34 行 docstring 與結構斷言，導致這處**既有** /health 探測往下位移。
-    # 探測程式碼本身未改動（git show HEAD 確認原在第 94 行），僅行號漂移。
-    # 本白名單以 (路徑, 行號) 為鍵，故需同步更新；**大小維持 9 不變**。
-    ("tests/test_plan_a_launcher_v1.py", 128): "pre-existing /health probe of the running service (read-only)",
-    ("tests/test_server_ops_python_path_v1.py", 79): "pre-existing /health probe of the running service (read-only)",
+    # -- an OpenAI-compatible base URL that is handed to an adapter and never dialled
     ("tests/clients/test_vc_perf_opt_1.py", 303): "OpenAI-compatible base URL handed to an adapter (never dialled)",
     # -- the address-pattern fixtures of the companion guard
     ("tests/test_infra_no_pattern_process_kill.py", 430):
@@ -252,11 +258,18 @@ SUBPROCESS_ALLOWLIST: Dict[Tuple[str, int], str] = {
         "nested `pytest -q` regression run over 3 sibling test files, SOUL_OS_DATA_DIR removed from the child env",
     ("tests/test_observability_completeness_1.py", 762):
         "read-only `git diff --name-only HEAD` frozen-contract scope check",
-    ("tests/test_plan_a_launcher_v1.py", 102):
-        "v1 baseline: powershell -File against a path asserted ABSENT (skipTest() at :99-100 runs first "
+    # (原 102 → 113) 2026-10-27 FEAT-LIFECYCLE-CLI-TYPE-NEUTRAL B 段：該檔的
+    # /health 探針改為 env 驅動 opt-in（新增 `import os` ＋ 模組層級 `LIVE_BASE`
+    # ＋ 說明註解），使其下方**所有行號整組 +11**。被 allowlist 的呼叫點本身
+    # **未改動**（仍是同一個 `subprocess.run([... powershell.exe -File <不存在> ...])`
+    # ，且它的前提是該 .ps1 不存在 ⇒ 斷言是「它失敗」⇒ 什麼都啟動不了），
+    # 純行號漂移；本白名單以 (路徑, 行號) 為鍵，故需同步更新。**大小維持 22 不變**。
+    ("tests/test_plan_a_launcher_v1.py", 113):
+        "v1 baseline: powershell -File against a path asserted ABSENT (skipTest() at :110-111 runs first "
         "when it exists, and it does today — verified the guard still precedes the subprocess call) — "
         "the assertion IS that it fails, so nothing can be launched. (原 68 → 102："
-        "SOUL-TECH-DEBT-001 校準上方過期 baseline 測試後淨增 34 行，純行號漂移。)",
+        "SOUL-TECH-DEBT-001 校準上方過期 baseline 測試後淨增 34 行，純行號漂移；"
+        "再於 2026-10-27 FEAT-LIFECYCLE-CLI-TYPE-NEUTRAL B 段 +11 行 → 113。)",
     ("tests/test_ts3_official_mcp_server.py", 108):
         "PID-scoped `taskkill /PID <pid> /T /F` tree cleanup of the npx child this test started",
     ("tests/test_ts3_official_mcp_server.py", 158):

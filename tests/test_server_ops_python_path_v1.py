@@ -19,7 +19,12 @@ Bry 派工原話: 「 Bry 派工原話假設 server_ops.ps1 已經修過, 實際
 - test_baseline_no_uvicorn_pre_check: 有 uvicorn pre-check 且位置在 Start-Process 之前
 mock 範圍:
 - 讀 server_ops.ps1 內容, 不實際啟動 server (避免跟生產服務衝突)
+
+🔺 2026-10-27（FEAT-LIFECYCLE-CLI-TYPE-NEUTRAL B 段）—— /health 探針改為 opt-in:
+- 目標由環境變數 `SOUL_OS_LIVE_SERVICE_BASE_URL` 提供（**預設空字串**）
+- 未設定時 `self.skipTest(...)` ⇒ 預設離線、不對任何服務發請求（不是失敗）
 """
+import os
 import re
 import sys
 import unittest
@@ -29,6 +34,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 REPO = Path("C:\\Users\\bbfcc\\.local\\bin\\soul-os-harness")
 EXPECTED_PYTHON = str(REPO / ".venv" / "Scripts" / "python.exe")
+
+#: 線上服務目標。**預設空字串** ⇒ 環境未設定時沒有目標、沒有能力。
+#: 🔺 2026-10-27（FEAT-LIFECYCLE-CLI-TYPE-NEUTRAL B 段）：本檔原本硬寫生產服務
+#: 位址且**沒有任何 opt-in 閘門** ⇒ 每次全庫回歸都直連生產服務。現改為由環境變數
+#: 明確授權（預設空字串），未設定時以 `self.skipTest(...)` 跳過（不是失敗）。
+LIVE_BASE = os.environ.get("SOUL_OS_LIVE_SERVICE_BASE_URL", "")
 
 
 class TestServerOpsPythonPathV1(unittest.TestCase):
@@ -71,20 +82,33 @@ class TestServerOpsPythonPathV1(unittest.TestCase):
         print("[v1 校準] uvicorn pre-check 在 Start-Process 之前 (server_ops.ps1 L67-81)")
 
     def test_baseline_existing_server_not_affected(self):
-        """v1 baseline: 確認現有 server PID 23512 還活, mock test 不影響它
+        """v1 baseline: 確認「**被明確授權的**目標」/health 可達, mock test 不影響它
         Bry 派工原話: 「mock test 驗證 (不主動 kill 現有 server 去測)」
+
+        🔺 2026-10-27（FEAT-LIFECYCLE-CLI-TYPE-NEUTRAL B 段）：本檔原本硬寫生產服務
+        位址、**沒有任何 opt-in 閘門** ⇒ 每次全庫回歸都直連生產服務。現改為：
+          · 目標由 `SOUL_OS_LIVE_SERVICE_BASE_URL` 提供（**預設空字串**）
+            ⇒ 環境未設定時沒有目標、沒有能力；
+          · 沒有授權目標時 `self.skipTest(...)` ⇒ 預設離線、無從探測（**不是失敗**：
+            沒有目標就沒有東西可探）。
         """
+        if not LIVE_BASE:
+            self.skipTest(
+                "未設定 SOUL_OS_LIVE_SERVICE_BASE_URL ⇒ 沒有授權目標，無從探測"
+                "（預設離線；這不是失敗）"
+            )
         import httpx
         try:
-            r = httpx.get("http://127.0.0.1:8000/health", timeout=5)
+            r = httpx.get(f"{LIVE_BASE}/health", timeout=5)
             self.assertEqual(
                 r.status_code, 200,
-                f"現有 server 應該還活, /health = {r.status_code}"
+                f"授權目標的 /health 應該可達, /health = {r.status_code}"
             )
-            print(f"[v1 baseline] 現有 server PID 23512 還活, /health = 200 (mock test 沒影響)")
+            print(f"[v1 baseline] 授權目標 {LIVE_BASE} 的 /health = 200 "
+                  f"(mock test 沒影響)")
         except Exception as e:
             self.fail(
-                f"v1 baseline: 現有 server 應該還活, 但 /health 失敗: {e}"
+                f"v1 baseline: 授權目標 {LIVE_BASE} 的 /health 失敗: {e}"
             )
 
 
