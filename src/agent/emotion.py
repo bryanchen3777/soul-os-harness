@@ -34,7 +34,47 @@ logger = logging.getLogger("soul_os.emotion")
 # redirect via SOUL_OS_DATA_DIR.
 from src.paths import data_root
 
-DB_PATH = data_root() / "memory.db"
+# 🔴 BUG-EMOTION-IMPORT-SIDE-EFFECT（2026-10-27）：**模組 import 不得解析資料根**。
+#    舊版在模組層級直接呼叫 `data_root()` ⇒ ① import 時就 mkdir 資料根、
+#    ② 把 `src.paths._DATA_ROOT` **快取成行程期單例**（往後 `SOUL_OS_DATA_DIR`
+#    再改也無效）⇒ 任何在快取之前 import 本模組的測試，會把資料
+#    寫進**生產** `data/`。
+#    ⇒ 改為**惰性解析**（真正要用 DB 時才解析），並以模組層級 `__getattr__`
+#    （PEP 562）保持 `DB_PATH` 的向後相容（存取那一刻才解析）。
+def _default_db_path() -> Path:
+    """惰性解析預設 DB 路徑（**import 時不得呼叫**）。"""
+    return data_root() / "memory.db"
+
+
+def __getattr__(name: str):
+    """PEP 562：模組層級屬性的惰性提供。
+
+    ① `DB_PATH`：存取那一刻才解析（向後相容）。
+    ② `emotion_engine`：**第一次存取**才建立並缓存到模組 globals
+       ⇒ 收集期（import 期）不會建立任何 sqlite 連線。
+    """
+    if name == "DB_PATH":
+        return _default_db_path()
+    if name == "emotion_engine":
+        return _engine()
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
+
+
+def _engine() -> "EmotionEngine":
+    """取得（並**惰性建立**）模組層級 singleton。
+
+    🔴 **模組內部的函式不得直接用全域名 `emotion_engine`**：
+    Python 的全域名查找**不會**走模組層的 `__getattr__`（PEP 562 只攔到
+    `模組屬性存取`）⇒ 只要沒有人先做過 `module.emotion_engine`，內部查找就會
+    **NameError**。而該處的 `except Exception` 會把這個錯誤吞掉
+    ⇒ 親密衰減**靜默失效**且無人知。
+    ⇒ 本模組內部一律用 `_engine()`（守衛 G7 釘死這條）。
+    """
+    eng = globals().get("emotion_engine")
+    if eng is None:
+        eng = EmotionEngine()
+        globals()["emotion_engine"] = eng
+    return eng
 
 # 各 agent 對情緒變化的敏感度
 # - response_boost：每次 user_message 給的 mood 增量（正向）
@@ -315,7 +355,7 @@ def decay_evaluate_eligible_agents(
             )
             break
         try:
-            result = emotion_engine.try_apply_decay(agent_id, now=now_ts)
+            result = _engine().try_apply_decay(agent_id, now=now_ts)
         except Exception as e:  # noqa: BLE001 — 單一角色失敗不得中斷整輪
             logger.warning(
                 "[INTIMACY-DECAY] periodic evaluation failed agent=%s: %s",
@@ -359,16 +399,47 @@ def decay_evaluate_eligible_agents(
 class EmotionEngine:
     """情緒引擎：管理各 agent 的 mood / intimacy（SQLite 持久化）"""
 
-    def __init__(self, db_path: Path = DB_PATH) -> None:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        # INTIMACY-GROWTH-2 (C2)：**顯式**設 busy_timeout。
-        # 這條連線是模組層級 singleton 的單一長生命週期連線（全 process 共用），
-        # 上面沒有 timeout= 引數 ⇒ Python 預設 5.0s。本工單要求在連線上顯式
-        # 發出 PRAGMA，讓「等待鎖」的預算是被寫下來的契約、而非直譯器預設值。
-        # 只在**寫**連線上做；不開第二條連線（C1：SQLite 單寫者模型）。
-        self.conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
-        self._init_schema()
+    def __init__(self, db_path: Optional[Path] = None) -> None:
+        """**不得有任何檔案系統／資料庫副作用**（BUG-EMOTION-IMPORT-SIDE-EFFECT）。
+
+        🔴 舊版在此直接 `mkdir` + `sqlite3.connect` + `_init_schema()` ⇒ 模組層級
+        singleton `emotion_engine = EmotionEngine()` 一被 import 就會：①建立資料根目錄、
+        ②開一條長生命週期 SQLite 連線、③在 `memory.db` 上跑 DDL
+        ⇒ import 本身就有副作用（且這檔磊的自己已自言
+        「模組 import 時不得執行任何 DDL」——**舊版违反了自己的約束**）。
+        ⇒ 改為：`__init__` 只存路徑；連線與 schema 改由 `conn` 屬性**首次取用時**才建立。
+        """
+        self._db_path = db_path        # None ⇒ 首次取用時惰性解析 `_default_db_path()`
+        self._conn: Optional[sqlite3.Connection] = None
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        """SQLite 連線（**惰性**：第一次真的用到 DB 時才開）。
+
+        開連線時才會：解析資料根（可能 mkdir）→ connect → 設 busy_timeout → 建 schema。
+        ⇒ import 階段完全零副作用。
+        🔴 可變設（測試的故障注入需要替換連線）。
+        """
+        if self._conn is None:
+            with _WRITE_LOCK:
+                if self._conn is None:
+                    path = (self._db_path if self._db_path is not None
+                            else _default_db_path())
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    conn = sqlite3.connect(str(path), check_same_thread=False)
+                    # INTIMACY-GROWTH-2 (C2)：**顯明**設 busy_timeout（契約，非直譯器預設值）。
+                    # 只在**寫**連線上做；不開第二條連線（C1：SQLite 單寫者模型）。
+                    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+                    # 🔴 先設值再 init：`_init_schema()` 內部走 `self.conn`（property）
+                    #    ⇒ 必須已存在才不會遵弰。
+                    self._conn = conn
+                    self._init_schema()
+        return self._conn
+
+    @conn.setter
+    def conn(self, value: sqlite3.Connection) -> None:
+        """可變設（測試的故障注入需要替換連線）。"""
+        self._conn = value
 
     def _init_schema(self) -> None:
         self.conn.execute("""
@@ -1186,5 +1257,9 @@ def compute_longing(intimacy: float, silence_minutes: float) -> float:
     return attachment * silence_factor
 
 
-# 模組層級 singleton — 各處 `from src.agent.emotion import emotion_engine`
-emotion_engine = EmotionEngine()
+# 🔴 BUG-EMOTION-IMPORT-SIDE-EFFECT（2026-10-27）：模組層級 singleton 不再在 **import 期**建立。
+#    改由模組層級 `__getattr__`（PEP 562）提供：**第一次存取**才建立
+#    並缓存到模組 globals。
+#    ⇒ 收集期（import 期）不會解析資料根、不開連線、不跑 DDL。
+#    🔵 生產行程語意不變：生產沒有 fixture ⇒ 第一次存取時
+#    `data_root()` 就是生產根。

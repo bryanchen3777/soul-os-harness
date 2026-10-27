@@ -47,7 +47,10 @@ class TestSelfTurnInjection:
     def test_build_private_injects_self_turn_block(self, monkeypatch):
         """_build_messages_private 有 self_recent 時, 應注入「你最近的發言」。"""
         # 把 format helpers 都 mock 掉, 只測 self-turn 注入
-        monkeypatch.setattr(proxy_mod, "emotion_engine", type("E", (), {"mood_description": lambda self, m: ""})())
+        # 🔴 proxy 改為**呼叫點局部匯入**（BUG-EMOTION-IMPORT-SIDE-EFFECT）
+        #    ⇒ patch 接縫必須是**來源模組** `src.agent.emotion`。
+        import src.agent.emotion as emotion_mod
+        monkeypatch.setattr(emotion_mod, "emotion_engine", type("E", (), {"mood_description": lambda self, m: ""})())
         monkeypatch.setattr(proxy_mod, "_format_relationship_block", lambda a: "")
         monkeypatch.setattr(proxy_mod, "_format_recent_inner_life", lambda a: "")
         monkeypatch.setattr(proxy_mod, "_compute_silence_str", lambda t, n: None)

@@ -53,34 +53,38 @@ from src.paths import (  # noqa: E402
 
 #: 盤點清單的**筆數**（守門釘死）。新增／刪減一個 import 期資料根常數時，
 #: 必須同時更新這裡與 ``src/paths.py::DERIVED_DATA_ROOT_CONSTANTS``。
-EXPECTED_CONSTANT_COUNT = 12
+EXPECTED_CONSTANT_COUNT = 11
 
-#: 盤點清單涵蓋的**模組數**（6 個）。
-EXPECTED_MODULE_COUNT = 6
+#: 盤點清單涵蓋的**模組數**（5 個）。
+#: 🔺 2026-10-27：`src.agent.emotion` 已**移出**本清單（`DB_PATH` 改為惰性解析
+#:    ⇒ 不再是 import 期資料根常數 ⇒ 少一個模組。
+EXPECTED_MODULE_COUNT = 5
 
 #: 「生產資料根解析器」的筆數（1 個）。
 EXPECTED_RESOLVER_COUNT = 1
 
-#: 「**預設參數捕捉**」捕捉點（**實測 3 筆**，主大腦 2026-10-24 獨立複核）。
+#: 「**預設參數捕捉**」捕捉點（**實測 2 筆**；2026-10-27 由 3 筆減為 2 筆）。
 #:
 #: 🔺 這些值在 **import 期**就綁進函式簽章 ⇒ **只換模組屬性不夠**；
 #:    而這一層一旦失效，「預設建構的 MemoryStore／EmotionEngine／DiaryWriter」
 #:    會**脫離隔離、指向生產**（import 期值 ＝ cwd/data）⇒ 屬生產污染風險。
 #:
-#: 🔺 為什麼是 **3** 筆而不是更多：
+#: 🔺 為什麼是 **2** 筆而不是更多：
+#:    * `src.agent.emotion.EmotionEngine.__init__` 的預設參數已改為 `None`
+#:      （`db_path` 惰性解析）⇒ **不再有 import 期捕捉點**；其資料根改在
+#:      **首次取用**時解析 ⇒ 自動跟著隔離根走（不需要再靠清單置換）。
 #:    * ``src.llm.proxy.MemoryStore`` 與 ``src.memory.store.MemoryStore``
 #:      是**同一個函式物件**（proxy 只是 import 了它）⇒ 不重複計。
 #:    * ``src.llm.proxy`` **並未** import ``DiaryWriter``（實測
 #:      ``AttributeError: module 'src.llm.proxy' has no attribute 'DiaryWriter'``）
 #:      ⇒ 不存在第 4 個捕捉點。
 DEFAULT_ARG_CAPTURE_POINTS: Tuple[Tuple[str, str, str, int, str], ...] = (
-    ("src.agent.emotion", "EmotionEngine", "__init__", 0, "memory.db"),
     ("src.memory.store", "MemoryStore", "__init__", 0, "memory.db"),
     ("src.soul.diary", "DiaryWriter", "__init__", 0, "soul"),
 )
 
 #: 「預設參數捕捉」的筆數（守門釘死；新增／刪減捕捉點必須同時更新這裡）。
-EXPECTED_DEFAULT_ARG_CAPTURE_COUNT = 3
+EXPECTED_DEFAULT_ARG_CAPTURE_COUNT = 2
 
 #: ``check_store_dir()`` 的**原始碼**逐位元雜湊（EOL 正規化）。
 #:

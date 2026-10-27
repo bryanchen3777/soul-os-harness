@@ -42,23 +42,29 @@ class TestComputeLonging:
 
 class TestFormatAttachmentStr:
     def test_returns_attachment_fact(self, monkeypatch):
-        import src.llm.proxy as proxy_mod
+        import src.agent.emotion as emotion_mod
 
         class FakeEngine:
             def get(self, agent_id):
                 return (0.5, 80)
 
-        monkeypatch.setattr(proxy_mod, "emotion_engine", FakeEngine())
+        # 🔴 proxy 改為**呼叫點局部匯入**（BUG-EMOTION-IMPORT-SIDE-EFFECT）
+        #    ⇒ patch 接縫必須是**來源模組** `src.agent.emotion`
+        #    （局部匯入在呼叫時才從該模組取屬性）⇒ patch proxy 模組已無效。
+        monkeypatch.setattr(emotion_mod, "emotion_engine", FakeEngine())
         assert _format_attachment_str("agent_ruka") == "你對 Bry 的親密度目前是 80/100。"
 
     def test_fail_silent_returns_empty(self, monkeypatch):
-        import src.llm.proxy as proxy_mod
+        import src.agent.emotion as emotion_mod
 
         class FakeEngineFail:
             def get(self, agent_id):
                 raise Exception("boom")
 
-        monkeypatch.setattr(proxy_mod, "emotion_engine", FakeEngineFail())
+        # 🔴 proxy 改為**呼叫點局部匯入**（BUG-EMOTION-IMPORT-SIDE-EFFECT）
+        #    ⇒ patch 接縫必須是**來源模組** `src.agent.emotion`
+        #    （局部匯入在呼叫時才從該模組取屬性）⇒ patch proxy 模組已無效。
+        monkeypatch.setattr(emotion_mod, "emotion_engine", FakeEngineFail())
         assert _format_attachment_str("agent_ruka") == ""
 
 

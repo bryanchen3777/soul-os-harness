@@ -43,7 +43,9 @@ import httpx  # 使用 httpx 做非同步 HTTP,避免 requests 阻塞事件迴�
 from src.eventbus import SoulEventBus
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
 from src.memory.store import MemoryStore
-from src.agent.emotion import emotion_engine
+# 🔴 BUG-EMOTION-IMPORT-SIDE-EFFECT（2026-10-27）：**不在模組層體匯入** `emotion_engine`
+#    ⇒ 否則 proxy 的模組層匯入會提前觸發 singleton 建立。
+#    改為**呼叫點局部匯入**（三個呼叫點）。
 
 # JP rollback (Bry 拍板 2026-07-22 20:59):
 # - translate_to_chinese 不再 import, 整套方向 C Stage 2 砍掉
@@ -930,6 +932,7 @@ def _build_messages_group(
     if chrono_context.strip():
         system_parts.append(f"\n{chrono_context.strip()}")
     # Phase 3 情緒:把 mood 描述注入 system prompt
+    from src.agent.emotion import emotion_engine  # 局部匯入（惰性 singleton）
     mood_desc = emotion_engine.mood_description(mood)
     if mood_desc:
         system_parts.append(f"\n[情緒狀態] {mood_desc}")
@@ -1293,6 +1296,7 @@ def _format_attachment_str(agent_id: str) -> str:
     fail-silent: 讀不到 intimacy → 回空字串 (不阻塞 prompt)。
     """
     try:
+        from src.agent.emotion import emotion_engine  # 局部匯入（惰性 singleton）
         _, intimacy = emotion_engine.get(agent_id)
     except Exception:
         return ""
@@ -1794,6 +1798,7 @@ def _build_messages_private(
     if chrono_context.strip():
         system_parts.append(f"\n{chrono_context.strip()}")
     # Phase 3 情緒:把 mood 描述注入 system prompt
+    from src.agent.emotion import emotion_engine  # 局部匯入（惰性 singleton）
     mood_desc = emotion_engine.mood_description(mood)
     if mood_desc:
         system_parts.append(f"\n[情緒狀態] {mood_desc}")

@@ -97,7 +97,6 @@ class DerivedConstant:
 #: ⚠️ 本清單刻意**集中宣告於本檔**：各模組**一行都不必改**（`src/llm/proxy.py`
 #:    是主對話路徑，觸及面必須最小）。
 DERIVED_DATA_ROOT_CONSTANTS: Tuple[DerivedConstant, ...] = (
-    DerivedConstant("src.agent.emotion", "DB_PATH", "memory.db"),
     DerivedConstant("src.io.channels.router", "_STATE_DIR", "state"),
     DerivedConstant(
         "src.io.channels.router", "_LAST_TG_USER_FILE", "state/last_tg_user.json"

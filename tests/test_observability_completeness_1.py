@@ -902,6 +902,15 @@ class TestBoundedAndFrozenDiscipline:
             # production behaviour unchanged, zero LLM cost).
             # Predecessor ticket: FEAT-SUPERSEDED-ACCUMULATOR-PIPELINE (2026-10-24)
             "src/inner_life/contradiction_prefilter.py",
+            # -- BUG-EMOTION-IMPORT-SIDE-EFFECT (2026-10-27) ---------------
+            # This ticket touches 2 non-frozen files: the emotion module
+            # (module-level import side effects removed: lazy `DB_PATH`,
+            # lazy singleton, lazy sqlite connection) and the proxy module
+            # (module-level import of `emotion_engine` -> local imports).
+            # No frozen contract file is touched; no production behaviour
+            # change beyond the timing of the DB connection.
+            # Work order: logs/BUG-EMOTION-IMPORT-SIDE-EFFECT-WORK-ORDER.md
+            "src/agent/emotion.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

@@ -1216,6 +1216,11 @@ class TestChannelWiring:
         engine = EmotionEngine(db_path=db)
         router = self._point_router_at(engine, monkeypatch)
 
+        # 🔴 惰性連線（BUG-EMOTION-IMPORT-SIDE-EFFECT）：engine 建構期**不再**建檔
+        #    ⇒ 先建立連線（此時才建檔 ＋ base schema）再取基準，否則基準會是
+        #    「檔案不存在」，而後面的 schema 檢查會自行把檔案建出來 ⇒ 基準失真。
+        #    語意不變：旗標 OFF 的路徑**不得**再有任何持久寫入。
+        _cols(engine)
         sha_before = _db_sha(db)
         mtime_before = _db_mtime(db)
 
@@ -1538,6 +1543,9 @@ class TestFlagOffIsByteClean:
         monkeypatch.setenv("INTIMACY_DECAY_ENABLED", "")
         engine = EmotionEngine(db_path=db_path)
 
+        # 🔴 惰性連線：同上 ⇒ 先建立連線再取基準（基準必須與後續檢查同基準）。
+        #    「pristine」的語意不變：**不得**出現 G2 的兩欄與 ledger 表。
+        _cols(engine)
         sha_before = _db_sha(db_path)
         mtime_before = _db_mtime(db_path)
 
