@@ -7318,3 +7318,45 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
   ③ 刷新器 cron 路徑切換（由主大腦執行，執行者不得動 cron）；④ 沿用 §0.1.101 的未做清單
   （coverage 補回、刷新器之外的 repo 外工具、定時 sleep 型測試盤點、`support_propagation` 四槽增量 0、
   `test_tts_toggle` 的 reload/env 未還原、下一槽 `PENDING_COHORT` 待人工審核）。
+
+## 0.1.103 FEAT-LEDGER-REFRESH-IN-REPO：台帳刷新器轉正入版控（`scripts/ledger_refresh.py`）＋ 20:40 cron 指標切換與閘門②三態更新
+
+- **工單**：`logs/FEAT-LEDGER-REFRESH-IN-REPO-WORK-ORDER.md`（Owner 2026-10-28 裁定：**採預設分支** `scripts/ledger_refresh.py`、
+  **R5 掃描器維持現狀、`EXPECTED_SUBPROCESS_ALLOWLIST_SIZE = 22` 一字不改**、repo 外部備份維持 Frozen 存檔作為兜底）。
+- **施工（worker，ownership 僅 2 個新檔）**
+  - `scripts/ledger_refresh.py`（新增）：以**位元級搬移**（非手抄）自 repo 外現行版搬入，**恰 4 個 hunk**：
+    ① docstring 加一行轉正說明 ② `from pathlib import Path` ③ `REPO = r"C:\Users\…"` → `REPO = str(Path(__file__).resolve().parents[1])`
+    ④ 刪除死常數 `BACKUPS`（**全文無使用點**）⇒ **台帳判準／門檻／流程零語意變更**。
+    🔺 `REPO` 刻意保持 **字串**（非 `Path` 物件）⇒ 推導值與原值**逐位元相同** ⇒ 這是兩版輸出可比的前提。
+  - `tests/infra/test_ledger_refresh_in_repo_guard.py`（新增）：守衛 G1～G5（存在且被 git 追蹤／無任何絕對路徑字面值／
+    import 期零 IO／今日 5 處修正必須仍在／`--dry-run` 不寫任何檔案）。
+    「是否被 git 追蹤」讀 `.git/index`（沿用 `tests/infra/test_repo_hygiene_tracked_tests.py` 的既有做法）⇒ **不新增任何 `subprocess` 呼叫點**。
+- **主大腦獨立複核（自報不算證據）**
+  - 範圍：`git status --porcelain` 僅兩個新檔 ⇒ **未 git add／commit／push**（由主大腦執行）、**未動 cron**、未寫 `data/**`、未殺行程。
+  - **兩版差異**：repo 版 vs repo 外版 = **恰 4 個 hunk**（docstring 一行 ＋ `import Path` ＋ `REPO` 推導化 ＋ 刪 `BACKUPS`）⇒ **語意零變更**。
+  - **repo 外那份**：只加 1 行凍結註記（sha256 `7c89b6e9…` → `20fb0172…`，+106 bytes）⇒ 凍結時鐘 dry-run 的 sha256 **不變** ⇒ 註記行為中立；**原檔未刪**。
+  - **兩版 `--dry-run` 逐位元相同（主大腦自己重跑，非採信 worker）**：凍結時鐘（2026-10-28T13:55:00Z）下
+    repo 版與 repo 外版 **sha256 完全相同**（`a1707614…`，602 bytes）⇒ **byte-identical: True**；
+    真實時鐘下**只有 `now(UTC)` 一行不同**（`only the wall-clock line differs: True`）⇒ 兩版行為等價 ⇒ 可切 cron 指標。
+  - **守衛**：入版後 `tests/infra/test_ledger_refresh_in_repo_guard.py` ＋ 衛生守衛 ＋ R5 守衛 ＋ 台帳守衛
+    ⇒ **123 passed / 5 subtests**（exit 0）⇒ **G1 轉綠**（G1 的命題就是「必須入版控」，這是設計意圖）。
+  - **變異實驗**：10 條（M1–M10）**各自精準轉紅**，且 repo 前後 **9817 檔（含 `.git/index`）sha256 全部相同**。
+- **交接（主大腦親自執行；worker 不得動 cron）**
+  - **cron 指標切換**：20:40 EDT 的 `daily_cohort_ledger_refresh`（cronId `f197c501-8b3a-40e8-bda5-d0eac61f5f6b`）
+    的執行路徑由 repo 外那份改指 `scripts\ledger_refresh.py`；repo 外那份**保留為 frozen 兜底**。
+  - 🔺 **同步修正該 prompt 的閘門②舊措辭**：原 prompt 寫「沙盒 CLI 裁定為 `PASS`（**exit 0**）」⇒ 那是**三態裁定前**的說法，
+    與 `scripts/eval_lifecycle_cli.py` 的三態判定、以及刷新器本身已修的 gate 2（接受 exit 3）**不一致**
+    ⇒ 若不一起改，刷新器在遇到 `PENDING_COHORT` 時會被 **prompt 判成紅燈而中止**（＝2026-10-27 20:40 那次罷工的同一個坑）。
+    ⇒ 新 prompt：exit 0（PASS）／exit 3（`PENDING_COHORT`，**不是破線**，可續行但必須大聲標出 pending_cohorts 供人工審核）
+    皆可續行；**只有 exit 1（FAIL）／exit 2（硬拒絕）才中止**。
+- **全庫回歸（兩輪，順序執行，解譯器＝repo `.venv`；**不重生成基準** ⇒ 任何 skip 漂移都會判紅）**
+| 跑法 | passed | failed | skipped | exit | 秒 |
+|---|---|---|---|---|---|
+| 裸跑（預設收集順序） | 7531 | 0 | 31 | 0 | 903 |
+| 反序（SOUL_OS_TEST_ORDER=reverse） | 7531 | 0 | 31 | 0 | 868 |
+| 洗牌 seed=2（對抗性種子） | 7531 | 0 | 31 | 0 | 1169 |
+  - **skip 集合逐輪相同＝是**（31 筆，與 `tests/infra/skip_baseline.json` 逐筆相同）
+  - **pass 數逐輪相同＝是**（7531 筆）｜**failed ＝0（全部兩輪）＝是**
+- **未做／後續**：①【第二動】`FEAT-G3-PRODUCTION-BACKEND-WIRING`（Owner 已核准規格；**重啟另授**，PID 3448 保持連續運行）；
+  ② repo 外部那份 `ledger_refresh.py` **保留為 frozen 兜底**（不刪、不再執行）；③刷新器的 `.bak` 鏈
+  （`.bak-20261027`／`.bak-20261027-nb-none`／`.bak-20261027-gate2`）留在 repo 外備份目錄（不在版控內）。
