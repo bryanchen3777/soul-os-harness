@@ -52,7 +52,8 @@ class TestC2ReaderOpenWhileWriterUncommitted:
             writer.add_fact(fact)
             assert writer._pending_writes == 1  # 已 INSERT（未 commit）
 
-            # A: 第二個 GraphStore 同 path — 建構 + SELECT 必須 < 1.0s、0 locked
+            # A: 第二個 GraphStore 同 path — **不能被 writer 阻塞**（不碰 database is locked）
+            #    且開連線耗時遠低於 busy_timeout 契約（真實契約 10.0s ⇒ 上限取其半額）
             t0 = time.perf_counter()
             try:
                 reader = GraphStore(db_path=db_path)
@@ -63,8 +64,19 @@ class TestC2ReaderOpenWhileWriterUncommitted:
                     )
                 raise
             elapsed = time.perf_counter() - t0
-            assert elapsed < 1.0, (
-                f"reader 開連線耗時 {elapsed:.3f}s ≥ 1.0s（疑似仍在搶寫鎖）"
+            # 🔺 2026-10-28 Owner 裁定 (C)+(A)：本測試的**契約使命**是驗證
+            #   「reader 在快照隔離下開連線**不會被 writer 阻塞**」⇒ 斷言兩件事：
+            #   ① **沒撞到寫鎖**（上方 except 分支：OperationalError 含 "locked" ⇒ 直接失敗；
+            #     其它 OperationalError 直接 raise）⇒ 語意等價於「error is None」。
+            #   ② 開連線耗時**遠低於 busy_timeout 契約**（真實契約 10.0s ⇒ 10000ms ⇒ 上限取其半額 5.0s）。
+            #   ⇒ 上限從**連線實際的 `PRAGMA busy_timeout` 推定**（不寫死）⇒ 生產端若改契約本斷言自動跟著走。
+            #   ⇒ 舊寫法的「硬性 1.0s 牆上時鐘」是**效能抖動敏感**的：全庫高負載下實測量到
+            #     1.033s ⇒ 假紅；而 1.033s 遠低於 10s ⇒ 物理上已證明**沒有鎖排隊**。
+            _busy_ms = reader._get_conn().execute("PRAGMA busy_timeout").fetchone()[0]
+            _budget_secs = (_busy_ms / 1000.0) / 2 if _busy_ms else 5.0
+            assert elapsed < _budget_secs, (
+                f"reader 開連線耗時 {elapsed:.3f}s ≥ {_budget_secs:.1f}s"
+                f"（busy_timeout 契約 {_busy_ms}ms 的一半；疑似仍在搶寫鎖）"
             )
             try:
                 # B: 快照隔離 — reader 看不到未 commit 的列

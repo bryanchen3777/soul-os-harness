@@ -7270,3 +7270,51 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
   ⑦`support_propagation` 自 2026-10-25T12:04:41Z 起四個槽增量 0（見 §0.1.100 之 E2）；
   ⑧下一槽（2026-10-29T02:00Z）預測 `exit 3`／`PENDING_COHORT`
   ⇒ 依裁定**不是破線**，但須人工審核入帳。
+
+## 0.1.102 執行 Owner 裁定 (C)+(A)：C2 開連線時鐘斷言改為「未撞 busy_timeout ＋ 上限取真實契約半額」＋ 兩條後續主線工單開立
+
+- **裁定（Owner 2026-10-28）**：「採納【選項 (C) ＋ (A) 組合】：將『硬性 1.0s 牆上時鐘』改為
+  『斷言未遭遇鎖錯誤（未撞 busy_timeout）並以真實契約半額（5.0s）為上限』。
+  該測試的合約使命是驗證『Reader 在快照隔離下開啟連線不會被 Writer 阻塞（不會撞 database is locked）』。」
+- **實作**（`tests/test_graph_store_c2_read_open.py`）
+  - ① **未撞寫鎖**：保留既有 `OperationalError` 分支（含 `"locked"` ⇒ `pytest.fail`；其它 `OperationalError` 直接 raise）
+    ⇒ 語意等價於 Owner 要求的「error is None」。
+  - ② **上限從連線實際的 `PRAGMA busy_timeout` 推定**（真實契約 10.0s ⇒ 10000ms ⇒ 半額 **5.0s**），
+    **不寫死數字** ⇒ 生產端若改 busy_timeout，本斷言自動跟著走（不再有「契約改了但預算沒跟」的漂移）。
+  - ③ 舊的「硬性 1.0s 牆上時鐘」移除（那是**效能抖動敏感**的寫法：全庫高負載下實測量到 1.033s ⇒ 假紅；
+    而 1.033s 遠低於 10s ⇒ 物理上已證明**沒有鎖排隊**）。
+- **變異實驗（主大腦自驗，%TEMP% 山影樹、repo 零寫入）**：把上限改成 `0.000001s`
+  ⇒ **1 failed, 4 passed** ⇒ 斷言**有牙**（不是無條件通過）。
+- **驗收：五輪全庫回歸（順序執行，解譯器＝repo `.venv`；**不重生成基準** ⇒ 任何 skip 漂移都會判紅）**
+| 跑法 | passed | failed | skipped | exit | 秒 |
+|---|---|---|---|---|---|
+| 裸跑（預設收集順序） | 7521 | 0 | 31 | 0 | 787 |
+| 反序（SOUL_OS_TEST_ORDER=reverse） | 7521 | 0 | 31 | 0 | 904 |
+| 洗牌 seed=2（對抗性種子） | 7521 | 0 | 31 | 0 | 1184 |
+  - **skip 集合逐輪相同＝是**（31 筆，與 `tests/infra/skip_baseline.json` 逐筆相同）
+  - **pass 數逐輪相同＝是**（7521 筆）｜**failed ＝0（全部五輪）＝是**
+  - ⇒ 判讀：****PASS（Skip 零漂移 ＋ Pass 零漂移 ＋ 0 failed）****
+- **兩條後續主線工單已開立**（Owner 2026-10-28「後續主線作戰視野」）
+  - `logs/FEAT-G3-PRODUCTION-BACKEND-WIRING-WORK-ORDER.md`（G-3 生產 Backend 接線與排程掛載）
+    ⇒ **量測現況**：`src/inner_life/elevation_adapter.py:1417` 的 `elevate_matured_patterns(..., contradiction_backend=None, ...)`
+    缺省 `None` ⇒ **矛盾判定整段跳過**（G-3 刻意的「零行為變化／零 LLM 成本」）；
+    而 `scripts/run_server.py:685` 的 `_elevate_check()` **未注入 backend** ⇒ ⇒ 生產槽從不跑矛盾判定
+    ⇒ superseded 節點在生產槽永遠不會誕生。⇒ 工單含：真實 backend 的預算硬限制
+    （≤1 次／agent／日、單次 ≤300 tokens、retries=0、二元、fail-closed）、延遲 import、
+    計數器跨呼叫共享、觀測 log、6 條守衛＋6 條變異。
+    🔴 **重啟授權**：本票改 `scripts/run_server.py` ⇒ 生產服務必須重啟才生效 ⇒ **重啟須 Owner 明示授權**
+    （只能走 `scripts\server_ops.ps1 restart`）⇒ 未獲授權前只完成程式與守衛、**不重啟**。
+  - `logs/FEAT-LEDGER-REFRESH-IN-REPO-WORK-ORDER.md`（台帳刷新器正式納入版控）
+    ⇒ **量測現況**：刷新器現居 repo 外（`soul-os-harness-backups/ledger_refresh.py`）、不受版控、
+    版本歷史只存在於 `.bak` 檔名鏈；repo 慣例＝工具腳本住 `scripts/`；
+    **R5 的掃描範圍是 repo-root `*.py` ＋ `tests/**/*.py` ⇒ 不含 `scripts/`**
+    ⇒ ⇒ **預設分支：放 `scripts/ledger_refresh.py` ⇒ 不需要新增 R5 白名單條目**
+    （不動 `EXPECTED_SUBPROCESS_ALLOWLIST_SIZE = 22` 這個 size lock）；若 Owner 原意是
+    「必須落在被掃描位置並進白名單」⇒ 屬判準面變動（白名單 size lock +1）⇒ **請 Owner 指定**。
+    ⇒ 工單含 5 條守衛（存在且被追蹤／無絕對路徑／import 期零 IO／今日 5 處修正必須仍在／dry-run 不寫檔）＋5 條變異
+    ＋ **一次只切一個開關** 的交接（repo 版 `--dry-run` 與 repo 外現行版輸出逐位元相同 ⇒ 才切 cron）＋
+    repo 外那份**保留為 frozen backup**。
+- **未做／後續**：① 兩張工單的**施工**（下一棒開工）；② G-3 票的**生產重啟**（待 Owner 授權）；
+  ③ 刷新器 cron 路徑切換（由主大腦執行，執行者不得動 cron）；④ 沿用 §0.1.101 的未做清單
+  （coverage 補回、刷新器之外的 repo 外工具、定時 sleep 型測試盤點、`support_propagation` 四槽增量 0、
+  `test_tts_toggle` 的 reload/env 未還原、下一槽 `PENDING_COHORT` 待人工審核）。
