@@ -7138,3 +7138,24 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
 - **不變的結論**：本票的驗收重點「**測試不得以測試身分觸碰生產**」由服務日誌層面證實——回歸窗內
   `bryan_test`／`[Gateway] 連線`／`USER_MESSAGE`／`WS raw msg`／Traceback／ERROR／CRITICAL／`database is locked`
   全部 **0**；且 `agent_emotions` 寫入 0 筆。
+
+## 0.1.100 台帳刷新器的兩個真 bug（gate 2 把 PENDING_COHORT 當紅燈／新 cohort 缺逐節點下界）＋ 2026-10-27 cohort 入帳與 51 筆逐節點下界補丁
+
+- **觸發**：2026-10-27 22:1x 主大腦巡檢時發現**工作樹不乾淨**——`scripts/eval_lifecycle_cli.py` 有未提交修改（mtime **2026-10-27 20:40:14**），內容是 20:40 那輪每日台帳刷新（`soul-os-harness-backups/ledger_refresh.py`，**repo 外、不受版控**）寫入的 **2026-10-27 cohort**。⇒ 該輪刷新**改寫了檔案卻沒有 commit、沒有 canonical 條目** ⇒ 從 20:40 起 repo 就是髒的（`git log` 最新仍是 19:29 的 `57cb344`；`reflog` 無更晚的 git 動作）。
+- **🔺 根因 A：gate 2 的判準未同步 Owner 裁定 ⇒ 台帳刷新已悄悄罷工**。刷新器的 gate 2 原為
+  `if rc1 != 0 or rc2 != 0 or not (verdict2 and "PASS" in verdict2[0]): GATE RED`，
+  但 Owner 2026-10-27 裁定後，判定層是**三態**：exit 3／`VERDICT: PENDING_COHORT`＝**未核准的退役批次（待人工審核），不是破線**。
+  **實測（刷新器自己的 dry-run 印出）**：`sandbox CLI at next slot: rc=3 VERDICT: PENDING_COHORT` ⇒ **每當有待審批次就中止** ⇒ 每日刷新長期停在「改寫了檔案、沒 commit」的地雷上。
+  - **修法**：gate 2 改為接受 **exit 0（PASS）** 與 **exit 3（PENDING_COHORT，必須大聲回報待人工審核）**；只有 **exit 1（FAIL＝破線）** 與 **exit 2（硬拒絕）** 才是紅燈。
+  - **連帶事實（記帳）**：刷新器是「**先改寫檔案、後過閘門**」⇒ 閘門紅燈會留下**半套狀態**（檔案已改、無 commit、無條目）。本次即為實例；**非原子性本次未改**（另列追蹤票）。
+- **🔺 根因 B：新 cohort 永遠缺「逐節點下界」**。刷新器 `main()` 的逐節點下界計算是 `if t and nb and t < str(nb)`，而 `nb` 只在「台帳已有該 cohort」或「該 cohort 將於下一槽退役」時才有值 ⇒ **brand-new cohort 落進 `nb = None` 的分支** ⇒ `extra` 恆空 ⇒ 新 cohort **不會產出 `"bounds"` 區塊**。
+  - **修法**：補 `else: nb = cohort_not_before(date)`（＝建立日＋8 天 @02:00Z，與寫入端同一規則）⇒ 逐節點下界**真的算出來**。**不放寬任何門檻**：逐節點下界＝引擎自己的衰減門檻。
+- **症狀補丁（2026-10-27 cohort）**：以引擎錨點複刻（刷新器的 `decay_thresholds`＝`max(valid_from_ts of still-valid support edges)` → `last_support_ts` → `created+3d`，再 +7 天）量得 **51 顆全需逐節點下界**（cohort 級 `not_before`＝2026-11-04T02:00:00Z；引擎門檻落在 2026-11-03T02:00:27～12:19:18Z）⇒ 補 `"bounds"` 區塊 **51 筆**。
+  - **位元組層驗證**：diff 僅 **+53 行**（1 opener + 51 entries + 1 closer）、**−0 行**；`compile()` 通過；補丁前後 sha256 皆有記錄。
+  - **生產者 ≡ 補丁**：以修好後的刷新器 `rewrite_entry()` 對 **9 個 cohort** 逐位元重寫 ⇒ **全部與檔案逐位元相同**（`2026-10-11` 為常數式種子 cohort，刷新器本來就不重寫）⇒ 台帳與生產者不可能再分歧。
+  - **Owner 裁定一致性**：該 cohort **51 顆 `node_type` 全部是 `value`** ⇒ 符合「value 自動入帳；belief／trait／essence 嚴禁自動入帳、須人工審核」。
+- **⚠️ 主大腦更正一項不精確判斷**：本條開立前曾判定「10-27 cohort 缺 `bounds` ⇒ 11/03 槽會假紅」——**量測後不成立**：門檻 ≤ 2026-11-03T02:00:28Z 者為 **0 顆**（最早門檻 2026-11-03T02:00:28.857715Z，比槽時刻晚 **0.86 秒**）⇒ **本 cohort 不會造成假紅**。補丁仍有價值（讓台帳逐節點記錄引擎自己的門檻），但**理由不是假紅**。⇒ **但根因 B 的結構缺口是真的**：任何「建立時刻早於槽時刻（02:00:28Z）」的新 cohort 成員仍會晚一槽 ⇒ 假紅會復發；已由根因修補關閉。
+- **守衛**：台帳守衛定向 `tests/test_eval_lifecycle_cli.py`＝**80 passed / 5 subtests**（exit 0，解譯器＝repo `.venv`）。
+- **夜槽實況（2026-10-28T02:00:28Z ＝ 2026-10-27 22:00 EDT）**：服務日誌 `22:00:08,583` 觸發 40 隻角色 night（`AGENCY_TRIGGER published`）；`database is locked` **全日誌 0 筆**（寫鎖修正 `111c9ed`／`1aca261` 自 10-24 23:18 EDT 重啟後生效）；CLI 以**槽時刻**重算 ⇒ **VERDICT: PASS / exit 0**（本次命中 9 筆、expected_hits 9、pending_retirements_count 0、prompt_diffs_unexplained 0、weak_prefix 34→43、breaks 0）。
+  - ⚠️ **視角聲明（避免自欺）**：事後重跑是**冪等 no-op**（已套用的轉變不會重放）⇒ 它證明「事件已落地」，**不**證明「槽是綠的」；槽的**預測視角**已於 §0.1.97 ⑦ 記錄（PASS / exit 0）。二者不可混用。
+- **未做（記帳）**：刷新器**仍未納入版控**（repo 外工具，另列追蹤票）；刷新器「先改寫後過閘門」的非原子性未改；刷新器的備份：`ledger_refresh.py.bak-20261027`（原版）、`.bak-20261027-nb-none`（根因 B 修補前）、`.bak-20261027-gate2`（根因 A 修補前）；第三棒 FEAT-TEST-ENV-ISOLATION-CLEANUP 施工中（工單 `logs/FEAT-TEST-ENV-ISOLATION-CLEANUP-WORK-ORDER.md`）。
