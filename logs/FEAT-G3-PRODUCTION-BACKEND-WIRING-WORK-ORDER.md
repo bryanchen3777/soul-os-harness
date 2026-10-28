@@ -34,10 +34,17 @@
 2. **預算硬限制（Owner 既定「真實 LLM 預算」規格，逐條實作）**：
    - **≤1 次／agent／日**：用 `contradiction_calls` 跨實例計數器（形如 `{(agent_id, date): n}`）⇒ 超額 ⇒ **不呼叫**、回 `COMPATIBLE`（fail-closed）。
    - **單次 ≤300 tokens**：呼叫端必須帶 token 上限（沿用 repo 既有 LLM 呼叫慣例的參數形狀，**不得**自造新的 LLM 連線機制）。
+     🔺 **repo 既有契約（主大腦 2026-10-28 量測）**：`src/llm/proxy.py:1981` 的
+     `LLMBackend.complete(messages, model, max_tokens, temperature, **kwargs)`；OpenAI 端點實際送出的是
+     `max_completion_tokens`（proxy.py:2075，2026-07-25 Bry 拍板）⇒ ⇒ **token 上限以 `max_tokens=300` 參數傳入**即可。
    - **retries = 0**：任何失敗**不重試**。
+     🔺 **repo 既有預設是 3 次**：`src/llm/proxy.py:2069` 的 `max_retries = kwargs.pop("max_retries", 3)`
+     ⇒ ⇒ 「不重試」**必須顯式傳 `max_retries=0`**（不得依賴預設）⇒ 這條要進守衛 G3 的斷言來源。
    - **二元輸出**：`CONTRADICT` / `COMPATIBLE`；**無法解析** ⇒ 視為 `COMPATIBLE`。
    - **fail-closed**：例外／逾時／格式不符 ⇒ 一律 `COMPATIBLE`（＝不動作、不寫引擎、不擋主路徑）。
 3. **不得在模組層建立真實 LLM 連線** ⇒ 一律**延遲 import**（沿用 `elevation_adapter.py` 的既有規範：模組層 import 會與 `contradiction_prefilter` 成環）。
+   ⇒ ⇒ 且**不得**自建 HTTP 連線：**沿用 repo 既有的 `LLMProxy`／`LLMBackend` 路徑**（`src/llm/proxy.py`），
+   由呼叫端注入現成實例（與 `elevate_matured_patterns(llm=...)` 的既有注入風格一致）⇒ ⇒ backend 本身**不建立連線**。
 4. 預算耗盡／跳過呼叫時**必須寫一行 log**（可觀測：哪個 agent、哪一天、已用幾次）。
 
 #### D2. 生產接線（`scripts/run_server.py`）
