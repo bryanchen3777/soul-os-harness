@@ -7360,3 +7360,38 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
 - **未做／後續**：①【第二動】`FEAT-G3-PRODUCTION-BACKEND-WIRING`（Owner 已核准規格；**重啟另授**，PID 3448 保持連續運行）；
   ② repo 外部那份 `ledger_refresh.py` **保留為 frozen 兜底**（不刪、不再執行）；③刷新器的 `.bak` 鏈
   （`.bak-20261027`／`.bak-20261027-nb-none`／`.bak-20261027-gate2`）留在 repo 外備份目錄（不在版控內）。
+
+## 0.1.104 第二動 G3 生產 Backend 接線（ceb5f6d）＋第三動 VC 報時契約（ab1fb3c）＋三輪全庫回歸（2026-10-28）
+
+- **第二動 FEAT-G3-PRODUCTION-BACKEND-WIRING**（工單 `logs/FEAT-G3-PRODUCTION-BACKEND-WIRING-WORK-ORDER.md`；commit `ceb5f6d`）
+  - 範圍 6 檔 ＋1212／−3：`src/inner_life/contradiction_backend_llm.py`（新增 366 行，生產 LLM Backend）／
+    `src/inner_life/elevation_adapter.py`（`elevate_matured_patterns(..., contradiction_backend=None, ...)`，預設 None＝沿用舊語意、fail-closed）／
+    `scripts/run_server.py`（`_elevate_check()` 接上 backend）／守衛 `tests/inner_life/test_contradiction_backend_llm_guard.py`（新增 649 行）／
+    `tests/test_observability_completeness_1.py`（＋11）／工單 `logs/FEAT-VC-CLOCK-ANCHOR-WORK-ORDER.md`（108 行，同窗順手記）。
+  - 預算（Owner 已核准）：1 agent × 1 call／400 tokens／retries=0 顯式傳／fail-closed；import 安全；log-only 可觀測。
+  - 守衛 **24/24 全綠**（主大腦合入後重跑 `24 passed in 0.52s`）；變異 **6 條各自精準轉紅**；預算常數實查（AST 釘死，不得由 env／參數放寬）。
+  - 🔴 **未重啟服務**（PID 3448 連續運行；重啟需 Owner 另授）⇒ 程式碼已在 main，**生效待下一次服務重啟**。
+- **第三動 FEAT-VC-CLOCK-ANCHOR**（commit `ab1fb3c`）
+  - 範圍 2 檔 ＋542：`clients/voice_companion/akane_voice_brain.py`（＋260：機械式擋截具體時鐘時間＋權威本地時間注入）／
+    守衛 `tests/clients/test_vc_clock_anchor_guard.py`（新增 282 行）。
+  - 守衛 **9/9 全綠**（主大腦合入後重跑 `9 passed in 0.92s`）；變異 **7 條各自精準轉紅**；語料 9/9 與 11/11。
+  - 🔥 **更深根因（主大腦獨立追查，非執行者自報）**：`src/soul/temporal_phenomenology._period_en(11)` 回 `'afternoon'`，
+    而 `src.timezone_utils._period_label(11)` 回「中午」⇒ **同一個 11 點、兩套互斥時段標籤**。
+    VC 自組 prompt（未走主 LLM 那條已驗證正確的時間注入），給代理的時間錨點是「11:27 (Period: afternoon)」——有 24 小時制時間、卻無時區鍵 ⇒
+    模型做**最小修補自洽**，把 11 補成 13（分鐘 27 不動）⇒ 與觀測到的「一點二十七分」逐位元吻合。
+    全 repo 時區管路已逐層驗證正確 ⇒ **不是時區轉換 bug**。修法兩層：①機械式擋截不該講的（串流／語音路徑不經守門，token 播出無法收回 ⇒ 語音端只能靠給對的事實）；
+    ②無歧義權威時間句（時間值由同一時區工具取得）。已入 agent 記憶體（prompt 同義不同判 ⇒ 最小修補自洽）。
+- **三輪全庫回歸（解譯器＝repo `.venv`；不重生成基準 ⇒ 任何 skip 漂移都會判紅）**
+| 跑法 | passed | failed | skipped | subtests | 秒 |
+|---|---|---|---|---|---|
+| run2_plain（bg_9ad050da） | 7563 | 1 | 31 | 32 passed | 739 |
+| run3_reverse（同窗） | 7564 | 0 | 31 | 32 passed | 796 |
+| run4_shuffle_s2（bg_b759b047，run4 被 abort 後補跑） | 7564 | 0 | 31 | 32 passed | 1067 |
+  - run2 唯一失敗 `test_cold_schema_contended_single_character_does_not_double_timeout`（reason `'UNKNOWN'` vs 預期 `'SCHEMA_NOT_READY'`）；
+    A/B 單跑複驗（現行版單跑／影子樹現行版／影子樹 064f36c 版）**3/3 全過** ⇒ 判**順序相依 flaky**，非兩動引入。
+    （A/B 探針腳本自身 `env can only contain strings` bug 未跑成完整歸因，留痕；不影響判定——單跑三版全綠已證非確定性回歸。）
+  - 筆數由 §0.1.103 的 7531 → **7564（＋33＝兩動新守衛 24＋9）**；skip **31 筆三輪零漂移**
+   （run4：`[SKIP-BASELINE] skip-set STABLE skipped=31 baseline=31 added=0 removed=0`）。
+  - 合入後重跑兩動守衛：24＋9＝**33 passed**。
+- **未做**：未重啟生產服務（G3 接線待重啟生效；重啟需 Owner 明示授權，主大腦不得自行對生產行程動手）；
+  未寫 `data/**`；未殺任何行程；未跑 `scripts/manual_*.py`；真實 LLM 呼叫 0 次（兩動皆為接線＋守衛，G3 生產呼叫待重啟後才會發生）。
