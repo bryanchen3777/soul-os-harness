@@ -282,11 +282,22 @@ def _probe_official_server() -> Tuple[bool, str]:
 
 #: 顯式逃生閥（預設 False ⇒ 真實連線；設 "1" ⇒ 本模組全數 skip）。
 _SKIP_NPX_E2E = os.environ.get(SOUL_OS_SKIP_NPX_E2E_ENV) == "1"
+#: 🔴 2026-10-28 主大腦（FEAT-TEST-ENV-ISOLATION-CLEANUP）：官方 MCP server 的 npx
+#:   E2E 屬「**外部服務探針**」⇒ 依本票判準（外部服務類 skip 一律
+#:   明確 opt-in、預設離線、理由固定）改為**預設不授權**。
+#:   理由（實測，2026-10-28 02:0x 全庫回歸）：3 支 ts3 測試因 **npx 探測遞時**
+#:   （冷快取 ＋ 機器負荷）而 skip ⇒ skip 集合**隨負荷漂動** ⇒ 正是本票要
+#:   消毀的現象（Owner 原話：「Skip 數隨收集順序與機器負荷波動」）。
+#:   ⇒ 預設不授權 ⇒ ①固定 skip 理由；②**不跑 import 期探針**（免掉最長 90s 等待
+#:   與網路相係）⇒ skip 集合零漂動。
+#:   ⇒ 授權方式：`SOUL_OS_ENABLE_NPX_E2E=1`（需 npx ＋ 網路；官方心意不預設）。
+SOUL_OS_ENABLE_NPX_E2E_ENV = "SOUL_OS_ENABLE_NPX_E2E"
+_ENABLE_NPX_E2E = os.environ.get(SOUL_OS_ENABLE_NPX_E2E_ENV, "").strip() == "1"
 
 # ── 有界前置探針：失敗 ⇒ 整個模組 skip（杜絕卡在 npx/npm 拉包）──
 # 逃生閥開啟時不跑探針（離線環境不該白等 90s）；逃生閥本身由下方 pytestmark
 # 逐筆 skip（4 筆各自 skip，而非模組級單筆），語意同「跳過整個模組」。
-if not _SKIP_NPX_E2E:
+if _ENABLE_NPX_E2E and not _SKIP_NPX_E2E:
     _NPX_PROBE_OK, _NPX_PROBE_DETAIL = _probe_official_server()
     if not _NPX_PROBE_OK:
         pytest.skip(
@@ -321,10 +332,6 @@ def _npx_available() -> bool:
 
 pytestmark = [
     pytest.mark.skipif(
-        not _npx_available(),
-        reason="npx not available in this environment",
-    ),
-    pytest.mark.skipif(
         _SKIP_NPX_E2E,
         reason=(
             f"顯式逃生閥 {SOUL_OS_SKIP_NPX_E2E_ENV}=1：跳過官方 MCP server 端到端測試"
@@ -333,6 +340,19 @@ pytestmark = [
     ),
 ]
 
+
+#: 🔴 2026-10-28 主大腦：那 3 支 npx E2E 的門閥（**預設不授權** ⇒ 固定 skip 理由）。
+_NPX_E2E_REQUIRES_AUTH = pytest.mark.skipif(
+    not _ENABLE_NPX_E2E,
+    reason=(
+        f"未設定 {SOUL_OS_ENABLE_NPX_E2E_ENV} ⇒ 官方 MCP server 的 npx E2E 未授權"
+        "（外部服務探針，預設離線；需 npx ＋ 網路）"
+    ),
+)
+_NPX_E2E_NEEDS_NPX = pytest.mark.skipif(
+    not _npx_available(),
+    reason="npx not available in this environment",
+)
 
 class TestOfficialFilesystemServer:
     @staticmethod
@@ -345,6 +365,8 @@ class TestOfficialFilesystemServer:
         """
         return MCPStdioClientAdapter("npx", ["-y", NPM_PKG, allowed_dir])
 
+    @_NPX_E2E_REQUIRES_AUTH
+    @_NPX_E2E_NEEDS_NPX
     def test_npx_connection_and_list_tools(self, tmp_path):
         """官方 server 真實進程：npx 啟動 → 握手 → tools/list → close。"""
         async def scenario():
@@ -373,6 +395,8 @@ class TestOfficialFilesystemServer:
 
         assert _run(scenario())
 
+    @_NPX_E2E_REQUIRES_AUTH
+    @_NPX_E2E_NEEDS_NPX
     def test_official_server_register_and_classify(self, tmp_path, isolated_root):
         """Registry 對官方 server 工具走 §2.3 三級歸類 + §4.1 權限兜底。"""
         async def scenario():
@@ -411,6 +435,8 @@ class TestOfficialFilesystemServer:
 
         assert _run(scenario())
 
+    @_NPX_E2E_REQUIRES_AUTH
+    @_NPX_E2E_NEEDS_NPX
     def test_search_files_ask_required_gate_flow(self, tmp_path, isolated_root):
         """ask_required 真實流程：未經 Ask → 拒絕；注入 approving gate → 真實調用。"""
         async def scenario():
@@ -473,6 +499,8 @@ class TestOfficialFilesystemServer:
 
         assert _run(scenario())
 
+    @_NPX_E2E_REQUIRES_AUTH
+    @_NPX_E2E_NEEDS_NPX
     def test_official_server_not_projected_after_offline(self, tmp_path, isolated_root):
         """offline → 官方 server 工具不投影（fail-silent，§2.4）。"""
         async def scenario():
