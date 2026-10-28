@@ -911,6 +911,17 @@ class TestBoundedAndFrozenDiscipline:
             # change beyond the timing of the DB connection.
             # Work order: logs/BUG-EMOTION-IMPORT-SIDE-EFFECT-WORK-ORDER.md
             "src/agent/emotion.py",
+            # -- FEAT-G3-PRODUCTION-BACKEND-WIRING (2026-10-28) --------------
+            # This ticket adds 1 non-frozen file: the **real** LLM contradiction
+            # verdict backend (injected proxy; hard budget: <=1 call per agent
+            # per day, <=300 tokens per call, retries=0, binary output,
+            # fail-closed). It touches **no** frozen contract file. The
+            # prefilter / judge / accumulator / revision-chain modules and the
+            # adapter hook stay in place: the adapter's hook is still
+            # **default-off** (the backend is injected by the caller) and its
+            # thresholds / output format are unchanged.
+            # Work order: logs/FEAT-G3-PRODUCTION-BACKEND-WIRING-WORK-ORDER.md
+            "src/inner_life/contradiction_backend_llm.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

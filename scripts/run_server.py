@@ -671,6 +671,21 @@ async def lifespan(app: FastAPI):
             "fail-closed = 建不出 firewall 即拒絕)"
         )
 
+        # ── FEAT-G3-PRODUCTION-BACKEND-WIRING（2026-10-28）────────────────
+        # 真實矛盾判定 backend 接線：讓 ``superseded`` 節點能在生產槽真實誕生。
+        #
+        # 🔺 預算計數器是**行程級單例**（跨 _elevate_check 多次呼叫共享）⇒
+        #    「每 agent 每日至多 1 次」不會被每次呼叫重置而失守（D2.2）。
+        # 🔺 backend 由呼叫端注入既有 LLMProxy（下方 ``llm``）⇒ backend 模組
+        #    **不建立連線**（沿用 repo 既有 LLM 路徑，0 新 provider）。
+        from src.inner_life.contradiction_backend_llm import (
+            ensure_current_day,
+            make_verdict_backend,
+            new_budget,
+        )
+
+        _contradiction_budget = new_budget()
+
         def _elevate_check() -> None:
             """consume 之后证据驱动 elevate（独立于 Submission Gate）。
 
@@ -681,8 +696,28 @@ async def lifespan(app: FastAPI):
             belief/value/trait/essence。fire-and-forget，失败隔离在函数内
             （异常 → warning + []，不阻断 submit / 主路径），不提前（证据不足
             的组跳过）。
+
+            🔺 2026-10-28（FEAT-G3-PRODUCTION-BACKEND-WIRING）：注入真實矛盾
+            判定 backend（≤1 次／agent／日、單次 ≤300 tokens、retries=0、
+            二元輸出、fail-closed）＋**共享**預算計數器 ⇒ 生產槽才會真的
+            跑矛盾判定 ⇒ ``superseded`` 節點才會誕生。
             """
-            elevate_matured_patterns()
+            try:
+                # 跨日滾動：把「當日」預算換成今天（否則判定器會永遠以為用過）。
+                ensure_current_day(_contradiction_budget)
+                elevate_matured_patterns(
+                    contradiction_backend=make_verdict_backend(
+                        proxy=llm,
+                        budget=_contradiction_budget,
+                    ),
+                    contradiction_calls=_contradiction_budget,
+                )
+            except Exception as exc:  # noqa: BLE001 — 失败隔离（不阻断主路径）
+                logger.warning(
+                    "[SG-1] elevate_check failed (不影响主路径): %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
 
         logger.info(
             "[SG-1] SubmissionGate 已启用 (soul-elevation, "

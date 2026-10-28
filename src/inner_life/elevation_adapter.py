@@ -1321,6 +1321,40 @@ def _independent_evidence_count(edges: Sequence[dict]) -> int:
     return count
 
 
+def _bind_backend_agent(backend: Any, agent_id: str) -> Any:
+    """把 agent 身分綁到 backend（**純 additive**：backend 沒有 ``bind_agent`` ⇒ 原樣使用）。
+
+    🔺 為什麼需要：``contradiction_backend`` 的契約是 ``Callable[[str], str]``
+    （G-3 契約）⇒ backend 只看得到 prompt、**看不到 agent** ⇒ 「≤1 次／agent／日」
+    這條預算在 backend 層沒有歸屬。本模組是**唯一**知道 agent 身分的接縫 ⇒
+    由它綁一次（backend 回一個**共用同一份計數器**的新 callable）。
+
+    🔺 **不影響既有語意**：backend 沒有 ``bind_agent`` 方法時**原樣使用**
+    （既有 mock backend／既有注入風格逐位元不變）。
+    綁定失敗 ⇒ 回 ``None`` ⇒ 呼叫端 fail-closed（不判定、不寫引擎）。
+    """
+    binder = getattr(backend, "bind_agent", None)
+    if not callable(binder):
+        return backend
+    try:
+        bound = binder(agent_id)
+    except Exception as exc:  # noqa: BLE001 — 失敗隔離（不擋主路徑）
+        logger.warning(
+            "[elevate] contradiction backend bind failed agent=%s: %s: %s",
+            agent_id,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+    if not callable(bound):
+        logger.warning(
+            "[elevate] contradiction backend bind returned non-callable agent=%s",
+            agent_id,
+        )
+        return None
+    return bound
+
+
 def _run_contradiction_hook(
     *,
     engine: Any,
@@ -1389,9 +1423,14 @@ def _run_contradiction_hook(
     _soul_node, _pattern = _pair[0]
 
     # (d) 接線（注入式 backend；backend 為 None ⇒ 整條鏈路 no-op）。
+    #     🔺 綁定 agent（讓 backend 層也有「≤1 次／agent／日」的歸屬）；
+    #     綁不上 ⇒ fail-closed（不判定、不寫引擎）。
+    _bound_backend = _bind_backend_agent(backend, agent_id)
+    if _bound_backend is None:
+        return 0
     _pipeline = ContradictionPipeline(
         engine=engine,
-        backend=backend,
+        backend=_bound_backend,
         calls=calls,
         agent_id=agent_id,
     )
@@ -1402,7 +1441,7 @@ def _run_contradiction_hook(
     )
     logger.info(
         "[elevate] ↻ contradiction agent=%s soul=%s pattern=%s verdict=%s "
-        "recorded=%s superseded=%s reason=%s",
+        "recorded=%s superseded=%s reason=%s backend_invoked=%s",
         agent_id,
         str(_soul_node.get("node_id"))[:12],
         str(_pattern.get("node_id"))[:12],
@@ -1410,6 +1449,7 @@ def _run_contradiction_hook(
         _outcome.recorded,
         _outcome.superseded,
         _outcome.reason,
+        bool(_outcome.judge_outcome and _outcome.judge_outcome.backend_invoked),
     )
     return 1
 
