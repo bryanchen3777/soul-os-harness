@@ -328,7 +328,11 @@ class TestD_Regression:
                 [sys.executable, "-m", "pytest", target, "-q"],
                 cwd=str(repo),
                 capture_output=True,
-                text=True,
+                # 🔺 2026-10-28 主大腦：同型 nested-pytest 消費端。`text=True`
+                #    未指定 encoding ⇒ 本機 locale(cp950) 解碼 child 的 UTF-8 輸出
+                #    會 UnicodeDecodeError ⇒ stdout 為 None ⇒ 斷言空轉。
+                #    沿用 repo 既有寫法（tests/soul/test_life_thread_origins_m4.py:883-1007）。
+                text=True, encoding="utf-8", errors="replace",
             )
             assert proc.returncode == 0, f"{target} 回歸失敗:\n{proc.stdout[-3000:]}"
 

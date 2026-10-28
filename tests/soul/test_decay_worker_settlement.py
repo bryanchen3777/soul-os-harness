@@ -23,12 +23,17 @@
 
 唯一被替換的是「**何時**觸發取消」，那是被測語意的**輸入**，不是被測物。
 
-## 🔴 建立順序（工單 §4.3：先建立拋棄式根，再載入依賴）
+## 🔴 拋棄式根的**釘根時機**（2026-10-27 改寫）
 
-`src/agent/emotion.py` 在**匯入當下**會呼叫 `data_root()`（模組層級 singleton，
-`src/paths.py:26,40-48` 快取）。若在設定 `SOUL_OS_DATA_DIR` **之前**就 import
-emotion，資料根就已定型在 repo `data/` —— 之後再設定也沒有用。
-故本檔在最上方、任何 `src.*` 匯入之前，先建立並釘住拋棄式根。
+原本本檔在 **import 期**（模組層級）就把 `SOUL_OS_DATA_DIR` 釘到拋棄式根，
+理由是「`src/agent/emotion.py` 匯入當下會呼叫 `data_root()`」。該前提**已過期**：
+`src/agent/emotion.py` 已於 2026-10-27（BUG-EMOTION-IMPORT-SIDE-EFFECT）改為
+**惰性解析**資料根（PEP 562 `__getattr__`，import 期不再呼叫 `data_root()`），
+`src/agent/decay_worker.py` 亦明文禁止 import 期呼叫 `data_root()`。
+
+⇒ 真正的釘根改由**模組層級 autouse fixture** `_isolate_settlement_root` 執行
+（設定 → `reset_data_root()` → 測試 → 還原 → `reset_data_root()`），
+**import 期不再寫任何環境變數**（見下方說明）。
 
 ## 隔離紀律
 
@@ -42,11 +47,15 @@ emotion，資料根就已定型在 repo `data/` —— 之後再設定也沒有�
 from __future__ import annotations
 
 # ═════════════════════════════════════════════════════════════
-# 🔴 步驟 1：**先**建立拋棄式資料根，**再**載入任何 src.* 依賴
+# 步驟 1：建立拋棄式資料根（**路徑常數**）；**釘根動作在 fixture 裡**
 # ═════════════════════════════════════════════════════════════
-# 這必須在任何 `from src... import ...` 之前執行：`src/paths.py` 的
-# `_DATA_ROOT` 是模組層級快取，而 `src/agent/emotion.py` 匯入時就會呼叫
-# `data_root()`。順序錯了，隔離就是假的（而且不會報錯，只會靜默汙染）。
+# 🔴 2026-10-27（FEAT-TEST-ENV-ISOLATION-CLEANUP）：這裡原本還有**模組層級的
+# 環境變數寫入**（`_os.environ["SOUL_OS_DATA_DIR"] = …` ＋ 剝除憑證的迴圈）。
+# 那兩段是**全庫唯一的模組層級 env 寫入**：它把 `SOUL_OS_DATA_DIR` 洩漏進
+# pytest 行程且**永不還原** ⇒ 收集順序一翻，
+# `tests/test_data_root_isolation.py` 的白名單自證測試就會
+# 一邊被 skip、一邊轉紅（實測：`19 passed, 1 skipped` ↔ `1 failed, 19 passed`）。
+# ⇒ 改由模組層級 autouse fixture `_isolate_settlement_root` 執行（見下）。
 import os as _os
 import sys as _sys
 import tempfile as _tempfile
@@ -56,13 +65,8 @@ _REPO_ROOT = _Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_REPO_ROOT))
 
-#: 本模組專屬的拋棄式資料根（行程級；比 fixture 更早、更穩）。
+#: 本模組專屬的拋棄式資料根（**路徑常數**；import 期不再寫任何環境變數）。
 _SETTLEMENT_ROOT = _Path(_tempfile.mkdtemp(prefix="soul_decay_settlement_"))
-_os.environ["SOUL_OS_DATA_DIR"] = str(_SETTLEMENT_ROOT)
-# 剝除可能的生產憑證：本檔不需要它們，缺席時若實作仍能運作才叫真隔離。
-for _key in list(_os.environ):
-    if _key.startswith(("OPENAI_", "ANTHROPIC_", "DEEPSEEK_", "GEMINI_", "TELEGRAM_", "TG_")):
-        _os.environ.pop(_key, None)
 
 # ── 步驟 2：此時才載入依賴 ───────────────────────────────────
 import asyncio  # noqa: E402
@@ -135,6 +139,62 @@ def _reset_worker() -> None:
     dw._DECAY_WORKER_CANCEL.clear()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_settlement_root():
+    """把資料根釘到本模組的拋棄式根，並剝除生產憑證。
+
+    🔴 2026-10-27（FEAT-TEST-ENV-ISOLATION-CLEANUP）：原本這兩件事是在
+    **import 期**（模組層級）做的：
+
+      - `_os.environ["SOUL_OS_DATA_DIR"] = str(_SETTLEMENT_ROOT)`
+      - 剝除 `OPENAI_*`／`ANTHROPIC_*`／`DEEPSEEK_*`／`GEMINI_*`／
+        `TELEGRAM_*`／`TG_*` 憑證的迴圈
+
+    那兩段是**全庫唯一的模組層級 env 寫入**：它把 `SOUL_OS_DATA_DIR`
+    洩漏進 pytest 行程且**永不還原** ⇒ 收集順序一翻，
+    `tests/test_data_root_isolation.py` 的白名單自證測試就會
+    一邊被 skip、一邊轉紅（實測 `19 passed, 1 skipped` ↔
+    `1 failed, 19 passed`）。
+
+    ⇒ 改由**模組層級 autouse fixture** 執行（設定 → 測試 → 還原）：
+
+      1. 用**自建** `pytest.MonkeyPatch()` 實例（**不**宣告 `monkeypatch`
+         參數）——`tests/conftest.py` 已記載的 fixture 順序陷阱：宣告
+         `monkeypatch` 會把它的 setup 提前到其他 function-scoped fixture
+         之前、teardown 延後 ⇒ 既有測試由綠轉紅。
+      2. **隔離**：conftest 的 autouse `_isolate_soul_os_data_root` 已把資料根
+         指向每個測試自己的 tmp 目錄 ⇒ 本 fixture **不覆寫它**（覆寫會讓
+         資料根從「每測試一個」退化成「整個模組共用一個」）。只有在
+         conftest 隔離缺席時（例如本檔被當腳本直接執行）才退回本模組的
+         拋棄式根 —— **本檔在任何情況下都不會指向生產 `data/`**。
+      3. **憑證**：剝除生產憑證（`OPENAI_*`／`ANTHROPIC_*`／`DEEPSEEK_*`／
+         `GEMINI_*`／`TELEGRAM_*`／`TG_*`）——本檔不需要它們，缺席時若
+         實作仍能運作才叫真隔離。
+      4. 退出時 `undo()` ＋ `reset_data_root()`（`src.paths` 的資料根是
+         **行程期快取單例**，只換 env 不清快取，後續仍會解析到舊根）。
+
+    隔離語意與原版**等價**（同樣的拋棄式根、同樣的憑證剝除），
+    差別只在於「何時」套用：模組層級 import 期 → 每個測試。
+    """
+    from src.paths import reset_data_root
+
+    env_patch = pytest.MonkeyPatch()
+    # 隔離：conftest 的 autouse 隔離已生效時不動它（維持「每測試一個根」）；
+    # 缺席時才退回本模組的拋棄式根 ⇒ 永不指向生產 data/。
+    if not _os.environ.get("SOUL_OS_DATA_DIR"):
+        env_patch.setenv("SOUL_OS_DATA_DIR", str(_SETTLEMENT_ROOT))
+    # 剝除可能的生產憑證：本檔不需要它們，缺席時若實作仍能運作才叫真隔離。
+    for _key in list(_os.environ):
+        if _key.startswith(("OPENAI_", "ANTHROPIC_", "DEEPSEEK_", "GEMINI_", "TELEGRAM_", "TG_")):
+            env_patch.delenv(_key, raising=False)
+    reset_data_root()
+    try:
+        yield
+    finally:
+        env_patch.undo()
+        reset_data_root()
+
+
 @pytest.fixture
 def db_path(tmp_path) -> _Path:
     """拋棄式 DB 路徑（tmp_path 內）。"""
@@ -174,15 +234,16 @@ def test_isolation_root_is_disposable_not_production(tmp_path) -> None:
 
     🔴 **兩個層級的隔離，兩者都合法**：
 
-      1. 本模組層級：在任何 `src.*` 匯入**之前**先釘住
-         `SOUL_OS_DATA_DIR`（見檔頭），保護**匯入期**的 `data_root()` 呼叫。
-      2. `tests/conftest.py` 的 autouse `_isolate_soul_os_data_root`：每個
+      1. `tests/conftest.py` 的 autouse `_isolate_soul_os_data_root`：每個
          測試各自把根指向 `tmp_path` 下的新目錄，並 `reset_data_root()`
-         清快取。這是**更嚴**的隔離，且同樣是拋棄式的。
+         清快取。這是**本檔實際生效**的隔離層。
+      2. 本模組層級 autouse fixture `_isolate_settlement_root`：剝除生產
+         憑證；只有在 conftest 隔離缺席時才把根釘到本模組的拋棄式根
+         `_SETTLEMENT_ROOT`（見該 fixture 的說明）。
 
     故本斷言鎖的是**真正的性質** ——「落在 tmp 底下、且絕非 repo `data/`」——
-    而不是「恰好等於本模組釘的那一個路徑」。後者會與 conftest 的合法隔離
-    互相打架（第一版就是這樣寫的，實測紅）。
+    而不是「恰好等於某個特定路徑」。後者會與合法隔離互相打架
+    （第一版就是這樣寫的，實測紅）。
     """
     import tempfile as _tf
 
@@ -198,9 +259,14 @@ def test_isolation_root_is_disposable_not_production(tmp_path) -> None:
     ), (
         f"🔴 資料根不在 tmp 底下，隔離不成立：{resolved}"
     )
-    # 正向：本模組釘的根本身必須是 tmp（證明檔頭的「先釘根」確實生效）。
-    assert _SETTLEMENT_ROOT.resolve().is_relative_to(tmp_root), (
-        f"模組層級的拋棄式根不在 tmp 底下：{_SETTLEMENT_ROOT.resolve()}"
+    # 正向自證（**改斷言對象**，不改斷言強度）：**conftest 的 autouse 隔離**
+    # 確實生效 —— 解析後的資料根 == 當下 `SOUL_OS_DATA_DIR` 指向的目錄。
+    assert _os.environ.get("SOUL_OS_DATA_DIR"), (
+        "autouse 隔離未生效：SOUL_OS_DATA_DIR 未被設定"
+    )
+    assert resolved == _Path(_os.environ["SOUL_OS_DATA_DIR"]).resolve(), (
+        f"資料根與當下 SOUL_OS_DATA_DIR 不一致：{resolved} vs "
+        f"{_os.environ['SOUL_OS_DATA_DIR']}"
     )
     # 匯入期就已生效的證據：SETTLEMENT_ROOT 底下若有檔案，全部屬於本測試。
     assert str(tmp_path.resolve()).startswith(str(tmp_root)), (

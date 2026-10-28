@@ -14,6 +14,7 @@ import asyncio
 import logging
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Dict, Any
@@ -151,7 +152,21 @@ async def test_event_gen_v1(tmp_dir: Path) -> Dict[str, Any]:
             session_id="session_test_b21_v1",
         ))
         # 給 MemoryMiddleware 處理時間 (prefetch + re-publish)
-        await asyncio.sleep(0.5)
+        #
+        # 🔺 2026-10-27 主大腦修正（FEAT-TEST-ENV-ISOLATION-CLEANUP 附加項 D6）：
+        #   原本是**固定** `await asyncio.sleep(0.5)`。但 MemoryMiddleware 的
+        #   prefetch 會走 jieba 分詞，而 **jieba 首次建前綴字典實測要 0.488 秒**
+        #   ⇒ 當「jieba 尚未被 import」時（本測試排在收集順序較前），0.5 秒的
+        #   視窗會被字典建置吃掉 ⇒ 斷言在 middleware 重新發布**之前**就執行
+        #   ⇒ **這支測試會因收集順序而紅／綠**。
+        #   實測證據（2026-10-27）：單跑 3/3 失敗；先跑一支會 import jieba 的
+        #   測試（test_m6_0_2_validation_poc.py）則 17 passed / 0 failed；
+        #   純 HEAD 影子樹（git archive）同樣失敗 ⇒ 與本票無關的既有脆弱點。
+        #   ⇒ 改為**有界等待事件到達**：斷言強度不變（仍要求 ≥1 筆 ENRICHED），
+        #   但不再依賴「前面有測試先 import jieba」⇒ 任何收集順序都一致。
+        _deadline = time.monotonic() + 10.0
+        while not capture.captured and time.monotonic() < _deadline:
+            await asyncio.sleep(0.05)
 
         logger.info("\n── 斷言 ──")
         assert len(capture.captured) >= 1, "AGENT_INTENT_ENRICHED 沒被發布"

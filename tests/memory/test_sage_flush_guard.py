@@ -28,6 +28,7 @@ import asyncio
 import importlib
 import sqlite3
 import threading
+import weakref
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,30 @@ from src.memory.sage.models import Fact
 
 ROOT = Path(__file__).resolve().parents[2]
 RUN_SERVER = ROOT / "scripts" / "run_server.py"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_live_stores():
+    """把 `GraphStore._live_stores` 換成空集合（測試結束後還原）。
+
+    🔴 TEST-ORDER-ISOLATION-4：`GraphStore._live_stores` 是 **process-global**
+    的 WeakSet（`src/memory/sage/graph_store.py:197`）⇒ 任何其它測試留下
+    活著的 GraphStore 實例，都會讓本檔的**精確筆數**斷言（`n_live == 1` /
+    `n_live == 2`）失真 ⇒ 結果**依賴收集順序**（實測 shuffle seed=3 下
+    `_live_stores` 有 4 個殘留實例 ⇒ `assert 4 == 1` 轉紅；seed=2 下
+    `assert 2 == 1` 轉紅）。
+    ⇒ 本檔隔離該註冊表 ⇒ `n_live == 1` 變成**真正的**不變量（「掃描器只看到
+    本測試自己建立的 store，沒有多算別人的」）—— 這比原本的 ambient 計數
+    **更嚴格**，不是放寬斷言。
+    （與 `tests/infra/test_wal_governance_guard.py::isolated_live_stores`
+    同一手法。）
+    """
+    original = GraphStore._live_stores
+    GraphStore._live_stores = weakref.WeakSet()
+    try:
+        yield
+    finally:
+        GraphStore._live_stores = original
 
 
 @pytest.fixture
@@ -254,28 +279,48 @@ def test_run_server_flush_loop_is_guarded():
 # 6. import 0 副作用
 # ───────────────────────────────────────────────────────────
 
+def _restore_module_dict(mod, snapshot: dict) -> None:
+    """把模組 ``__dict__`` 逐位元還原回快照狀態（**含 class / 例外物件身分**）。"""
+    mod.__dict__.update(snapshot)
+    for key in [k for k in mod.__dict__ if k not in snapshot]:
+        del mod.__dict__[key]
+
+
 def test_import_no_side_effects():
     before = {t.ident: t.name for t in threading.enumerate()}
 
     mod = importlib.import_module("src.memory.sage.graph_store")
-    importlib.reload(mod)  # 重跑 module 級代碼
+    # 🔴 TEST-ORDER-ISOLATION-1：`importlib.reload()` 會在**同一個模組物件**上
+    # 重跑模組級程式碼 ⇒ 模組裡的 **class / 例外物件被換成新的身分**
+    # （`GraphStore`、`GraphStoreWriteBusy` …）。任何在*收集期*（import 其它測試
+    # 模組時）就 `from src.memory.sage.graph_store import GraphStore` 的測試，
+    # 手上的仍是**舊物件** ⇒ `isinstance()` 與類別屬性（`_live_stores`）對不上
+    # ⇒ 那些測試的結果**依賴收集順序**（實測：本 reload 先跑時，本檔 4 支
+    # `flush_all_live` 系列 + `tests/infra` 的 T7 / W4 全轉紅）。
+    # ⇒ reload 前快照模組 `__dict__`、reload 後**逐位元還原**（含 class 身分）
+    # ⇒ reload 對本行程的其它測試 0 影響。
+    snapshot = dict(mod.__dict__)
+    try:
+        importlib.reload(mod)  # 重跑 module 級代碼
 
-    after = {t.ident: t.name for t in threading.enumerate()}
-    assert before == after, "import 不得啟動任何新 thread"
+        after = {t.ident: t.name for t in threading.enumerate()}
+        assert before == after, "import 不得啟動任何新 thread"
 
-    # module 級代碼不得有 create_task / Thread / 週期 sleep
-    tree = ast.parse(Path(mod.__file__).read_text(encoding="utf-8"))
-    forbidden: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            continue
-        for sub in ast.walk(node):
-            if isinstance(sub, ast.Call):
-                f = sub.func
-                name = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
-                if name in ("create_task", "Thread", "sleep"):
-                    forbidden.add(name)
-    assert not forbidden, f"module 級代碼不得啟動任務/執行緒/迴圈: {forbidden}"
+        # module 級代碼不得有 create_task / Thread / 週期 sleep
+        tree = ast.parse(Path(mod.__file__).read_text(encoding="utf-8"))
+        forbidden: set[str] = set()
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Call):
+                    f = sub.func
+                    name = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
+                    if name in ("create_task", "Thread", "sleep"):
+                        forbidden.add(name)
+        assert not forbidden, f"module 級代碼不得啟動任務/執行緒/迴圈: {forbidden}"
+    finally:
+        _restore_module_dict(mod, snapshot)
 
 
 def test_run_server_module_level_no_task():

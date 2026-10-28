@@ -586,7 +586,13 @@ class TestM3ExistingSystemCompat(unittest.TestCase):
              # 避免它使用共用的 %TEMP%\\pytest-of-<user> root 而在 sessionfinish
              # 踩到壞掉的 pytest-current reparse point (PermissionError WinError 5)。
              f"--basetemp={tempfile.mkdtemp(prefix='pytest-m3-baseline-')}"],
-            capture_output=True, text=True,
+            # 🔺 2026-10-28 主大腦修正：子行程輸出會含中文（pytest 終端摘要、測試
+            #    的 print），而 `text=True` **未指定 encoding** 時會用父層 locale
+            #    （本機＝cp950）解碼 ⇒ UnicodeDecodeError ⇒ `result.stdout is None`
+            #    ⇒ 下一行變成 TypeError。沿用本 repo 既有寫法
+            #    （tests/soul/test_life_thread_origins_m4.py:883-1007 已記載此坑）：
+            #    **明確以 utf-8 解碼**。
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
             cwd=Path(__file__).parent.parent,
             env=child_env,
         )

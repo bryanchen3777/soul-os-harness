@@ -7,6 +7,7 @@
   (b) agent_rem 的摸頭詞族必須覆蓋 LLM 實際會吐的變體（摸摸頭／摸頭／被摸頭／…）。
 """
 import json
+import os
 import re
 from pathlib import Path
 
@@ -40,25 +41,22 @@ REM_PROFILE = REPO_ROOT / "clients" / "voice_companion" / "profiles" / "rem.json
 #
 # 本檔既有程式碼裡數處 `if not video.parent.is_dir(): return/continue`
 # 的舊守門，正是因為目錄恆存在而從未生效（那些分支等於死碼）。
-ANIMATION_ASSET_PATH = (
-    REPO_ROOT
-    / "clients"
-    / "voice_companion"
-    / "static"
-    / "avatars"
-    / "rem_head_pat_enjoy.mp4"
-)
+#
+# 🔴 2026-10-27（FEAT-TEST-ENV-ISOLATION-CLEANUP）：守門條件由
+# 「**代表檔是否存在**」（檔案存在性判據 ⇒ 會隨資產樹到處漂移）改為
+# **env opt-in**：`SOUL_OS_CLIENT_AVATAR_DIR` 指向 `.mp4` 資產目錄，
+# **預設空字串** ⇒ 離線／純後端環境下**恆定 skip**，理由固定。
+CLIENT_AVATAR_DIR = os.environ.get("SOUL_OS_CLIENT_AVATAR_DIR", "").strip()
 
-#: 動畫變體資產是否隨本 repo 一併提供（ Bry 裁定：純後端 repo 內為 False）。
-ANIMATION_ASSETS_BUNDLED = ANIMATION_ASSET_PATH.exists()
+#: 動畫變體資產是否可用（**env opt-in**；Bry 裁定：純後端 repo 內為 False）。
+ANIMATION_ASSETS_BUNDLED = bool(CLIENT_AVATAR_DIR)
 
 
 #: 動畫資產未隨後端 repo 提供時，這 5 支「接線對稱性」測試的共用守門。
-#: 條件檢查的是**動作變體資產是否實際存在**（見上方 Bry 裁定說明），
-#: 不是目錄是否存在 —— 目錄恆存在，用目錄判斷會讓守門恆為真而失效。
+#: 條件是**環境變數閘門**（不是檔案存在性判斷）⇒ skip 集合不隨資產樹漂移。
 requires_animation_assets = pytest.mark.skipif(
     not ANIMATION_ASSETS_BUNDLED,
-    reason="Client visual assets (.mp4) not bundled in harness git repo",
+    reason="未設定 SOUL_OS_CLIENT_AVATAR_DIR ⇒ 無客戶端視覺資產可對線",
 )
 
 
@@ -870,7 +868,11 @@ def test_action_hint_mentions_every_rem_profile_action_example():
 #   (d) tilt_head（BASE 字典既有鍵）不再是要不到片的死 token
 # ─────────────────────────────────────────────────────────────
 
-AVATAR_DIR = REPO_ROOT / "clients" / "voice_companion" / "static" / "avatars"
+AVATAR_DIR = (
+    Path(CLIENT_AVATAR_DIR)
+    if CLIENT_AVATAR_DIR
+    else REPO_ROOT / "clients" / "voice_companion" / "static" / "avatars"
+)
 
 #: 本票接線的 4 支最後孤兒
 NEW_REM_ACTIONS = (

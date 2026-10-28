@@ -139,7 +139,18 @@ class TestW1TargetWhitelist:
         assert _is_w1_tag_target("bryan") is False
 
     def test_registered_peer_allowed(self):
-        assert _is_w1_tag_target(TARGET) is True
+        # 🔴 TEST-ORDER-ISOLATION-3：`_AGENT_IDS` 是 **process-global**
+        # （`src/soul/motive.py`）。任何呼叫 `SoulScheduler.register()` 的测试
+        # 都会经由 `register_agent_id()` 把它填满 ⇒「TARGET 已注册」这个
+        # 前置条件并不由本测试建立 ⇒ 结果**依赖收集顺序**（实测：shuffle
+        # seed=1 下本支拿到 AMBIENT/False）。
+        # ⇒ 显式建立前置条件（测试名本身就是「registered peer allowed」），
+        # 断言一字不改。
+        set_agent_ids([AGENT, TARGET])
+        try:
+            assert _is_w1_tag_target(TARGET) is True
+        finally:
+            set_agent_ids([])
 
     def test_unregistered_target_rejected_when_registry_present(self):
         set_agent_ids([AGENT, TARGET])

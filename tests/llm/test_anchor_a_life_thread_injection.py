@@ -44,6 +44,13 @@ def _row(tid, status, narrative, updated="2026-10-02T08:00:00", seq=1):
     }
 
 
+def _restore_module_dict(mod, snapshot: dict) -> None:
+    """把模組 ``__dict__`` 逐位元還原回快照狀態（**含 class / 例外物件身分**）。"""
+    mod.__dict__.update(snapshot)
+    for key in [k for k in mod.__dict__ if k not in snapshot]:
+        del mod.__dict__[key]
+
+
 @pytest.fixture()
 def iso_root(tmp_path, monkeypatch):
     monkeypatch.setenv("SOUL_OS_DATA_DIR", str(tmp_path))
@@ -52,9 +59,25 @@ def iso_root(tmp_path, monkeypatch):
 
     import src.llm.proxy as proxy
 
-    importlib.reload(proxy)
-    yield tmp_path, proxy
-    reset_data_root()
+    # 🔺 TEST-ORDER-ISOLATION-1（2026-10-28 主大腦）：`importlib.reload()` 會在
+    #   **同一個模組物件**上重跑模組級程式碼 ⇒ 模組裡的 class 物件被**換成新身分**
+    #   （`LLMProxy`／`LLMBackend`／`OpenAIBackend`／`ClaudeBackend`）。任何在
+    #   *收集期*（import 其它測試模組時）就 `from src.llm.proxy import ...` 的
+    #   測試（實測有 8 個模組：tests/test_chrono_integration.py、
+    #   tests/test_event_generation_v1.py、tests/test_e2e_full_flow.py、
+    #   tests/observability/test_prompt_trace.py、tests/test_memory_middleware.py、
+    #   tests/test_phase4_multi_agent.py、tests/test_phase3_m8.py、
+    #   tests/test_m1_5_night_400_e2e.py），手上仍是**舊物件** ⇒
+    #   `isinstance()` 對不上 ⇒ 那些測試的結果**依賴收集順序**。
+    #   ⇒ reload 前快照模組 `__dict__`、reload 後**逐位元還原**（含 class 身分）
+    #   ⇒ 本 fixture 對同行程的其它測試 0 影響。
+    snapshot = dict(proxy.__dict__)
+    try:
+        importlib.reload(proxy)
+        yield tmp_path, proxy
+    finally:
+        _restore_module_dict(proxy, snapshot)
+        reset_data_root()
 
 
 def test_missing_file_is_silent(iso_root):

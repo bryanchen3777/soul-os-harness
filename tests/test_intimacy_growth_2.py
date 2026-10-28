@@ -1618,6 +1618,14 @@ class TestLazyDdl:
         `subprocess`（`tests/infra/test_no_production_spawn_guard.py` 的 R5
         禁令：掃描樹內**任何** `subprocess.*` 呼叫都必須被顯式 allowlist，
         而新增 allowlist 條目是該測試檔的職責，不在本票範圍）。
+
+        🔴 TEST-ORDER-ISOLATION-1：reload 會把模組裡的 **class / 例外物件換成
+        新的身分**（`EmotionEngine`、`SettleAbortedError` …）。任何在*收集期*
+        就 `from src.agent.emotion import SettleAbortedError` 的測試，手上的
+        仍是**舊物件** ⇒ `pytest.raises(SettleAbortedError)` 抓不到新物件拋的
+        例外 ⇒ 那些測試的結果**依賴收集順序**（實測：reload 先跑時，本檔
+        `TestPublicApiFailurePropagation` / `TestTransactionRollback` 共 4 支
+        全轉紅）。⇒ reload 前快照模組 `__dict__`、reload 後**逐位元還原**。
         """
         import importlib
 
@@ -1630,28 +1638,33 @@ class TestLazyDdl:
 
         import src.agent.emotion as emotion_mod
 
-        # reload ⇒ 模組層級 singleton 以新路徑重建 = 一次全新的「import」
-        reloaded = importlib.reload(emotion_mod)
-
-        conn = sqlite3.connect(str(reloaded.DB_PATH))
+        snapshot = dict(emotion_mod.__dict__)
         try:
-            cols = [r[1] for r in conn.execute("PRAGMA table_info(agent_emotions)")]
-            tabs = [
-                r[0]
-                for r in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                )
-            ]
+            # reload ⇒ 模組層級 singleton 以新路徑重建 = 一次全新的「import」
+            reloaded = importlib.reload(emotion_mod)
+
+            conn = sqlite3.connect(str(reloaded.DB_PATH))
+            try:
+                cols = [r[1] for r in conn.execute("PRAGMA table_info(agent_emotions)")]
+                tabs = [
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                ]
+            finally:
+                conn.close()
+
+            assert "last_valid_inbound_at" not in cols, cols
+            assert "next_decay_due_at" not in cols, cols
+            assert "intimacy_decay_ledger" not in tabs, tabs
         finally:
-            conn.close()
-
-        assert "last_valid_inbound_at" not in cols, cols
-        assert "next_decay_due_at" not in cols, cols
-        assert "intimacy_decay_ledger" not in tabs, tabs
-
-        # 收尾：reload 回原狀態，避免污染後續測試的模組層級 singleton
-        reset_data_root()
-        importlib.reload(emotion_mod)
+            # 收尾：**逐位元還原** reload 前的模組狀態（含 class / 例外身分），
+            # 避免污染後續測試的模組層級 singleton ⇒ 結果不依賴收集順序。
+            reset_data_root()
+            emotion_mod.__dict__.update(snapshot)
+            for key in [k for k in emotion_mod.__dict__ if k not in snapshot]:
+                del emotion_mod.__dict__[key]
 
 
 # ═════════════════════════════════════════════════════════════

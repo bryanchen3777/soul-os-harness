@@ -19,12 +19,22 @@ Bry 派工原話: 「修完後不要只驗證單一 agent, 用會觸發全部 10
 """
 import asyncio
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# 🔴 2026-10-27（FEAT-TEST-ENV-ISOLATION-CLEANUP）：`test_10` 讀**生產日誌**
+# ＋ 查 git 歷史，原本用四個「檔案存在性／內容」判據當 skip 判據
+# ⇒ skip 集合會隨生產日誌與修法 commit 狀態漂移。現改為 **env opt-in 閘門**：
+# 未授權 ⇒ 恆定 skip，**理由固定**；已授權 ⇒ 前置條件缺席是**失敗**（不是 skip）。
+NIGHT_400_FIX_CHECK = os.environ.get("SOUL_OS_NIGHT_400_FIX_CHECK", "").strip()
+NIGHT_400_FIX_CHECK_SKIP_REASON = (
+    "未設定 SOUL_OS_NIGHT_400_FIX_CHECK ⇒ 生產夜槽 400 canary 未授權"
+)
 
 
 class TestM15Fix(unittest.TestCase):
@@ -189,9 +199,14 @@ class TestM15Fix(unittest.TestCase):
         驗證方式: server log 應該沒有 400 (重啟後還沒觸發) 或者 < 5 條.
         Bry 派工是確認修法後重啟, 跑 10 隻 night diary 觸發, 看 400 數.
         """
+        if not NIGHT_400_FIX_CHECK:
+            self.skipTest(NIGHT_400_FIX_CHECK_SKIP_REASON)
         server_log = Path("C:/Users/bbfcc/.local/bin/soul-os-harness/data/server_nohup.err")
-        if not server_log.is_file():
-            self.skipTest("server log not found")
+        # 檔案存在性不再是 skip 判據（漂移來源）⇒ 已授權 canary 時缺席＝失敗。
+        self.assertTrue(
+            server_log.is_file(),
+            f"server log not found（已授權生產夜槽 400 canary）: {server_log}",
+        )
         # 這個測試需要在修法重啟後才能驗證
         # baseline 階段 (修法前) 應該 skip, 修法重啟後才跑
         # 修法 commit 標記
@@ -202,17 +217,25 @@ class TestM15Fix(unittest.TestCase):
                 cwd="C:/Users/bbfcc/.local/bin/soul-os-harness",
                 capture_output=True, text=True
             )
-            if "M1.5" not in r.stdout:
-                self.skipTest("M1.5 修法還沒 commit, 修法後重啟再驗證")
-        except Exception:
-            self.skipTest("git 查不到, 跳過")
+        except Exception as exc:
+            self.fail(f"git 查不到（已授權生產夜槽 400 canary）: {exc}")
+        # 「修法還沒 commit」原本是 skip 判據（漂移來源）⇒ 現為明確斷言。
+        self.assertIn(
+            "M1.5",
+            r.stdout,
+            "M1.5 修法還沒 commit（已授權生產夜槽 400 canary）",
+        )
         # 修法 commit 後: server log 重啟後 400 數應該 < 5
         content = server_log.read_text(encoding="utf-8")
         import re
         # 找 22:00:43 (重啟時間) 之後的 400
         restart = "2026-08-06 22:00:43"
-        if restart not in content:
-            self.skipTest("重啟時間戳不在 log, 可能 server 還沒重啟")
+        # 「重啟時間戳不在 log」原本是 skip 判據（漂移來源）⇒ 現為明確斷言。
+        self.assertIn(
+            restart,
+            content,
+            f"重啟時間戳不在 log, 可能 server 還沒重啟（已授權生產夜槽 400 canary）: {restart}",
+        )
         after = content.split(restart, 1)[-1]
         fours = re.findall(r'HTTP 400[^\n]*agent=(\w+)', after)
         self.assertLess(len(fours), 5,

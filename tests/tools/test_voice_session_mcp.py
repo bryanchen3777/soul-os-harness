@@ -48,9 +48,20 @@ def synth_pcm_b64(seconds: float = 0.2, sr: int = 16000, amp: float = 0.3,
 
 @pytest.fixture(autouse=True)
 def _clean_registry(monkeypatch):
-    """每笔测试前清空会话注册表、恢复默认 ASR 注入点。"""
+    """每笔测试前清空会话注册表、恢复默认 ASR 注入点，并重置语音路由单例。"""
     mcp._SESSION_REGISTRY.clear()
     monkeypatch.setattr(mcp, "_SESSION_ASR_FN", None)
+    # 🔴 TEST-ORDER-ISOLATION-2：`scripts/audio_stream_mcp.py` 的模块级单例
+    # `_SESSION_ROUTER` 持有**有状态**的防洪限速器（`VoiceRateLimiter`：
+    # 滚动窗口 6/min + 硬上限 12/min + 连续拒收 backoff 5s→10s→30s）。
+    # 它跨测试存活 ⇒ 前一支测试留下的 `_reject_count` 会让本支的
+    # USER_MESSAGE 被「防洪」降级成 AMBIENT ⇒ 结果**依赖测试执行顺序**
+    # （实测 reverse 顺序下：`_reject_count` 累积到 7 时 scene1 拿到
+    # AMBIENT 而非 USER_MESSAGE）。每支测试重建一份 router ⇒ 限速器归零。
+    monkeypatch.setattr(mcp, "_SESSION_ROUTER", None)
+    # 同理：`_VOICE_CONFIG` 是 env 派生配置的单例缓存，一并归零，避免继承
+    # 其它测试遗留的环境变量覆盖（VOICE_ADDRESS_NAMES / ADDRESS_STRONG …）。
+    monkeypatch.setattr(mcp, "_VOICE_CONFIG", None)
     yield
     mcp._SESSION_REGISTRY.clear()
 

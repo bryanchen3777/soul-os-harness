@@ -20,7 +20,10 @@ TEST-ISOLATION-FIX-1（2026-09-13）：新增全域 autouse 資料根隔離 fixt
 """
 from __future__ import annotations
 
+import os
+import random
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -30,6 +33,14 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.append(str(_REPO_ROOT))
+
+#: `tests/infra/` 內的共用純函式庫（skip 基準機制）。**不依賴套件化**：
+#: 直接把該目錄 append 到 sys.path 後 import（與 `tests/infra/` 下的守衛檔同一做法）。
+_INFRA_DIR = Path(__file__).resolve().parent / "infra"
+if str(_INFRA_DIR) not in sys.path:
+    sys.path.append(str(_INFRA_DIR))
+
+import skip_baseline_lib  # noqa: E402
 
 #: Opt-out 標記：顯式宣告「本測試必須斷言生產預設路徑佈局（repo `data/`）」。
 ALLOW_REAL_DATA_ROOT = "allow_real_data_root"
@@ -172,3 +183,185 @@ def tmp_dir(tmp_path):
 def project_root() -> Path:
     """repo 根目錄（等同該檔 `__main__` 的 Path(__file__).resolve().parent.parent）。"""
     return Path(__file__).resolve().parent.parent
+
+
+# ═════════════════════════════════════════════════════════════
+# Skip 集合基準機制（FEAT-TEST-ENV-ISOLATION-CLEANUP D4）
+# ═════════════════════════════════════════════════════════════
+#
+# 命題：同一份程式碼、任意時間重跑 ⇒ **被 skip 的測試 ID 集合逐筆相同**。
+# 機制：本場實際被 skip 的測試 ID 集合 vs `tests/infra/skip_baseline.json`。
+#   · **只比 ID，不比理由**（理由含時間戳／絕對路徑 ⇒ 假漂移）。
+#   · 只在**全庫回歸模式**強制（子集跑只印觀察結果，不判紅）。
+#   · `SOUL_OS_WRITE_SKIP_BASELINE=1` ⇒ 改寫基準檔（僅限刻意更新時）。
+#   · 基準檔**不含時間戳** ⇒ 每日 churn = 0。
+#
+# 🔴 **前提差一拍（實測）**：工單原文寫「`config.args` 為空（裸 `pytest -q`）」
+#    ⇒ 但 pytest 9 的 `config.args` 在裸跑時**不為空**（= `pytest.ini` 的
+#    `testpaths` 展開結果 `["tests"]`）⇒ 不能用「args 為空」判斷全庫模式。
+#    改用**公開**的 `config.args_source`（見 `_is_full_repo_run` 的說明）。
+
+
+def _is_full_repo_run(config) -> bool:
+    """本場是否「全庫回歸模式」（決定 skip 基準是否強制判紅）。
+
+    判準（依序）：
+      1. env `SOUL_OS_ENFORCE_SKIP_BASELINE=1` ⇒ 是（強制全庫比對）。
+      2. `config.args_source == TESTPATHS` ⇒ 是（呼叫端沒指定路徑，用的是
+         `pytest.ini` 的 `testpaths`）。
+      3. `config.args_source == ARGS` 且 args 恰好等於 testpaths 展開 ⇒ 是
+         （`pytest -q tests` 與裸跑等價）。
+      4. 其餘（指定子集路徑）⇒ 否。
+
+    另外：帶 `-k` / `-m` / `--deselect` / `--lf` / `--ff` / `--stepwise`
+    的執行**不算**全庫回歸（收集集合被裁過 ⇒ skip 集合本來就會不同）。
+    """
+    if os.environ.get("SOUL_OS_ENFORCE_SKIP_BASELINE") == "1":
+        return True
+    option = getattr(config, "option", None)
+    for name in (
+        "keyword",
+        "markexpr",
+        "deselect",
+        "lf",
+        "ff",
+        "last_failed",
+        "stepwise",
+        "stepwise_skip",
+    ):
+        if getattr(option, name, None):
+            return False
+    source = getattr(config, "args_source", None)
+    source_name = getattr(source, "name", "") or ""
+    if source_name == "TESTPATHS":
+        return True
+    if source_name == "ARGS":
+        try:
+            testpaths = [str(p) for p in (config.getini("testpaths") or [])]
+        except Exception:  # noqa: BLE001 — 讀不到就當「不是全庫」
+            return False
+        args = [str(a) for a in (getattr(config, "args", None) or [])]
+        return bool(testpaths) and sorted(args) == sorted(testpaths)
+    # 舊版 pytest 沒有 args_source ⇒ 退回「args 為空」。
+    return not (getattr(config, "args", None) or [])
+
+
+def _fail_session(terminalreporter) -> None:
+    """讓整場 exit code 變成非 0（pytest 9 的 exit status 在 sessionfinish 尾端定案）。"""
+    session = getattr(terminalreporter, "_session", None)
+    if session is not None:
+        session.exitstatus = 1
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Skip 集合基準比對（只在全庫回歸模式強制；子集跑只印不判紅）。"""
+    observed = skip_baseline_lib.collect_skip_ids(
+        terminalreporter.stats.get("skipped", [])
+    )
+    enforce = _is_full_repo_run(config)
+    write_mode = os.environ.get("SOUL_OS_WRITE_SKIP_BASELINE") == "1"
+
+    # 🔴 2026-10-28 主大腦：終端摘要一律用 **ASCII 機器格式**。
+    #   理由：本 repo 有多個「用 `subprocess.run(..., text=True)` 收 pytest 輸出」的
+    #   meta-test（test_m3_world_awareness.py／test_epistemic_mind_eh42.py 等）。
+    #   它們未指定 `encoding` ⇒ 本機 locale＝cp950 ⇒ **child 一旦輸出中文就會
+    #   UnicodeDecodeError** ⇒ `proc.stdout is None` ⇒ 消費端假綠／假紅。
+    #   （該坑本 repo 已在 tests/soul/test_life_thread_origins_m4.py:883-1007 記載。）
+    #   ⇒ 摘要行保持 ASCII ⇒ 任何消費端都不會被它打爆；中文說明只放在程式碼註解。
+    if write_mode:
+        if not enforce:
+            terminalreporter.write_line(
+                "[SKIP-BASELINE] write-mode=1 but run is NOT full-repo mode"
+                " => baseline NOT written (a subset run must not overwrite it)"
+            )
+            return
+        try:
+            path = skip_baseline_lib.save_baseline(observed)
+        except OSError as exc:  # pragma: no cover — 磁碟錯誤
+            terminalreporter.write_line(f"[SKIP-BASELINE] baseline write FAILED: {exc}")
+            _fail_session(terminalreporter)
+            return
+        terminalreporter.write_line(
+            f"[SKIP-BASELINE] baseline rewritten: {path} ids={len(observed)}"
+        )
+        return
+
+    try:
+        baseline = skip_baseline_lib.load_baseline()
+    except skip_baseline_lib.BaselineError as exc:
+        terminalreporter.write_line(f"[SKIP-BASELINE] baseline unavailable: {exc}")
+        if enforce:
+            _fail_session(terminalreporter)
+        return
+
+    diff = skip_baseline_lib.diff_skip_ids(baseline, observed)
+    added, removed = diff["added"], diff["removed"]
+    if not added and not removed:
+        terminalreporter.write_line(
+            f"[SKIP-BASELINE] skip-set STABLE skipped={len(observed)} "
+            f"baseline={len(baseline)} added=0 removed=0"
+        )
+        return
+
+    terminalreporter.write_line("")
+    if enforce:
+        terminalreporter.write_line("[SKIP-BASELINE] skip-set DRIFT:")
+        for node_id in added:
+            terminalreporter.write_line(f"  + {node_id}")
+        for node_id in removed:
+            terminalreporter.write_line(f"  - {node_id}")
+        terminalreporter.write_line(
+            "[SKIP-BASELINE] full-repo mode => FAIL (exit 1)."
+            " If this change is intended, rewrite the baseline on purpose with"
+            " SOUL_OS_WRITE_SKIP_BASELINE=1"
+        )
+        _fail_session(terminalreporter)
+    else:
+        # 子集跑的 skip 集合本來就只覆蓋基準的一部分 ⇒ 逐筆列表會是雜訊。
+        # 只印觀察結果（計數），不判紅。
+        terminalreporter.write_line(
+            f"[SKIP-BASELINE] observe-only (not full-repo mode) "
+            f"skipped={len(observed)} baseline={len(baseline)} "
+            f"added={len(added)} removed={len(removed)}"
+        )
+
+
+# ═════════════════════════════════════════════════════════════
+# 收集順序擾動機制（Owner 2026-10-27 裁示）
+# ═════════════════════════════════════════════════════════════
+#
+# env `SOUL_OS_TEST_ORDER`：
+#   · 未設定／空字串 ⇒ **完全不動**收集順序（既有行為零改變）。
+#   · `reverse` ⇒ 反轉收集順序。
+#   · `shuffle` ⇒ 以 `SOUL_OS_TEST_ORDER_SEED`（預設 0）為種子的**確定性**洗牌
+#     （同一 seed ⇒ 逐位元相同的順序 ⇒ 可做 A/B 對照）。
+# 只調換 item 順序：不改任何測試的語意、fixture、標記。
+
+
+def pytest_collection_modifyitems(session, config, items):
+    """收集順序擾動（env 驅動；**未設定時零影響**）。"""
+    order = os.environ.get("SOUL_OS_TEST_ORDER", "").strip()
+    if not order:
+        return
+    if order == "reverse":
+        items.reverse()
+        return
+    if order == "shuffle":
+        raw_seed = os.environ.get("SOUL_OS_TEST_ORDER_SEED", "0").strip() or "0"
+        try:
+            seed = int(raw_seed)
+        except ValueError:
+            warnings.warn(
+                f"SOUL_OS_TEST_ORDER_SEED={raw_seed!r} 不是整數 ⇒ 退回 seed=0",
+                UserWarning,
+                stacklevel=2,
+            )
+            seed = 0
+        random.Random(seed).shuffle(items)
+        return
+    warnings.warn(
+        f"SOUL_OS_TEST_ORDER={order!r} 未知取值 ⇒ 收集順序不變"
+        "（可用：reverse / shuffle）",
+        UserWarning,
+        stacklevel=2,
+    )

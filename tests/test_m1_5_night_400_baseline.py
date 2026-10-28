@@ -24,12 +24,23 @@ Bry 派工原話: 「修完後不要只驗證單一 agent, 比照這次的教訓
 """
 import asyncio
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# 🔴 2026-10-27（FEAT-TEST-ENV-ISOLATION-CLEANUP）：本檔的兩支測試讀**生產日誌**
+# （`data/server_nohup.err` / `data/logs/llm_4xx_response.log`）。原本用
+# 「檔案存在性」當 skip 判據 ⇒ skip 集合會隨生產日誌輪替而漂移
+# （有日誌時跑、沒日誌時 skip）。現改為 **env opt-in 閘門**：
+# 未授權 ⇒ 恆定 skip，**理由固定**；已授權 ⇒ 日誌缺席是**失敗**（不是 skip）。
+NIGHT_400_BASELINE = os.environ.get("SOUL_OS_NIGHT_400_BASELINE", "").strip()
+NIGHT_400_BASELINE_SKIP_REASON = (
+    "未設定 SOUL_OS_NIGHT_400_BASELINE ⇒ 生產夜槽 400 canary 未授權"
+)
 
 
 class TestM15Baseline(unittest.TestCase):
@@ -76,9 +87,14 @@ class TestM15Baseline(unittest.TestCase):
 
     def test_02_real_400_count_after_restart(self):
         """重啟後 400 累積次數: 從 server_nohup.err 統計, 確認規模性問題."""
+        if not NIGHT_400_BASELINE:
+            self.skipTest(NIGHT_400_BASELINE_SKIP_REASON)
         server_log = Path("C:/Users/bbfcc/.local/bin/soul-os-harness/data/server_nohup.err")
-        if not server_log.is_file():
-            self.skipTest("server log not found")
+        # 檔案存在性不再是 skip 判據（漂移來源）⇒ 已授權 canary 時缺席＝失敗。
+        self.assertTrue(
+            server_log.is_file(),
+            f"server log not found（已授權生產夜槽 400 canary）: {server_log}",
+        )
         # 從 server log 找 "HTTP 400" 模式, 但要帶 agent= 確認是 LLM 400 (不是其他)
         content = server_log.read_text(encoding="utf-8")
         # 重啟時間戳: 2026-08-06 22:00:43
@@ -99,9 +115,8 @@ class TestM15Baseline(unittest.TestCase):
         print(f"  [M1.5 baseline] 涉及 agent 數: {len(set(a for _, a in four_hundreds))}")
         print(f"  [M1.5 baseline] stub fallback 數: {len(stubs)}")
         # Bry 派工前提: 「10/10 全中」 是 P0
-        # 如果 < 5 條, 測試 skip (可能 server 還沒觸發)
-        if len(four_hundreds) < 5:
-            self.skipTest(f"重啟後 400 數 < 5 ({len(four_hundreds)}), server 可能還沒完全啟動")
+        # 原本「< 5 條 ⇒ skip」是日誌內容判準（漂移來源）⇒ 現由下方
+        # assertGreaterEqual 明確斷言（缺席＝失敗，不是 skip）。
         # 確認 400 數量級 (10 隻角色)
         self.assertGreaterEqual(len(four_hundreds), 5,
             f"重啟後 400 數應該 >= 5 (Bry 8/6 22:00 看到 10 隻全中), 實際 {len(four_hundreds)}")
@@ -111,9 +126,15 @@ class TestM15Baseline(unittest.TestCase):
 
     def test_03_4xx_log_all_chat_content_empty(self):
         """4xx log 全部是 chat content is empty (2013), 確認是老問題復發."""
+        # 同組 skip 點納入同一個 env 閘門（未授權 ⇒ 恆定 skip，理由固定）。
+        if not NIGHT_400_BASELINE:
+            self.skipTest(NIGHT_400_BASELINE_SKIP_REASON)
         log_4xx = Path("C:/Users/bbfcc/.local/bin/soul-os-harness/data/logs/llm_4xx_response.log")
-        if not log_4xx.is_file():
-            self.skipTest("4xx log not found")
+        # 檔案存在性不再是 skip 判據（漂移來源）⇒ 已授權 canary 時缺席＝失敗。
+        self.assertTrue(
+            log_4xx.is_file(),
+            f"4xx log not found（已授權生產夜槽 400 canary）: {log_4xx}",
+        )
         content = log_4xx.read_text(encoding="utf-8")
         # 統計 unique error message
         import re

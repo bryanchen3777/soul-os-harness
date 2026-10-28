@@ -50,6 +50,15 @@ REPO = Path("C:\\Users\\bbfcc\\.local\\bin\\soul-os-harness")
 #: 明確授權（預設空字串），未設定時以 `self.skipTest(...)` 跳過（不是失敗）。
 LIVE_BASE = os.environ.get("SOUL_OS_LIVE_SERVICE_BASE_URL", "")
 
+#: 要探測的**退役啟動腳本**路徑。**預設空字串** ⇒ 沒有授權目標、沒有能力。
+#: 🔴 2026-10-27（FEAT-TEST-ENV-ISOLATION-CLEANUP）：原本這支測試用
+#: 「`scripts/_start_plan_a.ps1` 是否存在」當 skip 判據（檔案存在性判據 ⇒
+#: skip 集合隨生產檔案狀態漂移）⇒ 改為 env opt-in，理由固定。
+PLAN_A_LAUNCHER_PATH = os.environ.get("SOUL_OS_PLAN_A_LAUNCHER_PATH", "").strip()
+PLAN_A_LAUNCHER_PATH_SKIP_REASON = (
+    "未設定 SOUL_OS_PLAN_A_LAUNCHER_PATH ⇒ 無授權的退役啟動腳本可探測"
+)
+
 
 class TestPlanALauncherV1(unittest.TestCase):
     """Plan A launcher v1 baseline (before 修法)"""
@@ -107,12 +116,21 @@ class TestPlanALauncherV1(unittest.TestCase):
         """v1 baseline: 模擬 Plan A 啟動不存在的 _start_plan_a.ps1, powershell.exe 找不到檔案立刻退出
         不影響現有 server (用 sandbox 測試, 不 kill PID 23512)
         """
-        if self.start_plan_a.exists():
-            self.skipTest(f"v1 baseline: _start_plan_a.ps1 已存在 ({self.start_plan_a}), 跳過")
+        if not PLAN_A_LAUNCHER_PATH:
+            self.skipTest(PLAN_A_LAUNCHER_PATH_SKIP_REASON)
+        target = Path(PLAN_A_LAUNCHER_PATH)
+        # 語意不變：**退役腳本必須不存在**。
+        # 🔴 這裡是**斷言**而不是 skip —— 「檔案存在性」當 skip 判據是漂移來源；
+        #    且若目標真的存在還照跑 powershell，就會真的拉起服務（違反行程安全
+        #    鐵律）⇒ 先斷言缺席，缺席時才執行探測。
+        self.assertFalse(
+            target.exists(),
+            f"退役的啟動腳本必須不存在（已授權探測）: {target}",
+        )
         # 模擬 Plan A 啟動指令
         proc = subprocess.run(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-File", str(self.start_plan_a)],
+             "-File", str(target)],
             capture_output=True, text=True, timeout=10,
         )
         # powershell.exe 找不到 .ps1 立刻退出, exit code != 0

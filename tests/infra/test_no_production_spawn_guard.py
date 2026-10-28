@@ -247,7 +247,13 @@ SUBPROCESS_ALLOWLIST: Dict[Tuple[str, int], str] = {
     # 呼叫點本身未改動，純行號漂移；白名單總數不變。
     ("tests/test_log_backup_fix_v2.py", 332):
         "PowerShell `PSParser::Tokenize` fed the script text on stdin — parses, never executes",
-    ("tests/test_m1_5_night_400_fix.py", 200):
+    # (原 200 → 215) 2026-10-27 FEAT-TEST-ENV-ISOLATION-CLEANUP：該檔把
+    # `test_10` 的多個 skip 判據（生產日誌內容＋git 歷史）改成 env opt-in 閘門
+    # （`SOUL_OS_NIGHT_400_FIX_CHECK`），使其下方行號整組 +15。被 allowlist 的
+    # 呼叫點本身**未改動**（仍是同一個唯讀
+    # `subprocess.run(["git", "log", "--oneline", "--grep=M1.5"], ...)`），
+    # 純行號漂移；白名單總數不變。
+    ("tests/test_m1_5_night_400_fix.py", 215):
         "read-only `git log --oneline --grep=M1.5` commit-marker check",
     # (原 762 → 780) SOUL-TECH-DEBT-001 C 類校準 dispatcher priority 斷言時，
     # 該檔上方淨增行數，導致這處**既有**唯讀 git diff 探測位移。純行號漂移；
@@ -258,18 +264,25 @@ SUBPROCESS_ALLOWLIST: Dict[Tuple[str, int], str] = {
         "nested `pytest -q` regression run over 3 sibling test files, SOUL_OS_DATA_DIR removed from the child env",
     ("tests/test_observability_completeness_1.py", 762):
         "read-only `git diff --name-only HEAD` frozen-contract scope check",
-    # (原 102 → 113) 2026-10-27 FEAT-LIFECYCLE-CLI-TYPE-NEUTRAL B 段：該檔的
+    # (原 102 → 113 → 131) 2026-10-27 FEAT-LIFECYCLE-CLI-TYPE-NEUTRAL B 段：該檔的
     # /health 探針改為 env 驅動 opt-in（新增 `import os` ＋ 模組層級 `LIVE_BASE`
     # ＋ 說明註解），使其下方**所有行號整組 +11**。被 allowlist 的呼叫點本身
     # **未改動**（仍是同一個 `subprocess.run([... powershell.exe -File <不存在> ...])`
     # ，且它的前提是該 .ps1 不存在 ⇒ 斷言是「它失敗」⇒ 什麼都啟動不了），
-    # 純行號漂移；本白名單以 (路徑, 行號) 為鍵，故需同步更新。**大小維持 22 不變**。
-    ("tests/test_plan_a_launcher_v1.py", 113):
-        "v1 baseline: powershell -File against a path asserted ABSENT (skipTest() at :110-111 runs first "
-        "when it exists, and it does today — verified the guard still precedes the subprocess call) — "
+    # 純行號漂移；本白名單以 (路徑, 行號) 為鍵，故需同步更新。
+    # (113 → 131) 2026-10-27 FEAT-TEST-ENV-ISOLATION-CLEANUP：該檔把
+    # 「`scripts/_start_plan_a.ps1` 存在與否」的 **skip 判據**改成 env opt-in
+    # 閘門（`SOUL_OS_PLAN_A_LAUNCHER_PATH`）＋ 明確斷言（`assertFalse(target.exists())`
+    # ，**在** subprocess 呼叫**之前**）⇒ 行號再 +18。呼叫點本身未改動。
+    # **大小維持 22 不變**。
+    ("tests/test_plan_a_launcher_v1.py", 131):
+        "v1 baseline: powershell -File against a path asserted ABSENT (the env gate "
+        "SOUL_OS_PLAN_A_LAUNCHER_PATH + `assertFalse(target.exists())` run first — the "
+        "assertion IS the guard, so the path is proven absent before the subprocess call) — "
         "the assertion IS that it fails, so nothing can be launched. (原 68 → 102："
         "SOUL-TECH-DEBT-001 校準上方過期 baseline 測試後淨增 34 行，純行號漂移；"
-        "再於 2026-10-27 FEAT-LIFECYCLE-CLI-TYPE-NEUTRAL B 段 +11 行 → 113。)",
+        "再於 2026-10-27 FEAT-LIFECYCLE-CLI-TYPE-NEUTRAL B 段 +11 行 → 113；"
+        "再於 2026-10-27 FEAT-TEST-ENV-ISOLATION-CLEANUP +18 行 → 131。)",
     ("tests/test_ts3_official_mcp_server.py", 108):
         "PID-scoped `taskkill /PID <pid> /T /F` tree cleanup of the npx child this test started",
     ("tests/test_ts3_official_mcp_server.py", 158):
