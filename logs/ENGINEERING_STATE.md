@@ -7395,3 +7395,15 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
   - 合入後重跑兩動守衛：24＋9＝**33 passed**。
 - **未做**：未重啟生產服務（G3 接線待重啟生效；重啟需 Owner 明示授權，主大腦不得自行對生產行程動手）；
   未寫 `data/**`；未殺任何行程；未跑 `scripts/manual_*.py`；真實 LLM 呼叫 0 次（兩動皆為接線＋守衛，G3 生產呼叫待重啟後才會發生）。
+
+## 0.1.105 生產重啟生效（Owner 2026-10-28 15:54 明示授權；G3 接線正式上線）（2026-10-28 15:54–15:57 EDT）
+
+- **授權**：Owner「需要重啟就重啟吧」⇒ 主大腦走官方 `.\scripts\server_ops.ps1 restart`（未手動殺任何行程、未 `task_stop` wrapper）。
+- **過程**：舊樹 PID 3448 下線 → 新 trampoline PID **22524** → 子行程 PID **17852**；冷啟動約 67s（uvicorn `Application startup complete` 於 15:55:50）。
+- **三者一致複查（全綠）**：`server_ops.ps1 status`＝22524＋17852 且 `/health = 200`；
+  `netstat :8000`＝LISTENING owner **17852**（子行程，符合鐵律② pidfile＝trampoline／socket owner＝子行程）；
+  `data/server.pid`＝**22524**；urllib `/health`＝**200**。
+- **G3 接線已上線證據**：啟動日誌即見新 Backend 埋點
+  `[elevate] …contradiction … verdict=UNDECIDED … reason=budget_exhausted backend_invoked=False`（多 agent 逐筆出現）⇒
+  `scripts/run_server.py:685` 的 `_elevate_check()` 確實走到新 backend 分支（預算耗盡時 fail-closed 不呼叫，符合設計）。
+- 附帶（非本動引入）：TG 9/10 bots polling（`mahiru` poller 重建中，`attempt 1/5`）⇒ 只回報，不動手。
