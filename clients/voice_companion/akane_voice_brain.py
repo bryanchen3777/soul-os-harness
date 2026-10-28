@@ -931,6 +931,240 @@ def sanitize_voice_output(text: str, allow_drama3: bool = False) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
+# VC-CLOCK-ANCHOR（2026-10-28 Owner 裁定）：機械式擋截 ＋ 權威時間注入
+# ─────────────────────────────────────────────────────────────
+#
+# 故障實測（2026-10-28）：真實紐約 11:27:18（UTC 15:27:18）時，使用者問「现在才几点」，
+# 代理答「現在嗎。一點二十七分。」⇒ 報成 13:27＝**快 2 小時**（分鐘對、小時錯）。
+#
+# 全 repo 時區管路已逐層驗證正確（src/timezone_utils / src.llm.proxy）⇒ **不是時區轉換缺陷**。
+# 真正的成因有兩個，兩者都必須處理（Owner 裁定「兩個都做」）：
+#   ① 代理本來就不該報時（persona 契約：expression_mode=implicit / soft_explicit
+#      ⇒「絕不提及／不說出具體時鐘時間」）⇒ 需要**機械式擋截**；
+#   ② 萬一要報，prompt 裡必須有一個**無歧義的權威時間**（時序體感錨點只有 24 小時制時間、
+#      沒有時區標示）⇒ 需要**權威時間注入**。
+#
+# 🔴 D1 **不得**把命中的句子改寫成另一個時間數字（那只是把亂報換成亂報）。
+# 🔴 D1 **不得**誤傷模糊表述（「今天比較晚出現呢」「都這麼晚了還不睡嗎」「下午的光線很舒服」）
+#    ⇒ 只擋**含具體時鐘數字**者。
+# 🔴 守門 fail-closed：偵測不到就原樣放行；任何例外 ⇒ 放行原文並記 log。
+
+#: 權威時間區塊標題（D2）
+VC_CLOCK_ANCHOR_HEADING = "【當前本地時間（權威）】"
+
+#: 權威時間區塊的用法行（**不是**報時指令：報不報由 persona 的 expression_mode 決定）
+VC_CLOCK_ANCHOR_RULE = (
+    "- 上面是 24 小時制的本地時間；若要引用時間，只能用上面這個時間；"
+    "不得自行換算、不得臆測時區。"
+)
+
+#: 句尾標點（切句用；逗號只是分句，不切）
+_CLOCK_SENTENCE_END = "。！？!?；;\n"
+
+#: 中文數字（時數判定用；「兩」＝2）
+_CLOCK_CN_DIGITS = {
+    "零": 0, "〇": 0, "一": 1, "二": 2, "兩": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+}
+
+#: 「數字＋點」**前**若出現這些字 ⇒ 那是修飾語（「有一點」「晚一點」），不是時鐘
+_CLOCK_VAGUE_PREFIX = set(
+    "早晚会快慢稍微差多少再就更太有没挺很蛮不这那个吗呢吧啊呀哦好"
+)
+
+#: 「點」**後**若緊接這些字 ⇒ 是別的詞（點頭／點心／點歌／一點光…），不是時鐘
+_CLOCK_NON_CLOCK_TAIL = set("點頭心歌菜名贊亮破火水算綴香滴光希聲風")
+
+#: 「點」**後**若出現這些字 ⇒ 仍是指涉時鐘（分鐘數／時刻用語）
+_CLOCK_TAIL_WORDS = set("半整多過差左右分鐘時到開見醒了")
+
+#: 句中出現這些字 ⇒ 該句在談「時間／時段／日期」
+_CLOCK_CONTEXT_WORDS = (
+    "現在", "今天", "明天", "昨天", "今日", "明日", "今早", "明早", "今晚", "明晚",
+    "昨晚", "昨夜", "今晨", "早上", "早晨", "上午", "中午", "下午", "午後", "傍晚",
+    "晚上", "深夜", "凌晨", "半夜", "夜裡", "夜里", "星期", "禮拜", "週", "周",
+    "時間", "時鐘", "時刻", "此刻", "目前", "當下", "整點", "鐘點",
+)
+
+#: 判斷「整句就是一句報時」時可忽略的字（空白／標點／語氣助詞）
+_CLOCK_STRIP_CHARS = set(
+    " \t\r\n　。！？!?，、；;：:～…─-（）()「」『』《》【】[]{}"
+    "啦啊呀吧呢哦喔嘛咯哈耶嘍唄的了着過儿"
+)
+
+#: HH:MM / HH:MM:SS（阿拉伯數字＋冒號）
+_CLOCK_COLON_RE = re.compile(r"(?<!\d)(\d{1,2})\s*[:：]\s*(\d{2})(?!\d)")
+
+#: 阿拉伯數字＋點（3點 / 13點）
+_CLOCK_ARABIC_HOUR_RE = re.compile(r"(?<!\d)(\d{1,2})\s*點")
+
+#: 中文數字＋點（一點 / 十一點 / 二十三點）
+_CLOCK_CN_HOUR_RE = re.compile(r"([零〇一二兩三四五六七八九十]{1,3})\s*點")
+
+
+def _parse_cn_int(text: str) -> Optional[int]:
+    """中文數字 → int（支援 0-24 需要的寫法：零/十/十一/二十/二十三…）。
+
+    無法解析（例如非數字字串）⇒ None（呼叫端視為「不是時鐘」，fail-open）。
+    """
+    if not text:
+        return None
+    if "十" in text:
+        head, _, tail = text.partition("十")
+        tens = 1 if head == "" else _CLOCK_CN_DIGITS.get(head)
+        ones = 0 if tail == "" else _CLOCK_CN_DIGITS.get(tail)
+        if tens is None or ones is None:
+            return None
+        return tens * 10 + ones
+    value = 0
+    for ch in text:
+        digit = _CLOCK_CN_DIGITS.get(ch)
+        if digit is None:
+            return None
+        value = value * 10 + digit
+    return value
+
+
+def _is_clock_continuation(tail: str) -> bool:
+    """「點」之後是否接著分鐘數／時刻用語（一點半 / 一點二十七分 / 三點到…）。"""
+    text = tail.lstrip(" \u3000")
+    if not text:
+        return False
+    head = text[0]
+    if head.isdigit():
+        return True
+    if head in "零〇一二兩三四五六七八九十":
+        return True
+    return head in _CLOCK_TAIL_WORDS
+
+
+def _is_pure_clock_statement(sentence: str, match: "re.Match") -> bool:
+    """整句除了這個報時表達以外**沒有別的內容**（「三點。」⇒ True）。"""
+    rest = sentence[: match.start()] + sentence[match.end():]
+    residue = "".join(ch for ch in rest if ch not in _CLOCK_STRIP_CHARS)
+    return not residue
+
+
+def _hour_point_is_clock(sentence: str, match: "re.Match") -> bool:
+    """「數字＋點」是否構成**具體時鐘時間**（而非模糊表述）。"""
+    num_text = match.group(1)
+    if num_text.isdigit():
+        hour = int(num_text)
+    else:
+        hour = _parse_cn_int(num_text)
+    if hour is None or not (0 <= hour <= 24):
+        return False
+
+    start, end = match.span()
+    tail = sentence[end:]
+
+    # ① 「點」後接的是別的詞（點頭／點心／一點光／一點希望）⇒ 不是時鐘
+    if tail[:1] and tail[0] in _CLOCK_NON_CLOCK_TAIL:
+        return False
+
+    # ② 分鐘數／時刻用語（一點二十七分／三點半／十二點半）⇒ 一定是時鐘。
+    #    ⚠️ 必須**先**判這條：「等一下就十二點半」的前一字是「就」（模糊修飾語），
+    #    若先判 ③ 會被誤殺。
+    if _is_clock_continuation(tail):
+        return True
+
+    # ③ 「數字＋點」**前**若是模糊修飾語（「有一點」「晚一點」「差一點」）⇒ 不是時鐘
+    prev_idx = start - 1
+    while prev_idx >= 0 and sentence[prev_idx] in " \u3000":
+        prev_idx -= 1
+    prev = sentence[prev_idx] if prev_idx >= 0 else ""
+    if prev and prev in _CLOCK_VAGUE_PREFIX:
+        # 例外：「今晚三點」「明早八點」——前一字是時間詞的一部分，不是修飾語
+        back = sentence[prev_idx - 1] if prev_idx - 1 >= 0 else ""
+        if not (prev in "早晚" and back in "今明清昨"):
+            return False
+
+    # ④ 句中在談時間（現在／今天／下午…）⇒ 是時鐘
+    if any(word in sentence for word in _CLOCK_CONTEXT_WORDS):
+        return True
+
+    # ⑤ 整句就是一句報時（「三點。」）⇒ 是時鐘
+    if _is_pure_clock_statement(sentence, match):
+        return True
+    return False
+
+
+def clock_type_in_sentence(sentence: str) -> Optional[str]:
+    """判斷一句話是否含「具體時鐘時間」；有 ⇒ 回傳型態，無 ⇒ None。
+
+    型態：`HH:MM`（阿拉伯數字＋冒號）／`N點`（阿拉伯數字＋點）／`X點`（中文數字＋點）。
+    """
+    if _CLOCK_COLON_RE.search(sentence):
+        return "HH:MM"
+    for match in _CLOCK_ARABIC_HOUR_RE.finditer(sentence):
+        if _hour_point_is_clock(sentence, match):
+            return "N點"
+    for match in _CLOCK_CN_HOUR_RE.finditer(sentence):
+        if _hour_point_is_clock(sentence, match):
+            return "X點"
+    return None
+
+
+def _iter_sentences(text: str) -> List[str]:
+    """切句（含句尾標點）；逗號不分句。"""
+    sentences: List[str] = []
+    buffer: List[str] = []
+    for ch in text:
+        buffer.append(ch)
+        if ch in _CLOCK_SENTENCE_END:
+            sentences.append("".join(buffer))
+            buffer = []
+    if buffer:
+        sentences.append("".join(buffer))
+    return sentences
+
+
+def strip_clock_statements(text: str) -> tuple:
+    """剔除含「具體時鐘時間」的句子（VC-CLOCK-ANCHOR D1）。
+
+    回傳 `(淨化後文字, [(命中句, 型態)])`。**偵測不到就原樣回傳**（fail-closed：
+    不可因新邏輯而讓正常回答被吃掉）。
+    """
+    if not text:
+        return text, []
+    kept: List[str] = []
+    hits: List[tuple] = []
+    for sentence in _iter_sentences(text):
+        kind = clock_type_in_sentence(sentence)
+        if kind is None:
+            kept.append(sentence)
+        else:
+            hits.append((sentence, kind))
+    return "".join(kept), hits
+
+
+def format_vc_clock_anchor_block(cfg: Optional[dict] = None) -> str:
+    """VC 權威本地時間區塊（D2）。
+
+    時間值一律取自 `src.timezone_utils` 的既有工具（`now_local()`／
+    `format_localized()`）——**不得**自行組時區字面值、**不得**寫死 offset。
+    fail-closed：取不到時間 ⇒ 回傳空字串 ⇒ 不注入（寧可沒有，不要錯的）。
+
+    本區塊是**權威事實**，不是**報時指令**：報不報仍由 persona 的 `expression_mode`
+    決定（D1 才是那個機關）。
+    """
+    try:
+        from src.timezone_utils import format_localized, now_local
+
+        stamp = format_localized(now_local(cfg), cfg)
+        if not stamp or stamp == "時間未知":
+            return ""
+        return (
+            f"{VC_CLOCK_ANCHOR_HEADING}\n"
+            f"- 現在是 {stamp}\n"
+            f"{VC_CLOCK_ANCHOR_RULE}"
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-closed：寧可不注入，不要錯的
+        logger.warning(f"[VC-CLOCK-ANCHOR] 時間注入 fail-closed：{exc}")
+        return ""
+
+
+# ─────────────────────────────────────────────────────────────
 # Persona 組裝
 # ─────────────────────────────────────────────────────────────
 
@@ -1415,6 +1649,15 @@ class AkaneVoiceBrain:
             except Exception:
                 pass
 
+        # 1b. VC-CLOCK-ANCHOR（D2）：權威本地時間（放在【當前時序體感】之後、歷史之前）。
+        #     時序體感錨點只有 24 小時制時間、**沒有時區標示** ⇒ 代理無法判斷那個時間屬於哪個
+        #     半天（實測：11:27 ＋ afternoon ⇒ 被補成 13:27）。本區塊提供**無歧義**的權威值。
+        #     時間值取自 src.timezone_utils（now_local／format_localized）⇒ 不寫死 offset、
+        #     不自行組時區字面值。本區塊是**權威事實**，不是報時指令（報不報由 persona 決定）。
+        clock_block = format_vc_clock_anchor_block(self.config)
+        if clock_block:
+            sys_parts.append(clock_block)
+
         # 2. SAGE 唯讀記憶檢索（若有）
         if self.memory_retriever and user_text:
             try:
@@ -1500,6 +1743,23 @@ class AkaneVoiceBrain:
 
     def _guarded(self, text: str) -> str:
         result = sanitize_voice_output(text, allow_drama3=self.drama3_enabled).strip()
+        # VC-CLOCK-ANCHOR D1：機械式擋截「具體時鐘時間」。
+        # 依 persona 契約（expression_mode=implicit / soft_explicit ⇒ 不報時），
+        # 命中時**整句剔除**（不得改寫成別的數字）；剔除後為空 ⇒ 走既有 fallback。
+        try:
+            cleaned, hits = strip_clock_statements(result)
+        except Exception as exc:  # noqa: BLE001 — fail-closed：守門失效 ⇒ 原樣放行
+            logger.warning(f"[VC-CLOCK-GUARD] fail-open（守門例外，原樣放行）：{exc}")
+            cleaned, hits = result, []
+        if hits:
+            for sentence, kind in hits:
+                logger.warning(
+                    "[VC-CLOCK-GUARD] 已剔除報時句 type=%s hit=%r final_len=%d",
+                    kind,
+                    sentence,
+                    len(cleaned.strip()),
+                )
+        result = cleaned.strip()
         return result if result else "……"
 
     # ── VC-UNIFY-1 寫側：SAGE 記憶背景入庫（Fire-and-Forget，0 阻塞音訊）────
