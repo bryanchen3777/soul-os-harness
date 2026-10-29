@@ -7407,3 +7407,11 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
   `[elevate] …contradiction … verdict=UNDECIDED … reason=budget_exhausted backend_invoked=False`（多 agent 逐筆出現）⇒
   `scripts/run_server.py:685` 的 `_elevate_check()` 確實走到新 backend 分支（預算耗盡時 fail-closed 不呼叫，符合設計）。
 - 附帶（非本動引入）：TG 9/10 bots polling（`mahiru` poller 重建中，`attempt 1/5`）⇒ 只回報，不動手。
+
+## 0.1.106 值守端日常台帳刷新（cohort 2026-10-28 封閉後，自動）
+
+- 封閉 cohort：`2026-10-28`（UTC 建立日過完才封閉）⇒ 核准集合 **61 顆**（本次新增 **61 顆**；四條件量測：value ＋ 建立日 == cohort date ＋ last_support_ts == created_ts ＋ 無 support_propagation 祖先邊）。
+- 其他受影響 cohort：2026-10-21（核准 19 顆，本次新增 0 顆）；2026-10-22（核准 44 顆，本次新增 0 顆）。
+- 下一槽沙盒快跑：`2026-10-30T02:00:00+00:00` ⇒ `PENDING_COHORT`（exit 3）。
+- 守衛：`tests/test_eval_lifecycle_cli.py` 全綠（exit 0）。
+- 自動刷新機制：每日 20:40 EDT（= 00:40Z，UTC 日封閉後）執行。
