@@ -24,6 +24,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -237,9 +238,19 @@ def test_g1_other_agent_and_next_day_get_their_own_budget():
     assert len(proxy.calls) == 2, "不同 agent 各自有 1 次額度"
 
     # 跨日 ⇒ 額度重生（UTC 日界；日期由模組的 ``_utc_today`` 決定）。
+    #
+    # 🔴 曆法炸彈拔除（Owner 2026-10-29 裁定「核准開立修復工單，立即排工拔除」）：
+    #    原本把「明天」**寫死**成 ``"2026-10-29"`` ⇒ 當執行當日恰好是 2026-10-29
+    #    時，「明天」＝「今天」⇒ 跨日不成立 ⇒ 額度不會重生 ⇒ 本測試**必然紅**
+    #    （寫死日期的自我否定；實測：2026-10-29 當日 FAIL、模擬成 10-28 PASS）。
+    # ⇒ 改為**相對於執行當下**的動態隔日推導：以模組自己的 ``_utc_today()``
+    #    為基準日 ＋ 1 天 ⇒ 任何執行日都成立，且與模組的 UTC 日界口徑一致
+    #    （不另立一套日期權威）。
     original_today = backend_mod._utc_today
     today = original_today()
-    backend_mod._utc_today = lambda: "2026-10-29"  # type: ignore[assignment]
+    tomorrow = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    assert tomorrow != today, "隔日推導失敗：今天與明天相同（%s）" % today
+    backend_mod._utc_today = lambda: tomorrow  # type: ignore[assignment]
     try:
         backend.bind_agent("agent-a")("prompt-3")
     finally:
@@ -247,8 +258,13 @@ def test_g1_other_agent_and_next_day_get_their_own_budget():
     assert len(proxy.calls) == 3, "跨日 ⇒ 額度重生"
 
     view = budget_by_agent_day(budget)
-    assert view[("agent-a", "2026-10-29")] == 1
-    assert view[("agent-b", today)] == 1
+    assert view[("agent-a", tomorrow)] == 1, (
+        "跨日後的計數必須落在隔日（%s）" % tomorrow)
+    # 🔺 agent-b 的計數落在**當日**；日鍵由計數器本身決定（不依賴外部捕捉的
+    #    日期字串）⇒ 測試恰好跨過 UTC 日界時也不會誤判。
+    agent_b_days = sorted(d for (a, d) in view if a == "agent-b")
+    assert len(agent_b_days) == 1, "agent-b 必須只有單一日的計數：%s" % agent_b_days
+    assert view[("agent-b", agent_b_days[0])] == 1
 
 
 def test_g1_counter_shape_is_agent_day_keyed():

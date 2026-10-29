@@ -514,38 +514,40 @@ def test_g6_approved_minus_derived_is_always_explainable():
     斷言的是**等號** ⇒ 只要有成員「被背書過才老化」，approved 就會**永久大於**
     derived ⇒ 假紅。
 
-    🔴 本守衛**不修改**那條等號斷言（放寬判準是主大腦／Owner 的裁示範圍）。
-       它只做一件事：把「approved ⊋ derived 的差額」**明確量測出來**，並要求
-       差額**可被解釋**（每個差額成員都必須是「被背書過才老化」）。
+    🔴 Owner 2026-10-29 裁定（已落地）：那條等號斷言改為「**子集 ＋ 差額可解釋**」
+       ⇒ 判準**不放寬**，只是把「合法代謝」與「真實矛盾」**分開**。
+       本守衛就是那條「差額可解釋」的**權威實作**。
+
+    🔺 判準的**單一份實作**在
+       `scripts/eval_lifecycle_cli.py::explain_approved_difference()`
+       （CLI 與守衛**共用同一份程式碼**，不可各自實作一遍推導）。
     """
     prod_nodes = _prod_jsonl("elevation_nodes.jsonl")
     prod_edges = _prod_jsonl("elevation_edges.jsonl")
     assert prod_nodes, "生產圖譜不可讀（data/elevation/elevation_nodes.jsonl）"
 
-    by_id = {n.get("node_id"): n for n in prod_nodes if isinstance(n, dict)}
-    supported = {e.get("node_id") for e in prod_edges
-                 if isinstance(e, dict)
-                 and e.get("trigger_type") == "support_propagation"}
-    derived_by_cohort = CLI.expected_retirement_sets_by_cohort(
-        prod_nodes, prod_edges)
+    derived_by_cohort = CLI.expected_retirement_sets_by_cohort(prod_nodes, prod_edges)
 
     measured = []
     unexplained = []
     for cohort in CLI.normalize_cohorts():
         date = cohort["date"]
-        difference = sorted(set(cohort["nodes"]) - derived_by_cohort.get(date, set()))
+        derived = derived_by_cohort.get(date, set())
+        explanation = CLI.explain_approved_difference(
+            cohort, derived, prod_nodes, prod_edges)
+        difference = set(cohort["nodes"]) - derived
+        accounted = ({nid for nid, _ in explanation["explained"]}
+                     | {nid for nid, _ in explanation["unexplained"]})
+        # 🔴 反空轉：解釋結果必須**完整覆蓋**差額（漏算成員 ⇒ 判準被掏空 ⇒
+        #    「unexplained == 空」會變成假綠）。
+        assert accounted == difference, (
+            "cohort %s 的差額有成員未被解釋結果覆蓋（漏算：%s）"
+            % (date, sorted(difference - accounted)))
+        assert set(explanation["difference"]) == difference, (
+            "cohort %s 的差額清單與實測差額不一致" % date)
         measured.append((date, len(difference)))
-        for nid in difference:
-            node = by_id.get(nid)
-            if node is None:
-                unexplained.append((date, nid, "節點不在圖譜中"))
-                continue
-            created = node.get("created_ts") or ""
-            supported_after_creation = (node.get("last_support_ts") or "") != created
-            has_ancestor_support_edge = nid in supported
-            if not (supported_after_creation or has_ancestor_support_edge):
-                unexplained.append(
-                    (date, nid, "既非被背書過、也無 support_propagation 祖先邊"))
+        unexplained.extend((date, nid, reason)
+                           for nid, reason in explanation["unexplained"])
 
     assert not unexplained, (
         "approved ⊋ derived 的差額有**無法解釋**的成員：%s" % unexplained)
@@ -556,3 +558,70 @@ def test_g6_approved_minus_derived_is_always_explainable():
     # 差額是**量測值**，不是門檻：把總數講清楚，讓「台帳與圖矛盾」無所遁形。
     print("[G6] approved \\ derived per cohort: %s (total %d)"
           % (measured, sum(n for _, n in measured)))
+
+
+def test_g6_explainability_criterion_is_not_vacuous():
+    """反向空轉：判準必須**真的**能分辨「可解釋」與「不可解釋」。
+
+    🔴 為什麼需要這條：生產現況的差額**全部**可解釋（unexplained == 0）⇒
+    「差額可解釋」這條斷言在**當下**是**空轉**的（把判準整個刪掉也不會變紅）。
+    ⇒ 必須用**合成 fixture**證明判準有牙齒：不可解釋的成員必須被判紅。
+    """
+    explained_ids = []
+    unexplained_ids = []
+
+    # ① 可解釋（有 support_propagation 祖先邊 ⇒ 條件④不成立 ⇒ 被背書過才老化）。
+    nid = "1" * 32
+    cohort = _cohort("2026-10-20", nodes=[nid])
+    nodes = [_node(nid, created="2026-10-20T03:15:00+00:00")]
+    edges = [_support_edge(nid)]
+    derived = CLI.expected_retirement_sets_by_cohort(nodes, edges, cohorts=[cohort])
+    out = CLI.explain_approved_difference(
+        cohort, derived.get("2026-10-20", set()), nodes, edges)
+    explained_ids += [n for n, _ in out["explained"]]
+    unexplained_ids += [n for n, _ in out["unexplained"]]
+
+    # ② 可解釋（建立後曾被背書 ⇒ last_support_ts != created_ts ⇒ 條件③不成立）。
+    nid = "2" * 32
+    cohort = _cohort("2026-10-20", nodes=[nid])
+    nodes = [_node(nid, created="2026-10-20T03:15:00+00:00",
+                   last_support="2026-10-21T09:00:00+00:00")]
+    derived = CLI.expected_retirement_sets_by_cohort(nodes, [], cohorts=[cohort])
+    out = CLI.explain_approved_difference(
+        cohort, derived.get("2026-10-20", set()), nodes, [])
+    explained_ids += [n for n, _ in out["explained"]]
+    unexplained_ids += [n for n, _ in out["unexplained"]]
+
+    # ③ 不可解釋（型別與台帳記載不符 ⇒ 節點不屬於這個 cohort 的成員）。
+    nid = "3" * 32
+    cohort = _cohort("2026-10-20", nodes=[nid], types={nid: "belief"})
+    nodes = [_node(nid, node_type="value", created="2026-10-20T03:15:00+00:00")]
+    derived = CLI.expected_retirement_sets_by_cohort(nodes, [], cohorts=[cohort])
+    out = CLI.explain_approved_difference(
+        cohort, derived.get("2026-10-20", set()), nodes, [])
+    explained_ids += [n for n, _ in out["explained"]]
+    unexplained_ids += [n for n, _ in out["unexplained"]]
+
+    # ④ 不可解釋（建立日不屬於此 cohort）。
+    nid = "4" * 32
+    cohort = _cohort("2026-10-20", nodes=[nid])
+    nodes = [_node(nid, created="2026-10-19T03:15:00+00:00")]
+    derived = CLI.expected_retirement_sets_by_cohort(nodes, [], cohorts=[cohort])
+    out = CLI.explain_approved_difference(
+        cohort, derived.get("2026-10-20", set()), nodes, [])
+    explained_ids += [n for n, _ in out["explained"]]
+    unexplained_ids += [n for n, _ in out["unexplained"]]
+
+    # ⑤ 不可解釋（節點根本不在圖譜中）。
+    nid = "5" * 32
+    cohort = _cohort("2026-10-20", nodes=[nid])
+    derived = CLI.expected_retirement_sets_by_cohort([], [], cohorts=[cohort])
+    out = CLI.explain_approved_difference(
+        cohort, derived.get("2026-10-20", set()), [], [])
+    explained_ids += [n for n, _ in out["explained"]]
+    unexplained_ids += [n for n, _ in out["unexplained"]]
+
+    assert explained_ids == ["1" * 32, "2" * 32], (
+        "可解釋的差額成員未被正確辨識：%s" % explained_ids)
+    assert unexplained_ids == ["3" * 32, "4" * 32, "5" * 32], (
+        "不可解釋的差額成員未被正確標紅：%s" % unexplained_ids)

@@ -1375,6 +1375,83 @@ def expected_retirement_sets_by_cohort(nodes: list, edges: list,
     return out
 
 
+def explain_approved_difference(cohort, derived, nodes, edges) -> dict:
+    """解釋台帳「只增不減」留下的差額（``approved ⊋ derived``）—— 逐筆可解釋性。
+
+    🔴 語意（Owner 2026-10-29 裁定「等號斷言 → 子集 ＋ 差額可解釋」）：
+    台帳對封閉 cohort **刻意只增不減**（保留曾被背書後又老化的成員）⇒
+    ``approved ⊋ derived`` 是**合法**的 ⇒ 守衛**不可**再斷言等號。
+    但「合法」不等於「任意」⇒ 差額必須**逐筆可解釋**。
+
+    一個差額成員 ``nid`` 可被解釋，**當且僅當**它同時滿足：
+      ① 確實屬於這個 cohort（型別 == 該 cohort 台帳記載的型別〔條件①〕
+         ＋ 建立日 == cohort 日期〔條件②〕）；
+      ② 之所以**沒被推導出來**，是因為「被背書過才老化」——
+         建立後曾被背書（``last_support_ts`` **有值**且 != ``created_ts``
+         ⇒ 條件③不成立）**或** 有 ``support_propagation`` 祖先邊（⇒ 條件④不成立）。
+
+    ⇒ **不可解釋**者 = 台帳與圖的**真實矛盾**（節點不在圖譜／型別與台帳記載不符／
+    建立日不屬於此 cohort／四條件皆成立卻未被推導）⇒ 必須報紅。
+
+    ⚠️ 這是**量測 + 判準**，不放寬任何門檻；純函式、唯讀、不寫任何檔案。
+
+    Args:
+        cohort: 台帳條目（需含 ``date``／``nodes``／可選 ``types``）。
+        derived: 該 cohort 的四條件推導集合（``set``）。
+        nodes: 圖譜節點清單（``list[dict]``）。
+        edges: 圖譜邊清單（``list[dict]``）。
+
+    Returns:
+        ``{"difference": [node_id, ...],
+            "explained": [(node_id, reason), ...],
+            "unexplained": [(node_id, reason), ...]}``
+        ⚠️ ``difference`` 是**完整的差額清單**（未被解釋的成員也列在內）⇒
+        呼叫端可驗證「解釋結果**完整覆蓋**差額」⇒ 判準被掏空時會轉紅
+        （否則「unexplained == 空」會變成**空轉**的綠燈）。
+    """
+    by_id = {n.get("node_id"): n for n in (nodes or []) if isinstance(n, dict)}
+    supported = {e.get("node_id") for e in (edges or [])
+                 if isinstance(e, dict) and e.get("trigger_type") == "support_propagation"}
+    date = cohort.get("date")
+    cohort_types = cohort.get("types") or {}
+    derived = set(derived or ())
+    difference = sorted(set(cohort.get("nodes") or ()) - derived)
+    explained = []
+    unexplained = []
+    for nid in difference:
+        node = by_id.get(nid)
+        if node is None:
+            unexplained.append((nid, "節點不在圖譜中"))
+            continue
+        recorded_type = _recorded_node_type(nid, cohort_types)
+        if node.get("node_type") != recorded_type:
+            unexplained.append((nid, "型別與台帳記載不符（圖譜=%r，台帳記載=%r）"
+                                % (node.get("node_type"), recorded_type)))
+            continue
+        created = node.get("created_ts") or ""
+        if not isinstance(created, str) or created[:10] != date:
+            unexplained.append((nid, "建立日不屬於此 cohort（圖譜=%r，cohort=%r）"
+                                % (str(created)[:10], date)))
+            continue
+        last_support = node.get("last_support_ts") or ""
+        # 🔴 「建立後曾被背書」必須**有值**：``last_support_ts`` 缺席（空字串）
+        #    代表「從未被背書」，不可被當成「與建立時刻不同 ⇒ 被背書過」
+        #    （否則缺欄位的節點會被誤判為可解釋 ⇒ 假綠）。
+        supported_after_creation = bool(last_support) and last_support != created
+        has_ancestor_support_edge = nid in supported
+        if supported_after_creation and has_ancestor_support_edge:
+            explained.append((nid, "被背書過才老化（建立後曾被背書 ＋ 有 "
+                                "support_propagation 祖先邊）"))
+        elif supported_after_creation:
+            explained.append((nid, "被背書過才老化（建立後曾被背書："
+                                "last_support_ts != created_ts）"))
+        elif has_ancestor_support_edge:
+            explained.append((nid, "被背書過才老化（有 support_propagation 祖先邊）"))
+        else:
+            unexplained.append((nid, "四條件皆成立卻未被推導 —— 推導層與台帳互相矛盾"))
+    return {"difference": difference, "explained": explained, "unexplained": unexplained}
+
+
 def expected_retirement_set(nodes: list, edges: list) -> set:
     """推導「預期退役集合」（**所有 cohort 的聯集**）。
 

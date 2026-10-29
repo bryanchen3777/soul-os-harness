@@ -7657,3 +7657,162 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
    worker 實測對照：同一份測試本體用真日期 **FAIL**、把日期模擬成 2026-10-28 就 **PASS**
    ⇒ 純日曆相依。該檔只 import `src.inner_life.contradiction_backend_llm`，與 `scripts/*` 無關 ⇒ **需另立工單**。
 
+
+### 0.1.108 兩筆既有紅燈拔除（Owner 2026-10-29 裁定「審定備案與架構雙向裁定」）
+
+**本節對應 Owner 2026-10-29 的兩筆裁定**。兩處皆為「決策已完整」的定點修改
+（Owner 已把做法與判準寫死），故**主大腦直接執行、未派工**；改動全程 repo 唯讀
+（變異在 `%TEMP%` 影子樹）、**未重啟服務**（Owner：待維護窗口統一生效）。
+
+| # | 裁定 | 性質 | 本節 |
+|---|---|---|---|
+| 一 | 封閉 cohort 斷言：`derived == approved` →「**子集 ＋ 差額可解釋**」 | 【核准修改】 | (1) |
+| 二 | 曆法時間炸彈（`test_g1_...` 寫死 `"2026-10-29"`） | 【核准開立修復工單，立即排工拔除】 | (2) |
+
+#### (1) 裁定一：等號斷言 → 子集 ＋ 差額可解釋
+
+**根因（主大腦獨立複核，非推測）**：台帳對封閉 cohort **刻意只增不減**
+（保留「被背書過才老化」的成員），而守衛斷言的是**物理等號**
+⇒ 只要有任一成員被背書過，approved 就**永久大於** derived
+⇒ **結構性假紅**（與程式碼正確性無關，與資料演化方向有關）。
+
+**改法（三條並存，嚴格方向未被放寬）**：
+
+| 條 | 斷言 | 語意 |
+|---|---|---|
+| ① | `derived ⊆ approved` | 自我否決方向：規則**不得**被放寬（原等號的嚴格半邊） |
+| ② | `unexplained == 0` ＋ **解釋結果完整覆蓋差額** | 「合法代謝」與「真實矛盾」的分界 |
+| ③ | `baseline_violation(...) == []` | **既有斷言保留**（Owner 明示） |
+
+**判準的單一份實作**（新增 `scripts/eval_lifecycle_cli.py::explain_approved_difference()`）：
+CLI 與守衛**共用同一份程式碼**（不各自實作一遍推導）。一個差額成員可被解釋
+**當且僅當**它同時滿足：
+- ① 確實屬於這個 cohort：型別 == 該 cohort 台帳記載型別（四條件①）**且** 建立日 == cohort 日期（四條件②）；
+- ② 之所以沒被推導出來，是因為「被背書過才老化」：建立後曾被背書
+  （`last_support_ts` **有值**且 != `created_ts` ⇒ 四條件③不成立）**或** 有
+  `support_propagation` 祖先邊（四條件④不成立）。
+
+⇒ **不可解釋**者 = 台帳與圖的**真實矛盾**（節點不在圖譜／型別與台帳記載不符／
+建立日不屬於此 cohort／四條件皆成立卻未被推導）⇒ 報紅。
+
+**🔴 量測修正（推翻先前描述，誠實記帳）**：先前 §0.1.107 把 41 筆差額描述為
+「supported-then-aged（`last_support_ts != created_ts`）」。**主大腦本回合實測**：
+全庫 41 筆差額成員的 `last_support_ts` **全部 == `created_ts`**（41/41），
+`missing_last_support_ts=0`、`not_in_graph=0`、**41/41 都有 `support_propagation` 祖先邊**
+⇒ 差額的**真正**機制是**四條件④不成立**（背書以「祖先邊」的形式體現，
+`last_support_ts` 未反映被傳播的背書）。⇒ 判準保留**兩個分支並存**（任一成立即可解釋），
+但「supported-then-aged」這個**名稱**不再精確，改稱「被背書過才老化」。
+
+**🔴 收緊一處（方向：更嚴，對現況零影響）**：「建立後曾被背書」分支要求
+`last_support_ts` **有值**。原 G6 內聯實作是 `(node.get("last_support_ts") or "") != created`
+⇒ **欄位缺席**（空字串）會被誤判為「與建立時刻不同 ⇒ 被背書過」⇒ 缺欄位的節點
+會被誤判為可解釋 ⇒ **潛在假綠**。實測 `missing_last_support_ts=0` ⇒
+**當日 `unexplained` 仍為 0，數字零變動**；此處只是關掉一個潛在漏洞。
+
+**🔴 反空轉（新增，關鍵）**：生產現況的差額**全部**可解釋 ⇒ 若只斷言
+「`unexplained == []`」，把判準整個掏空也**不會**轉紅 ⇒ 該斷言在當下是**空轉**的綠燈。
+故補上**完整性**斷言：解釋結果（explained ∪ unexplained）必須**完整覆蓋**差額，
+且 CLI 回傳的 `difference` 清單必須與實測差額一致 ⇒ 判準被掏空 ⇒ **轉紅**。
+另補 `tests/test_ledger_refresh_type_neutral.py::test_g6_explainability_criterion_is_not_vacuous`
+（合成 fixture：可解釋 2 種 ＋ 不可解釋 3 種）⇒ 判準的**牙齒**有專屬守衛。
+
+**變異實測（repo 檔全程唯讀，變異只作用在 `%TEMP%` 副本）**：
+
+| # | 變異 | 預期 | 實測 |
+|---|---|---|---|
+| M1 | `explain_approved_difference` 回傳空解釋（保留 difference） | RED | **RED** — 封閉 cohort 守衛 ＋ G6 ＋ G6 反空轉 共 3 筆轉紅 |
+| M1b | 連 `difference` 清單一併清空 | RED | **RED** — 同上 3 筆 |
+| M2 | 四條件②（建立日 == cohort 日期）拿掉（規則放寬） | RED | **RED** — **9 筆**轉紅（含封閉 cohort 守衛的 ① 與 ③） |
+| M3 | 四條件④（無 `support_propagation` 祖先邊）拿掉（規則放寬） | RED | **RED** — 4 筆轉紅（G4、G6 反空轉、2 筆推導守衛） |
+
+🔴 **誠實揭露**：M3（拿掉條件④）**不會**讓封閉 cohort 守衛轉紅——因為那會讓
+approved 的 4 顆被推導出來 ⇒ `derived == approved` ⇒ 子集仍成立。該變異是由
+**其他**守衛（G4「其餘三條件不成立者不得算進缺口」、G6 反空轉、2 筆推導守衛）抓住的。
+⇒ **封閉 cohort 守衛的牙齒分工**：①／③ 守「推導不得超出核准」，
+②＋完整性守「差額必須可解釋且不得漏算」。
+
+#### (2) 裁定二：拔除 `test_g1_...` 的曆法時間炸彈
+
+**原狀**：`backend_mod._utc_today = lambda: "2026-10-29"` 當「明天」。
+真實 UTC 日期**就是** 2026-10-29 ⇒「明天」==「今天」⇒ 不發生跨日 ⇒ 額度不重生
+⇒ **自 2026-10-29T00:00:00Z 起每輪必紅**（寫死日期的自我否定）。
+
+**改法（Owner 指定方向：相對於執行當下的動態計算）**：
+以**模組自己的** `_utc_today()` 為基準日 ＋ 1 天
+（`datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)`）
+⇒ 不另立一套日期權威，與模組的 UTC 日界口徑一致；**任何執行日都成立**。
+另補兩點穩健性：
+- **自我檢查斷言** `tomorrow != today`（隔日推導失敗 ⇒ 立刻紅，不讓它靜默退化）；
+- `agent-b` 的日鍵改由**計數器本身**決定（`view` 的 key）⇒ 測試恰好跨過 UTC 日界時不誤判
+  （原寫法 `view[("agent-b", today)]` 在跨日瞬間會 KeyError）。
+
+**變異實測**：
+
+| # | 變異 | 預期 | 實測 |
+|---|---|---|---|
+| M4 | 把動態隔日推導**還原**成寫死的 `"2026-10-29"`（以 repo 真檔為 `__file__`、在記憶體中執行突變後原始碼） | RED | **RED** — `AssertionError: 隔日推導失敗：今天與明天相同（2026-10-29）` |
+| M5 | 曆法獨立性：凍結 `_utc_today` 於 8 個日期（2026-01-01／02-28／06-15／10-29／12-31、2027-02-28／12-31、2028-02-29）逐一執行 | 全 PASS | **8/8 全 PASS** |
+
+#### (3) 全庫回歸（主大腦實測，repo 內 `.venv`）
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q tests
+```
+
+| 項目 | 結果 |
+|---|---|
+| 解譯器 | **repo 內 `.venv`**（`.venv\Scripts\python.exe -m pytest -q tests`；**非** PATH 上的全域 pytest） |
+| collected | **7613**（7582 passed ＋ 0 failed ＋ 31 skipped） |
+| **passed** | **7582** |
+| **failed** | **0** |
+| **skipped** | **31**（skip-set **STABLE**：added=0／removed=0 ⇒ 零漂移） |
+| subtests | 32 passed |
+| 耗時 | 847.88s（0:14:07） |
+| 對照 Owner 預期 | 7,581 ＝ 前兩輪的 2 筆既有紅燈轉綠；**＋1** ＝ 本回合新增的 G6 反空轉守衛 ⇒ **7,582**（**超出**預期，非放寬） |
+
+- 🔺 **兩筆既有紅燈已清零**（前兩輪的 7579 passed / 2 failed ⇒ 本輪 7582 / 0）。
+- 🔺 本回合**無 baseline 紅燈**（0 failed）⇒ 不需要再做「既有 vs 本次引入」的歸因切分。
+- 定向合流預檢（改動後）：`TestEvaluationClockConsistency` ＋ `test_ledger_refresh_type_neutral.py`
+  ＋ `test_contradiction_backend_llm_guard.py` ⇒ **41 passed / 0 failed**。
+
+
+#### (4) 生命週期 CLI 沙盒快跑（功能驗收不綁 22:00）
+
+```powershell
+.venv\Scripts\python.exe scripts/eval_lifecycle_cli.py --simulated-time '2026-10-29T02:00:00Z'
+```
+
+- `VERDICT: PASS` ／ **exit 0**
+- `expected_hits = 0`；`pending_retirements_count = 0`
+- `graph_nodes = 1953`；`state_dist = {'weakening': 474, 'dormant': 18, 'active': 1461}`
+- 關鍵反例節點 `6a92c906b245` transitions = 0（非預期代謝時必須 0）
+- 弱化包裝 `weak_prefix 57 -> 57`（不變）
+- `prompt_diffs = 無（所有 agent 正文逐位元相同）`；`prompt_diffs_unexplained = 0`
+
+🔴 **CLI 結構上不可能寫生產已複測**：跑前／跑後生產五檔 sha256 **逐位元相同**
+（`elevation_nodes.jsonl` `bfe2054a…`、`elevation_edges.jsonl` `b504f313…`、
+`elevation_lifecycle_events.jsonl` `49f84603…`、`elevation_trace.jsonl` `82071886…`、
+`inner_life/epistemic_tensions.jsonl` `58036991…`；後者 mtime 仍 `2026-10-28 06:32:14`）。
+
+#### (5) 本回合未做／邊界（誠實聲明）
+
+- **未重啟服務**（Owner：待維護窗口統一生效）；**未殺任何行程**；**未寫 `data/**`**
+  （`git status --porcelain` 僅 4 個 modified 檔，無新增檔、無未追蹤檔）。
+- 本回合**未動 `src/**`** ⇒ 不涉及「src 變更待維護窗口重啟生效」的待辦。
+- **未放寬任何既有守衛斷言**：③（`baseline_violation`）保留；① 是等號的**嚴格半邊**；
+  ② 是**新增**的更嚴校驗 ⇒ 淨效果是「假紅消失、真矛盾仍會紅」。
+- 變異實驗全部在 `%TEMP%` 影子樹／記憶體中進行（M4 以 repo 真檔為 `__file__`
+  在記憶體內執行突變後原始碼）⇒ **repo 檔全程唯讀**。
+- 未跑 `scripts/manual_*.py`；真實 LLM 呼叫 0 次；未打真實外部 API。
+- **🔴 一處行尾修正（本回合主動做，屬同一工作範圍）**：
+  `tests/test_ledger_refresh_type_neutral.py` 的工作樹原為**純 LF**
+  （repo 其餘檔案與 `core.autocrlf=true` 慣例皆為 CRLF）⇒ 已正規化為 **CRLF**
+  （627/627）⇒ git 的 `LF will be replaced by CRLF` 警告消失，
+  且 `git diff --stat` **未受行尾污染**（仍為 111 行變動）。
+
+#### (6) 殘餘風險備查（Owner 已裁定維持現狀）
+
+- **Tension 跨行程 TOCTOU**：生產為單一寫入行程 ⇒ 實務風險低；
+  根治需把 append 原語升級為跨行程鎖 ⇒ 另案（本回合未動）。
+- **刷新器看不見未入帳的 belief／trait**：屬 fail-closed ＋「嚴禁自動入帳」的必然結果，
+  由 CLI 的 `PENDING_COHORT` 大聲回報 ⇒ 若要主動發掘屬新增量測面，另立工單。

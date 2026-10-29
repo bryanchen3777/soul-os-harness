@@ -1357,10 +1357,20 @@ class TestEvaluationClockConsistency(unittest.TestCase):
                          "無時區的建立時刻不得被判為晚於時鐘")
 
     def test_closed_cohort_is_fully_reconciled_with_the_graph(self):
-        """已封閉的 cohort：四條件推導集合必須與核准清單**完全相等**。
+        """已封閉的 cohort：四條件推導集合必須是核准清單的**子集**，且差額**可解釋**。
 
         該 cohort 的建立日已過 ⇒ 不會再有成員加入 ⇒ 這是穩定不變量。
-        （2026-10-25 的 48 顆是晨槽 08:00 EDT 新建的，台帳已於同日刷新。）"""
+        （2026-10-25 的 48 顆是晨槽 08:00 EDT 新建的，台帳已於同日刷新。）
+
+        🔴 判準（Owner 2026-10-29 裁定「等號斷言 → 子集 ＋ 差額可解釋」）：
+        台帳對封閉 cohort **刻意只增不減**（保留曾被背書後又老化的成員）⇒
+        ``approved ⊋ derived`` 是**合法**的生命週期代謝 ⇒ 物理等號斷言會把它
+        誤判為假紅。
+        ⇒ 改為**單向包含**（``derived ⊆ approved``；方向＝自我否決，規則**不得
+        被放寬**）＋ **差額逐筆可解釋**（不可解釋 ⇒ 台帳與圖真實矛盾 ⇒ 報紅）。
+        ⚠️ 這是**改判準、不是放寬判準**：等號的**嚴格方向**（推導不得超出核准）
+        由 ① 與 ③ 兩條斷言守住；「合法代謝」與「真實矛盾」的**分界**由 ② 守住。
+        """
         prod_nodes = self._prod_jsonl("elevation_nodes.jsonl")
         prod_edges = self._prod_jsonl("elevation_edges.jsonl")
         if not prod_nodes:
@@ -1368,11 +1378,32 @@ class TestEvaluationClockConsistency(unittest.TestCase):
         derived = CLI.expected_retirement_sets_by_cohort(
             prod_nodes, prod_edges, cohorts=[self._cohort()])[self.CLOSED_COHORT]
         approved = set(self._cohort()["nodes"])
-        self.assertEqual(set(derived), approved,
-                         "cohort %s 的核准清單必須與四條件推導集合完全相等"
-                         % self.CLOSED_COHORT)
+        derived_set = set(derived)
+
+        # ① 推導 ⊆ 核准（自我否決方向：規則**不得**被放寬）。
+        self.assertTrue(derived_set.issubset(approved),
+                        "cohort %s 的四條件推導集合必須是核准清單的**子集**"
+                        "（自我否決方向：推導不得超出核准）" % self.CLOSED_COHORT)
+        # ② 差額必須**逐筆可解釋**（台帳刻意只增不減的合法代謝 vs 真實矛盾）。
+        #    判準的單一份實作在 CLI（CLI 與守衛共用同一份程式碼）。
+        explanation = CLI.explain_approved_difference(
+            self._cohort(), derived_set, prod_nodes, prod_edges)
+        self.assertEqual(explanation["unexplained"], [],
+                         "cohort %s 的核准清單多於推導集合的差額有**無法解釋**的成員：%s"
+                         % (self.CLOSED_COHORT, explanation["unexplained"]))
+        # ②b 反空轉：解釋結果必須**完整覆蓋**整個差額（不得有成員被漏算）。
+        #     否則「unexplained == 空」會因為判準被掏空而**假綠**。
+        difference = approved - derived_set
+        accounted = ({nid for nid, _ in explanation["explained"]}
+                     | {nid for nid, _ in explanation["unexplained"]})
+        self.assertEqual(accounted, difference,
+                         "cohort %s 的差額必須被**完整**解釋（漏算成員：%s）"
+                         % (self.CLOSED_COHORT, sorted(difference - accounted)))
+        self.assertEqual(set(explanation["difference"]), difference,
+                         "差額清單本身必須與實測差額一致")
+        # ③ 自我否決（既有斷言，保留）：推導不得超出核准。
         self.assertEqual(CLI.baseline_violation(
-            {self.CLOSED_COHORT: set(derived)},
+            {self.CLOSED_COHORT: derived_set},
             cohorts=[self._cohort()]), [],
             "已封閉 cohort 不得觸發自我否決（台帳與圖必須已對帳）")
 
