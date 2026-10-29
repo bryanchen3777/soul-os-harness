@@ -1002,3 +1002,208 @@ def test_mutation_load_point_override_rejects_paths_outside_temp():
         _resolve_override_path(str(REPO_ROOT))
     with pytest.raises(RuntimeError):
         _resolve_override_path(str(Path(tempfile.gettempdir()).parent))
+
+
+# ══ TENSION-OPEN-IDEMPOTENT-WRITE-GUARD-1：寫入端冪等守門 ══════════════
+#
+# 🔴 為什麼有這張票
+# ------------------
+# 2026-10-29 生產實測：``data/inner_life/epistemic_tensions.jsonl`` 內同一
+# ``(agent_id, tension_id)`` 出現**兩筆** ``tension_opened``（期間**沒有**任何
+# ``tension_resolved``）⇒ 讀端去重（``run_background_action`` 的 ``known`` 集合）
+# **看漏了**既有事件。根因尚未定位（見 ``logs/ENGINEERING_STATE.md``）。
+#
+# ⇒ 本段守門把冪等性搬到**寫入端**：同一 ``tension_id`` 在**未閉合／已開立**
+# 狀態下，**不得**再產生第二筆 ``tension_opened`` 事件。
+#
+# 🔴 本段全部測試只寫 ``tmp_path``（**零生產寫入**）；變異實驗走本檔既有的
+#    ``MUTATION_MODULE_ENV`` 載入點覆寫（模組副本**只准**放 ``%TEMP%`` ⇒
+#    repo 檔全程零寫入，由 ``_resolve_override_path`` 執行期硬攔保證）。
+def _opened_events(store_dir: Path) -> list:
+    """承載檔內的 ``tension_opened`` 事件（開立事件清單）。"""
+    return [e for e in _read_events(store_dir) if e.get("kind") == ea.TENSION_EVENT_OPENED]
+
+
+# ── G1：寫入端冪等（同一 id 連續開立 ⇒ 只留 1 筆）──────────────────────
+def test_g1_write_end_is_idempotent_for_the_same_tension_id(tmp_path):
+    """G1 — 同一 ``tension_id`` 連續呼叫兩次 ``upsert_open_tension``
+    ⇒ 檔內的 ``tension_opened`` 事件**只有 1 筆**（改前是 2 筆 ⇒ 變異會轉紅）。
+
+    第二次呼叫回傳 ``True`` ＝ **冪等成功**（不是錯誤）。
+    """
+    store = tmp_path / "tensions"
+    tension = _tension()
+
+    assert ea.upsert_open_tension(tension, store) is True
+    assert ea.upsert_open_tension(tension, store) is True, (
+        "第二次開立必須是**冪等成功**（回 True），不是錯誤"
+    )
+
+    assert len(_opened_events(store)) == 1, (
+        f"同一 tension_id 不得產生第二筆 opened：{_opened_events(store)!r}"
+    )
+    assert len(_read_events(store)) == 1, "整個承載檔只應有那一筆事件"
+
+    # 讀取端語意不變：未閉合清單仍然只有這一條。
+    assert [t.tension_id for t in ea.load_open_tensions("agent_rem", store)] == [
+        tension.tension_id
+    ]
+
+    # 不同的 tension_id 仍可正常開立（守門不得過度阻擋）。
+    other = _tension(tension_id="epistemic_gap:test0002")
+    assert ea.upsert_open_tension(other, store) is True
+    assert len(_opened_events(store)) == 2, "不同 id 的開立不得被守門擋掉"
+
+
+# ── G2：已消解 ⇒ 仍可重新開立（不得判成「永不開立」）────────────────────
+def test_g2_resolved_tension_can_be_opened_again(tmp_path):
+    """G2 — 先 ``mark_tension_resolved`` 再 ``upsert_open_tension``
+    ⇒ **可以**再寫一筆 ``opened``（證明沒有把「已開立」判成「永不開立」）。
+
+    「已消解 ⇒ 允許重開」是既有語意，守門不得把它一併鎖死。
+    """
+    store = tmp_path / "tensions"
+    tension = _tension()
+
+    assert ea.upsert_open_tension(tension, store) is True
+    assert ea.mark_tension_resolved(tension, store, now=2000.0) is True
+    assert ea.upsert_open_tension(tension, store) is True
+
+    assert len(_opened_events(store)) == 2, (
+        f"已消解的張力必須能重新開立：{_opened_events(store)!r}"
+    )
+    assert len(_read_events(store)) == 3, "opened ＋ resolved ＋ opened ＝ 3 筆"
+
+    # 部分消解（partially_resolved）**仍未閉合** ⇒ 不得重開。
+    part_store = tmp_path / "partial"
+    _write_events(part_store, [_production_shaped_event(status="partially_resolved")])
+    part_tension = ea.Tension.from_dict(_production_shaped_event(status="partially_resolved")["payload"])
+    assert part_tension is not None
+    assert ea.upsert_open_tension(part_tension, part_store) is True
+    assert len(_opened_events(part_store)) == 0, (
+        "partially_resolved 仍未閉合 ⇒ 不得再開立第二筆 opened"
+    )
+
+
+# ── G3：批次內同 id 多筆 ⇒ 只寫一筆 ──────────────────────────────────────
+def test_g3_same_id_inside_one_batch_is_written_once(tmp_path):
+    """G3 — 同一批送兩筆同 id（``save_tension_records`` 路徑）⇒ 只寫一筆。
+
+    守門必須**同時**處理「既有檔」與「批次內累積」兩層狀態。
+    """
+    store = tmp_path / "tensions"
+    tension = _tension()
+    record = {"tension": tension.to_dict(), "status": "open", "resolved_at": None}
+
+    assert ea.save_tension_records("agent_rem", [record, dict(record)], store) is True
+
+    assert len(_opened_events(store)) == 1, (
+        f"同一批內的同 id 事件只准寫一筆：{_opened_events(store)!r}"
+    )
+    assert len(_read_events(store)) == 1
+
+
+# ── G4：守門在**寫入端** ⇒ 不依賴讀取端（本工單的核心價值守衛）──────────
+def test_g4_write_end_guard_does_not_depend_on_the_read_end(tmp_path, monkeypatch):
+    """G4 — 讀取端「看不到」既有張力時，**寫入端仍然擋得住**第二筆。
+
+    讀端去重在生產失效（同一 id 兩筆 opened）⇒ 冪等性不得建立在「讀端看得到」
+    之上。本測試把公開讀取 API 弄成失明（回空清單），寫入端仍必須自守。
+    """
+    store = tmp_path / "tensions"
+    tension = _tension()
+
+    assert ea.upsert_open_tension(tension, store) is True
+    assert len(_opened_events(store)) == 1
+
+    # 讀取端「失明」：公開讀取 API 回傳空清單（模擬讀端看漏既有事件）。
+    monkeypatch.setattr(ea, "load_open_tensions", lambda *a, **k: [])
+    monkeypatch.setattr(ea, "load_tension_records", lambda *a, **k: [])
+
+    assert ea.upsert_open_tension(tension, store) is True
+    assert len(_opened_events(store)) == 1, (
+        "讀端看不到既有事件時，寫入端仍不得產生第二筆 opened"
+    )
+
+
+def test_g4b_unreadable_store_fails_closed(tmp_path, monkeypatch):
+    """G4b — 承載檔**讀不到**時 ⇒ **fail-closed**：不得寫入第二筆 ``opened``.
+
+    🔴 這是本工單最關鍵的一條：生產事故的後果就是「讀端沒看到既有事件卻照寫」。
+    寫入端若沿用讀取端的 fail-silent（讀不到就當「沒有事件」）⇒ 同一個失效會
+    **原封不動**重演 ⇒ 守門必須在「看不到」時**拒寫**，而不是「照寫」。
+
+    （狀態未知 ⇒ 回傳 ``False``＝未寫入；與「已開立而被冪等擋下」的 ``True``
+    刻意不同：後者是冪等成功，前者是「沒寫成」。）
+    """
+    store = tmp_path / "tensions"
+    tension = _tension()
+
+    assert ea.upsert_open_tension(tension, store) is True
+    assert len(_opened_events(store)) == 1
+
+    # 讓承載檔的讀取失敗（模擬「讀端看不到既有事件」的最壞情況）。
+    real_read_bytes = Path.read_bytes
+
+    def _boom(self):
+        if self.name == ea.TENSION_STORE_EVENTS_FILENAME:
+            raise PermissionError("simulated: 承載檔讀取失敗")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _boom)
+
+    assert ea.upsert_open_tension(tension, store) is False, (
+        "狀態未知（讀不到）⇒ 不得寫入 ⇒ 必須回 False（未寫入）"
+    )
+    assert len(_opened_events(store)) == 1, (
+        "讀不到承載檔時**不得**產生第二筆 opened（fail-closed）"
+    )
+
+
+# ── G5：既有語意零回歸（讀取端不因本次改動而放寬）──────────────────────
+def test_g5_read_end_semantics_are_unchanged(tmp_path):
+    """G5 — 讀取端語意**逐字不變**：fold 仍是最後一筆勝出、未閉合佇列仍是
+    ``open``／``partially_resolved``、``resolved`` 不得進未閉合佇列。
+
+    另外釘死：**其他事件型別**（resolved／thought）不受寫入端守門影響。
+    """
+    store = tmp_path / "tensions"
+    _write_events(
+        store,
+        [
+            _production_shaped_event(tension_id="t-open", status="open"),
+            _production_shaped_event(tension_id="t-part", status="partially_resolved"),
+            _production_shaped_event(tension_id="t-done", status="resolved", decided=True),
+        ],
+    )
+
+    statuses = {
+        r["tension"]["tension_id"]: r["status"] for r in ea.load_tension_records("agent_rem", store)
+    }
+    assert statuses == {
+        "t-open": "open",
+        "t-part": "partially_resolved",
+        "t-done": "resolved",
+    }, f"既有讀取語意不得改變：{statuses}"
+
+    open_ids = {t.tension_id for t in ea.load_open_tensions("agent_rem", store)}
+    assert open_ids == {"t-open", "t-part"}, (
+        f"未閉合佇列仍是 open／partially_resolved：{open_ids}"
+    )
+
+    # fold 仍是「最後一筆勝出」。
+    folded = ea._fold_tension_events(
+        [
+            {"tension_id": "x", "kind": ea.TENSION_EVENT_OPENED, "status": "open"},
+            {"tension_id": "x", "kind": ea.TENSION_EVENT_RESOLVED, "status": "resolved"},
+        ]
+    )
+    assert folded["x"]["status"] == "resolved", "fold 語意（最後一筆勝出）不得改變"
+
+    # 其他事件型別不受守門影響：resolved／thought 照寫。
+    tension = _tension()
+    assert ea.mark_tension_resolved(tension, store, now=2000.0) is True
+    assert ea.record_thought_enqueued(tension, store, thought_payload="想通了") is True
+    kinds = [e["kind"] for e in _read_events(store)]
+    assert ea.TENSION_EVENT_RESOLVED in kinds, "resolved 事件不得被守門擋掉"
+    assert ea.TENSION_EVENT_THOUGHT_ENQUEUED in kinds, "thought 事件不得被守門擋掉"

@@ -42,6 +42,7 @@ Usage:
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -57,7 +58,17 @@ CLI = os.path.join(REPO, "scripts", "eval_lifecycle_cli.py")
 ELEV = os.path.join(REPO, "data", "elevation")
 PY = os.path.join(REPO, ".venv", "Scripts", "python.exe")
 CANON = os.path.join(REPO, "logs", "ENGINEERING_STATE.md")
-FOUR_CONDITIONS_DOC = "value ＋ 建立日 == cohort date ＋ last_support_ts == created_ts ＋ 無 support_propagation 祖先邊"
+# 🔴 2026-10-29 工單 LEDGER-REFRESH-TYPE-NEUTRAL-1：條件①已由硬寫 `value`
+#    改為「**台帳記載型別**（未記載＝value）」⇒ 這行說明跟著更新，否則寫進
+#    canonical 的描述會與實際量測口徑不符。
+FOUR_CONDITIONS_DOC = "台帳記載型別（未記載＝value）＋ 建立日 == cohort date ＋ last_support_ts == created_ts ＋ 無 support_propagation 祖先邊"
+
+#: 缺口回報的**逐型別**次序（value／belief／trait／essence —— 與 CLI 的
+#: `SOUL_TYPES` 同集合，報告時以 value 為首）。
+REPORT_TYPES = ("value", "belief", "trait", "essence")
+
+#: `cli_module()` 的快取（見該函式：延遲載入，import 期零副作用）。
+_CLI_MODULE = None
 
 
 def sh(cmd, cwd=REPO, env=None):
@@ -79,23 +90,115 @@ def read_jsonl(path):
     return out
 
 
-def structural_members(nodes, edges, date):
-    """Four-condition structural set for one cohort date (read-only)."""
-    supported = {e.get("node_id") for e in edges
+def cli_module():
+    """載入 `scripts/eval_lifecycle_cli.py`（**唯讀**；型別語意完全同源）。
+
+    🔴 為什麼要載入它：台帳「**記載型別**」的語意只有**一份**定義，在 CLI 模組裡
+       （`approved_node_types()` / `_recorded_node_type()`）⇒ 刷新器複用同一份，
+       **不再各寫一份推導**（避免再次兩份口徑漂移 —— 這正是本工單要修的病）。
+    🔴 為什麼是**延遲**載入：`scripts/ledger_refresh.py` 的 import 必須零副作用
+       （既有守衛 G3：import 不得建立檔案、不得啟動行程）⇒ 載入不放在 import 期；
+       且載入期間關掉 bytecode 寫入 ⇒ 不在 repo 留下 `__pycache__`。
+    """
+    global _CLI_MODULE
+    if _CLI_MODULE is None:
+        spec = importlib.util.spec_from_file_location(
+            "eval_lifecycle_cli_ledger_refresh", CLI)
+        module = importlib.util.module_from_spec(spec)
+        previous = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.dont_write_bytecode = previous
+        _CLI_MODULE = module
+    return _CLI_MODULE
+
+
+def structural_records(nodes, edges, date, types=None):
+    """四條件命中的節點記錄（**型別中立**）：``[{node_id, agent_id, node_type}]``。
+
+    四條件（**不得**放寬、**不得**加任何時間算術）：
+      1. 節點型別 == **台帳記載的型別**（未記載 ⇒ 向後相容預設 `"value"`；
+         與 CLI 的 `approved_node_types()` / `_recorded_node_type()` 完全同源）
+      2. created_ts 的日期部分 == `date`
+      3. last_support_ts == created_ts（建立後從未再被背書）
+      4. 沒有任何 ``trigger_type == "support_propagation"`` 的邊指向它
+
+    🔴 2026-10-29 工單 LEDGER-REFRESH-TYPE-NEUTRAL-1：條件①由硬寫
+       ``node_type == "value"`` 改為**型別中立** ⇒ 消除「missing 0」量測盲區
+       （belief／trait／essence 型同樣會被量測到、會被要求入帳）。
+    🔴 **fail-closed 方向**：未記載型別者視為 `"value"` ⇒ 未入帳的非 value 節點
+       **不會**被這支工具自動入帳（入帳仍須主大腦／Owner 人工核准）。
+    """
+    module = cli_module()
+    if types is None:
+        types = module.approved_node_types()
+    recorded_type = module._recorded_node_type
+    supported = {e.get("node_id") for e in (edges or ())
                  if isinstance(e, dict) and e.get("trigger_type") == "support_propagation"}
-    out = {}
-    for n in nodes:
-        if n.get("node_type") != "value":
+    out = []
+    for n in nodes or ():
+        if not isinstance(n, dict):
+            continue
+        nid = n.get("node_id")
+        if n.get("node_type") != recorded_type(nid, types):
             continue
         created = n.get("created_ts") or ""
         if not isinstance(created, str) or created[:10] != date:
             continue
         if (n.get("last_support_ts") or "") != created:
             continue
-        nid = n.get("node_id")
         if not nid or nid in supported:
             continue
-        out[nid] = n.get("agent_id") or "?"
+        out.append({"node_id": nid,
+                    "agent_id": n.get("agent_id") or "?",
+                    "node_type": n.get("node_type")})
+    return out
+
+
+def structural_members(nodes, edges, date, types=None):
+    """四條件結構性成員（**型別中立**）：``node_id → agent_id``。"""
+    return {r["node_id"]: r["agent_id"]
+            for r in structural_records(nodes, edges, date, types)}
+
+
+def type_breakdown(ids, node_type_by_id=None, types_by_id=None):
+    """把一組節點 id 拆成**逐型別**筆數（value／belief／trait／essence 恆有鍵）。
+
+    🔴 為什麼要逐型別：只報總數會讓「missing 0」這種**假綠**回來 —— 總數是 0
+       時，逐型別仍能把「哪一型有缺口、量測口徑涵蓋了哪一型」講清楚。
+    """
+    counts = {t: 0 for t in REPORT_TYPES}
+    for nid in ids or ():
+        t = (node_type_by_id or {}).get(nid)
+        if t is None and types_by_id is not None:
+            t = (types_by_id or {}).get(nid)
+        t = t or "value"
+        counts[t] = counts.get(t, 0) + 1
+    return counts
+
+
+def fmt_breakdown(counts):
+    """把 `type_breakdown()` 的結果格式化成 ``value 3, belief 1, ...``。"""
+    return ", ".join("%s %d" % (t, (counts or {}).get(t, 0)) for t in REPORT_TYPES)
+
+
+def auto_entry_ids(node_ids, node_type_by_id=None):
+    """**自動入帳**集合：只收 value 型節點。
+
+    🔴 入帳紀律（Owner 2026-10-27 裁定「白名單型別中立化」）：
+       **value 由每日刷新 job 自動入帳；belief／trait／essence 嚴禁自動入帳**
+       （必須由 Engineering Brain 與 Owner 人工審核核准後**補丁**登錄）。
+    ⇒ 非 value 型即使被四條件量測到，也只**回報缺口**，永遠不會被這支工具
+       寫進台帳（守衛 G5 釘死這條線）。
+
+    未知型別（節點不在圖譜裡）⇒ 視為 `"value"`（沿用既有向後相容預設）。
+    """
+    out = set()
+    for nid in node_ids or ():
+        if (node_type_by_id or {}).get(nid, "value") == "value":
+            out.add(nid)
     return out
 
 
@@ -405,8 +508,16 @@ def main():
 
     nodes = read_jsonl(os.path.join(ELEV, "elevation_nodes.jsonl"))
     edges = read_jsonl(os.path.join(ELEV, "elevation_edges.jsonl"))
-    struct = structural_members(nodes, edges, closed_date)
-    print("structural members of %s = %d" % (closed_date, len(struct)))
+    # 🔴 2026-10-29 工單 LEDGER-REFRESH-TYPE-NEUTRAL-1：四條件量測**型別中立**
+    #    （條件①改以「台帳記載型別」為準）⇒ 缺口不再只看得見 value 型。
+    records = structural_records(nodes, edges, closed_date)
+    struct = {r["node_id"]: r["agent_id"] for r in records}
+    node_type_by_id = {n.get("node_id"): n.get("node_type")
+                       for n in nodes if isinstance(n, dict)}
+    types_by_id = cli_module().approved_node_types()
+    print("structural members of %s = %d [%s]"
+          % (closed_date, len(struct),
+             fmt_breakdown(type_breakdown(struct, node_type_by_id, types_by_id))))
 
     rc, verdict, out, retiring = sim_retiring_value_nodes(slot.isoformat())
     print("sandbox CLI at next slot: rc=%d %s" % (rc, verdict[0] if verdict else "?"))
@@ -440,7 +551,12 @@ def main():
     agents = {}
     for date in entries:
         agents[date] = dict(struct)
-    targets[closed_date] = set(struct)
+    # 🔴 入帳紀律（Owner 2026-10-27 裁定「白名單型別中立化」）：**value 由每日
+    #    刷新 job 自動入帳；belief／trait／essence 嚴禁自動入帳**（必須由
+    #    Engineering Brain 與 Owner 人工審核核准後**補丁**登錄）。
+    #    ⇒ 自動入帳集合**只收 value 型**；非 value 型即使被量測到也只**回報**，
+    #    永遠不會被這支工具寫進台帳（守衛 G5 釘死）。
+    targets[closed_date] = auto_entry_ids(struct, node_type_by_id)
     agents[closed_date] = dict(struct)
     for date, members in retiring.items():
         targets.setdefault(date, set()).update(members.keys())
@@ -459,6 +575,10 @@ def main():
         print("  %s: approved %d -> merged %d (missing %d)%s"
               % (date, len(approved), len(merged), len(miss),
                  "" if not miss else " -> %s" % sorted(miss)[:3]))
+        # 🔴 逐型別的缺口分佈（2026-10-29 工單 §4）：只報總數會讓「missing 0」
+        #    這種**假綠**回來 ⇒ 每一個 cohort 都要逐型別列出筆數。
+        print("    gap by type: %s"
+              % fmt_breakdown(type_breakdown(miss, node_type_by_id, types_by_id)))
         if not miss:
             final_count[date] = len(approved)
             delta[date] = 0

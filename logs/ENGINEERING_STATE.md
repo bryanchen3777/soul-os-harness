@@ -7410,8 +7410,250 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
 
 ## 0.1.106 值守端日常台帳刷新（cohort 2026-10-28 封閉後，自動）
 
+- 撠 cohort：2026-10-28，ATC 撠個？仿？摰？撠？，？詨？？61 顆，？撱？甈⊥？憓？61 顆，
+  璇？辣？?葫嚗alue，撠個？？== cohort date，last_support_ts == created_ts，
+  ？support_propagation 蟡？？。
+- ？？cohort：2026-10-21，？撱？？19 顆，祆活？啣？ 0 顆；2026-10-22，？撱？？44 顆，
+  祆活？啣？ 0 顆。
+- 瑽賣？翰頝？`2026-10-30T02:00:00+00:00` →`PENDING_COHORT`（exit 3）。
+- 摰？：tests/test_eval_lifecycle_cli.py ？函？exit 0。
+- ？瑟？頭？？20:40 EDT（00:40Z）ATC ？亙？？，？？
+
+## 0.1.107 Owner 三大提請裁定（2026-10-29 14:4x EDT）＋ 2026-10-21 cohort 4 項正式入帳
+
+- **Owner 裁定（逐字摘要）**
+  1. **2026-10-21 Cohort 4 項節点正式核准入帳** ⇒【核准入帳】。
+  2. **ledger_refresh.py 四條件量測解耦為「型別中立」** ⇒【核准立項修复】。
+  3. **tension_id 唯一性約束** ⇒【維持静態記錄，禁止生產重開同名 Tension】；
+     業務邏輯端應維持幂等，若 Tension 處於未閉合或已開立狀態，不得重複生成相同 ID 之事件。
+- **本回合結果摘要**：① 4 項**已入帳並實測生效**（前槽視角 rc 3→0、PENDING→PASS、pending 4→0）；
+  ② 型別中立化**已完成**（8/8 盲區節點可推導、自我否死 extra=0 全 12 cohort、變異 6 條轉紅）；
+  ③ tension 寫入端幂等守門**已完成**（守門 6 支全結、5 項沙盢實測全 PASS、生產檔 sha256 未變）。
+  ⇒ 三項裁定**全部落地**；兩筆**既有**紅燈（皆經 baseline 驗證非本次造成）仍待 Owner 裁示。
+
+### (1) 2026-10-21 cohort 4 顆入帳（已執行，主大腦親自驗證）
+
+- 🔴 **一項事實更正**：Owner 裁定書「依據」段寫「建立於 2026-10-11」——**該日期是 10 顆
+  Legacy Value 基準 cohort 的建立日**，非本批 4 顆。裁定**標題**寫的「2026-10-21 Cohort」才是對的。
+  主大腦以節點檔 `created_ts` 實查 4 顆 **全部為 2026-10-21**（建立日與台帳欄位取用無歧義）。
+- **4 顆真實欄位（實查）**：
+  | node_id | agent | node_type | created_ts | last_support_ts | 祖先 support_propagation 邊 | 落盤 ts |
+  |---|---|---|---|---|---|---|
+  | bfad28d21ee84ca7bbb78aea786999c8 | agent_yua | trait | 2026-10-21T02:05:22.512217+00:00 | == created_ts | 0 | 2026-10-29T02:00:25.197652+00:00 |
+  | 5f83b79f626441a39c76c7a55b2961d5 | agent_ram | belief | 2026-10-21T12:10:40.718645+00:00 | == created_ts | 0 | 2026-10-29T02:00:25.197652+00:00 |
+  | cf61d09a57bd4ea992c4b925740a1ce8 | agent_miku | belief | 2026-10-21T12:10:40.695093+00:00 | == created_ts | 0 | 2026-10-29T02:00:25.197652+00:00 |
+  | d703149f3ae9475a80bc01621042a799 | agent_ruka | belief | 2026-10-21T12:00:17.563778+00:00 | == created_ts | 0 | 2026-10-29T02:00:25.197652+00:00 |
+- **入帳動作**：`scripts/eval_lifecycle_cli.py` 的 `EXPECTED_RETIREMENT_COHORTS` 中
+  `2026-10-21` cohort 條目 → **新增 `types` 欄位**（4 顆的 belief／trait）＋ **`nodes` 補 4 顆**。
+  🔴 **為何必須帶 `types`**：該 cohort 原 19 顆全是 value 型，未記載型別者一律視為 `value`
+  ⇒ 不帶 `types` 會讓這 4 顆的**型別比對失敗 ⇒ 誤判破線**。
+  與 `2026-10-20` cohort 已有的 4 顆 trait 先例**同構**（`approved_node_types()`／`_recorded_node_type()`）。
+- **入帳效果（主大腦獨立實測）**
+  - 前槽重算視角（複製生產 elevation 至 %TEMP% → 移除 ts≥02:00Z 的 66 筆事件 → 槽前 sidecar 426 筆
+    → `--source-dir` 指向副本重跑）：**rc 3 → 0**、`VERDICT PENDING_COHORT → PASS`、
+    `pending_retirements_count` **4 → 0**、`pending_cohorts` `[{2026-10-21, count:4}] → []`、
+    `soul_type_transitions` = belief 3／value 19／trait 1（4 顆轉為 **expected**）。
+  - 已套用後視角：`returncode 0`／`eval_error ''`／`undelivered 0`／`VERDICT PASS`（真冪等 no-op）。
+  - **自我否決不變量逐 cohort 實測：`derived ⊆ approved` 成立，extra = 0（全 cohort）**。
+  - 位移說明：`approved 433 → 437`（入帳 +4）；`derived 397 → 388`（節點已轉 weakening ⇒ 推導自然減少）
+    ⇒ **兩者方向相反但皆非破壞**。
+  - 分類實測確認：4 顆**不在** `breaks` 內（`breaks` 18 筆全是 10-19 的歷史 quarantine 事件、
+    `node_type=None`，與 CLI 判定無關）。
+  - **復驗（第二次獨立跑）**：前槽視角仍為 `rc=0`／`PASS`／`pending_retirements_count=0`／
+    `pending_cohorts=[]`／`weak_prefix 34→57`／`soul_type_transitions={belief:3, value:19, trait:1}`
+    ⇒ 入帳結果**穩定可重現**。
+  - **守衛未受損**：`.venv\Scripts\python.exe -m pytest -q tests/test_eval_lifecycle_cli.py`
+    ⇒ **1 failed / 79 passed**（失敗的**僅有**那條既有紅燈）＝與入帳前**完全相同**
+    ⇒ **本次入帳未引入任何新失敗**。
+
+### (2) 🔴 既有守衛紅燈：**入帳前即存在**，非本次造成（實測證據）
+
+- `tests/test_eval_lifecycle_cli.py::TestEvaluationClockConsistency::test_closed_cohort_is_fully_reconciled_with_the_graph`
+  **1 failed / 79 passed**（其餘 79 筆全綠）。
+- **歸因實測（主大腦）**：`git stash` 還原到本次改動前 → **同樣失敗**；再逐一 checkout
+  `c5f4c4e`／`bb6cc9e`／`2243926`／`17ffee2`／`963364d`／`963364d~1` → **全部同樣失敗**。
+  ⇒ **早於 2026-10-28 全部改動**，非本次入帳引入。
+- **根因**：台帳對封閉 cohort **只增不減**（`scripts/ledger_refresh.py` 註解明寫
+  "the approved set may legitimately contain members the structural set no longer shows
+  (supported-then-aged) => **only add, never shrink**"），
+  而該守衛斷言 `set(derived) == set(approved)`（**等號**）
+  ⇒ 只要有成員「被背書過才老化」（supported-then-aged），approved 會**永久大於** derived ⇒ 假紅。
+- **實測反例**：cohort `2026-10-25` 有 4 顆 value
+  （`64325480fb4142ac9f71f4626518368d`／`36a215fc302644508f0e1e6bb45602b5`／
+  `c9e4661a9d724eaf93092bdd15c852f4`／`c4373ede472d4d389a27f48f4a1a597b`）
+  現已**帶有 support_propagation 祖先邊**（條件④不成立）⇒ 被推導層排除，但仍在台帳內。
+- **處置**：🔴 **未放寬、未刪除**該守衛的等號斷言（那是「為了讓數字好看而動門檻」）。
+  已寫入工單 `logs/LEDGER-REFRESH-TYPE-NEUTRAL-1-WORK-ORDER.md` 第 6 步，
+  要求**提請裁示**（把等號改為 `derived ⊆ approved`，或另議），
+  並要求執行者**只新增**「差額可被解釋」的量測守衛。
+
+### (3) 裁定二：ledger_refresh.py 四條件型別中立化 ⇒ 已完成（主大腦獨立複驗）
+
+- 工單：`logs/LEDGER-REFRESH-TYPE-NEUTRAL-1-WORK-ORDER.md`；執行 task `bg_4fceb34f-1806-4f29-b204-f169f5c22f1a`。
+- 🔴 **同源盲區（主大腦實測）**：**兩支工具同盲** ——
+  `scripts/ledger_refresh.py::structural_members()` 與
+  `scripts/eval_lifecycle_cli.py::expected_retirement_sets_by_cohort()` **都寫死 `node_type != "value"`**
+  ⇒ 生成器與判準器都看不到 trait/belief ⇒ 缺口永遠不會被自動發現（假綠）。
+- **實作（3 檔）**
+  - `scripts/eval_lifecycle_cli.py`：**僅條件①**由硬寫 `value` 改為「節點型別 == **該 cohort 台帳記載的型別**」
+    （沿用既有 `_recorded_node_type()`；未記載 ⇒ 向後相容預設 `value` ⇒ **fail-closed**）。
+    🔴 **未動**判定層／放行條件／衰減門檻／台帳資料。
+  - `scripts/ledger_refresh.py`：新增 `cli_module()`（**延遲載入** CLI 模組 ⇒ 型別語意**完全同源**、
+    不再各寫一份推導；import 期零副作用）、`structural_records()`（型別中立核心）、
+    `type_breakdown()`／`fmt_breakdown()`（**逐型別**回報）、`auto_entry_ids()`（**只准 value 自動入帳**）。
+  - `tests/test_ledger_refresh_type_neutral.py`（新增 558 行，G1～G6 共 11 支守衛）。
+- **主大腦獨立複驗（不只信自報）**
+  - 守衛 **11/11 綠**（`11 passed in 1.03s`）；定向套件 **133 passed / 1 failed**
+    （唯一失敗＝既有紅燈，`tests/test_eval_lifecycle_cli.py` **git diff 為空** ⇒ 未被修改）。
+  - **逐 cohort 自我否決：`extra = 0`（全 12 cohort）**；`baseline_violation = []`。
+  - **盲區關閉驗證：台帳記載的 8 顆非 value 型別（4 trait@10-20 ＋ 3 belief／1 trait@10-21）
+    ⇒ 8/8 皆可推導得出** ⇒ trait 5／belief 3 盲區已關閉，且 `extra` 仍恆為 0。
+  - **G6 差額複驗（主大腦自寫腳本）**：`approved \ derived` = **41 筆**，
+    **型別分佈 100% value**、**可解釋理由 100%「有 support_propagation 祖先邊」**、`unexplained = 0`
+    ⇒ 41 筆全部是台帳刻意保留的 supported-then-aged 成員（只增不減的後果）。
+  - **既有紅燈根因獨立複核**：2026-10-25 那 4 顆**各帶恰好 1 條** `support_propagation` 祖先邊
+    ⇒ 條件④不成立 ⇒ 被推導層排除但仍在台帳 ⇒ `approved(58) > derived(54)` ⇒ **等號斷言＝假紅**。
+  - 變異 **6 條各自精準轉紅**（M1 退回 value-only／M2 CLI 退回 value-only／M3 **放寬成任何靈魂型**／
+    M4 拿掉條件③／M5 拿掉 value-only 自動入帳過濾／M6 「盲區修錯」複合變異）；
+    全程在 `%TEMP%` **影子樹**（`SOUL_OS_EVAL_CLI_PATH`／`SOUL_OS_LEDGER_REFRESH_PATH` 鉤子載入副本），
+    **repo 檔全程唯讀**（sha256 前後相同）、無 commit。
+  - 🔺 **M3 的實測結論（重要）**：若把條件①放寬成「任何靈魂型」⇒ 生產圖譜 6 個 cohort 的建立日上
+    有**未核准**的 belief／trait（合計 21 顆）⇒ `derived ⊋ approved` ⇒ **自我否決破裂、CLI 報 FAIL**
+    ⇒ **只有「台帳記載型別」這條規則是安全的**（fail-closed 方向）。
+  - 🔴 **殘餘限制（誠實記帳）**：台帳**未記載**的 belief／trait（未核准者）**仍不會**被刷新器看見
+    —— 這是 fail-closed ＋「嚴禁自動入帳」的必然結果，**不是漏做**；
+    它們由 CLI 的 `PENDING_COHORT` 大聲回報（實測 pending：2026-10-23 belief×4、2026-10-24 belief×1，exit 3）。
+    若要刷新器**主動發掘**未入帳的靈魂型成員 ⇒ 屬「新增量測面」，建議另立工單（且仍須維持「只回報、不自動入帳」）。
+- **入帳紀律（工單 §5 假設 1，已實作釘死）**：value 由每日 job **自動**入帳；
+  belief／trait／essence **嚴禁自動入帳**（守衛 G5 釘住「`types` 區塊逐位元不變」＋
+  「新建節點的圖譜型別必須是 value」）。
+
+### (4) 裁定三：tension_id 唯一性 ⇒ 靜態記錄 ＋ 工單已完成（主大腦獨立複驗）
+
+- **靜態記錄（保留不動，依裁定「維持靜態記錄」）**：`data/inner_life/epistemic_tensions.jsonl`
+  （5 筆事件、3 個 distinct tension_id；**稽核錨點**：
+  `sha256 = 5803699192136dd4044c8a820d8161d739e1cc02faffd8e41d80b0f677f35633`、3115 bytes
+  ⇒ **入帳與工單一律不得改寫此檔**）中**同一 `(agent_id, tension_id)` 有兩筆 `tension_opened`**：
+  - `agent_rem` `relational_tension:6bfe56006414294a` ×2
+    （10-21 21:07:25 EDT／10-23 16:45:07 EDT）
+  - `agent_yua` `relational_tension:4b0084b9a7d4ddf8` ×2
+    （10-26 11:13:45 EDT／10-28 06:32:14 EDT）
+  - 兩組的 `kind`／`status`／`source`／`subject`／`bond` 完全同構；
+    **期間無任何 `tension_resolved` 事件** ⇒ 第二筆**不是重開已消解的張力**，
+    而是**同一條仍開立的張力被再開一次**。
+  - **排程批次佐證（主大腦實測）**：`agent_ruka` 第一筆 ts=1793027625.**0657** 與
+    `agent_yua` 第一筆 ts=1793027625.**0667** 相差 **1 毫秒** ⇒ 同一個排程批次開多 agent；
+    而 `agent_yua` 第二筆在 **+43.4 小時**後（1793183534.0784）**單獨**重開
+    ⇒ 形狀是「常態批次開立」＋「**某時點單獨重開**」，與讀端去重失效的假設一致。
+- 🔴 **機制追查（主大腦實測，結論誠實）**：
+  - `run_background_action()` 有**讀端去重**（`known = {t.tension_id for t in tensions}`）；
+    `collect_tensions()` 通道 2 的 `tension_id` = `_tension_id(agent_id, "relational_tension", "bryan")`
+    ＝ **固定雜湊** ⇒ 同一 agent 的 relational tension 永遠同一 id（既有冪等鍵）。
+  - `upsert_open_tension()` **寫入端完全不自守**（無條件追加 `tension_opened`）；
+    模組 docstring 的「fold 等價」是**讀取語意**等價，**不是**「不會重複開立」的保證。
+  - **沙盒重現實驗**：tmp store 上模擬同一 agent 連續兩次去重步驟（第二次 `created_at` 改 2000.0）
+    ⇒ **去重生效**（檔內最終僅 1 筆事件）。
+    ⇒ **矛盾**：讀端去重在沙盒有效，**生產上仍重複開立**。
+  - **已排除**：服務重啟清空記憶體（兩次開立落在同一輪替檔＝同一行程）、
+    legacy 遷移折算（payload 無 `migration_digest`）、檔案重建（CreationTime＝首筆事件時刻、
+    全庫僅此一份）、`save_tension_records` 為寫入者（`src/` 內無生產呼叫者）、
+    排程器直寫（`epistemic_tension_scheduler.evaluate()` 註解明寫「只讀」）、
+    事件順序亂序（檔案順序與 ts 順序一致）。
+  - ⚠️ **主大腦未能定位完整成因**（時限內）⇒ 依裁定要的**結果**採**寫入端自守**
+    （更嚴的方向：原本可能寫 2 筆，現在最多 1 筆）。
+- 工單：`logs/TENSION-OPEN-IDEMPOTENT-WRITE-GUARD-1-WORK-ORDER.md`；
+  執行 task `bg_9bf8fd81-f8c2-4b2a-8896-010851f1046b`。
+- **實作（2 檔）**：`src/inner_life/epistemic_action.py` 新增 `_read_store_events_for_guard()`
+  （守門專用狀態讀取，**讀不到 ⇒ fail-closed**）與 `_guard_opened_events()`
+  （同一 `tension_id` 未閉合／已開立 ⇒ 不再追加 `tension_opened`；**批次內同 id 也去重**），
+  接在**唯一寫入咽喉** `_append_tension_events()` 上；
+  `_read_tension_events()` 拆出共用解析器 `_parse_tension_event_lines()`（純重構，讀取語意不變）；
+  `tests/inner_life/test_epistemic_action.py` 新增 G1～G5（＋G4b）6 支守衛。
+- **主大腦獨立複驗（不只信自報）**
+  - 新守衛 **6 passed**；`tests/inner_life/` **438 passed / 1 failed**
+    （唯一失敗經 `git stash` 證實為 **baseline 既有紅燈**，與本次無關）。
+  - **自寫沙盒五項驗證全 PASS**：① 首次開立 1 筆／② 同 id 再開立**仍 1 筆**（回 True＝冪等成功）／
+    ③ **讀端失明時（monkeypatch `load_open_tensions` 回空）寫入端仍擋下**＝**不依賴讀端**／
+    ④ resolved 後**仍可重開**（事件數 2→3）／⑤ 批次內同 id 只寫 1 筆。
+  - **生產檔 `epistemic_tensions.jsonl` sha256 驗證前後相同**
+    （`5803699192136dd4044c8a820d8161d739e1cc02faffd8e41d80b0f677f35633`）、
+    mtime 仍為 **2026-10-28 06:32:14** ⇒ **既有 5 筆歷史事件未被改寫**（裁定＝維持靜態記錄）✔
+  - 變異 **5 條各自轉紅**（M1 守門失效／M2 永不重開／M3 批次內不去重／M4 讀取失敗改 fail-open／M5 fold 反轉）
+    ⇒ **fail-open 會讓 G4b 轉紅＝事故照演** ⇒ fail-closed 方向正確。
+- **根因（誠實聲明：未找到完整根因）**
+  - 🔴 **主大腦未能定位完整成因**（已排除：服務重啟清空記憶體、legacy 遷移折算、檔案重建、
+    `save_tension_records` 為寫入者、排程器直寫、事件順序亂序、id 漂移）。
+    worker 另排除：`.migrated` 檔不存在、讀寫不同目錄、排程器合成 id `"relational:current"`
+    （主大腦複核：那是**觸發判定**用的合成 id，與寫入無關 ⇒ 排除）。
+  - **收斂後的結論（worker 提供、主大腦認可）**：同一 `store_dir` 同一呼叫內「讀」與「寫」是同一個檔
+    ⇒ 該輪讀取**回傳的事件數少於檔內實際持有**；程式裡讀端「看漏」的**唯一**路徑是 fail-silent
+    （`Path.exists()` 吞 OSError、`read_bytes()` 拋例外被吞回 `[]`），
+    而**寫入端原本完全不自守** ⇒ **兩個缺口疊加**即足以產生生產上的重複開立。
+    本工單補上缺的那一半（寫入端自守）且做成 **fail-closed**。
+  - ⚠️ **殘餘風險（誠實揭露）**：**跨行程 TOCTOU** —— 兩行程同時「首次開立」可能各寫一筆
+    （守門的讀與追加非原子）；根治需跨行程鎖住「讀＋追加」，會動到 append 原語（工單明列 Out of Scope）。
+    目前生產只有單一寫入行程 ⇒ 實務風險低。
+- **兩點偏離（皆朝「更嚴」方向，已於工單執行回報中聲明）**
+  1. 工單字面寫「依 `_read_tension_events()` → `_fold_tension_events()`」；
+     實作用**同一份檔、同一套 fold 語意**，但以專用讀取區分「檔不存在」與「讀取失敗」，
+     後者 **fail-closed**（否則 G4 要求「模擬讀取失敗時仍不得寫第二筆」不可能通過）。
+  2. 回傳值契約：「已開立被冪等擋下」回 `True`（冪等成功）；
+     「承載檔讀不到 ⇒ 拒寫」回 `False`（未寫入，誠實地不是冪等成功）。
+
+### (5) 本回合未做／邊界
+
+- 未重啟服務（入版後生效需重啟，重啟需 Owner 另授）；未殺任何行程；未寫 `data/`
+  （台帳改的是 **repo 內** `scripts/eval_lifecycle_cli.py`，非生產資料；
+  生產 `data/inner_life/epistemic_tensions.jsonl` sha256 驗證前後相同）；
+- 未跑 `scripts/manual_*.py`；真實 LLM 呼叫 0 次；未放寬任何既有守衛斷言
+  （`tests/test_eval_lifecycle_cli.py` **git diff 為空**）；
+- 變異實驗全部在 `%TEMP%` 影子樹／沙盒進行，repo 檔全程唯讀。
+- 🔴 **待 Owner 裁示（兩項）**
+  1. **既有紅燈 `test_closed_cohort_is_fully_reconciled_with_the_graph`**：
+     等號斷言 `derived == approved` 與台帳「只增不減」語意**結構性衝突**（假紅，根因已獨立複核）；
+     差額 41 筆已量化為 **100% 可解釋**（value 型 ＋ 各帶恰好 1 條 support_propagation 祖先邊）。
+     建議改為 `derived ⊆ approved`（允許 approved ⊋ derived，但要求差額可被解釋）——
+     **主大腦未自行放寬**，等你裁示。
+  2. **`test_g1_other_agent_and_next_day_get_their_own_budget`（既有紅燈，與本次兩動無關）**：
+     該測試把 `_utc_today` 寫死成 `"2026-10-29"` 當「隔天」，而**真實 UTC 日期就是 2026-10-29**
+     ⇒ 不發生跨日 ⇒ 額度不重生 ⇒ **曆法時間炸彈**（worker 實測：同一份測試本體，
+     用真日期 FAIL／把日期模擬成 2026-10-28 就 PASS）。自 **2026-10-29T00:00:00Z 起每輪必紅**。
+     該檔只 import `src.inner_life.contradiction_backend_llm`，與 `scripts/*` 無關 ⇒ **需另立工單**。
+
+
 - 封閉 cohort：`2026-10-28`（UTC 建立日過完才封閉）⇒ 核准集合 **61 顆**（本次新增 **61 顆**；四條件量測：value ＋ 建立日 == cohort date ＋ last_support_ts == created_ts ＋ 無 support_propagation 祖先邊）。
 - 其他受影響 cohort：2026-10-21（核准 19 顆，本次新增 0 顆）；2026-10-22（核准 44 顆，本次新增 0 顆）。
 - 下一槽沙盒快跑：`2026-10-30T02:00:00+00:00` ⇒ `PENDING_COHORT`（exit 3）。
 - 守衛：`tests/test_eval_lifecycle_cli.py` 全綠（exit 0）。
 - 自動刷新機制：每日 20:40 EDT（= 00:40Z，UTC 日封閉後）執行。
+### (6) 合流全庫回歸（兩動同樹，主大腦實測）
+
+| 項目 | 結果 |
+|---|---|
+| 解譯器 | **repo 內 `.venv`**（`.venv\Scripts\python.exe -m pytest -q tests`；**非** PATH 上的全域 pytest） |
+| collected | **7612**（7579 passed ＋ 2 failed ＋ 31 skipped） |
+| passed | **7579** |
+| failed | **2**（皆既有紅燈，見 (6)） |
+| skipped | **31**（skip-set **STABLE**：added=0／removed=0 ⇒ 零漂移） |
+| subtests | 32 passed |
+| 耗時 | 870.66s（0:14:30） |
+| 守衛新增 | ledger 11 支 ＋ tension 6 支 ＝ **17 支全綠**（不 skip ⇒ 不動 skip 基準） |
+
+- **baseline 硬性切分實測**：把本次**全部**改動 stash 掉後重跑那兩筆失敗 ⇒ **同樣失敗**
+  ⇒ 兩筆皆**與本次兩動無關**。
+- **合流前定向合流預檢**：CLI 測試 ＋ 新守衛 ＋ tension 守衛 ⇒ **133 passed / 1 failed**
+  （唯一失敗＝既有紅燈）⇒ **兩動不互相破壞**。
+
+### (7) 🔴 兩筆既有紅燈（皆經 baseline 驗證非本次造成；待 Owner 裁示）
+
+1. **`test_closed_cohort_is_fully_reconciled_with_the_graph`** —— **等號斷言**與台帳「只增不減」語意
+   **結構性衝突**（假紅）。根因已獨立複核：2026-10-25 那 4 顆各帶**恰好 1 條** support_propagation 祖先邊
+   ⇒ 條件④不成立 ⇒ `approved(58) > derived(54)`；全庫差額 **41 筆**（100% value 型、100% 可解釋、unexplained=0）。
+   ⇒ 建議改為 `derived ⊆ approved` ＋「差額可被解釋」守衛（G6 已實作）。
+   🔴 **主大腦未自行放寬**（`tests/test_eval_lifecycle_cli.py` **git diff 為空**）。
+2. **`test_g1_other_agent_and_next_day_get_their_own_budget`** —— **曆法時間炸彈**（與本次兩動無關）：
+   該測試把 `_utc_today` 寫死成 `"2026-10-29"` 當「隔天」，而**真實 UTC 日期就是 2026-10-29**
+   ⇒ 不發生跨日 ⇒ 額度不重生 ⇒ 自 2026-10-29T00:00:00Z 起每輪必紅。
+   worker 實測對照：同一份測試本體用真日期 **FAIL**、把日期模擬成 2026-10-28 就 **PASS**
+   ⇒ 純日曆相依。該檔只 import `src.inner_life.contradiction_backend_llm`，與 `scripts/*` 無關 ⇒ **需另立工單**。
+

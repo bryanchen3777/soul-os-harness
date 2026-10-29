@@ -231,6 +231,19 @@ EXPECTED_RETIREMENT_COHORTS = (
         {
         "date": "2026-10-21",
         "not_before": "2026-10-29T02:00:00+00:00",
+        # 🔴 2026-10-28 Owner 核准入帳：2026-10-21 cohort 的 4 顆**靈魂型**
+        #    （3 belief ＋ 1 trait）退役批次 —— 建立於 2026-10-21、
+        #    last_support_ts == created_ts、無 support_propagation 祖先邊、
+        #    已於 2026-10-29T02:00:25Z 實體落盤（slot 2026-10-29T02:00:00Z）。
+        #    ★ 這 4 顆**不在** 19 顆 value 集合內 ⇒ 必須以 `types` 記載型別，
+        #      否則未記載型別會被視為 "value" ⇒ 型別比對失敗 ⇒ 誤判破線。
+        #    ★ 與 2026-10-20 cohort 的 4 顆 trait 同構（既有先例）。
+        "types": {
+            "5f83b79f626441a39c76c7a55b2961d5": "belief",   # agent_ram
+            "bfad28d21ee84ca7bbb78aea786999c8": "trait",    # agent_yua
+            "cf61d09a57bd4ea992c4b925740a1ce8": "belief",   # agent_miku
+            "d703149f3ae9475a80bc01621042a799": "belief",   # agent_ruka
+        },
         "bounds": {
             "04ab9b3c3e244cc28ee9eb6a6c344c95": "2026-10-28T12:00:12.856724+00:00",
             "07c268736b3747d1b5e8f7e3670603cc": "2026-10-28T12:00:17.563778+00:00",
@@ -272,6 +285,11 @@ EXPECTED_RETIREMENT_COHORTS = (
             "b085cbf072d34aaeb7be8ebc7ce43281",  # agent_mahiru
             "bd1d1134c3cd4afdb9490a0f389a69b5",  # agent_mai
             "fc85b012e7604e0cb1d2fbd228c6f4c2",  # agent_ram
+            # 🔴 2026-10-28 Owner 核准入帳：4 顆靈魂型退役（3 belief ＋ 1 trait）。
+            "5f83b79f626441a39c76c7a55b2961d5",  # agent_ram
+            "bfad28d21ee84ca7bbb78aea786999c8",  # agent_yua
+            "cf61d09a57bd4ea992c4b925740a1ce8",  # agent_miku
+            "d703149f3ae9475a80bc01621042a799",  # agent_ruka
         }),
     },
         {
@@ -1307,7 +1325,8 @@ def expected_retirement_sets_by_cohort(nodes: list, edges: list,
     """**逐 cohort** 推導「四條件全中」的節點集合（建立日 → 集合）。
 
     每個 cohort 的四條件（**不得**放寬、**不得**加任何時間算術）：
-      1. node_type == "value"
+      1. 節點型別 == **該 cohort 台帳記載的型別**（未記載 ⇒ 向後相容預設
+         `"value"`；與 `approved_node_types()` / `_recorded_node_type()` 完全同源）
       2. created_ts 的日期部分 == 該 cohort 的 `date`
       3. last_support_ts == created_ts（建立後從未再被背書）
       4. 沒有任何 trigger_type == "support_propagation" 的邊指向它（祖先支持邊＝0）
@@ -1328,9 +1347,19 @@ def expected_retirement_sets_by_cohort(nodes: list, edges: list,
     out = {}
     for c in normalize_cohorts(cohorts):
         date = c.get("date")
+        # 🔴 型別中立（2026-10-29 工單 LEDGER-REFRESH-TYPE-NEUTRAL-1）：
+        #    條件①由硬寫 `node_type == "value"` 改為「節點型別 == **該 cohort
+        #    台帳記載的型別**」（沿用既有 `_recorded_node_type()` helper）。
+        #    🔴 **fail-closed 方向**：未記載型別者視為 `"value"` ⇒ 非 value 型
+        #    的節點**推導不出來**（推導只會更嚴、不會更鬆）⇒ 逐 cohort 的
+        #    自我否決（推導 ⊆ 核准）不受影響。
+        cohort_types = c.get("types") or {}
         found = set()
         for n in nodes or ():
-            if not isinstance(n, dict) or n.get("node_type") != "value":
+            if not isinstance(n, dict):
+                continue
+            nid = n.get("node_id")
+            if n.get("node_type") != _recorded_node_type(nid, cohort_types):
                 continue
             created = n.get("created_ts") or ""
             if not isinstance(created, str) or created[:10] != date:
@@ -1339,7 +1368,6 @@ def expected_retirement_sets_by_cohort(nodes: list, edges: list,
                 continue          # 晚於評估時鐘 ⇒ 當時尚未存在 ⇒ 不列入推導
             if (n.get("last_support_ts") or "") != created:
                 continue
-            nid = n.get("node_id")
             if not nid or nid in supported:
                 continue
             found.add(nid)

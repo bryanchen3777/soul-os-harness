@@ -632,13 +632,21 @@ def _append_tension_events(
       跨行程也安全）；**不持有長命 handle**（無 handle 生命週期管理）。
     - **單次** ``write()`` 送出整批位元組 ⇒ 同一行不會被兩個寫入者交錯。
     - ``flush()`` ＋ ``os.fsync()`` ⇒ 掉電不遺失（末筆可見）。
+    - 🔴 2026-10-29（TENSION-OPEN-IDEMPOTENT-WRITE-GUARD-1）：**寫入端冪等守門**
+      （:func:`_guard_opened_events`）在此**唯一**的寫入咽喉把關 ⇒
+      同一 ``tension_id`` 未閉合／已開立時**不得**再追加 ``tension_opened``；
+      批次內同 id 多筆也只寫一筆。**其他事件型別（resolved／thought）不受影響。**
     """
     if not events:
         return True
+    safe_events, uncertain = _guard_opened_events(store_dir, events)
+    if not safe_events:
+        # 全部被冪等守門擋下 ⇒ **冪等成功**（不是錯誤）；狀態未知 ⇒ 未寫入 ⇒ False。
+        return not uncertain
     path = tension_store_path(store_dir)
     blob = b"".join(
         (json.dumps(dict(event), ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
-        for event in events
+        for event in safe_events
     )
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -649,16 +657,13 @@ def _append_tension_events(
         return False
 
 
-def _read_tension_events(store_dir: Optional[Any]) -> List[Dict[str, Any]]:
-    """讀出承載檔的**全部**事件（壞行略過；fail-silent）。"""
-    path = tension_store_path(store_dir)
-    try:
-        if not path.exists():
-            return []
-        raw = path.read_bytes()
-    except Exception as exc:  # noqa: BLE001 — fail-silent
-        logger.debug("[epistemic-action] 張力承載讀取失敗：%s: %s", type(exc).__name__, exc)
-        return []
+def _parse_tension_event_lines(raw: bytes) -> List[Dict[str, Any]]:
+    """把承載檔的原始位元組解析成事件清單（**壞行略過**）。
+
+    🔴 讀取端（:func:`_read_tension_events`）與**寫入端守門**
+    （:func:`_read_store_events_for_guard`）**共用**這一份解析規則 ⇒ 兩邊對
+    「哪些事件算數」的判斷**逐字一致**（守門不會比讀取端更寬鬆）。
+    """
     events: List[Dict[str, Any]] = []
     for line in raw.decode("utf-8", errors="replace").splitlines():
         line = line.strip()
@@ -676,6 +681,19 @@ def _read_tension_events(store_dir: Optional[Any]) -> List[Dict[str, Any]]:
     return events
 
 
+def _read_tension_events(store_dir: Optional[Any]) -> List[Dict[str, Any]]:
+    """讀出承載檔的**全部**事件（壞行略過；fail-silent）。"""
+    path = tension_store_path(store_dir)
+    try:
+        if not path.exists():
+            return []
+        raw = path.read_bytes()
+    except Exception as exc:  # noqa: BLE001 — fail-silent
+        logger.debug("[epistemic-action] 張力承載讀取失敗：%s: %s", type(exc).__name__, exc)
+        return []
+    return _parse_tension_event_lines(raw)
+
+
 def _fold_tension_events(
     events: Sequence[Mapping[str, Any]]
 ) -> Dict[str, Dict[str, Any]]:
@@ -691,6 +709,80 @@ def _fold_tension_events(
             continue
         state[tension_id] = dict(event)
     return state
+
+
+# ── 寫入端冪等守門（TENSION-OPEN-IDEMPOTENT-WRITE-GUARD-1, 2026-10-29）────
+def _read_store_events_for_guard(store_dir: Optional[Any]) -> Tuple[bool, List[Dict[str, Any]]]:
+    """**寫入端守門**的狀態讀取（回傳 ``(可讀, 事件)``）。
+
+    🔴 與讀取端（:func:`_read_tension_events`）的**關鍵差異**：讀取端是 fail-silent
+    （讀不到就當「沒有事件」），但守門端**必須知道「我到底看沒看到既有事件」**
+    ——看不到 ⇒ **不得**寫入 ``tension_opened``（fail-closed）。
+
+    為什麼不能沿用讀取端的 fail-silent：2026-10-29 生產實測發現同一
+    ``tension_id`` 出現**兩筆** ``tension_opened``（期間沒有任何
+    ``tension_resolved``）⇒ 讀端去重**看漏了**既有事件。根因尚未定位，但
+    「讀不到就當沒有」這條路徑本身就是 fail-open ⇒ 守門端不得沿用。
+    """
+    path = tension_store_path(store_dir)
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return True, []  # 承載檔尚未建立 ⇒ 沒有既有事件（首次開立）
+    except OSError as exc:  # noqa: BLE001 — 讀不到 ⇒ fail-closed（不寫入 opened）
+        logger.warning(
+            "[epistemic-action] 張力承載讀取失敗（寫入端守門 fail-closed ⇒ 不寫入 opened）：%s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return False, []
+    return True, _parse_tension_event_lines(raw)
+
+
+def _guard_opened_events(
+    store_dir: Optional[Any], events: Sequence[Mapping[str, Any]]
+) -> Tuple[List[Mapping[str, Any]], bool]:
+    """**寫入端冪等守門**：同一 ``tension_id`` 未閉合／已開立 ⇒ 不得再追加 ``opened``。
+
+    回傳 ``(可追加的事件, 狀態未知旗標)``。
+
+    - 判斷依據＝**同一份承載檔**（``store_dir`` 解析出的路徑）的 fold 結果
+      （**最後一筆勝出**）＋ **批次內累積**（同一批內的多筆同 id 事件也會去重）。
+    - 最後一筆 ``status`` ∈ {``open``, ``partially_resolved``}（或**未知狀態**）
+      ⇒ 已開立 ⇒ **跳過**該筆 ``opened``（冪等成功，不是錯誤）。
+    - 最後一筆 ``status`` == ``resolved`` ⇒ 已消解 ⇒ **允許**重新開立（既有語意）。
+    - 查無該 id ⇒ 首次開立 ⇒ 正常追加。
+    - **狀態未知**（承載檔讀不到）⇒ **fail-closed**：不得追加任何 ``opened``
+      （其餘型別照寫——閉合事件不可被卡住）。
+
+    ⚠️ 本守門**只在寫入端**作用：**不依賴讀取端**（``load_open_tensions``／
+    ``load_tension_records``），因此讀端看漏既有事件時**仍然擋得住**。
+    """
+    if not any(event.get("kind") == TENSION_EVENT_OPENED for event in events):
+        return list(events), False
+    readable, existing = _read_store_events_for_guard(store_dir)
+    if not readable:
+        # 狀態未知 ⇒ fail-closed：opened 一律不寫；其餘型別照寫。
+        return [event for event in events if event.get("kind") != TENSION_EVENT_OPENED], True
+    state = _fold_tension_events(existing)
+    kept: List[Mapping[str, Any]] = []
+    batch_state: Dict[str, Dict[str, Any]] = {}
+    for event in events:
+        tension_id = event.get("tension_id")
+        if event.get("kind") == TENSION_EVENT_OPENED:
+            prior = batch_state.get(tension_id)
+            if prior is None:
+                prior = state.get(tension_id)
+            if prior is not None:
+                # 有既有狀態 ⇒ 最後一筆的 status 決定是否已閉合。
+                # 🔴 只有 ``resolved`` 算「已消解」；``open``／
+                # ``partially_resolved``（乃至**未知狀態**）都算**未閉合**⇒ 不得重開。
+                if prior.get("status") != TENSION_STATUS_RESOLVED:
+                    continue
+        kept.append(event)
+        if isinstance(tension_id, str) and tension_id:
+            batch_state[tension_id] = dict(event)
+    return kept, False
 
 
 def _tension_body(payload: Mapping[str, Any]) -> Dict[str, Any]:
@@ -907,6 +999,16 @@ def load_open_tensions(
 
 def upsert_open_tension(tension: Tension, store_dir: Optional[Any] = None) -> bool:
     """把一條張力記成「未閉合」（**append-only**：追加一筆 opened 事件）。
+
+    🔴 **寫入端冪等**（2026-10-29，TENSION-OPEN-IDEMPOTENT-WRITE-GUARD-1）：
+    同一 ``tension_id`` 若已處於**未閉合／已開立**狀態（``open``／
+    ``partially_resolved``）⇒ **不得**再追加第二筆 ``opened`` 事件 ⇒
+    **跳過寫入並回傳 ``True``**（冪等成功，不是錯誤）。
+    已消解（``resolved``）⇒ 仍可重新開立（既有語意不變）。
+
+    守門在**寫入端**（:func:`_guard_opened_events`）⇒ **不依賴讀取端**
+    （``load_open_tensions``／``load_tension_records``）：讀端看漏既有事件時
+    **仍然擋得住**。
 
     舊版是「同 id 覆寫」；append-only 下同 id 會有多筆事件，但 fold（取最後一筆）
     的結果**等價**，且**不再互相覆蓋別人的寫入**。
