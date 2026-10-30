@@ -7658,7 +7658,7 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
    ⇒ 純日曆相依。該檔只 import `src.inner_life.contradiction_backend_llm`，與 `scripts/*` 無關 ⇒ **需另立工單**。
 
 
-### 0.1.108 兩筆既有紅燈拔除（Owner 2026-10-29 裁定「審定備案與架構雙向裁定」）
+## 0.1.108 兩筆既有紅燈拔除（Owner 2026-10-29 裁定「審定備案與架構雙向裁定」）
 
 **本節對應 Owner 2026-10-29 的兩筆裁定**。兩處皆為「決策已完整」的定點修改
 （Owner 已把做法與判準寫死），故**主大腦直接執行、未派工**；改動全程 repo 唯讀
@@ -7669,7 +7669,7 @@ harness 放 `%TEMP%\revchain_mut_harness\run_mutations.py`（**改副本**模式
 | 一 | 封閉 cohort 斷言：`derived == approved` →「**子集 ＋ 差額可解釋**」 | 【核准修改】 | (1) |
 | 二 | 曆法時間炸彈（`test_g1_...` 寫死 `"2026-10-29"`） | 【核准開立修復工單，立即排工拔除】 | (2) |
 
-#### (1) 裁定一：等號斷言 → 子集 ＋ 差額可解釋
+### (1) 裁定一：等號斷言 → 子集 ＋ 差額可解釋
 
 **根因（主大腦獨立複核，非推測）**：台帳對封閉 cohort **刻意只增不減**
 （保留「被背書過才老化」的成員），而守衛斷言的是**物理等號**
@@ -7731,7 +7731,7 @@ approved 的 4 顆被推導出來 ⇒ `derived == approved` ⇒ 子集仍成立�
 ⇒ **封閉 cohort 守衛的牙齒分工**：①／③ 守「推導不得超出核准」，
 ②＋完整性守「差額必須可解釋且不得漏算」。
 
-#### (2) 裁定二：拔除 `test_g1_...` 的曆法時間炸彈
+### (2) 裁定二：拔除 `test_g1_...` 的曆法時間炸彈
 
 **原狀**：`backend_mod._utc_today = lambda: "2026-10-29"` 當「明天」。
 真實 UTC 日期**就是** 2026-10-29 ⇒「明天」==「今天」⇒ 不發生跨日 ⇒ 額度不重生
@@ -7753,7 +7753,7 @@ approved 的 4 顆被推導出來 ⇒ `derived == approved` ⇒ 子集仍成立�
 | M4 | 把動態隔日推導**還原**成寫死的 `"2026-10-29"`（以 repo 真檔為 `__file__`、在記憶體中執行突變後原始碼） | RED | **RED** — `AssertionError: 隔日推導失敗：今天與明天相同（2026-10-29）` |
 | M5 | 曆法獨立性：凍結 `_utc_today` 於 8 個日期（2026-01-01／02-28／06-15／10-29／12-31、2027-02-28／12-31、2028-02-29）逐一執行 | 全 PASS | **8/8 全 PASS** |
 
-#### (3) 全庫回歸（主大腦實測，repo 內 `.venv`）
+### (3) 全庫回歸（主大腦實測，repo 內 `.venv`）
 
 ```powershell
 .venv\Scripts\python.exe -m pytest -q tests
@@ -7776,7 +7776,7 @@ approved 的 4 顆被推導出來 ⇒ `derived == approved` ⇒ 子集仍成立�
   ＋ `test_contradiction_backend_llm_guard.py` ⇒ **41 passed / 0 failed**。
 
 
-#### (4) 生命週期 CLI 沙盒快跑（功能驗收不綁 22:00）
+### (4) 生命週期 CLI 沙盒快跑（功能驗收不綁 22:00）
 
 ```powershell
 .venv\Scripts\python.exe scripts/eval_lifecycle_cli.py --simulated-time '2026-10-29T02:00:00Z'
@@ -7794,7 +7794,7 @@ approved 的 4 顆被推導出來 ⇒ `derived == approved` ⇒ 子集仍成立�
 `elevation_lifecycle_events.jsonl` `49f84603…`、`elevation_trace.jsonl` `82071886…`、
 `inner_life/epistemic_tensions.jsonl` `58036991…`；後者 mtime 仍 `2026-10-28 06:32:14`）。
 
-#### (5) 本回合未做／邊界（誠實聲明）
+### (5) 本回合未做／邊界（誠實聲明）
 
 - **未重啟服務**（Owner：待維護窗口統一生效）；**未殺任何行程**；**未寫 `data/**`**
   （`git status --porcelain` 僅 4 個 modified 檔，無新增檔、無未追蹤檔）。
@@ -7810,14 +7810,120 @@ approved 的 4 顆被推導出來 ⇒ `derived == approved` ⇒ 子集仍成立�
   （627/627）⇒ git 的 `LF will be replaced by CRLF` 警告消失，
   且 `git diff --stat` **未受行尾污染**（仍為 111 行變動）。
 
-#### (6) 殘餘風險備查（Owner 已裁定維持現狀）
+### (6) 殘餘風險備查（Owner 已裁定維持現狀）
 
 - **Tension 跨行程 TOCTOU**：生產為單一寫入行程 ⇒ 實務風險低；
   根治需把 append 原語升級為跨行程鎖 ⇒ 另案（本回合未動）。
 - **刷新器看不見未入帳的 belief／trait**：屬 fail-closed ＋「嚴禁自動入帳」的必然結果，
   由 CLI 的 `PENDING_COHORT` 大聲回報 ⇒ 若要主動發掘屬新增量測面，另立工單。
 
-## 0.1.108 值守端日常台帳刷新（cohort 2026-10-29 封閉後，自動）
+## 0.1.109 2026-10-29 三次重啟存證 ＋ 夜槽中斷的處置裁定（Owner 2026-10-29 23:00 EDT）
+
+### (1) 當期 PID 基線（Owner 指定更新；「當期觀測值」不是不變量）
+
+| 角色 | 當期實測 | 依據 |
+|---|---|---|
+| Trampoline（`data\server.pid`） | **20048** | `server_ops.log`：`[2026-10-29 22:03:13] [ok] Server started PID=20048` |
+| 服務 `:8000` socket owner | **20004** | `watchdog.log` 22:08:03 起 `port=8000 listener=20004 procs=2` |
+| VC 實例 `:8765` | **1612** | netstat（LISTENING） |
+| VC 實例 `:8766` | **14916** | netstat（LISTENING） |
+| VC 實例 `:8767` | **6524** | netstat（LISTENING） |
+
+- VC 三實例**未隨服務重啟改變**（獨立行程）⇒ 只有服務本體的 PID 隨重啟位移。
+- 依規則：有重啟 ⇒ 標「基線已隨重啟位移」**而非 FAIL**；本次三次重啟皆有日誌自證（見 (2)）。
+
+### (2) 10-29 三次重啟的逐筆日誌證據（主大腦實測；`server_ops.log` ＋ `watchdog.log`）
+
+| 時刻 | 觸發 | watchdog 判定 | 被殺 PID | Plan A | 服務 PID |
+|---|---|---|---|---|---|
+| 14:58:04 | watchdog | `WARN post-bb6cc9e N=1/10 trial=220/98 port_listen=False -> restart` | 23180 / 8780 | 26512 | 23956（14:58:14） |
+| 20:33:03 | watchdog | `WARN post-7014574 N=1/10 trial=37/98 port_listen=False -> restart` | 23956 / 23740 | 14456 | 18940（20:33:13） |
+| 22:03:03 | watchdog | `WARN post-2ece524 N=1/10 trial=17/98 port_listen=False -> restart` | 18940 / 8512 | 9652 | 20048（22:03:13） |
+
+- 三次皆走同一路徑：`port_listen=False` → `killed PID …` → `port 8000 released after 1s`
+  → `launched Plan A (PID …)` → `server_ops.ps1` pre-check OK ×2 → `[ok] Server started`。
+- 🔺 **與裁定文字的差異（誠實記帳）**：Owner 裁定書寫「三次重啟（14:58 授權重啟、20:33 與 22:03 Watchdog 自愈重啟）」；
+  **日誌證據顯示 14:58 亦為 watchdog 自癒重啟**（同樣有 `WARN … port_listen=False -> restart`
+  ＋ `killed PID 23180 / 8780` ＋ `launched Plan A (PID 26512)`，且 `server_ops.log` 該時刻
+  只有 pre-check 與 started 兩類行、**無**人工 restart 請求行）⇒ 本節依**日誌實測**記為
+  「三次皆 watchdog 自癒」；裁定原文「14:58 授權重啟」之差異在此明示，不自行改判。
+- 裁定第三點「終止者已由 Watchdog 日誌完全自證，無需動用 Windows 稽核權限額外排查」
+  ⇒ **已採納**：`watchdog.log` 的逐字 `killed PID …` ＋ `launched Plan A …` 即為完整自證，
+  本回合**未**查閱 Security 日誌（`Get-WinEvent -ListLog Security` 在一般權限下本即不可用）。
+
+### (3) 22:00 夜槽中斷現象（槽未落地）
+
+| 項目 | 實際 | 期望 | 差距 |
+|---|---|---|---|
+| 接縫發射 | **53 筆** | 78 筆 | 🔴 −25 |
+| 弱化包裝增量 | **0 筆** | 38 筆 | 🔴 −38 |
+| 生命週期評估 | **未觸發**（`[lifecycle]` 0 行、sidecar 增量 0 筆、mtime 停在 2026-10-28 22:07:33） | 38 筆 | 🔴 −38 |
+
+- 根因鏈：22:01:23 uvicorn accept loop 拋 `OSError [WinError 64]`（`Accept failed on a socket`
+  ＋ `Task exception was never retrieved`）→ accept task 死、`:8000` 不再 accept →
+  watchdog 22:03:03 判 `port_listen=False` → 殺 18940／8512 → 22:03:13 Plan A 重啟
+  ⇒ 槽只跑了 3 分鐘即被跨行程斬斷。
+- 🔺 **因果邊界（誠實揭露）**：「accept 失敗 ⇒ 致命」**不成立**——實測每個行程恰好 1 次
+  accept 失敗（10-28 20:26:51／10-29 14:57:22／20:29:19／22:01:23），**前三次服務都存活**
+  （watchdog 持續報 OK）⇒ 真正致因＝watchdog 判定失聯；accept 失敗與之時間相近（相差 100 秒）
+  但**未證因果**。槽內 event loop 停滯：今晚 22:00:10→22:01:22 有 **72 秒**日誌空洞
+  （前一晚同段 22 秒）。對照組：前一晚 10-28 槽**正常完成**（22:07:33 產出 66 筆轉變、
+  行程存活到 10-29 14:57）⇒ 今晚是**首次**出現此形狀。
+
+### (4) 裁定一：遺失的 38 筆生命週期評估 ＋ 25 筆接縫 ⇒ **等下一槽自然補，嚴禁手動補跑**
+
+- Owner 依據（逐字）：嚴守「禁止人為製造假資料、禁止手動觸發內部狀態」紅線；
+  生命週期衰減與接縫發射具備自然的冪等聚合特性，未發射的線頭其 `ts < 槽時刻` 條件依然成立；
+  未老化的靈魂節點在明天的日槽／夜槽中其 age 與 decay 只會進一步加深，下一槽會自然全量吸收。
+- 🔺 **機制上成立（主大腦實測 `src/soul/life_thread_orchestrator.py:411-469`）**：
+  發射選擇條件為 `status == "completed"` ∧ `sage_fact_id` 非空 ∧
+  `thread_id not in _ELEVATION_EMITTED`；**程式碼中沒有任何 `ts` 過濾** ⇒
+  ① 未發射的 25 條仍具備 `completed` ＋ `sage_fact_id`；② 其 `thread_id` **不在新行程
+  （PID 20004）的記憶體登記表**（`_ELEVATION_EMITTED` 隨舊行程死亡而清零）
+  ⇒ **下一槽必被選中**。
+- 🔺 **對明晨槽的可驗證預測（供值守對帳）**：下一槽（10-30 02:00Z）的接縫期望值應為
+  **「重啟後首槽的全量重發」≈ 78 筆，而非 25 筆**——因新行程登記表為空，53 筆亦會被重發
+  （此即期望值模型所述「重啟後首槽的全量重發」歷史上 35／35／42／42 的來源）。
+  生命週期評估同理：sidecar 應有 ≥38 筆新增 transition。
+
+### (5) 裁定二：排程槽中斷後的補跑機制（Catch-up）⇒ **維持現狀，不加進程內重試**
+
+- Owner 依據（逐字）：夜槽屬於離線／低頻的後台代謝批次。若在排程器增加「重啟後立即偵測並
+  重跑夜槽」，一旦重啟原因本身是因夜槽引發的死鎖或 OOM，立即重跑只會引發
+  「重啟 → 跑槽 → 崩潰 → 重啟」的**死亡風暴**。容忍單次排程槽因重啟遺失，
+  靜候次日排程天然修復，是更具彈性的架構防禦策略。
+- 🔺 主大腦補充的可執行邊界（**不新增任何機制**，僅記錄未來若要加時的前提）：
+  必須滿足「重啟原因**不可歸因於**該槽」的前提，且不得實作為行程內的即時重試。
+
+### (6) 裁定三：10-29 重啟記錄與權限歸因 ⇒ 納入本節存證（已執行；內容見 (1)(2)）
+
+### (7) 本回合未做／邊界
+
+- **未重啟服務**（裁定二：保持系統靜態運轉；PID 20004 維持連續監聽，`/health` = 200）。
+- **未手動補跑**任何槽（裁定一：嚴禁手動補跑）⇒ 未觸發 synthetic diary／dream、
+  未清空或繞過 `_ELEVATION_EMITTED`。
+- **未新增**任何 catch-up／進程內重試機制（裁定二）⇒ `src/**` 本回合零變更。
+- 未寫 `data/**`（sidecar `elevation_lifecycle_events.jsonl` sha256 `49f84603…` 未變、
+  mtime 仍 2026-10-28 22:07:33）；未殺任何行程；未跑 `scripts/manual_*.py`；真實 LLM 呼叫 0 次。
+- 🔺 **附帶存證（同時入帳）**：`4b6cb4b` 的 `src/inner_life/epistemic_action.py`
+  （tension 寫入端冪等守門）**已因 20:33／22:03 的 watchdog 自癒重啟而提前進入生產行程**
+  （非排定的維護窗口）⇒ 該守門的生產前提已成立；22:15 觀測亦確認
+  `epistemic_tensions.jsonl` 自 10-28 06:32:14 起無新重複開立（mtime 未變）。
+- 🔺 **canonical 編號碰撞與本次修正（誠實記帳）**：本回合 17:50 的裁定章節誤用三井號標題
+  （`### 0.1.108`）⇒ ① 與 20:40 自動台帳刷新寫入的 `## 0.1.108` **編號重複**；
+  ② 刷新器的 `scripts/ledger_refresh.py::assign_section_numbers()` 只認
+  `^##\s+0\.1\.(\d+)` ⇒ 漏算本節 ⇒ **明日 20:40 會再撞**。本次修正：
+  17:50 章節改為 `## 0.1.108`（子標題同步降為 `### (N)`，與 §0.1.107 慣例一致）、
+  20:40 章節讓位為 `## 0.1.110`、本節為 `## 0.1.109` ⇒ `##` 序列唯一，且明日
+  max+1 = 111（不撞）。**規則（後續適用）**：canonical 的人工章節一律用 `## 0.1.N`
+  （兩井號），否則自動刷新器的編號計算會漏算。
+
+## 0.1.110 值守端日常台帳刷新（cohort 2026-10-29 封閉後，自動）
+
+> 🔺 **編號讓位說明**：本節原寫作 `## 0.1.108`（commit `2ece524`，20:40 自動寫入），
+> 與同日 17:50 的人工裁定章節（§0.1.108）**編號重複** ⇒ 於 §0.1.109 補錄時讓位為
+> `## 0.1.110`，以維持 canonical 章節編號唯一（詳見 §0.1.109 (7)）。
+
 
 - 封閉 cohort：`2026-10-29`（UTC 建立日過完才封閉）⇒ 核准集合 **111 顆**（本次新增 **111 顆**；四條件量測：台帳記載型別（未記載＝value）＋ 建立日 == cohort date ＋ last_support_ts == created_ts ＋ 無 support_propagation 祖先邊）。
 - 其他受影響 cohort：2026-10-22（核准 44 顆，本次新增 0 顆）；2026-10-23（核准 50 顆，本次新增 0 顆）。
