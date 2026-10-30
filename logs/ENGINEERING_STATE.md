@@ -7821,24 +7821,33 @@ approved 的 4 顆被推導出來 ⇒ `derived == approved` ⇒ 子集仍成立�
 
 ### (1) 當期 PID 基線（Owner 指定更新；「當期觀測值」不是不變量）
 
-| 角色 | 當期實測 | 依據 |
-|---|---|---|
-| Trampoline（`data\server.pid`） | **20048** | `server_ops.log`：`[2026-10-29 22:03:13] [ok] Server started PID=20048` |
-| 服務 `:8000` socket owner | **20004** | `watchdog.log` 22:08:03 起 `port=8000 listener=20004 procs=2` |
-| VC 實例 `:8765` | **1612** | netstat（LISTENING） |
-| VC 實例 `:8766` | **14916** | netstat（LISTENING） |
-| VC 實例 `:8767` | **6524** | netstat（LISTENING） |
+| 角色 | 裁定時點（23:00） | **當期實測（23:08 起）** | 依據 |
+|---|---|---|---|
+| Trampoline（`data\server.pid`） | 20048 | **20988** | `server_ops.log`：`[2026-10-29 23:03:13] [ok] Server started PID=20988` |
+| 服務 `:8000` socket owner | 20004 | **8388** | `watchdog.log` 23:08:04 起 `port=8000 listener=8388 procs=2` |
+| VC 實例 `:8765` | 1612 | **1612** | netstat（LISTENING） |
+| VC 實例 `:8766` | 14916 | **14916** | netstat（LISTENING） |
+| VC 實例 `:8767` | 6524 | **6524** | netstat（LISTENING） |
 
-- VC 三實例**未隨服務重啟改變**（獨立行程）⇒ 只有服務本體的 PID 隨重啟位移。
-- 依規則：有重啟 ⇒ 標「基線已隨重啟位移」**而非 FAIL**；本次三次重啟皆有日誌自證（見 (2)）。
+- 🔺 **裁定後 3 分鐘即發生第四次重啟（23:03:03）⇒ 基線再度位移**（這正是「PID 是當期觀測值、
+  不是不變量」的實例）：Owner 指定寫入的 20048／20004 是 **23:00 當下**的有效值，
+  **當期值已為 20988／8388** ⇒ 兩者並列，不覆蓋任一方。
+- VC 三實例**四次重啟全程未改變**（獨立行程）⇒ 只有服務本體的 PID 隨重啟位移。
+- 依規則：有重啟 ⇒ 標「基線已隨重啟位移」**而非 FAIL**；本次四次重啟皆有日誌自證（見 (2)）。
 
-### (2) 10-29 三次重啟的逐筆日誌證據（主大腦實測；`server_ops.log` ＋ `watchdog.log`）
+### (2) 10-29 四次重啟的逐筆日誌證據（主大腦實測；`server_ops.log` ＋ `watchdog.log`）
+
+> 🔺 **第四次（23:03:03）發生於 Owner 23:00 裁定之後 3 分鐘** ⇒ 本節由「三次」補正為「四次」。
+> 另註：23:08:02 的 `observation window rotated: post-2ece524 -> post-2d1ec52`
+> ＝ watchdog 因 canonical commit（`2d1ec52`，23:07:37）**旋轉觀察窗並重置計數器**，
+> **該旋轉本身沒有重啟服務**（服務在 23:03:13 已起，listener 8388 沿用）⇒ 不計入重啟次數。
 
 | 時刻 | 觸發 | watchdog 判定 | 被殺 PID | Plan A | 服務 PID |
 |---|---|---|---|---|---|
 | 14:58:04 | watchdog | `WARN post-bb6cc9e N=1/10 trial=220/98 port_listen=False -> restart` | 23180 / 8780 | 26512 | 23956（14:58:14） |
 | 20:33:03 | watchdog | `WARN post-7014574 N=1/10 trial=37/98 port_listen=False -> restart` | 23956 / 23740 | 14456 | 18940（20:33:13） |
 | 22:03:03 | watchdog | `WARN post-2ece524 N=1/10 trial=17/98 port_listen=False -> restart` | 18940 / 8512 | 9652 | 20048（22:03:13） |
+| **23:03:03** | watchdog | `WARN post-2ece524 N=2/10 trial=29/98 port_listen=False -> restart` | 20048 / 20004 | 18416 | 20988（23:03:14） |
 
 - 三次皆走同一路徑：`port_listen=False` → `killed PID …` → `port 8000 released after 1s`
   → `launched Plan A (PID …)` → `server_ops.ps1` pre-check OK ×2 → `[ok] Server started`。
@@ -7863,12 +7872,22 @@ approved 的 4 顆被推導出來 ⇒ `derived == approved` ⇒ 子集仍成立�
   ＋ `Task exception was never retrieved`）→ accept task 死、`:8000` 不再 accept →
   watchdog 22:03:03 判 `port_listen=False` → 殺 18940／8512 → 22:03:13 Plan A 重啟
   ⇒ 槽只跑了 3 分鐘即被跨行程斬斷。
-- 🔺 **因果邊界（誠實揭露）**：「accept 失敗 ⇒ 致命」**不成立**——實測每個行程恰好 1 次
-  accept 失敗（10-28 20:26:51／10-29 14:57:22／20:29:19／22:01:23），**前三次服務都存活**
-  （watchdog 持續報 OK）⇒ 真正致因＝watchdog 判定失聯；accept 失敗與之時間相近（相差 100 秒）
-  但**未證因果**。槽內 event loop 停滯：今晚 22:00:10→22:01:22 有 **72 秒**日誌空洞
-  （前一晚同段 22 秒）。對照組：前一晚 10-28 槽**正常完成**（22:07:33 產出 66 筆轉變、
-  行程存活到 10-29 14:57）⇒ 今晚是**首次**出現此形狀。
+- ✅ **因果鏈補正（2026-10-29 23:1x 主大腦自查推翻前一結論）**：
+  全量掃描輪替日誌（`data\logs\server_nohup*.err` ＋ `data\server_nohup.err`）⇒
+  **每一個行程恰好 1 次 accept 失敗，且該次失敗都落在該行程生命的最後一刻**：
+  10-28 20:26:51（行程 15:54:43 起）、10-29 14:57:22（行程 10-28 20:28:14 起）、
+  20:29:19（行程 14:58:15 起）、22:01:23（行程 20:33:14 起）、**23:02:32（行程 22:03:16 起）**
+  ⇒ **5/5 全部隨後被 watchdog 判定 `port_listen=False` 並重啟**。
+  ⇒ **本節先前的「『accept 失敗 ⇒ 致命』不成立（前三 次服務都存活）」是誤讀，已撤回**：
+  誤讀來源＝把 watchdog 對**後續新行程**的 `OK` 記錄當成「發生 accept 失敗的那個行程仍健康」。
+  ✅ **正確結論**：**根因＝uvicorn accept loop 拋 `WinError 64` ⇒ accept task 死 ⇒ `:8000`
+  仍綁著但不再 accept（服務失聰）⇒ watchdog 下一輪探測（5 分鐘內）才發現並重啟**；
+  watchdog 是**自癒者與後果**，不是致因。
+  🔺 該修正**不改變**裁定一與裁定二（補跑機制）的結論。
+- 🔺 **槽內 event loop 停滯**：今晚 22:00:10→22:01:22 有 **72 秒**日誌空洞
+  （前一晚同段 22 秒）⇒ 與 accept 失敗時序相鄰，但**仍未證因果**。
+- 對照組：前一晚 10-28 槽**正常完成**（22:07:33 產出 66 筆轉變、行程存活到 10-29 14:57）
+  ⇒ **「槽在窗內被斬斷」是首次發生**（但 accept loop 崩潰本身此前已發生 2 次，落在槽窗外）。
 
 ### (4) 裁定一：遺失的 38 筆生命週期評估 ＋ 25 筆接縫 ⇒ **等下一槽自然補，嚴禁手動補跑**
 
@@ -7905,6 +7924,9 @@ approved 的 4 顆被推導出來 ⇒ `derived == approved` ⇒ 子集仍成立�
 - **未新增**任何 catch-up／進程內重試機制（裁定二）⇒ `src/**` 本回合零變更。
 - 未寫 `data/**`（sidecar `elevation_lifecycle_events.jsonl` sha256 `49f84603…` 未變、
   mtime 仍 2026-10-28 22:07:33）；未殺任何行程；未跑 `scripts/manual_*.py`；真實 LLM 呼叫 0 次。
+- 🔺 **裁定後 3 分鐘即發生第四次 watchdog 自癒重啟（23:03:03）** ⇒ 本節基線由 20048／20004
+  位移為 20988／8388（並列記於 (1)）；受影響的是**排程槽層**（該次重啟在槽窗外，
+  且 22:00 槽早已結束）⇒ 對「38 筆 ＋ 25 筆等下一槽自然補」的結論**無影響**。
 - 🔺 **附帶存證（同時入帳）**：`4b6cb4b` 的 `src/inner_life/epistemic_action.py`
   （tension 寫入端冪等守門）**已因 20:33／22:03 的 watchdog 自癒重啟而提前進入生產行程**
   （非排定的維護窗口）⇒ 該守門的生產前提已成立；22:15 觀測亦確認
