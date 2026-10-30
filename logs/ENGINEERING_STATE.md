@@ -8159,3 +8159,84 @@ loop handler 只影響**日誌輸出**，`sock.close()` 照跑、accept 迴圈�
   **未觸發** synthetic diary／dream、真實 LLM 呼叫 0 次（模擬器用 scripted proxy）。
 - 新增的兩份工單檔（`FEAT-UVICORN-ACCEPT-RESILIENCE-WORK-ORDER.md`、
   `FEAT-SIM-HERMETIC-CLOCK-WORK-ORDER.md`）皆為**決策文件**，不含任何可執行改動。
+
+
+## 0.1.113 5 筆 belief 退役節點正式入帳（Owner 2026-10-30 09:3x EDT 核准）＋ 晨槽／夜槽權責分流定案
+
+**Owner 裁定（2026-10-30 09:3x EDT）**：① CLI 沙盒回報的 `PENDING_COHORT`（exit 3）**5 筆 belief 節點正式核准入帳**；② **修訂基準模型** —— 晨槽生命週期轉變期望值修正為 **0**、昨晚遺失的 38 筆生命週期評估**鎖定於今晚 22:00 EDT 夜槽驗證**、晨槽接縫發射**全面廢除寫死數字**改為逐槽重算。
+
+### 1. 入帳內容（`scripts/eval_lifecycle_cli.py` → `EXPECTED_RETIREMENT_COHORTS`）
+
+| cohort | 節點 | agent | 建立日 | last_support | 引擎門檻（last_support＋7d） |
+|---|---|---|---|---|---|
+| 2026-10-23 | `310a62dcfbcd48a69729d48d0e3a3dfb` | agent_mai | 2026-10-23T12:01:17.385299Z | ＝created_ts | 2026-10-30T12:01:17.385299Z |
+| 2026-10-23 | `3a7308ce1519493e94029a4d8cf2c418` | agent_aoi | 2026-10-23T12:01:22.443087Z | ＝created_ts | 2026-10-30T12:01:22.443087Z |
+| 2026-10-23 | `ac640743f7b04750a5ab436fc40dccf6` | agent_rem | 2026-10-23T02:01:10.112764Z | ＝created_ts | 2026-10-30T02:01:10.112764Z |
+| 2026-10-23 | `f852908766ad46f4883580462a835989` | agent_anna | 2026-10-23T02:01:24.559726Z | ＝created_ts | 2026-10-30T02:01:24.559726Z |
+| 2026-10-24 | `59a4cd01d63f4fa2875d221e0bce92b4` | agent_yua | 2026-10-24T02:00:51.278109Z | ＝created_ts | 2026-10-31T02:00:51.278109Z |
+
+- 五筆**全部**為 `node_type=belief`、`candidate_node_type=null`、`lifecycle_state=active`、`confidence=0.5`、`stability=0.3`、`lineage_depth=1`，且**無 `support_propagation` 祖先邊**（`support_propagation edges = 0`）⇒ 四條件（型別／建立日／last_support==created／無祖先支持邊）全中。
+- 🔴 **必須以 `types` 記載為 `belief`**：台帳未記載型別者一律視為 `value`（`approved_node_types()` 的 fail-closed 預設）⇒ 若漏寫 `types`，belief 弱化**不會**被放行成 expected，而是直接判 breaks。
+- 🔴 **必須逐節點覆寫 `bounds`**（＝引擎自己的衰減門檻 `last_support_ts ＋ 7 天`）：這五筆的 cohort 級 `not_before`（建立日＋8 天 @02:00Z）比它們的真實門檻**晚一槽** ⇒ 不覆寫就會被誤判成「提前早衰」（破線）。與 2026-10-27 既有 cohort 同一慣例；**既有 2026-10-23 cohort 的 46 筆 bounds 已逐筆驗證全部等於 `created_ts ＋ 7 天`（46/46）**。
+- 為何不是「一次過把所有 pending 批次都入帳」：pending 集合**會隨時間增長**（10-30T12:05Z 為 4 筆、10-31T02:05Z 為 5 筆），每槽都會再冒出新 cohort ⇒ 入帳只能**逐次人工核准**（CLI 不得自行核准）。
+
+### 2. 入帳後判定（CLI 沙盒，來源唯讀、唯一寫入＝temp 沙盒）
+
+| simulated-time | returncode | VERDICT | pending | expected_hits | 沙盒新增轉變 | weak_prefix | key_node | prompt_diffs_unexplained |
+|---|---|---|---|---|---|---|---|---|
+| 2026-10-30T12:05:00Z | 0 | PASS | 0 | 88 | 295 | 57 → 145 | 0 | 0 |
+| **2026-10-31T02:00:00Z（今晚槽）** | **0** | **PASS** | **0** | **88** | **303** | **57 → 145** | **0** | **0** |
+| 2026-10-31T02:05:00Z | 0 | PASS | 0 | 107 | 369 | 57 → 164 | 0 | 0 |
+| 2026-11-01T02:00:00Z | 0 | PASS | 0 | 144 | 465 | 57 → 201 | 0 | 0 |
+
+- 入帳前同四個時點為 exit 3／`PENDING_COHORT`（pending 4→4→5→5）⇒ **入帳後 pending 清零、restore 為全綠 PASS**，四欄（`returncode`／`eval_error`／`undelivered`／`VERDICT`）皆：`eval_error`＝無、`undelivered`＝0。
+- `eval_error`＝無、`undelivered`＝0 ⇒ 不是「0 筆反推 PASS」的假綠。
+- **生產零寫入**：四次 CLI 執行前後，生產 `data/elevation/elevation_lifecycle_events.jsonl` 維持 **492 筆／size 180099／mtime 2026-10-29T02:07:33Z** 不變。
+- ⚠️ `graph_nodes` 由 2125 變 2131 是**生產服務持續寫入**（節點檔 mtime 2026-10-30T12:35:10Z）⇒ 不是 CLI 產物。
+
+### 3. 晨槽／夜槽權責分流（2026-10-30 實測定案）
+
+| 功能模組 | 晨槽（08:05 EDT／12:00Z） | 夜槽（22:00 EDT／02:00Z） |
+|---|---|---|
+| 生命週期評估（weakening／retiring） | **0 筆（不排程、不觸發）** | 完整執行（全量掃描並寫入 sidecar） |
+| 接縫發射（`[elevate] ✓` 線頭提升） | 執行晨間掃描（2026-10-30 實測 **40 筆**） | 執行夜間掃描 |
+| 記憶與節點代謝增量 | 晨間日記／天氣／感知寫入（2026-10-30 實測 172 節點／532 邊） | 夜間夢境、整合與深層衰減 |
+
+- 佐證：**全庫 49/49 筆 `[lifecycle]` 標記全部出現在夜槽時段**（2026-10-28 22:07:33）；晨槽日誌中 `[lifecycle]` 與「生命週期評估完成」皆為 **0 筆** ⇒ 生命週期評估的**唯一承載槽是夜槽**。
+- ⇒ 先前「晨槽會產生 ≈78 筆生命週期轉變」的預期屬**跨槽口徑混淆**，**正式廢除**。
+- ⇒ 「重啟後必全量重發 ≈78 筆接縫」的假設同樣**廢除**：2026-10-30（10-29 23:03 重啟後首個晨槽）接縫發射 **40 筆**，與前一日晨槽 19 筆同量級，**不是**全量重發。接縫期望值一律**逐槽現場重算**（分子＝槽窗內 `[elevate] ✓` 筆數，分母＝槽窗內可發射線頭數）。
+- ⇒ 昨晚（10-29）夜槽遺漏的代謝**只能由下一個夜槽自然補償**（Owner 裁定：等下一槽自然補償，**嚴禁手動補跑**、嚴禁進程內重試）。
+
+### 4. 今晚夜槽（2026-10-30 22:00 EDT ＝ 2026-10-31T02:00:00Z）法定考驗點
+
+- ① **生命週期自然吸收**：sidecar mtime 必須**正式刷新**（離開 2026-10-29T02:07:33Z）；新增 lifecycle_transition **≥ 38 筆**（38 ＝ 昨晚遺漏量的**下限**，非本槽總量上限；本槽總量以現場重算為準，沙盒參考值 **303 筆** ＝ 215 pattern ＋ 84 value ＋ 4 belief）。
+- ② **弱化包裝推進**：Owner 鎖定 57 → 約 95（＋38）；⚠️ 95 對應昨晚遺漏批次，本槽實際推進以現場重算為準（沙盒參考值 **57 → 145**，＋88 靈魂型 expected）⇒ 差額來自「自 10-29 夜槽起更多節點跨過 7 天門檻」。
+- ③ **台帳入帳校驗**：五筆 belief 入帳後 CLI 三態預期 **exit 0／PASS／pending ＝ 0**；若回 exit 3 ⇒ 多半是又有新 cohort 未入帳（附 `pending_cohorts` 結構證據）；若回 exit 1 ⇒ **破線，立即回報且不得自行改判**。
+- ④ **持續紅線**：`database is locked` 預期 0 筆；Win32 v1 追加 LF-only；行程不得手動重啟；不得手動補跑任何排程槽。
+
+### 5. 排程基準修正（值守端 cron 已更新）
+
+- `daily_morning_slot_criteria_refresh`（cronId `42f6e874`）新增兩條永久規則：**【★ 晨槽生命週期零承載】**（晨槽新增 lifecycle_transition 預期＝0 筆）＋**【★ 接縫期望值全面廢除寫死數字】**。
+- `daily_night_slot_criteria_refresh`（cronId `558a97a8`）新增永久規則：**【★ 生命週期評估的唯一承載槽＝夜槽】**（晨槽遺漏只能由下一夜槽自然補償，嚴禁手動補跑）。
+- 新增一次性 `night_slot_baseline_correction_2026-10-30_2212`（cronId `9214c8db`，2026-10-30 22:12 EDT 送達，綁定夜槽觀測 session `mvs_7945637717284662a8080cebb4f10356`）＝ 本節第 4 項的當槽鎖定基準（自我到期，明日起不殘留）。
+
+### 6. 驗證紀律
+
+- **守衛**：`tests/test_eval_lifecycle_cli.py` **80 passed ＋ 5 subtests**（台帳結構、逐 cohort 自我否決、`types`／`bounds` 鍵值合法性、型別中立 fail-closed）。
+- **雙向變異測試**（5 條，全部轉紅；變異物件為 **sandbox-only** 的 CLI 腳本，來源唯讀、唯一寫入＝temp 沙盒 ⇒ **不可能觸達生產**；每次變異後由備份 bytes 還原並重算 sha256 比對，**5/5 還原後逐位元相同**）：
+  - **M1** 移除 2026-10-23 cohort 的 4 筆 belief `types` 記載 ⇒ **FAIL (exit 1)**（記載型別回落預設 value ≠ 實際 belief ⇒ fail-closed 不得放行）
+  - **M2** 移除 1 筆 belief 的逐節點 `bounds` ⇒ **FAIL (exit 1)**（回落到 cohort 級 `not_before` ⇒ 早於它就判「提前早衰」）
+  - **M3** 只移除 2026-10-24 cohort 該筆 belief 的 `types` 區塊 ⇒ **FAIL (exit 1)**。⚠️ 註記：此變異**預期是 PENDING_COHORT、實際是 FAIL** —— 因節點仍在 `nodes` 內 ⇒ 落入「已入帳卻不命中 expected」⇒ 判 breaks。**轉紅成立，但驗證的是另一條路徑**；原預期錯在「只動 `types` 不足以取消入帳」。
+  - **M3'**（修正版）把該筆 belief **完全移出核准清單**（`types` ＋ `bounds` ＋ `nodes` 三處同時移除）⇒ **PENDING_COHORT (exit 3)**，`pending_cohorts` 正確列出 `date=2026-10-24 / count=1` ⇒ **證明「台帳漏了節點」不會被靜默放行成 PASS**。
+  - **M4** 把 1 筆 belief 的記載型別改成 `trait` ⇒ **FAIL (exit 1)**（型別與圖譜不符不得放行）
+- **全庫回歸**（解譯器＝repo 的 `.venv\Scripts\python.exe`）：**7593 passed / 2 failed / 31 skipped / 32 subtests passed，806.69s（13:26）**。2 筆失敗為 `tests/test_sim_accel_thread.py::test_sandbox_run_emits_exactly_one_new_event` 與 `::test_seam_without_seeding_emits_all_36` ⇒ **見 §7 既有紅燈盤點（A/B 歸因：與本次改動無關）**。
+- **觀測期間零副作用**：未寫入／改名／刪除 `data/**` 任何檔案；未殺任何行程；未重啟服務；未手動補跑任何排程槽；未觸發 synthetic diary／dream；未執行 `scripts/manual_*.py`；真實 LLM 呼叫 0 次。
+
+### 7. 既有紅燈盤點（**與本次改動無關**，A/B 歸因）
+
+- **症狀**：`tests/test_sim_accel_thread.py` 2 筆失敗，斷言皆為 `seam_post["total_events"] == 1` 實際 `0`（模擬全新行程時，新建的線頭**沒有**發射出接縫事件）。
+- **A/B 歸因（Owner 要求的量化紀律，不採信「感覺不相干」）**：把本次改動 `git stash push -- scripts/eval_lifecycle_cli.py` 後，在 **HEAD 樹**（HEAD ＝ `a37ab9e`）上重跑**同一組**失敗測試 ⇒ **同樣 2 筆失敗、同一行斷言（367／406）、同樣 `assert 0 == 1`** ⇒ **既有問題，與本次改動無關**。⇒ 本次改動**未引入任何回歸**。
+- **該測試檔完全不 import 生命週期 CLI**（`tests/test_sim_accel_thread.py` 僅 `importlib` 載入 `sim_accel_thread_cli`；全檔無 `eval_lifecycle`／`COHORT`／`ledger` 引用）⇒ 依賴圖上亦無路徑。
+- **本票不修**：超出本票範圍（Owner 裁定為台帳入帳 ＋ 基準模型修訂）⇒ 另立紅燈處置。
+- **產出副作用已清理**：A/B 過程產生的暫存 stash 已 `git stash drop`（**工作區檔案已先以 sha256 驗證逐位元還原**）；使用者原有的 `pre-vc-audit local WIP` stash **未動**。
+

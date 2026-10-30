@@ -131,6 +131,17 @@ EXPECTED_RETIREMENT_NOT_BEFORE = "2026-10-25T02:00:00+00:00"
 #    2. `2026-10-11` 直接引用 `EXPECTED_RETIREMENT_BASELINE`（Owner 核准的
 #       10 顆），避免手抄 32 字元 id 時打錯一個字元。
 #
+# 🔴 **2026-10-30 Owner 核准入帳（5 筆 belief）**：CLI 沙盒快跑回報
+#    `PENDING_COHORT`（exit 3）的 5 筆 belief 節點，經四條件與時間窗診斷
+#    驗證後由 Owner 核准入帳 —— 2026-10-23 cohort 4 筆
+#    （agent_mai／agent_aoi／agent_rem／agent_anna）
+#    ＋ 2026-10-24 cohort 1 筆（agent_yua）。
+#    🔴 **逐節點 `bounds` ＝ 引擎自己的衰減門檻（last_support_ts ＋ 7 天）**：
+#       這 5 筆的 cohort 級 `not_before`（建立日＋8 天 @02:00Z）比它們的
+#       真實門檻**晚一槽** ⇒ 必須逐節點覆寫，否則會被誤判成「提前早衰」
+#       （破線）。與 2026-10-27 既有 cohort 同一慣例；本 cohort 既有 46 筆
+#       bounds 已逐筆驗證全部等於 created_ts ＋ 7 天（46/46）。
+#
 #    🔴 `not_before` ＝ 該 cohort 的**首次退役槽**（宣告式常數；判準層不做
 #    任何「距今 N 天」型算術，守衛 `test_cli_does_not_import_decay_thresholds`）。
 EXPECTED_RETIREMENT_COHORTS = (
@@ -385,6 +396,12 @@ EXPECTED_RETIREMENT_COHORTS = (
         {
         "date": "2026-10-23",
         "not_before": "2026-10-31T02:00:00+00:00",
+        "types": {
+            "310a62dcfbcd48a69729d48d0e3a3dfb": "belief",
+            "3a7308ce1519493e94029a4d8cf2c418": "belief",
+            "ac640743f7b04750a5ab436fc40dccf6": "belief",
+            "f852908766ad46f4883580462a835989": "belief",
+        },
         "bounds": {
             "002232c610504a13a9cebcd2a34bf37d": "2026-10-30T12:01:12.628544+00:00",
             "0567db7ab97940e8b9f7457d547aac45": "2026-10-30T12:00:57.181156+00:00",
@@ -392,7 +409,9 @@ EXPECTED_RETIREMENT_COHORTS = (
             "240a059732284414a4b522702024cd7e": "2026-10-30T12:00:44.044075+00:00",
             "28eb6e3216714b17a3aae0f64b55406e": "2026-10-30T12:01:07.927136+00:00",
             "2bf15a92392a4362a618db172bea0bd4": "2026-10-30T12:01:20.895951+00:00",
+            "310a62dcfbcd48a69729d48d0e3a3dfb": "2026-10-30T12:01:17.385299+00:00",
             "38a0651fdce546709f544f03bbdb793a": "2026-10-30T12:01:01.381618+00:00",
+            "3a7308ce1519493e94029a4d8cf2c418": "2026-10-30T12:01:22.443087+00:00",
             "44f424e7a58e4bbd9e50fb6cf0587579": "2026-10-30T02:01:14.255790+00:00",
             "5db2038b2ea4478298ee587c483250fe": "2026-10-30T12:00:47.723574+00:00",
             "673362d810be43f591f52de2350e82ce": "2026-10-30T12:00:59.488190+00:00",
@@ -416,6 +435,7 @@ EXPECTED_RETIREMENT_COHORTS = (
             "9d4af70406fd4606990fa529abc48a8c": "2026-10-30T02:01:50.924606+00:00",
             "9f74b9763bc944389e8c98477d026a66": "2026-10-30T02:01:04.061416+00:00",
             "a3ee3a86f01f4589acc74fb7e18fe913": "2026-10-30T02:01:22.203160+00:00",
+            "ac640743f7b04750a5ab436fc40dccf6": "2026-10-30T02:01:10.112764+00:00",
             "b06db3840b8545f98d708a2c114f0981": "2026-10-30T02:01:45.685237+00:00",
             "b4b2d74388b845cc9aa8ea3761a57c06": "2026-10-30T12:01:22.524803+00:00",
             "b59da74b5deb49dd923b6108638bdd36": "2026-10-30T12:00:54.780745+00:00",
@@ -431,6 +451,7 @@ EXPECTED_RETIREMENT_COHORTS = (
             "ed5b1aa5b27b47a8bd049be9176c52f8": "2026-10-30T02:01:10.111762+00:00",
             "ee9e9b9d5f174b55bbaa5ef5f19659a5": "2026-10-30T02:01:54.321442+00:00",
             "f68b7691a5cd44d8a26ec58f208f15f9": "2026-10-30T02:01:32.221593+00:00",
+            "f852908766ad46f4883580462a835989": "2026-10-30T02:01:24.559726+00:00",
             "fe4484bef142463dbe62dd55b9f56dd8": "2026-10-30T12:00:51.675335+00:00",
         },
         "nodes": frozenset({
@@ -441,7 +462,9 @@ EXPECTED_RETIREMENT_COHORTS = (
             "240a059732284414a4b522702024cd7e",  # agent_ai
             "28eb6e3216714b17a3aae0f64b55406e",  # agent_reze
             "2bf15a92392a4362a618db172bea0bd4",  # agent_tsukasa
+            "310a62dcfbcd48a69729d48d0e3a3dfb",  # agent_mai
             "38a0651fdce546709f544f03bbdb793a",  # agent_kurisu
+            "3a7308ce1519493e94029a4d8cf2c418",  # agent_aoi
             "44f424e7a58e4bbd9e50fb6cf0587579",  # agent_ram
             "4df8ea17cfde403084fef41e2a328ddc",  # agent_rem
             "5db2038b2ea4478298ee587c483250fe",  # agent_fuuka
@@ -466,6 +489,7 @@ EXPECTED_RETIREMENT_COHORTS = (
             "9d4af70406fd4606990fa529abc48a8c",  # agent_nagisa
             "9f74b9763bc944389e8c98477d026a66",  # agent_akane
             "a3ee3a86f01f4589acc74fb7e18fe913",  # agent_anna
+            "ac640743f7b04750a5ab436fc40dccf6",  # agent_rem
             "b06db3840b8545f98d708a2c114f0981",  # agent_emilia
             "b4b2d74388b845cc9aa8ea3761a57c06",  # agent_yue
             "b59da74b5deb49dd923b6108638bdd36",  # agent_kana
@@ -483,12 +507,16 @@ EXPECTED_RETIREMENT_COHORTS = (
             "edecb4cc8fc641e9b30502e29430751f",  # agent_mai
             "ee9e9b9d5f174b55bbaa5ef5f19659a5",  # agent_rika
             "f68b7691a5cd44d8a26ec58f208f15f9",  # agent_miku
+            "f852908766ad46f4883580462a835989",  # agent_anna
             "fe4484bef142463dbe62dd55b9f56dd8",  # agent_iroha
         }),
     },
         {
         "date": "2026-10-24",
         "not_before": "2026-11-01T02:00:00+00:00",
+        "types": {
+            "59a4cd01d63f4fa2875d221e0bce92b4": "belief",
+        },
         "bounds": {
             "029ff2882da4409baedbed4b0c54c810": "2026-10-31T12:00:10.156382+00:00",
             "068cf1b57c634f85b607f03322ae796a": "2026-10-31T02:01:56.085157+00:00",
@@ -508,6 +536,7 @@ EXPECTED_RETIREMENT_COHORTS = (
             "51c759ffc3a74e63aed033f065872b90": "2026-10-31T12:00:30.855259+00:00",
             "54d68583d28a41f8994d342749678c6e": "2026-10-31T02:00:52.442803+00:00",
             "56912ffddd604aa4b3834610560c8609": "2026-10-31T12:00:25.825435+00:00",
+            "59a4cd01d63f4fa2875d221e0bce92b4": "2026-10-31T02:00:51.278109+00:00",
             "60df9025683d46cd9c03545ab73d34e0": "2026-10-31T12:00:43.822090+00:00",
             "626cb717a06c4bc8bc591046a6b62404": "2026-10-31T12:00:32.151702+00:00",
             "62c1de5182f64e688c17f9c9482d70d1": "2026-10-31T02:01:05.633103+00:00",
@@ -567,6 +596,7 @@ EXPECTED_RETIREMENT_COHORTS = (
             "56912ffddd604aa4b3834610560c8609",  # agent_hiro
             "577234a010764c3ca32f0d126bc6b469",  # agent_shino
             "57a3a5270fe04f339d5b8ac7b9d8070d",  # agent_minami
+            "59a4cd01d63f4fa2875d221e0bce92b4",  # agent_yua
             "60df9025683d46cd9c03545ab73d34e0",  # agent_rin
             "626cb717a06c4bc8bc591046a6b62404",  # agent_kaori
             "62c1de5182f64e688c17f9c9482d70d1",  # agent_aoi
