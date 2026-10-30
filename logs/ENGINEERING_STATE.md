@@ -8240,3 +8240,74 @@ loop handler 只影響**日誌輸出**，`sock.close()` 照跑、accept 迴圈�
 - **本票不修**：超出本票範圍（Owner 裁定為台帳入帳 ＋ 基準模型修訂）⇒ 另立紅燈處置。
 - **產出副作用已清理**：A/B 過程產生的暫存 stash 已 `git stash drop`（**工作區檔案已先以 sha256 驗證逐位元還原**）；使用者原有的 `pre-vc-audit local WIP` stash **未動**。
 
+
+
+## 0.1.114 既有紅燈處置裁定（Owner 2026-10-30 12:3x EDT）＋ 跟蹤工單立項 ＋ **接縫口徑更正（更正 §0.1.113 §3 的過度修正）**
+
+**Owner 裁定**：① 既有紅燈（`tests/test_sim_accel_thread.py` 2 筆）**確認為既有問題，核准另立跟蹤工單，不阻斷今晚夜槽**；② 列入後續技術債梳理清單，於**下週例行窗口**進行「時序加速邊界加固」。
+
+### 1. 接縫口徑更正（🔴 誠實更正：§0.1.113 §3 的措辭過度修正）
+
+§0.1.113 §3 寫「『重啟後必全量重發 ≈78 筆』假設**正式廢除**」—— 該措辭**過度修正**，現更正如下：
+
+| 命題 | §0.1.113 §3 的說法 | **更正後的正確說法** |
+|---|---|---|
+| 「重啟後接縫全量重發」 | 假設，正式廢除 | ✅ **成立，且已實測命中 100%**（2026-10-30 晨槽 A＝78，預測 ≈78） |
+| 「跨槽口徑混淆」 | （混在上一句裡一併廢除） | ❌ **這才是真正被廢除的**：不得把夜槽的**生命週期**筆數算進晨槽的**接縫**預期 |
+| 接縫發射數可否沿用靜態數字 | 廢除寫死數字 | ✅ 維持：逐槽現場重算 |
+
+**根因（量測口徑差異）**：專案用語的「接縫」是 **`[LifeThreadOrchestrator] ... elevation 事件已提交`**（以下 **A**）；而 `[elevate] ✓`（pattern → value/trait 提升，以下 **B**）**不是接縫**。§0.1.113 §3 的「晨槽 40 筆」量的是 **B**，而 cron 預測的 ≈78 指的是 **A** ⇒ **口徑錯配，不是系統不符**。
+
+**各槽實測（2026-10-30 12:4x 重掃全部輪替日誌）**：
+
+| 槽 | A（接縫提交） | B（`[elevate] ✓`） | 備註 |
+|---|---|---|---|
+| 2026-10-28 夜槽（完整跑完） | **77** | 33 | 完整夜槽基準 |
+| 2026-10-29 夜槽（22:03:03 被重啟斬斷） | **53** | 19（尾段行程另 B＋5、A＋0） | **該槽遺失接縫 24 筆**（77−53）≈ Owner 所述「25 筆」 |
+| 2026-10-29 晨槽 | 1 | 19 | |
+| **2026-10-30 晨槽（重啟後首個）** | **78** | 45（槽窗 08:00–08:05 內 40；08:35 尾段另 +5） | **A＝78 ＝ cron 預測的 ≈78 ⇒ 命中** |
+
+⇒ 2026-10-30 晨槽的兩個預測分項：**接縫全量重發 ≈78 → 實際 78（命中）**；**38 筆生命週期補齊 → 實際 0（晨槽零承載，機制上不可能，鎖定夜槽）**。
+
+### 2. 既有紅燈：根因已定位（時序加速邊界）
+
+- **症狀**：`tests/test_sim_accel_thread.py::test_sandbox_run_emits_exactly_one_new_event` 與 `::test_seam_without_seeding_emits_all_36` 失敗，斷言皆為 `seam_post["total_events"] == 1` 實際 `0`。
+- **A/B 歸因**：`git stash push -- scripts/eval_lifecycle_cli.py` 後於 **HEAD 樹**（`a37ab9e`）重跑同組測試 ⇒ **同樣失敗、同斷言行、同 `assert 0 == 1`** ⇒ 既有問題，與本次改動無關。該測試檔亦完全不 import 生命週期 CLI。
+- **根因（2026-10-30 12:5x 在 temp 沙盒唯讀重演確認）**：模擬器挑「`created_at` 最舊的 active 線頭」，並令 `virtual_now = created_at + 14 天 + 1 秒`。若該線頭**仍被夜槽持續更新**（真實 `updated_at` 已晚於 `virtual_now`），則：
+  `idle = virtual_now − updated_at` 為**負** ⇒ idle 軸不可能超限 ⇒ 終態路徑拿不到 `should_mutate`
+  ⇒ 沉澱被跳過（`status=skipped_not_terminal`、`reason=should_mutate_not_true`、`llm_calls=0`）
+  ⇒ 沒有 `sage_fact_id` ⇒ 接縫發射條件不成立 ⇒ `seam_post == 0`。
+- **對照實測**（同一沙盒流程）：
+
+| 觀測項 | agent_mahiru（測試檔的 `AGENT_ID`，失敗） | agent_yua（對照，成功） |
+|---|---|---|
+| 目標線頭 | `e81d777e-…`（created 2026-10-15T12:00:50Z） | `b027e02c-…`（created 2026-10-22T12:00:07Z） |
+| 真實 `updated_at` | **2026-10-30T02:02:33Z** | 2026-10-30T02:01:35Z |
+| `virtual_now` | **2026-10-29T12:00:51Z（落後真實 updated_at）** | 2026-11-05T12:00:08Z（領先） |
+| `m2_terminal` | `active`／`should_mutate=false`／`advisory=true`／`has_reflection_prompt=false` | `completed`／`should_mutate=true`／`advisory=false`／`has_reflection_prompt=true` |
+| `consolidation` | `skipped_not_terminal`／`llm_calls=0` | `consolidated`／`llm_calls=1` |
+| `seam_post.total_events` | **0** | 1 |
+
+- ⚠️ **會持續惡化**：該線頭自 2026-10-15 起每晚仍被追加 `updated` 事件 ⇒ 「挑最舊的 active 線頭」會**愈來愈容易**挑到時序倒置者 ⇒ 不是偶發。
+- **不在本票修**（Owner 裁定另案）：見 `logs/SIM-ACCEL-TIME-ACCEL-BOUNDARY-WORK-ORDER.md`（決策完整工單，含做法、驗收、測試、不做範圍、Frozen Contract 注意）。**修法方向**：目標挑選增加「可加速性」判準（`virtual_now > updated_at`），排除時序倒置者；**不得**改動 `virtual_now = created_at + 14d + 1s` 公式（已有守衛測試斷言）。
+
+### 3. 今晚值守陣容（已鎖定）
+
+| 時刻 | 事件 | 內容 |
+|---|---|---|
+| 20:40 EDT | `daily_cohort_ledger_refresh`（cronId `f197c501`） | 台帳自動刷新；**已查證** `ledger_refresh.py` 的 `rewrite_entry` 保留既有 `types`/`bounds` 區塊，且 `auto_entry_ids()` 僅收 `value` 型 ⇒ 不會抹掉本次手動核准的 5 筆 belief；belief 僅回報缺口。 |
+| 22:00 EDT | 生產夜槽 | 生命週期自然代謝（法定考驗點） |
+| 22:05 EDT | `daily_night_slot_criteria_refresh`（cronId `558a97a8`） | 判讀基準校正（已更新：接縫口徑 A/B 定義、夜槽唯一承載生命週期） |
+| 22:12 EDT | `night_slot_baseline_correction_2026-10-30_2212`（cronId `9214c8db`，已更新） | 今晚鎖定基準五項（見下） |
+| 22:15 EDT | `night_slot_observation`（cronId `36e57724`） | 專項對帳 |
+
+**今晚鎖定的五項觀測標準**（細節見 cronId `9214c8db`）：
+① 生命週期自然吸收：sidecar mtime 正式刷新，新增 lifecycle_transition **≥ 38 筆**（下限；本槽總量以現場重算為準，沙盒參考 303 筆）。
+② 弱化包裝推進：Owner 鎖定 57 → 約 95（下限）；本槽實際以現場重算為準（沙盒參考 57 → 145）。
+③ **接縫補償（本次新增）**：槽窗內 **A** 筆數 **≥ 24 筆**（昨晚遺失下限）；回報須同時印 A 與 B 並標明口徑。
+④ 台帳入帳校驗 ＋ 存續檢查：CLI 預期 exit 0／PASS／pending 0；且 5 筆 belief 的 `nodes` ＋ `types` ＋ `bounds` 三處須仍在（20:40 刷新不得抹掉）。
+⑤ 持續紅線：`database is locked` 0 筆、Win32 v1 LF-only、行程不手動重啟、不手動補跑任何排程槽。
+
+### 4. 觀測期間零副作用
+
+未寫入／改名／刪除 `data/**` 任何檔案；未殺任何行程；未重啟服務；未手動補跑任何排程槽；未觸發 synthetic diary／dream；未執行 `scripts/manual_*.py`；真實 LLM 呼叫 0 次（沙盒重演為 scripted LLM，`real_llm_calls=0`）。
