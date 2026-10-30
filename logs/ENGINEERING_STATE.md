@@ -7816,3 +7816,11 @@ approved 的 4 顆被推導出來 ⇒ `derived == approved` ⇒ 子集仍成立�
   根治需把 append 原語升級為跨行程鎖 ⇒ 另案（本回合未動）。
 - **刷新器看不見未入帳的 belief／trait**：屬 fail-closed ＋「嚴禁自動入帳」的必然結果，
   由 CLI 的 `PENDING_COHORT` 大聲回報 ⇒ 若要主動發掘屬新增量測面，另立工單。
+
+## 0.1.108 值守端日常台帳刷新（cohort 2026-10-29 封閉後，自動）
+
+- 封閉 cohort：`2026-10-29`（UTC 建立日過完才封閉）⇒ 核准集合 **111 顆**（本次新增 **111 顆**；四條件量測：台帳記載型別（未記載＝value）＋ 建立日 == cohort date ＋ last_support_ts == created_ts ＋ 無 support_propagation 祖先邊）。
+- 其他受影響 cohort：2026-10-22（核准 44 顆，本次新增 0 顆）；2026-10-23（核准 50 顆，本次新增 0 顆）。
+- 下一槽沙盒快跑：`2026-10-31T02:00:00+00:00` ⇒ `PENDING_COHORT`（exit 3）。
+- 守衛：`tests/test_eval_lifecycle_cli.py` 全綠（exit 0）。
+- 自動刷新機制：每日 20:40 EDT（= 00:40Z，UTC 日封閉後）執行。
