@@ -922,6 +922,18 @@ class TestBoundedAndFrozenDiscipline:
             # thresholds / output format are unchanged.
             # Work order: logs/FEAT-G3-PRODUCTION-BACKEND-WIRING-WORK-ORDER.md
             "src/inner_life/contradiction_backend_llm.py",
+            # -- FEAT-UVICORN-ACCEPT-RESILIENCE (2026-10-29) -------------------
+            # This ticket adds 1 non-frozen file: the accept-path resilience
+            # patch for the Windows Uvicorn accept seam (pure logic + an
+            # installer; stdlib only). It touches **no** frozen contract file:
+            # Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers /
+            # SAGE writing logic are untouched, and the only other repo change
+            # is the `scripts/run_server.py` wiring (1 import + 1 call inside
+            # the `__main__` block, before `uvicorn.run(...)`) plus this
+            # allowlist entry. Production behaviour is unchanged until the next
+            # maintenance-window restart.
+            # Work order: logs/FEAT-UVICORN-ACCEPT-RESILIENCE-WORK-ORDER.md
+            "src/io/accept_resilience.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

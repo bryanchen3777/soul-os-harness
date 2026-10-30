@@ -7952,3 +7952,210 @@ approved 的 4 顆被推導出來 ⇒ `derived == approved` ⇒ 子集仍成立�
 - 下一槽沙盒快跑：`2026-10-31T02:00:00+00:00` ⇒ `PENDING_COHORT`（exit 3）。
 - 守衛：`tests/test_eval_lifecycle_cli.py` 全綠（exit 0）。
 - 自動刷新機制：每日 20:40 EDT（= 00:40Z，UTC 日封閉後）執行。
+
+## 0.1.111 FEAT-UVICORN-ACCEPT-RESILIENCE 立項 ＋ 代碼先行落地（Owner 2026-10-29 23:20 EDT 裁定）
+
+> 狀態：**代碼先行已入版，生產服務未重啟**。生效時點＝**下一個維護窗口**統一重啟。
+> 本章節由主大腦寫入；`## 0.1.N` 兩井號格式（`scripts/ledger_refresh.py::assign_section_numbers()` 只認此級別）。
+
+### 1. Owner 裁定（原文要點）
+
+- 【核准立項進行服務層守門強化，排入受控維護窗口（不在此時線上熱修）】
+- 處置原則：在主服務啟動包裝（`scripts/run_server.py` 或自訂 Server Runner）層級，為 Uvicorn 的
+  Server/Lifespan 或底層連線處理增加 Windows 專屬 Exception Handler，將 `WinError 64` 與
+  `WinError 10054` 視為良性網路噪聲並 `ignore_or_continue`，杜絕 Accept Loop 主任務退出。
+- 實施約束：代碼改動涉及 `src/**` 與服務核心啟動鏈路，嚴格維持「**代碼先行、驗收封裝、待下一個維護窗口重啟**」。
+- 明晨（08:05 EDT）槽＝「重啟後首槽自然補償」的第一個自然檢驗點（接縫預期 ≈78 筆全量重發）。
+
+### 2. 主大腦實測的根因（CPython 3.11.15 原始碼已讀，勿再重猜）
+
+服務啟動路徑：`asyncio/windows_events.py:590 IocpProactor.accept()` → `AcceptEx` →
+`windows_events.py:596 finish_accept()` → `ov.getresult()` → 拋 `OSError: [WinError 64]`。
+該例外被 **asyncio 自己 catch**，落到 `asyncio/proactor_events.py:861`：
+
+```python
+except OSError as exc:
+    if sock.fileno() != -1:
+        self.call_exception_handler({
+            'message': 'Accept failed on a socket',
+            'exception': exc,
+            'socket': trsock.TransportSocket(sock),
+        })
+        sock.close()            # ← 真兇：asyncio 主動關掉「監聽 socket」
+    elif self._debug:
+        logger.debug("Accept failed on socket %r", sock, exc_info=True)
+except exceptions.CancelledError:
+    sock.close()
+else:
+    self._accept_futures[sock.fileno()] = f
+    f.add_done_callback(loop)   # ← 只有 else 分支會「重新 arm accept」
+```
+
+**兩條決定性事實**（與 §0.1.109 的因果鏈互為補完）：
+
+1. **不只是「accept task 退出」** —— asyncio 會 **`sock.close()`**，把監聽 socket 從 OS 的 LISTEN
+   清單中移除 ⇒ watchdog 的 `Get-NetTCPConnection -LocalPort 8000 -State Listen` 必然查不到
+   ⇒ `port_listen=False` ⇒ 觸發重啟 ⇒ 粗暴斬斷執行中的排程槽。
+2. **`except OSError` 分支不重新 arm accept**（只有 `else:` 分支才 `add_done_callback(loop)`）
+   ⇒ 即使不關閉 socket，accept 迴圈也不會再接新連線。
+
+🔴 **機制更正（對 Owner 指示的精確化，不改其目標）**：若「Exception Handler」只用
+`loop.set_exception_handler` 實作則**無效**——例外是被 asyncio **內部 catch** 的，
+loop handler 只影響**日誌輸出**，`sock.close()` 照跑、accept 迴圈照樣不重新 arm。
+⇒ 本工單把「Exception Handler」定義為 **accept 路徑上的例外攔截 ＋ 重新 arm**，
+這才真的達成 Owner 寫定的目標「杜絕 Accept Loop 退出、服務不失聰」。
+
+**已排除的替代方案（勿再提案）**：改用 Selector event loop（uvicorn 0.49 `loops/asyncio.py`
+在 win32 直接回傳 `asyncio.ProactorEventLoop`，且 Windows 的 Selector loop **同樣使用
+`IocpProactor`** ⇒ 換 loop 類別換不掉這條 accept 路徑）；只掛 loop exception handler（見上）；
+複製上游私有 `_start_serving`（私有 API 逐行複製＝版本耦合與漂移）。
+
+### 3. 落地方案
+
+工單：`logs/FEAT-UVICORN-ACCEPT-RESILIENCE-WORK-ORDER.md`（decision-complete，含 G1–G10 與 M1–M7 變異表）。
+
+| 檔案 | 動作 | 內容 |
+|---|---|---|
+| `src/io/accept_resilience.py` | **新增** | `BENIGN_ACCEPT_WINERRORS={64,10054}`、`is_benign_accept_error()`、`make_resilient_accept()`（可注入 `accept_impl`／`sleep` 的純核心）、`install_accept_resilience()`（Windows-only、冪等、版本守門 fail-closed） |
+| `scripts/run_server.py` | **修改** | 僅 `__main__` 區塊、`uvicorn.run(...)` **之前**呼叫 `install_accept_resilience()`；`uvicorn.run` 參數／順序／位置**逐位元未動**；模組層級零副作用 |
+| `tests/test_io_accept_resilience.py` | **新增** | 13 支守門：G1 良性判定／G2 不殺 accept 迴圈／G3 退避封頂／G4 非良性原樣 raise／G5 冪等＋回傳 Future／G6 版本守門 fail-closed／G7 非 Windows no-op／G8 接線不變性／G9 零副作用＋純 stdlib／G10 母體完整性＋合成樣本會紅 |
+
+接縫＝**`asyncio.windows_events.IocpProactor.accept`**（Windows 上 Proactor 與 Selector 兩種 loop
+的共同 accept 實作）⇒ 單一接縫全覆盖，且**不動** repo 既有的 event loop policy 偏好機制。
+關鍵實作約束（已寫入守門 G5b）：patched accept 必須回傳 **Future**（上游 `_start_serving`
+對它呼叫 `add_done_callback` 與 `result()`），不得回傳 coroutine。
+
+### 4. 驗證
+
+- **新增守門**：`.venv\Scripts\python.exe -m pytest -q tests/test_io_accept_resilience.py` ⇒ **13 passed**（0 failed）。
+- **真實接縫健全性（非 fake class、純行程內、不開任何 socket）**：對**真正的**
+  `asyncio.windows_events.IocpProactor` 執行 `install_accept_resilience()` ⇒
+  首次 `True`、第二次 `False`（冪等）、`class_patched=True`、`marker_set=True`；
+  且上游 `IocpProactor.accept` 原始碼確含 `AcceptEx` ⇒ **版本守門在本機 CPython 3.11.15 上成立**
+  （即：維護窗口重啟時守門不會擋下安裝）。
+- **相鄰守門（主大腦自跑）**：`pytest -q tests/test_io_accept_resilience.py tests/infra tests/integration` ⇒ **170 passed / 0 failed**
+  （spawn 守門 `scanned=410 / spawn_sites=22 / allowlisted=22`、`spawn_hits=0 kill_hits=0 address_hits=3 allowed_kills=1` 全部對齊）。
+- **全庫回歸（repo 內 `.venv`，聲明解譯器）**：**7593 passed / 2 failed / 31 skipped / 32 subtests passed**，耗時 836.78s（解譯器＝repo 內 `.venv\Scripts\python.exe`）。
+  skip 集合 **STABLE**（skipped=31、baseline=31、added=0、removed=0）。
+  2 筆 failed ＝ `tests/test_sim_accel_thread.py` 的兩支（**生產資料耦合**型既有缺陷；已用 A/B 在 HEAD 樹與乾淨快照雙重證明與本次改動無關，成因已實測坐實並立項待裁示，見 §0.1.112）。
+  對照 §0.1.108 的 7582 passed / 0 failed（取得於 10-29 18:0x EDT）⇒ 本次 +11 passed ＝ 新增 13 支 accept 守門 − 2 筆既有紅燈（曆法炸彈已於本回合拔除，故不再計入 failed）。
+  （詳見 §0.1.112：三筆紅燈已用 A/B 證明為**既有**問題，其中「曆法炸彈」已於本回合拔除。）
+- **雙向變異實測（主大腦自跑，repo 唯讀、突變僅在記憶體經 `sys.modules` 注入）**：
+  每一筆都是對**真實** `src/io/accept_resilience.py` 的**單點文字突變**，並實際貼出守門轉紅 output：
+
+  | 突變 | 內容 | 轉紅證據 |
+  |---|---|---|
+  | M1 | 良性失敗也直接 raise（不重新 arm） | `test_g2` RED：`the benign failure must not escape the accept loop (outcome=closed)`；連帶 G3、G5 共 **3 failed** |
+  | M2 | 只允許重試一次就放棄 | `test_g2` RED（同上）；**3 failed** |
+  | M3 | 退避無上限（拿掉 cap） | `test_g3` RED：`backoff sequence mismatch: [0.05,0.1,0.2,0.4,0.8,1.6,3.2,6.4] != [0.05,…,1.0,1.0,1.0]`；**1 failed** |
+  | M4 | 放寬判準：所有 OSError 都視為良性 | `test_g1` RED：`winerror=10048 must NOT be benign`；`test_g4` RED：`a non-benign failure must keep the upstream error path`；**2 failed**（證明判準**沒有**被放寬） |
+  | M5 | 白名單拿掉 10054 | `test_g1` RED：`winerror=10054 must be benign`；**4 failed**（含 G10 母體完整性） |
+  | M6 | 拿掉版本守門（形狀不符仍照套） | `test_g6` RED：`the version guard must refuse the install`；**1 failed** |
+  | M7 | 拿掉冪等保護（重複 install 疊 wrapper） | `test_g5` RED：`the no-op install must be logged as INFO`；**1 failed** |
+
+  ⇒ **M1–M7 全數轉紅**；且每筆都在 **fake 依賴**（fake `accept_impl`／fake `sleep`）下觸發，
+  被解除防護的程式碼**不可能**真的執行到生產（未開任何真實監聽 socket、未綁 8000/8765/8766/8767）。
+
+  🔴 **誠實揭露（M7 的紅點機制）**：M7 移除冪等保護後，第二次安裝會把「已 patch 過的 accept」
+  再包一層，而該 wrapper 原始碼不含 `AcceptEx` ⇒ 被**版本守門 fail-closed 拒絕並記 ERROR**
+  ⇒ 守門仍抓住（紅點落在「no-op 必須記 INFO／不得記 ERROR」斷言，**不是**
+  「wrapper 只疊一次」的身分斷言）。此為實測結果，非推論。
+
+### 5. 邊界聲明
+
+- 本回合**未重啟生產服務**：Trampoline `20988` / `:8000` listener `8388` / `/health=200` 維持在線。
+- **未觸碰 `data/`** 下任何檔案、**未殺任何行程**、**未手動補跑任何排程槽**、**未觸發** synthetic
+  diary／dream、真實 LLM 呼叫 0 次、**未開**任何真實監聽 socket。
+- 變異實測：**repo 檔全程唯讀**，突變只在記憶體（`sys.modules` 注入）進行。
+- 生效需**維護窗口重啟**；重啟後 `_ELEVATION_EMITTED` 清零 ⇒ 下一槽接縫**全量重發**（≈78 筆），
+  這是既有已知行為、**非本工單缺陷**，但重啟後的對帳須依此設定期望值。
+
+### 6. 未解／待裁示
+
+- 上游 `IocpProactor.accept` 另會 `ensure_future` 一個 fire-and-forget 的 `accept_coro` task；
+  良性失敗時該 task 仍會拋例外 ⇒ 日誌仍可能出現一行 `Task exception was never retrieved`（ERROR 級噪音）。
+  **不影響服務可用性**（accept 已由本工單重新 arm、監聽 socket 未被關閉）。
+  （此為**由 CPython 原始碼推導**，尚未在生產實測——因為生產尚未發生過被本工單接管的良性失敗。）
+- 「縮短 watchdog 探測間隔」或「listener 失效自檢／自癒」屬**另一層**，Owner 尚未裁示，本工單不碰。
+
+## 0.1.112 既有紅燈盤點：曆法炸彈拔除（已修）＋ 生產資料耦合紅燈（已立項）
+
+> 狀態：**一修一立**。① 曆法炸彈（與 §0.1.108 同一類）已於本回合拔除並入版；
+> ② `tests/test_sim_accel_thread.py` 兩筆屬**生產資料耦合**缺陷，已定位成因並立項（待 Owner 裁示方向）。
+> 本章節由主大腦寫入。
+
+### 1. 為什麼會在「全綠」的 repo 上冒出紅燈
+
+§0.1.108 記錄的全庫回歸是 **7582 passed / 0 failed**，取得時間為 **2026-10-29 18:0x EDT
+（＝10-29 22:0x UTC）**；本回合 **10-30 00:1x EDT（＝10-30 04:1x UTC）** 的全庫回歸是
+**7592 passed / 3 failed**。
+
+⇒ 🔴 **repo 的「綠」有時效性**：它會隨**生產語料**與 **UTC 日界**漂移。
+⇒ 這是「**假綠**」家族的一員（綠不是因為守門有效，而是因為當下資料剛好對得上）。
+
+### 2. 三筆紅燈的 A/B 證明（與本次改動無關）
+
+`git stash` 暫離本次全部改動後，在 **HEAD 樹（358ac52）** 上重跑**同一組三筆**：
+
+```
+3 failed in 13.83s
+  tests/inner_life/test_contradiction_backend_llm_guard.py::test_ensure_current_day_resets_the_judge_facing_counter
+  tests/test_sim_accel_thread.py::test_sandbox_run_emits_exactly_one_new_event
+  tests/test_sim_accel_thread.py::test_seam_without_seeding_emits_all_36
+```
+
+⇒ 三筆在**未改動樹上一樣紅** ⇒ 不是 FEAT-UVICORN-ACCEPT-RESILIENCE 造成。
+（獨立第三方（worker）亦以 **%TEMP% 乾淨 HEAD 快照**重現同樣三筆，結論一致。）
+
+### 3. 紅燈①：曆法時間炸彈（**已拔除**）
+
+- 位置：`tests/inner_life/test_contradiction_backend_llm_guard.py::test_ensure_current_day_resets_the_judge_facing_counter`
+- 原碼：`backend_mod._utc_today = lambda: "2026-10-30"` —— 把「跨到明天」寫死成日期字串。
+- 引爆時點：**2026-10-30 00:00 UTC（＝10-29 20:00 EDT）**；一過該時點，真實 UTC 日追上那個字串
+  ⇒ mock 不再構成「跨日」⇒ `ensure_current_day` 不滾動 ⇒ `assert rolled is True` 恆紅。
+- **與 §0.1.108 為同一類**（Owner 當時裁定：改用動態隔日推導、不得硬編碼日期）。
+- 修法（沿用同檔 G1 的既有做法，**不另立日期權威**）：
+  ```python
+  today = original_today()
+  tomorrow = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+  assert tomorrow != today, "隔日推導失敗：今天與明天相同（%s）" % today
+  backend_mod._utc_today = lambda: tomorrow
+  ```
+- 驗證：該檔 **24 passed**（全綠）。
+
+### 4. 紅燈②：`tests/test_sim_accel_thread.py` 兩筆（**生產資料耦合**，已立項待裁示）
+
+- 工單：`logs/FEAT-SIM-HERMETIC-CLOCK-WORK-ORDER.md`（已立項，**尚未實作**）。
+- 現象：`report["seam_post"]["total_events"]` 期望 1 ⇒ 實際 0。
+- **根因（實測坐實，非推測）**：模擬的**虛擬時鐘由 `created_at` 反推**，與生產語料當下無關；
+  而 10-29 夜槽（22:00 EDT＝10-30 02:00 UTC）把目標線頭的 `updated_at` 前移到
+  `2026-10-30T02:02:33Z` ⇒ **虛擬時鐘倒置**（落在語料之後）：
+
+  ```
+  target   = e81d777e-…（agent_mahiru）
+  created_at  = 2026-10-15T12:00:50Z
+  updated_at  = 2026-10-30T02:02:33Z   ← 夜槽剛寫過
+  virtual_now = 2026-10-29T12:00:51Z   ← created_at + 14d + 1s
+  idle = virtual_now − updated_at = −50502.8 s（負數）
+  m2_terminal = {should_mutate: false, advisory: true, idle_days: null}
+  consolidation = {status: "skipped_not_terminal", reason: "should_mutate_not_true"}
+  seam_pre=0  seam_post=0  seam_again=0
+  ```
+
+  ⇒ 時鐘倒置 ⇒ **閒置軸無法計算**（`idle_days: null`）⇒ 只給建議不溶解 ⇒ 線頭不轉 `completed`、
+  無 `sage_fact_id` ⇒ **接縫沒有可發射的線頭** ⇒ 0 筆。
+
+- **不是產品缺陷**：接縫的發射判準本身**無日期視窗**
+  （`status == "completed"` ∧ `sage_fact_id` 非空 ∧ 不在 `_ELEVATION_EMITTED`）。
+  缺陷在**模擬器與其守門**與生產語料耦合。
+- 處置選項（工單內列 A／B／C，主大腦推薦 **A：模擬器去生產耦合（hermetic）**；
+  **C（放寬期望值）已自我否決**——違反「不放寬判準讓模組假裝能跑」的裁定，會消滅守門本身）。
+- **待 Owner 裁示**（主大腦不自做決定）：模擬器語意屬設計決策。
+
+### 5. 本回合的邊界聲明
+
+- 三筆紅燈**皆已證明與本次改動無關**（A/B ＋ 第三方乾淨 HEAD 快照雙重佐證）。
+- 本回合**未寫入 `data/`**、**未殺任何行程**、**未重啟服務**、**未手動補跑任何排程槽**、
+  **未觸發** synthetic diary／dream、真實 LLM 呼叫 0 次（模擬器用 scripted proxy）。
+- 新增的兩份工單檔（`FEAT-UVICORN-ACCEPT-RESILIENCE-WORK-ORDER.md`、
+  `FEAT-SIM-HERMETIC-CLOCK-WORK-ORDER.md`）皆為**決策文件**，不含任何可執行改動。

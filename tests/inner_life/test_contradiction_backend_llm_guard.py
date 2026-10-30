@@ -653,7 +653,14 @@ def test_ensure_current_day_resets_the_judge_facing_counter():
     budget["agents"]["agent-a"] = {"attempted": 1}
     budget["attempted"] = 5
     original_today = backend_mod._utc_today
-    backend_mod._utc_today = lambda: "2026-10-30"  # type: ignore[assignment]
+    # 🔴 不可把「明天」寫死成某個日期字串：一旦真實 UTC 日追上那個字串，
+    #    這個 mock 就不再構成「跨日」⇒ ensure_current_day 不滾動 ⇒ 測試恆紅
+    #    （2026-10-30 00:00 UTC 實測引爆）。一律以模組自己的 _utc_today() 為
+    #    基準日 +1 天推導（不另立日期權威）；與同檔 G1 的既有做法一致。
+    today = original_today()
+    tomorrow = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    assert tomorrow != today, "隔日推導失敗：今天與明天相同（%s）" % today
+    backend_mod._utc_today = lambda: tomorrow  # type: ignore[assignment]
     try:
         rolled = ensure_current_day(budget)
         again = ensure_current_day(budget)

@@ -2614,6 +2614,16 @@ if __name__ == "__main__":
         _active_loop_class_name(),
         _crash_f1_pref,
     )
+
+    # FEAT-UVICORN-ACCEPT-RESILIENCE (2026-10-29): Windows 上 accept 路徑的良性網路
+    # 噪聲（WinError 64 / 10054）會讓上游 asyncio/proactor_events.py:861 關掉
+    # **監聽 socket** 且不重新 arm accept ⇒ 服務失聰 ⇒ watchdog 粗暴重啟 ⇒
+    # 斬斷排程槽。此處在 uvicorn.run 之前把 accept 接縫補上（退避後重新 arm）。
+    # 🔴 只在此 __main__ 區塊安裝：模組層級零副作用（非 __main__ 匯入必須乾淨）。
+    from src.io.accept_resilience import install_accept_resilience
+
+    install_accept_resilience()
+
     uvicorn.run(
         app,
         host="0.0.0.0",
