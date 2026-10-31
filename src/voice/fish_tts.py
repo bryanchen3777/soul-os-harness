@@ -45,7 +45,11 @@ VOICES: dict[str, str] = {
     # 🔺 akane_voice 2026-10-31 換成茜的新克隆音色（與 clients/voice_companion/config.json
     #    的 VC 語音同一個 reference_id ⇒ TG 與 VC 兩個通道聽起來是同一個人）。
     "akane_voice": "9338a8e636cf4044b4955ab012715c1e",  # 黒川茜 (推しの子)
-    "ruka_voice":  "6a45afe8e5f84217acdfc8103156e0cc",  # 更科瑠夏
+    # 🔺 ruka_voice 2026-10-31 換成瑠夏的新克隆音色。🔻 結構不對稱：**瑠夏只有 TG 通道**
+    #    （vc_ops.ps1 只有 8765 茜／8766 麻衣／8767 雷姆；也沒有 profiles/ruka.json）
+    #    ⇒ 這是 TG 通道的**單一**來源；若日後新增瑠夏的 VC 實例，必須把該 profile 的
+    #      voice_id 設成同一個 reference_id（否則 TG 與 VC 聽起來是兩個人）。
+    "ruka_voice":  "1d3ed7b0354a45c49a3fd30f4f5ba09c",  # 更科瑠夏
     # 🔺 mai_voice 2026-10-30 換成麻衣的新克隆音色（與 clients/voice_companion/profiles/mai.json
     #    的 VC 語音同一個 reference_id ⇒ TG 與 VC 兩個通道聽起來是同一個人）。
     "mai_voice":   "b41446ba546c4e4aab598f4ac3afd634",  # 櫻島麻衣 (青春豬頭)

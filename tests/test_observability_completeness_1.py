@@ -934,6 +934,24 @@ class TestBoundedAndFrozenDiscipline:
             # maintenance-window restart.
             # Work order: logs/FEAT-UVICORN-ACCEPT-RESILIENCE-WORK-ORDER.md
             "src/io/accept_resilience.py",
+            # -- VOICE-CLONED-ID-SWAP (2026-10-31) ---------------------------
+            # Owner-directed cloned-voice swaps for the TG channel. The only
+            # `src/` file involved is the **single source of truth** for Fish
+            # reference ids: the `VOICES` table in `src/voice/fish_tts.py`.
+            #   - 2026-10-30 櫻島麻衣 → b41446ba…  (canonical §0.1.118)
+            #   - 2026-10-31 黒川茜   → 9338a8e6…  (canonical §0.1.119)
+            #   - 2026-10-31 更科瑠夏 → 1d3ed7b0…  (canonical §0.1.122)
+            # It touches **no** frozen contract file: the `agent_id → voice
+            # key` mapping lives in `src/llm/fish_tts_handler.py` (unchanged
+            # here), and Agency 4 stages / TriggerEnvelope / InnerLifeEvent /
+            # 4 handlers / SAGE writing logic are all untouched. The VC-side
+            # counterparts live under `clients/voice_companion/` (not `src/`,
+            # hence not constrained by this scope check).
+            # 🔺 Why this entry exists only now: the two earlier voice tickets
+            #    ran the **voice-only** test subset, never the full-repo
+            #    regression, so this scope check was never exercised for them.
+            #    The entry covers the same single file for all three swaps.
+            "src/voice/fish_tts.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

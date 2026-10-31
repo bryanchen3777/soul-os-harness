@@ -2982,6 +2982,7 @@ class TestVoiceConsistencyAcrossChannels:
     }
     MAI_VOICE_ID = "b41446ba546c4e4aab598f4ac3afd634"
     AKANE_VOICE_ID = "9338a8e636cf4044b4955ab012715c1e"
+    RUKA_VOICE_ID = "1d3ed7b0354a45c49a3fd30f4f5ba09c"
 
     @staticmethod
     def _soul_os_voice(alias: str) -> str:
@@ -3024,4 +3025,41 @@ class TestVoiceConsistencyAcrossChannels:
         assert self._soul_os_voice("akane_voice") == self._vc_voice("akane"), (
             "Soul OS VOICES['akane_voice'] 與 clients/voice_companion/config.json "
             "的 voice_id 必須相同（否則 TG 與 VC 聽起來是兩個人）"
+        )
+
+    def test_ruka_tg_voice_id_is_expected(self):
+        """瑠夏的 TG 音色 ＝ 2026-10-31 換定的音色。
+
+        🔺 瑠夏目前**只有 TG 通道**（``vc_ops.ps1`` 只有 8765 茜／8766 麻衣／8767 雷姆，
+        也沒有 ``profiles/ruka.json``）⇒ 這裡是**單一**事實來源，
+        不存在「TG 與 VC 不同調」的可能。
+        """
+        assert self._soul_os_voice("ruka_voice") == self.RUKA_VOICE_ID, (
+            "src/voice/fish_tts.py 的 VOICES['ruka_voice'] 必須是 %s" % self.RUKA_VOICE_ID
+        )
+
+    def test_ruka_vc_profile_if_it_ever_exists_must_match_tg(self):
+        """🔺 日後若新增瑠夏的 VC 實例，profile 的 voice_id 必須與 TG 同一個。
+
+        為什麼是「若存在則比對」而不是「斷定不存在」：瑠夏**可以**有 VC 實例，
+        但那時 TG 與 VC 必須同一個 reference_id —— 否則同一個人在兩個通道是兩個聲音
+        （2026-10-30 雷姆就踩過一次：Owner 換了 VC 的卻不知道 TG 沒換）。
+
+        🔴 本條**不得**用 ``pytest.skip`` 實作「目前沒有 VC 實例」那個分支：
+        repo 的 skip-set 基線在 full-repo 模式下把「新增 skip」視為 drift ⇒ 整場判紅
+        （tests/conftest.py 的 SKIP-BASELINE）。沒有 VC 實例時改為**直接斷言 TG 那一條**，
+        兩條分支都留下有意義的斷言。
+        """
+        ruka_profile = REPO_ROOT / "clients" / "voice_companion" / "profiles" / "ruka.json"
+        if not ruka_profile.exists():
+            # 瑠夏目前只有 TG 通道 ⇒ 不存在「TG 與 VC 不同調」的可能；
+            # 這裡仍斷言 TG 的值，以確保這條守門**不是空殼**。
+            assert self._soul_os_voice("ruka_voice") == self.RUKA_VOICE_ID, (
+                "瑠夏只有 TG 通道時，VOICES['ruka_voice'] 必須是 %s" % self.RUKA_VOICE_ID
+            )
+            return
+        with open(ruka_profile, encoding="utf-8-sig") as f:
+            cfg = json.load(f)
+        assert cfg["fish_audio"]["voice_id"] == self._soul_os_voice("ruka_voice"), (
+            "瑠夏的 TG 與 VC 必須是同一個 reference_id（否則 TG 與 VC 聽起來是兩個人）"
         )
