@@ -8743,3 +8743,110 @@ proxy 發 AGENT_SPEAK
    （只 log warn、釋放鎖、讓 watchdog 自行接管自癒）⇒ 不會卡死。若要調寬，必須同時確認
    不超過 watchdog 的 10 分鐘鎖 stale 門檻（超過就會被當 stale 刪掉 ⇒ 保護失效）。
 3. `logs/FEAT-SIM-HERMETIC-CLOCK-WORK-ORDER.md`（sim 生產資料耦合 2 筆既有紅燈）仍待裁示。
+
+## 0.1.122 TG 更科瑠夏語音換成新克隆音色 1d3ed7b0…（Owner 2026-10-31 17:07 指示；TG 單一來源）
+
+記錄 Owner 2026-10-31 17:07 EDT 的指示：「瑠夏的 voice id `1d3ed7b0354a45c49a3fd30f4f5ba09c` 換一下」
+（與 §0.1.118 麻衣、§0.1.119 茜同一條「換音色」流程的第三次）。
+
+### 1. 盤點：瑠夏的音色只有**單一**來源（與麻衣／茜不同）
+
+- **Soul OS（TG 通道）**：`src/voice/fish_tts.py` 的 `VOICES["ruka_voice"]`
+  （經 `src/llm/fish_tts_handler.py` 的 `AGENT_ID_TO_VOICE_KEY`：`agent_ruka → ruka_voice`
+  → `fish_tts.resolve_voice_id()` → `VOICES` → mp3 → `AGENT_AUDIO_READY`
+  → `src/io/channels/telegram.py::send_voice()`）。舊值 `6a45afe8e5f84217acdfc8103156e0cc`。
+- 🔻 **結構不對稱：瑠夏沒有 VC 通道** ——
+  `scripts/vc_ops.ps1` 只有三個實例（**8765 茜／8766 麻衣／8767 雷姆**），
+  `clients/voice_companion/profiles/` 也只有 `mai.json` 與 `rem.json`（**沒有 ruka.json**）。
+  ⇒ 本次是**單一來源**的改動，**不存在**「TG 與 VC 不同調」的可能（麻衣／茜當時是兩處）。
+- **env 覆寫層**：`clients/voice_companion/env_config.py` 只有 `FISH_VOICE_ID`（通用，僅作用於
+  VC config）與 `MAI_FISH_VOICE_ID`／`REM_FISH_VOICE_ID`，**沒有** RUKA 專屬變數；
+  `src/voice/fish_tts.py` 本身也**沒有** voice_id 的 env 覆寫（只有 `FISH_API_KEY`）；
+  生產 `.env` 與 `clients/voice_companion/.env` **均無任何 VOICE_ID 設定**
+  ⇒ `VOICES` 的值即生效值。
+- repo 內**無任何測試**涵蓋瑠夏的音色（`tests/clients/` 完全沒有 `ruka` 字樣）⇒ 本次補上守門。
+
+### 2. 改動
+
+- `src/voice/fish_tts.py`：`VOICES["ruka_voice"]` → `1d3ed7b0354a45c49a3fd30f4f5ba09c`；
+  並在條目上方補註：換音色日期、**瑠夏只有 TG 通道**的結構不對稱，
+  以及「若日後新增瑠夏的 VC 實例，profile 的 voice_id 必須設成同一個 reference_id」。
+- `tests/clients/test_voice_companion.py`：`TestVoiceConsistencyAcrossChannels` 新增兩條
+  —— `test_ruka_tg_voice_id_is_expected`（釘住 TG 的目標 id）
+  ＋ `test_ruka_vc_profile_if_it_ever_exists_must_match_tg`
+  （瑠夏日後若有 VC profile，其 voice_id 必須與 TG 同一個）。
+  🔴 該條**刻意不用 `pytest.skip`** 實作「目前沒有 VC 實例」的分支：repo 的 skip-set
+  基線在 full-repo 模式下把「新增 skip」視為 drift ⇒ 整場判紅
+  （`tests/conftest.py` 的 SKIP-BASELINE）。沒有 VC 實例時改為直接斷言 TG 那一條，
+  兩條分支都留有意義的斷言。
+
+### 3. 🔺 順手補掉的守門缺口：frozen-scope 守門的「逐票許可集」
+
+- **現象**：第一次全庫回歸除既有的 2 筆紅燈外，多出一筆新的紅燈：
+  `tests/test_observability_completeness_1.py::TestBoundedAndFrozenDiscipline::test_no_frozen_contract_file_touched`
+  ⇒ `AssertionError: src/ 改動超出許可集: {'src/voice/fish_tts.py'}`。
+- **機制**（不是 frozen contract）：該守門以 `git diff --name-only HEAD`（**未提交**的變更）
+  比對 `src/**` 的**逐票許可集**（`allowed`），並另有一組 `frozen_dirs`（10 個檔）才是
+  **永久紅線**。`src/voice/fish_tts.py` **不在** `frozen_dirs` 裡 ⇒ 它從來不是 frozen contract。
+- **為什麼現在才炸**：§0.1.118（麻衣）與 §0.1.119（茜）**只跑了語音相關 8 檔、
+  沒有跑全庫回歸** ⇒ 這道 scope 守門從未被觸發。
+  （此處同時把 §0.1.118 留下的「語音守門未跑全庫回歸」一併補回。）
+- **修法（依該守門自述的機制）**：`allowed` 清單新增 `"src/voice/fish_tts.py"`
+  並註明三次換音色（麻衣／茜／瑠夏）動的是**同一個檔**（VOICES ＝ Fish reference_id 的
+  單一事實來源）；`frozen_dirs` 的 10 筆永久紅線**全部保留不動**。
+- 本票**沒有**動任何 frozen contract：`agent_id → voice key` 的對應在
+  `src/llm/fish_tts_handler.py`（未動），Agency 4 stages／TriggerEnvelope／InnerLifeEvent／
+  4 handlers／SAGE 寫入邏輯皆未觸碰。
+
+### 4. 生效（官方路徑，主服務重啟）
+
+- **主服務**：`scripts/server_ops.ps1 restart`（**§0.1.121 的動態維護鎖生效後的第一次使用**）
+  ⇒ 17:47:30 寫鎖 → 17:47:39 新行程啟動（trampoline **4684**）→ **17:49:46** probe #25 回 200
+  → 鎖釋放；**鎖全程持有 136 秒**（舊版同一路徑只握 14 秒）。
+- **再次證明動態維護鎖有效**（刻意把 17:48:02 的 tick 排進「舊實例已死、新實例未綁埠」的空窗）：
+  `data/logs/watchdog.log` ⇒
+  `[2026-10-31 17:48:02] SKIP  maintenance window (server_ops restart in progress, lock age=1m) - watchdog tick skipped`
+  且埠／健康時間軸（每 2 秒採樣）在 **17:48:01 與 17:48:05 兩次都是 `listen=NONE health=None`**
+  ⇒ tick 那一刻服務確實未綁埠（不是因為服務還活著才沒事）⇒ **零額外重啟**。
+- 重啟後的 tick：`[17:53:02] observation window rotated: post-e76f614 -> post-57fe29f (counter reset, n_restarts=0, trial_count=0)`、
+  `[17:53:05] OK post-57fe29f N=0/10 trial=1/98 port=8000 listener=15028 procs=2`
+  ⇒ 觀察窗已輪換到本次 commit，且重啟計數維持 0/10。
+- **新音色已載入的硬證據**（三段合起來才成立）：
+  1. 服務日誌：`2026-10-31 17:47:41,518 [soul_os.fish_tts_handler] INFO: [FishTTS] fish_tts module loaded`
+     ⇒ 新行程確實載入了 `fish_tts` 模組；
+  2. `src/voice/fish_tts.py` mtime **17:10:21** **早於**載入時刻 17:47:41
+     ⇒ 載入的是**改過之後**的版本（VOICES 於 import 時定格）；
+  3. 走**服務自己的**解析路徑 `src/llm/fish_tts_handler._resolve_voice_id("agent_ruka")`
+     ＝ **`1d3ed7b0354a45c49a3fd30f4f5ba09c`**（`fish_tts.__file__` ＝ repo 內 `src/voice/fish_tts.py`）。
+- **VC 端不需重啟**（瑠夏沒有 VC 實例）：三個 VC 實例 PID 全程未變
+  （:8765＝720／:8766＝22228／:8767＝24564）。
+- 重啟前後對帳：sidecar `data/elevation/elevation_lifecycle_events.jsonl`
+  **795 筆／291007 bytes／sha256 `0019fda0…e13`** **逐位元相同** ⇒ 重啟**未**觸發生命週期評估重跑。
+- TG **10/10 bots status=ok**（`ruka` 亦 ok，心跳 pid 15028）。
+
+### 5. 守門
+
+- 語音 2 檔 ＋ frozen-discipline 檔 ⇒ **200 passed**，**skip-set added=0**（無漂移）。
+- 全庫 `.venv\Scripts\python.exe -m pytest -q tests`
+  ⇒ **7618 passed / 31 skipped / 2 failed / 32 subtests passed（882 秒）**，
+  **skip-set STABLE（added=0, removed=0）**。
+- 那 2 筆失敗（`tests/test_sim_accel_thread.py::test_sandbox_run_emits_exactly_one_new_event`、
+  `::test_seam_without_seeding_emits_all_36`）是**既有**紅燈（A/B 對照已於 §0.1.121 確認：
+  把我當時的改動換回 HEAD 後完全一樣地失敗）⇒ 屬
+  `logs/FEAT-SIM-HERMETIC-CLOCK-WORK-ORDER.md` 的 sim 生產資料耦合問題，**與本票無關**、仍待裁示。
+- 舊 id `6a45afe8…` 在生效路徑（`src`／`clients`／`scripts`／`configs`／`tests`）殘留 **0 處**；
+  唯一殘留在 `src/voice/fish_tts.py.bak_lesson42_raise_20260731_1820` —— 那是 2026-07-31 的
+  **本機備份檔、未被 git 追蹤、不在部署路徑上** ⇒ 依「不擅自清理殘留」慣例**不動**，僅回報。
+- 新 id 出現位置：`src/voice/fish_tts.py` ＋ `tests/clients/test_voice_companion.py`（各 1 處）。
+- 行尾未受污染：`src/voice/fish_tts.py`＝LF、`tests/clients/test_voice_companion.py`＝CRLF。
+
+### 6. 當期基線（PID 是當期觀測值不是不變量）
+
+| 項目 | 值 |
+|---|---|
+| `data/server.pid`（trampoline） | 4684 |
+| `:8000` socket owner | 15028 |
+| `:8765`（akane） | 720 |
+| `:8766`（mai） | 22228 |
+| `:8767`（rem） | 24564 |
+| `/health` | 200 |
