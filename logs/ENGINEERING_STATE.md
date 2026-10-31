@@ -8311,3 +8311,11 @@ loop handler 只影響**日誌輸出**，`sock.close()` 照跑、accept 迴圈�
 ### 4. 觀測期間零副作用
 
 未寫入／改名／刪除 `data/**` 任何檔案；未殺任何行程；未重啟服務；未手動補跑任何排程槽；未觸發 synthetic diary／dream；未執行 `scripts/manual_*.py`；真實 LLM 呼叫 0 次（沙盒重演為 scripted LLM，`real_llm_calls=0`）。
+
+## 0.1.115 值守端日常台帳刷新（cohort 2026-10-30 封閉後，自動）
+
+- 封閉 cohort：`2026-10-30`（UTC 建立日過完才封閉）⇒ 核准集合 **91 顆**（本次新增 **91 顆**；四條件量測：台帳記載型別（未記載＝value）＋ 建立日 == cohort date ＋ last_support_ts == created_ts ＋ 無 support_propagation 祖先邊）。
+- 其他受影響 cohort：2026-10-22（核准 44 顆，本次新增 0 顆）；2026-10-23（核准 54 顆，本次新增 0 顆）；2026-10-24（核准 61 顆，本次新增 0 顆）。
+- 下一槽沙盒快跑：`2026-11-01T02:00:00+00:00` ⇒ `PASS`（exit 0）。
+- 守衛：`tests/test_eval_lifecycle_cli.py` 全綠（exit 0）。
+- 自動刷新機制：每日 20:40 EDT（= 00:40Z，UTC 日封閉後）執行。
