@@ -1,4 +1,4 @@
-# _test_watchdog_fix.ps1 — 驗證 watchdog 方案 A/B 修復邏輯 (2026-09-08)
+﻿# _test_watchdog_fix.ps1 — 驗證 watchdog 方案 A/B 修復邏輯 (2026-09-08)
 # 方案 A: 啟動窗口保護 (距上次 Plan A 啟動 < 90s 不判定崩潰)
 # 方案 B: Plan A 前殺進程樹 + 等 port 釋放
 # 用 mock 函數驗證核心判斷邏輯, 不執行真實 watchdog 主流程。

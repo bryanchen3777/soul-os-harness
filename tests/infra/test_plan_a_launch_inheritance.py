@@ -728,9 +728,17 @@ def _replay(tmp: Path, plan_a_text: str, ops_text: str, mutation: str = "") -> d
     # 沙盒的服務本體 = 無害探針（取代 scripts\run_server.py）
     (scripts_dir / "run_server.py").write_text(SERVICE_PROBE, encoding="utf-8")
     # 共用 nohup 輪替 helper（生產檔原樣複製; 內含路徑, 不需替換）
+    #
+    # 🔴 沙盒副本必須寫成**與生產檔相同的位元組組態**：UTF-8 **with BOM**。
+    #    生產 .ps1 帶 BOM ⇒ Windows PowerShell 5.1 會以 UTF-8 解碼；
+    #    若沙盒副本少了 BOM，5.1 就改用系統 ANSI 碼頁（cp950）解碼，
+    #    中文註解會被解成亂碼，甚至讓**下一行的 '#' 被吃成亂碼的一部分**
+    #    ⇒ 該行變成活程式碼 ⇒ parse 失敗（2026-10-31 實測：
+    #    「port_listen=False」被當成賦值敘述）。
+    #    ⇒ 沙盒測的就不是生產會讀的那個檔了。
     (scripts_dir / "_nohup_log_rotation.ps1").write_text(
         (SCRIPTS_DIR / "_nohup_log_rotation.ps1").read_text(encoding="utf-8-sig"),
-        encoding="utf-8",
+        encoding="utf-8-sig",
     )
 
     port = _free_port()
@@ -753,8 +761,24 @@ def _replay(tmp: Path, plan_a_text: str, ops_text: str, mutation: str = "") -> d
             facts["refused"] = "啟動路徑的寫入目標指向生產檔案: %s" % target
             return facts
 
-    plan_a_path.write_text(plan_a_sandbox, encoding="utf-8")
-    ops_path.write_text(ops_sandbox, encoding="utf-8")
+    # 🔴 沙盒副本必須與生產檔**位元組組態一致**（UTF-8 with BOM）——
+    #    見上方 _nohup_log_rotation.ps1 的說明：少了 BOM，PS 5.1 會改用 cp950
+    #    解碼中文註解，甚至讓下一行的 '#' 被吃掉 ⇒ 該行變成活程式碼 ⇒ parse 失敗。
+    plan_a_path.write_text(plan_a_sandbox, encoding="utf-8-sig")
+    ops_path.write_text(ops_sandbox, encoding="utf-8-sig")
+
+    # BOM 對等性：沙盒副本的前 3 個位元組必須與其生產來源相同。
+    # （生產 .ps1 皆為 UTF-8 with BOM ⇒ 沙盒副本也必須帶 BOM。）
+    for sandbox_path, source_path in (
+        (plan_a_path, PLAN_A_PATH),
+        (ops_path, SERVER_OPS_PATH),
+        (scripts_dir / "_nohup_log_rotation.ps1",
+         SCRIPTS_DIR / "_nohup_log_rotation.ps1"),
+    ):
+        assert sandbox_path.read_bytes()[:3] == source_path.read_bytes()[:3], (
+            "沙盒副本 %s 的 BOM 與生產檔 %s 不一致 ⇒ PS 5.1 的解碼結果不同"
+            "（沙盒測的不是生產會讀的那個檔）" % (sandbox_path.name, source_path.name)
+        )
 
     powershell = str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
                      / "WindowsPowerShell" / "v1.0" / "powershell.exe")

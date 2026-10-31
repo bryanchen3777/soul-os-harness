@@ -27,6 +27,14 @@ $errLog = Join-Path $root 'data\server_nohup.err'
 # (ModuleNotFoundError: No module named 'networkx' → Application startup failed)
 $python = 'C:\Users\bbfcc\.local\bin\soul-os-harness\.venv\Scripts\python.exe'
 $opsLog = Join-Path $root 'data\logs\server_ops.log'
+# 生產服務的 TCP 埠（就緒探針用；跟 _start_plan_a.ps1 一致用**數字常數**而非位址字面值，
+# 這樣 tests\infra\test_plan_a_launch_inheritance.py 的沙盒複本只要改這一行就能整組換埠）。
+$servicePort = 8000
+# 就緒探針的逾時上限（秒）—— 單一事實來源。必須落在 [90, 600]：
+#   下限 90s（實測 uvicorn 綁埠要 1~3 分鐘）；
+#   上限 600s（watchdog 的維護鎖 stale 門檻是 10 分鐘，超過就會被當 stale 刪掉
+#   ⇒ 維護鎖這道保護直接失效）。
+$healthReadyTimeoutSec = 180
 
 function Get-ServerProcess {
     Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
@@ -46,6 +54,56 @@ function Write-OpsLog([string]$msg) {
     } catch {
         Write-Host "[server_ops] WARN log write failed: $_"
     }
+}
+
+# ───────────────────────────────────────────────────────────
+# MAINT-LOCK-DYNAMIC-READY（2026-10-31，Owner 裁定 15:47）
+# 維護鎖的釋放時機：由「固定秒數」改為「持有至服務真的就緒」。
+#
+# 為什麼（2026-10-31 00:08 實測事故）：
+#   uvicorn 啟動時會跑一輪 elevation / contradiction 掃描，實際綁埠要 1~3 分鐘。
+#   舊流程在 Start-SoulOsServer 回來後就釋放 lock ⇒ 落在「鎖已解、port 尚未 LISTEN」
+#   的空窗期 ⇒ watchdog 的 tick（每 5 分鐘）看到 port_listen=False 就判定失聯，
+#   **自行重啟**（殺掉剛拉起的實例、改拉 Plan A）。實測事實：
+#     00:08:04 WARN post-eb0b15f N=1/10 port_listen=False procs=2 -> restart
+#     00:08:06 拉 Plan A
+#   無資料損失（sidecar mtime / bytes 未變），但等於每次「用官方腳本重啟」都多一次重啟。
+#
+# 修法：釋放 lock **之前**先用 /health 輪詢探針，等服務真的回 200。
+#   * 唯一成功判準 = StatusCode 200（不是「有回應」、也不是「port 有 LISTEN」）；
+#   * 逾時上限由 $healthReadyTimeoutSec 控制 ⇒ 必須小於 watchdog 的 lock stale
+#     門檻（10 分鐘），否則保護會被 watchdog 當 stale 刪掉；
+#   * 逾時時**不**讓腳本失敗（服務可能只是起來得慢）：只 log warn 並釋放 lock，
+#     讓 watchdog 自行接管自癒 —— 取捨是「寧可多一次自癒，也不要重啟兩次」。
+#
+# 🔴 本函式**只**在 restart 分支被呼叫。`start` 絕不可呼叫它：
+#    `start` 會被 watchdog 的 _start_plan_a.ps1 以 WaitForExit(120000) 呼叫，
+#    阻塞式等待會讓 Plan A 路徑誤判失敗（120s 上限 < 探針逾時上限）。
+function Wait-SoulOsHealthy {
+    param(
+        [int]$TimeoutSec = 180,
+        [int]$IntervalSec = 3
+    )
+    $url = "http://127.0.0.1:$servicePort/health"
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $attempt = 0
+    while ($true) {
+        $attempt++
+        try {
+            $r = Invoke-WebRequest $url -UseBasicParsing -TimeoutSec 5
+            if ($r.StatusCode -eq 200) {
+                Write-OpsLog "     /health = 200 (ready: probe #$attempt, port=$servicePort)"
+                return $true
+            }
+            Write-OpsLog "     /health = $($r.StatusCode) (probe #$attempt, not ready yet)"
+        } catch {
+            Write-OpsLog "     /health probe #$attempt failed: $($_.Exception.Message)"
+        }
+        if ((Get-Date) -ge $deadline) { break }
+        Start-Sleep -Seconds $IntervalSec
+    }
+    Write-OpsLog "     /health not ready within ${TimeoutSec}s (probes=$attempt)"
+    return $false
 }
 
 # CRASH-OBS-1 (2026-09-10): 載入共用 nohup log 輪替 helper (與 _start_plan_a.ps1 一致)
@@ -266,6 +324,16 @@ switch ($Action) {
             Stop-SoulOsServer
             Start-Sleep -Seconds 2
             Start-SoulOsServer
+            # MAINT-LOCK-DYNAMIC-READY（2026-10-31，Owner 裁定 15:47）：
+            # 維護鎖必須覆蓋整個 start→bind 窗口。舊流程在 Start-SoulOsServer
+            # 回來後就釋放鎖，而服務實際要 1~3 分鐘才綁埠 ⇒ watchdog 在那個
+            # 空窗期會誤判失聯而自行重啟（2026-10-31 00:08 實測）。
+            # 這裡在 finally（釋放鎖）**之前**輪詢 /health，成功判準是 200；
+            # 逾時只 log warn 並釋放鎖，讓 watchdog 自行接管自癒。
+            $ready = Wait-SoulOsHealthy -TimeoutSec $healthReadyTimeoutSec
+            if (-not $ready) {
+                Write-OpsLog "[warn] 服務在 ${healthReadyTimeoutSec}s 內未回報就緒；維護鎖將釋放，watchdog 將自行接管自癒"
+            }
         } finally {
             if (Test-Path $maintenanceLock) {
                 Remove-Item $maintenanceLock -Force -ErrorAction SilentlyContinue
