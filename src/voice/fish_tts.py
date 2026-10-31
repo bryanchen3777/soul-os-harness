@@ -42,7 +42,9 @@ VOICES: dict[str, str] = {
     "rem_zh_voice": "1325f2c9fdb4406db10dea59a85dde3f",  # 雷姆 中文專用
     "mahiru_voice": "b3d773aaa2f44e128e8ae21321e64b45",  # 椎名まひる
     "yua_voice":   "5ae50aa681784e7e8913f681117a1b7e",  # ユア
-    "akane_voice": "4c11d21b14284d428074f76a1cf32298",  # 黒川茜 (推しの子)
+    # 🔺 akane_voice 2026-10-31 換成茜的新克隆音色（與 clients/voice_companion/config.json
+    #    的 VC 語音同一個 reference_id ⇒ TG 與 VC 兩個通道聽起來是同一個人）。
+    "akane_voice": "9338a8e636cf4044b4955ab012715c1e",  # 黒川茜 (推しの子)
     "ruka_voice":  "6a45afe8e5f84217acdfc8103156e0cc",  # 更科瑠夏
     # 🔺 mai_voice 2026-10-30 換成麻衣的新克隆音色（與 clients/voice_companion/profiles/mai.json
     #    的 VC 語音同一個 reference_id ⇒ TG 與 VC 兩個通道聽起來是同一個人）。

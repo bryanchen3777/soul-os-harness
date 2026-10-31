@@ -2964,14 +2964,24 @@ class TestVoiceConsistencyAcrossChannels:
     兩處單一事實來源：
     - Soul OS TG 通道：`src/voice/fish_tts.py` 的 `VOICES["<role>_voice"]`
       （經 `src/llm/fish_tts_handler.py` 的 `AGENT_ID_TO_VOICE_KEY`）
-    - VC 通道：`clients/voice_companion/profiles/<role>.json` 的 `fish_audio.voice_id`
+    - VC 通道：該角色的 VC 設定檔的 `fish_audio.voice_id`
 
     🔺 為什麼要有這個守門：2026-10-30 之前，雷姆的 TG 與 VC 各用各的音色
     （Owner 換了 VC 的卻不知道 TG 沒換），同一個人在兩個通道聽起來是兩個人。
     換音色時必須**兩處一起改**，否則這條守門會轉紅。
     """
 
+    #: 角色 → （Soul OS VOICES 的 key、VC 設定檔的 repo 相對路徑）
+    #: 🔺 茜的 VC 設定檔**不是** profiles/akane.json（不存在），而是預設的
+    #:    clients/voice_companion/config.json（web_server.py 的 CONFIG_PATH），
+    #:    因為 :8765 那個實例啟動時沒有 --config。
+    ROLES = {
+        "mai": ("mai_voice", "clients/voice_companion/profiles/mai.json"),
+        "rem": ("rem_voice", "clients/voice_companion/profiles/rem.json"),
+        "akane": ("akane_voice", "clients/voice_companion/config.json"),
+    }
     MAI_VOICE_ID = "b41446ba546c4e4aab598f4ac3afd634"
+    AKANE_VOICE_ID = "9338a8e636cf4044b4955ab012715c1e"
 
     @staticmethod
     def _soul_os_voice(alias: str) -> str:
@@ -2980,27 +2990,38 @@ class TestVoiceConsistencyAcrossChannels:
         assert m, f"src/voice/fish_tts.py 的 VOICES 必須有 {alias} 對應"
         return m.group(1)
 
-    @staticmethod
-    def _vc_profile_voice(role: str) -> str:
-        path = REPO_ROOT / f"clients/voice_companion/profiles/{role}.json"
-        with open(path, encoding="utf-8-sig") as f:
+    @classmethod
+    def _vc_voice(cls, role: str) -> str:
+        _, rel = cls.ROLES[role]
+        with open(REPO_ROOT / rel, encoding="utf-8-sig") as f:
             cfg = json.load(f)
         return cfg["fish_audio"]["voice_id"]
 
     def test_mai_profile_uses_expected_voice_id(self):
-        """麻衣 profile 的 voice_id ＝ 2026-10-30 換定的音色"""
-        assert self._vc_profile_voice("mai") == self.MAI_VOICE_ID
+        """麻衣 VC 設定檔的 voice_id ＝ 2026-10-30 換定的音色"""
+        assert self._vc_voice("mai") == self.MAI_VOICE_ID
+
+    def test_akane_config_uses_expected_voice_id(self):
+        """茜 VC 設定檔（預設 config.json）的 voice_id ＝ 2026-10-31 換定的音色"""
+        assert self._vc_voice("akane") == self.AKANE_VOICE_ID
 
     def test_mai_tg_and_vc_use_identical_voice_id(self):
-        """麻衣：Soul OS VOICES['mai_voice'] ＝ VC profile voice_id"""
-        assert self._soul_os_voice("mai_voice") == self._vc_profile_voice("mai"), (
+        """麻衣：Soul OS VOICES['mai_voice'] ＝ VC 設定檔 voice_id"""
+        assert self._soul_os_voice("mai_voice") == self._vc_voice("mai"), (
             "Soul OS VOICES['mai_voice'] 與 clients/voice_companion/profiles/mai.json "
             "的 voice_id 必須相同（否則 TG 與 VC 聽起來是兩個人）"
         )
 
     def test_rem_tg_and_vc_use_identical_voice_id(self):
         """雷姆：同一條不變量（2026-10-30 已統一到 0758ee97…，此處防止回退）"""
-        assert self._soul_os_voice("rem_voice") == self._vc_profile_voice("rem"), (
+        assert self._soul_os_voice("rem_voice") == self._vc_voice("rem"), (
             "Soul OS VOICES['rem_voice'] 與 clients/voice_companion/profiles/rem.json "
+            "的 voice_id 必須相同（否則 TG 與 VC 聽起來是兩個人）"
+        )
+
+    def test_akane_tg_and_vc_use_identical_voice_id(self):
+        """茜：同一條不變量（2026-10-31 換成 9338a8e6…）"""
+        assert self._soul_os_voice("akane_voice") == self._vc_voice("akane"), (
+            "Soul OS VOICES['akane_voice'] 與 clients/voice_companion/config.json "
             "的 voice_id 必須相同（否則 TG 與 VC 聽起來是兩個人）"
         )
