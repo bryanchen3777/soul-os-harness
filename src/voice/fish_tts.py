@@ -36,7 +36,9 @@ API_URL = "https://api.fish.audio/v1/tts"
 # Update the right-hand side to use your own cloned voice. To add more, copy
 # a line and put in a new key + Fish ID.
 VOICES: dict[str, str] = {
-    "rem_voice":   "aebe94aa8d634c19b2a08ba9836a7af4",  # Re:Zero — レム (default)
+    # 🔺 rem_voice 2026-10-30 換成雷姆的新克隆音色（與 clients/voice_companion/profiles/rem.json
+    #    的 VC 語音同一個 reference_id ⇒ TG 與 VC 兩個通道聽起來是同一個人）。
+    "rem_voice":   "0758ee97c4b946f395cfc3555589c70c",  # Re:Zero — レム (default)
     "rem_zh_voice": "1325f2c9fdb4406db10dea59a85dde3f",  # 雷姆 中文專用
     "mahiru_voice": "b3d773aaa2f44e128e8ae21321e64b45",  # 椎名まひる
     "yua_voice":   "5ae50aa681784e7e8913f681117a1b7e",  # ユア

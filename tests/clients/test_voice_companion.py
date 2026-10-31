@@ -2806,7 +2806,7 @@ class TestMaiCompanionVC24:
 class TestRemCompanion:
     """驗收雷姆獨立語音伴侶服務（Port 8767）：
 
-    - 雷姆 Profile 設定（agent_rem、personas/agent_rem.md、voice_id 055de7dab3aa411ea544f2673ff537fa）
+    - 雷姆 Profile 設定（agent_rem、personas/agent_rem.md、voice_id 0758ee97c4b946f395cfc3555589c70c）
     - 獨立 Port 8767 與 Loopback HTTPS 綁定
     - 環境變數 REM_* 優先級覆寫
     - 記憶庫隔離（agent_rem 命名空間）
@@ -2825,7 +2825,7 @@ class TestRemCompanion:
         assert companion.get("id") == "agent_rem"
         assert companion.get("display_name") == "雷姆"
         assert companion.get("short_name") == "雷姆"
-        assert rem_cfg.get("fish_audio", {}).get("voice_id") == "055de7dab3aa411ea544f2673ff537fa"
+        assert rem_cfg.get("fish_audio", {}).get("voice_id") == "0758ee97c4b946f395cfc3555589c70c"
         persona_file = REPO_ROOT / companion.get("persona_file", "")
         assert persona_file.is_file(), f"Persona 檔案 {persona_file} 必須存在"
         content = persona_file.read_text(encoding="utf-8")
