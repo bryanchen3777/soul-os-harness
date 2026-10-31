@@ -8319,3 +8319,54 @@ loop handler 只影響**日誌輸出**，`sock.close()` 照跑、accept 迴圈�
 - 下一槽沙盒快跑：`2026-11-01T02:00:00+00:00` ⇒ `PASS`（exit 0）。
 - 守衛：`tests/test_eval_lifecycle_cli.py` 全綠（exit 0）。
 - 自動刷新機制：每日 20:40 EDT（= 00:40Z，UTC 日封閉後）執行。
+
+## 0.1.116 FEAT-UVICORN-ACCEPT-RESILIENCE 於生產生效 ＋ VC 三實例官方重啟（2026-10-30 20:08 / 21:05 EDT）
+
+> 由主大腦寫入（Owner 2026-10-30 21:0x EDT 口頭指示「vc 重啟一下」）。
+
+### 1. FEAT-UVICORN-ACCEPT-RESILIENCE 已在生產生效（§0.1.111 的落地確認）
+
+- 主服務於 **2026-10-30 20:08:12 EDT** 經維護窗口重啟 ⇒ **本工單的 accept 韌性補丁自此在生產生效**。
+- 生產證據（現行行程日誌 `data/server_nohup.err`）：
+
+  ```
+  2026-10-30 20:08:12,230 [soul_os.server.accept_resilience] INFO: [AcceptResilience] installed on
+      IocpProactor.accept (benign winerrors=[64, 10054], backoff=0.05..1.0)
+  ```
+
+- 當期 PID 基線：`data/server.pid` = **6044**（trampoline）／`:8000` listener = **25332**
+  （前一基線 20988／8388 已因本次重啟位移 ⇒ 屬「基線隨重啟位移」，非故障）。
+- 自 20:08:12 起，現行行程日誌的 `Accept failed on a socket` = **0 筆**
+  （對照 §0.1.109 的 5/5 樣本：每次 accept 失敗都隨後失聯並被重啟）。
+  🔴 尚無「良性失敗真實發生」的生產樣本 ⇒ 本補丁的**真實路徑**仍待第一次自然事件驗證
+  （目前只證明「安裝成功 + 未破壞正常 accept」）。
+
+### 2. VC 三實例官方重啟（Owner 指示，走 `scripts/vc_ops.ps1 restart`）
+
+| 實例 | 埠 | 重啟前 PID | 重啟後 PID | launcher |
+|---|---|---|---|---|
+| akane（黒川茜） | 8765 | 1612 | **18184** | 26728 |
+| mai（櫻島麻衣） | 8766 | 14916 | **23560** | 21368 |
+| rem（雷姆） | 8767 | 6524 | **24060** | 26008 |
+
+- 三實例皆於 **21:05:47** 記錄新的 `startup` 行（agent_id／port／config／`model=drama-3`／
+  `asr_model=transcribe-1-pro` 皆正確），且 `:8765/:8766/:8767` 皆為 LISTEN。
+- **重啟的實際目的已驗證**：`clients/voice_companion/profiles/rem.json` 的
+  `fish_audio.voice_id` 由 `055de7dab3aa411ea544f2673ff537fa` 改為
+  `0758ee97c4b946f395cfc3555589c70c`；rem 的啟動日誌顯示 `voice_id=0758ee97c4b946f395cfc3555589c70c`
+  ⇒ **新音色已生效**。
+- 🔴 `clients/voice_companion/profiles/rem.json` 的改動**仍留在工作樹未入版**
+  （Owner 的改動；主大腦不代為入版，避免歸屬錯置）⇒ 待 Owner 自行入版。
+- 主服務 `:8000` **未受本次 VC 重啟影響**（仍為 trampoline 6044／listener 25332）。
+- 邊界：本節所載重啟**未**動 `data/` 下任何檔案；VC 重啟走官方 `vc_ops.ps1`（非手動 kill）。
+
+### 3. 晨槽（08:05 EDT）「重啟後首槽自然補償」驗證結論（補記 §0.1.114 的口徑更正）
+
+- 接縫 **78 筆全部落在本槽窗內**（12:00→12／12:01→44／12:02→3／12:03→4／12:04→5／12:05→5／
+  12:06→6／12:07→3），且本行程**槽窗前已發射數 = 0** ⇒ 今晨槽確為**重啟後首槽**
+  ⇒ 期望值應取「**全量**」而非「待發射池」⇒ **Owner 的全量重發預測命中**。
+- at-most-once 違例 78 筆＝重啟清零行程內 `_ELEVATION_EMITTED` 所致
+  ⇒ **重啟後首槽的正常形態，非缺口**（Owner 2026-10-29 裁示維持現狀、不加進程內重試）。
+- 沙盒 CLI：`VERDICT = PENDING_COHORT`（exit 3、`expected_hits=60`、`pending_retirements_count=2`）
+  ⇒ **非破線**；原報告「CLI 未輸出 VERDICT ⇒ FAIL」係**工具層解析缺陷**（`ensure_ascii` 轉義），
+  非 CLI 未跑。
