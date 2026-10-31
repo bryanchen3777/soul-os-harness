@@ -44,7 +44,9 @@ VOICES: dict[str, str] = {
     "yua_voice":   "5ae50aa681784e7e8913f681117a1b7e",  # ユア
     "akane_voice": "4c11d21b14284d428074f76a1cf32298",  # 黒川茜 (推しの子)
     "ruka_voice":  "6a45afe8e5f84217acdfc8103156e0cc",  # 更科瑠夏
-    "mai_voice":   "101fe58fb9914eefa510f3c92ec1d798",  # 櫻島麻衣 (青春豬頭) — Bry 自製
+    # 🔺 mai_voice 2026-10-30 換成麻衣的新克隆音色（與 clients/voice_companion/profiles/mai.json
+    #    的 VC 語音同一個 reference_id ⇒ TG 與 VC 兩個通道聽起來是同一個人）。
+    "mai_voice":   "b41446ba546c4e4aab598f4ac3afd634",  # 櫻島麻衣 (青春豬頭)
     "ram_voice":   "3559bc2b12d24220b107378130419890",  # ラム (Re:Zero 雙胞胎姊姊)
     "miku_voice":  "d8d514a56bca4a7a8af3c27232cc39aa",  # 中野三玖 (五等分) — Fish Audio default
     "anna_voice":  "a3eda99cf8f8425bac220499766ffbdd",  # 山田杏奈

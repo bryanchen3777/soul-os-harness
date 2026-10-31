@@ -8,7 +8,7 @@
   },
   "fish_audio": {
     "api_key": "",
-    "voice_id": "101fe58fb9914eefa510f3c92ec1d798",
+    "voice_id": "b41446ba546c4e4aab598f4ac3afd634",
     "endpoint": "https://api.fish.audio/v1/tts",
     "asr_endpoint": "https://api.fish.audio/v1/asr",
     "tts_ws_endpoint": "wss://api.fish.audio/v1/tts/live",
