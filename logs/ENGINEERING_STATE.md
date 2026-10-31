@@ -8436,3 +8436,186 @@ proxy 發 AGENT_SPEAK
   「生產資料耦合」既有紅燈同一組**，**本次語音改動零新增紅燈**。
 - 行尾未受污染：`src/voice/fish_tts.py`＝LF、`tests/clients/test_voice_companion.py`＝CRLF、
   `clients/voice_companion/profiles/rem.json`＝LF，三者皆維持原慣例。
+
+## 0.1.118 TG 櫻島麻衣語音統一到 b41446ba…（Soul OS ＋ VC 同步 ＋ 官方重啟生效）
+
+記錄 Owner 2026-10-30 23:57 EDT 的指示：「櫻島麻衣 新的 id b41446ba546c4e4aab598f4ac3afd634
+幫忙更新soul os與vc然後重啟」。
+
+### 1. 盤點：麻衣的音色有兩處定義（舊值兩處一致）
+
+- **Soul OS（TG 通道）**：`src/voice/fish_tts.py` 的 `VOICES["mai_voice"]`
+  （經 `src/llm/fish_tts_handler.py` 的 `AGENT_ID_TO_VOICE_KEY`：`agent_mai → mai_voice`
+  → `fish_tts.resolve_voice_id()` → `VOICES` → mp3 → `AGENT_AUDIO_READY`
+  → `src/io/channels/telegram.py::send_voice()`）。
+- **VC（:8766）**：`clients/voice_companion/profiles/mai.json` 的 `fish_audio.voice_id`
+  （`vc_ops.ps1` 以 `--config clients/voice_companion/profiles/mai.json` 啟動）。
+- 舊值 `101fe58fb9914eefa510f3c92ec1d798`（兩處一致）。
+- **env 覆寫**：`clients/voice_companion/env_config.py` 有 `MAI_FISH_VOICE_ID` 覆寫優先於
+  config，但生產 `clients/voice_companion/.env` **無任何 VOICE_ID 設定** ⇒ profile 值即生效值。
+- repo 內**無任何測試釘選**麻衣的 voice id（只有雷姆有）⇒ 本次順手補上可執行守門。
+
+### 2. 改動（commit `eb0b15f`，已推 origin/main）
+
+- `src/voice/fish_tts.py`：`VOICES["mai_voice"]` → `b41446ba546c4e4aab598f4ac3afd634`。
+- `clients/voice_companion/profiles/mai.json`：`voice_id` → 同值。
+- `tests/clients/test_voice_companion.py`：新增 `TestVoiceConsistencyAcrossChannels` ——
+  把「TG 與 VC 必須是**同一個** reference_id」變成可執行守門。
+  🔺 為什麼要加：2026-10-30 之前雷姆的 TG 與 VC 各用各的音色（Owner 換了 VC 的卻沒換 TG），
+  同一個人在兩個通道聽起來是兩個人；換音色漏改一邊時這條守門會轉紅。
+
+### 3. 生效（Owner 口頭授權，走官方路徑）
+
+- **VC**：`scripts/vc_ops.ps1 restart`（00:06:34–00:06:56）
+  ⇒ akane 18184→**18328**、mai 23560→**25508**、rem 24060→**19476**；三者皆 LISTEN。
+- **主服務**：`scripts/server_ops.ps1 restart`（00:07:09–00:07:26）；新 VOICES 生效
+  （`src/voice/fish_tts.py` mtime **23:59:40** 早於新行程啟動）。
+- **硬證據（直接印出 reference_id 的那一行）**：
+  `clients/voice_companion/logs/vc_agent_mai.log` 的 startup 行
+  `startup agent_id=agent_mai display_name=櫻島麻衣 tts_mode=rest
+  voice_id=b41446ba546c4e4aab598f4ac3afd634 model=drama-3 ... port=8766`
+  （VC 實例啟動日誌本來就印 `voice_id=`，見 `web_server.py:1458`）。
+- `/health = 200`（00:10:10）；TG **10/10 bots 上線**。
+
+### 4. 🔴 本次重啟暴露的既有缺陷（watchdog × server_ops.ps1 的重啟競態）—— **未修，待裁示**
+
+- 00:08:04 watchdog tick：`post-eb0b15f N=1/10 trial=1/98 port_listen=False procs=2 -> restart`
+  ⇒ watchdog **自行殺掉** server_ops 剛拉起的 8916／23464，00:08:06 改拉 Plan A (9276)。
+- **根因**：`server_ops.ps1` 的維護鎖只持有到「啟動後 3 秒 ＋ 一次 5 秒 `/health` 探測」
+  （00:07:09 → 00:07:26）就釋放；但 uvicorn 實際綁埠要 **~3 分鐘**（00:10:10）
+  ⇒ 落在「鎖已釋放、port 尚未 LISTEN」的窗口，watchdog 誤判失聯。
+- **後果**：多一次重啟；**無資料損失**（`elevation_lifecycle_events.jsonl` 仍 795 筆／291007 bytes／
+  mtime 2026-10-30 22:06:50 ⇒ 重啟未觸發生命週期評估重跑）。
+- **對策（本次已用）**：第二次重啟刻意排在 watchdog tick（00:18:03）**之後**發動
+  ⇒ 綁埠 00:19:56 早於下個 tick 00:23:04 ⇒ **本次無額外重啟**。
+- 🔺 **未修**（需 Owner 裁示）：`server_ops.ps1` 應把維護鎖**持有到 `/health` 成功（或逾時）**，
+  而不是固定 3 秒；否則每次「用官方腳本重啟」都會被 watchdog 追殺一次。
+
+### 5. 守門
+
+- 語音相關 7 檔（`test_voice_companion`／`test_vc_lang_tags`／`test_m6_2_1_text_tts_correlation`／
+  `test_m1_6_audio_action_fix`／`test_voice_session_mcp`／`test_ms3_voice_gate`／
+  `test_persona_fix2_yua_action_tag_carveout`）⇒ **283 passed + 8 subtests passed**，0 failed。
+- 實跑 `resolve_voice_id("mai_voice") = b41446ba546c4e4aab598f4ac3afd634`。
+- 行尾未受污染：`src/voice/fish_tts.py`＝LF、`clients/voice_companion/profiles/mai.json`＝LF、
+  `tests/clients/test_voice_companion.py`＝CRLF，三者皆維持原慣例。
+## 0.1.119 TG 黒川茜語音統一到 9338a8e6…（Soul OS ＋ VC 同步 ＋ 官方重啟生效）
+
+記錄 Owner 2026-10-31 00:05 EDT 的指示：「黑川茜也有新ID了喔 9338a8e636cf4044b4955ab012715c1e
+要再來一次了」（與 §0.1.118 同一個維護窗口內的第二次）。
+
+### 1. 🔺 結構不對稱：茜的 VC 語音**不在** profiles/ 底下
+
+- **Soul OS（TG 通道）**：`src/voice/fish_tts.py` 的 `VOICES["akane_voice"]`
+  （`agent_akane → akane_voice`）。
+- **VC（:8765）**：**預設的 `clients/voice_companion/config.json`**
+  —— 茜**沒有** `profiles/akane.json`（該檔不存在），且 :8765 那個實例啟動時**不帶** `--config`
+  （`vc_ops.ps1` 的啟動命令逐字沿用生產命令列；`web_server.py:62` 的
+  `CONFIG_PATH = Path(__file__).resolve().parent / "config.json"`）。
+  `scripts/vc_ops.ps1` 的頭註解已載明此點：**「結構不對稱，不是 bug」**。
+- 舊值 `4c11d21b14284d428074f76a1cf32298`（VOICES ＋ config.json 兩處一致）。
+- **env 覆寫**：`FISH_VOICE_ID`（通用）與 `MAI_FISH_VOICE_ID`／`REM_FISH_VOICE_ID` 皆未在生產設定，
+  ⇒ config.json 的值即生效值。
+
+### 2. 改動（commit `0b36ff4`，已推 origin/main）
+
+- `src/voice/fish_tts.py`：`VOICES["akane_voice"]` → `9338a8e636cf4044b4955ab012715c1e`。
+- `clients/voice_companion/config.json`：`voice_id` → 同值。
+- `tests/clients/test_voice_companion.py`：`TestVoiceConsistencyAcrossChannels` 擴充為
+  **三角色**（麻衣／雷姆／茜），VC 設定檔路徑改為依角色查表（`ROLES`）；
+  另加 `test_akane_config_uses_expected_voice_id` 釘住茜的目標 id。
+- `tests/clients/test_vc_model_registry.py`：**不需改**。它的 `CONFIG_TEXT` 是**獨立 fixture**
+  （不讀真檔），斷言的是「改模型不動 voice_id」，與真實設定檔無關 ⇒ 不會轉紅。
+
+### 3. 生效（Owner 口頭授權，走官方路徑）
+
+- **VC**：`scripts/vc_ops.ps1 restart`（00:17:47–00:18:07）
+  ⇒ akane 18328→**720**、mai 25508→**22228**、rem 19476→**24564**；三者皆 LISTEN。
+- **硬證據**（VC 啟動日誌直接印 reference_id）：
+  - `vc_agent_akane.log` 00:17:57 `startup agent_id=agent_akane display_name=黑川茜
+    tts_mode=rest voice_id=9338a8e636cf4044b4955ab012715c1e ... port=8765`
+  - `vc_agent_mai.log`  00:17:58 `voice_id=b41446ba546c4e4aab598f4ac3afd634 ... port=8766`
+  - `vc_agent_rem.log`  00:17:59 `voice_id=0758ee97c4b946f395cfc3555589c70c ... port=8767`
+- **主服務**：`scripts/server_ops.ps1 restart`（00:18:30–00:18:44），新行程 **00:18:39** 啟動；
+  `src/voice/fish_tts.py` mtime **00:14:25** 早於它 ⇒ 新 VOICES 生效。
+- `/health = 200`（00:19:56）；TG **10/10 bots `status=ok`**（心跳檔 00:20:24、pid 24076）。
+- TG:akane 初始啟動失敗 → **自癒鏈 00:19:56 重建成功**
+  （已知鏈，與同窗口 TG:rem 的 00:09:56→00:10:03 同型，非新缺陷）。
+- watchdog：00:18:03 tick OK（重啟前）；綁埠 00:19:56 早於下個 tick 00:23:04 ⇒ **本次無額外重啟**。
+- 生產 `elevation_lifecycle_events.jsonl` 仍 795 筆／291007 bytes／mtime 2026-10-30 22:06:50
+  ⇒ 重啟**未**觸發生命週期評估重跑。
+
+### 4. 守門
+
+- 語音相關 8 檔（新增 `test_vc_model_registry`）⇒ **303 passed + 8 subtests passed**，0 failed。
+- 舊 id `4c11d21b…` 在生效路徑（`src/voice/fish_tts.py`、`clients/voice_companion/config.json`、
+  `profiles/*.json`）殘留 **0 處**；其餘殘留在 `tests` 的 env-override fixture（任意樣本值）、
+  `logs/ENGINEERING_STATE.md` 的歷史條目、與 `src/_backup_jp_20260722_rollback/`
+  ⇒ 依 append-only／rollback 慣例**不動**。
+- 行尾未受污染：`src/voice/fish_tts.py`＝LF、`clients/voice_companion/config.json`＝LF、
+  `tests/clients/test_voice_companion.py`＝CRLF。
+
+### 5. 當期 PID 基線（供下一槽對照；PID 是當期觀測值不是不變量）
+
+| 項目 | 值 |
+|---|---|
+| `data/server.pid`（trampoline） | 23176 |
+| `:8000` socket owner | 24076 |
+| `:8765`（akane） | 720 |
+| `:8766`（mai） | 22228 |
+| `:8767`（rem） | 24564 |
+| `/health` | 200 |
+
+### 6. 副作用（已知）
+
+`_ELEVATION_EMITTED` 因重啟清零 ⇒ **下一個槽＝「重啟後首槽」** ⇒ 接縫全量重發
+（與 §0.1.118 同一已知形態，非缺口）。
+## 0.1.120 2026-10-30 22:00 夜槽觀察：槽窗 ERROR 1 筆 ＋ Sunset 候選的沉澱 LLM 失敗
+
+（對應 cron `9214c8db`／`c282a716`／`36e57724` 三張夜槽票；完整報告在
+`%TEMP%\night_obs\report_2026-10-30_night_slot.txt` 與
+`%TEMP%\night_obs\v1_format_check_2026-10-30.txt`，此處只留工程狀態面。）
+
+### 1. 槽窗結果（五項核對全綠）
+
+- 生命週期自然吸收：sidecar mtime 離開遺漏基線（2026-10-29T02:07:33Z）→ **2026-10-31T02:06:50Z**；
+  槽內 **303 筆** `lifecycle_transition`（pattern 215／value 84／belief 4；全部 to_state=weakening；
+  trait／essence ＝ 0）；關鍵反例 `6a92c906b245` 槽內轉變 0 筆。
+- 弱化包裝：**57 → 145**（＋88 ＝ 84 value ＋ 4 belief）。提示的 95 是「57＋38」（只補昨晚遺漏量），
+  實際夜槽是**全量重評**（凡錨點逾 7 天者一律轉弱化）⇒ 數量由整體圖譜錨點年齡分布決定。
+  獨立驗證：複製 elevation/ 到 %TEMP%、移除槽窗 303 筆重建槽前狀態、CLI `--source-dir` 重跑
+  ⇒ expected_hits **88**，與生產實測逐值吻合。
+- 接縫：**A ＝ 82 筆**（夜槽窗 B ＝ 20；另 22:20 的 15 筆 `[elevate] ✓` 屬
+  `world:weather_temp_change` 事件觸發，**不屬夜槽**）。10-29 夜槽 A=53 且 lifecycle 標記 0
+  （被 accept 失敗＋watchdog 重啟斬斷）⇒ 缺口今晚補回。
+- CLI 四欄：`returncode=0`／`eval_error=無`／`undelivered=0 筆`／`VERDICT: PASS`；
+  `pending_retirements_count=0`；5 筆核准 belief 節點全在
+  `EXPECTED_RETIREMENT_COHORTS` 且 nodes＋types＋bounds 三處齊全（5/5）。
+- 持續紅線：`database is locked` 0 筆／Traceback 0 筆／v1 原子追加 LF-only
+  （世界日誌 30 shard ＋ 張力承載檔，CR ＝ 0）／節點檔 SHA-256 恆等／無手動重啟與手動補跑。
+
+### 2. 🔴 紅燈：槽窗 ERROR 級行 ＝ 1 筆（基線 0）
+
+```
+2026-10-30 22:01:26,124 [src.llm.proxy] ERROR: [LLMProxy] generate_text 未預期錯誤:
+  OpenAIBackend exhausted 1 attempts, last error: network ConnectError elapsed_ms=21945
+  | agent=agent_akane
+```
+
+- **確定下游後果**（本輪查明）：該筆**就是 Sunset 候選 `0e8a37f0` 的沉澱 LLM 呼叫**
+  ⇒ 22:01:03.836 `scheduled agent=agent_akane thread_id=0e8a37f0… status=completed`
+  ⇒ 22:01:26.150 `consolidate done status=llm_failed llm_calls=1`
+  ⇒ **線頭已完成 Sunset（容量已釋放）但沉澱（meaning-making → SAGE 事實）未產出**。
+  槽窗 `consolidate done` 分佈：consolidated 7／llm_failed 1（分母 8）。
+- 根因＝**外部 LLM 後端連線抖動**（fail-closed），非生命週期／接縫／Sunset 機制缺陷。
+- Sunset 機制本身正確：重算（`src/soul/life_thread_sunset` 自身函式、槽前狀態嚴格重建）
+  ＝ 應收束 1 筆（agent_akane `0e8a37f0`，age 21.58>21／active 2≥cap 2／slots 27≥3／最舊 active），
+  與生產的 `age_days=21.58 slots_since_new_thread=27` **逐值一致**。
+
+### 3. 🔺 需裁示（1 項）
+
+「Win32 v1 追加必須 LF-only」有兩種解讀：
+(a) canonical 的 v1 原子追加契約（世界日誌 shard ＋ 張力承載檔）⇒ **今晚 PASS**（CR ＝ 0）；
+(b) 若意指「所有生產 JSONL 追加」⇒ **elevation 檔案群自 2026-10-19T22:11:57Z 起即為 CRLF**
+（sidecar 第 19 筆起 777 處 CR、今晚 303 筆新增全 CRLF）。該檔案群**不受任何現行契約涵蓋**
+（解析正常、SHA-256 基線恆等、CLI 可讀）⇒ **不是紅燈**，但與專案 LF-only 位元組慣例不符、已存在 11 天。
