@@ -8370,3 +8370,69 @@ loop handler 只影響**日誌輸出**，`sock.close()` 照跑、accept 迴圈�
 - 沙盒 CLI：`VERDICT = PENDING_COHORT`（exit 3、`expected_hits=60`、`pending_retirements_count=2`）
   ⇒ **非破線**；原報告「CLI 未輸出 VERDICT ⇒ FAIL」係**工具層解析缺陷**（`ensure_ascii` 轉義），
   非 CLI 未跑。
+
+## 0.1.117 TG 雷姆語音統一到 0758ee97…（voice 設定 ＋ 主服務重啟生效）
+
+> Owner 指示（2026-10-30 21:0x EDT）：「幫我把 soul os 裡面 tg 對話用的語音也換成
+> `0758ee97c4b946f395cfc3555589c70c`」＋「這 ID 是雷姆的」。主大腦寫入。
+
+### 1. TG 語音的實際鏈路（已實測，非推測）
+
+TG 語音**不走 VC**，走的是主服務內的 Fish TTS handler：
+
+```
+proxy 發 AGENT_SPEAK
+  → src/llm/fish_tts_handler.py（AGENT_ID_TO_VOICE_KEY：agent_rem → "rem_voice"）
+    → fish_tts.resolve_voice_id("rem_voice") → VOICES["rem_voice"]
+      → POST https://api.fish.audio/v1/tts（reference_id = VOICES 的值）
+        → mp3 寫 data/tts/{agent_id}/ → 廣播 AGENT_AUDIO_READY
+          → src/io/channels/telegram.py::send_voice() 上傳到 TG
+```
+
+- **單一事實來源＝`src/voice/fish_tts.py`**：handler 以 `sys.path.insert(0, src/voice)` 載入，
+  實測 `fish_tts.__file__` = repo 內這一份；`Downloads\voice\fish_tts.py` 只存在於**舊註解**、
+  無任何程式碼引用（repo 內另有一份 `_backup_jp_20260722_rollback/` 副本，非啟動路徑）。
+
+### 2. 改動（commit `0f7de2c`，已推 origin/main）
+
+| 檔案 | 改動 |
+|---|---|
+| `src/voice/fish_tts.py` | `VOICES["rem_voice"]`：`aebe94aa8d634c19b2a08ba9836a7af4` → **`0758ee97c4b946f395cfc3555589c70c`**（TG 雷姆） |
+| `clients/voice_companion/profiles/rem.json` | Owner 的工作樹改動（`voice_id` 同換成 `0758ee97…`）**一併入版** —— 避免「生產已是新音色、repo 仍是舊音色」的分裂（全新 clone 會拿到舊音色） |
+| `tests/clients/test_voice_companion.py` | 釘住 rem profile `voice_id` 的斷言與 docstring 同步更新（原值 `055de7d…` 已被 Owner 的 profile 改動淘汰；該守門在改動後本來就會紅） |
+
+### 3. 生效條件與重啟（Owner 口頭授權，走官方 `.\scripts\server_ops.ps1 restart`）
+
+- **生效條件**：`fish_tts` 於行程內只 import 一次、`VOICES` 在 import 時定格
+  ⇒ 改檔案**不會**讓執行中的行程換音色 ⇒ **必須重啟主服務**。
+- 重啟歷程（21:17:56 → 21:21:23）：
+  - `watchdog` 於 21:18:01 因**維護鎖**跳過該 tick（不會誤殺啟動中的行程）；
+  - 舊 listener 25332（trampoline 6044）→ 新 trampoline **12508**／listener **1880**；
+  - accept 韌性補丁於 **21:18:07** 再次安裝（`[AcceptResilience] installed on IocpProactor.accept`）；
+  - TG polling 自 21:18:09 起；
+  - `Application startup complete.` ＋ `Uvicorn running on http://0.0.0.0:8000` 於 **21:21:23**
+    （啟動含一輪 elevation/contradiction 掃描，約 3 分鐘；`server_ops` 在 21:18:11 報的
+    `/health failed` 是「尚未綁定」而非故障）；
+  - **/health = 200**；
+  - TG **10/10 bots 上線**（mahiru／mai／aoi 初始啟動失敗 → supervisor 於 21:20:25–21:21:31 重建成功）。
+- **新 VOICES 確實被載入的客觀證據**：`src/voice/fish_tts.py` mtime **21:12:31 早於**新行程啟動
+  **21:18:06** ⇒ 執行中的行程 import 的就是新表。
+  結果：**TG 雷姆與 VC 雷姆現在是同一個 reference_id**（`0758ee97c4b946f395cfc3555589c70c`）。
+
+### 4. 副作用（已知、Owner 已接受）
+
+`_ELEVATION_EMITTED` 因重啟清零 ⇒ **今晚 22:00 夜槽＝「重啟後首槽」** ⇒ 接縫**全量重發**
+（≈78 筆，屬既有已知形態，非缺口）。
+
+### 5. 守門
+
+- `tests/clients/test_voice_companion.py` ⇒ **138 passed**（含釘住 rem profile `voice_id` 的那條）。
+- 其餘 fish_tts 相關 5 檔（`test_vc_lang_tags`／`test_persona_fix1_layer3_sanitize`／
+  `test_m6_2_1_text_tts_correlation`／`test_m1_6_audio_action_fix`／`test_proxy_stub_speak`）
+  ⇒ **59 passed**。
+- 全庫回歸（repo 內 `.venv`，聲明解譯器）：**7593 passed / 2 failed / 31 skipped / 32 subtests passed**
+  （871.86s），skip 集合 **STABLE**（skipped=31／baseline=31／added=0／removed=0）。
+  2 筆 failed ＝ `tests/test_sim_accel_thread.py` 的兩支 ⇒ **與 §0.1.112 已定位並立項的
+  「生產資料耦合」既有紅燈同一組**，**本次語音改動零新增紅燈**。
+- 行尾未受污染：`src/voice/fish_tts.py`＝LF、`tests/clients/test_voice_companion.py`＝CRLF、
+  `clients/voice_companion/profiles/rem.json`＝LF，三者皆維持原慣例。
