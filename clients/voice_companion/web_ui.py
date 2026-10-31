@@ -1158,6 +1158,19 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       cold:{ url:'/static/avatars/mai_cold.mp4',        loop:true, fallbackToIdle:true },
       blush:{ url:'/static/avatars/mai_blush.mp4',       loop:true, fallbackToIdle:true },
       pout:{ url:'/static/avatars/mai_pout.mp4',        loop:true, fallbackToIdle:true }
+    } },
+    // VC-AVATAR-RUKA（2026-10-31）：更科瑠夏加入 VC（companion.id=agent_ruka，port 8768）。
+    // 形狀刻意**對齊茜／麻衣**：她目前只有一支通用底片 ruka.mp4（Owner 放的），
+    // 逐狀態短片尚未到位 ⇒ 那些 url 載入失敗時由 fallbackToIdle 優雅降級回 ruka.mp4，
+    // 不會留黑畫面。日後補上 ruka_<狀態>.mp4 即自動生效，不需改本表。
+    ruka:  { id:'ruka',  name:'更科瑠夏', idle:'/static/avatars/ruka.mp4', states:{
+      idle:{ url:'/static/avatars/ruka.mp4', loop:true, fallbackToIdle:true },
+      speaking:{ url:'/static/avatars/ruka_speaking.mp4', loop:true, fallbackToIdle:true },
+      happy:{ url:'/static/avatars/ruka_happy.mp4',       loop:true, fallbackToIdle:true },
+      concerned:{ url:'/static/avatars/ruka_concerned.mp4', loop:true, fallbackToIdle:true },
+      cold:{ url:'/static/avatars/ruka_cold.mp4',        loop:true, fallbackToIdle:true },
+      blush:{ url:'/static/avatars/ruka_blush.mp4',       loop:true, fallbackToIdle:true },
+      pout:{ url:'/static/avatars/ruka_pout.mp4',        loop:true, fallbackToIdle:true }
     } }
   };
 
@@ -1260,7 +1273,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   var SAFE_FALLBACK_IDLE = {
     rem:   '/static/avatars/rem.mp4',
     akane: '/static/avatars/akane.mp4',
-    mai:   '/static/avatars/mai.mp4'
+    mai:   '/static/avatars/mai.mp4',
+    // VC-AVATAR-RUKA（2026-10-31）：瑠夏的最後一道保險底層片。
+    ruka:  '/static/avatars/ruka.mp4'
   };
 
   var stage = document.getElementById('avatarStage');
@@ -1583,6 +1598,10 @@ _AVATAR_ID_BY_COMPANION_ID = {
     "agent_rem": "rem",
     "agent_akane": "akane",
     "agent_mai": "mai",
+    # VC-AVATAR-RUKA（2026-10-31）：瑠夏加入 VC。
+    # 🔺 這行不是可有可無的：查不到就會落到 _DEFAULT_AVATAR_ID=akane
+    #    ⇒ 瑠夏的 VC 會顯示**茜的頭像**（不是「沒頭像」，是「別人的頭像」）。
+    "agent_ruka": "ruka",
 }
 _DEFAULT_AVATAR_ID = "akane"
 
@@ -1590,7 +1609,8 @@ _DEFAULT_AVATAR_ID = "akane"
 def resolve_avatar_id(companion_id: str | None = None, display_name: str | None = None) -> str:
     """VC-AVATAR-1：由 companion.id 推導 avatar id。
 
-    agent_rem → rem、agent_akane → akane、agent_mai → mai，其餘 → akane（安全預設）。
+    agent_rem → rem、agent_akane → akane、agent_mai → mai、agent_ruka → ruka，
+    其餘 → akane（安全預設）。
     """
     return _AVATAR_ID_BY_COMPANION_ID.get(str(companion_id or "").strip().lower(), _DEFAULT_AVATAR_ID)
 

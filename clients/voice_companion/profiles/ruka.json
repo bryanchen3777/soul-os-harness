@@ -1,0 +1,54 @@
+{
+  "companion": {
+    "id": "agent_ruka",
+    "display_name": "更科瑠夏",
+    "short_name": "瑠夏",
+    "persona_file": "personas/agent_ruka.md",
+    "system_prompt": "適時使用（突然出現）、（拿手機）、（拿槍）等動作。動作一律用全形括號標示，不要寫成普通文字。"
+  },
+  "fish_audio": {
+    "api_key": "",
+    "voice_id": "1d3ed7b0354a45c49a3fd30f4f5ba09c",
+    "endpoint": "https://api.fish.audio/v1/tts",
+    "asr_endpoint": "https://api.fish.audio/v1/asr",
+    "tts_ws_endpoint": "wss://api.fish.audio/v1/tts/live",
+    "model": "drama-3",
+    "asr_model": "transcribe-1-pro",
+    "mode": "rest",
+    "live_format": "pcm"
+  },
+  "stt": {
+    "engine": "fish",
+    "language": "zh"
+  },
+  "vad": {
+    "sample_rate": 16000,
+    "silence_threshold_sec": 0.8,
+    "energy_threshold": 0.015
+  },
+  "dialogue": {
+    "wake_words": [
+      "瑠夏",
+      "更科瑠夏",
+      "Sarashina",
+      "ruka",
+      "Ruka"
+    ],
+    "continuous_timeout_sec": 30.0,
+    "ephemeral_mode": false
+  },
+  "llm": {
+    "endpoint": "https://ollama.com/v1",
+    "model": "deepseek-v4.1-flash:1017"
+  },
+  "memory": {
+    "sage_write": {
+      "enabled": true
+    }
+  },
+  "web": {
+    "host": "127.0.0.1",
+    "port": 8768,
+    "https": true
+  }
+}

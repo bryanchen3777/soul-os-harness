@@ -1,25 +1,26 @@
 ﻿<#
-  vc_ops.ps1 — Voice Companion 三實例的啟停／狀態管理（VC-REFINER-2 附帶）
+  vc_ops.ps1 — Voice Companion 四實例的啟停／狀態管理（VC-REFINER-2 附帶）
 
   為什麼需要這個腳本
   ------------------
   :8000 主服務一直有 scripts/server_ops.ps1 負責 start/stop/status/restart，
-  但三個 VC 語音實例（8765 黒川茜 / 8766 櫻島麻衣 / 8767 雷姆）**從來沒有任何
+  但四個 VC 語音實例（8765 黒川茜 / 8766 櫻島麻衣 / 8767 雷姆 / 8768 更科瑠夏）**從來沒有任何
   官方重啟路徑** —— 歷史上都是人手動開 pythonw.exe。缺了這條路，任何要讓 VC 改動
   生效的重啟都只能靠「殺行程」，那正是 AGENTS.md 第 1 條明令禁止的動作。
   本腳本把重啟變成**可稽核、可預先檢視、不需臨時殺行程**的固定動作。
 
-  三個實例的啟動命令（2026-10-16 實測自 production 行程命令列，逐字沿用）：
+  四個實例的啟動命令（2026-10-16 實測自 production 行程命令列，逐字沿用）：
     8765  黒川茜  pythonw -u -m clients.voice_companion.web_server --https
     8766  櫻島麻衣  pythonw -u -m clients.voice_companion.web_server --config clients/voice_companion/profiles/mai.json --https
     8767  雷姆      pythonw -u -m clients.voice_companion.web_server --config clients/voice_companion/profiles/rem.json --https
+    8768  更科瑠夏  pythonw -u -m clients.voice_companion.web_server --config clients/voice_companion/profiles/ruka.json --https
 
   ⚠️ 小茜**沒有** profiles/akane.json —— clients/voice_companion/config.json 就是
      她的預設 config，所以啟動時**不帶** --config。這是結構不對稱，不是 bug。
 
   用法：
-    .\scripts\vc_ops.ps1 status      # 只讀：列出三埠的 listener / PID / 命令列
-    .\scripts\vc_ops.ps1 restart     # 停掉三個實例並以相同命令重新拉起
+    .\scripts\vc_ops.ps1 status      # 只讀：列出四埠的 listener / PID / 命令列
+    .\scripts\vc_ops.ps1 restart     # 停掉四個實例並以相同命令重新拉起
     .\scripts\vc_ops.ps1 start       # 只啟動「沒在跑」的實例
     .\scripts\vc_ops.ps1 stop        # 只停
     .\scripts\vc_ops.ps1 help
@@ -45,6 +46,9 @@ $INSTANCES = @(
     [pscustomobject]@{ Port = 8765; Tag = 'akane'; Extra = @() }
     [pscustomobject]@{ Port = 8766; Tag = 'mai';  Extra = @('--config', 'clients/voice_companion/profiles/mai.json') }
     [pscustomobject]@{ Port = 8767; Tag = 'rem';  Extra = @('--config', 'clients/voice_companion/profiles/rem.json') }
+    # VC-AVATAR-RUKA（2026-10-31）：更科瑠夏加入 VC。公開 hostname ruka.brynetsolutions.com
+    # 由 Cloudflare tunnel 指向本機 8768（Owner 已建好）。
+    [pscustomobject]@{ Port = 8768; Tag = 'ruka'; Extra = @('--config', 'clients/voice_companion/profiles/ruka.json') }
 )
 
 function Write-OpsLog([string]$msg) {
@@ -70,7 +74,7 @@ function Get-VcProcesses {
 }
 
 function Show-Status {
-    Write-OpsLog '[status] === VC 三實例狀態 ==='
+    Write-OpsLog '[status] === VC 四實例狀態 ==='
     $procs = Get-VcProcesses
     foreach ($inst in $INSTANCES) {
         $l = Get-Listener $inst.Port
@@ -123,7 +127,7 @@ switch ($Action) {
     'start'  { foreach ($i in $INSTANCES) { Start-Instance $i } }
     'stop'   { foreach ($i in $INSTANCES) { Stop-Instance $i } }
     'restart' {
-        Write-OpsLog '[restart] 依序停止三個實例…'
+        Write-OpsLog '[restart] 依序停止四個實例…'
         foreach ($i in $INSTANCES) { Stop-Instance $i }
         Write-OpsLog '[restart] 依序重新啟動…'
         foreach ($i in $INSTANCES) { Start-Instance $i }
@@ -133,9 +137,9 @@ switch ($Action) {
     'help' {
         Write-Host @'
 用法：.\scripts\vc_ops.ps1 <action>
-  status    只讀列出 8765/8766/8767 的 listener、PID 與完整命令列
+  status    只讀列出 8765/8766/8767/8768 的 listener、PID 與完整命令列
   start     啟動「目前沒在跑」的實例
-  stop      停止三個實例（以埠的 socket owner 為準，taskkill /T /F 整棵樹）
+  stop      停止四個實例（以埠的 socket owner 為準，taskkill /T /F 整棵樹）
   restart   stop + start，並於結束時列出狀態
 '@
     }

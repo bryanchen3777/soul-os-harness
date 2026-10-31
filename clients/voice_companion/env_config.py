@@ -57,6 +57,22 @@ REM_OVERRIDE_MAP: list[tuple[str, str, str]] = [
 ]
 
 
+# 更科瑠夏專屬環境變數（僅 companion.id == 'agent_ruka' 時覆寫）
+#
+# 🔺 為什麼瑠夏也需要專屬表（2026-10-31）：通用表裡的 `FISH_VOICE_ID` 會**套用到所有**
+#    VC 實例的 config。VC 實例從 3 個變 4 個後，那把通用鑰匙的爆炸半徑跟著變大
+#    —— 一旦有人設了它，四個實例會**同時**被改成同一個音色。
+#    與 MAI_／REM_ 對稱：每個角色有自己的專屬鑰匙，通用鑰匙只當全域預設。
+RUKA_OVERRIDE_MAP: list[tuple[str, str, str]] = [
+    ("RUKA_FISH_API_KEY", "fish_audio", "api_key"),
+    ("RUKA_FISH_VOICE_ID", "fish_audio", "voice_id"),
+    ("RUKA_LLM_BASE_URL", "llm", "endpoint"),
+    ("RUKA_LLM_API_KEY", "llm", "api_key"),
+    ("RUKA_LLM_MODEL", "llm", "model"),
+    ("RUKA_PORT", "web", "port"),
+]
+
+
 def load_dotenv(path: Optional[str] = None) -> bool:
     """載入 .env（預設為本模組旁的 .env）到 os.environ。
 
@@ -87,7 +103,8 @@ def apply_env_overrides(config: dict) -> dict:
     """以 os.environ 中「存在且非空」的變數覆寫 config 對應鍵（原地修改並回傳）。
 
     優先序：
-    1. 角色專屬變數（例如 companion.id == 'agent_mai' 讀取 MAI_*，agent_rem 讀取 REM_*）
+    1. 角色專屬變數（例如 companion.id == 'agent_mai' 讀取 MAI_*，agent_rem 讀取 REM_*，
+       agent_ruka 讀取 RUKA_*）
     2. 既有通用變數（FISH_* / LLM_* / VOICE_WEB_*）
     3. profile JSON 預設值
     """
@@ -102,6 +119,8 @@ def apply_env_overrides(config: dict) -> dict:
         override_map = MAI_OVERRIDE_MAP
     elif companion_id == "agent_rem":
         override_map = REM_OVERRIDE_MAP
+    elif companion_id == "agent_ruka":
+        override_map = RUKA_OVERRIDE_MAP
 
     if override_map:
         for env_name, section, key in override_map:

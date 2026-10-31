@@ -791,7 +791,9 @@ _M3_NON_PY_SCANNED_COUNTS = {
     # 2026-10-21：configs/packs/ 新增 roswaal_mansion_ram_v1.yaml（PACK-EXPAND 票）
     # ⇒ 非 .py 掃描檔 2 → 3。已複核新檔對 M3 的引用命中 = []（0 處）。
     "configs": 3,
-    "clients": 4,
+    # 2026-10-31：clients/voice_companion/profiles/ 新增 ruka.json（VC-AVATAR-RUKA 票）
+    # ⇒ 非 .py 掃描檔 4 → 5。已複核新檔對 M3 的引用命中 = []（0 處）。
+    "clients": 5,
 }
 
 #: 🔴 F5：`ast.parse` **無法解析**的 `.py`（相對 repo 根、排序）。

@@ -3063,3 +3063,54 @@ class TestVoiceConsistencyAcrossChannels:
         assert cfg["fish_audio"]["voice_id"] == self._soul_os_voice("ruka_voice"), (
             "瑠夏的 TG 與 VC 必須是同一個 reference_id（否則 TG 與 VC 聽起來是兩個人）"
         )
+
+
+class TestVcAvatarIdentityMapping:
+    """🔺 VC 的 avatar id 映射：**每個有 VC profile 的角色都必須有一筆**。
+
+    病根：``web_ui.resolve_avatar_id()`` 是**白名單查表**，查不到就**靜默**落到
+    ``_DEFAULT_AVATAR_ID = "akane"`` ⇒ 該角色會顯示**茜的頭像** ——
+    不是「沒有頭像」（那至少看得出來），是「**別人的頭像**」（看起來像壞掉或設定錯）。
+
+    2026-10-31 加瑠夏的 VC 實例時就撞到這個坑：``profiles/ruka.json`` 有了，
+    但 ``_AVATAR_ID_BY_COMPANION_ID`` 沒有 ``agent_ruka`` ⇒ 她會長成茜。
+    ⇒ 這條守門把「新增 profile」與「新增映射」的耦合釘死。
+    """
+
+    def _profile_companion_ids(self):
+        profiles_dir = REPO_ROOT / "clients" / "voice_companion" / "profiles"
+        ids = []
+        for path in sorted(profiles_dir.glob("*.json")):
+            with open(path, encoding="utf-8-sig") as f:
+                ids.append(json.load(f)["companion"]["id"])
+        return ids
+
+    def test_every_vc_profile_companion_id_has_an_avatar_mapping(self):
+        """每個 VC profile 的 companion.id 都必須在 avatar id 映射表裡。"""
+        from clients.voice_companion.web_ui import _AVATAR_ID_BY_COMPANION_ID
+
+        missing = [
+            cid for cid in self._profile_companion_ids()
+            if cid not in _AVATAR_ID_BY_COMPANION_ID
+        ]
+        assert not missing, (
+            "這些角色有 VC profile 卻沒有 avatar id 映射 ⇒ 會靜默顯示茜的頭像：%s"
+            % missing
+        )
+
+    def test_avatar_id_matches_the_profile_own_tag(self):
+        """反向對照：每個角色的 avatar id 必須等於**它自己**的 companion id 去前綴。
+
+        （不是「不等於安全預設」—— 茜的映射本來就會等於預設 ``akane``，
+          那不是漏。真正的病根是「**查不到**就靜默落到預設」，由第一條守門釘住。）
+        語意：``agent_ruka`` ⇒ avatar id ``ruka`` ⇒ 她的底片是 ``ruka.mp4``，
+        不是任何別人的。
+        """
+        from clients.voice_companion.web_ui import _AVATAR_ID_BY_COMPANION_ID
+
+        for cid in self._profile_companion_ids():
+            mapped = _AVATAR_ID_BY_COMPANION_ID.get(cid)
+            assert mapped == cid.replace("agent_", ""), (
+                "角色 %s 的 avatar id 應為 %s，實際 %r"
+                % (cid, cid.replace("agent_", ""), mapped)
+            )
