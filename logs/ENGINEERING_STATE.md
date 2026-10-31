@@ -8850,3 +8850,171 @@ proxy 發 AGENT_SPEAK
 | `:8766`（mai） | 22228 |
 | `:8767`（rem） | 24564 |
 | `/health` | 200 |
+
+## 0.1.123 更科瑠夏加入 VC 語音伴侶（port 8768 / ruka.brynetsolutions.com；Owner 2026-10-31 指示）
+
+記錄 Owner 2026-10-31 18:0x 的指示：「我打算把瑠夏也加入 VC」，並指定
+→「port 就繼續 8768」＋公開 hostname `https://ruka.brynetsolutions.com`
+（DNS／Cloudflare tunnel／Access 政策由 Owner 先行建好，本票只補 VC 端與本機接線）。
+
+### 1. 加入 VC 前的盤點（決定要動哪裡）
+
+| 面向 | 現況（加入前） | 加入後 |
+|---|---|---|
+| TG 通道 | `src/voice/fish_tts.py` 的 `VOICES["ruka_voice"]`（§0.1.122 剛換成 `1d3ed7b0…`） | 不變 |
+| VC 通道 | **無**（`vc_ops.ps1` 只有 8765／8766／8767；`profiles/` 只有 mai／rem） | **8768** |
+| persona | `personas/agent_ruka.md`（既存，40 KB；`<repo>/personas/` 是 `persona_file` 的解析根） | 直接沿用 |
+| avatar 底片 | `clients/voice_companion/static/avatars/ruka.mp4`（Owner 放的，2.24 MB） | 納入版控 |
+| 環境變數覆寫 | 只有通用 `FISH_VOICE_ID` ＋ `MAI_`／`REM_` 專屬表 | **新增 `RUKA_` 專屬表** |
+
+- 🔺 **avatar 檔名慣例已對齊**：`static/avatars/` 裡只有 4 支單一檔
+  （`akane.mp4`／`mai.mp4`／`rem.mp4`／`ruka.mp4`），而 `web_ui.py` 的
+  `AVATAR_REGISTRY` 指向的 `rem_idle_normal.mp4` 等**逐狀態**短片在本機**並不存在**
+  ⇒ 三個既有實例都靠 `SAFE_FALLBACK_IDLE` 的「最後一道保險」通用底片撐住。
+  ⇒ Owner 放的 `ruka.mp4` **正是同一個命名慣例**（通用底片），可直接當保險片用。
+- 🔺 **底片格式已實測**：`ruka.mp4` 與三支兄弟檔**同構**（ISO MP4／`ftyp` brand `isom`／
+  `moov`＋`mdat` 齊備／同時含 `vide` 與 `soun` track）⇒ 不是改過副檔名的假檔。
+- 🔺 **公開 hostname 層已就緒**（Owner 建好，實測）：DNS 有 `ruka` 的 A 記錄
+  （172.64.80.1，Cloudflare）；`https://ruka.brynetsolutions.com/` 會 302 到
+  `bbfchen.cloudflareaccess.com/cdn-cgi/access/login/ruka.brynetsolutions.com`
+  ⇒ 與 `mai`／`rem` 完全同形（**Cloudflare Access 保護**，未認證的 curl 會拿到登入頁）。
+  本機 `cloudflared` 是 token 模式的服務（`C:\ProgramData\cloudflared\token`），
+  ⇒ hostname→port 的映射在 Cloudflare Zero Trust 儀表板側，**不在 repo**。
+- 🔺 **憑證層已核**：四個 VC 實例**共用**一份 `clients/voice_companion/certs/cert.pem`
+  （`certs/` 為 gitignored）⇒ 瑠夏不需自己的憑證。
+  生產 `clients/voice_companion/.env` 只有 `FISH_API_KEY`／`OLLAMA_API_KEY`／`LLM_API_KEY`
+  ⇒ **無** `VOICE_WEB_TOKEN`／`VOICE_WEB_ALLOWED_ORIGINS`（公開 hostname 不受 CORS/token 阻擋）、
+  **無** `FISH_VOICE_ID`（瑠夏的音色只可能來自 profile）。
+
+### 2. 改動（commit `68ac0a8`，7 檔）
+
+- **新增** `clients/voice_companion/profiles/ruka.json`：`companion.id=agent_ruka`、
+  `display_name=更科瑠夏`、`short_name=瑠夏`、`persona_file=personas/agent_ruka.md`、
+  **`fish_audio.voice_id=1d3ed7b0354a45c49a3fd30f4f5ba09c（與 TG 通道同一個
+  reference_id）**、`web.port=8768`。`system_prompt` 的動作清單取自 persona 原文的
+  Action Priority 節（（突然出現）（拿手機）（拿槍））。
+- `clients/voice_companion/env_config.py`：新增 `RUKA_OVERRIDE_MAP` 與
+  `companion.id == 'agent_ruka'` 的派送。
+  🔺 為什麼瑠夏也需要專屬表：通用表裡的 `FISH_VOICE_ID` 會**套用到所有** VC 實例的
+  config。實例從 3 個變 4 個後，那把通用鑰匙的爆炸半徑跟著變大
+  —— 一旦有人設了它，四個實例會**同時**被改成同一個音色。與 `MAI_`／`REM_` 對稱。
+  （已複核 `apply_env_overrides` 的套用順序：**通用表先、角色專屬表後** ⇒ 專屬優先；
+  `port` 另有 `int()` 轉換。）
+- `clients/voice_companion/web_ui.py`：**三處**
+  1. `_AVATAR_ID_BY_COMPANION_ID += "agent_ruka" → "ruka"`
+     🔺 這行不是可有可無的：查不到就**靜默**落到 `_DEFAULT_AVATAR_ID = "akane"`
+     ⇒ 瑠夏的 VC 會顯示**茜的頭像**（不是沒頭像，是別人的頭像）。
+  2. `AVATAR_REGISTRY += ruka`（形狀對齊茜／麻衣：逐狀態短片尚未到位 ⇒
+     `fallbackToIdle` 優雅降級回 `ruka.mp4`，不留黑畫面；
+     日後補上 `ruka_<狀態>.mp4` 即自動生效，不需再改本表）。
+  3. `SAFE_FALLBACK_IDLE += ruka → /static/avatars/ruka.mp4`。
+- `clients/voice_companion/static/avatars/ruka.mp4`：**納入版控**（同目錄三支兄弟檔
+  早已被追蹤；不追蹤的話「新增 profile」與「新增底片」會脫節，fresh clone 缺檔）。
+- `scripts/vc_ops.ps1`：`$INSTANCES` 新增 `8768 / ruka`（`--config profiles/ruka.json`）；
+  檔頭與 help 的「三個實例／三埠」改為四個（這是文件與實際的第二個不一致來源）。
+- `tests/clients/test_voice_companion.py`：見下一節守門。
+- `tests/soul/test_life_thread_wake_gate_m3.py`：見下一節守門（M3 覆蓋面登錄）。
+
+### 3. 守門
+
+- `tests/clients/test_voice_companion.py`
+  1. `TestVoiceConsistencyAcrossChannels.test_ruka_vc_profile_if_it_ever_exists_must_match_tg`
+     —— **本票自動生效**（`profiles/ruka.json` 出現了）：斷言 VC 的 `voice_id`
+     必須與 TG 同一個 reference_id（2026-10-30 雷姆踩過 TG／VC 各用各的音色）。
+  2. 新增 `TestVcAvatarIdentityMapping`（2 條）：每個有 VC profile 的角色都必須有
+     avatar id 映射，且映射必須等於自己的 companion id 去前綴
+     ⇒ 把「新增 profile」與「新增映射」的耦合釘死。
+     🔺 **牙齒已驗**（實測，非預測）：移除 `"agent_ruka"` 映射 ⇒ 兩條**同時轉紅**。
+- 🔺 **M3 守門的覆蓋面釘死（第一次全庫回歸被它擋下，必須登錄）**：
+  `tests/soul/test_life_thread_wake_gate_m3.py` 的 `_M3_NON_PY_SCANNED_COUNTS["clients"]`
+  是一個「**被掃描的非 .py 檔數 == 實測值**」的釘死值（守的是「覆蓋面不可靜默縮小」，
+  並刻意**不用** `pytest.skip`）。
+  新增 `profiles/ruka.json` 讓 `clients/**` 的非 `.py` 被掃描檔數由 **4 → 5**
+  ⇒ 守門 `test_t7_non_python_dirs_still_zero_reference[clients]` 紅。
+  **這不是誤報，是該守門的設計意圖**（新增檔案就逼人回來複核）。
+  複核已完成：新檔對 M3（`MODULE_QUALNAME='life_thread_wake_gate'`）的引用命中 **= 0 處**
+  ⇒ 登錄覆蓋面 4 → 5（與 2026-10-21 `configs` 3 筆的先例同型）。
+  補丁以位元組層級套用（保留原檔 CRLF 2887→2889 行、UTF-8 無 BOM），
+  並用 difflib 與 `HEAD` 逐行比對確認：**只插入 2 行註解 + 數值 4→5，其餘逐行相同**。
+- 全庫 `.venv\Scripts\python.exe -m pytest -q tests` ⇒ 見下方「回歸」。
+
+### 4. 回歸（兩輪）
+
+- **第 1 輪**：**7618 passed / 31 skipped / 4 failed / 900.19 秒**。
+  4 筆失敗拆解（**不可只看「多 2 筆」就當成壞掉**）：
+  1. `tests/soul/test_life_thread_wake_gate_m3.py::test_t7_non_python_dirs_still_zero_reference[clients]`
+     —— **本票造成**（新增 `ruka.json` 讓覆蓋面釘死值漂移）⇒ 已修（見上節）。
+  2. `tests/test_intimacy_growth_2.py::TestExecutionBoundaryColdSchemaContended::test_cold_schema_contended_single_character_does_not_double_timeout`
+     —— **計時型測試**（斷言 `elapsed < 1.7 × BUSY_TIMEOUT_MS`；`BUSY_TIMEOUT_MS=5000`
+     ⇒ 門檻 8.5 s）。隔離重跑**通過**；與本票改動的檔案（VC profile／avatar／
+     env_config／web_ui／vc_ops.ps1）**零交集**（用的是 `src/agent/emotion.py` 的
+     sqlite busy_timeout 路徑）⇒ 判定為**負載敏感的 flake**，非本票回歸。
+  3. + 4. `tests/test_sim_accel_thread.py` 兩筆 —— **既有紅燈**（§0.1.121 已 A/B 確認）。
+- **第 2 輪（修完 M3 後重跑，決定性）**：**7620 passed / 31 skipped / 2 failed /
+  32 subtests passed（861.52 秒）**、**skip-set STABLE（added=0, removed=0）**。
+  - 剩下的 2 筆**正是**既有的 `test_sim_accel_thread.py` 紅燈（A/B 已於 §0.1.121 確認）
+    ⇒ 仍待裁示（見末節）。
+  - 第 1 輪那筆計時測試**本輪通過** ⇒ 進一步佐證它是負載 flake、不是本票回歸。
+  - 7620 − 7618 = 2 ＝ 本票新增的 `TestVcAvatarIdentityMapping` 兩條 ⇒ 計數自洽。
+- 守門子集另跑：`tests/soul/test_life_thread_wake_gate_m3.py` ⇒ **367 passed**（4.0 秒）。
+
+### 5. 生效與驗證（官方路徑）
+
+- `.\scripts\vc_ops.ps1 start`（18:44:05）—— 該動詞只啟動「**目前沒在跑**」的實例：
+  ```
+  [start] akane :8765 已在監聽，略過
+  [start] mai   :8766 已在監聽，略過
+  [start] rem   :8767 已在監聽，略過
+  [start] ruka  :8768 launched launcher_pid=3448 args=-u -m clients.voice_companion.web_server --config clients/voice_companion/profiles/ruka.json --https
+  ```
+  ⇒ **只拉起 8768，沒有動到既有三個**（PID 720／22228／24564 全程未變）。
+- **啟動日誌硬證據**（`clients/voice_companion/logs/vc_agent_ruka.log`，18:44:15）：
+  ```
+  startup agent_id=agent_ruka display_name=更科瑠夏 tts_mode=rest
+  voice_id=1d3ed7b0354a45c49a3fd30f4f5ba09c model=drama-3
+  host=127.0.0.1 port=8768 scheme=https config=clients/voice_companion/profiles/ruka.json
+  ```
+- **六項驗證全數通過**（`%TEMP%\night_obs\verify_ruka_vc.py`，exit 0）：
+  1. `:8768` 在監聽（listener pid=9656）。
+  2. 其他三個實例 PID **全未變**（720／22228／24564）⇒ `start` 沒有副作用。
+  3. 啟動日誌的 `voice_id`／`port=8768`／`agent_id=agent_ruka` 三者皆符。
+  4. 本機頁面 `https://127.0.0.1:8768/` → **200（67713 bytes）**，內含
+     「更科瑠夏」且 `data-initial-avatar="ruka"` ⇒ **avatar 映射真的生效**
+     （不是落到茜的頭像）。
+  5. 公開 hostname：`ruka.brynetsolutions.com` → **302 → Cloudflare Access 登入頁**
+     （與 `mai`／`rem` 同形）。
+  6. TG 通道 `fish_tts_handler._resolve_voice_id('agent_ruka')` =
+     `1d3ed7b0354a45c49a3fd30f4f5ba09c` ⇒ **TG／VC 同一個音色**（跨通道守門雙證）。
+- **主服務完全未受影響**：`data/server.pid`=4684、`:8000` socket owner=15028、
+  `/health`=200；sidecar `data/elevation/elevation_lifecycle_events.jsonl`
+  **795 筆／291007 bytes／sha256 `0019fda0…e13`** —— 與 §0.1.122 基線**逐位元相同**。
+- **TG 通道**：10 bots **全部 status=ok**（含 `ruka`，`age_s`≈4.7；heartbeat pid=15028）。
+
+### 6. 附錄：基線／ID 對照（本次入版後）
+
+| 項目 | 值 |
+|---|---|
+| `data/server.pid`（trampoline） | 4684 |
+| `:8000` socket owner | 15028 |
+| `:8765`（akane） | 720 |
+| `:8766`（mai） | 22228 |
+| `:8767`（rem） | 24564 |
+| `:8768`（ruka，本票新增） | **9656**（launcher 3448） |
+| `/health` | 200 |
+| 音色（TG ＋ VC 共用） | `1d3ed7b0354a45c49a3fd30f4f5ba09c` |
+
+### 7. 本票之外的觀察（不自行處理，回報）
+
+- `akane.brynetsolutions.com` **先前**從本機 curl 會逾時（15 s），與本票無關；
+  但本票驗證時四個 hostname **全部**回 302 → Cloudflare Access 登入頁
+  ⇒ 該逾時是**暫時性**的，已自行恢復，無需裁示。
+- **仍待 Owner 裁示**（本回合未動，與 §0.1.121 一致）：
+  1. `scripts/_start_plan_a.ps1` 的健康等待只有 **60 秒**（`:170-188`）——
+     實測 00:09:19 回報 `service not healthy within 60s - Plan A FAILED`，但服務
+     00:10:10 就緒 ⇒ 啟動門檻比實際就緒時間短。
+  2. §0.1.121 的 **180 秒**探針逾時偏緊：本次啟動期撞到 LLM `TimeoutError`，
+     綁埠被拉到 120 秒；逾時是 fail-open（只 warn、釋放鎖、讓 watchdog 自癒）。
+  3. `logs/FEAT-SIM-HERMETIC-CLOCK-WORK-ORDER.md`：sim 生產資料耦合的 **2 筆既有紅燈**。
+  4. 是否新增 `.gitattributes` 釘住 canonical 的 LF（repo 目前 `core.autocrlf=true`、
+     無 `.gitattributes` ⇒ Windows 全新 clone 會變 CRLF；`data/` 是 gitignored，
+     v1 的 LF-only 契約不受影響）。
