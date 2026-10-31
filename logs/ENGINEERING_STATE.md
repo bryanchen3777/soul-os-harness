@@ -8619,3 +8619,127 @@ proxy 發 AGENT_SPEAK
 (b) 若意指「所有生產 JSONL 追加」⇒ **elevation 檔案群自 2026-10-19T22:11:57Z 起即為 CRLF**
 （sidecar 第 19 筆起 777 處 CR、今晚 303 筆新增全 CRLF）。該檔案群**不受任何現行契約涵蓋**
 （解析正常、SHA-256 基線恆等、CLI 可讀）⇒ **不是紅燈**，但與專案 LF-only 位元組慣例不符、已存在 11 天。
+
+## 0.1.121 維護鎖釋放時機：改為持有至 /health=200 或逾時 180s（Owner 2026-10-31 15:47 裁定；含生產重啟的決定性驗證）
+
+記錄 Owner 2026-10-31 15:47 EDT 的裁定（三大裁定中的第 1 項）：
+
+> **1. 維護鎖釋放時機修正（避免重啟時被 Watchdog 誤殺）—— 裁定：【核准立項修復】**
+> 修改 server_ops.ps1，將維護鎖（Maintenance Lock）的釋放時機從「固定秒數釋放」改為
+> 「持續持有至 /health 探針成功返回 200，或達超時上限（如 180 秒）」。
+> 架構依據：Uvicorn 啟動時包含整套 Elevation 初始化與圖譜掃描，物理綁埠耗時約 1 至 3 分鐘。
+> 固定秒數釋放會出現「鎖已解、埠未開」的空窗期，引發 Watchdog 誤判失聯而二度重啟。
+> ……系統進入平穩運行期，後續在常規維護窗口安排落實 server_ops.ps1 的動態健康維護鎖即可。
+
+（另兩項裁定：夜槽 Sunset 沉澱失敗 →【維持現狀、不補跑不介入】；elevation CRLF →【暫不立項、維持現狀】。）
+
+### 1. 靶心：既有缺陷的事實（不是推論）
+
+- **誤判現場**（§0.1.118 §4 已記錄）：2026-10-31 00:08:04 watchdog tick
+  `post-eb0b15f N=1/10 port_listen=False procs=2 -> restart` ⇒ watchdog **自行殺掉**
+  server_ops 剛拉起的 8916／23464，00:08:06 改拉 Plan A（無資料損失，但等於每次官方重啟都多一次重啟）。
+- **空窗期的長度**（`data/logs/server_ops.log` 逐行）：00:18:30 寫鎖 → 00:18:39 服務啟動 →
+  00:18:44 舊的單次探測失敗 → **00:18:44 鎖釋放**；而服務實際 **00:19:56** 才綁埠
+  ⇒ **鎖釋放後有 72 秒的「鎖已解、port 尚未 LISTEN」空窗**。watchdog 每 5 分鐘 tick 一次，
+  只要落在這 72 秒內就會誤判失聯。
+
+### 2. 改動（commit `1ec84be`，已推 origin/main）
+
+- `scripts/server_ops.ps1`
+  - `$healthReadyTimeoutSec = 180`（單一事實來源，鄰接既有 `$servicePort = 8000`）；
+  - 新增 `Wait-SoulOsHealthy`：輪詢 `http://127.0.0.1:$servicePort/health`，
+    **唯一成功判準 ＝ `StatusCode -eq 200`**（不是「有回應」、也不是「port 有 LISTEN」），逾時回 $false；
+  - `restart` 分支：在 `finally`（釋放鎖）**之前**呼叫 `Wait-SoulOsHealthy -TimeoutSec $healthReadyTimeoutSec`；
+    逾時**不**讓腳本失敗 —— 只 log warn、釋放鎖、讓 watchdog 自行接管自癒（fail-open，不卡死）。
+- 🔴 **阻塞式探針只放 `restart`，絕不放 `start`**：`start` 會被 watchdog 的 `_start_plan_a.ps1`
+  以 `WaitForExit(120000)` 呼叫，阻塞會讓 Plan A 路徑誤判失敗（120s 上限 < 探針逾時上限）。
+- 逾時上限 180s < watchdog 的鎖 stale 門檻（10 分鐘）⇒ 保護不會被 watchdog 當 stale 刪掉。
+- 探針位址一律走 `$servicePort`（數字常數），不硬寫位址字面值（與 `_start_plan_a.ps1` 同慣例）。
+- **本票邊界（未動）**：`scripts/_watchdog.ps1`、`scripts/_start_plan_a.ps1`、`scripts/vc_ops.ps1`、
+  `src/**`、`data/**`。
+
+### 3. 🔺 順手撞出並修掉的既有缺陷：`.ps1` 的編碼契約（cp950 位元組位移吃掉下一行的 `#`）
+
+- **現象**：新增中文註解後，`tests/infra/test_plan_a_launch_inheritance.py` 的**沙盒副本**
+  （寫成 UTF-8 **無 BOM**）被 PS 5.1 以系統 ANSI 碼頁（cp950）解碼 ⇒ 7 條守衛紅、
+  訊息是 `The assignment expression is not valid` / `Array index expression is missing`。
+- **根因（位元組層級）**：生產 `.ps1` 帶 BOM ⇒ PS 5.1 以 UTF-8 解；沙盒副本少了 BOM ⇒ 改用 cp950。
+  於是中文註解的 UTF-8 尾位元組被當成 cp950 的**前導位元組**，**把下一行的 `#` 配對掉**
+  ⇒ 那一行從註解變成活程式碼。本票的觸發點：以「：」結尾的註解列（`EF BC 9A` 的 `9A` 是 cp950 合法前導位元組）
+  下一行正好是 `#     00:08:04 WARN post-eb0b15f N=1/10 port_listen=False procs=2 -> restart`
+  ⇒ `port_listen=False` 被 5.1 當成賦值敘述。
+- **修法（本票一併落地）**：
+  1. 沙盒副本改寫為 `encoding="utf-8-sig"`（與生產**位元組組態一致**）＋ 加 BOM 對等性斷言
+     （`plan_a_path`／`ops_path`／`_nohup_log_rotation.ps1` 三個逐字複製點）；
+  2. `scripts/_test_watchdog_fix.ps1` 補上**既存缺失**的 BOM（它本來就是同一類受害者：
+     中文註解在 PS 5.1 下全是亂碼；位元組仍是合法 UTF-8，故只需補 BOM）；
+  3. 新增 `tests/infra/test_powershell_script_encoding.py`：**含非 ASCII 的 `scripts/**/*.ps1`
+     必須是 UTF-8 with BOM**（純 ASCII 的不強行要求 BOM，避免過度約束）＋ 牙齒自測 ＋
+     沙盒副本 BOM 對等性。⇒ 這個地雷從此不可悄悄重現。
+
+### 4. 守門
+
+- `tests/infra/test_server_ops_maintenance_lock.py`（新，13 tests）
+  - **靜態守衛 G1–G6**：G1 `restart` 分支在**釋放鎖之前**呼叫探針（呼叫 < `} finally {` < `Remove-Item $maintenanceLock`）；
+    G2 探針的**唯一**成功判準是 `StatusCode -eq 200`（且只有一個 `return $true`／一個 `return $false`）；
+    G3 逾時上限 ∈ [90, 600]，且「常數／參數預設值／呼叫點」三者一致（無漂移）；
+    G4 `start` 路徑（switch 分支 ＋ `Start-SoulOsServer` 函式本體）**不得**呼叫阻塞探針；
+    G5 逾時上限 **<** watchdog 的鎖 stale 門檻（自 `_watchdog.ps1` 實讀，非抄在測試裡的常數）；
+    G6 探針 URL 必須由 `$servicePort` 組合、不得硬寫位址字面值。
+  - **行為守衛 B1–B3**（沙盒複本 ＋ 本機暫時埠的無害 HTTP 探針；函式本體**逐字**取自生產檔）：
+    B1 端點回 200 ⇒ READY；B2 端點不存在 ⇒ TIMEOUT（且**確實等滿**逾時上限）；
+    B3 端點回 503 ⇒ TIMEOUT（證明「唯一成功判準是 200」）。
+  - **雙向變異 M1–M6**：G3×2、G1、G4、G6 各一條 ＋ B1 的兩條（把 200 收緊成 204／反向成 `-ne 200`）
+    ⇒ **每一條變異都必須把對應守門弄紅**（護欄自己不是盲腸）；變異一律作用在記憶體中的腳本文字。
+- `tests/infra/test_powershell_script_encoding.py`（新，5 tests）：E1–E5（含 E4 牙齒自測）。
+- 本票相關檔案複驗 34 passed；全庫 `.venv\Scripts\python.exe -m pytest -q tests`
+  ⇒ **7616 passed / 31 skipped / 2 failed（915 秒）**。
+- 那 2 筆失敗（`tests/test_sim_accel_thread.py::test_sandbox_run_emits_exactly_one_new_event`、
+  `::test_seam_without_seeding_emits_all_36`）**與本票無關** —— A/B 對照：把
+  `scripts/server_ops.ps1`、`tests/infra/test_plan_a_launch_inheritance.py`、
+  `scripts/_test_watchdog_fix.ps1` 換回 HEAD 版本後重跑 ⇒ **同一批 2 筆完全一樣地失敗**
+  ⇒ 屬 `logs/FEAT-SIM-HERMETIC-CLOCK-WORK-ORDER.md` 已記錄的 sim 生產資料耦合既有紅燈（仍待裁示）。
+
+### 5. 生產驗證（官方路徑 `.\scripts\server_ops.ps1 restart`）
+
+- **刻意排程**：把重啟排在 **16:32:30** 啟動，使 watchdog 的 **16:33:02** tick
+  **正好落在「舊實例已死、新實例未綁埠」的空窗裡**（＝2026-10-31 00:08:04 誤判的同一個條件）。
+- **決定性證據**：
+  - `data/logs/watchdog.log`：
+    `[2026-10-31 16:33:02] SKIP  maintenance window (server_ops restart in progress, lock age=1m) - watchdog tick skipped`
+    ⇒ **跳過，不是自行重啟**（該 tick 連 crash dump collector 都沒啟動 —— 鎖判定在 collector 之前）。
+  - 埠／健康時間軸（每 2 秒採樣，`%TEMP%\night_obs\port_timeline_1632.txt`）：
+    16:32:33–16:34:22 `listen=NONE health=None`；**16:33:01 與 16:33:05 兩次採樣都顯示服務確實未綁埠**
+    ⇒ 「SKIP」不是因為服務還活著，而是因為**鎖真的生效**。
+  - 鎖持有期間：16:32:30 → **16:34:30（120 秒）**；舊版同一路徑只握 14 秒。
+  - 探針命中：`[2026-10-31 16:34:30] /health = 200 (ready: probe #22, port=8000)`
+    → `[maintenance] watchdog resumed (lock removed)`。
+  - 重啟後 tick：`[16:38:02] observation window rotated: post-57be40c -> post-1ec84be (counter reset, n_restarts=0, trial_count=0)`、
+    `[16:38:04] OK post-1ec84be N=0/10 trial=1/98 port=8000 listener=19808 procs=2`
+    ⇒ **零額外重啟**（N 維持 0/10）。
+- 重啟前後對帳：sidecar `data/elevation/elevation_lifecycle_events.jsonl`
+  **795 筆／291007 bytes／sha256 `0019fda0…e13`** **逐位元相同** ⇒ 重啟**未**觸發生命週期評估重跑、零資料寫入。
+- TG **10/10 bots status=ok**（心跳 pid 19808，最大 age 9.7 秒）。
+
+### 6. 當期基線（PID 是當期觀測值不是不變量）
+
+| 項目 | 值 |
+|---|---|
+| `data/server.pid`（trampoline） | 10416 |
+| `:8000` socket owner | 19808 |
+| `:8765`（akane） | 720 |
+| `:8766`（mai） | 22228 |
+| `:8767`（rem） | 24564 |
+| `/health` | 200 |
+
+### 7. 未修／需另立項（本票**未**動，待 Owner 裁示）
+
+1. 🔺 `scripts/_start_plan_a.ps1` 的健康等待只有 **60 秒**（`_start_plan_a.ps1:170-188`）
+   ⇒ 2026-10-31 00:08:06 watchdog 拉起 Plan A 後，00:09:19 回報
+   `ERROR service not healthy within 60s (pid=23792) - Plan A FAILED`，而服務 00:10:10 就緒
+   ⇒ **watchdog／Plan A 層**（與本票的 server_ops 層是兩個層）。
+2. 🔺 本次量測：啟動期 elevation／contradiction 掃描要打 LLM，撞到一次 `TimeoutError`（16:34:18）
+   ⇒ 綁埠耗時被拉到 120 秒。**180 秒的逾時上限偏緊但可用**；逾時後果是 fail-open
+   （只 log warn、釋放鎖、讓 watchdog 自行接管自癒）⇒ 不會卡死。若要調寬，必須同時確認
+   不超過 watchdog 的 10 分鐘鎖 stale 門檻（超過就會被當 stale 刪掉 ⇒ 保護失效）。
+3. `logs/FEAT-SIM-HERMETIC-CLOCK-WORK-ORDER.md`（sim 生產資料耦合 2 筆既有紅燈）仍待裁示。
