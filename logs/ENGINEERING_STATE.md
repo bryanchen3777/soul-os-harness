@@ -9369,3 +9369,385 @@ CLI 自己的 10 條驗收斷言就是最嚴格的判官：
 - 🔺 本章僅新增 CLI 旗標與一行 `phase_parent` 呼叫，**未動任何守門的判準**
   ⇒ 全庫回歸沿用 §0.1.127 的那一輪（7632 passed / 0 failed），並以
   本檔 15 passed ＋ 7 條變異全紅覆蓋。
+
+## 0.1.129 獨立審查（verifier，唯讀）結果與主大腦據此所做的兩項守門修正
+
+記錄本輪的**獨立審查**（verifier，唯讀）結果與主大腦據此所做的兩項修正。
+
+### 1. 審查範圍與結論
+
+審查對象：§0.1.125～§0.1.127 三個 commit（`.gitattributes` 釘定、
+FEAT-SIM-HERMETIC-CLOCK、Plan A 健康等待 180s）＋ canonical §0.1.128。
+
+審查結論：**可接受（PASS）**。四項裁定全部落地且**未越界**；
+三個 commit 的聯集恰 **6 個檔案**（`.gitattributes`、
+`scripts/_start_plan_a.ps1`、`scripts/sim_accel_thread_cli.py`、
+`tests/infra/test_plan_a_health_wait.py`、
+`tests/infra/test_powershell_script_encoding.py`、`tests/test_sim_accel_thread.py`）
+⇒ **`src/**`、`data/**`、重量級守門 `test_plan_a_launch_inheritance.py` 皆未動**。
+7 條變異**實測全紅**；全庫回歸 **7632 passed / 0 failed**；
+編碼與行尾契約全部成立（`.ps1` BOM+全 CRLF、`.py` LF+無 BOM）。
+
+### 2. 審查指出的問題與處置
+
+| # | 問題 | 性質 | 處置 |
+|---|---|---|---|
+| 1 | commit `19701c4` 的訊息宣稱「並加 CLI 旗標走 legacy 路徑」，但**旗標當時不存在** | 訊息事實錯誤 | ✅ 已修（`d4742d8` ＋ §0.1.128） |
+| 2 | `test_sandbox_copies_are_independent_inodes` 在 hermetic 預設下**空轉** ⇒ SIM-ACCEL-RECALL-30D 硬連結事故失去 baseline 覆蓋 | 覆蓋缺口 | ✅ 已修（見下 §3） |
+| 3 | `_timeout_of` 取**首個**匹配，而 PowerShell 取**末次**賦值 ⇒ 影子賦值會**假綠** | 守門盲區 | ✅ 已修（見下 §3） |
+
+#### 問題 1 的細節（審查實測）
+
+審查查證 `build_parser()` 當時**沒有**任何 hermetic 相關旗標、
+全庫**沒有任何 `hermetic=False` 呼叫** ⇒ legacy 路徑**從 CLI 不可達**，
+而該路徑的 docstring 卻寫著「想用真實語料重現生產症狀時用」。
+主大腦在自查時也發現同一處不一致，兩邊結論一致 ⇒ commit `d4742d8` 補上
+`--real-corpus` 旗標（parent 旗標 ＋ child 的 `SIM_ACCEL_REAL_CORPUS` env 承接），
+並在 §0.1.128 記錄。
+
+### 3. 兩項守門修正（commit `46581f3`）
+
+- **影子賦值假綠**：`_timeout_of` 改用 `re.findall` 取**最後一個**賦值
+  （與 PowerShell「後賦值覆蓋前賦值」的語意一致）。
+  🔺 這是**文字層級守門**最典型的盲區：守門讀到的值與執行期實際採用的值不一致。
+  牙齒實測：檔尾再賦 `$healthWaitTimeoutSec = 60` ⇒ **轉紅**
+  （「應為 180，實際 60」）；檔尾賦**同值** 180 ⇒ 仍綠
+  （證明不是「看到第二個賦值就紅」）。
+- **複製路徑守門空轉**：新增
+  `test_legacy_copy_path_keeps_independent_inodes`
+  —— 直接呼叫 `prepare_sandbox(..., hermetic=False)`，把**複製路徑**重新釘死：
+  ① 沙盒檔與生產檔 `st_ino` 相異；② 兩者 `st_nlink == 1`；
+  ③ **至少比對到一組檔案**（防止複製路徑日後被移除後，這條守門變成空轉）。
+  原測試的 docstring 同步註明分工（hermetic 那一半 vs legacy 那一半）。
+
+### 4. 審查提出的「建議但非阻擋」之處置
+
+- **fixture 的 `origin_type` 分佈比生產窄**（fixture 只有 `necessity_driven` ＋
+  1 條 active；生產另有 `world_collision` 1067 筆、`whim_driven` 78 筆）：
+  **接受**。那兩條路徑各有自己的 fixture 與守門
+  （`tests/soul/test_life_thread_whim_origin.py`、`test_world_collision_window.py`），
+  接縫的 at-most-once 語意不依賴 `origin_type` 分佈 ⇒ 不擴大 fixture（避免增加無效變數）。
+- **`.gitattributes` 效應延遲生效**（受管路徑仍有工作樹為 CRLF）：
+  **接受**。索引 blob 皆為 LF、`git status` 乾淨無 churn ⇒ **fresh clone 即 LF**；
+  工作樹需 re-checkout 才會重寫，屬預期行為。
+- **PS 5.1 執行期語意未實測**（守門為文字層級比對）：**維持未驗證**。
+  本票刻意**不對生產行程動手**（AGENTS.md 行程安全鐵律：重啟需 Owner 明示授權）
+  ⇒ 生效觀察留待下一次**自然**發生的重啟。
+
+### 4.1 🟡 新發現（**非本輪造成，結構性既存**）：全庫回歸與生產夜槽會**撞車** ⇒ 假紅
+
+- **現象**：本輪第一次全庫回歸於 **22:00:50** 啟動 ⇒ 在進度點上出現 F
+  （該輪最終 **3 failed / 7630 passed / 31 skipped / 863.56s**，exit ≠ 0）。
+- **真相**：該守門的做法是「run 前後對**生產 `data/`** 逐檔 sha256 比對」
+  ⇒ 只要**任何其他行程**在那個取樣窗內寫了 `data/`，它就會紅。
+  而生產**夜槽正好在 22:01 啟動**（`state/event_loop_alive.json` 22:01:52）。
+  🔺 **主大腦實測的精確窗口**（逐檔比對守門自己的 guarded 集合）：
+  **22:01:57 → 22:08:35（≈ 6.6 分鐘）共寫入 44 個 guarded 檔** ＝
+  41 個 `soul/<agent>/life_threads.jsonl` ＋ `observability/diary_raw_response.jsonl`
+  ＋ `elevation/elevation_lifecycle_events.jsonl`。
+  （夜槽另寫的 `soul/*/diary/*.jsonl`、`elevation/elevation_nodes.jsonl`、
+    `elevation/elevation_edges.jsonl`、`inner_life/trace.jsonl` 等
+    **都在 `_MUTATION_SKIP_PATTERNS` 內** ⇒ 不會讓守門變紅。）
+  ⇒ **撞車**。⇒ 與本輪改動**無關**（本輪只動兩個測試檔與一支 CLI）。
+- **同型前例**：`harness/runner.py` 的 skip 清單註解已明寫
+  「2026-10-25 實測：全庫回歸期間此檔被活體服務改動一次 ⇒ 守門偽紅」——
+  專案**早就知道**這道守門會與活體服務相撞，但只針對**always-on** 的寫入路徑
+  （`world/world_log/*.jsonl`、`world/perception_trace.jsonl`…）做了排除；
+  **夜槽才會寫的** `soul/*/life_threads.jsonl`／`soul/*/diary/*.jsonl` **不在**排除清單。
+- **實際失敗的三筆**（以 `full_regression_batch3.txt` 的 FAILED 行為準，
+  逐位元指名，非推測）：
+  1. `tests/harness/test_tl10_relational_expression.py::TestD2Determinism::test_repo_production_data_zero_mutation`
+     ⇒ diff 命中 `soul/*/life_threads.jsonl`
+  2. `tests/soul/test_sim_accel_streak_7d.py::test_production_untouched`
+     ⇒ 「新增=[] 消失=[] 變動=['agent_emilia/life_threads.jsonl']」
+  3. `tests/soul/test_sim_accel_streak_7d_sunset.py::test_production_life_threads_are_byte_identical_after_the_sandbox`
+     ⇒ 變動命中 `agent_mahiru` / `agent_fuuka` / `agent_makima` 的 `life_threads.jsonl`
+  （該輪 skip-set 仍 `skipped=31 baseline=31 added=0 removed=0` ⇒ **STABLE**）
+- **同型守門共五道**（皆直接讀**活的**生產 `data/`，逐支都會撞車）：
+  上列三道 ＋ `tests/harness/test_tl11_commitment_narrative.py::test_repo_production_data_zero_mutation`
+  ＋ `tests/harness/test_tl9_relation_evolution.py::test_repo_production_soul_zero_mutation`。
+  🔺 tl11／tl9 在該輪**恰好落在無寫入的取樣窗內而僥倖通過** ⇒
+  那是**時序僥倖**、不是「這兩道安全」；不可把它們記成「只有三道有風險」。
+  （其餘 zero-mutation 型守門都用 `tmp_path` 隔離，無虞。）
+- **本輪的處置**：Owner 的裁定文件已預見此事並指示
+  「建議先完成必要提交，再於 **22:15 後**重新跑全庫回歸」⇒ **照辦**：
+  夜槽結束後重跑，作為本輪的決定性閘門。
+- 🔺 **不自行改動的理由**（留給後續裁示）：
+  把 `soul/*/life_threads.jsonl` 加進 skip 清單會**削弱**這道守門的偵測力
+  —— 而 2026-10-30 的 SIM-ACCEL-RECALL-30D 事故正是 `life_threads.jsonl` 被寫髒。
+  ⇒ 正確修法應是「**可執行的判準差異**」（例如：把「活體服務在窗內寫入」
+    與「harness 污染」用**可判定**的方式區分），而不是**放寬排除清單**。
+  本輪**不動**這條共用 harness（它同時服務多道守門），僅回報。
+
+### 5. 審查明確驗證、但主大腦未重做的項目
+
+- **fresh clone 的 `.gitattributes` checkout 結果**：審查標為「未驗證」
+  （它沒有 re-checkout）。主大腦**已做過**決定性 A/B：
+  `git clone --no-hardlinks file://…` 出兩個副本，checkout `9d2032f` 與 `1cf0ea3`
+  ⇒ canonical 由 **CRLF 9020／LF 0** 變成 **CRLF 0／LF 9028**；
+  `src/soul/life_threads.py`（CRLF 710）與 `scripts/server_ops.ps1`（CRLF 347）
+  **逐位元未變**。證據已在本輪 §0.1.125 記錄。
+
+### 6. 回歸
+
+- **全庫回歸**（`.venv\Scripts\python.exe -m pytest -q tests`，解譯器＝repo 內 `.venv`）：
+  - 第 1 輪（22:00:50 啟動，**與生產夜槽撞車**）＝ `3 failed, 7630 passed, 31 skipped, 32 subtests passed in 863.56s (0:14:23)`
+    ⇒ 3 筆皆為**活體服務寫入造成的假紅**（見 §4.1），與本輪改動無關。
+  - 第 2 輪（夜槽寫入結束後，主大腦自跑）＝ `7633 passed, 31 skipped, 32 subtests passed in 822.32s (0:13:42)`
+    ⇒ `[SKIP-BASELINE] skip-set STABLE skipped=31 baseline=31 added=0 removed=0`
+  - 第 3 輪（`0dc5664` 之後＝**本輪最終樹**）＝ `7635 passed, 31 skipped, 32 subtests passed in 864.87s (0:14:24)`
+    ⇒ `[SKIP-BASELINE] skip-set STABLE skipped=31 baseline=31 added=0 removed=0`
+  - 獨立第三方（verifier）自跑的一輪亦為 **7633 passed / 31 skipped / 0 failed**（838.97s）
+    ⇒ 與主大腦的結果**互為佐證**。
+- **CLI 沙盒快跑對帳**（AGENTS.md 硬閘門：生命週期／昇華／投影相關改動必附）：
+  `scripts/eval_lifecycle_cli.py --simulated-time …`
+  （來源唯讀、唯一寫入目標＝自建 temp 沙盒）：
+
+  | simulated-time | returncode | VERDICT | 本次命中 | expected_hits | pending | 關鍵反例轉變 | weak_prefix | prompt_diffs_unexplained |
+  |---|---|---|---|---|---|---|---|---|
+  | 2026-10-31T02:00:00Z | 0 | PASS | 0 | 0 | 0 | 0 | 201 → 201 | 0 |
+  | 2026-10-31T14:00:00Z | 0 | PASS | 0 | 0 | 0 | 0 | 201 → 201 | 0 |
+  | 2026-11-01T02:00:00Z | 0 | PASS | 0 | 0 | 0 | 0 | 201 → 201 | 0 |
+
+  - 三次皆：`prompt_diffs = 無（所有 agent 正文逐位元相同）`；
+    圖譜 2504 顆（weakening 939／dormant 18／active 1547）。
+  - 🔺 **0 筆新轉變但圖非空 ⇒ 冪等 no-op，不是失敗**（今晚 22:01:57–22:08:35 的槽
+    已把該轉的都轉過了）—— 兩種「0 筆」必須分開判讀。
+  - ⇒ 另以守門自己的 guarded 集合比對：**三次執行前後生產 guarded 集合逐位元相同**
+    （`d0faeabeee2e9c97…`）⇒ CLI 的「來源唯讀」契約成立。
+- **變異**：M1～M7 既有 ＋ M8／M9／M10（§0.1.130 新增）⇒ **10 條全部實測轉紅**。
+- **兩項守門修正的牙齒**（主大腦自寫腳本 `verify_audit_fixes.py` 實測，**不採信自報**）：
+  影子賦值（檔尾再賦 60 ⇒ **轉紅**／再賦**同值** 180 ⇒ 仍綠 ⇒ 不是「見第二個賦值就紅」）；
+  複製路徑（inode 相異、nlink 1／1；hermetic 預設下 `shutil.copy2` 呼叫數 ＝ 0）。
+- **生產健康巡檢**（回歸期間實測）：
+  `:8000 /health` ＝ **200**；主服務 PID **4684 / 15028 全程未變**；
+  四個 VC 埠 8765/8766/8767/8768 **全部 LISTEN**
+  （PID 720 / 22228 / 24564 / 9656 **未變** ⇒ 無意外重啟）；
+  watchdog `OK post-0dc5664 N=0/10 trial=2/98` ⇒ **0 重啟**；
+  生產 guarded 集合 digest 全程為 `d0faeabeee2e9c97…` ⇒ **未被任何測試寫到**。
+- **三個審查 commit 的檔案聯集**（主大腦獨立複核）：恰 **6 檔**
+  （`.gitattributes`、`scripts/_start_plan_a.ps1`、`scripts/sim_accel_thread_cli.py`、
+  `tests/infra/test_plan_a_health_wait.py`、
+  `tests/infra/test_powershell_script_encoding.py`、`tests/test_sim_accel_thread.py`）
+  ⇒ **未觸及** `src/**`、`data/**`、重量級守門 `test_plan_a_launch_inheritance.py`。
+
+## 0.1.130 獨立審查的非阻擋建議 1／2 之處置：旗標接線守門 ＋ 複製守門自產化
+
+處理 2026-10-31 獨立審查（verifier）在 **PASS 之外**提出的兩項**非阻擋建議**。
+兩者皆為**本輪自己造成的缺口**，故採納並落地（commit `0dc5664`）。
+
+審查的最終判定：**VERDICT: PASS**，且必須修正的問題＝**無**。
+本票處理的是它留下的兩項「建議但非阻擋」。
+
+### 1. 建議一：`--real-corpus` 旗標**零 baseline 守門**（已修）
+
+**審查的實測依據**：全庫 grep `tests/**` 對 `real_corpus` / `--real-corpus`
+**零命中**（只有 CLI 內 4 處）⇒ 若有人把 `phase_parent` 寫死
+`hermetic=True`（或把旗標整個刪掉），旗標會**靜默失效**、
+**沒有任何測試會轉紅**，而 commit 訊息仍宣稱「可用 `--real-corpus` 走 legacy 路徑」
+⇒ 這與 §0.1.128 修掉的「訊息與程式不一致」是**同一類**。
+
+**落地**（`tests/test_sim_accel_thread.py` 新增 Section E）：
+
+| 守門 | 層級 | 釘死什麼 |
+|---|---|---|
+| `test_e1_real_corpus_flag_parses_and_defaults_to_false` | parser | 旗標**存在**且**預設 False** |
+| `test_e2_real_corpus_flag_reaches_prepare_sandbox` | **行為** | 旗標**真的**切換沙盒模式 |
+
+- E2 是**行為層**：攔截 `phase_parent` **實際傳入** `prepare_sandbox` 的
+  `hermetic` 值（兩種旗標狀態各跑一次），**不是**比對原始碼文字。
+  `os.spawnv` 以哨兵例外攔截（**不會**真的換行程）；
+  `os.environ` 於 `finally` 還原（`phase_parent` 會 `os.environ.update(env)`
+  寫入沙盒 env ⇒ 不還原會污染同一 pytest 行程裡的後續測試）。
+- 🔺 E1 必須先 `delenv("SIM_ACCEL_REAL_CORPUS")`：旗標的 `default` 來自 env
+  ⇒ 否則在「上一次跑過 legacy 模式」的環境裡會讀到 `True`。
+
+**牙齒（實測轉紅）**：
+
+| 變異 | 內容 | 結果 |
+|---|---|---|
+| M8 `real_corpus_flag_removed` | 移除 `--real-corpus` 旗標 | **E1、E2 轉紅**（argparse：unrecognized arguments） |
+| M9 `real_corpus_wiring_dead` | `phase_parent` 寫死 `hermetic=True` | **E2 轉紅**（實際傳入 `hermetic=True`，期望 `False`） |
+
+### 2. 建議二：複製路徑守門**硬依賴生產語料**（已修）
+
+**審查的實測依據**：原 `test_legacy_copy_path_keeps_independent_inodes`
+直接比對**真實生產 `data/`** ⇒ 在沒有生產語料的環境（fresh clone）會因
+「覆蓋面已漂移」而**轉紅**，與 `tests/conftest.py` 把 `SOUL_OS_DATA_DIR`
+導向 tmp 的**全套隔離慣例相反**。
+
+**落地**：改為在 tmp 內**自產一棵「假的生產樹」**
+（`soul/<agent>/life_threads.jsonl` ＋ `memory/<agent>/graph.sqlite`
+＋ `elevation/elevation_nodes.jsonl`），
+把它當作 `data_dir` 餵進 `prepare_sandbox(..., hermetic=False)`
+⇒ 仍走**真實的複製路徑**、仍抓得到硬連結、且**完全不依賴生產**。
+
+- 🔺 既有兩條 inode 守門**本來就是自我完備的**（都用 `if prod.exists():` 守著）
+  ⇒ 不受影響；**只有本輪新增的那條**是真缺口。
+- 覆蓋面斷言（「至少比對到一組檔案」）**保留**：自產假生產樹後，
+  複製路徑若被移除 ⇒ 沙盒無檔 ⇒ 該斷言轉紅（守門不會退化成空轉）。
+
+**牙齒（實測轉紅）**：
+
+| 變異 | 內容 | 結果 |
+|---|---|---|
+| M10 `copy_replaced_by_hardlink` | `shutil.copy2` → `os.link`（SIM-ACCEL-RECALL-30D **事故原形**） | **轉紅**：訊息「legacy 沙盒副本與來源檔共用 inode（=9288674233716809）⇒ append 會落在來源上」，`st_nlink=2` |
+
+### 3. 回歸
+
+- `tests/test_sim_accel_thread.py` ⇒ **18 passed**（16 → 18）。
+- 變異 **M1～M10 共 10 條，全部實測轉紅**
+  （M1～M7 既有；M8／M9／M10 本票新增）。
+- 本票**未動** `src/**`、`data/**`、任何 `.ps1`。
+
+### 4. 審查的第三項建議（數字）—— 以 canonical 補正處理，**不改舊章節**
+
+審查實測：`--real-corpus` 的 CLI 層級 A/B 實跑是 **7 條 FAIL**
+（§0.1.128 §2 寫「6 條紅」，少了 `registry_contains_the_new_thread` 一條）。
+🔺 canonical 為 **append-only** ⇒ **不改** §0.1.128；
+以本章 §5 記錄該補正。
+
+### 5. §0.1.128 數字補正（append-only 補正，不改舊章節）
+
+- §0.1.128 §2 的「**6 條紅**」⇒ 實測為 **7 條 FAIL**
+  （多出 `registry_contains_the_new_thread`）。判定與行為不變
+  （legacy 語料 ⇒ exit ≠ 0；hermetic 語料 ⇒ 10 條綠 exit 0）。
+- §0.1.128 §3 沿用 §0.1.127 的「7632 passed」⇒ 本輪（`46581f3` 之後）
+  為 **7633 passed**（新增 1 條測試）；`0dc5664` 之後（本輪最終樹）為 **7635 passed**
+  （見 §0.1.129 §6 的三輪回歸對帳）。
+
+## 0.1.131 待 Owner 裁示登錄（本輪三項：watchdog 啟動窗口／zero-mutation 守門與夜槽競態／src 是否納入 .gitattributes）
+
+本輪三張票（§0.1.125～§0.1.127）落地過程中浮出三個**架構層面**的問題。
+三者皆**非本輪改動造成**，且皆需 Owner 拍板（動生產行為或改守門判準）⇒ 主大腦**不自行處置**，登錄於此。
+
+---
+
+### 1. `src/**` 是否納入 `.gitattributes`（裁定三未涵蓋之處）
+
+**決定性證據（全庫索引 blob 層掃描，1275 個 blob，逐檔統計 CRLF／bare-LF／BOM）**：
+
+| 群組 | 檔數 | 全 LF | 全 CRLF | 混合 | BOM |
+|---|---|---|---|---|---|
+| `src/` | 191 | 186 | **0** | 0 | 0 |
+| `scripts/*.py` | 53 | 53 | 0 | 0 | 1 |
+| `scripts/*.ps1` | 10 | 10 | 0 | 0 | **10** |
+| `tests/` | 473 | 455 | **16** | 0 | 0 |
+| `logs/` | 184 | 184 | 0 | 0 | 0 |
+| `harness/` | 37 | 37 | 0 | 0 | 1 |
+
+（差額為二進位檔：`.png`／`.mp4` 被 CRLF 巧合位元組誤判，非行尾問題。）
+
+🔺 **關鍵更正（推翻本輪先前的敘述）**：索引 blob 層 `src/**` **全部是 LF**，不是 CRLF。
+先前「`src/soul/life_threads.py`（CRLF 710）」是**工作樹層級**的觀測值——
+本機 `core.autocrlf=true`（實測）⇒ checkout 時把 blob 的 LF 轉成工作樹的 CRLF。
+⇒ **任何平台的 `git clone` 拿到的 `src/**` 位元組完全一致**（blob 就是 LF）。
+
+**建議：維持排除（不要把 `src/**` 寫進 `.gitattributes`）。** 四條理由：
+
+1. **無正確性缺口**：`src/**` 191 檔 blob 零 CRLF ⇒ clone 到任何機器都一致；
+   `.gitattributes` 的 `eol=lf` 只影響**工作樹**，不影響 clone 出來的位元組。
+2. **工作樹跨平台不一致是既有事實**，由**機器層設定** `core.autocrlf` 決定
+   （本機 `true` ⇒ Windows 工作樹 CRLF；`false` 的機器 ⇒ LF）。
+   `eol=lf` 會強制**所有**機器的工作樹都 LF。
+3. **代價**：寫入 `src/** text eol=lf` ⇒ 下一次 re-checkout 會把 **191 檔工作樹**
+   從 CRLF 改寫成 LF ⇒ 大面積 churn，與「讓 append-only 的 canonical 不依賴機器設定」
+   這個原始目的無關。
+4. **repo 內真正的自我約束缺口只有一處**：`core.autocrlf` 不在 repo 裡 ⇒
+   同一份 commit 在不同機器的工作樹位元組不同。`.gitattributes` 對
+   canonical／logs／scripts／tests 補的就是這個缺口；對 `src/` 只是偏好一致。
+
+**附帶記錄的真實混合**：`tests/results/rem_soul_regression/*.txt`（**16 檔**）
+在索引裡就是 **CRLF** ⇒ repo 索引內確實存在混合行尾，但全在**測試產物**目錄，
+且現行規則只管 `tests/**/*.py` ⇒ 不影響任何契約檔。
+
+若 Owner 仍要「全 repo 工作樹一致」，建議開**獨立遷移票**
+（一次性 re-checkout ＋ `git diff --stat` 對帳 ＋ 全庫回歸），不要附加在釘定票上。
+
+---
+
+### 2. 五道 zero-mutation 守門與生產夜槽的**結構性競態**（本輪實測撞車）
+
+**事實（22:00 夜槽的完整 guarded 寫入清單）**：
+
+    22:01:57 → 22:08:35（≈ 6.6 分鐘）共寫入 44 個 guarded 檔：
+      41 × soul/<agent>/life_threads.jsonl（所有 canonical agent）
+       1 × observability/diary_raw_response.jsonl
+       1 × elevation/elevation_lifecycle_events.jsonl
+    （elevation_nodes／edges／trace、inner_life/trace、perception_trace 等
+      皆已在 _MUTATION_SKIP_PATTERNS 內 ⇒ 不計）
+
+**同型守門共五道**（皆直接對**活的**生產 `data/` 做 sha256 前後比對）：
+
+    1. tests/harness/test_tl10_relational_expression.py::TestD2Determinism::test_repo_production_data_zero_mutation
+    2. tests/harness/test_tl11_commitment_narrative.py::test_repo_production_data_zero_mutation
+    3. tests/harness/test_tl9_relation_evolution.py::test_repo_production_soul_zero_mutation
+    4. tests/soul/test_sim_accel_streak_7d.py::test_production_untouched
+    5. tests/soul/test_sim_accel_streak_7d_sunset.py::test_production_life_threads_are_byte_identical_after_the_sandbox
+
+本輪（22:00:50 啟動）撞上 ⇒ **3 筆紅**（1 / 4 / 5）；另兩道（2 / 3）**時序僥倖**
+落在無寫入的取樣窗內而通過 ⇒ 那是僥倖，不是「那兩道安全」。
+
+**結構性問題**：守門的判準是「窗內**任何**變動都算污染」，
+而它**無法分辨**「活體服務寫的」與「harness 寫的」。
+
+**明確否決**：把 `soul/*/life_threads.jsonl` 加進 `_MUTATION_SKIP_PATTERNS`。
+理由：這道守門正是 2026-10-30 SIM-ACCEL-RECALL-30D 事故
+（`life_threads.jsonl` 被寫髒）的**偵測器**；加 skip ＝ 把事故偵測器關掉。
+這與 Owner 2026-10-23 裁定（「預期異常須用**可執行的判準差異**處理」）同構：
+不可用「放寬排除」代替「區分能力」。
+
+**方案 α（建議先做；零 `src/**` 改動、不放寬任何判準）**：
+全庫回歸的**啟動閘門**先做「guarded 集合靜默檢查」，不滿足就**拒跑並以非 0 結束**
+（不是 `skip`、不是放寬判準）。
+
+- 判準直接複用 `harness/runner.py` 的 `snapshot_data_root_hashes`
+  （守門自己的 guarded 定義）⇒ **不會與守門漂移**。
+- 本輪已實作並實測可用：`%TEMP%\night_obs\guarded_digest.py` ＋
+  `run_regression_after_night_v2.py`。實測：22:20 起判定 guarded 集合靜默；
+  夜槽寫入窗口（22:01:57→22:08:35）精準被辨識；
+  另一支全庫回歸在跑時**正確延後**（未並行啟動第二支）。
+- 誠實性：未跑 ≠ 通過（退出碼非 0）⇒ 不會變成偽綠。
+- 代價：回歸會被「拒跑」⇒ 驗收時段受限；但 AGENTS.md 的兩級制已給離線替代
+  （`scripts/eval_lifecycle_cli.py` CLI 沙盒快跑）。
+
+**方案 β（正解；需動 `src/**`，屬架構變更 ⇒ 交 Owner）**：
+服務端寫 guarded 路徑時，在**已被 skip 的** sidecar 記錄「寫入者＋路徑＋時間」
+⇒ 守門把「變動檔案」與「服務寫入清單」做**可判定**比對：
+變動 ⊆ 服務寫入清單 ⇒ 判「環境寫入、非 harness 污染」；
+否則 ⇒ 判「harness 污染」⇒ 真紅。
+這才是「可執行的判準差異」：守門從「任何變動都算污染」
+升級成「**非服務歸因**的變動才算污染」。
+代價：服務端多一次寫入 ＋ 一個新的 sidecar 通道。
+
+**本輪處置**：不動共用 harness、不放寬排除清單；夜槽結束後重跑作為決定性閘門；
+本項登錄待裁示。
+
+---
+
+### 3. watchdog 的 `$STARTUP_WINDOW_SECONDS = 90` 與 Plan A 的 180s 等待
+
+**事實（實讀 `scripts/_watchdog.ps1` ＋ `scripts/_start_plan_a.ps1`）**：
+
+- watchdog 由 Task Scheduler **每 5 分鐘（300s）**叫一次（`_watchdog.ps1:2`）。
+- watchdog 拉起 Plan A 是**非同步**的（`:485-489` `Start-Process -PassThru`，**無** `-Wait`）
+  ⇒ tick **不會**被 180s 阻塞；`watchdog_last_launch.txt` 在拉起**後**立即寫入（`:493-496`）
+  ⇒ 啟動窗口基準 = 拉起時刻。
+- 實際啟動窗口 = `PORT_RELEASE_WAIT_SECONDS`(**30**) ＋ Plan A 健康等待(**180**)
+  = **最壞 210s**。
+- 下一個 tick 在 t0+300 ⇒ `sinceLaunchSec = 300 ≥ 90`
+  ⇒ **90s 的啟動窗口保護在現行 tick 間隔下永遠不會觸發**。
+  🔺 此性質**自 2026-09-08 該常數存在時即如此**，**非本輪 60→180s 造成**。
+- 結論：**現行行為無害**（210s < 300s，安全邊際 90s）。
+
+**但結構性問題成立**：這道保護**覆蓋不到它想保護的區間**（90 < 210），
+而且兩個常數分屬兩個檔案、**無交叉守門** ⇒ 會靜默漂移。
+若日後把 tick 縮到 120s，watchdog 會在 Plan A 還在等健康時砍掉它並重拉
+⇒ 正是 2026-09-08 雙實例事故的形狀。
+
+**建議（可執行判準差異）**：把不變式寫成
+`STARTUP_WINDOW ≥ PORT_RELEASE_WAIT + healthWait + 60s`（＝270s），
+並在 `tests/infra/test_plan_a_health_wait.py` 把現有 P4/P5 的跨檔比對
+**擴充成三方**（`_start_plan_a.ps1` ／ `server_ops.ps1` ／ `_watchdog.ps1`）。
+🔺 需動 `_watchdog.ps1` 的**生產行為**（啟動後崩潰時的等待上限由 90s 變 270s）
+⇒ 交 Owner 拍板。本輪**不動**。
