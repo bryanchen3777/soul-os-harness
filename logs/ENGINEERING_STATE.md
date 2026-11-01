@@ -9863,3 +9863,127 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 附記：`.pytest_cache/v/cache/lastfailed` 的 mtime 停在 2026-10-31 22:49（舊輪次殘留），
   本輪 exit 0 且摘要行 7635 passed 為準；該快取未被本輪刷新一事已如實記錄，
   不屬本工單範圍（不動門檻、不動資料、不另行清理）。
+
+## 0.1.134 第二動【防禦加固】：方案 α 靜默閘門 ＋ Watchdog 270s ＋ 三方交叉守門（Owner 2026-11-01 雙向裁定）
+
+### 1. 背景（為什麼有這一動）
+
+- 全庫回歸曾撞上「活的生產服務背景寫入」（TG 心跳 30s、world_log 事件驅動等）
+  ⇒ 即使 skip 清單已收窄，仍可能在快照窗內落入寫入 ⇒ 假紅。
+- 逾時配置撕裂：Plan A 健康等待 180s、server_ops 就緒探針 180s，但 watchdog
+  啟動窗口僅 90s ⇒ 啟動窗口比「實際就緒時間」短 ⇒ 假失敗燒重啟預算。
+- 對策（Owner 雙向裁定）：方案 α（回歸前 guarded 靜態一致性快照閘門）
+  ＋ Watchdog STARTUP_WINDOW 90→270s ＋ 三方交叉守門。
+
+### 2. 改動清單（本工單 5 檔；probe 遺留檔不動）
+
+- 新建 `scripts/guard_regression_quiescence.py`：方案 α 腳本。
+  零拷貝 `from harness.runner import _is_mutation_skipped, snapshot_data_root_hashes`
+  （與五道 zero-mutation 守門同一函式物件，禁止另抄排除清單）。
+  邏輯：連續 3 輪取 guarded 集合 sha256 digest（輪間隔 60s，覆蓋 TG 心跳 30s×2）；
+  3 輪全同 ⇒ exit 0 放行；任一輪不同 ⇒ exit 2 拒跑，並在 stdout 逐檔點名
+  變動檔（排序，最多 50 個）。只讀生產 `data/`（快照函式本身只讀），
+  不寫入 `data/**` 任何檔案；五道既有守門一字不動；接線（pytest fixture／CI）
+  本次不做。
+- `scripts/_watchdog.ps1`：僅 `$STARTUP_WINDOW_SECONDS = 90` → `270`
+ （30 PORT_RELEASE ＋ 180 healthWait ＋ 60 buffer）。
+  `$PORT_RELEASE_WAIT_SECONDS = 30`、`_start_plan_a.ps1` 的 `$healthWaitTimeoutSec = 180`、
+  `server_ops.ps1` 的 `$healthReadyTimeoutSec = 180` 一字不動。
+  附記：422 行註解的「< 90s」字樣按工單「僅一處」範圍保留未動（已如實記錄，不算漂移）。
+- `tests/infra/test_plan_a_health_wait.py`：追加 P6/P7 三方交叉斷言（既有 P1–P5／M1–M3 一字不動）。
+  P6 斷言 STARTUP_WINDOW == 270；P7a 斷言 `startup ≥ port_release ＋ plan_a ＋ 60`
+  （讀三檔實際常數比較，不得寫死單邊）；P7b 斷言 server_ops healthReady == Plan A healthWait。
+  雙向變異 M4（窗口改回 90）／M5（釋放等待膨脹到 300）／M6（ops 就緒漂移到 120）
+  ⇒ 三方守門必須轉紅。
+- 新建 `tests/harness/test_guard_regression_quiescence.py`：三類驗收
+  （靜默放行／寫入拒跑／點名檔：新增＋刪除＋改內容三態、排序、50 截斷）
+  ＋ 設計鎖定 M11（零拷貝 import 行首錨點）／M12（ROUNDS=3）／M13（exit 2）
+  ＋ 行為級牙齒（同寫入下真實守門拒跑而 exit-0 變異會放行）。
+  全部離線；文件系統寫入只發生在 tmp 偽根，0 生產寫入。
+- 本節 canonical（append-only，不動舊節）。
+
+### 3. 本輪測試結果（`.venv`，2026-11-01 01:0x EDT，非 22:00 夜槽窗）
+
+- `.venv\Scripts\python.exe -m pytest -q tests/harness/test_guard_regression_quiescence.py tests/infra/test_plan_a_health_wait.py`
+  ⇒ **23 passed**，exit 0（含 M1–M3 既有變異全紅、M4–M6／M11–M13 新變異全紅）。
+  中途修過一次 M11：docstring 範例與真正 import 行同字串，變異命中 docstring 致假綠；
+  已把錨點收緊為「換行＋無縮排行首 import」，重跑全綠。
+- 全庫回歸見 §4；CLI 複驗見 §5。
+
+### 4. 全庫回歸（本輪實測，`.venv`，2026-11-01 01:0x–01:2x EDT，非 22:00 夜槽窗）
+
+- `.venv\Scripts\python.exe -m pytest -q tests` ⇒
+  **7649 passed, 31 skipped, 32 subtests passed, 4 failed in 843.69s（0:14:03）**，exit 1。
+- skip-set：`skipped=31 baseline=31` 無新增無移除（observe-only 摘要行）。
+- 4 紅拆解（2 個已修、2 個是範圍外舊錨與新裁定衝突，升級為待主大腦裁示）：
+  1. `test_no_unlisted_process_spawn_in_scanned_tree`（R5）：新測試檔 2 處 `subprocess.run`
+     未進 allowlist ⇒ **執行者範圍內已修**：改為 in-process `GUARD.main()`＋capsys
+     （回傳碼即 `__main__` 的 exit 碼，驗收等價；不碰 allowlist 檔）。
+     重跑 `test_guard_regression_quiescence ＋ hygiene ＋ spawn_guard ＋ plan_a_health_wait`
+     ⇒ **56 passed** 全綠。
+  2. `test_every_collectable_test_file_under_tests_is_git_tracked`：新測試檔未追蹤 ⇒
+     **已修**：`git add -N`（intent-to-add，只進索引、未 commit）兩新建檔；
+     同上 56 passed 證實轉綠。未提交、未 push 不變。
+  3. `test_guard7_watchdog_retry_semantics_are_unchanged`
+    （`tests/infra/test_plan_a_launch_inheritance.py`）釘死 `STARTUP_WINDOW_SECONDS = 90`。
+  4. `test_watchdog_layer_is_untouched_by_this_ticket`
+    （`tests/infra/test_server_ops_maintenance_lock.py`）同樣釘死 `= 90`
+    （「屬另一層，本票不得順手改掉」）。
+  - (3)(4) 與 Owner 本工單雙向裁定（90→270）**直接矛盾**，且兩檔皆不在本工單可動範圍；
+    執行者**未動**这两檔（範圍外），升級為阻斷項（見 §7）。
+  - 除 (3)(4) 外全綠 ⇒ 含五道 zero-mutation 守門在內無假紅。
+
+### 5. CLI 沙盒快跑複驗（台帳一字未動，來源唯讀沙盒）
+
+- `--simulated-time '2026-11-02T02:00:00Z'` ⇒ `verdict: PASS`／exit 0／
+  `pending_retirements_count = 0`／`expected_hits_count = 56`（與 §0.1.133 入帳後基線一致）。
+
+### 6. Frozen Contract／意外行為
+
+- 未碰：生命週期判準、Tension 寫入咽喉、SAGE 寫入邏輯、Agency 4 stages／
+  TriggerEnvelope／InnerLifeEvent／4 handlers。
+- 未殺行程、未啟動伺服器、未綁埠、未寫 `data/**`、`pytest.skip` 0 新增、
+  未動 `src/**`；`scripts/probe_ledger_bounds_tmp.py`（未追蹤遺留探針）不動不刪。
+- 未提交（工作樹保持本工單檔案改動，由主大腦驗收後再定）。
+
+### 7. 阻斷項（待主大腦裁示，執行者停手未動）
+
+- 兩處舊錨與新裁定衝突（皆範圍外檔案，執行者一字未動）：
+  `tests/infra/test_plan_a_launch_inheritance.py:1162`（Guard7）
+  與 `tests/infra/test_server_ops_maintenance_lock.py:685`
+  均斷言 `STARTUP_WINDOW_SECONDS = 90`。
+- 請主大腦二選一：
+  （A）擴範圍：由主大腦（或新工單）把兩處 90→270（含其各自變異錨點同步），
+  之後再跑一次全庫回歸驗 exit 0；
+  （B）維持現狀：接受全庫回歸 2 紅（僅此二處），本工單以「功能驗收全綠＋已知衝突揭露」結案。
+- 在裁示前：不要 commit、不要為消紅而改判準、不要動 `src/**`／`data/**`。
+
+## 0.1.135 主大腦裁示 §0.1.134 §7（選項 A）＋ 第二動全綠合入（2026-11-01 01:5x EDT）
+
+### 1. 裁示（主大腦，Owner 雙向裁定的直接延續）
+
+- 選項 A。兩處舊錨釘的是「舊常數值」而非「不得改 watchdog」本身：
+  其立法意圖是「無關工單不得順手改 watchdog」；本次改動正是 Owner
+  雙向裁定明令的 90→270 ⇒ 更新錨點值是延續守門意圖，不是削弱守門。
+- 改動（主大腦親手，2 行）：兩檔的 `("STARTUP_WINDOW_SECONDS", "90")`
+  → `("STARTUP_WINDOW_SECONDS", "270")`，各附 `Owner 2026-11-01 核准` 註記；
+  兩檔其他 90（wrapper 返回期限／MIN_TIMEOUT 下界／探針執行逾時）與啟動窗口無關，一字未動。
+- 誠實記錄：§0.1.134 §4／§7 的「7649＋4 紅」是本節的前置事實，不改舊節；
+  本節只記裁示後的終局結果。
+
+### 2. 終局全庫回歸（`.venv`，2026-11-01 01:3x–01:5x EDT，非 22:00 夜槽窗）
+
+- `.venv\Scripts\python.exe -m pytest -q tests` ⇒
+  **7653 passed, 31 skipped, 32 subtests passed in 823.81s（0:13:43）**，exit 0。
+- 算術對帳：7649 passed ＋ 4 failed ＝ 7653 ⇒ 4 紅全數轉綠，無新增、無消失。
+- skip-set：`skipped=31 baseline=31 added=0 removed=0`，STABLE。
+- Hard Gate 四項：AST 守衛（既有一字未動）＋ 雙向變異
+  （M1–M3／M4–M6／M11–M13 拿掉即轉紅，在定向 44 passed 內機械複驗）
+  ＋ 全庫回歸 exit 0 ＋ CLI 沙盒快跑 PASS（§0.1.134 §5，台帳未動）⇒ 全綠合入。
+
+### 3. 附記（未解決的遺留，不屬本動範圍）
+
+- 工作樹根 `_regression_out.txt`（worker 回歸輸出暫存）與
+  `scripts/probe_ledger_bounds_tmp.py`（主大腦遺留探針）仍為未追蹤；
+  兩次可復原刪除被主機策略擋下，按紀律未繞過 ⇒ 留待 Owner 方便時手動刪除。
+  兩檔皆不在 pytest 收集範圍（`testpaths=tests`），對回歸零影響。

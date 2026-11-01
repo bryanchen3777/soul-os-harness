@@ -167,3 +167,107 @@ def test_m1_m3_mutations_turn_the_guard_red(name, mutate):
     assert mutated != plan_a_src, "變異沒有真的改到任何東西（錨點可能已漂移）"
     with pytest.raises(AssertionError):
         _check_plan_a(mutated, ops_src)
+
+
+WATCHDOG_PATH = REPO_ROOT / "scripts" / "_watchdog.ps1"
+
+#: Owner 2026-11-01 裁定：STARTUP_WINDOW = 30（PORT_RELEASE）
+#: ＋ 180（Plan A healthWait）＋ 60（buffer）＝ 270。
+EXPECTED_STARTUP_WINDOW_SEC = 270
+
+#: buffer 的秒數（啟動窗口扣除釋放等待與健康等待後的餘量）。
+STARTUP_WINDOW_BUFFER_SEC = 60
+
+
+def _check_watchdog_window(watchdog_source: str, plan_a_source: str, ops_source: str) -> None:
+    """P6–P7：三方交叉 —— watchdog 啟動窗口必須蓋住釋放等待＋健康等待＋buffer。
+
+    三個秒數全部**實讀三檔實際常數**做比較（不得寫死任一單邊為字面值）；
+    變異實驗直接餵「變異後的原始碼」即可。
+    """
+    startup = _timeout_of(watchdog_source, "STARTUP_WINDOW_SECONDS")
+    assert startup is not None, (
+        "_watchdog.ps1 的 $STARTUP_WINDOW_SECONDS 不見了 —— 對照基準可能已漂移"
+    )
+    port_release = _timeout_of(watchdog_source, "PORT_RELEASE_WAIT_SECONDS")
+    assert port_release is not None, (
+        "_watchdog.ps1 的 $PORT_RELEASE_WAIT_SECONDS 不見了 —— 對照基準可能已漂移"
+    )
+    plan_a = _timeout_of(plan_a_source, "healthWaitTimeoutSec")
+    assert plan_a is not None, (
+        "_start_plan_a.ps1 的 $healthWaitTimeoutSec 不見了 —— 對照基準可能已漂移"
+    )
+    ops = _timeout_of(ops_source, "healthReadyTimeoutSec")
+    assert ops is not None, (
+        "server_ops.ps1 的 $healthReadyTimeoutSec 不見了 —— 對照基準可能已漂移"
+    )
+
+    # ── P6：啟動窗口必須是裁定值 270（30 PORT_RELEASE ＋ 180 healthWait ＋ 60 buffer）──
+    assert startup == EXPECTED_STARTUP_WINDOW_SEC, (
+        "watchdog 的 $STARTUP_WINDOW_SECONDS 應為 %d，實際 %r"
+        % (EXPECTED_STARTUP_WINDOW_SEC, startup)
+    )
+
+    # ── P7a：三方交叉不等式（全實讀常數比較，不得寫死單邊）──
+    assert startup >= port_release + plan_a + STARTUP_WINDOW_BUFFER_SEC, (
+        "啟動窗口（%r 秒）必須 ≥ 釋放等待（%r）＋ 健康等待（%r）＋ buffer（%r）"
+        % (startup, port_release, plan_a, STARTUP_WINDOW_BUFFER_SEC)
+    )
+
+    # ── P7b：server_ops 的就緒探針必須顯式等於 Plan A 的健康等待 ──
+    assert ops == plan_a, (
+        "server_ops 的健康就緒（%r 秒）與 Plan A 的健康等待（%r 秒）不一致"
+        % (ops, plan_a)
+    )
+
+
+def test_p6_p7_watchdog_startup_window_tripartite():
+    """P6–P7：watchdog 270 ≥ PORT_RELEASE ＋ Plan A healthWait ＋ 60 buffer，三方實讀比對。"""
+    _check_watchdog_window(_read(WATCHDOG_PATH), _read(PLAN_A_PATH), _read(SERVER_OPS_PATH))
+
+
+# ───────────────────────────────────────────────────────────
+# 雙向變異（P6/P7）：每條變異都必須讓上面的三方守門**轉紅**
+# ───────────────────────────────────────────────────────────
+
+def _mutate_startup_back_to_90(source: str) -> str:
+    return source.replace(
+        "$STARTUP_WINDOW_SECONDS = 270", "$STARTUP_WINDOW_SECONDS = 90", 1
+    )
+
+
+def _mutate_port_release_inflated(source: str) -> str:
+    return source.replace(
+        "$PORT_RELEASE_WAIT_SECONDS = 30", "$PORT_RELEASE_WAIT_SECONDS = 300", 1
+    )
+
+
+def _mutate_ops_timeout_drift(source: str) -> str:
+    return source.replace(
+        "$healthReadyTimeoutSec = 180", "$healthReadyTimeoutSec = 120", 1
+    )
+
+
+@pytest.mark.parametrize(
+    "name,mutate,target",
+    [
+        ("M4_啟動窗口改回 90", _mutate_startup_back_to_90, "watchdog"),
+        ("M5_釋放等待膨脹到 300", _mutate_port_release_inflated, "watchdog"),
+        ("M6_server_ops 就緒漂移到 120", _mutate_ops_timeout_drift, "ops"),
+    ],
+)
+def test_m4_m6_mutations_turn_the_tripartite_guard_red(name, mutate, target):
+    """牙齒：變異必須真的讓三方守門轉紅（否則這條守門就是裝飾）。"""
+    watchdog_src = _read(WATCHDOG_PATH)
+    plan_a_src = _read(PLAN_A_PATH)
+    ops_src = _read(SERVER_OPS_PATH)
+    if target == "watchdog":
+        mutated = mutate(watchdog_src)
+        assert mutated != watchdog_src, "變異沒有真的改到任何東西（錨點可能已漂移）"
+        with pytest.raises(AssertionError):
+            _check_watchdog_window(mutated, plan_a_src, ops_src)
+    else:
+        mutated = mutate(ops_src)
+        assert mutated != ops_src, "變異沒有真的改到任何東西（錨點可能已漂移）"
+        with pytest.raises(AssertionError):
+            _check_watchdog_window(watchdog_src, plan_a_src, mutated)

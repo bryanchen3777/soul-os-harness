@@ -692,7 +692,7 @@ def test_watchdog_layer_is_untouched_by_this_ticket(ops_text):
     for constant, value in (
         ("N_CAP", "10"),
         ("TRIAL_TARGET", "98"),
-        ("STARTUP_WINDOW_SECONDS", "90"),
+        ("STARTUP_WINDOW_SECONDS", "270"),  # Owner 2026-11-01 核准：30＋180＋60
         ("PORT_RELEASE_WAIT_SECONDS", "30"),
     ):
         assert re.search(r"\$%s\s*=\s*%s\b" % (constant, value), wd_masked), (

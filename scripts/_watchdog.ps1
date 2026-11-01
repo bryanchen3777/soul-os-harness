@@ -25,7 +25,7 @@ $TRIAL_TARGET = 98
 # 不應判定崩潰。距上次 Plan A 啟動 < STARTUP_WINDOW_SECONDS 時, port_listen=False
 # 只記 WARN 不 restart (避免啟動初期誤判 → 反覆拉新實例 → 雙實例 → getUpdates 409
 # 風暴 → httpx socket 並發損壞 → Windows IOCP access violation)。
-$STARTUP_WINDOW_SECONDS = 90
+$STARTUP_WINDOW_SECONDS = 270
 # 方案 B (2026-09-08, Bry 拍板): Plan A 前殺進程樹 + 等 port 釋放
 # 杜絕「舊實例未死透 + 新實例啟動」的雙實例窗口。
 $PORT_RELEASE_WAIT_SECONDS = 30
