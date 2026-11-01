@@ -1,0 +1,17 @@
+# .gitattributes — 契約檔案的行尾契約（Owner 2026-10-31 裁定「核准落地」）
+#
+# 為什麼需要：本機 `core.autocrlf=true` ⇒ Windows 上全新 clone 時，
+# 這些檔案會被轉成 CRLF ⇒ 台帳與狀態基準**失去位元組級一致性**，
+# 且 canonical 的「LF-only」契約在 fresh clone 上直接失效。
+# 條目一經寫下，git 於 checkout 時即依它決定工作樹行尾（覆寫 core.autocrlf）。
+#
+# 🔺 只釘這四類：**canonical 台帳**、**logs 下其他紀錄**、**scripts 的 .py**、
+#    **tests 的 .py**。`src/**` 不在本次裁定範圍（維持 core.autocrlf 預設）。
+#
+# 註：`*.ps1` 刻意**不在**本檔內 —— .ps1 另有專屬的 BOM 契約
+# （見 tests/infra/test_powershell_script_encoding.py），行尾由各檔自行決定。
+
+logs/ENGINEERING_STATE.md text eol=lf
+logs/*.md text eol=lf
+scripts/*.py text eol=lf
+tests/**/*.py text eol=lf
