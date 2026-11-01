@@ -9026,3 +9026,299 @@ proxy 發 AGENT_SPEAK
 - 下一槽沙盒快跑：`2026-11-02T02:00:00+00:00` ⇒ `PENDING_COHORT`（exit 3）。
 - 守衛：`tests/test_eval_lifecycle_cli.py` 全綠（exit 0）。
 - 自動刷新機制：每日 20:40 EDT（= 00:40Z，UTC 日封閉後）執行。
+
+## 0.1.125 .gitattributes 釘定契約檔案 LF-only（Owner 2026-10-31 裁定「核准落地」）
+
+記錄 Owner 2026-10-31 的裁定「**三、.gitattributes 釘定**：核准落地」。
+
+### 1. 裁定的要點（問題是實測出來的，不是推測）
+
+本機 `core.autocrlf=true` ⇒ Windows 上**全新 clone** 時，下列檔案會被轉成 CRLF。
+**A/B 實測**（checkout 到 `.gitattributes` 之前的 commit `9d2032f`）：
+
+    logs/ENGINEERING_STATE.md  →  **CRLF 9020 行 / LF-only 0 行**
+
+⇒ canonical 的「**LF-only**」契約在 fresh clone 上**直接失效**：
+台帳與狀態基準的字節級一致性在 Windows 端不可重現。
+
+### 2. 落地內容（repo 根目錄新增 `.gitattributes`）
+
+    logs/ENGINEERING_STATE.md text eol=lf
+    logs/*.md text eol=lf
+    scripts/*.py text eol=lf
+    tests/**/*.py text eol=lf
+
+- 條目**逐字**依裁定內容；另附一段說明「為什麼要這樣」的註解（維護者要能一眼看懂）。
+- 🔺 `*.ps1` **刻意不在**本檔內 —— `.ps1` 另有專屬的 **BOM 契約**
+  （`tests/infra/test_powershell_script_encoding.py`），行尾由各檔自行決定
+  （現況：`server_ops.ps1` 是 BOM+CRLF、`vc_ops.ps1` 是 BOM+LF，兩者並存且都有測試守著）。
+- 🔺 `src/**` **不在**裁定範圍 ⇒ 維持 `core.autocrlf` 預設（未越界）。若日後要擴，
+  需 Owner 再裁一次。
+
+### 3. 驗證：**全新 clone 的 A/B**（決定性，commit `1cf0ea3`）
+
+在同一台機器上 `git clone --no-hardlinks file:///…/soul-os-harness` 出兩個副本，
+分別 checkout 修改前／修改後的 commit：
+
+| 檔案 | 修改前（`9d2032f`） | 修改後（`1cf0ea3`） |
+|---|---|---|
+| `logs/ENGINEERING_STATE.md` | CRLF 9020 / LF-only 0 | **CRLF 0 / LF-only 9028** |
+| `logs/FEAT-SIM-HERMETIC-CLOCK-WORK-ORDER.md` | — | CRLF 0 / LF-only 114 |
+| `scripts/sim_accel_thread_cli.py` | — | CRLF 0 / LF-only 1155 |
+| `tests/test_sim_accel_thread.py` | LF-only 583（本來就是 LF） | CRLF 0 / LF-only 583 |
+| `src/soul/life_threads.py`（**不在裁定範圍**） | CRLF 710 | CRLF 710（**未動**） |
+| `scripts/server_ops.ps1`（BOM 契約檔） | CRLF 347 | CRLF 347（**未動**） |
+
+⇒ Owner 指出的脆弱點**已消除**；未受裁定涵蓋的路徑**逐位元未變**。
+
+### 4. 屬性解析（`git check-attr text eol`）
+
+    logs/ENGINEERING_STATE.md: text: set   eol: lf
+    logs/FEAT-SIM-HERMETIC-CLOCK-WORK-ORDER.md: text: set   eol: lf
+    scripts/sim_accel_thread_cli.py:        text: set   eol: lf
+    tests/test_sim_accel_thread.py:         text: set   eol: lf
+    src/soul/life_threads.py:               text: unspecified   eol: unspecified
+    scripts/server_ops.ps1:                 text: unspecified   eol: unspecified
+
+### 5. 工作樹狀態
+
+加入 `.gitattributes` 後，既有工作樹檔案**未被判為 modified**
+（git 比較時會套用 `text` 的正規化 ⇒ CRLF 工作樹與 LF 索引視為相同），
+`git status` 只多出 `?? .gitattributes` 一項 ⇒ 沒有產生任何「假修改」的雜訊。
+
+### 6. 回歸
+
+- 全庫回歸（repo 內 `.venv\Scripts\python.exe -m pytest -q tests`）：
+  **7632 passed / 31 skipped / 32 subtests passed（848.90 秒）**、**skip-set STABLE（added=0, removed=0）**、**0 failed**。
+  ⇒ 本輪之前那 2 筆既有紅燈（`tests/test_sim_accel_thread.py` 的兩筆）**已轉綠**；
+    本輪新增 10 條守門全綠；**無任何新紅燈**。
+  （回歸期間生產零污染實測：`data/server.pid`=4684、`:8000` socket owner=15028、
+    sidecar 795 筆／291007 bytes／sha256 `0019fda0…e13` **逐位元未變**、
+    watchdog `OK N=0/10` 無重啟、生產 `life_threads.jsonl` mtime 未變。）
+- 專屬子集：`tests/infra/test_powershell_script_encoding.py`（含新增 E6／E7）
+  ⇒ 9 passed；`tests/infra/test_plan_a_health_wait.py` ⇒ 5 passed。
+
+## 0.1.126 FEAT-SIM-HERMETIC-CLOCK：模擬器去生產耦合（封裝隔離的靜態時鐘 ＋ 確定性語料；Owner 2026-10-31 裁定選項 A）
+
+記錄 Owner 2026-10-31 的裁定「**二、FEAT-SIM-HERMETIC-CLOCK**：採納選項 A
+（模擬器去生產耦合）／Hermetic Clock」。
+
+### 1. 根因（2026-10-31 實測，不是推測）
+
+舊版的沙盒語料是**生產 `life_threads.jsonl` 的副本**，而虛擬時鐘由
+`created_at + 14d + 1s` 反推 ⇒ 兩者一組造成**時間倒置**：
+
+1. 生產語料的 `updated_at`（服務每次轉移都會更新）落在虛擬時鐘**之後**；
+2. M1 的 fold **規則 2** 取 `(updated_at, event_seq)` 的**最大者**；
+3. 模擬器剛寫的「轉 completed」事件其 `updated_at = virtual_now`
+   ⇒ **輸給**生產那條較新的記錄 ⇒ fold 仍看見 `status = active`；
+4. 終態溶解的閘門（步驟 2：`completed` ⇒ `should_mutate=True`）**永遠不開**；
+5. ⇒ 沉澱被跳過（`skipped_not_terminal`）⇒ 事實沒寫 ⇒ 線頭沒有 `sage_fact_id`
+   ⇒ 接縫不發射 ⇒ 「本次只新增 1 筆」變成「新增 **0** 筆」。
+
+線上症狀（實測報告）：`m2_terminal.target_status` ＝ **"active"**（不是 completed）、
+`should_mutate=false`、`consolidation.status=skipped_not_terminal`、
+`seam_post.total_events=0`、`llm_calls.m5_scripted=0`。
+
+### 2. 落地（commit `19701c4`，`scripts/sim_accel_thread_cli.py`）
+
+- 新增**封裝隔離的靜態時鐘**與**確定性語料**：
+  - `SIM_HERMETIC_BASE` ＝ 固定虛擬基準日 `2026-01-15T12:00:00Z`；
+  - `SIM_HERMETIC_HISTORY_COUNT` ＝ 35、`SIM_HERMETIC_AGENTS`、`SIM_HERMETIC_ORIGIN_TYPE`；
+  - `build_hermetic_corpus(agent_id)` —— 產生 `{agent_id: [entry…]}`。
+- fixture 的**四條不變量**（逐條被守門釘死）：
+  1. 整份 fixture 恰有 **1 條 active** 線頭 ⇒ `pick_target_thread` 的選擇是確定性的；
+  2. 目標線頭 `created_at` ＝ `base − 14 天 − 1 秒` ⇒ `virtual_now` ＝ `base`（**固定值**）；
+  3. **每條** fixture 線頭的 `updated_at` 都**嚴格小於** `base`
+     ⇒ fold 的最大者**必定**是模擬器自己寫的轉移事件
+     ⇒ 終態溶解的閘門一定會開（**這一條正是舊版壞掉的地方**）；
+  4. 歷史線頭 `status=completed` ＋ 非空 `sage_fact_id`
+     ⇒ 播種（35 條）與「未播種應發射全部」兩條路徑都成立。
+- `prepare_sandbox(..., hermetic=True)` 成為**預設**：沙盒語料改為**自產 fixture**，
+  **不複製**生產的 `life_threads.jsonl`／`graph.sqlite`／`elevation/*.jsonl`
+  （SAGE 的 `GraphStore` 會自建 schema ⇒ 空沙盒也能寫事實、讀感悟；
+   而複製生產事實會讓模擬結果**依賴生產當下有什麼** ⇒ 失去確定性）。
+- 保留 `hermetic=False` 的 **legacy 路徑**（想用真實語料重現生產症狀時用），
+  並加 CLI 旗標走它。🔴 該模式**依賴生產當下狀態** ⇒ 結果不確定；
+  **測試路徑一律走 hermetic**。
+
+### 3. 守門（`tests/test_sim_accel_thread.py` 新增 Section D）
+
+- **P-H1** fixture 的四條不變量；
+- **P-H2** 沙盒語料必須是 fixture 自產 —— 以 `thread_id` **形狀**比對
+  （`sim%08x-0000-4000-8000-%012x`；生產是**隨機 UUID4** ⇒ 第二／三段不可能是
+  `0000`／`4000`）⇒ **不必讀生產資料**也能決定性分辨，且在沒有 `data/` 的環境也成立；
+  另把硬連結事故（SIM-ACCEL-RECALL-30D）在 hermetic 模式下也釘死
+  （沙盒檔是新寫出的 ⇒ inode 必然不同、nlink 必然 1）。
+- **P-H3** 同一份 fixture 跑兩次 ⇒ **判定結果逐位元相同**；
+  並順手確認判定結果本身是「對」的（不是兩次都錯）。
+- 🔺 **補掉既有 fixture 漏掉的一項行程級狀態**：
+  `life_thread_dissolution_exec._DEFAULT_BUDGET`（per-agent 每日 3 次／全行程每日 200 次）。
+  不清會讓**排在後面**的案例拿到 `skipped_budget`
+  （2026-10-31 實測：第 4 個跑模擬的案例直接 `skipped_budget`）
+  ⇒ 測試結果會**依賴執行順序**。這是本檔既有 fixture 的真實缺口。
+- 🔺 **雙向變異 7 條，全部實測轉紅**（`SIM_ACCEL_MUTANT` 機制，記憶體內替換，
+  **不動 repo 內任何檔案**）：
+
+  | 變異 | 作用 | 轉紅的守衛 |
+  |---|---|---|
+  | M1 `advisory_as_dissolution` | advisory 誤發成真溶解 | `test_m2_age_boundary…`、`test_m2_active_advisory…` |
+  | M2 `at_most_once_removed` | 移除接縫 at-most-once | `test_sandbox_run_emits…`、`test_seam_without_seeding…`、P-H3 |
+  | M3 `llm_shape_accepted` | 畸形 LLM 輸出被誤接受 | `test_exec_layer_rejects_malformed_llm_shape` |
+  | M4 `no_llm_guard_removed` | 移除「依賴缺席就跳過」 | `test_exec_layer_skips_when_llm_absent` |
+  | M5 `sandbox_check_removed` | 移除沙盒 env 漂移自我檢查 | `test_child_refuses_when_env_drifts` |
+  | **M6 `hermetic_disabled`** | **解除 hermetic 隔離**（改回複製生產語料） | **P-H2**、P-H3 |
+  | **M7 `fixture_clock_inverted`** | **把 fixture 的 `updated_at` 推到基準日之後 ⇒ 重現線上症狀** | **P-H1**、P-H3 |
+
+  M7 是最有價值的一條：它把「時間倒置」這個 bug **在可控環境裡重現**，
+  而 P-H1／P-H3 會立刻轉紅 ⇒ 守門確實抓得住那個失效模式。
+
+### 4. 驗證
+
+- **決定性**：兩次獨立執行（不同沙盒），
+  正規化 `sage_fact_id`／`event_id`／`dissolved_at`（**記錄識別碼與寫入時刻**，
+  每次由寫入當下產生，與生產耦合無關）後**逐位元相同**（7423 bytes）。
+  🔺 口徑誠實化：舊版若用「全部欄位逐位元相同」會**假紅**（UUID4 與寫入時刻本來就會變）。
+- **因果 A/B**（同一支 CLI、同一份生產資料，**只切換語料來源**）：
+
+  | 欄位 | legacy（複製生產語料） | hermetic（自產 fixture） |
+  |---|---|---|
+  | `target.thread_id` | `e81d777e-a5a7-…`（生產線頭） | `sim00000000-…` |
+  | `target.virtual_now` | `2026-10-29T12:00:51Z`（**隨生產 created_at 漂移**） | `2026-01-15T12:00:00Z`（**固定**） |
+  | `m2_active_advisory.should_mutate` | False | False（**應為 False**） |
+  | `m2_terminal.target_status` | **active** | **completed** |
+  | `m2_terminal.should_mutate` | **False** | **True** |
+  | `consolidation.status` | **skipped_not_terminal** | **consolidated** |
+  | `registry.seeded` | 90 | 35 |
+  | `seam_pre / post / again` | 0 / **0** / 0 | 0 / **1** / 0 |
+  | `llm_calls.m5_scripted` | **0** | **1** |
+  | 語料筆數 / 與對方的 thread_id 重疊 | 1814 / — | 38 / **0** |
+
+  ⇒ 只切換語料來源就能**重現**症狀並**修好**它 ⇒ 因果確定，不是「順便變綠」。
+  附註：生產實際的「已發射線頭」是 **90** 條（不是工單寫的 35）⇒ 工單的 35 是過期數字。
+- **CLI 端到端**（parent→child 換行程流程）：**全部 10 條斷言通過**、
+  虛擬時點 `2026-01-15T12:00:00Z`、接縫新增 1 個事件（歷史 35 筆零重發）、
+  **生產 99 個檔案 sha256 逐位元相同**、exit 0。
+- 本檔全量：**15 passed**。
+
+### 4.1 為什麼本票**不適用** `scripts/eval_lifecycle_cli.py` 的沙盒快跑對帳
+
+AGENTS.md 的兩級閘門把「CLI 沙盒快跑對帳」列為**涉及生命週期／昇華／投影**的票的
+Hard Gate。本票改的是**模擬器**（`scripts/sim_accel_thread_cli.py` ＋ 其守門測試），
+`src/soul/*`（生命週期／溶解／接縫的**生產**實作）**一個位元組都沒動**
+⇒ 生產生命週期行為不變 ⇒ 沙盒快跑對帳不適用。
+
+替代證據（同級別、更貼近本票）：
+- CLI 端到端跑在**沙盒**內，且 **生產 99 個檔案 sha256 逐位元相同**；
+- `test_sandbox_run_emits_exactly_one_new_event` 內建的生產對帳
+  （`production_sha_snapshot()` 前後比對 ＋ `production_delta_has_sandbox_artifacts()`）
+  **仍然生效且未被削弱**。
+
+### 5. 回歸
+
+- 全庫回歸（repo 內 `.venv\Scripts\python.exe -m pytest -q tests`）：
+  **7632 passed / 31 skipped / 32 subtests passed（848.90 秒）**、**skip-set STABLE（added=0, removed=0）**、**0 failed**。
+  ⇒ 本輪之前那 2 筆既有紅燈（`tests/test_sim_accel_thread.py` 的兩筆）**已轉綠**；
+    本輪新增 10 條守門全綠；**無任何新紅燈**。
+  （回歸期間生產零污染實測：`data/server.pid`=4684、`:8000` socket owner=15028、
+    sidecar 795 筆／291007 bytes／sha256 `0019fda0…e13` **逐位元未變**、
+    watchdog `OK N=0/10` 無重啟、生產 `life_threads.jsonl` mtime 未變。）
+- 專屬子集：`tests/test_sim_accel_thread.py` ⇒ **15 passed**。
+- 🔺 **本輪之後，全庫回歸首次達到「0 failed」**（此前恆有 2 筆 sim 紅燈）。
+
+## 0.1.127 _start_plan_a.ps1 健康等待 60s → 180s（Owner 2026-10-31 裁定）；server_ops.ps1 探針維持 180s
+
+記錄 Owner 2026-10-31 的裁定「**一、_start_plan_a.ps1 60 秒健康等待**：
+核准放寬至 **180 秒**」與「**四、server_ops.ps1 探針超時**：維持 **180 秒**現狀，暫不調整」。
+
+### 1. 問題（2026-10-31 實測）
+
+    2026-10-31 00:09:19  ERROR service not healthy within 60s (pid=…) - Plan A FAILED
+    2026-10-31 00:10:10  服務實際就緒（相差 51 秒）
+
+⇒ 這是**假失敗**，不是真的沒起來。成因：主服務啟動期會跑 **Elevation 掃描**，
+偶遇外部 LLM 延遲時綁埠可被拉長到 **~120 秒**；而 Plan A 的健康等待上限只有
+**60 秒** ⇒ **上限比實際就緒時間短**。
+
+假失敗的代價不是「多寫一行 log」：
+watchdog 的重啟預算 `$counter.n_restarts` 是在**拉起之前**就遞增的
+（`scripts/_watchdog.ps1` step 7）⇒ **假失敗照樣燒掉重啟預算**。
+
+### 2. 落地（commit `704db2b`，`scripts/_start_plan_a.ps1`）
+
+位元組層級操作（**BOM ＋ 全 CRLF 保持**）：
+
+- 新增具名常數 `$healthWaitTimeoutSec = 180`
+  （沿用 `$servicePort = 8000` 的**跨檔常數慣例**：同名 ＋ 交叉註解
+  —— 兩個腳本各自定義、彼此對齊，而非新增一個共用的設定檔）；
+- 截止時間改用 `AddSeconds($healthWaitTimeoutSec)`；
+- 失敗訊息改用 `${healthWaitTimeoutSec}s`
+  （**不得寫死秒數** ⇒ 否則訊息會與實際行為脫節）。
+
+### 3. 守門（新增 `tests/infra/test_plan_a_health_wait.py`，5 條）
+
+- **P1** `$healthWaitTimeoutSec` 存在且為 180；
+- **P2** 截止時間**用常數**（不得寫死 `AddSeconds(60)`）；
+- **P3** 失敗訊息**用常數**（不得寫死 `60s`）；
+- **P4** 與 `server_ops.ps1` 的 `$healthReadyTimeoutSec` **實讀比對**（不抄常數），
+  且必須落在 **[90, 600]**
+  （下限 90s ＝ 實測 uvicorn 綁埠要 1~3 分鐘；上限 600s ＝ 必須小於 watchdog
+  的**維護鎖 stale 門檻 10 分鐘**，超過就會被當 stale 刪掉 ⇒ 那道保護直接失效）；
+- **P5** 兩個腳本各自保有自己的具名常數（跨檔常數慣例）。
+
+🔺 **雙向變異 3 條，全部實測轉紅**（改檔 → 跑 pytest → **逐位元組還原**，
+以 sha256 驗證還原成功）：
+
+| 變異 | 結果 |
+|---|---|
+| M1 常數改回 60 | 🔴 2 failed |
+| M2 截止時間改回寫死 `AddSeconds(60)` | 🔴 2 failed |
+| M3 失敗訊息改回寫死 `within 60s` | 🔴 2 failed |
+
+### 4. 順手補强（`tests/infra/test_powershell_script_encoding.py` 新增 E6／E7）
+
+- **E6**：`scripts/**/*.ps1` 的行尾**不得混用** CRLF 與 LF。
+  理由：本票改 `.ps1` 時，我手寫的 CRLF 轉義**誤植成純 LF 一行**
+  ⇒ 檔案變成混用。PS 5.1 對混用**不會報錯**（兩種都吃），
+  但「這個檔案的行尾是什麼」變成不可預期 ⇒ diff／雜湊／位元組級比較失去可重現性。
+  （該誤植是**手動**抓出來的，不是測試抓的 ⇒ 這條守門就是為此而立。）
+- **E7**：牙齒 —— 混用樣本必須被判違規，全 CRLF／全 LF 必須放行。
+- 現況掃描：10 支 `scripts/**/*.ps1` **全部內部一致**（8 支全 CRLF、2 支全 LF），
+  且**全部有 BOM** ⇒ 新守門即刻成立。
+
+### 5. 邊界安全分析（為什麼 180 秒不會與 watchdog 打架）
+
+- watchdog 每 **5 分鐘** tick 一次，且**在同一次 tick 內**拉起 Plan A
+  ⇒ 下一次 tick 距 Plan A 啟動 **300 秒**；
+- Plan A 的健康等待最長 180 秒 ＋ 埠釋放等待 ⇒ **215 秒 < 300 秒**
+  ⇒ **下一個 tick 不會落在 Plan A 的等待窗內** ⇒ 不會出現「Plan A 還在等、
+  watchdog 卻判定埠沒起來而殺掉正在啟動的服務」。
+- 🔺 但 `scripts/_watchdog.ps1` 的**啟動窗口保護只有 90 秒**
+  （`$STARTUP_WINDOW_SECONDS`）—— 那是**另一個機制**（watchdog 自己不重複拉起），
+  本次裁定未涵蓋。實務上因 tick 間隔 300 秒 ≫ 90 秒，該窗口只在 watchdog 被
+  **手動密集呼叫**時才有意義。**此項不自行處理，回報 Owner 裁示。**
+
+### 6. 裁定四：`server_ops.ps1` 的探針逾時**維持 180 秒**（本次 0 改動）
+
+理由（與 §0.1.121 一致）：180 秒落在 [90, 600] 的合法區間內，且
+**小於** watchdog 的維護鎖 stale 門檻（10 分鐘）⇒ 逾時時是 **fail-open**
+（只 warn、釋放鎖、讓 watchdog 自行接管自癒），不會讓維護鎖這道保護失效。
+本次啟動期曾撞到 LLM `TimeoutError` 使綁埠被拉到 120 秒 —— 那是**真實延遲**，
+180 秒足以涵蓋 ⇒ 維持不變。
+
+### 7. 回歸
+
+- 全庫回歸（repo 內 `.venv\Scripts\python.exe -m pytest -q tests`）：
+  **7632 passed / 31 skipped / 32 subtests passed（848.90 秒）**、**skip-set STABLE（added=0, removed=0）**、**0 failed**。
+  ⇒ 本輪之前那 2 筆既有紅燈（`tests/test_sim_accel_thread.py` 的兩筆）**已轉綠**；
+    本輪新增 10 條守門全綠；**無任何新紅燈**。
+  （回歸期間生產零污染實測：`data/server.pid`=4684、`:8000` socket owner=15028、
+    sidecar 795 筆／291007 bytes／sha256 `0019fda0…e13` **逐位元未變**、
+    watchdog `OK N=0/10` 無重啟、生產 `life_threads.jsonl` mtime 未變。）
+- 專屬子集：`tests/infra/test_plan_a_health_wait.py` ⇒ 5 passed（3 條變異皆紅）；
+  `tests/infra/test_powershell_script_encoding.py` ⇒ 9 passed（E6／E7）。
+- PS 5.1 解析：`scripts/_start_plan_a.ps1` ⇒ `PARSE_OK`。
+- 🔺 **生效性未重啟驗證**：本票只改「等待上限」，且失敗路徑是 fail-closed
+  （逾時 ⇒ 回報 FAILED 讓 watchdog 接管），**刻意不對生產行程動手**
+  （AGENTS.md 行程安全鐵律：重啟需 Owner 明示授權）⇒ 生效觀察留待下一次
+  **自然**發生的重啟（watchdog 自癒時）觀察日誌。
