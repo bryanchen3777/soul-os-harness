@@ -10065,6 +10065,15 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
   按紀律未繞過、未用永久刪除 ⇒ 兩檔留置，**請 Owner 手動刪除**（或授權其他方式）。
   兩檔皆在 pytest 收集範圍外，對回歸零影響。
 
+## 0.1.139 生產重啟生效：TG 真昼新音色上線（Owner 2026-11-01 11:10 明示授權）
+
+- `.\scripts\server_ops.ps1 restart` 官方路徑：watchdog 維護鎖留痕完整
+  （paused → rotated → started PID=2020 → resumed），/health=200 於第 35 次探針
+  （約 178s，落在 180s 窗內），exit 0。
+- 三方一致：pid 檔 trampoline 2020／:8000 LISTENING owner 7884（子行程）／
+  `/health = 200`。新行程自含 `5fa22aa` 的工作樹啟動 ⇒ `mahiru_voice` 新 id 生效。
+- 舊監聽 15028 樹已由官方路徑接管清除；無手動殺行程。
+
 ## 0.1.138 TG 椎名真昼語音換成新克隆音色 a57b6d37…（Owner 2026-11-01 指示；TG 單一來源）
 
 - `src/voice/fish_tts.py`：`mahiru_voice` 由 `b3d773aa…` → `a57b6d3758024bb399eafdd48fea4dff`，
