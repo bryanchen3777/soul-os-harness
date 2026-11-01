@@ -9018,3 +9018,11 @@ proxy 發 AGENT_SPEAK
   4. 是否新增 `.gitattributes` 釘住 canonical 的 LF（repo 目前 `core.autocrlf=true`、
      無 `.gitattributes` ⇒ Windows 全新 clone 會變 CRLF；`data/` 是 gitignored，
      v1 的 LF-only 契約不受影響）。
+
+## 0.1.124 值守端日常台帳刷新（cohort 2026-10-31 封閉後，自動）
+
+- 封閉 cohort：`2026-10-31`（UTC 建立日過完才封閉）⇒ 核准集合 **126 顆**（本次新增 **126 顆**；四條件量測：台帳記載型別（未記載＝value）＋ 建立日 == cohort date ＋ last_support_ts == created_ts ＋ 無 support_propagation 祖先邊）。
+- 其他受影響 cohort：2026-10-24（核准 61 顆，本次新增 0 顆）；2026-10-25（核准 58 顆，本次新增 0 顆）。
+- 下一槽沙盒快跑：`2026-11-02T02:00:00+00:00` ⇒ `PENDING_COHORT`（exit 3）。
+- 守衛：`tests/test_eval_lifecycle_cli.py` 全綠（exit 0）。
+- 自動刷新機制：每日 20:40 EDT（= 00:40Z，UTC 日封閉後）執行。
