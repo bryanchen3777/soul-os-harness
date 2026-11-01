@@ -9809,3 +9809,57 @@ FEAT-SIM-HERMETIC-CLOCK、Plan A 健康等待 180s）＋ canonical §0.1.128。
 - **不動**共用 harness、**不放寬**排除清單（本輪既定原則；Owner 2026-10-23 裁定：
   預期異常須用**可執行的判準差異**處理，不可用「放寬排除」代替「區分能力」）。
 - 本章僅**補正敘述 + 記錄升級後的事實**，並把方案 β 的優先度寫清楚 ⇒ 交 Owner 拍板。
+
+## 0.1.133 2026-10-25 Cohort 台帳入帳 ＋ 10-21 Cohort 4 顆 bounds 補齊（Owner 2026-11-01 核准）
+
+### 1. 背景
+
+CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2026-10-25 cohort 的
+2 顆 belief 退役批次。主大腦唯讀量測確認四條件成立，Owner 2026-11-01 核准入帳；
+同批補齊 10-21 cohort 4 顆靈魂型節點缺失的逐節點 bounds（該 4 顆的 `types`／`nodes`
+此前已入帳，見 §0.1.107；本次只補 `bounds`）。
+
+### 2. 六顆節點的實測四條件對帳表（主大腦唯讀量測，執行者未重算）
+
+| cohort | node（前 8 碼） | agent | 型別 | created_ts | last_support_ts | support_propagation 祖先邊 | bound（created ＋ 7 天） |
+|---|---|---|---|---|---|---|---|
+| 10-21 | `5f83b79f…` | agent_ram | belief | 2026-10-21T12:10:40.718645 | == created | 0 | 2026-10-28T12:10:40.718645+00:00 |
+| 10-21 | `bfad28d2…` | agent_yua | trait | 2026-10-21T02:05:22.512217 | == created | 0 | 2026-10-28T02:05:22.512217+00:00 |
+| 10-21 | `cf61d09a…` | agent_miku | belief | 2026-10-21T12:10:40.695093 | == created | 0 | 2026-10-28T12:10:40.695093+00:00 |
+| 10-21 | `d703149f…` | agent_ruka | belief | 2026-10-21T12:00:17.563778 | == created | 0 | 2026-10-28T12:00:17.563778+00:00 |
+| 10-25 | `d195f6d1…` | agent_shino | belief | 2026-10-25T03:03:37.082142 | == created | 0（全 5526 邊實測 0 命中） | 2026-11-01T03:03:37.082142+00:00 |
+| 10-25 | `d323179e…` | agent_mahiru | belief | 2026-10-25T12:00:58.067450 | == created | 0（全 5526 邊實測 0 命中） | 2026-11-01T12:00:58.067450+00:00 |
+
+### 3. 台帳改動（僅 `scripts/eval_lifecycle_cli.py`，判準層一字未動）
+
+- 10-21 條目 `bounds` 追加 4 筆（升序位置；既有 19 筆一字不動）＋ 條目註解末尾加一句補齊說明。
+- 10-25 條目新增 `types`（2 筆 belief，`not_before` 之後、`bounds` 之前，與 10-20／10-21 同構）
+  ＋ `bounds` 追加 2 筆 ＋ `nodes` 追加 2 顆（含 `agent_shino`／`agent_mahiru` 註解）
+  ＋ 條目註解（仿 10-21 的 🔴 入帳註解風格）。
+- 判準層（`normalize_cohorts`／`retirement_bounds`／`classify_soul_retirements`）一字未動；
+  衰減 7 天門檻本身未動。Frozen Contract 無觸碰。
+
+### 4. 入帳前後 CLI 對帳（來源唯讀沙盒快跑，不寫生產）
+
+- 入帳前（主大腦留存證據）：11-02 槽 `PENDING_COHORT`／exit 3／pending 2 筆。
+- 入帳後（本輪實測，`.venv`）：
+  - `--simulated-time '2026-11-02T02:00:00Z'` ⇒ `VERDICT: PASS`／exit 0／
+    `pending_retirements_count = 0`／`expected_hits = 56`
+   （54 value ＋ 2 belief；`soul_type_counts` belief=2 即本次入帳的 2 顆）。
+  - `--simulated-time '2026-11-01T02:00:00Z'` ⇒ `VERDICT: PASS`／exit 0／pending 0
+   （10-25 cohort `not_before = 2026-11-02T02:00:00+00:00`，11-01 槽 0 命中為預期）。
+- `tests/test_eval_lifecycle_cli.py`：80 passed（＋ 5 subtests）全綠。
+- 全庫回歸見 §5。
+
+### 5. 全庫回歸（本輪實測，`.venv`，2026-11-01 00:3x–00:4x EDT）
+
+- `.venv\Scripts\python.exe -m pytest -q tests` ⇒
+  **7635 passed, 31 skipped, 32 subtests passed in 849.13s（0:14:09）**，exit 0。
+- `[SKIP-BASELINE] skip-set STABLE skipped=31 baseline=31 added=0 removed=0`
+  ⇒ 無新增 skip、無移除，既有 skip 集合零漂移。
+- 未撞生產夜槽寫入窗（本輪約 00:30–00:44 EDT，非 22:00 窗）；
+  全綠 ⇒ 含五道 zero-mutation 守門在內無假紅（僅以套件 exit 0＋摘要行為據，
+  未逐一看守門取樣窗，誠實記錄此限度）。
+- 附記：`.pytest_cache/v/cache/lastfailed` 的 mtime 停在 2026-10-31 22:49（舊輪次殘留），
+  本輪 exit 0 且摘要行 7635 passed 為準；該快取未被本輪刷新一事已如實記錄，
+  不屬本工單範圍（不動門檻、不動資料、不另行清理）。
