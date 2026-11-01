@@ -59,6 +59,15 @@ $launcherLog = Join-Path $root 'data\logs\plan_a_launcher.log'
 $serverOps = Join-Path $root 'scripts\server_ops.ps1'
 # 生產服務的 TCP 埠（健康等待用; 跟 server_ops.ps1 一致）。
 $servicePort = 8000
+# 健康等待的逾時上限（秒）—— 對齊 server_ops.ps1 的 $healthReadyTimeoutSec。
+# 2026-10-31（Owner 裁定）：原為 60 秒。實測主服務啟動期會跑 Elevation 掃描，
+# 偶遇外部 LLM 延遲時綁埠可被拉長到 ~120 秒 ⇒ 60 秒必然產生「Plan A FAILED」
+# 的**假失敗**（2026-10-31 00:09:19 回報失敗，服務 00:10:10 就緒）。
+# 假失敗的代價：watchdog 的重啟預算（$counter.n_restarts）在**拉起之前**就遞增
+# ⇒ 假失敗會燒掉預算。
+# 下限 90s／上限 600s 的理由與 server_ops.ps1 的 $healthReadyTimeoutSec 相同
+# （上限必須小於 watchdog 的維護鎖 stale 門檻 10 分鐘）。
+$healthWaitTimeoutSec = 180
 
 # 跟 server_ops.ps1 一致: 用 soul-os .venv python (有 networkx/telegram/icalendar)
 # 不依賴系統 PATH, 避免 8/15 22:00 night slot 時 hermes venv 缺 networkx 導致 server 掛掉
@@ -168,7 +177,7 @@ if (-not $serverPid) {
     exit 1
 }
 $healthy = $false
-$healthDeadline = (Get-Date).AddSeconds(60)
+$healthDeadline = (Get-Date).AddSeconds($healthWaitTimeoutSec)
 while ((Get-Date) -lt $healthDeadline) {
     try {
         $r = Invoke-WebRequest "http://127.0.0.1:$servicePort/health" -UseBasicParsing -TimeoutSec 5
@@ -182,7 +191,7 @@ while ((Get-Date) -lt $healthDeadline) {
     Start-Sleep -Seconds 2
 }
 if (-not $healthy) {
-    Log-PlanA "ERROR service not healthy within 60s (pid=$serverPid) - Plan A FAILED"
+    Log-PlanA "ERROR service not healthy within ${healthWaitTimeoutSec}s (pid=$serverPid) - Plan A FAILED"
     exit 1
 }
 Log-PlanA "OK server healthy PID=$serverPid (via server_ops.ps1 start; python=$python; logs: $outLog / $errLog)"

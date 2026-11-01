@@ -99,6 +99,48 @@ def test_e3_pure_ascii_ps1_may_omit_the_bom():
         )
 
 
+def _eol_violations(data: bytes) -> list:
+    """行尾一致性：同一個 .ps1 不得混用 CRLF 與純 LF。
+
+    為什麼有這條（2026-10-31 實測）：本回合改 _start_plan_a.ps1 時，手寫的
+    CRLF 轉義誤植成純 LF 一行 ⇒ 檔案變成 CRLF/LF 混用。PS 5.1 對混用**不會報錯**
+    （兩種行尾都吃），但「這個檔案的行尾是什麼」變成不可預期 ⇒
+    diff／雜湊／位元組級比較都失去可重現性。
+
+    規則：**全 CRLF** 或 **全 LF** 皆可，**混用**不可。
+    """
+    crlf = data.count(b"\r\n")
+    lf_only = data.count(b"\n") - crlf
+    if crlf and lf_only:
+        return ["行尾混用：CRLF %d 行 + 純 LF %d 行（同一個檔案必須一致）" % (crlf, lf_only)]
+    return []
+
+
+def test_e6_scripts_ps1_line_endings_must_not_be_mixed():
+    """E6：scripts/**/*.ps1 的行尾不得混用 CRLF 與 LF。"""
+    offenders = []
+    for path in _ps1_files():
+        problems = _eol_violations(path.read_bytes())
+        if problems:
+            offenders.append("  - %s: %s" % (path.relative_to(REPO_ROOT).as_posix(),
+                                             "；".join(problems)))
+    assert not offenders, (
+        "以下 scripts/**/*.ps1 行尾混用（位元組級比較會失去可重現性）:\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_e7_eol_guard_has_teeth():
+    """E7：E6 的牙齒 —— 混用樣本必須被判違規，全 CRLF／全 LF 必須放行。"""
+    mixed = b"line one\r\nline two\nline three\r\n"
+    all_crlf = b"line one\r\nline two\r\n"
+    all_lf = b"line one\nline two\n"
+
+    assert _eol_violations(mixed), "E6 抓不到 CRLF/LF 混用 ⇒ 護欄已失效"
+    assert not _eol_violations(all_crlf), "E6 誤判『全 CRLF』⇒ 護欄太嚴"
+    assert not _eol_violations(all_lf), "E6 誤判『全 LF』⇒ 護欄太嚴"
+
+
 def test_e4_guard_has_teeth():
     """E4：E1 的牙齒 —— 合成樣本必須被正確判斷。"""
     bad = "Write-Host '中文'"      # 有中文、**無** BOM ⇒ 必須被判違規
