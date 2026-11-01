@@ -1093,7 +1093,7 @@ def phase_parent(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir) if args.out_dir else Path(tempfile.gettempdir()) / "sim_accel" / (
         "thread_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     )
-    sandbox = prepare_sandbox(out_dir, agent_id)
+    sandbox = prepare_sandbox(out_dir, agent_id, hermetic=not args.real_corpus)
     before = production_sha_snapshot()
     _write_json(sandbox / "production_sha_before.json", before)
     _log("[parent] 沙盒：%s" % sandbox)
@@ -1110,6 +1110,7 @@ def phase_parent(args: argparse.Namespace) -> int:
         "SIM_ACCEL_SANDBOX": str(sandbox),
         "SIM_ACCEL_AGENT": agent_id,
         "SIM_ACCEL_SLOT": args.slot,
+        "SIM_ACCEL_REAL_CORPUS": "1" if args.real_corpus else "0",
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUTF8": "1",
         "PYTHONPATH": os.pathsep.join(
@@ -1272,6 +1273,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=os.environ.get("SIM_ACCEL_JSON") == "1",
         help="以 JSON 輸出結果（父行程會以 SIM_ACCEL_JSON 傳給子行程）",
+    )
+    parser.add_argument(
+        "--real-corpus",
+        action="store_true",
+        default=os.environ.get("SIM_ACCEL_REAL_CORPUS") == "1",
+        help=(
+            "改用**生產語料**（legacy 路徑）。🔴 該模式依賴生產當下狀態 ⇒ 結果不確定；"
+            "預設是 hermetic（自產確定性 fixture）。"
+        ),
     )
     return parser
 
