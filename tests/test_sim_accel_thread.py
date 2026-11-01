@@ -21,6 +21,14 @@ C. **注入缺席必須 fail-closed**（`src/soul/life_thread_dissolution_exec.p
    `llm_call is None` ⇒ `skipped_no_llm`（0 呼叫）；LLM 回傳形狀不符 ⇒ `parse_failed`
    ＋ **不得寫入事實**。
 
+D. **模擬器必須與生產解耦**（FEAT-SIM-HERMETIC-CLOCK，Owner 2026-10-31 裁定「選項 A」）：
+   沙盒語料是**模擬器自產的確定性 fixture**，虛擬時鐘是**封裝隔離的靜態時鐘**
+   ⇒ 模擬結果與「今天幾點」「生產當下有什麼」**完全無關**。
+   （舊版複製生產 `life_threads.jsonl` ⇒ 生產的 `updated_at` 落在虛擬時鐘**之後**
+   ⇒ M1 fold 取最大者時反而輸給生產那條 ⇒ 終態溶解的閘門**永遠不開**
+   ⇒ 沉澱被跳過 ⇒ 事實沒寫 ⇒ 接縫不發射 ⇒ 「新增 1 筆」變「新增 0 筆」。
+   2026-10-31 實測：`m2_terminal.target_status` ＝ **"active"**（不是 completed）。）
+
 變異實驗怎麼跑
 ==============
 本檔支援環境變數 `SIM_ACCEL_MUTANT=<變異名>`：命中時，守衛測試會改用**變異體**
@@ -35,7 +43,9 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import os
+import re
 import sys
 import types
 from datetime import datetime, timedelta, timezone
@@ -122,6 +132,23 @@ MUTANT_REPLACE_SANDBOX = """    actual = Path(env_root).resolve()
             "[refuse] env 與沙盒不一致：SOUL_OS_DATA_DIR=%s 期望=%s" % (actual, expected)
         )"""
 
+#: M6 —— 解除 hermetic 隔離：沙盒改回「複製生產語料」（預設值翻回 False）。
+MUTANT_ANCHOR_HERMETIC = """    data_dir: Optional[Path] = None,
+    hermetic: bool = True,
+) -> Path:"""
+MUTANT_REPLACE_HERMETIC = """    data_dir: Optional[Path] = None,
+    hermetic: bool = False,
+) -> Path:"""
+
+#: M7 —— **重現「時間倒置」那個 bug**：把目標線頭的 `updated_at` 推到虛擬時點之後。
+#: 這一條會讓 M1 的 fold 取到「fixture 那條」而不是模擬器寫的轉移事件
+#: ⇒ 狀態仍是 active ⇒ 終態溶解的閘門不開 ⇒ 沉澱被跳過 ⇒ 接縫 0 筆
+#: ⇒ 與 2026-10-31 線上症狀**完全相同**。
+MUTANT_ANCHOR_CLOCK = """            "created_at": created.isoformat(),
+            "updated_at": created.isoformat(),"""
+MUTANT_REPLACE_CLOCK = """            "created_at": created.isoformat(),
+            "updated_at": (created + timedelta(days=400)).isoformat(),"""
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 載入工具
@@ -205,6 +232,14 @@ def _subject() -> SimpleNamespace:
         subject.cli = _load_mutant(
             CLI_PATH, MUTANT_ANCHOR_SANDBOX, MUTANT_REPLACE_SANDBOX, "mutant_cli"
         )
+    elif mutant == "hermetic_disabled":
+        subject.cli = _load_mutant(
+            CLI_PATH, MUTANT_ANCHOR_HERMETIC, MUTANT_REPLACE_HERMETIC, "mutant_cli"
+        )
+    elif mutant == "fixture_clock_inverted":
+        subject.cli = _load_mutant(
+            CLI_PATH, MUTANT_ANCHOR_CLOCK, MUTANT_REPLACE_CLOCK, "mutant_cli"
+        )
     else:
         raise RuntimeError("未知的變異名稱：%s" % mutant)
     return subject
@@ -222,13 +257,20 @@ def cli() -> types.ModuleType:
 def _clean_process_state():
     """每個測試前後清空**行程內**狀態（否則前一個測試會洩漏到下一個）。
 
-    🔴 三處行程內記憶體狀態：
+    🔴 四處行程內記憶體狀態：
       1. `life_thread_orchestrator._ELEVATION_EMITTED`（接縫的 at-most-once 登記表）
          ⇒ 不清會讓前一個測試的播種壓掉下一個測試的「不播種應發射全部」。
       2. `life_thread_dissolution_exec._CONSOLIDATED`（沉澱冪等 sentinel）
          ⇒ 不清會讓第二個測試拿到 `skipped_duplicate`（0 寫入）。
       3. `life_thread_consolidation_wiring._WRITERS`（per-agent SAGE writer 快取）
          ⇒ 不清會讓第二個測試**寫進第一個測試的沙盒**。
+      4. `life_thread_dissolution_exec._DEFAULT_BUDGET`（行程級**預算計數器**，
+         per-agent 每日 3 次／全行程每日 200 次）
+         ⇒ 🔴 2026-10-31 補：不清會讓**排在後面**的案例拿到 `skipped_budget`
+           （2026-10-31 實測：第 4 個跑模擬的案例直接 `skipped_budget`）
+           ⇒ 測試結果會**依賴執行順序**。本檔的預算上限本身由
+           `ConsolidationBudget(per_agent_limit=..., global_limit=...)` 注入，
+           這裡只是把**預設**那份丟掉。
 
     三者都有現成的「測試專用」清空 helper（生產路徑不呼叫）。
     """
@@ -240,6 +282,7 @@ def _clean_process_state():
     def _clear() -> None:
         orch._ELEVATION_EMITTED.clear()
         exec_module._clear_consolidated_registry()
+        exec_module._reset_default_budget()
         lt_wiring._reset_writers()
 
     _clear()
@@ -581,3 +624,185 @@ def test_cli_has_no_forbidden_imports():
     source = CLI_PATH.read_text(encoding="utf-8")
     for banned in ("subprocess", "requests", "httpx", "socket", "uvicorn", "fastapi"):
         assert ("import %s" % banned) not in source, "CLI 不得 import %s" % banned
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D. FEAT-SIM-HERMETIC-CLOCK：封裝隔離的靜態時鐘 ＋ 確定性語料
+#    （Owner 2026-10-31 裁定「選項 A：模擬器去生產耦合」）
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: fixture 線頭 id 的形狀（`sim%08x-0000-4000-8000-%012x`）。
+#: 🔺 生產的 thread_id 是**隨機 UUID4** ⇒ 第二／三段**不可能**是 `0000`／`4000`
+#:    ⇒ 這個樣式比對可以**決定性**分辨「fixture 自產」與「生產複製」，
+#:    而且**不需要讀生產資料**（⇒ 本守門在沒有 `data/` 的環境也成立）。
+FIXTURE_THREAD_ID_RE = re.compile(r"^sim[0-9a-f]{8}-0000-4000-8000-[0-9a-f]{12}$")
+
+#: 報告裡**允許每次不同**的欄位：記錄識別碼（UUID4）與寫入時刻。
+#: 這三者是「寫入當下產生的身份」，不是「與生產耦合的時間」。
+VOLATILE_REPORT_KEYS = ("sage_fact_id", "event_id", "dissolved_at")
+
+
+def _normalize_volatile(node: Any) -> Any:
+    """把允許變動的欄位換成佔位符（其餘保持原樣 ⇒ 可逐位元比較）。"""
+    if isinstance(node, dict):
+        return {
+            key: ("<VOLATILE>" if key in VOLATILE_REPORT_KEYS else _normalize_volatile(value))
+            for key, value in node.items()
+        }
+    if isinstance(node, list):
+        return [_normalize_volatile(value) for value in node]
+    return node
+
+
+def test_ph1_hermetic_fixture_invariants():
+    """P-H1：fixture 的四條不變量（決定性的前提）。"""
+    subject = _subject()
+    cli = subject.cli
+    base = cli.SIM_HERMETIC_BASE
+    corpus = cli.build_hermetic_corpus(AGENT_ID)
+
+    # ① 整份 fixture 恰有 1 條 active 線頭 ⇒ 目標的選擇是確定性的。
+    actives = [
+        entry
+        for entries in corpus.values()
+        for entry in entries
+        if entry.get("status") == "active" and entry.get("dissolved_at") is None
+    ]
+    assert len(actives) == 1, (
+        "整份 fixture 必須恰有 1 條 active 線頭（否則 pick_target_thread 的選擇不確定）：%d"
+        % len(actives)
+    )
+
+    # ② 目標線頭的 created_at = base − 14 天 − 1 秒 ⇒ virtual_now = base（固定值）。
+    created = datetime.fromisoformat(actives[0]["created_at"])
+    expected = base - timedelta(days=14) - timedelta(seconds=1)
+    assert created == expected, (
+        "目標線頭的 created_at 應為 %s，實際 %s"
+        % (expected.isoformat(), created.isoformat())
+    )
+
+    # ③ 每條 fixture 線頭的 updated_at 都**嚴格小於** base。
+    #    🔺 這一條正是舊版壞掉的地方：若某條線頭的 updated_at ≥ virtual_now，
+    #       M1 的 fold（取 `(updated_at, event_seq)` 最大者）就會取到它而不是
+    #       模擬器寫的轉移事件 ⇒ 狀態仍是 active ⇒ 終態溶解的閘門不開。
+    late = [
+        (owner, entry["thread_id"], entry["updated_at"])
+        for owner, entries in corpus.items()
+        for entry in entries
+        if datetime.fromisoformat(entry["updated_at"]) >= base
+    ]
+    assert not late, (
+        "fixture 線頭的 updated_at 必須嚴格小於虛擬基準日 %s（否則 fold 會取到它，"
+        "終態溶解的閘門就不開）：%s" % (base.isoformat(), late[:3])
+    )
+
+    # ④ 歷史線頭：status=completed ＋ 非空 sage_fact_id，且 ≥ 35 條。
+    history = [
+        entry
+        for entries in corpus.values()
+        for entry in entries
+        if entry.get("status") == "completed"
+    ]
+    assert len(history) >= 35, "歷史線頭應有 35 條以上：%d" % len(history)
+    missing = [
+        entry["thread_id"]
+        for entry in history
+        if not str(entry.get("sage_fact_id") or "").strip()
+    ]
+    assert not missing, (
+        "歷史線頭必須有非空 sage_fact_id（播種與未播種兩條路徑都靠它）：%s" % missing[:3]
+    )
+
+
+def test_ph2_sandbox_corpus_is_self_generated(tmp_path):
+    """P-H2：沙盒內的線頭語料必須是 **fixture 自產**的（不得含生產語料）。"""
+    import os
+
+    from src.soul import life_thread_orchestrator as orch
+
+    subject = _subject()
+    box = tmp_path / "sandbox_ph2"
+    subject.cli.prepare_sandbox(box, AGENT_ID)
+
+    ids: List[str] = []
+    for path in sorted((box / "soul").glob("*/life_threads.jsonl")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                ids.append(json.loads(line)["thread_id"])
+    assert ids, "沙盒內沒有任何線頭（fixture 一定要自產語料）"
+
+    bad = [tid for tid in ids if not FIXTURE_THREAD_ID_RE.match(tid)]
+    assert not bad, (
+        "沙盒內有非 fixture 來源的 thread_id（⇒ 生產語料被複製進沙盒了）：%s" % bad[:5]
+    )
+    assert len(ids) == subject.cli.SIM_HERMETIC_HISTORY_COUNT + 1, (
+        "沙盒應有 %d 條線頭（35 歷史 ＋ 1 目標），實際 %d"
+        % (subject.cli.SIM_HERMETIC_HISTORY_COUNT + 1, len(ids))
+    )
+
+    # 🔺 硬連結事故（SIM-ACCEL-RECALL-30D）在 hermetic 模式也必須不可能發生：
+    #    沙盒的線頭檔是**新寫出**的，不是複製來的 ⇒ inode 必然不同、nlink 必然 1。
+    production = Path(orch.__file__).resolve().parents[2] / "data"
+    prod = production / "soul" / AGENT_ID / "life_threads.jsonl"
+    sbx = box / "soul" / AGENT_ID / "life_threads.jsonl"
+    if prod.exists():
+        prod_stat = os.stat(prod)
+        sbx_stat = os.stat(sbx)
+        assert sbx_stat.st_nlink == 1, "沙盒檔是硬連結（nlink=%d）" % sbx_stat.st_nlink
+        if prod_stat.st_ino and sbx_stat.st_ino:
+            assert prod_stat.st_ino != sbx_stat.st_ino, (
+                "沙盒檔與生產檔共用 inode（=%s）⇒ append 會落在生產上" % prod_stat.st_ino
+            )
+
+
+def _run_hermetic_sim(subject: SimpleNamespace, box: Path, monkeypatch) -> Dict[str, Any]:
+    """在指定沙盒跑一次模擬，並清掉行程內狀態（否則第二次會被 at-most-once 蓋掉）。"""
+    from src.paths import data_root, reset_data_root
+    from src.soul import life_thread_consolidation_wiring as lt_wiring
+
+    monkeypatch.setenv("SOUL_OS_DATA_DIR", str(box))
+    monkeypatch.setenv("LIFE_THREAD_ELEVATION_ENABLED", "1")
+    monkeypatch.setenv("LIFE_THREAD_CONSOLIDATION_ENABLED", "1")
+    monkeypatch.setenv("LIFE_THREAD_CATCHUP_ENABLED", "")
+    monkeypatch.setenv("LIFE_THREAD_BOOTSTRAP_ENABLED", "")
+    reset_data_root()
+    assert data_root().resolve() == box.resolve()
+
+    subject.cli.prepare_sandbox(box, AGENT_ID)
+    report = asyncio.run(
+        subject.cli.run_simulation(
+            sandbox=box,
+            agent_id=AGENT_ID,
+            slot="night",
+            seed_registry=True,
+            seam_module=subject.seam_module,
+        )
+    )
+    subject.seam_module._ELEVATION_EMITTED.clear()
+    lt_wiring.lt_exec._clear_consolidated_registry()
+    lt_wiring._reset_writers()
+    return report
+
+
+def test_ph3_simulation_result_is_deterministic(tmp_path, monkeypatch):
+    """P-H3：同一份 fixture 跑兩次 ⇒ **判定結果逐位元相同**（封裝隔離的靜態時鐘）。"""
+    subject = _subject()
+    first = _run_hermetic_sim(subject, tmp_path / "ph3_a", monkeypatch)
+    second = _run_hermetic_sim(subject, tmp_path / "ph3_b", monkeypatch)
+    first.pop("sandbox", None)
+    second.pop("sandbox", None)
+
+    left = json.dumps(_normalize_volatile(first), ensure_ascii=False, sort_keys=True)
+    right = json.dumps(_normalize_volatile(second), ensure_ascii=False, sort_keys=True)
+    assert left == right, (
+        "兩次執行的判定結果不同（⇒ 模擬仍與「當下」或生產耦合）：\n"
+        "--- 第一次 ---\n%s\n--- 第二次 ---\n%s"
+        % (left[:1500], right[:1500])
+    )
+    # 順手確認判定結果本身是「對」的（不是兩次都錯）。
+    assert first["m2_terminal"]["should_mutate"] is True
+    assert first["m2_terminal"]["target_status"] == "completed"
+    assert first["consolidation"]["status"] == "consolidated"
+    assert first["seam_pre"]["total_events"] == 0
+    assert first["seam_post"]["total_events"] == 1
+    assert first["seam_again"]["total_events"] == 0

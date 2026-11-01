@@ -150,6 +150,45 @@ FAKE_MEANING_KIND = "relief"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# FEAT-SIM-HERMETIC-CLOCK：封裝隔離的靜態時鐘 ＋ 確定性語料
+# （Owner 2026-10-31 裁定「選項 A：模擬器去生產耦合」）
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# 為什麼要這樣（2026-10-31 實測）
+# -------------------------------
+# 舊版的沙盒語料是**生產 `life_threads.jsonl` 的副本**，而虛擬時鐘由
+# `created_at + 14d + 1s` 反推。兩者一組 ⇒ **時間倒置**：
+#
+#   1. 生產語料的 `updated_at`（服務每次轉移都會更新）會落在虛擬時鐘**之後**；
+#   2. M1 的 fold 規則 2 取 `(updated_at, event_seq)` 的**最大者**；
+#   3. 模擬器剛寫的「轉 completed」事件其 `updated_at = virtual_now`
+#      ⇒ **輸給**生產那條較新的記錄 ⇒ fold 仍看見 `status = active`；
+#   4. 終態溶解的閘門（步驟 2：`completed` ⇒ `should_mutate=True`）**永遠不開**；
+#   5. ⇒ 沉澱被跳過（`skipped_not_terminal`）⇒ 事實沒寫 ⇒ 線頭沒有 `sage_fact_id`
+#      ⇒ 接縫不發射 ⇒ 「本次只新增 1 筆」變成「新增 **0** 筆」。
+#
+# 實測（2026-10-31 18:4x，線上語料）：`m2_terminal.target_status` ＝ **"active"**
+# （不是 completed）、`should_mutate=false`、`consolidation.status=skipped_not_terminal`。
+#
+# ⇒ 解法：**語料與時鐘都由模擬器自己產生**，且所有 fixture 時間戳都落在虛擬基準日
+#   **之前** ⇒ fold 的「最大者」永遠是模擬器自己寫的那條
+#   ⇒ 模擬結果與「今天幾點」「生產當下有什麼」**完全無關**。
+#
+#: 模擬器的**固定虛擬基準日**（UTC）。所有 fixture 線頭的時間戳都相對於它。
+#: 🔺 這就是「封裝隔離的靜態時鐘」：模擬結果與「現在幾點」無關（可重現）。
+SIM_HERMETIC_BASE = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+
+#: fixture 的歷史線頭筆數（守門要求 ≥ 35：35 筆歷史 ＋ 1 筆新 = 36）。
+SIM_HERMETIC_HISTORY_COUNT = 35
+
+#: fixture 的歷史 agent 清單（**決定性**；與生產當下的 agent 清單無關）。
+SIM_HERMETIC_AGENTS = ("agent_akane", "agent_mahiru", "agent_rem", "agent_ruka", "agent_yua")
+
+#: fixture 線頭的 `origin_type`（生產的合法值之一）。
+SIM_HERMETIC_ORIGIN_TYPE = "necessity_driven"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 小工具
 # ─────────────────────────────────────────────────────────────────────────────
 def _log(message: str) -> None:
@@ -316,21 +355,122 @@ def _write_json(path: Path, payload: Any) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # 沙盒準備（父行程）
 # ─────────────────────────────────────────────────────────────────────────────
+def _hermetic_thread_id(index: int) -> str:
+    """決定性的 thread_id（固定 UUID 形狀；不隨執行時間／機器／生產狀態變動）。"""
+    return "sim%08x-0000-4000-8000-%012x" % (index, index)
+
+
+def _hermetic_fact_id(index: int) -> str:
+    """決定性的事實 id 標記（fixture 的歷史線頭用）。"""
+    return "sim-fact-%04d" % index
+
+
+def build_hermetic_corpus(agent_id: str) -> Dict[str, List[Dict[str, Any]]]:
+    """產生**確定性**的線頭語料：``{agent_id: [entry, ...]}``。
+
+    🔺 四條不變量（守門 P-H1 逐條驗；任一條被破壞都會讓模擬結果失真）：
+
+      1. 目標 agent 恰有 **1 條 active** 線頭（`dissolved_at is None`）
+         ⇒ `pick_target_thread` 的選擇是**確定性**的（不會挑到別的線頭）。
+      2. 目標線頭的 `created_at` ＝ `SIM_HERMETIC_BASE − 14 天 − 1 秒`
+         ⇒ `virtual_now` ＝ `created_at + 14 天 + 1 秒` ＝ `SIM_HERMETIC_BASE`（固定值）。
+      3. **每一條** fixture 線頭的 `updated_at` 都**嚴格小於** `SIM_HERMETIC_BASE`
+         ⇒ 模擬器自己寫的轉移事件（`updated_at = virtual_now`）**必定**是 fold 的
+         最大者 ⇒ 終態溶解的閘門一定會開（這正是舊版壞掉的那一步）。
+      4. 歷史線頭 `status = "completed"` 且有非空 `sage_fact_id`
+         ⇒ 播種（35 條）與「未播種應發射全部」兩條路徑都成立。
+    """
+    agents = list(SIM_HERMETIC_AGENTS)
+    if agent_id not in agents:
+        agents.append(agent_id)
+    corpus: Dict[str, List[Dict[str, Any]]] = {name: [] for name in agents}
+
+    # ── ① 目標線頭：整份語料裡**唯一**的 active 線頭 ──
+    created = SIM_HERMETIC_BASE - timedelta(days=MAX_ACTIVE_DURATION_DAYS) - timedelta(
+        seconds=BOUNDARY_EXTRA_SECONDS
+    )
+    corpus[agent_id].append(
+        {
+            "thread_id": _hermetic_thread_id(0),
+            "event_seq": 1,
+            "event_type": "created",
+            "origin_type": SIM_HERMETIC_ORIGIN_TYPE,
+            "status": "active",
+            "title": "模擬目標線頭",
+            "narrative_content": "模擬語料：這是一條由確定性 fixture 產生的在途線頭正文。",
+            "created_at": created.isoformat(),
+            "updated_at": created.isoformat(),
+            "check_after_ts": None,
+            "share_target": "none",
+            "dissolved_at": None,
+            "sage_fact_id": None,
+        }
+    )
+
+    # ── ② 歷史線頭：35 筆，round-robin 分配到各 agent ──
+    for index in range(1, SIM_HERMETIC_HISTORY_COUNT + 1):
+        owner = agents[(index - 1) % len(agents)]
+        born = SIM_HERMETIC_BASE - timedelta(days=30 + index)
+        closed = born + timedelta(days=1)
+        corpus[owner].append(
+            {
+                "thread_id": _hermetic_thread_id(index),
+                "event_seq": 1,
+                "event_type": "transitioned",
+                "origin_type": SIM_HERMETIC_ORIGIN_TYPE,
+                "status": "completed",
+                "title": "模擬歷史線頭 #%d" % index,
+                "narrative_content": "模擬語料：第 %d 條歷史線頭的正文。" % index,
+                "created_at": born.isoformat(),
+                "updated_at": closed.isoformat(),
+                "check_after_ts": None,
+                "share_target": "none",
+                "dissolved_at": closed.isoformat(),
+                "sage_fact_id": _hermetic_fact_id(index),
+            }
+        )
+    return corpus
+
+
 def prepare_sandbox(
     out_dir: Path,
     agent_id: str,
     data_dir: Optional[Path] = None,
+    hermetic: bool = True,
 ) -> Path:
     """建立沙盒（**只讀**生產、**只寫**沙盒）。
 
-    內容：
-      - `soul/<agent>/life_threads.jsonl`：**全部** agent（全域 35 條已發射線頭要能重現）；
-      - `memory/<agent>/graph.sqlite(+-wal)`：**只有目標 agent**（供事實寫入 ＋ 感悟回讀）。
-        🔴 `-shm` **不複製**（sqlite 會依 `-wal` 重建；複製熱寫入中的 `-shm` 有撕裂風險）；
-      - `elevation/`：節點／邊（不複製 40MB 的 trace；trace 對本票無關）。
+    🔴 **FEAT-SIM-HERMETIC-CLOCK**（Owner 2026-10-31 裁定「選項 A」）：
+    預設 ``hermetic=True`` ⇒ 沙盒內的線頭語料是**本檔自己產生的確定性 fixture**，
+    **不複製生產的 `life_threads.jsonl`**。理由見 `build_hermetic_corpus` 上方的
+    說明（生產語料會造成時間倒置 ⇒ 終態溶解的閘門永遠不開）。
+
+    ``hermetic=False`` 是**保留的開發用路徑**（想用真實語料重現生產症狀時用）：
+    它會把生產的 `life_threads.jsonl`／`graph.sqlite`／`elevation/*.jsonl` 複製進沙盒。
+    🔴 該模式**依賴生產當下狀態** ⇒ 結果不確定；**測試路徑一律走 hermetic**。
+
+    內容（hermetic 模式）：
+      - `soul/<agent>/life_threads.jsonl`：**本檔產生**的確定性語料；
+      - `memory/<agent>/`：**空目錄**（SAGE 的 GraphStore 會自行建 schema
+        ⇒ `CREATE TABLE IF NOT EXISTS`；空沙盒也能寫事實、讀感悟）。
+        🔴 **不複製生產的 `graph.sqlite`**：複製生產事實會讓模擬結果**依賴生產
+        當下有什麼** ⇒ 失去確定性；
+      - `elevation/`：**空目錄**（不複製生產的節點／邊 ⇒ 新節點的 id 不會與生產撞號）。
     """
     production = Path(data_dir) if data_dir is not None else PRODUCTION_DATA_DIR
     sandbox = assert_under_temp(Path(out_dir))
+
+    if hermetic:
+        corpus = build_hermetic_corpus(agent_id)
+        for owner, entries in corpus.items():
+            dst = sandbox / "soul" / owner / "life_threads.jsonl"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            with dst.open("w", encoding="utf-8", newline="\n") as handle:
+                for entry in entries:
+                    handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        (sandbox / "memory" / agent_id).mkdir(parents=True, exist_ok=True)
+        (sandbox / "elevation").mkdir(parents=True, exist_ok=True)
+        return sandbox
 
     for src in sorted((production / "soul").glob("*/life_threads.jsonl")):
         dst = sandbox / "soul" / src.parent.name / "life_threads.jsonl"
