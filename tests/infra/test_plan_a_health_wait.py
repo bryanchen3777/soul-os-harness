@@ -64,10 +64,15 @@ def _code_only(source: str) -> str:
 
 
 def _timeout_of(source: str, var_name: str):
-    """抓出 ``$var = <整數>`` 的值；抓不到回 None。"""
+    """抓出 ``$var = <整數>`` 的值；抓不到回 None。
+
+    🔺 取**最後一個**賦值：PowerShell 的語意是「後賦值覆蓋前賦值」
+    ⇒ 守門必須與執行期一致；否則「影子賦值」（在檔尾再賦一次）會讓本守門**假綠**
+    —— 那正是文字層級守門最典型的盲區。
+    """
     pattern = r"^\s*\$%s\s*=\s*(\d+)\s*$" % re.escape(var_name)
-    match = re.search(pattern, _code_only(source), re.M)
-    return int(match.group(1)) if match else None
+    matches = re.findall(pattern, _code_only(source), re.M)
+    return int(matches[-1]) if matches else None
 
 
 def _check_plan_a(source: str, ops_source: str) -> None:

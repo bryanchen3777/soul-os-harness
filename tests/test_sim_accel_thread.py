@@ -583,6 +583,11 @@ def test_sandbox_copies_are_independent_inodes(sandbox):
     ⇒ 本檔的沙盒一律 `shutil.copy2`（實體複製）；此測試把該性質釘死：
       1. 沙盒檔的 `st_ino` ≠ 生產檔的 `st_ino`（兩者皆可用時）；
       2. 生產檔與沙盒檔的 `st_nlink` 都是 1（**沒有第二個硬連結**）。
+
+    🔺 2026-10-31 補：FEAT-SIM-HERMETIC-CLOCK 之後，**預設**路徑不再走 `shutil.copy2`
+    （沙盒語料是自產的）⇒ 本測試在預設路徑上**只覆蓋到 hermetic 那一半**；
+    複製路徑的覆蓋改由 `test_legacy_copy_path_keeps_independent_inodes` 負責
+    （直接呼叫 `prepare_sandbox(..., hermetic=False)`）。
     """
     import os
 
@@ -617,6 +622,66 @@ def test_sandbox_copies_are_independent_inodes(sandbox):
             "沙盒副本是硬連結（nlink=%d）⇒ 必須改成實體複製（%s）"
             % (sbx_stat.st_nlink, sbx)
         )
+
+
+def test_legacy_copy_path_keeps_independent_inodes(tmp_path):
+    """🔴 **legacy 複製路徑**必須仍是實體複製（SIM-ACCEL-RECALL-30D 事故根因）。
+
+    為什麼要有這條（2026-10-31 獨立審查發現）
+    ------------------------------------------
+    FEAT-SIM-HERMETIC-CLOCK 之後，**預設**路徑不再走 `shutil.copy2`
+    （沙盒語料是自產的）⇒ 原有的 `test_sandbox_copies_are_independent_inodes`
+    只覆蓋到 hermetic 那一半，而**複製路徑**在整套 baseline 裡**沒有任何守門**
+    ⇒ 若有人把複製改回**硬連結**（事故原形：沙盒與生產共用 inode ⇒
+    CLI 的 append 直接寫進生產檔，造成 805 筆假事件 ＋ 513 顆節點狀態被改），
+    **不會有任何守門轉紅**。
+
+    ⇒ 本條直接呼叫 `prepare_sandbox(..., hermetic=False)`，把複製路徑重新釘死：
+      1. 沙盒檔的 `st_ino` ≠ 生產檔的 `st_ino`；
+      2. 兩者的 `st_nlink` 都是 1（**沒有第二個硬連結**）。
+    """
+    import os
+
+    from src.soul import life_thread_orchestrator as orch
+
+    module = _load_cli()
+    box = tmp_path / "sandbox_legacy"
+    module.prepare_sandbox(box, AGENT_ID, hermetic=False)
+
+    production = Path(orch.__file__).resolve().parents[2] / "data"
+    pairs = [
+        (
+            production / "soul" / AGENT_ID / "life_threads.jsonl",
+            box / "soul" / AGENT_ID / "life_threads.jsonl",
+        ),
+        (
+            production / "memory" / AGENT_ID / "graph.sqlite",
+            box / "memory" / AGENT_ID / "graph.sqlite",
+        ),
+    ]
+    checked = 0
+    for prod, sbx in pairs:
+        if not prod.exists() or not sbx.exists():
+            continue
+        checked += 1
+        prod_stat = os.stat(prod)
+        sbx_stat = os.stat(sbx)
+        if prod_stat.st_ino and sbx_stat.st_ino:
+            assert prod_stat.st_ino != sbx_stat.st_ino, (
+                "legacy 沙盒副本與生產檔共用 inode（=%s）⇒ append 會落在生產上"
+                % prod_stat.st_ino
+            )
+        assert prod_stat.st_nlink == 1, (
+            "生產檔有 %d 個硬連結 ⇒ 有別處以硬連結共用它（%s）"
+            % (prod_stat.st_nlink, prod)
+        )
+        assert sbx_stat.st_nlink == 1, (
+            "legacy 沙盒副本是硬連結（nlink=%d）⇒ 必須改成實體複製（%s）"
+            % (sbx_stat.st_nlink, sbx)
+        )
+    assert checked >= 1, (
+        "legacy 複製路徑沒有任何檔案可比對 ⇒ 這個守門的覆蓋面已漂移"
+    )
 
 
 def test_cli_has_no_forbidden_imports():
