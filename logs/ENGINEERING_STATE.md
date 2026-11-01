@@ -10064,3 +10064,11 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 主大腦持授權重試 `rm --`（可復原刪除）：主機仍拒絕（targets-only trash marker），
   按紀律未繞過、未用永久刪除 ⇒ 兩檔留置，**請 Owner 手動刪除**（或授權其他方式）。
   兩檔皆在 pytest 收集範圍外，對回歸零影響。
+
+## 0.1.138 TG 椎名真昼語音換成新克隆音色 a57b6d37…（Owner 2026-11-01 指示；TG 單一來源）
+
+- `src/voice/fish_tts.py`：`mahiru_voice` 由 `b3d773aa…` → `a57b6d3758024bb399eafdd48fea4dff`，
+  附 TG-單一來源註記（真昼無 VC 實例、無 profile，日後若建 VC 須同 id）。
+- 舊 id 全庫唯一引用即本行；無測試釘死該值；`resolve_voice_id('mahiru_voice')`
+  實測回新 id；語音定向測試 27 passed。
+- 生效待生產重啟（模組常駐記憶體），由 Owner 授權後走官方路徑。

@@ -40,7 +40,11 @@ VOICES: dict[str, str] = {
     #    的 VC 語音同一個 reference_id ⇒ TG 與 VC 兩個通道聽起來是同一個人）。
     "rem_voice":   "0758ee97c4b946f395cfc3555589c70c",  # Re:Zero — レム (default)
     "rem_zh_voice": "1325f2c9fdb4406db10dea59a85dde3f",  # 雷姆 中文專用
-    "mahiru_voice": "b3d773aaa2f44e128e8ae21321e64b45",  # 椎名まひる
+    # 🔺 mahiru_voice 2026-11-01 換成真昼的新克隆音色。🔻 結構不對稱：**真昼只有 TG 通道**
+    #    （無 VC 實例、無 profiles/mahiru.json）⇒ 這是 TG 通道的**單一**來源；
+    #    若日後新增真昼的 VC 實例，必須把該 profile 的 voice_id 設成同一個
+    #    reference_id（否則 TG 與 VC 聽起來是兩個人）。
+    "mahiru_voice": "a57b6d3758024bb399eafdd48fea4dff",  # 椎名まひる
     "yua_voice":   "5ae50aa681784e7e8913f681117a1b7e",  # ユア
     # 🔺 akane_voice 2026-10-31 換成茜的新克隆音色（與 clients/voice_companion/config.json
     #    的 VC 語音同一個 reference_id ⇒ TG 與 VC 兩個通道聽起來是同一個人）。
