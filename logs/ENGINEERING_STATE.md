@@ -10074,6 +10074,14 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
   `/health = 200`。新行程自含 `5fa22aa` 的工作樹啟動 ⇒ `mahiru_voice` 新 id 生效。
 - 舊監聽 15028 樹已由官方路徑接管清除；無手動殺行程。
 
+## 0.1.140 TG 拉姆語音換成新克隆音色 d6119213…（Owner 2026-11-01 指示；TG 單一來源）
+
+- `src/voice/fish_tts.py`：`ram_voice` 由 `3559bc2b…` → `d61192134d09486da36607586bc26eb4`，
+  附 TG-單一來源註記（拉姆無 VC 實例、無 profile，日後若建 VC 須同 id）。
+- 舊 id 全庫唯一引用即本行；`agent_ram → ram_voice` 別名映射不動；
+  無測試釘死該值；`resolve_voice_id('ram_voice')` 實測回新 id；語音定向測試 27 passed。
+- 生效待生產重啟（模組常駐記憶體），由 Owner 授權後走官方路徑。
+
 ## 0.1.138 TG 椎名真昼語音換成新克隆音色 a57b6d37…（Owner 2026-11-01 指示；TG 單一來源）
 
 - `src/voice/fish_tts.py`：`mahiru_voice` 由 `b3d773aa…` → `a57b6d3758024bb399eafdd48fea4dff`，

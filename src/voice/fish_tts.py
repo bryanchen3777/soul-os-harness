@@ -57,7 +57,11 @@ VOICES: dict[str, str] = {
     # 🔺 mai_voice 2026-10-30 換成麻衣的新克隆音色（與 clients/voice_companion/profiles/mai.json
     #    的 VC 語音同一個 reference_id ⇒ TG 與 VC 兩個通道聽起來是同一個人）。
     "mai_voice":   "b41446ba546c4e4aab598f4ac3afd634",  # 櫻島麻衣 (青春豬頭)
-    "ram_voice":   "3559bc2b12d24220b107378130419890",  # ラム (Re:Zero 雙胞胎姊姊)
+    # 🔺 ram_voice 2026-11-01 換成拉姆的新克隆音色。🔻 結構不對稱：**拉姆只有 TG 通道**
+    #    （無 VC 實例、無 profiles/ram.json）⇒ 這是 TG 通道的**單一**來源；
+    #    若日後新增拉姆的 VC 實例，必須把該 profile 的 voice_id 設成同一個
+    #    reference_id（否則 TG 與 VC 聽起來是兩個人）。
+    "ram_voice":   "d61192134d09486da36607586bc26eb4",  # ラム (Re:Zero 雙胞胎姊姊)
     "miku_voice":  "d8d514a56bca4a7a8af3c27232cc39aa",  # 中野三玖 (五等分) — Fish Audio default
     "anna_voice":  "a3eda99cf8f8425bac220499766ffbdd",  # 山田杏奈
     "hinami_voice": "b60ceb0336e24f8a9b6e785db1f01488",  # 日南葵 (弱キャラ友崎くん)
