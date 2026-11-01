@@ -9322,3 +9322,50 @@ watchdog 的重啟預算 `$counter.n_restarts` 是在**拉起之前**就遞增�
   （逾時 ⇒ 回報 FAILED 讓 watchdog 接管），**刻意不對生產行程動手**
   （AGENTS.md 行程安全鐵律：重啟需 Owner 明示授權）⇒ 生效觀察留待下一次
   **自然**發生的重啟（watchdog 自癒時）觀察日誌。
+
+## 0.1.128 補正 §0.1.126：補上 --real-corpus 旗標（legacy 路徑的 CLI 入口）＋ CLI 層級 A/B 證據
+
+補正 §0.1.126 的一處**訊息與程式不一致**：該章與前一個 commit 的訊息都寫了
+「並加 CLI 旗標走 legacy 路徑」，但當時只加了 `prepare_sandbox(..., hermetic=...)`
+的**參數**，`--real-corpus` **旗標本身漏了** ⇒ 訊息宣稱的東西不存在。
+commit `d4742d8` 補上。
+
+### 1. 落地
+
+- `scripts/sim_accel_thread_cli.py` 新增 `--real-corpus`
+  （父行程旗標；子行程以 `SIM_ACCEL_REAL_CORPUS` 承接，與既有參數的 env 傳遞一致）。
+- `phase_parent` 改為
+  `prepare_sandbox(out_dir, agent_id, hermetic=not args.real_corpus)`。
+- 預設**仍為 hermetic**（自產確定性 fixture）；`--real-corpus` 才走
+  「複製生產語料」的 legacy 路徑（該路徑依賴生產當下狀態 ⇒ 結果不確定）。
+
+### 2. 驗證：**CLI 層級的 A/B**（同一支 CLI、同一份生產資料，只切換旗標）
+
+CLI 自己的 10 條驗收斷言就是最嚴格的判官：
+
+    預設（hermetic）
+      [child] OK：全部 10 條斷言通過
+      [child] 目標線頭：sim00000000-0000-4000-8000-000000000000
+      [child] 虛擬時點：2026-01-15T12:00:00+00:00
+      [child] 接縫：新增 1 個事件（歷史 35 筆零重發）
+                                                          ⇒ exit 0
+
+    --real-corpus（legacy）—— **完整重現線上症狀**
+      [child] FAIL：m2_terminal_should_mutate —— should_mutate=False target=active
+      [child] FAIL：consolidation_succeeded —— status=skipped_not_terminal llm_calls=0
+      [child] FAIL：zero_real_llm_calls —— M5 腳本化 0 次
+      [child] FAIL：exactly_one_new_event —— 接縫「後」掃描建立 0 個事件
+      [child] FAIL：new_event_targets_the_pushed_thread
+      [child] FAIL：new_event_carries_narrative_and_reflection
+                                                          ⇒ exit ≠ 0
+
+⇒ legacy 語料 ⇒ **6 條紅**；hermetic 語料 ⇒ **10 條綠**。
+這比腳本層級的 A/B 更強：它用的是**產品自己的驗收斷言**，不是另寫的比較邏輯。
+
+### 3. 回歸
+
+- `tests/test_sim_accel_thread.py` ⇒ **15 passed**。
+- 7 條變異仍**全部實測轉紅**（M1–M5 既有、M6 解除隔離、M7 重現時間倒置）。
+- 🔺 本章僅新增 CLI 旗標與一行 `phase_parent` 呼叫，**未動任何守門的判準**
+  ⇒ 全庫回歸沿用 §0.1.127 的那一輪（7632 passed / 0 failed），並以
+  本檔 15 passed ＋ 7 條變異全紅覆蓋。
