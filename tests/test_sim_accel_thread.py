@@ -149,6 +149,41 @@ MUTANT_ANCHOR_CLOCK = """            "created_at": created.isoformat(),
 MUTANT_REPLACE_CLOCK = """            "created_at": created.isoformat(),
             "updated_at": (created + timedelta(days=400)).isoformat(),"""
 
+#: M8 —— **移除 `--real-corpus` 旗標本身**（2026-10-31 獨立審查建議 1 的牙齒）。
+#: 這個旗標在修正前是「零守門」的 ⇒ 有人把它刪掉，**沒有任何測試會轉紅**，
+#: 而 commit 訊息仍宣稱「可用 `--real-corpus` 走 legacy 路徑」
+#: ⇒ 與 §0.1.128 修掉的「訊息與程式不一致」是同一類。
+MUTANT_ANCHOR_FLAG = """    parser.add_argument(
+        "--real-corpus",
+        action="store_true",
+        default=os.environ.get("SIM_ACCEL_REAL_CORPUS") == "1",
+        help=(
+            "改用**生產語料**（legacy 路徑）。🔴 該模式依賴生產當下狀態 ⇒ 結果不確定；"
+            "預設是 hermetic（自產確定性 fixture）。"
+        ),
+    )
+"""
+MUTANT_REPLACE_FLAG = """    # M8：--real-corpus 旗標被移除
+"""
+
+#: M9 —— **旗標接線斷掉**：`phase_parent` 把 `hermetic` 寫死成 True。
+#: ⇒ `--real-corpus` 解析得出來卻**不會**切換沙盒模式（靜默失效）。
+MUTANT_ANCHOR_WIRING = """    sandbox = prepare_sandbox(out_dir, agent_id, hermetic=not args.real_corpus)"""
+MUTANT_REPLACE_WIRING = """    sandbox = prepare_sandbox(out_dir, agent_id, hermetic=True)"""
+
+#: M10 —— **重現 SIM-ACCEL-RECALL-30D 事故原形**：把複製改成**硬連結**。
+#: ⇒ 沙盒副本與來源檔共用 inode ⇒ CLI 的 append 會直接寫回來源。
+#: 對應守門：`test_legacy_copy_path_keeps_independent_inodes`（2026-10-31 重寫為
+#: 自產假生產樹後，仍必須抓得到這一種）。
+MUTANT_ANCHOR_HARDLINK = """    for src in sorted((production / "soul").glob("*/life_threads.jsonl")):
+        dst = sandbox / "soul" / src.parent.name / "life_threads.jsonl"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)"""
+MUTANT_REPLACE_HARDLINK = """    for src in sorted((production / "soul").glob("*/life_threads.jsonl")):
+        dst = sandbox / "soul" / src.parent.name / "life_threads.jsonl"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        os.link(src, dst)"""
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 載入工具
@@ -239,6 +274,18 @@ def _subject() -> SimpleNamespace:
     elif mutant == "fixture_clock_inverted":
         subject.cli = _load_mutant(
             CLI_PATH, MUTANT_ANCHOR_CLOCK, MUTANT_REPLACE_CLOCK, "mutant_cli"
+        )
+    elif mutant == "real_corpus_flag_removed":
+        subject.cli = _load_mutant(
+            CLI_PATH, MUTANT_ANCHOR_FLAG, MUTANT_REPLACE_FLAG, "mutant_cli"
+        )
+    elif mutant == "real_corpus_wiring_dead":
+        subject.cli = _load_mutant(
+            CLI_PATH, MUTANT_ANCHOR_WIRING, MUTANT_REPLACE_WIRING, "mutant_cli"
+        )
+    elif mutant == "copy_replaced_by_hardlink":
+        subject.cli = _load_mutant(
+            CLI_PATH, MUTANT_ANCHOR_HARDLINK, MUTANT_REPLACE_HARDLINK, "mutant_cli"
         )
     else:
         raise RuntimeError("未知的變異名稱：%s" % mutant)
@@ -637,42 +684,71 @@ def test_legacy_copy_path_keeps_independent_inodes(tmp_path):
     **不會有任何守門轉紅**。
 
     ⇒ 本條直接呼叫 `prepare_sandbox(..., hermetic=False)`，把複製路徑重新釘死：
-      1. 沙盒檔的 `st_ino` ≠ 生產檔的 `st_ino`；
+      1. 沙盒檔的 `st_ino` ≠ 來源檔的 `st_ino`；
       2. 兩者的 `st_nlink` 都是 1（**沒有第二個硬連結**）。
+
+    🔺 **自產假生產樹**（2026-10-31 獨立審查建議 2）：
+    本條**不得**讀真實生產 `data/`。原版直接比對生產目錄 ⇒ 在沒有生產語料的環境
+    （fresh clone）會因「覆蓋面已漂移」而轉紅，與 `tests/conftest.py`
+    把 `SOUL_OS_DATA_DIR` 導向 tmp 的全套隔離慣例相反。
+    ⇒ 改為在 tmp 內自產一棵**假的生產樹**，當作 `data_dir` 餵進 `prepare_sandbox`
+    ⇒ 仍走**真實的複製路徑**、仍抓得到硬連結、且**完全不依賴生產**。
+
+    🔺 對應變異 M10（`shutil.copy2` → `os.link`，事故原形）⇒ 本條必須轉紅。
     """
-    import os
+    module = _subject().cli
 
-    from src.soul import life_thread_orchestrator as orch
+    # ── 自產「假生產樹」：內容刻意不同 ⇒ 實體複製與硬連結都能被分辨 ──
+    fake_prod = tmp_path / "fake_production"
+    (fake_prod / "soul" / AGENT_ID).mkdir(parents=True)
+    (fake_prod / "memory" / AGENT_ID).mkdir(parents=True)
+    (fake_prod / "elevation").mkdir(parents=True)
+    (fake_prod / "soul" / AGENT_ID / "life_threads.jsonl").write_text(
+        json.dumps(
+            {
+                "thread_id": "fake-thread-0001",
+                "event_seq": 1,
+                "event_type": "transitioned",
+                "status": "active",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+            },
+            ensure_ascii=False,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    (fake_prod / "memory" / AGENT_ID / "graph.sqlite").write_bytes(b"fake-sqlite-bytes")
+    (fake_prod / "elevation" / "elevation_nodes.jsonl").write_text("", encoding="utf-8")
 
-    module = _load_cli()
     box = tmp_path / "sandbox_legacy"
-    module.prepare_sandbox(box, AGENT_ID, hermetic=False)
+    module.prepare_sandbox(box, AGENT_ID, data_dir=fake_prod, hermetic=False)
 
-    production = Path(orch.__file__).resolve().parents[2] / "data"
     pairs = [
         (
-            production / "soul" / AGENT_ID / "life_threads.jsonl",
+            fake_prod / "soul" / AGENT_ID / "life_threads.jsonl",
             box / "soul" / AGENT_ID / "life_threads.jsonl",
         ),
         (
-            production / "memory" / AGENT_ID / "graph.sqlite",
+            fake_prod / "memory" / AGENT_ID / "graph.sqlite",
             box / "memory" / AGENT_ID / "graph.sqlite",
         ),
     ]
     checked = 0
     for prod, sbx in pairs:
-        if not prod.exists() or not sbx.exists():
+        if not sbx.exists():
+            # 沙盒沒有這個檔 ⇒ 複製路徑沒跑 ⇒ 由下面的覆蓋面斷言抓
             continue
+        assert prod.exists(), "假生產樹缺檔（測試自身設定錯誤）：%s" % prod
         checked += 1
         prod_stat = os.stat(prod)
         sbx_stat = os.stat(sbx)
         if prod_stat.st_ino and sbx_stat.st_ino:
             assert prod_stat.st_ino != sbx_stat.st_ino, (
-                "legacy 沙盒副本與生產檔共用 inode（=%s）⇒ append 會落在生產上"
+                "legacy 沙盒副本與來源檔共用 inode（=%s）⇒ append 會落在來源上"
                 % prod_stat.st_ino
             )
         assert prod_stat.st_nlink == 1, (
-            "生產檔有 %d 個硬連結 ⇒ 有別處以硬連結共用它（%s）"
+            "來源檔有 %d 個硬連結 ⇒ 有別處以硬連結共用它（%s）"
             % (prod_stat.st_nlink, prod)
         )
         assert sbx_stat.st_nlink == 1, (
@@ -871,3 +947,88 @@ def test_ph3_simulation_result_is_deterministic(tmp_path, monkeypatch):
     assert first["seam_pre"]["total_events"] == 0
     assert first["seam_post"]["total_events"] == 1
     assert first["seam_again"]["total_events"] == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Section E：`--real-corpus` 旗標的接線守門（2026-10-31 獨立審查建議 1）
+# ─────────────────────────────────────────────────────────────────────────────
+# 為什麼要有這條
+# ------------
+# 2026-10-31 獨立審查實測：`--real-corpus` 這個旗標在 `tests/**` 裡**零命中**
+# ⇒ 若有人把 `phase_parent` 寫死 `hermetic=True`（或把旗標整個刪掉），
+# 旗標會**靜默失效**，沒有任何測試會轉紅，而 commit 訊息仍宣稱
+# 「可用 `--real-corpus` 走 legacy 路徑」⇒ 這正是 §0.1.128 修掉的
+# **同一類**「訊息與程式不一致」。
+#
+# 本節釘死兩件事：
+#   E1. 旗標**存在**且**預設 False**（`parse_args` 層）。
+#   E2. 旗標**真的接到** `prepare_sandbox(hermetic=...)`（`phase_parent` 層，
+#       **行為層**驗證：攔截實際傳入的 `hermetic` 值，**不是**比對原始碼文字）。
+#       ⇒ 對應變異 M8（旗標被移除）與 M9（接線被寫死）。
+
+
+def test_e1_real_corpus_flag_parses_and_defaults_to_false(monkeypatch):
+    """E1：`--real-corpus` 必須存在，且**預設 False**（預設走 hermetic）。
+
+    🔺 旗標的 `default` 來自 env（`SIM_ACCEL_REAL_CORPUS`）⇒ 本條必須先清掉該
+    env，否則在「上一次跑過 legacy 模式」的環境裡會讀到 True。
+    """
+    monkeypatch.delenv("SIM_ACCEL_REAL_CORPUS", raising=False)
+    parser = _subject().cli.build_parser()
+    assert parser.parse_args([]).real_corpus is False, (
+        "預設必須是 hermetic（旗標預設 False）"
+    )
+    assert parser.parse_args(["--real-corpus"]).real_corpus is True, (
+        "--real-corpus 必須能被解析（旗標被移除或改名了？）"
+    )
+
+
+def test_e2_real_corpus_flag_reaches_prepare_sandbox(tmp_path, monkeypatch):
+    """E2：旗標必須**真的**切換沙盒模式（行為層，不是比對原始碼文字）。
+
+    牙齒：M9 把 `phase_parent` 寫死 `hermetic=True` ⇒ 本條轉紅。
+    """
+    module = _subject().cli
+    seen: List[bool] = []
+
+    def fake_prepare_sandbox(out_dir, agent_id, data_dir=None, hermetic=True):
+        seen.append(bool(hermetic))
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        return out
+
+    class _Stop(Exception):
+        """在真正 spawn 子行程**之前**停下來（避免測試真的換行程）。"""
+
+    def fake_spawnv(*_args, **_kwargs):
+        raise _Stop()
+
+    monkeypatch.setattr(module, "prepare_sandbox", fake_prepare_sandbox)
+    monkeypatch.setattr(module, "production_sha_snapshot", lambda *a, **k: {})
+    monkeypatch.setattr(module.os, "spawnv", fake_spawnv)
+    monkeypatch.delenv("SIM_ACCEL_REAL_CORPUS", raising=False)
+
+    parser = module.build_parser()
+    saved_env = dict(os.environ)
+    # (額外引數, 期望傳入 prepare_sandbox 的 hermetic 值)
+    cases = ((["--real-corpus"], False), ([], True))
+    try:
+        for extra, expect in cases:
+            args = parser.parse_args(
+                ["--out-dir", str(tmp_path / ("box_%d" % len(seen)))] + list(extra)
+            )
+            with pytest.raises(_Stop):
+                module.phase_parent(args)
+            assert seen[-1] is expect, (
+                "旗標沒有真的切換沙盒模式（--real-corpus=%s ⇒ 實際傳入 hermetic=%s，期望 %s）"
+                % (bool(extra), seen[-1], expect)
+            )
+    finally:
+        # `phase_parent` 會 `os.environ.update(env)`（沙盒 env）⇒ 必須還原，
+        # 否則會污染同一個 pytest 行程裡的後續測試。
+        os.environ.clear()
+        os.environ.update(saved_env)
+
+    assert seen == [False, True], (
+        "旗標沒有真的切換沙盒模式（實際傳入的 hermetic 序列＝%r）" % (seen,)
+    )
