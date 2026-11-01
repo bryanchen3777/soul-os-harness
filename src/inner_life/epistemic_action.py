@@ -107,6 +107,16 @@ TENSION_EVENT_KINDS: Tuple[str, ...] = (
 TENSION_STATUS_OPEN = "open"
 TENSION_STATUS_RESOLVED = "resolved"
 TENSION_STATUS_PARTIALLY_RESOLVED = "partially_resolved"
+#: 註記型事件（``tension_thought_enqueued``）的狀態標籤（**不是張力狀態**）。
+#:
+#: 🔴 2026-11-01（FEAT-TENSION-OPEN-IDEMPOTENT-FIX F3）：thought 事件以前把
+#: ``status`` 硬寫成 ``"resolved"`` ⇒ kind-blind 的 fold 把回聲當終態（狀態漂白）。
+#: 現改為自帶的非終態標籤 ⇒ 即使有未來的 kind-blind 讀者，也會走「未知狀態 ⇒
+#: 保留原值、不視為已消解」路徑（見 :func:`load_tension_records`），而**不是**
+#: 被當成已消解。🔴 本常數**刻意不進** ``TENSION_STATUSES``（該三元組由
+#: ``test_p3_t5_tension_statuses_is_a_closed_set`` 釘死）；fold／守門一律按
+#: ``kind`` 忽略 thought 事件（F1／F2），根本不讀它的 ``status``。
+TENSION_STATUS_THOUGHT = "thought"
 TENSION_STATUSES: Tuple[str, ...] = (
     TENSION_STATUS_OPEN,
     TENSION_STATUS_RESOLVED,
@@ -697,15 +707,24 @@ def _read_tension_events(store_dir: Optional[Any]) -> List[Dict[str, Any]]:
 def _fold_tension_events(
     events: Sequence[Mapping[str, Any]]
 ) -> Dict[str, Dict[str, Any]]:
-    """**fold** 事件序列 ⇒ 每個 ``tension_id`` 取**最後一筆**。
+    """**fold** 事件序列 ⇒ 每個 ``tension_id`` 取**最後一筆狀態型事件**。
 
     與舊版「dict 覆蓋」等價（同 id 的最後一筆勝出），但**寫入面**已無覆蓋行為。
     鍵的順序＝該 ``tension_id`` **首次出現**的順序（與舊版 list 順序一致）。
+
+    🔴 2026-11-01（FEAT-TENSION-OPEN-IDEMPOTENT-FIX F1）：**按 kind 分流** ——
+    ``tension_thought_enqueued`` 是註記（小念頭已入隊的稽核軌跡），**不是**
+    張力狀態遷移 ⇒ **永不更新**每 id 的狀態（即使它是物理末筆）。否則
+    thought 回聲（其 ``status`` 曾冒充 ``"resolved"``）會蓋掉真正的末筆狀態，
+    讓守門把「剛閉合」誤讀為「早已消解」（狀態漂白；生產 E7 → E8 誤放行）。
+    只有 ``tension_opened``／``tension_resolved`` 參與狀態折疊。
     """
     state: Dict[str, Dict[str, Any]] = {}
     for event in events:
         tension_id = event.get("tension_id")
         if not isinstance(tension_id, str) or not tension_id:
+            continue
+        if event.get("kind") == TENSION_EVENT_THOUGHT_ENQUEUED:
             continue
         state[tension_id] = dict(event)
     return state
@@ -739,6 +758,27 @@ def _read_store_events_for_guard(store_dir: Optional[Any]) -> Tuple[bool, List[D
     return True, _parse_tension_event_lines(raw)
 
 
+def _prior_state_event(
+    state: Mapping[str, Dict[str, Any]],
+    batch_state: Mapping[str, Dict[str, Any]],
+    tension_id: Any,
+) -> Optional[Dict[str, Any]]:
+    """取「末筆狀態型事件」（F2）：批次內累積優先，否則 kind 感知 fold 的結果。
+
+    🔴 兩層輸入都只含狀態型事件：``state`` 來自 :func:`_fold_tension_events`
+    （F1 已按 kind 剔除 thought 註記），``batch_state`` 只記錄本批的狀態型
+    事件（thought 從不寫入）。回傳 ``None`` ＝ 查無該 id（首次開立）。
+    F1／F2 共用**同一份 kind 感知原語** ⇒ 拿掉 F1 的 kind 過濾會同時讓守門
+    失明（變異 M-a 的錨點；見新守門檔 G1／G2）。
+    """
+    if isinstance(tension_id, str) and tension_id:
+        prior = batch_state.get(tension_id)
+        if prior is not None:
+            return prior
+        return state.get(tension_id)
+    return None
+
+
 def _guard_opened_events(
     store_dir: Optional[Any], events: Sequence[Mapping[str, Any]]
 ) -> Tuple[List[Mapping[str, Any]], bool]:
@@ -770,9 +810,9 @@ def _guard_opened_events(
     for event in events:
         tension_id = event.get("tension_id")
         if event.get("kind") == TENSION_EVENT_OPENED:
-            prior = batch_state.get(tension_id)
-            if prior is None:
-                prior = state.get(tension_id)
+            # 🔴 F2：經 :func:`_prior_state_event` 取末筆**狀態型**事件（thought
+            # 註記不可能出現在這裡）；只有真 ``resolved`` 算已消解。
+            prior = _prior_state_event(state, batch_state, tension_id)
             if prior is not None:
                 # 有既有狀態 ⇒ 最後一筆的 status 決定是否已閉合。
                 # 🔴 只有 ``resolved`` 算「已消解」；``open``／
@@ -780,7 +820,11 @@ def _guard_opened_events(
                 if prior.get("status") != TENSION_STATUS_RESOLVED:
                     continue
         kept.append(event)
-        if isinstance(tension_id, str) and tension_id:
+        if (
+            isinstance(tension_id, str)
+            and tension_id
+            and event.get("kind") != TENSION_EVENT_THOUGHT_ENQUEUED
+        ):
             batch_state[tension_id] = dict(event)
     return kept, False
 
@@ -1040,11 +1084,17 @@ def record_thought_enqueued(
     thought_tags: Sequence[str] = (),
     now: Optional[float] = None,
 ) -> bool:
-    """記錄「閉合後的小念頭已入隊」（**append-only**：追加一筆 thought 事件）。"""
+    """記錄「閉合後的小念頭已入隊」（**append-only**：追加一筆 thought 事件）。
+
+    🔴 2026-11-01（FEAT-TENSION-OPEN-IDEMPOTENT-FIX F3）：thought 註記的
+    ``status`` 永不冒充終態 —— 以 ``TENSION_STATUS_THOUGHT``（``"thought"``）
+    自帶非終態標籤取代舊的 ``"resolved"`` 硬寫。縱深：即使未來的 kind-blind
+    讀者不按 kind 過濾，也會走「未知狀態 ⇒ 保留原值」路徑而非視為已消解。
+    """
     event = _make_tension_event(
         TENSION_EVENT_THOUGHT_ENQUEUED,
         tension,
-        "resolved",
+        TENSION_STATUS_THOUGHT,
         extra={
             "thought_payload": thought_payload,
             "thought_tags": list(thought_tags),
@@ -1534,6 +1584,7 @@ __all__ = [
     "TENSION_STATUS_OPEN",
     "TENSION_STATUS_PARTIALLY_RESOLVED",
     "TENSION_STATUS_RESOLVED",
+    "TENSION_STATUS_THOUGHT",
     "TENSION_STORE_EVENTS_FILENAME",
     "TENSION_STORE_FILENAME",
     "TENSION_STORE_MIGRATED_SUFFIX",

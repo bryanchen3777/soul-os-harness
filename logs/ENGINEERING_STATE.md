@@ -9987,3 +9987,64 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
   `scripts/probe_ledger_bounds_tmp.py`（主大腦遺留探針）仍為未追蹤；
   兩次可復原刪除被主機策略擋下，按紀律未繞過 ⇒ 留待 Owner 方便時手動刪除。
   兩檔皆不在 pytest 收集範圍（`testpaths=tests`），對回歸零影響。
+
+## 0.1.136 第三動二階段【實作】FEAT-TENSION-OPEN-IDEMPOTENT-FIX（F1–F3＋G1–G3／M-a–c；F4 不做）
+
+### 1. 改動（只動一檔源碼＋新建守門一檔；F3 在本輪自查補齊）
+
+- `src/inner_life/epistemic_action.py`（＋58−7）：新常數
+  `TENSION_STATUS_THOUGHT = "thought"`（註記標籤，**刻意不進**
+  `TENSION_STATUSES` 三元組；`__all__` 增補）；F1
+  `_fold_tension_events` 按 kind 跳過 `tension_thought_enqueued`；
+  F2 新增 `_prior_state_event` helper，`_guard_opened_events` 經它取末筆
+  **狀態型**事件、`batch_state` 不再記錄 thought；F3
+  `record_thought_enqueued` 的 status 由 `"resolved"` 硬寫改為
+  `TENSION_STATUS_THOUGHT`。F1／F2 共用同一份 kind 感知原語
+  （M-a 單點回退同時致盲兩者——此耦合是設計）。
+- 新建 `tests/harness/test_tension_open_idempotent_fix.py`（9 tests：
+  G1a–d 原語／G2a–c tmp 端到端／G3a–b 讀端；自含
+  `MUTATION_MODULE_ENV` 載入點覆寫慣例，仿既有守門檔）；
+  已 `git add` 暫存（**未 commit／未 push**，合入由主大腦裁決）。
+- G0 沿用既有 `test_g1_write_end_is_idempotent_for_the_same_tension_id`
+  （`tests/inner_life/test_epistemic_action.py:1028`），未重建。
+- 誠實記錄：F3 初版遺漏（`record_thought_enqueued` 仍硬寫
+  `"resolved"`），自查 grep 發現後補上並加 docstring。
+
+### 2. Hard Gate 四項全綠（2026-11-01 01:2x–01:5x EDT，非 22:00 夜槽窗）
+
+- 新守門定向 **9 passed**（G1a–d／G2a–c／G3a–b）。
+- 雙向變異 M-a–c（repo 檔複製到 `%TEMP%`→字串替換→載入點覆寫跑守衛，
+  repo sha 前後一致 `9c63c189…cac29fa4`，零寫入）：
+  M-a（拿掉 fold kind 過濾）紅 5（G1a／G1b／G2a／G3a／G3b——
+  **同時點紅 G1／G2**，符合共用原語設計；G2b 不紅是正確的，
+  因其 thought 狀態形為真 `"thought"`）；M-b（thought status 改回
+  `"resolved"`）紅 2（G1c／G2b 狀態形）；M-c（拿掉 batch_state 去重）
+  紅既有 old-G3（`test_g3_same_id_inside_one_batch_is_written_once`）。
+- 全庫回歸 `.venv\Scripts\python.exe -m pytest -q tests`：第一輪
+  7661 passed＋1 failed（唯一失敗＝repo hygiene
+  `test_every_collectable_test_file_under_tests_is_git_tracked`，
+  因新檔尚未暫存——屬預期內的未追蹤狀態）；`git add` 新檔後定向複驗
+  17 passed（hygiene 8＋新守門 9）；第二輪
+  **7662 passed, 31 skipped, 32 subtests passed in 856.00s（0:14:16），exit 0**。
+  算術對帳：7653（§0.1.135 基線）＋9（新守門）＝7662，無新增失敗、
+  無消失；skip-set STABLE（`skipped=31 baseline=31 added=0 removed=0`）。
+- CLI 沙盒快跑 11-02 槽
+ （`--simulated-time 2026-11-02T02:00:00Z`，來源唯讀＋自建 temp 沙盒）：
+  **VERDICT PASS／exit 0／pending 0**；sidecar 957→1119（＋162）；
+  soul_type belief 2＋value 54＝expected 命中 56、trait／essence 雙 0；
+  關鍵反例節點 0 transitions；`prompt_diffs_unexplained` 0；
+  weak_prefix 201→257（＝expected＋pending 筆數，預期投影後果）。
+
+### 3. 生產零觸碰＋Frozen＋F4（不做）
+
+- 生產 `data/inner_life/epistemic_tensions.jsonl` sha256
+  `EE30B3154C3BAFEF572CAC23F12A8852677E1C971B30E364A78D57C5BA15DA05`，
+  改前／CLI 後／兩輪回歸後一致（唯讀；回歸與 CLI 只寫 tmp）。
+- F3 grep：無測試斷言 thought status＝＝"resolved"（新 G1c 反向釘死
+  `"thought"` 且斷言其不在三元組內；P3-T5 三元組一字未動）。
+- Frozen Contract 未觸碰：生命週期判準層／4 handlers／SAGE 寫入皆未動；
+  E8 形（真 resolve→窗口重入→同 id 重開）仍判允許（舊 G2＋新 G1d／G2c
+  釘死）；E8 形是否非法屬 F4，待 Owner 政策裁決，本階段不斷言。
+- 不做：F4（冷卻期／實質差異）；不 commit／不 push；
+  `_regression_out.txt`／`scripts/probe_ledger_bounds_tmp.py`
+  （他 worker／主大腦遺留未追蹤檔）未動未刪。
