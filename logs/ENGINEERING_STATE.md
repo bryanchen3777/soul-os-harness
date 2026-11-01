@@ -10048,3 +10048,19 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 不做：F4（冷卻期／實質差異）；不 commit／不 push；
   `_regression_out.txt`／`scripts/probe_ledger_bounds_tmp.py`
   （他 worker／主大腦遺留未追蹤檔）未動未刪。
+
+## 0.1.137 Owner 政策裁決：E8 形定性為合法重開（F4 不立項）＋ 暫存清理授權處置（2026-11-01）
+
+### 1. F4 裁決（Owner 2026-11-01「審定備案與架構雙向裁定」）
+
+- E8 形（真消解約 24 小時後重開同 ID）定性為**合法重開（Feature）**，不追加 F4
+  冷卻期／實質差異門檻。非法重複的契約邊界＝open 未決時的重複 open（已由
+  F1–F3 杜絕）；resolved 之後的新情境重開屬正常感知演化。
+- 本立項 FEAT-TENSION-OPEN-IDEMPOTENT-FIX 以 F1–F3 封版（`ff905ff`），不再延伸。
+
+### 2. 暫存清理授權處置
+
+- Owner 核准移除 `scripts/probe_ledger_bounds_tmp.py` 與 `_regression_out.txt`。
+- 主大腦持授權重試 `rm --`（可復原刪除）：主機仍拒絕（targets-only trash marker），
+  按紀律未繞過、未用永久刪除 ⇒ 兩檔留置，**請 Owner 手動刪除**（或授權其他方式）。
+  兩檔皆在 pytest 收集範圍外，對回歸零影響。
