@@ -1,0 +1,94 @@
+{
+  "registry_version": 2,
+  "source": "GET https://opencode.ai/zen/go/v1/models + GET https://ollama.com/v1/models (2026-11-01)",
+  "channel": {
+    "name": "OpenCode Go（主）+ Ollama Cloud（deepseek 補位）",
+    "base_url": "https://opencode.ai/zen/go/v1",
+    "credentials": "MiniMax Code config.yaml → custom_provider.opencode-go{,-responses,-anthropic}",
+    "note": "三個 opencode-go 條目共用同一把 key 與同一個 baseURL，差異只在 api 欄位決定的協定。deepseek-v4.1-flash 於 2026-11-01 經 Owner 裁示改走 custom_provider.ollama（https://ollama.com/v1）補位，因為它在 Go 被 workspace Privacy 地區設定擋掉。混通道會破壞可比性，manifest 的 channels / mixed_channels 會逐顆揭露。"
+  },
+  "price_unit": "USD per 1M tokens",
+  "models": [
+    {
+      "id": "deepseek-v4.1-flash",
+      "display": "DeepSeek V4.1 Flash",
+      "protocol": "chat-completions",
+      "endpoint": "ollama-chat",
+      "api_model": "deepseek-v4.1-flash:1017",
+      "effort_supported": [],
+      "effort_default": null,
+      "price_in": null,
+      "price_out": null,
+      "context_limit": null,
+      "output_limit": null,
+      "status": "ready",
+      "channel_note": "ollama-cloud（非 OpenCode Go）",
+      "status_note": "2026-11-01 Owner 裁示改走 Ollama Cloud（OpenCode Go 對這顆回 HTTP 400 requires Global regions）。實測 2/2 成功（890ms / 521ms，兩次都正確服從 system prompt）。⚠️ 三個不對等處必須在報告揭露：①通道不同（baseURL／金鑰／路由／可用參數／計費全不同）；②模型名帶 :1017 版本戳 => 不保證與 Go 的 deepseek-v4.1-flash 同一份權重；③Ollama 的 usage 沒有 reasoning 明細，但實測一詞回答吃掉 completion_tokens=140（另一次 26）=> 推理量被計入 output，而 Go 通道可把 reasoning_tokens 拆出來。因此 Cost Efficiency 這張表在 deepseek 這一列上不可與其他五顆直接比。effort 在 Ollama 相容層未驗證故不送。價格未知，成本顯示 n/a，不由我代填。"
+    },
+    {
+      "id": "muse-spark-1.3-contributor",
+      "display": "Muse Spark 1.3 Contributor",
+      "protocol": "responses",
+      "effort_supported": ["minimal", "low", "medium", "high", "xhigh"],
+      "effort_default": null,
+      "price_in": 0.1,
+      "price_out": 0.2,
+      "context_limit": 1048576,
+      "output_limit": 131072,
+      "status": "ready",
+      "status_note": "2026-11-01 實測 1376ms 可用。注意：這是 reasoning 模型，max_tokens 太小會被 thinking 吃光。"
+    },
+    {
+      "id": "mimo-v2.6-flash",
+      "display": "MiMo V2.6 Flash",
+      "protocol": "chat-completions",
+      "effort_supported": [],
+      "effort_default": null,
+      "price_in": 0.14,
+      "price_out": 0.28,
+      "context_limit": 1048576,
+      "output_limit": 131072,
+      "status": "ready",
+      "status_note": "2026-11-01 實測 3297ms 可用。不支援 effort。"
+    },
+    {
+      "id": "glm-5.3-flash",
+      "display": "GLM 5.3 Flash",
+      "protocol": "chat-completions",
+      "effort_supported": ["low", "high", "max"],
+      "effort_default": null,
+      "price_in": 0.15,
+      "price_out": 0.5,
+      "context_limit": 1000000,
+      "output_limit": 131072,
+      "status": "ready",
+      "status_note": "2026-11-01 實測 1258ms 可用。"
+    },
+    {
+      "id": "qwen3.8-flash",
+      "display": "Qwen 3.8 Flash",
+      "protocol": "messages",
+      "effort_supported": ["low", "medium", "xhigh"],
+      "effort_default": null,
+      "price_in": 0.15,
+      "price_out": 0.47,
+      "context_limit": 1000000,
+      "output_limit": 131072,
+      "status": "ready",
+      "status_note": "2026-11-01 實測 1717ms 可用。走 anthropic messages 協定（不是 chat completions）。"
+    },
+    {
+      "id": "minimax-m3.1-flash",
+      "display": "MiniMax M3.1 Flash",
+      "protocol": "chat-completions",
+      "effort_supported": ["low", "medium", "high", "xhigh", "max"],
+      "effort_default": null,
+      "price_in": 0.15,
+      "price_out": 0.6,
+      "context_limit": 1000000,
+      "output_limit": 512000,
+      "status": "ready",
+      "status_note": "2026-11-01 實測 1352ms 可用。"
+    }
+  ]
+}

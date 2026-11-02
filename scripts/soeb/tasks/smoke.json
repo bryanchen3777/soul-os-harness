@@ -1,0 +1,48 @@
+{
+  "spec_version": 1,
+  "suite": "soeb-smoke",
+  "purpose": "只用於驗證執行器本身（通路、usage 記錄、空正文歸因、輸出路徑護欄）。不是 SOEB 的正式題目，分數不可當任何結論。",
+  "context_packet": null,
+  "defaults": {
+    "max_tokens": 512,
+    "temperature": 0.0
+  },
+  "tasks": [
+    {
+      "id": "SMOKE-echo",
+      "note": "最小可回話驗證：確認協定與認證都對。",
+      "max_tokens": 512,
+      "temperature": 0.0,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Reply with exactly one word: pong"
+        }
+      ]
+    },
+    {
+      "id": "SMOKE-usage",
+      "note": "確認 usage 三個欄位（input/output/reasoning）與 finish_reason 都能被記錄下來。",
+      "max_tokens": 512,
+      "temperature": 0.0,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Count from 1 to 5, one number per line, nothing else."
+        }
+      ]
+    },
+    {
+      "id": "SMOKE-truncation-probe",
+      "note": "故意給極小輸出預算：reasoning 模型會把預算吃光、正文為空。用來驗證 explain_empty 能把這種情況歸因為「預算耗盡」而不是被誤讀成模型失敗。",
+      "max_tokens": 24,
+      "temperature": 0.0,
+      "messages": [
+        {
+          "role": "user",
+          "content": "Explain in detail why the sky appears blue, including Rayleigh scattering and wavelength dependence."
+        }
+      ]
+    }
+  ]
+}

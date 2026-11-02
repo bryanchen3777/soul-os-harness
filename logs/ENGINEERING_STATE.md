@@ -10089,3 +10089,11 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 舊 id 全庫唯一引用即本行；無測試釘死該值；`resolve_voice_id('mahiru_voice')`
   實測回新 id；語音定向測試 27 passed。
 - 生效待生產重啟（模組常駐記憶體），由 Owner 授權後走官方路徑。
+
+## 0.1.141 值守端日常台帳刷新（cohort 2026-11-01 封閉後，自動）
+
+- 封閉 cohort：`2026-11-01`（UTC 建立日過完才封閉）⇒ 核准集合 **111 顆**（本次新增 **111 顆**；四條件量測：台帳記載型別（未記載＝value）＋ 建立日 == cohort date ＋ last_support_ts == created_ts ＋ 無 support_propagation 祖先邊）。
+- 其他受影響 cohort：2026-10-25（核准 60 顆，本次新增 0 顆）；2026-10-26（核准 46 顆，本次新增 0 顆）。
+- 下一槽沙盒快跑：`2026-11-03T02:00:00+00:00` ⇒ `PENDING_COHORT`（exit 3）。
+- 守衛：`tests/test_eval_lifecycle_cli.py` 全綠（exit 0）。
+- 自動刷新機制：每日 20:40 EDT（= 00:40Z，UTC 日封閉後）執行。
