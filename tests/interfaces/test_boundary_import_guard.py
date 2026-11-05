@@ -12,9 +12,9 @@ import subprocess
 import sys
 
 
-_PKG_FILES = ("src/interfaces/__init__.py", "src/interfaces/schema.py", "src/interfaces/config.py", "src/interfaces/classification.py", "src/interfaces/identity.py", "src/interfaces/context_policy.py")
-_PKG_ALLOW = ("src/interfaces/__init__.py", "src/interfaces/schema.py", "src/interfaces/config.py", "src/interfaces/identity.py", "src/interfaces/classification.py", "src/interfaces/context_policy.py", "src/__init__.py")
-_REL_ALLOW = ("schema", "config", "identity", "classification", "context_policy")
+_PKG_FILES = ("src/interfaces/__init__.py", "src/interfaces/schema.py", "src/interfaces/config.py", "src/interfaces/classification.py", "src/interfaces/identity.py", "src/interfaces/context_policy.py", "src/interfaces/journal.py", "src/interfaces/runtime_port.py")
+_PKG_ALLOW = ("src/interfaces/__init__.py", "src/interfaces/schema.py", "src/interfaces/config.py", "src/interfaces/identity.py", "src/interfaces/classification.py", "src/interfaces/context_policy.py", "src/interfaces/journal.py", "src/interfaces/runtime_port.py", "src/__init__.py")
+_REL_ALLOW = ("schema", "config", "identity", "classification", "context_policy", "journal", "runtime_port")
 
 
 def _is_read_mode(mode) -> bool:
