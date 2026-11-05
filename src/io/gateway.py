@@ -197,6 +197,82 @@ def _validate_clear_agent_id(agent_id: str) -> None:
         raise HTTPException(status_code=404, detail=f"unknown agent_id: {agent_id}")
 
 
+# ── EI-SEC-P0-DEFAULT-OFF-IMPLEMENT-1（P0 Security Containment，Owner Bry 已核准 Option A 預設關閉）──
+# 以下兩個函式是原 `POST /memory/clear/group`、`POST /memory/clear/{agent_id}` 的
+# **完整實作原樣保留**（含 `_validate_clear_agent_id` 三道閘＋503＋realpath 路徑收容），
+# 但刻意**不註冊為任何 HTTP 路由**：預設不暴露、無 alias、route table／OpenAPI 不可見、
+# 不因 SOUL_ENV 重開。若未來要恢復，必須另開工單＋Owner 核准，不得私自加回 decorator。
+async def _unregistered_clear_group_memory() -> dict:
+    """原 `/memory/clear/group` 實作（現未註冊，僅供單測直接呼叫驗證邏輯）。"""
+    import json as _json
+    from pathlib import Path as _Path
+
+    result = {"cleared": False, "file": ""}
+    group_file = data_root() / "conversations" / "group_chat.json"
+    if group_file.exists():
+        try:
+            group_file.unlink()
+            result["cleared"] = True
+            result["file"] = str(group_file)
+        except Exception as e:
+            result["error"] = str(e)
+
+    logger.info(f"[Gateway] clear_group_memory result={result}")
+    return result
+
+
+async def _unregistered_clear_agent_memory(agent_id: str) -> dict:
+    """原 `/memory/clear/{agent_id}` 實作（現未註冊，僅供單測直接呼叫驗證邏輯）。"""
+    import json as _json
+    import os as _os
+    from fastapi import HTTPException as _HTTPException
+    from pathlib import Path as _Path
+
+    # EI-SEC-PATH-VALIDATION-IMPLEMENT-1：驗證先於一切檔案操作。
+    # 非法輸入直接 4xx，本函式後續的 exists/unlink/read/write
+    # 對非法輸入不可達（fail-closed）。
+    _validate_clear_agent_id(agent_id)
+
+    result = {"agent_id": agent_id, "cleared": False, "files": []}
+
+    # 清除私人對話歷史
+    conversations_dir = data_root() / "conversations"
+    private_file = conversations_dir / f"bryan_{agent_id}_private.json"
+    # 路徑收容：最終解析位置必須**直接位於** conversations/ 內。
+    # 不用字串前綴判斷；realpath 同時消解 .. 與 symlink。
+    # 驗證過的 ID 正常情形下恆通過；此為縱深防禦。
+    if (
+        _Path(_os.path.realpath(private_file)).parent
+        != _Path(_os.path.realpath(conversations_dir))
+    ):
+        raise _HTTPException(status_code=400, detail="path containment violation")
+    if private_file.exists():
+        try:
+            private_file.unlink()
+            result["files"].append(str(private_file))
+            result["cleared"] = True
+        except Exception as e:
+            result["error"] = str(e)
+
+    # 清除群聊中該 Agent 的私人訊息標記
+    group_file = data_root() / "conversations" / "group_chat.json"
+    if group_file.exists():
+        try:
+            history = _json.loads(group_file.read_text(encoding="utf-8"))
+            original_count = len(history)
+            # 移除該 agent 的私人訊息標記（is_private=True 且 speaker=agent_id）
+            history = [m for m in history if not (m.get("is_private") and m.get("speaker") == agent_id)]
+            if len(history) < original_count:
+                group_file.write_text(_json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+                result["files"].append(str(group_file))
+                result["cleared"] = True
+        except Exception as e:
+            result["error"] = str(e)
+
+    logger.info(f"[Gateway] clear_memory agent={agent_id} result={result}")
+    return result
+
+
 # ── Soul Wall 輔助函式（Web UI 重設計，只讀不寫）──────────────────────
 
 def _clip(text: str, n: int = 40) -> str:
@@ -701,21 +777,9 @@ class IOGateway:
                         break
             return {"interactions": records, "count": len(records)}
 
-        @self.app.get("/debug/broadcast")
-        async def debug_broadcast():
-            """直接送一條測試訊息繞過 LLM 管線"""
-            from src.eventbus.schema import SoulEvent
-            fake_event = SoulEvent(
-                event_type=EventType.AGENT_SPEAK,
-                source="agent_yua",
-                target="broadcast",
-                payload={
-                    "agent_id": "agent_yua",
-                    "text": "嗨你好。這是 Yua 冷泡茶模式。[MiniMax-style mock]",
-                },
-            )
-            await self._on_agent_speak(fake_event)
-            return {"broadcast": True}
+        # ── EI-SEC-P0-DEFAULT-OFF-IMPLEMENT-1 ──
+        # `GET /debug/broadcast` 已除役（預設關閉）：無認證、有副作用的測試入口。
+        # 恢復需另開工單＋Owner 核准，不得私自加回。
 
         @self.app.get("/debug/emotion/{agent_id}")
         async def debug_emotion(agent_id: str):
@@ -740,46 +804,10 @@ class IOGateway:
                 "updated_at": updated_at,
             }
 
-        @self.app.get("/inject/yua")
-        async def inject_yua():
-            """直接讓 Yua 說句話（走真實 LLM）測試用。
-
-            🔴 SOUL-BUG-003（Bry 2026-10-16 裁示）：本端點無認證，且 publish 的
-            是帶真實 draft 的 AGENT_INTENT ⇒ **每次呼叫都會觸發一次真實付費 LLM
-            呼叫**並 `sleep(8.0)` 佔住 handler。原型是無認證 debug 面，但它是
-            「未被防護的付費出口」中最直接的一個，故比照同檔 `/_admin/fast_forward`
-            的既有條例加上生產閘門。
-
-            ⚠️ 閘門必須放在 `try` **之前**：本函式的 `except Exception` 會把
-            HTTPException 吞成 200 + {"error": ...}，放在 try 內等於沒有防護。
-            """
-            import os as _os
-            if _os.getenv("SOUL_ENV", "dev") == "production":
-                from fastapi import HTTPException
-                raise HTTPException(status_code=403, detail="disabled in production")
-            try:
-                from src.eventbus.schema import SoulEvent, EventPriority, EventType
-                intent = SoulEvent(
-                    event_type=EventType.AGENT_INTENT,
-                    source="agent_yua",
-                    target="broadcast",
-                    priority=EventPriority.NORMAL,
-                    payload={
-                        "agent_id": "agent_yua",
-                        "reason": "silence_timeout",
-                        "draft": "還好你還在。",
-                        "mode": "private",
-                        "memory_query_hint": "",
-                        "chrono_context": "",
-                    },
-                )
-                await self.bus.publish(intent)
-                # MiniMax takes ~2-3s; wait before returning so browser stays connected
-                await asyncio.sleep(8.0)
-                return {"yua_intent_fired": True}
-            except Exception as e:
-                import traceback
-                return {"error": str(e), "trace": traceback.format_exc()}
+        # ── EI-SEC-P0-DEFAULT-OFF-IMPLEMENT-1 ──
+        # `GET /inject/yua` 已除役（預設關閉）：無認證的真實付費 LLM 出口
+        #（帶真實 draft 的 AGENT_INTENT＋sleep(8.0) 佔住 handler，見 SOUL-BUG-003）。
+        # 恢復需另開工單＋Owner 核准，不得私自加回。
 
         # ── /api/tts/audio endpoint (B 方案 2026-07-15 Bry 拍板) ──
         # FishTTSHandler 透過 TTSService 寫 mp3 到 data/tts/{agent_id}/{ts}.mp3
@@ -879,22 +907,9 @@ class IOGateway:
                 logger.warning(f"[Gateway] Edge TTS failed: {e}")
                 raise HTTPException(status_code=500, detail=f"TTS failed: {e}")
 
-        @self.app.get("/_admin/fast_forward")
-        async def admin_fast_forward(minutes: float = 35.0):
-            """
-            觸發測試捷徑模擬 last_user_activity 往前設定
-            不允許在正式環境（SOUL_ENV=production）使用
-            """
-            import os
-            if os.getenv("SOUL_ENV", "dev") == "production":
-                from fastapi import HTTPException
-                raise HTTPException(status_code=403, detail="disabled in production")
-            heartbeat = getattr(self.app.state, "_heartbeat", None)
-            if heartbeat is None:
-                return {"error": "heartbeat not exposed on app.state"}
-            from datetime import timedelta, datetime, timezone
-            heartbeat.last_user_activity = datetime.now(timezone.utc) - timedelta(minutes=minutes)
-            return {"fast_forwarded": True, "minutes": minutes}
+        # ── EI-SEC-P0-DEFAULT-OFF-IMPLEMENT-1 ──
+        # `GET /_admin/fast_forward` 已除役（預設關閉）：可任意改寫 heartbeat
+        # last_user_activity 的無認證測試捷徑。恢復需另開工單＋Owner 核准。
 
         @self.app.websocket("/ws")
         async def websocket_endpoint(ws: WebSocket):
@@ -986,76 +1001,13 @@ class IOGateway:
                 logger.warning(f"[Gateway] Failed to mount static files: {e}")
 
 
-        @self.app.post("/memory/clear/group")
-        async def clear_group_memory():
-            """清除群組聊天的記憶"""
-            import json as _json
-            from pathlib import Path as _Path
-            
-            result = {"cleared": False, "file": ""}
-            group_file = data_root() / "conversations" / "group_chat.json"
-            if group_file.exists():
-                try:
-                    group_file.unlink()
-                    result["cleared"] = True
-                    result["file"] = str(group_file)
-                except Exception as e:
-                    result["error"] = str(e)
-            
-            logger.info(f"[Gateway] clear_group_memory result={result}")
-            return result
+        # ── EI-SEC-P0-DEFAULT-OFF-IMPLEMENT-1 ──
+        # `POST /memory/clear/group`、`POST /memory/clear/{agent_id}` 已除役
+        #（預設關閉）：無認證的破壞性端點。完整實作保留為模組級
+        # `_unregistered_clear_group_memory`／`_unregistered_clear_agent_memory`
+        #（含 validator 三道閘＋503＋realpath 收容），此處刻意不註冊任何路由。
+        # 恢復需另開工單＋Owner 核准，不得私自加回。
 
-        @self.app.post("/memory/clear/{agent_id}")
-        async def clear_agent_memory(agent_id: str):
-            """清除指定 Agent 的記憶（私人對話歷史）"""
-            import json as _json
-            import os as _os
-            from fastapi import HTTPException as _HTTPException
-            from pathlib import Path as _Path
-
-            # EI-SEC-PATH-VALIDATION-IMPLEMENT-1：驗證先於一切檔案操作。
-            # 非法輸入直接 4xx，本函式後續的 exists/unlink/read/write
-            # 對非法輸入不可達（fail-closed）。
-            _validate_clear_agent_id(agent_id)
-
-            result = {"agent_id": agent_id, "cleared": False, "files": []}
-
-            # 清除私人對話歷史
-            conversations_dir = data_root() / "conversations"
-            private_file = conversations_dir / f"bryan_{agent_id}_private.json"
-            # 路徑收容：最終解析位置必須**直接位於** conversations/ 內。
-            # 不用字串前綴判斷；realpath 同時消解 .. 與 symlink。
-            # 驗證過的 ID 正常情形下恆通過；此為縱深防禦。
-            if (
-                _Path(_os.path.realpath(private_file)).parent
-                != _Path(_os.path.realpath(conversations_dir))
-            ):
-                raise _HTTPException(status_code=400, detail="path containment violation")
-            if private_file.exists():
-                try:
-                    private_file.unlink()
-                    result["files"].append(str(private_file))
-                    result["cleared"] = True
-                except Exception as e:
-                    result["error"] = str(e)
-            
-            # 清除群聊中該 Agent 的私人訊息標記
-            group_file = data_root() / "conversations" / "group_chat.json"
-            if group_file.exists():
-                try:
-                    history = _json.loads(group_file.read_text(encoding="utf-8"))
-                    original_count = len(history)
-                    # 移除該 agent 的私人訊息標記（is_private=True 且 speaker=agent_id）
-                    history = [m for m in history if not (m.get("is_private") and m.get("speaker") == agent_id)]
-                    if len(history) < original_count:
-                        group_file.write_text(_json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
-                        result["files"].append(str(group_file))
-                        result["cleared"] = True
-                except Exception as e:
-                    result["error"] = str(e)
-            
-            logger.info(f"[Gateway] clear_memory agent={agent_id} result={result}")
-            return result
     async def _on_agent_speak(self, event: SoulEvent):
         # hotfix #11 (2026-07-16 Bry 拍板):
         # proxy.py finally 區塊會補發 stub AGENT_SPEAK 觸發 consciousness._pending reset
