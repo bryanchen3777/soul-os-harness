@@ -952,6 +952,14 @@ class TestBoundedAndFrozenDiscipline:
             #    regression, so this scope check was never exercised for them.
             #    The entry covers the same single file for all three swaps.
             "src/voice/fish_tts.py",
+            # ── EI-1-HG (2026-11-04) ─────────────────────────────────────
+            # 本票登記 6 個已審查非 frozen 檔（src/interfaces 精確路徑，無 wildcard）。
+            "src/interfaces/__init__.py",
+            "src/interfaces/schema.py",
+            "src/interfaces/config.py",
+            "src/interfaces/identity.py",
+            "src/interfaces/classification.py",
+            "src/interfaces/context_policy.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",
