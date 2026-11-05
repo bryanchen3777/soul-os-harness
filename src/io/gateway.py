@@ -138,6 +138,65 @@ AGENT_DISPLAY_NAMES: dict[str, str] = {
 }
 
 
+# ── EI-SEC-PATH-VALIDATION-IMPLEMENT-1＋FALLBACK-FIX-1：destructive 路由輸入驗證 ──
+# `/memory/clear/{agent_id}` 的 agent_id 是不可信輸入，會直接拼進檔案路徑。
+# 驗證必須發生在任何 exists()/read/unlink/write 之前，fail-closed。
+#
+# 合法 ID 權威來源 = 成功讀取的 configs/default.yaml enabled agents（與同檔
+# `_default_group_members` 同一註冊表）。FALLBACK-FIX-1：權威讀取失敗時
+# 不得回退到 AGENT_DISPLAY_NAMES（僅顯示用途）或任何硬編碼清單，
+# 一律拒絕破壞性操作（503）。不另發明身份規則。
+def _validate_clear_agent_id(agent_id: str) -> None:
+    """驗證清除端點的 agent_id；非法者 raise HTTPException（400/404）。
+
+    三道閘（順序固定）：
+      ① 結構拒絕 → 400（分隔符 / 反斜槓 / dot segments / 空值 /
+         非預期編碼殘留 % / 控制字元）。Starlette 傳入的已是 url-decoded
+         值，此處看到的就是最終進檔案系統的字串。
+      ② 字元集＋長度白名單 → 400（`agent_[a-z_]{1,48}`；註冊 ID 皆落在此集合內，
+         以 configs/default.yaml 為準，不在此寫死數量）。
+      ③ 成員資格 → 404（必須是註冊表中的 enabled agent；與同檔
+         `/debug/emotion/{agent_id}` 的 unknown→404 慣例一致）。
+         權威不可用（讀取失敗／結構無效）→ 503，一律拒絕破壞性操作，
+         不得回退到顯示名錶或硬編碼清單（FALLBACK-FIX-1）。
+    """
+    from fastapi import HTTPException
+    import re as _re
+
+    # ① 結構拒絕
+    if (
+        not isinstance(agent_id, str)
+        or not agent_id
+        or agent_id in (".", "..")
+        or "/" in agent_id
+        or "\\" in agent_id
+        or "%" in agent_id
+        or "\x00" in agent_id
+        or any(ord(c) < 0x20 or ord(c) == 0x7F for c in agent_id)
+    ):
+        raise HTTPException(status_code=400, detail=f"invalid agent_id: {agent_id!r}")
+    # ② 字元集＋長度白名單
+    if _re.fullmatch(r"agent_[a-z_]{1,48}", agent_id) is None:
+        raise HTTPException(status_code=400, detail=f"invalid agent_id: {agent_id!r}")
+    # ③ 成員資格（僅接受成功讀取的權威註冊表；FALLBACK-FIX-1：
+    #   任何權威失效一律拒絕，不得回退到 AGENT_DISPLAY_NAMES 或硬編碼清單）
+    try:
+        from configs.loader import load_config
+        _cfg = load_config()
+    except Exception:
+        raise HTTPException(status_code=503, detail="agent authority unavailable")
+    _agents = _cfg.get("agents", []) if isinstance(_cfg, dict) else None
+    if not isinstance(_agents, list):
+        raise HTTPException(status_code=503, detail="agent authority invalid")
+    _valid = {
+        _a["id"]
+        for _a in _agents
+        if isinstance(_a, dict) and "id" in _a and _a.get("enabled", True)
+    }
+    if agent_id not in _valid:
+        raise HTTPException(status_code=404, detail=f"unknown agent_id: {agent_id}")
+
+
 # ── Soul Wall 輔助函式（Web UI 重設計，只讀不寫）──────────────────────
 
 def _clip(text: str, n: int = 40) -> str:
@@ -950,12 +1009,28 @@ class IOGateway:
         async def clear_agent_memory(agent_id: str):
             """清除指定 Agent 的記憶（私人對話歷史）"""
             import json as _json
+            import os as _os
+            from fastapi import HTTPException as _HTTPException
             from pathlib import Path as _Path
-            
+
+            # EI-SEC-PATH-VALIDATION-IMPLEMENT-1：驗證先於一切檔案操作。
+            # 非法輸入直接 4xx，本函式後續的 exists/unlink/read/write
+            # 對非法輸入不可達（fail-closed）。
+            _validate_clear_agent_id(agent_id)
+
             result = {"agent_id": agent_id, "cleared": False, "files": []}
-            
+
             # 清除私人對話歷史
-            private_file = data_root() / "conversations" / f"bryan_{agent_id}_private.json"
+            conversations_dir = data_root() / "conversations"
+            private_file = conversations_dir / f"bryan_{agent_id}_private.json"
+            # 路徑收容：最終解析位置必須**直接位於** conversations/ 內。
+            # 不用字串前綴判斷；realpath 同時消解 .. 與 symlink。
+            # 驗證過的 ID 正常情形下恆通過；此為縱深防禦。
+            if (
+                _Path(_os.path.realpath(private_file)).parent
+                != _Path(_os.path.realpath(conversations_dir))
+            ):
+                raise _HTTPException(status_code=400, detail="path containment violation")
             if private_file.exists():
                 try:
                     private_file.unlink()
