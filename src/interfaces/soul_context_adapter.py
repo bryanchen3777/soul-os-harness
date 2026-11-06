@@ -30,7 +30,8 @@ NEVER in this module:
   - production ``data/`` reads or writes
   - real LLM providers / keys / network
 
-Ticket: EI-2B-REAL-CONTEXT-ISOLATED-ADAPTER-1. No commit/push/merge.
+Ticket: EI-2B-REAL-CONTEXT-ISOLATED-ADAPTER-1 + PATH-ROOT-FAILCLOSED-FIX-1.
+Local commit only; no push/merge.
 """
 
 from __future__ import annotations
@@ -92,11 +93,17 @@ def verify_isolation() -> IsolationReport:
 
     Proves (not assumes):
       1. SOUL_OS_DATA_DIR is set in this process.
-      2. post-reset data_root() equals it and is NOT the production root.
-      3. proxy.CONV_DIR (import-time capture feeding _load_private ->
+      2. The import-time module bindings (CONV_DIR / INNER_LIFE_DATA_DIR as
+         bound BEFORE reset_data_root() re-points registered constants)
+         are NOT production-bound. This pre-reset capture is the only
+         witness of the process launch binding: after reset the constants
+         follow the current env, so a post-reset-only read cannot detect
+         "imported under production, env switched later".
+      3. post-reset data_root() equals it and is NOT the production root.
+      4. proxy.CONV_DIR (import-time capture feeding _load_private ->
          _load_self_recent / _load_bry_recent inside the genuine builder)
          lives under a non-production launch root.
-      4. proxy.INNER_LIFE_DATA_DIR (import-time capture feeding
+      5. proxy.INNER_LIFE_DATA_DIR (import-time capture feeding
          _format_recent_inner_life) likewise.
     """
     from src.paths import data_root, reset_data_root
@@ -108,9 +115,26 @@ def verify_isolation() -> IsolationReport:
             "SOUL_OS_DATA_DIR is not set; refusing (import-time CONV_DIR.mkdir "
             "at proxy.py:73-74 executes on first import src.llm.proxy)."
         )
+    # PATH-ROOT-FIX-1: capture the launch binding BEFORE reset_data_root().
+    # reset re-points every registered constant (paths.py
+    # DERIVED_DATA_ROOT_CONSTANTS: proxy.CONV_DIR, INNER_LIFE_DATA_DIR) to
+    # the current env, so only this pre-reset read witnesses where the
+    # process was actually launched/bound. Path computation only, no IO.
+    prod = _production_root()
+    pre_conv = Path(_proxy.CONV_DIR).resolve()
+    pre_inner = Path(_proxy.INNER_LIFE_DATA_DIR).resolve()
+    for label, pre_dir in (("CONV_DIR", pre_conv),
+                           ("INNER_LIFE_DATA_DIR", pre_inner)):
+        pre_root = pre_dir.parent
+        if pre_root == prod or prod in pre_root.parents:
+            raise IsolationError(
+                f"BLOCKED import-time binding: module {label}={pre_dir} is "
+                "production-bound at launch; relaunch with "
+                "SOUL_OS_DATA_DIR=<isolated-root> BEFORE first import "
+                "src.llm.proxy (reset cannot undo the import-time mkdir)."
+            )
     reset_data_root()
     cur = data_root().resolve()
-    prod = _production_root()
     if cur == prod or prod in cur.parents:
         raise IsolationError(f"data_root resolves to production: {cur}")
 
@@ -138,11 +162,81 @@ def verify_isolation() -> IsolationReport:
         module_inner_life_dir=str(inner_dir),
         checks={
             "env_set": "ok",
+            "import_time_binding_isolated": "ok",
             "data_root_isolated": "ok",
             "conv_dir_bounded": "ok",
             "inner_life_dir_bounded": "ok",
         },
     )
+
+
+def validate_request_data_root(request_root) -> Tuple[Path, IsolationReport]:
+    """Fail-closed gate for every caller-provided data root.
+
+    Runs the full verify_isolation() preflight first, then proves the
+    request root against the CURRENT data_root (post-reset). In the
+    supported isolated one-shot process the current root IS the launch
+    root (nothing re-points it mid-process); under pytest the per-test
+    conftest env plays that role, which is why the anchor is the current
+    root and not a process-import-time capture (the latter would forbid
+    the sanctioned per-test re-pointing).
+
+    Refuses (all BEFORE any mkdir / GraphStore / SQLite / singleton
+    mutation by the caller):
+      - missing/illegal values (None, empty, non-path types);
+      - unresolvable paths;
+      - the production root or anything under it (checked BEFORE the
+        existence check so a production path is refused as production);
+      - missing paths or non-directories;
+      - anything not equal-to-or-nested-under the current data_root
+        (foreign temp roots, ``..`` escapes, symlink-to-production after
+        canonical resolve(), launch/request/env mismatch).
+
+    Canonical ``resolve()`` comparison throughout. Resolving a symlink
+    stats the link target's metadata (one realpath, no content read, no
+    listing) -- the mandated minimum for the symlink-escape test.
+
+    Returns the resolved request root plus the isolation report.
+    """
+    report = verify_isolation()
+    if request_root is None or (
+        not isinstance(request_root, (str, Path))
+    ):
+        raise IsolationError(
+            f"illegal request data_root {request_root!r}: refusing "
+            "(None / non-path values are never valid roots)."
+        )
+    if isinstance(request_root, str) and not request_root.strip():
+        raise IsolationError(
+            "illegal request data_root '': refusing (empty path)."
+        )
+    try:
+        resolved = Path(request_root).resolve()
+    except Exception as exc:  # noqa: BLE001 -- unresolvable, fail closed
+        raise IsolationError(
+            f"unresolvable request data_root {request_root!r}: {exc}; "
+            "refusing."
+        ) from None
+    prod = Path(report.production_data_root)
+    if resolved == prod or prod in resolved.parents:
+        raise IsolationError(
+            f"request data_root {resolved} is the production root or "
+            "under it; refusing before any filesystem side effect."
+        )
+    if not resolved.exists() or not resolved.is_dir():
+        raise IsolationError(
+            f"request data_root {resolved} is missing or not a directory; "
+            "refusing (the adapter creates only the validated 'soul' "
+            "child, never the request root itself)."
+        )
+    current = Path(report.current_data_root)
+    if resolved != current and current not in resolved.parents:
+        raise IsolationError(
+            f"request data_root {resolved} is outside the current isolated "
+            f"data_root {current}; refusing (foreign temp root, '..' "
+            "escape, symlink escape, or launch/request/env mismatch)."
+        )
+    return resolved, report
 
 
 def resolve_agent_id(soul_alias: str) -> str:
@@ -199,17 +293,22 @@ def get_scope_provider(
     Genuine ``SAGELiteProvider(data_dir=<root>/sage/<scope>)`` +
     ``initialize(session_id)``. No schema/reader/writer/cache changes, no
     background prefetch queueing (background thread forbidden).
+
+    PATH-ROOT-FIX-1: the request root is fully validated (preflight +
+    production / existence / nesting checks) BEFORE provider construction,
+    so an unsafe root can never reach the SQLite open inside initialize().
     """
+    resolved_root, _ = validate_request_data_root(data_root)
     from src.memory.sage.provider import SAGELiteProvider
 
     if scope not in ("rem", "ram"):
         raise IsolationError(f"unknown SAGE scope {scope!r}.")
-    key = (str(Path(data_root).resolve()), scope)
+    key = (str(resolved_root), scope)
     provider = _SCOPE_PROVIDERS.get(key)
     if provider is None:
         provider = SAGELiteProvider(
             profile_id=f"harness_{scope}",
-            data_dir=str(Path(data_root).resolve() / "sage" / scope),
+            data_dir=str(resolved_root / "sage" / scope),
         )
         provider.initialize(session_id=session_id)
         _SCOPE_PROVIDERS[key] = provider
@@ -232,10 +331,14 @@ def ensure_relationship_isolation(soul_dir: Path):
     instead of rebinding. Simultaneous builds in one process remain
     SHARED_RUNTIME_BLOCKED: a lock only serializes OUR calls, it cannot
     stop other singleton users.
+
+    PATH-ROOT-FIX-1: the target dir is re-validated here (defense in
+    depth for direct callers) before the singleton is touched.
     """
     from src.soul import relationships as _rel
 
-    target = Path(soul_dir).resolve()
+    validated, _ = validate_request_data_root(soul_dir)
+    target = validated
     with _rel._manager_lock:
         prior = _rel._manager_singleton
     if prior is not None:
@@ -308,8 +411,11 @@ def build_harness_messages(
             "refusing instead of crashing or substituting fixtures."
         )
     agent_id, soul = load_harness_persona(soul_alias)
-    report = verify_isolation()
-    soul_dir = Path(data_root).resolve() / "soul"
+    # PATH-ROOT-FIX-1: validate the caller root BEFORE the first
+    # filesystem side effect (previously soul_dir.mkdir ran unvalidated
+    # and the singleton rebound to whatever was passed).
+    resolved_request, report = validate_request_data_root(data_root)
+    soul_dir = resolved_request / "soul"
     soul_dir.mkdir(parents=True, exist_ok=True)
     from src.soul import relationships as _rel
 

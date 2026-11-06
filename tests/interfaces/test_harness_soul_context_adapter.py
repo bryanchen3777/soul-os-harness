@@ -1,4 +1,5 @@
-"""EI-2B-REAL-CONTEXT-ISOLATED-ADAPTER-1 acceptance (16 scenarios).
+"""EI-2B-REAL-CONTEXT-ISOLATED-ADAPTER-1 acceptance (21 scenarios/tests 01-21)
+plus PATH-ROOT-FIX-1 negatives (tests 22-33).
 
 RUN RULE (structural, non-negotiable): the OS environment MUST preset
 SOUL_OS_DATA_DIR to a fresh isolated root BEFORE the pytest process starts,
@@ -41,6 +42,7 @@ from src.interfaces.soul_context_adapter import (
     load_harness_persona,
     prefetch_scope_memory,
     resolve_agent_id,
+    validate_request_data_root,
     verify_isolation,
 )
 
@@ -74,7 +76,14 @@ def _clean_relationship_singleton():
 # ── helpers ──────────────────────────────────────────────────────────
 
 def _isolated_writes_root(tmp_path: Path) -> Path:
-    root = tmp_path / "harness_data"
+    # PATH-ROOT-FIX-1: caller request roots must nest under the CURRENT
+    # isolated data_root (post-reset env). Anchor here, with a per-test
+    # unique child (tmp_path.name) so SAGE providers / relationship state
+    # never leak across tests. tmp_path itself is NOT under the env root
+    # (sibling basetemp dirs), so only its name is reused, never the path.
+    env = os.environ.get("SOUL_OS_DATA_DIR")
+    assert env, "SOUL_OS_DATA_DIR must be preset before pytest starts"
+    root = Path(env).resolve() / tmp_path.name / "harness_data"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -565,7 +574,11 @@ def test_19_sequential_rem_ram_builds_stay_scoped(tmp_path):
 # ── 20: build on a bare empty root (no hidden production seeding) ─────
 
 def test_20_build_on_bare_empty_root(tmp_path):
-    root = tmp_path / "brand_new_root"  # nothing pre-seeded at all
+    # PATH-ROOT-FIX-1: the bare root must still nest under the current
+    # isolated data_root (nothing pre-seeded inside it at all).
+    env = os.environ.get("SOUL_OS_DATA_DIR")
+    assert env, "SOUL_OS_DATA_DIR must be preset before pytest starts"
+    root = Path(env).resolve() / tmp_path.name / "brand_new_root"  # nothing pre-seeded at all
     root.mkdir(parents=True, exist_ok=True)
     mem = _make_memory(tmp_path, name="bare_memory.db")
     try:
@@ -585,3 +598,303 @@ def test_21_shared_runtime_use_declared_blocked():
     assert ISOLATED_ONESHOT_ONLY is True
     assert "one-shot" in SHARED_RUNTIME_BLOCKED
     assert "process-global" in SHARED_RUNTIME_BLOCKED
+
+
+# ── PATH-ROOT-FIX-1 negatives (22-33) ─────────────────────────────────
+#
+# Fail-closed data-root validation: every caller-provided root is fully
+# validated BEFORE any mkdir / GraphStore / SQLite / singleton mutation.
+# No test below performs production IO: production paths are used for pure
+# path computation + resolve() only (one realpath metadata stat for the
+# symlink case, no content read, no listing); refusal is proven with
+# fault-injection spies, never with real production writes.
+
+def _env_root() -> Path:
+    env = os.environ.get("SOUL_OS_DATA_DIR")
+    assert env, "SOUL_OS_DATA_DIR must be preset before pytest starts"
+    return Path(env).resolve()
+
+
+def _unsafe_roots(tmp_path: Path):
+    """ Representative unsafe caller roots (all must raise IsolationError).
+
+    Production paths below are path-computation only (resolve, no IO).
+    """
+    from src.paths import production_data_root
+
+    prod = production_data_root().resolve()  # path only, no IO
+    foreign = tmp_path / "foreign_unsafe_root"
+    foreign.mkdir(parents=True, exist_ok=True)
+    return [prod, prod / "conversations", foreign, _env_root().parent]
+
+
+# ── FIX-1: correct isolated root succeeds on both entrypoints ─────────
+
+def test_22_correct_isolated_root_succeeds_both_entrypoints(tmp_path):
+    root = _isolated_writes_root(tmp_path)
+    mem = _make_memory(tmp_path)
+    try:
+        provider = get_scope_provider(root, "rem", session_id="s22")
+        assert provider is not None
+        resolved, report = validate_request_data_root(root)
+        assert resolved == root.resolve()
+        assert Path(report.current_data_root) == _env_root()
+        assert report.checks.get("import_time_binding_isolated") == "ok"
+        ctx = build_harness_messages(
+            soul_alias="rem", user_id=OWNER_USER, text="隔離根探針",
+            data_root=root, memory_store=mem)
+        assert ctx["messages"][0]["role"] == "system"
+        assert Path(ctx["isolation"].relationship_dir).resolve() == \
+            (root / "soul").resolve()
+    finally:
+        mem.close()
+
+
+# ── FIX-2: production root refused on both entrypoints ────────────────
+
+def test_23_production_root_refused(tmp_path):
+    from src.paths import production_data_root
+
+    prod = production_data_root().resolve()  # path only, no IO
+    mem = _make_memory(tmp_path)
+    try:
+        with pytest.raises(IsolationError):
+            get_scope_provider(prod, "rem", session_id="s23")
+        with pytest.raises(IsolationError):
+            build_harness_messages(
+                soul_alias="rem", user_id=OWNER_USER, text="生產根探針",
+                data_root=prod, memory_store=mem)
+    finally:
+        mem.close()
+
+
+# ── FIX-3: production subdirectory refused ────────────────────────────
+
+def test_24_production_subdir_refused(tmp_path):
+    from src.paths import production_data_root
+
+    sub = production_data_root().resolve() / "conversations"  # path only
+    mem = _make_memory(tmp_path)
+    try:
+        with pytest.raises(IsolationError):
+            get_scope_provider(sub, "ram", session_id="s24")
+        with pytest.raises(IsolationError):
+            build_harness_messages(
+                soul_alias="ram", user_id=OWNER_USER, text="生產子目錄探針",
+                data_root=sub, memory_store=mem)
+    finally:
+        mem.close()
+
+
+# ── FIX-4: foreign temp root refused ──────────────────────────────────
+
+def test_25_foreign_temp_root_refused(tmp_path):
+    foreign = tmp_path / "foreign_isolated_root"
+    foreign.mkdir(parents=True, exist_ok=True)
+    mem = _make_memory(tmp_path)
+    try:
+        with pytest.raises(IsolationError):
+            get_scope_provider(foreign, "rem", session_id="s25")
+        with pytest.raises(IsolationError):
+            build_harness_messages(
+                soul_alias="rem", user_id=OWNER_USER, text="外部根探針",
+                data_root=foreign, memory_store=mem)
+    finally:
+        mem.close()
+
+
+# ── FIX-5: '..' traversal refused (canonical resolve defeats it) ─────
+
+def test_26_dotdot_traversal_refused(tmp_path):
+    # A '..'-spelled path resolving to a REAL dir outside the env root:
+    # proves canonicalization (not string prefix) decides.
+    escape = _env_root().parent / "dotdot_escape_probe"
+    escape.mkdir(parents=True, exist_ok=True)
+    raw = _env_root() / ".." / "dotdot_escape_probe"
+    assert ".." in str(raw)
+    assert raw.resolve() == escape.resolve()
+    mem = _make_memory(tmp_path)
+    try:
+        with pytest.raises(IsolationError):
+            get_scope_provider(raw, "rem", session_id="s26")
+        with pytest.raises(IsolationError):
+            build_harness_messages(
+                soul_alias="rem", user_id=OWNER_USER, text="跳脫探針",
+                data_root=raw, memory_store=mem)
+    finally:
+        mem.close()
+
+
+# ── FIX-6: symlink escape refused ─────────────────────────────────────
+
+def test_27_symlink_escape_refused(tmp_path):
+    from src.paths import production_data_root
+
+    prod = production_data_root().resolve()  # path only, no IO
+    link = _env_root() / tmp_path.name / "slink_to_prod"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(prod, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation needs privilege on this host")
+    # The link textually nests under the env root; only canonical
+    # resolve() (one realpath metadata stat, no content read/list)
+    # reveals it IS production.
+    assert link.resolve() == prod
+    mem = _make_memory(tmp_path)
+    try:
+        with pytest.raises(IsolationError):
+            get_scope_provider(link, "rem", session_id="s27")
+        with pytest.raises(IsolationError):
+            build_harness_messages(
+                soul_alias="rem", user_id=OWNER_USER, text="連結探針",
+                data_root=link, memory_store=mem)
+    finally:
+        mem.close()
+        if link.is_symlink():
+            link.unlink()
+
+
+# ── FIX-7: env/launch/request mismatch refused ────────────────────────
+
+def test_28_env_request_mismatch_refused(tmp_path, monkeypatch):
+    root_a = _isolated_writes_root(tmp_path)  # nests under env A
+    env_b = tmp_path / "env_b_root"
+    env_b.mkdir(parents=True, exist_ok=True)
+    mem = _make_memory(tmp_path)
+    try:
+        # Switch the process env to B AFTER the request root was fixed
+        # under A: import/launch binding (A) != current env (B) !=
+        # request anchor. Both entrypoints must refuse.
+        monkeypatch.setenv("SOUL_OS_DATA_DIR", str(env_b))
+        with pytest.raises(IsolationError):
+            get_scope_provider(root_a, "rem", session_id="s28")
+        with pytest.raises(IsolationError):
+            build_harness_messages(
+                soul_alias="rem", user_id=OWNER_USER, text="不一致探針",
+                data_root=root_a, memory_store=mem)
+    finally:
+        mem.close()
+
+
+# ── FIX-8: missing SOUL_OS_DATA_DIR refused on both entrypoints ───────
+
+def test_29_missing_env_refused_both_entrypoints(tmp_path, monkeypatch):
+    root = _isolated_writes_root(tmp_path)
+    mem = _make_memory(tmp_path)
+    try:
+        monkeypatch.delenv("SOUL_OS_DATA_DIR", raising=True)
+        with pytest.raises(IsolationError):
+            get_scope_provider(root, "rem", session_id="s29")
+        with pytest.raises(IsolationError):
+            build_harness_messages(
+                soul_alias="rem", user_id=OWNER_USER, text="缺 env 探針",
+                data_root=root, memory_store=mem)
+    finally:
+        mem.close()
+
+
+# ── FIX-9: get_scope_provider unsafe paths refused ────────────────────
+
+def test_30_get_scope_provider_unsafe_roots_refused(tmp_path):
+    for bad in _unsafe_roots(tmp_path) + [None, "", 12345]:
+        with pytest.raises(IsolationError):
+            get_scope_provider(bad, "rem", session_id="s30")
+
+
+# ── FIX-10: build_harness_messages unsafe paths refused ───────────────
+
+def test_31_build_unsafe_roots_refused(tmp_path):
+    mem = _make_memory(tmp_path)
+    try:
+        for bad in _unsafe_roots(tmp_path) + [None, "", 12345]:
+            with pytest.raises(IsolationError):
+                build_harness_messages(
+                    soul_alias="rem", user_id=OWNER_USER, text="不安全根探針",
+                    data_root=bad, memory_store=mem)
+    finally:
+        mem.close()
+
+
+# ── FIX-11: refusal performs no mkdir/SQLite/singleton-call ───────────
+
+def test_32_refusal_performs_no_request_side_effects(tmp_path, monkeypatch):
+    import pathlib
+
+    import src.memory.sage.provider as _sage_mod
+    from src.soul import relationships as _rel
+
+    bad = tmp_path / "foreign_no_side_effect"
+    bad.mkdir(parents=True, exist_ok=True)
+    bad_resolved = bad.resolve()
+
+    mkdir_targets = []
+    real_mkdir = pathlib.Path.mkdir
+
+    def _spy_mkdir(self, *args, **kwargs):
+        mkdir_targets.append(Path(self).resolve())
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "mkdir", _spy_mkdir)
+
+    constructed = []
+
+    class _SpyProvider:
+        def __init__(self, *args, **kwargs):
+            constructed.append((args, kwargs))
+            raise AssertionError("SAGELiteProvider must not be constructed")
+
+    monkeypatch.setattr(_sage_mod, "SAGELiteProvider", _SpyProvider)
+
+    rel_calls = []
+    real_get = _rel.get_relationships_manager
+
+    def _spy_get(*args, **kwargs):
+        rel_calls.append((args, kwargs))
+        return real_get(*args, **kwargs)
+
+    monkeypatch.setattr(_rel, "get_relationships_manager", _spy_get)
+
+    mem = _make_memory(tmp_path)
+    try:
+        with pytest.raises(IsolationError):
+            get_scope_provider(bad, "rem", session_id="s32")
+        with pytest.raises(IsolationError):
+            build_harness_messages(
+                soul_alias="rem", user_id=OWNER_USER, text="無副作用探針",
+                data_root=bad, memory_store=mem)
+    finally:
+        mem.close()
+    assert constructed == [], "refused root reached SQLite provider init"
+    assert rel_calls == [], "refused root reached relationships manager"
+    hits = [t for t in mkdir_targets
+            if t == bad_resolved or bad_resolved in t.parents]
+    assert hits == [], f"mkdir touched the refused root: {hits}"
+
+
+# ── FIX-12: refusal leaves the relationships singleton untouched ───────
+
+def test_33_refusal_leaves_singleton_untouched(tmp_path):
+    from src.soul import relationships as _rel
+
+    bad = tmp_path / "foreign_singleton_probe"
+    bad.mkdir(parents=True, exist_ok=True)
+    mem = _make_memory(tmp_path)
+    sentinel = object()  # simulates a foreign owner's pin
+    with _rel._manager_lock:
+        _rel._manager_singleton = sentinel
+    try:
+        with pytest.raises(IsolationError):
+            build_harness_messages(
+                soul_alias="rem", user_id=OWNER_USER, text="單例探針",
+                data_root=bad, memory_store=mem)
+        with _rel._manager_lock:
+            assert _rel._manager_singleton is sentinel
+        with pytest.raises(IsolationError):
+            get_scope_provider(bad, "ram", session_id="s33")
+        with _rel._manager_lock:
+            assert _rel._manager_singleton is sentinel
+    finally:
+        mem.close()
+        with _rel._manager_lock:
+            _rel._manager_singleton = None
