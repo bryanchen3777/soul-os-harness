@@ -268,13 +268,50 @@ class Journal:
                     pass
                 raise OwnershipError("generated ownership failed")
             if state == "executing":
-                conn.execute(
+                # Atomic compare-and-set: the row must still be owned by this
+                # epoch in executing state. A concurrent recover/claim that
+                # moved it to uncertain (or anything else) makes rowcount 0,
+                # so a stale worker can never overwrite a converged verdict.
+                cur = conn.execute(
                     "UPDATE requests SET response_id=?, response_body=?, state='generated'"
-                    " WHERE request_id=?",
-                    (response_id, response_body, request_id),
+                    " WHERE request_id=? AND state='executing' AND epoch=?",
+                    (response_id, response_body, request_id, epoch),
                 )
-                conn.commit()
-                return
+                if cur.rowcount == 1:
+                    conn.commit()
+                    return
+                # Lost a race between our SELECT and UPDATE: re-read once and
+                # decide purely from current durable state (read-only here, so
+                # no second overwrite is possible from this path).
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                row2 = conn.execute(
+                    "SELECT state, epoch, response_id, response_body FROM requests WHERE request_id=?",
+                    (request_id,),
+                ).fetchone()
+                if row2 is None:
+                    raise JournalError("unknown request")
+                state2 = row2[0]
+                sepoch2 = row2[1]
+                sresp_id2 = row2[2]
+                sresp_body2 = row2[3]
+                if sepoch2 != epoch:
+                    raise OwnershipError("generated ownership failed")
+                if state2 == "generated" or state2 == "transport_sent":
+                    if sresp_id2 == response_id and sresp_body2 == response_body:
+                        try:
+                            conn.commit()
+                        except Exception:
+                            try:
+                                conn.rollback()
+                            except Exception:
+                                pass
+                            raise JournalError("generated commit failed")
+                        return
+                    raise JournalError("generated response mismatch")
+                raise JournalError("bad state for generated")
             if state == "generated" or state == "transport_sent":
                 if sresp_id == response_id and sresp_body == response_body:
                     try:
@@ -376,11 +413,29 @@ class Journal:
         if not isinstance(epoch, int) or isinstance(epoch, bool):
             raise JournalError("bad epoch")
         conn = self.conn
-        try:
-            row = conn.execute(
-                "SELECT epoch, outcomes FROM requests WHERE request_id=?",
-                (request_id,),
-            ).fetchone()
+        # Atomic compare-and-set: each attempt reads the current durable
+        # (epoch, outcomes) snapshot and writes only if that exact snapshot
+        # still holds. The write is a single predicated UPDATE in autocommit
+        # mode, so either it lands on the snapshot we validated or rowcount
+        # is 0 and nothing changed. A stale worker therefore can never
+        # silently overwrite a newer durable outcome: a durable completed
+        # is never downgraded by a stale pending/skipped/unknown (that path
+        # raises "completed cannot downgrade" from a fresh read), and any
+        # other lost race retries from fresh state instead of clobbering.
+        # Same single-statement-CAS pattern as record_generated /
+        # mark_uncertain above.
+        for _ in range(3):
+            try:
+                row = conn.execute(
+                    "SELECT epoch, outcomes FROM requests WHERE request_id=?",
+                    (request_id,),
+                ).fetchone()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("record_outcome failed")
             if row is None:
                 try:
                     conn.rollback()
@@ -394,7 +449,14 @@ class Journal:
                 except Exception:
                     pass
                 raise OwnershipError("outcome ownership failed")
-            data = _parse_outcomes(row[1])
+            try:
+                data = _parse_outcomes(row[1])
+            except JournalError:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
             current = data.get(_MEMORY_DEST, "pending")
             if current == "completed" and status != "completed":
                 try:
@@ -402,21 +464,60 @@ class Journal:
                 except Exception:
                     pass
                 raise JournalError("completed cannot downgrade")
+            if current == status:
+                # Durable state already equals the desired outcome, so there
+                # is nothing to write. This covers the completed/completed
+                # same-state case: both writers carry valid evidence and
+                # agree on byte-identical durable JSON, so no conflict
+                # policy is involved and success drops nothing.
+                try:
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise JournalError("record_outcome failed")
+                return
             data[_MEMORY_DEST] = status
-            text = _dump_outcomes(data)
-            conn.execute(
-                "UPDATE requests SET outcomes=? WHERE request_id=?",
-                (text, request_id),
-            )
-            conn.commit()
-        except (JournalError, OwnershipError):
-            raise
-        except Exception as exc:
+            try:
+                text = _dump_outcomes(data)
+            except JournalError:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+            try:
+                cur = conn.execute(
+                    "UPDATE requests SET outcomes=? WHERE request_id=? AND epoch=? AND outcomes=?",
+                    (text, request_id, epoch, row[1]),
+                )
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("record_outcome failed")
+            if cur.rowcount == 1:
+                try:
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise JournalError("record_outcome failed")
+                return
+            # Lost a race: our snapshot went stale before the predicated
+            # write landed (a concurrent writer committed first). Roll back
+            # (drops the stale snapshot, releases any lock) and retry from
+            # a fresh read; attempts are bounded below.
             try:
                 conn.rollback()
             except Exception:
                 pass
-            raise JournalError("record_outcome failed")
+        raise JournalError("record_outcome conflict")
 
     def mark_uncertain(self, request_id) -> None:
         """Fail-closed monotonic move: executing -> uncertain (any epoch).
@@ -455,11 +556,41 @@ class Journal:
                 except Exception:
                     pass
                 raise JournalError("bad state for uncertain")
-            conn.execute(
-                "UPDATE requests SET state='uncertain' WHERE request_id=?",
+            # Atomic compare-and-set: only an executing row moves. A concurrent
+            # record_generated that converged it to generated makes rowcount 0,
+            # so a late reaper can never orphan a good response. Deliberately
+            # still no epoch check: uncertainty must never be blocked by a
+            # stale owner; the state predicate alone carries the fencing.
+            cur = conn.execute(
+                "UPDATE requests SET state='uncertain' WHERE request_id=? AND state='executing'",
                 (request_id,),
             )
-            conn.commit()
+            if cur.rowcount == 1:
+                conn.commit()
+                return
+            # Lost a race between our SELECT and UPDATE: re-read once and
+            # decide purely from current durable state (read-only here).
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            row2 = conn.execute(
+                "SELECT state FROM requests WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if row2 is None:
+                raise JournalError("unknown request")
+            if row2[0] == "uncertain":
+                try:
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise JournalError("mark_uncertain failed")
+                return
+            raise JournalError("bad state for uncertain")
         except JournalError:
             raise
         except Exception:
