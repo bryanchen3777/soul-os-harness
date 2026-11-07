@@ -635,11 +635,57 @@ class Journal:
                 except Exception:
                     pass
                 raise JournalError("bad state for failed_before_execution")
-            conn.execute(
-                "UPDATE requests SET state='failed_before_execution' WHERE request_id=?",
-                (request_id,),
-            )
-            conn.commit()
+            # Atomic compare-and-set: the row must still be owned by this
+            # epoch in accepted state. A concurrent begin() that moved it to
+            # executing makes rowcount 0, so a stale marker can never flip a
+            # live execution back to failed_before_execution. Same
+            # single-statement-CAS pattern as begin / record_generated /
+            # mark_uncertain above.
+            try:
+                cur = conn.execute(
+                    "UPDATE requests SET state='failed_before_execution'"
+                    " WHERE request_id=? AND state='accepted' AND epoch=?",
+                    (request_id, epoch),
+                )
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("mark_failed_before_execution failed")
+            if cur.rowcount == 1:
+                try:
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise JournalError("mark_failed_before_execution failed")
+                return
+            # Lost a race between our SELECT and UPDATE: re-read once and
+            # decide purely from current durable state (read-only here, so
+            # no second overwrite is possible from this path).
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                row2 = conn.execute(
+                    "SELECT state, epoch FROM requests WHERE request_id=?",
+                    (request_id,),
+                ).fetchone()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("mark_failed_before_execution failed")
+            if row2 is None:
+                raise JournalError("unknown request")
+            if row2[1] != epoch:
+                raise OwnershipError("failed_before_execution ownership failed")
+            raise JournalError("bad state for failed_before_execution")
         except (JournalError, OwnershipError):
             raise
         except Exception:
