@@ -697,6 +697,22 @@ class Journal:
 
     def recover(self):
         conn = self.conn
+        # Atomic fenced sweep: BEGIN IMMEDIATE takes the write lock first,
+        # so the SELECT snapshot and the predicated UPDATE below commit as
+        # one unit. A concurrent record_generated either lands fully before
+        # our BEGIN (then our SELECT no longer sees it: never returned,
+        # never downgraded) or blocks on our RESERVED lock and loses its
+        # CAS after we commit (recovery wins; returned IDs equal the durable
+        # uncertain rows). Eligibility predicate is unchanged:
+        # state='executing' AND epoch<self.epoch.
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise JournalError("recover failed")
         try:
             rows = conn.execute(
                 "SELECT request_id FROM requests WHERE state='executing' AND epoch<?",
@@ -707,11 +723,22 @@ class Journal:
                 "UPDATE requests SET state='uncertain' WHERE state='executing' AND epoch<?",
                 (self.epoch,),
             )
-            conn.commit()
-            return ids
-        except Exception as exc:
+        except Exception:
             try:
                 conn.rollback()
             except Exception:
                 pass
             raise JournalError("recover failed")
+        try:
+            conn.commit()
+        except Exception:
+            # Commit outcome is unknowable from here: it may already have
+            # been applied durably before the error surfaced, so rollback
+            # must not be claimed to undo it. Report ambiguity, never a
+            # false success and never phantom IDs (nothing is returned).
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise JournalError("recover ambiguous: commit outcome unknown")
+        return ids
