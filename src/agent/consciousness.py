@@ -240,6 +240,12 @@ class AgentConsciousness(ABC):
                     chrono_payload["target_channel"] = tc
                 if tu is not None:
                     chrono_payload["target_user_id"] = tu
+                # EI-2B-PROGRAM-2 additive passthrough: the request id rides
+                # the same chrono_payload channel (no _pending / 競標 logic
+                # touched; absent key = background, zero behaviour change).
+                _rid = event.payload.get("soul_request_id")
+                if _rid is not None:
+                    chrono_payload["soul_request_id"] = _rid
                 await self._fire_intent(
                     reason="user_message",
                     elapsed_mins=0.0,
@@ -524,6 +530,10 @@ class AgentConsciousness(ABC):
             # AGENT_SPEAK event → ChannelRouter (看到 dry_run=True 跳過 TG 推播)
             if "dry_run" in chrono_payload:
                 intent_payload["dry_run"] = chrono_payload["dry_run"]
+            # EI-2B-PROGRAM-2 additive passthrough (same pattern as dry_run):
+            # chrono_payload → AGENT_INTENT → proxy → AGENT_SPEAK → O-gates.
+            if "soul_request_id" in chrono_payload:
+                intent_payload["soul_request_id"] = chrono_payload["soul_request_id"]
             # KI-001: 若 chrono_payload 沒有 target_user_id，fallback 用 _fire_intent 參數
             if "target_user_id" not in intent_payload:
                 intent_payload["target_user_id"] = user_id

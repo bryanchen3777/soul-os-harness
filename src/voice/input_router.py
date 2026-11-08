@@ -103,6 +103,7 @@ class VoiceInputRouter:
     limiter: VoiceRateLimiter = field(default_factory=VoiceRateLimiter)
     tracer: VoiceGateTracer = field(default_factory=VoiceGateTracer)
     transport: Optional[Any] = None    # 预留：跨进程 transport（当前直接 publish）
+    admission: Optional[Any] = None    # EI-2B-PROGRAM-2 caller-owned AdmissionContext（None = legacy）
 
     # 统计（§4.5 计数 / §5.4 观测）
     user_message_count: int = 0
@@ -176,7 +177,7 @@ class VoiceInputRouter:
         self.tracer.record(outcome)
         return await self._dispatch(outcome)
 
-    async def _dispatch(self, outcome: RouteOutcome) -> RouteOutcome:
+    async def _dispatch(self, outcome: RouteOutcome, *, turn_id: Optional[str] = None) -> RouteOutcome:
         if outcome.decision == RouteDecision.USER_MESSAGE:
             # §4.5 防洪：发布前检查 limiter（时间源 = outcome.ts_ms，可注入 mock）
             now = outcome.ts_ms or 0
@@ -200,7 +201,57 @@ class VoiceInputRouter:
                     RouteDecision.AMBIENT, outcome.address_score, "identity",
                     "voice owner 不在白名单（§5.1）", outcome.features, outcome.ts_ms,
                 )
-            await self._publish_user_message(outcome.features)
+            # EI-2B-PROGRAM-2: per-soul admission at the publish boundary
+            # (gate 通過後、touch/publish 之前；touch 是持久寫，claim 必須在前)。
+            # Flag-gated；deny = backoff + AMBIENT（不 publish、不 touch）。
+            # EI-2B-PROGRAM-3 §8/§9: AMBIENT 即 busy 狀態（RouteDecision 僅三態，
+            # 不擴充），reason 明載 retry_after=1；deny 的原輸入＋重試 key 留存，
+            # 穩定 turn 識別缺席時走 UUID（不承諾重試去重，見矩陣）。
+            _soul_request_id = None
+            if self.admission is not None:
+                from src.interfaces.coordinator import coordinator_enabled as _coord_enabled_v
+                from src.interfaces.coordinator import prepare_publish as _prepare_publish_v
+                if _coord_enabled_v():
+                    _full = self.target.agent_id
+                    if not _full.startswith("agent_"):
+                        _full = f"agent_{_full}"
+                    from src.interfaces.coordinator import derive_retry_key as _retry_key_v
+                    _v_retry_key = _retry_key_v("voice", _full, turn_id)
+                    _identity_v, _outcome_v = _prepare_publish_v(
+                        self.admission,
+                        soul_alias=_full,
+                        entry_kind="voice",
+                        text=outcome.features.text,
+                        idempotency_key=_v_retry_key,
+                    )
+                    if not _outcome_v.should_publish:
+                        logger.warning(
+                            f"[VoiceInputRouter] admission deny | soul={_full} "
+                            f"code={_outcome_v.code} busy={_outcome_v.busy}"
+                        )
+                        if _outcome_v.busy is not None:
+                            try:
+                                from src.interfaces.coordinator import record_rejected_input as _record_rejected_v
+                                _record_rejected_v(
+                                    self.admission,
+                                    entry_kind="voice",
+                                    soul_alias=_full,
+                                    retry_key=_v_retry_key,
+                                    reason=_outcome_v.code,
+                                    text=outcome.features.text,
+                                    now=self.admission.now(),
+                                )
+                            except Exception:
+                                logger.debug("[VoiceInputRouter] rejected-input retain failed", exc_info=True)
+                        self.ambient_count += 1
+                        self.limiter.note_rejection(now)
+                        return RouteOutcome(
+                            RouteDecision.AMBIENT, outcome.address_score, "flood",
+                            "per-soul busy（EI-2B）→ 降级 AMBIENT；retry_after=1",
+                            outcome.features, outcome.ts_ms,
+                        )
+                    _soul_request_id = _identity_v.request_id
+            await self._publish_user_message(outcome.features, soul_request_id=_soul_request_id)
             self.user_message_count += 1
             self.limiter.record_publication(now)
             self.limiter.note_acceptance()
@@ -212,9 +263,11 @@ class VoiceInputRouter:
         self.drop_count += 1
         return outcome
 
-    async def _publish_user_message(self, features: RoutingFeatures) -> None:
+    async def _publish_user_message(self, features: RoutingFeatures, soul_request_id=None) -> None:
         """bus.publish 唯一入口（对齐 gateway.py:884 / router.py:869），副作用链原样。"""
         event = self.build_user_message_event(features)
+        if soul_request_id is not None:
+            event.payload["soul_request_id"] = soul_request_id
         if self.bus is None:
             logger.info(f"[VoiceInputRouter] (no bus) USER_MESSAGE: {features.text[:30]!r}")
             return

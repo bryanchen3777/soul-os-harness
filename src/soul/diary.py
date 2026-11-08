@@ -332,6 +332,10 @@ class DiaryWriter:
         # Empty string treated as None for safety (avoid corrupting jsonl with "" id).
         if inner_life_event_id:
             entry["inner_life_event_id"] = inner_life_event_id
+        # EI-2B-PROGRAM-2 additive background mark (literal key, no import so
+        # the static guard "background never imports coordinator" holds):
+        # diary rows are never request outcomes.
+        entry["non_request_write"] = True
         with self._lock:
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)

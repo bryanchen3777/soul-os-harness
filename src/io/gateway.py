@@ -401,10 +401,13 @@ class IOGateway:
     同時提供靜態檔案服務（頭像、CSS 等）。
     """
 
-    def __init__(self, bus: SoulEventBus, app: FastAPI = None):
+    def __init__(self, bus: SoulEventBus, app: FastAPI = None, admission=None):
         self.bus = bus
         self.manager = ConnectionManager()
         self.app = app or FastAPI(title="Soul OS Gateway")
+        # EI-2B-PROGRAM-2: caller-owned AdmissionContext (None = legacy path,
+        # flag-off byte-identical). Wired by the process entry, never built here.
+        self._admission = admission
         # Live2D 已移除（Bry 拍板 2026-07-14）— 純文字 + STT 介面
         self._setup_routes()
 
@@ -878,6 +881,55 @@ class IOGateway:
                             ws_full_agent = ws_target if ws_target.startswith("agent_") else f"agent_{ws_target}"
                             ws_session_id = f"session_{ws_user_id}_{ws_full_agent}"
                             logger.info(f"[Gateway] WS session_id={ws_session_id} (user={ws_user_id}, agent={ws_full_agent})")
+                            # EI-2B-PROGRAM-2: per-soul admission at the publish
+                            # boundary (parse success, before the first
+                            # persistent side effect). Flag-gated; flag off =
+                            # legacy path untouched. Deny = log + keep
+                            # listening (no touch, no publish, no outcome write).
+                            # EI-2B-PROGRAM-3 §8/§9: stable retry key when the
+                            # client supplies a message id, else UUID (no
+                            # retry-dedup promise); busy (holder class +
+                            # retry_after=1) goes back on the same socket.
+                            _soul_request_id = None
+                            if self._admission is not None:
+                                from src.interfaces.coordinator import coordinator_enabled as _coord_enabled
+                                from src.interfaces.coordinator import prepare_publish as _prepare_publish
+                                if _coord_enabled():
+                                    from src.interfaces.coordinator import derive_retry_key as _retry_key_w
+                                    _ws_retry_key = _retry_key_w("web", ws_full_agent, msg.get("message_id"))
+                                    _identity, _outcome = _prepare_publish(
+                                        self._admission,
+                                        soul_alias=ws_full_agent,
+                                        entry_kind="web",
+                                        text=raw_content,
+                                        idempotency_key=_ws_retry_key,
+                                    )
+                                    if not _outcome.should_publish:
+                                        logger.warning(
+                                            "[Gateway] admission deny | soul=%s code=%s busy=%s",
+                                            ws_full_agent, _outcome.code, _outcome.busy,
+                                        )
+                                        if _outcome.busy is not None:
+                                            try:
+                                                from src.interfaces.coordinator import busy_frame as _busy_frame_w
+                                                await ws.send_text(json.dumps(_busy_frame_w(_outcome), ensure_ascii=False))
+                                            except Exception:
+                                                logger.debug("[Gateway] busy frame send failed", exc_info=True)
+                                            try:
+                                                from src.interfaces.coordinator import record_rejected_input as _record_rejected_w
+                                                _record_rejected_w(
+                                                    self._admission,
+                                                    entry_kind="web",
+                                                    soul_alias=ws_full_agent,
+                                                    retry_key=_ws_retry_key,
+                                                    reason=_outcome.code,
+                                                    text=raw_content,
+                                                    now=self._admission.now(),
+                                                )
+                                            except Exception:
+                                                logger.debug("[Gateway] rejected-input retain failed", exc_info=True)
+                                        continue
+                                    _soul_request_id = _identity.request_id
                             user_event = SoulEvent(
                                 event_type=EventType.USER_MESSAGE,
                                 source=ws_user_id,
@@ -900,6 +952,8 @@ class IOGateway:
                             # 收到 proactive_dm (scheduler 可送達檢查 + router M0.5
                             # throttle 都讀同一個檔案)。web UI 是 Bry 專屬介面,
                             # 所以所有 web USER_MESSAGE 都算 Bry 活躍。
+                            if _soul_request_id is not None:
+                                user_event.payload["soul_request_id"] = _soul_request_id
                             from src.io.channels.bryan_state import touch_bryan_last_seen
                             touch_bryan_last_seen(ws_full_agent, raw_content)
                             # 🔴 INTIMACY-GROWTH-2 (C5 / §2)：Web **不 TOUCH**。
@@ -992,6 +1046,23 @@ class IOGateway:
                 f"reason={event.payload.get('stub_reason', 'unknown')}"
             )
             return
+
+        # EI-2B-PROGRAM-2 O1 (+PROGRAM-3 generation check): dispatch-side
+        # fail-closed. A request-attributed AGENT_SPEAK (stamped
+        # soul_request_id) with no live executing journal row, or with a
+        # stale capability generation, is unregistered: uncertain + log,
+        # zero send. Payloads without an id are background: pass through,
+        # never blocked here.
+        _o1_req = event.payload.get("soul_request_id")
+        if _o1_req is not None and self._admission is not None:
+            from src.interfaces.coordinator import coordinator_enabled as _coord_enabled_o1
+            from src.interfaces.coordinator import require_current as _require_current_o1
+            if _coord_enabled_o1() and not _require_current_o1(self._admission, _o1_req):
+                logger.warning(
+                    "[Gateway][O1] unregistered speak, drop | agent=%s req=%s",
+                    event.payload.get("agent_id", event.source), _o1_req,
+                )
+                return
 
         ts = event.timestamp.isoformat() if hasattr(event, "timestamp") and event.timestamp else datetime.now(timezone.utc).isoformat()
         # Bry 拍板 2026-07-18 10:50: payload 內 text 已是整合後的 (proxy.py 整合)

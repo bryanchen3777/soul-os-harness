@@ -5030,6 +5030,10 @@ class LLMProxy:
                     # intent_payload → AGENT_INTENT event.payload → LLMProxy →
                     # AGENT_SPEAK event.payload → ChannelRouter 看到 True 跳過 TG 推播
                     "dry_run": event.payload.get("dry_run", False),
+                    # EI-2B-PROGRAM-2 additive passthrough (same pattern as
+                    # dry_run): AGENT_INTENT → AGENT_SPEAK → O1/O2/O3 gates.
+                    # None = background / legacy, zero behaviour change.
+                    "soul_request_id": event.payload.get("soul_request_id"),
                 },
             )
             await self.bus.publish(speak_event)

@@ -86,6 +86,9 @@ class TTSService:
         # 從上游 AGENT_SPEAK 的 event_id 透傳,讓 AGENT_AUDIO_READY 跟
         # 原始 text message 配對。None = backward compat (不傳 message_id)。
         message_id: Optional[str] = None,
+        # EI-2B-PROGRAM-2 additive passthrough (message_id precedent).
+        # None = background / legacy, zero behaviour change.
+        soul_request_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         寫 mp3 到磁碟 + emit AGENT_AUDIO_READY 事件
@@ -151,6 +154,10 @@ class TTSService:
                         # ChannelRouter (per-message pair) 跟 web client
                         # (attach replay button to specific text) 用
                         "message_id": message_id,
+                        # EI-2B-PROGRAM-2 additive passthrough (message_id
+                        # precedent). AGENT_AUDIO_READY 只是合成的後果；
+                        # 合成已被 O3 閘門擋下時此事件根本不會產生。
+                        "soul_request_id": soul_request_id,
                     },
                 )
                 await self.bus.publish(event)

@@ -172,8 +172,12 @@ class FishTTSHandler:
         output_dir: Optional[Path] = None,
         *,
         enabled: bool = True,
+        # EI-2B-PROGRAM-2: caller-owned AdmissionContext for the O3 gate
+        # (None = legacy path, flag-off byte-identical).
+        admission=None,
     ):
         self.bus = bus
+        self.admission = admission
         # P0.5 (Bry 派工 2026-08-09 19:48): resolve via data_root() for test isolation
         from src.paths import data_root
         if output_dir is None:
@@ -244,6 +248,23 @@ class FishTTSHandler:
                 )
                 return
 
+            # EI-2B-PROGRAM-2 O3 (+PROGRAM-3 generation check):
+            # dispatch-side fail-closed. A request-attributed AGENT_SPEAK
+            # with no live executing journal row, or a stale capability
+            # generation, is unregistered: uncertain + log, zero synthesis.
+            # Payloads without an id are background: pass through, never
+            # blocked here.
+            _o3_req = payload.get("soul_request_id")
+            if _o3_req is not None and self.admission is not None:
+                from src.interfaces.coordinator import coordinator_enabled as _coord_enabled_o3
+                from src.interfaces.coordinator import require_current as _require_current_o3
+                if _coord_enabled_o3() and not _require_current_o3(self.admission, _o3_req):
+                    logger.warning(
+                        f"[FishTTS][O3] unregistered speak, skip synthesis | "
+                        f"agent={payload.get('agent_id')} req={_o3_req}"
+                    )
+                    return
+
             # 2. 必要欄位檢查
             agent_id = payload.get("agent_id") or event.source
             audio_text = payload.get("audio_text")
@@ -280,6 +301,8 @@ class FishTTSHandler:
                     emotion=emotion,
                     text_preview=text,
                     message_id=message_id,
+                    # EI-2B-PROGRAM-2 additive passthrough (message_id precedent).
+                    soul_request_id=_o3_req,
                 )
             )
         except Exception as e:
@@ -298,6 +321,8 @@ class FishTTSHandler:
         # M6.2-1 (Bry 派工 2026-08-14 19:47 EDT): per-message correlation
         # 從 _on_agent_speak 透傳進來,再傳給 TTSService.synthesize_and_store
         message_id: Optional[str] = None,
+        # EI-2B-PROGRAM-2 additive passthrough (message_id precedent).
+        soul_request_id: Optional[str] = None,
     ) -> None:
         """
         真正呼叫 Fish Audio API 的 async 函式
@@ -378,6 +403,8 @@ class FishTTSHandler:
                     text_preview=text_preview,
                     # M6.2-1: 透傳 message_id 到 AGENT_AUDIO_READY
                     message_id=message_id,
+                    # EI-2B-PROGRAM-2 additive passthrough (message_id precedent).
+                    soul_request_id=soul_request_id,
                 )
             else:
                 # fallback: 舊的直接寫檔邏輯（TTSService 載入失敗時的退路）
