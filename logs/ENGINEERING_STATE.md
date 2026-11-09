@@ -10162,3 +10162,10 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 新增 `docs/EXTERNAL-INTERFACE-GUIDE.md`（dab1b6d，純新增 219 行，tracked 零差分）：版本聲明（KEY-1 fdc28ea）＋G1–G5 BLOCKED 聲明；§1 簽發／§2 配置範本／§3 輪轉／§4 撤銷／§5 調用格式錯誤碼／§6 已知限制／§7 不承諾事項；每條斷言標 S1–S7 來源＋行號；範本不可部署警告保留。
 - 獨立複核（.venv Python 3.11）：憑證 grep 0 命中；tests/interfaces 獨立重跑 5 failed、541 passed（5 failed 逐筆為預期五紅，無新增紅）。Sol 終判 ACCEPTED。
 - 三票閉環：KEY-1／DOC-1／GAP-DECISION-1 全部合入；G1–G5 仍 BLOCKED 待 Owner 圈選 A／B（任選 B 需另開工單＋授權）。
+## S2 五項決議（Owner 拍板，2026-11-09）[S2-RULING-1109]
+- (1)靈魂清單：首批 5 個——雷姆／櫻島麻衣／更科瑠夏／黑川茜／椎名真昼。slug 映射（rem／mai／ruka／akane／mahiru）由 W3 按 registry routes＋proxy agent 名交叉確認後凍結。
+- (2)埠號：`:18765`（主腦推薦，同意）。
+- (3)傳輸：LAN 明文 HTTP（Owner 明示「填入 key 直接呼叫」）。後果：Bearer key 在內網裸奔，僅限信任內網 192.168.0.0/16；任何出內網需求必須另開 TLS 工單，不得直接暴露。
+- (4)串流：首批非串流（`stream:false` 全量回，`stream:true` 回 400 明示）。主要調用方為語音代理／個人助理類（非 coding 類），全量回可接受；SSE 列增量。
+- (5)Provider：preset config 檔照格式填、可擴充；首批形狀＝OpenAI v1（chat/completions＋models）；預設接 ollama＋deepseek v4.1-flash（與 Soul OS 本機一致）。key 值由 Owner 在 S7 前本機注入 env，env 名在 W2 凍結。
+- S3 已解鎖（S2 全定）；S1 全庫留底跑ing。
