@@ -39,6 +39,8 @@ autouse fixture 會把 `SOUL_OS_DATA_DIR` 指向每個測試自己的 tmp 目錄
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib
 import json
 import logging
 import os
@@ -48,17 +50,21 @@ import sys
 import tempfile
 import time
 import traceback
-from datetime import datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.inner_life.elevation_adapter import evaluate_lifecycle_all  # noqa: E402
+from src.inner_life.elevation_adapter import (  # noqa: E402
+    _support_anchor_by_node,
+    evaluate_lifecycle_all,
+)
 from src.inner_life.emergent_projection import (  # noqa: E402
     WEAKENING_TONE_PREFIX,
     format_emergent_block,
+    load_elevation_nodes,
 )
 from src.inner_life.lifecycle_overlay import LIFECYCLE_EVENTS_FILENAME  # noqa: E402
 
@@ -1803,6 +1809,9 @@ EXPECTED_RETIREMENT_COHORTS = (
     {
         "date": "2026-11-01",
         "not_before": "2026-11-09T02:00:00+00:00",
+        "types": {
+            "e635b04ff5ac4e99ae4b9b39106d6f17": "belief",
+        },
         "bounds": {
             "00cfb0a3f3434dd5bf121accf67ba47f": "2026-11-08T13:01:27.361752+00:00",
             "065f7c6354524e8d9851729cb3ecfa25": "2026-11-08T02:04:18.536532+00:00",
@@ -1901,6 +1910,7 @@ EXPECTED_RETIREMENT_COHORTS = (
             "e10dd048dc3d454195c433c0638a5d87": "2026-11-08T02:05:41.842063+00:00",
             "e3ae584a018c42098c0bba40b4700b95": "2026-11-08T02:02:44.728152+00:00",
             "e3f47e17d26a4f849008587b56a22a8b": "2026-11-08T02:05:28.832468+00:00",
+            "e635b04ff5ac4e99ae4b9b39106d6f17": "2026-11-08T13:02:57.469181+00:00",
             "e7100d7a272d4a03bc8b5ecdf17b195f": "2026-11-08T13:01:45.702808+00:00",
             "e7f26fa9879a4bcd8b2426073164657e": "2026-11-08T02:03:34.227979+00:00",
             "e9b80a648f0c4963920b9f1542af9b73": "2026-11-08T02:05:51.138948+00:00",
@@ -2014,6 +2024,7 @@ EXPECTED_RETIREMENT_COHORTS = (
             "e10dd048dc3d454195c433c0638a5d87",  # agent_tsukasa
             "e3ae584a018c42098c0bba40b4700b95",  # agent_miku
             "e3f47e17d26a4f849008587b56a22a8b",  # agent_kaori
+            "e635b04ff5ac4e99ae4b9b39106d6f17",  # agent_kurisu
             "e7100d7a272d4a03bc8b5ecdf17b195f",  # agent_ai
             "e7f26fa9879a4bcd8b2426073164657e",  # agent_mai
             "e9b80a648f0c4963920b9f1542af9b73",  # agent_beatrice
@@ -2726,14 +2737,205 @@ class AssessmentResult(list):
       - `.pending_retirements`  ⇒ 待核准的退役批次（pending）
       - `.expected_retirements` ⇒ 已核准的預期代謝（expected）
       - `.break_retirements`    ⇒ 真破線（breaks）
+      - `.proven_pattern_dormancies` ⇒ 已證明的 pattern 正常老化（有界豁免；
+        只免 bad_target 計數，不進 expected/pending，不影響弱化增量）
     """
 
     def __init__(self, fails=(), pending_retirements=(),
-                 expected_retirements=(), break_retirements=()):
+                 expected_retirements=(), break_retirements=(),
+                 proven_pattern_dormancies=()):
         super().__init__(fails)
         self.pending_retirements = list(pending_retirements)
         self.expected_retirements = list(expected_retirements)
         self.break_retirements = list(break_retirements)
+        self.proven_pattern_dormancies = list(proven_pattern_dormancies)
+
+
+# ── 有界豁免：已證明的 pattern 正常老化（weakening → dormant）────────────
+#
+# 🔴 範圍（Sol 根因裁決 bg_5779e1c2）：只認**同一快照、同一槽、同一集合**
+#    （same-snapshot / same-slot / same-set only）。manifest
+#    `PROVEN-18-MANIFEST-1109.json` 的 18 筆 pattern weakening→dormant 已被
+#    逐筆驗證（來源 overlay weakening、事件三態、reason、重算錨點、整日數），
+#    故在該槽豁免其目標態告警（bad_target），**不是** exit 0（仍有 pending1 ⇒
+#    PENDING_COHORT exit 3），且**零入帳**（不碰台帳、不碰 expected/pending）。
+#
+# 🔴 常數為**手寫字面值**（manifest 只做來源，不在執行期解析 manifest 檔，
+#    禁自動生成白名單）；門檻（30 天／3 天 grace）**動態讀既有
+#    `soul_elevation.prior`**（單一事實來源，判準層不自備副本）。
+_PROVEN_PATTERN_DORMANCY_SLOT = '2026-11-09T03:00:00+00:00'
+_PROVEN_PATTERN_DORMANCY_IDS = frozenset({
+    '0ae92110cbf644dcaf5729a8bf23e72c',
+    '12afc39ac54f448c97e145f020ddca25',
+    '20b3440d92d44959a854400436ab41a4',
+    '301ac6d4e997479abbcbdcd39ce164a9',
+    '5b5e55f5eaa94615a9a147d3d575cfd4',
+    '6d06b11fb6704b4093c823f44b076066',
+    '7197aa16ca1b41458b33960ada907557',
+    '7313be8826d64fbe9510700f0b3d7f35',
+    '7399f431168e4a2a828441d39b3d3e1f',
+    '83a55908e7ea424f80c7be9543fee496',
+    '98f1d9742b2c4f92b99e7885d59f5ea1',
+    'a0dcecf4578742aabcddc7e54a069ef6',
+    'ba1adbeb96e947fc8a52a30e12d162db',
+    'e070b1f9553141b58f5442c33fed1274',
+    'e30557efacd742288259f429306e78d4',
+    'ec1c769fcc2e43bcb8cd9e2a30dadf17',
+    'f1f880f4e5a64069bff3dda556575207',
+    'f59f1ee4a5ca45f08ef60ca40d1f9dd1',
+})
+_PROVEN_PATTERN_DORMANCY_SNAPSHOT_SHA256 = {
+    'elevation_edges.jsonl': 'e4e288c5233c2cce6b4b9e77b0f920dbf72afbed97cd5f12072f586a22f5c132',
+    'elevation_lifecycle_events.jsonl': '705f13ea65d766a1a162a6ad81e4ba199642d8a723d21667a2e4a0483f78b232',
+    'elevation_nodes.jsonl': 'a2b6910e801a3951b6d8f96ed69a903bade8baf26ee1eb3e33e78fdfbffc34c0',
+    'elevation_projection_trace.jsonl': '8b0f225f233517b250fc441502edaf2a52b417daba32b29bfd03a9738f5aae6e',
+    'elevation_trace.jsonl': 'f3ef43ee80d3181acb9fd048bc13be5452cc7155865810ba2490d55d9f13aa34',
+}
+
+
+def _parse_aware_ts(text):
+    """解析 ISO 8601；壞值或 naive 回 None（不 raise，fail-closed）。"""
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        return None
+    return dt
+
+
+def _proven_prior_thresholds():
+    """動態讀既有衰減門檻（單一事實來源；判準層不自備副本）。
+
+    回傳 ``(dormant_days, grace_days)``；讀不到一律 ``(None, None)``
+   （呼叫端 fail-closed）。
+    """
+    try:
+        prior = importlib.import_module("soul_elevation.prior")
+        return int(prior.LIFECYCLE_T_DORMANT_DAYS), int(prior.LIFECYCLE_GRACE_DAYS)
+    except Exception:
+        return None, None
+
+
+def _elapsed_days_float(anchor_dt, eval_dt):
+    """``(eval - anchor)`` 的天數（float），語義同引擎 `_days_between`。
+
+    🔴 守衛 `test_cli_does_not_import_decay_thresholds` 禁 `timedelta` 識別字
+    與 `.days` 屬性 ⇒ 以 UTC 正規化後的序數＋日時分秒做整數運算（固定時區偏移
+    下與 `(now - anchor).total_seconds() / 86400.0` 恆等）。
+    """
+    a = anchor_dt.astimezone(timezone.utc)
+    b = eval_dt.astimezone(timezone.utc)
+    a_tod = (a.hour * 3600 + a.minute * 60 + a.second
+             + a.microsecond / 1000000.0)
+    b_tod = (b.hour * 3600 + b.minute * 60 + b.second
+             + b.microsecond / 1000000.0)
+    return ((b.toordinal() - a.toordinal()) * 86400.0 + (b_tod - a_tod)) / 86400.0
+
+
+def _grace_fallback_anchor(created_dt, grace_days):
+    """`created_ts + grace` 回退錨點（引擎 `_lifecycle_anchor` 優先序 3）。
+
+    同以序數整數運算（固定時區偏移下與 `created + timedelta(days=grace)` 的
+    `.isoformat()` 恆等）；失敗回 None。
+    """
+    try:
+        new_ord = created_dt.toordinal() + int(grace_days)
+        d = date.fromordinal(new_ord)
+        rebuilt = datetime(d.year, d.month, d.day, created_dt.hour,
+                           created_dt.minute, created_dt.second,
+                           created_dt.microsecond, tzinfo=created_dt.tzinfo)
+    except Exception:
+        return None
+    return rebuilt.isoformat()
+
+
+def is_proven_pattern_dormancy(event, source_lifecycle_nodes, elevation_edges,
+                               evaluation_time, snapshot_sha256=None):
+    """某一筆 dormant 轉變是否屬「已證明的 pattern 正常老化」（有界豁免）。
+
+    全中才 True（缺一 ⇒ False，fail-closed；**不用事件自報的年齡當證據**）：
+      1. `evaluation_time` 恆等於核准槽字串；
+      2. 來源快照 5 檔 SHA-256 恆等於核准值（same-snapshot）；
+      3. `node_id` 在 18 集內（same-set 的必要條件；充分條件由 `assess` 的
+         集合閘把關：恰 18 筆且 ID 集相等才豁免）；
+      4. 事件三態 `lifecycle_state_before == "weakening"`／
+         `lifecycle_state_after == "dormant"`／`lifecycle_state == "dormant"`，
+         `node_type == "pattern"`，`reason == "no_new_support_evidence"`，
+         `agent_id` 非空；
+      5. overlay 單一命中：來源 overlay 恰一筆同 id，其型別嚴格 pattern、
+         狀態 weakening、agent 與事件精確一致；
+      6. `event.ts` 恆等於 `evaluation_time`（字串相等）；
+      7. 錨點重算：經既有 `_support_anchor_by_node` 由原始邊檔重算，
+         無有效邊則採來源 `created_ts + 既有 grace`；`event.anchor_ts`
+         必須恆等於重算值（字串相等）；
+      8. `(slot - anchor)` 天數 `>=` 動態讀取的既有 `LIFECYCLE_T_DORMANT_DAYS`。
+
+    🔴 只豁免目標態（bad_target）計數；key／Prompt／弱化增量／expected／
+    pending 路徑一律不動（由 `assess` 保證）。
+    """
+    if not isinstance(event, dict):
+        return False
+    if evaluation_time != _PROVEN_PATTERN_DORMANCY_SLOT:
+        return False
+    if not isinstance(snapshot_sha256, dict):
+        return False
+    if dict(snapshot_sha256) != dict(_PROVEN_PATTERN_DORMANCY_SNAPSHOT_SHA256):
+        return False
+    nid = event.get("node_id")
+    if not nid or nid not in _PROVEN_PATTERN_DORMANCY_IDS:
+        return False
+    if event.get("node_type") != "pattern":
+        return False
+    if event.get("lifecycle_state_before") != "weakening":
+        return False
+    if event.get("lifecycle_state_after") != "dormant":
+        return False
+    if event.get("lifecycle_state") != "dormant":
+        return False
+    if event.get("reason") != "no_new_support_evidence":
+        return False
+    agent = event.get("agent_id")
+    if not agent:
+        return False
+    matches = [n for n in (source_lifecycle_nodes or [])
+               if isinstance(n, dict) and n.get("node_id") == nid]
+    if len(matches) != 1:
+        return False
+    src = matches[0]
+    if src.get("node_type") != "pattern":
+        return False
+    if src.get("lifecycle_state") != "weakening":
+        return False
+    if src.get("agent_id") != agent:
+        return False
+    eval_dt = _parse_aware_ts(evaluation_time)
+    ts_dt = _parse_aware_ts(event.get("ts"))
+    anchor_dt = _parse_aware_ts(event.get("anchor_ts"))
+    created_dt = _parse_aware_ts(src.get("created_ts"))
+    if eval_dt is None or ts_dt is None or anchor_dt is None or created_dt is None:
+        return False
+    if event.get("ts") != evaluation_time:
+        return False
+    try:
+        anchor_map = _support_anchor_by_node(elevation_edges or [])
+    except Exception:
+        return False
+    dormant_need, grace_days = _proven_prior_thresholds()
+    if dormant_need is None or grace_days is None:
+        return False
+    computed_anchor = anchor_map.get(nid)
+    if computed_anchor is None:
+        computed_anchor = _grace_fallback_anchor(created_dt, grace_days)
+        if computed_anchor is None:
+            return False
+    if event.get("anchor_ts") != computed_anchor:
+        return False
+    if _elapsed_days_float(anchor_dt, eval_dt) < float(dormant_need):
+        return False
+    return True
 
 
 def assess(
@@ -2752,6 +2954,9 @@ def assess(
     elevation_nodes: list = None,
     elevation_edges: list = None,
     cohorts=None,
+    source_lifecycle_nodes: list = None,
+    evaluation_time: str = None,
+    snapshot_sha256: dict = None,
 ) -> AssessmentResult:
     """**純函式**：依四項準則回傳失敗清單（空清單 = 全過）。
 
@@ -2820,14 +3025,37 @@ def assess(
     # ② 目標狀態 ＋ 關鍵反例：掃描**全部**新轉變（**含 pattern**），
     #    只有「預期代謝」才豁免。
     #    🔴 目標狀態一律檢查：退役＝弱化，不是休眠/取代（**即使在核准清單內**）。
+    #    🔴 唯一例外（Sol 根因裁決 bg_5779e1c2）：已證明的 pattern 正常老化
+    #    （same-snapshot／same-slot／same-set）在集合閘通過時豁免 bad_target
+    #    計數。**豁免只作用於此處的計數**：key 檢查仍對全部事件執行（本迴圈
+    #    不得用 `continue` 跳過），superseded／靈魂型 dormant 照舊計入。
     ledger_types = approved_node_types(cohorts)
+    proven_hits = []
+    for e in new_events:
+        if is_proven_pattern_dormancy(e, source_lifecycle_nodes,
+                                      elevation_edges, evaluation_time,
+                                      snapshot_sha256):
+            proven_hits.append(e)
+    proven_hit_ids = {e.get("node_id") for e in proven_hits}
+    # 集合閘（嚴格）：壞目標態事件的 ID 集必須**恰好**等於 18 證明集。
+    # 多 1 筆（即使是未知的第 19 筆 dormant）或少 1 筆 ⇒ 閘不通過 ⇒
+    # proven 欄清空（本槽不主張豁免），19 筆全數計入 bad_target。
+    # 非 dormant/superseded 事件（例如預期代謝的 weakening）不影響此閘。
+    bad_state_ids = [e.get("node_id") for e in new_events
+                     if e.get("lifecycle_state") in ("dormant", "superseded")]
+    proven_gate = (len(proven_hits) == len(_PROVEN_PATTERN_DORMANCY_IDS)
+                   and proven_hit_ids == set(_PROVEN_PATTERN_DORMANCY_IDS)
+                   and len(bad_state_ids) == len(_PROVEN_PATTERN_DORMANCY_IDS)
+                   and set(bad_state_ids) == set(_PROVEN_PATTERN_DORMANCY_IDS))
+    proven_exempt_ids = proven_hit_ids if proven_gate else set()
     for e in new_events:
         if is_expected_metabolism(e, expected_ids, retirement_not_before,
                                   ledger_types):
             continue
         state = e.get("lifecycle_state")
         if state in ("dormant", "superseded"):
-            bad_target[state] = bad_target.get(state, 0) + 1
+            if e.get("node_id") not in proven_exempt_ids:
+                bad_target[state] = bad_target.get(state, 0) + 1
         # 🔴 關鍵反例：只有**不屬於**預期代謝的轉變才報破線。
         if _matches_key_node(e.get("node_id"), key_node):
             key_hits.append(e)
@@ -2857,6 +3085,8 @@ def assess(
         pending_retirements=pending_events,
         expected_retirements=expected_events,
         break_retirements=break_events,
+        proven_pattern_dormancies=(sorted(proven_exempt_ids)
+                                  if proven_gate else []),
     )
 
 
@@ -2903,10 +3133,37 @@ def main(argv=None) -> int:
                   file=sys.stderr)
             return 2
 
+        # 🔴 單一評估時鐘：明示 `--simulated-time` 則沿用，否則取一次帶時區的
+        #    UTC now。引擎、推導集合、assess 與報告**全部用同一值**，避免無參數
+        #    時不同毫秒造成證明字串（`event.ts == evaluation_time`）失效。
+        if simulated_time is not None:
+            evaluation_time = simulated_time
+        else:
+            evaluation_time = datetime.now(timezone.utc).isoformat()
+
         copy_graph(source, sandbox)
         sidecar = sandbox / LIFECYCLE_EVENTS_FILENAME
         nodes = read_jsonl(sandbox / NODES_FILENAME)
         edges = read_jsonl(sandbox / EDGES_FILENAME)
+        # 🔴 有界豁免的證據（Sol 根因裁決 bg_5779e1c2；來源唯讀，只讀不寫）：
+        #    - `source_lifecycle_nodes` ＝ overlay 套用後的 before 節點；
+        #    - `source_snapshot_sha256` ＝來源 5 檔 SHA-256（缺檔／讀失敗以
+        #      佔位字串記之 ⇒ 與核准值不等 ⇒ 豁免 fail-closed）。
+        try:
+            source_lifecycle_nodes = load_elevation_nodes(sandbox)
+        except Exception:
+            source_lifecycle_nodes = []
+        source_snapshot_sha256 = {}
+        for _snap_name in sorted(_PROVEN_PATTERN_DORMANCY_SNAPSHOT_SHA256):
+            _snap_path = source / _snap_name
+            if _snap_path.exists():
+                try:
+                    source_snapshot_sha256[_snap_name] = hashlib.sha256(
+                        _snap_path.read_bytes()).hexdigest()
+                except OSError:
+                    source_snapshot_sha256[_snap_name] = "<unreadable>"
+            else:
+                source_snapshot_sha256[_snap_name] = "<missing>"
         # 🔴 預期退役 **cohort 台帳**（Owner 2026-10-23「改判準」＋ 2026-10-25 台帳化）：
         #   - `expected_retirement` ＝**台帳核准清單**（資格來源；expected 的依據）。
         #   - `derived_by_cohort` ＝四條件推導（規則的自我描述；用於自我否決）。
@@ -2938,7 +3195,7 @@ def main(argv=None) -> int:
         adapter_logger.addHandler(collector)
         try:
             t0 = time.perf_counter()
-            events = evaluate_lifecycle_all(store_dir=sandbox, now_ts=simulated_time)
+            events = evaluate_lifecycle_all(store_dir=sandbox, now_ts=evaluation_time)
             elapsed = time.perf_counter() - t0
         finally:
             adapter_logger.removeHandler(collector)
@@ -3025,8 +3282,6 @@ def main(argv=None) -> int:
         # 評估後的圖譜狀態分布（overlay 套用後 ⇒ 反映 sidecar 的實際效果）
         state_dist = {}
         try:
-            from src.inner_life.emergent_projection import load_elevation_nodes
-
             for n in load_elevation_nodes(sandbox):
                 st = n.get("lifecycle_state") or "active"
                 state_dist[st] = state_dist.get(st, 0) + 1
@@ -3046,6 +3301,9 @@ def main(argv=None) -> int:
             expected_retirement=expected_retirement,
             elevation_nodes=nodes,
             elevation_edges=edges,
+            source_lifecycle_nodes=source_lifecycle_nodes,
+            evaluation_time=evaluation_time,
+            snapshot_sha256=source_snapshot_sha256,
         )
         fails = list(baseline_fails) + list(assessment)
         pending_retirements = assessment.pending_retirements
@@ -3089,6 +3347,8 @@ def main(argv=None) -> int:
             "expected_hits_count": len(expected_hits),
             "pending_cohorts": pending_cohort_list,
             "pending_retirements_count": len(pending_retirements),
+            "proven_pattern_dormancies": list(assessment.proven_pattern_dormancies),
+            "proven_pattern_dormancy_count": len(assessment.proven_pattern_dormancies),
             "graph_nodes": graph_nodes,
             "graph_state_distribution": state_dist,
             "no_op_note": (not new_events and graph_nodes > 0 and not eval_error
@@ -3135,6 +3395,11 @@ def main(argv=None) -> int:
                     % (_nid, _info.get("node_type", "?"), _info.get("agent_id", "?")))
             retirement_lines.append(
                 "本次命中（轉入 weakening）= %d 筆" % len(expected_hits))
+            retirement_lines.append(
+                "proven_pattern_dormancy（有界豁免，只免 bad_target）= %d 筆"
+                % len(assessment.proven_pattern_dormancies))
+            for _pid in assessment.proven_pattern_dormancies:
+                retirement_lines.append("  proven %s" % _pid)
             # 🔴 pending（未核准的退役批次）必須**大聲回報**（Owner 2026-10-23
             #    「改判準」：放行必須有界、可被推翻、不留死角）。
             if pending_cohort_list:
@@ -3167,6 +3432,8 @@ def main(argv=None) -> int:
                 *retirement_lines,
                 "expected_hits         = %d" % len(expected_hits),
                 "pending_retirements_count = %d" % len(pending_retirements),
+                "proven_pattern_dormancy_count = %d"
+                % len(assessment.proven_pattern_dormancies),
                 "graph_nodes          = %d   state_dist=%s" % (graph_nodes, state_dist),
                 "no_op_note           = %s" % (
                     "是（0 筆新轉變，但圖非空 ⇒ 冪等 no-op，非失敗）"
@@ -3206,6 +3473,11 @@ def main(argv=None) -> int:
             % len(expected_derived),
             "- 本次命中（轉入 weakening）：%d 筆" % len(expected_hits),
             "- pending（**未核准**的退役批次）：%d 筆" % len(pending_retirements),
+            "- proven_pattern_dormancy（有界豁免，只免 bad_target）：%d 筆"
+            % len(assessment.proven_pattern_dormancies),
+            "- proven_pattern_dormancies = %s"
+            % json.dumps(list(assessment.proven_pattern_dormancies),
+                         ensure_ascii=True),
             "- pending_cohorts = %s"
             % json.dumps(pending_cohort_list, ensure_ascii=True),
             "- 核准指示（CLI 不得自行核准）：在 scripts/eval_lifecycle_cli.py 的 "
