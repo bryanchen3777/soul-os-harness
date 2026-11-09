@@ -10122,3 +10122,10 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
   - journal.py／src/inner_life 零差分（`git diff HEAD --stat` 空）；E hunk 功能上不依賴 O 碼（admission 接線獨立於 clear 路由除役）。
 - 分流結果：E 無 O 相依且無 U ⇒ **進入 B**：工作區內新完整 clone（不用 linked worktree），以 HEAD 建隔離分支，僅移入 E 行群（順序 interfaces→接線→測試→文件／canonical 條目，margin 另筆）；禁 `git add -A`、禁動原目錄；全套重驗（雙守衛／interfaces／entry／lease＋授權／intimacy 全檔＋AST＋雙向變異＋.venv 全庫＋CLI 沙盒）；main 前進則重整重驗；僅實際進 main 才報合併。
 - Notion 規劃／驗收狀態需區分標記（Sol 要求）。
+## EI-2B e635 ACCEPTED 並合入 main（2026-11-09）[EI2B-E635-ACCEPTED-1109]
+- e635（belief 節點 `e635b04f…`）為 Sol 批准的單節點另案入帳：2026-11-01 cohort 條目 +1（bounds=nodes=112），active→weakening，reason=`no_new_support_evidence`，7.581 天 ≥ 7 天門檻；其餘 111 筆不動。
+- PROVEN18（18 筆 pattern-dormant 正常老化）先行 ACCEPTED，有界豁免 exit3 語義；e635 寫入後 CLI 凍結槽 exit0／PASS（pending1→0、expected42→43、transitions117、sidecar2407→2524、weak809→852、proven18、prompt diffs42 全解釋、failures 空）。
+- 補證閉環：C5 主腦重跑變異 OVERALL=GREEN（control 綠、M1–M6 各因指定斷言紅、repo SHA 不變）；C6 主腦核讀 FAILED/ERROR 46vs46 雙向差分空，collect 大小寫歸一後 extra44/missing0（44＝CLI38＋EI1 guard6，與 passed 差 +44 吻合），解譯器 repo 內 .venv Python 3.11。
+- 合入：隔離整合樹逐檔提交 `63a8cec`（台帳）＋`78f9a09`（邊界測試 7 測）＋`b758442`（交接注記）；原倉在途髒改動經 Owner 確認全屬本專案，歸檔至側分支 `wip-origin-inflight-1109`（提交 `590c175`，未驗證、禁上 main），main 恢復乾淨後 `merge --ff-only` 至 `b758442`（63 檔 +17605/-219）。
+- main 上重驗（.venv Python 3.11）：CLI 凍結槽 exit0／PASS；`tests/test_eval_lifecycle_cli.py` 118 passed（原 skip 基線項在 main 上實跑通過）；`tests/infra` 319 passed，exit 0。
+- 狀態：已驗收／已合入／未部署、未重啟。Canary（22:00 夜槽）維持非阻塞巡檢。Notion 狀態頁＋EI 計畫頁已同步（marker EI2B-E635-ACCEPTED-1109）。
