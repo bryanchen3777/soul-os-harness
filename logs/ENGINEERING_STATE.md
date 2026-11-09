@@ -10145,3 +10145,7 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 6 失敗定性（Sol 終判 ACCEPTED 可合入）：5 gap 為 pre-existing RED（journal×3＋runtime_port×2，改動檔零觸及，乾淨環境重跑同樣 5 failed）；test_g2 為 harness artifact（全域 TEMP 隔離與 unset 斷言互斥，乾淨新行程重跑 1 passed）；Demotions flake 本輪未現。
 - 合入：`e25ff78`（5 檔＋verification/SKIP-BASELINE-DRIFT-FIX-1/，8 files +360/-35）。合入後聚焦：tests/infra＋隔離＋adapter 368 passed、1 skipped exit 0；合入後全庫（隔離環境）已啟動重驗，待摘要。
 - 保留：原始全庫 exit 1 如實保留；五 gap 維持原紅；g2 僅允許匯入快照差異；合入後重驗沿用啟動前隔離環境（不可為消 g2 而全域 unset）。
+## 部署與服務啟動完成（Owner 明示授權，2026-11-09）[DEPLOY-1109]
+- push：main 超前 18 個提交全為已驗收工作，遠端無新提交，fast-forward 至 `fe83eab`（origin/main 已同步）。
+- 重啟（官方 `server_ops.ps1 restart`，exit 0）：舊 port-8000 樹已停；新服務 PID=29416（trampoline，`data/server.pid` 一致）＋34488（直譯器）；`:8000` LISTENING owner 34488；`/health=200`（probe #16，暖機約 80s）；watchdog 已恢復。
+- 生產載入版本含：EI-2 整步、EI-1 追認 CLOSED、G1–G5 歸層、SKIP-BASELINE 基線 32。
