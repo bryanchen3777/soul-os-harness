@@ -1,0 +1,25 @@
+{
+  "owner_principal_id": "example-owner-do-not-deploy",
+  "backends": ["example-port"],
+  "routes": [
+    {
+      "soul_alias": "example-soul",
+      "backend_alias": "example-backend",
+      "agent_id": "example-agent",
+      "public_model_id": "example-model",
+      "backend_ref": "example-port",
+      "context_window_tokens": 4096
+    }
+  ],
+  "clients": [
+    {
+      "client_id": "example-client-do-not-deploy",
+      "principal_id": "example-owner-do-not-deploy",
+      "purpose": "interactive",
+      "allowed_routes": ["example-soul/example-backend"],
+      "scope": "owner_private",
+      "allow_persistent_memory": true,
+      "credential_sha256": "9ccf0108a6ce70d514d7f72e93cf8c4d078de4e894d0e5b3a5a8b4ac68a82dbd"
+    }
+  ]
+}
