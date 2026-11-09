@@ -28,6 +28,9 @@ PROGRAM-2 TTL-takeover half, keeps B4 / B5 / B6 / B7):
   transport_sent (send fate unknown) / uncertain / crash -> isolate.
   No backend-terminal release exists (upstream has no completed / failed
   / cancelled states). Never release on finally, timeout, or outcome alone.
+  Backend-terminal release exists ONLY on private memory evidence
+  (EI-2B-BACKEND-SETTLE-1 ``backend_execution`` ledger: never persisted,
+  never replayed across restarts — recovery conservatively isolates).
 - Feature flag ``SOUL_OS_PER_SOUL_MUTEX`` defaults OFF. When off, entries
   must not call this module at all (old behaviour byte-identical); see
   ``coordinator_enabled()`` and the static compat guard in tests.
@@ -65,6 +68,19 @@ from src.interfaces.journal import (
     Journal,
     JournalError,
     OwnershipError,
+)
+from src.interfaces.backend_execution import (
+    BACKEND_CANCELLED,
+    BACKEND_COMPLETED,
+    BACKEND_FAILED,
+    BACKEND_RETRYABLE,
+    BACKEND_RUNNING,
+    BACKEND_TERMINAL,
+    BACKEND_UNKNOWN,
+    BackendRecord,
+    Decision,
+    PortError,
+    PortResult,
 )
 from src.interfaces.soul_lease import (
     LEASE_DEFAULT_TTL_SECONDS,
@@ -471,6 +487,7 @@ def _admit_with_lease(
     pid: int = -1,
     process_create_time: Optional[float] = None,
     held_map: Optional[dict] = None,
+    backend_ledger: Optional[dict] = None,
 ) -> AdmissionOutcome:
     """Two-step admission: capability lease first, idempotency row second.
 
@@ -479,6 +496,10 @@ def _admit_with_lease(
     won and then lost at the claim/begin is released only with proven
     quiescence (this path never published and opened no permits, so the
     proof is local and exact).
+
+    On ``begin`` success the request is bound RUNNING in ``backend_ledger``
+    (when given; SETTLE-1): only a bound request may call the backend
+    port. ``None`` keeps the legacy journal-only path (no port rights).
     """
     token = holder_token if holder_token else _mint_holder_token()
     nonce = process_nonce if process_nonce else ""
@@ -639,6 +660,11 @@ def _admit_with_lease(
         registry.track_request(request_id, soul_alias, capability.generation)
     if held_map is not None:
         held_map[soul_alias] = capability
+    if backend_ledger is not None:
+        _bind_backend_running(
+            backend_ledger, soul_alias=soul_alias, request_id=request_id,
+            generation=capability.generation, epoch=epoch,
+        )
     return AdmissionOutcome(
         disposition=OUTCOME_NEW,
         http_status=201,
@@ -718,6 +744,7 @@ def admit_entry(
     pid: int = -1,
     process_create_time: Optional[float] = None,
     held_map: Optional[dict] = None,
+    backend_ledger: Optional[dict] = None,
 ) -> AdmissionOutcome:
     """Per-soul admission at an entry claim point (publish boundary).
 
@@ -738,6 +765,10 @@ def admit_entry(
     Without ``lease_store`` (legacy / PROGRAM-1 callers): the old
     single-step ``claim -> begin`` path, unchanged.
 
+    ``backend_ledger`` (SETTLE-1): the winning admission binds RUNNING
+    here so the backend port may be called; ``None`` keeps the legacy
+    journal-only path with no port rights.
+
     ``JournalError``/``SoulLeaseError`` map to UNCERTAIN (fail-closed),
     never to success. Losers get 409 busy (holder class + epoch +
     ``Retry-After: 1``), never a queue, never a drop-with-success.
@@ -757,6 +788,7 @@ def admit_entry(
             process_nonce=process_nonce, pid=pid,
             process_create_time=process_create_time,
             held_map=held_map,
+            backend_ledger=backend_ledger,
         )
     try:
         claimed = journal.claim(journal_ns, fingerprint, request_id, now)
@@ -934,6 +966,15 @@ class AdmissionContext:
     #: outcomes); entries settle through :func:`settle_request` /
     #: :func:`settle_held`, which look the capability up here.
     held: dict = field(default_factory=dict)
+    #: Private backend-execution ledger (SETTLE-1): request_id ->
+    #: :class:`BackendRecord`. Memory only: bound at ``begin`` success
+    #: (RUNNING), advanced only by real port returns, never persisted.
+    #: A restart drops it; recovery must isolate, never re-release.
+    _backend_ledger: dict = field(default_factory=dict, repr=False, compare=False)
+    #: Private release tombstones (SETTLE-1): request_id -> terminal state.
+    #: A released request settles idempotent without touching the lease
+    #: store again and never replays the port.
+    _backend_tombstones: dict = field(default_factory=dict, repr=False, compare=False)
 
     def now(self) -> float:
         fn = self.now_fn if self.now_fn is not None else time.time
@@ -1104,6 +1145,7 @@ def prepare_publish(
         pid=ctx.pid,
         process_create_time=ctx.process_create_time,
         held_map=ctx.held,
+        backend_ledger=ctx._backend_ledger,
     )
     return identity, outcome
 
@@ -1304,6 +1346,12 @@ def admit_group(
             ctx.registry.register(lease_namespace(alias, identity.idempotency_key), entry_kind)
             ctx.registry.track_request(identity.request_id, alias, capability.generation)
         ctx.held[alias] = capability
+        # SETTLE-1: every group winner binds RUNNING like the single path.
+        _bind_backend_running(
+            ctx._backend_ledger, soul_alias=alias,
+            request_id=identity.request_id,
+            generation=capability.generation, epoch=ctx.epoch,
+        )
     return GroupAdmissionResult(
         True, {a: (i, c) for a, i, c in grants}, None
     )
@@ -1466,9 +1514,22 @@ def require_current(ctx: AdmissionContext, request_id: str) -> bool:
 
     Leaseless (legacy) admits are never tracked and keep the journal-only
     rule (documented residual: legacy paths predate generations).
+
+    SETTLE-1: a sealed backend record (terminal or UNKNOWN) is never
+    current — dispatch past cancellation / completion / isolation is
+    zero-write / zero-deliver even when the journal row still reads
+    executing.
     """
     if not isinstance(request_id, str) or not request_id.strip():
         return False
+    try:
+        ledger = ctx._backend_ledger
+    except AttributeError:
+        ledger = None
+    if isinstance(ledger, dict):
+        rec = ledger.get(request_id.strip())
+        if rec is not None and getattr(rec, "sealed", False):
+            return False
     try:
         row = _read_request_by_id(ctx.journal, request_id.strip())
     except JournalError:
@@ -1586,6 +1647,9 @@ def open_permit(
 
     Must be called BEFORE the send. Returns the permit id; the caller
     must :func:`close_permit` it exactly once when the send settles.
+
+    SETTLE-1: a sealed backend record (terminal or UNKNOWN) refuses new
+    permits — fail closed with ``ValueError``, never an orphan permit.
     """
     if not isinstance(request_id, str) or not request_id.strip():
         raise ValueError("request_id must be a non-empty string.")
@@ -1593,6 +1657,14 @@ def open_permit(
         raise ValueError("destination must be a non-empty string.")
     if isinstance(now, bool) or not isinstance(now, (int, float)):
         raise ValueError("now must be a caller-provided epoch number.")
+    try:
+        ledger = ctx._backend_ledger
+    except AttributeError:
+        ledger = None
+    if isinstance(ledger, dict):
+        rec = ledger.get(request_id.strip())
+        if rec is not None and getattr(rec, "sealed", False):
+            raise ValueError("request sealed: refusing new permit.")
     permit_id = "permit-%s" % uuid.uuid4().hex
     conn = _permit_conn(ctx)
     try:
@@ -1671,6 +1743,318 @@ def record_reconciliation(
         raise SoulLeaseError("permit storage unavailable.")
 
 
+# -- backend execution evidence (EI-2B-BACKEND-SETTLE-1) --------------------
+#
+# Upstream journal states stop at generated / transport_sent (§9 gaps G1/G2:
+# no completed / failed / cancelled). Backend-terminal evidence therefore
+# lives ONLY in the context-private memory ledger (request_id ->
+# BackendRecord), bound at begin success (RUNNING) and advanced solely by
+# real port returns. It is never persisted and never replayed: a restart
+# drops it, and recovery must conservatively isolate, never re-release.
+# Callers can never submit a "completed" boolean; only a real PortResult
+# returned by the port creates completion evidence. FAILED is reachable only
+# by abandoning a proven-clean RETRYABLE; general exceptions always map to
+# UNKNOWN (never retryable, never FAILED).
+#
+# Port protocol (duck-typed, G5): ``execute(decision)`` -> PortResult or
+# raise; ``cancel()`` best-effort halt; ``confirm_exited()`` truthy = exited
+# clean (CANCELLED), falsy / missing / raising = fate unproven (UNKNOWN).
+# The join point is deliberately NOT named ``join``: the static deadlock
+# guard bans that attribute name in this module. A port must not expose
+# ``destination`` / ``memory`` / ``completed`` attributes (caller-supplied
+# routing or verdict evidence is refused outright).
+
+
+def _bind_backend_running(
+    ledger, *, soul_alias: str, request_id: str,
+    generation: int, epoch: int,
+):
+    """Bind one admitted request RUNNING in the memory ledger (begin success).
+
+    ``None`` ledger keeps the legacy journal-only path (no port rights).
+    A sealed record is never rebound (fail closed, never resurrect).
+    """
+    if ledger is None:
+        return None
+    if not isinstance(request_id, str) or not request_id:
+        raise ValueError("request_id must be a non-empty string.")
+    existing = ledger.get(request_id)
+    if existing is not None and getattr(existing, "sealed", False):
+        raise ValueError("backend record sealed: refusing rebind.")
+    rec = BackendRecord(
+        soul_alias=soul_alias, request_id=request_id,
+        generation=int(generation), epoch=int(epoch),
+        attempt=0, state=BACKEND_RUNNING, sealed=False,
+    )
+    ledger[request_id] = rec
+    return rec
+
+
+def _require_live_backend_record(
+    ctx: AdmissionContext, capability: Capability,
+) -> BackendRecord:
+    """Return the ledger record for a live capability, else refuse.
+
+    Refusal (``ValueError``, fail closed, never a state): non-capability,
+    capability not live in this context (stale or foreign holder), missing
+    ledger record (journal-only legacy path or post-restart empty ledger:
+    memory evidence is never re-created), or binding mismatch
+    (alias / generation / request / epoch). Callers must re-admit; nothing
+    here may mint evidence from the journal row alone.
+    """
+    if not isinstance(capability, Capability):
+        raise ValueError("capability must be a Capability.")
+    try:
+        live = ctx.held.get(capability.soul_alias)
+    except AttributeError:
+        live = None
+    if live != capability:
+        raise ValueError("capability not live in this context (stale or foreign).")
+    ledger = ctx._backend_ledger
+    rec = ledger.get(capability.request_id) if isinstance(ledger, dict) else None
+    if rec is None:
+        raise ValueError("no backend evidence bound (journal-only or post-restart).")
+    try:
+        bound = (
+            rec.soul_alias == capability.soul_alias
+            and int(rec.generation) == int(capability.generation)
+            and rec.request_id == capability.request_id
+            and int(rec.epoch) == int(ctx.epoch)
+        )
+    except (TypeError, ValueError, AttributeError):
+        bound = False
+    if not bound:
+        raise ValueError("backend evidence binding mismatch (stale attempt/epoch).")
+    return rec
+
+
+def _require_backend_port(port):
+    """Validate the duck-typed backend port (G5 consumer side).
+
+    Requires a callable ``execute``; refuses ports exposing ``destination``,
+    ``memory``, or ``completed`` attributes (routing / verdict evidence must
+    come from the real port return, never from caller-supplied fields).
+    """
+    if port is None or not callable(getattr(port, "execute", None)):
+        raise ValueError("port must expose a callable execute(decision).")
+    for forbidden in ("destination", "memory", "completed"):
+        if getattr(port, forbidden, None) is not None:
+            raise ValueError("port must not carry %r evidence." % (forbidden,))
+    return port
+
+
+def _apply_port_return(ctx: AdmissionContext, rec: BackendRecord, result) -> str:
+    """Map one real port return onto the ledger record. Returns the state.
+
+    ``PortResult(completed=True)`` fixes the response durably FIRST
+    (``record_generated``); only a successful fix yields COMPLETED. A failed
+    fix, ``completed=False``, or a non-``PortResult`` return proves nothing
+    about side-effect fate: UNKNOWN (sealed, never retryable, never FAILED).
+    """
+    if isinstance(result, PortResult) and result.completed is True:
+        try:
+            ctx.journal.record_generated(
+                rec.request_id, rec.epoch, result.response_id, result.response_body)
+        except (JournalError, OwnershipError, ValueError, TypeError):
+            rec.state = BACKEND_UNKNOWN
+            rec.sealed = True
+            return BACKEND_UNKNOWN
+        rec.response_id = result.response_id
+        rec.response_body = result.response_body
+        rec.state = BACKEND_COMPLETED
+        rec.sealed = True
+        return BACKEND_COMPLETED
+    rec.state = BACKEND_UNKNOWN
+    rec.sealed = True
+    return BACKEND_UNKNOWN
+
+
+def _apply_port_error(rec: BackendRecord, exc: BaseException) -> str:
+    """Map one port exception onto the ledger record. Returns the state.
+
+    Only an explicit ``PortError(ambiguous=False)`` — the port's own proof
+    of a side-effect-free failure — yields RETRYABLE (lease kept). An
+    ambiguous ``PortError`` or ANY general exception proves nothing:
+    UNKNOWN (sealed). General failures never enter RETRYABLE and there is
+    no path from them to FAILED.
+    """
+    if isinstance(exc, PortError) and exc.ambiguous is False:
+        rec.state = BACKEND_RETRYABLE
+        return BACKEND_RETRYABLE
+    rec.state = BACKEND_UNKNOWN
+    rec.sealed = True
+    return BACKEND_UNKNOWN
+
+
+def submit_backend(
+    ctx: AdmissionContext, capability: Capability,
+    decision: Decision, port,
+) -> str:
+    """First backend call for one admitted request (G2/G5 consumer side).
+
+    Requires a live capability, a bound RUNNING record, and a first
+    submission (attempt 0, nothing stored yet). Stores the decision/port,
+    pre-increments the attempt fence, then calls ``port.execute(decision)``
+    exactly once and maps the real return. RETRYABLE records must use
+    :func:`retry_backend` (re-authorization per attempt); sealed records
+    refuse. Returns the new evidence state (``BACKEND_*``).
+    """
+    if not isinstance(decision, Decision):
+        raise ValueError("decision must be a Decision.")
+    _require_backend_port(port)
+    rec = _require_live_backend_record(ctx, capability)
+    if rec.sealed:
+        raise ValueError("backend record sealed: refusing submit.")
+    if rec.state != BACKEND_RUNNING:
+        raise ValueError("submit allowed only from RUNNING (use retry_backend from RETRYABLE).")
+    if rec.attempt != 0 or rec.decision is not None or rec.port is not None:
+        raise ValueError("backend already submitted (use retry_backend).")
+    rec.decision = decision
+    rec.port = port
+    rec.attempt += 1
+    try:
+        result = port.execute(decision)
+    except Exception as exc:
+        return _apply_port_error(rec, exc)
+    return _apply_port_return(ctx, rec, result)
+
+
+def retry_backend(
+    ctx: AdmissionContext, capability: Capability, *,
+    attempt: Optional[int] = None, abandon: bool = False,
+) -> str:
+    """Retry or abandon after a proven side-effect-free failure (G4).
+
+    Replays the STORED decision/port — the caller supplies no new input and
+    no verdict boolean. Normal path requires RETRYABLE (never sealed,
+    never terminal): optionally fences on ``attempt`` (stale attempt
+    refuses with zero resend), pre-increments, transitions to RUNNING
+    BEFORE the call so a concurrent retry sees a non-retryable state and
+    refuses without resending, then maps the real return. ``abandon=True``
+    requires RETRYABLE and is the ONLY path to FAILED (the caller gives up
+    a proven-clean retry). Retrying a sealed terminal record is an
+    idempotent no-op returning its state (never resends). Returns the new
+    evidence state (``BACKEND_*``).
+    """
+    if not isinstance(abandon, bool):
+        raise ValueError("abandon must be a bool, not a truthy value.")
+    rec = _require_live_backend_record(ctx, capability)
+    if abandon:
+        if rec.sealed or rec.state != BACKEND_RETRYABLE:
+            raise ValueError("abandon allowed only from unsealed RETRYABLE.")
+        rec.state = BACKEND_FAILED
+        rec.sealed = True
+        return BACKEND_FAILED
+    if rec.sealed:
+        return rec.state
+    if rec.state != BACKEND_RETRYABLE:
+        raise ValueError("retry allowed only from RETRYABLE.")
+    if attempt is not None:
+        if isinstance(attempt, bool):
+            raise ValueError("attempt must be an int, not a bool.")
+        try:
+            fenced = int(attempt)
+        except (TypeError, ValueError):
+            raise ValueError("attempt must be an int.")
+        if fenced != int(rec.attempt):
+            raise ValueError("stale attempt (fencing): refusing resend.")
+    if rec.decision is None or rec.port is None:
+        raise ValueError("no stored backend call to replay.")
+    rec.attempt += 1
+    rec.state = BACKEND_RUNNING
+    try:
+        result = rec.port.execute(rec.decision)
+    except Exception as exc:
+        return _apply_port_error(rec, exc)
+    return _apply_port_return(ctx, rec, result)
+
+
+def cancel_backend(ctx: AdmissionContext, capability: Capability) -> str:
+    """Cancel one request's backend call (G1 consumer side).
+
+    Seals the record FIRST (no submit / retry / permit / dispatch past this
+    point), then best-effort ``port.cancel()``, then the join point
+    ``port.confirm_exited()`` (truthy = exited clean -> CANCELLED). A
+    missing/unjoined ``confirm_exited``, a falsy return, or ANY exception
+    from the port yields UNKNOWN (fate unproven, fail-closed isolation). An
+    already-sealed record returns its state without touching the port.
+    Cancelling before any submit proves zero side effects structurally
+    (the port was never invoked) -> CANCELLED. Returns the evidence state
+    (``BACKEND_*``).
+    """
+    rec = _require_live_backend_record(ctx, capability)
+    if rec.sealed:
+        return rec.state
+    rec.sealed = True
+    port = rec.port
+    if port is None:
+        rec.state = BACKEND_CANCELLED
+        return BACKEND_CANCELLED
+    try:
+        cancel_fn = getattr(port, "cancel", None)
+        if callable(cancel_fn):
+            cancel_fn()
+        confirm_fn = getattr(port, "confirm_exited", None)
+        if not callable(confirm_fn):
+            rec.state = BACKEND_UNKNOWN
+            return BACKEND_UNKNOWN
+        exited_clean = confirm_fn()
+    except Exception:
+        rec.state = BACKEND_UNKNOWN
+        return BACKEND_UNKNOWN
+    if exited_clean:
+        rec.state = BACKEND_CANCELLED
+        return BACKEND_CANCELLED
+    rec.state = BACKEND_UNKNOWN
+    return BACKEND_UNKNOWN
+
+
+def _settle_with_backend_evidence(
+    ctx: AdmissionContext, capability: Capability,
+    rec: BackendRecord, permits_open: int, now: float, release_fn,
+) -> str:
+    """Settle one ledger-bound request per the SETTLE-1 end table.
+
+    - terminal (COMPLETED / FAILED / CANCELLED) + sealed + zero permits ->
+      release (tombstone kept on success for idempotent re-settle);
+      terminal + open permits -> held (permits).
+    - RUNNING / RETRYABLE -> held (tasks open), whatever the journal says.
+    - UNKNOWN, unsealed-terminal contradiction, binding contradiction, or
+      any future label -> isolate (quarantine on capability match).
+    Never releases on memory outcomes, transport state, or finally/timeout.
+    """
+    try:
+        bound = (
+            rec.soul_alias == capability.soul_alias
+            and int(rec.generation) == int(capability.generation)
+            and rec.request_id == capability.request_id
+            and int(rec.epoch) == int(ctx.epoch)
+        )
+    except (TypeError, ValueError, AttributeError):
+        bound = False
+    if not bound:
+        try:
+            ctx.lease_store.quarantine_self(capability, now)
+        except (SoulLeaseError, ValueError):
+            pass
+        return SETTLE_ISOLATED
+    state = rec.state
+    if state in BACKEND_TERMINAL and rec.sealed:
+        if permits_open == 0:
+            verdict = release_fn()
+            if verdict == SETTLE_RELEASED:
+                ctx._backend_tombstones[capability.request_id] = state
+            return verdict
+        return SETTLE_HELD_PERMITS_OPEN
+    if state in (BACKEND_RUNNING, BACKEND_RETRYABLE):
+        return SETTLE_HELD_TASKS_OPEN
+    try:
+        ctx.lease_store.quarantine_self(capability, now)
+    except (SoulLeaseError, ValueError):
+        pass
+    return SETTLE_ISOLATED
+
+
 # -- settle table (§6, EI-2B-JOURNAL-ADAPT-1) ------------------------------------
 #
 # Fixed register — the ONLY ways a held lease ends:
@@ -1686,6 +2070,19 @@ def record_reconciliation(
 # - "isolated": transport_sent (send fate unknown), uncertain, or any
 #   ambiguous mix — quarantine on capability match, never free.
 # Never released by finally, timeout, or outcome alone.
+#
+# SETTLE-1 ledger branch (takes effect ONLY when the request has memory
+# backend evidence in ``ctx._backend_ledger``; journal-only requests keep
+# the table above byte-identical):
+# - tombstoned request id -> released (idempotent re-settle: no lease
+#   touch, no port replay, ever again).
+# - COMPLETED / FAILED / CANCELLED + sealed + zero permits -> release
+#   (tombstone kept on success); terminal + open permits -> held_permits.
+# - RUNNING / RETRYABLE -> held_tasks_open, whatever the journal says.
+# - UNKNOWN, unsealed-terminal contradiction, binding contradiction, or
+#   any future label -> isolated (quarantine on capability match).
+# FAILED means a proven-clean abandonment only; general exceptions land
+# UNKNOWN and can never release.
 
 SETTLE_RELEASED = "released"
 SETTLE_ISOLATED = "isolated"
@@ -1708,12 +2105,32 @@ def settle_request(
     upstream journal states stop at generated / transport_sent, so those
     (and uncertain) isolate — memory ``completed`` must never be read as
     a backend terminal state (§9 gap G1/G2, BLOCKED, not waived).
+
+    SETTLE-1: when this context holds memory backend evidence for the
+    request (``ctx._backend_ledger``), the ledger branch decides per the
+    end table — including terminal release on COMPLETED / FAILED /
+    CANCELLED (sealed, zero permits) with a memory tombstone for
+    idempotent re-settle. Journal-only requests (no ledger record: legacy
+    path or post-restart empty ledger) keep the journal-only rule exactly:
+    executing / generated never release, so a restart can never re-release
+    a backend whose memory evidence is gone.
     """
     if not isinstance(capability, Capability):
         raise ValueError("capability must be a Capability.")
     if isinstance(now, bool) or not isinstance(now, (int, float)):
         raise ValueError("now must be a caller-provided epoch number.")
     stamp = float(now)
+    # SETTLE-1 fast path: a released terminal settles idempotent from the
+    # memory tombstone — no lease touch, no port replay, ever again.
+    try:
+        tombstoned = (
+            isinstance(ctx._backend_tombstones, dict)
+            and capability.request_id in ctx._backend_tombstones
+        )
+    except AttributeError:
+        tombstoned = False
+    if tombstoned:
+        return SETTLE_RELEASED
     try:
         row = _read_request_by_id(ctx.journal, capability.request_id)
     except JournalError:
@@ -1732,6 +2149,18 @@ def settle_request(
         except SoulLeaseError:
             return SETTLE_REFUSED_UNKNOWN
         return SETTLE_REFUSED_UNKNOWN
+
+    try:
+        ledger = ctx._backend_ledger
+    except AttributeError:
+        ledger = None
+    backend_rec = (
+        ledger.get(capability.request_id)
+        if isinstance(ledger, dict) else None
+    )
+    if backend_rec is not None:
+        return _settle_with_backend_evidence(
+            ctx, capability, backend_rec, permits_open, stamp, _release)
 
     if state == STATE_ACCEPTED or state == STATE_FAILED_BEFORE_EXECUTION:
         # Not started: release only with proven zero side effect.
@@ -1766,16 +2195,28 @@ def settle_held(
     return settle_request(ctx, cap, now)
 
 
-def require_registered(journal: Journal, request_id: str) -> bool:
+def require_registered(
+    journal: Journal, request_id: str, *,
+    ledger: Optional[dict] = None,
+) -> bool:
     """Dispatch-side O-gate: True only for a live executing request row.
 
     Payloads without ``soul_request_id`` are background (pass-through,
     never blocked here); payloads naming an unknown / non-executing row
     are unregistered and must go fail-closed uncertain with zero send.
     Storage failure reads as unregistered (fail closed, never dispatch).
+
+    SETTLE-1: pass the context's ``_backend_ledger`` as ``ledger`` and a
+    sealed record (terminal or UNKNOWN) reads unregistered even when its
+    journal row still says executing. ``None`` (default) keeps the legacy
+    journal-only rule byte-identical.
     """
     if not isinstance(request_id, str) or not request_id.strip():
         return False
+    if isinstance(ledger, dict):
+        rec = ledger.get(request_id.strip())
+        if rec is not None and getattr(rec, "sealed", False):
+            return False
     try:
         row = _read_request_by_id(journal, request_id.strip())
     except JournalError:
