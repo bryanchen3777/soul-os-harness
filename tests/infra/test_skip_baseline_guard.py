@@ -15,9 +15,13 @@
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 #: 共用純函式庫（skip 基準機制）。**不依賴套件化**。
 _INFRA_DIR = Path(__file__).resolve().parent
@@ -203,3 +207,147 @@ def test_repo_skip_baseline_has_no_timestamp_field():
         (_INFRA_DIR / "skip_baseline.json").read_text(encoding="utf-8")
     )
     assert set(raw) == {"count", "node_ids"}, raw
+
+
+# ═════════════════════════════════════════════════════════════
+# 真 hook 變異證明（SKIP-BASELINE-DRIFT-FIX-1 §5）
+# ═════════════════════════════════════════════════════════════
+#
+# 同一 oracle（`tests/conftest.py::pytest_terminal_summary` 真 hook）
+# 正常綠／變異紅：
+#   · 基準集合 ⇒ 綠（STABLE，exitstatus 不動）；
+#   · 資料變異（＋1／−1 筆 skip）⇒ 紅（DRIFT，`session.exitstatus = 1`）；
+#   · 程式碼變異（差集清空／停用失敗設定）⇒ 被本檔 oracle 殺死。
+# 全部只在合成物件／沙盒操作；接觸入口前先硬攔網路與持久化。
+
+_HOOK_MOD = None
+
+
+def _load_conftest_hook():
+    """載入執行期真正在用的 hook（`tests/conftest.py`，非複製品）。"""
+    global _HOOK_MOD
+    if _HOOK_MOD is not None:
+        return _HOOK_MOD
+    path = Path(__file__).resolve().parent.parent / "conftest.py"
+    spec = importlib.util.spec_from_file_location(
+        "tests_conftest_hook_under_test", path
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    _HOOK_MOD = mod
+    return mod
+
+
+class _FakeSession:
+    """`terminalreporter._session` 的最小替身（只需 exitstatus）。"""
+
+    def __init__(self) -> None:
+        self.exitstatus = 0
+
+
+class _FakeTerminalReporter:
+    """真 hook 的合成 reporter（合成 skip 報告＋行收集器＋假 session）."""
+
+    def __init__(self, skipped_ids) -> None:
+        self.stats = {"skipped": [_FakeReport(n) for n in skipped_ids]}
+        self.lines: list = []
+        self._session = _FakeSession()
+
+    def write_line(self, msg: str) -> None:
+        self.lines.append(msg)
+
+
+def _hard_block_io_before_entry(monkeypatch) -> None:
+    """接觸入口前硬攔：比對路徑不得碰網路與持久化入口."""
+    import socket
+    import subprocess
+
+    def _blocked(*args, **kwargs):
+        raise AssertionError(
+            "blocked: skip-baseline compare path must not touch network/persistence"
+        )
+
+    monkeypatch.setattr(socket, "socket", _blocked)
+    monkeypatch.setattr(socket, "create_connection", _blocked)
+    monkeypatch.setattr(subprocess, "Popen", _blocked)
+    monkeypatch.setattr(subprocess, "run", _blocked)
+    # 比對路徑不得寫基準檔（寫模式另有專用流程，本票不走）。
+    monkeypatch.setattr(skip_baseline_lib, "save_baseline", _blocked)
+
+
+def _drive_real_hook(monkeypatch, skipped_ids) -> _FakeTerminalReporter:
+    """用合成 skip 集合驅動真 hook（全庫模式，唯讀基準）。"""
+    hook = _load_conftest_hook()
+    _hard_block_io_before_entry(monkeypatch)
+    # 全庫模式判定走 env 強制（不依賴 config 形狀）。
+    monkeypatch.setenv("SOUL_OS_ENFORCE_SKIP_BASELINE", "1")
+    monkeypatch.delenv("SOUL_OS_WRITE_SKIP_BASELINE", raising=False)
+    reporter = _FakeTerminalReporter(skipped_ids)
+    hook.pytest_terminal_summary(reporter, 0, object())
+    return reporter
+
+
+def test_hook_reports_stable_for_baseline_set(monkeypatch):
+    """正常綠：觀察集合逐筆等於基準 ⇒ STABLE，exitstatus 不動。"""
+    baseline = skip_baseline_lib.load_baseline()
+    reporter = _drive_real_hook(monkeypatch, list(baseline))
+    assert reporter._session.exitstatus == 0
+    assert any("STABLE" in line for line in reporter.lines), reporter.lines
+    assert any("added=0 removed=0" in line for line in reporter.lines)
+
+
+def test_hook_turns_red_on_added_skip(monkeypatch):
+    """資料變異＋1：多一筆 skip ⇒ 真 hook 轉紅並逐筆指名。"""
+    baseline = skip_baseline_lib.load_baseline()
+    probe = "tests/synthetic/mutant_probe.py::test_added_skip_probe"
+    assert probe not in baseline
+    reporter = _drive_real_hook(monkeypatch, list(baseline) + [probe])
+    assert reporter._session.exitstatus == 1, reporter.lines
+    assert any("DRIFT" in line for line in reporter.lines)
+    assert any(probe in line for line in reporter.lines)
+
+
+def test_hook_turns_red_on_removed_skip(monkeypatch):
+    """資料變異−1：少一筆 skip ⇒ 真 hook 轉紅並逐筆指名。"""
+    baseline = skip_baseline_lib.load_baseline()
+    assert baseline, "基準檔不得為空"
+    dropped = baseline[0]
+    observed = [n for n in baseline if n != dropped]
+    reporter = _drive_real_hook(monkeypatch, observed)
+    assert reporter._session.exitstatus == 1, reporter.lines
+    assert any("DRIFT" in line for line in reporter.lines)
+    assert any(dropped in line for line in reporter.lines)
+
+
+def test_mutant_cleared_diff_is_killed(monkeypatch):
+    """程式碼變異（差集清空）被 oracle 殺死：同一斷言正常綠、變異紅。"""
+    oracle = (
+        skip_baseline_lib.diff_skip_ids(["a"], ["a", "b"])["added"] == ["b"]
+    )
+    assert oracle  # 正常綠
+    monkeypatch.setattr(
+        skip_baseline_lib,
+        "diff_skip_ids",
+        lambda base, obs: {"added": [], "removed": []},
+    )
+    with pytest.raises(AssertionError):  # 變異紅（被殺見證）
+        assert (
+            skip_baseline_lib.diff_skip_ids(["a"], ["a", "b"])["added"]
+            == ["b"]
+        )
+
+
+def test_mutant_disabled_fail_setting_is_killed(monkeypatch):
+    """程式碼變異（停用失敗設定）被 oracle 殺死：同一斷言正常綠、變異紅。"""
+    hook = _load_conftest_hook()
+    baseline = skip_baseline_lib.load_baseline()
+    probe = "tests/synthetic/mutant_probe.py::test_added_skip_probe"
+    # 正常綠：真 hook 遇漂移必 exitstatus=1（有牙）。
+    reporter = _drive_real_hook(monkeypatch, list(baseline) + [probe])
+    assert reporter._session.exitstatus == 1
+    # 變異：把失敗設定停用 ⇒ 同一 oracle 斷言失敗（被殺見證）。
+    monkeypatch.setattr(hook, "_fail_session", lambda tr: None)
+    reporter2 = _drive_real_hook(monkeypatch, list(baseline) + [probe])
+    with pytest.raises(AssertionError):
+        assert reporter2._session.exitstatus == 1

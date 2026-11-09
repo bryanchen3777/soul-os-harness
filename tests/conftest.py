@@ -45,6 +45,11 @@ import skip_baseline_lib  # noqa: E402
 #: Opt-out 標記：顯式宣告「本測試必須斷言生產預設路徑佈局（repo `data/`）」。
 ALLOW_REAL_DATA_ROOT = "allow_real_data_root"
 
+#: 收集前 `SOUL_OS_DATA_DIR` 原值的 stash 鍵（SKIP-BASELINE-DRIFT-FIX-1）。
+#: `pytest_configure`（收集開始前）寫入一次；測試只能透過
+#: `startup_data_dir_snapshot` fixture **唯讀** 取出（字串或 None），不得寫入。
+_STARTUP_DATA_DIR_KEY = pytest.StashKey()
+
 
 def pytest_configure(config):
     """pytest filterwarnings：忽略 DeprecationWarning（execute_work mock 面標記）。"""
@@ -55,6 +60,11 @@ def pytest_configure(config):
         "只有『必須斷言生產預設路徑佈局（repo `data/`）』的測試才可標記——"
         "白名單必須顯式且最小；一般測試請勿使用。",
     )
+    # 啟動快照自證（SKIP-BASELINE-DRIFT-FIX-1）：保存**收集前**行程環境原值。
+    # 此後任何測試的 autouse 隔離／monkeypatch 都只改「測試當下」的值；
+    # opt-out 自證測試用它證明「fixture 沒動我的環境」，不再用「環境乾淨才跑」
+    # 的污染式 skip（舊 `requires_clean_process_env` 已刪除）。
+    config.stash[_STARTUP_DATA_DIR_KEY] = os.environ.get("SOUL_OS_DATA_DIR")
 
 
 @pytest.fixture(autouse=True)
@@ -183,6 +193,17 @@ def tmp_dir(tmp_path):
 def project_root() -> Path:
     """repo 根目錄（等同該檔 `__main__` 的 Path(__file__).resolve().parent.parent）。"""
     return Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture
+def startup_data_dir_snapshot(request):
+    """收集前 `SOUL_OS_DATA_DIR` 原值（SKIP-BASELINE-DRIFT-FIX-1，唯讀）。
+
+    來源＝`pytest_configure` 在收集開始前寫入 `config.stash` 的快照。
+    回傳字串或 None；呼叫端**只能讀、不得寫回環境**（寫入會污染後續測試）。
+    用途：opt-out 自證測試斷言「測試當下環境等於啟動快照」。
+    """
+    return request.config.stash.get(_STARTUP_DATA_DIR_KEY, None)
 
 
 # ═════════════════════════════════════════════════════════════

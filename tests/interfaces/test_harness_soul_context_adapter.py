@@ -735,8 +735,12 @@ def test_27_symlink_escape_refused(tmp_path):
     link.parent.mkdir(parents=True, exist_ok=True)
     try:
         link.symlink_to(prod, target_is_directory=True)
-    except OSError:
-        pytest.skip("symlink creation needs privilege on this host")
+    except OSError as exc:
+        # SKIP-BASELINE-DRIFT-FIX-1：只認 Windows 特權缺失（winerror=1314）。
+        # 廣泛吞掉全部 OSError 會把「連結建立失敗」這類真缺陷也藏成 skip。
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("symlink creation needs privilege on this host")
+        raise
     # The link textually nests under the env root; only canonical
     # resolve() (one realpath metadata stat, no content read/list)
     # reveals it IS production.
@@ -753,6 +757,59 @@ def test_27_symlink_escape_refused(tmp_path):
         mem.close()
         if link.is_symlink():
             link.unlink()
+
+
+# ── FIX-6b: synthetic symlink-like escape refused (no privilege needed) ─
+#
+# 合成補償案例（SKIP-BASELINE-DRIFT-FIX-1）：無 symlink 特權的環境也能跑的
+# 拒絕邏輯覆蓋 —— 用 `Path.resolve` 的精確攔截偽造「文字上嵌在 env 根、
+# 解析後是生產根」的路徑，證明是**正規化比較**擋下逃逸（不是字串前綴）。
+# 🔴 明註：本案例**不等同實體 symlink 驗證**（真連結的 metadata stat、
+# 目標存在性等只在 `test_27` 覆蓋）；它只保證「拒絕邏輯」本身在無特權
+# 環境仍被執行到。I/O 硬攔在接觸入口前先立好：拒絕路徑不得碰網路與持久化。
+
+def test_27b_symlink_like_canonical_escape_refused(tmp_path, monkeypatch):
+    import socket
+    import subprocess
+
+    from src.paths import production_data_root
+
+    prod = production_data_root().resolve()  # path only, no IO
+    link = _env_root() / tmp_path.name / "synthetic_slink_to_prod"
+    assert link != prod
+    assert str(_env_root()) in str(link)  # 文字上嵌在 env 根底下
+
+    mem = _make_memory(tmp_path)
+    try:
+        # I/O 硬攔：先立後測；拒絕路徑若碰網路／持久化入口即爆。
+        def _blocked(*args, **kwargs):
+            raise AssertionError(
+                "blocked: refusal path must not touch network/persistence"
+            )
+
+        monkeypatch.setattr(socket, "socket", _blocked)
+        monkeypatch.setattr(socket, "create_connection", _blocked)
+        monkeypatch.setattr(subprocess, "Popen", _blocked)
+        monkeypatch.setattr(subprocess, "run", _blocked)
+
+        # 合成解析：只有這條合成路徑被導向生產根，其餘一律走真實解析。
+        real_resolve = Path.resolve
+
+        def _fake_resolve(self, *args, **kwargs):
+            if str(self) == str(link):
+                return prod
+            return real_resolve(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", _fake_resolve)
+
+        with pytest.raises(IsolationError):
+            get_scope_provider(link, "rem", session_id="s27b")
+        with pytest.raises(IsolationError):
+            build_harness_messages(
+                soul_alias="rem", user_id=OWNER_USER, text="合成連結探針",
+                data_root=link, memory_store=mem)
+    finally:
+        mem.close()
 
 
 # ── FIX-7: env/launch/request mismatch refused ────────────────────────

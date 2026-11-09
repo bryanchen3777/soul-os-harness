@@ -1,11 +1,12 @@
 {
-  "count": 31,
+  "count": 32,
   "node_ids": [
     "tests/clients/test_voice_brain_actions.py::test_all_rem_avatar_videos_are_wired_with_zero_orphans_and_zero_broken_names",
     "tests/clients/test_voice_brain_actions.py::test_rem_free_form_actions_have_animation_assets",
     "tests/clients/test_voice_brain_actions.py::test_rem_head_pat_variants_have_no_animation_gap",
     "tests/clients/test_voice_brain_actions.py::test_rem_new_action_keys_have_animation_assets",
     "tests/clients/test_voice_brain_actions.py::test_tilt_head_is_no_longer_a_dead_token_for_rem",
+    "tests/interfaces/test_harness_soul_context_adapter.py::test_27_symlink_escape_refused",
     "tests/test_extract_and_judge_context_bug.py::test_content_stage_sees_real_text",
     "tests/test_identity.py::test_identity",
     "tests/test_m1_5_night_400_baseline.py::TestM15Baseline::test_02_real_400_count_after_restart",
