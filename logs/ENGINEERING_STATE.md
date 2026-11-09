@@ -10169,3 +10169,7 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - (4)串流：首批非串流（`stream:false` 全量回，`stream:true` 回 400 明示）。主要調用方為語音代理／個人助理類（非 coding 類），全量回可接受；SSE 列增量。
 - (5)Provider：preset config 檔照格式填、可擴充；首批形狀＝OpenAI v1（chat/completions＋models）；預設接 ollama＋deepseek v4.1-flash（與 Soul OS 本機一致）。key 值由 Owner 在 S7 前本機注入 env，env 名在 W2 凍結。
 - S3 已解鎖（S2 全定）；S1 全庫留底跑ing。
+## S3-W1 shim 層 ACCEPTED 並合入（2026-11-09）[S3-W1-ACCEPTED-1109]
+- 新增 `src/external_gateway/`（`__init__`＋`openai_shim.py`）＋`tests/external_gateway/test_shim.py`（fe1e53d，28 tests，tracked 零差分）：parse 白名單／to_chat_response／to_error 映射／stream:true→400／secret scrub／雙 golden／serve_external 實接線。
+- 獨立複核（.venv）：28 passed 復現；interfaces 聚焦 541 passed＋5 預期紅。Sol 終判 ACCEPTED，三項假設全接受（stop 接受不轉發已明示／temperature 口徑與 classification 同／未列名碼預設 invalid_request_error）。
+- S4 可開工。
