@@ -10158,3 +10158,7 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 獨立複核（.venv Python 3.11）：新檔 54 passed；契約 78 passed（identity 13＋config 48＋context_policy 16＋boundary_import_guard 1）；合跑 132 passed；interfaces 全目錄 5 failed、541 passed（5 failed 逐筆為 G1–G5 預期紅，未新增、未轉綠）。Frozen 面（identity／journal／inner_life／衰減門檻）零差分；無 IO／環境／網路／綁埠；`data/**` 零寫入。
 - Sol 終判 ACCEPTED：兩處語義假設接受——最後一戶撤銷 409＋快照不動（由調用方下線入口；關閉態 provider 屬新狀態機不在本票）；`Bearer ` 大小寫敏感（封閉入口 fail-closed，DOC-1 須寫進調用約束）。
 - DOC-1 可依本票驗收結果撰寫 Key 操作章節（含 issue／rotate／revoke、409 語義、精確 `Bearer ` 格式、範例檔不可部署聲明）。
+## DOC-1 對外手冊 ACCEPTED 並合入（2026-11-09）[DOC-1-ACCEPTED-1109]
+- 新增 `docs/EXTERNAL-INTERFACE-GUIDE.md`（dab1b6d，純新增 219 行，tracked 零差分）：版本聲明（KEY-1 fdc28ea）＋G1–G5 BLOCKED 聲明；§1 簽發／§2 配置範本／§3 輪轉／§4 撤銷／§5 調用格式錯誤碼／§6 已知限制／§7 不承諾事項；每條斷言標 S1–S7 來源＋行號；範本不可部署警告保留。
+- 獨立複核（.venv Python 3.11）：憑證 grep 0 命中；tests/interfaces 獨立重跑 5 failed、541 passed（5 failed 逐筆為預期五紅，無新增紅）。Sol 終判 ACCEPTED。
+- 三票閉環：KEY-1／DOC-1／GAP-DECISION-1 全部合入；G1–G5 仍 BLOCKED 待 Owner 圈選 A／B（任選 B 需另開工單＋授權）。
