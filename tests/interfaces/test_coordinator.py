@@ -7,6 +7,7 @@ No server, no ports, no real API/LLM, no subprocess.
 from __future__ import annotations
 
 import ast
+import json
 import sqlite3
 import threading
 from pathlib import Path
@@ -49,7 +50,7 @@ def _open(path) -> sqlite3.Connection:
 
 def _setup(tmp_path, name="c.db"):
     conn = _open(tmp_path / name)
-    return Journal(conn), conn, HolderRegistry()
+    return Journal(conn, epoch=1), conn, HolderRegistry()
 
 
 def _admit(j, reg, **kw):
@@ -147,7 +148,7 @@ def test_dual_entry_same_soul_same_key_exactly_one_holder(tmp_path):
     def worker(i: int) -> None:
         conn = _open(path)
         try:
-            jj = Journal(conn)
+            jj = Journal(conn, epoch=1)
             barrier.wait(timeout=10)
             outs[i] = admit_entry(
                 jj, shared,
@@ -205,11 +206,12 @@ def test_busy_writes_no_outcome_and_keeps_lease(tmp_path):
     assert second.disposition == "IN_PROGRESS"
     assert second.should_publish is False
     rows = conn.execute(
-        "SELECT COUNT(*) FROM journal_outcomes WHERE request_id IN (?, ?)",
-        (REQ, "request-002"),
-    ).fetchone()[0]
-    assert rows == 0
-    assert j.load(lease_namespace(SOUL, KEY))["state"] == "executing"
+        "SELECT request_id, outcomes FROM requests",
+    ).fetchall()
+    assert [r[0] for r in rows] == [REQ]
+    assert json.loads(rows[0][1]) == {"memory": "pending"}
+    assert coord._read_row_by_namespace(
+        j, coord.journal_namespace(SOUL, KEY))["state"] == "executing"
 
 
 def test_different_souls_do_not_block(tmp_path):
@@ -224,7 +226,7 @@ def test_different_souls_do_not_block(tmp_path):
 def test_same_key_retry_replays_fixed_response(tmp_path):
     j, _, reg = _setup(tmp_path)
     assert _admit(j, reg).should_publish is True  # claim NEW + begin inside
-    assert j.record_generated(REQ, 1, "resp-1", "fixed-body") is True
+    j.record_generated(REQ, 1, "resp-1", "fixed-body")
     retry = _admit(j, reg, request_id="request-retry-late")
     assert retry.disposition == "REPLAY"
     assert retry.http_status == 200
@@ -241,11 +243,13 @@ def test_same_key_different_body_conflicts(tmp_path):
     assert clash.should_publish is False
 
 
-def test_terminal_past_24h_expires(tmp_path):
+def test_generated_past_24h_expires(tmp_path):
+    """Upstream expiry: a generated row past EXPIRY_SECONDS re-admits as
+    EXPIRED (no backend terminal exists upstream, §9 gap G1/G2 — expiry of
+    the fixed response is the equivalent mapping)."""
     j, _, reg = _setup(tmp_path)
     assert _admit(j, reg).should_publish is True  # claim NEW + begin inside
-    assert j.record_generated(REQ, 1, "resp-1", "fixed-body") is True
-    assert j.record_outcome(REQ, "backend", "ok", {"completed": True}, T0 + 10.0) is True
+    j.record_generated(REQ, 1, "resp-1", "fixed-body")
     late = _admit(j, reg, request_id="request-next-day", now=T0 + 24 * 3600 + 1.0)
     assert late.disposition == "EXPIRED"
     assert late.http_status == 410
@@ -257,7 +261,7 @@ def test_terminal_past_24h_expires(tmp_path):
 
 def test_storage_failure_fails_closed_uncertain(tmp_path):
     conn = _open(tmp_path / "dead.db")
-    j = Journal(conn)
+    j = Journal(conn, epoch=1)
     reg = HolderRegistry()
     conn.close()  # every subsequent statement raises; must map to UNCERTAIN.
     out = _admit(j, reg)
@@ -269,17 +273,19 @@ def test_storage_failure_fails_closed_uncertain(tmp_path):
 def test_restart_marks_old_epoch_uncertain_without_backfill(tmp_path):
     j, conn, reg = _setup(tmp_path)
     assert _admit(j, reg, epoch=1).should_publish is True
-    assert j.recover_executing(2) == 1
-    stale = _admit(j, reg, request_id="request-after-restart")
+    j2 = Journal(conn, epoch=2)
+    assert j2.recover() == [REQ]
+    stale = _admit(j2, reg, request_id="request-after-restart")
     assert stale.disposition == "UNCERTAIN"
     assert stale.should_publish is False
     # New epoch on a fresh key proceeds; the old row stays uncertain
     # (B7 accepted gap:断裂 recorded as an uncertain gap, never forged).
-    fresh = _admit(j, reg, request_id="request-epoch-2",
+    fresh = _admit(j2, reg, request_id="request-epoch-2",
                    idempotency_key="turn-002", epoch=2)
     assert fresh.disposition == "NEW"
     assert fresh.should_publish is True
-    assert j.load(lease_namespace(SOUL, KEY))["state"] == "uncertain"
+    assert coord._read_row_by_namespace(
+        j2, coord.journal_namespace(SOUL, KEY))["state"] == "uncertain"
 
 
 def test_fail_closed_path_marks_uncertain_and_never_publishes(tmp_path, caplog):
@@ -289,13 +295,13 @@ def test_fail_closed_path_marks_uncertain_and_never_publishes(tmp_path, caplog):
         out = fail_closed_uncertain(j, request_id=REQ, epoch=1, reason="no-registration")
     assert out.disposition == "UNCERTAIN"
     assert out.should_publish is False
-    assert j.load_by_request(REQ)["state"] == "uncertain"
+    assert coord._read_request_by_id(j, REQ)["state"] == "uncertain"
     assert any("fail-closed" in m for m in caplog.messages)
 
 
 def test_fail_closed_never_raises_on_dead_storage(tmp_path):
     conn = _open(tmp_path / "dead2.db")
-    j = Journal(conn)
+    j = Journal(conn, epoch=1)
     conn.close()
     out = fail_closed_uncertain(j, request_id=REQ, epoch=1, reason="no-registration")
     assert out.disposition == "UNCERTAIN"
@@ -320,8 +326,8 @@ def test_background_mark_never_mixes_into_outcome(tmp_path):
     # Memory/bus evidence can never complete a request (journal frozen rule).
     j, _, reg = _setup(tmp_path)
     assert _admit(j, reg).should_publish is True
-    assert j.record_outcome(REQ, "memory", "ok", {"completed": True}, T0) is True
-    assert j.load_by_request(REQ)["state"] == "executing"
+    j.record_outcome(REQ, 1, "memory", "completed", {"completed": True})
+    assert coord._read_request_by_id(j, REQ)["state"] == "executing"
 
 
 # -- PROGRAM-2 two-step admission (lease first, claim second) ------------------
@@ -425,7 +431,7 @@ def test_true_mutex_different_keys_same_soul(tmp_path):
 def test_lease_loser_same_key_replay_keeps_semantics(tmp_path):
     ctx, _ = _setup2(tmp_path)
     assert _admit2(ctx).should_publish is True
-    assert ctx.journal.record_generated(REQ, 1, "resp-1", "fixed-body") is True
+    ctx.journal.record_generated(REQ, 1, "resp-1", "fixed-body")
     # Same key, same body, new request id, lease still held by REQ:
     # lease loses, journal re-walk replays the fixed response.
     retry = _admit2(ctx, request_id="request-retry-late")
@@ -444,28 +450,27 @@ def test_lease_loser_different_key_pure_busy_no_journal_write(tmp_path):
     assert other.should_publish is False
     assert other.busy is not None and other.busy.holder_entry == "web"
     # Zero journal writes for the foreign key.
-    assert ctx.journal.load(lease_namespace(SOUL, "turn-002")) is None
+    assert coord._read_row_by_namespace(
+        ctx.journal, coord.journal_namespace(SOUL, "turn-002")) is None
 
 
 def test_claim_conflict_compensates_lease(tmp_path):
     """PROGRAM-3: a won lease lost at the claim is compensated with proven
-    quiescence (never held-but-unused); the FREE row persists."""
-    from src.interfaces.coordinator import (
-        SETTLE_RELEASED,
-        current_capability,
-        settle_request,
-    )
+    quiescence (never held-but-unused); the FREE row persists.
+
+    Upstream has no backend terminal (§9 gap G1/G2), so the hold is freed
+    through the proven-dead + quiesced recover path instead of a
+    settle-after-terminal; the conflict-then-compensate half is unchanged."""
+    from src.interfaces.coordinator import current_capability
+    from src.interfaces.soul_lease import Liveness
 
     ctx, _ = _setup2(tmp_path)
     assert _admit2(ctx).should_publish is True
     cap = current_capability(ctx, SOUL)
     assert cap is not None
-    # Terminal path: complete the request, then settle releases the hold.
-    assert ctx.journal.record_generated(REQ, 1, "resp-1", "fixed-body") is True
-    assert ctx.journal.record_outcome(
-        REQ, "backend", "ok", {"completed": True}, T0 + 1.0) is True
-    assert settle_request(ctx, cap, T0 + 2.0) == SETTLE_RELEASED
-    assert current_capability(ctx, SOUL) is None
+    dead = Liveness("DEAD", "test fixture death")
+    assert ctx.lease_store.recover(
+        SOUL, dead, T0 + 1, side_effects_quiesced=True) == "FREE"
     # A conflicting retry wins the FREE lease (generation 2), hits
     # CONFLICT at the claim, and auto-compensates back to FREE.
     clash = _admit2(ctx, fingerprint="fp-body-v2", request_id="request-002")
@@ -479,12 +484,15 @@ def test_claim_conflict_compensates_lease(tmp_path):
 
 
 def test_settle_then_new_request_admits_with_next_generation(tmp_path):
+    """Settle holds the live task; proven-dead + quiesced recover frees it
+    and the next hold is generation 2 (no backend-terminal release exists
+    upstream, §9 gap G1/G2)."""
     from src.interfaces.coordinator import (
         SETTLE_HELD_TASKS_OPEN,
-        SETTLE_RELEASED,
         current_capability,
         settle_request,
     )
+    from src.interfaces.soul_lease import Liveness
 
     ctx, _ = _setup2(tmp_path)
     assert _admit2(ctx).should_publish is True
@@ -494,11 +502,13 @@ def test_settle_then_new_request_admits_with_next_generation(tmp_path):
     # Still executing: settle refuses (never release a live task).
     assert settle_request(ctx, cap, T0 + 1.0) == SETTLE_HELD_TASKS_OPEN
     assert ctx.lease_store.load(SOUL)["state"] == "HELD"
-    # Complete, then settle releases; the next hold is generation 2.
-    assert ctx.journal.record_generated(REQ, 1, "resp-1", "fixed-body") is True
-    assert ctx.journal.record_outcome(
-        REQ, "backend", "ok", {"completed": True}, T0 + 2.0) is True
-    assert settle_request(ctx, cap, T0 + 3.0) == SETTLE_RELEASED
+    # Fixed response: still held (generated never releases, §9 gap).
+    ctx.journal.record_generated(REQ, 1, "resp-1", "fixed-body")
+    assert settle_request(ctx, cap, T0 + 2.0) == SETTLE_HELD_TASKS_OPEN
+    # Proven-dead + quiesced recover frees; the next hold is generation 2.
+    dead = Liveness("DEAD", "test fixture death")
+    assert ctx.lease_store.recover(
+        SOUL, dead, T0 + 3.0, side_effects_quiesced=True) == "FREE"
     nxt = _admit2(ctx, request_id="request-next", idempotency_key="turn-002",
                   fingerprint="fp-next")
     assert nxt.disposition == "NEW"
@@ -536,7 +546,8 @@ def test_recover_dead_holder_frees_and_marks_original_epoch(tmp_path):
     assert row is not None
     assert row["state"] == "FREE"
     assert row["generation"] == 1
-    assert fresh.journal.load(lease_namespace(SOUL, KEY))["state"] == "uncertain"
+    assert coord._read_row_by_namespace(
+        fresh.journal, coord.journal_namespace(SOUL, KEY))["state"] == "uncertain"
     # New epoch on a fresh key proceeds with generation 2.
     nxt = admit_entry(
         fresh.journal, fresh.registry, soul_alias=SOUL, entry_kind="tg",
@@ -606,7 +617,8 @@ def test_prepare_publish_mints_and_stamps(tmp_path):
     ident, out = prepare_publish(ctx, soul_alias=SOUL, entry_kind="web", text=" hi ")
     assert out.should_publish is True
     assert ident.request_id.startswith("in-")
-    assert ctx.journal.load_by_request(ident.request_id)["state"] == "executing"
+    assert coord._read_request_by_id(
+        ctx.journal, ident.request_id)["state"] == "executing"
 
 
 def test_require_registered_gate(tmp_path):
@@ -616,8 +628,9 @@ def test_require_registered_gate(tmp_path):
     assert require_registered(ctx.journal, ident.request_id) is True
     assert require_registered(ctx.journal, "request-ghost") is False
     assert require_registered(ctx.journal, "") is False
-    # Completed rows no longer count as live registrations.
-    assert ctx.journal.record_generated(ident.request_id, 1, "r", "b") is True
+    # Generated rows no longer count as live registrations (no backend
+    # terminal exists upstream, §9 gap: a fixed response never releases).
+    ctx.journal.record_generated(ident.request_id, 1, "r", "b")
     assert require_registered(ctx.journal, ident.request_id) is False
 
 
@@ -689,7 +702,8 @@ def test_admit_group_all_win_grants_held_and_executing(tmp_path):
     assert sorted(res.grants) == ["agent_miku", "agent_yua"]
     for alias, (ident, cap) in res.grants.items():
         assert ctx.held.get(alias) == cap
-        assert ctx.journal.load_by_request(ident.request_id)["state"] == "executing"
+        assert coord._read_request_by_id(
+            ctx.journal, ident.request_id)["state"] == "executing"
         assert coord.require_current(ctx, ident.request_id) is True
 
 
@@ -731,9 +745,9 @@ def test_admit_group_phase2_loss_marks_journal_uncertain(tmp_path):
     # Pre-claim agent_b's namespace under another request with the SAME
     # fingerprint: the group claim then maps to non-NEW (phase-2 loss).
     idem = {"agent_a": "fixed-key-a", "agent_b": "fixed-key-b"}
-    ns_b = coord.lease_namespace("agent_b", "fixed-key-b")
+    ns_b = coord.journal_namespace("agent_b", "fixed-key-b")
     pre = ctx.journal.claim(ns_b, coord.fingerprint_for_text("b-text"), "in-other", T0)
-    assert pre.outcome == "NEW"
+    assert pre.kind == "NEW"
     res = coord.admit_group(
         ctx, soul_aliases=["agent_a", "agent_b"],
         entry_kind="web", texts={"agent_a": "a-text", "agent_b": "b-text"},
@@ -745,12 +759,12 @@ def test_admit_group_phase2_loss_marks_journal_uncertain(tmp_path):
     # with the original epoch; both leases are FREE again.
     assert ctx.lease_store.load("agent_a")["state"] == "FREE"
     assert ctx.lease_store.load("agent_b")["state"] == "FREE"
-    ns_a = coord.lease_namespace("agent_a", "fixed-key-a")
-    row_a = ctx.journal.load(ns_a)
+    ns_a = coord.journal_namespace("agent_a", "fixed-key-a")
+    row_a = coord._read_row_by_namespace(ctx.journal, ns_a)
     assert row_a is not None and row_a["state"] == "uncertain"
     assert int(row_a["epoch"]) == 1  # original epoch, never forged
     # agent_b's pre-existing row is untouched by the group attempt.
-    assert ctx.journal.load(ns_b)["request_id"] == "in-other"
+    assert coord._read_row_by_namespace(ctx.journal, ns_b)["request_id"] == "in-other"
 
 
 def test_admit_group_rejects_empty_and_bad_kind(tmp_path):
@@ -815,13 +829,10 @@ def test_stable_key_retry_returns_fixed_response_without_republish(tmp_path):
     ident, out = prepare_publish(
         ctx, soul_alias=SOUL, entry_kind="tg", text="same text", idempotency_key=key)
     assert out.should_publish is True
-    # Complete the request through the backend evidence point.
-    assert ctx.journal.record_generated(ident.request_id, 1, "resp-1", "fixed body") is True
-    assert ctx.journal.record_outcome(
-        ident.request_id, "backend", "ok", {"completed": True}, T0 + 1) is True
-    verdict = coord.settle_after_outcome(ctx, ident.request_id, T0 + 2)
-    assert verdict == coord.SETTLE_RELEASED
-    # Same-key retry: lease is free, journal replays the fixed response.
+    # Fix the response; the journal now answers REPLAY for the same key
+    # (no backend terminal exists upstream, §9 gap — no settle step here).
+    ctx.journal.record_generated(ident.request_id, 1, "resp-1", "fixed body")
+    # Same-key retry: journal replays the fixed response.
     ident2, out2 = prepare_publish(
         ctx, soul_alias=SOUL, entry_kind="tg", text="same text", idempotency_key=key)
     assert out2.should_publish is False
@@ -850,27 +861,30 @@ def test_require_current_blocks_stale_generation_worker(tmp_path):
     assert out2.should_publish is True
     # The stale worker's id still names an executing journal row, but its
     # generation no longer matches the live lease: blocked, zero send.
-    assert ctx.journal.load_by_request(ident.request_id)["state"] == "executing"
+    assert coord._read_request_by_id(
+        ctx.journal, ident.request_id)["state"] == "executing"
     assert coord.require_current(ctx, ident.request_id) is False
     assert coord.require_current(ctx, ident2.request_id) is True
 
 
 def test_settle_valve_needs_terminal_and_zero_permits(tmp_path):
+    """New-table valve: executing / generated never release (no backend
+    terminal exists upstream, §9 gap G1/G2); unknown ids refuse."""
     ctx = _ctx3(tmp_path, "sv.db")
     ident, out = prepare_publish(ctx, soul_alias=SOUL, entry_kind="web", text="task")
     assert out.should_publish is True
-    # Executing: not terminal, never released.
+    # Executing: not releasable, never released.
     assert coord.settle_after_outcome(ctx, ident.request_id, T0 + 1) == coord.SETTLE_HELD_TASKS_OPEN
     assert ctx.held.get(SOUL) is not None
-    # Open permit blocks even a terminal row.
+    # An open permit changes nothing while tasks are open ...
     permit = coord.open_permit(ctx, request_id=ident.request_id, destination="web", now=T0 + 2)
-    assert ctx.journal.record_generated(ident.request_id, 1, "r", "b") is True
-    assert ctx.journal.record_outcome(
-        ident.request_id, "backend", "ok", {"completed": True}, T0 + 3) is True
-    assert coord.settle_after_outcome(ctx, ident.request_id, T0 + 4) == coord.SETTLE_HELD_PERMITS_OPEN
+    ctx.journal.record_generated(ident.request_id, 1, "r", "b")
+    # ... and a fixed response still never releases: generated is not a
+    # terminal state and memory outcomes never impersonate one.
+    assert coord.settle_after_outcome(ctx, ident.request_id, T0 + 4) == coord.SETTLE_HELD_TASKS_OPEN
     assert coord.close_permit(ctx, permit_id=permit, now=T0 + 5) is True
-    assert coord.settle_after_outcome(ctx, ident.request_id, T0 + 6) == coord.SETTLE_RELEASED
-    assert ctx.held.get(SOUL) is None
+    assert coord.settle_after_outcome(ctx, ident.request_id, T0 + 6) == coord.SETTLE_HELD_TASKS_OPEN
+    assert ctx.held.get(SOUL) is not None
     assert coord.settle_after_outcome(ctx, "in-ghost", T0 + 7) == coord.SETTLE_REFUSED_UNKNOWN
 
 

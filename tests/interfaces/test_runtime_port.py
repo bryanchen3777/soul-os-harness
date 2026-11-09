@@ -1,282 +1,362 @@
-"""EI-2A runtime-port tests: fake runtime submit semantics.
-
-Offline only: caller-opened SQLite in tmp files, caller-provided clock.
-No server, no ports, no real API/LLM, no subprocess.
-"""
-
-from __future__ import annotations
+"""Fake runtime port tests: ordering, replay, fail-closed uncertainty."""
 
 import ast
+import json
 import sqlite3
 from pathlib import Path
 
 import pytest
 
 from src.interfaces.journal import Journal
-from src.interfaces.runtime_port import Decision
+from src.interfaces.runtime_port import FakeCancelled
+from src.interfaces.runtime_port import FakeClock
 from src.interfaces.runtime_port import FakeRuntime
-from src.interfaces.runtime_port import PortError
-from src.interfaces.runtime_port import PortResult
 from src.interfaces.runtime_port import submit
 
 
-T0 = 1_700_000_000.0
-NS = "owner-01/branch-a/agent-01:req-101"
-FP = "fp-decision-v1"
-REQ = "request-101"
+def _open(path):
+    return sqlite3.connect(str(path), timeout=30, isolation_level=None, check_same_thread=False)
 
 
-def _open(path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path), timeout=10.0)
-    conn.execute("PRAGMA busy_timeout=10000")
-    return conn
+def _ns(p="p1", a="a1", s="scope1", c="conv1", b="branch1", k="key1"):
+    return (p, a, s, c, b, k)
 
 
-def _begun(tmp_path, name="p.db", epoch: int = 1):
-    conn = _open(tmp_path / name)
-    j = Journal(conn)
-    assert j.claim(NS, FP, REQ, T0).outcome == "NEW"
-    assert j.begin(REQ, epoch) is True
-    return j, conn
+def _row(conn, rid):
+    return conn.execute(
+        "SELECT state, epoch, response_id, response_body, transport_count, outcomes"
+        " FROM requests WHERE request_id=?",
+        (rid,),
+    ).fetchone()
 
 
-def _ok_port(response_id="resp-1", body="body-1", **kw):
-    return FakeRuntime([PortResult(response_id, body, **kw)])
+def test_submit_success_completed_evidence(tmp_path):
+    db = tmp_path / "p1.db"
+    conn = _open(db)
+    j = Journal(conn, epoch=7)
+    clock = FakeClock(1000.0, 7)
+    fake = FakeRuntime().ok("resp-1", "hello", "mem-ev-1")
+    out = submit(j, _ns(), "fp1", "req-1", fake, clock)
+    assert out.kind == "NEW"
+    assert out.response_id == "resp-1"
+    assert out.response_body == "hello"
+    assert fake.calls == [1]
+    state, epoch, rid, body, tcount, outcomes = _row(conn, "req-1")
+    assert state == "transport_sent"
+    assert tcount == 1
+    assert json.loads(outcomes) == {"memory": "completed"}
 
 
-# -- begin gate -----------------------------------------------------------------
+def test_submit_success_pending_without_evidence(tmp_path):
+    db = tmp_path / "p2.db"
+    conn = _open(db)
+    j = Journal(conn, epoch=7)
+    clock = FakeClock(1000.0, 7)
+    fake = FakeRuntime().ok("resp-2", "hi", None)
+    out = submit(j, _ns(k="k2"), "fp1", "req-2", fake, clock)
+    assert out.kind == "NEW"
+    assert json.loads(_row(conn, "req-2")[5]) == {"memory": "pending"}
+    fake2 = FakeRuntime().ok("resp-3", "hi2", "")
+    out2 = submit(j, _ns(k="k3"), "fp1", "req-3", fake2, FakeClock(1001.0, 7))
+    assert out2.kind == "NEW"
+    assert json.loads(_row(conn, "req-3")[5]) == {"memory": "pending"}
 
 
-def test_submit_requires_begin_and_never_calls_port(tmp_path):
-    conn = _open(tmp_path / "p.db")
-    j = Journal(conn)
-    assert j.claim(NS, FP, REQ, T0).outcome == "NEW"
-    port = _ok_port()
-    res = submit(j, namespace=NS, request_id=REQ, epoch=1,
-                 decision=Decision("op", "payload"), port=port, now=T0 + 1.0)
-    assert res.outcome == "NOT_EXECUTING"
-    assert res.status == 409
-    assert port.call_count == 0
-    assert j.load(NS)["state"] == "accepted"
+def test_replay_does_not_call_runtime(tmp_path):
+    db = tmp_path / "p3.db"
+    conn = _open(db)
+    j = Journal(conn, epoch=7)
+    clock = FakeClock(1000.0, 7)
+    fake = FakeRuntime().ok("resp-1", "hello", "ev-1")
+    first = submit(j, _ns(), "fp1", "req-1", fake, clock)
+    assert first.kind == "NEW"
+    fake2 = FakeRuntime().ok("resp-other", "other", "ev-x")
+    second = submit(j, _ns(), "fp1", "req-1", fake2, FakeClock(1001.0, 7))
+    assert second.kind == "REPLAY"
+    assert second.response_id == "resp-1"
+    assert second.response_body == "hello"
+    assert fake2.calls == []
 
 
-def test_submit_wrong_epoch_never_calls_port(tmp_path):
-    j, _ = _begun(tmp_path, epoch=1)
-    port = _ok_port()
-    res = submit(j, namespace=NS, request_id=REQ, epoch=2,
-                 decision=Decision("op", "payload"), port=port, now=T0 + 1.0)
-    assert res.outcome == "NOT_EXECUTING"
-    assert port.call_count == 0
+def test_non_new_kinds_do_not_call_runtime(tmp_path):
+    db = tmp_path / "p4.db"
+    conn = _open(db)
+    j = Journal(conn, epoch=7)
+    ns = _ns()
+    # accepted -> IN_PROGRESS
+    j.claim(ns, "fp1", "req-1", 1000.0)
+    probe = FakeRuntime().ok("r", "b", "e")
+    assert submit(j, ns, "fp1", "req-1", probe, FakeClock(1001.0, 7)).kind == "IN_PROGRESS"
+    assert probe.calls == []
+    # conflict
+    probe2 = FakeRuntime().ok("r", "b", "e")
+    assert submit(j, ns, "fp-other", "req-1", probe2, FakeClock(1002.0, 7)).kind == "CONFLICT"
+    assert probe2.calls == []
+    # uncertain sticky
+    conn.execute("UPDATE requests SET state='uncertain' WHERE request_id='req-1'")
+    conn.commit()
+    probe3 = FakeRuntime().ok("r", "b", "e")
+    assert submit(j, ns, "fp1", "req-1", probe3, FakeClock(1003.0, 7)).kind == "UNCERTAIN"
+    assert probe3.calls == []
 
 
-def test_submit_unknown_namespace_or_request(tmp_path):
-    j, _ = _begun(tmp_path)
-    port = _ok_port()
-    res = submit(j, namespace="nobody:key", request_id=REQ, epoch=1,
-                 decision=Decision("op"), port=port, now=T0)
-    assert res.outcome == "NO_CLAIM"
-    assert port.call_count == 0
-    res2 = submit(j, namespace=NS, request_id="request-impostor", epoch=1,
-                  decision=Decision("op"), port=port, now=T0)
-    assert res2.outcome == "CONFLICT"
-    assert port.call_count == 0
+def test_expired_does_not_call_runtime(tmp_path):
+    db = tmp_path / "p5.db"
+    conn = _open(db)
+    j = Journal(conn, epoch=7)
+    ns = _ns()
+    t0 = 5000.0
+    fake = FakeRuntime().ok("resp-1", "b", "ev")
+    assert submit(j, ns, "fp1", "req-1", fake, FakeClock(t0, 7)).kind == "NEW"
+    probe = FakeRuntime().ok("r2", "b2", "e2")
+    out = submit(j, ns, "fp1", "req-1", probe, FakeClock(t0 + 86400 + 5.0, 7))
+    assert out.kind == "EXPIRED"
+    assert probe.calls == []
 
 
-def test_submit_after_cancel_never_reuses_opportunity(tmp_path):
-    j, _ = _begun(tmp_path)
-    assert j.cancel(REQ) is True
-    port = _ok_port()
-    res = submit(j, namespace=NS, request_id=REQ, epoch=1,
-                 decision=Decision("op"), port=port, now=T0 + 1.0)
-    assert res.outcome == "TERMINAL"
-    assert port.call_count == 0
-    assert j.begin(REQ, 1) is False
-
-
-# -- happy path ------------------------------------------------------------------
-
-
-def test_submit_ok_flow_completes_with_explicit_evidence(tmp_path):
-    j, conn = _begun(tmp_path)
-    port = _ok_port("resp-7", "body-7")
-    decision = Decision("generate", "hello")
-    res = submit(j, namespace=NS, request_id=REQ, epoch=1,
-                 decision=decision, port=port, now=T0 + 1.0)
-    assert res.outcome == "OK"
-    assert (res.response_id, res.response_body) == ("resp-7", "body-7")
-    assert res.completed is True
-    assert port.call_count == 1
-    assert port.calls[0] == decision
-    entry = j.load(NS)
-    assert entry["state"] == "completed"
-    assert (entry["response_id"], entry["response_body"]) == ("resp-7", "body-7")
-    transports = conn.execute(
-        "SELECT destination, ok FROM journal_transports WHERE request_id=?",
-        (REQ,),
-    ).fetchall()
-    assert transports == [("backend", 1)]
-    outcomes = conn.execute(
-        "SELECT destination, state FROM journal_outcomes WHERE request_id=?",
-        (REQ,),
-    ).fetchall()
-    assert outcomes == [("backend", "ok")]
-
-
-def test_submit_incomplete_backend_result_stays_generated(tmp_path):
-    j, _ = _begun(tmp_path)
-    port = FakeRuntime([PortResult("resp-i", "body-i", completed=False)])
-    res = submit(j, namespace=NS, request_id=REQ, epoch=1,
-                 decision=Decision("op"), port=port, now=T0 + 1.0)
-    assert res.outcome == "OK"
-    assert res.completed is False
-    # Evidence stored, but the entry is NOT completed: no explicit
-    # completion evidence was returned.
-    assert j.load(NS)["state"] == "generated"
-
-
-def test_memory_destination_cannot_complete_entry(tmp_path):
-    j, _ = _begun(tmp_path)
-    port = FakeRuntime([PortResult("resp-m", "body-m", completed=True,
-                                   destination="memory")])
-    res = submit(j, namespace=NS, request_id=REQ, epoch=1,
-                 decision=Decision("memorize"), port=port, now=T0 + 1.0)
-    assert res.outcome == "OK"
-    assert res.completed is False
-    # Memory evidence must never impersonate a backend commit.
-    assert j.load(NS)["state"] == "generated"
-
-
-# -- failure paths -----------------------------------------------------------------
-
-
-def test_submit_ambiguous_error_marks_uncertain_once(tmp_path):
-    j, _ = _begun(tmp_path)
-    port = FakeRuntime([PortError("boom after dispatch", ambiguous=True)])
-    res = submit(j, namespace=NS, request_id=REQ, epoch=1,
-                 decision=Decision("op"), port=port, now=T0 + 1.0)
-    assert res.outcome == "UNCERTAIN"
-    assert j.load(NS)["state"] == "uncertain"
-    # Uncertain entries never recall the runtime.
-    again = submit(j, namespace=NS, request_id=REQ, epoch=1,
-                   decision=Decision("op"), port=port, now=T0 + 2.0)
-    assert again.outcome == "UNCERTAIN"
-    assert port.call_count == 1
-
-
-def test_submit_proved_side_effect_free_is_explicitly_retryable(tmp_path):
-    j, _ = _begun(tmp_path)
-    port = FakeRuntime([
-        PortError("validation before dispatch", ambiguous=False),
-        PortResult("resp-r", "body-r"),
-    ])
-    first = submit(j, namespace=NS, request_id=REQ, epoch=1,
-                   decision=Decision("op"), port=port, now=T0 + 1.0)
-    assert first.outcome == "RETRYABLE"
-    assert j.load(NS)["state"] == "executing"
-    second = submit(j, namespace=NS, request_id=REQ, epoch=1,
-                    decision=Decision("op"), port=port, now=T0 + 2.0)
-    assert second.outcome == "OK"
-    assert (second.response_id, second.response_body) == ("resp-r", "body-r")
-    assert port.call_count == 2
-
-
-def test_submit_unknown_exception_is_uncertain(tmp_path):
-    j, _ = _begun(tmp_path)
-
-    class WeirdPort:
-        def __init__(self):
-            self.calls = []
-
-        def execute(self, decision):
-            self.calls.append(decision)
-            raise RuntimeError("unclassifiable")
-
-    port = WeirdPort()
-    res = submit(j, namespace=NS, request_id=REQ, epoch=1,
-                 decision=Decision("op"), port=port, now=T0 + 1.0)
-    assert res.outcome == "UNCERTAIN"
-    assert j.load(NS)["state"] == "uncertain"
-
-
-# -- replay / recovery never recall -------------------------------------------------
-
-
-def test_generated_replay_never_recalls_runtime(tmp_path):
-    j, _ = _begun(tmp_path)
-    port = _ok_port("resp-3", "body-3")
-    first = submit(j, namespace=NS, request_id=REQ, epoch=1,
-                   decision=Decision("op"), port=port, now=T0 + 1.0)
-    assert first.outcome == "OK"
-    # completed replays without touching the runtime or memory again.
-    second = submit(j, namespace=NS, request_id=REQ, epoch=1,
-                    decision=Decision("op-changed"), port=port, now=T0 + 2.0)
-    assert second.outcome == "REPLAY"
-    assert (second.response_id, second.response_body) == ("resp-3", "body-3")
-    assert port.call_count == 1
-    # claim() agrees: same fixed response.
-    replay = j.claim(NS, FP, "request-late", T0 + 3.0)
-    assert replay.outcome == "REPLAY"
-    assert (replay.response_id, replay.response_body) == ("resp-3", "body-3")
-
-
-def test_submit_after_crash_recovery_never_recalls_runtime(tmp_path):
-    path = tmp_path / "p.db"
-    conn = _open(path)
-    j = Journal(conn)
-    assert j.claim(NS, FP, REQ, T0).outcome == "NEW"
-    assert j.begin(REQ, 1) is True
-    # Crash before the runtime answers.
-    del j
+def test_side_effect_exception_marks_uncertain_fail_closed(tmp_path):
+    db = tmp_path / "p6.db"
+    conn = _open(db)
+    j = Journal(conn, epoch=7)
+    ns = _ns()
+    fake = FakeRuntime().raise_at(True, RuntimeError("boom-after-write"))
+    out = submit(j, ns, "fp1", "req-1", fake, FakeClock(1000.0, 7))
+    assert out.kind == "UNCERTAIN"
+    assert fake.calls == [1]
+    assert _row(conn, "req-1")[0] == "uncertain"
     conn.close()
+    conn2 = _open(db)
+    j2 = Journal(conn2, epoch=8)
+    assert j2.claim(ns, "fp1", "req-1", 1001.0).kind == "UNCERTAIN"
 
-    conn2 = _open(path)
+
+def test_no_side_effect_exception_still_uncertain(tmp_path):
+    db = tmp_path / "p7.db"
+    conn = _open(db)
+    j = Journal(conn, epoch=7)
+    fake = FakeRuntime().raise_at(False, ValueError("clean failure"))
+    out = submit(j, _ns(), "fp1", "req-1", fake, FakeClock(1000.0, 7))
+    assert out.kind == "UNCERTAIN"
+    assert _row(conn, "req-1")[0] == "uncertain"
+
+
+def test_cancel_collision_new_epoch_stays_uncertain(tmp_path):
+    db = tmp_path / "p8.db"
+    conn = _open(db)
+    j = Journal(conn, epoch=7)
+    ns = _ns()
+    fake = FakeRuntime().cancel()
+    out = submit(j, ns, "fp1", "req-1", fake, FakeClock(1000.0, 7))
+    assert out.kind == "UNCERTAIN"
+    assert _row(conn, "req-1")[0] == "uncertain"
+    conn.close()
+    conn2 = _open(db)
+    j2 = Journal(conn2, epoch=8)
+    fake2 = FakeRuntime().ok("resp-new", "b", "ev")
+    out2 = submit(j2, ns, "fp1", "req-1", fake2, FakeClock(1001.0, 8))
+    assert out2.kind == "UNCERTAIN"
+    assert fake2.calls == []
+
+
+def test_order_claim_before_begin_before_fake(tmp_path):
+    db = tmp_path / "p9.db"
+    conn = _open(db)
+    j = Journal(conn, epoch=7)
+    order = []
+    real_claim = j.claim
+    real_begin = j.begin
+    real_generated = j.record_generated
+
+    def claim_spy(*a, **k):
+        order.append("claim")
+        return real_claim(*a, **k)
+
+    def begin_spy(*a, **k):
+        order.append("begin")
+        return real_begin(*a, **k)
+
+    def gen_spy(*a, **k):
+        order.append("generated")
+        return real_generated(*a, **k)
+
+    j.claim = claim_spy
+    j.begin = begin_spy
+    j.record_generated = gen_spy
+
+    class OrderFake(FakeRuntime):
+        def __call__(self):
+            order.append("fake")
+            return super().__call__()
+
+    fake = OrderFake().ok("resp-1", "b", "ev")
+    out = submit(j, _ns(), "fp1", "req-1", fake, FakeClock(1000.0, 7))
+    assert out.kind == "NEW"
+    assert order[:3] == ["claim", "begin", "fake"]
+    assert order.index("claim") < order.index("begin") < order.index("fake") < order.index("generated")
+
+
+def test_replay_path_never_calls_begin_or_fake(tmp_path):
+    db = tmp_path / "p10.db"
+    conn = _open(db)
+    j = Journal(conn, epoch=7)
+    fake = FakeRuntime().ok("resp-1", "b", "ev")
+    assert submit(j, _ns(), "fp1", "req-1", fake, FakeClock(1000.0, 7)).kind == "NEW"
+
+    def boom_begin(*a, **k):
+        raise AssertionError("begin must not run on REPLAY")
+
+    j.begin = boom_begin
+    probe = FakeRuntime().ok("other", "o", "e")
+    out = submit(j, _ns(), "fp1", "req-1", probe, FakeClock(1001.0, 7))
+    assert out.kind == "REPLAY"
+    assert probe.calls == []
+
+
+def test_exception_does_not_blind_retry(tmp_path):
+    db = tmp_path / "p11.db"
+    conn = _open(db)
+    j = Journal(conn, epoch=7)
+    ns = _ns()
+    bad = FakeRuntime().raise_at(True, RuntimeError("x"))
+    assert submit(j, ns, "fp1", "req-1", bad, FakeClock(1000.0, 7)).kind == "UNCERTAIN"
+    calls_before = len(bad.calls)
+    retry = FakeRuntime().ok("resp-1", "b", "ev")
+    out = submit(j, ns, "fp1", "req-1", retry, FakeClock(1001.0, 7))
+    assert out.kind == "UNCERTAIN"
+    assert retry.calls == []
+    assert len(bad.calls) == calls_before
+
+
+def test_crash_before_begin_submit_sees_in_progress_no_call(tmp_path):
+    db = tmp_path / "p12.db"
+    conn1 = _open(db)
+    j1 = Journal(conn1, epoch=1)
+    ns = _ns()
+    assert j1.claim(ns, "fp1", "req-1", 1000.0).kind == "NEW"
+    conn1.close()
+    conn2 = _open(db)
+    j2 = Journal(conn2, epoch=2)
+    probe = FakeRuntime().ok("r", "b", "e")
+    out = submit(j2, ns, "fp1", "req-1", probe, FakeClock(1001.0, 2))
+    assert out.kind == "IN_PROGRESS"
+    assert probe.calls == []
+
+
+def test_crash_after_generated_submit_replays_no_call(tmp_path):
+    db = tmp_path / "p13.db"
+    conn1 = _open(db)
+    j1 = Journal(conn1, epoch=1)
+    ns = _ns()
+    j1.claim(ns, "fp1", "req-1", 1000.0)
+    j1.begin("req-1", 1)
+    j1.record_generated("req-1", 1, "resp-9", "body-9")
+    conn1.close()
+    conn2 = _open(db)
+    j2 = Journal(conn2, epoch=2)
+    probe = FakeRuntime().ok("other", "o", "e")
+    out = submit(j2, ns, "fp1", "req-1", probe, FakeClock(1001.0, 2))
+    assert out.kind == "REPLAY"
+    assert out.response_id == "resp-9"
+    assert out.response_body == "body-9"
+    assert probe.calls == []
+
+
+def test_fake_cancelled_type(tmp_path):
+    with pytest.raises(FakeCancelled):
+        raise FakeCancelled("cancelled")
+
+
+def test_submit_uses_stored_request_identity(tmp_path):
+    # main-brain hardening: after a failed_before_execution reset, the
+    # caller may pass a fresh request_id; submit must still drive the
+    # stored immutable identity to completion.
+    from src.interfaces.journal import OwnershipError
+
+    db = tmp_path / "p14.db"
+    conn = _open(db)
+    j = Journal(conn, epoch=7)
+    ns = _ns()
+    assert j.claim(ns, "fp1", "req-orig", 1000.0).kind == "NEW"
+    j.mark_failed_before_execution("req-orig", 7)
+    fake = FakeRuntime().ok("resp-1", "b", "ev")
+    out = submit(j, ns, "fp1", "req-fresh", fake, FakeClock(1001.0, 7))
+    assert out.kind == "NEW"
+    assert out.request_id == "req-orig"
+    assert out.response_id == "resp-1"
+    assert fake.calls == [1]
+    assert _row(conn, "req-orig")[0] == "transport_sent"
+
+
+def test_submit_begin_failure_marks_failed_before_execution(tmp_path):
+    # main-brain hardening: begin can only fail here under a real race;
+    # the row must be left failed_before_execution (re-claimable), never
+    # stuck, and the ownership error must propagate (no silent swallow).
+    from src.interfaces.journal import OwnershipError
+
+    db = tmp_path / "p15.db"
+    conn = _open(db)
+    real = Journal(conn, epoch=7)
+    ns = _ns()
+
+    class BeginBomb:
+        def __init__(self, inner):
+            self._inner = inner
+            self.conn = inner.conn
+            self.epoch = inner.epoch
+
+        def claim(self, *a, **k):
+            return self._inner.claim(*a, **k)
+
+        def begin(self, *a, **k):
+            raise OwnershipError("injected race")
+
+        def mark_failed_before_execution(self, *a, **k):
+            return self._inner.mark_failed_before_execution(*a, **k)
+
+        def mark_uncertain(self, *a, **k):
+            return self._inner.mark_uncertain(*a, **k)
+
+    wrapped = BeginBomb(real)
+    fake = FakeRuntime().ok("resp-1", "b", "ev")
+    with pytest.raises(OwnershipError):
+        submit(wrapped, ns, "fp1", "req-1", fake, FakeClock(1000.0, 7))
+    assert fake.calls == []
+    assert _row(conn, "req-1")[0] == "failed_before_execution"
+    # key stays re-claimable through the real journal afterwards
+    assert real.claim(ns, "fp1", "req-1", 1001.0).kind == "NEW"
+
+
+# -- EI-2B retained cases (rewritten to the 666f154 contract) -------------------
+#
+# The upstream skeleton above is verbatim; the cases below preserve the
+# EI-2B-side coverage that has an equivalent mapping: crash-during-executing
+# submit isolation via recover(), and the module-hygiene AST case.
+
+
+def test_retained_submit_after_recover_never_recalls_runtime(tmp_path):
+    db = tmp_path / "r1.db"
+    conn1 = _open(db)
+    j1 = Journal(conn1, epoch=1)
+    ns = _ns()
+    assert j1.claim(ns, "fp1", "req-1", 1000.0).kind == "NEW"
+    j1.begin("req-1", 1)
+    # Crash before the runtime answers.
+    conn1.close()
+    conn2 = _open(db)
     try:
-        j2 = Journal(conn2)
-        assert j2.recover_executing(2) == 1
-        port = _ok_port()
-        # Same epoch: uncertain, no call. New epoch: not executing, no call.
-        assert submit(j2, namespace=NS, request_id=REQ, epoch=1,
-                      decision=Decision("op"), port=port, now=T0 + 5.0).outcome == "UNCERTAIN"
-        assert submit(j2, namespace=NS, request_id=REQ, epoch=2,
-                      decision=Decision("op"), port=port, now=T0 + 6.0).outcome == "UNCERTAIN"
-        assert port.call_count == 0
+        j2 = Journal(conn2, epoch=2)
+        assert j2.recover() == ["req-1"]
+        probe = FakeRuntime().ok("resp-x", "b", "ev")
+        out = submit(j2, ns, "fp1", "req-1", probe, FakeClock(1001.0, 2))
+        assert out.kind == "UNCERTAIN"
+        assert probe.calls == []
+        # Sticky: a fresh runtime on the new epoch still never runs.
+        probe2 = FakeRuntime().ok("resp-y", "b2", "ev2")
+        out2 = submit(j2, ns, "fp1", "req-1", probe2, FakeClock(1002.0, 2))
+        assert out2.kind == "UNCERTAIN"
+        assert probe2.calls == []
     finally:
         conn2.close()
-
-
-# -- FakeRuntime unit behavior ---------------------------------------------------------
-
-
-def test_fake_runtime_script_and_validation():
-    with pytest.raises(ValueError):
-        FakeRuntime([])
-    with pytest.raises(TypeError):
-        FakeRuntime(["not-a-result"])
-    port = FakeRuntime([PortResult("r", "b")])
-    with pytest.raises(TypeError):
-        port.execute("not-a-decision")
-    # Exhausted scripts repeat the last item deterministically.
-    d = Decision("op")
-    assert port.execute(d).response_id == "r"
-    assert port.execute(d).response_id == "r"
-    assert port.call_count == 2
-
-
-def test_submit_validates_port_result_shape(tmp_path):
-    j, _ = _begun(tmp_path)
-
-    class BadPort:
-        def execute(self, decision):
-            return "a string is not evidence"
-
-    with pytest.raises(TypeError):
-        submit(j, namespace=NS, request_id=REQ, epoch=1,
-               decision=Decision("op"), port=BadPort(), now=T0)
-    # The entry is untouched: a shapeless answer proves nothing.
-    assert j.load(NS)["state"] == "executing"
-
-
-# -- module hygiene ----------------------------------------------------------------------
 
 
 def test_runtime_port_module_has_no_io_or_runtime_startup():
@@ -304,3 +384,30 @@ def test_runtime_port_module_has_no_io_or_runtime_startup():
                              "Popen", "run", "call", "check_output", "connect"):
                 raise AssertionError(
                     "runtime_port.py must not touch IO: %s" % node.attr)
+
+
+# -- Declared contract gaps (must stay RED; see work-order section 9) ------------
+#
+# G4 proved side-effect-free retry stays UNCERTAIN (no RETRYABLE), G5 the old
+# Decision/PortResult/PortError vocabulary is absent from the upstream port.
+# These are collected but expected-red evidence for the BLOCKED verdict. Do
+# not skip/xfail them into green; closing them needs a follow-up main-brain
+# decision ticket.
+
+
+def test_gap_no_side_effect_retry_still_uncertain(tmp_path):
+    db = tmp_path / "g4.db"
+    conn = _open(db)
+    j = Journal(conn, epoch=7)
+    ns = _ns()
+    bad = FakeRuntime().raise_at(False, ValueError("clean failure"))
+    assert submit(j, ns, "fp1", "req-1", bad, FakeClock(1000.0, 7)).kind == "UNCERTAIN"
+    retry = FakeRuntime().ok("resp-1", "b", "ev")
+    out = submit(j, ns, "fp1", "req-1", retry, FakeClock(1001.0, 7))
+    assert retry.calls == [1]
+    assert out.kind == "NEW"
+
+
+def test_gap_decision_port_result_absent():
+    from src.interfaces.runtime_port import Decision  # noqa: F401
+    from src.interfaces.runtime_port import PortResult  # noqa: F401

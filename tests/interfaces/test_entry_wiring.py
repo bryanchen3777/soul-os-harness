@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from src.eventbus.schema import EventPriority, EventType, SoulEvent
+from src.interfaces import coordinator as coord
 from src.interfaces.coordinator import (
     FLAG_ENV_VAR,
     coordinator_enabled,
@@ -154,7 +155,7 @@ async def test_voice_flag_on_allow_stamps_id(tmp_path, monkeypatch):
     assert len(bus.publishes) == 1
     rid = bus.publishes[0].payload.get("soul_request_id")
     assert isinstance(rid, str) and rid.startswith("in-")
-    assert ctx.journal.load_by_request(rid)["state"] == "executing"
+    assert coord._read_request_by_id(ctx.journal, rid)["state"] == "executing"
     # Admit sits before the persistent touch write, and allow keeps it.
     assert (data_root() / "state" / "bryan_last_seen.json").is_file()
 

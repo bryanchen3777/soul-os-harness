@@ -91,7 +91,8 @@ def test_stale_generation_old_capability_releases_nothing(tmp_path):
     assert ctx.held[SOUL].generation == old_generation + 1
     # Stale worker: journal row still executing, but the triple no longer
     # matches the live lease — blocked (zero write / zero send).
-    assert ctx.journal.load_by_request(ident.request_id)["state"] == "executing"
+    assert coord._read_request_by_id(
+        ctx.journal, ident.request_id)["state"] == "executing"
     assert coord.require_current(ctx, ident.request_id) is False
     assert coord.require_current(ctx, ident2.request_id) is True
     # The stale capability object itself releases nothing: the conditional
@@ -142,10 +143,9 @@ def test_orphan_permit_blocks_release_and_files_reconciliation(tmp_path):
     ctx = _ctx(tmp_path, "orphan.db")
     ident, out = prepare_publish(ctx, soul_alias=SOUL, entry_kind="tg", text="send me")
     assert out.should_publish is True
-    # Drive the journal row terminal through the backend evidence point.
-    assert ctx.journal.record_generated(ident.request_id, 1, "r-ok", "body-ok") is True
-    assert ctx.journal.record_outcome(
-        ident.request_id, "backend", "ok", {"completed": True}, T0 + 1) is True
+    # Fix the response (no backend terminal exists upstream, §9 gap G1/G2:
+    # generated is the furthest durable state and never releases).
+    ctx.journal.record_generated(ident.request_id, 1, "r-ok", "body-ok")
     # One outbound permit opens and is never closed: the send fate is
     # unknown, so the holder is NOT quiesced.
     permit = coord.open_permit(ctx, request_id=ident.request_id, destination="tg", now=T0 + 2)
@@ -158,14 +158,14 @@ def test_orphan_permit_blocks_release_and_files_reconciliation(tmp_path):
         ctx, request_id=ident.request_id, permit_id=permit,
         reason="holder-dead-permit-open", now=T0 + 4,
     )
-    rows = ctx.journal._conn.execute(
+    rows = ctx.journal.conn.execute(
         "SELECT request_id, permit_id, reason FROM reconciliation").fetchall()
     assert (ident.request_id, permit, "holder-dead-permit-open") in rows
-    assert ctx.journal._conn.execute(
+    assert ctx.journal.conn.execute(
         "SELECT COUNT(*) FROM outbound_permits WHERE permit_id=? AND state='open'",
         (permit,)).fetchone()[0] == 1
-    # Terminal row but open permit: the valve holds (never released).
-    assert coord.settle_after_outcome(ctx, ident.request_id, T0 + 5) == coord.SETTLE_HELD_PERMITS_OPEN
+    # Generated row with an open permit: the valve holds (never released).
+    assert coord.settle_after_outcome(ctx, ident.request_id, T0 + 5) == coord.SETTLE_HELD_TASKS_OPEN
     assert ctx.lease_store.load(SOUL)["state"] == "QUARANTINED"
 
 
@@ -221,35 +221,36 @@ def test_flag_defaults_off():
     assert coordinator_enabled({}) is False
 
 
-def test_startup_recovery_leaves_settled_state_untouched(tmp_path):
+def test_startup_recovery_leaves_generated_state_untouched(tmp_path):
     name = "startup.db"
     ctx = _ctx(tmp_path, name, epoch=1)
     ident, out = prepare_publish(ctx, soul_alias=SOUL, entry_kind="web", text="done")
     assert out.should_publish is True
-    assert ctx.journal.record_generated(ident.request_id, 1, "r", "b") is True
-    assert ctx.journal.record_outcome(
-        ident.request_id, "backend", "ok", {"completed": True}, T0 + 1) is True
-    assert coord.settle_after_outcome(ctx, ident.request_id, T0 + 2) == coord.SETTLE_RELEASED
+    ctx.journal.record_generated(ident.request_id, 1, "r", "b")
     generation = ctx.lease_store.load(SOUL)["generation"]
-    ctx.journal._conn.close()
-    # Restart at a new epoch over the same file: settled rows and the FREE
+    ctx.journal.conn.close()
+    # Restart at a new epoch over the same file: generated rows and the HELD
     # lease row (with its generation) are untouched — zero trigger.
+    # (No completed state exists upstream, §9 gap G1/G2.)
     ctx2 = open_admission_context(_open(tmp_path / name), epoch=2)
     try:
-        assert ctx2.journal.load_by_request(ident.request_id)["state"] == "completed"
+        assert coord._read_request_by_id(
+            ctx2.journal, ident.request_id)["state"] == "generated"
+        assert coord._read_request_by_id(
+            ctx2.journal, ident.request_id)["response_body"] == "b"
         row = ctx2.lease_store.load(SOUL)
-        assert row["state"] == "FREE"
+        assert row["state"] == "HELD"
         assert int(row["generation"]) == int(generation)
         assert ctx2.lease_store.all_rows() == [SOUL]
     finally:
-        ctx2.journal._conn.close()
+        ctx2.journal.conn.close()
 
 
 def test_startup_recovery_on_empty_store_is_noop(tmp_path):
     ctx = _ctx(tmp_path, "empty.db", epoch=3)
     try:
         assert ctx.lease_store.all_rows() == []
-        assert ctx.journal.load_by_request("req-absent") is None
+        assert coord._read_request_by_id(ctx.journal, "req-absent") is None
         assert coord.count_open_permits(ctx, "req-absent") == 0
     finally:
-        ctx.journal._conn.close()
+        ctx.journal.conn.close()

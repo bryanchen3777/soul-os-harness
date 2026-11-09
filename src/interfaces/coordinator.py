@@ -24,10 +24,10 @@ PROGRAM-2 TTL-takeover half, keeps B4 / B5 / B6 / B7):
   Commit exceptions re-read before compensating; ambiguous states are
   never compensated into the wrong place.
 - Settle table (work order §6, ``settle_request``): not-started +
-  proven-no-side-effect -> release; normal / definitive-failure with
-  all tasks + permits settled -> release; cancelled-unjoined /
-  backend-unknown / send-unknown / crash -> isolate. Never release on
-  finally, timeout, or outcome alone.
+  proven-no-side-effect -> release; executing / generated -> held;
+  transport_sent (send fate unknown) / uncertain / crash -> isolate.
+  No backend-terminal release exists (upstream has no completed / failed
+  / cancelled states). Never release on finally, timeout, or outcome alone.
 - Feature flag ``SOUL_OS_PER_SOUL_MUTEX`` defaults OFF. When off, entries
   must not call this module at all (old behaviour byte-identical); see
   ``coordinator_enabled()`` and the static compat guard in tests.
@@ -39,12 +39,12 @@ PROGRAM-2 TTL-takeover half, keeps B4 / B5 / B6 / B7):
 - Background writes never go through the coordinator; ``mark_non_request``
   labels them so they cannot be mistaken for request outcomes. Lifecycle
   evaluation takes no lease (B3).
-- Restart: ``recover_executing`` marks old-epoch executing journal rows
-  uncertain (evidence kept); lease rows are verified holder-by-holder
-  (``open_admission_context``): the live stay held, the unknown go
-  QUARANTINED, and only the proven-dead + quiesced go FREE —each freed
-  holder's journal row then goes ``mark_uncertain`` with its ORIGINAL
-  epoch (never forged, never blanket).
+- Restart: ``recover()`` marks old-epoch executing journal rows
+  uncertain (evidence kept, ids counted not logged); lease rows are
+  verified holder-by-holder (``open_admission_context``): the live stay
+  held, the unknown go QUARANTINED, and only the proven-dead + quiesced
+  go FREE — each freed holder's journal row then goes single-parameter
+  ``mark_uncertain`` (never blanket).
 
 Pure stdlib. No network, no subprocess, no server, no env access at import.
 """
@@ -62,21 +62,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional, Tuple
 
 from src.interfaces.journal import (
-    OUTCOME_CONFLICT,
-    OUTCOME_EXPIRED,
-    OUTCOME_IN_PROGRESS,
-    OUTCOME_NEW,
-    OUTCOME_REPLAY,
-    OUTCOME_UNCERTAIN,
-    STATE_ACCEPTED,
-    STATE_CANCELLED,
-    STATE_COMPLETED,
-    STATE_EXECUTING,
-    STATE_FAILED,
-    STATE_GENERATED,
-    STATE_UNCERTAIN,
     Journal,
     JournalError,
+    OwnershipError,
 )
 from src.interfaces.soul_lease import (
     LEASE_DEFAULT_TTL_SECONDS,
@@ -257,7 +245,7 @@ class HolderRegistry:
     is unregistered even when its journal row still reads executing.
     Leaseless (legacy) admits are never tracked and keep the journal-only
     rule. The map lives and dies with the process: after a restart the
-    registry is empty and ``recover_executing`` has already marked old
+    registry is empty and ``recover()`` has already marked old
     executing rows uncertain, so nothing tracked can go stale.
     """
 
@@ -309,15 +297,123 @@ def lease_namespace(soul_alias: str, idempotency_key: str) -> str:
     return "%s%s/%s" % (NAMESPACE_PREFIX, soul_alias.strip(), idempotency_key.strip())
 
 
-def _holder_of(journal: Journal, namespace: str, registry: Optional[HolderRegistry]) -> BusyBody:
+#: Coordinator-local disposition labels. Same string values as the upstream
+#: ``ClaimResult.kind`` register (EI-2B-JOURNAL-ADAPT-1): these are the
+#: coordinator's admission dispositions, not journal states — no new journal
+#: state is introduced here.
+OUTCOME_NEW = "NEW"
+OUTCOME_REPLAY = "REPLAY"
+OUTCOME_IN_PROGRESS = "IN_PROGRESS"
+OUTCOME_CONFLICT = "CONFLICT"
+OUTCOME_UNCERTAIN = "UNCERTAIN"
+OUTCOME_EXPIRED = "EXPIRED"
+
+#: Coordinator-local copies of the upstream durable states this module may
+#: observe. Upstream ``_VALID_STATES`` has no completed / failed /
+#: cancelled — the settle table below must never reference such terminal
+#: states (see §9 gap G1/G2).
+STATE_ACCEPTED = "accepted"
+STATE_EXECUTING = "executing"
+STATE_GENERATED = "generated"
+STATE_TRANSPORT_SENT = "transport_sent"
+STATE_FAILED_BEFORE_EXECUTION = "failed_before_execution"
+STATE_UNCERTAIN = "uncertain"
+
+
+def journal_namespace(soul_alias: str, idempotency_key: str) -> tuple:
+    """Six-column journal key for one soul's idempotency row.
+
+    Fixed mapping (EI-2B-JOURNAL-ADAPT-1 §3): ``("ei2b-local", alias,
+    "soul-lease", "", "", key)``. ``lease_namespace()`` above is kept for
+    the in-memory holder-class registry only; the two namespaces are built
+    independently — the old string is never parsed apart. Single-user entry
+    namespace; no multi-tenant authorization is claimed.
+    """
+    if not isinstance(soul_alias, str) or not soul_alias.strip():
+        raise ValueError("soul_alias must be a non-empty string.")
+    if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+        raise ValueError("idempotency_key must be a non-empty string.")
+    return (
+        "ei2b-local",
+        soul_alias.strip(),
+        "soul-lease",
+        "",
+        "",
+        idempotency_key.strip(),
+    )
+
+
+_REQUEST_ROW_SELECT = (
+    "SELECT request_id, state, epoch, fingerprint, response_id,"
+    " response_body, expires_ts FROM requests"
+)
+
+
+def _row_to_dict(row) -> dict:
+    return {
+        "request_id": row[0],
+        "state": row[1],
+        "epoch": row[2],
+        "fingerprint": row[3],
+        "response_id": row[4],
+        "response_body": row[5],
+        "expires_ts": row[6],
+    }
+
+
+def _read_request_by_id(journal: Journal, request_id: str) -> Optional[dict]:
+    """Coordinator-owned read-only lookup of one journal row by request id.
+
+    Parameterized SELECT over ``journal.conn``; never added as a Journal
+    API (upstream stays byte-identical). Storage failure raises
+    ``JournalError`` (callers map it fail-closed); unknown id returns None.
+    """
+    try:
+        row = journal.conn.execute(
+            _REQUEST_ROW_SELECT + " WHERE request_id=?",
+            (request_id,),
+        ).fetchone()
+    except JournalError:
+        raise
+    except Exception as exc:
+        raise JournalError("coordinator read failed: %s" % exc)
+    if row is None:
+        return None
+    return _row_to_dict(row)
+
+
+def _read_row_by_namespace(journal: Journal, journal_ns: tuple) -> Optional[dict]:
+    """Coordinator-owned read-only lookup of one journal row by six-tuple.
+
+    Same contract as :func:`_read_request_by_id`, keyed by the full
+    ``(principal_id, agent_id, scope, conversation_id, branch_id,
+    idempotency_key)`` tuple.
+    """
+    try:
+        row = journal.conn.execute(
+            _REQUEST_ROW_SELECT
+            + " WHERE principal_id=? AND agent_id=? AND scope=?"
+            + " AND conversation_id=? AND branch_id=? AND idempotency_key=?",
+            tuple(journal_ns),
+        ).fetchone()
+    except JournalError:
+        raise
+    except Exception as exc:
+        raise JournalError("coordinator read failed: %s" % exc)
+    if row is None:
+        return None
+    return _row_to_dict(row)
+
+
+def _holder_of(journal: Journal, journal_ns: tuple, registry: Optional[HolderRegistry], registry_key: str) -> BusyBody:
     epoch = 0
     try:
-        row = journal.load(namespace)
+        row = _read_row_by_namespace(journal, journal_ns)
         if row is not None:
             epoch = int(row.get("epoch") or 0)
     except (JournalError, ValueError, TypeError, AttributeError):
         epoch = 0
-    holder_entry = registry.lookup(namespace) if registry is not None else "unknown"
+    holder_entry = registry.lookup(registry_key) if registry is not None else "unknown"
     return BusyBody(holder_entry=holder_entry, holder_epoch=epoch)
 
 
@@ -365,7 +461,8 @@ def _admit_with_lease(
     entry_kind: str,
     fingerprint: str,
     request_id: str,
-    namespace: str,
+    journal_ns: tuple,
+    registry_key: str,
     epoch: int,
     now: float,
     lease_ttl: float,
@@ -403,17 +500,17 @@ def _admit_with_lease(
         # the journal so REPLAY / CONFLICT / EXPIRED keep their meaning;
         # otherwise this is a pure busy with zero journal writes.
         try:
-            existing = journal.load(namespace)
+            existing = _read_row_by_namespace(journal, journal_ns)
         except JournalError as exc:
             logger.warning("[Coordinator] busy re-read failure soul=%s entry=%s: %s", soul_alias, entry_kind, exc)
             return _uncertain(registry)
         if existing is not None:
             try:
-                claimed = journal.claim(namespace, fingerprint, request_id, now)
+                claimed = journal.claim(journal_ns, fingerprint, request_id, now)
             except JournalError as exc:
                 logger.warning("[Coordinator] claim storage failure soul=%s entry=%s: %s", soul_alias, entry_kind, exc)
                 return _uncertain(registry)
-            if claimed.outcome == OUTCOME_REPLAY:
+            if claimed.kind == OUTCOME_REPLAY:
                 return AdmissionOutcome(
                     disposition=OUTCOME_REPLAY,
                     http_status=200,
@@ -422,21 +519,21 @@ def _admit_with_lease(
                     fixed_response_id=claimed.response_id,
                     fixed_response_body=claimed.response_body,
                 )
-            if claimed.outcome == OUTCOME_CONFLICT:
+            if claimed.kind == OUTCOME_CONFLICT:
                 return AdmissionOutcome(
                     disposition=OUTCOME_CONFLICT,
                     http_status=409,
                     code="soul_conflict",
                     should_publish=False,
                 )
-            if claimed.outcome == OUTCOME_EXPIRED:
+            if claimed.kind == OUTCOME_EXPIRED:
                 return AdmissionOutcome(
                     disposition=OUTCOME_EXPIRED,
                     http_status=410,
                     code="soul_expired",
                     should_publish=False,
                 )
-            if claimed.outcome == OUTCOME_UNCERTAIN:
+            if claimed.kind == OUTCOME_UNCERTAIN:
                 return AdmissionOutcome(
                     disposition=OUTCOME_UNCERTAIN,
                     http_status=409,
@@ -453,16 +550,24 @@ def _admit_with_lease(
         )
     # Lease won: claim the idempotency row, then CAS begin.
     try:
-        claimed = journal.claim(namespace, fingerprint, request_id, now)
+        claimed = journal.claim(journal_ns, fingerprint, request_id, now)
     except JournalError as exc:
         logger.warning("[Coordinator] claim storage failure soul=%s entry=%s: %s", soul_alias, entry_kind, exc)
         _compensate_lease(lease_store, capability, soul_alias, entry_kind, now, held_map)
         return _uncertain(registry)
-    if claimed.outcome != OUTCOME_NEW:
+    if claimed.kind != OUTCOME_NEW:
         # Same-key second attempt under a fresh lease: do not hold what
-        # we will not use —release, then map the journal outcome.
+        # we will not use —release, then map the journal outcome. The
+        # persistent request id is authoritative: when it differs from our
+        # capability's id we publish nothing, release our just-won lease
+        # (isolate), and report — never paper over it by swapping identity.
+        if claimed.request_id != request_id:
+            logger.warning(
+                "[Coordinator] divergent claim soul=%s entry=%s: journal row held by %s",
+                soul_alias, entry_kind, claimed.request_id,
+            )
         _compensate_lease(lease_store, capability, soul_alias, entry_kind, now, held_map)
-        if claimed.outcome == OUTCOME_REPLAY:
+        if claimed.kind == OUTCOME_REPLAY:
             return AdmissionOutcome(
                 disposition=OUTCOME_REPLAY,
                 http_status=200,
@@ -471,71 +576,74 @@ def _admit_with_lease(
                 fixed_response_id=claimed.response_id,
                 fixed_response_body=claimed.response_body,
             )
-        if claimed.outcome == OUTCOME_CONFLICT:
+        if claimed.kind == OUTCOME_CONFLICT:
             return AdmissionOutcome(
                 disposition=OUTCOME_CONFLICT,
                 http_status=409,
                 code="soul_conflict",
                 should_publish=False,
             )
-        if claimed.outcome == OUTCOME_EXPIRED:
+        if claimed.kind == OUTCOME_EXPIRED:
             return AdmissionOutcome(
                 disposition=OUTCOME_EXPIRED,
                 http_status=410,
                 code="soul_expired",
                 should_publish=False,
             )
-        if claimed.outcome == OUTCOME_IN_PROGRESS:
+        if claimed.kind == OUTCOME_IN_PROGRESS:
             return AdmissionOutcome(
                 disposition=OUTCOME_IN_PROGRESS,
                 http_status=409,
                 code="soul_busy",
                 should_publish=False,
-                busy=_holder_of(journal, namespace, registry),
+                busy=_holder_of(journal, journal_ns, registry, registry_key),
             )
         return AdmissionOutcome(
             disposition=OUTCOME_UNCERTAIN,
             http_status=409,
             code="soul_uncertain",
             should_publish=False,
-            busy=_holder_of(journal, namespace, registry),
+            busy=_holder_of(journal, journal_ns, registry, registry_key),
         )
     try:
-        won = journal.begin(request_id, epoch)
+        journal.begin(request_id, epoch)
+    except OwnershipError as exc:
+        # Lost the CAS: someone holds the row. Release the lease, fail busy.
+        logger.warning("[Coordinator] begin ownership lost soul=%s entry=%s: %s", soul_alias, entry_kind, exc)
+        _compensate_lease(lease_store, capability, soul_alias, entry_kind, now, held_map)
+        return AdmissionOutcome(
+            disposition=OUTCOME_IN_PROGRESS,
+            http_status=409,
+            code="soul_busy",
+            should_publish=False,
+            busy=_holder_of(journal, journal_ns, registry, registry_key),
+        )
     except JournalError as exc:
         logger.warning("[Coordinator] begin storage failure soul=%s entry=%s: %s", soul_alias, entry_kind, exc)
         # §5 commit-exception path: re-read before compensating. If the
         # row is executing under OUR request id the CAS may have landed
-        # before the error —mark it uncertain with the original epoch
-        # (never forge, never compensate into the wrong place).
+        # before the error —mark it uncertain (never compensate into the
+        # wrong place). Single-parameter mark: non-executing raises and is
+        # left alone, never assumed a no-op.
         seen = _recheck_begin(journal, request_id, epoch)
         if seen is not None and seen.get("request_id") == request_id:
             try:
-                journal.mark_uncertain(request_id, epoch)
+                journal.mark_uncertain(request_id)
             except JournalError:
                 pass
         _compensate_lease(lease_store, capability, soul_alias, entry_kind, now, held_map)
         return _uncertain(registry)
-    if won:
-        if registry is not None:
-            registry.register(namespace, entry_kind)
-            registry.track_request(request_id, soul_alias, capability.generation)
-        if held_map is not None:
-            held_map[soul_alias] = capability
-        return AdmissionOutcome(
-            disposition=OUTCOME_NEW,
-            http_status=201,
-            code="soul_admitted",
-            should_publish=True,
-        )
-    # Lost the CAS: someone holds the row. Release the lease, fail busy.
-    _compensate_lease(lease_store, capability, soul_alias, entry_kind, now, held_map)
+    # Begin success returns None — never truth-tested (no `if won:`).
+    if registry is not None:
+        registry.register(registry_key, entry_kind)
+        registry.track_request(request_id, soul_alias, capability.generation)
+    if held_map is not None:
+        held_map[soul_alias] = capability
     return AdmissionOutcome(
-        disposition=OUTCOME_IN_PROGRESS,
-        http_status=409,
-        code="soul_busy",
-        should_publish=False,
-        busy=_holder_of(journal, namespace, registry),
+        disposition=OUTCOME_NEW,
+        http_status=201,
+        code="soul_admitted",
+        should_publish=True,
     )
 
 
@@ -571,10 +679,12 @@ def _recheck_begin(
     """Re-read a journal row after a commit exception (§5).
 
     Returns the row (or None) without writing: the caller decides, and
-    an ambiguous state is never compensated into the wrong place.
+    an ambiguous state is never compensated into the wrong place. The
+    ``epoch`` argument is kept for caller compatibility and is not used
+    for fencing here. Storage failure reads as None (fail closed).
     """
     try:
-        return journal.load_by_request(request_id)
+        return _read_request_by_id(journal, request_id)
     except JournalError:
         return None
 
@@ -634,59 +744,63 @@ def admit_entry(
     """
     if entry_kind not in ENTRY_KINDS:
         raise ValueError("entry_kind must be one of %r." % (ENTRY_KINDS,))
-    namespace = lease_namespace(soul_alias, idempotency_key)
+    registry_key = lease_namespace(soul_alias, idempotency_key)
+    journal_ns = journal_namespace(soul_alias, idempotency_key)
     if lease_store is not None:
         return _admit_with_lease(
             journal, registry, lease_store,
             soul_alias=soul_alias, entry_kind=entry_kind,
             fingerprint=fingerprint, request_id=request_id,
-            namespace=namespace, epoch=epoch, now=now,
+            journal_ns=journal_ns, registry_key=registry_key,
+            epoch=epoch, now=now,
             lease_ttl=lease_ttl, holder_token=holder_token,
             process_nonce=process_nonce, pid=pid,
             process_create_time=process_create_time,
             held_map=held_map,
         )
     try:
-        claimed = journal.claim(namespace, fingerprint, request_id, now)
+        claimed = journal.claim(journal_ns, fingerprint, request_id, now)
     except JournalError as exc:
         logger.warning("[Coordinator] claim storage failure soul=%s entry=%s: %s", soul_alias, entry_kind, exc)
         return _uncertain(registry)
-    if claimed.outcome == OUTCOME_NEW:
+    if claimed.kind == OUTCOME_NEW:
         try:
-            won = journal.begin(request_id, epoch)
+            journal.begin(request_id, epoch)
+        except OwnershipError as exc:
+            # Lost the CAS: someone else holds the row. Fail closed as busy.
+            logger.warning("[Coordinator] begin ownership lost soul=%s entry=%s: %s", soul_alias, entry_kind, exc)
+            return AdmissionOutcome(
+                disposition=OUTCOME_IN_PROGRESS,
+                http_status=409,
+                code="soul_busy",
+                should_publish=False,
+                busy=_holder_of(journal, journal_ns, registry, registry_key),
+            )
         except JournalError as exc:
             logger.warning("[Coordinator] begin storage failure soul=%s entry=%s: %s", soul_alias, entry_kind, exc)
             try:
-                journal.mark_uncertain(request_id, epoch)
+                journal.mark_uncertain(request_id)
             except JournalError:
                 pass
             return _uncertain(registry)
-        if won:
-            if registry is not None:
-                registry.register(namespace, entry_kind)
-            return AdmissionOutcome(
-                disposition=OUTCOME_NEW,
-                http_status=201,
-                code="soul_admitted",
-                should_publish=True,
-            )
-        # Lost the CAS: someone else holds the lease. Fail closed as busy.
+        # Begin success returns None — never truth-tested (no `if won:`).
+        if registry is not None:
+            registry.register(registry_key, entry_kind)
+        return AdmissionOutcome(
+            disposition=OUTCOME_NEW,
+            http_status=201,
+            code="soul_admitted",
+            should_publish=True,
+        )
+    if claimed.kind == OUTCOME_IN_PROGRESS:
         return AdmissionOutcome(
             disposition=OUTCOME_IN_PROGRESS,
             http_status=409,
             code="soul_busy",
             should_publish=False,
-            busy=_holder_of(journal, namespace, registry),
+            busy=_holder_of(journal, journal_ns, registry, registry_key),
         )
-    if claimed.outcome == OUTCOME_IN_PROGRESS:
-        return AdmissionOutcome(
-            disposition=OUTCOME_IN_PROGRESS,
-            http_status=409,
-            code="soul_busy",
-            should_publish=False,
-            busy=_holder_of(journal, namespace, registry),
-        )
-    if claimed.outcome == OUTCOME_REPLAY:
+    if claimed.kind == OUTCOME_REPLAY:
         return AdmissionOutcome(
             disposition=OUTCOME_REPLAY,
             http_status=200,
@@ -695,14 +809,14 @@ def admit_entry(
             fixed_response_id=claimed.response_id,
             fixed_response_body=claimed.response_body,
         )
-    if claimed.outcome == OUTCOME_CONFLICT:
+    if claimed.kind == OUTCOME_CONFLICT:
         return AdmissionOutcome(
             disposition=OUTCOME_CONFLICT,
             http_status=409,
             code="soul_conflict",
             should_publish=False,
         )
-    if claimed.outcome == OUTCOME_EXPIRED:
+    if claimed.kind == OUTCOME_EXPIRED:
         return AdmissionOutcome(
             disposition=OUTCOME_EXPIRED,
             http_status=410,
@@ -715,7 +829,7 @@ def admit_entry(
         http_status=409,
         code="soul_uncertain",
         should_publish=False,
-        busy=_holder_of(journal, namespace, registry),
+        busy=_holder_of(journal, journal_ns, registry, registry_key),
     )
 
 
@@ -728,7 +842,12 @@ def current_busy(
 ) -> BusyBody:
     """Re-read the busy body for a lease (holder class may have registered
     after an earlier admission attempt saw ``"unknown"``). Pure read."""
-    return _holder_of(journal, lease_namespace(soul_alias, idempotency_key), registry)
+    return _holder_of(
+        journal,
+        journal_namespace(soul_alias, idempotency_key),
+        registry,
+        lease_namespace(soul_alias, idempotency_key),
+    )
 
 
 def fail_closed_uncertain(
@@ -742,10 +861,13 @@ def fail_closed_uncertain(
 
     Callers use this when an event has no valid admission (no claim point
     covered it): the event must not be broadcast/sent/synthesised. Best
-    effort ``mark_uncertain``; storage failure is logged, never raised.
+    effort single-parameter ``mark_uncertain`` (non-executing raises and is
+    left alone, never assumed a no-op); storage failure is logged, never
+    raised. The ``epoch`` argument is kept for caller compatibility and is
+    not passed to the journal.
     """
     try:
-        journal.mark_uncertain(request_id, epoch)
+        journal.mark_uncertain(request_id)
     except JournalError as exc:
         logger.warning("[Coordinator] fail-closed mark_uncertain failed: %s", exc)
     logger.warning("[Coordinator] fail-closed uncertain request=%s epoch=%s reason=%s", request_id, epoch, reason)
@@ -830,8 +952,8 @@ def _verify_holder(
     - Quiescence = zero unsettled permits for the holder's request
       (unclosed permits count as not quiesced, §4).
     - ALIVE -> untouched. UNKNOWN -> quarantine. DEAD + quiesced ->
-      free + ``mark_uncertain`` of the holder's journal row with its
-      ORIGINAL epoch (never forged). DEAD + working -> quarantine.
+      free + single-parameter ``mark_uncertain`` of the holder's journal
+      row. DEAD + working -> quarantine.
     """
     try:
         row = ctx.lease_store.load(soul_alias)
@@ -858,11 +980,12 @@ def _verify_holder(
         logger.warning("[Coordinator] startup verify failed soul=%s: %s", soul_alias, exc)
         return str(row.get("state"))
     if result == LEASE_FREE and liveness.state == LIVENESS_DEAD and holder_request:
-        # Proven-dead + quiesced only: settle the journal row with its
-        # original epoch. mark_uncertain no-ops unless the row is still
-        # same-epoch executing, so completed/failed rows are untouched.
+        # Proven-dead + quiesced only: fail the holder's journal row
+        # closed. Single-parameter mark raises unless the row is still
+        # executing, so generated / transport_sent rows are untouched
+        # (never compensated into the wrong place).
         try:
-            ctx.journal.mark_uncertain(holder_request, int(row.get("journal_epoch") or 0))
+            ctx.journal.mark_uncertain(holder_request)
         except (JournalError, ValueError, TypeError):
             pass
     return result
@@ -883,11 +1006,16 @@ def open_admission_context(
     """Build caller-owned admission stores over one connection + recover.
 
     ``sqlite3`` is imported lazily here (never at module import). Restart
-    recovery runs at open in two parts: (1) the frozen journal rule — old-epoch executing rows go uncertain (evidence kept); (2) per-holder
+    recovery runs at open in two parts: (1) the upstream journal rule —
+    ``recover()`` moves old-epoch executing rows to uncertain and returns
+    their request ids (a commit ambiguity raises and fails the open
+    closed — never a false success, never phantom ids); (2) per-holder
     lease verification (work order §5) —live holders stay held, unknown
     go QUARANTINED, and only proven-dead + quiesced holders go FREE (each
-    then settled via ``mark_uncertain`` with its original epoch). The
-    PROGRAM-2 blanket ``drop every lease row`` is gone.
+    then settled via single-parameter ``mark_uncertain``). The
+    PROGRAM-2 blanket ``drop every lease row`` is gone. A journal scan
+    never stands in for holder death: the lease is still verified
+    holder-by-holder.
     """
     import sqlite3 as _sqlite3
 
@@ -895,14 +1023,19 @@ def open_admission_context(
         raise TypeError("open_admission_context requires a caller-opened sqlite3.Connection.")
     if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
         raise ValueError("epoch must be a non-negative int.")
-    journal = Journal(conn)
+    journal = Journal(conn, epoch=epoch)
     lease_store = SoulLeaseStore(conn)
     _ensure_permit_schema(conn)
     _ensure_rejected_schema(conn)
     try:
-        journal.recover_executing(epoch)
+        recovered = journal.recover()
     except JournalError:
         raise
+    if recovered:
+        logger.warning(
+            "[Coordinator] startup recover marked %d executing row(s) uncertain",
+            len(recovered),
+        )
     ctx = AdmissionContext(
         journal=journal,
         lease_store=lease_store,
@@ -1026,12 +1159,13 @@ def _compensate_group_grant(
 
     Quiescence proof is local and exact: the group path never publishes
     and opens no permits, so ``quiesced=True`` is proven, not assumed.
-    Journal-touched grants are marked uncertain with the ORIGINAL epoch
-    (evidence kept) because their row already reads executing-ours.
+    Journal-touched grants are marked uncertain (single-parameter; a
+    non-executing row raises and is left alone) because their row already
+    reads executing-ours.
     """
     if journal_touched:
         try:
-            ctx.journal.mark_uncertain(identity.request_id, ctx.epoch)
+            ctx.journal.mark_uncertain(identity.request_id)
         except JournalError:
             pass
     try:
@@ -1110,37 +1244,33 @@ def admit_group(
     won_aliases: list = []
     for alias, identity, capability in grants:
         key = idem.get(alias)
-        namespace = lease_namespace(
+        registry_key = lease_namespace(alias, identity.idempotency_key)
+        journal_ns = journal_namespace(
             alias, identity.idempotency_key if key is None else str(key)
         )
         try:
             text = texts.get(alias, "")
-            claimed = ctx.journal.claim(namespace, fingerprint_for_text(text), identity.request_id, stamp)
+            claimed = ctx.journal.claim(journal_ns, fingerprint_for_text(text), identity.request_id, stamp)
         except JournalError as exc:
             logger.warning("[Coordinator] group claim failure soul=%s entry=%s: %s", alias, entry_kind, exc)
             for a2, i2, c2 in grants:
                 _compensate_group_grant(ctx, a2, i2, c2, a2 in won_aliases, stamp)
             return GroupAdmissionResult(False, {}, _uncertain(ctx.registry))
-        if claimed.outcome != OUTCOME_NEW:
+        if claimed.kind != OUTCOME_NEW:
+            if claimed.request_id != identity.request_id:
+                logger.warning(
+                    "[Coordinator] divergent group claim soul=%s entry=%s: journal row held by %s",
+                    alias, entry_kind, claimed.request_id,
+                )
             for a2, i2, c2 in grants:
                 _compensate_group_grant(ctx, a2, i2, c2, a2 in won_aliases, stamp)
-            return GroupAdmissionResult(False, {}, _map_claim_outcome(ctx, claimed, namespace))
+            return GroupAdmissionResult(
+                False, {}, _map_claim_outcome(ctx, claimed, journal_ns, registry_key))
         try:
-            begun = ctx.journal.begin(identity.request_id, ctx.epoch)
-        except JournalError as exc:
-            logger.warning("[Coordinator] group begin failure soul=%s entry=%s: %s", alias, entry_kind, exc)
-            seen = _recheck_begin(ctx.journal, identity.request_id, ctx.epoch)
-            touched = seen is not None and seen.get("request_id") == identity.request_id
-            if touched:
-                try:
-                    ctx.journal.mark_uncertain(identity.request_id, ctx.epoch)
-                except JournalError:
-                    pass
-            for a2, i2, c2 in grants:
-                _compensate_group_grant(
-                    ctx, a2, i2, c2, (a2 in won_aliases) or (a2 == alias and touched), stamp)
-            return GroupAdmissionResult(False, {}, _uncertain(ctx.registry))
-        if not begun:
+            ctx.journal.begin(identity.request_id, ctx.epoch)
+        except OwnershipError as exc:
+            # Lost the CAS: someone holds the row. Unwind all, fail busy.
+            logger.warning("[Coordinator] group begin ownership lost soul=%s entry=%s: %s", alias, entry_kind, exc)
             for a2, i2, c2 in grants:
                 _compensate_group_grant(ctx, a2, i2, c2, a2 in won_aliases, stamp)
             return GroupAdmissionResult(
@@ -1150,9 +1280,23 @@ def admit_group(
                     http_status=409,
                     code="soul_busy",
                     should_publish=False,
-                    busy=_holder_of(ctx.journal, namespace, ctx.registry),
+                    busy=_holder_of(ctx.journal, journal_ns, ctx.registry, registry_key),
                 ),
             )
+        except JournalError as exc:
+            logger.warning("[Coordinator] group begin failure soul=%s entry=%s: %s", alias, entry_kind, exc)
+            seen = _recheck_begin(ctx.journal, identity.request_id, ctx.epoch)
+            touched = seen is not None and seen.get("request_id") == identity.request_id
+            if touched:
+                try:
+                    ctx.journal.mark_uncertain(identity.request_id)
+                except JournalError:
+                    pass
+            for a2, i2, c2 in grants:
+                _compensate_group_grant(
+                    ctx, a2, i2, c2, (a2 in won_aliases) or (a2 == alias and touched), stamp)
+            return GroupAdmissionResult(False, {}, _uncertain(ctx.registry))
+        # Begin success returns None — never truth-tested (no `if begun:`).
         won_aliases.append(alias)
 
     for alias, identity, capability in grants:
@@ -1165,9 +1309,9 @@ def admit_group(
     )
 
 
-def _map_claim_outcome(ctx: AdmissionContext, claimed, namespace: str) -> AdmissionOutcome:
+def _map_claim_outcome(ctx: AdmissionContext, claimed, journal_ns: tuple, registry_key: str) -> AdmissionOutcome:
     """Map a non-NEW journal claim to its admission outcome (group path)."""
-    if claimed.outcome == OUTCOME_REPLAY:
+    if claimed.kind == OUTCOME_REPLAY:
         return AdmissionOutcome(
             disposition=OUTCOME_REPLAY,
             http_status=200,
@@ -1176,27 +1320,27 @@ def _map_claim_outcome(ctx: AdmissionContext, claimed, namespace: str) -> Admiss
             fixed_response_id=claimed.response_id,
             fixed_response_body=claimed.response_body,
         )
-    if claimed.outcome == OUTCOME_CONFLICT:
+    if claimed.kind == OUTCOME_CONFLICT:
         return AdmissionOutcome(
             disposition=OUTCOME_CONFLICT,
             http_status=409,
             code="soul_conflict",
             should_publish=False,
         )
-    if claimed.outcome == OUTCOME_EXPIRED:
+    if claimed.kind == OUTCOME_EXPIRED:
         return AdmissionOutcome(
             disposition=OUTCOME_EXPIRED,
             http_status=410,
             code="soul_expired",
             should_publish=False,
         )
-    if claimed.outcome == OUTCOME_IN_PROGRESS:
+    if claimed.kind == OUTCOME_IN_PROGRESS:
         return AdmissionOutcome(
             disposition=OUTCOME_IN_PROGRESS,
             http_status=409,
             code="soul_busy",
             should_publish=False,
-            busy=_holder_of(ctx.journal, namespace, ctx.registry),
+            busy=_holder_of(ctx.journal, journal_ns, ctx.registry, registry_key),
         )
     return _uncertain(ctx.registry)
 
@@ -1326,7 +1470,7 @@ def require_current(ctx: AdmissionContext, request_id: str) -> bool:
     if not isinstance(request_id, str) or not request_id.strip():
         return False
     try:
-        row = ctx.journal.load_by_request(request_id.strip())
+        row = _read_request_by_id(ctx.journal, request_id.strip())
     except JournalError:
         return False
     if row is None:
@@ -1428,7 +1572,7 @@ def _ensure_permit_schema(conn) -> None:
 
 
 def _permit_conn(ctx: AdmissionContext):
-    return ctx.journal._conn
+    return ctx.journal.conn
 
 
 def open_permit(
@@ -1527,14 +1671,20 @@ def record_reconciliation(
         raise SoulLeaseError("permit storage unavailable.")
 
 
-# -- settle table (§6) ----------------------------------------------------------
+# -- settle table (§6, EI-2B-JOURNAL-ADAPT-1) ------------------------------------
 #
-# Fixed register —the ONLY ways a held lease ends:
-# - "released": not-started + proven no side effect (accepted row, zero
-#   permits/transports), OR normal / definitive-failure terminal row
-#   (completed / failed) with all tasks + permits settled.
-# - "isolated": cancelled-without-join, backend/send fate unknown,
-#   generated-but-uncommitted, crash remnants, or any ambiguous mix.
+# Fixed register — the ONLY ways a held lease ends:
+# - "released": not-started + proven no side effect (accepted /
+#   failed_before_execution row, zero permits). Upstream has NO
+#   completed / failed / cancelled journal states (§9 gap G1/G2), so no
+#   backend-terminal release exists here; memory outcomes and
+#   transport_sent must never impersonate one.
+# - "held_tasks_open": executing / generated — still working or response
+#   fixed but uncommitted, never released.
+# - "held_permits_open": not-started row with unclosed permits (defensive;
+#   unreachable via the public admit path, which always begins).
+# - "isolated": transport_sent (send fate unknown), uncertain, or any
+#   ambiguous mix — quarantine on capability match, never free.
 # Never released by finally, timeout, or outcome alone.
 
 SETTLE_RELEASED = "released"
@@ -1551,10 +1701,13 @@ def settle_request(
 ) -> str:
     """End one holder's lease per the fixed settle table.
 
-    The caller proves task completion by driving the journal row to its
-    terminal state first; this function re-reads (never trusts the
-    caller's word) and either releases with proven quiescence or
-    isolates. Returns one of the ``SETTLE_*`` verdicts.
+    The caller proves task completion by driving the journal row forward
+    first; this function re-reads (never trusts the caller's word) and
+    either releases with proven quiescence or isolates. Returns one of
+    the ``SETTLE_*`` verdicts. There is no backend-terminal release:
+    upstream journal states stop at generated / transport_sent, so those
+    (and uncertain) isolate — memory ``completed`` must never be read as
+    a backend terminal state (§9 gap G1/G2, BLOCKED, not waived).
     """
     if not isinstance(capability, Capability):
         raise ValueError("capability must be a Capability.")
@@ -1562,7 +1715,7 @@ def settle_request(
         raise ValueError("now must be a caller-provided epoch number.")
     stamp = float(now)
     try:
-        row = ctx.journal.load_by_request(capability.request_id)
+        row = _read_request_by_id(ctx.journal, capability.request_id)
     except JournalError:
         return SETTLE_REFUSED_UNKNOWN
     if row is None:
@@ -1580,20 +1733,15 @@ def settle_request(
             return SETTLE_REFUSED_UNKNOWN
         return SETTLE_REFUSED_UNKNOWN
 
-    if state == STATE_ACCEPTED:
+    if state == STATE_ACCEPTED or state == STATE_FAILED_BEFORE_EXECUTION:
         # Not started: release only with proven zero side effect.
         if permits_open == 0:
             return _release()
         return SETTLE_HELD_PERMITS_OPEN
-    if state in (STATE_COMPLETED, STATE_FAILED):
-        # Terminal + definitive: release only when permits all settled.
-        if permits_open > 0:
-            return SETTLE_HELD_PERMITS_OPEN
-        return _release()
-    if state in (STATE_EXECUTING, STATE_GENERATED):
+    if state == STATE_EXECUTING or state == STATE_GENERATED:
         # Still working / response fixed but uncommitted: never release.
         return SETTLE_HELD_TASKS_OPEN
-    # CANCELLED (maybe never joined), UNCERTAIN, or any future state:
+    # TRANSPORT_SENT (send fate unknown), UNCERTAIN, or any future state:
     # isolate — quarantine on capability match, never free.
     try:
         ctx.lease_store.quarantine_self(capability, stamp)
@@ -1629,7 +1777,7 @@ def require_registered(journal: Journal, request_id: str) -> bool:
     if not isinstance(request_id, str) or not request_id.strip():
         return False
     try:
-        row = journal.load_by_request(request_id.strip())
+        row = _read_request_by_id(journal, request_id.strip())
     except JournalError:
         return False
     if row is None:

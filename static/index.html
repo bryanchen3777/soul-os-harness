@@ -1052,18 +1052,9 @@
     }
 
     function clearCurrentMemory() {
-      var name = currentConversation === "group" ? "群組" : displayName(currentConversation);
-      if (!confirm("確定要清除 " + name + " 的記憶嗎？")) return;
-      var endpoint = currentConversation === "group" ? "/memory/clear/group" : "/memory/clear/" + currentConversation;
-      fetch(endpoint, { method: "POST" })
-        .then(function (r) { return r.json(); })
-        .then(function (result) {
-          console.log("Memory cleared:", result);
-          localStorage.removeItem(getStorageKey(currentConversation));
-          document.getElementById("chat-container").innerHTML = "";
-          alert(name + " 的記憶已清除");
-        })
-        .catch(function (e) { console.error("Clear memory failed:", e); });
+      // EI-SEC-P0-DEFAULT-OFF：危險路由已預設關閉，前端不再發送記憶清除請求。
+      // 不刪 localStorage、不清空聊天畫，僅明確告知停用。
+      alert("記憶清除功能已停用（安全管制 EI-SEC-P0）。如需清除請依工單流程處理。");
     }
 
     // ════════════════════════════════════════════

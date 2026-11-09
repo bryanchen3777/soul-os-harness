@@ -1,472 +1,744 @@
-"""EI-2A offline idempotency journal. Caller-owned SQLite, caller-owned clock.
+"""Offline durable request journal (EI-2A). Pure stdlib only.
 
-Contract (work order EI-2A-JOURNAL-PORT-1, decision-complete):
-
-- The constructor takes a caller-opened ``sqlite3.Connection``. There is no
-  default path, no environment lookup, and import performs no IO.
-- One row per idempotency ``namespace`` (unique key) holding the payload
-  ``fingerprint``, the owning ``request_id``, the durable ``state``, the
-  claiming ``epoch``, the fixed response, per-destination submit evidence,
-  and create/expiry timestamps.
-- ``claim()`` runs check-and-insert inside a single transaction and returns
-  one of NEW / REPLAY / IN_PROGRESS / CONFLICT / UNCERTAIN / EXPIRED.
-- Same key + different fingerprint is always CONFLICT (even past expiry).
-- A terminal row older than 24h returns EXPIRED (callers map it to
-  ``410 idempotency_expired`` and must mint a fresh key for a new event);
-  the old operation is never redone automatically, and unresolved rows are
-  never unblocked by expiry.
-- ``begin()`` CASes accepted -> executing for exactly one executor.
-- ``record_generated()`` only lets the holding executor fix response id/body.
-- ``record_transport()`` stores evidence; it never changes commit state.
-- ``recover_executing()`` only marks old-epoch executing rows uncertain.
-- ``record_outcome()`` only accepts the predetermined destination/state
-  enums; ``unknown`` never promotes to completed without explicit
-  same-request completion evidence, and memory/bus evidence can never
-  impersonate a backend commit.
-- Storage errors are never leaked (generic ``JournalError``).
-
-Pure stdlib. No network, no subprocess, no server, no env access.
+Injected sqlite3 connection only; never opens files, env, or network.
+All durability decisions live in single BEGIN IMMEDIATE transactions.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from typing import Optional
 
 
-#: Idempotency window: terminal rows older than this report EXPIRED.
-EXPIRY_SECONDS = 24 * 3600
+EXPIRY_SECONDS = 86400
 
-#: Durable entry states. ``generated`` is durable but NOT terminal:
-#: its fixed response must still replay after the window.
-STATE_ACCEPTED = "accepted"
-STATE_EXECUTING = "executing"
-STATE_GENERATED = "generated"
-STATE_UNCERTAIN = "uncertain"
-STATE_COMPLETED = "completed"
-STATE_FAILED = "failed"
-STATE_CANCELLED = "cancelled"
-
-STATES = frozenset(
-    (
-        STATE_ACCEPTED,
-        STATE_EXECUTING,
-        STATE_GENERATED,
-        STATE_UNCERTAIN,
-        STATE_COMPLETED,
-        STATE_FAILED,
-        STATE_CANCELLED,
-    )
-)
-
-#: States that count as terminal for the 24h EXPIRED rule.
-TERMINAL_STATES = frozenset((STATE_COMPLETED, STATE_FAILED, STATE_CANCELLED))
-
-#: Predetermined submit destinations (transport vs memory are separate).
-DESTINATIONS = ("backend", "bus", "memory")
-
-#: Predetermined per-destination outcome states.
-OUTCOME_STATES = ("ok", "failed", "unknown")
-
-#: claim()/submit() outcome labels.
-OUTCOME_NEW = "NEW"
-OUTCOME_REPLAY = "REPLAY"
-OUTCOME_IN_PROGRESS = "IN_PROGRESS"
-OUTCOME_CONFLICT = "CONFLICT"
-OUTCOME_UNCERTAIN = "UNCERTAIN"
-OUTCOME_EXPIRED = "EXPIRED"
+_VALID_STATES = ("accepted", "executing", "generated", "transport_sent", "failed_before_execution", "uncertain")
+_VALID_KINDS = ("NEW", "REPLAY", "IN_PROGRESS", "CONFLICT", "UNCERTAIN", "EXPIRED")
+_VALID_OUTCOME_STATUS = ("pending", "completed", "skipped", "unknown")
+_MEMORY_DEST = "memory"
+_DEFAULT_OUTCOMES_TEXT = '{"memory": "pending"}'
+_SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS requests (principal_id TEXT NOT NULL, agent_id TEXT NOT NULL, scope TEXT NOT NULL, conversation_id TEXT NOT NULL, branch_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, fingerprint TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE, state TEXT NOT NULL, epoch INTEGER NOT NULL, response_id TEXT, response_body TEXT, transport_count INTEGER NOT NULL DEFAULT 0, outcomes TEXT NOT NULL, created_ts REAL NOT NULL, expires_ts REAL NOT NULL, updated_ts REAL NOT NULL, UNIQUE (principal_id, agent_id, scope, conversation_id, branch_id, idempotency_key))"
 
 
 class JournalError(Exception):
-    """Generic journal failure. Never carries storage internals."""
+    pass
+
+
+class OwnershipError(JournalError):
+    pass
 
 
 @dataclass(frozen=True)
 class ClaimResult:
-    outcome: str
-    request_id: Optional[str]
-    response_id: Optional[str]
-    response_body: Optional[str]
-    status: int
-    code: str
+    kind: str
+    request_id: str
+    response_id: Optional[str] = None
+    response_body: Optional[str] = None
 
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS journal_entries (
-    namespace   TEXT PRIMARY KEY,
-    fingerprint TEXT NOT NULL,
-    request_id  TEXT NOT NULL UNIQUE,
-    state       TEXT NOT NULL,
-    epoch       INTEGER NOT NULL,
-    response_id TEXT,
-    response_body TEXT,
-    created_at  REAL NOT NULL,
-    expires_at  REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS journal_transports (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    request_id  TEXT NOT NULL,
-    destination TEXT NOT NULL,
-    ok          INTEGER NOT NULL,
-    evidence    TEXT NOT NULL,
-    at          REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS journal_outcomes (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    request_id  TEXT NOT NULL,
-    destination TEXT NOT NULL,
-    state       TEXT NOT NULL,
-    evidence    TEXT NOT NULL,
-    at          REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS journal_transports_by_request
-    ON journal_transports (request_id);
-CREATE INDEX IF NOT EXISTS journal_outcomes_by_request
-    ON journal_outcomes (request_id);
-"""
-
-_ENTRY_COLUMNS = (
-    "namespace, fingerprint, request_id, state, epoch, "
-    "response_id, response_body, created_at, expires_at"
-)
+def _norm_namespace(namespace) -> tuple:
+    try:
+        items = tuple(namespace)
+    except Exception:
+        raise JournalError("bad namespace")
+    if len(items) != 6:
+        raise JournalError("bad namespace")
+    out = []
+    for v in items:
+        if v is None:
+            out.append("")
+        elif isinstance(v, str):
+            out.append(v)
+        else:
+            raise JournalError("bad namespace")
+    return (out[0], out[1], out[2], out[3], out[4], out[5])
 
 
-def _entry_dict(row) -> dict:
-    return {
-        "namespace": row[0],
-        "fingerprint": row[1],
-        "request_id": row[2],
-        "state": row[3],
-        "epoch": row[4],
-        "response_id": row[5],
-        "response_body": row[6],
-        "created_at": row[7],
-        "expires_at": row[8],
-    }
+def _parse_outcomes(text: str) -> dict:
+    try:
+        data = json.loads(text)
+    except Exception:
+        raise JournalError("bad outcomes")
+    if not isinstance(data, dict):
+        raise JournalError("bad outcomes")
+    return data
+
+
+def _dump_outcomes(data: dict) -> str:
+    try:
+        return json.dumps(data, sort_keys=True, separators=(",", ":"))
+    except Exception:
+        raise JournalError("bad outcomes")
 
 
 class Journal:
-    """Durable idempotency journal over a caller-owned connection."""
-
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        if not isinstance(conn, sqlite3.Connection):
-            raise TypeError("Journal requires a caller-opened sqlite3.Connection.")
-        self._conn = conn
+    def __init__(self, conn, *, epoch) -> None:
+        if not isinstance(epoch, int) or isinstance(epoch, bool):
+            raise JournalError("bad epoch")
+        self.conn = conn
+        self.epoch = epoch
         try:
-            with self._conn:
-                self._conn.executescript(_SCHEMA)
-        except sqlite3.Error:
-            raise JournalError("journal storage unavailable.")
+            self.conn.execute(_SCHEMA_SQL)
+            self.conn.commit()
+        except Exception as exc:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            raise JournalError("journal init failed")
 
-    # -- internal helpers -------------------------------------------------
-
-    @staticmethod
-    def _check_text(name: str, value: Any) -> str:
-        if not isinstance(value, str) or value == "":
-            raise ValueError(name + " must be a non-empty string.")
-        return value
-
-    @staticmethod
-    def _check_now(now: Any) -> float:
-        if isinstance(now, bool) or not isinstance(now, (int, float)):
-            raise ValueError("now must be a caller-provided epoch number.")
-        return float(now)
-
-    @staticmethod
-    def _check_epoch(epoch: Any) -> int:
-        if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
-            raise ValueError("epoch must be a non-negative int.")
-        return epoch
-
-    @staticmethod
-    def _dump_evidence(evidence: Any) -> str:
-        if not isinstance(evidence, Mapping):
-            raise ValueError("evidence must be a mapping.")
+    def claim(self, namespace, fingerprint, request_id, now) -> ClaimResult:
+        ns = _norm_namespace(namespace)
+        if not isinstance(fingerprint, str):
+            raise JournalError("bad fingerprint")
+        if not isinstance(request_id, str) or request_id == "":
+            raise JournalError("bad request_id")
         try:
-            return json.dumps(dict(evidence), sort_keys=True, ensure_ascii=True)
-        except (TypeError, ValueError):
-            raise ValueError("evidence must be JSON-serializable.")
-
-    @staticmethod
-    def _classify(entry: dict, fingerprint: str, now: float) -> ClaimResult:
-        if fingerprint != entry["fingerprint"]:
-            # Same key, different payload: always CONFLICT, even past expiry.
-            return ClaimResult(
-                OUTCOME_CONFLICT, entry["request_id"], None, None,
-                409, "idempotency_conflict",
-            )
-        state = entry["state"]
-        if state in TERMINAL_STATES and now >= entry["expires_at"]:
-            # Terminal and past the 24h window: demand a fresh key.
-            # The old operation is NOT redone; unresolved rows never land here.
-            return ClaimResult(
-                OUTCOME_EXPIRED, entry["request_id"], entry["response_id"],
-                entry["response_body"], 410, "idempotency_expired",
-            )
-        if state in (STATE_ACCEPTED, STATE_EXECUTING):
-            return ClaimResult(
-                OUTCOME_IN_PROGRESS, entry["request_id"], None, None,
-                409, "idempotency_in_progress",
-            )
-        if state == STATE_UNCERTAIN:
-            return ClaimResult(
-                OUTCOME_UNCERTAIN, entry["request_id"], None, None,
-                409, "idempotency_uncertain",
-            )
-        # generated, completed, failed, cancelled (within window): replay
-        # the fixed response without touching the runtime or memory.
-        return ClaimResult(
-            OUTCOME_REPLAY, entry["request_id"], entry["response_id"],
-            entry["response_body"], 200, "idempotency_replay",
-        )
-
-    # -- public API ---------------------------------------------------------
-
-    def claim(
-        self, namespace: str, fingerprint: str, request_id: str, now: float
-    ) -> ClaimResult:
-        """Claim an idempotency namespace in a single transaction."""
-        self._check_text("namespace", namespace)
-        self._check_text("fingerprint", fingerprint)
-        self._check_text("request_id", request_id)
-        stamp = self._check_now(now)
-        expires_at = stamp + EXPIRY_SECONDS
+            ts = float(now)
+        except Exception:
+            raise JournalError("bad now")
+        conn = self.conn
         try:
-            with self._conn:
-                row = self._conn.execute(
-                    "SELECT " + _ENTRY_COLUMNS + " FROM journal_entries WHERE namespace=?",
-                    (namespace,),
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT fingerprint, request_id, state, epoch, response_id, response_body, expires_ts"
+                    " FROM requests WHERE principal_id=? AND agent_id=? AND scope=? AND"
+                    " conversation_id=? AND branch_id=? AND idempotency_key=?",
+                    ns,
                 ).fetchone()
                 if row is None:
-                    try:
-                        self._conn.execute(
-                            "INSERT INTO journal_entries (" + _ENTRY_COLUMNS + ") "
-                            "VALUES (?,?,?,?,?,?,?,?,?)",
-                            (
-                                namespace, fingerprint, request_id,
-                                STATE_ACCEPTED, 0, None, None,
-                                stamp, expires_at,
-                            ),
-                        )
-                    except sqlite3.IntegrityError:
-                        # Lost an insert race: another claimant won. Re-read
-                        # inside the same transaction and classify as existing.
-                        row = self._conn.execute(
-                            "SELECT " + _ENTRY_COLUMNS + " FROM journal_entries WHERE namespace=?",
-                            (namespace,),
-                        ).fetchone()
-                        if row is None:  # pragma: no cover - defensive
-                            raise JournalError("journal storage unavailable.")
-                        return self._classify(_entry_dict(row), fingerprint, stamp)
-                    return ClaimResult(
-                        OUTCOME_NEW, request_id, None, None,
-                        201, "idempotency_new",
+                    created = ts
+                    expires = ts + EXPIRY_SECONDS
+                    conn.execute(
+                        "INSERT INTO requests (principal_id, agent_id, scope, conversation_id,"
+                        " branch_id, idempotency_key, fingerprint, request_id, state, epoch,"
+                        " response_id, response_body, transport_count, outcomes,"
+                        " created_ts, expires_ts, updated_ts)"
+                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            ns[0],
+                            ns[1],
+                            ns[2],
+                            ns[3],
+                            ns[4],
+                            ns[5],
+                            fingerprint,
+                            request_id,
+                            "accepted",
+                            self.epoch,
+                            None,
+                            None,
+                            0,
+                            _DEFAULT_OUTCOMES_TEXT,
+                            created,
+                            expires,
+                            created,
+                        ),
                     )
-                return self._classify(_entry_dict(row), fingerprint, stamp)
+                    conn.commit()
+                    return ClaimResult("NEW", request_id)
+                sfp = row[0]
+                srid = row[1]
+                state = row[2]
+                sepoch = row[3]
+                sresp_id = row[4]
+                sresp_body = row[5]
+                sexp = row[6]
+                if sfp != fingerprint:
+                    conn.commit()
+                    return ClaimResult("CONFLICT", srid)
+                if state == "accepted":
+                    conn.commit()
+                    return ClaimResult("IN_PROGRESS", srid)
+                if state == "executing":
+                    if sepoch == self.epoch:
+                        conn.commit()
+                        return ClaimResult("IN_PROGRESS", srid)
+                    if sepoch < self.epoch:
+                        conn.execute(
+                            "UPDATE requests SET state='uncertain', updated_ts=?"
+                            " WHERE principal_id=? AND agent_id=? AND scope=?"
+                            " AND conversation_id=? AND branch_id=? AND idempotency_key=?"
+                            " AND state='executing'",
+                            (ts, ns[0], ns[1], ns[2], ns[3], ns[4], ns[5]),
+                        )
+                        conn.commit()
+                        return ClaimResult("UNCERTAIN", srid)
+                    conn.commit()
+                    return ClaimResult("IN_PROGRESS", srid)
+                if state == "uncertain":
+                    conn.commit()
+                    return ClaimResult("UNCERTAIN", srid)
+                if state == "failed_before_execution":
+                    conn.execute(
+                        "UPDATE requests SET state='accepted', epoch=?, expires_ts=?, updated_ts=?"
+                        " WHERE principal_id=? AND agent_id=? AND scope=?"
+                        " AND conversation_id=? AND branch_id=? AND idempotency_key=?"
+                        " AND state='failed_before_execution'",
+                        (self.epoch, ts + EXPIRY_SECONDS, ts, ns[0], ns[1], ns[2], ns[3], ns[4], ns[5]),
+                    )
+                    conn.commit()
+                    return ClaimResult("NEW", srid)
+                if state == "generated" or state == "transport_sent":
+                    try:
+                        expired = float(ts) > float(sexp)
+                    except Exception:
+                        raise JournalError("bad expiry")
+                    if expired:
+                        conn.commit()
+                        return ClaimResult("EXPIRED", srid)
+                    conn.commit()
+                    return ClaimResult("REPLAY", srid, sresp_id, sresp_body)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("bad state")
+            except JournalError:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+            except Exception as exc:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("claim failed")
         except JournalError:
             raise
-        except sqlite3.Error:
-            raise JournalError("journal storage unavailable.")
+        except Exception as exc:
+            raise JournalError("claim failed")
 
-    def begin(self, request_id: str, epoch: int) -> bool:
-        """CAS accepted -> executing. Exactly one executor wins."""
-        self._check_text("request_id", request_id)
-        epoch = self._check_epoch(epoch)
+    def begin(self, request_id, epoch) -> None:
+        if not isinstance(request_id, str) or request_id == "":
+            raise JournalError("bad request_id")
+        if not isinstance(epoch, int) or isinstance(epoch, bool):
+            raise JournalError("bad epoch")
+        conn = self.conn
         try:
-            with self._conn:
-                cur = self._conn.execute(
-                    "UPDATE journal_entries SET state=?, epoch=? "
-                    "WHERE request_id=? AND state=?",
-                    (STATE_EXECUTING, epoch, request_id, STATE_ACCEPTED),
-                )
-                return cur.rowcount == 1
-        except sqlite3.Error:
-            raise JournalError("journal storage unavailable.")
+            cur = conn.execute(
+                "UPDATE requests SET state='executing' WHERE request_id=? AND state='accepted' AND epoch=?",
+                (request_id, epoch),
+            )
+            if cur.rowcount != 1:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise OwnershipError("begin ownership failed")
+            conn.commit()
+        except OwnershipError:
+            raise
+        except Exception as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise JournalError("begin failed")
 
-    def record_generated(
-        self, request_id: str, epoch: int, response_id: str, response_body: str
-    ) -> bool:
-        """Fix the response. Only the holding executor (epoch) may do so."""
-        self._check_text("request_id", request_id)
-        epoch = self._check_epoch(epoch)
-        self._check_text("response_id", response_id)
-        if not isinstance(response_body, str):
-            raise ValueError("response_body must be a string.")
+    def record_generated(self, request_id, epoch, response_id, response_body) -> None:
+        if not isinstance(request_id, str) or request_id == "":
+            raise JournalError("bad request_id")
+        if not isinstance(epoch, int) or isinstance(epoch, bool):
+            raise JournalError("bad epoch")
+        conn = self.conn
         try:
-            with self._conn:
-                cur = self._conn.execute(
-                    "UPDATE journal_entries SET state=?, response_id=?, "
-                    "response_body=? "
-                    "WHERE request_id=? AND epoch=? AND state=?",
-                    (
-                        STATE_GENERATED, response_id, response_body,
-                        request_id, epoch, STATE_EXECUTING,
-                    ),
-                )
-                return cur.rowcount == 1
-        except sqlite3.Error:
-            raise JournalError("journal storage unavailable.")
-
-    def record_transport(
-        self,
-        request_id: str,
-        destination: str,
-        ok: bool,
-        evidence: Mapping[str, Any],
-        now: float,
-    ) -> bool:
-        """Store per-destination transport evidence. Never changes commit state."""
-        self._check_text("request_id", request_id)
-        if destination not in DESTINATIONS:
-            raise ValueError("unknown destination: %r." % (destination,))
-        stamp = self._check_now(now)
-        blob = self._dump_evidence(evidence)
-        try:
-            with self._conn:
-                known = self._conn.execute(
-                    "SELECT 1 FROM journal_entries WHERE request_id=?",
-                    (request_id,),
-                ).fetchone()
-                if known is None:
-                    return False
-                self._conn.execute(
-                    "INSERT INTO journal_transports "
-                    "(request_id, destination, ok, evidence, at) "
-                    "VALUES (?,?,?,?,?)",
-                    (request_id, destination, 1 if ok else 0, blob, stamp),
-                )
-                return True
-        except sqlite3.Error:
-            raise JournalError("journal storage unavailable.")
-
-    def record_outcome(
-        self,
-        request_id: str,
-        destination: str,
-        state: str,
-        evidence: Mapping[str, Any],
-        now: float,
-    ) -> bool:
-        """Store a per-destination outcome; promote only on explicit backend
-        completion evidence. ``unknown`` never promotes; memory/bus evidence
-        can never impersonate a backend commit."""
-        self._check_text("request_id", request_id)
-        if destination not in DESTINATIONS:
-            raise ValueError("unknown destination: %r." % (destination,))
-        if state not in OUTCOME_STATES:
-            raise ValueError("unknown outcome state: %r." % (state,))
-        stamp = self._check_now(now)
-        blob = self._dump_evidence(evidence)
-        try:
-            with self._conn:
-                known = self._conn.execute(
-                    "SELECT state FROM journal_entries WHERE request_id=?",
-                    (request_id,),
-                ).fetchone()
-                if known is None:
-                    return False
-                self._conn.execute(
-                    "INSERT INTO journal_outcomes "
-                    "(request_id, destination, state, evidence, at) "
-                    "VALUES (?,?,?,?,?)",
-                    (request_id, destination, state, blob, stamp),
-                )
-                if destination == "backend" and isinstance(evidence, Mapping):
-                    if state == "ok" and evidence.get("completed") is True:
-                        self._conn.execute(
-                            "UPDATE journal_entries SET state=? "
-                            "WHERE request_id=? AND state IN (?,?,?)",
-                            (
-                                STATE_COMPLETED, request_id,
-                                STATE_EXECUTING, STATE_GENERATED, STATE_UNCERTAIN,
-                            ),
-                        )
-                    elif state == "failed" and evidence.get("definitive") is True:
-                        self._conn.execute(
-                            "UPDATE journal_entries SET state=? "
-                            "WHERE request_id=? AND state IN (?,?,?)",
-                            (
-                                STATE_FAILED, request_id,
-                                STATE_EXECUTING, STATE_GENERATED, STATE_UNCERTAIN,
-                            ),
-                        )
-                return True
-        except sqlite3.Error:
-            raise JournalError("journal storage unavailable.")
-
-    def recover_executing(self, current_epoch: int) -> int:
-        """Mark only old-epoch executing rows uncertain (restart recovery)."""
-        current_epoch = self._check_epoch(current_epoch)
-        try:
-            with self._conn:
-                cur = self._conn.execute(
-                    "UPDATE journal_entries SET state=? "
-                    "WHERE state=? AND epoch<?",
-                    (STATE_UNCERTAIN, STATE_EXECUTING, current_epoch),
-                )
-                return cur.rowcount
-        except sqlite3.Error:
-            raise JournalError("journal storage unavailable.")
-
-    def mark_uncertain(self, request_id: str, epoch: int) -> bool:
-        """Mark a same-epoch executing row uncertain (ambiguous backend error)."""
-        self._check_text("request_id", request_id)
-        epoch = self._check_epoch(epoch)
-        try:
-            with self._conn:
-                cur = self._conn.execute(
-                    "UPDATE journal_entries SET state=? "
-                    "WHERE request_id=? AND epoch=? AND state=?",
-                    (STATE_UNCERTAIN, request_id, epoch, STATE_EXECUTING),
-                )
-                return cur.rowcount == 1
-        except sqlite3.Error:
-            raise JournalError("journal storage unavailable.")
-
-    def cancel(self, request_id: str) -> bool:
-        """Cancel an unresolved claim. The original execution opportunity is
-        never reused: cancelled rows can never begin again."""
-        self._check_text("request_id", request_id)
-        try:
-            with self._conn:
-                cur = self._conn.execute(
-                    "UPDATE journal_entries SET state=? "
-                    "WHERE request_id=? AND state IN (?,?,?)",
-                    (
-                        STATE_CANCELLED, request_id,
-                        STATE_ACCEPTED, STATE_EXECUTING, STATE_UNCERTAIN,
-                    ),
-                )
-                return cur.rowcount == 1
-        except sqlite3.Error:
-            raise JournalError("journal storage unavailable.")
-
-    def load(self, namespace: str) -> Optional[dict]:
-        """Read one entry by exact namespace. Never spans namespaces."""
-        self._check_text("namespace", namespace)
-        try:
-            row = self._conn.execute(
-                "SELECT " + _ENTRY_COLUMNS + " FROM journal_entries WHERE namespace=?",
-                (namespace,),
-            ).fetchone()
-        except sqlite3.Error:
-            raise JournalError("journal storage unavailable.")
-        if row is None:
-            return None
-        return _entry_dict(row)
-
-    def load_by_request(self, request_id: str) -> Optional[dict]:
-        """Read one entry by exact request id."""
-        self._check_text("request_id", request_id)
-        try:
-            row = self._conn.execute(
-                "SELECT " + _ENTRY_COLUMNS + " FROM journal_entries WHERE request_id=?",
+            row = conn.execute(
+                "SELECT state, epoch, response_id, response_body FROM requests WHERE request_id=?",
                 (request_id,),
             ).fetchone()
-        except sqlite3.Error:
-            raise JournalError("journal storage unavailable.")
-        if row is None:
-            return None
-        return _entry_dict(row)
+            if row is None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("unknown request")
+            state = row[0]
+            sepoch = row[1]
+            sresp_id = row[2]
+            sresp_body = row[3]
+            if sepoch != epoch:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise OwnershipError("generated ownership failed")
+            if state == "executing":
+                # Atomic compare-and-set: the row must still be owned by this
+                # epoch in executing state. A concurrent recover/claim that
+                # moved it to uncertain (or anything else) makes rowcount 0,
+                # so a stale worker can never overwrite a converged verdict.
+                cur = conn.execute(
+                    "UPDATE requests SET response_id=?, response_body=?, state='generated'"
+                    " WHERE request_id=? AND state='executing' AND epoch=?",
+                    (response_id, response_body, request_id, epoch),
+                )
+                if cur.rowcount == 1:
+                    conn.commit()
+                    return
+                # Lost a race between our SELECT and UPDATE: re-read once and
+                # decide purely from current durable state (read-only here, so
+                # no second overwrite is possible from this path).
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                row2 = conn.execute(
+                    "SELECT state, epoch, response_id, response_body FROM requests WHERE request_id=?",
+                    (request_id,),
+                ).fetchone()
+                if row2 is None:
+                    raise JournalError("unknown request")
+                state2 = row2[0]
+                sepoch2 = row2[1]
+                sresp_id2 = row2[2]
+                sresp_body2 = row2[3]
+                if sepoch2 != epoch:
+                    raise OwnershipError("generated ownership failed")
+                if state2 == "generated" or state2 == "transport_sent":
+                    if sresp_id2 == response_id and sresp_body2 == response_body:
+                        try:
+                            conn.commit()
+                        except Exception:
+                            try:
+                                conn.rollback()
+                            except Exception:
+                                pass
+                            raise JournalError("generated commit failed")
+                        return
+                    raise JournalError("generated response mismatch")
+                raise JournalError("bad state for generated")
+            if state == "generated" or state == "transport_sent":
+                if sresp_id == response_id and sresp_body == response_body:
+                    try:
+                        conn.commit()
+                    except Exception:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                        raise JournalError("generated commit failed")
+                    return
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("generated response mismatch")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise JournalError("bad state for generated")
+        except (JournalError, OwnershipError):
+            raise
+        except Exception as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise JournalError("record_generated failed")
+
+    def record_transport(self, request_id, epoch) -> None:
+        if not isinstance(request_id, str) or request_id == "":
+            raise JournalError("bad request_id")
+        if not isinstance(epoch, int) or isinstance(epoch, bool):
+            raise JournalError("bad epoch")
+        conn = self.conn
+        try:
+            row = conn.execute(
+                "SELECT state, epoch FROM requests WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if row is None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("unknown request")
+            state = row[0]
+            sepoch = row[1]
+            if sepoch != epoch:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise OwnershipError("transport ownership failed")
+            if state == "generated":
+                conn.execute(
+                    "UPDATE requests SET state='transport_sent', transport_count=transport_count+1"
+                    " WHERE request_id=?",
+                    (request_id,),
+                )
+                conn.commit()
+                return
+            if state == "transport_sent":
+                conn.execute(
+                    "UPDATE requests SET transport_count=transport_count+1 WHERE request_id=?",
+                    (request_id,),
+                )
+                conn.commit()
+                return
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise JournalError("bad state for transport")
+        except (JournalError, OwnershipError):
+            raise
+        except Exception as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise JournalError("record_transport failed")
+
+    def record_outcome(self, request_id, epoch, dest, status, evidence=None) -> None:
+        if dest != _MEMORY_DEST:
+            raise JournalError("bad dest")
+        if status not in _VALID_OUTCOME_STATUS:
+            raise JournalError("bad status")
+        if status == "completed":
+            if evidence is None:
+                raise JournalError("completed requires evidence")
+            if isinstance(evidence, str) and evidence == "":
+                raise JournalError("completed requires evidence")
+            if isinstance(evidence, (list, dict, set, tuple)) and len(evidence) == 0:
+                raise JournalError("completed requires evidence")
+        if not isinstance(request_id, str) or request_id == "":
+            raise JournalError("bad request_id")
+        if not isinstance(epoch, int) or isinstance(epoch, bool):
+            raise JournalError("bad epoch")
+        conn = self.conn
+        # Atomic compare-and-set: each attempt reads the current durable
+        # (epoch, outcomes) snapshot and writes only if that exact snapshot
+        # still holds. The write is a single predicated UPDATE in autocommit
+        # mode, so either it lands on the snapshot we validated or rowcount
+        # is 0 and nothing changed. A stale worker therefore can never
+        # silently overwrite a newer durable outcome: a durable completed
+        # is never downgraded by a stale pending/skipped/unknown (that path
+        # raises "completed cannot downgrade" from a fresh read), and any
+        # other lost race retries from fresh state instead of clobbering.
+        # Same single-statement-CAS pattern as record_generated /
+        # mark_uncertain above.
+        for _ in range(3):
+            try:
+                row = conn.execute(
+                    "SELECT epoch, outcomes FROM requests WHERE request_id=?",
+                    (request_id,),
+                ).fetchone()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("record_outcome failed")
+            if row is None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("unknown request")
+            sepoch = row[0]
+            if sepoch != epoch:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise OwnershipError("outcome ownership failed")
+            try:
+                data = _parse_outcomes(row[1])
+            except JournalError:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+            current = data.get(_MEMORY_DEST, "pending")
+            if current == "completed" and status != "completed":
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("completed cannot downgrade")
+            if current == status:
+                # Durable state already equals the desired outcome, so there
+                # is nothing to write. This covers the completed/completed
+                # same-state case: both writers carry valid evidence and
+                # agree on byte-identical durable JSON, so no conflict
+                # policy is involved and success drops nothing.
+                try:
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise JournalError("record_outcome failed")
+                return
+            data[_MEMORY_DEST] = status
+            try:
+                text = _dump_outcomes(data)
+            except JournalError:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+            try:
+                cur = conn.execute(
+                    "UPDATE requests SET outcomes=? WHERE request_id=? AND epoch=? AND outcomes=?",
+                    (text, request_id, epoch, row[1]),
+                )
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("record_outcome failed")
+            if cur.rowcount == 1:
+                try:
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise JournalError("record_outcome failed")
+                return
+            # Lost a race: our snapshot went stale before the predicated
+            # write landed (a concurrent writer committed first). Roll back
+            # (drops the stale snapshot, releases any lock) and retry from
+            # a fresh read; attempts are bounded below.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise JournalError("record_outcome conflict")
+
+    def mark_uncertain(self, request_id) -> None:
+        """Fail-closed monotonic move: executing -> uncertain (any epoch).
+
+        Already-uncertain is a no-op success. Any other state, or an
+        unknown request, raises JournalError. No epoch check: uncertainty
+        must never be blocked by a stale owner.
+        """
+        if not isinstance(request_id, str) or request_id == "":
+            raise JournalError("bad request_id")
+        conn = self.conn
+        try:
+            row = conn.execute(
+                "SELECT state FROM requests WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if row is None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("unknown request")
+            if row[0] == "uncertain":
+                try:
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise JournalError("mark_uncertain failed")
+                return
+            if row[0] != "executing":
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("bad state for uncertain")
+            # Atomic compare-and-set: only an executing row moves. A concurrent
+            # record_generated that converged it to generated makes rowcount 0,
+            # so a late reaper can never orphan a good response. Deliberately
+            # still no epoch check: uncertainty must never be blocked by a
+            # stale owner; the state predicate alone carries the fencing.
+            cur = conn.execute(
+                "UPDATE requests SET state='uncertain' WHERE request_id=? AND state='executing'",
+                (request_id,),
+            )
+            if cur.rowcount == 1:
+                conn.commit()
+                return
+            # Lost a race between our SELECT and UPDATE: re-read once and
+            # decide purely from current durable state (read-only here).
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            row2 = conn.execute(
+                "SELECT state FROM requests WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if row2 is None:
+                raise JournalError("unknown request")
+            if row2[0] == "uncertain":
+                try:
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise JournalError("mark_uncertain failed")
+                return
+            raise JournalError("bad state for uncertain")
+        except JournalError:
+            raise
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise JournalError("mark_uncertain failed")
+
+    def mark_failed_before_execution(self, request_id, epoch) -> None:
+        """Owner-only move: accepted -> failed_before_execution.
+
+        Gives the failed_before_execution state a real producer: a claim
+        whose execution could never start. Re-claim of the same key and
+        fingerprint later resets to accepted (see claim).
+        """
+        if not isinstance(request_id, str) or request_id == "":
+            raise JournalError("bad request_id")
+        if not isinstance(epoch, int) or isinstance(epoch, bool):
+            raise JournalError("bad epoch")
+        conn = self.conn
+        try:
+            row = conn.execute(
+                "SELECT state, epoch FROM requests WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if row is None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("unknown request")
+            if row[1] != epoch:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise OwnershipError("failed_before_execution ownership failed")
+            if row[0] != "accepted":
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("bad state for failed_before_execution")
+            # Atomic compare-and-set: the row must still be owned by this
+            # epoch in accepted state. A concurrent begin() that moved it to
+            # executing makes rowcount 0, so a stale marker can never flip a
+            # live execution back to failed_before_execution. Same
+            # single-statement-CAS pattern as begin / record_generated /
+            # mark_uncertain above.
+            try:
+                cur = conn.execute(
+                    "UPDATE requests SET state='failed_before_execution'"
+                    " WHERE request_id=? AND state='accepted' AND epoch=?",
+                    (request_id, epoch),
+                )
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("mark_failed_before_execution failed")
+            if cur.rowcount == 1:
+                try:
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise JournalError("mark_failed_before_execution failed")
+                return
+            # Lost a race between our SELECT and UPDATE: re-read once and
+            # decide purely from current durable state (read-only here, so
+            # no second overwrite is possible from this path).
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                row2 = conn.execute(
+                    "SELECT state, epoch FROM requests WHERE request_id=?",
+                    (request_id,),
+                ).fetchone()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("mark_failed_before_execution failed")
+            if row2 is None:
+                raise JournalError("unknown request")
+            if row2[1] != epoch:
+                raise OwnershipError("failed_before_execution ownership failed")
+            raise JournalError("bad state for failed_before_execution")
+        except (JournalError, OwnershipError):
+            raise
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise JournalError("mark_failed_before_execution failed")
+
+    def recover(self):
+        conn = self.conn
+        # Atomic fenced sweep: BEGIN IMMEDIATE takes the write lock first,
+        # so the SELECT snapshot and the predicated UPDATE below commit as
+        # one unit. A concurrent record_generated either lands fully before
+        # our BEGIN (then our SELECT no longer sees it: never returned,
+        # never downgraded) or blocks on our RESERVED lock and loses its
+        # CAS after we commit (recovery wins; returned IDs equal the durable
+        # uncertain rows). Eligibility predicate is unchanged:
+        # state='executing' AND epoch<self.epoch.
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise JournalError("recover failed")
+        try:
+            rows = conn.execute(
+                "SELECT request_id FROM requests WHERE state='executing' AND epoch<?",
+                (self.epoch,),
+            ).fetchall()
+            ids = [r[0] for r in rows]
+            conn.execute(
+                "UPDATE requests SET state='uncertain' WHERE state='executing' AND epoch<?",
+                (self.epoch,),
+            )
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise JournalError("recover failed")
+        try:
+            conn.commit()
+        except Exception:
+            # Commit outcome is unknowable from here: it may already have
+            # been applied durably before the error surfaced, so rollback
+            # must not be claimed to undo it. Report ambiguity, never a
+            # false success and never phantom IDs (nothing is returned).
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise JournalError("recover ambiguous: commit outcome unknown")
+        return ids
