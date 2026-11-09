@@ -1647,3 +1647,607 @@ class TestTypeNeutralLedger(unittest.TestCase):
         self.assertEqual(pend, [], "有 support_propagation 祖先邊 ⇒ 不得算 pending")
         self.assertEqual([e["node_id"] for e in brk], [nid],
                          "形狀不符 ⇒ 應為破線：%s" % brk)
+
+
+# ── 有界豁免：已證明的 pattern 正常老化（Sol 根因裁決 bg_5779e1c2）─────
+#
+# 🔴 下列 18 ID／槽／快照 SHA **寫死於此**（不引用 CLI 的常數）⇒ 可反向釘死
+#    `_PROVEN_PATTERN_DORMANCY_*` 常數本身有沒有被改動。
+_PROVEN_IDS_18 = (
+    "0ae92110cbf644dcaf5729a8bf23e72c",
+    "12afc39ac54f448c97e145f020ddca25",
+    "20b3440d92d44959a854400436ab41a4",
+    "301ac6d4e997479abbcbdcd39ce164a9",
+    "5b5e55f5eaa94615a9a147d3d575cfd4",
+    "6d06b11fb6704b4093c823f44b076066",
+    "7197aa16ca1b41458b33960ada907557",
+    "7313be8826d64fbe9510700f0b3d7f35",
+    "7399f431168e4a2a828441d39b3d3e1f",
+    "83a55908e7ea424f80c7be9543fee496",
+    "98f1d9742b2c4f92b99e7885d59f5ea1",
+    "a0dcecf4578742aabcddc7e54a069ef6",
+    "ba1adbeb96e947fc8a52a30e12d162db",
+    "e070b1f9553141b58f5442c33fed1274",
+    "e30557efacd742288259f429306e78d4",
+    "ec1c769fcc2e43bcb8cd9e2a30dadf17",
+    "f1f880f4e5a64069bff3dda556575207",
+    "f59f1ee4a5ca45f08ef60ca40d1f9dd1",
+)
+_PROVEN_SLOT = "2026-11-09T03:00:00+00:00"
+_PROVEN_SNAPSHOT_SHA = {
+    "elevation_edges.jsonl":
+        "e4e288c5233c2cce6b4b9e77b0f920dbf72afbed97cd5f12072f586a22f5c132",
+    "elevation_lifecycle_events.jsonl":
+        "705f13ea65d766a1a162a6ad81e4ba199642d8a723d21667a2e4a0483f78b232",
+    "elevation_nodes.jsonl":
+        "a2b6910e801a3951b6d8f96ed69a903bade8baf26ee1eb3e33e78fdfbffc34c0",
+    "elevation_projection_trace.jsonl":
+        "8b0f225f233517b250fc441502edaf2a52b417daba32b29bfd03a9738f5aae6e",
+    "elevation_trace.jsonl":
+        "f3ef43ee80d3181acb9fd048bc13be5452cc7155865810ba2490d55d9f13aa34",
+}
+#: 合成邊錨點：距核准槽 31 天（整日 31 ≥ 既有 30 天門檻）。
+_PROVEN_ANCHOR = "2026-10-09T02:00:00+00:00"
+
+
+def _proven_overlay_node(nid, agent="agent_akane",
+                         created="2026-10-09T02:00:00+00:00",
+                         state="weakening", ntype="pattern"):
+    return {
+        "node_id": nid,
+        "node_type": ntype,
+        "agent_id": agent,
+        "created_ts": created,
+        "last_support_ts": created,
+        "lifecycle_state": state,
+    }
+
+
+def _proven_event(nid, agent="agent_akane", anchor=_PROVEN_ANCHOR,
+                  ts=_PROVEN_SLOT, ntype="pattern", before="weakening",
+                  after="dormant", state="dormant",
+                  reason="no_new_support_evidence"):
+    return {
+        "node_id": nid,
+        "node_type": ntype,
+        "event": "lifecycle_transition",
+        "lifecycle_state": state,
+        "lifecycle_state_before": before,
+        "lifecycle_state_after": after,
+        "anchor_ts": anchor,
+        "ts": ts,
+        "reason": reason,
+        "agent_id": agent,
+    }
+
+
+def _proven_full_set(**kw):
+    """18 筆全合法：事件＋overlay 節點＋支持邊（錨點＝邊重算值）。"""
+    agent = kw.get("agent", "agent_akane")
+    anchor = kw.get("anchor", _PROVEN_ANCHOR)
+    nodes = [_proven_overlay_node(nid, agent=agent) for nid in _PROVEN_IDS_18]
+    edges = [{"node_id": nid, "valid_from_ts": anchor} for nid in _PROVEN_IDS_18]
+    events = [_proven_event(nid, agent=agent, anchor=anchor)
+              for nid in _PROVEN_IDS_18]
+    return events, nodes, edges
+
+
+def _proven_assess(events, nodes, edges, **kw):
+    params = dict(new_events=events, prompt_diffs=[], key_node="KEY",
+                  weak_before=0, weak_after=0, graph_nodes=399,
+                  source_lifecycle_nodes=nodes, elevation_edges=edges,
+                  evaluation_time=_PROVEN_SLOT,
+                  snapshot_sha256=dict(_PROVEN_SNAPSHOT_SHA))
+    params.update(kw)
+    return CLI.assess(**params)
+
+
+class TestProvenPatternDormancy(unittest.TestCase):
+    """有界豁免的正測＋逐條件負測（缺一即 False／破線）。"""
+
+    def test_proven_constants_are_nailed(self):
+        """CLI 常數必須恆等於本檔寫死的 manifest 值（防常數被改）。"""
+        self.assertEqual(CLI._PROVEN_PATTERN_DORMANCY_SLOT, _PROVEN_SLOT)
+        self.assertEqual(set(CLI._PROVEN_PATTERN_DORMANCY_IDS), set(_PROVEN_IDS_18))
+        self.assertEqual(dict(CLI._PROVEN_PATTERN_DORMANCY_SNAPSHOT_SHA256),
+                         dict(_PROVEN_SNAPSHOT_SHA))
+
+    def test_full_18_exactly_passes(self):
+        """全 18 筆合法 ⇒ `fails == []` 且 proven 列出 18 ID。"""
+        events, nodes, edges = _proven_full_set()
+        result = _proven_assess(events, nodes, edges)
+        self.assertEqual(list(result), [],
+                         "全合法 18 筆必須零失敗：%s" % list(result))
+        self.assertEqual(sorted(result.proven_pattern_dormancies),
+                         sorted(_PROVEN_IDS_18))
+
+    def test_single_valid_shape_is_helper_true(self):
+        """單筆合法形狀 ⇒ helper True（但集合閘不滿 ⇒ assess 仍報）。"""
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid)
+        nodes = [_proven_overlay_node(nid)]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertTrue(
+            CLI.is_proven_pattern_dormancy(
+                ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+        result = _proven_assess([ev], nodes, edges)
+        self.assertTrue(any("dormant" in f for f in result),
+                        "未滿 18 筆 ⇒ 集合閘不通過 ⇒ 仍須報 dormant：%s"
+                        % list(result))
+        self.assertEqual(list(result.proven_pattern_dormancies), [])
+
+    def test_grace_fallback_path_is_helper_true(self):
+        """無有效邊 ⇒ 回退 `created + 既有 grace`；恰 30 天 ⇒ helper True。"""
+        nid = _PROVEN_IDS_18[1]
+        created = "2026-10-06T03:00:00+00:00"
+        anchor = "2026-10-09T03:00:00+00:00"  # created + 3 天 grace
+        ev = _proven_event(nid, anchor=anchor)
+        nodes = [_proven_overlay_node(nid, created=created)]
+        self.assertTrue(
+            CLI.is_proven_pattern_dormancy(
+                ev, nodes, [], _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)),
+            "回退錨點恰 30 天 ⇒ 必須 True")
+
+    def test_29_days_is_rejected(self):
+        """29 天（門檻下 1 天）⇒ False＋破線。"""
+        nid = _PROVEN_IDS_18[0]
+        anchor = "2026-10-10T03:00:01+00:00"  # 距槽不足 29 天
+        ev = _proven_event(nid, anchor=anchor)
+        nodes = [_proven_overlay_node(nid)]
+        edges = [{"node_id": nid, "valid_from_ts": anchor}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+        result = _proven_assess([ev], nodes, edges)
+        self.assertTrue(any("dormant" in f for f in result), list(result))
+
+    def test_missing_source_nodes_is_rejected(self):
+        """缺 before 節點（舊呼叫形狀）⇒ False＋破線。"""
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid)
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, None, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+        result = CLI.assess(
+            new_events=[ev], prompt_diffs=[], key_node="KEY",
+            weak_before=0, weak_after=0, graph_nodes=399)
+        self.assertTrue(any("dormant" in f for f in result), list(result))
+
+    def test_active_source_is_rejected(self):
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid)
+        nodes = [_proven_overlay_node(nid, state="active")]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+        self.assertTrue(any("dormant" in f
+                            for f in _proven_assess([ev], nodes, edges)))
+
+    def test_unknown_id_is_rejected(self):
+        ev = _proven_event("0" * 32)
+        nodes = [_proven_overlay_node("0" * 32)]
+        edges = [{"node_id": "0" * 32, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+
+    def test_duplicate_overlay_id_is_rejected(self):
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid)
+        nodes = [_proven_overlay_node(nid), _proven_overlay_node(nid)]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+
+    def test_wrong_event_type_is_rejected(self):
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid, ntype="value")
+        nodes = [_proven_overlay_node(nid)]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+        result = _proven_assess([ev], nodes, edges)
+        self.assertTrue(any("dormant" in f for f in result), list(result))
+
+    def test_wrong_overlay_type_is_rejected(self):
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid)
+        nodes = [_proven_overlay_node(nid, ntype="value")]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+
+    def test_naive_event_ts_is_rejected(self):
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid, ts="2026-11-09T03:00:00")
+        nodes = [_proven_overlay_node(nid)]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+
+    def test_bad_anchor_ts_is_rejected(self):
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid, anchor="not-a-time")
+        nodes = [_proven_overlay_node(nid)]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+
+    def test_event_clock_mismatch_is_rejected(self):
+        """`event.ts != evaluation_time` ⇒ False（時鐘必須字串相等）。"""
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid, ts="2026-11-09T03:00:01+00:00")
+        nodes = [_proven_overlay_node(nid)]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+
+    def test_forged_anchor_is_rejected(self):
+        """有新支持邊而沿用舊錨點 ⇒ 重算不等 ⇒ False（不用自報錨點當證據）。"""
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid, anchor=_PROVEN_ANCHOR)
+        nodes = [_proven_overlay_node(nid)]
+        edges = [{"node_id": nid, "valid_from_ts": "2026-10-20T02:00:00+00:00"}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+
+    def test_wrong_reason_is_rejected(self):
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid, reason="other_reason")
+        nodes = [_proven_overlay_node(nid)]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+
+    def test_agent_mismatch_is_rejected(self):
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid, agent="agent_akane")
+        nodes = [_proven_overlay_node(nid, agent="agent_miku")]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+
+    def test_empty_agent_is_rejected(self):
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid, agent="")
+        nodes = [_proven_overlay_node(nid, agent="")]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+
+    def test_before_active_is_rejected(self):
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid, before="active")
+        nodes = [_proven_overlay_node(nid)]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+
+    def test_lifecycle_state_mismatch_is_rejected(self):
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid, state="weakening")
+        nodes = [_proven_overlay_node(nid)]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+
+    def test_wrong_slot_is_rejected(self):
+        """換槽 ⇒ False（same-slot only）。"""
+        nid = _PROVEN_IDS_18[0]
+        other = "2026-11-10T03:00:00+00:00"
+        ev = _proven_event(nid, ts=other)
+        nodes = [_proven_overlay_node(nid)]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, other, dict(_PROVEN_SNAPSHOT_SHA)))
+
+    def test_wrong_snapshot_is_rejected(self):
+        """換快照（任一 SHA 不符）⇒ False（same-snapshot only）。"""
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid)
+        nodes = [_proven_overlay_node(nid)]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        bad = dict(_PROVEN_SNAPSHOT_SHA)
+        bad["elevation_nodes.jsonl"] = "0" * 64
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, bad))
+        result = _proven_assess([ev], nodes, edges, snapshot_sha256=bad)
+        self.assertTrue(any("dormant" in f for f in result), list(result))
+
+    def test_missing_one_breaks_the_set_gate(self):
+        """缺 1 筆（17/18）⇒ 集合閘不通過 ⇒ 17 筆全報。"""
+        events, nodes, edges = _proven_full_set()
+        result = _proven_assess(events[:-1], nodes, edges)
+        self.assertTrue(any("dormant" in f for f in result), list(result))
+        self.assertEqual(list(result.proven_pattern_dormancies), [])
+
+    def test_extra_event_breaks_the_set_gate(self):
+        """多 1 筆第 19 筆 ⇒ 集合閘不通過 ⇒ 全報（含第 19 筆）。"""
+        events, nodes, edges = _proven_full_set()
+        stray = _proven_event("f" * 32)
+        nodes = list(nodes) + [_proven_overlay_node("f" * 32)]
+        edges = list(edges) + [{"node_id": "f" * 32,
+                                "valid_from_ts": _PROVEN_ANCHOR}]
+        result = _proven_assess(events + [stray], nodes, edges)
+        self.assertTrue(any("dormant" in f for f in result), list(result))
+        self.assertEqual(list(result.proven_pattern_dormancies), [])
+
+    def test_superseded_is_never_exempt(self):
+        """pattern superseded（其餘形狀合法）⇒ 仍是破線。"""
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid, after="superseded", state="superseded")
+        nodes = [_proven_overlay_node(nid)]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+        result = _proven_assess([ev], nodes, edges)
+        self.assertTrue(any("superseded" in f for f in result), list(result))
+
+    def test_soul_type_dormant_is_never_exempt(self):
+        """value dormant（其餘形狀合法）⇒ 仍是破線。"""
+        nid = _PROVEN_IDS_18[0]
+        ev = _proven_event(nid, ntype="value")
+        nodes = [_proven_overlay_node(nid, ntype="value")]
+        edges = [{"node_id": nid, "valid_from_ts": _PROVEN_ANCHOR}]
+        self.assertFalse(CLI.is_proven_pattern_dormancy(
+            ev, nodes, edges, _PROVEN_SLOT, dict(_PROVEN_SNAPSHOT_SHA)))
+        result = _proven_assess([ev], nodes, edges)
+        self.assertTrue(any("dormant" in f for f in result), list(result))
+
+    def test_proven_hit_on_key_node_still_fails(self):
+        """豁免只免 bad_target：命中關鍵反例仍報 ③。"""
+        events, nodes, edges = _proven_full_set()
+        result = _proven_assess(events, nodes, edges,
+                                key_node=_PROVEN_IDS_18[0])
+        self.assertTrue(any("關鍵反例" in f for f in result), list(result))
+        self.assertEqual(sorted(result.proven_pattern_dormancies),
+                         sorted(_PROVEN_IDS_18))
+
+    def test_proven_with_prompt_change_still_fails(self):
+        """豁免只免 bad_target：Prompt 正文改變仍報 ④。"""
+        events, nodes, edges = _proven_full_set()
+        diff = {"agent": "agent_akane", "error": "boom"}
+        result = _proven_assess(events, nodes, edges, prompt_diffs=[diff])
+        self.assertTrue(any("Prompt" in f for f in result), list(result))
+
+
+class TestProvenExemptionGuards(unittest.TestCase):
+    """豁免的結構守衛：唯一調用點、無 `continue` 跳過、作用域封閉。"""
+
+    def _helper_def(self):
+        src = CLI_PATH.read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        defs = [n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef)
+                and n.name == "is_proven_pattern_dormancy"]
+        self.assertEqual(len(defs), 1, "helper 必須恰有一處定義")
+        return src, tree, defs[0]
+
+    def test_helper_call_site_is_unique_and_inside_assess(self):
+        """全檔唯一調用點在 `assess` 內（classify／main 不得出現）。"""
+        src, tree, _ = self._helper_def()
+        refs = [n for n in ast.walk(tree)
+                if isinstance(n, ast.Name)
+                and n.id == "is_proven_pattern_dormancy"]
+        self.assertEqual(len(refs), 1, "helper 必須恰有一處調用：%s" % len(refs))
+        funcs = {n.name for n in ast.walk(tree)
+                 if isinstance(n, ast.FunctionDef)}
+        for fname in ("classify_soul_retirements", "main"):
+            fn = next(n for n in ast.walk(tree)
+                      if isinstance(n, ast.FunctionDef) and n.name == fname)
+            inner = {x.id for x in ast.walk(fn)
+                     if isinstance(x, ast.Name)}
+            self.assertNotIn("is_proven_pattern_dormancy", inner,
+                             "helper 不得在 %s 內出現" % fname)
+        assess_fn = next(n for n in ast.walk(tree)
+                         if isinstance(n, ast.FunctionDef) and n.name == "assess")
+        inner = [x for x in ast.walk(assess_fn)
+                 if isinstance(x, ast.Name)
+                 and x.id == "is_proven_pattern_dormancy"]
+        self.assertEqual(len(inner), 1, "唯一調用點必須在 assess 內")
+
+    def test_proven_path_has_no_continue(self):
+        """`assess` 內的 `continue` 只屬於預期代謝分支；豁免路徑不得跳過檢查。"""
+        _src, tree, _ = self._helper_def()
+
+        class _Parent(ast.NodeVisitor):
+            def __init__(self):
+                self.parent = {}
+
+            def generic_visit(self, node):
+                for child in ast.iter_child_nodes(node):
+                    self.parent[child] = node
+                    self.generic_visit(child)
+
+        tracker = _Parent()
+        tracker.visit(tree)
+        assess_fn = next(n for n in ast.walk(tree)
+                         if isinstance(n, ast.FunctionDef) and n.name == "assess")
+        continues = [n for n in ast.walk(assess_fn)
+                     if isinstance(n, ast.Continue)]
+        self.assertTrue(continues, "assess 應含預期代謝的既有 continue")
+        for cont in continues:
+            node = cont
+            ok = False
+            while node in tracker.parent:
+                node = tracker.parent[node]
+                if isinstance(node, ast.If):
+                    seg = ast.get_source_segment(_src, node.test) or ""
+                    if "is_expected_metabolism" in seg:
+                        ok = True
+                        break
+            self.assertTrue(
+                ok, "assess 內的 continue 必須只屬於預期代謝分支 "
+                    "(L%d)：豁免不得用 continue 跳過 key 檢查" % cont.lineno)
+
+
+class TestProvenMutationBidirectional(unittest.TestCase):
+    """TEMP 副本上的雙向變異（repo 檔全程不寫入，以 SHA 對帳代替還原）。"""
+
+    def _load_temp_copy(self, text):
+        mod_name = "eval_cli_mutant_%s" % uuid.uuid4().hex
+        with tempfile.TemporaryDirectory(prefix="cli_mut_") as td:
+            p = pathlib.Path(td) / "eval_lifecycle_cli.py"
+            p.write_text(text, encoding="utf-8")
+            spec = importlib.util.spec_from_file_location(mod_name, p)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+
+    def test_mutations_cut_both_ways(self):
+        """M1（helper 恆 True＋集合閘旁路）⇒ 缺證據裸 dormant 被放行
+        （既有 `test_dormant_target_is_flagged` 會轉紅，有牙）；
+        M2（helper 恆 False）⇒ 全合法 18 筆報 dormant（新正測會轉紅，有牙）。"""
+        sha_before = hashlib.sha256(CLI_PATH.read_bytes()).hexdigest()
+        text = CLI_PATH.read_text(encoding="utf-8")
+        tree = ast.parse(text)
+        helper = next(n for n in ast.walk(tree)
+                      if isinstance(n, ast.FunctionDef)
+                      and n.name == "is_proven_pattern_dormancy")
+        seg = ast.get_source_segment(text, helper)
+        self.assertTrue(seg, "取不到 helper 原始碼段")
+
+        # M1：helper 第一道檢查改為無條件 True，並旁路集合閘。
+        m1_seg = seg.replace(
+            "    if not isinstance(event, dict):\n        return False",
+            "    return True  # MUTANT-M1", 1)
+        self.assertNotEqual(m1_seg, seg, "M1 替換未命中")
+        m1 = text.replace(seg, m1_seg).replace(
+            "proven_exempt_ids = proven_hit_ids if proven_gate else set()",
+            "proven_exempt_ids = proven_hit_ids  # MUTANT-M1")
+        mod1 = self._load_temp_copy(m1)
+        bare = [{"node_id": "p1", "node_type": "pattern",
+                 "lifecycle_state": "dormant"}]
+        fails_m1 = mod1.assess(
+            new_events=bare, prompt_diffs=[], key_node="KEY",
+            weak_before=0, weak_after=0, graph_nodes=399)
+        self.assertEqual(list(fails_m1), [],
+                         "M1 下裸 dormant 被放行 ⇒ 既有守衛會轉紅（有牙）")
+
+        # M2：helper 末端改為無條件 False。
+        self.assertEqual(seg.count("\n    return True"), 1,
+                         "helper 末端 return True 必須唯一")
+        m2_seg = seg.replace("\n    return True", "\n    return False  # MUTANT-M2")
+        m2 = text.replace(seg, m2_seg)
+        mod2 = self._load_temp_copy(m2)
+        events, nodes, edges = _proven_full_set()
+        fails_m2 = mod2.assess(
+            new_events=events, prompt_diffs=[], key_node="KEY",
+            weak_before=0, weak_after=0, graph_nodes=399,
+            source_lifecycle_nodes=nodes, elevation_edges=edges,
+            evaluation_time=_PROVEN_SLOT,
+            snapshot_sha256=dict(_PROVEN_SNAPSHOT_SHA))
+        self.assertTrue(any("dormant" in f for f in fails_m2),
+                         "M2 下全合法 18 筆仍報 dormant ⇒ 新正測會轉紅（有牙）")
+
+        sha_after = hashlib.sha256(CLI_PATH.read_bytes()).hexdigest()
+        self.assertEqual(sha_before, sha_after,
+                         "變異全程不得寫入 repo（前後 SHA 必須一致）")
+
+
+class TestE635LedgerBoundary(unittest.TestCase):
+    """e635 單節點台帳增補的邊界守衛（Sol 授權 bg_43614208／工單 e635）。
+
+    🔴 全部走**真實台帳**（`CLI.EXPECTED_RETIREMENT_COHORTS`／`retirement_bounds()`），
+    不自建 cohort ⇒ 台帳被改壞（刪 ID／改型別／改下界）會直接轉紅。
+    形狀沿用 `TestTypeNeutralLedger`（`is_expected_metabolism` 純函式＋行內呼叫，
+    無子行程、無網路、無伺服器）。
+    """
+
+    NID = "e635b04ff5ac4e99ae4b9b39106d6f17"
+    BOUND = "2026-11-08T13:02:57.469181+00:00"
+    SLOT = "2026-11-09T03:00:00+00:00"
+
+    def _expected_ids_and_types(self):
+        ids = set()
+        types = {}
+        for c in CLI.EXPECTED_RETIREMENT_COHORTS:
+            ids |= set(c.get("nodes") or ())
+            for nid, t in (c.get("types") or {}).items():
+                types[nid] = t
+        return ids, types
+
+    def _ev(self, **kw):
+        ev = {"node_id": self.NID, "node_type": "belief",
+              "lifecycle_state": "weakening", "ts": self.SLOT}
+        ev.update(kw)
+        return ev
+
+    def test_e635_enrolled_exactly_as_authorized(self):
+        """授權五欄精確一致：date／not_before／types／bounds／nodes 並集（無覆蓋）。"""
+        hits = [c for c in CLI.EXPECTED_RETIREMENT_COHORTS
+                if c.get("date") == "2026-11-01"
+                and c.get("not_before") == "2026-11-09T02:00:00+00:00"]
+        self.assertEqual(len(hits), 1, "2026-11-01 既有條目必須恰好一筆")
+        c = hits[0]
+        self.assertEqual(dict(c.get("types") or {}), {self.NID: "belief"},
+                         "types 必須恰為單筆 belief（不得連帶其他型別）")
+        self.assertEqual((c.get("bounds") or {}).get(self.NID), self.BOUND,
+                         "逐節點下界必須精確等於授權值")
+        self.assertIn(self.NID, set(c.get("nodes") or ()),
+                      "nodes 必須以並集增補 N（不得以單元素集合覆蓋）")
+        self.assertEqual(len(c.get("nodes") or ()), 112,
+                         "原 111 筆＋N＝112（其餘不得連帶入帳）")
+        self.assertEqual(len(c.get("bounds") or ()), 112,
+                         "bounds 必須與 nodes 同步為 112 筆")
+
+    def test_e635_positive_hit_at_approved_slot(self):
+        """正向命中：N 在核准槽 ⇒ expected（走真實台帳推導的下界）。"""
+        ids, types = self._expected_ids_and_types()
+        self.assertIn(self.NID, ids, "N 必須在台帳核准清單內")
+        self.assertTrue(
+            CLI.is_expected_metabolism(self._ev(), ids, None, types),
+            "N 在核准槽以 belief 弱化 ⇒ 必須命中 expected")
+
+    def test_e635_one_microsecond_before_bound_is_rejected(self):
+        """下界前一微秒拒絕：bounds[N]−1µs ⇒ 不得 expected（提前早衰熔斷）。"""
+        ids, types = self._expected_ids_and_types()
+        bound_dt = datetime.fromisoformat(self.BOUND)
+        early = (bound_dt - timedelta(microseconds=1)).isoformat()
+        self.assertFalse(
+            CLI.is_expected_metabolism(self._ev(ts=early), ids, None, types),
+            "早於下界 1µs ⇒ 不得放行（fail-closed）")
+        self.assertTrue(
+            CLI.is_expected_metabolism(self._ev(ts=self.BOUND), ids, None, types),
+            "恰好等於下界 ⇒ 可放行（對照組）")
+
+    def test_e635_wrong_type_is_rejected(self):
+        """錯型別拒絕：台帳記載 belief，value 事件 ⇒ 不得命中。"""
+        ids, types = self._expected_ids_and_types()
+        self.assertFalse(
+            CLI.is_expected_metabolism(self._ev(node_type="value"), ids, None, types),
+            "型別不符 ⇒ 不得放行（fail-closed）")
+
+    def test_e635_wrong_state_is_rejected(self):
+        """錯狀態拒絕：只有 weakening 是預期代謝，dormant ⇒ 不得命中。"""
+        ids, types = self._expected_ids_and_types()
+        self.assertFalse(
+            CLI.is_expected_metabolism(
+                self._ev(lifecycle_state="dormant"), ids, None, types),
+            "狀態非 weakening ⇒ 不得放行")
+
+    def test_e635_unapproved_id_is_rejected(self):
+        """非核准 ID 拒絕：不在台帳核准清單 ⇒ 不得命中。"""
+        ids, types = self._expected_ids_and_types()
+        ghost = "0" * 32
+        self.assertNotIn(ghost, ids, "對照 ID 必須確實不在台帳內")
+        self.assertFalse(
+            CLI.is_expected_metabolism(self._ev(node_id=ghost), ids, None, types),
+            "非核准 ID ⇒ 不得放行（fail-closed）")
+
+    def test_e635_membership_check_is_decisive(self):
+        """成員檢查獨立有牙：即使下界映射含該 ID，非核准 ID 仍不得命中。
+
+        🔴 背景：生產路徑（`not_before=None` 派生）下，「成員檢查」與
+        「查無下界 fail-closed」互為掩護——單拆任一條都不可觀測。
+        本測試把下界因素固定（顯式映射含 ghost），讓成員檢查成為唯一關卡
+        ⇒ 移除成員檢查的變異（M5）必轉紅。
+        """
+        ids, types = self._expected_ids_and_types()
+        ghost = "0" * 32
+        self.assertNotIn(ghost, ids, "對照 ID 必須確實不在台帳內")
+        bounds = dict(CLI.retirement_bounds())
+        bounds[ghost] = self.SLOT  # 下界不再是阻擋因素
+        ev = {"node_id": ghost, "node_type": "value",  # 未記載 ⇒ 預設 value
+              "lifecycle_state": "weakening", "ts": self.SLOT}
+        self.assertFalse(
+            CLI.is_expected_metabolism(ev, ids, bounds, types),
+            "非核准 ID 即使有下界 ⇒ 仍不得放行（成員檢查獨立把關）")
