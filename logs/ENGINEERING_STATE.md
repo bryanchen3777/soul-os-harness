@@ -10153,3 +10153,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 新增 `docs/G1-G5-ARCHITECTURE-OPTIONS.md`（76b10e3，純新增 81 行，tracked 零差分）：G1–G5 每項並列 A（誠實收斂）／B（另案架構升級），含能力、代價、遷移／回退、Frozen 影響、未勾選 Owner 選項欄；不代選、不實作。
 - 五紅維持（worker 回報 5 failed、原因與處置文件一致；主腦靜態核讀旁證，本輪未獨立重跑）。原位契約改造擱置狀態維持，不得讀成 G1–G5 CLOSED；B 選項無施工效力，另案需重開 decision-complete 工單＋授權。
 - 無需部署重啟（文件票）。KEY-1 並行施工中，提交範圍已限定、無混入。
+## KEY-1 憑證生命週期 ACCEPTED 並合入（2026-11-09）[KEY-1-ACCEPTED-1109]
+- 新增 5 檔（fdc28ea，純新增 842 行，tracked 零差分）：`src/interfaces/credentials.py`（簽發／輪轉／撤銷，僅 stdlib＋InterfaceError）＋`src/interfaces/external_auth.py`（RegistryProvider＋extract_bearer＋serve_external，重用 admit／validate_registry）＋`configs/external_registry.example.json`（範例，digest 測試佔位、標不可部署）＋`tests/interfaces/test_external_{credentials,auth}.py`（54 tests）。
+- 獨立複核（.venv Python 3.11）：新檔 54 passed；契約 78 passed（identity 13＋config 48＋context_policy 16＋boundary_import_guard 1）；合跑 132 passed；interfaces 全目錄 5 failed、541 passed（5 failed 逐筆為 G1–G5 預期紅，未新增、未轉綠）。Frozen 面（identity／journal／inner_life／衰減門檻）零差分；無 IO／環境／網路／綁埠；`data/**` 零寫入。
+- Sol 終判 ACCEPTED：兩處語義假設接受——最後一戶撤銷 409＋快照不動（由調用方下線入口；關閉態 provider 屬新狀態機不在本票）；`Bearer ` 大小寫敏感（封閉入口 fail-closed，DOC-1 須寫進調用約束）。
+- DOC-1 可依本票驗收結果撰寫 Key 操作章節（含 issue／rotate／revoke、409 語義、精確 `Bearer ` 格式、範例檔不可部署聲明）。
