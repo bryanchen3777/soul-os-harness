@@ -10097,3 +10097,28 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 下一槽沙盒快跑：`2026-11-03T02:00:00+00:00` ⇒ `PENDING_COHORT`（exit 3）。
 - 守衛：`tests/test_eval_lifecycle_cli.py` 全綠（exit 0）。
 - 自動刷新機制：每日 20:40 EDT（= 00:40Z，UTC 日封閉後）執行。
+## EI-2B-PROGRAM-3 ACCEPTED（主腦複核裁決，2026-11-08）[EI-2B-PROGRAM-3-ACCEPTED-20261108]
+- 工單 `docs/EI-2B-PROGRAM-3-WORK-ORDER.md`；票證 `ei2b-program-3-20261108/`（ENTRY-SINK-MATRIX.md、guard_ei1.log、ticket_tests.log、race_diag.py、race_diag2.py、full_regress_verify.log）。
+- 主腦獨立重跑（.venv Python 3.11）：雙守衛 74 passed（ei1＋observability 同綠）；`tests/interfaces` 246 passed；entry 18 passed；lease＋授權 39 passed。TTL 接管已除（過期 HELD 照樣 409 busy）；recover 三態與 Sol 設計一致；busy frame＋rejected-input 在 deny 路徑；三接線 admit 皆在持久寫之前、deny 零副作用。
+- 全庫回歸（bg_2c12a73a 續跑）：5 failed, 8043 passed, 31 skipped, 32 subtests, 707.33s。五紅全歸因非本票：①hygiene 12 untracked＝本票新測檔（合併即綠）；②③inject×2＋④ws e2e＝EI-SEC-P0 他人差分（gateway :783-813 有 EI-SEC-P0-DEFAULT-OFF-IMPLEMENT-1 標記，PROGRAM-2 已記開工前已 M，本票 hunk 未動該段）；⑤intimacy 4589 UNKNOWN vs SCHEMA_NOT_READY＝HEAD 同因（emotion.py＋測試檔＋conftest 零差分，單跑同敗，causal path 全 HEAD 一致且只依賴 stdlib＋sqlite，本票不可能引入；PROGRAM-2 記為 flake，本輪兩連敗呈確定性 HEAD 紅，另立案追蹤，不擋本票）。
+- Frozen：`src/interfaces/journal.py` 零差分、`src/inner_life` 零差分、`data/` 零寫入；`scripts/eval_lifecycle_cli.py` +1288 行屬他人在途差分，不碰不評。
+- worker 遺留定性：race iter11＝測試 harness 高負載重疊偽影（測修不碰產品，生產 schema 恆預存，競爭在生產不存在）；baseline-head.tar＋空目錄留票證目錄（硬政策未刪）；基線 clone 對照以 HEAD-grep＋零差分因果鏈替代（路由除役有 EI-SEC 標記＋PROGRAM-2 記錄；intimacy 全鏈 HEAD 一致）。
+- 本票新增失敗零容忍達成 ⇒ EI-2B-PROGRAM-3 ACCEPTED。EI-2 整步完成（EI-2A＋EI-2B 皆 ACCEPTED）；未 commit／push／merge，合併待下一輪。
+## intimacy 4589 margin 修復（test-only，2026-11-08）[INTIMACY-MARGIN-FIX-20261108]
+- 根因：`tests/test_intimacy_growth_2.py:4581` 持鎖餘裕 `+0.5s` 不足。busy 等待會 overshoot，
+  持鎖釋放後 DDL 成功 ⇒ `ensure` 回 True ⇒ 誤走 §9 UNKNOWN（實測 ensure 耗時 5.61s 回 True）。
+  同檔 4474 行慣例為 `+2.0s`；holder 實現 4101-4134 行為同步等待，排除 setup race。
+- 修正（test-only 一行，零產品風險）：4581 行 `+ 0.5` → `+ 2.0`，加註解說明 overshoot 機制與同檔慣例。
+  `src/agent/emotion.py` 零差分；`data/` 零寫入。
+- 驗證（.venv Python 3.11）：同類 3 passed；全檔 `pytest -q tests/test_intimacy_growth_2.py` 196 passed（67.77s，EXIT=0）。
+- 全庫 5 紅中的 intimacy 項自此關閉；其餘 4 紅（hygiene untracked／inject×2／ws e2e）歸因不變（他人差分）。
+  合併仍待 Owner 定奪（混合工作樹＋他人 staged 變更進行中，未 commit／push／merge）。
+## EI-2 合併 Sol 裁決：選 C（hunk 歸屬清單→隔離合併），2026-11-08 [EI2-MERGE-VERDICT-1108]
+- Owner 把合併時機交 Sol 決定；Sol（gpt-6.1-sol，bg_836e2855）裁決 **C：不等他人落地，立即完成 hunk 歸屬清單，再依固定判準進入隔離合併**。
+- Mavis 唯讀盤點（HEAD=5ae6760，不動工作樹/index）結論：
+  - **U（證據不足）＝零**。gateway 上 E／O 是分離 hunk，無單 hunk 內交錯，可做 hunk 級拆分。
+  - **E（本票）**：src/interfaces/ 新建 10 檔（EI-2A journal／runtime_port＋EI-2B coordinator／soul_lease 皆有 ACCEPTED 工單）；tests/interfaces/ 11 檔；tests/infra/test_ei1_scope_registration_guard.py 新建；gateway 4 處 E hunk（__init__ admission、publish 邊界 admit、soul_request_id 透傳、O1，逐項純 EI-2B 標記）；router.py 全 E（含 O2＋hold）；input_router.py 全 E（voice admit＋AMBIENT）；consciousness／proxy／diary／dream_event／fish_tts／tts_service 全 E；observability +24（第二 cohort）；intimacy 4581 一行 test-only；docs 工單五檔 E；canonical 本票條目（append-only 共享）。
+  - **O（他人）**：gateway 6 處 EI-SEC hunk（validator +135、_unregistered_*、debug/broadcast、inject/yua、fast_forward、clear 路由移除）；scripts/eval_lifecycle_cli.py +1288；staged 的 scripts/soeb/*＋soeb guard（他人進行中）；untracked 的 SOUL-EXTERNAL-INTERFACE／B7 docs、probe_ledger、tests/results/soeb。AGENTS.md／static/index.html 本輪無髒。
+  - journal.py／src/inner_life 零差分（`git diff HEAD --stat` 空）；E hunk 功能上不依賴 O 碼（admission 接線獨立於 clear 路由除役）。
+- 分流結果：E 無 O 相依且無 U ⇒ **進入 B**：工作區內新完整 clone（不用 linked worktree），以 HEAD 建隔離分支，僅移入 E 行群（順序 interfaces→接線→測試→文件／canonical 條目，margin 另筆）；禁 `git add -A`、禁動原目錄；全套重驗（雙守衛／interfaces／entry／lease＋授權／intimacy 全檔＋AST＋雙向變異＋.venv 全庫＋CLI 沙盒）；main 前進則重整重驗；僅實際進 main 才報合併。
+- Notion 規劃／驗收狀態需區分標記（Sol 要求）。

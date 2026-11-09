@@ -504,6 +504,10 @@ class DreamEventWriter:
             entry["activity"] = activity.get("name", "")
             entry["category"] = activity.get("category", "")
             entry["shareable"] = activity.get("shareable", False)
+        # EI-2B-PROGRAM-2 additive background mark (literal key, no import so
+        # the static guard "background never imports coordinator" holds):
+        # dream/event rows are never request outcomes.
+        entry["non_request_write"] = True
         with self._lock:
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)

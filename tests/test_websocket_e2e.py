@@ -434,7 +434,14 @@ async def test_inject_tick_endpoint_is_retired():
 @pytest.mark.asyncio
 async def test_websocket_user_message_forwarding():
     """
-    使用 /debug/broadcast 直接觸發 AGENT_SPEAK，驗證 WS 暢通。
+    WS 暢通驗證（EI-SEC-P0-DEFAULT-OFF 遷移版）。
+
+    舊版用 `GET /debug/broadcast` 直接觸發 AGENT_SPEAK；該端點已除役
+    （EI-SEC-P0，預設關閉），此處改走**內部入口**，不重暴露任何 debug 面：
+      1. 先釘住 `/debug/broadcast` 已除役（404，與
+         `test_inject_tick_endpoint_is_retired` 同理）；
+      2. WS 本體改用正常 `USER_MESSAGE` 走 `/ws` 驗證雙向暢通
+         （`/ws` 路由保留，Mock LLM 離線回覆，0 成本）。
     """
     # P0.5 (Bry 派工 2026-08-09 19:48): isolate persistence via SOUL_OS_DATA_DIR
     # TEST-INFRA-ISOLATION-1: 同上，只打自己的 ephemeral server。
@@ -446,32 +453,44 @@ async def test_websocket_user_message_forwarding():
         try:
             server.wait_ready(60)
 
-            async with websockets.connect(server.ws_url()) as ws:
-                # 直接廣播（打自己的 server）
-                req = urllib.request.Request(
-                    f"{server.base_url()}/debug/broadcast", method="GET"
-                )
+            # 1. /debug/broadcast 已除役 → 404（EI-SEC-P0 未註冊釘）
+            req = urllib.request.Request(
+                f"{server.base_url()}/debug/broadcast", method="GET"
+            )
+            try:
                 with urllib.request.urlopen(req, timeout=5) as r:
-                    result = json.loads(r.read())
-                print(f"[debug/broadcast] result={result}")
+                    b_status = r.status
+            except urllib.error.HTTPError as exc:
+                b_status = exc.code
+            assert b_status == 404, (
+                f"/debug/broadcast 已於 EI-SEC-P0 除役，應回 404；實際 {b_status}。"
+                f"若有人把它加回來，請先重開工單評估無認證副作用入口的暴露面。"
+            )
+            print("[OK] /debug/broadcast 已除役（404）")
 
-                # 等廣播過來（最多 5 秒）
+            # 2. WS 照常用 USER_MESSAGE 驗證暢通（內部入口，不經任何 debug 路由）
+            async with websockets.connect(server.ws_url()) as ws:
+                await ws.send(json.dumps({
+                    "type": "USER_MESSAGE",
+                    "content": "ping",
+                    "user_id": "1696287850",
+                    "mode": "private",
+                    "target_agent": "agent_yua",
+                }))
+
+                # 等待回訊（最多 25 秒；Mock LLM 離線，0 成本）
                 received = []
-                deadline = asyncio.get_event_loop().time() + 5
+                deadline = asyncio.get_event_loop().time() + 25
                 while asyncio.get_event_loop().time() < deadline:
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
-                        data = json.loads(raw)
-                        if data.get("type") == "agent_speak":
-                            received.append(data)
-                            break
+                        received.append(json.loads(raw))
+                        break
                     except asyncio.TimeoutError:
                         continue
 
-                assert len(received) >= 1, f"Expected broadcast from /debug/broadcast, got {len(received)}"
-                first = received[0]
-                assert "yua" in first.get("agent_id", "").lower(), f"Expected yua, got {first}"
-                print(f"[OK] WebSocket broadcast received: {first}")
+                assert len(received) >= 1, "WS 上 25s 內未收到任何訊息（/ws 疑似不通）"
+                print(f"[OK] WebSocket 暢通，收到：{received[0]}")
 
         finally:
             if server is not None:

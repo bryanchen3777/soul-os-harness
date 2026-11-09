@@ -952,6 +952,30 @@ class TestBoundedAndFrozenDiscipline:
             #    regression, so this scope check was never exercised for them.
             #    The entry covers the same single file for all three swaps.
             "src/voice/fish_tts.py",
+            # ── EI-1-HG (2026-11-04) ─────────────────────────────────────
+            # 本票登記 6 個已審查非 frozen 檔（src/interfaces 精確路徑，無 wildcard）。
+            "src/interfaces/__init__.py",
+            "src/interfaces/schema.py",
+            "src/interfaces/config.py",
+            "src/interfaces/identity.py",
+            "src/interfaces/classification.py",
+            "src/interfaces/context_policy.py",
+            # ── EI-2B-PROGRAM-3（2026-11-08，第二 cohort）─────────────────
+            # 本票登記 8 個已審查非 frozen 檔：6 個接線／承載檔（scope 內邊界
+            # 檢查、身份透傳及可信登記）＋ 2 個新模組（精確路徑，無 wildcard）。
+            # consciousness／router／proxy 三檔早在原 scope 內（baseline），
+            # 不重複登記。原摘要／原 baseline／frozen 摘要一律不變，見
+            # tests/infra/test_ei1_scope_registration_guard.py 的 EI2B_FILES
+            # 第二 cohort 協議。
+            # Work order: docs/EI-2B-PROGRAM-3-WORK-ORDER.md（做法 1）。
+            "src/voice/tts_service.py",
+            "src/soul/diary.py",
+            "src/voice/input_router.py",
+            "src/io/gateway.py",
+            "src/soul/dream_event.py",
+            "src/llm/fish_tts_handler.py",
+            "src/interfaces/coordinator.py",
+            "src/interfaces/soul_lease.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

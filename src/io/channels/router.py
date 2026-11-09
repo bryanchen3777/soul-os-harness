@@ -111,9 +111,12 @@ def _bounded_log(text: str, limit: int = _LOG_LINE_LIMIT) -> str:
 class ChannelRouter:
     """Phase 5b：把 AGENT_SPEAK 依 target_channel 分發到對應 ChannelAdapter。"""
 
-    def __init__(self, bus, gateway_manager=None):
+    def __init__(self, bus, gateway_manager=None, admission=None):
         self._bus = bus
         self._adapters: dict[str, "ChannelAdapter"] = {}
+        # EI-2B-PROGRAM-2: caller-owned AdmissionContext (None = legacy path,
+        # flag-off byte-identical). Wired by the process entry, never built here.
+        self._admission = admission
         # Phase 5c：拿到 IOGateway 的 ConnectionManager，動態查 WebSocket 連線數
         self._gateway_manager = gateway_manager
         # Phase 5c：記「每個 agent 最近一次互動的 tg user」，
@@ -211,6 +214,22 @@ class ChannelRouter:
             )
             return
 
+        # EI-2B-PROGRAM-2 O2 (+PROGRAM-3 generation check): dispatch-side
+        # fail-closed. A request-attributed AGENT_SPEAK with no live
+        # executing journal row, or a stale capability generation, is
+        # unregistered: uncertain + log, zero send. Payloads without an id
+        # are background: pass through, never blocked here.
+        _o2_req = event.payload.get("soul_request_id")
+        if _o2_req is not None and self._admission is not None:
+            from src.interfaces.coordinator import coordinator_enabled as _coord_enabled_o2
+            from src.interfaces.coordinator import require_current as _require_current_o2
+            if _coord_enabled_o2() and not _require_current_o2(self._admission, _o2_req):
+                logger.warning(
+                    f"[ChannelRouter][O2] unregistered speak, drop | "
+                    f"agent={event.payload.get('agent_id') or event.source} req={_o2_req}"
+                )
+                return
+
         target_channel = event.payload.get("target_channel", "web")
         target_user_id = event.payload.get("target_user_id")
         agent_id = event.payload.get("agent_id", event.source)
@@ -218,6 +237,12 @@ class ChannelRouter:
         # ── Phase 5c fallback ──────────────────────────────
         # 主動觸發（heartbeat）的 AGENT_SPEAK 預設走 web，
         # 但如果 user 不在 Web UI → 改成走 Telegram（她「找得到你」的方式）
+        # EI-2B-PROGRAM-2 flag-on: 只保留＋對帳（不自動 web→TG 轉發、
+        # 不排程 threshold 自動 flush；Bry 上線觸發的顯式 flush 保留）。
+        _ei2b_hold = False
+        if self._admission is not None:
+            from src.interfaces.coordinator import coordinator_enabled as _coord_enabled_fb
+            _ei2b_hold = _coord_enabled_fb()
         if target_channel == "web" and self._gateway_manager is not None:
             if self._gateway_manager.count == 0:
                 # M0.5 (Bry 8/1 10:35 派工): 優先讀全域共享 last_tg_user
@@ -228,13 +253,25 @@ class ChannelRouter:
                 )
                 source = "global" if self._last_tg_user_global else "per-agent"
                 if last_user:
-                    logger.info(
-                        f"[ChannelRouter] web 0 conn, "
-                        f"fallback telegram: {agent_id} → user {last_user} "
-                        f"(source={source})"
-                    )
-                    target_channel = "telegram"
-                    target_user_id = last_user
+                    if _ei2b_hold:
+                        # 保留＋對帳：不斷言送達，不自動轉發。
+                        logger.warning(
+                            f"[ChannelRouter][EI-2B] hold: retain, no auto web->TG forward | "
+                            f"agent={agent_id} user={last_user} (source={source})"
+                        )
+                        self._enqueue_outbox(
+                            agent_id,
+                            event.payload.get("text", ""),
+                            event.payload.get("reason", "proactive"),
+                        )
+                    else:
+                        logger.info(
+                            f"[ChannelRouter] web 0 conn, "
+                            f"fallback telegram: {agent_id} → user {last_user} "
+                            f"(source={source})"
+                        )
+                        target_channel = "telegram"
+                        target_user_id = last_user
                 else:
                     # M2 (Bry 8/2 10:51 派工): Bry 不在 web + 沒 last_tg_user
                     # → 進 outbox, 等 Bry 上線時 flush 摘要
@@ -251,7 +288,13 @@ class ChannelRouter:
                     # 這裡不能 await (在 _on_agent_speak 流程內),
                     # 但 _on_agent_speak 是 async 所以可以直接 await
                     # 為了不阻塞主流程, 排成 task
-                    create_managed_task(self._maybe_flush_outbox())
+                    if _ei2b_hold:
+                        logger.warning(
+                            f"[ChannelRouter][EI-2B] hold: retained, no auto flush | "
+                            f"agent={agent_id}"
+                        )
+                    else:
+                        create_managed_task(self._maybe_flush_outbox())
         # ── Phase 5c fallback end ──────────────────────────
 
         # Web 由 IOGateway 處理，這裡跳過避免重複送出
@@ -878,6 +921,8 @@ class ChannelRouter:
         text: str,
         user_id: int,
         channel: str = "telegram",
+        *,
+        update_id: object = None,
     ) -> None:
         """Telegram / LINE / WeChat 收到 user 訊息 → 發 USER_MESSAGE 進 Event Bus。
 
@@ -914,6 +959,73 @@ class ChannelRouter:
             agent_id if agent_id.startswith("agent_")
             else f"agent_{agent_id}"
         )
+        # EI-2B-PROGRAM-2: per-soul admission at the publish boundary
+        # (after id normalisation, before the first persistent side
+        # effect). Inbound is booked under the "tg" holder class whatever
+        # the channel (ENTRY_KINDS has no per-channel kinds; never invent
+        # one). Flag-gated; flag off = legacy path untouched. Deny = log +
+        # return (no touch, no publish, no outcome write).
+        # EI-2B-PROGRAM-3 §8/§9: stable retry key from bot namespace +
+        # update_id when the caller supplies one, else UUID (no
+        # retry-dedup promise); busy (holder class + retry_after=1) goes
+        # back as an explicit busy message on the same channel.
+        _soul_request_id = None
+        if self._admission is not None:
+            from src.interfaces.coordinator import coordinator_enabled as _coord_enabled_in
+            from src.interfaces.coordinator import prepare_publish as _prepare_publish_in
+            if _coord_enabled_in():
+                from src.interfaces.coordinator import derive_retry_key as _retry_key_in
+                _tg_client_key = None
+                if update_id is not None:
+                    try:
+                        _tg_client_key = "%s:%s" % (channel, int(update_id))
+                    except (TypeError, ValueError):
+                        _tg_client_key = None
+                _tg_retry_key = _retry_key_in("tg", full_agent_id, _tg_client_key)
+                _identity, _outcome = _prepare_publish_in(
+                    self._admission,
+                    soul_alias=full_agent_id,
+                    entry_kind="tg",
+                    text=text,
+                    idempotency_key=_tg_retry_key,
+                )
+                if not _outcome.should_publish:
+                    logger.warning(
+                        f"[inbound:{channel}] admission deny | soul={full_agent_id} "
+                        f"code={_outcome.code} busy={_outcome.busy}"
+                    )
+                    if _outcome.busy is not None:
+                        try:
+                            from src.interfaces.coordinator import busy_text as _busy_text_in
+                            _busy_adapter = self._adapters.get(channel)
+                            if _busy_adapter is not None:
+                                _busy_agent = full_agent_id[len("agent_"):] if full_agent_id.startswith("agent_") else full_agent_id
+                                try:
+                                    _busy_user: object = int(user_id)
+                                except (ValueError, TypeError):
+                                    _busy_user = str(user_id)
+                                await _busy_adapter.send(
+                                    agent_id=_busy_agent,
+                                    text=_busy_text_in(_outcome),
+                                    user_id=_busy_user,
+                                )
+                        except Exception:
+                            logger.debug("[inbound] busy message send failed", exc_info=True)
+                        try:
+                            from src.interfaces.coordinator import record_rejected_input as _record_rejected_in
+                            _record_rejected_in(
+                                self._admission,
+                                entry_kind="tg",
+                                soul_alias=full_agent_id,
+                                retry_key=_tg_retry_key,
+                                reason=_outcome.code,
+                                text=text,
+                                now=self._admission.now(),
+                            )
+                        except Exception:
+                            logger.debug("[inbound] rejected-input retain failed", exc_info=True)
+                    return
+                _soul_request_id = _identity.request_id
         if channel == "telegram":
             self._last_tg_user[full_agent_id] = user_id
             # M0.5: 寫入全域共享 + persistent state, miku 等沒跟 Bry 對話過
@@ -963,6 +1075,8 @@ class ChannelRouter:
             },
             session_id=session_id,
         )
+        if _soul_request_id is not None:
+            event.payload["soul_request_id"] = _soul_request_id
         await self._bus.publish(event)
         logger.info(
             f"[inbound:{channel}] {full_agent_id} ← user_id={user_id} "

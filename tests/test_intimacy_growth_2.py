@@ -4577,8 +4577,10 @@ class TestExecutionBoundaryColdSchemaContended:
         assert "last_valid_inbound_at" not in _cols(engine), "本測試需 schema 未建"
         monkeypatch.setattr(emotion_mod, "emotion_engine", engine)
 
-        # 持鎖時間略長於 busy_timeout，讓「第一次」timeout 必定發生。
-        hold = (BUSY_TIMEOUT_MS / 1000.0) + 0.5
+        # 持鎖時間必須有足夠餘裕（+2.0s，同 4474 行慣例）：busy 等待會 overshoot，
+        # +0.5s 餘裕會被吃掉 ⇒ DDL 在持鎖釋放後成功 ⇒ ensure 回 True ⇒ 誤走 §9 UNKNOWN。
+        # 實測（2026-11-08）：+0.5s 下 ensure 耗時 5.61s 回 True；鎖競爭本身不受影響。
+        hold = (BUSY_TIMEOUT_MS / 1000.0) + 2.0
         with _ContendedWriteLock(db_path, hold):
             t0 = time.monotonic()
             res = engine.try_apply_decay("agent_yua", now=T0 + DAY)
