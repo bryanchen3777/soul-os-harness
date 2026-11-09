@@ -10129,3 +10129,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 合入：隔離整合樹逐檔提交 `63a8cec`（台帳）＋`78f9a09`（邊界測試 7 測）＋`b758442`（交接注記）；原倉在途髒改動經 Owner 確認全屬本專案，歸檔至側分支 `wip-origin-inflight-1109`（提交 `590c175`，未驗證、禁上 main），main 恢復乾淨後 `merge --ff-only` 至 `b758442`（63 檔 +17605/-219）。
 - main 上重驗（.venv Python 3.11）：CLI 凍結槽 exit0／PASS；`tests/test_eval_lifecycle_cli.py` 118 passed（原 skip 基線項在 main 上實跑通過）；`tests/infra` 319 passed，exit 0。
 - 狀態：已驗收／已合入／未部署、未重啟。Canary（22:00 夜槽）維持非阻塞巡檢。Notion 狀態頁＋EI 計畫頁已同步（marker EI2B-E635-ACCEPTED-1109）。
+## EI-1-ACCEPTANCE-RATIFY-1 ACCEPTED／CLOSED 並合入 main（2026-11-09）[EI1-ACCEPTANCE-RATIFIED-CLOSED-1109]
+- EI-1 scope 早前成立（SETTLE 契約審計證據票 ACCEPTED）；本輪補定六模組追認驗收（明標非原始授權、commit 主旨非驗收授權）。
+- FUP-2 主腦退回補證（oracle 非同一斷言殺死、P6 多欄同改、DRIFT 需逐條）；FUP-3 部分成立（P6／封鎖下正常匯入／DRIFT 歸因成立，N2 foreign-import 仍缺同一 oracle）；FUP-4 補齊（`_oracle_no_foreign_import` 同一 callable 正常綠／mutant 紅，原 `any(...)` 降為診斷），主腦再終判 CLOSED。
+- 合入：`ee8dedd`（docs＋tests＋verification 6 檔 +2621，僅三新路徑；must-stay-RED 原位）。追蹤後 infra＋聚焦 411 passed exit 0（hygiene 轉綠實測）；main 上重驗 interfaces 5 failed（journal×3＋runtime_port×2，皆已知 test_gap）／494 passed（含 hygiene 8）／1 skipped，預期紅無意外轉綠。
+- 保留：test_g2 環境耦合、SKIP-BASELINE DRIFT 獨立阻斷、nodeid 全量差分未驗證（基線檔缺失），皆維持原口徑，不擋本票。Notion 待同步。
