@@ -10133,4 +10133,9 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - EI-1 scope 早前成立（SETTLE 契約審計證據票 ACCEPTED）；本輪補定六模組追認驗收（明標非原始授權、commit 主旨非驗收授權）。
 - FUP-2 主腦退回補證（oracle 非同一斷言殺死、P6 多欄同改、DRIFT 需逐條）；FUP-3 部分成立（P6／封鎖下正常匯入／DRIFT 歸因成立，N2 foreign-import 仍缺同一 oracle）；FUP-4 補齊（`_oracle_no_foreign_import` 同一 callable 正常綠／mutant 紅，原 `any(...)` 降為診斷），主腦再終判 CLOSED。
 - 合入：`ee8dedd`（docs＋tests＋verification 6 檔 +2621，僅三新路徑；must-stay-RED 原位）。追蹤後 infra＋聚焦 411 passed exit 0（hygiene 轉綠實測）；main 上重驗 interfaces 5 failed（journal×3＋runtime_port×2，皆已知 test_gap）／494 passed（含 hygiene 8）／1 skipped，預期紅無意外轉綠。
-- 保留：test_g2 環境耦合、SKIP-BASELINE DRIFT 獨立阻斷、nodeid 全量差分未驗證（基線檔缺失），皆維持原口徑，不擋本票。Notion 待同步。
+- 保留：test_g2 環境耦合、SKIP-BASELINE DRIFT 獨立阻斷、nodeid 全量差分未驗證（基線檔缺失），皆維持原口徑，不擋本票。Notion 已同步（marker EI1-ACCEPTED-CLOSED-1109：狀態頁 2709→2713、EI 計畫頁 426→428）。
+## G1–G5 歸層補證完成（Owner 批准執行，2026-11-09）[G1G5-DISPOSITION-1109]
+- 主腦設計票：推薦保留原契約及原紅測試、驗證既有替代路徑，不宣稱修復；Owner 拍板做歸層補證、擱置原位契約改造。
+- 新增 `docs/G1-G5-CONTRACT-DISPOSITION.md`＋`verification/G1-G5-CONTRACT/witness_g1_g5.py`＋`WITNESS-LOG.md`（僅新增，產品碼／既有測試零差分，`data/` 零變動）。
+- 見證（.venv Python 3.11）：25 passed（G1–G5 逐項原位紅釘＋替代路徑綠例）；原五紅確認仍原位失敗；統籌獨立重跑 25/25 通過。
+- 殘餘限制：五紅繼續存在（BLOCKED）；backend 終態記憶體化、不可跨重啟恢復（fail-closed 設計視之）。
