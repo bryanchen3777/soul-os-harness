@@ -10149,3 +10149,7 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - push：main 超前 18 個提交全為已驗收工作，遠端無新提交，fast-forward 至 `fe83eab`（origin/main 已同步）。
 - 重啟（官方 `server_ops.ps1 restart`，exit 0）：舊 port-8000 樹已停；新服務 PID=29416（trampoline，`data/server.pid` 一致）＋34488（直譯器）；`:8000` LISTENING owner 34488；`/health=200`（probe #16，暖機約 80s）；watchdog 已恢復。
 - 生產載入版本含：EI-2 整步、EI-1 追認 CLOSED、G1–G5 歸層、SKIP-BASELINE 基線 32。
+## GAP-DECISION-1 選項文件 ACCEPTED 並合入（2026-11-09）[GAP-DECISION-1-ACCEPTED-1109]
+- 新增 `docs/G1-G5-ARCHITECTURE-OPTIONS.md`（76b10e3，純新增 81 行，tracked 零差分）：G1–G5 每項並列 A（誠實收斂）／B（另案架構升級），含能力、代價、遷移／回退、Frozen 影響、未勾選 Owner 選項欄；不代選、不實作。
+- 五紅維持（worker 回報 5 failed、原因與處置文件一致；主腦靜態核讀旁證，本輪未獨立重跑）。原位契約改造擱置狀態維持，不得讀成 G1–G5 CLOSED；B 選項無施工效力，另案需重開 decision-complete 工單＋授權。
+- 無需部署重啟（文件票）。KEY-1 並行施工中，提交範圍已限定、無混入。
