@@ -10139,3 +10139,9 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 新增 `docs/G1-G5-CONTRACT-DISPOSITION.md`＋`verification/G1-G5-CONTRACT/witness_g1_g5.py`＋`WITNESS-LOG.md`（僅新增，產品碼／既有測試零差分，`data/` 零變動）。
 - 見證（.venv Python 3.11）：25 passed（G1–G5 逐項原位紅釘＋替代路徑綠例）；原五紅確認仍原位失敗；統籌獨立重跑 25/25 通過。
 - 殘餘限制：五紅繼續存在（BLOCKED）；backend 終態記憶體化、不可跨重啟恢復（fail-closed 設計視之）。
+## SKIP-BASELINE-DRIFT-FIX-1 ACCEPTED 並合入 main（2026-11-09）[SKIPBASELINE-FIX-1109]
+- 主腦設計：1314 有界承認＋啟動快照自證，基線 31→32（symlink 特權缺失 1 筆承認，不重錄、不放寬真漂移必紅）。
+- 獨立全庫（.venv Python 3.11，SOUL_OS_DATA_DIR=TEMP）：6 failed、8380 passed、32 skipped、32 subtests passed，831.42s；skip-set STABLE（added=0、removed=0）。
+- 6 失敗定性（Sol 終判 ACCEPTED 可合入）：5 gap 為 pre-existing RED（journal×3＋runtime_port×2，改動檔零觸及，乾淨環境重跑同樣 5 failed）；test_g2 為 harness artifact（全域 TEMP 隔離與 unset 斷言互斥，乾淨新行程重跑 1 passed）；Demotions flake 本輪未現。
+- 合入：`e25ff78`（5 檔＋verification/SKIP-BASELINE-DRIFT-FIX-1/，8 files +360/-35）。合入後聚焦：tests/infra＋隔離＋adapter 368 passed、1 skipped exit 0；合入後全庫（隔離環境）已啟動重驗，待摘要。
+- 保留：原始全庫 exit 1 如實保留；五 gap 維持原紅；g2 僅允許匯入快照差異；合入後重驗沿用啟動前隔離環境（不可為消 g2 而全域 unset）。
