@@ -976,6 +976,15 @@ class TestBoundedAndFrozenDiscipline:
             "src/llm/fish_tts_handler.py",
             "src/interfaces/coordinator.py",
             "src/interfaces/soul_lease.py",
+            # ── EI-2B-SETTLE-1（2026-11-09，第三 cohort）──────────────────
+            # 本票登記 1 個已審查非 frozen 檔：backend 終態證據純類型模組
+            # （精確路徑，無 wildcard；coordinator 記憶體 ledger 的對側，
+            # journal 持久狀態不經此檔寫入）。
+            # 原摘要／原 baseline／EI2B 摘要／frozen 摘要一律不變，見
+            # tests/infra/test_ei1_scope_registration_guard.py 的 SETTLE_FILES
+            # 第三 cohort 協議。
+            # Work order: docs/EI-2B-PROGRAM-3-WORK-ORDER.md（SETTLE-1 施工）。
+            "src/interfaces/backend_execution.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",
