@@ -10237,3 +10237,11 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 全庫回歸（.venv，15:36）：8692 passed／32 skipped／5 failed——5 條全為 G1–G5 預期紅，零新增；scope 雙守衛 99 綠（digest 20fe766e… 未動）。
 - Sol 終判 ACCEPTED：偏離點（u2/u5/u9 既有測試適配）核准為合規適配（D1 語義推翻／保住原測試意圖），D1 優先、不退回；H4（cloud 真實 probe）待 Owner 給 cloud base_url，不阻斷合入；D5 N/A（本機 11434 CLOSED）。
 - M4 可在 H4 probe 通過後直接配 cloud preset（model=`deepseek-v4.1-flash:1017` 合法，OLLAMA_BASE_URL 指 https cloud URL 不衝突 S2 入站凍結）。
+
+## S8-CLOSEOUT-1 對外閘道運維手冊 ACCEPTED 並合入（2026-11-10）[S8-CLOSEOUT-1-ACCEPTED-1110]
+- 改1加2（d7153dc）：`docs/EXTERNAL-INTERFACE-GUIDE.md`（頁首 S8＋§7 末點＋新增 §8 運維：埠 18765／rem・primary／agent 精確映射／Bearer／非串流 stream:true→400／preset 逐 call 重讀／registry 啟動快照／LAN 明文風險／H4・M4 引用／未驗證項／200≠人格記憶驗收，§6 G1–G5 逐字保留）＋`tests/external_gateway/test_s8_acceptance.py`（13 項：ASGI 記憶體傳輸＋假 registry＋注入式假 carrier；chat／models 200、401／403／404／stream-400／agent 錯配 500，拒絕路徑 7 條皆斷言 provider 零呼叫；preset 換模免重啟、registry 磁碟改寫不生效→重建生效、key 零外洩）＋`verification/S8/REPORT.md`（驗收總表）；另同批合入 `verification/DORMANT9-PENDING1-RATIFY-EVIDENCE-1110.md`（dormant-9＋pending-1 取證，10.8KB）。
+- 獨立複核（.venv Python 3.11，`-B`）：新檔 13 passed 復現；守衛群 785 passed 僅 G1–G5 五紅；全庫 8704 passed／32 skipped／6 failed（五紅＋hygiene 1 紅，hygiene sole offender 即本票新檔，合入後該守衛 8/8 轉綠）；隔離變異探針（TEMP，socket 硬攔，無 repo／data 寫入）控制綠／M-AUTH 紅／M-PRESET 紅；G1–G5 五紅實測仍紅；生命週期 CLI N/A（未動該面）。
+- H4・M4 引用：原始出處待主腦補登（REPORT §3 誠實登記未補發請求）；宣稱僅限 rem/primary。正式閘道常駐 0.0.0.0:18765（repo 外／data 外部署目錄，冒煙 401/401/200）。
+- dormant-9：Sol 補裁決接受有界參照、正式掛起，不得附條件 PASS 結案；RULE-2 僅事後分析口徑，不追溯改寫歷史判定；真槽 18 筆與 no-op PASS 均不算補證；重啟須可認證同槽原始材料（鎖定九 ID／當時輸入／事件，固定工具版本、排除後來狀態滲入、逐筆核驗並說明新舊判準差異）；不得入 EXPECTED_RETIREMENT_COHORTS，不得借用 PENDING_COHORT 或新增 CLI 判態。
+- pending-1：Sol 重議維持 PENDING（技術閉環、授權未閉環）；五問全答（追認可行：台帳是驗收分類非執行許可；不污染口徑：cohort 按建立日非 value 專屬；非 schema 變更：types 已是選用鍵；7 天為資格下界非執行期限，晚約 14 小時合理；日期分帳：date／not_before／bounds 均非核准日，批准後另以註解＋canonical 記真實核准時間）；批准前唯一缺件＝Owner 明示可追溯事後追認；核准前不得入帳、不倒填。
+- Frozen：`src/**` 零差分（僅 docs＋tests＋verification）、衰減門檻／台帳零動、`data/**` 零寫入；無殺行程、無綁埠、無真實 LLM（H4／M4 為 Owner 授權例外，既有證據）；未動他人在途檔。
