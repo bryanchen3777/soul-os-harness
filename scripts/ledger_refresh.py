@@ -15,7 +15,8 @@ passed: value nodes keep being created under that date until 00:00Z of the
 next day.  Therefore an approval made before closure goes stale, and the
 self-negation fires again (a false red on the next night slot).
 
-This job runs at 20:40 EDT (= 00:40Z next day, i.e. *after* the UTC day that
+This job runs at 20:40 New York local time (= 00:40Z next day in EDT /
+01:40Z next day in EST, i.e. *after* the UTC day that
 just closed) and:
 
   1. measures the closed cohort's membership **live** (four conditions, from
@@ -51,6 +52,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 REPO = str(Path(__file__).resolve().parents[1])
@@ -202,13 +204,58 @@ def auto_entry_ids(node_ids, node_type_by_id=None):
     return out
 
 
+def _new_york_tz():
+    """紐約時區（夜槽的定義時區）。
+
+    🔴 缺 tz 資料時**硬拒**，不得退回固定 offset（固定 -5/-4 會在另一半的
+       年份錯一小時 —— 正是本票要修的 DST 缺陷本身）。
+    """
+    try:
+        return ZoneInfo("America/New_York")
+    except Exception as exc:
+        raise RuntimeError(
+            "America/New_York 時區資料缺失，拒絕退回固定 offset"
+            "（安裝 tzdata／系統時區資料後重試）") from exc
+
+
+def _aware_iso(ts, what):
+    """解析 ISO 時刻；naive（無 tzinfo）**硬拒**。
+
+    時間比較一律用 aware datetime —— 不拿字串比（字串比遇到 `Z`／`+00:00`
+    混寫或不同 offset 會靜默錯序）。
+    """
+    try:
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except Exception as exc:
+        raise ValueError("拒收無法解析的時刻 %r（%s）" % (ts, what)) from exc
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        raise ValueError(
+            "拒收 naive 時刻 %r（%s）：時間比較一律用 aware datetime" % (ts, what))
+    return dt
+
+
 def next_slot_iso(now_utc):
-    """The next night slot (02:00Z) strictly after now."""
-    day = now_utc.date() + timedelta(days=1)
-    for cand in (datetime(day.year, day.month, day.day, 2, 0, tzinfo=timezone.utc),):
-        if cand > now_utc:
-            return cand
-    return cand
+    """下一個夜槽（紐約當地 22:00，嚴格晚於 now；回傳 UTC aware datetime）。
+
+    🔴 2026-11-10 工單 LEDGER-SLOT-TZ-1：夜槽是「**本地 22:00**」，不是固定
+       UTC 時刻 —— EST（UTC-5）時是 03:00Z，EDT（UTC-4）時是 02:00Z。
+       舊實作兩宗罪：① 硬寫 02:00Z ⇒ DST 結束後整季錯一小時；② `date()+1 天`
+       再取 02:00 ⇒ 跳到**再隔一天**（實測 now=2026-11-10T01:42Z 推導出
+       2026-11-11T02:00Z，而正確是 2026-11-10T03:00Z —— 2026-11-09 20:40 的
+       每日刷新因此把 gate2 跑在錯槽上）。
+       現在的 02:00Z 只是夏令投影、03:00Z 只是冬令投影 —— **它們不是兩個
+       排程**，程式裡不得留任何「02 或 03」的分支邏輯。
+    """
+    if not isinstance(now_utc, datetime) or now_utc.tzinfo is None \
+            or now_utc.utcoffset() is None:
+        raise ValueError("next_slot_iso() 拒收 naive datetime（必須是 aware）")
+    ny = _new_york_tz()
+    local = now_utc.astimezone(ny)
+    cand = datetime(local.year, local.month, local.day, 22, 0, tzinfo=ny)
+    if cand <= now_utc:
+        nxt = local.date() + timedelta(days=1)
+        cand = datetime(nxt.year, nxt.month, nxt.day, 22, 0, tzinfo=ny)
+    return cand.astimezone(timezone.utc)
 
 
 def engine_anchors(nodes, edges):
@@ -220,6 +267,15 @@ def engine_anchors(nodes, edges):
       3. ``created_ts + LIFECYCLE_GRACE_DAYS``（3 天 grace）
     🔴 2026-10-27 主大腦實測：錨點『幾乎全部來自支援邊』，節點的
     ``last_support_ts`` 欄位**不是**錨點 ⇒ 用欄位算下界會與與枠矛盾。
+
+    🔴 2026-11-10 工單 LEDGER-SLOT-TZ-1 揭露（**本票不改本函式**）：本函式的
+       無邊回退（優先序 2：節點檔 `last_support_ts` 欄位 —— 從未被支持的節點
+       該欄位停滯在 `created_ts`）與 adapter 的無邊回退規則**不同**：adapter
+       的 `_inject_support_anchor` 對「無仍有效支持邊」者注入 None ⇒ 引擎走
+       優先序 3（`created_ts + grace`），刻意不用檔裡停滯的欄位值。
+       ⇒ **禁止**用本函式／`decay_thresholds()` 的新計算去覆蓋既有台帳的
+       `bounds`：台帳 `bounds` 是人工核准值；重算只准用於新 cohort／缺失條目
+       （`rewrite_entry` 的 `extra_bounds` 路徑），既有值一律保留。
     """
     active = {}
     for e in edges or ():
@@ -259,7 +315,8 @@ def engine_anchors(nodes, edges):
 def decay_thresholds(nodes, edges):
     """node_id → 與枠的衰減門檻（**錨點 + 7 天**，LIFECYCLE_T_WEAKEN_DAYS）。
 
-    🔴 2026-10-27 主大腦補丁：cohort 級 `not_before`（建立日 + 8 天 @02:00Z）是
+    🔴 2026-10-27 主大腦補丁：cohort 級 `not_before`（建立日＋8 天；UTC 投影為
+    夏令 02:00Z／冬令 03:00Z）是
     **近似值** ⇒ 對某些成員會**晚一槓**（與枠按「錨點 + 7 天」讓它們弱化）
     ⇒ 沿用 cohort 級下界會被謺判成「提前早衰」＝假紅。
     ⇒ 逐節點記錄**與枠自己的門檻**（**不放寬任何門檻**，只是把事實記進台帳）。
@@ -354,15 +411,22 @@ def parse_ledger(text):
 
 
 def cohort_not_before(date):
-    """台帳既定規則：建立日 + 8 天 @02:00:00Z（每個 cohort 一致）。
+    """台帳既定規則：日序 = 建立日＋8 天；構造 = 本地 (D+7) 日 22:00 轉 UTC。
+
+    🔴 2026-11-10 工單 LEDGER-SLOT-TZ-1：舊寫法是「UTC D+8 @02:00Z」—— 那只是
+       夏令時（EDT）的投影；同一個本地時刻在冬令（EST）是 D+8 @03:00Z。
+       UTC 日期標籤的日序語意不變（仍是 D+8），變的只是那一小時的投影。
+       缺 tz 資料時硬拒（見 `_new_york_tz`），不得退回固定 offset。
 
     🔴 2026-10-27 主大腦修正：舊 fallback 是 "2026-01-01T00:00:00+00:00"
        ⇒ 那是**誤植**（2026-10-26 cohort 就是這樣被寫壞的 ⇒ 放行窗寬 10 個月
        ⇒ 「提前早衰」的熔斷對該批節點完全失效 ⇒ 守門被弱化）。
     """
-    d = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    return (d + timedelta(days=8)).replace(hour=2, minute=0, second=0,
-                                          microsecond=0).isoformat()
+    d = datetime.strptime(date, "%Y-%m-%d").date()  # 格式非法 ⇒ ValueError 硬拒
+    ny = _new_york_tz()
+    target = d + timedelta(days=7)  # 本地 D+7 日 22:00 ＝ UTC D+8 日的夜槽
+    return datetime(target.year, target.month, target.day,
+                    22, 0, tzinfo=ny).astimezone(timezone.utc).isoformat()
 
 
 def parse_block_maps(block):
@@ -614,16 +678,26 @@ def main():
             #   逐節點下界** => 對「建立後從未被背書」的成員會晚一槽
             #   => 11/03 槽誤判「提前早衰」＝假紅（實測：2026-10-27 cohort
             #   57 顆全需逐節點下界）。
-            #   => 這裡補上寫入端本來就會用的 cohort 級下界（建立日＋8 天
-            #   @02:00Z），讓逐節點下界**真的算出來**。不放寬任何門檻：
+            #   => 這裡補上寫入端本來就會用的 cohort 級下界（建立日＋8 天的
+            #   本地 22:00 轉 UTC），讓逐節點下界**真的算出來**。不放寬任何門檻：
             #   逐節點下界＝引擎自己的衰減門檻。
             nb = cohort_not_before(date)
+        # 🔴 blast radius（2026-11-10 LEDGER-SLOT-TZ-1，務必照此敘述）：
+        #    * 錯槽影響的是**預演／入帳覆蓋**（哪一批 cohort 會被視為「下一槽
+        #      退役」而寫進台帳）。
+        #    * `not_before` **只影響 CLI 對「該筆是否算預期代謝」的資格判斷**，
+        #      **不控制引擎何時退役**（引擎看的是自己的衰減門檻）。
+        #    * **逐節點 `bounds` 優先於 cohort 級 `not_before`**（見 CLI 的
+        #      `retirement_bounds()`：`per_node.get(nid) or cohort_bound`）。
+        #    * 本票**不改** `engine_anchors()`（見該函式揭露）；禁止用
+        #      `engine_anchors()` 的新計算去覆蓋既有台帳的 `bounds`。
+        nb_dt = _aware_iso(nb, "cohort %s not_before" % date)
         # 🔴 逐節點下界：真實衰減門檻（引擎錨點 + 7 天）早於 cohort 級下界者
         #    ⇒ 逐節點記錄（否則會被誤判成「提前早衰」＝假紅）。
         extra = {}
         for nid in targets[date]:
             t = thresholds.get(nid)
-            if t and nb and t < str(nb):
+            if t and _aware_iso(t, "threshold %s" % nid) < nb_dt:
                 extra[nid] = t
         if extra:
             print("  %s: per-node bounds for %d node(s)" % (date, len(extra)))
@@ -685,7 +759,7 @@ def main():
         "- 下一槽沙盒快跑：`%s` ⇒ `%s`（exit %d）。"
         % (slot.isoformat(), verdict2[0].replace("VERDICT: ", "") if verdict2 else "?", rc2),
         "- 守衛：`tests/test_eval_lifecycle_cli.py` 全綠（exit %d）。" % rc1,
-        "- 自動刷新機制：每日 20:40 EDT（= 00:40Z，UTC 日封閉後）執行。",
+        "- 自動刷新機制：每日 20:40 紐約本地（EDT 期＝次日 00:40Z／EST 期＝次日 01:40Z，UTC 日封閉後）執行。",
         "",
     ]
     entry = "\n".join(lines).replace("\r\n", "\n")

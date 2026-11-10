@@ -449,11 +449,15 @@ def test_g4a_rewritten_entry_keeps_types_bounds_and_agent_comments():
 
 
 def test_g4b_not_before_fallback_is_creation_date_plus_8_days():
-    """Fix ②: the fallback is *creation date + 8 days*, not a hard-wired 2026-01-01."""
+    """Fix ②: the fallback is *creation date + 8 days*, not a hard-wired 2026-01-01.
+
+    Day order only — the UTC projection is local 22:00 (EST 03:00Z / EDT 02:00Z).
+    LEDGER-SLOT-TZ-1 (2026-11-10): these three dates all land in EST ⇒ 03:00Z.
+    """
     module = _load_module()
-    assert module.cohort_not_before("2026-10-27") == "2026-11-04T02:00:00+00:00"
-    assert module.cohort_not_before("2026-10-30") == "2026-11-07T02:00:00+00:00"
-    assert module.cohort_not_before("2026-12-28") == "2027-01-05T02:00:00+00:00"
+    assert module.cohort_not_before("2026-10-27") == "2026-11-04T03:00:00+00:00"
+    assert module.cohort_not_before("2026-10-30") == "2026-11-07T03:00:00+00:00"
+    assert module.cohort_not_before("2026-12-28") == "2027-01-05T03:00:00+00:00"
 
 
 def test_g4c_per_node_bounds_come_from_engine_decay_thresholds():
@@ -500,9 +504,9 @@ def test_g4d_new_cohort_gets_not_before_from_cohort_not_before():
         {"cohort_not_before": module.cohort_not_before, "date": "2026-11-05"},
         {},
     )
-    assert value == "2026-11-13T02:00:00+00:00", (
+    assert value == "2026-11-13T03:00:00+00:00", (
         f"the new-cohort branch evaluated to {value!r}; it must use "
-        f"cohort_not_before(date) (= creation date + 8 days @02:00Z)"
+        f"cohort_not_before(date) (= creation date + 8 days, local 22:00 UTC-projected)"
     )
 
 
