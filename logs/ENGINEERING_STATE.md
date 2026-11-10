@@ -10173,3 +10173,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 新增 `src/external_gateway/`（`__init__`＋`openai_shim.py`）＋`tests/external_gateway/test_shim.py`（fe1e53d，28 tests，tracked 零差分）：parse 白名單／to_chat_response／to_error 映射／stream:true→400／secret scrub／雙 golden／serve_external 實接線。
 - 獨立複核（.venv）：28 passed 復現；interfaces 聚焦 541 passed＋5 預期紅。Sol 終判 ACCEPTED，三項假設全接受（stop 接受不轉發已明示／temperature 口徑與 classification 同／未列名碼預設 invalid_request_error）。
 - S4 可開工。
+## S4-W2 preset 解析 ACCEPTED 並合入（2026-11-09）[S4-W2-ACCEPTED-1109]
+- 新增 3 檔＋M3 常數（3b5f08a，581 insertions）：`src/external_gateway/preset.py`（frozen dataclass Preset，api_key repr=False；_fail 洩漏牙齒；provider 白名單 deepseek/openai/gemini/ollama；params 白名單 temperature/max_tokens/base_url；key_ref 正則＋＞24 拒載；load_preset 先驗 schema 再取 env，缺／空 key 拒載；ollama base_url 解析 params＞env＞預設字串，零連線）＋`configs/models/example-do-not-deploy.json`（雙佔位 preset，model 皆 example-model-do-not-deploy，key_ref 皆 EXAMPLE_NO_DEPLOY_KEY 21 字元）＋`tests/external_gateway/test_preset.py`（37 tests，含洩漏牙齒／repr／範例不可部署斷言）；M3 `_M3_NON_PY_SCANNED_COUNTS` configs 3→5（KEY-1 致 3→4＋W2 致 4→5，一次註解）。
+- 獨立複核（.venv Python 3.11）：聚焦 446 passed 復現；雙向變異皆紅（MutA provider 放寬→DID NOT RAISE；MutB 牙齒移除→洩漏未攔），變異後 sha256 恢復一致；hygiene 無 socket/requests/urllib 匯入、key 僅欄位定義與賦值兩處、無 Frozen 引用、範例無真實 key 形狀。
+- 全庫回歸（.venv，789 秒）：6 failed、8513 passed、32 skipped——1 項為 W2 新測試檔未 git add 的 hygiene（合入 git add 後重跑 454 passed 轉綠，Sol 附帶條件滿足）；5 項 test_gap_* 為 G1–G5 must-stay-RED 預期紅（所在檔 W2 未碰）；g2 通過、t7 通過、skip 基線 STABLE、ROOT-SCRIPTS／SPAWN 守衛全綠。
+- Sol 終判 ACCEPTED（首判 REJECTED 補全庫，複判通過）：三項必要決策全接受（歧義拒載／21 字元範例 key_ref／ollama base_url 優先序）；S5 可開工；S1 附條件 PASS 的條件 a 視為滿足。
