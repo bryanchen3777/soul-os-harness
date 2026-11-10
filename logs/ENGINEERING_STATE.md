@@ -10178,3 +10178,9 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 獨立複核（.venv Python 3.11）：聚焦 446 passed 復現；雙向變異皆紅（MutA provider 放寬→DID NOT RAISE；MutB 牙齒移除→洩漏未攔），變異後 sha256 恢復一致；hygiene 無 socket/requests/urllib 匯入、key 僅欄位定義與賦值兩處、無 Frozen 引用、範例無真實 key 形狀。
 - 全庫回歸（.venv，789 秒）：6 failed、8513 passed、32 skipped——1 項為 W2 新測試檔未 git add 的 hygiene（合入 git add 後重跑 454 passed 轉綠，Sol 附帶條件滿足）；5 項 test_gap_* 為 G1–G5 must-stay-RED 預期紅（所在檔 W2 未碰）；g2 通過、t7 通過、skip 基線 STABLE、ROOT-SCRIPTS／SPAWN 守衛全綠。
 - Sol 終判 ACCEPTED（首判 REJECTED 補全庫，複判通過）：三項必要決策全接受（歧義拒載／21 字元範例 key_ref／ollama base_url 優先序）；S5 可開工；S1 附條件 PASS 的條件 a 視為滿足。
+## S5-W3-1 路由白名單 ACCEPTED 並合入（2026-11-10）[S5-W3-1-ACCEPTED-1110]
+- 新增 2 檔＋scope 登記 2 檔（07dda2e，509 insertions）：`src/external_gateway/routing.py`（136 行，SOUL_WHITELIST 五魂凍結＋SOUL_AGENT_MAP 精確映射，resolve 回傳 (RouteBinding, Preset)，未知魂／缺路由／合法設定內未知 preset 統一 404 route_not_found，映射錯配／壞設定／缺 key 維持 500 固定安全訊息，非法路由在 env 讀取前返回，僅匯入 future／collections／json／src＋types／preset／config.resolve_route）＋`tests/external_gateway/test_routing.py`（27 tests：白名單精確五魂、AST 讀 proxy 短名交叉、5×2 成功矩陣、404 四類、500 三類、env 未讀斷言）；另按逐票更新慣例登記 `tests/test_observability_completeness_1.py`（allowed＋routing.py 一條）＋`tests/infra/test_ei1_scope_registration_guard.py`（S5 第四 cohort：S5_FILES 單檔＋digest 63eb04af…＋validate_scope 四 cohort 相減＋positive／missing／absorbency 測試，frozen_dirs 與三舊 cohort digests 未動）。
+- 獨立複核（.venv Python 3.11）：新測 27 綠、gateway 全目錄 106 綠、M3 367 綠；雙向變異皆紅（放寬加 ram→2 failed；刪 rem→8 failed）還原雜湊一致；修 A（AST 測試順序依賴改差集斷言）修 B（含 guard 第四 cohort）後針對性三檔 191 passed。
+- 全庫回歸（.venv，891.95 秒）：5 failed、8546 passed、32 skipped、32 subtests passed——5 條全為 G1–G5 預期紅（journal×3＋runtime_port×2），前次 2 新紅（routing 順序依賴、observability scope）已消失，零新增回歸。
+- Sol 終判 ACCEPTED：修 A 保持原意未放寬、修 B 符合逐票更新未碰紅線、全庫 5 紅確為預期；合入僅四檔，`scripts/eval_lifecycle_cli.py`（＋626 行台帳髒檔）排除在外。
+- S6 可開工（組裝 HTTP）。
