@@ -991,6 +991,12 @@ class TestBoundedAndFrozenDiscipline:
             # 在 env 讀取前返回）。frozen_dirs 本體未動。
             # Work order: Sol S5-W3-1 decision-complete 工單。
             "src/external_gateway/routing.py",
+            # ── S6-W4（2026-11-10，第五 cohort）────────────────────────
+            # 本票新增 1 個已審查非 frozen 檔：外部 LLM 接口 HTTP 組裝層
+            # （create_external_app 工廠＋純函式 handlers；零傳輸綁定、
+            # 零真實出站；非法路由在 env／檔案讀取前返回）。frozen_dirs 本體未動。
+            # Work order: Sol S6-W4 decision-complete 工單。
+            "src/external_gateway/app.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",
