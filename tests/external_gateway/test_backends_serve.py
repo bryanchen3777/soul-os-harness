@@ -158,19 +158,20 @@ def test_u1_deepseek_success_shape(monkeypatch):
     assert body["stream"] is False
 
 
-def test_u2_ollama_success_shape_no_auth_header(monkeypatch):
+def test_u2_ollama_success_shape_with_bearer(monkeypatch):
+    # S7-W6: Bearer is unconditional (cloud and local share one path, no
+    # URL sniffing). Localhost stays the loopback representative, so the
+    # D3 https gate lets it through.
     seen = []
     _patch_post(monkeypatch, 200, _ok_payload(), capture=seen)
-    preset = _ollama_preset()
-    backend = OllamaBackend(base_url=preset.base_url, model="do-not-deploy-model")
+    preset = _ollama_preset(base_url="http://localhost:11434")
+    backend = OllamaBackend(base_url=preset.base_url, model="do-not-deploy-model", api_key=preset.api_key)
     out = backend.complete(None, preset, _messages(), _params())
     assert out == CONTENT_SENTINEL
     assert len(seen) == 1
     call = seen[0]
-    assert call["url"].startswith(preset.base_url)
-    assert call["url"].endswith("/v1/chat/completions")
-    lowered = {k.lower() for k in call["headers"]}
-    assert "authorization" not in lowered
+    assert call["url"] == "http://localhost:11434/v1/chat/completions"
+    assert call["headers"] == {"Authorization": "Bearer " + KEY_O}
     assert call["json"]["stream"] is False
 
 
@@ -199,7 +200,7 @@ def test_u4_provider_401_maps_500_without_leak(monkeypatch):
 def test_u5_provider_403_maps_500(monkeypatch):
     _patch_post(monkeypatch, 403, {"error": "denied"})
     with pytest.raises(InterfaceError) as ei:
-        OllamaBackend(base_url="http://x", model="m").complete(None, _ollama_preset(), _messages(), _params())
+        OllamaBackend(base_url="http://localhost:11434", model="m", api_key=KEY_O).complete(None, _ollama_preset(), _messages(), _params())
     assert (ei.value.status, ei.value.code) == (500, "internal")
 
 
@@ -229,7 +230,7 @@ def test_u8_timeout_maps_500(monkeypatch):
 def test_u9_connect_error_maps_500(monkeypatch):
     _patch_post(monkeypatch, raises=httpx.ConnectError("S7-W5-CONNECT-SENTINEL"))
     with pytest.raises(InterfaceError) as ei:
-        OllamaBackend(base_url="http://x", model="m").complete(None, _ollama_preset(), _messages(), _params())
+        OllamaBackend(base_url="http://localhost:11434", model="m", api_key=KEY_O).complete(None, _ollama_preset(), _messages(), _params())
     assert (ei.value.status, ei.value.code) == (500, "internal")
     assert "S7-W5-CONNECT-SENTINEL" not in str(ei.value)
 
@@ -261,6 +262,132 @@ def test_u12_secrets_never_enter_logs_or_errors(monkeypatch, caplog):
     assert "hi" not in caplog.text
     assert UPSTREAM_SENTINEL not in str(ei.value)
     assert UPSTREAM_SENTINEL not in caplog.text
+
+
+# -- S7-W6: Ollama Bearer + https gate (H1-H3) -----------------------------------
+#
+# Cloud and local share one unconditional Bearer path (no URL sniffing).
+# Plain http is loopback-only; anything else must arrive over https.
+# Every key below is an uppercase hyphenated SENTINEL, never real material.
+
+
+KEY_C = "S7-W6-CLOUD-SENTINEL-KEY"
+KEY_L = "S7-W6-LOCAL-SENTINEL-KEY"
+KEY_W = "S7-W6-WAN-SENTINEL-KEY"
+REF_C = "S7_W6_OLLAMA_CLOUD_REF"
+REF_L = "S7_W6_OLLAMA_LOCAL_REF"
+REF_W = "S7_W6_OLLAMA_WAN_REF"
+CLOUD_URL = "https://ollama-do-not-deploy-cloud.example.com"
+WAN_URL = "http://wan-do-not-deploy.example.com"
+
+
+def _ollama_cloud_preset():
+    return Preset(
+        name="primary",
+        provider="ollama",
+        model="do-not-deploy-model",
+        params=MappingProxyType({"temperature": 0.5, "max_tokens": 512}),
+        key_ref=REF_C,
+        api_key=KEY_C,
+        base_url=CLOUD_URL,
+    )
+
+
+def _ollama_localhost_preset():
+    return Preset(
+        name="primary",
+        provider="ollama",
+        model="do-not-deploy-model",
+        params=MappingProxyType({"temperature": 0.5, "max_tokens": 512}),
+        key_ref=REF_L,
+        api_key=KEY_L,
+        base_url="http://localhost:11434",
+    )
+
+
+def _ollama_wan_preset():
+    return Preset(
+        name="primary",
+        provider="ollama",
+        model="do-not-deploy-model",
+        params=MappingProxyType({"temperature": 0.5, "max_tokens": 512}),
+        key_ref=REF_W,
+        api_key=KEY_W,
+        base_url=WAN_URL,
+    )
+
+
+def test_h1_cloud_bearer_exact_and_passthrough(monkeypatch):
+    seen = []
+    _patch_post(monkeypatch, 200, _ok_payload(), capture=seen)
+    preset = _ollama_cloud_preset()
+    out = build_backend(preset).complete(None, preset, _messages(), _params())
+    assert out == CONTENT_SENTINEL
+    assert len(seen) == 1
+    call = seen[0]
+    assert call["url"] == CLOUD_URL + "/v1/chat/completions"
+    assert call["headers"] == {"Authorization": "Bearer " + KEY_C}
+    body = call["json"]
+    assert body["model"] == "do-not-deploy-model"
+    assert body["messages"] == [{"role": "user", "content": "hi"}]
+    assert body["temperature"] == 0.5
+    assert body["max_tokens"] == 512
+    assert body["stream"] is False
+
+
+def test_h1b_cloud_401_maps_500_without_leak(monkeypatch, caplog):
+    _patch_post(monkeypatch, 401, {"error": UPSTREAM_SENTINEL})
+    preset = _ollama_cloud_preset()
+    with caplog.at_level(logging.INFO, logger=BACKEND_LOGGER):
+        with pytest.raises(InterfaceError) as ei:
+            build_backend(preset).complete(None, preset, _messages(), _params())
+    assert ei.value.status == 500
+    assert ei.value.code == "internal"
+    assert ei.value.message == "Internal server error."
+    assert KEY_C not in str(ei.value)
+    assert KEY_C[:8] not in str(ei.value)
+    assert KEY_C[-4:] not in str(ei.value)
+    assert UPSTREAM_SENTINEL not in str(ei.value)
+    assert KEY_C not in caplog.text
+    assert KEY_C[:8] not in caplog.text
+    assert KEY_C[-4:] not in caplog.text
+    assert UPSTREAM_SENTINEL not in caplog.text
+
+
+def test_h2_localhost_same_bearer_no_fork(monkeypatch):
+    seen = []
+    _patch_post(monkeypatch, 200, _ok_payload(), capture=seen)
+    preset = _ollama_localhost_preset()
+    out = build_backend(preset).complete(None, preset, _messages(), _params())
+    assert out == CONTENT_SENTINEL
+    assert len(seen) == 1
+    call = seen[0]
+    assert call["url"] == "http://localhost:11434/v1/chat/completions"
+    assert call["headers"] == {"Authorization": "Bearer " + KEY_L}
+
+
+def test_h3_wan_http_refused_without_request(monkeypatch):
+    seen = []
+    _patch_post(monkeypatch, 200, _ok_payload(), capture=seen)
+    preset = _ollama_wan_preset()
+    with pytest.raises(InterfaceError) as ei:
+        build_backend(preset).complete(None, preset, _messages(), _params())
+    assert ei.value.status == 500
+    assert ei.value.code == "internal"
+    assert ei.value.message == "Internal server error."
+    assert len(seen) == 0
+    assert KEY_W not in str(ei.value)
+
+
+def test_h3b_loopback_numeric_http_still_allowed(monkeypatch):
+    seen = []
+    _patch_post(monkeypatch, 200, _ok_payload(), capture=seen)
+    preset = _ollama_preset(base_url="http://127.0.0.1:11434")
+    backend = OllamaBackend(base_url=preset.base_url, model="do-not-deploy-model", api_key=preset.api_key)
+    out = backend.complete(None, preset, _messages(), _params())
+    assert out == CONTENT_SENTINEL
+    assert len(seen) == 1
+    assert seen[0]["headers"] == {"Authorization": "Bearer " + KEY_O}
 
 
 # -- service layer: through the S6 app ------------------------------------------

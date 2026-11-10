@@ -83,6 +83,31 @@ def _fail_closed() -> None:
     raise InterfaceError(500, "internal", None, _FIXED_500_MESSAGE)
 
 
+#: Hosts allowed to speak plain HTTP to an Ollama base URL (loopback only).
+#: Anything else must arrive over HTTPS. Parsed with plain string ops on
+#: purpose: the G1 import pin forbids adding a URL-parsing import here.
+_LOCAL_HTTP_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _ollama_base_allowed(base_url: Any) -> bool:
+    """True when an Ollama base URL may be dialed (https anywhere, else loopback)."""
+    if not isinstance(base_url, str):
+        return False
+    text = base_url.strip().lower()
+    if text.startswith("https://"):
+        return True
+    if not text.startswith("http://"):
+        return False
+    hostport = text[len("http://"):].split("/", 1)[0]
+    if "@" in hostport:
+        hostport = hostport.rsplit("@", 1)[-1]
+    if hostport.startswith("["):
+        host = hostport[1:].split("]", 1)[0]
+    else:
+        host = hostport.split(":", 1)[0]
+    return host in _LOCAL_HTTP_HOSTS
+
+
 class DeepSeekBackend:
     """DeepSeek chat carrier (key travels in the header, never in logs)."""
 
@@ -133,17 +158,21 @@ class DeepSeekBackend:
 
 
 class OllamaBackend:
-    """Ollama chat carrier (OpenAI-compatible path; no auth header here)."""
+    """Ollama chat carrier (OpenAI-compatible path; Bearer always attached)."""
 
-    def __init__(self, base_url: str, model: str) -> None:
+    def __init__(self, base_url: str, model: str, api_key: str) -> None:
         self._base_url = base_url
         self._model = model
+        self._api_key = api_key
 
     def _url(self) -> str:
         base = self._base_url if isinstance(self._base_url, str) else ""
         return base.rstrip("/") + "/v1/chat/completions"
 
     def complete(self, route: Any, preset: Any, messages: Any, params: Any) -> str:
+        if not _ollama_base_allowed(self._base_url):
+            _LOGGER.info("ext provider=%s preset=%s status=%s", "ollama", preset.name, 500)
+            _fail_closed()
         try:
             payload = {
                 "model": self._model,
@@ -155,9 +184,10 @@ class OllamaBackend:
         except (KeyError, TypeError):
             _LOGGER.info("ext provider=%s preset=%s status=%s", "ollama", preset.name, 500)
             _fail_closed()
+        headers = {"Authorization": "Bearer " + self._api_key}
         try:
             with httpx.Client(timeout=_timeout()) as client:
-                resp = client.post(self._url(), json=payload)
+                resp = client.post(self._url(), headers=headers, json=payload)
         except InterfaceError:
             raise
         except httpx.TimeoutException:
@@ -200,5 +230,5 @@ def build_backend(preset: Preset) -> ChatBackend:
     if provider == "deepseek":
         return DeepSeekBackend(api_key=preset.api_key, model=preset.model)
     if provider == "ollama":
-        return OllamaBackend(base_url=preset.base_url, model=preset.model)
+        return OllamaBackend(base_url=preset.base_url, model=preset.model, api_key=preset.api_key)
     raise InterfaceError(500, "invalid_preset", "preset", _FIXED_PRESET_MESSAGE)
