@@ -1,0 +1,25 @@
+{
+  "presets": [
+    {
+      "name": "example-ollama-do-not-deploy",
+      "provider": "ollama",
+      "model": "example-model-do-not-deploy",
+      "params": {
+        "temperature": 0.5,
+        "max_tokens": 512
+      },
+      "key_ref": "EXAMPLE_NO_DEPLOY_KEY"
+    },
+    {
+      "name": "example-deepseek-do-not-deploy",
+      "provider": "deepseek",
+      "model": "example-model-do-not-deploy",
+      "params": {
+        "temperature": 0.5,
+        "max_tokens": 512,
+        "base_url": "https://example-do-not-deploy.invalid/v1"
+      },
+      "key_ref": "EXAMPLE_NO_DEPLOY_KEY"
+    }
+  ]
+}

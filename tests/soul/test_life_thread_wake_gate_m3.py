@@ -790,7 +790,11 @@ _M3_IMPORTER_WHITELIST = ("src/soul/life_thread_orchestrator.py",)
 _M3_NON_PY_SCANNED_COUNTS = {
     # 2026-10-21：configs/packs/ 新增 roswaal_mansion_ram_v1.yaml（PACK-EXPAND 票）
     # ⇒ 非 .py 掃描檔 2 → 3。已複核新檔對 M3 的引用命中 = []（0 處）。
-    "configs": 3,
+    # 2026-11-09：configs/ 新增 external_registry.example.json（KEY-1 票）
+    # ⇒ 非 .py 掃描檔 3 → 4。已複核新檔對 M3 的引用命中 = []（0 處）。
+    # 2026-11-09：configs/models/ 新增 example-do-not-deploy.json（S4-W2 票）
+    # ⇒ 非 .py 掃描檔 4 → 5。已複核新檔對 M3 的引用命中 = []（0 處）。
+    "configs": 5,
     # 2026-10-31：clients/voice_companion/profiles/ 新增 ruka.json（VC-AVATAR-RUKA 票）
     # ⇒ 非 .py 掃描檔 4 → 5。已複核新檔對 M3 的引用命中 = []（0 處）。
     "clients": 5,
