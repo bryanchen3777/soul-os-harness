@@ -10231,3 +10231,9 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
   - `.venv\Scripts\python.exe -B scripts\serve_external_gateway.py --registry <REG>.json --presets <PRESETS>.json`
   - 另開一窗：`curl.exe -X POST http://<LAN-IP>:18765/rem/primary/v1/chat/completions -H "Authorization: Bearer <PASTE-KEY-HERE>" -H "Content-Type: application/json" -d "{\"model\":\"primary\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"`
   - 預期：終端印 `external gateway on 0.0.0.0:18765 (trusted-LAN plaintext, no TLS)` 後常駐；curl 回 200＋assistant 內容；Ctrl-C 收尾（wrapper 即服務父行程，收掉後照鐵律 11 複查三件套）。
+## S7-W6 OllamaBackend 無條件 Bearer 修補 ACCEPTED 並合入（2026-11-10）[S7-W6-ACCEPTED-1110]
+- 僅改 2 檔（ec2c722，170 insertions）：`src/external_gateway/backends.py`（D1 `__init__` 加 `api_key`＋無條件 Bearer、D2 接線、D3 `_ollama_base_allowed` 純字串解析守門零新增 import）＋`tests/external_gateway/test_backends_serve.py`（u2/u5/u9 適配＋h1/h1b/h2/h3/h3b 新增 5 筆，目標檔 26 綠）。
+- 獨立複核（.venv Python 3.11）：目標檔＋雙守衛 125 passed 復現；u5/u9 核對確為僅構造行變更、斷言行逐字未動；雙向變異 M1（去 Bearer⇒u2/h1/h2/h3b 紅）M2（去守門⇒h3 紅）還原 sha 一致。
+- 全庫回歸（.venv，15:36）：8692 passed／32 skipped／5 failed——5 條全為 G1–G5 預期紅，零新增；scope 雙守衛 99 綠（digest 20fe766e… 未動）。
+- Sol 終判 ACCEPTED：偏離點（u2/u5/u9 既有測試適配）核准為合規適配（D1 語義推翻／保住原測試意圖），D1 優先、不退回；H4（cloud 真實 probe）待 Owner 給 cloud base_url，不阻斷合入；D5 N/A（本機 11434 CLOSED）。
+- M4 可在 H4 probe 通過後直接配 cloud preset（model=`deepseek-v4.1-flash:1017` 合法，OLLAMA_BASE_URL 指 https cloud URL 不衝突 S2 入站凍結）。
