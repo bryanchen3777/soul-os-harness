@@ -985,6 +985,12 @@ class TestBoundedAndFrozenDiscipline:
             # 第三 cohort 協議。
             # Work order: docs/EI-2B-PROGRAM-3-WORK-ORDER.md（SETTLE-1 施工）。
             "src/interfaces/backend_execution.py",
+            # ── S5-W3-1（2026-11-10，第四 cohort）────────────────────────
+            # 本票新增 1 個已審查非 frozen 檔：離線 soul/preset 路由層
+            # （純查表＋preset 載入，無 server／port／network／LLM；非法路由
+            # 在 env 讀取前返回）。frozen_dirs 本體未動。
+            # Work order: Sol S5-W3-1 decision-complete 工單。
+            "src/external_gateway/routing.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

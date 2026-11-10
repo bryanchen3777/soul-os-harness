@@ -53,6 +53,18 @@ SETTLE_FILES = (
 )
 EXPECTED_SETTLE_COHORT_DIGEST = "fd496e8e48abfc8d4b3aa87763288fa8aefe44b8df2959ee494e8e6802278c76"
 
+# ── S5-W3-1 fourth cohort (2026-11-10) ─────────────────────────────────
+# Fixed 1-file cohort: offline soul/preset routing layer (pure table lookup +
+# preset loading, no server / port / network / LLM; illegal routes return
+# before env reads). Precise path, no wildcard.
+# method: sha256(json.dumps(sorted(S5_FILES),ensure_ascii=True,separators=(',',':')).encode('utf-8'))
+# computed from THIS fixed list (never from the file under test).
+# NEW / EI2B / SETTLE / original / frozen digests all unchanged.
+S5_FILES = (
+    "src/external_gateway/routing.py",
+)
+EXPECTED_S5_COHORT_DIGEST = "63eb04af9cc591500c0644a24712712ce0ce475e32b5f2ac34190b23f7e98ef3"
+
 # method: sha256(json.dumps(sorted(allowed),ensure_ascii=True,separators=(',',':')).encode('utf-8'))
 EXPECTED_ORIGINAL_ALLOWED_DIGEST = "e7689f3572cfd1b12ee3499170dc5866b324df773491645bda3147f514088929"
 # method: sha256(json.dumps(frozen_ordered,ensure_ascii=True,separators=(',',':')).encode('utf-8')) in original tuple order
@@ -152,10 +164,12 @@ def validate_scope(source_text: str) -> bool:
     - NEW_FILES (exactly these 6) subset of allowed,
     - EI2B_FILES (exactly these 8) subset of allowed,
     - SETTLE_FILES (exactly this 1) subset of allowed,
-    - the three cohorts mutually exclusive (pairwise disjoint),
-    - digest(sorted(allowed - NEW_FILES - EI2B_FILES - SETTLE_FILES)) == EXPECTED_ORIGINAL_ALLOWED_DIGEST,
+    - S5_FILES (exactly this 1) subset of allowed,
+    - the four cohorts mutually exclusive (pairwise disjoint),
+    - digest(sorted(allowed - NEW_FILES - EI2B_FILES - SETTLE_FILES - S5_FILES)) == EXPECTED_ORIGINAL_ALLOWED_DIGEST,
     - digest(sorted(EI2B_FILES)) == EXPECTED_EI2B_COHORT_DIGEST,
     - digest(sorted(SETTLE_FILES)) == EXPECTED_SETTLE_COHORT_DIGEST,
+    - digest(sorted(S5_FILES)) == EXPECTED_S5_COHORT_DIGEST,
     - digest(frozen in source order) == EXPECTED_FROZEN_DIGEST.
     Exact-set digest pins unknown wrapper/other-runtime/dir/wildcard/extra-scope.
     """
@@ -245,6 +259,15 @@ def validate_scope(source_text: str) -> bool:
         # list, never from the file under test)
         if _digest_sorted(SETTLE_FILES) != EXPECTED_SETTLE_COHORT_DIGEST:
             return False
+        # S5_FILES fixed one subset, disjoint from all three earlier cohorts
+        if len(S5_FILES) != 1 or len(set(S5_FILES)) != 1:
+            return False
+        if set(S5_FILES) & (set(NEW_FILES) | set(EI2B_FILES) | set(SETTLE_FILES)):
+            return False
+        # fourth cohort digest pins exactly this one (from this fixed
+        # list, never from the file under test)
+        if _digest_sorted(S5_FILES) != EXPECTED_S5_COHORT_DIGEST:
+            return False
         allowed_set = set(allowed_list)
         if not set(NEW_FILES) <= allowed_set:
             return False
@@ -252,9 +275,11 @@ def validate_scope(source_text: str) -> bool:
             return False
         if not set(SETTLE_FILES) <= allowed_set:
             return False
+        if not set(S5_FILES) <= allowed_set:
+            return False
         # old-scope digest must be unchanged (exact set, order-insensitive
-        # via sorted) after removing all THREE cohorts
-        remainder = allowed_set - set(NEW_FILES) - set(EI2B_FILES) - set(SETTLE_FILES)
+        # via sorted) after removing all FOUR cohorts
+        remainder = allowed_set - set(NEW_FILES) - set(EI2B_FILES) - set(SETTLE_FILES) - set(S5_FILES)
         if _digest_sorted(remainder) != EXPECTED_ORIGINAL_ALLOWED_DIGEST:
             return False
         # frozen full-sequence digest must be unchanged (order-sensitive)
@@ -442,6 +467,20 @@ def test_settle_cohort_digest_matches_fixed_list():
     assert set(SETTLE_FILES).isdisjoint(set(EI2B_FILES))
 
 
+def test_s5_files_constant_is_exactly_one():
+    assert tuple(S5_FILES) == (
+        "src/external_gateway/routing.py",
+    )
+
+
+def test_s5_cohort_digest_matches_fixed_list():
+    # Pinned from this fixed list, never from the file under test.
+    assert _digest_sorted(S5_FILES) == EXPECTED_S5_COHORT_DIGEST
+    assert set(S5_FILES).isdisjoint(set(NEW_FILES))
+    assert set(S5_FILES).isdisjoint(set(EI2B_FILES))
+    assert set(S5_FILES).isdisjoint(set(SETTLE_FILES))
+
+
 def test_real_updated_file_positive():
     src = _read_target_source()
     assert validate_scope(src) is True
@@ -501,6 +540,16 @@ def test_missing_settle_file_rejected(missing):
     assert validate_scope(mutated) is False
 
 
+@pytest.mark.parametrize("missing", list(S5_FILES))
+def test_missing_s5_file_rejected(missing):
+    src = _read_target_source()
+    allowed = _current_allowed_list(src)
+    trimmed = [s for s in allowed if s != missing]
+    assert missing not in trimmed
+    mutated = _with_modified_scope(src, new_allowed=trimmed)
+    assert validate_scope(mutated) is False
+
+
 def test_unregistered_backend_adjacent_path_rejected():
     # Third-cohort negative control: an unreviewed backend-adjacent path
     # next to the registered backend_execution.py must still fail.
@@ -528,8 +577,8 @@ def test_second_cohort_does_not_absorb_first():
 
 
 def test_third_cohort_does_not_absorb_second():
-    # Removing EI2B_FILES while keeping NEW_FILES + SETTLE_FILES must still
-    # fail: all three cohorts are required, mutually exclusive.
+    # Removing EI2B_FILES while keeping NEW_FILES + SETTLE_FILES + S5_FILES
+    # must still fail: all four cohorts are required, mutually exclusive.
     src = _read_target_source()
     allowed = _current_allowed_list(src)
     trimmed = [s for s in allowed if s not in set(EI2B_FILES)]
@@ -538,11 +587,32 @@ def test_third_cohort_does_not_absorb_second():
 
 
 def test_second_cohort_does_not_absorb_third():
-    # Removing SETTLE_FILES while keeping NEW_FILES + EI2B_FILES must still
-    # fail: the backend_execution.py registration is required, not optional.
+    # Removing SETTLE_FILES while keeping NEW_FILES + EI2B_FILES + S5_FILES
+    # must still fail: the backend_execution.py registration is required,
+    # not optional.
     src = _read_target_source()
     allowed = _current_allowed_list(src)
     trimmed = [s for s in allowed if s not in set(SETTLE_FILES)]
+    mutated = _with_modified_scope(src, new_allowed=trimmed)
+    assert validate_scope(mutated) is False
+
+
+def test_fourth_cohort_does_not_absorb_third():
+    # Removing SETTLE_FILES while keeping NEW_FILES + EI2B_FILES + S5_FILES
+    # must still fail (four-cohort variant of the absorbency check).
+    src = _read_target_source()
+    allowed = _current_allowed_list(src)
+    trimmed = [s for s in allowed if s not in set(SETTLE_FILES)]
+    mutated = _with_modified_scope(src, new_allowed=trimmed)
+    assert validate_scope(mutated) is False
+
+
+def test_fourth_cohort_is_required():
+    # Removing S5_FILES while keeping NEW_FILES + EI2B_FILES + SETTLE_FILES
+    # must still fail: the routing.py registration is required, not optional.
+    src = _read_target_source()
+    allowed = _current_allowed_list(src)
+    trimmed = [s for s in allowed if s not in set(S5_FILES)]
     mutated = _with_modified_scope(src, new_allowed=trimmed)
     assert validate_scope(mutated) is False
 
