@@ -1,8 +1,10 @@
 # Soul OS 對外接口使用說明手冊（External Interface Guide）
 
-> 適用版本：KEY-1 合入後 main（`fdc28ea`；本手冊撰寫時 HEAD=`315be9e`）。
+> 適用版本：S8 合入後 main（S7-W5／S7-W6 已合入）。
 > G1–G5 仍 **BLOCKED**（未決）：本手冊不承諾任何缺口能力，不代選架構選項，
-> 不掛 gateway，不承諾線上可用／SLA。
+> 不承諾線上可用／SLA。
+> 對外閘道（trusted-LAN，埠 `18765`）的 LAN→gateway→cloud 路線已貫通：
+> `rem/primary` 已實機驗證（見 §8）；其餘 soul／preset 組合未經驗證，不得擴稱。
 > 本手冊為純文件新增；每條操作斷言均標註來源文件＋行號，無孤斷言。
 > 行號以撰寫時 HEAD 的文件為準。
 
@@ -215,5 +217,74 @@
 
 - G1–G5 缺口能力（見 §6）不承諾；已誠實收斂的缺口不得為「讓手冊好看」
   而放寬或重述。
-- 不掛 gateway；不承諾線上可用／SLA。
+- 閘道僅在受信 LAN 內提供服務（見 §8）；不承諾線上可用／SLA。
 - 範本 registry 為測試佔位（見 §2 開頭警告），不可直接部署。
+
+---
+
+## 8. 對外閘道運維（LAN→gateway→cloud，S8）
+
+本節只描述已貫通並經驗證的路線，不新增能力承諾。
+
+### 8.1 生效範圍（只宣稱已驗證者）
+
+- **埠**：`18765`（`src/external_gateway/app.py:71`，`EXTERNAL_PORT` 凍結常數；
+  服務腳本 `scripts/serve_external_gateway.py` 預設即此埠）。
+- **已實機驗證路由**：僅 `rem/primary`
+  （`POST /rem/primary/v1/chat/completions`）。其餘四魂／其他 preset
+  組合**未經驗證**，不得擴稱為「五魂貫通」或「兩 provider 均完成」。
+- **soul→agent 精確映射**（`src/external_gateway/routing.py:51–65`，五對凍結，
+  錯配即 500）：
+  `rem→agent_rem`、`mai→agent_mai`、`ruka→agent_ruka`、
+  `akane→agent_akane`、`mahiru→agent_mahiru`。
+
+### 8.2 Bearer 操作（憑證通道唯一）
+
+- 簽發／輪轉／撤銷見 §1／§3／§4；請求頭格式與大小寫規則見 §5.1。
+- 無 key／錯 key 一律 **401**（`unauthorized`），且認證失敗時後端
+  executor 完全不被觸碰（見 §5.3）。
+- 錯誤不回顯憑證：任何 5xx 為固定文案，4xx 經過去敏（見 §5.3）。
+
+### 8.3 非串流限制
+
+- 首批只做非串流：`stream: true` 一律 **400**
+  （`src/external_gateway/openai_shim.py:184–189`，
+  "Streaming is not supported by this interface version."）。
+  SSE 為後續增量，本節不承諾。
+
+### 8.4 兩種重載語義（改錯會以為「沒生效」）
+
+- **preset 逐 call 重讀**：每次聊天請求都經 `file_preset_loader`
+  重新讀取 preset 檔（`src/external_gateway/app.py:146–170`），
+  故**換模型免重啟**——改 preset 檔後下一次請求即生效。
+- **registry 啟動快照**：服務啟動時讀一次 registry 檔建成
+  `RegistryProvider` 物件（`scripts/serve_external_gateway.py:89`），
+  運行中只讀該記憶體快照。故**改路由需重啟**——只改磁碟檔、
+  不重建服務，線上行為不變。
+
+### 8.5 受信 LAN 明文風險
+
+- 閘道為 trusted-LAN 明文 HTTP，無 TLS
+  （`scripts/serve_external_gateway.py:93–96` 公告文案明示
+  "trusted-LAN plaintext, no TLS"）。**不得**把該埠暴露到非受信網路；
+  需要跨網存取時，須在閘道之外另加受信反向代理／TLS（本手冊不代選方案）。
+
+### 8.6 實機證據 H4／M4（引用既有，不補發請求）
+
+- **H4**：Owner 直連 ollama cloud
+  `model=deepseek-v4.1-flash:1017` 回 **200**（`chatcmpl-233`
+  前綴 id 族）。來源：Sol S8-CLOSEOUT-1 工單記述之既有證據；
+  原始出處待主腦合入 canonical 時補登。本次工單未發起任何真實 LLM 請求。
+- **M4**：`POST /rem/primary/v1/chat/completions` 回 **200**；
+  無 key／錯 key 皆 **401**。來源同 H4（工單記述之既有證據，
+  未補發請求，原始出處待補登）。
+- 上述兩項只證明「`rem/primary` 的 LAN→gateway→cloud 通路可達」；
+  **200 不等於人格／記憶持久化驗收**（回 200 只代表通路與形狀正確，
+  不代表該 soul 的人格、記憶或長期狀態已驗證）。
+
+### 8.7 未驗證項（誠實登記）
+
+- `mai／ruka／akane／mahiru` 四魂的實機通路未驗證。
+- deepseek 直連 provider 的實機通路未驗證（H4 覆蓋的是 ollama cloud）。
+- 生命週期補證（轉變純度／關鍵反例／投影對帳）另案處理，不綁住 S8
+  （見 `verification/S8/REPORT.md`）。
