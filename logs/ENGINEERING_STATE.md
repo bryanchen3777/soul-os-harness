@@ -10184,3 +10184,10 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 全庫回歸（.venv，891.95 秒）：5 failed、8546 passed、32 skipped、32 subtests passed——5 條全為 G1–G5 預期紅（journal×3＋runtime_port×2），前次 2 新紅（routing 順序依賴、observability scope）已消失，零新增回歸。
 - Sol 終判 ACCEPTED：修 A 保持原意未放寬、修 B 符合逐票更新未碰紅線、全庫 5 紅確為預期；合入僅四檔，`scripts/eval_lifecycle_cli.py`（＋626 行台帳髒檔）排除在外。
 - S6 可開工（組裝 HTTP）。
+## S6-W4 HTTP 組裝層 ACCEPTED 並合入（2026-11-10）[S6-W4-ACCEPTED-1110]
+- 新增 2 檔＋scope 登記 2 檔（222d63d，1024 insertions）：`src/external_gateway/app.py`（create_external_app() 工廠＋純函式 parse_external_path，EXTERNAL_PORT=18765 常數只定義不綁定，ChatBackend 協議預設 NotImplementedBackend 回 500，認證順序沿用 external_auth 語義，不新增第三方依賴、不做真實 Provider 出站）＋`tests/test_external_gateway_app_1.py`（29 tests）；另登記 observability allowed＋guard 第五 cohort（S6_FILES＋digest 7f59de97…，frozen_dirs 與四舊 cohort digests 未動）。
+- 獨立複核（.venv Python 3.11）：新檔 29 綠、gateway 全目錄＋guard＋observability＋hygiene 聚焦 234 綠；違禁字樣零命中；雙向變異皆紅（M1 去 Bearer→4 敗、M2 去 authorize→1 敗親做、M3 去 stream 映射→應用＋shim 共 4 敗）還原 sha256 一致；`_s6_digest_tmp.py` 殘留已清。
+- 全庫回歸（.venv，885.22 秒）：5 failed、8581 passed、32 skipped——5 條全為 G1–G5 預期紅（journal×3＋runtime_port×2），零新增。
+- CLI 沙盒快跑（--simulated-time 2026-11-09T22:00:00Z）：VERDICT FAIL（exit 1），唯一破線＝轉變目標含 dormant 9 筆；其餘全綠。Sol 裁決 FAIL 不阻斷合入（app.py 未被 CLI import、程式碼正交，另票溯源）；pending cohort 1 筆（2026-11-02／962c9fce…）駁回核准（另票附依據＋Owner 台帳登記，否則維持 PENDING）。
+- 合入僅四檔，`scripts/eval_lifecycle_cli.py`（＋626 行台帳髒檔）排除在外，仍為 unstaged 髒檔留置工作樹。
+- S7 可開工（傳輸綁定）。
