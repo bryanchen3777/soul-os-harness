@@ -997,6 +997,17 @@ class TestBoundedAndFrozenDiscipline:
             # 零真實出站；非法路由在 env／檔案讀取前返回）。frozen_dirs 本體未動。
             # Work order: Sol S6-W4 decision-complete 工單。
             "src/external_gateway/app.py",
+            # ── S7-W5（2026-11-10，第六 cohort）────────────────────────
+            # 本票新增 2 個已審查非 frozen 檔：對外出站傳輸承載層
+            # （PresetRoutingBackend 逐呼叫分派 ollama／deepseek，fail-closed
+            # 誤差映射，日誌僅 provider／preset 名／status）＋ trusted-LAN
+            # 啟動器（凍結埠預設、fail-closed 啟動拒絕、無 TLS）。frozen_dirs
+            # 本體未動；src/ 以外的新檔（scripts 啟動器）同步登記以滿足
+            # tests/infra/test_ei1_scope_registration_guard.py 的 S7_FILES
+            # 子集約束（該守衛要求 cohort ⊆ allowed）。
+            # Work order: Sol S7-W5 decision-complete 工單。
+            "src/external_gateway/backends.py",
+            "scripts/serve_external_gateway.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",
