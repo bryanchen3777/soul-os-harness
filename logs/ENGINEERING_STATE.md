@@ -10251,3 +10251,21 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 驗證：gate1 `tests/test_eval_lifecycle_cli.py` 136 passed＋5 subtests；下一槽沙盒（2026-11-11T03:00Z）VERDICT PENDING_COHORT（exit 3，正確：11-03 四筆仍待審），expected_hits＝104、pending＝4、proven 20／rejected 0、prompt 零 unexplained、key 節點 0 轉變——台帳語義只增不減，未放寬判準。
 - 授權鏈：Sol 首裁（技術充分、授權未閉環）→ Owner 提重議 → Sol 重裁（維持 PENDING，五問全答，唯一缺件＝Owner 明示追認）→ Owner 2026-11-10 19:10 EST 明示「批」⇒ 入帳閉環。
 - Frozen：衰減門檻零動、其餘 cohort 零動、`data/**` 零寫入（CLI 沙盒唯讀源＋自建 TEMP）。
+
+## FIVE-SOULS-COMPLETE-1110 (Owner 完備化授權 2026-11-10, gateway five routes 5/5 200)
+- registry (repo 外部署目錄, digest 不變 `9bbd3501ba58` 前綴): routes 1->5,
+  `mai/ruka/akane/mahiru x primary`, agent_id 嚴格 `agent_<soul>`,
+  `allowed_routes` 同步五條; 寫入後 `validate_registry` 通過才落檔。
+- 閘道: 18765 當時無監聽 (舊行程已死), 以分離式 Start-Process 重起,
+  新快照生效; TCP OPEN + 無 key 401 驗活。
+- 五魂煙測 (同一 primary preset `deepseek-v4.1-flash:1017`, 未新增成本維度):
+  rem 200(chatcmpl-b503) / mai 200(chatcmpl-236f) / ruka 200(chatcmpl-3e70)
+  / akane 200(chatcmpl-e31b) / mahiru 200(chatcmpl-c542), 5/5 全 200;
+  錯 key 五魂全 401 (executor 未觸碰)。
+- 認證插曲: Owner 首貼字串 sha256 `b1efb4...` 與 registry `9bbd35...` 不符被擋;
+  第二貼 `sk-lan-..._i3g` 命中 digest 才放行。判準: 先離線對 hash, 再打實機。
+- 手冊 `docs/EXTERNAL-INTERFACE-GUIDE.md` §8.1/§8.6/§8.7 已更新為五魂已驗證;
+  唯一未驗證保留: deepseek 直連 provider。第二 model preset 待 Owner 指名
+  (成本決策, 未代選; 機制上改 presets.json 即生效, 免重啟)。
+- Frozen: `src/**` 未動; 僅 docs + 本 canonical 條目; `data/**` 未寫入;
+  真實 LLM 5 發 (最小 hi, M4 同類)。
