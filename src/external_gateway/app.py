@@ -182,7 +182,111 @@ def _from_interface_error(exc: InterfaceError) -> JSONResponse:
     return _error_response(exc.status, exc.code, exc.message)
 
 
-def create_external_app(registry, load_preset_fn=None, chat_backend=None) -> FastAPI:
+def _sa_live_dispatch(
+    body,
+    *,
+    soul,
+    preset_name,
+    endpoint,
+    req_id,
+    route,
+    preset_obj,
+    soul_live_handler,
+) -> JSONResponse:
+    """Dispatch a soul-access envelope to the live loop (SA-1 thin entry).
+
+    Fail-closed mapping (fixed copy, never leaks internals):
+      - no handler wired ......... 500 internal (like NotImplementedBackend);
+      - release gate closed ....... 403 forbidden (refuse new inbound);
+      - envelope malformed ........ 400 invalid_request_error;
+      - live/generate fault ....... 500 internal.
+    Function-level imports keep the legacy module import graph untouched.
+    """
+    from src.soul_access import api as _sa_api
+    from src.soul_access import bridge as _sa_bridge
+    from src.soul_access.schema import SnapshotRejected as _SaSnapshotRejected
+
+    try:
+        envelope = _sa_api.try_parse_envelope(body)
+    except _SaSnapshotRejected:
+        _LOGGER.info(
+            "ext soul=%s preset=%s endpoint=%s status=400 req=%s",
+            soul,
+            preset_name,
+            endpoint,
+            req_id,
+        )
+        return _error_response(400, "invalid_request_error", "Invalid request.")
+    if envelope is None:  # unreachable (caller checks the marker), fail closed
+        _LOGGER.info(
+            "ext soul=%s preset=%s endpoint=%s status=400 req=%s",
+            soul,
+            preset_name,
+            endpoint,
+            req_id,
+        )
+        return _error_response(400, "invalid_request_error", "Invalid request.")
+    if soul_live_handler is None:
+        _LOGGER.info(
+            "ext soul=%s preset=%s endpoint=%s status=500 req=%s",
+            soul,
+            preset_name,
+            endpoint,
+            req_id,
+        )
+        return _error_response(500, "internal", _FIXED_500_MESSAGE)
+    try:
+        text = soul_live_handler(envelope, route=route, preset=preset_obj)
+    except _sa_bridge.LiveRefused as exc:
+        _LOGGER.info(
+            "ext soul=%s preset=%s endpoint=%s status=%s req=%s",
+            soul,
+            preset_name,
+            endpoint,
+            exc.status,
+            req_id,
+        )
+        if exc.status == 403:
+            return _error_response(403, "forbidden", _FIXED_403_MESSAGE)
+        return _error_response(500, "internal", _FIXED_500_MESSAGE)
+    except _SaSnapshotRejected:
+        _LOGGER.info(
+            "ext soul=%s preset=%s endpoint=%s status=400 req=%s",
+            soul,
+            preset_name,
+            endpoint,
+            req_id,
+        )
+        return _error_response(400, "invalid_request_error", "Invalid request.")
+    except Exception:
+        _LOGGER.info(
+            "ext soul=%s preset=%s endpoint=%s status=500 req=%s",
+            soul,
+            preset_name,
+            endpoint,
+            req_id,
+        )
+        return _error_response(500, "internal", _FIXED_500_MESSAGE)
+    if not isinstance(text, str):
+        _LOGGER.info(
+            "ext soul=%s preset=%s endpoint=%s status=500 req=%s",
+            soul,
+            preset_name,
+            endpoint,
+            req_id,
+        )
+        return _error_response(500, "internal", _FIXED_500_MESSAGE)
+    _LOGGER.info(
+        "ext soul=%s preset=%s endpoint=%s status=200 req=%s",
+        soul,
+        preset_name,
+        endpoint,
+        req_id,
+    )
+    return JSONResponse(status_code=200, content=to_chat_response(text, envelope.snapshot.model))
+
+
+def create_external_app(registry, load_preset_fn=None, chat_backend=None, soul_live_handler=None) -> FastAPI:
     """Assemble the outward OpenAI-shaped ASGI app. No carrier attached.
 
     ``registry`` is a ``RegistryProvider`` (or a ready ``Registry``
@@ -190,6 +294,8 @@ def create_external_app(registry, load_preset_fn=None, chat_backend=None) -> Fas
     (see ``file_preset_loader``); ``chat_backend`` implements
     ``ChatBackend``. Omitted slots fail closed: a missing loader makes
     every route 500, a missing carrier installs ``NotImplementedBackend``.
+    ``soul_live_handler`` (SA-1, optional) serves envelope-marked bodies via
+    the live loop; omitted means envelope traffic fails closed with 500.
     """
     loader = load_preset_fn if callable(load_preset_fn) else _missing_preset_loader
     backend = chat_backend if chat_backend is not None else NotImplementedBackend()
@@ -342,6 +448,20 @@ def create_external_app(registry, load_preset_fn=None, chat_backend=None) -> Fas
                 req_id,
             )
             return _error_response(400, "invalid_request_error", "Invalid request.")
+        # SA-1: soul-access live-loop dispatch (thin entry, additive). Bodies
+        # WITHOUT the soul-access marker fall through to the legacy parser
+        # untouched (EI-1 old path byte-identical).
+        if isinstance(body, dict) and "soul_access_v1" in body:
+            return _sa_live_dispatch(
+                body,
+                soul=soul,
+                preset_name=preset_name,
+                endpoint=endpoint,
+                req_id=req_id,
+                route=route,
+                preset_obj=preset_obj,
+                soul_live_handler=soul_live_handler,
+            )
         try:
             internal = parse_chat_request(body)
         except InterfaceError as exc:

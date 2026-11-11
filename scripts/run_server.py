@@ -782,6 +782,15 @@ async def lifespan(app: FastAPI):
     # P0.5 (Bry 派工 2026-08-09 19:48): data_dir=None → use data_root() default
     mw = MemoryMiddleware(bus=bus, data_dir=None, llm_proxy=llm)
     mw.register()
+    # SA-1: attach the soul-access live loop to app.state for the :8000 side.
+    # Uses the EXISTING bus/llm/mw instances above (no construction here);
+    # additive only -- a missing bridge module leaves startup untouched.
+    try:
+        from src.soul_access.bridge import attach_live_loop as _sa_attach_live_loop
+
+        _sa_attach_live_loop(app, bus=bus, llm=llm, middleware=mw)
+    except ImportError:
+        logger.warning("[SA-1] soul-access bridge unavailable, live loop not attached")
 
     # M3 Phase 1 (Bry 拍板 2026-08-07 19:40 + 2026-08-07 20:02 hardening):
     # WorldPerceptionMiddleware 在 MemoryMiddleware 之後接管

@@ -60,6 +60,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Bind port (default: %(default)s; frozen).",
     )
+    parser.add_argument(
+        "--soul-access-release",
+        default=None,
+        help="SA-1: release file gating soul-access live-loop inbound. "
+        "Omitted = envelope traffic fails closed (500). Set = per-inbound "
+        "hot-read; missing/bad/closed file refuses new inbound (403).",
+    )
     return parser
 
 
@@ -87,8 +94,25 @@ def main(argv=None) -> int:
     except (OSError, ValueError, TypeError):
         return _refuse()
     registry = RegistryProvider(registry_raw)
+    # SA-1: thin entry keeps the legacy direct-provider carrier for legacy
+    # bodies (EI-1 old path unchanged) and adds a release-gated live-loop
+    # handler for envelope-marked bodies. No live instances exist in this
+    # process, so an OPEN gate with no loop still fails closed (500); the
+    # production-side loop attach lives in scripts/run_server.py (same ticket).
+    soul_live_handler = None
+    if args.soul_access_release is not None:
+        from src.soul_access.bridge import build_live_handler
+
+        soul_live_handler = build_live_handler(
+            live=None,
+            generate=None,
+            release_path=args.soul_access_release,
+        )
     app = create_external_app(
-        registry, file_preset_loader(args.presets), PresetRoutingBackend()
+        registry,
+        file_preset_loader(args.presets),
+        PresetRoutingBackend(),
+        soul_live_handler=soul_live_handler,
     )
     print(
         "external gateway on %s:%s (trusted-LAN plaintext, no TLS)"
