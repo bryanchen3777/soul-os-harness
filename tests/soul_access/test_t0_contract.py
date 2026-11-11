@@ -6,8 +6,10 @@ All test names carry the t0 marker: `pytest -q tests/soul_access -k t0` must col
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
+import types
 from dataclasses import FrozenInstanceError
 from dataclasses import fields
 from dataclasses import is_dataclass
@@ -283,10 +285,132 @@ def test_t0_mutation_reverted_validator_returns_green():
 # ── T0-5: independent hard blocks (network / prod writes / kill / spawn) ──
 
 
+_CONFTEST_PATH = _REPO_ROOT / "tests" / "soul_access" / "conftest.py"
+
+_SPAWN_SENTINEL = object()
+
+# argv fixtures for the spawn oracle. Plain list literals, never passed to a
+# real spawn entry point (the R1/R5 scanners only see real spawn call sites,
+# and there are none left in this file after this ticket).
+_SERVER_ARGV = ["python", "scripts/run_server.py"]
+_HARMLESS_ARGV = ["python", "-c", "print('t0-ok')"]
+
+
+def _load_guarded_popen_code():
+    """Extract (code, markers) of conftest._guarded_popen WITHOUT exec'ing conftest.
+
+    Verifies the FunctionDef name and source really is that function, then
+    compiles ONLY that single node. The module body (fixtures, real spawn
+    binding) is never executed and the real spawn entry point is never touched.
+    """
+    src = _CONFTEST_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    fn_node = next(
+        (n for n in tree.body
+         if isinstance(n, ast.FunctionDef) and n.name == "_guarded_popen"),
+        None,
+    )
+    assert fn_node is not None, "conftest must define _guarded_popen"
+    markers_node = next(
+        (n for n in tree.body
+         if isinstance(n, ast.Assign)
+         and any(isinstance(t, ast.Name) and t.id == "_SERVER_MARKERS"
+                 for t in n.targets)),
+        None,
+    )
+    assert markers_node is not None, "conftest must define _SERVER_MARKERS"
+    markers = ast.literal_eval(markers_node.value)
+    assert isinstance(markers, tuple) and all(isinstance(m, str) for m in markers), (
+        "conftest _SERVER_MARKERS must be a tuple of str"
+    )
+    mod = ast.Module(body=[fn_node], type_ignores=[])
+    ast.fix_missing_locations(mod)
+    compiled = compile(mod, str(_CONFTEST_PATH), "exec")
+    fn_code = next(
+        c for c in compiled.co_consts
+        if hasattr(c, "co_name") and c.co_name == "_guarded_popen"
+    )
+    return fn_code, markers
+
+
+def _original_server_markers():
+    """A COPY of conftest's current marker tuple (never the live object)."""
+    _, markers = _load_guarded_popen_code()
+    return tuple(markers)
+
+
+def _make_isolated_guarded_popen(markers, record):
+    """FunctionType copy of _guarded_popen with an independent, minimal globals.
+
+    Only the builtins the code needs, a COPY of the marker tuple, and a
+    record-only fake for _REAL_POPEN (appends to `record`, returns the
+    sentinel — zero real-spawn capability). The original globals are never
+    copied; the original function object is never called.
+    """
+    fn_code, _ = _load_guarded_popen_code()
+
+    def _record_only(args, *pargs, **kwargs):
+        record.append((args, pargs, kwargs))
+        return _SPAWN_SENTINEL
+
+    clean_globals = {
+        "__builtins__": {
+            "isinstance": isinstance,
+            "str": str,
+            "list": list,
+            "tuple": tuple,
+            "any": any,
+            "RuntimeError": RuntimeError,
+            "Exception": Exception,
+        },
+        "_SERVER_MARKERS": tuple(markers),
+        "_REAL_POPEN": _record_only,
+    }
+    return types.FunctionType(fn_code, clean_globals, "_guarded_popen")
+
+
+def _assert_spawn_oracle(markers):
+    """Shared oracle: server argv raises + fake silent; harmless argv passes + fake once."""
+    record = []
+    guarded = _make_isolated_guarded_popen(markers, record)
+    try:
+        guarded(_SERVER_ARGV)
+    except RuntimeError as exc:
+        assert "spawning a server is hard-blocked" in str(exc), (
+            f"unexpected guard message: {exc}"
+        )
+    else:
+        raise AssertionError("spawn oracle: server argv did not raise (gate relaxed?)")
+    assert record == [], (
+        f"spawn oracle: fake must stay silent on server argv, got {record}"
+    )
+    try:
+        result = guarded(_HARMLESS_ARGV)
+    except RuntimeError as exc:
+        raise AssertionError(
+            f"spawn oracle: harmless argv blocked (gate too tight?): {exc}"
+        ) from exc
+    assert result is _SPAWN_SENTINEL, "spawn oracle: harmless argv must return sentinel"
+    assert len(record) == 1, (
+        f"spawn oracle: fake must be called exactly once, got {len(record)}"
+    )
+
+
+def test_t0_mutation_spawn_guard_relaxed_turns_red():
+    """Bidirectional probe (loose): empty markers must make the shared oracle fail."""
+    with pytest.raises(AssertionError):
+        _assert_spawn_oracle(markers=())
+
+
+def test_t0_mutation_spawn_guard_tightened_turns_red():
+    """Bidirectional probe (tight): '' marker blocks everything, oracle must fail."""
+    with pytest.raises(AssertionError):
+        _assert_spawn_oracle(markers=("",))
+
+
 def test_t0_hard_blocks_stop_network_and_prod_writes(tmp_path):
     import os
     import socket
-    import subprocess
 
     with pytest.raises(RuntimeError):
         socket.socket()
@@ -294,8 +418,9 @@ def test_t0_hard_blocks_stop_network_and_prod_writes(tmp_path):
         socket.create_connection(("127.0.0.1", 8000), timeout=1)
     with pytest.raises(RuntimeError):
         os.kill(999999, 9)
-    with pytest.raises(RuntimeError):
-        subprocess.Popen(["python", "scripts/run_server.py"])
+    # Spawn gate via the shared oracle (isolated code copy + record-only fake:
+    # no real spawn entry point is ever called from this file).
+    _assert_spawn_oracle(markers=_original_server_markers())
     prod_probe = _REPO_ROOT / "data" / "__sa0_t0_probe__.tmp"
     with pytest.raises(RuntimeError):
         open(prod_probe, "w")
