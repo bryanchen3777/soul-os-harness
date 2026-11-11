@@ -4909,6 +4909,13 @@ class LLMProxy:
                 # M2 task 4 (Bry 8/2 14:14 派工): 只在 reason == "user_message" 才寫 user,
                 # proactive 觸發的 draft (heartbeat / proactive_dm / event / dream / morning / night)
                 # 不是 Bry 真實輸入, 寫進 history 會污染 (Bry 抓漏 8/2 13:45)。
+                # ── SA-4 B-firewall (additive policy gate; writers untouched) ──
+                # 失敗支線亦受禁存約束：污染輪整輪零寫（含 user 先寫）。
+                if not sa4_soul_write_allowed(
+                    user_text=user_message or "",
+                    assistant_text="",
+                ):
+                    return
                 if user_message and reason == "user_message":
                     if mode == "group":
                         self._append_group_user_instance("bryan", user_message)
@@ -4945,11 +4952,20 @@ class LLMProxy:
             else:
                 _ui_text = generated_text
 
+            # ── SA-4 B-firewall (additive policy gate; writers untouched) ──
+            # 整輪禁存：污染候選正文 ⇒ user＋assistant 零寫入（禁止先寫 user）。
+            # 僅跳過寫入；下方 AGENT_SPEAK 發布照常（回覆照發，只是不進長期記憶）。
+            _sa4_soul_writable = sa4_soul_write_allowed(
+                user_text=user_message or "",
+                assistant_text=_ui_text or "",
+            )
             # ── 寫入歷史(user + assistant 一起寫)──────────
             # 這樣保證 LLM 看到的 prompt 跟實際 history 一致,不會出現「你問兩遍」的重複問題
             # M2 task 4 (Bry 8/2 14:14 派工): user 訊息只在 reason == "user_message" 才寫,
             # 角色實際輸出 (assistant) 永遠寫入但加 triggered_by metadata 標記主動觸發。
-            if mode == "group":
+            if not _sa4_soul_writable:
+                pass  # SA-4 污染輪：整輪零寫。
+            elif mode == "group":
                 if user_message and reason == "user_message":
                     self._append_group_user_instance("bryan", user_message)
                     self._memory.append("group", "user", user_message, "bryan", is_private=False)
@@ -5543,3 +5559,38 @@ def sa3_phase_enter(phase_name, *, has_tools=True):
 def sa3_phase_transitions():
     """Return the request-local travelled SA-3 phases (tuple, oldest first)."""
     return tuple(getattr(_SA3_THREAD_STATE, "transitions", ()))
+
+
+# ── SA-4 dual-memory round junction (additive; hooks only) ──────────────────
+# Decision-complete scope (SA-4): ONLY this block is new in this file, plus
+# two gate call sites (the failure branch ~:4912 and the history-write block
+# ~:4948, both calling sa4_soul_write_allowed). No writer / SAGE / generation
+# line was modified, and no module-level soul_access import was added
+# (function-level lazy import only, same as the SA-3 junction above, so the
+# module import graph is untouched). The round context is set service-side
+# with a service-minted credential; payload booleans are never consulted
+# (admission.decide has no such parameter, so forged flags cannot open it).
+
+def sa4_round_reset():
+    """Clear the request-local SA-4 round context (request boundary)."""
+    from src.soul_access import admission as _sa4_admission
+
+    _sa4_admission.reset_round_context()
+
+
+def sa4_round_set(*, tool_markers=(), credential=None):
+    """Set this request's tool markers + credential (service side only)."""
+    from src.soul_access import admission as _sa4_admission
+
+    _sa4_admission.set_round_context(
+        tool_markers=tool_markers, credential=credential
+    )
+
+
+def sa4_soul_write_allowed(*, user_text="", assistant_text="") -> bool:
+    """SA-4 B-firewall gate: True iff this round may touch soul long-term sinks."""
+    from src.soul_access import admission as _sa4_admission
+
+    return _sa4_admission.round_soul_write_allowed(
+        user_text=user_text, assistant_text=assistant_text
+    )

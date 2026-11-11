@@ -516,6 +516,23 @@ class MemoryMiddleware:
             )
             return
 
+        # ── SA-4 B-firewall (additive policy gate; writers/SAGE untouched) ──
+        # 提交前判定：污染輪整輪禁存（不建背景 task，零 SAGE 寫入）。
+        # 背景 closure 只捕捉核准文字（approved_*）；raw user_text / agent_text
+        # 不得進入 _commit_async（由 T4 以 AST 釘死）。function-level lazy import
+        # 保持模組 import graph 不變。
+        from src.soul_access import admission as _sa4_admission
+        if not _sa4_admission.round_soul_write_allowed(
+            user_text=user_text, assistant_text=agent_text
+        ):
+            logger.info(
+                "[MemoryMiddleware] SA-4 B-firewall denies soul write | "
+                "agent=%s (polluted round, zero SAGE writes)" % (agent_id,)
+            )
+            return
+        approved_user_text = user_text
+        approved_agent_text = agent_text
+
         provider = self._get_provider(agent_id)
         # 修法 1 (Bry 拍板 2026-08-03 22:xx, 方案 B): 寫入帶 source_pair 標記
         # 格式: "<target_user_id>:<agent_id>", 例 "bryan:agent_ruka"
@@ -543,13 +560,13 @@ class MemoryMiddleware:
         async def _commit_async() -> None:
             try:
                 commit_result = await provider.post_reply_commit(
-                    session_id, user_text, agent_text,
+                    session_id, approved_user_text, approved_agent_text,
                     source_pair=source_pair,
                     inner_life_event_id=canonical_event_id,
                 )
                 logger.info(
                     f"[MemoryMiddleware] 寫入 graph | agent={agent_id} | "
-                    f"user_len={len(user_text)} | agent_len={len(agent_text)}"
+                    f"user_len={len(approved_user_text)} | agent_len={len(approved_agent_text)}"
                 )
                 # SAGE-INTIMACY-1A: 非同步觀測管線 — 記錄 SAGE 沉澱計數。
                 # 獨立 try/except：計數記錄異常絕不影響回覆流程（fire-and-forget 維持）。
@@ -632,10 +649,10 @@ class MemoryMiddleware:
             try:
                 from src.memory.shadow import maybe_observe
                 await maybe_observe(
-                    text=agent_text,
+                    text=approved_agent_text,
                     agent_id=agent_id,
                     speaker=event.source or "",
-                    context=user_text,
+                    context=approved_user_text,
                     heuristic_facts=None,  # 現有 heuristic 由 provider 自己跑, 不傳入避免雙重計算
                 )
             except Exception as _shadow_err:
