@@ -10269,3 +10269,25 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
   (成本決策, 未代選; 機制上改 presets.json 即生效, 免重啟)。
 - Frozen: `src/**` 未動; 僅 docs + 本 canonical 條目; `data/**` 未寫入;
   真實 LLM 5 發 (最小 hi, M4 同類)。
+
+## MINIMAX-PRESET-1110 (Owner 指名 ollama cloud 掛 minimax-m3.1-flash, 2026-11-10, 五魂 5/5 200)
+- 決策: Owner 先指 `minimax-m3.1-flash`, 後糾正走 ollama provider (非 minimax
+  provider); 定案 preset `minimax-m3.1-flash` (`provider=ollama`,
+  `model=minimax-m3.1-flash`, `base=https://ollama.com`,
+  `key_ref=OLLAMA_API_KEY`, 與 primary 同 key, 零改碼; provider 欄位全程
+  皆為 ollama, 中間一度誤寫 MiniMax 官方 base 已更正)。
+- 部署 (repo 外目錄): presets.json 1->2 筆; registry backends 1->2,
+  routes 5->10 (`<soul>/minimax-m3.1-flash`, agent_id 嚴格 `agent_<soul>`),
+  allowed_routes 5->10, digest 不變; 雙雙過 `validate_registry`／preset schema。
+- 重啟插曲 (agent 依行程鐵律未碰行程, 全程 Owner 操作): 首次 Owner 稱完成,
+  但真 key 探測回 404 (`route_not_found`) 識破舊快照仍在 (無 key 401 不能
+  證路由存在, 認證先於路由解析); 第二次只跑 Start-Process 未先停舊行程,
+  新行程撞埠退出 (埠持有者仍為舊 PID); 第三次先停後起, 埠易手 (新 PID,
+  當日 20:15 啟) 才生效。
+- 五魂煙測 (同 key, 最小 hi): rem/mai/ruka/akane/mahiru 5/5 全 200
+  (回文各約 30 字, 本輪未記 chatcmpl id); 無 key／錯 key 逐魂全 401
+  (executor 未觸碰)。模型字串 `minimax-m3.1-flash` 在 ollama cloud 有效。
+- 手冊 `docs/EXTERNAL-INTERFACE-GUIDE.md` §8.1/§8.6/§8.7 已更新為五魂×雙預設;
+  唯一未驗證保留仍為 deepseek 直連 provider。
+- Frozen: `src/**` 未動; 僅 docs + 本 canonical 條目; `data/**` 未寫入;
+  真實 LLM 5 發 (最小 hi, Owner 已授權第二模型)。

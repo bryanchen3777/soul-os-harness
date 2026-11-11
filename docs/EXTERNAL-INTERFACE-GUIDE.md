@@ -230,9 +230,10 @@
 
 - **埠**：`18765`（`src/external_gateway/app.py:71`，`EXTERNAL_PORT` 凍結常數；
   服務腳本 `scripts/serve_external_gateway.py` 預設即此埠）。
-- **已實機驗證路由**：五魂全通（2026-11-10）
-  （`POST /<soul>/primary/v1/chat/completions`，soul＝
-  `rem／mai／ruka／akane／mahiru`，逐魂回 **200**，見 §8.6）。
+- **已實機驗證路由**：五魂 × 雙預設全通（2026-11-10）
+  （`POST /<soul>/<preset>/v1/chat/completions`，soul＝
+  `rem／mai／ruka／akane／mahiru`，preset＝`primary`／`minimax-m3.1-flash`，
+  逐魂逐預設回 **200**，見 §8.6）。
   其他 preset 組合**未經驗證**，不得擴稱為「兩 provider 均完成」。
 - **soul→agent 精確映射**（`src/external_gateway/routing.py:51–65`，五對凍結，
   錯配即 500）：
@@ -289,13 +290,28 @@
   同期錯 key 五魂全 **401**（認證層擋下，executor 未觸碰）。
   全部走同一 `primary` preset（`deepseek-v4.1-flash:1017`），
   未新增成本維度。
+- **第二預設煙測（2026-11-10，Owner 指名 ollama cloud 掛 `minimax-m3.1-flash`）**：
+  preset 檔加第二筆（`provider=ollama`，`model=minimax-m3.1-flash`，
+  `base_url=https://ollama.com`，`key_ref=OLLAMA_API_KEY`，與 primary
+  同 key、零改碼；`MiniMax-M3.1-Flash` 的大小寫只用於 MiniMax 官方端點，
+  ollama cloud 側以 Owner 字串 `minimax-m3.1-flash` 為準）＋registry 擴為
+  10 路由（五魂各加 `<soul>/minimax-m3.1-flash`，`agent_id` 嚴格
+  `agent_<soul>`，`allowed_routes` 同步五條，digest 不變）＋Owner 受控重啟
+  閘道載入新快照（agent 依行程鐵律未碰行程；舊 PID 未替換的一次重啟經
+  真 key 404 識破並重做）後，逐魂一次最小 `hi` 調用：
+  `rem／mai／ruka／akane／mahiru` 5/5 全 **200**（回文各約 30 字，
+  本輪腳本未記錄 chatcmpl id）；同期無 key／錯 key 逐魂全 **401**
+  （認證層擋下，executor 未觸碰）。真 key 404 只證明路由不在快照，
+  無 key 401 不能證明路由存在（認證先於路由解析）——快照新舊必須以
+  真 key 判定。
 - 上述兩項只證明「`rem/primary` 的 LAN→gateway→cloud 通路可達」；
   **200 不等於人格／記憶持久化驗收**（回 200 只代表通路與形狀正確，
   不代表該 soul 的人格、記憶或長期狀態已驗證）。
 
 ### 8.7 未驗證項（誠實登記）
 
-- `mai／ruka／akane／mahiru` 四魂的實機通路**已驗證**（見 §8.6 五魂煙測）。
+- `mai／ruka／akane／mahiru` 四魂的實機通路**已驗證**
+  （見 §8.6 五魂煙測＋第二預設煙測，兩預設皆 5/5 200）。
 - deepseek 直連 provider 的實機通路未驗證（H4 覆蓋的是 ollama cloud）。
 - 生命週期補證（轉變純度／關鍵反例／投影對帳）另案處理，不綁住 S8
   （見 `verification/S8/REPORT.md`）。
