@@ -143,6 +143,11 @@ class VoiceInputRouter:
             "target_agent": self.target.agent_id,          # 完整 agent_id
             "mode": "private",                             # 语音 = 一对一私聊
             "participants": None,                          # 对齐 gateway.py:843
+            # SA-2 (additive passthrough only): DM identity (unified
+            # conversation "dm" / branch "root"; turn/key filled at publish
+            # from session + turn_id). No logic change.
+            "conversation_id": "dm",
+            "branch_id": "root",
             # §5.4 additive：现有消费端未使用该 key，0 冲突；仅 provenance 可辨
             "input_channel": "voice",
         }
@@ -251,7 +256,8 @@ class VoiceInputRouter:
                             outcome.features, outcome.ts_ms,
                         )
                     _soul_request_id = _identity_v.request_id
-            await self._publish_user_message(outcome.features, soul_request_id=_soul_request_id)
+            await self._publish_user_message(outcome.features, soul_request_id=_soul_request_id,
+                                               turn_id=turn_id)
             self.user_message_count += 1
             self.limiter.record_publication(now)
             self.limiter.note_acceptance()
@@ -263,11 +269,18 @@ class VoiceInputRouter:
         self.drop_count += 1
         return outcome
 
-    async def _publish_user_message(self, features: RoutingFeatures, soul_request_id=None) -> None:
+    async def _publish_user_message(self, features: RoutingFeatures, soul_request_id=None,
+                                      turn_id: Optional[str] = None) -> None:
         """bus.publish 唯一入口（对齐 gateway.py:884 / router.py:869），副作用链原样。"""
         event = self.build_user_message_event(features)
         if soul_request_id is not None:
             event.payload["soul_request_id"] = soul_request_id
+        # SA-2 (additive passthrough only): voice turn/key from session +
+        # turn_id. No logic change.
+        event.payload["turn_id"] = turn_id
+        event.payload["idempotency_key"] = (
+            "%s.%s" % (event.session_id, turn_id) if turn_id else None
+        )
         if self.bus is None:
             logger.info(f"[VoiceInputRouter] (no bus) USER_MESSAGE: {features.text[:30]!r}")
             return

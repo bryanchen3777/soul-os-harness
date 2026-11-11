@@ -1072,6 +1072,12 @@ class ChannelRouter:
                 "target_channel": channel,   # 透傳到 AGENT_INTENT → AGENT_SPEAK
                 "target_user_id": user_id,   # 透傳，給 router outbound 用
                 "mode": "private",           # Telegram 預設一對一私聊
+                # SA-2 (additive passthrough only): DM identity + TG retry key
+                # (bot namespace + update_id). No logic change.
+                "conversation_id": "dm",
+                "branch_id": "root",
+                "turn_id": str(update_id) if update_id is not None else None,
+                "idempotency_key": ("%s.%s" % (channel, update_id)) if update_id is not None else None,
             },
             session_id=session_id,
         )

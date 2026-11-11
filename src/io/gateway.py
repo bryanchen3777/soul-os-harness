@@ -1018,6 +1018,13 @@ class IOGateway:
                                     "target_agent": ws_full_agent,
                                     "mode": mode,
                                     "participants": participants,
+                                    # SA-2 (additive passthrough only): cross-entry
+                                    # pool identity. Client-supplied when present;
+                                    # DM defaults otherwise. No logic change.
+                                    "conversation_id": msg.get("conversation_id") or "dm",
+                                    "branch_id": msg.get("branch_id") or "root",
+                                    "turn_id": msg.get("turn_id") or msg.get("message_id"),
+                                    "idempotency_key": msg.get("idempotency_key") or msg.get("message_id"),
                                 },
                             )
                             # Proactive DM 三件修復 #2 (Bry 拍板 2026-08-29): 統一信號源 —
