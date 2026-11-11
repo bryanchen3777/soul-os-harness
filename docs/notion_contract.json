@@ -1,0 +1,50 @@
+{
+ "audit_rules": [
+  "缺標記即違規",
+  "多餘塊即違規",
+  "內容不符即違規"
+ ],
+ "frozen_note": "舊館 S/E/R 三頁自 T0 起凍結：只讀ordinary Can view由人工作業收權限本contract與腳本不寫舊ID不刪舊頁不做逐塊DELETE與erase_content",
+ "human_callout_template": "更新 Notion 一律經 scripts/update_notion_statuspy 不許手調 API 直寫 topic={topic} 寫入位置=本頁 Current 段 欄位=正文1200字內含下一步阻塞來源UTC證據索引 反例首頁底部追加日期流水帳是錯的 須經腳本事件鍵去重",
+ "last_sync_commit": "",
+ "old_pages": {
+  "E": "40e5ab1a-15bb-810c-91f6-ef05180f9520",
+  "R": "3af5ab1a-15bb-813b-9ad0-c8239ff3bd83",
+  "S": "3ae5ab1a-15bb-8104-bd2f-c2c954161258"
+ },
+ "routes": {
+  "core": {
+   "block_template": "callout→Current標題→正文→Evidence標題→索引",
+   "page_id": "PENDING-CREATION",
+   "page_name": "03核心"
+  },
+  "ei": {
+   "block_template": "callout→Current標題→正文→Evidence標題→索引",
+   "page_id": "PENDING-CREATION",
+   "page_name": "02EI"
+  },
+  "persona": {
+   "block_template": "callout→Current標題→正文→Evidence標題→索引",
+   "page_id": "PENDING-CREATION",
+   "page_name": "05角色資產"
+  },
+  "roadmap": {
+   "block_template": "callout→Current標題→正文→Evidence標題→索引",
+   "page_id": "PENDING-CREATION",
+   "page_name": "04路線圖"
+  }
+ },
+ "t0_utc": "2026-11-11T01:50Z",
+ "version": 1,
+ "h0_commit": "19e6fd14b5b6c0dedc30b15d8109cada100da8c1",
+ "manifest": {
+  "path": "verification/NOTION-MEMORY-1/old_manifest.json",
+  "count": 14698,
+  "s": 13127,
+  "e": 1219,
+  "r": 352,
+  "subpages": 120,
+  "sample_audit": "每十取一1470筆，51筆初判不符全經回取證實為500字截斷所致，實質不符0"
+ },
+ "blocker": "internal integration無權建workspace層根頁（POST /v1/pages parent.workspace→400）。需Owner在Notion UI建頂層頁並分享給既有整合，再由主腦裁決新樹parent後重跑create_tree.py。"
+}

@@ -92,6 +92,7 @@
 ## 專案治理對齊
 
 - **Canonical 狀態**：`logs/ENGINEERING_STATE.md` 是單一事實來源。文件更新以它為準。
+- **更新 Notion 一律經 `scripts/update_notion_status.py`，不許手調 API 直寫**（NOTION-MEMORY-1）。
 - **Frozen Contract**：Agency 4 stages / TriggerEnvelope / InnerLifeEvent / 4 handlers / SAGE 寫入邏輯 等，未經主大腦 + Owner 許可不得改動。
 - **花錢事項**：一律回報 Owner (Bryan) 拍板，主大腦不得自行決定。
 - **驗證紀律**：每階梯走「mock test → 回歸 → commit → 重啟 → 觀察」。實作後主大腦必須驗證，不能只信執行者口頭回報。

@@ -1,0 +1,8 @@
+{
+ "t0_utc": "2026-11-11T01:50Z",
+ "h0_commit": "19e6fd14b5b6c0dedc30b15d8109cada100da8c1",
+ "h0_short": "19e6fd1",
+ "policy": "T0 起凍結 S/E/R 舊館，只寫新樹；舊館保留可讀，禁 DELETE/erase_content；舊頁讀者權限待人工降為 Can view。",
+ "old_manifest": "old_manifest.json，共 14698 筆（S=13127/E=1219/R=352）；hash 對帳：抽樣 1470 筆初驗 51 筆疑異，逐筆回取 API 覆核 51/51 吻合（皆為 manifest 500 字截斷所致），實質不符 0。",
+ "blocker": "internal integration 建 workspace 層根頁被 API 400 拒絕（已親自複核）；待 Owner 在 Notion UI 建頂層頁並分享給既有整合後，重跑 create_tree.py（冪等跳過）。"
+}
