@@ -10245,3 +10245,9 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - dormant-9：Sol 補裁決接受有界參照、正式掛起，不得附條件 PASS 結案；RULE-2 僅事後分析口徑，不追溯改寫歷史判定；真槽 18 筆與 no-op PASS 均不算補證；重啟須可認證同槽原始材料（鎖定九 ID／當時輸入／事件，固定工具版本、排除後來狀態滲入、逐筆核驗並說明新舊判準差異）；不得入 EXPECTED_RETIREMENT_COHORTS，不得借用 PENDING_COHORT 或新增 CLI 判態。
 - pending-1：Sol 重議維持 PENDING（技術閉環、授權未閉環）；五問全答（追認可行：台帳是驗收分類非執行許可；不污染口徑：cohort 按建立日非 value 專屬；非 schema 變更：types 已是選用鍵；7 天為資格下界非執行期限，晚約 14 小時合理；日期分帳：date／not_before／bounds 均非核准日，批准後另以註解＋canonical 記真實核准時間）；批准前唯一缺件＝Owner 明示可追溯事後追認；核准前不得入帳、不倒填。
 - Frozen：`src/**` 零差分（僅 docs＋tests＋verification）、衰減門檻／台帳零動、`data/**` 零寫入；無殺行程、無綁埠、無真實 LLM（H4／M4 為 Owner 授權例外，既有證據）；未動他人在途檔。
+
+## PENDING-1 事後追認入帳（2026-11-10，Owner 核准）[PENDING-1-RATIFIED-1110]
+- 入帳（0df31f1，僅 `scripts/eval_lifecycle_cli.py` 9 insertions）：2026-11-02 cohort 加 `962c9fcec78d40858ce166216b40820a`（belief／agent_ruka；created＝last_support＝2026-11-02T13:00:18.284659+00:00；support_propagation 入邊 0；已於 2026-11-10T03:00:20Z 槽實際退役 active→weakening）；新增 `types` 鍵（該條目首個 types，非 schema 變更，沿用 10-25 前例）；`bounds[id]`＝真實錨點＋7 天；`not_before` 保留；其餘 103 筆成員與 bounds 一字不動；註記真實核准日 2026-11-10、不倒填、不改寫歷史判定。
+- 驗證：gate1 `tests/test_eval_lifecycle_cli.py` 136 passed＋5 subtests；下一槽沙盒（2026-11-11T03:00Z）VERDICT PENDING_COHORT（exit 3，正確：11-03 四筆仍待審），expected_hits＝104、pending＝4、proven 20／rejected 0、prompt 零 unexplained、key 節點 0 轉變——台帳語義只增不減，未放寬判準。
+- 授權鏈：Sol 首裁（技術充分、授權未閉環）→ Owner 提重議 → Sol 重裁（維持 PENDING，五問全答，唯一缺件＝Owner 明示追認）→ Owner 2026-11-10 19:10 EST 明示「批」⇒ 入帳閉環。
+- Frozen：衰減門檻零動、其餘 cohort 零動、`data/**` 零寫入（CLI 沙盒唯讀源＋自建 TEMP）。
