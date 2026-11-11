@@ -2044,6 +2044,13 @@ EXPECTED_RETIREMENT_COHORTS = (
     {
         "date": "2026-11-02",
         "not_before": "2026-11-10T03:00:00+00:00",
+        # 🔴 2026-11-10 Owner 明示核准事後追認：2026-11-02 cohort 加 1 顆 belief
+        #    （962c9fcec78d40858ce166216b40820a／agent_ruka；created＝last_support、
+        #    無 support_propagation 入邊、已於 2026-11-10T03:00:20Z 槽實際退役；
+        #    bounds ＝ 真實錨點＋7 天；不倒填核准日期、不改寫歷史判定）
+        "types": {
+            "962c9fcec78d40858ce166216b40820a": "belief",   # agent_ruka
+        },
         "bounds": {
             "05eab82d55f14c368c682a1ace92df0e": "2026-11-09T13:00:59.916939+00:00",
             "0ff7a82192e3435289bb537eb8e51fe1": "2026-11-09T03:01:01.342335+00:00",
@@ -2101,6 +2108,7 @@ EXPECTED_RETIREMENT_COHORTS = (
             "935a49a6e9544a8a8acf7d2ca137b6fc": "2026-11-09T13:02:02.985885+00:00",
             "938ab5c6e3f342499382d840ccc0a7e6": "2026-11-09T13:01:05.041414+00:00",
             "9590be209e9f4ae2bb277d8ee852170d": "2026-11-09T03:01:06.277242+00:00",
+            "962c9fcec78d40858ce166216b40820a": "2026-11-09T13:00:18.284659+00:00",  # agent_ruka（事後追認，錨點＋7天）
             "97646b58b7f04cedb224111ed0b2e1bf": "2026-11-09T13:01:32.971498+00:00",
             "979501b105164a1cafc88ea1c97e94ab": "2026-11-09T13:02:15.883907+00:00",
             "98cf056721e242cb8cd1c7cd4db93410": "2026-11-09T13:00:29.093912+00:00",
@@ -2206,6 +2214,7 @@ EXPECTED_RETIREMENT_COHORTS = (
             "935a49a6e9544a8a8acf7d2ca137b6fc",  # agent_itsuki
             "938ab5c6e3f342499382d840ccc0a7e6",  # agent_kaguya
             "9590be209e9f4ae2bb277d8ee852170d",  # agent_anna
+            "962c9fcec78d40858ce166216b40820a",  # agent_ruka（2026-11-10 Owner 核准事後追認）
             "97646b58b7f04cedb224111ed0b2e1bf",  # agent_rio
             "979501b105164a1cafc88ea1c97e94ab",  # agent_saki
             "98cf056721e242cb8cd1c7cd4db93410",  # agent_mahiru
