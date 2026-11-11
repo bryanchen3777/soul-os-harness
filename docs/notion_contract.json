@@ -15,23 +15,28 @@
  "routes": {
   "core": {
    "block_template": "callout→Current標題→正文→Evidence標題→索引",
-   "page_id": "PENDING-CREATION",
+   "page_id": "4155ab1a-15bb-814f-8fd3-d65e5da21037",
    "page_name": "03核心"
   },
   "ei": {
    "block_template": "callout→Current標題→正文→Evidence標題→索引",
-   "page_id": "PENDING-CREATION",
+   "page_id": "4155ab1a-15bb-812b-9a4c-c8c942d7311e",
    "page_name": "02EI"
   },
   "persona": {
    "block_template": "callout→Current標題→正文→Evidence標題→索引",
-   "page_id": "PENDING-CREATION",
+   "page_id": "4155ab1a-15bb-818a-9373-fce2105a7d5e",
    "page_name": "05角色資產"
   },
   "roadmap": {
    "block_template": "callout→Current標題→正文→Evidence標題→索引",
-   "page_id": "PENDING-CREATION",
+   "page_id": "4155ab1a-15bb-817a-b38a-ce46734eb370",
    "page_name": "04路線圖"
+  },
+  "status01": {
+   "page_id": "4155ab1a-15bb-814f-a482-ffdb0a1212ca",
+   "page_name": "01現況",
+   "block_template": "callout→Current標題→正文→Evidence標題→索引"
   }
  },
  "t0_utc": "2026-11-11T01:50Z",
@@ -46,5 +51,19 @@
   "subpages": 120,
   "sample_audit": "每十取一1470筆，51筆初判不符全經回取證實為500字截斷所致，實質不符0"
  },
- "blocker": "internal integration無權建workspace層根頁（POST /v1/pages parent.workspace→400）。需Owner在Notion UI建頂層頁並分享給既有整合，再由主腦裁決新樹parent後重跑create_tree.py。"
+ "blocker": "internal integration無權建workspace層根頁（POST /v1/pages parent.workspace→400）。需Owner在Notion UI建頂層頁並分享給既有整合，再由主腦裁決新樹parent後重跑create_tree.py。",
+ "new_tree": {
+  "root_id": "4155ab1a-15bb-80a4-8cb2-d228aa8a4047",
+  "kid_00入口樞紐": "4155ab1a-15bb-8195-8f16-f40089b281e7",
+  "kid_01現況": "4155ab1a-15bb-814f-a482-ffdb0a1212ca",
+  "kid_02EI": "4155ab1a-15bb-812b-9a4c-c8c942d7311e",
+  "kid_03核心": "4155ab1a-15bb-814f-8fd3-d65e5da21037",
+  "kid_04路線圖": "4155ab1a-15bb-817a-b38a-ce46734eb370",
+  "kid_05角色資產": "4155ab1a-15bb-818a-9373-fce2105a7d5e",
+  "kid_90證據": "4155ab1a-15bb-8115-9ea3-f316a1a965e1",
+  "ev_2026_11": "4155ab1a-15bb-8105-8972-eccb337f6909"
+ },
+ "last_build_utc": "2026-11-11T02:07Z",
+ "last_build_commit": "e82d3bf",
+ "blocker_resolved": "Owner 已建根頁 4155ab1a…並分享；workspace 直建阻塞解除（B 案）。2026-11-11T02:07Z"
 }

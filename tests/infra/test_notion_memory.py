@@ -242,3 +242,73 @@ def test_five_agents_first_round_landing_format_dedup(contract):
     pid = contract["routes"]["ei"]["page_id"].replace("-", "")
     markers = [b for b in mock.pages[pid] if U.MARKER in json.dumps(b, ensure_ascii=False)]
     assert len(markers) == 1
+
+
+# --- 建樹冪等＋contract 回填一致性（NOTION-MEMORY-1 B 案；全 mock／純函式，不碰真 API） ---
+
+import importlib.util as _ilu
+from pathlib import Path as _Path
+
+_TREEPATH = _Path(__file__).resolve().parent.parent.parent / "verification" / "NOTION-MEMORY-1" / "create_tree.py"
+_MIGPATH = _Path(__file__).resolve().parent.parent.parent / "verification" / "NOTION-MEMORY-1" / "migrate_assets.py"
+
+
+def _load_mod(path, name):
+    spec = _ilu.spec_from_file_location(name, str(path))
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_tree_rerun_skips_built_kids():
+    ct = _load_mod(_TREEPATH, "ct_tree")
+    existing = {f"kid_{n}": f"id-{i}" for i, (n, _) in enumerate(ct.KIDS_SPEC)}
+    assert ct.plan_missing(existing) == []  # 重跑：已建全跳過，零寫入
+    partial = dict(list(existing.items())[:3])
+    missing = ct.plan_missing(partial)
+    assert len(missing) == len(ct.KIDS_SPEC) - 3  # 只建缺的，不重建已有的
+
+
+def test_tree_currents_within_limit():
+    ct = _load_mod(_TREEPATH, "ct_tree2")
+    assert len(ct.KIDS_SPEC) == 7
+    for name, current in ct.KIDS_SPEC:
+        assert len(current) <= 1200, name
+        assert "UTC" in current and "來源" in current, name
+
+
+def test_tree_backfill_consistency():
+    ct = _load_mod(_TREEPATH, "ct_tree3")
+    contract = {"version": 1, "routes": {
+        "ei": {"page_id": "PENDING-CREATION"}, "core": {"page_id": "PENDING-CREATION"},
+        "roadmap": {"page_id": "PENDING-CREATION"}, "persona": {"page_id": "PENDING-CREATION"}}}
+    tree = {"kid_02EI": "a1", "kid_03核心": "b2", "kid_04路線圖": "c3",
+            "kid_05角色資產": "d4", "kid_01現況": "e5"}
+    out = ct.backfill_contract_data(contract, tree)
+    for r in out["routes"].values():
+        assert "PENDING" not in r["page_id"]
+    ids = [r["page_id"] for r in out["routes"].values()]
+    assert len(set(ids)) == len(ids)
+    assert "t0_utc" not in out  # 純函式不動 T0（T0 由主流程保留）
+    # 缺 kid 不得回填
+    import pytest as _pt
+    with _pt.raises(ValueError):
+        ct.backfill_contract_data(contract, {"kid_02EI": "a1"})
+    # 重複 id 必紅
+    dup_tree = dict(tree)
+    dup_tree["kid_03核心"] = "a1"
+    with _pt.raises(ValueError):
+        ct.backfill_contract_data(contract, dup_tree)
+    # 舊館 id 必紅
+    old_tree = dict(tree)
+    old_tree["kid_02EI"] = "3ae5ab1a-15bb-8104-bd2f-c2c954161258"
+    with _pt.raises(ValueError):
+        ct.backfill_contract_data(contract, old_tree)
+
+
+def test_migrate_pending_sources_resume():
+    mg = _load_mod(_MIGPATH, "mg_mig")
+    all_ids = ["s1", "s2", "s3"]
+    assert mg.pending_sources(all_ids, {"s1": {}}) == ["s2", "s3"]  # 已遷跳過
+    assert mg.pending_sources(all_ids, {}) == all_ids
+    assert mg.pending_sources([], {}) == []
