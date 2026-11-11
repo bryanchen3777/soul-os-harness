@@ -92,6 +92,29 @@ S7_FILES = (
 )
 EXPECTED_S7_COHORT_DIGEST = "20fe766e141d3d3256657d79565fec322ee971ee9b23fa379bfe54a9b2a35724"
 
+# ── SA-5 seventh cohort (2026-11-11) ───────────────────────────────────
+# Fixed 11-file cohort: soul-access chain SA-0..SA-4 product surface
+# (9 src/soul_access modules + harness/tool_memory.py + the additive
+# middleware junction src/memory/middleware.py; src/llm/proxy.py already in
+# baseline, not re-registered). Precise paths, no wildcard.
+# method: sha256(json.dumps(sorted(SA_FILES),ensure_ascii=True,separators=(',',':')).encode('utf-8'))
+# computed from THIS fixed list (never from the file under test).
+# NEW / EI2B / SETTLE / S5 / S6 / S7 / original / frozen digests all unchanged.
+SA_FILES = (
+    "src/soul_access/schema.py",
+    "src/soul_access/api.py",
+    "src/soul_access/bridge.py",
+    "src/soul_access/release.py",
+    "src/soul_access/pool.py",
+    "src/soul_access/policy.py",
+    "src/soul_access/loop.py",
+    "src/soul_access/snapshot.py",
+    "src/soul_access/admission.py",
+    "harness/tool_memory.py",
+    "src/memory/middleware.py",
+)
+EXPECTED_SA_COHORT_DIGEST = "8910323ee13f7f2369cd2ad1d6a77d2e4eba5d870658bcb093a067c711d52485"
+
 # method: sha256(json.dumps(sorted(allowed),ensure_ascii=True,separators=(',',':')).encode('utf-8'))
 EXPECTED_ORIGINAL_ALLOWED_DIGEST = "e7689f3572cfd1b12ee3499170dc5866b324df773491645bda3147f514088929"
 # method: sha256(json.dumps(frozen_ordered,ensure_ascii=True,separators=(',',':')).encode('utf-8')) in original tuple order
@@ -194,13 +217,15 @@ def validate_scope(source_text: str) -> bool:
     - S5_FILES (exactly this 1) subset of allowed,
     - S6_FILES (exactly this 1) subset of allowed,
     - S7_FILES (exactly these 2) subset of allowed,
-    - the six cohorts mutually exclusive (pairwise disjoint),
-    - digest(sorted(allowed - NEW_FILES - EI2B_FILES - SETTLE_FILES - S5_FILES - S6_FILES - S7_FILES)) == EXPECTED_ORIGINAL_ALLOWED_DIGEST,
+    - SA_FILES (exactly these 11) subset of allowed,
+    - the seven cohorts mutually exclusive (pairwise disjoint),
+    - digest(sorted(allowed - NEW_FILES - EI2B_FILES - SETTLE_FILES - S5_FILES - S6_FILES - S7_FILES - SA_FILES)) == EXPECTED_ORIGINAL_ALLOWED_DIGEST,
     - digest(sorted(EI2B_FILES)) == EXPECTED_EI2B_COHORT_DIGEST,
     - digest(sorted(SETTLE_FILES)) == EXPECTED_SETTLE_COHORT_DIGEST,
     - digest(sorted(S5_FILES)) == EXPECTED_S5_COHORT_DIGEST,
     - digest(sorted(S6_FILES)) == EXPECTED_S6_COHORT_DIGEST,
     - digest(sorted(S7_FILES)) == EXPECTED_S7_COHORT_DIGEST,
+    - digest(sorted(SA_FILES)) == EXPECTED_SA_COHORT_DIGEST,
     - digest(frozen in source order) == EXPECTED_FROZEN_DIGEST.
     Exact-set digest pins unknown wrapper/other-runtime/dir/wildcard/extra-scope.
     """
@@ -319,6 +344,17 @@ def validate_scope(source_text: str) -> bool:
         # list, never from the file under test)
         if _digest_sorted(S7_FILES) != EXPECTED_S7_COHORT_DIGEST:
             return False
+        # SA_FILES fixed eleven subset, disjoint from all six earlier cohorts
+        if len(SA_FILES) != 11 or len(set(SA_FILES)) != 11:
+            return False
+        if set(SA_FILES) & (
+            set(NEW_FILES) | set(EI2B_FILES) | set(SETTLE_FILES) | set(S5_FILES) | set(S6_FILES) | set(S7_FILES)
+        ):
+            return False
+        # seventh cohort digest pins exactly these eleven (from this fixed
+        # list, never from the file under test)
+        if _digest_sorted(SA_FILES) != EXPECTED_SA_COHORT_DIGEST:
+            return False
         allowed_set = set(allowed_list)
         if not set(NEW_FILES) <= allowed_set:
             return False
@@ -332,8 +368,10 @@ def validate_scope(source_text: str) -> bool:
             return False
         if not set(S7_FILES) <= allowed_set:
             return False
+        if not set(SA_FILES) <= allowed_set:
+            return False
         # old-scope digest must be unchanged (exact set, order-insensitive
-        # via sorted) after removing all SIX cohorts
+        # via sorted) after removing all SEVEN cohorts
         remainder = (
             allowed_set
             - set(NEW_FILES)
@@ -342,6 +380,7 @@ def validate_scope(source_text: str) -> bool:
             - set(S5_FILES)
             - set(S6_FILES)
             - set(S7_FILES)
+            - set(SA_FILES)
         )
         if _digest_sorted(remainder) != EXPECTED_ORIGINAL_ALLOWED_DIGEST:
             return False
@@ -576,6 +615,33 @@ def test_s7_cohort_digest_matches_fixed_list():
     assert set(S7_FILES).isdisjoint(set(S6_FILES))
 
 
+def test_sa_files_constant_is_exactly_eleven():
+    assert tuple(SA_FILES) == (
+        "src/soul_access/schema.py",
+        "src/soul_access/api.py",
+        "src/soul_access/bridge.py",
+        "src/soul_access/release.py",
+        "src/soul_access/pool.py",
+        "src/soul_access/policy.py",
+        "src/soul_access/loop.py",
+        "src/soul_access/snapshot.py",
+        "src/soul_access/admission.py",
+        "harness/tool_memory.py",
+        "src/memory/middleware.py",
+    )
+
+
+def test_sa_cohort_digest_matches_fixed_list():
+    # Pinned from this fixed list, never from the file under test.
+    assert _digest_sorted(SA_FILES) == EXPECTED_SA_COHORT_DIGEST
+    assert set(SA_FILES).isdisjoint(set(NEW_FILES))
+    assert set(SA_FILES).isdisjoint(set(EI2B_FILES))
+    assert set(SA_FILES).isdisjoint(set(SETTLE_FILES))
+    assert set(SA_FILES).isdisjoint(set(S5_FILES))
+    assert set(SA_FILES).isdisjoint(set(S6_FILES))
+    assert set(SA_FILES).isdisjoint(set(S7_FILES))
+
+
 def test_real_updated_file_positive():
     src = _read_target_source()
     assert validate_scope(src) is True
@@ -657,6 +723,16 @@ def test_missing_s6_file_rejected(missing):
 
 @pytest.mark.parametrize("missing", list(S7_FILES))
 def test_missing_s7_file_rejected(missing):
+    src = _read_target_source()
+    allowed = _current_allowed_list(src)
+    trimmed = [s for s in allowed if s != missing]
+    assert missing not in trimmed
+    mutated = _with_modified_scope(src, new_allowed=trimmed)
+    assert validate_scope(mutated) is False
+
+
+@pytest.mark.parametrize("missing", list(SA_FILES))
+def test_missing_sa_file_rejected(missing):
     src = _read_target_source()
     allowed = _current_allowed_list(src)
     trimmed = [s for s in allowed if s != missing]
@@ -772,6 +848,36 @@ def test_sixth_cohort_does_not_absorb_fifth():
     allowed = _current_allowed_list(src)
     trimmed = [s for s in allowed if s not in set(S6_FILES)]
     mutated = _with_modified_scope(src, new_allowed=trimmed)
+    assert validate_scope(mutated) is False
+
+
+def test_seventh_cohort_is_required():
+    # Removing SA_FILES while keeping all six earlier cohorts must still
+    # fail: the soul-access chain registration is required, not optional.
+    src = _read_target_source()
+    allowed = _current_allowed_list(src)
+    trimmed = [s for s in allowed if s not in set(SA_FILES)]
+    mutated = _with_modified_scope(src, new_allowed=trimmed)
+    assert validate_scope(mutated) is False
+
+
+def test_seventh_cohort_does_not_absorb_sixth():
+    # Removing S7_FILES while keeping NEW_FILES + EI2B_FILES + SETTLE_FILES
+    # + S5_FILES + S6_FILES + SA_FILES must still fail (seven-cohort variant
+    # of the absorbency check).
+    src = _read_target_source()
+    allowed = _current_allowed_list(src)
+    trimmed = [s for s in allowed if s not in set(S7_FILES)]
+    mutated = _with_modified_scope(src, new_allowed=trimmed)
+    assert validate_scope(mutated) is False
+
+
+def test_unregistered_soul_access_adjacent_path_rejected():
+    # Seventh-cohort negative control: an unreviewed soul-access-adjacent
+    # path next to the registered chain must still fail.
+    src = _read_target_source()
+    allowed = _current_allowed_list(src)
+    mutated = _with_modified_scope(src, new_allowed=allowed + ["src/soul_access/loop_v2.py"])
     assert validate_scope(mutated) is False
 
 

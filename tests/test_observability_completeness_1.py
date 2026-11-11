@@ -1008,6 +1008,26 @@ class TestBoundedAndFrozenDiscipline:
             # Work order: Sol S7-W5 decision-complete 工單。
             "src/external_gateway/backends.py",
             "scripts/serve_external_gateway.py",
+            # ── SA-5（2026-11-11，第七 cohort）────────────────────────────
+            # 本票新增 11 個已審查非 frozen 檔：Soul 鏈 SA-0..SA-4 產品面
+            # （9 個 src/soul_access 模組＋harness/tool_memory.py＋加法式
+            # 中介接線 src/memory/middleware.py；src/llm/proxy.py 早在原
+            # baseline 內，不重複登記）。frozen_dirs 本體未動；src/ 以外的
+            # 新檔（harness 工具記憶）同步登記以滿足
+            # tests/infra/test_ei1_scope_registration_guard.py 的 SA_FILES
+            # 子集約束（該守衛要求 cohort ⊆ allowed）。
+            # Work order: Sol SA-5 decision-complete 工單。
+            "src/soul_access/schema.py",
+            "src/soul_access/api.py",
+            "src/soul_access/bridge.py",
+            "src/soul_access/release.py",
+            "src/soul_access/pool.py",
+            "src/soul_access/policy.py",
+            "src/soul_access/loop.py",
+            "src/soul_access/snapshot.py",
+            "src/soul_access/admission.py",
+            "harness/tool_memory.py",
+            "src/memory/middleware.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",
