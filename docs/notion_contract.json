@@ -63,6 +63,12 @@
   "kid_90證據": "4155ab1a-15bb-8115-9ea3-f316a1a965e1",
   "ev_2026_11": "4155ab1a-15bb-8105-8972-eccb337f6909"
  },
+  "evidence_routes": {
+  "rule": "Canary 巡檢證據報告唯一寫回路由：依月份鍵 YYYY-MM 解析至 90證據下月冊；缺路由即拒寫，禁止退回舊館 S/E/R（凍結）。跨月月冊建成後由主腦回填本表新月份條目；CLI 不得自行推導或新建月冊 ID。",
+  "monthly": {
+   "2026-11": "4155ab1a-15bb-8105-8972-eccb337f6909"
+  }
+ },
  "last_build_utc": "2026-11-11T02:07Z",
  "last_build_commit": "e82d3bf",
  "blocker_resolved": "Owner 已建根頁 4155ab1a…並分享；workspace 直建阻塞解除（B 案）。2026-11-11T02:07Z"

@@ -312,3 +312,82 @@ def test_migrate_pending_sources_resume():
     assert mg.pending_sources(all_ids, {"s1": {}}) == ["s2", "s3"]  # 已遷跳過
     assert mg.pending_sources(all_ids, {}) == all_ids
     assert mg.pending_sources([], {}) == []
+
+
+# --- 證據通道（NOTION-MEMORY-1-CANARY-ROUTE；全 mock，不碰真 API） ---
+
+EV_MONTH_ID = "55555555-5555-5555-5555-555555555555"
+
+
+@pytest.fixture()
+def ev_contract(contract):
+    c = dict(contract)
+    c["evidence_routes"] = {
+        "rule": "缺路由即拒寫，禁止退回舊館",
+        "monthly": {"2026-11": EV_MONTH_ID},
+    }
+    return c
+
+
+def test_evidence_resolve_current_month(ev_contract):
+    pid = U.resolve_evidence_page("2026-11", ev_contract)
+    assert pid == EV_MONTH_ID
+
+
+def test_evidence_missing_month_or_bad_format_refuses(ev_contract, contract):
+    with pytest.raises(U.Refused):  # 跨月無路由：拒寫，不退回舊館
+        U.resolve_evidence_page("2026-12", ev_contract)
+    with pytest.raises(U.Refused):  # contract 根本無 evidence_routes 表
+        U.resolve_evidence_page("2026-11", contract)
+    with pytest.raises(U.Refused):  # 月份格式錯誤
+        U.resolve_evidence_page("2026/11", ev_contract)
+    with pytest.raises(U.Refused):  # 缺 --month
+        U.resolve_evidence_page("", ev_contract)
+
+
+def test_evidence_route_old_id_refuses(ev_contract):
+    bad = dict(ev_contract)
+    bad["evidence_routes"] = {"monthly": {"2026-11": "3ae5ab1a-15bb-8104-bd2f-c2c954161258"}}
+    with pytest.raises(U.Refused):
+        U.resolve_evidence_page("2026-11", bad)
+    with pytest.raises(U.Refused):
+        U.build_evidence_blocks("2026-11", "正文含證據 Evidence", "evt-old-ev", bad)
+
+
+def test_evidence_write_lands_on_monthly_book_idempotent(ev_contract):
+    mock = MockNotion()
+    text = "Canary 巡檢報告含證據 Evidence idx-ev-1" + "巡檢內容。" * 10
+    pkg = U.build_evidence_blocks("2026-11", text, "evt-ev-1", ev_contract)
+    assert pkg["page_id"] == EV_MONTH_ID
+    assert "topic=evidence" in pkg["marker"] and "month=2026-11" in pkg["marker"]
+    rec = U.append_blocks(pkg["page_id"], pkg["blocks"], "evt-ev-1", opener=mock)
+    assert rec["batches_done"] == 1
+    pid = EV_MONTH_ID.replace("-", "")
+    assert pid in mock.pages  # 落在 90 月冊，不在舊館
+    for oid in U.OLD_IDS:
+        assert oid.replace("-", "") not in mock.pages  # 舊館零寫入
+    n_calls = len(mock.calls)
+    # 重跑同事件鍵：冪等無重複塊（batches_done 已記，跳過不重送）
+    U.append_blocks(pkg["page_id"], pkg["blocks"], "evt-ev-1", opener=mock)
+    assert len(mock.calls) == n_calls
+    assert len([b for b in mock.pages[pid] if U.MARKER in json.dumps(b, ensure_ascii=False)]) == 1
+    # 讀回驗證：標記對得上
+    violations = U.audit_page(pkg["page_id"], pkg["marker"], opener=mock)
+    assert not [v for v in violations if "MISSING" in v or "MISMATCH" in v]
+
+
+def test_evidence_long_report_chunks(ev_contract):
+    text = "證據 Evidence " + "長" * (U.EVIDENCE_CHUNK + 100)
+    pkg = U.build_evidence_blocks("2026-11", text, "evt-ev-long", ev_contract)
+    paras = [b for b in pkg["blocks"] if b.get("type") == "paragraph"
+             and U.MARKER not in json.dumps(b, ensure_ascii=False)]
+    assert len(paras) >= 2  # 超長分塊，不走 Current 的 1200 拒寫
+    for b in paras:
+        content = b["paragraph"]["rich_text"][0]["text"]["content"]
+        assert len(content) <= U.EVIDENCE_CHUNK
+
+
+def test_current_four_channels_unchanged(contract):
+    for topic in ("ei", "core", "roadmap", "persona"):
+        pkg = U.build_update_blocks(topic, "正文含證據 Evidence guard", "evt-guard", contract)
+        assert pkg["page_id"] == contract["routes"][topic]["page_id"]

@@ -7,10 +7,13 @@ NOTION-MEMORY-1（B 案「凍結另起」）後，**更新 Notion 一律經本�
     python scripts/update_notion_status.py                 # 零參數：列出上次同步後 canonical 變更
     python scripts/update_notion_status.py --topic ei --text "..." --event-key <key>
     python scripts/update_notion_status.py --topic core|roadmap|persona --text "..." --event-key <key>
+    python scripts/update_notion_status.py --topic evidence --month YYYY-MM --text "..." --event-key <key>
     python scripts/update_notion_status.py --audit --topic ei   # 對照已寫入區塊與預期 hash
 
 規則（見 docs/notion_contract.json）:
-- --topic 僅允 ei / core / roadmap / persona；其餘拒絕。
+- --topic 僅允 ei / core / roadmap / persona / evidence；其中 evidence 為
+  Canary 巡檢證據報告通道（須搭配 --month），寫 90證據下月冊，不進 Current。
+- 證據月冊路由見 contract["evidence_routes"]：缺月份即拒寫，禁止退回舊館。
 - 舊館 S/E/R 三頁 ID 及舊樹任何 ID 一律拒寫（OLD_IDS）。
 - 來源未覆蓋 / 工作樹髒檔 / 缺證據不得宣稱成功（寫前三檢查）。
 - 所有寫入塊帶 `SOULSYNC/1` + 事件鍵 + 內容 hash；另寫 audit 對照。
@@ -43,6 +46,8 @@ OLD_IDS = {
     "3af5ab1a-15bb-813b-9ad0-c8239ff3bd83",  # R 路線圖頁
 }
 ALLOWED_TOPICS = ("ei", "core", "roadmap", "persona")
+EVIDENCE_TOPIC = "evidence"  # Canary 巡檢證據報告通道：寫 90證據下月冊，不進 Current
+EVIDENCE_CHUNK = 1900  # Notion 單塊 2000 字元上限留裕度；Current 的 1200 上限不適用證據通道
 MIN_INTERVAL = 0.6
 BATCH = 50
 _last_ts = [0.0]
@@ -82,6 +87,45 @@ def resolve_topic(topic, contract):
     if "PENDING" in route["page_id"]:
         raise Refused(f"topic {topic!r} 新頁 UUID 尚未回填（PENDING），不得寫入")
     return route
+
+
+def resolve_evidence_page(month, contract):
+    """證據月冊路由：依 YYYY-MM 解析；缺路由即拒寫，禁止退回舊館。"""
+    import re
+    if not re.fullmatch(r"\d{4}-\d{2}", month or ""):
+        raise Refused(f"--month 須為 YYYY-MM，實得 {month!r}")
+    table = (contract.get("evidence_routes") or {}).get("monthly", {})
+    pid = table.get(month)
+    if not pid:
+        raise Refused(f"證據路由缺月份 {month!r}（須主腦回填月冊後再寫；缺路由即拒寫，禁止退回舊館）")
+    for oid in OLD_IDS:
+        if pid.replace("-", "") == oid.replace("-", ""):
+            raise Refused(f"證據路由 {month!r} 指向舊館 ID（凍結，拒寫）")
+    if "PENDING" in pid:
+        raise Refused(f"證據路由 {month!r} 尚未回填月冊 UUID（PENDING），不得寫入")
+    return pid
+
+
+def build_evidence_blocks(month, text, event_key, contract):
+    """組證據寫入塊：標題＋分塊正文＋SOULSYNC/1 標記行（含月份、事件鍵、內容 hash）。
+
+    複用 journal＋事件鍵＋冪等＋讀回（經 append_blocks / audit_page）。
+    舊的四種 Current 通道（build_update_blocks）原樣保留，不動其語義。
+    """
+    page_id = resolve_evidence_page(month, contract)
+    body_hash = sha16(f"evidence|{month}|{event_key}|{text}")
+    marker_line = f"{MARKER} topic=evidence month={month} event={event_key} hash={body_hash}"
+    blocks = [{"object": "block", "type": "heading_2",
+               "heading_2": {"rich_text": [{"type": "text", "text": {
+                   "content": f"巡檢證據（{month}｜{utcnow()[:10]}）"}}]}}]
+    for i in range(0, len(text), EVIDENCE_CHUNK):
+        blocks.append({"object": "block", "type": "paragraph",
+                       "paragraph": {"rich_text": [{"type": "text", "text": {
+                           "content": text[i:i + EVIDENCE_CHUNK]}}]}})
+    blocks.append({"object": "block", "type": "paragraph",
+                   "paragraph": {"rich_text": [{"type": "text", "text": {"content": marker_line}}]}})
+    return {"page_id": page_id, "blocks": blocks,
+            "body_hash": body_hash, "marker": marker_line}
 
 
 def check_clean_tree():
@@ -257,7 +301,8 @@ def audit_page(page_id, expected_marker, opener=urllib.request.urlopen, expected
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--topic", choices=ALLOWED_TOPICS)
+    ap.add_argument("--topic", choices=ALLOWED_TOPICS + (EVIDENCE_TOPIC,))
+    ap.add_argument("--month", default="")  # 證據通道專用：YYYY-MM 月冊鍵
     ap.add_argument("--text", default="")
     ap.add_argument("--event-key", default="")
     ap.add_argument("--audit", action="store_true")
@@ -270,10 +315,19 @@ def main(argv=None):
         if not args.topic:
             print("FAIL: --audit 需搭配 --topic", file=sys.stderr)
             return 2
-        route = resolve_topic(args.topic, contract)
+        if args.topic == EVIDENCE_TOPIC:
+            if not args.month:
+                print("FAIL: --topic evidence 需搭配 --month YYYY-MM", file=sys.stderr)
+                return 2
+            page_id = resolve_evidence_page(args.month, contract)
+            key = f"{EVIDENCE_TOPIC}:{args.month}"
+        else:
+            route = resolve_topic(args.topic, contract)
+            page_id = route["page_id"]
+            key = args.topic
         journal = _load_journal()
-        last_marker = journal.get("last_marker", {}).get(args.topic, "")
-        violations = audit_page(route["page_id"], last_marker)
+        last_marker = journal.get("last_marker", {}).get(key, "")
+        violations = audit_page(page_id, last_marker)
         print(json.dumps({"violations": violations}, ensure_ascii=False, indent=1))
         return 1 if violations else 0
 
@@ -293,10 +347,18 @@ def main(argv=None):
         print("FAIL: 缺證據索引（正文須含 證據/Evidence 指針），不得宣稱成功", file=sys.stderr)
         return 2
     try:
-        pkg = build_update_blocks(args.topic, args.text, args.event_key, contract)
+        if args.topic == EVIDENCE_TOPIC:
+            if not args.month:
+                print("FAIL: --topic evidence 需搭配 --month YYYY-MM", file=sys.stderr)
+                return 2
+            pkg = build_evidence_blocks(args.month, args.text, args.event_key, contract)
+            journal_key = f"{EVIDENCE_TOPIC}:{args.month}"
+        else:
+            pkg = build_update_blocks(args.topic, args.text, args.event_key, contract)
+            journal_key = args.topic
         rec = append_blocks(pkg["page_id"], pkg["blocks"], args.event_key)
         journal = _load_journal()
-        journal.setdefault("last_marker", {})[args.topic] = pkg["marker"]
+        journal.setdefault("last_marker", {})[journal_key] = pkg["marker"]
         _save_journal(journal)
         violations = audit_page(pkg["page_id"], pkg["marker"])
         if violations:
