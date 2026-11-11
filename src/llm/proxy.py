@@ -5488,3 +5488,58 @@ except Exception as _epistemic_sched_exc:  # noqa: BLE001 — fail-silent
         type(_epistemic_sched_exc).__name__,
         _epistemic_sched_exc,
     )
+
+
+# ── SA-3 request-local phase junction (additive; hooks only) ──────────────
+# Decision-complete scope (SA-3): ONLY this block is new in this file. It
+# exposes the SA-0 state machine (HEAD_LOAD -> GEN1 -> TOOL_LOOP ->
+# TAIL_REJOIN -> GEN2 -> admit) as request-local hooks. It never touches
+# generation logic: no existing function in this file was modified, and no
+# generation path calls these hooks (pinned by test_t3_loop.py T3-6).
+# Function-level lazy import keeps the module import graph untouched.
+
+_SA3_THREAD_STATE = threading.local()  # threading is already imported above.
+
+
+def sa3_phase_current():
+    """Return the current request-local SA-3 phase name, or None when unset."""
+    return getattr(_SA3_THREAD_STATE, "phase", None)
+
+
+def sa3_phase_reset():
+    """Clear the request-local SA-3 phase (request boundary)."""
+    _SA3_THREAD_STATE.phase = None
+    _SA3_THREAD_STATE.transitions = ()
+
+
+def sa3_phase_enter(phase_name, *, has_tools=True):
+    """Enter one SA-3 phase, validating the SA-0 transition (hooks only).
+
+    The first enter must be ``head_load``; later enters must legally
+    advance via SA-0 ``advance``. Raises the SA-0 ``PhaseViolation`` on any
+    off-machine move. Returns the entered phase name.
+    """
+    from src.soul_access.schema import Phase as _Sa3Phase
+    from src.soul_access.schema import PhaseViolation as _Sa3PhaseViolation
+    from src.soul_access.schema import advance as _sa3_advance
+
+    target = _Sa3Phase(phase_name)
+    current_name = sa3_phase_current()
+    if current_name is None:
+        if target is not _Sa3Phase.HEAD_LOAD:
+            raise _Sa3PhaseViolation(
+                "SA-3 junction must start at head_load, got %r" % (phase_name,)
+            )
+        _SA3_THREAD_STATE.phase = target.value
+        _SA3_THREAD_STATE.transitions = (target.value,)
+        return target.value
+    current = _Sa3Phase(current_name)
+    nxt = _sa3_advance(current, target, has_tools=has_tools)
+    _SA3_THREAD_STATE.phase = nxt.value
+    _SA3_THREAD_STATE.transitions = tuple(_SA3_THREAD_STATE.transitions) + (nxt.value,)
+    return nxt.value
+
+
+def sa3_phase_transitions():
+    """Return the request-local travelled SA-3 phases (tuple, oldest first)."""
+    return tuple(getattr(_SA3_THREAD_STATE, "transitions", ()))
