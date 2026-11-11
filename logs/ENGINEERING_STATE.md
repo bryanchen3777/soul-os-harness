@@ -10291,3 +10291,11 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
   唯一未驗證保留仍為 deepseek 直連 provider。
 - Frozen: `src/**` 未動; 僅 docs + 本 canonical 條目; `data/**` 未寫入;
   真實 LLM 5 發 (最小 hi, Owner 已授權第二模型)。
+
+## 0.1.145 值守端日常台帳刷新（cohort 2026-11-10 封閉後，自動）
+
+- 封閉 cohort：`2026-11-10`（UTC 建立日過完才封閉）⇒ 核准集合 **116 顆**（本次新增 **116 顆**；四條件量測：台帳記載型別（未記載＝value）＋ 建立日 == cohort date ＋ last_support_ts == created_ts ＋ 無 support_propagation 祖先邊）。
+- 其他受影響 cohort：2026-11-03（核准 106 顆，本次新增 0 顆）。
+- 下一槽沙盒快跑：`2026-11-11T03:00:00+00:00` ⇒ `PENDING_COHORT`（exit 3）。
+- 守衛：`tests/test_eval_lifecycle_cli.py` 全綠（exit 0）。
+- 自動刷新機制：每日 20:40 紐約本地（EDT 期＝次日 00:40Z／EST 期＝次日 01:40Z，UTC 日封閉後）執行。
