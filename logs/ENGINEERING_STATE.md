@@ -10299,3 +10299,10 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 下一槽沙盒快跑：`2026-11-11T03:00:00+00:00` ⇒ `PENDING_COHORT`（exit 3）。
 - 守衛：`tests/test_eval_lifecycle_cli.py` 全綠（exit 0）。
 - 自動刷新機制：每日 20:40 紐約本地（EDT 期＝次日 00:40Z／EST 期＝次日 01:40Z，UTC 日封閉後）執行。
+
+## 0.1.146 SA-6 分批發布準備合入（commit cc9f53d，部署 BLOCKED）
+
+- 範圍：新建 `tests/soul_access/test_t7_rollout.py`（T7 17 項）、`docs/SA-6-RUNBOOK.md`、`verification/soul-access/sa6/`（REPORT＋evidence 104 筆＋CLI 原始 JSON）；產品檔零改動。
+- 裁決採用：票面 503→403，不開產品票，T6 不改。runbook 逐字：release gate 逐筆熱讀；熱關後通過前置驗證的新入站回 403（generate=0）；重開不解 UNKNOWN 隔離（同鍵仍 409），無須重啟。
+- 驗收：T7 17 綠、soul_access 136 綠、三守衛 140 綠（Mavis 獨立重跑）；全庫 8875 passed／6 failed＝5 既有紅＋1 hygiene 合入後轉綠；CLI 2026-11-12 槽 exit 3 PENDING_COHORT（pending 90，交集核准台帳 0，Mavis 獨立重跑確認）。
+- 部署 BLOCKED：PENDING_COHORT 本輪不核准＋無生產接線核准；準備與部署分開報，不混報上線。

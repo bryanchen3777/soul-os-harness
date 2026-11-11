@@ -19,13 +19,13 @@
 | 4 | `tests/test_observability_completeness_1.py` | allowed 加 11 筆＋ SA-5 逐票註記；原摘要／原 baseline／frozen 摘要一律不變 |
 | 5 | `verification/soul-access/` | 本目錄（對帳報告＋原始輸出） |
 
-## 2. 票面字樣差異（需主大腦判決，不在本票改動）
+## 2. 票面字樣差異（主大腦已裁決，SA-6 同步）
 
-- 票面寫「熱關新入站 503」；凍結產品行為（`src/external_gateway/app.py:200`、
+- 票面寫「熱關新入站 503」；凍結產品行為（`src/external_gateway/app.py`、
   `src/soul_access/bridge.py:179` 明文）為 **`LiveRefused(403, "forbidden")`
-  → HTTP 403**。本票禁動產品檔，故 T6 釘死實際 403。
-- **提請 Sol 判決**：改票面字樣（503→403），抑或另開產品票改行為。
-  在判決前，403 即正確期望（T6-1／T6-4 皆以 403 為綠）。
+  → HTTP 403**。產品檔禁動，故 T6 釘死實際 403。
+- **Sol 判決（bg_e64965be，已採用）**：改票面字樣（503→403），不另開產品票，
+  產品與 T6 不改。SA-6 runbook 收錄逐字句，T7-1／T7-6 把 403 釘死為綠。
 
 ## 3. 程式驗收（新增測試）
 
