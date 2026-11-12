@@ -2544,12 +2544,142 @@ class TestE635LedgerBoundary(unittest.TestCase):
             "非核准 ID 即使有下界 ⇒ 仍不得放行（成員檢查獨立把關）")
 
 
+class Test1105LedgerBoundary(unittest.TestCase):
+    """2026-11-05 cohort 入帳的邊界守衛（Sol 2026-11-12 核准 93 ID）。
+
+    🔴 全部走**真實台帳**（`CLI.EXPECTED_RETIREMENT_COHORTS`／`retirement_bounds()`），
+    不自建 cohort ⇒ 台帳被改壞（漏 ID／錯型別／改下界）會直接轉紅。
+    形狀沿用 `TestE635LedgerBoundary`（`is_expected_metabolism` 純函式＋行內呼叫，
+    無子行程、無網路、無伺服器）。
+    """
+
+    VALUE_NID = "01047e5f4ee4438f93e0d0df266ee007"  # agent_kaguya／value
+    VALUE_BOUND = "2026-11-12T13:02:00.414789+00:00"  # created＋7天
+    BELIEF_NID = "483a962c58704f33b60cfca471730243"  # agent_mahiru／belief
+    BELIEF_BOUND = "2026-11-12T13:01:00.733081+00:00"  # created＋7天
+    SLOT = "2026-11-13T03:00:00+00:00"  # cohort not_before（核准退役槽）
+
+    BELIEF_TYPES = {
+        "483a962c58704f33b60cfca471730243": "belief",
+        "4b38d7c627ca4f5a95c269822dad6e5f": "belief",
+        "63b286e01b004c4a8cc63d2065ab7421": "belief",
+        "dad154a54589446cb93d240a34967d0e": "belief",
+    }
+
+    def _expected_ids_and_types(self):
+        ids = set()
+        types = {}
+        for c in CLI.EXPECTED_RETIREMENT_COHORTS:
+            ids |= set(c.get("nodes") or ())
+            for nid, t in (c.get("types") or {}).items():
+                types[nid] = t
+        return ids, types
+
+    def _ev(self, nid, node_type, **kw):
+        ev = {"node_id": nid, "node_type": node_type,
+              "lifecycle_state": "weakening", "ts": self.SLOT}
+        ev.update(kw)
+        return ev
+
+    def test_1105_enrolled_exactly_as_authorized(self):
+        """授權形狀精確一致：date／not_before／types／bounds／nodes（93 筆）。"""
+        hits = [c for c in CLI.EXPECTED_RETIREMENT_COHORTS
+                if c.get("date") == "2026-11-05"]
+        self.assertEqual(len(hits), 1, "2026-11-05 條目必須恰好一筆")
+        c = hits[0]
+        self.assertEqual(c.get("not_before"), self.SLOT)
+        self.assertEqual(dict(c.get("types") or {}), self.BELIEF_TYPES,
+                         "types 必須恰為 4 筆 belief（不得多記、不得少記）")
+        self.assertEqual(len(set(c.get("nodes") or ())), 93)
+        self.assertEqual(set(c.get("bounds") or ()),
+                         set(c.get("nodes") or ()),
+                         "逐節點下界必須全覆蓋 93 節點")
+        self.assertEqual((c.get("bounds") or {}).get(self.VALUE_NID),
+                         self.VALUE_BOUND)
+        self.assertEqual((c.get("bounds") or {}).get(self.BELIEF_NID),
+                         self.BELIEF_BOUND)
+
+    def test_1105_value_positive_hit_at_approved_slot(self):
+        """正向命中（value）：N 在核准槽以 value 弱化 ⇒ expected（對照組綠）。"""
+        ids, types = self._expected_ids_and_types()
+        self.assertIn(self.VALUE_NID, ids)
+        self.assertTrue(
+            CLI.is_expected_metabolism(
+                self._ev(self.VALUE_NID, "value"), ids, None, types),
+            "value N 在核准槽弱化 ⇒ 必須命中 expected")
+
+    def test_1105_belief_positive_hit_at_approved_slot(self):
+        """正向命中（belief）：N 在核准槽以 belief 弱化 ⇒ expected（對照組綠）。"""
+        ids, types = self._expected_ids_and_types()
+        self.assertIn(self.BELIEF_NID, ids)
+        self.assertTrue(
+            CLI.is_expected_metabolism(
+                self._ev(self.BELIEF_NID, "belief"), ids, None, types),
+            "belief N 在核准槽弱化 ⇒ 必須命中 expected")
+
+    def test_1105_dropped_id_is_rejected(self):
+        """M-漏ID：核准清單少一筆 ⇒ 該筆弱化不得命中（有牙）。"""
+        ids, types = self._expected_ids_and_types()
+        pruned = set(ids) - {self.VALUE_NID}
+        self.assertNotIn(self.VALUE_NID, pruned)
+        self.assertFalse(
+            CLI.is_expected_metabolism(
+                self._ev(self.VALUE_NID, "value"), pruned, None, types),
+            "漏 ID ⇒ 不得放行（fail-closed）")
+
+    def test_1105_wrong_type_is_rejected(self):
+        """M-錯型：台帳記載 belief，value 事件 ⇒ 不得命中；反之亦然。"""
+        ids, types = self._expected_ids_and_types()
+        self.assertFalse(
+            CLI.is_expected_metabolism(
+                self._ev(self.BELIEF_NID, "value"), ids, None, types),
+            "belief 記為 value 事件 ⇒ 不得放行")
+        self.assertFalse(
+            CLI.is_expected_metabolism(
+                self._ev(self.VALUE_NID, "belief"), ids, None, types),
+            "value 記為 belief 事件 ⇒ 不得放行")
+
+    def test_1105_one_microsecond_before_bound_is_rejected(self):
+        """M-提前：bounds[N]−1µs ⇒ 不得 expected（提前早衰熔斷）。"""
+        ids, types = self._expected_ids_and_types()
+        bound_dt = datetime.fromisoformat(self.VALUE_BOUND)
+        early = (bound_dt - timedelta(microseconds=1)).isoformat()
+        self.assertFalse(
+            CLI.is_expected_metabolism(
+                self._ev(self.VALUE_NID, "value", ts=early),
+                ids, None, types),
+            "早於下界 1µs ⇒ 不得放行（fail-closed）")
+        self.assertTrue(
+            CLI.is_expected_metabolism(
+                self._ev(self.VALUE_NID, "value", ts=self.VALUE_BOUND),
+                ids, None, types),
+            "恰好等於下界 ⇒ 可放行（對照組）")
+
+    def test_1105_dormant_is_rejected(self):
+        """M-dormant：只有 weakening 是預期代謝，dormant ⇒ 不得命中。"""
+        ids, types = self._expected_ids_and_types()
+        self.assertFalse(
+            CLI.is_expected_metabolism(
+                self._ev(self.VALUE_NID, "value", lifecycle_state="dormant"),
+                ids, None, types),
+            "狀態非 weakening ⇒ 不得放行")
+        self.assertFalse(
+            CLI.is_expected_metabolism(
+                self._ev(self.BELIEF_NID, "belief",
+                         lifecycle_state="dormant"),
+                ids, None, types),
+            "belief 以 dormant ⇒ 亦不得放行")
+
+
 class TestPending1104EvidenceBinding(unittest.TestCase):
     """PENDING-1104 同源綁定：證據欄位的 AST＋功能＋雙向變異守衛。
 
     A 階段只加欄位、不動台帳；B 階段唯一合法增長即 2026-11-04 cohort 的 90 ID
     （核准數 1302→1392，舊集合零刪除，見
     `test_ledger_count_now_1392_after_1104_cohort`）。
+    2026-11-05 cohort 入帳（Sol 2026-11-12 核准 93 ID：89 value＋4 belief）後，
+    核准數 1392→1485，舊集合零刪除，見
+    `test_ledger_count_now_1485_after_1105_cohort`。
     全部隔離沙盒／TEMP 副本；repo 檔全程不寫入。
     """
 
@@ -2599,33 +2729,48 @@ class TestPending1104EvidenceBinding(unittest.TestCase):
         for key in self.REQUIRED_EVIDENCE_KEYS:
             self.assertIn('"%s"' % key, src, "缺少證據鍵：%s" % key)
 
-    def test_ledger_count_now_1392_after_1104_cohort(self):
-        """台帳凍結（B 階段）：核准數 1302 → 1392，增長恰為 2026-11-04 的 90 ID。
+    def test_ledger_count_now_1485_after_1105_cohort(self):
+        """台帳凍結（2026-11-05 入帳）：核准數 1392 → 1485，增長恰為 2026-11-05 的 93 ID。
 
         舊集合不變由「純新增 diff」保證（本票對 CLI 的改動必須是零刪除；
         見 stage-b 證據的 `git diff --numstat`），本測試釘死新總數與新 cohort
-        的形狀：90 節點、退役窗、1 belief 記載型別、逐節點下界全覆蓋。
+        的形狀：93 節點、退役窗、4 belief 記載型別、逐節點下界全覆蓋；
+        同時保留 2026-11-04 cohort 的形狀斷言（90 節點／退役窗／1 belief／
+        bounds 全覆蓋），舊集合一字不動。
         """
-        self.assertEqual(len(CLI.approved_retirement_ids()), 1392)
+        self.assertEqual(len(CLI.approved_retirement_ids()), 1485)
         self.assertEqual(CLI.EXPECTED_RETIREMENT_NOT_BEFORE,
                          "2026-10-25T02:00:00+00:00")
-        cohorts = [c for c in CLI.EXPECTED_RETIREMENT_COHORTS
-                   if c["date"] == "2026-11-04"]
-        self.assertEqual(len(cohorts), 1, "2026-11-04 cohort 必須恰有一筆")
-        c = cohorts[0]
-        self.assertEqual(c["not_before"], "2026-11-12T03:00:00+00:00")
-        self.assertEqual(len(set(c["nodes"])), 90)
-        self.assertEqual(c["types"],
+        cohorts04 = [c for c in CLI.EXPECTED_RETIREMENT_COHORTS
+                     if c["date"] == "2026-11-04"]
+        self.assertEqual(len(cohorts04), 1, "2026-11-04 cohort 必須恰有一筆")
+        c04 = cohorts04[0]
+        self.assertEqual(c04["not_before"], "2026-11-12T03:00:00+00:00")
+        self.assertEqual(len(set(c04["nodes"])), 90)
+        self.assertEqual(c04["types"],
                          {"e140a13e03f54dd28868dca9c5f8c516": "belief"})
-        self.assertEqual(set(c["bounds"]), set(c["nodes"]),
+        self.assertEqual(set(c04["bounds"]), set(c04["nodes"]),
                          "逐節點下界必須全覆蓋 90 節點")
+        cohorts = [c for c in CLI.EXPECTED_RETIREMENT_COHORTS
+                   if c["date"] == "2026-11-05"]
+        self.assertEqual(len(cohorts), 1, "2026-11-05 cohort 必須恰有一筆")
+        c = cohorts[0]
+        self.assertEqual(c["not_before"], "2026-11-13T03:00:00+00:00")
+        self.assertEqual(len(set(c["nodes"])), 93)
+        self.assertEqual(c["types"],
+                         {"483a962c58704f33b60cfca471730243": "belief",
+                          "4b38d7c627ca4f5a95c269822dad6e5f": "belief",
+                          "63b286e01b004c4a8cc63d2065ab7421": "belief",
+                          "dad154a54589446cb93d240a34967d0e": "belief"})
+        self.assertEqual(set(c["bounds"]), set(c["nodes"]),
+                         "逐節點下界必須全覆蓋 93 節點")
         rest = set()
         for other in CLI.EXPECTED_RETIREMENT_COHORTS:
-            if other["date"] != "2026-11-04":
+            if other["date"] != "2026-11-05":
                 rest |= set(other["nodes"])
-        self.assertEqual(len(rest), 1302, "舊集合必須原樣保留 1302 筆")
+        self.assertEqual(len(rest), 1392, "舊集合必須原樣保留 1392 筆")
         self.assertEqual(set(c["nodes"]) & rest, set(),
-                         "新 90 ID 不得與舊集合重疊")
+                         "新 93 ID 不得與舊集合重疊")
 
     # ── 功能（合成圖譜，全隔離）──
     def test_synthetic_run_evidence_is_consistent(self):
