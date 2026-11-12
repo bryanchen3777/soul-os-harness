@@ -10306,3 +10306,13 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 裁決採用：票面 503→403，不開產品票，T6 不改。runbook 逐字：release gate 逐筆熱讀；熱關後通過前置驗證的新入站回 403（generate=0）；重開不解 UNKNOWN 隔離（同鍵仍 409），無須重啟。
 - 驗收：T7 17 綠、soul_access 136 綠、三守衛 140 綠（Mavis 獨立重跑）；全庫 8875 passed／6 failed＝5 既有紅＋1 hygiene 合入後轉綠；CLI 2026-11-12 槽 exit 3 PENDING_COHORT（pending 90，交集核准台帳 0，Mavis 獨立重跑確認）。
 - 部署 BLOCKED：PENDING_COHORT 本輪不核准＋無生產接線核准；準備與部署分開報，不混報上線。
+
+## 0.1.147 PENDING 2026-11-04 送主腦覆核＋Owner 重啟明授（已記錄，未執行）
+
+- 90 逐筆證據已備（`verification/soul-access/pending-2026-11-04/evidence.json`）：
+  同槽同快照（slot `2026-11-12T03:00:00Z`，來源 5 檔 SHA-256 隨附），逐筆六項全真
+  （型別／11-04 建立／created＝last_support／sp 入邊 0／pre active＋槽內 weakening／
+  觀測下界＝評估時鐘），交集核准台帳 0。工具版本：rule `PATTERN-DORMANCY-RULE-2`、
+  CLI sha `b6dc533a…70cdc45`、HEAD `9dd67bf`、台帳 1302。
+- Owner 明授（2026-11-11）：PENDING 核准＋生產接線核准兩門下達後，主服務重啟可執行。
+  兩門未齊前不動生產；授權本身不是執行指令。
