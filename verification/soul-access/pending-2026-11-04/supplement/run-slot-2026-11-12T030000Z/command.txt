@@ -1,0 +1,1 @@
+.venv/Scripts/python.exe scripts/eval_lifecycle_cli.py --simulated-time 2026-11-12T03:00:00Z --json

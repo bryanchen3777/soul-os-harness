@@ -1,0 +1,645 @@
+{
+ "formula": "bound = anchor + 7*86400s；weakening ⟺ (now-anchor).total_seconds()/86400 >= 7（engine.py evaluate_lifecycle，比較語義 >=，浮點天數）",
+ "anchor_priority": "仍有效支持邊最大 valid_from_ts → last_support_ts（注入值） → created_ts+3天grace → None跳過（engine.py _lifecycle_anchor）",
+ "inputs": {
+  "edges_file": "C:\\Users\\bbfcc\\.local\\bin\\soul-os-harness\\verification\\soul-access\\pending-2026-11-04\\supplement\\_snapshots\\slot-2026-11-12T030000Z\\elevation_edges.jsonl",
+  "support_anchor_fn": "src/inner_life/elevation_adapter.py:_support_anchor_by_node",
+  "inject_fn": "src/inner_life/elevation_adapter.py:_inject_support_anchor",
+  "engine_anchor_fn": "soul_elevation/engine.py:_lifecycle_anchor (editable: C:\\Users\\bbfcc\\.local\\bin\\soul-elevation\\src\\soul_elevation\\engine.py)",
+  "engine_sha256": "6f7402214f4c7bc8b1fc6e0dde01004acc63cc74c71e629434f9e9e55700074e",
+  "prior_sha256": "b588b47d435fce1ee0d5005439cd94ec5f44201b488b09b6321df0dc4925bdc3",
+  "adapter_sha256": "0a91bfb50da8c4d41bb576bc62e3f47a92cd7020a2a2488e3348455212a8938b"
+ },
+ "per_id": {
+  "0558f3dacb2a42b3aafbe67c77d31c12": {
+   "anchor": "2026-11-04T13:02:36.597605+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:02:36.597605+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "057fa6d67e6f453797aaa06c7bf25503": {
+   "anchor": "2026-11-04T13:02:04.032239+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:02:04.032239+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "08138f0cf34149b885488d95e5d13c35": {
+   "anchor": "2026-11-04T03:05:32.793494+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:05:32.793494+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "087f180b7cc24348bbcc8a5177dba10d": {
+   "anchor": "2026-11-04T03:04:28.148285+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:04:28.148285+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "0c50b4b99c4749059e94f5e9ca769b97": {
+   "anchor": "2026-11-04T13:00:53.704043+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:00:53.704043+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "0e18cb63bf47459eb4ddc36c876b5c85": {
+   "anchor": "2026-11-04T13:00:46.317922+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:00:46.317922+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "10557427dc644cfc8e420cb901a483c5": {
+   "anchor": "2026-11-04T03:03:35.538876+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:03:35.538876+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "12c586a7259841d3a5f439a122d27949": {
+   "anchor": "2026-11-04T03:04:02.669179+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:04:02.669179+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "1651034ffc7b436ab96b2735a6977e05": {
+   "anchor": "2026-11-04T13:00:36.392505+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:00:36.392505+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "168c761c81584156a37de712fed035b8": {
+   "anchor": "2026-11-04T03:02:09.720323+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:02:09.720323+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "1bfc2edc2ec64f5b8a501ce5ac57e457": {
+   "anchor": "2026-11-04T03:02:42.208466+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:02:42.208466+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "1fffa98912f34dc5ae60cec6e2c8e5c9": {
+   "anchor": "2026-11-04T03:04:07.955755+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:04:07.955755+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "213b0db766974e37b159f04fd7bda903": {
+   "anchor": "2026-11-04T13:03:53.028804+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:03:53.028804+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "21ac5c656a1b4b1396cda35e00965f92": {
+   "anchor": "2026-11-04T03:06:14.785181+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:06:14.785181+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "21b258a93356495fa02260777c411929": {
+   "anchor": "2026-11-04T03:03:47.542287+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:03:47.542287+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "2580ef2fc0b44d21a93e54bd53a4eb32": {
+   "anchor": "2026-11-04T13:02:58.007024+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:02:58.007024+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "2c192cf2db1d40898fe02f224d86fc35": {
+   "anchor": "2026-11-04T13:04:20.711334+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:04:20.711334+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "2daff75ed91643568fdd3d26bed6e1dc": {
+   "anchor": "2026-11-04T03:02:28.950198+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:02:28.950198+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "2fc5ffbef113453391cb55fde3684bfe": {
+   "anchor": "2026-11-04T03:02:54.460664+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:02:54.460664+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "3349de6e3c014709a37052c5c869db6a": {
+   "anchor": "2026-11-04T13:03:03.416273+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:03:03.416273+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "36a78432928a4ea085d67509440765b1": {
+   "anchor": "2026-11-04T03:04:43.966990+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:04:43.966990+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "37fb476e472f442f8474879ea2e46eb1": {
+   "anchor": "2026-11-04T03:03:21.514408+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:03:21.514408+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "3834fbf0467e43e09b387eddd1b62833": {
+   "anchor": "2026-11-04T13:04:25.184803+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:04:25.184803+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "38d95d7cd9cb4c9d9e1d262f92dd332c": {
+   "anchor": "2026-11-04T13:03:31.787828+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:03:31.787828+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "3f0103af2fe043b2bd7862f6982f8567": {
+   "anchor": "2026-11-04T03:04:58.788125+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:04:58.788125+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "3fe0e1a641404fa399e60dcd33e8a4af": {
+   "anchor": "2026-11-04T03:04:33.801596+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:04:33.801596+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "4242847a4358481e92e61f57eb5ebc92": {
+   "anchor": "2026-11-04T03:06:02.775003+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:06:02.775003+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "48bf45448bb14db8b5094e4db53b5832": {
+   "anchor": "2026-11-04T03:06:08.598915+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:06:08.598915+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "50eb3fa4a8254148966a6667c6e5872a": {
+   "anchor": "2026-11-04T13:01:45.230795+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:01:45.230795+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "54cb11ba1dea49b4b6c5c08591929d6f": {
+   "anchor": "2026-11-04T13:00:11.531657+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:00:11.531657+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "59c322d2af264010b10b54df580a1cd4": {
+   "anchor": "2026-11-04T03:04:22.945369+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:04:22.945369+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "5dca3777140943b09a6f3cf7faad013c": {
+   "anchor": "2026-11-04T13:01:29.433416+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:01:29.433416+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "5e84fb00fe4f4aae8c8b5002662865bc": {
+   "anchor": "2026-11-04T03:02:15.958453+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:02:15.958453+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "60cfc4a53baf47ad86cca68f410bf009": {
+   "anchor": "2026-11-04T13:03:24.097747+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:03:24.097747+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "649a9baf7b7648dd958114293922e0dc": {
+   "anchor": "2026-11-04T03:05:50.515584+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:05:50.515584+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "64ca966df58c4d2b8cb4544a906dab99": {
+   "anchor": "2026-11-04T13:02:19.967793+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:02:19.967793+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "6ba9926c16fd404cbb3b088f1938feed": {
+   "anchor": "2026-11-04T03:02:01.300625+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:02:01.300625+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "733dc731e588439cb30f138fbce045d5": {
+   "anchor": "2026-11-04T13:01:59.439621+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:01:59.439621+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "73eae4732fc64c0cbe58f79ce2707cae": {
+   "anchor": "2026-11-04T13:00:16.508268+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:00:16.508268+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "74bd55a6f6934f1ca25d64b658c9bc05": {
+   "anchor": "2026-11-04T13:01:07.139203+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:01:07.139203+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "7af0758dfa1342f2aac42151e549d691": {
+   "anchor": "2026-11-04T03:05:38.805434+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:05:38.805434+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "80ca01167b5c45d5b01f65f5056888d2": {
+   "anchor": "2026-11-04T13:03:47.391121+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:03:47.391121+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "8176353db22e475e884c392d3104dd5f": {
+   "anchor": "2026-11-04T03:03:03.313290+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:03:03.313290+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "83bd94088fb845ffba06062ca8e06776": {
+   "anchor": "2026-11-04T03:02:36.405710+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:02:36.405710+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "87dbbf815d8d4f9f97083b6d86f6776c": {
+   "anchor": "2026-11-04T13:03:42.853157+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:03:42.853157+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "8e447521b0124e379112a6b72d3c169e": {
+   "anchor": "2026-11-04T13:02:25.676675+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:02:25.676675+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "8ebab54f355f45d4b5fd012584ec74d5": {
+   "anchor": "2026-11-04T13:01:32.843343+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:01:32.843343+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "90668601848d4d87afa890ce1a42eb6d": {
+   "anchor": "2026-11-04T13:01:22.722880+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:01:22.722880+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "914a0d52669e4e6fbe0b110c224cfe3a": {
+   "anchor": "2026-11-04T13:02:47.441762+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:02:47.441762+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "94679a91d65d4ce184bfbd70f3f3593f": {
+   "anchor": "2026-11-04T13:00:41.866695+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:00:41.866695+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "956c747aa3b84091bb153f2b4ae6bb33": {
+   "anchor": "2026-11-04T03:05:03.970171+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:05:03.970171+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "95ed06a2a037488da642617fea911618": {
+   "anchor": "2026-11-04T03:05:24.735878+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:05:24.735878+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "9f25e79105084281ade74fa592014660": {
+   "anchor": "2026-11-04T13:04:10.177767+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:04:10.177767+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "9fb13339798843a98d71e44420351ee7": {
+   "anchor": "2026-11-04T13:02:10.020368+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:02:10.020368+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "a29614fba5ff4d63aa5d98ffb6f91fa2": {
+   "anchor": "2026-11-04T13:01:02.989676+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:01:02.989676+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "a37bad58ea6b461f9a1162a0507afc08": {
+   "anchor": "2026-11-04T03:04:17.570102+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:04:17.570102+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "a583bd7b63d54215b3bc4789f6197935": {
+   "anchor": "2026-11-04T13:03:13.813925+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:03:13.813925+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "ab8f7accb81b4cbd8ec1e4ddc1d19da1": {
+   "anchor": "2026-11-04T03:05:18.882157+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:05:18.882157+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "abbf6560bc66446cb441270aeb150140": {
+   "anchor": "2026-11-04T13:03:37.471949+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:03:37.471949+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "b0c9fcc5fff8406492dd5d30fa3cbb6b": {
+   "anchor": "2026-11-04T03:05:57.436993+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:05:57.436993+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "b44ff484d5b74c5580ac8154d6777c07": {
+   "anchor": "2026-11-04T13:02:14.988028+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:02:14.988028+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "b6230f48fec745dab43426b5b561c087": {
+   "anchor": "2026-11-04T13:00:28.965642+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:00:28.965642+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "c0101a7476354791806ff7079097666e": {
+   "anchor": "2026-11-04T13:02:42.041400+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:02:42.041400+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "c13329f11dfc4ed7bfd7b3274d97ea2d": {
+   "anchor": "2026-11-04T13:03:58.760726+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:03:58.760726+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "c21bf196f44946759b61a88db27ca6b7": {
+   "anchor": "2026-11-04T13:01:50.174402+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:01:50.174402+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "c2cd5a4c707146bcbb0b99286daa3d27": {
+   "anchor": "2026-11-04T13:02:53.061887+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:02:53.061887+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "c75fb0895a1f4804bbe8d039d7fc96b3": {
+   "anchor": "2026-11-04T13:03:19.065349+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:03:19.065349+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "cd87ca1beefd42348e725ac3ef5b6b28": {
+   "anchor": "2026-11-04T13:04:31.448379+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:04:31.448379+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "ce05f2e1fcb94c469c9b1f76a141481a": {
+   "anchor": "2026-11-04T13:01:54.980241+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:01:54.980241+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "cfce58987c8f404abf1aadae18a98ae8": {
+   "anchor": "2026-11-04T03:03:14.683098+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:03:14.683098+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "d1109dc26dff4efaa0c0459dbc2bdea9": {
+   "anchor": "2026-11-04T03:04:53.599407+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:04:53.599407+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "d18f8e5b28fd442a8ea6ffe6ea4e81a0": {
+   "anchor": "2026-11-04T03:01:57.578390+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:01:57.578390+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "d24e9e14a0394201a7fe3636c46c42de": {
+   "anchor": "2026-11-04T13:00:21.916764+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:00:21.916764+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "d3050a856a82447bb9f85ca09e2e38f4": {
+   "anchor": "2026-11-04T03:04:12.552274+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:04:12.552274+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "d3221ebe64014058bdf11a8d14b794dc": {
+   "anchor": "2026-11-04T13:04:15.695690+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:04:15.695690+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "d47cba808ef745c99f6e1f8897bb9eec": {
+   "anchor": "2026-11-04T13:04:31.016162+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:04:31.016162+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "d68427062cb54cbebd70eee7752b2f62": {
+   "anchor": "2026-11-04T03:01:51.358854+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:01:51.358854+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "d6eaf8cd4b93423fb5206dd85eb3924d": {
+   "anchor": "2026-11-04T03:02:21.487841+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:02:21.487841+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "d93f530c31ad44a69360f359c2a8a09b": {
+   "anchor": "2026-11-04T03:03:28.698952+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:03:28.698952+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "df7dbaecca8f479c99b6ee42fca47339": {
+   "anchor": "2026-11-04T03:04:38.711170+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:04:38.711170+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "e140a13e03f54dd28868dca9c5f8c516": {
+   "anchor": "2026-11-04T03:06:02.328821+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:06:02.328821+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "e1a00d18b02647bf8d5754312b25ed81": {
+   "anchor": "2026-11-04T13:03:08.668877+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:03:08.668877+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "e25002eb99a44028b5d9142e333a4744": {
+   "anchor": "2026-11-04T13:02:31.662079+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:02:31.662079+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "e8f606eb7852434aa491cd2ac70530b4": {
+   "anchor": "2026-11-04T03:05:07.048780+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:05:07.048780+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "eebe2ff25c1c462ca857cde7a881077a": {
+   "anchor": "2026-11-04T03:04:48.810557+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:04:48.810557+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "ef556bd3058b41639cb11ff919bf7f93": {
+   "anchor": "2026-11-04T03:03:52.358956+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:03:52.358956+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "f50d0f5d68444c14877bedaba00d5315": {
+   "anchor": "2026-11-04T13:03:29.371850+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:03:29.371850+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "f824eba5f8934f3db2b5b5f37fa7eac0": {
+   "anchor": "2026-11-04T03:03:41.621349+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:03:41.621349+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "f9d4a20cd0d24afcb3588d849aa444de": {
+   "anchor": "2026-11-04T03:05:12.883785+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T03:05:12.883785+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  },
+  "fc972434867049eca9b4637610849a7a": {
+   "anchor": "2026-11-04T13:04:04.578072+00:00",
+   "anchor_src": "仍有效邊最大valid_from_ts（注入last_support_ts→引擎優先序1/2）",
+   "bound": "2026-11-11T13:04:04.578072+00:00",
+   "derived": true,
+   "note": "推導值，非 observed 時刻"
+  }
+ }
+}

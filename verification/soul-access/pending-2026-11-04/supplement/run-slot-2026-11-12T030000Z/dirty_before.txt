@@ -1,0 +1,7 @@
+﻿ M scripts/eval_lifecycle_cli.py
+?? verification/NOTION-MEMORY-1/journal.json
+?? verification/NOTION-MEMORY-1/journal.tmp
+?? verification/NOTION-MEMORY-1/migrate_journal.json
+?? verification/NOTION-MEMORY-1/sync_journal.json
+?? verification/notebooklm/
+?? verification/soul-access/pending-2026-11-04/supplement/

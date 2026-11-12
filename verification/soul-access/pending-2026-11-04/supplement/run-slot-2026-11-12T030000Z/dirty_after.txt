@@ -1,0 +1,4 @@
+git diff --stat (at REPORT time, HEAD 33f1126):
+ scripts/eval_lifecycle_cli.py    |  83 ++++++++++++++++
+ tests/test_eval_lifecycle_cli.py | 205 +++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 288 insertions(+)

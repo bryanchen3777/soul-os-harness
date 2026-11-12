@@ -2542,3 +2542,208 @@ class TestE635LedgerBoundary(unittest.TestCase):
         self.assertFalse(
             CLI.is_expected_metabolism(ev, ids, bounds, types),
             "非核准 ID 即使有下界 ⇒ 仍不得放行（成員檢查獨立把關）")
+
+
+class TestPending1104EvidenceBinding(unittest.TestCase):
+    """PENDING-1104 A 補件：同源綁定證據欄位的 AST＋功能＋雙向變異守衛。
+
+    只加欄位，不動台帳（EXPECTED_RETIREMENT_COHORTS 一字不動；
+    核准數恆 1302，見 `test_ledger_count_still_1302`）。
+    全部隔離沙盒／TEMP 副本；repo 檔全程不寫入。
+    """
+
+    # PENDING-1104 A 新增的 --json 證據鍵（少任一即破線）。
+    REQUIRED_EVIDENCE_KEYS = (
+        "source_snapshot_sha256",
+        "sandbox_consumed_sha256",
+        "sidecar_before_sha256",
+        "sidecar_after_sha256",
+        "sidecar_appended_jsonl",
+        "sidecar_appended_sha256",
+        "sidecar_appended_events",
+        "sidecar_append_consistent",
+        "cli_sha256",
+        "adapter_info",
+        "engine_info",
+    )
+
+    def _parse_cli_json(self, out):
+        return json.loads(out[out.index("{"):out.rindex("}") + 1])
+
+    def _load_temp_copy(self, text):
+        mod_name = "eval_cli_mutant_%s" % uuid.uuid4().hex
+        with tempfile.TemporaryDirectory(prefix="cli_mut1104_") as td:
+            p = pathlib.Path(td) / "eval_lifecycle_cli.py"
+            p.write_text(text, encoding="utf-8")
+            spec = importlib.util.spec_from_file_location(mod_name, p)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+
+    def _run_mod(self, mod, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = mod.main(list(args))
+        return rc, out.getvalue(), err.getvalue()
+
+    # ── AST ──
+    def test_evidence_keys_present_in_source_ast(self):
+        """AST：新證據輔助函式與 result 鍵必須存在（刪任一即轉紅）。"""
+        src = CLI_PATH.read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        fn_names = {n.name for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef)}
+        self.assertIn("_sha256_file", fn_names)
+        self.assertIn("_raw_jsonl_lines", fn_names)
+        for key in self.REQUIRED_EVIDENCE_KEYS:
+            self.assertIn('"%s"' % key, src, "缺少證據鍵：%s" % key)
+
+    def test_ledger_count_still_1302(self):
+        """台帳凍結：核准數恆 1302（本票不得增刪任何條目）。"""
+        self.assertEqual(len(CLI.approved_retirement_ids()), 1302)
+        self.assertEqual(CLI.EXPECTED_RETIREMENT_NOT_BEFORE,
+                         "2026-10-25T02:00:00+00:00")
+
+    # ── 功能（合成圖譜，全隔離）──
+    def test_synthetic_run_evidence_is_consistent(self):
+        """合成圖譜 --json：消費指紋＝來源、同次追加自洽（誤拒合法證據即紅）。"""
+        with tempfile.TemporaryDirectory(prefix="cli_ev1104_") as td:
+            src = _synthetic_graph(pathlib.Path(td))
+            src_sha = {p.name: _sha(p) for p in src.iterdir()}
+            rc, out, err = _run_cli("--source-dir", str(src), "--json")
+            self.assertEqual(rc, 0, out[-500:] + err[-500:])
+            data = self._parse_cli_json(out)
+            for key in self.REQUIRED_EVIDENCE_KEYS:
+                self.assertIn(key, data, "缺少證據鍵：%s" % key)
+            # 來源五檔指紋齊全
+            self.assertEqual(set(data["source_snapshot_sha256"]),
+                             {"elevation_nodes.jsonl", "elevation_edges.jsonl",
+                              "elevation_lifecycle_events.jsonl",
+                              "elevation_projection_trace.jsonl",
+                              "elevation_trace.jsonl"})
+            # 沙盒實際消費三檔＝來源位元組（複製前後一致；合成來源缺檔即跳過）
+            for name in ("elevation_nodes.jsonl", "elevation_edges.jsonl",
+                         "elevation_lifecycle_events.jsonl"):
+                if name not in src_sha:
+                    continue
+                self.assertEqual(data["sandbox_consumed_sha256"][name],
+                                 src_sha[name], "消費指紋漂移：%s" % name)
+            # 同次追加：原始行解析後逐筆等於事件陣列（直接取，不重建）
+            appended_raw = data["sidecar_appended_jsonl"]
+            appended_ev = data["sidecar_appended_events"]
+            self.assertEqual(len(appended_raw), len(appended_ev))
+            self.assertEqual(len(appended_raw), data["transitions"])
+            for ln, ev in zip(appended_raw, appended_ev):
+                self.assertEqual(json.loads(ln), ev)
+            self.assertTrue(data["sidecar_append_consistent"])
+            # 追加 SHA 可重算
+            expect_sha = hashlib.sha256(
+                "\n".join(appended_raw).encode("utf-8")).hexdigest()
+            self.assertEqual(data["sidecar_appended_sha256"], expect_sha)
+
+    # ── 雙向變異（TEMP 副本；repo SHA 前後一致）──
+    def test_mutation_dropped_event_is_flagged(self):
+        """M-漏事件：追加少一行 ⇒ consistent 必須 False（有牙）；對照組 True。"""
+        sha_before = hashlib.sha256(CLI_PATH.read_bytes()).hexdigest()
+        text = CLI_PATH.read_text(encoding="utf-8")
+        anchor = "sidecar_appended_raw = sidecar_after_raw[len(sidecar_before_raw):]"
+        self.assertEqual(text.count(anchor), 1, "M-漏事件錨點必須唯一")
+        mutant = text.replace(
+            anchor, anchor + "\n        sidecar_appended_raw = "
+                             "sidecar_appended_raw[:-1]  # MUTANT-1104-LEAK",
+            1)
+        for mod, want, label in ((self._load_temp_copy(text), True, "對照"),
+                                 (self._load_temp_copy(mutant), False, "變異")):
+            with tempfile.TemporaryDirectory(prefix="cli_mutrun_") as td:
+                src = _synthetic_graph(pathlib.Path(td))
+                rc, out, err = self._run_mod(mod, "--source-dir", str(src),
+                                             "--json")
+                self.assertEqual(rc, 0, label + out[-500:] + err[-500:])
+                data = self._parse_cli_json(out)
+                self.assertEqual(data["sidecar_append_consistent"], want,
+                                 "%s組 consistent 應為 %s" % (label, want))
+        sha_after = hashlib.sha256(CLI_PATH.read_bytes()).hexdigest()
+        self.assertEqual(sha_before, sha_after, "變異全程不得寫入 repo")
+
+    def test_mutation_corrupt_consumed_sha_is_visible(self):
+        """M-換SHA：消費指紋被竄改 ⇒ 與來源不一致必須可見；對照組一致。"""
+        sha_before = hashlib.sha256(CLI_PATH.read_bytes()).hexdigest()
+        text = CLI_PATH.read_text(encoding="utf-8")
+        anchor = "sandbox_consumed_sha256 = {"
+        self.assertEqual(text.count(anchor), 1, "M-換SHA錨點必須唯一")
+        mutant = text.replace(
+            anchor,
+            'sandbox_consumed_sha256 = {"elevation_nodes.jsonl": "0" * 64,\n'
+            '            "elevation_edges.jsonl": "0" * 64,\n'
+            '            "elevation_lifecycle_events.jsonl": "0" * 64}  # MUTANT-1104-SHA\n'
+            '        _consumed_mutant_placeholder = {',
+            1)
+        with tempfile.TemporaryDirectory(prefix="cli_mutrun_") as td:
+            src = _synthetic_graph(pathlib.Path(td))
+            src_sha = {p.name: _sha(p) for p in src.iterdir()}
+            rc, out, _ = self._run_mod(
+                self._load_temp_copy(mutant), "--source-dir", str(src), "--json")
+            self.assertEqual(rc, 0)
+            data = self._parse_cli_json(out)
+            mismatch = [n for n in src_sha
+                        if data["sandbox_consumed_sha256"].get(n) != src_sha[n]]
+            self.assertTrue(mismatch, "竄改後必須可見不一致（有牙）")
+        sha_after = hashlib.sha256(CLI_PATH.read_bytes()).hexdigest()
+        self.assertEqual(sha_before, sha_after, "變異全程不得寫入 repo")
+
+    # ── 邊界謂詞雙向（真實引擎＋合成沙盒，全隔離）──
+    def _probe_weakened(self, anchor_iso, probe_iso):
+        """合成 value 節點（錨點＝anchor_iso，仍有效邊 1 條），probe 時刻是否轉 weakening。"""
+        from src.inner_life.elevation_adapter import evaluate_lifecycle_all
+        nid = uuid.uuid4().hex
+        node = {
+            "node_id": nid, "node_type": "value", "content": "邊界謂詞合成命題",
+            "agent_id": "agent_probe", "candidate_node_type": None,
+            "confidence": 0.5, "stability": 0.0, "valence": "neutral",
+            "created_ts": anchor_iso, "last_support_ts": anchor_iso,
+            "lineage_depth": 0, "lineage_path": "",
+            "parent_node_id": None, "provenance_ref": None,
+            "lifecycle_state": "active", "superseded_by": None,
+        }
+        edge = {
+            "edge_id": uuid.uuid4().hex, "node_id": nid,
+            "source_type": "inner_life_event", "source_id": uuid.uuid4().hex,
+            "agent_id": "agent_probe", "weight": 1.0,
+            "valid_from_ts": anchor_iso, "valid_until_ts": None,
+            "inner_life_event_id": None, "trigger_type": "diary:night",
+        }
+        with tempfile.TemporaryDirectory(prefix="probe1104_") as td:
+            sb = pathlib.Path(td)
+            (sb / "elevation_nodes.jsonl").write_text(
+                json.dumps(node, ensure_ascii=False) + "\n", encoding="utf-8")
+            (sb / "elevation_edges.jsonl").write_text(
+                json.dumps(edge, ensure_ascii=False) + "\n", encoding="utf-8")
+            (sb / "elevation_lifecycle_events.jsonl").write_text(
+                "", encoding="utf-8")
+            evaluate_lifecycle_all(store_dir=sb, now_ts=probe_iso)
+            events = [json.loads(l) for l in
+                      (sb / "elevation_lifecycle_events.jsonl")
+                      .read_text(encoding="utf-8").splitlines() if l.strip()]
+            return any(e.get("node_id") == nid
+                       and e.get("lifecycle_state_before") == "active"
+                       and e.get("lifecycle_state_after") == "weakening"
+                       for e in events)
+
+    def test_boundary_predicate_cuts_both_ways(self):
+        """下界謂詞雙向：bound−1µs 不轉（錯下界主張被證偽须紅）；
+        bound／+1µs 轉（合法證據被誤拒亦紅，還原綠）。"""
+        anchor = "2026-01-01T00:00:00+00:00"
+        bound = "2026-01-08T00:00:00+00:00"  # anchor＋7天（推導）
+        bound_dt = datetime.fromisoformat(bound)
+        before = (bound_dt - timedelta(microseconds=1)).isoformat()
+        after = (bound_dt + timedelta(microseconds=1)).isoformat()
+        self.assertFalse(self._probe_weakened(anchor, before),
+                         "下界前 1µs 不得轉 weakening（比較語義 >=）")
+        self.assertTrue(self._probe_weakened(anchor, bound),
+                        "下界恰好 ⇒ 必須轉（誤拒合法證據即紅）")
+        self.assertTrue(self._probe_weakened(anchor, after),
+                        "下界後 1µs ⇒ 必須轉")
+        # 錯下界（提前一日）在其主張時刻必不轉 ⇒ 該主張被證偽（紅）。
+        tampered = (bound_dt - timedelta(days=1)).isoformat()
+        self.assertFalse(self._probe_weakened(anchor, tampered),
+                         "錯下界（提前一日）在其主張時刻不轉 ⇒ 主張被證偽")

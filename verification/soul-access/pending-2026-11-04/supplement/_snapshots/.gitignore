@@ -1,0 +1,3 @@
+# PENDING-1104 supplement snapshots: raw bytes stay out of git.
+# Only filenames / sizes / SHAs / locations are committed (see manifest.json).
+*.jsonl

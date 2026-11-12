@@ -2953,6 +2953,30 @@ def read_jsonl(path: Path) -> list:
     return out
 
 
+def _sha256_file(path: Path) -> str:
+    """單檔 SHA-256（讀失敗回佔位字串，不拋例外）。
+
+    PENDING-1104 A 階段補件用：證明沙盒實際消費的位元組與來源一致。
+    """
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return "<unreadable>"
+
+
+def _raw_jsonl_lines(path: Path) -> list:
+    """sidecar 原始行（去空行；與 ``read_jsonl`` 的行切分同口徑）。
+
+    PENDING-1104 A 階段補件用：直接取追加內容，不人工重建事件。
+    回傳的是**原始字串行**，呼叫端用切片 ``after[len(before):]`` 取追加段。
+    """
+    if not path.exists():
+        return []
+    with open(path, "r", encoding="utf-8") as fh:
+        return [ln for ln in (l.strip() for l in fh.read().splitlines())
+                if ln]
+
+
 def copy_graph(src: Path, dst: Path) -> None:
     """把來源圖譜的必要檔案複製到沙盒（**不**複製 40MB 的 trace 檔）。"""
     dst.mkdir(parents=True, exist_ok=True)
@@ -4087,6 +4111,15 @@ def main(argv=None) -> int:
 
         copy_graph(source, sandbox)
         sidecar = sandbox / LIFECYCLE_EVENTS_FILENAME
+        # 🔴 PENDING-1104 A 補件：沙盒實際消費的位元組指紋（複製完成當下即取，
+        #    評估前快照；與 source_snapshot_sha256 對讀即得「複製前後一致」）。
+        sandbox_consumed_sha256 = {
+            name: _sha256_file(sandbox / name) for name in COPY_FILES
+        }
+        # 🔴 PENDING-1104 A 補件：sidecar 評估前原始行（评估后切片即得追加段，
+        #    直接取追加內容，不人工重建事件）。
+        sidecar_before_raw = _raw_jsonl_lines(sidecar)
+        sidecar_before_sha256 = _sha256_file(sidecar)
         nodes = read_jsonl(sandbox / NODES_FILENAME)
         edges = read_jsonl(sandbox / EDGES_FILENAME)
         # 🔴 有界豁免的證據（RULE-2 逐筆證明；來源唯讀，只讀不寫）：
@@ -4160,6 +4193,50 @@ def main(argv=None) -> int:
         after_events = read_jsonl(sidecar)
         after_prompt = prompt_snapshot(sandbox, agents)
         new_events = after_events[len(before_events):]
+        # 🔴 PENDING-1104 A 補件：同次 sidecar 追加的原始 JSONL 行及其 SHA、
+        #    完整事件陣列（直接取追加段，不人工重建；行數須與解析事件數一致）。
+        sidecar_after_raw = _raw_jsonl_lines(sidecar)
+        sidecar_after_sha256 = _sha256_file(sidecar)
+        sidecar_appended_raw = sidecar_after_raw[len(sidecar_before_raw):]
+        sidecar_appended_sha256 = hashlib.sha256(
+            "\n".join(sidecar_appended_raw).encode("utf-8")).hexdigest() \
+            if sidecar_appended_raw else hashlib.sha256(b"").hexdigest()
+        sidecar_append_consistent = (
+            len(sidecar_appended_raw) == len(new_events)
+            and all(json.loads(ln) == ev for ln, ev in zip(sidecar_appended_raw, new_events))
+            if sidecar_appended_raw or new_events else True
+        )
+        # 🔴 PENDING-1104 A 補件：實載引擎／prior 的路徑、版本與檔案 SHA
+        #   （只讀指紋，不改行為）。
+        try:
+            import importlib.util as _ilu
+            _eng_spec = _ilu.find_spec("soul_elevation.engine")
+            _pri_spec = _ilu.find_spec("soul_elevation.prior")
+            _pkg_spec = _ilu.find_spec("soul_elevation")
+            try:
+                from importlib.metadata import version as _pkg_version
+                _se_version = _pkg_version("soul-elevation")
+            except Exception:
+                _se_version = "<unknown>"
+            _engine_info = {
+                "package": "soul_elevation",
+                "version": _se_version,
+                "engine_file": str(_eng_spec.origin) if _eng_spec else "<unknown>",
+                "engine_sha256": _sha256_file(Path(_eng_spec.origin)) if _eng_spec and _eng_spec.origin else "<unknown>",
+                "prior_file": str(_pri_spec.origin) if _pri_spec else "<unknown>",
+                "prior_sha256": _sha256_file(Path(_pri_spec.origin)) if _pri_spec and _pri_spec.origin else "<unknown>",
+            }
+        except Exception as _e:
+            _engine_info = {"error": "%s: %s" % (type(_e).__name__, _e)}
+        try:
+            import src.inner_life.elevation_adapter as _adapter_mod
+            _adapter_info = {
+                "file": str(Path(_adapter_mod.__file__).resolve()),
+                "sha256": _sha256_file(Path(_adapter_mod.__file__)),
+            }
+        except Exception as _e:
+            _adapter_info = {"error": "%s: %s" % (type(_e).__name__, _e)}
+        _cli_info = {"sha256": _sha256_file(Path(__file__).resolve())}
 
         # 🔴 本次「命中」的預期代謝（核准清單內 value 轉入 weakening **且在退役窗之後**）。
         #    與 `expected_retirement`（集合）分開報：集合是「誰有資格」，
@@ -4318,6 +4395,18 @@ def main(argv=None) -> int:
             "verdict": verdict,
             "exit_code": exit_code,
             "failures": fails,
+            # 🔴 PENDING-1104 A 補件：同源綁定證據（只加欄位，不改既有分類與退出碼）。
+            "source_snapshot_sha256": source_snapshot_sha256,
+            "sandbox_consumed_sha256": sandbox_consumed_sha256,
+            "sidecar_before_sha256": sidecar_before_sha256,
+            "sidecar_after_sha256": sidecar_after_sha256,
+            "sidecar_appended_jsonl": sidecar_appended_raw,
+            "sidecar_appended_sha256": sidecar_appended_sha256,
+            "sidecar_appended_events": new_events,
+            "sidecar_append_consistent": sidecar_append_consistent,
+            "cli_sha256": _cli_info.get("sha256"),
+            "adapter_info": _adapter_info,
+            "engine_info": _engine_info,
         }
 
         if args.json:
