@@ -2545,10 +2545,11 @@ class TestE635LedgerBoundary(unittest.TestCase):
 
 
 class TestPending1104EvidenceBinding(unittest.TestCase):
-    """PENDING-1104 A 補件：同源綁定證據欄位的 AST＋功能＋雙向變異守衛。
+    """PENDING-1104 同源綁定：證據欄位的 AST＋功能＋雙向變異守衛。
 
-    只加欄位，不動台帳（EXPECTED_RETIREMENT_COHORTS 一字不動；
-    核准數恆 1302，見 `test_ledger_count_still_1302`）。
+    A 階段只加欄位、不動台帳；B 階段唯一合法增長即 2026-11-04 cohort 的 90 ID
+    （核准數 1302→1392，舊集合零刪除，見
+    `test_ledger_count_now_1392_after_1104_cohort`）。
     全部隔離沙盒／TEMP 副本；repo 檔全程不寫入。
     """
 
@@ -2598,11 +2599,33 @@ class TestPending1104EvidenceBinding(unittest.TestCase):
         for key in self.REQUIRED_EVIDENCE_KEYS:
             self.assertIn('"%s"' % key, src, "缺少證據鍵：%s" % key)
 
-    def test_ledger_count_still_1302(self):
-        """台帳凍結：核准數恆 1302（本票不得增刪任何條目）。"""
-        self.assertEqual(len(CLI.approved_retirement_ids()), 1302)
+    def test_ledger_count_now_1392_after_1104_cohort(self):
+        """台帳凍結（B 階段）：核准數 1302 → 1392，增長恰為 2026-11-04 的 90 ID。
+
+        舊集合不變由「純新增 diff」保證（本票對 CLI 的改動必須是零刪除；
+        見 stage-b 證據的 `git diff --numstat`），本測試釘死新總數與新 cohort
+        的形狀：90 節點、退役窗、1 belief 記載型別、逐節點下界全覆蓋。
+        """
+        self.assertEqual(len(CLI.approved_retirement_ids()), 1392)
         self.assertEqual(CLI.EXPECTED_RETIREMENT_NOT_BEFORE,
                          "2026-10-25T02:00:00+00:00")
+        cohorts = [c for c in CLI.EXPECTED_RETIREMENT_COHORTS
+                   if c["date"] == "2026-11-04"]
+        self.assertEqual(len(cohorts), 1, "2026-11-04 cohort 必須恰有一筆")
+        c = cohorts[0]
+        self.assertEqual(c["not_before"], "2026-11-12T03:00:00+00:00")
+        self.assertEqual(len(set(c["nodes"])), 90)
+        self.assertEqual(c["types"],
+                         {"e140a13e03f54dd28868dca9c5f8c516": "belief"})
+        self.assertEqual(set(c["bounds"]), set(c["nodes"]),
+                         "逐節點下界必須全覆蓋 90 節點")
+        rest = set()
+        for other in CLI.EXPECTED_RETIREMENT_COHORTS:
+            if other["date"] != "2026-11-04":
+                rest |= set(other["nodes"])
+        self.assertEqual(len(rest), 1302, "舊集合必須原樣保留 1302 筆")
+        self.assertEqual(set(c["nodes"]) & rest, set(),
+                         "新 90 ID 不得與舊集合重疊")
 
     # ── 功能（合成圖譜，全隔離）──
     def test_synthetic_run_evidence_is_consistent(self):

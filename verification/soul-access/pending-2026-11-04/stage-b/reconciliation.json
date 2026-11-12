@@ -1,0 +1,86 @@
+{
+  "verdict": [
+    "PENDING_COHORT",
+    "PASS"
+  ],
+  "exit_code": [
+    3,
+    0
+  ],
+  "transitions": [
+    206,
+    206
+  ],
+  "engine_events_returned": [
+    206,
+    206
+  ],
+  "sidecar_appended_events_len": [
+    206,
+    206
+  ],
+  "sidecar_appended_sha256": [
+    "46a1624ffc06f0abde23ef85b8a8e1b01f90fdd0c5d8df0df669a540a0bbb9f8",
+    "46a1624ffc06f0abde23ef85b8a8e1b01f90fdd0c5d8df0df669a540a0bbb9f8"
+  ],
+  "sidecar_appended_events_identical": true,
+  "sidecar_after_sha256": [
+    "1be908d5988d8919df1cc1e1ecf32818b4b2c6ba891a68544642b47efe602247",
+    "1be908d5988d8919df1cc1e1ecf32818b4b2c6ba891a68544642b47efe602247"
+  ],
+  "sidecar_append_consistent": [
+    true,
+    true
+  ],
+  "pending_cohorts_len": [
+    1,
+    0
+  ],
+  "pending_ids_count": 90,
+  "pending_ids_equals_ledger_diff": true,
+  "expected_hits_count": [
+    0,
+    90
+  ],
+  "expected_retirement_count": [
+    1302,
+    1392
+  ],
+  "expected_retirement_delta_equals_diff": true,
+  "expected_retirement_derived_count": [
+    1239,
+    1329
+  ],
+  "soul_type_transitions_identical": true,
+  "soul_type_transitions": {
+    "belief": 1,
+    "value": 89,
+    "trait": 0,
+    "essence": 0
+  },
+  "by_node_type_identical": true,
+  "by_to_state_identical": true,
+  "weak_prefix": {
+    "before": [
+      1066,
+      1066
+    ],
+    "after": [
+      1156,
+      1156
+    ]
+  },
+  "prompt_diffs_len": [
+    46,
+    46
+  ],
+  "prompt_diffs_identical": true,
+  "prompt_diffs_unexplained": [
+    0,
+    0
+  ],
+  "key_node_transitions": [
+    0,
+    0
+  ]
+}

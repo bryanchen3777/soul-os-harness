@@ -10316,3 +10316,29 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
   CLI sha `b6dc533a…70cdc45`、HEAD `9dd67bf`、台帳 1302。
 - Owner 明授（2026-11-11）：PENDING 核准＋生產接線核准兩門下達後，主服務重啟可執行。
   兩門未齊前不動生產；授權本身不是執行指令。
+
+## 0.1.148 PENDING-1104 B 階段完工：台帳追加 2026-11-04 cohort（90 ID），exit 3→0（仍未部署）
+
+- 裁決：主腦 Sol 明示核准（A 閉環、核准進入 B、限封存 90 ID）；不是部署核准，生產接線核准另票。
+- 範圍（只動兩檔＋新增 stage-b 證據）：`scripts/eval_lifecycle_cli.py`（台帳區單一 hunk、
+  191 insertions／0 deletions，新 cohort 按建立日序插於 11-03／11-09 之間）、
+  `tests/test_eval_lifecycle_cli.py`（守衛更名釘死 1392＋新 cohort 形狀＋其餘聯集 1302 零重疊）；
+  證據 `verification/soul-access/pending-2026-11-04/stage-b/`（REPORT-B＋原始 JSON＋對帳＋差集＋變異紀錄＋回歸 log）。
+  禁動皆未動：A 階段證據、快照、引擎、判準、`data/**`、Frozen Contract。
+- 台帳差集（模組載入新舊比對）：old 1302 ⊆ new 1392，deletions＝[]，差集 90＝`per_id.json` 90 ID 逐字相等；
+  1 belief（`e140a13e…`）記 `types`，89 value 為預設不記；逐節點 `bounds` 90 筆全命中；
+  單一 11-04 cohort，`not_before=2026-11-12T03:00:00+00:00`。
+- 同快照同槽重跑（快照 `--source-dir`，槽 `2026-11-12T03:00:00Z`）：exit 3→0、
+  verdict `PENDING_COHORT`→`PASS`、pending 90→0、expected hits 0→90；
+  206 筆 sidecar 事件逐位元相同（appended／after 雙 sha 前後一致）；
+  soul 型別 belief 1／value 89／trait 0／essence 0 不變；
+  Prompt 46 筆逐位元相同、weak 增量同為 90、unexplained 0；
+  關鍵反例節點 `6a92c906b245` 零轉變（仍 active）。
+- 測試：CLI 類＋`tests/infra` 520 passed／5 subtests／exit 0；
+  全庫 `5 failed, 8882 passed, 32 skipped, 32 subtests passed`——5 紅全為既有
+  `test_gap_*`（journal 3＋runtime_port 2），無新增。
+- TEMP 三變異（副本＋合成事件，repo 只讀）：M1 漏 ID／M2 錯型／M3 下界後移各轉紅、
+  真實模組拒絕早產事件，還原後轉綠（`mutations.log`）。
+- 備註：任務中段曾出現未提交的 386-insertions 台帳編輯（缺 `types`）後被未知方還原；
+  本單以乾淨基線重做為 191 行純新增，`git diff` 可驗零刪除；HEAD 全程 `578f3a2` 未變。
+- 部署狀態：仍未部署，不得宣稱部署。
