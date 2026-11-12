@@ -584,6 +584,46 @@ def ping(endpoint: Endpoint, model_id: str, *, timeout: float = 120.0) -> CallRe
     )
 
 
+def settlement_for_result(result: CallResult) -> tuple[int | None, int | None, bool]:
+    """按协议 completion/output 结算（含 reasoning，保守口径），供 harness 记账。
+
+    与 ``harness.budget.settle_billed_tokens`` 同规则（``billed = output +
+    reasoning``，宁可多算不可少算），此处就地实现以避免 ``scripts`` 反向
+    依赖 ``harness``（Soul/B 边界：调用层不 import harness）。
+
+    回传 ``(billed_completion, billed_total, unknown)``；``ok=False``、
+    usage 缺失、output 缺失 ⇒ ``unknown=True``（调用方须保留预留、
+    标 UNKNOWN 并停止后续发送，**不得当 0 处理**）。
+    """
+    if not result.ok:
+        return None, None, True
+    usage = result.usage or {}
+    out = usage.get("output_tokens")
+    if out is None:
+        return None, None, True
+    try:
+        out_i = int(out)
+    except (TypeError, ValueError):
+        return None, None, True
+    try:
+        r_i = int(usage.get("reasoning_tokens") or 0)
+    except (TypeError, ValueError):
+        return None, None, True
+    billed = out_i + r_i
+    total = usage.get("total_tokens")
+    try:
+        billed_total = int(total) if total is not None else out_i + int(usage.get("input_tokens") or 0)
+    except (TypeError, ValueError):
+        billed_total = billed
+    return billed, billed_total, False
+
+
+def is_unknown_result(result: CallResult) -> bool:
+    """是否属于 UNKNOWN（缺 usage / 超时 / 失败）：一律停发。"""
+    _, _, unknown = settlement_for_result(result)
+    return unknown
+
+
 __all__ = [
     "CallResult",
     "Endpoint",
@@ -593,10 +633,12 @@ __all__ = [
     "extract_finish_reason",
     "extract_reasoning",
     "extract_text",
+    "is_unknown_result",
     "load_endpoints",
     "normalize_usage",
     "ping",
     "redact",
     "redact_headers",
     "session_id",
+    "settlement_for_result",
 ]

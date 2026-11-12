@@ -38,8 +38,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from soeb import client as soeb_client  # noqa: E402
+from harness import budget as harness_budget  # noqa: E402  # 调用方集中限额（只活在 harness）
 
 
 def _force_utf8_stdio() -> None:
@@ -226,17 +228,29 @@ def run_matrix(
     save_raw: bool,
     timeout: float,
     sink: Callable[[dict[str, Any]], None] | None = None,
+    budget_doc: dict[str, Any] | None = None,
+    budget_ledger: Any | None = None,
+    presend_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     """逐模型 × 逐題 × 逐次執行。
 
     `sink` 會在**每一筆觀測產生時**被呼叫。呼叫端用它做增量落盤：
     推理模型一題可能要跑幾十分鐘，若只在全部跑完才寫檔，
     任何一次中斷（harness 逾時、斷線、例外）都會讓**已完成的所有觀測一起消失**。
+
+    限額（SA-HARNESS-BUDGET-1）：傳入 budget_doc + budget_ledger 時，
+    每一發在 `soeb_client.call` 之前先持久化預留（reserve 落盤後才發送），
+    發後按協議結算（含 reasoning）；缺 usage / 超時 / 存證失敗 ⇒ 保留預留、
+    標 UNKNOWN 並停止後續發送（halt）。本票禁自動重試加額。
+    不傳 budget 參數時行為與舊版逐位元相同。
     """
     by_id = {m["id"]: m for m in registry["models"]}
     observations: list[dict[str, Any]] = []
 
     for mid in model_ids:
+        if budget_ledger is not None and budget_ledger.halted:
+            print("[BUDGET-HALT] 账本已 HALT，停止后续发送")
+            break
         meta = by_id[mid]
         protocol = meta["protocol"]
         # 端點鍵 != 協定：`ollama-chat` 與 `chat-completions` 是同一種協定、不同通道。
@@ -264,6 +278,9 @@ def run_matrix(
         api_model = meta.get("api_model") or mid
 
         for task in tasks:
+            if budget_ledger is not None and budget_ledger.halted:
+                print("[BUDGET-HALT] 账本已 HALT，停止后续发送")
+                break
             # 統一 System Prompt：六家收到的 bytes 必須完全相同，所以由 spec 提供、
             # 在這裡前置，而不是各題自己寫進 messages（那會讓題目間不一致）。
             messages = list(task.messages)
@@ -274,6 +291,71 @@ def run_matrix(
                 effort = task.effort
                 if effort and effort not in (meta.get("effort_supported") or []):
                     effort = None  # 不支援就別送，避免 400 混進結果
+                # ── 限额预留（先落盘后发送；禁绕过）──
+                _rid: str | None = None
+                _caps: dict[str, Any] | None = None
+                if budget_doc is not None and budget_ledger is not None:
+                    _key = harness_budget.ProfileKey(
+                        channel=endpoint_key,
+                        api_model=api_model,
+                        task_sha256=harness_budget.canonical_task_sha256(messages),
+                        effort=effort,
+                    )
+                    _, _caps = harness_budget.resolve_profile(budget_doc, _key)
+                    budget_ledger.check_fits(
+                        single_shot_max_completion=int(_caps["single_shot_max_completion"]),
+                        total_max_completion=int(_caps["total_max_completion"]),
+                        max_shots=int(_caps["max_shots"]),
+                        planned_max_tokens=int(task.max_tokens),
+                        planned_new_shots=1,
+                    )
+                    _rid = budget_ledger.reserve(
+                        shot_id=f"{mid}/{task.id}/r{run_idx}",
+                        pre_tokens=int(task.max_tokens),
+                    )
+                    if presend_dir is not None:
+                        _url, _headers, _body = soeb_client.build_request(
+                            endpoint.protocol,
+                            endpoint,
+                            api_model,
+                            messages,
+                            max_tokens=task.max_tokens,
+                            temperature=task.temperature,
+                            effort=effort,
+                        )
+                        _redacted = dict(_headers)
+                        try:
+                            _redacted = soeb_client.redact_headers(_headers)
+                            harness_budget.validate_redacted_headers(_redacted)
+                        except harness_budget.BudgetError as _be:
+                            budget_ledger.mark_unknown(_rid, reason=f"presend-redact-fail: {_be}")
+                            raise SystemExit(f"预算拒绝（发前存证失败，已标 UNKNOWN 并停止）：{_be}")
+                        presend_dir.mkdir(parents=True, exist_ok=True)
+                        _pf = presend_dir / f"presend-{mid}-{task.id}-r{run_idx}.json"
+                        try:
+                            with open(_pf, "w", encoding="utf-8", newline="\n") as _fh:
+                                json.dump(
+                                    {
+                                        "reservation": _rid,
+                                        "channel": endpoint_key,
+                                        "api_model": api_model,
+                                        "task": task.id,
+                                        "run": run_idx,
+                                        "effort_sent": effort,
+                                        "task_sha256": _key.task_sha256,
+                                        "request": {
+                                            "url": _url,
+                                            "headers": _redacted,
+                                            "body": _body,
+                                        },
+                                    },
+                                    _fh,
+                                    ensure_ascii=False,
+                                    indent=2,
+                                )
+                        except OSError as _oe:
+                            budget_ledger.mark_unknown(_rid, reason=f"presend-persist-fail: {_oe}")
+                            raise SystemExit(f"预算拒绝（发前存证落盘失败，已标 UNKNOWN 并停止）：{_oe}")
                 result = soeb_client.call(
                     endpoint,
                     api_model,
@@ -284,6 +366,52 @@ def run_matrix(
                     timeout=timeout,
                     save_raw=save_raw,
                 )
+                if budget_doc is not None and budget_ledger is not None and _rid is not None:
+                    _billed, _btotal, _unknown = soeb_client.settlement_for_result(result)
+                    if _unknown or _billed is None or _btotal is None:
+                        budget_ledger.mark_unknown(
+                            _rid,
+                            reason=(
+                                f"unknown-settlement: ok={result.ok} "
+                                f"status={result.status_code} err={(result.error or '')[:120]}"
+                            ),
+                        )
+                        rec_u = result.to_dict()
+                        rec_u["model_id"] = mid
+                        rec_u["api_model"] = api_model
+                        rec_u["channel"] = endpoint_key
+                        rec_u["task"] = task.id
+                        rec_u["run"] = run_idx
+                        rec_u["task_note"] = task.note
+                        rec_u["effort_sent"] = effort
+                        rec_u["budget_reservation"] = _rid
+                        rec_u["budget_status"] = "UNKNOWN"
+                        observations.append(rec_u)
+                        if sink is not None:
+                            sink(rec_u)
+                        print(
+                            f"[BUDGET-UNKNOWN] {mid:<26} {task.id:<28} r{run_idx} "
+                            f"预留已保留并 HALT，停止后续发送"
+                        )
+                        break
+                    assert _caps is not None
+                    if int(_billed) > int(_caps["single_shot_max_completion"]):
+                        budget_ledger.mark_unknown(_rid, reason=f"over-single-shot: billed={_billed}")
+                        raise SystemExit(
+                            f"预算拒绝（单发超限 billed={_billed}，已标 UNKNOWN 并停止）"
+                        )
+                    budget_ledger.settle(
+                        _rid,
+                        billed_completion=int(_billed),
+                        billed_total=int(_btotal),
+                        assoc={
+                            "model_id": mid,
+                            "task": task.id,
+                            "run": run_idx,
+                            "status_code": result.status_code,
+                            "finish_reason": result.finish_reason,
+                        },
+                    )
                 rec = result.to_dict()
                 # 觀測列的 model_id 一律是 registry 的參賽者 id，不是上游 API 名。
                 # 否則 deepseek 會以 `deepseek-v4.1-flash:1017` 的身分出現，
@@ -295,6 +423,9 @@ def run_matrix(
                 rec["run"] = run_idx
                 rec["task_note"] = task.note
                 rec["effort_sent"] = effort
+                if _rid is not None:
+                    rec["budget_reservation"] = _rid
+                    rec["budget_status"] = "settled"
                 observations.append(rec)
                 if sink is not None:
                     sink(rec)
@@ -337,6 +468,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=None, help="MiniMax Code config.yaml 路徑（預設自動偵測）")
     parser.add_argument("--no-save-raw", action="store_true", help="不保存原始回應（省空間）")
     parser.add_argument("--run", action="store_true", help="真的發送請求（會產生 LLM 費用）")
+    parser.add_argument(
+        "--budget-profile",
+        default=None,
+        help="预算 profile 名（budgets.json 内条目；--run 必填，无回落默认值）",
+    )
+    parser.add_argument(
+        "--budgets",
+        default=None,
+        help="budgets.json 路径（默认 scripts/soeb/budgets.json）",
+    )
+    parser.add_argument(
+        "--budget-auth-id",
+        default=None,
+        help="账本独占授权 ID（默认取 --budget-profile 的值）",
+    )
+    parser.add_argument(
+        "--budget-ledger",
+        default=None,
+        help="账本路径（默认 <out>/budget_ledger.json，必在 out 之下）",
+    )
     parser.add_argument("--allow-blocked", action="store_true", help="連 registry 標記 blocked 的模型也一起打")
     parser.add_argument(
         "--only",
@@ -432,6 +583,108 @@ def main(argv: list[str] | None = None) -> int:
         print("確認上面的矩陣與成本量級後，加上 --run 才會真的執行。")
         return 0
 
+    # ── 限额前置（SA-HARNESS-BUDGET-1）：--run 必须指定 profile；超限直接拒绝 ──
+    if not args.budget_profile:
+        print("Error: --run 必须同时指定 --budget-profile（无默认回落）", file=sys.stderr)
+        return 2
+    _budgets_path = Path(args.budgets) if args.budgets else (SOEB_DIR / "budgets.json")
+    try:
+        budget_doc = harness_budget.load_budgets(_budgets_path)
+    except harness_budget.BudgetError as exc:
+        print(f"Error: 预算配置无效：{exc}", file=sys.stderr)
+        return 2
+    if args.budget_profile not in (budget_doc.get("profiles") or {}):
+        print(
+            f"Error: budgets 内无 profile {args.budget_profile!r}（禁回落），"
+            f"可选：{sorted((budget_doc.get('profiles') or {}))}",
+            file=sys.stderr,
+        )
+        return 2
+    _auth_id = args.budget_auth_id or args.budget_profile
+    _ledger_path = Path(args.budget_ledger) if args.budget_ledger else (out_dir / "budget_ledger.json")
+    try:
+        _ledger_resolved = _ledger_path.resolve()
+        _out_resolved = out_dir.resolve()
+        if _ledger_resolved != _out_resolved and _out_resolved not in _ledger_resolved.parents:
+            print(f"Error: 账本必须落在 out 之下：{_ledger_path}", file=sys.stderr)
+            return 2
+    except OSError as exc:
+        print(f"Error: 账本路径无效：{exc}", file=sys.stderr)
+        return 2
+    budget_ledger = harness_budget.Ledger(_ledger_path)
+    try:
+        budget_ledger.acquire(_auth_id)
+    except harness_budget.BudgetError as exc:
+        print(f"Error: 账本独占锁拒绝：{exc}", file=sys.stderr)
+        return 2
+    # 发前总量预检：任一 (模型,题,次) 无显式配置或超限 ⇒ 直接拒绝，不发送
+    try:
+        for _mid in model_ids:
+            _meta = by_id[_mid]
+            _ekey = _meta.get("endpoint") or _meta["protocol"]
+            _api = _meta.get("api_model") or _mid
+            for _t in tasks:
+                _msgs = list(_t.messages)
+                if system_prompt:
+                    _msgs = [{"role": "system", "content": system_prompt}, *_msgs]
+                _eff = _t.effort
+                if _eff and _eff not in (_meta.get("effort_supported") or []):
+                    _eff = None
+                _k = harness_budget.ProfileKey(
+                    channel=_ekey,
+                    api_model=_api,
+                    task_sha256=harness_budget.canonical_task_sha256(_msgs),
+                    effort=_eff,
+                )
+                _, _caps = harness_budget.resolve_profile(budget_doc, _k)
+                budget_ledger.check_fits(
+                    single_shot_max_completion=int(_caps["single_shot_max_completion"]),
+                    total_max_completion=int(_caps["total_max_completion"]),
+                    max_shots=int(_caps["max_shots"]),
+                    planned_max_tokens=int(_t.max_tokens),
+                    planned_new_shots=1,
+                )
+                # 预检只判“本发是否放得下”，不占位（占位在发送前逐发 reserve）。
+                # 但发数上限需按整批总量判：剩余容量必须 ≥ 整批剩余发数。
+        _planned_total = sum(_t.runs for _t in tasks) * len(model_ids)
+        _first_caps: dict[str, Any] | None = None
+        for _mid in model_ids:
+            _meta = by_id[_mid]
+            _ekey = _meta.get("endpoint") or _meta["protocol"]
+            _api = _meta.get("api_model") or _mid
+            for _t in tasks:
+                _msgs = list(_t.messages)
+                if system_prompt:
+                    _msgs = [{"role": "system", "content": system_prompt}, *_msgs]
+                _eff = _t.effort
+                if _eff and _eff not in (_meta.get("effort_supported") or []):
+                    _eff = None
+                _, _caps = harness_budget.resolve_profile(
+                    budget_doc,
+                    harness_budget.ProfileKey(
+                        channel=_ekey,
+                        api_model=_api,
+                        task_sha256=harness_budget.canonical_task_sha256(_msgs),
+                        effort=_eff,
+                    ),
+                )
+                _first_caps = _first_caps or _caps
+                break
+            if _first_caps is not None:
+                break
+        if _first_caps is not None and budget_ledger.used_shots() + _planned_total > int(_first_caps["max_shots"]):
+            print(
+                f"Error: 发数超限：已用 {budget_ledger.used_shots()} + 本批 {_planned_total} > "
+                f"max_shots={_first_caps['max_shots']}，拒绝发送",
+                file=sys.stderr,
+            )
+            return 2
+    except harness_budget.BudgetError as exc:
+        print(f"Error: 预算拒绝（未发送）：{exc}", file=sys.stderr)
+        return 2
+    presend_dir = out_dir / "presend"
+    presend_dir.mkdir(parents=True, exist_ok=True)
+
     endpoints = soeb_client.load_endpoints(args.config)
     print(f"已載入 {len(endpoints)} 個協定端點：{sorted(endpoints)}")
 
@@ -458,9 +711,17 @@ def main(argv: list[str] | None = None) -> int:
             save_raw=not args.no_save_raw,
             timeout=args.timeout,
             sink=_sink,
+            budget_doc=budget_doc,
+            budget_ledger=budget_ledger,
+            presend_dir=presend_dir,
         )
     finally:
         obs_fh.close()
+
+    # 账本摘要（发后存证，留在 harness out 内）
+    budget_summary = budget_ledger.summary()
+    with open(out_dir / "budget_settle.json", "w", encoding="utf-8", newline="\n") as _bf:
+        json.dump(budget_summary, _bf, ensure_ascii=False, indent=2)
 
     finished_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -503,6 +764,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         > 1,
         "registry_version": registry["registry_version"],
+        "budget_profile": args.budget_profile,
+        "budget_auth_id": _auth_id,
+        "budget_ledger": str(_ledger_path),
+        "budget_summary": budget_summary,
     }
     manifest_path = out_dir / "manifest.json"
     with open(manifest_path, "w", encoding="utf-8", newline="\n") as fh:

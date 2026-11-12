@@ -1,0 +1,16 @@
+{
+  "ledger_version": 1,
+  "note": "SA-HARNESS-BUDGET-1：调用方集中限额显式配置。精确匹配无回落；未列出的组合一律拒绝发送。本文件只活在 harness，不改 Soul 生产行为。",
+  "profiles": {
+    "sa-budget-1-verified-t1": {
+      "note": "唯一已验组合示例（SA-BUDGET-1 三发 precedent：8000/24000/3）。其它组合必须显式加条目，禁回落用此值。",
+      "channel": "ollama-chat",
+      "api_model": "deepseek-v4.1-flash:1017",
+      "task_sha256": "c76c9253613bdab7c8752e5700dc89c81bd4aa0da018b2c8bb9b224791dce414",
+      "effort": null,
+      "single_shot_max_completion": 8000,
+      "total_max_completion": 24000,
+      "max_shots": 3
+    }
+  }
+}
