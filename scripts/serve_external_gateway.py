@@ -64,8 +64,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--soul-access-release",
         default=None,
         help="SA-1: release file gating soul-access live-loop inbound. "
-        "Omitted = envelope traffic fails closed (500). Set = per-inbound "
-        "hot-read; missing/bad/closed file refuses new inbound (403).",
+        "Omitted = the pinned production file (src/soul_access/wiring.py "
+        "RELEASE_FILE, never in git); missing/bad/closed file refuses new "
+        "inbound (403).",
     )
     return parser
 
@@ -94,20 +95,16 @@ def main(argv=None) -> int:
     except (OSError, ValueError, TypeError):
         return _refuse()
     registry = RegistryProvider(registry_raw)
-    # SA-1: thin entry keeps the legacy direct-provider carrier for legacy
-    # bodies (EI-1 old path unchanged) and adds a release-gated live-loop
-    # handler for envelope-marked bodies. No live instances exist in this
-    # process, so an OPEN gate with no loop still fails closed (500); the
-    # production-side loop attach lives in scripts/run_server.py (same ticket).
-    soul_live_handler = None
-    if args.soul_access_release is not None:
-        from src.soul_access.bridge import build_live_handler
+    # SA-LIVE-WIRING-1: thin entry is a cross-process forwarder. This process
+    # holds NO live instances (it has none to hold), so the handler is the
+    # thin forwarder, never an in-process live handler: release closed /
+    # missing refuses 403 before any byte is sent; otherwise the sealed
+    # envelope is re-serialized and POSTed to the fixed internal live
+    # endpoint. Omitted flag = the pinned production file.
+    from src.soul_access import wiring as _sa_wiring
 
-        soul_live_handler = build_live_handler(
-            live=None,
-            generate=None,
-            release_path=args.soul_access_release,
-        )
+    release_path = args.soul_access_release or str(_sa_wiring.RELEASE_FILE)
+    soul_live_handler = _sa_wiring.build_thin_forwarder(release_path=release_path)
     app = create_external_app(
         registry,
         file_preset_loader(args.presets),

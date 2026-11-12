@@ -1028,6 +1028,11 @@ class TestBoundedAndFrozenDiscipline:
             "src/soul_access/admission.py",
             "harness/tool_memory.py",
             "src/memory/middleware.py",
+            # ── SA-LIVE-WIRING-1（2026-11-12，第八 cohort）─────────────────
+            # 本票新增 1 個已審查非 frozen 檔：Soul 鏈 live 接線面（薄轉發＋
+            # 內端掛載＋generate 適配器；bridge/api/release 不動）。
+            # Work order: Sol SA-LIVE-WIRING-1 decision-complete 工單。
+            "src/soul_access/wiring.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

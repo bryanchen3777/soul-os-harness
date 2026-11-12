@@ -791,6 +791,31 @@ async def lifespan(app: FastAPI):
         _sa_attach_live_loop(app, bus=bus, llm=llm, middleware=mw)
     except ImportError:
         logger.warning("[SA-1] soul-access bridge unavailable, live loop not attached")
+    # SA-LIVE-WIRING-1: mount the live-side internal route on the SAME
+    # bus/llm/mw instances above (zero construction here). dialog=None means
+    # the generate adapter is formally mounted but refuses at call time
+    # (500, never falls back): the production dialog stays unwired until a
+    # later Owner-approved ticket wires it. Additive only.
+    try:
+        from src.soul_access import wiring as _sa_wiring
+
+        _sa_wiring.mount_live_route(
+            app,
+            live=_sa_wiring.get_live_loop(app),
+            generate=_sa_wiring.build_generate(
+                bus=bus,
+                llm=llm,
+                middleware=mw,
+                session_store=_sa_wiring.new_shared_session_store(),
+                dialog=None,
+            ),
+            release_path=_sa_wiring.RELEASE_FILE,
+        )
+        logger.info("[SA-LIVE-WIRING-1] soul-access internal live route mounted ✓")
+    except ImportError:
+        logger.warning(
+            "[SA-LIVE-WIRING-1] soul-access wiring unavailable, live route not mounted"
+        )
 
     # M3 Phase 1 (Bry 拍板 2026-08-07 19:40 + 2026-08-07 20:02 hardening):
     # WorldPerceptionMiddleware 在 MemoryMiddleware 之後接管
