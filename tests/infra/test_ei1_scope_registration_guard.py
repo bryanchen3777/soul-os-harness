@@ -115,6 +115,18 @@ SA_FILES = (
 )
 EXPECTED_SA_COHORT_DIGEST = "8910323ee13f7f2369cd2ad1d6a77d2e4eba5d870658bcb093a067c711d52485"
 
+# ── SA-LIVE-WIRING-1 eighth cohort (2026-11-12) ──────────────────────────
+# Fixed 1-file cohort: soul-access live wiring surface (thin forwarder +
+# internal live-route mount + generate adapter; bridge/api/release untouched).
+# Precise paths, no wildcard.
+# method: sha256(json.dumps(sorted(SALW_FILES),ensure_ascii=True,separators=(',',':')).encode('utf-8'))
+# computed from THIS fixed list (never from the file under test).
+# NEW / EI2B / SETTLE / S5 / S6 / S7 / SA / original / frozen digests all unchanged.
+SALW_FILES = (
+    "src/soul_access/wiring.py",
+)
+EXPECTED_SALW_COHORT_DIGEST = "ed3703a1b8e930903b005cd7130f922cd84b45da78e06bf557b1d030a8876b03"
+
 # method: sha256(json.dumps(sorted(allowed),ensure_ascii=True,separators=(',',':')).encode('utf-8'))
 EXPECTED_ORIGINAL_ALLOWED_DIGEST = "e7689f3572cfd1b12ee3499170dc5866b324df773491645bda3147f514088929"
 # method: sha256(json.dumps(frozen_ordered,ensure_ascii=True,separators=(',',':')).encode('utf-8')) in original tuple order
@@ -218,14 +230,16 @@ def validate_scope(source_text: str) -> bool:
     - S6_FILES (exactly this 1) subset of allowed,
     - S7_FILES (exactly these 2) subset of allowed,
     - SA_FILES (exactly these 11) subset of allowed,
-    - the seven cohorts mutually exclusive (pairwise disjoint),
-    - digest(sorted(allowed - NEW_FILES - EI2B_FILES - SETTLE_FILES - S5_FILES - S6_FILES - S7_FILES - SA_FILES)) == EXPECTED_ORIGINAL_ALLOWED_DIGEST,
+    - SALW_FILES (exactly this 1) subset of allowed,
+    - the eight cohorts mutually exclusive (pairwise disjoint),
+    - digest(sorted(allowed - NEW_FILES - EI2B_FILES - SETTLE_FILES - S5_FILES - S6_FILES - S7_FILES - SA_FILES - SALW_FILES)) == EXPECTED_ORIGINAL_ALLOWED_DIGEST,
     - digest(sorted(EI2B_FILES)) == EXPECTED_EI2B_COHORT_DIGEST,
     - digest(sorted(SETTLE_FILES)) == EXPECTED_SETTLE_COHORT_DIGEST,
     - digest(sorted(S5_FILES)) == EXPECTED_S5_COHORT_DIGEST,
     - digest(sorted(S6_FILES)) == EXPECTED_S6_COHORT_DIGEST,
     - digest(sorted(S7_FILES)) == EXPECTED_S7_COHORT_DIGEST,
     - digest(sorted(SA_FILES)) == EXPECTED_SA_COHORT_DIGEST,
+    - digest(sorted(SALW_FILES)) == EXPECTED_SALW_COHORT_DIGEST,
     - digest(frozen in source order) == EXPECTED_FROZEN_DIGEST.
     Exact-set digest pins unknown wrapper/other-runtime/dir/wildcard/extra-scope.
     """
@@ -355,6 +369,17 @@ def validate_scope(source_text: str) -> bool:
         # list, never from the file under test)
         if _digest_sorted(SA_FILES) != EXPECTED_SA_COHORT_DIGEST:
             return False
+        # SALW_FILES fixed one subset, disjoint from all seven earlier cohorts
+        if len(SALW_FILES) != 1 or len(set(SALW_FILES)) != 1:
+            return False
+        if set(SALW_FILES) & (
+            set(NEW_FILES) | set(EI2B_FILES) | set(SETTLE_FILES) | set(S5_FILES) | set(S6_FILES) | set(S7_FILES) | set(SA_FILES)
+        ):
+            return False
+        # eighth cohort digest pins exactly this one (from this fixed
+        # list, never from the file under test)
+        if _digest_sorted(SALW_FILES) != EXPECTED_SALW_COHORT_DIGEST:
+            return False
         allowed_set = set(allowed_list)
         if not set(NEW_FILES) <= allowed_set:
             return False
@@ -370,8 +395,10 @@ def validate_scope(source_text: str) -> bool:
             return False
         if not set(SA_FILES) <= allowed_set:
             return False
+        if not set(SALW_FILES) <= allowed_set:
+            return False
         # old-scope digest must be unchanged (exact set, order-insensitive
-        # via sorted) after removing all SEVEN cohorts
+        # via sorted) after removing all EIGHT cohorts
         remainder = (
             allowed_set
             - set(NEW_FILES)
@@ -381,6 +408,7 @@ def validate_scope(source_text: str) -> bool:
             - set(S6_FILES)
             - set(S7_FILES)
             - set(SA_FILES)
+            - set(SALW_FILES)
         )
         if _digest_sorted(remainder) != EXPECTED_ORIGINAL_ALLOWED_DIGEST:
             return False
