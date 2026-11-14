@@ -1,0 +1,1 @@
+{"check":"t11-closed-gate-zero-inference","model_mapping_status":"closed:thin-403-plus-handler-403-plus-zero-posts; open-admit-then-close-refuse-frozen","result":"PASS (13 passed in file, exit 0; dialog seam untouched while closed)","sha256_or_absent":"9d029558ce0905f326a0018e81e0fdd9bd143a13b82841f9091fe2127cdebbdb","source_path":"tests/soul_access/test_t11_closed_deploy.py"}
