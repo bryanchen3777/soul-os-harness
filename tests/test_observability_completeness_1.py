@@ -1041,6 +1041,13 @@ class TestBoundedAndFrozenDiscipline:
             # 第九 cohort 協議。
             "src/interfaces/journal.py",
             "src/interfaces/runtime_port.py",
+            # ── SA-EVIDENCE-SCOPE-1（2026-11-14，第十 cohort）──────────────
+            # 本票新增 1 個已審查非 frozen 檔：SA-EVIDENCE-CHANNEL-1 的可重播
+            # 證據通道（精確路徑，無 wildcard）。
+            # 原摘要／原 baseline／前九 cohort 摘要／frozen 摘要一律不變，見
+            # tests/infra/test_ei1_scope_registration_guard.py 的 EVIDENCE_FILES
+            # 第十 cohort 協議。
+            "src/soul_access/evidence.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",

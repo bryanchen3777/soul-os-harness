@@ -139,6 +139,18 @@ INTERFACE_GAPS_FILES = (
 )
 EXPECTED_INTERFACE_GAPS_COHORT_DIGEST = "7a167b963c9f3e1110076799677c7ed7f1027cc41e3c16a0f181a268e3a2d0b9"
 
+# ── SA-EVIDENCE-SCOPE-1 tenth cohort (2026-11-14) ───────────────────────
+# Fixed 1-file cohort: replayable evidence channel (request/response pair,
+# zero live calls; precise path, no wildcard).
+# method: sha256(json.dumps(sorted(EVIDENCE_FILES),ensure_ascii=True,separators=(',',':')).encode('utf-8'))
+# computed from THIS fixed list (never from the file under test).
+# NEW / EI2B / SETTLE / S5 / S6 / S7 / SA / SALW / INTERFACE_GAPS /
+# original / frozen digests all unchanged.
+EVIDENCE_FILES = (
+    "src/soul_access/evidence.py",
+)
+EXPECTED_EVIDENCE_COHORT_DIGEST = "a687a9a1d99a404099321763ad1de98d4fc94675acf95e93c5799b35e01c8b3c"
+
 # method: sha256(json.dumps(sorted(allowed),ensure_ascii=True,separators=(',',':')).encode('utf-8'))
 EXPECTED_ORIGINAL_ALLOWED_DIGEST = "e7689f3572cfd1b12ee3499170dc5866b324df773491645bda3147f514088929"
 # method: sha256(json.dumps(frozen_ordered,ensure_ascii=True,separators=(',',':')).encode('utf-8')) in original tuple order
@@ -244,8 +256,9 @@ def validate_scope(source_text: str) -> bool:
     - SA_FILES (exactly these 11) subset of allowed,
     - SALW_FILES (exactly this 1) subset of allowed,
     - INTERFACE_GAPS_FILES (exactly these 2) subset of allowed,
-    - the nine cohorts mutually exclusive (pairwise disjoint),
-    - digest(sorted(allowed - NEW_FILES - EI2B_FILES - SETTLE_FILES - S5_FILES - S6_FILES - S7_FILES - SA_FILES - SALW_FILES - INTERFACE_GAPS_FILES)) == EXPECTED_ORIGINAL_ALLOWED_DIGEST,
+    - EVIDENCE_FILES (exactly this 1) subset of allowed,
+    - the ten cohorts mutually exclusive (pairwise disjoint),
+    - digest(sorted(allowed - NEW_FILES - EI2B_FILES - SETTLE_FILES - S5_FILES - S6_FILES - S7_FILES - SA_FILES - SALW_FILES - INTERFACE_GAPS_FILES - EVIDENCE_FILES)) == EXPECTED_ORIGINAL_ALLOWED_DIGEST,
     - digest(sorted(EI2B_FILES)) == EXPECTED_EI2B_COHORT_DIGEST,
     - digest(sorted(SETTLE_FILES)) == EXPECTED_SETTLE_COHORT_DIGEST,
     - digest(sorted(S5_FILES)) == EXPECTED_S5_COHORT_DIGEST,
@@ -254,6 +267,7 @@ def validate_scope(source_text: str) -> bool:
     - digest(sorted(SA_FILES)) == EXPECTED_SA_COHORT_DIGEST,
     - digest(sorted(SALW_FILES)) == EXPECTED_SALW_COHORT_DIGEST,
     - digest(sorted(INTERFACE_GAPS_FILES)) == EXPECTED_INTERFACE_GAPS_COHORT_DIGEST,
+    - digest(sorted(EVIDENCE_FILES)) == EXPECTED_EVIDENCE_COHORT_DIGEST,
     - digest(frozen in source order) == EXPECTED_FROZEN_DIGEST.
     Exact-set digest pins unknown wrapper/other-runtime/dir/wildcard/extra-scope.
     """
@@ -405,6 +419,17 @@ def validate_scope(source_text: str) -> bool:
         # list, never from the file under test)
         if _digest_sorted(INTERFACE_GAPS_FILES) != EXPECTED_INTERFACE_GAPS_COHORT_DIGEST:
             return False
+        # EVIDENCE_FILES fixed one subset, disjoint from all nine earlier cohorts
+        if len(EVIDENCE_FILES) != 1 or len(set(EVIDENCE_FILES)) != 1:
+            return False
+        if set(EVIDENCE_FILES) & (
+            set(NEW_FILES) | set(EI2B_FILES) | set(SETTLE_FILES) | set(S5_FILES) | set(S6_FILES) | set(S7_FILES) | set(SA_FILES) | set(SALW_FILES) | set(INTERFACE_GAPS_FILES)
+        ):
+            return False
+        # tenth cohort digest pins exactly this one (from this fixed
+        # list, never from the file under test)
+        if _digest_sorted(EVIDENCE_FILES) != EXPECTED_EVIDENCE_COHORT_DIGEST:
+            return False
         allowed_set = set(allowed_list)
         if not set(NEW_FILES) <= allowed_set:
             return False
@@ -424,8 +449,10 @@ def validate_scope(source_text: str) -> bool:
             return False
         if not set(INTERFACE_GAPS_FILES) <= allowed_set:
             return False
+        if not set(EVIDENCE_FILES) <= allowed_set:
+            return False
         # old-scope digest must be unchanged (exact set, order-insensitive
-        # via sorted) after removing all NINE cohorts
+        # via sorted) after removing all TEN cohorts
         remainder = (
             allowed_set
             - set(NEW_FILES)
@@ -437,6 +464,7 @@ def validate_scope(source_text: str) -> bool:
             - set(SA_FILES)
             - set(SALW_FILES)
             - set(INTERFACE_GAPS_FILES)
+            - set(EVIDENCE_FILES)
         )
         if _digest_sorted(remainder) != EXPECTED_ORIGINAL_ALLOWED_DIGEST:
             return False
@@ -718,6 +746,26 @@ def test_interface_gaps_cohort_digest_matches_fixed_list():
     assert set(INTERFACE_GAPS_FILES).isdisjoint(set(SALW_FILES))
 
 
+def test_evidence_files_constant_is_exactly_one():
+    assert tuple(EVIDENCE_FILES) == (
+        "src/soul_access/evidence.py",
+    )
+
+
+def test_evidence_cohort_digest_matches_fixed_list():
+    # Pinned from this fixed list, never from the file under test.
+    assert _digest_sorted(EVIDENCE_FILES) == EXPECTED_EVIDENCE_COHORT_DIGEST
+    assert set(EVIDENCE_FILES).isdisjoint(set(NEW_FILES))
+    assert set(EVIDENCE_FILES).isdisjoint(set(EI2B_FILES))
+    assert set(EVIDENCE_FILES).isdisjoint(set(SETTLE_FILES))
+    assert set(EVIDENCE_FILES).isdisjoint(set(S5_FILES))
+    assert set(EVIDENCE_FILES).isdisjoint(set(S6_FILES))
+    assert set(EVIDENCE_FILES).isdisjoint(set(S7_FILES))
+    assert set(EVIDENCE_FILES).isdisjoint(set(SA_FILES))
+    assert set(EVIDENCE_FILES).isdisjoint(set(SALW_FILES))
+    assert set(EVIDENCE_FILES).isdisjoint(set(INTERFACE_GAPS_FILES))
+
+
 def test_real_updated_file_positive():
     src = _read_target_source()
     assert validate_scope(src) is True
@@ -827,6 +875,16 @@ def test_missing_interface_gaps_file_rejected(missing):
     assert validate_scope(mutated) is False
 
 
+@pytest.mark.parametrize("missing", list(EVIDENCE_FILES))
+def test_missing_evidence_file_rejected(missing):
+    src = _read_target_source()
+    allowed = _current_allowed_list(src)
+    trimmed = [s for s in allowed if s != missing]
+    assert missing not in trimmed
+    mutated = _with_modified_scope(src, new_allowed=trimmed)
+    assert validate_scope(mutated) is False
+
+
 def test_ninth_cohort_is_required():
     # Removing INTERFACE_GAPS_FILES while keeping all eight earlier cohorts
     # must still fail: the journal/runtime_port registration is required,
@@ -835,6 +893,46 @@ def test_ninth_cohort_is_required():
     allowed = _current_allowed_list(src)
     trimmed = [s for s in allowed if s not in set(INTERFACE_GAPS_FILES)]
     mutated = _with_modified_scope(src, new_allowed=trimmed)
+    assert validate_scope(mutated) is False
+
+
+def test_tenth_cohort_is_required():
+    # Removing EVIDENCE_FILES while keeping all nine earlier cohorts
+    # must still fail: the evidence.py registration is required,
+    # not optional.
+    src = _read_target_source()
+    allowed = _current_allowed_list(src)
+    trimmed = [s for s in allowed if s not in set(EVIDENCE_FILES)]
+    mutated = _with_modified_scope(src, new_allowed=trimmed)
+    assert validate_scope(mutated) is False
+
+
+def test_tenth_cohort_does_not_absorb_ninth():
+    # Removing INTERFACE_GAPS_FILES while keeping EVIDENCE_FILES must
+    # still fail: both cohorts are required, mutually exclusive.
+    src = _read_target_source()
+    allowed = _current_allowed_list(src)
+    trimmed = [s for s in allowed if s not in set(INTERFACE_GAPS_FILES)]
+    mutated = _with_modified_scope(src, new_allowed=trimmed)
+    assert validate_scope(mutated) is False
+
+
+def test_ninth_cohort_does_not_absorb_tenth():
+    # Removing EVIDENCE_FILES while keeping INTERFACE_GAPS_FILES must
+    # still fail (mirror direction of the absorbency check).
+    src = _read_target_source()
+    allowed = _current_allowed_list(src)
+    trimmed = [s for s in allowed if s not in set(EVIDENCE_FILES)]
+    mutated = _with_modified_scope(src, new_allowed=trimmed)
+    assert validate_scope(mutated) is False
+
+
+def test_unregistered_evidence_adjacent_path_rejected():
+    # Tenth-cohort negative control: an unreviewed evidence-adjacent path
+    # next to the registered evidence.py must still fail.
+    src = _read_target_source()
+    allowed = _current_allowed_list(src)
+    mutated = _with_modified_scope(src, new_allowed=allowed + ["src/soul_access/evidence_v2.py"])
     assert validate_scope(mutated) is False
 
 
