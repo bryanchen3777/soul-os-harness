@@ -75,6 +75,7 @@ __all__ = [
     "new_shared_session_store",
     "build_generate",
     "build_dialog_factory",
+    "build_gated_sender",
     "build_thin_forwarder",
     "mount_live_route",
 ]
@@ -610,6 +611,66 @@ def build_generate(
     return generate
 
 
+# -- shared pre-dispatch gate (SA-ENTRY-GATE-1, additive) --------------------
+#
+# The thin forwarder (below) and any direct (diagnostic) sender share this one
+# gate: the authoritative gate source is re-read from disk before EVERY
+# dispatch attempt, including retries. There is no startup cache to go stale.
+# Closed / missing / unreadable / bad-JSON / non-dict / wrong-status all
+# refuse 403 with zero sender calls. A gate that closes mid-retry refuses the
+# next attempt; already-dispatched attempts are NOT retracted (the gate only
+# guards new dispatches). This ticket never opens the production gate: both
+# the positive and the negative drills use a sandbox gate source.
+
+
+def build_gated_sender(
+    *,
+    release_path=None,
+    sender: Callable[[str, dict], str] | None = None,
+    max_attempts: int = 1,
+):
+    """Build the shared gated sender ``(url, body) -> str``.
+
+    ``release_path`` is the authoritative gate source (sandbox file in every
+    drill; the production file only in production). ``None`` (no gate source
+    configured) refuses fail-closed. ``sender`` is the bottom transport
+    (real POST by default, counting fakes in tests); it is ONLY called while
+    the gate reads open. ``max_attempts`` bounds transport retries (>= 1);
+    the gate is re-read before each attempt, so a close between attempts
+    refuses the next one with 403 instead of resending.
+    """
+    try:
+        attempts = int(max_attempts)
+    except (TypeError, ValueError):
+        attempts = 1
+    if attempts < 1:
+        attempts = 1
+    send = sender if callable(sender) else _default_sender
+
+    def _send(url: str, body: dict) -> str:
+        last_kind = None
+        for _ in range(attempts):
+            if release_path is None or not _release.is_live_inbound_open(
+                release_path
+            ):
+                raise _bridge.LiveRefused(
+                    403, "forbidden", "soul-access inbound closed"
+                )
+            try:
+                return send(url, body)
+            except (_bridge.LiveRefused, SnapshotRejected):
+                raise
+            except Exception as exc:
+                last_kind = type(exc).__name__
+                continue
+        raise _bridge.LiveRefused(
+            500, "internal", "soul-access forward failed: %s" % (last_kind or "unknown")
+        )
+
+    _send.sa_gated_sender_attempts = attempts
+    return _send
+
+
 # -- :18765 thin forwarder (cross-process, zero live instances) ---------------
 
 
@@ -630,24 +691,23 @@ def build_thin_forwarder(
 ):
     """Build the thin-side forwarder ``(envelope, route, preset) -> str``.
 
-    Holds NO live instances (this process has none). Closed/missing/bad
-    release refuses 403 before any byte is sent; the sender (real POST by
-    default, fake in tests) returns the reply text, which must be a non-empty
-    str or the forward refuses 500. Sender faults become 500 (never leak).
+    Holds NO live instances (this process has none). The dispatch shares the
+    SA-ENTRY-GATE-1 pre-dispatch gate (``build_gated_sender``): closed /
+    missing / bad release refuses 403 before any byte is sent, re-read per
+    attempt (single attempt on this path). The sender (real POST by default,
+    fake in tests) returns the reply text, which must be a non-empty str or
+    the forward refuses 500. Sender faults become 500 (never leak).
     """
+
+    gated = build_gated_sender(release_path=release_path, sender=sender)
 
     def _forward(envelope, *, route=None, preset=None) -> str:
         if not isinstance(envelope, _api.ForwardEnvelope):
             raise SnapshotRejected("not a ForwardEnvelope")
-        if release_path is not None and not _release.is_live_inbound_open(
-            release_path
-        ):
-            raise _bridge.LiveRefused(403, "forbidden", "soul-access inbound closed")
         body = _api.envelope_to_body(envelope)
         url = target_base.rstrip("/") + _api.FORWARD_ENDPOINT
-        send = sender if callable(sender) else _default_sender
         try:
-            text = send(url, body)
+            text = gated(url, body)
         except (_bridge.LiveRefused, SnapshotRejected):
             raise
         except Exception as exc:
