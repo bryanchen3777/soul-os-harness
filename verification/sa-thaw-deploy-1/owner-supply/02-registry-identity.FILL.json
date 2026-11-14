@@ -1,0 +1,17 @@
+{
+  "_file": "02-registry-identity.FILL.json —— 正式身分綁定（只給 ID，不給憑證明文）",
+  "_how": "owner_principal_id 填正式擁有者（不能是 t10-formal-owner 之類測試身分）；client 填正式客戶端；allowed_routes 預設只開 rem/primary 做閉門驗證，要加開再說；credential 欄只選一種：A 由工程新建入站 token（推薦，填 NEW），B 沿用你手上既有 LAN key（只填它的 sha256 雜湊，不填明文）。",
+  "owner_principal_id": "FILL_ME__例_bryan__禁測試身分",
+  "client": {
+    "client_id": "FILL_ME__例_client-prod-01",
+    "purpose": "interactive",
+    "scope": "owner_private",
+    "allowed_routes": ["rem/primary"],
+    "allow_persistent_memory": true
+  },
+  "credential": {
+    "_mode": "二選一：NEW（工程新建獨立入站token）或 EXISTING_SHA（沿用既有LAN key，只給sha256）",
+    "mode": "FILL_ME__NEW__或__EXISTING_SHA",
+    "existing_credential_sha256": "FILL_ME__僅當mode=EXISTING_SHA時填64位hex__否則留空"
+  }
+}
