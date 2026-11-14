@@ -865,6 +865,24 @@ def test_t10_e2e_union_twenty_admitted_shared_session(monkeypatch, tmp_path):
 # -- T10-4: bidirectional mutations (relaxed / tightened / revert green) -------
 
 
+def _closed_forwarder_refuses(fwd, sent) -> bool:
+    """Shared closed-gate oracle: True iff the forwarder refuses 403 with zero sends."""
+    try:
+        fwd(_envelope())
+    except sa_bridge.LiveRefused as exc:
+        return exc.status == 403 and sent == []
+    return False
+
+
+def _open_forwarder_admits(fwd, sent) -> bool:
+    """Shared open-gate oracle: True iff the forwarder admits with exactly one send."""
+    try:
+        fwd(_envelope())
+    except sa_bridge.LiveRefused:
+        return False
+    return len(sent) == 1
+
+
 def test_t10_mutation_relaxed_gate_turns_red_then_revert_green(tmp_path, monkeypatch):
     """Relaxed mutant: forced-open gate forwards while closed (RED)."""
     release_path = _write_release(tmp_path / "release.json", {"status": "closed"})
@@ -873,14 +891,14 @@ def test_t10_mutation_relaxed_gate_turns_red_then_revert_green(tmp_path, monkeyp
         release_path=str(release_path),
         sender=lambda url, body: sent.append(body) or "t10-red",
     )
+    assert _closed_forwarder_refuses(fwd, sent) is True  # green baseline, shared oracle
     monkeypatch.setattr(sa_release, "is_live_inbound_open", lambda path: True)
-    assert fwd(_envelope()) == "t10-red"  # RED: closed gate ignored.
+    assert _closed_forwarder_refuses(fwd, sent) is False  # RED: same oracle turns red
     if len(sent) != 1:
         pytest.fail("MUTATION DUD -- STOP, report: relaxed-open did not forward")
+    sent.clear()  # drop the RED send so the revert check starts from empty
     monkeypatch.undo()
-    with pytest.raises(sa_bridge.LiveRefused) as exc_info:
-        fwd(_envelope())
-    assert exc_info.value.status == 403
+    assert _closed_forwarder_refuses(fwd, sent) is True  # revert green
 
 
 def test_t10_mutation_tightened_gate_turns_red_then_revert_green(tmp_path, monkeypatch):
@@ -891,14 +909,14 @@ def test_t10_mutation_tightened_gate_turns_red_then_revert_green(tmp_path, monke
         release_path=str(release_path),
         sender=lambda url, body: sent.append(body) or "t10-red",
     )
+    assert _open_forwarder_admits(fwd, sent) is True  # green baseline, shared oracle
+    sent.clear()  # drop the baseline send so the mutant phase starts from empty
     monkeypatch.setattr(sa_release, "is_live_inbound_open", lambda path: False)
-    with pytest.raises(sa_bridge.LiveRefused) as exc_info:
-        fwd(_envelope())
-    assert exc_info.value.status == 403  # RED: open gate ignored.
+    assert _open_forwarder_admits(fwd, sent) is False  # RED: same oracle turns red
     if sent:
         pytest.fail("MUTATION DUD -- STOP, report: tightened-closed leaked a send")
     monkeypatch.undo()
-    assert fwd(_envelope()) == "t10-red"
+    assert _open_forwarder_admits(fwd, sent) is True  # revert green
 
 
 def test_t10_mutation_reverted_full_stack_green(monkeypatch, tmp_path):
@@ -982,7 +1000,11 @@ def test_t10_rollback_drill_closed_a_closed_union_closed_restore_a(
     assert _bellwether("rem", "primary", FORMAL_TOKEN, 701)[0] == 403
     assert _T10_POSTS == []
 
-    # 2. open + A: A admitted, B absent (404), snapshot pinned to A bytes.
+    # 2. frozen order (shut gate -> install -> open gate): A was installed at
+    #    build time under a shut gate -- assert shut, snapshot pinned to A,
+    #    then open and run bellwether.
+    assert json.loads(harness.stack.release_path.read_text(encoding="utf-8"))["status"] == "closed"
+    assert _route_names() == [("rem", alias) for alias in sorted(ALIASES)]
     harness.stack.release_path.write_text(json.dumps({"status": "open"}), encoding="utf-8")
     assert _bellwether("rem", "primary", FORMAL_TOKEN, 702)[0] == 200
     assert _bellwether("mai", "primary", FORMAL_TOKEN, 703)[0] == 404
@@ -994,9 +1016,14 @@ def test_t10_rollback_drill_closed_a_closed_union_closed_restore_a(
     assert _bellwether("rem", "primary", FORMAL_TOKEN, 704)[0] == 403
     assert len(_T10_POSTS) == 1
 
-    # 4. open + install union: B admitted, snapshot pinned to union bytes.
-    harness.stack.release_path.write_text(json.dumps({"status": "open"}), encoding="utf-8")
+    # 4. frozen order: assert shut before install, install union, snapshot
+    #    pinned to union, then open and run bellwether.
+    assert json.loads(harness.stack.release_path.read_text(encoding="utf-8"))["status"] == "closed"
     harness.provider.update(raw_u)
+    assert _route_names() == [
+        (soul, alias) for soul in sorted(ALL_SOULS) for alias in sorted(ALIASES)
+    ]
+    harness.stack.release_path.write_text(json.dumps({"status": "open"}), encoding="utf-8")
     assert _bellwether("mai", "primary", FORMAL_TOKEN, 705)[0] == 200
     assert _bellwether("mahiru", "mimo-v2.6-flash", FORMAL_TOKEN, 706)[0] == 200
     assert len(_T10_POSTS) == 3
@@ -1009,9 +1036,12 @@ def test_t10_rollback_drill_closed_a_closed_union_closed_restore_a(
     assert _bellwether("mai", "primary", FORMAL_TOKEN, 707)[0] == 403
     assert len(_T10_POSTS) == 3
 
-    # 6. open + restore pinned A bytes: B gone again, unknown alias still dead.
-    harness.stack.release_path.write_text(json.dumps({"status": "open"}), encoding="utf-8")
+    # 6. frozen order: assert shut before install, restore pinned A, snapshot
+    #    pinned to A, then open and run bellwether.
+    assert json.loads(harness.stack.release_path.read_text(encoding="utf-8"))["status"] == "closed"
     harness.provider.update(raw_a)
+    assert _route_names() == [("rem", alias) for alias in sorted(ALIASES)]
+    harness.stack.release_path.write_text(json.dumps({"status": "open"}), encoding="utf-8")
     assert _bellwether("rem", "glm-5.3-flash", FORMAL_TOKEN, 708)[0] == 200
     assert _bellwether("mai", "primary", FORMAL_TOKEN, 709)[0] == 404
     assert _bellwether("rem", "void-unknown", FORMAL_TOKEN, 710, model="sa-formal-void")[0] == 404
@@ -1023,3 +1053,26 @@ def test_t10_rollback_drill_closed_a_closed_union_closed_restore_a(
         )
     assert exc_info.value.status == 500
     assert len(_T10_POSTS) == 4
+
+
+def test_t10_wrong_order_install_while_open_leaks_detected(monkeypatch, tmp_path):
+    """Reverse-order control (forbidden by runbook section 3): opening the gate
+    before installing admits old-snapshot traffic, so the freeze oracle of zero
+    admission before opening is violated. Detecting the leak is a pass; this
+    sequence must never be used for real installs."""
+    raw_a = _formal_raw("registry.a.json")
+    raw_u = _formal_raw("registry.union.json")
+    harness = _build_harness(monkeypatch, tmp_path, raw_a, release_status="closed")
+    _T10_POSTS.clear()
+    # Wrong order: open first, install second.
+    harness.stack.release_path.write_text(json.dumps({"status": "open"}), encoding="utf-8")
+    snapshot = _snapshot_for("rem", "primary", MODEL_OF[("rem", "primary")], 801)
+    status, _payload = _outer_post(harness, "rem", "primary", FORMAL_TOKEN, snapshot)
+    assert status == 200  # old-snapshot traffic admitted while open
+    leaked_before_install = len(_T10_POSTS)
+    assert leaked_before_install == 1
+    # The admission happened before update() ran: installing now cannot undo
+    # the leak, which is exactly what the frozen order forbids.
+    harness.provider.update(raw_u)
+    assert leaked_before_install > 0
+    assert len(_T10_POSTS) == leaked_before_install

@@ -69,3 +69,29 @@
 - 凍結核對：`bridge/api/release/schema`、`journal/runtime_port`、`run_server.py`、`src/world/*` 零觸碰（diff 空）；變更集僅 `.gitignore`＋`wiring.py`（純加法）＋T10 新檔
 - 探針垃圾：26 個 t10 暫存檔中 24 個經 mavis-trash 清理；`t10dbg.err`／`t10real.err`（0 位元組）被他行程咬住，按鐵律不殺行程、留置（untracked，不入提交）
 - 六門結論：**全綠 → SA-THAW-DEPLOY-1 第一段 ACCEPTED，可提交；門檻狀態送臥龍確認後走第二段（解凍＋閉門部署）**
+
+## 補證（臥龍 VETO 後，相對 5fede13；不動產品、只改 T10 測試＋本文）
+
+臥龍指出的兩缺口原文：
+1. 雙向變異未用**同一個正常 oracle**證明綠→紅→還原綠（放鬆／收緊各自寫死斷言，判準不一致）。
+2. 回滾演練步驟 2／4／6 先寫 open 再 update，與 runbook §3 凍結順序（關 gate → `update()` 安裝 → 開 gate）相反，且缺少「倒序必紅」對照。
+
+改動（僅 `tests/soul_access/test_t10_thaw_deploy.py`，行號為補證後）：
+- 868–883：新增兩個 bool 共用正常 oracle `_closed_forwarder_refuses`／`_open_forwarder_admits`（沿用 `_envelope`／`sa_bridge.LiveRefused`；其他異常不吞、直接拋）。
+- 886–901（放鬆變異）：closed 建 fwd → oracle 綠 → 強制 open → 同一 oracle 紅 → DUD 熔斷（sent 恰 1，否則 `pytest.fail` 停手）→ `sent.clear()` 清掉 RED 殘留 → `undo()` → oracle 回綠。
+- 904–919（收緊變異）：open 建 fwd → admit-oracle 綠 → `sent.clear()`（基線 send 不污染 mutant 相）→ 強制 closed → 同一 oracle 紅 → DUD 熔斷（sent 空）→ `undo()` → oracle 回綠。
+- 回滾演練步驟 2／4／6（約 1003–1055）：每次 `provider.update()` 之前先讀 release JSON 斷言 `status == "closed"`（安裝前斷言關門）；update 後沿用 `_route_names()` 快照斷言；再寫 `open`；再跑 bellwether。posts 計數語義不變（closed 下零新增；open 下按批接納）。
+- 1058–1080：新增倒序必紅對照 `test_t10_wrong_order_install_while_open_leaks_detected`（獨立測試，tmp 沙盒）：先寫 open → bellwether 斷言 200 被接納（開門先行洩漏舊快照流量）→ 再 `update(union)` → 斷言安裝前 posts 已增長（洩漏發生在安裝完成之前）。以檢出洩漏為通過，註明此序列為禁行、對應 runbook §3。
+
+為何倒序對照只能是「檢出洩漏」形式：`RegistryProvider.update` 是純快照交換、無 gate 檢查（`src/interfaces/external_auth.py:40`，frozen 語義本票不改），故倒序下 update 本身不會失敗；唯一可觀測的破線訊號是「開門先行期間舊快照流量已被接納」（posts 在安裝完成前已增長），即凍結 oracle「開門前零接納」不變式被違反。測試不斷言 update 拋錯（那會與 frozen 語義矛盾），只斷言洩漏被檢出。
+
+驗證：`pytest -q tests/soul_access/test_t10_thaw_deploy.py` → **22 passed**（.venv Python 3.11.15）；`git diff --name-only` 僅本票上述測試檔＋本文；T10-5 禁字面自檢全程通過（無新增禁字面）。
+
+## Mavis 親驗（補證後，2026-11-14；直譯器一律 `.venv` Python 3.11.15）
+
+- T10：`pytest -q tests/soul_access/test_t10_thaw_deploy.py` → **22 passed**（1.54s；21 原有＋1 新增倒序對照）
+- 三目錄：`pytest -q tests/soul_access tests/interfaces tests/infra` → **1159 passed, 1 skipped**（163.72s）
+- 全庫：`pytest -q tests` → **9036 passed、32 skipped、32 subtests passed＋1 failed**（960.96s／0:16:00）；唯一失敗仍為已知 r2 併發 flake（`test_concurrent_retry_exactly_one_runtime_call`，loser 見 REPLAY 時序競態，本票僅動 T10＋本文、未觸 Journal 並發路徑）→ 隔離重跑 **1 passed**（8.41s）→ 整檔重跑 **14 passed**（1.26s），已排除產品回歸
+- CLI 沙盒固定槽：`--simulated-time 2026-11-12T03:00:00Z` → **exit 0、VERDICT: PASS**（sidecar 3625→3625 no-op；其餘四項對帳全合）
+- 變更集（相對 5fede13）：僅 T10＋本文；`src/`、frozen、`data/**`、生產全零觸碰
+- 補證結論：兩缺口已按臥龍最小補單關閉 → 送臥龍複裁第二段放行
