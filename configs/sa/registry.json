@@ -1,0 +1,53 @@
+{
+  "owner_principal_id": "bryan",
+  "backends": [
+    "sa-ollama-cloud"
+  ],
+  "routes": [
+    {
+      "soul_alias": "rem",
+      "backend_alias": "primary",
+      "agent_id": "agent_rem",
+      "public_model_id": "sa-rem-primary",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "rem",
+      "backend_alias": "minimax-m3.1-flash",
+      "agent_id": "agent_rem",
+      "public_model_id": "sa-rem-minimax-m3.1-flash",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "rem",
+      "backend_alias": "glm-5.3-flash",
+      "agent_id": "agent_rem",
+      "public_model_id": "sa-rem-glm-5.3-flash",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "rem",
+      "backend_alias": "mimo-v2.6-flash",
+      "agent_id": "agent_rem",
+      "public_model_id": "sa-rem-mimo-v2.6-flash",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    }
+  ],
+  "clients": [
+    {
+      "client_id": "client-bryan-01",
+      "principal_id": "bryan",
+      "purpose": "interactive",
+      "allowed_routes": [
+        "rem/primary"
+      ],
+      "scope": "owner_private",
+      "allow_persistent_memory": true,
+      "credential_sha256": "2dae25acab52c6bf9a1682bd23af06b94b7b3605d143d99c9ed2741d90b6e4f8"
+    }
+  ]
+}
