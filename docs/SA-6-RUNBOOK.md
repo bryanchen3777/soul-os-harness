@@ -129,3 +129,20 @@
 - 證據：`verification/sa-open-fire-1/`（`check-report.json`／
   `preflight-blocked.json`／`request.template.json`／`STATUS.md`）。
 - 禁止（本票）：不推播（本地提交，pathspec 僅本票檔案）；不動 §3。
+
+## 10. SA-EVIDENCE-CHANNEL-1 取證通道（2026-11-14；Sol 起草，零真實呼叫）
+
+- 目標：補「原始取證能力」（單發探針送前可重播 request、回後 CallResult raw＋usage），不開門、不部署、零真實呼叫。
+- 改動（additive；預設零行為變化）：
+  - `src/soul_access/evidence.py`（新增）：呼叫端專用沙盒 sink。送前存實際 provider payload＋sha256；回後存同次回應原文＋原生 usage，以 request_id 關聯；原子落檔（tmp＋rename）；只記 key 變數名（`OLLAMA_API_KEY`），不存憑證；`data/**` 結構性拒絕；無「最後一次結果」全域暫存。
+  - `src/llm/proxy.py`（`OpenAIBackend.complete`）：新增選配 `evidence_sink=None`。未配置時舊路徑逐位元不變；配置時固定零重試，缺欄（缺 raw/usage）或落檔失敗即不合格（不補發）；raw 不進回覆正文／記憶／日誌。
+  - `src/soul_access/wiring.py`（`build_dialog_factory`）：新增選配 `evidence_sink=None`，逐請求顯式透傳；未配置時完全不帶該參數（舊後端簽名相容，T9 全過）。
+  - `tests/soul_access/test_t14_evidence.py`（新增，20 項）：成功往返（雜湊／原文／usage 同 request_id）、缺證不合格、逾時已耗單次、落檔失敗不發／不重發、併發隔離（分 sink＋共享 sink）、未配置舊行為一致、factory 透傳、data/** 拒絕、雙向變異三類（sink 旁路／request_id 錯配／雜湊偽造，轉紅再轉綠）。全 mock：假 `httpx.AsyncClient`＋無迴圈協程驅動（Windows 建 loop 需 socketpair，會觸 SA-0 封網，故不用 `asyncio.run`）；非路由基址 `.invalid`；零伺服器、零埠、零真實請求。
+- 驗收（Hard Gate，`.venv` Python 3.11.15）：
+  1. `pytest -q tests/soul_access/test_t14_evidence.py` ⇒ 20 passed；
+  2. T10–T14 同跑 ⇒ 89 passed；`tests/soul_access tests/infra` ⇒ 666 passed（含 AST 守衛；T7 pin 未觸線）；
+  3. CLI 沙盒對帳 `--simulated-time 2026-11-14T03:00:00Z` ⇒ VERDICT PASS（exit 0；sidecar ＋0；類型 0/0/0/0；關鍵節點穩定；prompt 零差異）；
+  4. 全庫 `pytest -q tests` ⇒ 見 `verification/sa-evidence-channel-1/evidence-report.json`。
+- 邊界聲明：本票只驗收「能力」（evidence channel 可用），**不宣稱線上缺口已解除**。實彈續行另有兩前置：埠釋放＋閉門接線驗證。
+- 證據：`verification/sa-evidence-channel-1/`（`STATUS.md`／`evidence-report.json`／`sample/` 真實碼路徑樣本對）。
+- 禁止（本票）：不碰 launcher／探針／生產設定／data；失敗保留閉門；不推播（本地提交，pathspec 僅本票檔案）。

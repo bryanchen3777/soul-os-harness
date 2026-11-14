@@ -232,7 +232,7 @@ def _default_submit(loop, coro):
     return asyncio.run_coroutine_threadsafe(coro, loop)
 
 
-def build_dialog_factory(*, llm, loop=None, resolve_backend=None, submit=None):
+def build_dialog_factory(*, llm, loop=None, resolve_backend=None, submit=None, evidence_sink=None):
     """Build the per-request ``dialog_factory(snapshot) -> dialog`` seam.
 
     ``llm`` is the launcher instance (read-only; its ``backend`` serves the
@@ -243,6 +243,15 @@ def build_dialog_factory(*, llm, loop=None, resolve_backend=None, submit=None):
     faulting mapping) refuses at call time -- never falls back to primary.
     ``submit`` defaults to the worker-thread submitter above; tests inject a
     controllable ``submit(loop, coro) -> future`` so no loop is ever created.
+
+    ``evidence_sink`` (SA-EVIDENCE-CHANNEL-1, optional, default ``None``) is
+    the caller-owned sandbox sink (``src/soul_access/evidence.py``). When
+    configured it is passed explicitly on *every* request's
+    ``backend.complete(..., evidence_sink=...)`` call -- never via any shared
+    "last result" global/module cache. When ``None`` (default) the
+    ``evidence_sink`` argument is not passed at all, so legacy backends with
+    a fixed ``complete`` signature keep working and old behavior is
+    bit-identical.
 
     Each ``dialog`` call makes exactly one ``complete(max_retries=0)``
     attempt: empty / mistyped / faulting replies refuse (500), never resend.
@@ -333,13 +342,18 @@ def build_dialog_factory(*, llm, loop=None, resolve_backend=None, submit=None):
                     500, "internal", "soul-access dialog must not run on the live loop"
                 )
             try:
-                coro = backend.complete(
-                    messages=wire_messages,
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    max_retries=0,
-                )
+                # SA-EVIDENCE-CHANNEL-1: evidence_sink 只在已配置時才逐請求顯式
+                # 傳遞; 未配置時完全不帶該參數 (舊後端簽名相容, 舊行為逐位元一致)。
+                _complete_kwargs = {
+                    "messages": wire_messages,
+                    "model": model,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "max_retries": 0,
+                }
+                if evidence_sink is not None:
+                    _complete_kwargs["evidence_sink"] = evidence_sink
+                coro = backend.complete(**_complete_kwargs)
             except (_bridge.LiveRefused, SnapshotRejected):
                 raise
             except Exception as exc:

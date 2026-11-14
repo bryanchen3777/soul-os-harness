@@ -2007,6 +2007,7 @@ class OpenAIBackend(LLMBackend):
         frequency_penalty: Optional[float] = None,
         presence_penalty: Optional[float] = None,
         reasoning_effort: Optional[str] = None,
+        evidence_sink=None,
         **kwargs,
     ) -> str:
         """
@@ -2069,6 +2070,17 @@ class OpenAIBackend(LLMBackend):
         max_retries = kwargs.pop("max_retries", 3)     # 2026-07-25 拍板 D 2: retry 預設 3 次
         # kwargs 剩下的 (e.g. thinking) OpenAI 不支援, ignore
 
+        # SA-EVIDENCE-CHANNEL-1 (2026-11-14, Sol approved): 選配 evidence_sink。
+        #   - None (預設) ⇒ 舊行為逐位元不變 (max_retries 照舊, 不寫任何取證)。
+        #   - 非 None ⇒ 取證模式: 固定零重試; 送前交付實際 provider payload＋雜湊,
+        #     回來時交付同次回應原文及原生 usage (以 request_id 關聯)。缺欄或落檔
+        #     失敗即不合格 (EvidenceError, 不補發)。raw 不進回覆正文/記憶/日誌;
+        #     sink 只寫呼叫端提供的專用沙盒目錄, 不存憑證 (只記變數名)。
+        _evidence = evidence_sink
+        _evidence_request_id = None
+        if _evidence is not None:
+            max_retries = 0  # 取證模式固定零重試
+
         json_body = {
             "model": model,
             "messages": messages,
@@ -2089,6 +2101,25 @@ class OpenAIBackend(LLMBackend):
         # 觀測錨點: 既有 pre-request log 會印 `request body keys=[...]`（見下方 C1 log）。
         if reasoning_effort is not None:
             json_body["reasoning_effort"] = reasoning_effort
+
+        # SA-EVIDENCE-CHANNEL-1: 送前交付實際 provider payload＋雜湊 (可重播)。
+        # 落檔失敗 ⇒ 不合格, 不發送 (零 transport 呼叫)。
+        if _evidence is not None:
+            import uuid as _evidence_uuid
+
+            from src.soul_access import evidence as _sa_evidence
+
+            _evidence_request_id = (
+                "req-" + _evidence_uuid.uuid4().hex[:16]
+            )
+            _evidence_payload_sha256 = _sa_evidence.sha256_hex(
+                _sa_evidence.canonical_bytes(json_body)
+            )
+            _evidence.record_request(
+                request_id=_evidence_request_id,
+                payload=json_body,
+                payload_sha256=_evidence_payload_sha256,
+            )
 
         # 2026-07-25 拍板 D 2: retry-with-backoff 機制
         # 觸發: HTTP 5xx / 429 / 529 (provider 端 cluster 過載)
@@ -2178,6 +2209,22 @@ class OpenAIBackend(LLMBackend):
                 # max_retries+1 次都失敗
                 raise RuntimeError(
                     f"OpenAIBackend exhausted {max_retries+1} attempts, last error: {last_error}"
+                )
+
+            # SA-EVIDENCE-CHANNEL-1: 回來時交付同次回應原文及原生 usage。
+            # 缺欄 (raw/usage 任一不合) ⇒ 不合格 (EvidenceGap, 不補發);
+            # 落檔失敗 ⇒ 不合格 (EvidenceStoreError, 不補發)。此處不碰回傳形狀,
+            # 不印 raw/usage 內容到日誌, 不寫記憶。
+            if _evidence is not None:
+                _evidence_raw_text = resp.text
+                _evidence_usage = (
+                    data.get("usage") if isinstance(data, dict) else None
+                )
+                _sa_evidence.check_response(_evidence_raw_text, _evidence_usage)
+                _evidence.record_response(
+                    request_id=_evidence_request_id,
+                    raw_text=_evidence_raw_text,
+                    usage=_evidence_usage,
                 )
 
             # 2026-07-25 20:50 拍板 C1 (Bry 拍板 驗證 D 路盲點):
