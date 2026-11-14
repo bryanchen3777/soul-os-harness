@@ -1,0 +1,12 @@
+# tests/interfaces five-red baseline (must-stay-RED gap tests, G1-G5 CLOSED)
+# Source: SA-5/SA-6 established baseline; re-collected @ 6fdd38f.
+# Full-regression verdict rule: exactly these 5 fail with the same cause
+# (missing production wiring: journal backend completion unreachable /
+#  runtime port side-effect absent). One more red, one fewer red, or a
+# changed cause => BLOCKED.
+
+tests/interfaces/test_journal.py::test_gap_backend_completed_unreachable
+tests/interfaces/test_journal.py::test_gap_backend_dest_completion_rejected
+tests/interfaces/test_journal.py::test_gap_cancel_absent
+tests/interfaces/test_runtime_port.py::test_gap_no_side_effect_retry_still_uncertain
+tests/interfaces/test_runtime_port.py::test_gap_decision_port_result_absent

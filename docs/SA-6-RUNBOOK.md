@@ -53,3 +53,26 @@
 - T7 全綠（17 項）：`pytest -q tests/soul_access -k t7`。
 - 證據：`verification/soul-access/sa6/evidence.jsonl`（104 筆，見同目錄 REPORT）。
 - CLI 沙盒對帳：同目錄 `cli-2026-11-12.json`（PENDING_COHORT，exit 3）。
+
+## 7. SA-DEPLOY-PREFLIGHT-1 閉門預檢（2026-11-14；候選 `6fdd38f`；部署仍 BLOCKED）
+
+- 候選確認：HEAD = `6fdd38f`（SA-BUDGET-GO-1）；追蹤檔零差異；他人未追蹤檔全保留；
+  `stash@{0} pre-vc-audit local WIP` 未動。證據 `verification/sa-deploy-preflight-1/`。
+- GO-1 引用（零新增模型請求）：15/15 ACCEPT，40088 output tokens，
+  0 重試／0 UNKNOWN／0 超時；測試額度不轉上線額度。
+- 唯讀核對：release 判定 `src/soul_access/release.py:30`；生產釘選
+  `src/soul_access/wiring.py:74`（`release/sa.json` 不存在 ⇒ 恆 CLOSED）；
+  :8000 掛載 `scripts/run_server.py:794-813`（dialog=None）；
+  :18765 轉發 `scripts/serve_external_gateway.py:98-107`；
+  倉內僅 do-not-deploy 範例，無生產路徑。
+- Hard Gate（`.venv`，Python 3.11.15）：
+  1. `pytest -q tests/soul_access tests/infra` ⇒ 555 passed（exit 0）。
+  2. 變異收集 32 項（>0），隨上全綠（綠→紅→還原綠內建斷言，無 DUD）。
+  3. `pytest -q tests` ⇒ 5 failed, 8974 passed, 32 skipped, 32 subtests passed
+     （974.15s；五紅 = 既定 test_gap_*，nodeid＋原因逐項一致，零新增）。
+  4. CLI `--simulated-time 2026-11-12T03:00:00Z` ⇒ PASS exit 0（no-op；
+     sidecar 3397→3397 +0；類型 0/0/0/0；關鍵反例 0 轉變；
+     prompt unexplained 0；與 SA-6 同槽差異係夜排程已實現預測轉變，見 results.md）。
+- 核准包：`verification/sa-deploy-preflight-1/approval-package.md`（計畫文件，非授權）。
+  APPROVAL-1 維持 FROZEN；INTERFACE-GAPs-1 前置、CANARY-WIRING-1 另票；
+  批次定義（§2）與放行順序（§3）一字未改。

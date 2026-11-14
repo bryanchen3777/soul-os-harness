@@ -1,0 +1,37 @@
+SA-DEPLOY-PREFLIGHT-1 candidate + worktree + SHA256
+ticket: SA-DEPLOY-PREFLIGHT-1 (Sol decision-complete, execute as written)
+date (UTC): 2026-11-14
+
+HEAD
+6fdd38f7f8e7f12a5a9b9a67421ec879c62a9b13
+SA-BUDGET-GO-1: 5 Go channels T1 verified 15/15 ACCEPT (Sol approved spend)
+
+acceptance check: HEAD == 6fdd38f -> MATCH, proceed (no mixing).
+
+tracked worktree diff vs HEAD
+git diff HEAD --stat -> EMPTY (no tracked modifications)
+git stash list -> one entry: stash@{0}: On main: pre-vc-audit local WIP (NOT touched, NOT popped, left as-is)
+
+untracked files (retained, not mixed into this ticket):
+verification/NOTION-MEMORY-1/{journal.json,journal.tmp,migrate_journal.json,sync_journal.json}
+verification/notebooklm/* (monthly probes, qa/, clean/, sizeprobe-*, mk_monthly.py, pilot_report.md, probe*.txt)
+verification/** others pre-existing (sa-budget-1, sa-budget-go-1, soul-access, G1-G5-CONTRACT, etc.)
+-> None of the above are staged or committed by this ticket.
+
+SHA256 (repo .venv python, hashlib.sha256, file bytes as stored)
+5627a16b85a7b6f705a5d1a337460b53c18376a127f2dca68cc419158f378791  docs/SA-6-RUNBOOK.md
+ce3c8f85c55e5182be5e61e3350c7023c509e7fe78b6bb8896b7c43267cf6590  logs/ENGINEERING_STATE.md
+5305e7f0191c15b7c5d57beead6345d1e8865b1f30b373da753fcca42bcbe26b  verification/sa-budget-go-1/SUMMARY.json
+2cceec8f89726d20f53526384826f3838f2a822dd999ef98a3e58000c5b44e75  verification/sa-budget-go-1/criteria-go1.json
+7cc16754d3fb3f56df4979b1715b76cf3e7edfa878655a278e502769a67690bd  verification/sa-budget-go-1/detector_go1.py
+5ffd6a6ed82fdbfdfefa2ecf71a8d6e7b40310f0d9347fb2518e510f8f342af2  verification/soul-access/sa6/REPORT.md
+61aa2f05836288801b92ece8857525c010be9d2a1ce031fe9281d9b7b1cf2f76  verification/soul-access/sa6/evidence.jsonl
+1d19b8735c2502f7958689291c94892b4bfb74a619eb6f4de35d34df8c80360e  verification/soul-access/sa6/cli-2026-11-12.json
+55a14a5203129177f095b4840455651d511f859af398264bff58890bc4ff760d  src/soul_access/wiring.py
+a9363c2f5ed3ec46297a1665ea10628903c9e82adc62f94c15c1f67ec8b6f1d7  src/soul_access/bridge.py
+802529a091af7131d14a0cdf8db127f4148d77816c94831862a436e897212448  src/soul_access/release.py
+144c86a741f3dc11f41b0aaf151f950e4d3fc3d7abf0abd1e08a9f43f0811c91  src/external_gateway/app.py
+07c065b22bc9a817d8db199f728e7f8e548fc64517594726858b72206c5b286c  src/external_gateway/routing.py
+b186b4d1bc25f4287d1bd3e96b4933a1a3acd36a9539595b2afe40b7c4e841cf  scripts/serve_external_gateway.py
+6186ce273ddc4db7099c219e58b904363ee0e29b762cbe1852254bc1bd614f06  scripts/run_server.py
+d2dfae5e5e6980afe3af90acd13128ad165ef3bd53e65f31eb6bce9d037a4ece  scripts/eval_lifecycle_cli.py

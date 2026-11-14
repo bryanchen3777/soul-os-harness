@@ -10342,3 +10342,28 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 備註：任務中段曾出現未提交的 386-insertions 台帳編輯（缺 `types`）後被未知方還原；
   本單以乾淨基線重做為 191 行純新增，`git diff` 可驗零刪除；HEAD 全程 `578f3a2` 未變。
 - 部署狀態：仍未部署，不得宣稱部署。
+## SA-DEPLOY-PREFLIGHT-1 回到部署線，完成閉門預檢（2026-11-14；候選 6fdd38f；部署仍 BLOCKED）
+- 候選確認：HEAD = `6fdd38f`（SA-BUDGET-GO-1）；追蹤檔零差異；他人未追蹤檔全保留未混入；
+  `stash@{0} pre-vc-audit local WIP` 未動。相關檔案 SHA256 見
+  `verification/sa-deploy-preflight-1/candidate-and-sha256.txt`。
+- GO-1 引用（零新增模型請求）：15/15 ACCEPT，40088 output tokens，0 重試／0 UNKNOWN／0 超時；
+  測試額度不轉上線額度。證據 `verification/sa-deploy-preflight-1/go1-evidence.md`。
+- 唯讀核對（`verification/sa-deploy-preflight-1/wiring-audit.md`）：
+  release 判定 `src/soul_access/release.py:30`；生產釘選 `src/soul_access/wiring.py:74`
+  （`release/sa.json` 不存在 ⇒ 恆 CLOSED）；:8000 掛載 `scripts/run_server.py:794-813`
+  （dialog=None）；:18765 轉發 `scripts/serve_external_gateway.py:98-107`；
+  倉內僅 do-not-deploy 範例，無生產路徑／registry／presets。
+- Hard Gate（`.venv`，Python 3.11.15）：
+  (1) `pytest -q tests/soul_access tests/infra` ⇒ 555 passed，exit 0；
+  (2) 變異收集 32 項（>0），隨上全綠（綠→紅→還原綠內建斷言，無 DUD）；
+  (3) `pytest -q tests` ⇒ 5 failed, 8974 passed, 32 skipped, 32 subtests passed
+  （974.15s；5 紅 = 既定 test_gap_* journal 3＋runtime_port 2，nodeid＋原因逐項一致，零新增；
+  SKIP-BASELINE 全庫模式 STABLE 32/32/0/0）；
+  (4) CLI `--simulated-time 2026-11-12T03:00:00Z` ⇒ PASS exit 0（no-op）：
+  sidecar 3397→3397 +0；類型 0/0/0/0；關鍵反例零轉變；prompt unexplained 0，
+  weak 增量 0；與 SA-6 同槽差異係 11-12 夜排程已實現預測轉變（生產尾部 ts 2026-11-13T03:00:20Z），
+  誠實記錄於 `verification/sa-deploy-preflight-1/results.md`，非破線。
+- 核准包：`verification/sa-deploy-preflight-1/approval-package.md`（計畫文件，非授權）。
+  APPROVAL-1 維持 FROZEN；INTERFACE-GAPs-1 前置、CANARY-WIRING-1 另票；部署仍 BLOCKED。
+- Frozen：Agency 四階段／TriggerEnvelope／InnerLifeEvent／四 handlers／SAGE 寫入／衰減門檻／
+  T6 403／EXPECTED_RETIREMENT_COHORTS 全部未碰；data/** 零寫入；未殺行程、未啟伺服器、未綁埠。
