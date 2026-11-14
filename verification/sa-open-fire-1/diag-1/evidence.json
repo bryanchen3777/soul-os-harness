@@ -1,0 +1,117 @@
+{
+  "diag": "SA-OPEN-FIRE-1 diag-1",
+  "started_utc": "2026-11-14T23:32:29+00:00",
+  "finished_utc": "2026-11-14T23:32:29+00:00",
+  "host": "ollama.com",
+  "port": 443,
+  "interpreter": "repo .venv Python",
+  "guarantees": {
+    "no_key": true,
+    "no_authorization_header": true,
+    "no_model_endpoint_post": true,
+    "no_dotenv_read": true,
+    "no_production_write": true,
+    "max_attempts_per_layer": 2,
+    "timeout_s": 10,
+    "no_http_spoken": true
+  },
+  "layers": {
+    "proxy": {
+      "time_utc": "2026-11-14T23:32:29+00:00",
+      "target": "process env (names only)",
+      "vars": {
+        "HTTP_PROXY": {
+          "present": false,
+          "empty": null
+        },
+        "HTTPS_PROXY": {
+          "present": false,
+          "empty": null
+        },
+        "http_proxy": {
+          "present": false,
+          "empty": null
+        },
+        "https_proxy": {
+          "present": false,
+          "empty": null
+        },
+        "NO_PROXY": {
+          "present": false,
+          "empty": null
+        },
+        "no_proxy": {
+          "present": false,
+          "empty": null
+        }
+      }
+    },
+    "dns": {
+      "time_utc": "2026-11-14T23:32:29+00:00",
+      "target": "ollama.com",
+      "attempts": [
+        {
+          "n": 1,
+          "ok": true,
+          "elapsed_ms": 16.0,
+          "families": [
+            "2"
+          ],
+          "addresses": [
+            "34.36.133.15"
+          ]
+        }
+      ],
+      "verdict": "PASS"
+    },
+    "tcp": {
+      "time_utc": "2026-11-14T23:32:29+00:00",
+      "target": "ollama.com:443",
+      "timeout_s": 10,
+      "attempts": [
+        {
+          "n": 1,
+          "ok": true,
+          "elapsed_ms": 31.0,
+          "peer": [
+            "34.36.133.15",
+            443
+          ]
+        }
+      ],
+      "verdict": "PASS"
+    },
+    "tls": {
+      "time_utc": "2026-11-14T23:32:29+00:00",
+      "target": "ollama.com:443 (SNI=ollama.com)",
+      "timeout_s": 10,
+      "attempts": [
+        {
+          "n": 1,
+          "ok": true,
+          "elapsed_ms": 47.0,
+          "tls_version": "TLSv1.3",
+          "cipher": {
+            "name": "TLS_AES_256_GCM_SHA384",
+            "bits": 256
+          },
+          "issuer": "countryName=US,organizationName=Google Trust Services,commonName=WR3",
+          "subject": "commonName=ollama.com",
+          "not_before": "Sep 16 09:13:24 2026 GMT",
+          "not_after": "Dec 15 10:06:57 2026 GMT"
+        }
+      ],
+      "verdict": "PASS"
+    }
+  },
+  "excluded": [
+    "DNS resolution",
+    "TCP connect :443",
+    "TLS handshake+SNI+chain-validity"
+  ],
+  "unlocated": [],
+  "notes": [
+    "TLS PASS (if observed) means handshake+SNI+chain-validity only; it does NOT mean model inference is usable (no HTTP was spoken).",
+    "Proxy section records names + set/empty only; values never recorded."
+  ]
+}
