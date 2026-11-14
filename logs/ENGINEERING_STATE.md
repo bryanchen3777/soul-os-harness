@@ -10404,4 +10404,4 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
   未開門、未接流量、未做真實推理、未啟 :18765；未寫 data/**（日誌讀取除外）；
   未殺行程、未 task_stop wrapper。
 - Frozen：未改 Frozen Contract、未改守衛、未推送。
-- Notion 同步：event-key `SA-THAW-DEPLOY-1/2:DEPLOYED_CLOSED:e351541`（--topic evidence --month 2026-11）。
+- Notion 同步：event-key `SA-THAW-DEPLOY-1/2:DEPLOYED_CLOSED:24fa75b`（--topic evidence --month 2026-11）。
