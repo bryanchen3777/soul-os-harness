@@ -1,13 +1,13 @@
 {
   "_file": "01-preset-models.FILL.json —— 四 preset 共用同一 URL/同一 KEY，各 model 分別填",
   "_how": "把下面每個 FILL_ME 換成實際值。URL 四個別名填同一個；KEY 四個別名填同一個 key_ref 名（不是 KEY 明文）；model 四個各填各的，若某個別名在 ollama cloud 上沒有對應 model 就填 NO_MAPPING。",
-  "_provider_fixed": "provider 四個一律 openai，不用改",
-  "shared_base_url": "FILL_ME__ollama_cloud_base_url__例_https://xxxx/v1/chat/completions",
-  "shared_key_ref": "FILL_ME__key_ref_name_only__例_OLLAMA_CLOUD_KEY__只寫變數名_不寫明文",
+  "_provider_fixed": "openai",
+  "shared_base_url": "https://ollama.com/v1/chat/completions",
+  "shared_key_ref": "OLLAMA_API_KEY",
   "models": {
-    "primary": "FILL_ME__例_deepseek-v4.1-flash:1017__沿用_launcher_既有請照抄此值__否則填正式值",
-    "minimax-m3.1-flash": "FILL_ME__或_NO_MAPPING",
-    "glm-5.3-flash": "FILL_ME__或_NO_MAPPING",
-    "mimo-v2.6-flash": "FILL_ME__或_NO_MAPPING"
+    "primary": "deepseek-v4.1-flash:1017",
+    "minimax-m3.1-flash": "minimax-m3.1-flash",
+    "glm-5.3-flash": "glm-5.3-flash",
+    "mimo-v2.6-flash": "mimo-v2.6-flash"
   }
 }
