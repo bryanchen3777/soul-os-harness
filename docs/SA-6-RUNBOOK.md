@@ -102,3 +102,30 @@
   錯認證 401、非 rem/primary 路由 404/403；重建即重啟兩實例皆 403。
 - 禁止：不開門、不接真流量；不動 :8000、主服務控制、系統服務、
   registry/presets、`data/**`、canonical；Frozen（§3 放行順序在內）一字不動。
+
+## 9. SA-OPEN-FIRE-1 單發探針（2026-11-14；BLOCKED_PORT，零計費，雙門 closed）
+
+- 探針：`scripts/sa_open_fire_probe.py`（新建；本票唯一產品外文件）。
+  固定 `rem/primary`、單一 `request_id`（`req-sa-open-fire-1-0001`）、
+  單一訊息（「你好。」）；原子單次准入（`O_EXCL` 已送標記先行，路徑
+  `verification/sa-open-fire-1/`，重跑不重送）；禁併發、禁自動重試、
+  禁補發；逾時視為已耗額；第 2 次額度不啟用。
+- 預設閉門：一般啟動仍 closed；無 HTTP opener、無 `--host`／`--port`
+  旗標（loopback `127.0.0.1:18765` 結構性寫死，與薄端常數斷言相等）。
+- 存證：送前存可重播 request＋參數＋雜湊＋憑證引用（只記變數名
+  `OLLAMA_API_KEY`）；回後須存原始 CallResult raw＋usage；缺 raw 即
+  不合格停手（exit 3），不以文字答案或估算替代。
+- 實彈前唯讀 preflight（2026-11-14T20:49:45Z）：`0.0.0.0:18765`
+  被外來 PID `31704`（`python.exe` ← `9988 python.exe` ← `3388 svchost.exe`，
+  Session 0，命令列皆空，2026-11-11 建立）佔用 ⇒ **BLOCKED_PORT**，
+  拒啟並上報；未探測外來 listener、未反覆啟動、未殺行程、未換埠、
+  未旁路直打 LLM。
+- 第二阻斷（獨立）：離線已證明現行 dialog 只回字串
+  （`src/soul_access/wiring.py:358`），無 raw/usage 通道 ⇒ 即使埠可用，
+  `--fire` 亦停於 EVIDENCE_GAP；擴改線上鏈路須另票裁決，本票不斷言。
+- 終態（讀回值）：計費嘗試數 **0**（無 `sent.json`）；實例門 closed
+ （本票無 opener）；共享門 closed（`release/sa.json` 讀回 closed，零寫入）。
+- 測試：`tests/soul_access/test_t13_open_fire.py`（21 項，含雙向變異 6 項）。
+- 證據：`verification/sa-open-fire-1/`（`check-report.json`／
+  `preflight-blocked.json`／`request.template.json`／`STATUS.md`）。
+- 禁止（本票）：不推播（本地提交，pathspec 僅本票檔案）；不動 §3。
