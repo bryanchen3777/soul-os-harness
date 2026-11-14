@@ -1,0 +1,57 @@
+{
+  "auth_id": "sa-budget-go-1-glm",
+  "halted": false,
+  "reservations": [
+    {
+      "id": "rsv-0001-glm-5.3-flash/T1/r1",
+      "shot": "glm-5.3-flash/T1/r1",
+      "pre_tokens": 8000,
+      "status": "settled",
+      "billed_completion": 818,
+      "billed_total": 1171,
+      "assoc": {
+        "model_id": "glm-5.3-flash",
+        "task": "T1",
+        "run": 1,
+        "status_code": 200,
+        "finish_reason": "stop"
+      },
+      "reason": "",
+      "ts": "2026-11-14T00:11:12Z"
+    },
+    {
+      "id": "rsv-0002-glm-5.3-flash/T1/r1",
+      "shot": "glm-5.3-flash/T1/r1",
+      "pre_tokens": 8000,
+      "status": "settled",
+      "billed_completion": 987,
+      "billed_total": 1340,
+      "assoc": {
+        "model_id": "glm-5.3-flash",
+        "task": "T1",
+        "run": 1,
+        "status_code": 200,
+        "finish_reason": "stop"
+      },
+      "reason": "",
+      "ts": "2026-11-14T00:11:26Z"
+    },
+    {
+      "id": "rsv-0003-glm-5.3-flash/T1/r1",
+      "shot": "glm-5.3-flash/T1/r1",
+      "pre_tokens": 8000,
+      "status": "settled",
+      "billed_completion": 861,
+      "billed_total": 1214,
+      "assoc": {
+        "model_id": "glm-5.3-flash",
+        "task": "T1",
+        "run": 1,
+        "status_code": 200,
+        "finish_reason": "stop"
+      },
+      "reason": "",
+      "ts": "2026-11-14T00:11:41Z"
+    }
+  ]
+}

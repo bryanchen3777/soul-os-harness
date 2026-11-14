@@ -585,37 +585,61 @@ def ping(endpoint: Endpoint, model_id: str, *, timeout: float = 120.0) -> CallRe
 
 
 def settlement_for_result(result: CallResult) -> tuple[int | None, int | None, bool]:
-    """按协议 completion/output 结算（含 reasoning，保守口径），供 harness 记账。
+    """按协议输出计数一次（SA-BUDGET-GO-1 统一口径），供 harness 记账。
 
-    与 ``harness.budget.settle_billed_tokens`` 同规则（``billed = output +
-    reasoning``，宁可多算不可少算），此处就地实现以避免 ``scripts`` 反向
-    依赖 ``harness``（Soul/B 边界：调用层不 import harness）。
+    与 ``harness.budget.settle_billed_tokens`` 同规则
+    （``billed_completion = output_tokens`` 原值；各协议该值已含推理，
+    推理明细只做信息揭露，**不扣除、不重复相加**；缺明细记“未提供”），
+    此处就地实现以避免 ``scripts`` 反向依赖 ``harness``
+    （Soul/B 边界：调用层不 import harness）。
 
     回传 ``(billed_completion, billed_total, unknown)``；``ok=False``、
-    usage 缺失、output 缺失 ⇒ ``unknown=True``（调用方须保留预留、
-    标 UNKNOWN 并停止后续发送，**不得当 0 处理**）。
+    usage 缺失、output 缺失或非法、口径矛盾（reasoning > output）
+    ⇒ ``unknown=True``（调用方须保留预留、标 UNKNOWN 并停止后续发送，
+    **不得当 0 处理**）。
     """
     if not result.ok:
         return None, None, True
     usage = result.usage or {}
     out = usage.get("output_tokens")
-    if out is None:
+    if out is None or isinstance(out, bool):
         return None, None, True
     try:
         out_i = int(out)
     except (TypeError, ValueError):
         return None, None, True
+    if out_i < 0:
+        return None, None, True
+    raw_reasoning = usage.get("reasoning_tokens")
+    if raw_reasoning is None:
+        has_detail = False
+    else:
+        if isinstance(raw_reasoning, bool):
+            return None, None, True
+        try:
+            r_i = int(raw_reasoning)
+        except (TypeError, ValueError):
+            return None, None, True
+        if r_i < 0 or r_i > out_i:
+            return None, None, True
+        has_detail = True
+    billed = out_i  # 计一次：output 已含推理，不重复相加
+    total = usage.get("total_tokens")
+    if total is None:
+        try:
+            billed_total = out_i + int(usage.get("input_tokens") or 0)
+        except (TypeError, ValueError):
+            billed_total = billed
+        return billed, billed_total, False
+    if isinstance(total, bool):
+        return None, None, True
     try:
-        r_i = int(usage.get("reasoning_tokens") or 0)
+        total_i = int(total)
     except (TypeError, ValueError):
         return None, None, True
-    billed = out_i + r_i
-    total = usage.get("total_tokens")
-    try:
-        billed_total = int(total) if total is not None else out_i + int(usage.get("input_tokens") or 0)
-    except (TypeError, ValueError):
-        billed_total = billed
-    return billed, billed_total, False
+    if total_i < 0:
+        return None, None, True
+    return billed, total_i, False
 
 
 def is_unknown_result(result: CallResult) -> bool:

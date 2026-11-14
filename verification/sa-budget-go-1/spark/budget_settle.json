@@ -1,0 +1,59 @@
+{
+  "auth_id": "sa-budget-go-1-spark",
+  "halted": false,
+  "used_shots": 3,
+  "used_completion": 5515,
+  "reservations": [
+    {
+      "id": "rsv-0001-muse-spark-1.3-contributor/T1/r1",
+      "shot": "muse-spark-1.3-contributor/T1/r1",
+      "pre_tokens": 16000,
+      "status": "settled",
+      "billed_completion": 1793,
+      "billed_total": 2117,
+      "assoc": {
+        "model_id": "muse-spark-1.3-contributor",
+        "task": "T1",
+        "run": 1,
+        "status_code": 200,
+        "finish_reason": "completed"
+      },
+      "reason": "",
+      "ts": "2026-11-14T00:05:09Z"
+    },
+    {
+      "id": "rsv-0002-muse-spark-1.3-contributor/T1/r1",
+      "shot": "muse-spark-1.3-contributor/T1/r1",
+      "pre_tokens": 16000,
+      "status": "settled",
+      "billed_completion": 1858,
+      "billed_total": 2182,
+      "assoc": {
+        "model_id": "muse-spark-1.3-contributor",
+        "task": "T1",
+        "run": 1,
+        "status_code": 200,
+        "finish_reason": "completed"
+      },
+      "reason": "",
+      "ts": "2026-11-14T00:05:49Z"
+    },
+    {
+      "id": "rsv-0003-muse-spark-1.3-contributor/T1/r1",
+      "shot": "muse-spark-1.3-contributor/T1/r1",
+      "pre_tokens": 16000,
+      "status": "settled",
+      "billed_completion": 1864,
+      "billed_total": 2188,
+      "assoc": {
+        "model_id": "muse-spark-1.3-contributor",
+        "task": "T1",
+        "run": 1,
+        "status_code": 200,
+        "finish_reason": "completed"
+      },
+      "reason": "",
+      "ts": "2026-11-14T00:06:25Z"
+    }
+  ]
+}

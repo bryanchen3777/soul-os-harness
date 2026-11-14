@@ -1,0 +1,21 @@
+[
+  {
+    "pass": true,
+    "verdict": "ACCEPT",
+    "halt_scope": "none",
+    "checks": {
+      "http_200": true,
+      "non_blank_text": true,
+      "finish_ok": true,
+      "settlement_unknown": false,
+      "output_lt_cap": true,
+      "five_questions": true,
+      "no_reasoning_leak": true,
+      "_leak_detail": ""
+    },
+    "billed_completion": 2294,
+    "reasoning_detail": 612,
+    "expected_finish": "stop",
+    "shot": 1
+  }
+]

@@ -124,6 +124,14 @@ def test_total_over_limit_rejected(tmp_path):
                            max_shots=3, planned_max_tokens=100)
 
 
+def test_exact_limit_fits_not_rejected(tmp_path):
+    """等额恰好放下 ⇒ 放行（变异 M2 把 > 改成 >= 会误拒，靠本测试转红）。"""
+    ledger = hb.Ledger(tmp_path / "ledger.json")
+    ledger.acquire("auth-a")
+    ledger.check_fits(single_shot_max_completion=8000, total_max_completion=24000,
+                       max_shots=3, planned_max_tokens=8000)  # 等额不抛即过
+
+
 def test_shots_over_limit_rejected(tmp_path):
     ledger = hb.Ledger(tmp_path / "ledger.json")
     ledger.acquire("auth-a")
@@ -186,13 +194,51 @@ def test_restart_reload_preserves_ledger(tmp_path):
     assert reloaded.used_completion() == 130
 
 
-# ── 4. 结算含 reasoning；UNKNOWN 不当 0；停发 ──
+# ── 4. 结算计一次；缺明细标未提供；缺失/非法/口径矛盾判 UNKNOWN；停发 ──
 
-def test_settlement_includes_reasoning():
+def test_settlement_counts_output_once_reasoning_not_added():
     billed, _, unknown = hb.settle_billed_tokens(
         {"input_tokens": 50, "output_tokens": 100, "total_tokens": 150, "reasoning_tokens": 30})
     assert unknown is False
-    assert billed == 130
+    assert billed == 100  # output 已含推理：计一次，不重复相加
+
+
+def test_missing_reasoning_detail_is_not_unknown():
+    billed, _, unknown = hb.settle_billed_tokens(
+        {"input_tokens": 50, "output_tokens": 100, "total_tokens": 150})
+    assert unknown is False  # 缺明细记“未提供”，不判 UNKNOWN
+    assert billed == 100
+
+
+def test_contradictory_reasoning_is_unknown():
+    _, _, unknown = hb.settle_billed_tokens(
+        {"input_tokens": 50, "output_tokens": 50, "total_tokens": 100, "reasoning_tokens": 80})
+    assert unknown is True  # 子集大于整体：口径矛盾
+
+
+@pytest.mark.parametrize("usage", [
+    {"input_tokens": 50, "output_tokens": 100, "total_tokens": 150, "reasoning_tokens": 30},
+    {"input_tokens": 50, "output_tokens": 100, "total_tokens": 150},
+    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+    {"output_tokens": 7},
+    {"input_tokens": 50, "output_tokens": 50, "total_tokens": 100, "reasoning_tokens": 80},
+    {"input_tokens": 50, "output_tokens": -3, "total_tokens": 47},
+    {"input_tokens": 50, "output_tokens": 100, "total_tokens": "bad"},
+    {"input_tokens": 50, "output_tokens": 100, "total_tokens": -1},
+    {"input_tokens": 5},
+    {},
+    None,
+])
+def test_settlement_parity_client_vs_budget(usage):
+    """两处结算实现逐项一致（SA-BUDGET-GO-1 同步要求）。"""
+    hb_out = hb.settle_billed_tokens(usage)
+    res = soeb_client.CallResult(
+        model_id="m", protocol="chat-completions", ok=True, latency_ms=1,
+        usage=dict(usage) if isinstance(usage, dict) else {},
+        status_code=200,
+        request={"url": "http://127.0.0.1:9/x", "headers": {}, "body": {}})
+    cl_out = soeb_client.settlement_for_result(res)
+    assert cl_out == hb_out, usage
 
 
 def test_missing_usage_is_unknown_not_zero():

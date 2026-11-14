@@ -1,0 +1,57 @@
+{
+  "auth_id": "sa-budget-go-1-qwen",
+  "halted": false,
+  "reservations": [
+    {
+      "id": "rsv-0001-qwen3.8-flash/T1/r1",
+      "shot": "qwen3.8-flash/T1/r1",
+      "pre_tokens": 8000,
+      "status": "settled",
+      "billed_completion": 5174,
+      "billed_total": 5560,
+      "assoc": {
+        "model_id": "qwen3.8-flash",
+        "task": "T1",
+        "run": 1,
+        "status_code": 200,
+        "finish_reason": "end_turn"
+      },
+      "reason": "",
+      "ts": "2026-11-14T00:11:59Z"
+    },
+    {
+      "id": "rsv-0002-qwen3.8-flash/T1/r1",
+      "shot": "qwen3.8-flash/T1/r1",
+      "pre_tokens": 8000,
+      "status": "settled",
+      "billed_completion": 4414,
+      "billed_total": 4800,
+      "assoc": {
+        "model_id": "qwen3.8-flash",
+        "task": "T1",
+        "run": 1,
+        "status_code": 200,
+        "finish_reason": "end_turn"
+      },
+      "reason": "",
+      "ts": "2026-11-14T00:13:21Z"
+    },
+    {
+      "id": "rsv-0003-qwen3.8-flash/T1/r1",
+      "shot": "qwen3.8-flash/T1/r1",
+      "pre_tokens": 8000,
+      "status": "settled",
+      "billed_completion": 3566,
+      "billed_total": 3952,
+      "assoc": {
+        "model_id": "qwen3.8-flash",
+        "task": "T1",
+        "run": 1,
+        "status_code": 200,
+        "finish_reason": "end_turn"
+      },
+      "reason": "",
+      "ts": "2026-11-14T00:14:34Z"
+    }
+  ]
+}

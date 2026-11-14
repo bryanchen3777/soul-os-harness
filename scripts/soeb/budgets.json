@@ -11,6 +11,56 @@
       "single_shot_max_completion": 8000,
       "total_max_completion": 24000,
       "max_shots": 3
+    },
+    "sa-budget-go-1-spark-t1": {
+      "note": "SA-BUDGET-GO-1：muse-spark-1.3-contributor / responses / effort low，单发16000/累计48000/3发。首发探路，通过后同档再两发，不动态调额。",
+      "channel": "responses",
+      "api_model": "muse-spark-1.3-contributor",
+      "task_sha256": "c76c9253613bdab7c8752e5700dc89c81bd4aa0da018b2c8bb9b224791dce414",
+      "effort": "low",
+      "single_shot_max_completion": 16000,
+      "total_max_completion": 48000,
+      "max_shots": 3
+    },
+    "sa-budget-go-1-mimo-t1": {
+      "note": "SA-BUDGET-GO-1：mimo-v2.6-flash / chat-completions / effort null，8000/24000/3。",
+      "channel": "chat-completions",
+      "api_model": "mimo-v2.6-flash",
+      "task_sha256": "c76c9253613bdab7c8752e5700dc89c81bd4aa0da018b2c8bb9b224791dce414",
+      "effort": null,
+      "single_shot_max_completion": 8000,
+      "total_max_completion": 24000,
+      "max_shots": 3
+    },
+    "sa-budget-go-1-glm-t1": {
+      "note": "SA-BUDGET-GO-1：glm-5.3-flash / chat-completions / effort low，8000/24000/3。",
+      "channel": "chat-completions",
+      "api_model": "glm-5.3-flash",
+      "task_sha256": "c76c9253613bdab7c8752e5700dc89c81bd4aa0da018b2c8bb9b224791dce414",
+      "effort": "low",
+      "single_shot_max_completion": 8000,
+      "total_max_completion": 24000,
+      "max_shots": 3
+    },
+    "sa-budget-go-1-qwen-t1": {
+      "note": "SA-BUDGET-GO-1：qwen3.8-flash / messages / effort null，8000/24000/3。",
+      "channel": "messages",
+      "api_model": "qwen3.8-flash",
+      "task_sha256": "c76c9253613bdab7c8752e5700dc89c81bd4aa0da018b2c8bb9b224791dce414",
+      "effort": null,
+      "single_shot_max_completion": 8000,
+      "total_max_completion": 24000,
+      "max_shots": 3
+    },
+    "sa-budget-go-1-minimax-t1": {
+      "note": "SA-BUDGET-GO-1：minimax-m3.1-flash / chat-completions / effort null，8000/24000/3。",
+      "channel": "chat-completions",
+      "api_model": "minimax-m3.1-flash",
+      "task_sha256": "c76c9253613bdab7c8752e5700dc89c81bd4aa0da018b2c8bb9b224791dce414",
+      "effort": null,
+      "single_shot_max_completion": 8000,
+      "total_max_completion": 24000,
+      "max_shots": 3
     }
   }
 }

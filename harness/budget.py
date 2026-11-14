@@ -16,9 +16,11 @@
   - 发送前**先持久化预留**（reserve 落盘 + fsync 后才允许发送）。
   - 首尾生成 / 工具 LLM / 重试**全部计数**；本票禁自动重试加额
     （失败即结算或标 UNKNOWN 并停止，不自动补发）。
-  - 按协议 completion/output 结算**含 reasoning**（保守口径：
-    ``billed = output + reasoning``，宁可多算不可少算）；
-    缺 usage / 超时 / 存证失败 ⇒ 预留保留、标 UNKNOWN 并停止后续发送。
+  - 按协议输出计数**一次**（SA-BUDGET-GO-1 统一口径）：
+    ``billed_completion = output_tokens`` 原值（各协议该值已含推理；
+    推理明细只做信息揭露，**不扣除、不重复相加**；缺明细记“未提供”，
+    不判 UNKNOWN）；缺 usage / 缺 output / 非法值 / 口径矛盾
+    （reasoning > output）⇒ 预留保留、标 UNKNOWN 并停止后续发送。
   - 发前存脱敏 request / manifest，发后存关联 ID / CallResult /
     usage / finish，**全部留在 harness 输出目录**（不得写入 Soul、
     不得写入 ``data/``）。
@@ -122,35 +124,60 @@ def resolve_profile(doc: dict[str, Any], key: ProfileKey) -> tuple[str, dict[str
 def settle_billed_tokens(
     usage: dict[str, Any] | None,
 ) -> tuple[int | None, int | None, bool]:
-    """按协议摊平后的 usage 结算（含 reasoning，保守口径）。
+    """按协议输出计数一次（SA-BUDGET-GO-1 统一口径），供 harness 记账。
 
     回传 ``(billed_completion, billed_total, unknown)``：
-      - ``unknown=True`` ⇔ usage 缺失或 output 缺失 ⇒ 调用方必须保留预留、
+      - ``billed_completion = output_tokens`` 原值。各协议的该值已含推理，
+        故计一次即可；推理明细只做信息揭露（缺明细记“未提供”），
+        **不扣除、不重复相加**。
+      - ``unknown=True`` ⇔ usage 缺失 / output 缺失或非法（非整数/负数）/
+        口径矛盾（``reasoning_tokens > output_tokens``）⇒ 调用方必须保留预留、
         标 UNKNOWN 并停止后续发送（不得当 0 处理）。
-      - 正常时 ``billed_completion = output + reasoning``（任一缺省按 0 计，
-        但 output 缺省已在上条判为 unknown）。
     """
     if not isinstance(usage, dict):
         return None, None, True
     out = usage.get("output_tokens")
-    if out is None:
+    if out is None or isinstance(out, bool):
         return None, None, True
     try:
         out_i = int(out)
     except (TypeError, ValueError):
         return None, None, True
-    reasoning = usage.get("reasoning_tokens") or 0
+    if out_i < 0:
+        return None, None, True
+    raw_reasoning = usage.get("reasoning_tokens")
+    if raw_reasoning is None:
+        r_i = 0  # 缺明细：记“未提供”（由 verdict 层揭露），不判 UNKNOWN
+        has_reasoning_detail = False
+    else:
+        if isinstance(raw_reasoning, bool):
+            return None, None, True
+        try:
+            r_i = int(raw_reasoning)
+        except (TypeError, ValueError):
+            return None, None, True
+        if r_i < 0:
+            return None, None, True
+        has_reasoning_detail = True
+    if has_reasoning_detail and r_i > out_i:
+        return None, None, True  # 口径矛盾：子集大于整体
+    billed_completion = out_i  # 计一次：output 已含推理，不重复相加
+    total = usage.get("total_tokens")
+    if total is None:
+        try:
+            billed_total = out_i + int(usage.get("input_tokens") or 0)
+        except (TypeError, ValueError):
+            billed_total = billed_completion
+        return billed_completion, billed_total, False
+    if isinstance(total, bool):
+        return None, None, True
     try:
-        r_i = int(reasoning)
+        total_i = int(total)
     except (TypeError, ValueError):
         return None, None, True
-    billed_completion = out_i + r_i
-    total = usage.get("total_tokens")
-    try:
-        billed_total = int(total) if total is not None else out_i + int(usage.get("input_tokens") or 0)
-    except (TypeError, ValueError):
-        billed_total = billed_completion
-    return billed_completion, billed_total, False
+    if total_i < 0:
+        return None, None, True
+    return billed_completion, total_i, False
 
 
 def validate_redacted_headers(headers: dict[str, str]) -> None:

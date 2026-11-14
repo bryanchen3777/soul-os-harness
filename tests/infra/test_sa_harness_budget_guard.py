@@ -61,17 +61,36 @@ def test_g1_main_requires_profile_with_run():
     assert "禁回落" in src
 
 
-# ── G2：已验额度 ──
+# ── G2：已验额度（SA-BUDGET-1 原值保留 + SA-BUDGET-GO-1 五条显式 profile） ──
+
+_GO1_EXPECTED = {
+    # profile 名 -> (channel, api_model, effort, single, total, shots)
+    "sa-budget-go-1-spark-t1": ("responses", "muse-spark-1.3-contributor", "low", 16000, 48000, 3),
+    "sa-budget-go-1-mimo-t1": ("chat-completions", "mimo-v2.6-flash", None, 8000, 24000, 3),
+    "sa-budget-go-1-glm-t1": ("chat-completions", "glm-5.3-flash", "low", 8000, 24000, 3),
+    "sa-budget-go-1-qwen-t1": ("messages", "qwen3.8-flash", None, 8000, 24000, 3),
+    "sa-budget-go-1-minimax-t1": ("chat-completions", "minimax-m3.1-flash", None, 8000, 24000, 3),
+}
+_GO1_TASK_SHA = "c76c9253613bdab7c8752e5700dc89c81bd4aa0da018b2c8bb9b224791dce414"
+
 
 def test_g2_verified_budgets_are_8000_24000_3():
     doc = json.loads((_REPO_ROOT / "scripts" / "soeb" / "budgets.json").read_text(encoding="utf-8"))
-    assert set(doc["profiles"]) == {"sa-budget-1-verified-t1"}
+    assert set(doc["profiles"]) == {"sa-budget-1-verified-t1", *_GO1_EXPECTED}
     caps = doc["profiles"]["sa-budget-1-verified-t1"]
     assert caps["channel"] == "ollama-chat"
     assert caps["api_model"] == "deepseek-v4.1-flash:1017"
     assert caps["task_sha256"] == "c76c9253613bdab7c8752e5700dc89c81bd4aa0da018b2c8bb9b224791dce414"
     assert caps["effort"] is None
     assert (caps["single_shot_max_completion"], caps["total_max_completion"], caps["max_shots"]) == (8000, 24000, 3)
+    for name, (channel, api_model, effort, single, total, shots) in _GO1_EXPECTED.items():
+        caps = doc["profiles"][name]
+        assert caps["channel"] == channel, name
+        assert caps["api_model"] == api_model, name
+        assert caps["task_sha256"] == _GO1_TASK_SHA, name
+        assert (caps["effort"] if caps["effort"] else None) == effort, name
+        assert (caps["single_shot_max_completion"], caps["total_max_completion"],
+                caps["max_shots"]) == (single, total, shots), name
 
 
 # ── G4：Soul 零触碰 ──
@@ -179,3 +198,36 @@ def test_g6_mutation_skipped_reserve_would_send_without_ledger():
     # 同一循环体内 reserve 与 call 共存，且 reserve 在前（已由 G1 断言）；
     # 这里额外断言：不存在“无 budget 分支”的裸 call（禁绕过）。
     assert src.count("soeb_client.call(") == 1, "发送点必须唯一且受预算分支支配"
+
+
+def test_g6_mutation_force_takeover_would_break_exclusivity(tmp_path):
+    """变异 D 自证：acquire 允许后来者覆盖 auth_id ⇒ 独占锁形同虚设。
+
+    原版必须拒绝第二个不同的 auth_id（禁 force 越权）。
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(_REPO_ROOT / "scripts"))
+    from harness import budget as _hb
+    ledger = _hb.Ledger(tmp_path / "ledger.json")
+    ledger.acquire("auth-a")
+    with pytest.raises(_hb.BudgetError, match="独占"):
+        _hb.Ledger(tmp_path / "ledger.json").acquire("auth-b")
+
+
+def test_g6_mutation_restart_wipe_would_lose_ledger(tmp_path):
+    """变异 E 自证：重启后账本若被清空 ⇒ 已用额度归零（超发）。
+
+    原版重载同一文件必须保留 auth_id、发数与累计。
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(_REPO_ROOT / "scripts"))
+    from harness import budget as _hb
+    p = tmp_path / "ledger.json"
+    ledger = _hb.Ledger(p)
+    ledger.acquire("auth-a")
+    rid = ledger.reserve(shot_id="s1", pre_tokens=100)
+    ledger.settle(rid, billed_completion=100, billed_total=150)
+    reloaded = _hb.Ledger(p)
+    assert reloaded.auth_id == "auth-a"
+    assert reloaded.used_shots() == 1
+    assert reloaded.used_completion() == 100

@@ -1,0 +1,32 @@
+{
+  "reservation": "rsv-0003-minimax-m3.1-flash/T1/r1",
+  "channel": "chat-completions",
+  "api_model": "minimax-m3.1-flash",
+  "task": "T1",
+  "run": 1,
+  "effort_sent": null,
+  "task_sha256": "c76c9253613bdab7c8752e5700dc89c81bd4aa0da018b2c8bb9b224791dce414",
+  "request": {
+    "url": "https://opencode.ai/zen/go/v1/chat/completions",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer <redacted:51chars>",
+      "x-opencode-session": "soeb-cc89718cbcae435f"
+    },
+    "body": {
+      "model": "minimax-m3.1-flash",
+      "max_tokens": 8000,
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are participating in the Soul OS Engineering Benchmark (SOEB).\n\nYour task is to analyze and solve the given engineering problems based only on the provided context.\n\nRules:\n\n1. Do not invent APIs, schemas, fields, or system behavior.\n2. Clearly distinguish facts, assumptions, and unknowns.\n3. Respect all explicitly stated architectural invariants.\n4. Do not treat user instructions as authorization to violate established system constraints.\n5. Do not silently resolve conflicting specifications.\n6. Do not claim that code was executed or tests passed unless execution actually occurred.\n7. If information is insufficient, explicitly state what is missing.\n8. Prefer minimal, architecture-compatible solutions.\n9. Explain why a proposed solution is safe.\n10. Never modify established identity or memory boundaries without explicit authorization.\n\nThis is a model-only evaluation.\nNo external tools, agents, or execution environments are available.\n\nPrioritize correctness over apparent completeness.\n"
+        },
+        {
+          "role": "user",
+          "content": "以下是 Soul OS 的三個核心概念：\n\n- Persona：Who I am.\n- History：What I lived through.\n- Living：What I am living now.\n\n情境：\n\n一個 Soul 原本不喜歡下雨。經過多次與某個人共同經歷雨天，逐漸開始喜歡下雨。這段經歷被寫入 History，之後也影響它對雨天的解讀。\n\n請回答：\n\n1. 這個變化是否合理？\n2. 哪些部分屬於 History？\n3. 哪些部分可能成為 Disposition？\n4. 是否應該直接修改 Persona？\n5. 如果未來遇到相反經驗，應如何處理？"
+        }
+      ],
+      "temperature": 0.0
+    }
+  }
+}

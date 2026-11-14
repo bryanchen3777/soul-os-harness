@@ -1,0 +1,57 @@
+{
+  "auth_id": "sa-budget-go-1-minimax",
+  "halted": false,
+  "reservations": [
+    {
+      "id": "rsv-0001-minimax-m3.1-flash/T1/r1",
+      "shot": "minimax-m3.1-flash/T1/r1",
+      "pre_tokens": 8000,
+      "status": "settled",
+      "billed_completion": 4599,
+      "billed_total": 5107,
+      "assoc": {
+        "model_id": "minimax-m3.1-flash",
+        "task": "T1",
+        "run": 1,
+        "status_code": 200,
+        "finish_reason": "stop"
+      },
+      "reason": "",
+      "ts": "2026-11-14T00:15:33Z"
+    },
+    {
+      "id": "rsv-0002-minimax-m3.1-flash/T1/r1",
+      "shot": "minimax-m3.1-flash/T1/r1",
+      "pre_tokens": 8000,
+      "status": "settled",
+      "billed_completion": 5039,
+      "billed_total": 5547,
+      "assoc": {
+        "model_id": "minimax-m3.1-flash",
+        "task": "T1",
+        "run": 1,
+        "status_code": 200,
+        "finish_reason": "stop"
+      },
+      "reason": "",
+      "ts": "2026-11-14T00:16:16Z"
+    },
+    {
+      "id": "rsv-0003-minimax-m3.1-flash/T1/r1",
+      "shot": "minimax-m3.1-flash/T1/r1",
+      "pre_tokens": 8000,
+      "status": "settled",
+      "billed_completion": 2995,
+      "billed_total": 3503,
+      "assoc": {
+        "model_id": "minimax-m3.1-flash",
+        "task": "T1",
+        "run": 1,
+        "status_code": 200,
+        "finish_reason": "stop"
+      },
+      "reason": "",
+      "ts": "2026-11-14T00:17:00Z"
+    }
+  ]
+}

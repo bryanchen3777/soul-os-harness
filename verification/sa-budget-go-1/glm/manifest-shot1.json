@@ -1,0 +1,78 @@
+{
+  "runner": "soeb",
+  "spec_path": "verification\\sa-budget-go-1\\task-t1-go-effort-low.json",
+  "spec_sha256": "d49a977dc89065cb099a1754320e5afdb88c416c1e3dd04335f6351c4e1a2374",
+  "suite": "sa-budget-go-1-T1-effort-low",
+  "started_at": "2026-11-14T00:11:12Z",
+  "finished_at": "2026-11-14T00:11:21Z",
+  "models": [
+    "glm-5.3-flash"
+  ],
+  "excluded_models": [],
+  "tasks": [
+    {
+      "id": "T1",
+      "max_tokens": 8000,
+      "temperature": 0.0,
+      "effort": "low",
+      "note": "same T1 as shared spec (budget override via --force-max-tokens)"
+    }
+  ],
+  "context_packet": null,
+  "budget_override": {
+    "forced_max_tokens": 8000,
+    "original": {
+      "T1": 2048
+    }
+  },
+  "system_prompt_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "system_prompt_chars": 0,
+  "system_prompt_source": "inline",
+  "total_calls": 1,
+  "ok_calls": 1,
+  "failed_calls": 0,
+  "raw_saved": true,
+  "channel": {
+    "name": "OpenCode Go（主）+ Ollama Cloud（deepseek 補位）",
+    "base_url": "https://opencode.ai/zen/go/v1",
+    "credentials": "MiniMax Code config.yaml → custom_provider.opencode-go{,-responses,-anthropic}",
+    "note": "三個 opencode-go 條目共用同一把 key 與同一個 baseURL，差異只在 api 欄位決定的協定。deepseek-v4.1-flash 於 2026-11-01 經 Owner 裁示改走 custom_provider.ollama（https://ollama.com/v1）補位，因為它在 Go 被 workspace Privacy 地區設定擋掉。混通道會破壞可比性，manifest 的 channels / mixed_channels 會逐顆揭露。"
+  },
+  "channels": {
+    "glm-5.3-flash": {
+      "endpoint": "chat-completions",
+      "api_model": "glm-5.3-flash",
+      "channel_note": "opencode-go"
+    }
+  },
+  "mixed_channels": false,
+  "registry_version": 2,
+  "budget_profile": "sa-budget-go-1-glm-t1",
+  "budget_auth_id": "sa-budget-go-1-glm",
+  "budget_ledger": "C:\\Users\\bbfcc\\.local\\bin\\soul-os-harness\\verification\\sa-budget-go-1\\glm\\budget_ledger.json",
+  "budget_summary": {
+    "auth_id": "sa-budget-go-1-glm",
+    "halted": false,
+    "used_shots": 1,
+    "used_completion": 818,
+    "reservations": [
+      {
+        "id": "rsv-0001-glm-5.3-flash/T1/r1",
+        "shot": "glm-5.3-flash/T1/r1",
+        "pre_tokens": 8000,
+        "status": "settled",
+        "billed_completion": 818,
+        "billed_total": 1171,
+        "assoc": {
+          "model_id": "glm-5.3-flash",
+          "task": "T1",
+          "run": 1,
+          "status_code": 200,
+          "finish_reason": "stop"
+        },
+        "reason": "",
+        "ts": "2026-11-14T00:11:12Z"
+      }
+    ]
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "auth_id": "sa-budget-go-1-mimo",
+  "halted": false,
+  "used_shots": 3,
+  "used_completion": 6120,
+  "reservations": [
+    {
+      "id": "rsv-0001-mimo-v2.6-flash/T1/r1",
+      "shot": "mimo-v2.6-flash/T1/r1",
+      "pre_tokens": 8000,
+      "status": "settled",
+      "billed_completion": 1219,
+      "billed_total": 1546,
+      "assoc": {
+        "model_id": "mimo-v2.6-flash",
+        "task": "T1",
+        "run": 1,
+        "status_code": 200,
+        "finish_reason": "stop"
+      },
+      "reason": "",
+      "ts": "2026-11-14T00:07:13Z"
+    },
+    {
+      "id": "rsv-0002-mimo-v2.6-flash/T1/r1",
+      "shot": "mimo-v2.6-flash/T1/r1",
+      "pre_tokens": 8000,
+      "status": "settled",
+      "billed_completion": 2607,
+      "billed_total": 2934,
+      "assoc": {
+        "model_id": "mimo-v2.6-flash",
+        "task": "T1",
+        "run": 1,
+        "status_code": 200,
+        "finish_reason": "stop"
+      },
+      "reason": "",
+      "ts": "2026-11-14T00:08:06Z"
+    },
+    {
+      "id": "rsv-0003-mimo-v2.6-flash/T1/r1",
+      "shot": "mimo-v2.6-flash/T1/r1",
+      "pre_tokens": 8000,
+      "status": "settled",
+      "billed_completion": 2294,
+      "billed_total": 2621,
+      "assoc": {
+        "model_id": "mimo-v2.6-flash",
+        "task": "T1",
+        "run": 1,
+        "status_code": 200,
+        "finish_reason": "stop"
+      },
+      "reason": "",
+      "ts": "2026-11-14T00:09:40Z"
+    }
+  ]
+}
