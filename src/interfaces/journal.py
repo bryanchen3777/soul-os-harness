@@ -13,10 +13,18 @@ from typing import Optional
 
 EXPIRY_SECONDS = 86400
 
-_VALID_STATES = ("accepted", "executing", "generated", "transport_sent", "failed_before_execution", "uncertain")
-_VALID_KINDS = ("NEW", "REPLAY", "IN_PROGRESS", "CONFLICT", "UNCERTAIN", "EXPIRED")
+_VALID_STATES = ("accepted", "executing", "generated", "transport_sent", "completed", "cancelled", "failed_before_execution", "uncertain")
+_VALID_KINDS = ("NEW", "REPLAY", "IN_PROGRESS", "CONFLICT", "UNCERTAIN", "EXPIRED", "CANCELLED")
 _VALID_OUTCOME_STATUS = ("pending", "completed", "skipped", "unknown")
 _MEMORY_DEST = "memory"
+_BACKEND_DEST = "backend"
+_VALID_OUTCOME_DESTS = (_MEMORY_DEST, _BACKEND_DEST)
+# Rows that may carry a backend outcome. accepted / executing /
+# failed_before_execution / uncertain / cancelled rows refuse backend
+# evidence outright; completed rows accept only an idempotent same-value
+# resend of an already-stored backend completed (never an upgrade, never a
+# downgrade, never a new key).
+_BACKEND_OUTCOME_WRITABLE_STATES = ("generated", "transport_sent", "completed")
 _DEFAULT_OUTCOMES_TEXT = '{"memory": "pending"}'
 _SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS requests (principal_id TEXT NOT NULL, agent_id TEXT NOT NULL, scope TEXT NOT NULL, conversation_id TEXT NOT NULL, branch_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, fingerprint TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE, state TEXT NOT NULL, epoch INTEGER NOT NULL, response_id TEXT, response_body TEXT, transport_count INTEGER NOT NULL DEFAULT 0, outcomes TEXT NOT NULL, created_ts REAL NOT NULL, expires_ts REAL NOT NULL, updated_ts REAL NOT NULL, UNIQUE (principal_id, agent_id, scope, conversation_id, branch_id, idempotency_key))"
 
@@ -78,6 +86,12 @@ class Journal:
             raise JournalError("bad epoch")
         self.conn = conn
         self.epoch = epoch
+        # Memory-only clean-retry permits (Q3): bound to (stored
+        # request_id, epoch, failed attempt) on THIS instance. Never
+        # written to outcomes or any table, so a restart (fresh Journal)
+        # drops them and recovery stays fail-closed.
+        self._clean_retry_permits = {}
+        self._submit_attempts = {}
         try:
             self.conn.execute(_SCHEMA_SQL)
             self.conn.commit()
@@ -149,6 +163,13 @@ class Journal:
                 if sfp != fingerprint:
                     conn.commit()
                     return ClaimResult("CONFLICT", srid)
+                if state == "cancelled":
+                    # Terminal stickiness (Q4): same key + fingerprint stays
+                    # CANCELLED across epochs and past expiry. It is never
+                    # NEW again, never EXPIRED. Fingerprint conflict above
+                    # still takes priority.
+                    conn.commit()
+                    return ClaimResult("CANCELLED", srid)
                 if state == "accepted":
                     conn.commit()
                     return ClaimResult("IN_PROGRESS", srid)
@@ -181,7 +202,7 @@ class Journal:
                     )
                     conn.commit()
                     return ClaimResult("NEW", srid)
-                if state == "generated" or state == "transport_sent":
+                if state == "generated" or state == "transport_sent" or state == "completed":
                     try:
                         expired = float(ts) > float(sexp)
                     except Exception:
@@ -299,7 +320,7 @@ class Journal:
                 sresp_body2 = row2[3]
                 if sepoch2 != epoch:
                     raise OwnershipError("generated ownership failed")
-                if state2 == "generated" or state2 == "transport_sent":
+                if state2 == "generated" or state2 == "transport_sent" or state2 == "completed":
                     if sresp_id2 == response_id and sresp_body2 == response_body:
                         try:
                             conn.commit()
@@ -312,7 +333,7 @@ class Journal:
                         return
                     raise JournalError("generated response mismatch")
                 raise JournalError("bad state for generated")
-            if state == "generated" or state == "transport_sent":
+            if state == "generated" or state == "transport_sent" or state == "completed":
                 if sresp_id == response_id and sresp_body == response_body:
                     try:
                         conn.commit()
@@ -382,6 +403,15 @@ class Journal:
                 )
                 conn.commit()
                 return
+            if state == "completed":
+                # A completed row keeps counting transports without leaving
+                # the terminal state (Q2 transport-count path).
+                conn.execute(
+                    "UPDATE requests SET transport_count=transport_count+1 WHERE request_id=?",
+                    (request_id,),
+                )
+                conn.commit()
+                return
             try:
                 conn.rollback()
             except Exception:
@@ -397,7 +427,7 @@ class Journal:
             raise JournalError("record_transport failed")
 
     def record_outcome(self, request_id, epoch, dest, status, evidence=None) -> None:
-        if dest != _MEMORY_DEST:
+        if dest not in _VALID_OUTCOME_DESTS:
             raise JournalError("bad dest")
         if status not in _VALID_OUTCOME_STATUS:
             raise JournalError("bad status")
@@ -414,20 +444,28 @@ class Journal:
             raise JournalError("bad epoch")
         conn = self.conn
         # Atomic compare-and-set: each attempt reads the current durable
-        # (epoch, outcomes) snapshot and writes only if that exact snapshot
-        # still holds. The write is a single predicated UPDATE in autocommit
-        # mode, so either it lands on the snapshot we validated or rowcount
-        # is 0 and nothing changed. A stale worker therefore can never
-        # silently overwrite a newer durable outcome: a durable completed
-        # is never downgraded by a stale pending/skipped/unknown (that path
-        # raises "completed cannot downgrade" from a fresh read), and any
-        # other lost race retries from fresh state instead of clobbering.
-        # Same single-statement-CAS pattern as record_generated /
+        # (epoch, outcomes, state) snapshot and writes only if that exact
+        # snapshot still holds. The write is a single predicated UPDATE in
+        # autocommit mode, so either it lands on the snapshot we validated
+        # or rowcount is 0 and nothing changed. A stale worker therefore can
+        # never silently overwrite a newer durable outcome: a durable
+        # completed is never downgraded by a stale pending/skipped/unknown
+        # (that path raises "completed cannot downgrade" from a fresh read),
+        # and any other lost race retries from fresh state instead of
+        # clobbering. Same single-statement-CAS pattern as record_generated /
         # mark_uncertain above.
+        #
+        # Q1/Q2 (INTERFACE-GAPS-1 R2): the outcomes register carries one key
+        # per destination ({"memory": ...} plus, once observed, {"backend":
+        # ...}); each destination downgrades independently. A completed
+        # outcome flips the row to completed if and only if the row is in
+        # transport_sent, and the flip rides the SAME predicated UPDATE as
+        # the outcome write. generated rows only record. accepted /
+        # executing rows never flip.
         for _ in range(3):
             try:
                 row = conn.execute(
-                    "SELECT epoch, outcomes FROM requests WHERE request_id=?",
+                    "SELECT epoch, outcomes, state FROM requests WHERE request_id=?",
                     (request_id,),
                 ).fetchone()
             except Exception:
@@ -457,7 +495,23 @@ class Journal:
                 except Exception:
                     pass
                 raise
-            current = data.get(_MEMORY_DEST, "pending")
+            state = row[2]
+            if dest == _BACKEND_DEST and state not in _BACKEND_OUTCOME_WRITABLE_STATES:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("bad state for outcome")
+            current = data.get(dest, "pending")
+            if state == "completed" and dest == _BACKEND_DEST and current != status:
+                # A completed row only replays an already-stored backend
+                # completed (idempotent same-value resend); it never
+                # upgrades, downgrades, or opens a new backend key.
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("bad state for outcome")
             if current == "completed" and status != "completed":
                 try:
                     conn.rollback()
@@ -479,7 +533,7 @@ class Journal:
                         pass
                     raise JournalError("record_outcome failed")
                 return
-            data[_MEMORY_DEST] = status
+            data[dest] = status
             try:
                 text = _dump_outcomes(data)
             except JournalError:
@@ -489,10 +543,17 @@ class Journal:
                     pass
                 raise
             try:
-                cur = conn.execute(
-                    "UPDATE requests SET outcomes=? WHERE request_id=? AND epoch=? AND outcomes=?",
-                    (text, request_id, epoch, row[1]),
-                )
+                if status == "completed" and state == "transport_sent":
+                    cur = conn.execute(
+                        "UPDATE requests SET outcomes=?, state='completed'"
+                        " WHERE request_id=? AND epoch=? AND outcomes=? AND state='transport_sent'",
+                        (text, request_id, epoch, row[1]),
+                    )
+                else:
+                    cur = conn.execute(
+                        "UPDATE requests SET outcomes=? WHERE request_id=? AND epoch=? AND outcomes=?",
+                        (text, request_id, epoch, row[1]),
+                    )
             except Exception:
                 try:
                     conn.rollback()
@@ -694,6 +755,200 @@ class Journal:
             except Exception:
                 pass
             raise JournalError("mark_failed_before_execution failed")
+
+    def cancel(self, request_id) -> None:
+        """Owner-only move: accepted -> cancelled (same epoch only).
+
+        An already-cancelled row is an idempotent success. Any other state,
+        or an unknown request, raises JournalError; an accepted row owned by
+        a different epoch raises OwnershipError. A cancelled row is terminal:
+        it never resets, and claim keeps answering CANCELLED for the same
+        key/fingerprint (Q4).
+        """
+        if not isinstance(request_id, str) or request_id == "":
+            raise JournalError("bad request_id")
+        conn = self.conn
+        try:
+            row = conn.execute(
+                "SELECT state, epoch FROM requests WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if row is None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("unknown request")
+            if row[0] == "cancelled":
+                try:
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise JournalError("cancel failed")
+                return
+            if row[0] != "accepted":
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("bad state for cancel")
+            if row[1] != self.epoch:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise OwnershipError("cancel ownership failed")
+            # Atomic compare-and-set: the row must still be owned by this
+            # epoch in accepted state. A concurrent begin() that moved it to
+            # executing makes rowcount 0, so a stale canceller can never
+            # flip a live execution into cancelled.
+            try:
+                cur = conn.execute(
+                    "UPDATE requests SET state='cancelled'"
+                    " WHERE request_id=? AND state='accepted' AND epoch=?",
+                    (request_id, self.epoch),
+                )
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("cancel failed")
+            if cur.rowcount == 1:
+                try:
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise JournalError("cancel failed")
+                return
+            # Lost a race between our SELECT and UPDATE: re-read once and
+            # decide purely from current durable state (read-only here).
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                row2 = conn.execute(
+                    "SELECT state, epoch FROM requests WHERE request_id=?",
+                    (request_id,),
+                ).fetchone()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise JournalError("cancel failed")
+            if row2 is None:
+                raise JournalError("unknown request")
+            if row2[0] == "cancelled":
+                try:
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise JournalError("cancel failed")
+                return
+            if row2[1] != self.epoch:
+                raise OwnershipError("cancel ownership failed")
+            raise JournalError("bad state for cancel")
+        except (JournalError, OwnershipError):
+            raise
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise JournalError("cancel failed")
+
+    def _next_submit_attempt(self, request_id) -> int:
+        """Pre-increment the in-memory submit-attempt ordinal for one row.
+
+        Pure memory bookkeeping on this Journal instance: it fences clean
+        retries (each fake() call consumes the next ordinal) and never
+        touches durable state. Uses setdefault so instances built without
+        __init__ (storage-failure harnesses) still behave.
+        """
+        attempts = self.__dict__.setdefault("_submit_attempts", {})
+        attempts[request_id] = attempts.get(request_id, 0) + 1
+        return attempts[request_id]
+
+    def _grant_clean_retry(self, request_id, epoch, attempt) -> None:
+        """Store a single-use clean-retry permit in instance memory.
+
+        Bound to (stored request_id, epoch, failed attempt); never written
+        to outcomes or any table, so a restart drops it. Overwrites any
+        older permit for the same row. A storage failure never calls this,
+        so a permit is never granted for an unrecorded failure.
+        """
+        permits = self.__dict__.setdefault("_clean_retry_permits", {})
+        permits[request_id] = (epoch, attempt)
+
+    def try_consume_clean_retry(self, request_id) -> bool:
+        """Single-use clean-retry permit: uncertain -> executing (same epoch).
+
+        Returns True exactly once per granted permit, moving the row to
+        executing under this instance's epoch so the retry may call the
+        runtime WITHOUT begin. Returns False (no state change) when there
+        is no permit, the permit's epoch no longer matches, the permit's
+        attempt is stale, or the CAS loses. The permit is consumed (popped)
+        before the CAS, so no outcome — success or storage failure — ever
+        restores it. Bad request_id raises JournalError; every other
+        storage problem answers False (fail closed).
+        """
+        if not isinstance(request_id, str) or request_id == "":
+            raise JournalError("bad request_id")
+        permits = self.__dict__.setdefault("_clean_retry_permits", {})
+        entry = permits.pop(request_id, None)
+        if entry is None:
+            return False
+        try:
+            permit_epoch, permit_attempt = entry
+        except Exception:
+            return False
+        if permit_epoch != self.epoch:
+            return False
+        attempts = self.__dict__.setdefault("_submit_attempts", {})
+        try:
+            if attempts.get(request_id, 0) != permit_attempt:
+                return False
+        except Exception:
+            return False
+        conn = self.conn
+        try:
+            cur = conn.execute(
+                "UPDATE requests SET state='executing'"
+                " WHERE request_id=? AND state='uncertain' AND epoch=?",
+                (request_id, self.epoch),
+            )
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return False
+        if cur.rowcount != 1:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return False
+        try:
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return False
+        return True
 
     def recover(self):
         conn = self.conn

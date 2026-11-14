@@ -42,7 +42,7 @@ def test_submit_success_completed_evidence(tmp_path):
     assert out.response_body == "hello"
     assert fake.calls == [1]
     state, epoch, rid, body, tcount, outcomes = _row(conn, "req-1")
-    assert state == "transport_sent"
+    assert state == "completed"
     assert tcount == 1
     assert json.loads(outcomes) == {"memory": "completed"}
 
@@ -284,7 +284,7 @@ def test_submit_uses_stored_request_identity(tmp_path):
     assert out.request_id == "req-orig"
     assert out.response_id == "resp-1"
     assert fake.calls == [1]
-    assert _row(conn, "req-orig")[0] == "transport_sent"
+    assert _row(conn, "req-orig")[0] == "completed"
 
 
 def test_submit_begin_failure_marks_failed_before_execution(tmp_path):

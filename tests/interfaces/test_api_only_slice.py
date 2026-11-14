@@ -304,7 +304,7 @@ def test_journal_lifecycle_intact_after_new():
     assert resp.kind == "NEW"
     row = conn.execute("SELECT state, response_id, transport_count, outcomes FROM requests "
                        "WHERE request_id=?", ("req-life-001",)).fetchone()
-    assert row[0] == "transport_sent" and row[1] == resp.response_id and row[2] == 1
+    assert row[0] == "completed" and row[1] == resp.response_id and row[2] == 1
     assert '"memory":"completed"' in row[3]
 
 

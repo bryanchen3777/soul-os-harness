@@ -1033,6 +1033,14 @@ class TestBoundedAndFrozenDiscipline:
             # 內端掛載＋generate 適配器；bridge/api/release 不動）。
             # Work order: Sol SA-LIVE-WIRING-1 decision-complete 工單。
             "src/soul_access/wiring.py",
+            # ── INTERFACE-GAPS-1（2026-11-13，第九 cohort）──────────────────
+            # 本票新增 2 個已審查非 frozen 檔：journal 持久化＋runtime port
+            # （精確路徑，無 wildcard）。
+            # 原摘要／原 baseline／前八 cohort 摘要／frozen 摘要一律不變，見
+            # tests/infra/test_ei1_scope_registration_guard.py 的 INTERFACE_GAPS_FILES
+            # 第九 cohort 協議。
+            "src/interfaces/journal.py",
+            "src/interfaces/runtime_port.py",
         }
         frozen_dirs = (
             "src/agency/stages.py",
