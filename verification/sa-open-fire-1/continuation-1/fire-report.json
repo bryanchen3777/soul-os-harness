@@ -1,0 +1,28 @@
+{
+  "dialog_request_id": "req-sa-open-fire-1-0001",
+  "drill": "isolated-single-fire",
+  "evidence_request_id": "req-b54bd4d2a916479e",
+  "key_ref": "OLLAMA_API_KEY",
+  "message": "你好。",
+  "model": "deepseek-v4.1-flash:1017",
+  "note": "合成資料：假 transport 回包，非實彈成果；零真實外呼、零計費。",
+  "pair_ok": true,
+  "params": {
+    "max_tokens": 8,
+    "temperature": 0.5
+  },
+  "payload_sha256": "7043a3ffb0ce7a170c690feae6611a0231418ecb37996ca2978fa2474e81475c",
+  "raw_sha256": "8860307705e5bde75d4e9c2b2395fd1c4c8aa325f46334a19fec35f2eb0b25dd",
+  "real_billing": 0,
+  "route": "rem/primary",
+  "secret_present_in_evidence": false,
+  "synthetic": true,
+  "synthetic_mark": "合成資料（隔離演練，非實彈）",
+  "ticket": "SA-OPEN-FIRE-1-continuation-1",
+  "transport_calls": 1,
+  "usage": {
+    "completion_tokens": 1,
+    "prompt_tokens": 3,
+    "total_tokens": 4
+  }
+}

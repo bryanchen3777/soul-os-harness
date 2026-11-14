@@ -1,0 +1,25 @@
+{
+  "both_closed_reverified": {
+    "forwarder_refused_403": true,
+    "handler_refused_403": true,
+    "pass": true,
+    "production_release": {
+      "status": "closed"
+    },
+    "thin_open": false,
+    "upstream_calls": 0
+  },
+  "door1_only_closed": {
+    "pass": true,
+    "refused_403": true,
+    "upstream_calls": 0
+  },
+  "door2_only_closed": {
+    "pass": true,
+    "refused_403": true,
+    "upstream_calls": 0
+  },
+  "drill": "negative-gates-and-reclose",
+  "overall": "PASS",
+  "ticket": "SA-OPEN-FIRE-1-continuation-1"
+}

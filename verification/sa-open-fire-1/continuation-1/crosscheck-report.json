@@ -1,0 +1,18 @@
+{
+  "checks": {
+    "ids_match_request_response": true,
+    "key_ref_ok": true,
+    "pair_ok": true,
+    "payload_sha256_ok": true,
+    "raw_sha256_ok": true,
+    "report_match_ok": true,
+    "secret_absent_ok": true,
+    "synthetic_mark_ok": true,
+    "usage_ok": true
+  },
+  "dialog_request_id": "req-sa-open-fire-1-0001",
+  "drill": "independent-cross-process-readback",
+  "evidence_request_id": "req-b54bd4d2a916479e",
+  "overall": "PASS",
+  "ticket": "SA-OPEN-FIRE-1-continuation-1"
+}
