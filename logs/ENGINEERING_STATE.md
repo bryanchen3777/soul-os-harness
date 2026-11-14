@@ -10388,3 +10388,20 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
   前人 NOTION-MEMORY-1／notebooklm／sa-budget-1 目錄），不清理。
 - Frozen：bridge／api／release／schema、Journal／runtime_port、runbook §3 順序、
   Agency 四階段等全部未碰；data/** 零寫入；未殺行程、未啟伺服器、未綁埠、無真實外呼。
+## SA-THAW-DEPLOY-1/2 DEPLOYED_CLOSED：e351541 兩端閉門載入＋官方重啟生效（2026-11-14；臥龍 CONDITIONAL GO；Owner standing 授權）
+- 候選：HEAD = `e351541`（closed candidates assembled＋T7 pin 8->10，臥龍核准）；
+  `configs/sa/registry.json` SHA256 = `89C306660A7D57050F00A8FE45D4DAB0F784A63DC23B0C03CF7D6DB3EF759128`，
+  `configs/sa/presets.json` SHA256 = `C37DE506F9AB8F6D46D613F97ADE6AE5642157B7B3A19BA7ED165D092B58CDC1`；
+  重啟前後兩次重讀逐位元一致。
+- 官方重啟（唯一方式 `.\scripts\server_ops.ps1 restart`，exit 0）：
+  重啟前 pid 檔 `29416`／:8000 owner `34488`／status 雙行程＋/health 200；
+  重啟後 pid 檔 `11764`（新 trampoline，啟動 2026-11-14 14:37:00）／:8000 owner `26600`
+  （子行程，啟動 14:37:01）／status 雙行程＋/health 200（腳本內探針 #21 於 14:38:47 回 200；
+  watchdog 維護鎖已釋放）。三一致成立（pid 檔＝trampoline，owner＝其子行程）。
+  日誌唯讀：`data/server_nohup.err` 見 `Application startup complete.`＋`Uvicorn running on http://0.0.0.0:8000`。
+- 關門有效：`release/sa.json` 重啟前後皆 `{"status": "closed"}`；未對生產埠發任何測試請求
+  （健康確認僅走官方腳本內建探針＋status；驗收時間 2026-11-14 14:38-14:40 EDT）；
+  未開門、未接流量、未做真實推理、未啟 :18765；未寫 data/**（日誌讀取除外）；
+  未殺行程、未 task_stop wrapper。
+- Frozen：未改 Frozen Contract、未改守衛、未推送。
+- Notion 同步：event-key `SA-THAW-DEPLOY-1/2:DEPLOYED_CLOSED:e351541`（--topic evidence --month 2026-11）。
