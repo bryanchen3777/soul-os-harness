@@ -10367,3 +10367,24 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
   APPROVAL-1 維持 FROZEN；INTERFACE-GAPs-1 前置、CANARY-WIRING-1 另票；部署仍 BLOCKED。
 - Frozen：Agency 四階段／TriggerEnvelope／InnerLifeEvent／四 handlers／SAGE 寫入／衰減門檻／
   T6 403／EXPECTED_RETIREMENT_COHORTS 全部未碰；data/** 零寫入；未殺行程、未啟伺服器、未綁埠。
+## SA-THAW-DEPLOY-1 第一段 ACCEPTED＋補證關閉，VETO 撤銷（2026-11-14；`5fede13`→`4d1f45c`；部署仍 BLOCKED）
+- `5fede13` 第一段歷史 ACCEPTED：wiring.py 純加法正式 builder（FORMAL_BACKEND_ALIASES／
+  build_preset_backends／build_formal_resolve_backend）＋T10 新 21 測試＋正式候選證據
+  （registry.a 4 路由／union 20 路由／presets 4 別名全 openai＋.invalid）＋EVIDENCE；
+  `.gitignore` 追加 release/sa.json 忽略。生產掛載保持 resolve_backend=None，門關閉。
+- `4d1f45c` 補證（臥龍 VETO 兩缺口後關閉）：共用正常 oracle（綠→紅→還原綠，DUD 熔斷保留）；
+  回滾演練重排為關門→update→開門（每次安裝前斷言 closed）＋新增倒序必紅對照
+  （開門先行洩漏舊快照流量，檢出即通過，禁行）；僅動 T10＋EVIDENCE。證據
+  `verification/sa-thaw-deploy-1/EVIDENCE.md`（首段節＋補證節＋Mavis 親驗節）。
+- 實測（`.venv`，Python 3.11.15）：T10 22 過；三目錄 1159 過／1 skip；CLI 11-12 槽 PASS exit 0
+  （sidecar 3625→3625 no-op）；最新全庫 **9036 過＋1 紅**（`test_concurrent_retry_exactly_one_runtime_call`
+  已知併發 flake，隔離重跑 1 過、整檔 14 過，已排除產品回歸）；**不得寫「全庫全綠」**。
+  補證後暫列 CONDITIONAL，待全庫閘門滿足。
+- 第二段 BLOCKED（worker 按工單做法 2 在授權檢查點停手，零寫入零部署）：
+  生產 registry／presets／release 正式核准缺項（核准包 §4 待核准；APPROVAL-1 FROZEN；
+  formal 候選為測試身分／假 key／.invalid，禁部署禁自行補值）；缺授權下未做限域解凍登錄。
+  待 Owner 核准真實生產值後另票開工；未部署，不得標 DEPLOYED_CLOSED。
+  追蹤檔 diff 空（HEAD=`4d1f45c`），但仍有未追蹤檔（t10 殘留 .err 被他行程咬住未清、
+  前人 NOTION-MEMORY-1／notebooklm／sa-budget-1 目錄），不清理。
+- Frozen：bridge／api／release／schema、Journal／runtime_port、runbook §3 順序、
+  Agency 四階段等全部未碰；data/** 零寫入；未殺行程、未啟伺服器、未綁埠、無真實外呼。
