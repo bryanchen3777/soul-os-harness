@@ -791,14 +791,18 @@ async def lifespan(app: FastAPI):
         _sa_attach_live_loop(app, bus=bus, llm=llm, middleware=mw)
     except ImportError:
         logger.warning("[SA-1] soul-access bridge unavailable, live loop not attached")
-    # SA-LIVE-WIRING-1: mount the live-side internal route on the SAME
-    # bus/llm/mw instances above (zero construction here). dialog=None means
-    # the generate adapter is formally mounted but refuses at call time
-    # (500, never falls back): the production dialog stays unwired until a
-    # later Owner-approved ticket wires it. Additive only.
+    # SA-WIRING-OFFLINE-1: mount the live-side internal route on the SAME
+    # bus/llm/mw instances above (zero construction here). The per-request
+    # dialog factory reuses the launcher loop captured below (never creates
+    # one); ``primary`` reads the launcher backend read-only, every other
+    # alias has no mapping here (resolve_backend=None) so it refuses at call
+    # time (500, never falls back to primary). Additive only.
     try:
+        import asyncio as _sa_asyncio
+
         from src.soul_access import wiring as _sa_wiring
 
+        _sa_loop = _sa_asyncio.get_running_loop()
         _sa_wiring.mount_live_route(
             app,
             live=_sa_wiring.get_live_loop(app),
@@ -808,13 +812,16 @@ async def lifespan(app: FastAPI):
                 middleware=mw,
                 session_store=_sa_wiring.new_shared_session_store(),
                 dialog=None,
+                dialog_factory=_sa_wiring.build_dialog_factory(
+                    llm=llm, loop=_sa_loop, resolve_backend=None
+                ),
             ),
             release_path=_sa_wiring.RELEASE_FILE,
         )
-        logger.info("[SA-LIVE-WIRING-1] soul-access internal live route mounted ✓")
-    except ImportError:
+        logger.info("[SA-WIRING-OFFLINE-1] soul-access internal live route mounted ✓")
+    except (ImportError, RuntimeError):
         logger.warning(
-            "[SA-LIVE-WIRING-1] soul-access wiring unavailable, live route not mounted"
+            "[SA-WIRING-OFFLINE-1] soul-access wiring unavailable, live route not mounted"
         )
 
     # M3 Phase 1 (Bry 拍板 2026-08-07 19:40 + 2026-08-07 20:02 hardening):

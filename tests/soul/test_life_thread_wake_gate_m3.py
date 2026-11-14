@@ -794,7 +794,10 @@ _M3_NON_PY_SCANNED_COUNTS = {
     # ⇒ 非 .py 掃描檔 3 → 4。已複核新檔對 M3 的引用命中 = []（0 處）。
     # 2026-11-09：configs/models/ 新增 example-do-not-deploy.json（S4-W2 票）
     # ⇒ 非 .py 掃描檔 4 → 5。已複核新檔對 M3 的引用命中 = []（0 處）。
-    "configs": 5,
+    # 2026-11-14：configs/sa/ 新增 registry-a.offline.json、registry-ab.offline.json、
+    # presets.offline.json（SA-WIRING-OFFLINE-1 票，主腦 CONDITIONAL 裁決 Q1 准許 5→8）
+    # ⇒ 非 .py 掃描檔 5 → 8。已複核全 configs/ 對 life_thread_wake_gate 零命中。
+    "configs": 8,
     # 2026-10-31：clients/voice_companion/profiles/ 新增 ruka.json（VC-AVATAR-RUKA 票）
     # ⇒ 非 .py 掃描檔 4 → 5。已複核新檔對 M3 的引用命中 = []（0 處）。
     "clients": 5,

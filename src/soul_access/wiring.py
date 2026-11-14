@@ -27,9 +27,12 @@ Two processes, two roles (never mixed):
     ``sa-live`` turn, and records ``.trace`` / ``.pending[request_id]``.
 
 The production dialog (real LLM call, non-zero cost, needs an Owner-approved
-probe ticket) is NOT wired here: ``dialog=None`` builds fine but refuses at
-call time (500, never falls back to anything). Tests prove the formal mount
-+ handler + adapter + identity + trace with a fake dialog.
+probe ticket) is wired per request via ``build_dialog_factory``: the
+``primary`` alias reuses the launcher's existing backend (read-only, never
+replaced); every other alias resolves through the injected
+``resolve_backend`` (settings from presets) with no fallback to primary.
+Each request makes exactly one ``complete(max_retries=0)`` attempt from a
+worker thread; same-loop misuse refuses instead of deadlocking.
 
 Purity: stdlib + sibling ``api`` / ``bridge`` / ``release`` only, plus
 duck-typed ``session_store`` / ``dialog`` callables. No provider/backend
@@ -42,12 +45,16 @@ test file must reference it via this constant (never as a literal).
 
 from __future__ import annotations
 
+import asyncio
+import json
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
 from src.soul_access import api as _api
 from src.soul_access import bridge as _bridge
 from src.soul_access import release as _release
+from src.soul_access import schema as _schema
 from src.soul_access.schema import SnapshotRejected
 
 __all__ = [
@@ -62,6 +69,7 @@ __all__ = [
     "append_sa_turn",
     "new_shared_session_store",
     "build_generate",
+    "build_dialog_factory",
     "build_thin_forwarder",
     "mount_live_route",
 ]
@@ -136,6 +144,233 @@ def new_shared_session_store(data_dir=None):
     return SessionStore(data_dir=data_dir)
 
 
+# -- request-local current-turn binding (mount side sets, generate merges) ----
+#
+# The bridge is frozen, so the mount cannot pass the HTTP body turn through
+# its signature. Instead the mount parks ``envelope.messages`` here for the
+# duration of the synchronous handler call (same thread), and ``generate``
+# merges any parked turn into the dialog input. Direct handler calls (no
+# mount) see no parked turn, so their behaviour is unchanged.
+
+_TURN = threading.local()
+
+
+def _parked_turn_messages():
+    """Return the mount-parked current-turn messages, or None."""
+    parked = getattr(_TURN, "messages", None)
+    if not isinstance(parked, tuple) or not parked:
+        return None
+    clean = []
+    for item in parked:
+        if (
+            isinstance(item, tuple)
+            and len(item) == 2
+            and isinstance(item[0], str)
+            and item[0]
+            and isinstance(item[1], str)
+            and item[1]
+        ):
+            clean.append(item)
+    return tuple(clean) if clean else None
+
+
+def _merge_turn_messages(base: tuple, parked) -> tuple:
+    """Merge the parked current turn into the dialog input (no loss)."""
+    if not parked:
+        return base
+    merged = tuple(base) if isinstance(base, tuple) else ()
+    for item in parked:
+        if item not in merged:
+            merged = merged + (item,)
+    return merged
+
+
+def _decode_forward_text(text):
+    """Decode a transport-quoted reply back to its plain text form.
+
+    The :8000 live mount returns plain text; when it crosses the HTTP
+    boundary as JSON it arrives quoted (``'"reply"'``). A quoted payload
+    that JSON-decodes to a non-empty str decodes to it; anything else is
+    returned untouched (never raises, never invents text).
+    """
+    if not isinstance(text, str):
+        return text
+    stripped = text.strip()
+    if len(stripped) < 2 or not stripped.startswith('"'):
+        return text
+    try:
+        decoded = json.loads(stripped)
+    except (ValueError, TypeError):
+        return text
+    if isinstance(decoded, str) and decoded:
+        return decoded
+    return text
+
+
+# -- per-request dialog factory (real bottom-I/O seam, offline ticket) ------
+
+
+def _default_submit(loop, coro):
+    """Submit one coroutine to the launcher loop from a worker thread.
+
+    Same-loop misuse (called ON the launcher loop thread) refuses
+    immediately instead of deadlocking; nested execution is never used.
+    """
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if running is not None and running is loop:
+        raise _bridge.LiveRefused(
+            500, "internal", "soul-access dialog must not run on the live loop"
+        )
+    return asyncio.run_coroutine_threadsafe(coro, loop)
+
+
+def build_dialog_factory(*, llm, loop=None, resolve_backend=None, submit=None):
+    """Build the per-request ``dialog_factory(snapshot) -> dialog`` seam.
+
+    ``llm`` is the launcher instance (read-only; its ``backend`` serves the
+    ``primary`` alias and is never replaced). ``loop`` is the launcher's
+    already-running event loop (captured, never created here).
+    ``resolve_backend`` maps a non-primary backend alias to its request-local
+    backend instance (settings come from presets); ``None`` (or a missing /
+    faulting mapping) refuses at call time -- never falls back to primary.
+    ``submit`` defaults to the worker-thread submitter above; tests inject a
+    controllable ``submit(loop, coro) -> future`` so no loop is ever created.
+
+    Each ``dialog`` call makes exactly one ``complete(max_retries=0)``
+    attempt: empty / mistyped / faulting replies refuse (500), never resend.
+    """
+    if llm is None:
+        raise _bridge.LiveRefused(
+            500, "internal", "soul-access live loop missing: llm"
+        )
+    send = submit if callable(submit) else _default_submit
+
+    def _params_of(snapshot) -> tuple:
+        temperature = 0.5
+        max_tokens = 512
+        try:
+            pairs = dict(snapshot.params)
+        except (TypeError, ValueError):
+            pairs = {}
+        try:
+            temperature = float(pairs.get("temperature", temperature))
+        except (TypeError, ValueError):
+            temperature = 0.5
+        try:
+            max_tokens = int(pairs.get("max_tokens", max_tokens))
+        except (TypeError, ValueError):
+            max_tokens = 512
+        if max_tokens <= 0:
+            max_tokens = 512
+        return (temperature, max_tokens)
+
+    def factory(snapshot):
+        _schema.validate_snapshot(snapshot)
+        alias = snapshot.backend_alias
+        model = snapshot.model
+        temperature, max_tokens = _params_of(snapshot)
+        if alias == "primary":
+            backend = getattr(llm, "backend", None)
+            if backend is None:
+                raise _bridge.LiveRefused(
+                    500, "internal", "soul-access primary backend not wired"
+                )
+        else:
+            if resolve_backend is None:
+                raise _bridge.LiveRefused(
+                    500, "internal", "soul-access backend alias not mapped"
+                )
+            try:
+                backend = resolve_backend(alias)
+            except (_bridge.LiveRefused, SnapshotRejected):
+                raise
+            except Exception:
+                raise _bridge.LiveRefused(
+                    500, "internal", "soul-access backend alias not mapped"
+                )
+            if backend is None:
+                raise _bridge.LiveRefused(
+                    500, "internal", "soul-access backend alias not mapped"
+                )
+
+        def dialog(messages, *, agent_id=None, request_id=None) -> str:
+            if (
+                not isinstance(messages, tuple)
+                or not messages
+                or any(
+                    not isinstance(item, tuple)
+                    or len(item) != 2
+                    or not isinstance(item[0], str)
+                    or not item[0]
+                    or not isinstance(item[1], str)
+                    or not item[1]
+                    for item in messages
+                )
+            ):
+                raise _bridge.LiveRefused(
+                    500, "internal", "soul-access dialog messages mistyped"
+                )
+            wire_messages = [
+                {"role": role, "content": content} for role, content in messages
+            ]
+            # Same-loop misuse refuses BEFORE any backend call (zero attempts,
+            # no un-awaited coroutine left behind). _default_submit keeps the
+            # same guard as a second layer for the real submit path.
+            try:
+                _running = asyncio.get_running_loop()
+            except RuntimeError:
+                _running = None
+            if _running is not None and _running is loop:
+                raise _bridge.LiveRefused(
+                    500, "internal", "soul-access dialog must not run on the live loop"
+                )
+            try:
+                coro = backend.complete(
+                    messages=wire_messages,
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    max_retries=0,
+                )
+            except (_bridge.LiveRefused, SnapshotRejected):
+                raise
+            except Exception as exc:
+                raise _bridge.LiveRefused(
+                    500, "internal", "soul-access dialog failed: %s" % type(exc).__name__
+                ) from exc
+            try:
+                future = send(loop, coro)
+            except (_bridge.LiveRefused, SnapshotRejected):
+                raise
+            except Exception as exc:
+                raise _bridge.LiveRefused(
+                    500, "internal", "soul-access dialog failed: %s" % type(exc).__name__
+                ) from exc
+            try:
+                text = future.result()
+            except (_bridge.LiveRefused, SnapshotRejected):
+                raise
+            except Exception as exc:
+                raise _bridge.LiveRefused(
+                    500, "internal", "soul-access dialog failed: %s" % type(exc).__name__
+                ) from exc
+            if not isinstance(text, str) or not text:
+                raise _bridge.LiveRefused(
+                    500, "internal", "soul-access dialog mistyped"
+                )
+            return text
+
+        dialog.sa_dialog_backend_alias = alias
+        dialog.sa_dialog_model = model
+        return dialog
+
+    factory.sa_dialog_factory = True
+    return factory
+
+
 # -- :8000 generate adapter (formal mount + identity + trace) ----------------
 
 
@@ -146,6 +381,7 @@ def build_generate(
     middleware,
     session_store=None,
     dialog: Callable[..., str] | None = None,
+    dialog_factory: Callable[..., Callable[..., str]] | None = None,
 ):
     """Build the ``(snapshot, holder, live) -> str`` generate adapter.
 
@@ -154,17 +390,29 @@ def build_generate(
     synchronous bottom-I/O seam
     ``dialog(messages, agent_id=..., request_id=...) -> str``; ``None`` builds
     fine but refuses every call (500, never falls back to any other text
-    source). ``session_store=None`` likewise refuses at call time.
+    source). ``dialog_factory`` is the per-request alternative
+    (``dialog_factory(snapshot) -> dialog``); passing both ``dialog`` and
+    ``dialog_factory`` refuses at BUILD time (mutually exclusive). When only
+    the factory is given, each admitted request resolves its own dialog
+    (bound to that request's model / params); a factory fault refuses the
+    call (500) with zero dialog attempts. ``session_store=None`` likewise
+    refuses at call time.
 
     Each call records ``generate.trace`` (one record) and parks the holder in
     ``generate.pending[request_id]`` while in flight (popped on the way out,
-    success or refusal).
+    success or refusal). A mount-parked current turn (same thread) is merged
+    into the dialog input so a warm session never drops the live user input;
+    direct handler calls (no mount) see no parked turn.
     """
     for name, inst in (("bus", bus), ("llm", llm), ("middleware", middleware)):
         if inst is None:
             raise _bridge.LiveRefused(
                 500, "internal", "soul-access live loop missing: %s" % name
             )
+    if dialog is not None and dialog_factory is not None:
+        raise _bridge.LiveRefused(
+            500, "internal", "soul-access generate dialog seam ambiguous"
+        )
     trace: list = []
     pending: dict = {}
 
@@ -180,7 +428,7 @@ def build_generate(
                     "internal",
                     "soul-access live identity mismatch: %s" % name,
                 )
-        if dialog is None:
+        if dialog is None and dialog_factory is None:
             raise _bridge.LiveRefused(
                 500, "internal", "soul-access generate not wired"
             )
@@ -212,7 +460,23 @@ def build_generate(
                     for item in snapshot.clean_history
                     if isinstance(item, str) and item
                 )
-            text = dialog(messages, agent_id=agent_id, request_id=request_id)
+            messages = _merge_turn_messages(messages, _parked_turn_messages())
+            if dialog_factory is not None:
+                try:
+                    call_dialog = dialog_factory(snapshot)
+                except (_bridge.LiveRefused, SnapshotRejected):
+                    raise
+                except Exception as exc:
+                    raise _bridge.LiveRefused(
+                        500, "internal", "soul-access dialog failed: %s" % type(exc).__name__
+                    ) from exc
+                if not callable(call_dialog):
+                    raise _bridge.LiveRefused(
+                        500, "internal", "soul-access dialog mistyped"
+                    )
+            else:
+                call_dialog = dialog
+            text = call_dialog(messages, agent_id=agent_id, request_id=request_id)
             if not isinstance(text, str) or not text:
                 raise _bridge.LiveRefused(
                     500, "internal", "soul-access dialog mistyped"
@@ -245,7 +509,7 @@ def _default_sender(url: str, body: dict) -> str:
 
     response = httpx.post(url, json=body, timeout=30.0)
     response.raise_for_status()
-    return response.text
+    return _decode_forward_text(response.text)
 
 
 def build_thin_forwarder(
@@ -284,7 +548,7 @@ def build_thin_forwarder(
             raise _bridge.LiveRefused(
                 500, "internal", "soul-access forward mistyped"
             )
-        return text
+        return _decode_forward_text(text)
 
     _forward.sa_thin_target = target_base.rstrip("/") + _api.FORWARD_ENDPOINT
     return _forward
@@ -322,7 +586,11 @@ def mount_live_route(app, *, live=None, generate=None, release_path=None):
         ):
             raise _bridge.LiveRefused(403, "forbidden", "soul-access inbound closed")
         envelope = _api.envelope_from_body(body)
-        return handler(envelope)
+        _TURN.messages = envelope.messages
+        try:
+            return handler(envelope)
+        finally:
+            _TURN.messages = ()
 
     _sa_live_route.sa_live_path = INTERNAL_LIVE_PATH
     register = getattr(app, "add_api_route", None)

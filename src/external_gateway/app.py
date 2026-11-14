@@ -182,6 +182,50 @@ def _from_interface_error(exc: InterfaceError) -> JSONResponse:
     return _error_response(exc.status, exc.code, exc.message)
 
 
+def _sa_consistent_or_403(
+    *,
+    soul,
+    preset_name,
+    route,
+    preset_obj,
+    envelope,
+    client=None,
+) -> bool:
+    """Check envelope-vs-admission consistency (fail-closed, zero forward).
+
+    The envelope must agree with the already-admitted call: its principal /
+    scope match the authenticated client, its agent / backend alias match the
+    resolved route, and its backend alias / model match the loaded preset.
+    Any mismatch returns False (the caller answers 403 without forwarding).
+    ``client=None`` skips only the client-bound checks (backward compatible);
+    route / preset checks always apply.
+    """
+    try:
+        snapshot = envelope.snapshot
+        dedup = snapshot.dedup
+        if client is not None:
+            profile = getattr(client, "profile", None)
+            if getattr(profile, "principal_id", None) != dedup.principal_id:
+                return False
+            scope = getattr(profile, "scope", None)
+            scope_value = getattr(scope, "value", scope)
+            if scope_value != dedup.scope:
+                return False
+        if dedup.agent_id != route.agent_id:
+            return False
+        if snapshot.backend_alias != route.backend_alias:
+            return False
+        if snapshot.backend_alias != preset_name:
+            return False
+        if getattr(preset_obj, "name", None) != preset_name:
+            return False
+        if snapshot.model != getattr(preset_obj, "model", None):
+            return False
+    except Exception:
+        return False
+    return True
+
+
 def _sa_live_dispatch(
     body,
     *,
@@ -192,6 +236,7 @@ def _sa_live_dispatch(
     route,
     preset_obj,
     soul_live_handler,
+    client=None,
 ) -> JSONResponse:
     """Dispatch a soul-access envelope to the live loop (SA-1 thin entry).
 
@@ -199,6 +244,7 @@ def _sa_live_dispatch(
       - no handler wired ......... 500 internal (like NotImplementedBackend);
       - release gate closed ....... 403 forbidden (refuse new inbound);
       - envelope malformed ........ 400 invalid_request_error;
+      - envelope/admission drift .. 403 forbidden (zero forward);
       - live/generate fault ....... 500 internal.
     Function-level imports keep the legacy module import graph untouched.
     """
@@ -226,6 +272,31 @@ def _sa_live_dispatch(
             req_id,
         )
         return _error_response(400, "invalid_request_error", "Invalid request.")
+    if not isinstance(body, dict) or body.get("model") != envelope.snapshot.model:
+        _LOGGER.info(
+            "ext soul=%s preset=%s endpoint=%s status=400 req=%s",
+            soul,
+            preset_name,
+            endpoint,
+            req_id,
+        )
+        return _error_response(400, "invalid_request_error", "Invalid request.")
+    if not _sa_consistent_or_403(
+        soul=soul,
+        preset_name=preset_name,
+        route=route,
+        preset_obj=preset_obj,
+        envelope=envelope,
+        client=client,
+    ):
+        _LOGGER.info(
+            "ext soul=%s preset=%s endpoint=%s status=403 req=%s",
+            soul,
+            preset_name,
+            endpoint,
+            req_id,
+        )
+        return _error_response(403, "forbidden", _FIXED_403_MESSAGE)
     if soul_live_handler is None:
         _LOGGER.info(
             "ext soul=%s preset=%s endpoint=%s status=500 req=%s",
@@ -461,6 +532,7 @@ def create_external_app(registry, load_preset_fn=None, chat_backend=None, soul_l
                 route=route,
                 preset_obj=preset_obj,
                 soul_live_handler=soul_live_handler,
+                client=client,
             )
         try:
             internal = parse_chat_request(body)
