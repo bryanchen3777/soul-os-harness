@@ -1,0 +1,46 @@
+{
+  "owner_principal_id": "t10-formal-owner",
+  "backends": ["port-a"],
+  "routes": [
+    {"soul_alias": "rem", "backend_alias": "primary", "agent_id": "agent_rem", "public_model_id": "sa-formal-rem-primary", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "rem", "backend_alias": "minimax-m3.1-flash", "agent_id": "agent_rem", "public_model_id": "sa-formal-rem-minimax-m3-1-flash", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "rem", "backend_alias": "glm-5.3-flash", "agent_id": "agent_rem", "public_model_id": "sa-formal-rem-glm-5-3-flash", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "rem", "backend_alias": "mimo-v2.6-flash", "agent_id": "agent_rem", "public_model_id": "sa-formal-rem-mimo-v2-6-flash", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "mai", "backend_alias": "primary", "agent_id": "agent_mai", "public_model_id": "sa-formal-mai-primary", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "mai", "backend_alias": "minimax-m3.1-flash", "agent_id": "agent_mai", "public_model_id": "sa-formal-mai-minimax-m3-1-flash", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "mai", "backend_alias": "glm-5.3-flash", "agent_id": "agent_mai", "public_model_id": "sa-formal-mai-glm-5-3-flash", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "mai", "backend_alias": "mimo-v2.6-flash", "agent_id": "agent_mai", "public_model_id": "sa-formal-mai-mimo-v2-6-flash", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "ruka", "backend_alias": "primary", "agent_id": "agent_ruka", "public_model_id": "sa-formal-ruka-primary", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "ruka", "backend_alias": "minimax-m3.1-flash", "agent_id": "agent_ruka", "public_model_id": "sa-formal-ruka-minimax-m3-1-flash", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "ruka", "backend_alias": "glm-5.3-flash", "agent_id": "agent_ruka", "public_model_id": "sa-formal-ruka-glm-5-3-flash", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "ruka", "backend_alias": "mimo-v2.6-flash", "agent_id": "agent_ruka", "public_model_id": "sa-formal-ruka-mimo-v2-6-flash", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "akane", "backend_alias": "primary", "agent_id": "agent_akane", "public_model_id": "sa-formal-akane-primary", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "akane", "backend_alias": "minimax-m3.1-flash", "agent_id": "agent_akane", "public_model_id": "sa-formal-akane-minimax-m3-1-flash", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "akane", "backend_alias": "glm-5.3-flash", "agent_id": "agent_akane", "public_model_id": "sa-formal-akane-glm-5-3-flash", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "akane", "backend_alias": "mimo-v2.6-flash", "agent_id": "agent_akane", "public_model_id": "sa-formal-akane-mimo-v2-6-flash", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "mahiru", "backend_alias": "primary", "agent_id": "agent_mahiru", "public_model_id": "sa-formal-mahiru-primary", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "mahiru", "backend_alias": "minimax-m3.1-flash", "agent_id": "agent_mahiru", "public_model_id": "sa-formal-mahiru-minimax-m3-1-flash", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "mahiru", "backend_alias": "glm-5.3-flash", "agent_id": "agent_mahiru", "public_model_id": "sa-formal-mahiru-glm-5-3-flash", "backend_ref": "port-a", "context_window_tokens": 4096},
+    {"soul_alias": "mahiru", "backend_alias": "mimo-v2.6-flash", "agent_id": "agent_mahiru", "public_model_id": "sa-formal-mahiru-mimo-v2-6-flash", "backend_ref": "port-a", "context_window_tokens": 4096}
+  ],
+  "clients": [
+    {
+      "client_id": "client-t10-formal",
+      "principal_id": "t10-formal-owner",
+      "purpose": "interactive",
+      "allowed_routes": ["rem/primary", "rem/minimax-m3.1-flash", "rem/glm-5.3-flash", "rem/mimo-v2.6-flash", "mai/primary", "mai/minimax-m3.1-flash", "mai/glm-5.3-flash", "mai/mimo-v2.6-flash", "ruka/primary", "ruka/minimax-m3.1-flash", "ruka/glm-5.3-flash", "ruka/mimo-v2.6-flash", "akane/primary", "akane/minimax-m3.1-flash", "akane/glm-5.3-flash", "akane/mimo-v2.6-flash", "mahiru/primary", "mahiru/minimax-m3.1-flash", "mahiru/glm-5.3-flash", "mahiru/mimo-v2.6-flash"],
+      "scope": "owner_private",
+      "allow_persistent_memory": true,
+      "credential_sha256": "02356aae1ece900fbacff220d2a345cddaa385f89e66df36aef2d2fa5807d724"
+    },
+    {
+      "client_id": "client-t10-other",
+      "principal_id": "t10-formal-owner",
+      "purpose": "interactive",
+      "allowed_routes": ["rem/primary"],
+      "scope": "owner_private",
+      "allow_persistent_memory": true,
+      "credential_sha256": "1d780cb02c7b5d7268f957c328764853d022a4521d3e364fd13db2f02003d8bb"
+    }
+  ]
+}

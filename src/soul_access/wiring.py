@@ -37,7 +37,8 @@ worker thread; same-loop misuse refuses instead of deadlocking.
 Purity: stdlib + sibling ``api`` / ``bridge`` / ``release`` only, plus
 duck-typed ``session_store`` / ``dialog`` callables. No provider/backend
 imports, no socket/httpx at module import (httpx is imported lazily INSIDE
-the default thin sender, so importing this module never touches the network
+the default thin sender, and ``OpenAIBackend`` lazily INSIDE the formal
+preset builder, so importing this module never touches the network
 stack). The only :8000 literal in the repo lives in ``_THIN_TARGET_BASE``
 below: ``src/`` is outside the tests/** address-guard scan scope, while the
 test file must reference it via this constant (never as a literal).
@@ -48,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable
 
@@ -63,6 +65,9 @@ __all__ = [
     "INTERNAL_LIVE_PATH",
     "SHARED_USER_ID",
     "SA_LIVE_CHANNEL",
+    "FORMAL_BACKEND_ALIASES",
+    "build_preset_backends",
+    "build_formal_resolve_backend",
     "session_key",
     "session_path",
     "same_store_root",
@@ -369,6 +374,97 @@ def build_dialog_factory(*, llm, loop=None, resolve_backend=None, submit=None):
 
     factory.sa_dialog_factory = True
     return factory
+
+
+# -- formal closed-door assembly (SA-THAW-DEPLOY-1, additive) -----------------
+#
+# The production mount (``scripts/run_server.py``) keeps
+# ``resolve_backend=None``, so the gate stays closed until Owner approves a
+# dialog ticket. These builders assemble the SAME production classes
+# (``OpenAIBackend`` + ``build_dialog_factory``) from formal presets in
+# sandbox (tmp release / session files, non-routable ``.invalid`` base URLs,
+# counting stub at the bottom transport) to prove the formal wiring resolves
+# all four frozen aliases before any unfreeze. The provider import is
+# function-local (same lazy idiom as the thin sender's httpx import), so
+# importing this module still never touches the network stack.
+
+#: The four frozen backend aliases (A batch = rem x these four; B batch adds
+#: {mai, ruka, akane, mahiru} x the same four; union exactly 20 routes).
+FORMAL_BACKEND_ALIASES = (
+    "primary",
+    "minimax-m3.1-flash",
+    "glm-5.3-flash",
+    "mimo-v2.6-flash",
+)
+
+#: The single provider the formal presets pin (uniformly, offline).
+_FORMAL_PROVIDER = "openai"
+
+
+def build_preset_backends(presets):
+    """Build one production backend per frozen alias from formal presets.
+
+    ``presets`` maps alias -> preset object (``provider`` / ``api_key`` /
+    ``base_url`` attributes, as produced by the preset loader). The alias set
+    must be EXACTLY the four frozen aliases and every preset's provider must
+    be ``openai``; anything else (unknown / missing / extra alias, non-openai
+    provider, empty key / base URL, mistyped mapping) refuses at BUILD time
+    with 500 -- never a partial set, never a silent substitution.
+    """
+    if not isinstance(presets, Mapping):
+        raise _bridge.LiveRefused(
+            500, "internal", "soul-access formal presets mistyped"
+        )
+    if set(presets.keys()) != set(FORMAL_BACKEND_ALIASES):
+        raise _bridge.LiveRefused(
+            500, "internal", "soul-access formal alias set mismatch"
+        )
+    from src.llm.proxy import OpenAIBackend  # lazy: module import stays net-free
+
+    backends = {}
+    for alias in FORMAL_BACKEND_ALIASES:
+        preset = presets[alias]
+        if getattr(preset, "provider", None) != _FORMAL_PROVIDER:
+            raise _bridge.LiveRefused(
+                500, "internal", "soul-access formal provider not openai"
+            )
+        api_key = getattr(preset, "api_key", None)
+        base_url = getattr(preset, "base_url", None)
+        if not isinstance(api_key, str) or not api_key:
+            raise _bridge.LiveRefused(
+                500, "internal", "soul-access formal key missing"
+            )
+        if not isinstance(base_url, str) or not base_url:
+            raise _bridge.LiveRefused(
+                500, "internal", "soul-access formal base_url missing"
+            )
+        backends[alias] = OpenAIBackend(api_key=api_key, base_url=base_url)
+    return backends
+
+
+def build_formal_resolve_backend(backends):
+    """Resolve non-primary aliases against the formal backend set.
+
+    The backend set must hold EXACTLY the four frozen aliases (else 500 at
+    BUILD time). Resolution returns the mapped backend or ``None`` for an
+    unknown alias, so ``build_dialog_factory`` refuses (500) instead of
+    falling back to primary. ``primary`` itself is never resolved here: the
+    factory serves it from the launcher instance (read-only, original object).
+    """
+    if not isinstance(backends, Mapping):
+        raise _bridge.LiveRefused(
+            500, "internal", "soul-access formal backends mistyped"
+        )
+    if set(backends.keys()) != set(FORMAL_BACKEND_ALIASES):
+        raise _bridge.LiveRefused(
+            500, "internal", "soul-access formal alias set mismatch"
+        )
+    snapshot = dict(backends)
+
+    def _resolve(alias):
+        return snapshot.get(alias)
+
+    return _resolve
 
 
 # -- :8000 generate adapter (formal mount + identity + trace) ----------------

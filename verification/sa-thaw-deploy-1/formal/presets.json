@@ -1,0 +1,48 @@
+{
+  "presets": [
+    {
+      "name": "primary",
+      "provider": "openai",
+      "model": "sa-formal-primary",
+      "params": {
+        "temperature": 0.5,
+        "max_tokens": 8,
+        "base_url": "https://sa-formal-primary.invalid/v1/chat/completions"
+      },
+      "key_ref": "SA_T10_PRIMARY"
+    },
+    {
+      "name": "minimax-m3.1-flash",
+      "provider": "openai",
+      "model": "sa-formal-minimax",
+      "params": {
+        "temperature": 0.5,
+        "max_tokens": 8,
+        "base_url": "https://sa-formal-minimax.invalid/v1/chat/completions"
+      },
+      "key_ref": "SA_T10_MINIMAX_M31"
+    },
+    {
+      "name": "glm-5.3-flash",
+      "provider": "openai",
+      "model": "sa-formal-glm",
+      "params": {
+        "temperature": 0.5,
+        "max_tokens": 8,
+        "base_url": "https://sa-formal-glm.invalid/v1/chat/completions"
+      },
+      "key_ref": "SA_T10_GLM_53"
+    },
+    {
+      "name": "mimo-v2.6-flash",
+      "provider": "openai",
+      "model": "sa-formal-mimo",
+      "params": {
+        "temperature": 0.5,
+        "max_tokens": 8,
+        "base_url": "https://sa-formal-mimo.invalid/v1/chat/completions"
+      },
+      "key_ref": "SA_T10_MIMO_V26"
+    }
+  ]
+}
