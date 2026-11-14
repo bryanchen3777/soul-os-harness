@@ -76,3 +76,29 @@
 - 核准包：`verification/sa-deploy-preflight-1/approval-package.md`（計畫文件，非授權）。
   APPROVAL-1 維持 FROZEN；INTERFACE-GAPs-1 前置、CANARY-WIRING-1 另票；
   批次定義（§2）與放行順序（§3）一字未改。
+
+## 8. SA-THIN-ENTRY-1 薄端獨立入口（2026-11-14；閉門；成功僅判 DEPLOYED_CLOSED，不開門）
+
+- 入口：`scripts/serve_sa_thin.py`（新建；本票唯一產品文件）。
+  沿用生產認證／路由／設定載入器（`configs/sa/registry.json`＋`presets.json`，
+  e351541 版；SHA-256 registry `89c30666…759128`、presets `c37de506…58cdc1`，
+  啟動時重讀比對，不一致即拒啟 exit 2）。
+- 綁定：只綁 `127.0.0.1:18765`（結構性釘死，無 `--host`／`--port` 旗標，
+  常數 `THIN_HOST`／`THIN_PORT`，`THIN_PORT == EXTERNAL_PORT`）。
+- 門禁：只作用本實例。行程內 `_THIN_OPEN = False` 常數，無開啟介面；
+  soul-access 入站一律 403（凍結 bridge 文案 `soul-access inbound closed`），
+  先於上游 POST 與記憶寫入之前拒絕。共享 `release/sa.json` 不讀不寫不翻轉；
+  重啟（新行程重跑同一常數）後仍 closed。
+- 拒啟（exit 2，`sa thin entry: startup refused.`；拒啟≠失敗，屬預期行為）：
+  設定缺漏／JSON 破損／SHA 漂移／`do-not-deploy` 標記／registry schema 非法／
+  `127.0.0.1:18765` 已被佔用。
+- 啟停（沿用 S8 既有核准前台模式；不裝服務、不建系統服務、不開後台 wrapper）：
+  - 啟動：`.venv\Scripts\python.exe -B scripts\serve_sa_thin.py`
+    （成功印 `sa thin entry on 127.0.0.1:18765 (closed, loopback-only)` 後常駐）。
+  - 停止：前台窗口 Ctrl-C（同 S8 閘道）。
+  - 本票交付不啟動、不接流量；`release/sa.json` 保持 `{"status": "closed"}`。
+- 閉門證據（沙盒，T12）：release=open 下仍 403；上游呼叫 0（forwarder 0 次、
+  legacy carrier 零觸碰）；記憶寫入 0（拒絕點在 live handler 之前）；
+  錯認證 401、非 rem/primary 路由 404/403；重建即重啟兩實例皆 403。
+- 禁止：不開門、不接真流量；不動 :8000、主服務控制、系統服務、
+  registry/presets、`data/**`、canonical；Frozen（§3 放行順序在內）一字不動。
