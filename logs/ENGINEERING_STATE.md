@@ -10423,3 +10423,7 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 副作用：全库跑改写了 verification/sa-transport-obs-2a/case-matrix.json（T18自带zz writer既有行为，7行diff），Mavis已checkout还原（diff quiet exit 0），未提交（与HEAD一致无需提交）；t10空文件等untracked依铁律不动。
 - 待办：送卧龙终验（2C是否转ACCEPTED／OFFLINE_READY限定措辞）；E1归因裁决仍待回（bg_8c96e55b输出空， E1结论以卧龙书面为准，不自行定性）。
 - Frozen：未改Frozen Contract、未改守卫、未写data/**、未启服、未绑埠、无真实外呼；未杀行程、未task_stop wrapper。
+## 0.1.152 卧龙终验：T20 ACCEPTED、2C限定ACCEPTED／OFFLINE_READY、E1留案
+- 卧龙终验（bg_88464626，书面裁决，未读码未重跑，依Mavis复核摘要裁定）：A. T20-ISOLATION-1 ACCEPTED——正式产物零读写＋合成seed＋发送硬拦＋逐run写入范围断言，隔离成立；双变异覆盖路径逸出与已送前提丢失且还原转绿，对本票充分，不追加补证，不扩张为全局隔离保证；T18沿用0.1.149已准单项例外，全库如实记9291 passed／32 skipped／1 failed，不得称全绿。B. 2C ACCEPTED／OFFLINE_READY——限定为「B4离线接线及测试隔离验收完成」，不代表部署完成或实弹验收通过；实弹继续冻结，本裁决不授予重送、补打或任何新外呼权限。C. E1 INCONCLUSIVE／原因未定——空归因输出不能证明外部并发；新窗口无红不能解释旧四红；2a矩阵改写属已知T18 writer副作用，还原不抹除事件，不足以归因E1；E1留案，与限定验收分开处理。D. 下一票E1-ATTRIBUTION-1——只读核对既有失败堆栈、守卫基准与异动时间线，补足四红因果证据；不为取证重跑全库。
+- 效力收敛：2C离线能力验收关闭（含T20隔离）；B1/B2/B3维持INCONCLUSIVE；B4已耗尽；实弹冻结维持；部署仍BLOCKED。
+- Frozen：未改Frozen Contract、未改守卫、未写data/**、未启服、未绑埠、无真实外呼；未杀行程、未task_stop wrapper。
