@@ -96,7 +96,7 @@ assert THIN_PORT == EXTERNAL_PORT
 #: ``configs/sa/presets.json``). Re-read and compared on every start;
 #: any drift refuses startup. Lowercase hex, ``hashlib.sha256().hexdigest()``.
 REGISTRY_SHA256 = "6d805d70a13874240cb1a469310cc6327542d6e0bc21a663cb6ed40ac14ac203"
-PRESETS_SHA256 = "c37de506f9ab8f6d46d613f97ade6ae5642157b7b3a19ba7ed165d092b58cdc1"
+PRESETS_SHA256 = "35ab58bed7c72f60d7514deb8cd7e933be5b31c40c2598e3491919c28815e30a"
 
 #: Production config defaults (same files the gateway carrier loads).
 REGISTRY_DEFAULT = _REPO_ROOT / "configs" / "sa" / "registry.json"
