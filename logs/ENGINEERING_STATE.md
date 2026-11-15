@@ -10570,3 +10570,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 複核（.venv Python 3.11.15）：門機制＋台帳183 passed；分塊全庫R1 2505＋R2 2147＋S1 911＋S2 1302＋S3 1540＋S4 944＝9349 passed＋32 skipped（＝收集9381，互斥劃分，skip聯集added 0/removed 0）；CLI同槽重跑VERDICT PASS exit 0、pending 90→0、prompt零不明差。生產雙門閉、18765空、8000正常，data/elevation零寫入。
 - 待臥龍：FIX-2終驗（P1＋台帳重跑PASS）；通過則OPEN-1解阻。
 - Frozen：src零改動、正式參數、403、衰減、既有cohorts、放行順序不變。
+## 0.1.179 臥龍終驗FIX-2：ACCEPTED；開門仍BLOCKED（正式入口另有缺陷），已開ENTRY-FIX-1
+- 驗收：P1快路徑通過（serving loop直進獨立reject app、不進pump、復開不推翻已拒）；台帳通過（cohorts原樣＋90 ID一致、89 value＋1 belief、下界＝建立＋7天、起點22Z；CLI報告PASS pending 0包裝＋90正文零差）；分塊9349＋32與回報吻合、skip穩定；提交實為五施工檔＋canonical共六檔、非越界。本輪臥龍未重跑pytest未驗線上。
+- 新阻斷（開門前既存接線問題，非重開FIX-2）：(1)正式live路由body未宣告JSON body型，純記憶體簽章對照422（query/body），既有雙跳測試自加包裝遮住缺陷；(2)正式launcher未接evidence_sink，首發缺原生raw/usage，外層恆零usage不能當計費證據。
+- 已派ENTRY-FIX-1（wiring端點加body:dict保持同步＋run_server預設關SA取證開關透傳EvidenceSink＋正式端點直掛測試＋雙變異；不部署不實彈）。首發規則備用：核對版本雙雜湊埠run_id→close→install→ready→open→單封包你好→panic-close，漂移逾時缺證即停。
+- Frozen：除主大腦授權之wiring簽名一行＋取證透傳外，其餘src、正式參數、門機制、記憶規則、衰減、cohorts、放行順序不變。
