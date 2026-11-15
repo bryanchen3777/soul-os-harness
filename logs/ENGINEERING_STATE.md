@@ -10585,3 +10585,16 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 疑點2（少20項＋RUNBOOK附錄）：成立。分塊漏了tests/tools（C5只含clients/external_gateway/integration/world），全庫收集9387＝分塊9367＋tools 20。Mavis已補跑tests/tools：20 passed exit 0（證據regress_c10_tools.log＋full-addendum.txt）；併後9354 passed＋32 skipped＋1 failed（已知守衛碰撞，已提交樹上為綠）＝9387，與全庫收集總數吻合，覆蓋無缺。RUNBOOK缺ENTRY附錄屬實，Mavis已按既有體例補§11附錄（純文件，無產品碼變更）。
 - 待臥龍：ENTRY-FIX-1終驗（D1/D2＋證據閉合）＋OPEN-1解阻。生產雙門閉、18765空。
 - Frozen：除授權兩處外src不變；未啟服綁埠外呼殺行程。
+## 0.1.182 SA-PIN-ROTATE-1：registry pin 輪替（憑證指紋更新同步）
+- 輪替原因：後端憑證輪替，`configs/sa/registry.json` 內憑證指紋欄更新（內容一行差異），thin 入口啟動 pin 須同步，否則拒絕啟動。
+- 指紋（零明文，僅前綴）：舊 `89c30666…` → 新 `6d805d70…`（Get-FileHash 與 .venv hashlib 雙口徑一致；presets 指紋未變，pin 不動）。
+- 改動（僅一檔一行）：`scripts/serve_sa_thin.py:98` 的 `REGISTRY_SHA256` 常數換新值；主腦票面 `src/sa/serve_sa_thin.py` 實測不存在，全庫僅此一檔，無需停下。測試檔零改動（`test_t12_production_files_match_pins` 無硬編碼基準，直接比對模組常數，同步即轉綠）。
+- 驗證（.venv）：`tests/soul_access/test_t12_thin_entry.py` 13 passed，exit 0。
+- Frozen：除本票授權之一行外，其餘 src、正式參數、門機制、記憶規則、衰減、cohorts 不變；未啟服綁埠外呼殺行程；data 唯讀。
+## 0.1.183 SA-PIN-ROTATE-1 續走首發：探針 500，依票面 panic-close 後回報 BLOCKED
+- 門序（薄端自建行程，loopback 18765，非生產埠）：close／install／ready／open 四步皆 exit 0；開門當下共享門與實例門雙開。
+- 單封包探針（`verification/sa-pin-rotate-1/probe_pin_rotate_1.py`，新 request_id `req-sa-pin-rotate-1-0001`，訊息「你好」，Bearer 客戶端鑰匙本機讀、零明文）：HTTP 500，exit 7（已耗、O_EXCL marker 落檔、不重打、無 result.json）。
+- 已依票面立即 panic-close（exit 0），`release/sa.json` 讀回 `{"status":"closed"}`；薄端走控制面 shutdown（200）優雅退出；`:18765` 複查空；`:8000` 同一 PID 存活未碰；會話檔 mtime／bytes 與發送前基線逐字一致（零寫入）。
+- 根因（唯讀歸因，未對生產發第二包）：生產 `:8000` 行程啟於 11-14 17:13，早於 ENTRY-FIX-1 的 `_sa_live_route(body: dict)` 修復（11-15 15:59 合入）；舊行程內正式路由把 JSON 判 422，轉發層 `raise_for_status` 即薄端 500。佐證：轉發曾建連生產 `:8000`（TIME_WAIT 殘留）、生產會話零增量（422 擋在處理器之前）。
+- 結論：BLOCKED（探針非 200）。本票 pin 輪替本身已生效（T12 綠）；門開鏈首發須另票：先經 Owner 明示授權重啟 `:8000`（載入已合入之修復），再以新 request_id 重打。本票 request_id 已耗，不得重用。
+- Frozen：除 pin 一行與本節台帳外 src／configs／data 零增量（探針腳本＋sent.json 僅本票新目錄）；未殺行程、未綁生產埠、未寫 data。

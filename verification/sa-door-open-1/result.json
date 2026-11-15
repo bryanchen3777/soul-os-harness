@@ -1,0 +1,17 @@
+{
+  "client_id": "client-bryan-01",
+  "dialog_request_id": "req-sa-door-open-1-0001",
+  "http_status": 200,
+  "message": "你好",
+  "real_billing": 1,
+  "reply_chars": 79,
+  "reply_sha256": "46da643d6efaa979d008e56b4053bd8e3ebb088ba9af6167668450094e1126fd",
+  "route": "rem/primary",
+  "ticket": "SA-DOOR-OPEN-1",
+  "transport_calls": 1,
+  "usage": {
+    "completion_tokens": 0,
+    "prompt_tokens": 0,
+    "total_tokens": 0
+  }
+}

@@ -47,7 +47,7 @@
       ],
       "scope": "owner_private",
       "allow_persistent_memory": true,
-      "credential_sha256": "2dae25acab52c6bf9a1682bd23af06b94b7b3605d143d99c9ed2741d90b6e4f8"
+      "credential_sha256": "c6c526ca3b7360fb91c2190e8b68c0c500b5f45c227affde82daf78f78e3809f"
     }
   ]
 }
