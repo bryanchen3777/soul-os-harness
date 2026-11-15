@@ -1,0 +1,18 @@
+{
+  "key_ref": "OLLAMA_API_KEY",
+  "kind": "sa-evidence-request",
+  "payload": {
+    "max_completion_tokens": 8,
+    "messages": [
+      {
+        "content": "你好。",
+        "role": "user"
+      }
+    ],
+    "model": "deepseek-v4.1-flash:1017",
+    "temperature": 0.5
+  },
+  "payload_sha256": "7043a3ffb0ce7a170c690feae6611a0231418ecb37996ca2978fa2474e81475c",
+  "request_id": "req-d3da637d67824dc4",
+  "version": "sa-evidence-channel-1"
+}

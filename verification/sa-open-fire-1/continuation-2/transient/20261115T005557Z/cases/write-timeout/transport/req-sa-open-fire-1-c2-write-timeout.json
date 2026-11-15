@@ -1,0 +1,24 @@
+{
+  "attempts": [
+    {
+      "chain": [
+        "WriteTimeout"
+      ],
+      "elapsed_ms": 0.011899974197149277,
+      "errno": null,
+      "phase": "post",
+      "seq": 0,
+      "type": "write_timeout"
+    }
+  ],
+  "backend_observations": null,
+  "boundaries": {
+    "submit": true
+  },
+  "dialog_request_id": "req-sa-open-fire-1-c2-write-timeout",
+  "evidence_request_id": "req-e7f7586c69144406",
+  "kind": "sa-transport-diagnosis",
+  "observation_ok": true,
+  "transport_calls": 1,
+  "version": "sa-transport-obs-1"
+}

@@ -1,0 +1,24 @@
+{
+  "attempts": [
+    {
+      "chain": [
+        "PoolTimeout"
+      ],
+      "elapsed_ms": 0.012600328773260117,
+      "errno": null,
+      "phase": "post",
+      "seq": 0,
+      "type": "pool_timeout"
+    }
+  ],
+  "backend_observations": null,
+  "boundaries": {
+    "submit": true
+  },
+  "dialog_request_id": "req-sa-open-fire-1-c2-pool-timeout",
+  "evidence_request_id": "req-f599f19d7df54780",
+  "kind": "sa-transport-diagnosis",
+  "observation_ok": true,
+  "transport_calls": 1,
+  "version": "sa-transport-obs-1"
+}

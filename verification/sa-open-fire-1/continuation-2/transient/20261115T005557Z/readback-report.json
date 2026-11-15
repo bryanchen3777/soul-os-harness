@@ -1,0 +1,19 @@
+{
+  "checks": {
+    "case:connect": true,
+    "case:connect-timeout": true,
+    "case:pool-timeout": true,
+    "case:read-timeout": true,
+    "case:unknown": true,
+    "case:write-timeout": true,
+    "counterexamples:extra+missing-rejected": true,
+    "redaction:key_ref-only": true,
+    "success:pair+assoc+pins": true,
+    "template+old-shas-unchanged": true,
+    "thin:reclose-403-zero-transmit": true
+  },
+  "overall": "PASS",
+  "readback": "independent-cross-process-readback",
+  "run_id": "20261115T005557Z",
+  "ticket": "SA-ISOLATED-RECOVERY-1"
+}

@@ -1,0 +1,24 @@
+{
+  "attempts": [
+    {
+      "chain": [
+        "ConnectError"
+      ],
+      "elapsed_ms": 0.016500242054462433,
+      "errno": null,
+      "phase": "post",
+      "seq": 0,
+      "type": "connect"
+    }
+  ],
+  "backend_observations": null,
+  "boundaries": {
+    "submit": true
+  },
+  "dialog_request_id": "req-sa-open-fire-1-c2-connect",
+  "evidence_request_id": "req-93072584b05145d2",
+  "kind": "sa-transport-diagnosis",
+  "observation_ok": true,
+  "transport_calls": 1,
+  "version": "sa-transport-obs-1"
+}

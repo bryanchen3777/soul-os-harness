@@ -1,0 +1,134 @@
+{
+  "base_commit": "1d250f8",
+  "control": {
+    "final_state": "shut",
+    "listener_closed": 1,
+    "reply_state": "draining",
+    "reply_status": 200,
+    "result_code": 0,
+    "run_id_consistent": true
+  },
+  "drill": "continuation-2-isolated-recovery",
+  "error_cases": [
+    {
+      "case": "connect",
+      "dialog_request_id": "req-sa-open-fire-1-c2-connect",
+      "evidence_request_file": "req-ee49ca8a89c64311.request.json",
+      "evidence_request_id": "req-ee49ca8a89c64311",
+      "exc_class": "ConnectError",
+      "transport_calls": 1,
+      "transport_file": "cases\\connect\\transport\\req-sa-open-fire-1-c2-connect.json",
+      "type": "connect"
+    },
+    {
+      "case": "connect-timeout",
+      "dialog_request_id": "req-sa-open-fire-1-c2-connect-timeout",
+      "evidence_request_file": "req-25293b235d534ac7.request.json",
+      "evidence_request_id": "req-25293b235d534ac7",
+      "exc_class": "ConnectTimeout",
+      "transport_calls": 1,
+      "transport_file": "cases\\connect-timeout\\transport\\req-sa-open-fire-1-c2-connect-timeout.json",
+      "type": "connect_timeout"
+    },
+    {
+      "case": "read-timeout",
+      "dialog_request_id": "req-sa-open-fire-1-c2-read-timeout",
+      "evidence_request_file": "req-6aa50a3e98044539.request.json",
+      "evidence_request_id": "req-6aa50a3e98044539",
+      "exc_class": "ReadTimeout",
+      "transport_calls": 1,
+      "transport_file": "cases\\read-timeout\\transport\\req-sa-open-fire-1-c2-read-timeout.json",
+      "type": "read_timeout"
+    },
+    {
+      "case": "write-timeout",
+      "dialog_request_id": "req-sa-open-fire-1-c2-write-timeout",
+      "evidence_request_file": "req-07e04b35c8224aa1.request.json",
+      "evidence_request_id": "req-07e04b35c8224aa1",
+      "exc_class": "WriteTimeout",
+      "transport_calls": 1,
+      "transport_file": "cases\\write-timeout\\transport\\req-sa-open-fire-1-c2-write-timeout.json",
+      "type": "write_timeout"
+    },
+    {
+      "case": "pool-timeout",
+      "dialog_request_id": "req-sa-open-fire-1-c2-pool-timeout",
+      "evidence_request_file": "req-1d5204971d9d44f7.request.json",
+      "evidence_request_id": "req-1d5204971d9d44f7",
+      "exc_class": "PoolTimeout",
+      "transport_calls": 1,
+      "transport_file": "cases\\pool-timeout\\transport\\req-sa-open-fire-1-c2-pool-timeout.json",
+      "type": "pool_timeout"
+    },
+    {
+      "case": "unknown",
+      "dialog_request_id": "req-sa-open-fire-1-c2-unknown",
+      "evidence_request_file": "req-503744f973de4f36.request.json",
+      "evidence_request_id": "req-503744f973de4f36",
+      "exc_class": "TimeoutException",
+      "transport_calls": 1,
+      "transport_file": "cases\\unknown\\transport\\req-sa-open-fire-1-c2-unknown.json",
+      "type": "unknown"
+    }
+  ],
+  "key_ref": "OLLAMA_API_KEY",
+  "old_shas_before": {
+    "verification\\sa-open-fire-1\\continuation-1\\STATUS-continuation-1.md": "9ed0fa77d9d9b8b4a338c3303547076cf93c8a0c685f9b43bc561d35cb24980c",
+    "verification\\sa-open-fire-1\\continuation-1\\crosscheck-report.json": "27ec10ae40efafdd1d673fc71251afb3420de1b19322cf53d79575461a42665f",
+    "verification\\sa-open-fire-1\\continuation-1\\fire-report.json": "b950d31a5af325e97557ee4394a17bd846d449674514589fa9160aad93fb86ac",
+    "verification\\sa-open-fire-1\\continuation-1\\negative-report.json": "35f4315581019282b8b673b691a2a9dbb1d15931f3dd7f5a1356e21021a398e5",
+    "verification\\sa-open-fire-1\\continuation-1\\preflight-continuation-1.json": "e858a74225f75ad8bc62b904d7330d246062a68ae616d0dd253aa83f769d7f55",
+    "verification\\sa-open-fire-1\\continuation-1\\sandbox-evidence\\req-b54bd4d2a916479e.request.json": "604884406ec04ad9df176a2ca19323e70eac59e218186e99518a4ae40a5f685b",
+    "verification\\sa-open-fire-1\\continuation-1\\sandbox-evidence\\req-b54bd4d2a916479e.response.json": "62b470aa40703b5a8319dd73a948a697c07d8fb3a919e5fde85d24230635cf25",
+    "verification\\sa-open-fire-1\\continuation-1\\sandbox-gate-closed.json": "a9a3002720b1377784e6253946c0206b159930062e82d12596ad5eb9032b0056",
+    "verification\\sa-open-fire-1\\continuation-1\\sandbox-gate-open.json": "d10fa6a882110cc058dd35781e869811c5d1360046e0caefe4e1b4fc6b49f8df",
+    "verification\\sa-open-fire-1\\live-fire-1\\evidence\\req-cfa331374c62470a.request.json": "e0ed149b247ccc038f563b3708461c496062c8c787faaa9c79104ef2ffe4a449",
+    "verification\\sa-open-fire-1\\live-fire-1\\sent.json": "f07113f01fab7d40643911dc347a18b1321e390e4fae2f74757ec3a7609bd0ff",
+    "verification\\sa-open-fire-1\\live-fire-2\\evidence\\req-3de97b41344a42fd.request.json": "bdd808125fd73114f59f297ee6a27a1bf0bcddca21fcdc9b9938f6cad83f6c3c",
+    "verification\\sa-open-fire-1\\live-fire-2\\sent.json": "f07113f01fab7d40643911dc347a18b1321e390e4fae2f74757ec3a7609bd0ff",
+    "verification\\sa-open-fire-1\\request.template.json": "421cbddfff4b0189e76669ebdc1a17a5c77f1bc109c03ae00d696ba44c73dbb1"
+  },
+  "python": "3.11.15",
+  "real_billing": 0,
+  "route": "rem/primary",
+  "run_id": "20261115T005437Z",
+  "success": {
+    "dialog_request_id": "req-sa-open-fire-1-0001",
+    "evidence_request_id": "req-06e402de02d9465c",
+    "pair_ok": true,
+    "payload_sha256": "7043a3ffb0ce7a170c690feae6611a0231418ecb37996ca2978fa2474e81475c",
+    "raw_sha256": "8860307705e5bde75d4e9c2b2395fd1c4c8aa325f46334a19fec35f2eb0b25dd",
+    "transport_calls": 1,
+    "usage": {
+      "completion_tokens": 1,
+      "prompt_tokens": 3,
+      "total_tokens": 4
+    }
+  },
+  "synthetic": true,
+  "template": {
+    "bytes_len": 417,
+    "file_sha256": "421cbddfff4b0189e76669ebdc1a17a5c77f1bc109c03ae00d696ba44c73dbb1",
+    "inner_sha256": "418af81353a2457d0f3fae7459c6931e6fadb16afcbb41261cc9916d1915eeb1"
+  },
+  "thin": {
+    "both_closed_reverified": {
+      "sender_calls": 1,
+      "status": 403
+    },
+    "both_open_success": {
+      "sender_calls": 1,
+      "status": 200
+    },
+    "door1_only_closed": {
+      "sender_calls": 0,
+      "status": 403
+    },
+    "door2_only_closed": {
+      "sender_calls": 0,
+      "status": 403
+    },
+    "thin_open_restored_false": true
+  },
+  "ticket": "SA-ISOLATED-RECOVERY-1"
+}
