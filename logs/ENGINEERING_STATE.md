@@ -10541,3 +10541,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - Mavis複核：送前雙哈希＋雙門＋埠空✔；離線五項5/5✔；證據哈希request.replayable＝模板一致；舊批次唯讀（舊模板哈希不變、B1 sent.json仍原值）；新目錄已追蹤（10檔，__pycache__自動忽略）；exit0按票面口徑＝限定ACCEPTED（直送限定，不等端到端）。
 - 待辦：送臥龍終驗（限定ACCEPTED＋效力）；失敗不得進B（本輪成功，B仍待MECH）。
 - Frozen：src零改動、data唯讀、未啟服、未綁埠、未殺行程、未task_stop wrapper；真實外呼1次（Owner已授權單發，real_billing=1）。
+## 0.1.173 臥龍終驗SA-OPEN-FIRE-2：ACCEPTED（直送限定），本案關閉
+- 終驗：送前護欄、離線五項、防重放、回覆配對、去密、打後雙閉皆有證據；正式檔與舊批次未動，符合驗收。兩次進程＝一次實彈（首次import失敗在marker前退出，總用量93未超單發授權；失敗已如實登帳，不阻斷）。
+- 效力：直送前置驗證通過，可推進B後續工程；不得據此開門或接流量（副本刪bind探測，驗收不含正式bind/入口開門/持續服務）。雙門維持closed/False。本案關閉，不補打不重審；不得把限定通過記成服務已開放。
+- 待辦：只剩SA-DOOR-MECH-1施工中，回來即複核終驗，再走SA-DOOR-OPEN-1。
+- Frozen：src零改動、data唯讀、未啟服、未綁埠、未殺行程、未task_stop wrapper；真實外呼共1次（單發授權內，已耗盡）。
