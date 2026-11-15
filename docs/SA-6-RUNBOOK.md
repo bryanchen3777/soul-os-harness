@@ -168,7 +168,17 @@
   # 一鍵復閉
   sd panic-close
   ```
-- 測試：`tests/soul_access/test_sa_door_mech.py`（21 項，含雙向變異）；
+- 測試：`tests/soul_access/test_sa_door_mech.py`（31 項，含雙向變異）；
   T17 薄端門縫改走公開 API（install→ready→open），斷言不變。
+- FIX-1（2026-11-15；四缺陷全修，只動機制、不開門）：
+  D1 控制端點補 `request: Request` 型別（無型別會被綁成 query 而 422）；
+  D2 門鎖只保 admission、轉發在鎖外，業務走 import 期預建的 pump 執行緒
+  （plain queue＋sleep 輪詢、零跨執行緒 asyncio 喚醒，否則 SA-0 socket
+  硬阻斷會把 serving loop 卡死），panic-close 永遠先完成；wrapper 另以
+  `routes`／`router` 唯讀透傳被包 Starlette app 的路由表（T15 註冊證明讀
+  `app.routes`，serving 路徑不 consult 這些屬性）；
+  D3 重關一律經嚴格讀回確認，讀寫故障只記 unconfirmed 事件、永不謊稱
+  已關；D4 以雜湊釘住沙盒門檔、漂移先拒、測完即還原。
+  寫故障測試每形各用全新已關沙盒（失敗的重關本就會把共享門留在開位）。
 - 禁止（本票）：不開門、不接真流量；不動 `src/**`、正式設定、403 契約、
   放行順序；不重用舊 `door_open.py`；不手動改門、不繞常數。

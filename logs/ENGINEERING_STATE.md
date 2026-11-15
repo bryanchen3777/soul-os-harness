@@ -10555,3 +10555,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 否決理由（臥龍唯讀＋記憶體內ASGI實測重現）：(1)正式控制POST到不了控制器——端點缺Request型別被當query參數，合法POST回422；(2)慢上游擋住緊急關門——鎖包住整段forwarder，上游不返回則close卡死、實例門仍開；(3)讀回失敗謊報已關門——不是open就當關，PermissionError下仍回200 confirmed；(4)雜湊變異證據無效——先漂移再重釘漂移內容，不注入也過；且46＋428非同樹全庫，不算Hard Gate。
 - 裁決：MECH不予ACCEPTED，OPEN-1維持BLOCKED；實彈維持直送限定ACCEPTED，不重開不補打。已派SA-DOOR-MECH-FIX-1（4檔範圍：真路由＋鎖只保准入狀態變更＋AnyIO執行緒池隔離＋嚴格讀回＋固定沙盒pins紅綠對照；驗收含同樹全庫＋AST＋雙向變異＋CLI對帳）。
 - Frozen：src零改動、data唯讀、未啟服、未綁埠、未殺行程、未task_stop wrapper；本輪臥龍未改檔未跑pytest。
+## 0.1.176 SA-DOOR-MECH-FIX-1 worker交付，Mavis複核通過，待終驗
+- 交付（tracked僅3檔，src零改動）：serve_sa_thin.py（D1端點補Request型別；D2鎖縮到准入＋狀態變更、業務走pump執行緒泵＋daemon輪詢、panic-close先完成；D3嚴格讀回、失敗只記unconfirmed；D4沙盒雜湊釘住漂移先拒測完還原；另補wrapper routes/router透傳修T15回歸）；門機制31項；RUNBOOK §11附錄。
+- 複核（.venv Python 3.11.15）：門機制31 passed、T17 25 passed、除錯標記0殘留；分塊全庫C1 1398＋C2重跑3158＋C3a971/C3b195/C3c1271/C3d2215＋C4 138（各exit 0，證據verification/sa-door-mech-fix-1/chunk-c*.txt＋full.txt）；CLI沙盒22Z判PENDING_COHORT exit 3（11-08未核准退役批次90節點，sidecar＋197、prompt零不明差）。生產雙門閉、18765空、8000正常。
+- 待臥龍：FIX-1終驗＋11-08 cohort核准（CLI不得自批）；通過才走OPEN-1。
+- Frozen：src零改動、data唯讀、未啟服、未綁埠、未殺行程、未task_stop wrapper。

@@ -42,9 +42,19 @@ Coverage (ticket acceptance mapping):
      retry; success exits 0; lost contact / bad file / refusal exit 2 and
      never claim a re-close;
   k. bidirectional mutations (door check removed / hash guard removed) turn
-     red, then revert green; DUD stops the run;
+     red, then revert green; DUD stops the run; the hash pins name the
+     ORIGINAL sandbox bytes (pinned before the drift, never re-pinned);
   l. AST teeth: no spawn/kill/network imports; panic-close calls
-     close_door; ``--control`` branch precedes preflight in main.
+     close_door; ``--control`` branch precedes preflight in main;
+  m. formal ASGI control route (FIX-1 D1): five-command close/install/
+     ready/open/panic-close sequence plus auth counterexamples through the
+     real route (typed ``request: Request``; untyped answers 422, red);
+  n. slow upstream never blocks the re-close (FIX-1 D2): the lock guards
+     admission only, business runs off the serving loop via the AnyIO pool;
+     parked-sender close and stalled-business panic-close order proofs;
+  o. strict shared readback (FIX-1 D3): read/write faults answer
+     non-success with no confirmed event; drift + shared fault records
+     drift-reclose-unconfirmed, never drift-reclosed.
 """
 
 from __future__ import annotations
@@ -344,6 +354,29 @@ def _post_envelope(app, n=1):
                               created_utc="2026-11-15T00:00:00Z")))
 
 
+def _post_control(app, command, *, token=DOOR_TOKEN, run_id=RUN_ID):
+    """Drive one door command through the FORMAL ASGI control route.
+
+    In-memory ASGI, never a port. Direct ``handle_post`` calls and the fake
+    ``HTTPConnection`` client seam cannot see the FastAPI parameter binding;
+    only a true routed POST proves the endpoint is reachable (D1 guard).
+    """
+    async def _go():
+        client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        )
+        try:
+            return await client.post(
+                "/internal/sa-thin/control",
+                json={"token": token, "command": command, "run_id": run_id},
+            )
+        finally:
+            await client.aclose()
+
+    return _DOOR_RUNNER.run(_go())
+
+
 # -- fake HTTPConnection factory for the --control client ---------------------
 
 class _FakeHTTPResponse:
@@ -609,6 +642,91 @@ def test_door_drift_refuses_install_and_open_and_recloses(tmp_path, monkeypatch)
     assert status2 == 409 and payload2["reason"] == "presets-drift"
 
 
+# -- o: strict shared readback -- faults never claim confirmed (D3) -------------
+
+def _assert_close_unconfirmed(control, status, payload):
+    """A faulted re-close: non-success code, never a confirmed event, but the
+    instance door is still closed and the ready qualification revoked."""
+    assert status != 200, payload
+    assert payload.get("status") != "ok"
+    assert not any(
+        ev["event"] == "shared-closed" and ev.get("detail") == "confirmed"
+        for ev in control.events
+    )
+    assert control.is_instance_open() is False
+    assert control._ready is False
+
+
+def test_door_close_read_fault_never_claims_confirmed(tmp_path, monkeypatch):
+    """Write succeeds but the readback faults -> 500/close-failed, no
+    confirmed event. Pre-fix ``not is_shared_open()`` read the fault as
+    closed and answered 200/ok/confirmed (RED)."""
+    registry_path, presets_path, gate_path = _door_files(tmp_path)
+    control = _door_control(tmp_path, monkeypatch, gate_path, registry_path, presets_path)
+    _open_via_api(control)
+    assert control._ready is True
+    orig_read_text = Path.read_text
+
+    def _fault_read(self, *args, **kwargs):
+        if str(self) == str(gate_path):
+            raise OSError("door read fault injected")
+        return orig_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _fault_read)
+    status, payload = control.close_door()
+    _assert_close_unconfirmed(control, status, payload)
+    assert payload.get("status") == "close-failed"
+
+
+def test_door_close_write_fault_never_claims_confirmed(tmp_path, monkeypatch):
+    """Shared write faults (missing parent dir / directory as gate) -> 500,
+    no confirmed event; the instance door is still closed."""
+    registry_path, presets_path, gate_path = _door_files(tmp_path)
+    for broken in ("missing-dir", "as-dir"):
+        # Fresh closed sandbox per shape: the previous shape's failed
+        # re-close correctly leaves the shared gate open, so a new
+        # controller would (correctly) refuse install. Reset per iteration.
+        iteration = tmp_path / ("write-fault-%s" % broken)
+        iteration.mkdir(exist_ok=True)
+        registry_path, presets_path, gate_path = _door_files(iteration)
+        control = _door_control(
+            iteration, monkeypatch, gate_path, registry_path, presets_path,
+            run_id="run-door-wf-%s" % broken,
+        )
+        _open_via_api(control)
+        if broken == "missing-dir":
+            control.release_path = str(tmp_path / "nodir" / "gate.json")
+        else:
+            gate_dir = tmp_path / ("gate-%s.dir" % broken)
+            gate_dir.mkdir(exist_ok=True)
+            control.release_path = str(gate_dir)
+        status, payload = control.close_door()
+        _assert_close_unconfirmed(control, status, payload)
+
+
+def test_door_drift_reclose_unconfirmed_on_shared_fault(tmp_path, monkeypatch):
+    """Drift + shared write fault: the ticket still stops (409), but the
+    event must say unconfirmed -- never drift-reclosed.
+
+    Pre-fix the drift path swallowed the write fault and still recorded
+    drift-reclosed (RED)."""
+    registry_path, presets_path, gate_path = _door_files(tmp_path)
+    control = _door_control(tmp_path, monkeypatch, gate_path, registry_path, presets_path)
+    assert control.install_registry()[0] == 200
+    assert control.ready()[0] == 200
+    raw = presets_path.read_text(encoding="utf-8")
+    assert '"door-primary"' in raw
+    presets_path.write_text(raw.replace('"door-primary"', '"door-primarx"'), encoding="utf-8")
+    control.release_path = str(tmp_path / "nodir" / "gate.json")
+    status, payload = control.open_door()
+    assert status == 409 and payload["reason"] == "presets-drift"
+    kinds = [ev["event"] for ev in control.events]
+    assert "drift-reclosed" not in kinds
+    assert "drift-reclose-unconfirmed" in kinds
+    assert control.is_instance_open() is False
+    assert control._ready is False
+
+
 # -- h: install drives the live provider snapshot ------------------------------
 
 def test_door_install_uses_live_provider_snapshot(tmp_path, monkeypatch):
@@ -676,6 +794,136 @@ def test_door_concurrent_admissions_and_close_share_one_lock(tmp_path, monkeypat
     assert control.is_instance_open() is False
     assert control.is_shared_open() is False
     assert _post_envelope(app, n=99).status_code == 403
+
+
+# -- n: slow upstream never blocks the re-close (D2) ----------------------------
+
+class _ParkedSender(_CountingSender):
+    """Sender that parks inside the call until the test releases it."""
+
+    def __init__(self, entered: threading.Event, release: threading.Event):
+        super().__init__()
+        self._entered = entered
+        self._release = release
+
+    def __call__(self, url, body):
+        self.calls.append({"url": url, "body": body})
+        self._entered.set()
+        assert self._release.wait(timeout=15), "test never released the sender"
+        return self.text
+
+
+def test_door_close_completes_while_upstream_parked(tmp_path, monkeypatch):
+    """The door lock guards only admission: with one admitted call parked
+    inside a slow upstream, close_door still completes (200) on the spot.
+
+    Pre-fix the forwarder ran under the lock, so close_door starved until
+    the sender returned (the join below times out -> RED)."""
+    registry_path, presets_path, gate_path = _door_files(tmp_path)
+    control = _door_control(tmp_path, monkeypatch, gate_path, registry_path, presets_path)
+    entered = threading.Event()
+    release = threading.Event()
+    sender = _ParkedSender(entered, release)
+    app = _build_app(monkeypatch, registry_path, presets_path, gate_path, control, sender)
+    _open_via_api(control)
+    outcome = []
+
+    worker = threading.Thread(
+        target=lambda: outcome.append(_post_envelope(app)), daemon=True
+    )
+    worker.start()
+    assert entered.wait(timeout=15), "admitted call never reached the sender"
+    box = {}
+    closer = threading.Thread(
+        target=lambda: box.update(ret=control.close_door()), daemon=True
+    )
+    closer.start()
+    closer.join(timeout=5.0)
+    if closer.is_alive():
+        release.set()
+        closer.join(timeout=15.0)
+        worker.join(timeout=15.0)
+        pytest.fail("RED: close_door starved behind the parked upstream")
+    status, payload = box["ret"]
+    assert status == 200
+    assert payload["instance_open"] is False and payload["shared_open"] is False
+    assert control._ready is False
+    release.set()
+    worker.join(timeout=15.0)
+    assert outcome and outcome[0].status_code == 200  # admitted before close
+    assert _post_envelope(app, n=2).status_code == 403
+    assert len(sender.calls) == 1  # the re-close sent nothing new upstream
+
+
+def test_door_panic_close_route_completes_during_stalled_business(
+    tmp_path, monkeypatch
+):
+    """ASGI isolation: while a business call is stalled in a slow upstream
+    (worker thread), panic-close through the FORMAL control route still
+    completes first -- then the stalled admission lands (admitted pre-close)
+    and every later admission is refused with zero new upstream calls.
+
+    Pre-fix the stalled business pinned the serving loop, so the control
+    POST could only run after the sender timed out (order flips -> RED)."""
+    registry_path, presets_path, gate_path = _door_files(tmp_path)
+    control = _door_control(tmp_path, monkeypatch, gate_path, registry_path, presets_path)
+    entered = threading.Event()
+    release = threading.Event()
+    sender = _ParkedSender(entered, release)
+    app = _build_app(monkeypatch, registry_path, presets_path, gate_path, control, sender)
+    _open_via_api(control)
+    snapshot = _snapshot_for(PRIMARY, MODELS[PRIMARY], 7)
+    body = sa_api.envelope_to_body(
+        sa_api.build_envelope(snapshot=snapshot, messages=(("user", "door probe"),),
+                              created_utc="2026-11-15T00:00:00Z"))
+    order = []
+
+    async def _scenario():
+        biz_client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        )
+        ctl_client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        )
+        try:
+            async def _business():
+                response = await biz_client.post(
+                    "/%s/%s/v1/chat/completions" % (SOUL, PRIMARY),
+                    headers={"Authorization": "Bearer " + TOKEN},
+                    json=body,
+                )
+                order.append(("business", response.status_code))
+                return response
+
+            async def _control():
+                for _ in range(300):
+                    if entered.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+                assert entered.is_set(), "business never reached the sender"
+                response = await ctl_client.post(
+                    "/internal/sa-thin/control",
+                    json={"token": DOOR_TOKEN, "command": "panic-close",
+                          "run_id": RUN_ID},
+                )
+                order.append(("control", response.status_code))
+                release.set()
+                return response
+
+            return await asyncio.gather(_business(), _control())
+        finally:
+            await biz_client.aclose()
+            await ctl_client.aclose()
+
+    business_response, control_response = _DOOR_RUNNER.run(
+        asyncio.wait_for(_scenario(), timeout=30)
+    )
+    assert control_response.status_code == 200, control_response.text
+    assert control_response.json()["shared_open"] is False
+    assert business_response.status_code == 200  # admitted before the close
+    assert order == [("control", 200), ("business", 200)], order
+    assert _post_envelope(app, n=8).status_code == 403
+    assert len(sender.calls) == 1
 
 
 # -- j: --control client (fixed endpoint, zero retry, exit codes) ---------------
@@ -753,6 +1001,67 @@ def test_door_control_branch_runs_before_preflight(tmp_path, monkeypatch):
     assert log == [(thin_mod.THIN_HOST, thin_mod.THIN_PORT)]
 
 
+# -- m: formal ASGI control route (D1: endpoint must be reachable) --------------
+
+def test_door_control_route_five_command_sequence_via_asgi(tmp_path, monkeypatch):
+    """Five door commands through the FORMAL route: close -> install ->
+    ready -> open admits one success -> panic-close re-closes.
+
+    A direct ``handle_post`` call cannot see the FastAPI parameter binding;
+    with the ``request`` argument untyped the legal POST below answers 422
+    and the controller is never called (RED). Typed, the full sequence runs
+    green with the controller observably called (installed/ready/opened and
+    closed events in order)."""
+    registry_path, presets_path, gate_path = _door_files(tmp_path)
+    sender = _CountingSender()
+    control = _door_control(tmp_path, monkeypatch, gate_path, registry_path, presets_path)
+    app = _build_app(monkeypatch, registry_path, presets_path, gate_path, control, sender)
+    assert _post_envelope(app).status_code == 403
+    assert sender.calls == []
+    response = _post_control(app, "close")
+    assert response.status_code == 200, response.text
+    response = _post_control(app, "install")
+    assert response.status_code == 200, response.text
+    response = _post_control(app, "ready")
+    assert response.status_code == 200, response.text
+    assert response.json()["ready"] is True
+    response = _post_control(app, "open")
+    assert response.status_code == 200, response.text
+    assert response.json()["instance_open"] is True
+    assert response.json()["shared_open"] is True
+    kinds = [ev["event"] for ev in control.events]
+    assert kinds.index("shared-opened") < kinds.index("instance-opened")
+    admitted = _post_envelope(app, n=2)
+    assert admitted.status_code == 200
+    assert len(sender.calls) == 1
+    response = _post_control(app, "panic-close")
+    assert response.status_code == 200, response.text
+    assert response.json()["instance_open"] is False
+    assert response.json()["shared_open"] is False
+    assert _post_envelope(app, n=3).status_code == 403
+    assert len(sender.calls) == 1  # zero new upstream after the re-close
+    tail = [ev["event"] for ev in control.events]
+    assert tail.index("instance-closed") < tail.index("shared-closed")
+    assert all(ev["run_id"] == RUN_ID for ev in control.events)
+
+
+def test_door_control_route_auth_counterexamples_via_asgi(tmp_path, monkeypatch):
+    """Wrong token / wrong run_id refuse 401 THROUGH the route with zero
+    state change (proves the route reaches the controller: an untyped
+    endpoint would answer 422 instead of 401 here)."""
+    registry_path, presets_path, gate_path = _door_files(tmp_path)
+    sender = _CountingSender()
+    control = _door_control(tmp_path, monkeypatch, gate_path, registry_path, presets_path)
+    app = _build_app(monkeypatch, registry_path, presets_path, gate_path, control, sender)
+    for token, run_id in ((WRONG_TOKEN, RUN_ID), (DOOR_TOKEN, "run-nope")):
+        response = _post_control(app, "close", token=token, run_id=run_id)
+        assert response.status_code == 401, response.text
+    assert control.is_instance_open() is False
+    assert control.is_shared_open() is False
+    blob = json.dumps(control.events)
+    assert WRONG_TOKEN not in blob and DOOR_TOKEN not in blob
+
+
 # -- k: bidirectional mutations (removed guard must turn red) -------------------
 
 def test_door_mutation_door_removed_red_then_revert_green(tmp_path, monkeypatch):
@@ -801,12 +1110,17 @@ def test_door_mutation_hash_guard_removed_red_then_revert_green(
     tmp_path, monkeypatch
 ):
     """Relaxed mutant: the hash guard rigged to always match -> drifted
-    configs install (RED). Reverting refuses the drift (GREEN)."""
+    configs install (RED). Reverting refuses the drift (GREEN).
+
+    The pins name the ORIGINAL sandbox bytes (pinned BEFORE the drift, never
+    re-pinned): the same assertion judges all three states, so a vacuous
+    pin-the-drift pass is structurally impossible."""
     registry_path, presets_path, gate_path = _door_files(tmp_path)
+    _pin_to_files(monkeypatch, registry_path, presets_path)  # original pins
     raw = registry_path.read_text(encoding="utf-8")
     assert '"door-mech-owner"' in raw
     registry_path.write_text(raw.replace('"door-mech-owner"', '"door-mech-owneq"'), encoding="utf-8")
-    _pin_to_files(monkeypatch, registry_path, presets_path)
+    # NOTE: no re-pinning -- the pins still name the pre-drift bytes.
     control = thin_mod.ThinControl(
         run_id=RUN_ID,
         token=DOOR_TOKEN,
@@ -819,6 +1133,9 @@ def test_door_mutation_hash_guard_removed_red_then_revert_green(
 
     provider = RegistryProvider(_registry_raw())
     control.attach(provider=provider)
+    # Baseline (no mutant): the drift refuses.
+    status0, payload0 = control.install_registry()
+    assert status0 == 409 and payload0["reason"] == "registry-drift"
     calls = []
 
     def _fake_sha256(data):
@@ -832,11 +1149,12 @@ def test_door_mutation_hash_guard_removed_red_then_revert_green(
 
         return _H()
 
+    orig_sha256 = thin_mod.hashlib.sha256
     monkeypatch.setattr(thin_mod.hashlib, "sha256", _fake_sha256)
     status, _ = control.install_registry()
     if status != 200:
         pytest.fail("MUTATION DUD -- STOP, report: removed hash guard did not admit drift")
-    monkeypatch.undo()
+    monkeypatch.setattr(thin_mod.hashlib, "sha256", orig_sha256)  # revert guard only
     control2 = thin_mod.ThinControl(
         run_id="run-door-revert-2",
         token=DOOR_TOKEN,
@@ -932,3 +1250,89 @@ def test_door_ast_panic_close_calls_close_door_and_control_first():
     assert len(requests) == 1  # zero retry: a single POST, no loop resend
     assert thin_mod.CONTROL_COMMANDS == ("close", "install", "ready", "open", "panic-close")
     assert thin_mod.CONTROL_ENDPOINT == "/internal/sa-thin/control"
+
+
+def test_door_ast_control_endpoint_takes_typed_request():
+    """The control endpoint must declare ``request: Request``.
+
+    Untyped, FastAPI binds the argument as a required query parameter and
+    every legal POST answers 422 with the controller never called (D1)."""
+    src = _thin_source()
+    tree = ast.parse(src)
+    endpoint = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "_control_endpoint"
+    )
+    assert [arg.arg for arg in endpoint.args.args] == ["request"]
+    annotation = endpoint.args.args[0].annotation
+    assert annotation is not None, "_control_endpoint(request) must be typed"
+    label = ast.dump(annotation)
+    assert "Request" in label, annotation
+    assert "Request" in [
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "fastapi"
+        for alias in node.names
+    ] or "fastapi" in [
+        alias.name.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    ], "Request must be imported from fastapi"
+
+
+def test_door_ast_lock_guards_admission_only():
+    """The door lock must not wrap the forwarder call: admission is decided
+    under the lock, the upstream runs after it is released (D2)."""
+    src = _thin_source()
+    tree = ast.parse(src)
+    checked = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_handle":
+            text = ast.get_source_segment(src, node) or ""
+            if "_door_lock" not in text:
+                continue
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.With):
+                    with_text = ast.get_source_segment(src, sub) or ""
+                    if "_door_lock" in with_text:
+                        checked += 1
+                        assert "forwarder(" not in with_text, (
+                            "forwarder() must run outside the door lock"
+                        )
+    assert checked >= 1, "expected a _door_lock block inside _handle"
+
+
+def test_door_ast_strict_readback_and_unconfirmed_events():
+    """Re-close paths must read back through the strict confirmer and name
+    the unconfirmed outcomes (D3): no ``not is_shared_open()`` shortcut as
+    the close verdict, and both unconfirmed event names exist."""
+    src = _thin_source()
+    tree = ast.parse(src)
+    close_node = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "close_door"
+    )
+    close_text = ast.get_source_segment(src, close_node) or ""
+    assert "_confirm_shared_closed" in close_text
+    assert "not self.is_shared_open()" not in close_text
+    assert "shared-close-unconfirmed" in close_text
+    open_node = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "open_door"
+    )
+    open_text = ast.get_source_segment(src, open_node) or ""
+    assert "_write_shared_closed" in open_text
+    assert "drift-reclose-unconfirmed" in open_text
+    assert "_isolate_business_asgi" in src
+    app_node = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "build_thin_app"
+    )
+    app_text = ast.get_source_segment(src, app_node) or ""
+    assert "_isolate_business_asgi" in app_text

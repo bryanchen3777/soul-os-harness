@@ -51,11 +51,13 @@ no background wrapper, no system service):
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import hmac
 import http.client
 import json
 import os
+import queue
 import secrets
 import socket
 import sys
@@ -71,6 +73,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 import uvicorn
+from fastapi import Request
 
 from src.external_gateway.app import EXTERNAL_PORT
 from src.external_gateway.app import create_external_app
@@ -353,7 +356,44 @@ class ThinControl:
         return (True, (reg_parsed, pre_parsed))
 
     def _shared_closed(self) -> bool:
-        return not self.is_shared_open()
+        return self._confirm_shared_closed()
+
+    def _confirm_shared_closed(self) -> bool:
+        """Strict shared readback: True only on an explicit closed read.
+
+        A missing file, an unreadable file, bad JSON, a non-object payload,
+        or any status other than ``"closed"`` all read as UNCONFIRMED
+        (False). ``is_shared_open()`` (used for admission) stays fail-closed
+        in the other direction; this helper is the only readback the
+        re-close paths trust, so a read/write fault can never be reported
+        as a confirmed close.
+        """
+        if self.release_path is None:
+            return False
+        try:
+            raw = Path(self.release_path).read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            return False
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return False
+        return isinstance(data, dict) and data.get("status") == "closed"
+
+    def _write_shared_closed(self) -> bool:
+        """Atomically write closed and strictly read it back (shared logic).
+
+        Returns True only when the readback confirms ``closed``; any write
+        or read fault returns False. ``close_door`` and the drift re-close
+        in ``open_door`` share this helper.
+        """
+        if self.release_path is None:
+            return False
+        try:
+            self._atomic_write_json(self.release_path, {"status": "closed"})
+        except Exception:
+            return False
+        return self._confirm_shared_closed()
 
     def close_door(self):
         """One-shot dual re-close (idempotent; never blocked by drift).
@@ -376,7 +416,7 @@ class ThinControl:
             except Exception as exc:
                 self._record("shared-close-failed", type(exc).__name__)
                 return (500, self._door_payload("close-failed"))
-            if not self._shared_closed():
+            if not self._confirm_shared_closed():
                 self._record("shared-close-unconfirmed")
                 return (500, self._door_payload("close-failed"))
             self._record("shared-closed", "confirmed")
@@ -484,14 +524,13 @@ class ThinControl:
             if not ok:
                 self._instance_open = False
                 self._ready = False
-                try:
-                    if self.release_path is not None:
-                        self._atomic_write_json(
-                            self.release_path, {"status": "closed"}
-                        )
-                except Exception:
-                    pass
-                self._record("drift-reclosed", _data)
+                if self.release_path is not None:
+                    if self._write_shared_closed():
+                        self._record("drift-reclosed", _data)
+                    else:
+                        self._record("drift-reclose-unconfirmed", _data)
+                else:
+                    self._record("drift-reclosed", _data)
                 return (
                     409,
                     self._door_payload("refused", {"reason": _data}),
@@ -667,7 +706,7 @@ def mount_control_route(app, control):
     from fastapi.responses import JSONResponse
     from fastapi.routing import APIRoute
 
-    async def _control_endpoint(request):
+    async def _control_endpoint(request: Request):
         try:
             scope_client = (request.scope or {}).get("client")
             host = scope_client[0] if scope_client else None
@@ -689,6 +728,100 @@ def mount_control_route(app, control):
         except Exception:
             pass
     return route
+
+
+#: Business pump (SA-DOOR-MECH-FIX-1 D2): a dedicated daemon thread driving
+#: one event loop created at import time. Import time is before the SA-0
+#: test fixture hard-blocks ``socket.socket`` (Windows loop construction
+#: needs a socketpair-backed self-pipe), and the serving loop hands jobs
+#: over with plain ``queue.Queue`` + ``asyncio.sleep`` polling -- never a
+#: cross-thread asyncio wakeup (also socket-backed, also hard-blocked).
+#: Production uses this identical path: no file reads, no env reads, no
+#: port attach, no serving at import (same idiom as the test-side runner).
+_BUSINESS_LOOP = asyncio.new_event_loop()
+_BUSINESS_JOBS = queue.Queue()
+
+
+def _business_pump():
+    asyncio.set_event_loop(_BUSINESS_LOOP)
+    while True:
+        coro, out_q = _BUSINESS_JOBS.get()
+        try:
+            out_q.put((True, _BUSINESS_LOOP.run_until_complete(coro)))
+        except BaseException as exc:  # noqa: BLE001 -- report, never die
+            out_q.put((False, exc))
+
+
+_BUSINESS_THREAD = threading.Thread(
+    target=_business_pump, name="sa-thin-business", daemon=True
+)
+_BUSINESS_THREAD.start()
+
+
+def _isolate_business_asgi(app):
+    """Run business paths on the pump; keep control on the serving loop.
+
+    SA-DOOR-MECH-FIX-1 (thin-side only; frozen ``src/external_gateway/app.py``
+    untouched): the gateway calls the soul handler synchronously inside its
+    async dispatch, so a slow upstream pins the serving loop and starves
+    the loopback control route -- panic-close could not complete during a
+    stall. This wrapper keeps the control route (and lifespan / non-HTTP
+    scopes) on the serving loop and runs every other HTTP scope on the
+    import-time business pump: the request body is buffered on the serving
+    loop, the wrapped app runs to completion on the pump thread against
+    in-memory channels, and the captured response is replayed on the
+    serving loop. A stalled business call then parks the pump thread,
+    never the control route -- and no cross-thread asyncio wakeup is ever
+    needed, so the SA-0 socket hard-block cannot trip it.
+    """
+
+    async def _isolated(scope, receive, send):
+        if not isinstance(scope, dict) or scope.get("type") != "http":
+            return await app(scope, receive, send)
+        if scope.get("path") == CONTROL_ENDPOINT:
+            return await app(scope, receive, send)
+        buffered = []
+        while True:
+            message = await receive()
+            buffered.append(message)
+            if message.get("type") != "http.request" or not message.get(
+                "more_body"
+            ):
+                break
+        sent = []
+        replay = iter(buffered)
+
+        async def _mem_receive():
+            try:
+                return next(replay)
+            except StopIteration:
+                return {"type": "http.disconnect"}
+
+        async def _mem_send(message):
+            sent.append(message)
+
+        out_q = queue.Queue(maxsize=1)
+        _BUSINESS_JOBS.put((app(scope, _mem_receive, _mem_send), out_q))
+        while True:
+            try:
+                ok, value = out_q.get_nowait()
+            except queue.Empty:
+                await asyncio.sleep(0.005)
+                continue
+            break
+        if not ok:
+            raise value
+        for message in sent:
+            await send(message)
+
+    _isolated.__wrapped__ = app
+    # Route-introspection passthrough: the wrapper is a plain ASGI function,
+    # but registration proofs (T15) read ``app.routes`` off the built app.
+    # Mirror the wrapped Starlette app's routing surface read-only; the
+    # serving path itself never consults these attributes.
+    _isolated.routes = app.routes
+    _isolated.router = app.router
+    return _isolated
 
 
 def is_thin_open() -> bool:
@@ -725,11 +858,16 @@ def build_thin_closed_handler(*, release_path=None, _forwarder=None, control=Non
                 raise _sa_bridge.LiveRefused(403, "forbidden", _CLOSED_MESSAGE)
             return forwarder(envelope, route=route, preset=preset)
     else:
+        # SA-DOOR-MECH-FIX-1: the door lock guards ONLY the admission check
+        # and the state flags. The forwarder runs AFTER the lock is released,
+        # so a slow upstream parks the calling worker, never a re-close:
+        # panic-close (instance + shared, same lock) always gets the lock.
         def _handle(envelope, *, route=None, preset=None):
             with control._door_lock:
-                if not control._instance_open:
-                    raise _sa_bridge.LiveRefused(403, "forbidden", _CLOSED_MESSAGE)
-                return forwarder(envelope, route=route, preset=preset)
+                admitted = control._instance_open
+            if not admitted:
+                raise _sa_bridge.LiveRefused(403, "forbidden", _CLOSED_MESSAGE)
+            return forwarder(envelope, route=route, preset=preset)
 
     return _handle
 
@@ -834,7 +972,8 @@ def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder
             release_path=(str(release_path) if release_path is not None else None),
         )
         mount_control_route(app, control)
-    return app
+    # SA-DOOR-MECH-FIX-1: business on the pump thread, control on this loop.
+    return _isolate_business_asgi(app)
 
 
 def build_parser() -> argparse.ArgumentParser:
