@@ -1,0 +1,284 @@
+{
+  "cases": [
+    {
+      "case": "b3-load",
+      "dotenv_stubbed": true,
+      "main_called": false
+    },
+    {
+      "case": "key-existence",
+      "key_ref": "OLLAMA_API_KEY",
+      "value_reported": false
+    },
+    {
+      "case": "pump-control",
+      "result": "value",
+      "shape": "no-suspend"
+    },
+    {
+      "boundaries": {},
+      "case": "pump-running-loop",
+      "chain": [
+        "RuntimeError"
+      ],
+      "exc_type": "RuntimeError",
+      "five_fields": "absent",
+      "land_reason": "pump-level: no transport snapshot",
+      "landed": false,
+      "snapshot_present": false
+    },
+    {
+      "case": "pump-nested-ok",
+      "result": "value",
+      "shape": "actual-yield"
+    },
+    {
+      "boundaries": {},
+      "case": "pump-nested-raise",
+      "chain": [
+        "ValueError"
+      ],
+      "exc_type": "ValueError",
+      "five_fields": "absent",
+      "land_reason": "pump-level: no transport snapshot",
+      "landed": false,
+      "snapshot_present": false
+    },
+    {
+      "boundaries": {},
+      "case": "pump-fake-suspend",
+      "chain": [
+        "AssertionError"
+      ],
+      "exc_type": "AssertionError",
+      "five_fields": "absent",
+      "land_reason": "pump-level: no transport snapshot",
+      "landed": false,
+      "snapshot_present": false
+    },
+    {
+      "boundaries": {},
+      "case": "client-enter",
+      "chain": [
+        "RuntimeError"
+      ],
+      "exc_type": "RuntimeError",
+      "five_fields": "absent",
+      "land_reason": "no snapshot",
+      "landed": false,
+      "snapshot_present": false
+    },
+    {
+      "boundaries": {},
+      "case": "client-exit",
+      "chain": [
+        "RuntimeError"
+      ],
+      "exc_type": "RuntimeError",
+      "five_fields": "absent",
+      "land_reason": "no snapshot",
+      "landed": false,
+      "snapshot_present": false
+    },
+    {
+      "boundaries": {},
+      "case": "post-non-network",
+      "chain": [
+        "ValueError"
+      ],
+      "exc_type": "ValueError",
+      "five_fields": "absent",
+      "land_reason": "no snapshot",
+      "landed": false,
+      "snapshot_present": false
+    },
+    {
+      "boundaries": {},
+      "case": "response-json",
+      "chain": [
+        "ValueError"
+      ],
+      "exc_type": "ValueError",
+      "five_fields": "absent",
+      "land_reason": "no snapshot",
+      "landed": false,
+      "snapshot_present": false
+    },
+    {
+      "boundaries": {},
+      "case": "response-shape",
+      "chain": [
+        "KeyError"
+      ],
+      "exc_type": "KeyError",
+      "five_fields": "absent",
+      "land_reason": "no snapshot",
+      "landed": false,
+      "snapshot_present": false
+    },
+    {
+      "boundaries": {},
+      "case": "response-gap",
+      "chain": [
+        "EvidenceGap"
+      ],
+      "exc_type": "EvidenceGap",
+      "five_fields": "absent",
+      "land_reason": "no snapshot",
+      "landed": false,
+      "snapshot_present": false
+    },
+    {
+      "boundaries": {
+        "submit": true
+      },
+      "case": "dialog-submit",
+      "chain": [
+        "LiveRefused",
+        "RuntimeError"
+      ],
+      "exc_type": "LiveRefused",
+      "five_fields": {
+        "chain": [
+          "RuntimeError"
+        ],
+        "elapsed_ms": 3.25,
+        "errno": null,
+        "phase": "post",
+        "type": "connect"
+      },
+      "land_reason": "boundary-only case",
+      "landed": false,
+      "snapshot_present": true
+    },
+    {
+      "boundaries": {
+        "result": true
+      },
+      "case": "dialog-result",
+      "chain": [
+        "LiveRefused",
+        "RuntimeError"
+      ],
+      "exc_type": "LiveRefused",
+      "five_fields": {
+        "chain": [
+          "TimeoutError"
+        ],
+        "elapsed_ms": 3.25,
+        "errno": null,
+        "phase": "post",
+        "type": "connect"
+      },
+      "land_reason": "boundary-only case",
+      "landed": false,
+      "snapshot_present": true
+    },
+    {
+      "boundaries": {
+        "submit": true
+      },
+      "case": "counterexample-pump-exit7",
+      "chain": [
+        "LiveRefused",
+        "RuntimeError"
+      ],
+      "exc_type": "LiveRefused",
+      "five_fields": {
+        "chain": [
+          "ConnectError",
+          "OSError"
+        ],
+        "elapsed_ms": 0.024500302970409393,
+        "errno": 113,
+        "phase": "post",
+        "type": "connect"
+      },
+      "land_reason": "landed",
+      "landed": true,
+      "snapshot_present": true
+    },
+    {
+      "boundaries": {},
+      "case": "land-no-snapshot",
+      "chain": [
+        "RuntimeError"
+      ],
+      "exc_type": "RuntimeError",
+      "five_fields": "absent",
+      "land_reason": "no snapshot",
+      "landed": false,
+      "snapshot_present": false
+    },
+    {
+      "boundaries": {},
+      "case": "land-pollution",
+      "chain": [
+        "RuntimeError"
+      ],
+      "exc_type": "RuntimeError",
+      "five_fields": {
+        "chain": [
+          "ConnectError"
+        ],
+        "elapsed_ms": 1.0,
+        "errno": null,
+        "phase": "post",
+        "type": "connect"
+      },
+      "land_reason": "pollution refusal",
+      "landed": false,
+      "snapshot_present": true
+    },
+    {
+      "boundaries": {},
+      "case": "land-disk-failure",
+      "chain": [
+        "RuntimeError"
+      ],
+      "exc_type": "RuntimeError",
+      "five_fields": {
+        "chain": [
+          "ConnectError"
+        ],
+        "elapsed_ms": 1.0,
+        "errno": null,
+        "phase": "post",
+        "type": "connect"
+      },
+      "land_reason": "landing failure",
+      "landed": false,
+      "snapshot_present": true
+    },
+    {
+      "case": "ast-proxy",
+      "pins": "hold"
+    },
+    {
+      "case": "ast-wiring",
+      "pins": "hold"
+    },
+    {
+      "case": "ast-evidence",
+      "pins": "hold"
+    },
+    {
+      "case": "mut-delete-red",
+      "observer": "blind-as-designed"
+    },
+    {
+      "case": "mut-delete-green",
+      "observer": "sees-connect"
+    },
+    {
+      "case": "mut-misclassify-red",
+      "observer": "sees-read_timeout"
+    },
+    {
+      "case": "mut-misclassify-green",
+      "observer": "sees-connect"
+    }
+  ],
+  "note": "offline only; local POST != backend received/billed; same-shape reproduction, no historical root-cause claim",
+  "ticket": "SA-TRANSPORT-OBS-2A"
+}
