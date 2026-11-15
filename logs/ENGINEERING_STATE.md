@@ -10508,3 +10508,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - Mavis複核：最小序列38 passed（含邊界8）／T16↔T18各58 passed／infra 428全綠（追蹤後衛生轉綠）／diff僅兩檔52+/17-＋新檔；全庫（worker跑，1017s）1 failed、9314 passed，唯一紅係新檔未追蹤（已追蹤即消，T18無FAILED行）；tracked僅兩檔＋canonical，src零改動、data唯讀、雙哈希未動。
 - 待辦：送臥龍終驗（分支c修復ACCEPTED＋GATE效力重判）。
 - Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程、未task_stop wrapper。
+## 0.1.167 臥龍終驗T18邊界票：修復ACCEPTED（限T18邊界）＋GATE判CONDITIONAL＋補一次全庫
+- 終驗：根因由候選升為證實（合法延遲匯入撞陳舊快照，非T16洩漏/污染）；新鮮快照＋載入時嚴查＋finally復原＋四象限/雙變異＝把嚴格檢查移到正確時點，非放寬。驗收僅限T18邊界修復。
+- GATE重判：修復前全庫仍有1紅，不得追溯改綠；整票CONDITIONAL（修復已驗收、全庫Hard Gate未解除）；非新功能缺陷、不升P0。
+- 後續（唯一待辦）：在`8fc262d`等同樹、repo`.venv`跑一次`pytest -q tests`，exit 0即解除閘門關案；新紅只定位不擴修。不啟服、不外呼、不動生產。
+- Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程、未task_stop wrapper。
