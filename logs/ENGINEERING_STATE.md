@@ -10442,3 +10442,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 下一票SA-LOOP-OFFLINE-1（已派工bg_f2d6f9b2）：仅新增tests/soul_access/test_transport_loop.py；保留真backend/httpx、最低传输层注入mock；同输入对照旧pump与单线程无socket测试回圈；网络硬拦、假凭证、输出限tmp_path。验收：旧红→候选绿→退回红（附完整堆栈、mock raw/usage配对、单次零重试证据）；不能重现即INCONCLUSIVE停票。不做：改产品/Frozen/门禁/生产值/既有批次；启服绑埠、外呼、重跑全库追E1。
 - 排序与权限：①本票工程自办（成本最低）；②薄端合法开门与逐请求取证离线设计可并行，实作须另票限域解冻（成本较高）；③闭门部署须正式值核准＋全库闸门放行，2C不能取代。Owner须明示：花钱、registry/presets正式值核准、实际开门、新实弹批次。APPROVAL-1、T18、E1维持原判。
 - Frozen：未改Frozen Contract、未改守卫、未写data/**、未启服、未绑埠、无真实外呼；未杀行程、未task_stop wrapper。
+## 0.1.156 SA-LOOP-OFFLINE-1 worker交付：假说成立（重现），Mavis独立复核通过，待卧龙判定修复方向
+- 交付（commit be10375，唯一新增 tests/soul_access/test_transport_loop.py，395行）：假说成立——手动pump＋真backend/httpx在传输第一步抛anyio.NoEventLoopError，经wiring包成LiveRefused，与B4失败档逐字同形（outer_chain [LiveRefused,NoEventLoopError]、snapshot absent、evidence恰1个.request.json）；候选路径（单线程真loop＋最低层mock）同输入一次走通（transport_calls==1零重试、raw/usage配对、假凭证无泄漏）；还原则再红；全程外部入口计数为零。根因链：httpcore pool关连接AsyncShieldCancellation→anyio.CancelScope→get_async_backend，发生在任何socket建立之前（结构性零外连）。结论仅限本票对照，不超射为四次实弹根因（B1/B2/B3无档，形态是否同源未证）。
+- Mavis独立复核：单档1 passed（.venv复跑一致）；grep确认正式marker/matrix零读写；正式双哈希不变（matrix 7F14…、sent F071…）；提交pathspec仅一档；一次性探针已清（树上无残留）；未跑全库、未追E1（依工单范围）。
+- 待办：送卧龙判定假说是否转正确认修复方向（修发送器建loop vs 换同步客户端等路线由她定）；实弹继续冻结。
+- Frozen：未改Frozen Contract、未改守卫、未写data/**、未启服、未绑埠、无真实外呼；未杀行程、未task_stop wrapper。
