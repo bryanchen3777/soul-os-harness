@@ -10495,3 +10495,9 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 對照：GATE-1全套亦有T18一紅（同一檔，疑似同因）；T16根治定向（T16→T18共58 passed、反序＋新回歸61 passed、infra 420）不受影響。正式雙哈希未動。
 - 工作樹：tracked零改動（僅既有untracked＋本證據檔）；src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程。
 - Frozen：同上。
+## 0.1.165 臥龍歸因GATE-2唯一紅：不重開T16，另開SA-T18-DOTENV-BOUNDARY-1先證後修
+- 糾正：Mavis候選誤讀——`tests/soul/test_decay_worker_import_inert.py:134`是子直譯器探針字串（:215交子行程執行），不污染pytest主行程sys.modules。真兇仍待復現定位。
+- 定性：T18拿「收集時快照」比對「執行時全域狀態」（:299），同一斷言紅≠同一洩漏；T16案不重開。GATE-2判未達，不得以CONDITIONAL當全庫通過；T16既有局部驗收保留。
+- 新票SA-T18-DOTENV-BOUNDARY-1（先證後修）：未修提交同.venv隔離復現＋沙盒hook記dotenv身分、縮最小紅序列；證實T16洩漏才重開原案，真環境污染回報另裁；若係合法匯入撞陳舊快照，僅改T18一檔（_load_b3封裝快照/stub/載入/finally復原，sentinel區分缺席，保留嚴格is斷言，不放寬），新增`tests/infra/test_sa_t18_dotenv_boundary.py`。
+- 驗收：缺席/既存×成功/例外皆精確復原，真dotenv零讀、main零呼叫；移除stub/復原變異必紅；最小序列修前紅修後綠，T16/T18正反序＋infra＋全庫綠；產物僅tmp_path；src/conftest/正式證據雙哈希不動。
+- Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程、未task_stop wrapper。
