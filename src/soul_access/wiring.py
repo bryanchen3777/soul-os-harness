@@ -358,25 +358,60 @@ def build_dialog_factory(*, llm, loop=None, resolve_backend=None, submit=None, e
             except (_bridge.LiveRefused, SnapshotRejected):
                 raise
             except Exception as exc:
-                raise _bridge.LiveRefused(
+                _refused = _bridge.LiveRefused(
                     500, "internal", "soul-access dialog failed: %s" % type(exc).__name__
-                ) from exc
+                )
+                try:
+                    # SA-TRANSPORT-OBS-1: carry the transport snapshot (if any)
+                    # onto the wrapper refusal + mark the complete boundary.
+                    # Original type/message/cause unchanged; observation failure
+                    # never masks the error.
+                    from src.soul_access import evidence as _sa_transport_obs
+
+                    _sa_transport_obs.propagate_transport_obs(
+                        _refused, exc, boundary="complete", request_id=request_id
+                    )
+                except Exception:
+                    pass
+                raise _refused from exc
             try:
                 future = send(loop, coro)
             except (_bridge.LiveRefused, SnapshotRejected):
                 raise
             except Exception as exc:
-                raise _bridge.LiveRefused(
+                _refused = _bridge.LiveRefused(
                     500, "internal", "soul-access dialog failed: %s" % type(exc).__name__
-                ) from exc
+                )
+                try:
+                    # SA-TRANSPORT-OBS-1: carry the transport snapshot (if any)
+                    # onto the wrapper refusal + mark the submit boundary.
+                    from src.soul_access import evidence as _sa_transport_obs
+
+                    _sa_transport_obs.propagate_transport_obs(
+                        _refused, exc, boundary="submit", request_id=request_id
+                    )
+                except Exception:
+                    pass
+                raise _refused from exc
             try:
                 text = future.result()
             except (_bridge.LiveRefused, SnapshotRejected):
                 raise
             except Exception as exc:
-                raise _bridge.LiveRefused(
+                _refused = _bridge.LiveRefused(
                     500, "internal", "soul-access dialog failed: %s" % type(exc).__name__
-                ) from exc
+                )
+                try:
+                    # SA-TRANSPORT-OBS-1: carry the transport snapshot (if any)
+                    # onto the wrapper refusal + mark the result boundary.
+                    from src.soul_access import evidence as _sa_transport_obs
+
+                    _sa_transport_obs.propagate_transport_obs(
+                        _refused, exc, boundary="result", request_id=request_id
+                    )
+                except Exception:
+                    pass
+                raise _refused from exc
             if not isinstance(text, str) or not text:
                 raise _bridge.LiveRefused(
                     500, "internal", "soul-access dialog mistyped"

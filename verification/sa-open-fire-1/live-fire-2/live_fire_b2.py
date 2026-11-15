@@ -194,6 +194,33 @@ def _gates_closed() -> tuple:
     return (release_status == "closed" and thin_open is False, release_status, thin_open)
 
 
+def _land_transport_obs(exc) -> bool:
+    """Persist the exit-7 transport diagnosis; never masks the failure.
+
+    Reads the whitelisted snapshot carried on ``exc`` (or its cause chain),
+    binds ``dialog_request_id`` and lands it atomically at
+    ``LIVE_DIR/transport/<dialog_request_id>.json`` -- never inside the
+    ``evidence/`` pair dir (the success criterion of exactly 2 files there
+    is untouched). Returns True only when the file landed; False means the
+    observation is unqualified (no snapshot, pollution refusal, disk error)
+    and the caller must still exit 7 on the ORIGINAL error.
+    """
+    try:
+        obs = sa_evidence.find_transport_obs(exc)
+        if obs is None:
+            return False
+        carried = dict(obs)
+        carried["dialog_request_id"] = DIALOG_REQUEST_ID
+        sa_evidence.record_transport_diagnosis(
+            directory=LIVE_DIR / "transport",
+            dialog_request_id=DIALOG_REQUEST_ID,
+            diagnosis=carried,
+        )
+    except Exception:
+        return False
+    return True
+
+
 def main() -> int:
     marker = LIVE_DIR / "sent.json"
     if marker.exists():
@@ -256,7 +283,15 @@ def main() -> int:
     try:
         text = dialog((("user", MESSAGE),), agent_id=AGENT, request_id=DIALOG_REQUEST_ID)
     except Exception as exc:  # noqa: BLE001
-        return _fail(7, "transport failed (%s): consumed, no retry" % type(exc).__name__)
+        # SA-TRANSPORT-OBS-1: land the exit-7 transport diagnosis BEFORE
+        # failing (observation only; exit code and no-retry semantics kept).
+        if _land_transport_obs(exc):
+            return _fail(7, "transport failed (%s): consumed, no retry" % type(exc).__name__)
+        return _fail(
+            7,
+            "transport failed (%s): consumed, no retry; transport observation unqualified"
+            % type(exc).__name__,
+        )
     if not isinstance(text, str) or not text:
         return _fail(3, "dialog mistyped: unqualified, no resend")
 

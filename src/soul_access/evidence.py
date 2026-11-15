@@ -248,3 +248,371 @@ class EvidenceSink:
             )
         )
         return report
+
+
+# -- SA-TRANSPORT-OBS-1 (Sol approved): transport failure observation ---------
+#
+# Exit-7 (transport exhaustion) previously left zero persisted evidence. This
+# section adds a *whitelisted* transport diagnosis: per-attempt records with a
+# fixed five-field shape (type / chain / errno / elapsed_ms / phase), the
+# transport call count, and complete/submit/result boundary marks. It is
+# observation-only: stdlib only, no provider/backend/socket/httpx imports at
+# module import (classification keys off ``type(exc).__name__`` strings so
+# this module never touches the network stack), no globals, no caches -- every
+# record is built per call and keyed by its explicit request ids.
+#
+# Privacy: only type-name labels, ints, floats and id stems are ever
+# serialized. Exception messages, ``repr``, tracebacks, ``Authorization``,
+# credential values and request/response bodies can never enter the schema
+# (the builders accept nothing else). Before landing, the canonical text is
+# scanned for ``Bearer`` / ``api_key`` (same needles as the original-evidence
+# channel); a hit refuses the write with ``EvidenceStoreError`` (observation
+# unqualified -- never masking the original transport error).
+
+TRANSPORT_DIAGNOSIS_KIND = "sa-transport-diagnosis"
+TRANSPORT_DIAGNOSIS_VERSION = "sa-transport-obs-1"
+
+#: Whitelisted transport type labels. These are *type inferences* from the
+#: raised exception class, not DNS/TCP/TLS measurements.
+TRANSPORT_TYPES = (
+    "connect",
+    "connect_timeout",
+    "read_timeout",
+    "write_timeout",
+    "pool_timeout",
+    "unknown",
+)
+
+#: Whitelisted attempt/boundary phase labels.
+TRANSPORT_PHASES = ("post", "complete", "submit", "result")
+
+#: Exception-class-name -> transport label. Anything else is ``unknown``.
+_TRANSPORT_TYPE_BY_NAME = {
+    "ConnectError": "connect",
+    "ConnectTimeout": "connect_timeout",
+    "ReadTimeout": "read_timeout",
+    "WriteTimeout": "write_timeout",
+    "PoolTimeout": "pool_timeout",
+}
+
+_TRANSPORT_SCAN_NEEDLES = ("Bearer", "api_key")
+
+#: Attribute carrying the per-call transport snapshot along an exception
+#: (``raise ... from exc``) chain. Plain data dict, never an exception.
+TRANSPORT_OBS_ATTR = "_sa_transport_obs"
+
+_TYPE_NAME_RE = None  # compiled lazily (stdlib ``re`` only, no import cost here)
+
+
+def _type_name_ok(name) -> bool:
+    import re
+
+    global _TYPE_NAME_RE
+    if _TYPE_NAME_RE is None:
+        _TYPE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
+    return (
+        isinstance(name, str)
+        and bool(name)
+        and len(name) <= 128
+        and _TYPE_NAME_RE.fullmatch(name) is not None
+    )
+
+
+def classify_transport_type(exc) -> str:
+    """Map an exception instance to a whitelisted transport label.
+
+    Keyed off ``type(exc).__name__`` only (no httpx import, no I/O). Unknown
+    classes -- including plain ``TimeoutException`` or non-network errors --
+    map to ``"unknown"``.
+    """
+    return _TRANSPORT_TYPE_BY_NAME.get(type(exc).__name__, "unknown")
+
+
+def transport_chain(exc) -> list:
+    """Direct cause/context type-name chain (one layer each, at most 3 names).
+
+    ``[own, cause, context]``; the context slot is skipped when it is absent
+    or identical to the cause. Messages, args and tracebacks are never read.
+    """
+    names = [type(exc).__name__]
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None:
+        names.append(type(cause).__name__)
+    context = getattr(exc, "__context__", None)
+    if context is not None and context is not cause:
+        names.append(type(context).__name__)
+    return names
+
+
+def transport_errno(exc):
+    """First integer ``errno`` along self -> cause -> context; else ``None``.
+
+    Only a direct ``.errno`` attribute that is an ``int`` (``bool`` excluded)
+    counts. Nothing is guessed, parsed or coerced from messages.
+    """
+    seen = set()
+    queue = [exc, getattr(exc, "__cause__", None), getattr(exc, "__context__", None)]
+    for current in queue:
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        value = getattr(current, "errno", None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
+def build_transport_attempt(*, seq, exc_type, chain, errno, elapsed_ms, phase="post") -> dict:
+    """Build one whitelisted per-attempt record (fixed five fields + seq).
+
+    Raises ``ValueError`` on anything outside the whitelist (missing field,
+    wrong label, non-int errno, negative/non-finite elapsed, bad phase).
+    """
+    import math
+
+    if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
+        raise ValueError("transport attempt seq must be a non-negative int")
+    if exc_type not in TRANSPORT_TYPES:
+        raise ValueError("transport attempt type outside whitelist: %r" % (exc_type,))
+    if (
+        not isinstance(chain, (list, tuple))
+        or not chain
+        or len(chain) > 3
+        or not all(_type_name_ok(name) for name in chain)
+    ):
+        raise ValueError("transport attempt chain must be 1-3 type names")
+    if errno is not None and (
+        isinstance(errno, bool) or not isinstance(errno, int)
+    ):
+        raise ValueError("transport attempt errno must be an int or None")
+    if (
+        isinstance(elapsed_ms, bool)
+        or not isinstance(elapsed_ms, (int, float))
+        or not math.isfinite(elapsed_ms)
+        or elapsed_ms < 0
+    ):
+        raise ValueError("transport attempt elapsed_ms must be a finite non-negative number")
+    if phase not in TRANSPORT_PHASES:
+        raise ValueError("transport attempt phase outside whitelist: %r" % (phase,))
+    return {
+        "seq": seq,
+        "type": exc_type,
+        "chain": list(chain),
+        "errno": errno,
+        "elapsed_ms": elapsed_ms,
+        "phase": phase,
+    }
+
+
+def build_transport_diagnosis(
+    *,
+    dialog_request_id=None,
+    evidence_request_id=None,
+    transport_calls,
+    backend_observations=None,
+    attempts,
+    boundaries=None,
+    observation_ok=True,
+) -> dict:
+    """Build the whitelisted exit-7 transport diagnosis dict.
+
+    ``backend_observations`` must stay ``None`` (no backend-observation
+    channel exists; never 0, never a billing count). ``attempts`` is a list of
+    ``build_transport_attempt`` dicts (exact keys enforced). ``boundaries`` is
+    a subset of ``{complete, submit, result} -> bool``.
+    """
+    for label, value in (
+        ("dialog_request_id", dialog_request_id),
+        ("evidence_request_id", evidence_request_id),
+    ):
+        if value is not None:
+            if not isinstance(value, str) or not value or len(value) > 256:
+                raise ValueError("transport %s must be a short non-empty str" % label)
+            if "/" in value or "\\" in value or ".." in value:
+                raise ValueError("transport %s must be a plain id stem" % label)
+    if (
+        isinstance(transport_calls, bool)
+        or not isinstance(transport_calls, int)
+        or transport_calls < 0
+    ):
+        raise ValueError("transport transport_calls must be a non-negative int")
+    if backend_observations is not None:
+        raise ValueError("transport backend_observations has no channel: must be None")
+    if not isinstance(attempts, (list, tuple)):
+        raise ValueError("transport attempts must be a list")
+    clean_attempts = []
+    for item in attempts:
+        if not isinstance(item, dict) or set(item.keys()) != {
+            "seq",
+            "type",
+            "chain",
+            "errno",
+            "elapsed_ms",
+            "phase",
+        }:
+            raise ValueError("transport attempt has non-whitelisted keys")
+        clean_attempts.append(
+            build_transport_attempt(
+                seq=item["seq"],
+                exc_type=item["type"],
+                chain=item["chain"],
+                errno=item["errno"],
+                elapsed_ms=item["elapsed_ms"],
+                phase=item["phase"],
+            )
+        )
+    clean_boundaries = {}
+    if boundaries:
+        if not isinstance(boundaries, dict):
+            raise ValueError("transport boundaries must be a dict")
+        for key, value in boundaries.items():
+            if key not in ("complete", "submit", "result") or not isinstance(value, bool):
+                raise ValueError("transport boundary outside whitelist: %r" % (key,))
+            clean_boundaries[key] = value
+    if not isinstance(observation_ok, bool):
+        raise ValueError("transport observation_ok must be a bool")
+    return {
+        "kind": TRANSPORT_DIAGNOSIS_KIND,
+        "version": TRANSPORT_DIAGNOSIS_VERSION,
+        "dialog_request_id": dialog_request_id,
+        "evidence_request_id": evidence_request_id,
+        "transport_calls": transport_calls,
+        "backend_observations": None,
+        "attempts": clean_attempts,
+        "boundaries": clean_boundaries,
+        "observation_ok": observation_ok,
+    }
+
+
+def serialize_transport_diagnosis(diagnosis) -> str:
+    """Canonical JSON text of a whitelisted diagnosis; refuse on pollution.
+
+    Re-validates through ``build_transport_diagnosis`` (so only whitelisted
+    keys/values can land), then scans for ``Bearer`` / ``api_key``. A hit
+    raises ``EvidenceStoreError`` (observation unqualified, never masking the
+    original error at the call site).
+    """
+    clean = build_transport_diagnosis(
+        dialog_request_id=diagnosis.get("dialog_request_id"),
+        evidence_request_id=diagnosis.get("evidence_request_id"),
+        transport_calls=diagnosis.get("transport_calls"),
+        backend_observations=diagnosis.get("backend_observations"),
+        attempts=diagnosis.get("attempts"),
+        boundaries=diagnosis.get("boundaries"),
+        observation_ok=diagnosis.get("observation_ok", True),
+    )
+    if clean.get("kind") != TRANSPORT_DIAGNOSIS_KIND or clean.get("version") != TRANSPORT_DIAGNOSIS_VERSION:
+        raise EvidenceStoreError("transport diagnosis kind/version drift")
+    text = json.dumps(clean, ensure_ascii=False, sort_keys=True, indent=2)
+    for needle in _TRANSPORT_SCAN_NEEDLES:
+        if needle in text:
+            raise EvidenceStoreError(
+                "transport observation unqualified: credential-shaped text"
+            )
+    return text
+
+
+def record_transport_diagnosis(*, directory, dialog_request_id, diagnosis):
+    """Atomically land one diagnosis as ``<dialog_request_id>.json``.
+
+    ``directory`` is caller-provided (the live-fire ticket uses its own
+    ``transport/`` dir, never the ``evidence/`` pair dir). Paths under repo
+    ``data/**`` refuse structurally. Landing is tmp-file + ``os.replace``.
+    Returns the landed path; raises ``EvidenceStoreError`` on refusal/failure.
+    """
+    if not isinstance(diagnosis, dict):
+        raise EvidenceStoreError("transport diagnosis must be a dict")
+    EvidenceSink._check_request_id(dialog_request_id)
+    try:
+        resolved = Path(directory).expanduser().resolve()
+    except Exception as exc:
+        raise EvidenceStoreError(
+            "transport directory unresolvable: %s" % type(exc).__name__
+        ) from exc
+    if resolved == _PROD_DATA or _PROD_DATA in resolved.parents:
+        raise EvidenceStoreError("transport directory under data/** refused")
+    text = serialize_transport_diagnosis(diagnosis)
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        raise EvidenceStoreError(
+            "transport directory not creatable: %s" % type(exc).__name__
+        ) from exc
+    path = resolved / ("%s.json" % dialog_request_id)
+    tmp = path.with_name(".tmp-%s-%d-%d" % (path.name, os.getpid(), next(_counter)))
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception as exc:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+        raise EvidenceStoreError(
+            "transport landing failed: %s" % type(exc).__name__
+        ) from exc
+    return path
+
+
+def attach_transport_obs(exc, diagnosis) -> None:
+    """Attach a diagnosis snapshot to an exception (observation only)."""
+    if exc is None or not isinstance(diagnosis, dict):
+        return
+    try:
+        setattr(exc, TRANSPORT_OBS_ATTR, diagnosis)
+    except Exception:
+        pass
+
+
+def find_transport_obs(exc):
+    """First diagnosis snapshot along ``exc`` -> cause -> context (else None)."""
+    seen = set()
+    stack = [exc]
+    while stack:
+        current = stack.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        obs = getattr(current, TRANSPORT_OBS_ATTR, None)
+        if isinstance(obs, dict) and obs.get("kind") == TRANSPORT_DIAGNOSIS_KIND:
+            return obs
+        stack.append(getattr(current, "__cause__", None))
+        stack.append(getattr(current, "__context__", None))
+        if len(seen) > 32:
+            break
+    return None
+
+
+def propagate_transport_obs(new_exc, caught_exc, *, boundary=None, request_id=None) -> None:
+    """Carry a transport snapshot onto a wrapper exception (never raises).
+
+    Shallow-copies the snapshot found on ``caught_exc`` (or its cause chain),
+    marks ``boundaries[boundary]`` and fills ``dialog_request_id`` from the
+    wrapper's ``request_id`` when still unset, then attaches it to ``new_exc``.
+    No snapshot found, or anything unfit, means no-op: legacy/unconfigured
+    paths keep their exact old behavior.
+    """
+    try:
+        obs = find_transport_obs(caught_exc)
+        if obs is None:
+            return
+        carried = dict(obs)
+        carried_boundaries = dict(obs.get("boundaries") or {})
+        if boundary is not None:
+            if boundary not in ("complete", "submit", "result"):
+                return
+            carried_boundaries[boundary] = True
+        carried["boundaries"] = carried_boundaries
+        if (
+            carried.get("dialog_request_id") is None
+            and isinstance(request_id, str)
+            and request_id
+            and "/" not in request_id
+            and "\\" not in request_id
+            and ".." not in request_id
+        ):
+            carried["dialog_request_id"] = request_id
+        attach_transport_obs(new_exc, carried)
+    except Exception:
+        pass

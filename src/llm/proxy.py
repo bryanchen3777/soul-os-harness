@@ -2128,6 +2128,13 @@ class OpenAIBackend(LLMBackend):
         import random
         RETRYABLE_STATUS = {429, 500, 502, 503, 504, 529}
 
+        # SA-TRANSPORT-OBS-1: per-call transport observation (independent
+        # record per complete call, never a global/module cache). Attempts
+        # accumulate one whitelisted record per transport try; transport_calls
+        # counts only real client.post invocations.
+        _transport_attempts = []
+        _transport_calls = 0
+
         async with httpx.AsyncClient(timeout=120.0) as client:
             last_error = None
             for attempt in range(max_retries + 1):  # 0..max_retries 共 (max_retries+1) 次
@@ -2158,6 +2165,10 @@ class OpenAIBackend(LLMBackend):
                         )
 
                     _attempt_start = time.perf_counter()
+                    # SA-TRANSPORT-OBS-1: transport_calls counts ONLY actual
+                    # transport invocations (incremented immediately before the
+                    # original client.post call, never on backoff/retry waits).
+                    _transport_calls += 1
                     resp = await client.post(
                         self.base_url,
                         headers={"Authorization": f"Bearer {self.api_key}"},
@@ -2204,12 +2215,52 @@ class OpenAIBackend(LLMBackend):
                     last_error = (
                         f"network {type(e).__name__} elapsed_ms={_attempt_elapsed_ms:.0f}"
                     )
+                    try:
+                        # SA-TRANSPORT-OBS-1: save a whitelisted safe snapshot
+                        # for this attempt (seq + five fixed fields; timing
+                        # starts at the original post, backoff excluded).
+                        # Observation failure must never mask the error.
+                        from src.soul_access import evidence as _sa_transport_evidence
+
+                        _transport_attempts.append(
+                            _sa_transport_evidence.build_transport_attempt(
+                                seq=attempt,
+                                exc_type=_sa_transport_evidence.classify_transport_type(e),
+                                chain=_sa_transport_evidence.transport_chain(e),
+                                errno=_sa_transport_evidence.transport_errno(e),
+                                elapsed_ms=_attempt_elapsed_ms,
+                                phase="post",
+                            )
+                        )
+                    except Exception:
+                        pass
                     continue
             else:
                 # max_retries+1 次都失敗
-                raise RuntimeError(
+                _exhausted = RuntimeError(
                     f"OpenAIBackend exhausted {max_retries+1} attempts, last error: {last_error}"
                 )
+                try:
+                    # SA-TRANSPORT-OBS-1: attach the whitelisted safe snapshot
+                    # to the exhausted exception (original type/message/cause
+                    # unchanged; observation failure never masks the error).
+                    from src.soul_access import evidence as _sa_transport_evidence2
+
+                    _sa_transport_evidence2.attach_transport_obs(
+                        _exhausted,
+                        _sa_transport_evidence2.build_transport_diagnosis(
+                            dialog_request_id=None,
+                            evidence_request_id=_evidence_request_id,
+                            transport_calls=_transport_calls,
+                            backend_observations=None,
+                            attempts=_transport_attempts,
+                            boundaries={},
+                            observation_ok=True,
+                        ),
+                    )
+                except Exception:
+                    pass
+                raise _exhausted
 
             # SA-EVIDENCE-CHANNEL-1: 回來時交付同次回應原文及原生 usage。
             # 缺欄 (raw/usage 任一不合) ⇒ 不合格 (EvidenceGap, 不補發);
