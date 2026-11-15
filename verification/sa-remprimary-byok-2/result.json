@@ -1,0 +1,19 @@
+{
+  "body_shape": "plain-openai",
+  "client_id": "client-bryan-01",
+  "dialog_request_id": "req-sa-byok-verify-2-0001",
+  "http_status": 200,
+  "message": "你好",
+  "public_model_id": "sa-rem-primary",
+  "real_billing": 1,
+  "reply_chars": 35,
+  "reply_sha256": "bf56a90c7d5feb7a922a9c58b2fe8ff143611f2b2445268dc62e1d3d1fb0a139",
+  "route": "rem/primary",
+  "ticket": "SA-BYOK-VERIFY-2",
+  "transport_calls": 1,
+  "usage": {
+    "completion_tokens": 0,
+    "prompt_tokens": 0,
+    "total_tokens": 0
+  }
+}
