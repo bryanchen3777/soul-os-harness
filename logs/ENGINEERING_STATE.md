@@ -10530,3 +10530,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 工單B【SA-DOOR-OPEN-1】：BLOCKED，非授權問題，是缺件——`serve_sa_thin.py:107`寫死關門、控制面只有shutdown/status、runbook無開關門命令、舊door_open.py會覆寫證據禁用。解除條件另票補：正式開關門入口＋一鍵關門＋runbook精確命令，驗收後再補發本票。Owner授權有效。
 - 本輪：登帳＋派工A；同步請臥龍出補件票設計。
 - Frozen：src零改動、data唯讀、未啟服、未綁埠（A真打走外部網址非生產埠）、未殺行程、未task_stop wrapper。
+## 0.1.171 臥龍出SA-DOOR-MECH-1補件設計：正式雙門控制＋一鍵復閉，已派工
+- 設計要點：`ThinControl.close_door()/install_registry()/open_door()`＋`panic-close`直調close；loopback＋token＋run_id；門狀態實例所有預設閉合；close先關實例門再原子換共享release並讀回（漂移不擋復閉）；install須雙門閉合＋驗雙哈希＋同一份bytes調RegistryProvider.update()；open須同次已安裝就緒＋重驗哈希＋先共享後實例，漂移即復閉停票，重啟不恢復開門。`--control`分流先於bind；`ready`強制確認雙閉＋已驗快照。T17舊開門測縫替換保留斷言。
+- 驗收：順序不可跳；關門後新入站403＋上游零增量；一鍵雙門復閉冪等；漂移拒開。僅判機制，不代表已部署。
+- 本輪：登帳＋派工（與實彈A並行，檔案無重疊）；本票零真實外呼。
+- Frozen：不動產品傳輸語義、403契約、放行順序及`src/**`；不擴B批；禁施工寫data、綁生產埠、殺行程。
