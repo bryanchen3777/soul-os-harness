@@ -10487,3 +10487,11 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 重排全庫：下一個10:00–12:00工程窗口（EDT，避22:00–22:30），`.venv`跑`pytest -q tests`，不排除T16、不放寬斷言，回報總數／失敗清單／退出碼；屬狀態確認、不阻擋局部驗收；再現洩漏重開本案、其他失敗另行歸因；不得為趕窗口殺行程。
 - T16子項CLOSED。本票收口。實彈／部署／開門仍凍結。
 - Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程、未task_stop wrapper。
+
+## 0.1.164 全庫重排GATE-2：9306過、1紅（T18同一斷言，全套排序干擾候選）——送臥龍歸因
+- 重排：2026-11-15 10:00–12:00 EDT窗口內起跑，`.venv`（Python 3.11.15）`pytest -q tests`，不排除T16、不放寬斷言，985.79s：1 failed、9306 passed、32 skipped、32 subtests passed，exit 1。證據檔 `verification/offline/gate-2-full-2026-11-15.txt`（untracked慣例）。
+- 唯一紅：`tests/soul_access/test_t18_exit7_coverage.py::test_t18_b3_loads_without_dotenv_and_main_never_called`（:299）：`sys.modules.get(dotenv)` 為真實dotenv模組，而模組匯入時快照 `_SAVED_DOTENV` 為None——測試執行期才有人把真dotenv種進sys.modules。
+- 干擾候選：`tests/soul/test_decay_worker_import_inert.py:134` 在測試函式內 `import dotenv`（執行期種植）；收集順序上tests/soul先於tests/soul_access，與「T16→T18定向跑全綠、全套跑變紅」吻合。是否即真兇、屬T16案再現或另行歸因，送臥龍裁決，不自行定性。
+- 對照：GATE-1全套亦有T18一紅（同一檔，疑似同因）；T16根治定向（T16→T18共58 passed、反序＋新回歸61 passed、infra 420）不受影響。正式雙哈希未動。
+- 工作樹：tracked零改動（僅既有untracked＋本證據檔）；src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程。
+- Frozen：同上。
