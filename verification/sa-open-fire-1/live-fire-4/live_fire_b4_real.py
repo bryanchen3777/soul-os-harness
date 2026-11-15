@@ -135,30 +135,27 @@ def _snapshot() -> sa_schema.SoulSnapshot:
 
 
 def _run(coro):
-    """Synchronous coroutine pump (no loop creation, no threads)."""
-    send_value = None
-    throw_exc = None
-    started = False
-    while True:
+    """Drive one coroutine on a fresh real event loop (same thread).
+
+    Sync entry: exactly one ``asyncio.run`` per call when no loop is
+    running (loop created, run to completion, closed; same thread).
+    A running loop refuses instead of nesting (await instead). No hand
+    pump, no background threads. The backend client is created and
+    closed inside the driven coroutine (``async with`` in
+    ``OpenAIBackend.complete``), so creation and close always share
+    this loop; nothing is cached across calls.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
         try:
-            if throw_exc is not None:
-                exc, throw_exc = throw_exc, None
-                yielded = coro.throw(exc)
-            elif not started:
-                started = True
-                yielded = coro.send(None)
-            else:
-                yielded = coro.send(send_value)
-        except StopIteration as done:
-            return done.value
-        try:
-            if asyncio.iscoroutine(yielded):
-                send_value = _run(yielded)
-            else:
-                raise AssertionError("live-fire-4: fake suspend on %r" % (yielded,))
-        except BaseException as exc:  # noqa: BLE001
-            send_value = None
-            throw_exc = exc
+            coro.close()
+        except Exception:  # noqa: BLE001
+            pass
+        raise RuntimeError("live-fire-4: running loop present; await instead of nesting")
+    return asyncio.run(coro)
 
 
 class _ImmediateFuture:
@@ -170,6 +167,7 @@ class _ImmediateFuture:
 
 
 def _submit(loop, coro):
+    """Submit to the fresh-loop driver (``loop`` kept for wiring signature)."""
     if asyncio.iscoroutine(coro):
         return _ImmediateFuture(_run(coro))
     return _ImmediateFuture(coro)

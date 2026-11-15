@@ -10452,3 +10452,9 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 現況：2C離線ACCEPTED（限定OFFLINE_READY）；B1/B2/B3 INCONCLUSIVE；B4已耗盡；E1留案INCONCLUSIVE；全庫閘門不滿足；實彈凍結；部署BLOCKED；雙門closed；:18765空；:8000健康。
 - 下一步：另票限域修發送器（只動同步入口建loop，後端／wiring／記憶／證據契約不動），離線驗收另行派工；實彈／解凍／正式值／開門仍待Owner拍板。
 - Frozen：未改Frozen Contract、未改守衛、未寫data/**、未啟服、未綁埠、無真實外呼；未殺行程、未task_stop wrapper。
+## 0.1.158 SA-SENDER-LOOP-FIX-1 探針修復交付，Mavis複核通過，待臥龍終驗
+- 臥龍S拍板：修驗證探針、不動產品、不需解凍。S＝live_fire_b4_real.py的_submit（172行）＋同檔_run（137行）；解凍申請章節刪除；wiring不批准改；結論只限探針修復。
+- worker交付：_run手泵→單次asyncio.run＋有迴圈時先關coro再拒絕；_submit加docstring；diff僅兩函式22增22刪；新增tests/infra/test_sa_sender_loop_fix_1.py（5測：紅綠紅綠＋四變異）；CLI沙盒exit 0 PASS（sidecar＋0 no-op）；外連硬攔乾淨（DNS零嘗試、傳輸恰1次、假憑證零外洩）；報告verification/offline/sa-sender-loop-fix-1.txt。
+- Mavis複核（獨立重跑、非自報）：探針diff逐行確認僅兩函式；正式雙哈希改前後一致（matrix 7f14…b7807、sent f071…bd0ff）；新測5 passed；infra 411 passed；全庫唯一T18失敗經T16＋T18最小復現同形（1 failed／57 passed）＋T19檔內註解載明預先存在跨檔干擾，與本票無關；2a case-matrix一筆範圍外差異（缺b3-load段＋耗時抖動）已用checkout還原：根因是T18測試設計如此（test_t18_exit7_coverage.py:915每次跑都重寫repo內該檔），非執行者手改；缺b3-load段正是T16→T18污染下b3-load用例失敗未落檔的症狀。注意：任何含T18的全量／最小復現都會再弄髒它，屬既有衛生問題，提請終驗一併裁決。
+- 待辦：送臥龍終驗（探針ACCEPTED＋T18歸屬裁決）；實彈／部署／開門仍凍結。
+- Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程、未task_stop wrapper。
