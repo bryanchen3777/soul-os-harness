@@ -10560,3 +10560,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 複核（.venv Python 3.11.15）：門機制31 passed、T17 25 passed、除錯標記0殘留；分塊全庫C1 1398＋C2重跑3158＋C3a971/C3b195/C3c1271/C3d2215＋C4 138（各exit 0，證據verification/sa-door-mech-fix-1/chunk-c*.txt＋full.txt）；CLI沙盒22Z判PENDING_COHORT exit 3（11-08未核准退役批次90節點，sidecar＋197、prompt零不明差）。生產雙門閉、18765空、8000正常。
 - 待臥龍：FIX-1終驗＋11-08 cohort核准（CLI不得自批）；通過才走OPEN-1。
 - Frozen：src零改動、data唯讀、未啟服、未綁埠、未殺行程、未task_stop wrapper。
+## 0.1.177 臥龍終驗FIX-1：VETO（剩P1一條），90節點核准入帳，已開FIX-2
+- 終驗：D1/D3/D4通過；D2替代方案仍有阻斷——單pump序列，B在A慢上游停住期間拿不到403（現有測試在release之後才驗，未覆蓋），故障期間拒絕仍依賴上游恢復。FIX-1不驗收，OPEN-1維持BLOCKED。
+- 90節點核准：逐筆對帳成立（90 ID全存在、89 value＋1 belief、建日一致、last_support==created、傳遞邊零、7天下界早於22Z、包裝恰增90、正文零不明差）；只核准報告第22行固定90 ID。入帳只改台帳及其測試（11-08、not_before取22Z、逐節點bounds＝建立＋7天、a28d910…明記belief）；重跑同槽須PASS exit 0 pending 0，保留原exit 3報告。
+- 已派FIX-2（serving loop閉門判定後走獨立永不轉發拒絕app＋台帳入帳＋分塊Hard Gate＋nodeid/skip對帳）。
+- Frozen：src零改動、data唯讀、未啟服、未綁埠、未殺行程。
