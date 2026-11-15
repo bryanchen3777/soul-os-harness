@@ -1,0 +1,20 @@
+{
+  "dialog_request_id": "req-sa-open-fire-2-0001",
+  "gates_pre_fire": {
+    "release": "closed",
+    "thin_open": false
+  },
+  "key_ref": "OLLAMA_API_KEY",
+  "message": "你好。",
+  "model": "deepseek-v4.1-flash:1017",
+  "params": {
+    "max_tokens": 8,
+    "temperature": 0.5
+  },
+  "port_empty_readonly": true,
+  "presets_sha256": "c37de506f9ab8f6d46d613f97ade6ae5642157b7b3a19ba7ed165d092b58cdc1",
+  "registry_sha256": "89c306660a7d57050f00a8fe45d4dab0f784a63dc23b0c03cf7d6db3ef759128",
+  "route": "rem/primary",
+  "template_sha256": "d7b660e672a1f4d2d0a62e8459ea6ae1b53a7c090b1e19e69ebf753830cb1489",
+  "ticket": "SA-OPEN-FIRE-2"
+}

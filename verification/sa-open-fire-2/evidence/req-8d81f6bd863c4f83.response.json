@@ -1,0 +1,16 @@
+{
+  "key_ref": "OLLAMA_API_KEY",
+  "kind": "sa-evidence-response",
+  "raw_sha256": "b456b10940eb3ad2dc8cc465bcaa750977cfda37711095bcdd3372403c910708",
+  "raw_text": "{\"id\":\"chatcmpl-389\",\"object\":\"chat.completion\",\"created\":1794758726,\"model\":\"deepseek-v4.1-flash:1017\",\"system_fingerprint\":\"fp_ollama\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"你好！很高兴见到你。有什么我可以帮忙的吗？无论是聊天、解答问题，还是需要一些建议，我都很乐意帮忙。😊\",\"reasoning\":\"The user just said \\\"你好。\\\" (Hello.) in Chinese. I should respond warmly in Chinese and offer to help. Keep it brief and friendly.\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":32,\"completion_tokens\":61,\"total_tokens\":93,\"prompt_tokens_details\":{\"cached_tokens\":0}}}\n",
+  "request_id": "req-8d81f6bd863c4f83",
+  "usage": {
+    "completion_tokens": 61,
+    "prompt_tokens": 32,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 93
+  },
+  "version": "sa-evidence-channel-1"
+}

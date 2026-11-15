@@ -10535,3 +10535,9 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 驗收：順序不可跳；關門後新入站403＋上游零增量；一鍵雙門復閉冪等；漂移拒開。僅判機制，不代表已部署。
 - 本輪：登帳＋派工（與實彈A並行，檔案無重疊）；本票零真實外呼。
 - Frozen：不動產品傳輸語義、403契約、放行順序及`src/**`；不擴B批；禁施工寫data、綁生產埠、殺行程。
+
+## 0.1.172 SA-OPEN-FIRE-2真打exit0：Mavis複核通過（限定）——送臥龍終驗
+- 真打（新ID req-sa-open-fire-2-0001，`live_fire_real.py`，B4修復形態，副本刪bind探測）：進程2次（第1次REPO_ROOT層級誤寫import失敗exit1未耗marker如實記檔；第2次成功exit0）。耗用發送＝1（sent.json attempt:1，transport_calls:1）；usage prompt32/completion61/total93；pair_ok全True；reply50字；證據2檔配對；`secret_present_in_evidence=False`＋grep無Bearer/sk-值（僅key_ref變數名）；打後雙門closed/False。
+- Mavis複核：送前雙哈希＋雙門＋埠空✔；離線五項5/5✔；證據哈希request.replayable＝模板一致；舊批次唯讀（舊模板哈希不變、B1 sent.json仍原值）；新目錄已追蹤（10檔，__pycache__自動忽略）；exit0按票面口徑＝限定ACCEPTED（直送限定，不等端到端）。
+- 待辦：送臥龍終驗（限定ACCEPTED＋效力）；失敗不得進B（本輪成功，B仍待MECH）。
+- Frozen：src零改動、data唯讀、未啟服、未綁埠、未殺行程、未task_stop wrapper；真實外呼1次（Owner已授權單發，real_billing=1）。
