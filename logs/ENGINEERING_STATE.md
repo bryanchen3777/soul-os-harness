@@ -10519,3 +10519,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 對帳：上一輪9314 passed＋1紅（衛生未追蹤）＝9315；本輪新檔已追蹤，衛生轉綠，T18無FAILED行。工作樹tracked零改動（僅既有untracked）；src零改動、data唯讀、正式雙哈希未動。
 - 效力：臥龍0.1.167預授權達成——全庫Hard Gate解除；SA-T18-DOTENV-BOUNDARY-1 CLOSED；T18/T16/衛生三案皆CLOSED。實彈／部署／開門仍凍結（待Owner拍板事項不變）。
 - Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程、未task_stop wrapper。
+## 0.1.169 Owner批准三項生產動作：參數定版完成，實彈與開門送主腦出設計
+- Owner批（2026-11-15）：(1)打一次真實服務驗證 (2)開門接流量 (3)生產正式參數定版。順序：先3後1再2。
+- 參數定版（本輪完成，不花錢不對外）：`configs/sa/registry.json` SHA256 `89C30666…759128`、`configs/sa/presets.json` SHA256 `C37DE506…58CDC1`，與THAW-DEPLOY-1驗證版逐位元一致，工作樹tracked乾淨（HEAD `880694e`），即刻定為生產正式值；零改動、零重啟。
+- 後續：(1)新一批單發實彈 (2)開門接流量，兩件皆送臥龍出decision-complete設計（批次形狀／開門步驟／驗收／回滾），Owner已授權，設計完直接派工執行。
+- Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼（本輪）、未殺行程、未task_stop wrapper。
