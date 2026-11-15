@@ -10469,3 +10469,9 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - Mavis複核（獨立重跑）：工作樹僅兩M＋一A，verification零M；2b矩陣哈希與既有一致、2a無改動；新守衛＋T18＋T19共75 passed；infra全量417 passed exit 0；T16＋T18合跑1 failed／57 passed與基線一致（未放寬、未擴修，維持候選例外）。
 - 待辦：送臥龍終驗（衛生ACCEPTED＋T16子項BLOCKED裁決）；修復前禁跑規約維持有效直到本票合入。
 - Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程、未task_stop wrapper。
+## 0.1.161 臥龍終驗衛生票：ACCEPTED（限範圍）＋T16另開根治（只修T16）
+- 終驗：衛生修復ACCEPTED——T18／T19產物入tmp、矩陣唯讀、正反守衛＋75相關＋infra417全過、verification零M、src零改動。效力只限兩路不污染工作樹，不代表T16隔離或整體測試鏈驗收。
+- T16裁決：不轉永久例外，另開根治、只修T16測試檔（載入及執行前以測試作用域stub擋真dotenv，必要值monkeypatch明示＋自動復原；不得放寬T18斷言、動conftest、動src）。驗收：真dotenv零讀取、兩路皆復原、T16→T18／反序／相關回歸全綠；「與基線一致」只證既存、不能當通過。
+- 禁跑規約部分解除：T18／T19產物污染限制解除；T16混跑限制保留待根治票。T16子項保持OPEN，本票收口。
+- 下一步：派T16根治票（限測一檔）。實彈／部署／開門仍凍結。
+- Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程、未task_stop wrapper。
