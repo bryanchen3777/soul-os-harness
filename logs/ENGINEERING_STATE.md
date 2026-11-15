@@ -10475,3 +10475,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 禁跑規約部分解除：T18／T19產物污染限制解除；T16混跑限制保留待根治票。T16子項保持OPEN，本票收口。
 - 下一步：派T16根治票（限測一檔）。實彈／部署／開門仍凍結。
 - Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程、未task_stop wrapper。
+## 0.1.162 SA-T16-ISOLATION-1 根治交付，Mavis複核通過，待臥龍終驗
+- worker交付：T16一檔＋52／－5（測試作用域stub擋真dotenv，yield＋finally兩路還原；兩B2測試加計數斷言；B2鏈零環境依賴故無需供值）；新增tests/infra/test_sa_t16_dotenv_isolation.py（3例：成功零讀＋還原、例外仍還原、AST鎖必經stub）；未動T18斷言、conftest、src、data。
+- Mavis複核（獨立重跑）：工作樹僅一M＋一A，verification零M；T16→T18共58 passed（老紅消失）；反序＋新回歸共61 passed；infra全量420 passed exit 0；正式雙哈希一致（matrix 7f14…b7807、sent f071…bd0ff）。
+- 待辦：送臥龍終驗（根治ACCEPTED＋解除T16混跑保留限制）；全庫回歸可待終驗後排。
+- Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程、未task_stop wrapper。

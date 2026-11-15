@@ -34,13 +34,14 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import importlib.util
 import json
 import socket
 import sys
 import threading
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import httpx
 import pytest
@@ -66,11 +67,49 @@ LIVE_B2_PATH = (
 )
 
 
+# -- T16-ISOLATION-1: test-scoped dotenv stub (read-only wrt product) ------------
+# The B2 module self-loads ``load_dotenv`` at import. Without a stub, exec'ing
+# it here imports the REAL ``dotenv`` into ``sys.modules`` and reads a real
+# ``.env`` into ``os.environ`` — process-wide pollution that breaks T18's
+# strict ``sys.modules.get("dotenv") is _SAVED_DOTENV`` assertion when T16 runs
+# first. The stub below pre-empts ``sys.modules["dotenv"]`` ONLY around the
+# B2 exec (yield-based context manager: the ``finally`` restores the prior
+# entry on the success AND the exception path), then restores. B2's import
+# chain reads zero environment values (verified: no ``os.environ``/``getenv``
+# in ``live_fire_b2.py`` nor ``scripts/serve_sa_thin.py``), so no synthetic
+# env values need provisioning.
+_T16_DOTENV_CALLS: list = []
+
+
+class _NoopDotenv(ModuleType):
+    def load_dotenv(self, *args, **kwargs):  # noqa: N802
+        _T16_DOTENV_CALLS.append((args, kwargs))
+        return False
+
+
+_T16_STUB = _NoopDotenv("dotenv")
+
+
+@contextlib.contextmanager
+def _stub_dotenv_for_b2():
+    """Pre-empt ``sys.modules["dotenv"]`` for one B2 load; always restore."""
+    saved = sys.modules.get("dotenv")
+    sys.modules["dotenv"] = _T16_STUB
+    try:
+        yield _T16_STUB
+    finally:
+        if saved is None:
+            sys.modules.pop("dotenv", None)
+        else:
+            sys.modules["dotenv"] = saved
+
+
 def _load_b2():
-    spec = importlib.util.spec_from_file_location("live_fire_b2_t16", LIVE_B2_PATH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    with _stub_dotenv_for_b2():
+        spec = importlib.util.spec_from_file_location("live_fire_b2_t16", LIVE_B2_PATH)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
 
 class _FakeResp:
@@ -387,7 +426,11 @@ def test_t16_transport_wiring_association_and_readback(tmp_path, monkeypatch):
 
 def test_t16_transport_live_fire_landing_and_unqualified(tmp_path, monkeypatch):
     """Live-fire helper lands transport/ file; snapshot-less errors stay exit-7."""
+    _dotenv_calls_before = len(_T16_DOTENV_CALLS)
     b2 = _load_b2()
+    # B2's import-time load_dotenv() hit our stub exactly once: zero real reads.
+    assert len(_T16_DOTENV_CALLS) == _dotenv_calls_before + 1
+    assert _T16_DOTENV_CALLS[-1] == ((), {})
     monkeypatch.setattr(b2, "LIVE_DIR", tmp_path)
 
     diag = sa_evidence.build_transport_diagnosis(
@@ -629,7 +672,11 @@ def test_t16_transport_unconfigured_observation_compatible(tmp_path, monkeypatch
 
 def test_t16_transport_landing_failure_compat(tmp_path, monkeypatch):
     """Landing refusal stays an observation miss, never an exit-code change."""
+    _dotenv_calls_before = len(_T16_DOTENV_CALLS)
     b2 = _load_b2()
+    # B2's import-time load_dotenv() hit our stub exactly once: zero real reads.
+    assert len(_T16_DOTENV_CALLS) == _dotenv_calls_before + 1
+    assert _T16_DOTENV_CALLS[-1] == ((), {})
     monkeypatch.setattr(b2, "LIVE_DIR", tmp_path)
     diag = sa_evidence.build_transport_diagnosis(
         dialog_request_id=None,
