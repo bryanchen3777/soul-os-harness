@@ -1,0 +1,141 @@
+{
+  "cases": [
+    {
+      "case": "b4-load",
+      "dotenv_stubbed": true,
+      "formal_marker": "absent"
+    },
+    {
+      "case": "key-existence",
+      "key_ref": "OLLAMA_API_KEY",
+      "value_reported": false
+    },
+    {
+      "case": "success",
+      "observe_calls": 1,
+      "offline": true,
+      "pair_ok": true,
+      "rc": 0,
+      "real_billing": 0
+    },
+    {
+      "case": "transport-ConnectError",
+      "label": "connect",
+      "observe_calls": 1,
+      "rc": 7,
+      "snapshot": "present"
+    },
+    {
+      "case": "transport-ConnectTimeout",
+      "label": "connect_timeout",
+      "observe_calls": 1,
+      "rc": 7,
+      "snapshot": "present"
+    },
+    {
+      "case": "transport-ReadTimeout",
+      "label": "read_timeout",
+      "observe_calls": 1,
+      "rc": 7,
+      "snapshot": "present"
+    },
+    {
+      "case": "transport-WriteTimeout",
+      "label": "write_timeout",
+      "observe_calls": 1,
+      "rc": 7,
+      "snapshot": "present"
+    },
+    {
+      "case": "transport-PoolTimeout",
+      "label": "pool_timeout",
+      "observe_calls": 1,
+      "rc": 7,
+      "snapshot": "present"
+    },
+    {
+      "case": "transport-TimeoutException",
+      "label": "unknown",
+      "observe_calls": 1,
+      "rc": 7,
+      "snapshot": "present"
+    },
+    {
+      "case": "no-snapshot",
+      "rc": 7,
+      "snapshot": "absent",
+      "transport": "none"
+    },
+    {
+      "case": "pollution",
+      "rc": 7,
+      "snapshot": "rejected",
+      "transport": "none"
+    },
+    {
+      "case": "obs-landing-failure",
+      "rc": 7,
+      "token_only": true,
+      "transport": "landed"
+    },
+    {
+      "case": "missing-file",
+      "failure": "none",
+      "rc": 3
+    },
+    {
+      "case": "extra-file",
+      "rc": 3
+    },
+    {
+      "calls": 0,
+      "case": "marker-exists",
+      "rc": 4
+    },
+    {
+      "case": "negative",
+      "door1_403": true,
+      "door2_403": true,
+      "rc": 0
+    },
+    {
+      "case": "ast-wrapper",
+      "pins": "hold"
+    },
+    {
+      "case": "ast-dirs-pair",
+      "pins": "hold"
+    },
+    {
+      "case": "ast-control-flow",
+      "pins": "hold"
+    },
+    {
+      "case": "mut-unwrapped-red",
+      "observer": "silent-as-designed"
+    },
+    {
+      "case": "mut-unwrapped-green",
+      "observer": "lands-present"
+    },
+    {
+      "case": "mut-double-red",
+      "posts": 2
+    },
+    {
+      "case": "mut-double-green",
+      "posts": 1
+    },
+    {
+      "case": "mut-evidence-mix-red",
+      "rc": 3
+    },
+    {
+      "case": "mut-evidence-mix-green",
+      "rc": 0
+    }
+  ],
+  "formal_marker": "absent",
+  "note": "offline only; local POST != backend received/billed; B4 main wiring through observe_dialog into LIVE_DIR/failure; B1/B2/B3 originals untouched, INCONCLUSIVE stands; formal B4 marker absent, offline markers in sandboxes only",
+  "ticket": "SA-TRANSPORT-OBS-2C"
+}
