@@ -1,0 +1,18 @@
+{
+  "door1_thin_instance": {
+    "pass": true,
+    "refused_403": true,
+    "upstream_calls": 0
+  },
+  "door2_shared_release": {
+    "pass": true,
+    "refused_403": true,
+    "upstream_calls": 0
+  },
+  "overall": "PASS",
+  "production_release": {
+    "status": "closed"
+  },
+  "thin_open": false,
+  "ticket": "SA-OPEN-FIRE-1-live-fire-2"
+}

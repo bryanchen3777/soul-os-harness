@@ -1,0 +1,18 @@
+﻿{
+  "backend_alias": "primary",
+  "key_ref": "OLLAMA_API_KEY",
+  "messages": [
+    {
+      "content": "你好。",
+      "role": "user"
+    }
+  ],
+  "model": "deepseek-v4.1-flash:1017",
+  "params": {
+    "max_tokens": 8,
+    "temperature": 0.5
+  },
+  "request_id": "req-sa-open-fire-1-0001",
+  "sha256": "418af81353a2457d0f3fae7459c6931e6fadb16afcbb41261cc9916d1915eeb1",
+  "soul_alias": "rem"
+}
