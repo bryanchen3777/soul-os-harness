@@ -1,0 +1,184 @@
+================================================================
+E1-ATTRIBUTION-1：22:01→22:18 全庫輪舊四紅因果補證（唯讀取證）
+================================================================
+工單：E1-ATTRIBUTION-1｜日期：2026-11-14｜取證人：worker（唯讀）
+方法：只讀既有輸出＋提交差分＋守衛源碼＋data mtime＋生產紀錄內容時間戳。
+不跑全庫、不跑任何測試、不寫 data/**、不動 Frozen Contract。
+
+【結論三選一：① 外部併發成立】
+一句話理由：生產 22:00 夜槽在首輪回歸窗內（22:02:24→22:17:54）持續寫入
+四守衛共同覆蓋的 data 路徑（內容時間戳與檔案 mtime 互相咬合、具生產形狀）；
+而本輪新增套件差分（22238d4／798fd3f）經差分掃描無任何可達 data/** 寫入調用；
+GATE-1 全綠是取樣窗落在寫入停止之後（窗內 data 零寫入），依臥龍裁決不能
+以後無紅解釋舊四紅。
+
+----------------------------------------------------------------
+一、首輪四紅逐項時間線（守衛定義＋被點名檔＋落窗判斷）
+----------------------------------------------------------------
+回歸窗：約 22:01→22:18（commit 22238d4 22:01:48；canonical 0.1.149 記全庫
+1017s、5 failed／9287 passed／32 skipped；5 紅＝T18 一紅＋下述四守衛。
+首輪 short summary／失敗堆疊原文未落檔留存：verification/offline 僅存
+GATE-1 輪 2c-gate-1.txt；canonical 0.1.149 只記筆數；E1 歸因輸出 bg_8c96e55b
+為空（見 canonical 0.1.151）。故被點名檔以下按「守衛基準語義＋mtime 重疊」
+重建，並標註為重建、非引文。）
+
+[紅1] elevation_seam
+  node：tests/soul/test_life_thread_elevation_seam.py::test_does_not_mutate_data_dir
+  基準：兩層偵測（源碼 tests/soul/test_life_thread_elevation_seam.py:445-530）。
+    第①層檔名集合：repo data/** 全收、0 排除，新增／刪除／改名任一即紅。
+    第②層 size／mtime：僅比對未被 harness.runner._is_mutation_skipped 排除者。
+  被點名（重建）：第②層原地變更。窗內被改寫的 guarded 檔見下表
+    （life_threads ×~50、diary_raw_response、lifecycle_events、
+    goal_provider.json、graph.sqlite 皆不在排除清單，見第三節）。
+    第①層全過：窗內無 data 檔增刪（CreationTime 落窗者皆為同路徑原子覆寫，
+    見下：goal_provider.json 等 creation≈mtime，屬 os.replace 換 inode，
+    檔名集合不變，故第①層不紅——與 Mavis 初核「檔名層全過、無增刪」一致）。
+
+[紅2] w3_fix_narrative
+  node：tests/soul/test_life_thread_w3_fix_narrative.py::test_production_data_untouched
+  基準：與 seam 同法兩層（源碼 :406-456；排除走同一 _is_mutation_skipped）。
+  被點名（重建）：第②層原地變更，被點名集合與 [紅1] 同一窗內寫入集合。
+    第①層全過、無增刪（同上）。
+
+[紅3] sim_accel
+  node：tests/soul/test_sim_accel_streak_7d.py::test_production_untouched
+  基準：前後 sha256 digest 比對 data/soul/**/life_threads.jsonl
+    ＋ inode 獨立斷言（源碼 :1410-1439）。等價於第②層原地變更偵測；
+    無第①層（新增／消失以集合差分列出，初核記無增刪）。
+  被點名（重建）：窗內 ~50 個 life_threads.jsonl 逐檔改寫（22:02:24→22:14:30），
+    前後 digest 必不等。
+
+[紅4] sim_accel_sunset
+  node：tests/soul/test_sim_accel_streak_7d_sunset.py::
+        test_production_life_threads_are_byte_identical_after_the_sandbox
+  基準：模組匯入時基準 _PROD_DIGEST_BEFORE（源碼 :940-943，先於任何測試執行
+    擷取，防測試內寫入吃掉基準）vs 沙盒跑後 digest（:925-929）。
+  被點名（重建）：同 [紅3] 窗內 life_threads 改寫集合。
+
+落窗判斷：回歸窗 22:01→22:18；生產寫入 22:02:24→22:17:54 全程壓在窗內
+（下表）。各守衛快照對即其自身體前後（秒級微窗）：22:02 後連續寫入
+（平均約每 9 秒一筆，per-agent diary＋life_threads 成對出現）使任一守衛
+微窗踩中寫入的機率極高——四紅同因。tl10／tl11／tl9 同型守衛在同輪未紅，
+屬取樣窗僥倖（canonical 0.1.125 §4.1 已有同型前例記載，不視為安全）。
+
+----------------------------------------------------------------
+二、窗內生產寫入時間線（只讀 stat＋內容時間戳；皆為 guarded 路徑）
+----------------------------------------------------------------
+-- life_threads（節錄首尾，50 檔連續 22:02:24→22:14:30）--
+  data/soul/agent_yua/life_threads.jsonl      22:02:24  148151
+  data/soul/agent_ruka/life_threads.jsonl     22:02:39  158539
+  data/soul/agent_akane/life_threads.jsonl    22:03:01  132345
+  ...（per-agent 逐一切換，diary＋life_threads 成對，節奏＝夜槽管線逐隻掃）
+  data/soul/agent_emilia/life_threads.jsonl   22:12:18   65003
+  data/soul/agent_shino/life_threads.jsonl    22:14:18   71397
+  data/soul/agent_yotsuba/life_threads.jsonl  22:14:30   73631
+-- 其它 guarded 寫入 --
+  data/observability/diary_raw_response.jsonl        22:14:06  694883
+  data/elevation/elevation_lifecycle_events.jsonl    22:14:32 1402623
+  data/memory/agent_*/goal_provider.json（~50 檔）   22:15:04→22:17:54
+  data/memory/agent_sachi,agent_makima/graph.sqlite  22:14:32
+  data/memory/agent_kana/graph.sqlite                22:16:48
+  data/memory/agent_miku/graph.sqlite                22:17:23
+  data/soul/agent_ram/relationships.json 等           22:17:54（此為排除路徑，見第三節）
+-- 內容時間戳（生產形狀，非測試形狀）--
+  * emilia life_threads 尾筆 updated_at＝2026-11-15T03:12:18Z（＝22:12:18 EST，
+    與檔案 mtime 22:12:18 逐秒咬合），origin_type＝world_collision，生產夜槽事件。
+  * diary_raw_response 尾筆 ts＝2026-11-15T03:14:06Z（＝22:14:06 EST，
+    與 mtime 22:14:06 咬合），agent_yotsuba、slot＝night、model＝deepseek-v4.1-flash。
+  * lifecycle_events 尾筆 ts＝2026-11-15T03:00:19Z（22:00 槽啟動評估批次），
+    mtime 22:14:32（批次落盤跨度）。
+-- 服務存活 --
+  心跳 data/heartbeats/telegram_channel.json 持續更新（取證時 23:34:05）；
+  22:18→22:35 僅 4 筆 data 寫入且全為排除路徑（post_*_counter、elevation_nodes、
+  server_nohup.log）；GATE-1 窗 22:35→22:54 data 零寫入（見第四節）。
+
+----------------------------------------------------------------
+三、三類寫入路徑排除／命中表
+----------------------------------------------------------------
+(a) 新增測試直接寫入 data/** —— 排除。
+  * 22238d4（22:01:48，窗內起點；5 檔全在 tests/soul_access＋verification）：
+    差分寫入調用掃描命中全為 tmp_path 沙盒（sandbox/live、live2、neg、
+    evidence 子目錄、tmp *.response.json 的 victim.unlink）與
+    LIVE_B4_DIR＝verification/sa-open-fire-1/live-fire-4（含 offline/
+    case-matrix.json 一筆）；無 data/、SOUL_OS_DATA_DIR、data_root 寫入目標。
+  * B4 腳本（同提交）：LIVE_DIR＝腳本自身 verification 目錄；
+    僅寫 request.replayable.json／result.json／negative-report.json（verification 下）。
+  * T18（test_t18_exit7_coverage.py）：本輪未動（最近提交 1f04aee）；
+    zz writer 唯一寫目標 verification/sa-transport-obs-2a/case-matrix.json（:913-929）。
+  * 798fd3f（23:27:08，窗後）：僅改 T20 一檔，移除 LIVE_B4_DIR 依賴、
+    新增寫入範圍斷言（收斂沙盒）；時序上不可能造成 22:01 紅。
+  ⇒ 兩提交差分＋T20／T18 可達寫入調用中，零 data/** 寫入。
+
+(b) 測試狀態洩漏（全庫順序／共享狀態）—— 排除為必要因（有邊界，見缺口）。
+  * 全域 autouse 隔離：tests/conftest.py:70-141 每測試獨立 tmp 資料根
+    ＋ reset_data_root（TEST-ISOLATION-FIX-1，防快取殘留生產路徑）。
+  * 四守衛自身體全隔離：seam／w3 用 iso_env（tmp），sim_accel 用 sim_root（tmp），
+    sunset 用 sandbox；sim 另有獨立 inode 斷言（:1426-1429），沙盒與生產
+    共用 inode 即紅——結構上寫不進生產。
+  * 差分證據：若 (b) 為因，GATE-1（同樹同序、同守衛代碼）應重現；實際全綠，
+    而唯一變化是生產寫入停止（窗內零寫入）——差分支持 (c) 而非 (b)。
+  * 邊界：全套件窮舉式寫入面普查未做（唯讀＋不重跑範圍內不可為）；不影響①，
+    因①已有肯定性時間＋內容證據。
+
+(c) 生產併發（夜槽落盤）—— 命中（唯一命中項）。
+  * 排除清單核對（harness/runner.py:64-167）：被寫檔中 life_threads.jsonl、
+    observability/diary_raw_response.jsonl、elevation/elevation_lifecycle_events.jsonl、
+    memory/agent_*/goal_provider.json、memory/agent_*/graph.sqlite ——
+    全部不在 _MUTATION_SKIP_DIRS／_MUTATION_SKIP_PATTERNS／_MUTATION_SKIP_EXTS 內
+    ⇒ 四守衛的 guarded 層全覆蓋。同時：diary 日期檔（D1-4 窄樣式 :120）、
+    elevation_nodes／edges／trace（:107-109）、relationships.json（:118）確在
+    排除內 ⇒ 與「第①層全過、第②層紅」精準吻合（被排除的寫入不打第②層）。
+  * 時間來源：上表 mtime（檔案系統）＋內容 ts（生產紀錄）雙重咬合，見第二節。
+  ⇒ (c) 既是唯一命中項，也有日誌時間來源。
+
+----------------------------------------------------------------
+四、為何「GATE-1 無紅」不能解釋舊四紅
+----------------------------------------------------------------
+* 不同取樣窗：22:18→22:35 僅 4 筆且全為排除路徑；GATE-1 窗（22:35:50→22:53:05，
+  證據 verification/offline/2c-gate-1.txt）data 零寫入。守衛快照對只夾住
+  自身體的秒級微窗——窗外無寫入即綠，與窗內四紅無邏輯牴觸。
+* 臥龍已裁（canonical 0.1.150／0.1.152）：GATE-1＝CONDITIONAL（四 guard 通過
+  僅記當輪）；「新窗口無紅不能解釋舊四紅」；T20 三紅另因（sent.json 22:32:37
+  預存，B4 實彈遺留，非回歸寫入）。
+* 同輪 tl11／tl9 未紅＝時序僥倖（canonical 0.1.125 §4.1 同型前例），不得記為安全。
+
+----------------------------------------------------------------
+五、2a 矩陣改寫事件（T18 自帶 zz writer）與四紅的關係：無關
+----------------------------------------------------------------
+* 寫入目標 verification/sa-transport-obs-2a/case-matrix.json（repo verification，
+  非 data）；四守衛快照根皆為 repo data/**（seam／w3：_REPO_ROOT/"data"；
+  sim／sunset：data/soul），verification 變更不可能觸發。
+* 該副作用已知且已還原（canonical 0.1.151：checkout 還原、diff quiet exit 0，
+  未提交）；還原不抹除事件，但事件本身不在守衛觀測域內。
+⇒ 有關／無關：無關（有源碼路徑證據）。
+
+----------------------------------------------------------------
+六、引用
+----------------------------------------------------------------
+* 回歸窗與筆數：canonical 0.1.149（22238d4 交付＋Mavis 複核：全庫 1017s、
+  5 failed／9287 passed；2a 矩陣改寫還原）。
+* GATE-1：verification/offline/2c-gate-1.txt（22:35:50→22:53:05，四 guard 全綠、
+  T20 三紅因 sent.json 22:32:37 預存；case-matrix 22:42:52 測試寫入只回報）。
+* 差分：22238d4（5 檔，T20＋B4＋矩陣）、798fd3f（T20 沙盒隔離，23:27:08）。
+* 守衛源碼：tests/soul/test_life_thread_elevation_seam.py:445-530、
+  tests/soul/test_life_thread_w3_fix_narrative.py:406-456、
+  tests/soul/test_sim_accel_streak_7d.py:1410-1439、
+  tests/soul/test_sim_accel_streak_7d_sunset.py:925-943、
+  harness/runner.py:64-167（排除清單）、tests/conftest.py:70-141（autouse 隔離）。
+* 臥龍裁決：canonical 0.1.150（GATE-1 CONDITIONAL、碰撞裁決）、0.1.152
+  （T20 ACCEPTED、2C 限定 ACCEPTED、E1 留案＋本票只讀核對）。
+
+----------------------------------------------------------------
+七、缺口與剩餘風險（誠實記錄）
+----------------------------------------------------------------
+1. 首輪四紅的逐項失敗堆疊原文未留檔（bg_3ac7be4d 輸出不在 repo；bg_8c96e55b
+   輸出空）。被點名檔係按守衛語義＋mtime 重建，未逐字引用堆疊。
+2. 各守衛微窗在套件內的精確執行時刻未知（無輸出時間戳）；歸因取窗級
+   重疊＋差分排除，未做秒級夾擊證明。
+3. 全套件窮舉寫入面普查未做（超出唯讀工單工時）；但 (a) 差分掃描＋(b) 隔離
+   機制＋(c) 肯定性時間證據已使①成立，此缺口不翻轉結論。
+4. 本取證零程式修改：除本檔外 git tracked 無變更；未寫 data/**；
+   未啟服、未綁埠、無真實外呼、未殺行程、未 task_stop。
+
+Frozen Contract 接觸：無（未碰 Agency／TriggerEnvelope／InnerLife／四 handlers／
+SAGE／衰減門檻／T6／台賬／第九 cohort／runbook §3／RegistryProvider）。
