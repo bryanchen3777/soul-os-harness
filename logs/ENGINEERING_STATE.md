@@ -10513,3 +10513,9 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - GATE重判：修復前全庫仍有1紅，不得追溯改綠；整票CONDITIONAL（修復已驗收、全庫Hard Gate未解除）；非新功能缺陷、不升P0。
 - 後續（唯一待辦）：在`8fc262d`等同樹、repo`.venv`跑一次`pytest -q tests`，exit 0即解除閘門關案；新紅只定位不擴修。不啟服、不外呼、不動生產。
 - Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程、未task_stop wrapper。
+
+## 0.1.168 最終全庫全綠：GATE解除，SA-T18-DOTENV-BOUNDARY-1關案
+- 最終驗證（`0c8a452`等同樹，`.venv` Python 3.11.15，`pytest -q tests`，964s，exit 0）：**9315 passed、32 skipped、32 subtests passed、0 failed**。證據檔 `verification/offline/gate-3-full-2026-11-15.txt`（untracked慣例）。
+- 對帳：上一輪9314 passed＋1紅（衛生未追蹤）＝9315；本輪新檔已追蹤，衛生轉綠，T18無FAILED行。工作樹tracked零改動（僅既有untracked）；src零改動、data唯讀、正式雙哈希未動。
+- 效力：臥龍0.1.167預授權達成——全庫Hard Gate解除；SA-T18-DOTENV-BOUNDARY-1 CLOSED；T18/T16/衛生三案皆CLOSED。實彈／部署／開門仍凍結（待Owner拍板事項不變）。
+- Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程、未task_stop wrapper。
