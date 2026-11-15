@@ -10524,3 +10524,9 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 參數定版（本輪完成，不花錢不對外）：`configs/sa/registry.json` SHA256 `89C30666…759128`、`configs/sa/presets.json` SHA256 `C37DE506…58CDC1`，與THAW-DEPLOY-1驗證版逐位元一致，工作樹tracked乾淨（HEAD `880694e`），即刻定為生產正式值；零改動、零重啟。
 - 後續：(1)新一批單發實彈 (2)開門接流量，兩件皆送臥龍出decision-complete設計（批次形狀／開門步驟／驗收／回滾），Owner已授權，設計完直接派工執行。
 - Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼（本輪）、未殺行程、未task_stop wrapper。
+
+## 0.1.170 臥龍出實彈與開門兩票設計：A可執行、B阻斷缺件（另票補開關）
+- 工單A【SA-OPEN-FIRE-2】：直送（B4修復後形態，單次asyncio.run），固定rem/primary、「你好。」、deepseek-v4.1-flash:1017、temperature 0.5、max_tokens 8；新ID req-sa-open-fire-2-0001；一批一發零重試；送前核雙哈希＋雙門closed＋OS監聽埠空（副本刪bind探測）；先存request後O_EXCL准入；回後存raw＋usage，缺證即停。exit 0限探針ACCEPTED／exit 7直送限定INCONCLUSIVE；失敗不得進B。
+- 工單B【SA-DOOR-OPEN-1】：BLOCKED，非授權問題，是缺件——`serve_sa_thin.py:107`寫死關門、控制面只有shutdown/status、runbook無開關門命令、舊door_open.py會覆寫證據禁用。解除條件另票補：正式開關門入口＋一鍵關門＋runbook精確命令，驗收後再補發本票。Owner授權有效。
+- 本輪：登帳＋派工A；同步請臥龍出補件票設計。
+- Frozen：src零改動、data唯讀、未啟服、未綁埠（A真打走外部網址非生產埠）、未殺行程、未task_stop wrapper。
