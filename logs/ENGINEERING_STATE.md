@@ -10405,3 +10405,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
   未殺行程、未 task_stop wrapper。
 - Frozen：未改 Frozen Contract、未改守衛、未推送。
 - Notion 同步：event-key `SA-THAW-DEPLOY-1/2:DEPLOYED_CLOSED:24fa75b`（--topic evidence --month 2026-11）。
+## 0.1.149 SA-TRANSPORT-OBS-2C B4離線接線：worker交付，Mavis複核提交，臥龍 VETO（最終驗收 BLOCKED）
+- 交付（commit 22238d4，5新檔）：verification/sa-open-fire-1/live-fire-4/（live_fire_b4.py＝B3位元組級複製、唯一接線變更為dialog走fa_obs.observe_dialog、offline=True/real_billing=0；negative_check_b4.py；offline/README.md＋offline/case-matrix.json 26筆）＋tests/soul_access/test_t20_live_fire_observation.py（T20 27 tests）。B1/B2/B3唯讀未動，B4正式marker（sent.json/result.json）不存在，零真實外連。
+- Mavis複核：T20 27/27綠；T16+T19+T20合跑100 passed；全庫（.venv，1017s）5 failed、9287 passed、32 skipped；2a追蹤檔被合跑重寫部分已還原；Notion已同步OFFLINE_READY事件（event SA-TRANSPORT-OBS-2C:OFFLINE_READY:22238d4）。
+- 臥龍裁決VETO（只否最終驗收，不否已實作與測試成果）：① Mavis「隔離重跑4/4綠即證偽本套件責任」不成立——隔離綠只證未重現，不能排除全庫順序／共享狀態寫入，mtime重疊不能辨識寫入者；正確記法「原因未定，外部併發為合理假說」。② T18准列單項基線例外（預存dotenv干擾），全庫如實記5 failed，不得稱合跑全綠，不得把例外擴及四項待歸因失敗。③ B1/B2/B3維持INCONCLUSIVE，實彈繼續凍結。
+- 下一票 SA-TRANSPORT-OBS-2C-E1（最小證據補件）：只核對既有回歸輸出＋22238d4差分＋T20/fixture，追查四guard的新增測試可達寫入路徑（直接寫入 vs 狀態洩漏），既有日誌能定位外部寫入者則附時間來源；不碰data/**寫入、不改守衛/Frozen Contract、不啟服、不外連、不重跑全庫；證據不足即維持BLOCKED。交付＝文字證據表，無程式修改。不撤提交，不開實彈票。
