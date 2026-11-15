@@ -1,0 +1,10 @@
+{
+  "request_id": "req-sa-subagent-e2e-1-0001",
+  "status": 200,
+  "reply": "",
+  "usage": {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0
+  }
+}
