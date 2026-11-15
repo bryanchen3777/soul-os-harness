@@ -1,0 +1,20 @@
+{
+  "attempts": [],
+  "backend_observations": null,
+  "chain": null,
+  "dialog_request_id": "req-sa-open-fire-1-0001",
+  "elapsed_ms": null,
+  "errno": null,
+  "kind": "sa-exit7-observation",
+  "outer_exception": [
+    "LiveRefused",
+    "NoEventLoopError"
+  ],
+  "phase": "unknown",
+  "snapshot": null,
+  "snapshot_reason": "snapshot_absent",
+  "snapshot_status": "absent",
+  "transport_calls": null,
+  "type": "unknown",
+  "version": "sa-exit7-observation/v1"
+}
