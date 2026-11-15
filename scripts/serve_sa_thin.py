@@ -134,8 +134,10 @@ _THIN_OPEN = False
 #
 # Reply-first drain: after a verified shutdown request the endpoint replies
 # 200 immediately, then refuses new work (draining), waits for in-flight work
-# up to a finite timeout, closes the listener exactly once, releases
-# resources, and returns normally. A stuck drain still closes and releases
+# up to a finite timeout, closes the listener exactly once, signals the
+# injected serving loop to exit (``should_exit``), releases
+# resources, and returns normally, so the process ends and the loopback
+# bind is released. A stuck drain still closes and releases
 # but reports BLOCKED (it never hangs, never kills). Repeated shutdowns are
 # idempotent. The control path never consults the release gate, so a closed
 # production gate can still shut the process down.
@@ -174,6 +176,7 @@ class ThinControl:
         drain_timeout_s=5.0,
         listener=None,
         sleeper=None,
+        server=None,
         release_path=None,
         registry_path=None,
         presets_path=None,
@@ -195,6 +198,13 @@ class ThinControl:
         self._listener = listener
         self._sleeper = sleeper if callable(sleeper) else (lambda s: time.sleep(s))
         self._poller = None  # test seam: called once per drain iteration.
+        # SA-THIN-SHUTDOWN-FIX: the serving ``uvicorn.Server`` instance.
+        # ``main()`` injects it via ``attach_server()``; ``_shutdown()``
+        # flips ``should_exit`` so the serving loop returns and the process
+        # ends (previously only the listener was closed and the loop kept
+        # the process -- and :18765 -- alive). ``None`` keeps the pure-logic
+        # (fake listener / no serve) path working unchanged.
+        self._server = server
         self.state = STATE_SERVING
         self.inflight = 0
         self.events = []
@@ -284,6 +294,18 @@ class ThinControl:
         if release_path is not None:
             self.release_path = str(release_path)
         self._record("attached")
+        return self
+
+    def attach_server(self, server):
+        """Inject the serving ``uvicorn.Server`` (SA-THIN-SHUTDOWN-FIX).
+
+        ``main()`` calls this exactly once before serving. ``_shutdown()``
+        then sets ``server.should_exit = True`` so the serving loop returns
+        and the process ends normally. Accepts ``None`` (detach, restores
+        the pure-logic path). Returns ``self`` for chaining.
+        """
+        self._server = server
+        self._record("server-attached")
         return self
 
     def is_instance_open(self) -> bool:
@@ -636,6 +658,7 @@ class ThinControl:
         drained = self._drain()
         self._close_listener()
         self._listener = None
+        self._signal_server()
         if drained:
             self.state = STATE_SHUT
             self._record("shut")
@@ -643,6 +666,25 @@ class ThinControl:
             self.state = STATE_BLOCKED
             self._record("blocked", "inflight=%d" % self.inflight)
         return reply
+
+    def _signal_server(self):
+        """Ask the injected serving loop to exit (SA-THIN-SHUTDOWN-FIX).
+
+        Sets ``server.should_exit = True`` on the ``uvicorn.Server`` that
+        ``main()`` injected via ``attach_server()``. Runs on BOTH the shut
+        and the blocked paths: even a stuck drain must still release the
+        serving loop so the process ends (blocked reports via ``state`` /
+        ``result_code``, never by hanging). ``None`` (pure-logic path) is
+        a no-op; a faulty server object never breaks the shutdown reply.
+        """
+        server = self._server
+        if server is None:
+            return
+        try:
+            server.should_exit = True
+        except Exception:
+            return
+        self._record("server-signalled")
 
     def _drain(self):
         deadline = self._clock() + self._drain_timeout
@@ -1198,7 +1240,19 @@ def main(argv=None) -> int:
         % (THIN_HOST, THIN_PORT, control.run_id, CONTROL_ENDPOINT),
         flush=True,
     )
-    uvicorn.run(app, host=THIN_HOST, port=THIN_PORT, reload=False, log_level="info")
+    # SA-THIN-SHUTDOWN-FIX: serve via an explicit Server instance injected
+    # into the controller, so a verified shutdown POST flips
+    # ``should_exit`` and the serving loop returns: the process ends
+    # normally (exit 0) and the loopback bind is released. Previously
+    # ``uvicorn.run(...)`` owned an unreachable Server: shutdown drained
+    # and closed the (here ``None``) listener but the loop never exited,
+    # so the process -- and :18765 -- stayed alive.
+    config = uvicorn.Config(
+        app, host=THIN_HOST, port=THIN_PORT, reload=False, log_level="info"
+    )
+    server = uvicorn.Server(config)
+    control.attach_server(server)
+    server.run()
     return 0
 
 

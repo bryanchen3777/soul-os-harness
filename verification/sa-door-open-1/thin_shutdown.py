@@ -2,8 +2,9 @@
 
 Reads the loopback control file (run_id + token + endpoint), POSTs one
 ``shutdown`` command to the fixed loopback endpoint, and exits 0 only on
-a 200 reply (reply-first drain, server closes its own listener). The
-token value is never printed, never saved, never logged.
+a 200 reply (reply-first drain: the server closes its own listener, then
+exits its serving loop so the process ends normally and releases :18765).
+The token value is never printed, never saved, never logged.
 
 This is the ONLY approved way for this ticket to release :18765: no
 Stop-Process / taskkill / pkill / kill anywhere in this file.
