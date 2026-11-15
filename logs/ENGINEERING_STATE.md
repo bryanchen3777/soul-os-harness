@@ -10551,3 +10551,7 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 複核（.venv Python 3.11.15）：door_mech 21＋T17 25＝46 passed（2.66s）；tests/infra 428 passed（108s，exit 0，含AST守衛）；雙門預設閉合、順序不可跳、全序列開門事件有序、漂移拒裝拒開並重關、live provider快照有證、close/panic-close冪等；--control綁定前分流。生產雙門維持closed/False，:18765空、:8000正常。
 - 待辦：同步Notion後送臥龍終驗；終驗通過才走SA-DOOR-OPEN-1，之前不開門不接流量。
 - Frozen：src零改動、data唯讀、未啟服、未綁埠、未殺行程、未task_stop wrapper。
+## 0.1.175 臥龍終驗SA-DOOR-MECH-1：VETO（BLOCKED），已開修補票
+- 否決理由（臥龍唯讀＋記憶體內ASGI實測重現）：(1)正式控制POST到不了控制器——端點缺Request型別被當query參數，合法POST回422；(2)慢上游擋住緊急關門——鎖包住整段forwarder，上游不返回則close卡死、實例門仍開；(3)讀回失敗謊報已關門——不是open就當關，PermissionError下仍回200 confirmed；(4)雜湊變異證據無效——先漂移再重釘漂移內容，不注入也過；且46＋428非同樹全庫，不算Hard Gate。
+- 裁決：MECH不予ACCEPTED，OPEN-1維持BLOCKED；實彈維持直送限定ACCEPTED，不重開不補打。已派SA-DOOR-MECH-FIX-1（4檔範圍：真路由＋鎖只保准入狀態變更＋AnyIO執行緒池隔離＋嚴格讀回＋固定沙盒pins紅綠對照；驗收含同樹全庫＋AST＋雙向變異＋CLI對帳）。
+- Frozen：src零改動、data唯讀、未啟服、未綁埠、未殺行程、未task_stop wrapper；本輪臥龍未改檔未跑pytest。
