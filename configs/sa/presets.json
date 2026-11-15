@@ -2,45 +2,45 @@
   "presets": [
     {
       "name": "primary",
-      "provider": "openai",
+      "provider": "ollama",
       "model": "deepseek-v4.1-flash:1017",
       "params": {
         "temperature": 0.5,
         "max_tokens": 8,
-        "base_url": "https://ollama.com/v1/chat/completions"
+        "base_url": "https://ollama.com"
       },
       "key_ref": "OLLAMA_API_KEY"
     },
     {
       "name": "minimax-m3.1-flash",
-      "provider": "openai",
+      "provider": "ollama",
       "model": "minimax-m3.1-flash",
       "params": {
         "temperature": 0.5,
         "max_tokens": 8,
-        "base_url": "https://ollama.com/v1/chat/completions"
+        "base_url": "https://ollama.com"
       },
       "key_ref": "OLLAMA_API_KEY"
     },
     {
       "name": "glm-5.3-flash",
-      "provider": "openai",
+      "provider": "ollama",
       "model": "glm-5.3-flash",
       "params": {
         "temperature": 0.5,
         "max_tokens": 8,
-        "base_url": "https://ollama.com/v1/chat/completions"
+        "base_url": "https://ollama.com"
       },
       "key_ref": "OLLAMA_API_KEY"
     },
     {
       "name": "mimo-v2.6-flash",
-      "provider": "openai",
+      "provider": "ollama",
       "model": "mimo-v2.6-flash",
       "params": {
         "temperature": 0.5,
         "max_tokens": 8,
-        "base_url": "https://ollama.com/v1/chat/completions"
+        "base_url": "https://ollama.com"
       },
       "key_ref": "OLLAMA_API_KEY"
     }

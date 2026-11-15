@@ -167,7 +167,13 @@ class OllamaBackend:
 
     def _url(self) -> str:
         base = self._base_url if isinstance(self._base_url, str) else ""
-        return base.rstrip("/") + "/v1/chat/completions"
+        stripped = base.rstrip("/")
+        lowered = stripped.lower()
+        if lowered.endswith("/v1/chat/completions"):
+            return stripped
+        if lowered.endswith("/v1"):
+            return stripped + "/chat/completions"
+        return stripped + "/v1/chat/completions"
 
     def complete(self, route: Any, preset: Any, messages: Any, params: Any) -> str:
         if not _ollama_base_allowed(self._base_url):
