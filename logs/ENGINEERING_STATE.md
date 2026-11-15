@@ -10416,3 +10416,10 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 卧龙碰撞裁决（bg_fbe36555）：① GATE-1＝CONDITIONAL，四guard通过；T20三红是测试前提失效，不认定功能回归或违规真打，但不得自动追加基线豁免，不得称全绿。② 2C暂不转ACCEPTED／OFFLINE_READY；修完碰撞并验证后效力措辞为「2C ACCEPTED／OFFLINE_READY，限本票离线能力与隔离性；不重置既有真打状态、不授予再次真打权限」。③ 修测试不保留假红：sent.json永久保留；正式 offline/case-matrix.json 保留已还原版本（SHA256 7F14D38F89191CBF660C6CD6AC41691C149E9764A1CFBCD52EB704D64A2B7807，工作树已 checkout 还原、diff quiet exit 0＝与 22238d4 提交版一致），失败产物不覆盖正式矩阵。
 - 下一票 T20-ISOLATION-1（仅改T20测试模组＋专用helper）：所有marker、矩阵输出导向tmp_path；分未送/已送双沙盒（未送验证离线不建marker；已送验证marker原样保留，重送路径以mock验证拒绝）；禁条件式skip、禁吞assertion；外部发送入口执行期硬拦；不得改正式发送程序/Frozen Contract/生产资料。验收：先T20、四guard，再 .venv 全库回归（除已准T18外零失败）；沙盒变异须证离线建marker/已送态放行重送各自转红；正式marker、矩阵前后SHA256不变；无法隔离即停票回报。
 - Frozen：未改Frozen Contract、未改守卫、未写data/**、未启服、未绑埠、无真实外呼；未杀行程、未task_stop wrapper。
+## 0.1.151 T20-ISOLATION-1 worker交付，Mavis独立复核通过，待卧龙验收
+- 交付（commit 798fd3f，1档，pathspec干净）：tests/soul_access/test_t20_live_fire_observation.py（+143/-26），无helper新档。LIVE_B4_DIR已删；正式marker/matrix零读写（仅B4/B3/NEG .py源码import＋AST pins，属产品码读取）；_install_write_recorder＋_assert_writes_confined逐run记录写调用并断言收敛沙盒；未送沙盒marker字节精确＋收敛断言；已送沙盒手写同形seed（非正式拷贝）、marker原样保留、发送入口硬拦、rc==4零消耗零观测；zz矩阵改写tmp_path/t20-case-matrix/case-matrix.json。
+- Mavis独立复核：T20单档27 passed（.venv Python 3.11.15，复核后重跑一致）；grep确认正式artifact读取仅三处.py源码存在性＋AST pins，无sent.json/result.json/matrix读写；正式双哈希前后一致（matrix 7F14D38F…B7807、sent.json F07113F0…BD0FF）；提交pathspec仅T20一档；全库由worker在background执行（1023s，窗口约23:0x-23:2x，避开22:00-22:30）：9291 passed、32 skipped、1 failed＝T18 dotenv单项（canon 0.1.149已准基线例外，单跑转绿，属跨模块污染既有问题；T20计数闭合GATE-1 9288＋3＝9291，无data-guard红）。
+- 瞬态变异（worker执行，Mavis采信其红绿陈述，待卧龙终判）：Mut A（LIVE_DIR误指沙盒外）转红、Mut B（去seed＝放行重送）转红，还原皆绿；路径仅tmp金丝雀＋fake transport＋沙盒，无生产触达。
+- 副作用：全库跑改写了 verification/sa-transport-obs-2a/case-matrix.json（T18自带zz writer既有行为，7行diff），Mavis已checkout还原（diff quiet exit 0），未提交（与HEAD一致无需提交）；t10空文件等untracked依铁律不动。
+- 待办：送卧龙终验（2C是否转ACCEPTED／OFFLINE_READY限定措辞）；E1归因裁决仍待回（bg_8c96e55b输出空， E1结论以卧龙书面为准，不自行定性）。
+- Frozen：未改Frozen Contract、未改守卫、未写data/**、未启服、未绑埠、无真实外呼；未杀行程、未task_stop wrapper。
