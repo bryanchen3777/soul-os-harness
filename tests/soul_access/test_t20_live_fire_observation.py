@@ -1,5 +1,24 @@
 """SA-TRANSPORT-OBS-2C T20 live-fire-4 observation-wiring tests (sandbox only).
 
+T20-ISOLATION-1 (2026-11-15): the formal B4 live fire (commit 17c11d6, Owner
+one-shot authorization consumed) permanently created the formal marker
+``verification/sa-open-fire-1/live-fire-4/sent.json``. The pre-isolation T20
+asserted that formal marker ABSENT, so every full-repo run went red. This
+file no longer depends on the formal marker in either direction:
+
+  - Formal ``live-fire-4/`` artifacts (``sent.json``, ``result.json``,
+    ``request.replayable.json``, ``evidence/``, ``transport/``,
+    ``failure/``, ``offline/case-matrix.json``) are NEVER read nor written
+    here. Marker content shapes used in sandboxes are hand-written fixtures
+    (same ``request_id`` shape), never copies of the formal file.
+  - The ONLY formal ``live-fire-4/`` reads are the B4/B3 ``.py`` sources
+    (module import + AST wiring pins): product-code reads, not artifacts.
+  - Every marker / matrix output lands under per-test ``tmp_path``.
+  - Every ``_drive_main`` run records all write-ish filesystem calls
+    (``os.open`` create/write, ``os.replace``, ``Path.write_text``,
+    ``Path.write_bytes``, ``Path.mkdir``) and the unsent/sent tests assert
+    all recorded writes resolve inside the test sandbox.
+
 Decision-complete scope (SA-TRANSPORT-OBS-2C, mastermind Wolong approved):
 B4 offline wiring + verification. New files are ONLY
 ``verification/sa-open-fire-1/live-fire-4/live_fire_b4.py``,
@@ -22,22 +41,24 @@ only key *existence* is checked, the synthetic value is never reported or
 written anywhere.
 
 Coverage (ticket acceptance mapping):
-  a. B4 loads with dotenv disabled; ``main`` present; formal B4 marker
-     (``live-fire-4/sent.json``) absent before and after.
+  a. B4 loads with dotenv disabled; ``main`` present; module-level
+     ``LIVE_DIR`` default untouched (per-test sandbox patching only);
+     formal artifacts never referenced.
   b. Real ``main`` wiring: success (evidence exactly 2 + pair_ok, no failure
      file, summary marks OFFLINE / real_billing 0), ConnectError, four
      timeouts, TimeoutException (exit 7, dual landing, dialog exactly once,
      original exception + cause kept, two observation contents reconciled).
   c. No-snapshot (absent, no fabricated transport), pollution (rejected, no
      transport), observation-landing failure (fixed token only, original
-     unmasked), missing-file / extra-file (exit 3), marker-exists (exit 4),
-     negative dual doors (both 403, zero upstream).
+     unmasked), missing-file / extra-file (exit 3), sent-state marker-exists
+     (exit 4, sandbox marker byte-identical, zero consumption, send entry
+     hard-blocked), negative dual doors (both 403, zero upstream).
   d. AST pins (wrapper wiring, independent dirs, two-file criterion,
      original control flow incl. ``_land_transport_obs`` identical to B3).
   e. Bidirectional sandbox mutations (unwrapped / double-call /
      failure-mixed-into-evidence: RED then GREEN, DUD stops the run).
-  f. Socket hard block at runtime; zz case-matrix artifact to
-     ``live-fire-4/offline/`` (secret-free).
+  f. Socket hard block at runtime; zz case-matrix artifact to the
+     per-test ``tmp_path`` sandbox (secret-free, formal matrix untouched).
 """
 
 from __future__ import annotations
@@ -46,6 +67,7 @@ import ast
 import importlib.util
 import inspect
 import json
+import os
 import socket
 import sys
 import threading
@@ -74,7 +96,6 @@ LIVE_B4_PATH = (
 LIVE_B3_PATH = (
     _REPO_ROOT / "verification" / "sa-open-fire-1" / "live-fire-3" / "live_fire_b3.py"
 )
-LIVE_B4_DIR = _REPO_ROOT / "verification" / "sa-open-fire-1" / "live-fire-4"
 NEG_B4_PATH = (
     _REPO_ROOT / "verification" / "sa-open-fire-1" / "live-fire-4" / "negative_check_b4.py"
 )
@@ -219,6 +240,68 @@ def _files(directory):
     )
 
 
+def _install_write_recorder(monkeypatch, ledger):
+    """Record every write-ish filesystem call; behavior delegates unchanged.
+
+    Installed at test-call time (inside ``_drive_main``), i.e. AFTER the
+    SA-0 conftest autouse fixture, so the captured originals already carry
+    the SA-0 ``data/**`` hard blocks. Covers every write API the B4 flow
+    and the evidence/transport/failure landers use: ``os.open``
+    (create/write), ``os.replace`` (atomic landing), ``Path.write_text``,
+    ``Path.write_bytes``, ``Path.mkdir``. Reads are never recorded.
+    """
+    real_os_open = os.open
+    real_os_replace = os.replace
+    real_write_text = Path.write_text
+    real_write_bytes = Path.write_bytes
+    real_mkdir = Path.mkdir
+
+    def _record(path_like):
+        try:
+            ledger.append(str(Path(path_like).resolve(strict=False)))
+        except Exception:
+            ledger.append(str(path_like))
+
+    def _guarded_os_open(path, flags, *args, **kwargs):
+        if flags & (os.O_CREAT | os.O_WRONLY | os.O_RDWR | os.O_APPEND):
+            _record(path)
+        return real_os_open(path, flags, *args, **kwargs)
+
+    def _guarded_os_replace(src, dst, *args, **kwargs):
+        _record(dst)
+        return real_os_replace(src, dst, *args, **kwargs)
+
+    def _guarded_write_text(self, *args, **kwargs):
+        _record(self)
+        return real_write_text(self, *args, **kwargs)
+
+    def _guarded_write_bytes(self, *args, **kwargs):
+        _record(self)
+        return real_write_bytes(self, *args, **kwargs)
+
+    def _guarded_mkdir(self, *args, **kwargs):
+        _record(self)
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", _guarded_os_open)
+    monkeypatch.setattr(os, "replace", _guarded_os_replace)
+    monkeypatch.setattr(Path, "write_text", _guarded_write_text)
+    monkeypatch.setattr(Path, "write_bytes", _guarded_write_bytes)
+    monkeypatch.setattr(Path, "mkdir", _guarded_mkdir)
+    return ledger
+
+
+def _assert_writes_confined(writes, sandbox):
+    """T20-ISOLATION-1: every recorded write must resolve inside the sandbox."""
+    root = str(sandbox.resolve(strict=False))
+    outsiders = [
+        w for w in writes if not (w == root or w.startswith(root + os.sep))
+    ]
+    assert outsiders == [], (
+        "T20-ISOLATION-1: writes outside the test sandbox: %r" % (outsiders,)
+    )
+
+
 def _drive_main(
     monkeypatch,
     tmp_path,
@@ -240,6 +323,7 @@ def _drive_main(
     """
     sandbox = tmp_path / "live"
     sandbox.mkdir(parents=True, exist_ok=True)
+    writes = _install_write_recorder(monkeypatch, [])
     monkeypatch.setenv(SENTINEL_KEY_REF, FAKE_KEY_VALUE)
     # NOTE: EVIDENCE_DIR is bound at B4 import time from the real LIVE_DIR,
     # so it must be redirected too -- patching LIVE_DIR alone would leak
@@ -249,7 +333,10 @@ def _drive_main(
     monkeypatch.setattr(b4, "_port_empty_now", lambda: port_open)
     calls = _install_fake(monkeypatch, behavior=behavior or _ok_behavior)
     if pre_marker:
-        (sandbox / "sent.json").write_text('{"request_id": %s}' % json.dumps(RID))
+        # Hand-written formal request_id shape; never a copy of any formal file.
+        (sandbox / "sent.json").write_text(
+            json.dumps({"request_id": RID, "attempt": 1}), encoding="utf-8"
+        )
     if seed_evidence:
         ev_dir = sandbox / "evidence"
         ev_dir.mkdir(parents=True, exist_ok=True)
@@ -297,6 +384,7 @@ def _drive_main(
         sandbox=sandbox,
         calls=calls,
         observe_calls=observe_calls,
+        writes=writes,
     )
 
 
@@ -340,21 +428,24 @@ def _boom_polluted():
     return boom
 
 
-# -- T20-a: load, key, formal-marker-absent ------------------------------------
+# -- T20-a: load, key, formal-artifacts-untouched ------------------------------
 
 
-def test_t20_b4_loads_without_dotenv_and_formal_marker_absent():
+def test_t20_b4_loads_without_dotenv_and_formal_artifacts_untouched():
+    # T20-ISOLATION-1: no formal marker/matrix assertion in either direction.
+    # The formal live fire (commit 17c11d6) owns the formal marker; this file
+    # never reads nor writes formal artifacts. Only the B4/B3 *sources* are
+    # read (import + AST pins below).
     assert LIVE_B4_PATH.exists() and NEG_B4_PATH.exists() and LIVE_B3_PATH.exists()
     assert _B4_DOTENV_CALLS == [((), {})]  # stubbed loader did nothing
     assert sys.modules.get("dotenv") is not _T20_STUB  # stub never leaks
     assert callable(b4.main)  # present; tests only drive it against sandboxes
     assert "fake suspend" in inspect.getsource(b4._run)  # original pump pin
-    assert not (LIVE_B4_DIR / "sent.json").exists()  # formal B4 marker: never created
-    assert not (LIVE_B4_DIR / "result.json").exists()
-    assert not (LIVE_B4_DIR / "request.replayable.json").exists()
-    for sub in ("evidence", "transport", "failure"):
-        assert not (LIVE_B4_DIR / sub).exists()
-    _matrix("b4-load", {"dotenv_stubbed": True, "formal_marker": "absent"})
+    # Module default still points at the formal batch dir object: per-test
+    # sandboxing is done exclusively via monkeypatch, never by mutating it.
+    assert b4.LIVE_DIR == LIVE_B4_PATH.parent
+    assert b4.EVIDENCE_DIR == LIVE_B4_PATH.parent / "evidence"
+    _matrix("b4-load", {"dotenv_stubbed": True, "formal_artifacts": "untouched"})
 
 
 def test_t20_key_existence_only_never_reported(monkeypatch):
@@ -381,7 +472,12 @@ def test_t20_success_offline_pair_ok_no_failure(monkeypatch, tmp_path, capsys):
     assert report.get("pair_ok") is True
     assert _files(run.sandbox / "failure") == []  # success adds no failure
     assert _files(run.sandbox / "transport") == []  # success adds no transport
-    assert not (LIVE_B4_DIR / "sent.json").exists()  # formal marker still absent
+    # T20-ISOLATION-1 unsent-state: the offline run creates its marker ONLY
+    # in the sandbox, with the hand-written request_id shape, and performs
+    # zero writes outside the sandbox (recorded write APIs, not prediction).
+    marker_text = (run.sandbox / "sent.json").read_text(encoding="utf-8")
+    assert marker_text == json.dumps({"request_id": RID, "attempt": 1})
+    _assert_writes_confined(run.writes, run.sandbox)
     summary = json.loads((run.sandbox / "result.json").read_text(encoding="utf-8"))
     assert summary["ticket"] == "SA-OPEN-FIRE-1-live-fire-4"
     assert summary["offline"] is True  # fake run marks OFFLINE
@@ -569,14 +665,29 @@ def test_t20_extra_file_exit3(monkeypatch, tmp_path, capsys):
 
 
 def test_t20_marker_exists_exit4_no_consumption(monkeypatch, tmp_path, capsys):
-    run = _drive_main(monkeypatch, tmp_path, capsys, pre_marker=True)
+    # T20-ISOLATION-1 sent-state: the sandbox carries a hand-written marker
+    # of the formal request_id shape (never a copy of the formal file). The
+    # send entry is hard-blocked at execution time: any dialog build or
+    # transport POST raises instead of sending. Refusal must therefore show
+    # as rc==4 with zero consumption, never as a swallowed error.
+    run = _drive_main(
+        monkeypatch,
+        tmp_path,
+        capsys,
+        behavior=_raise_behavior(RuntimeError("t20 must not send when marked")),
+        factory=_raising_factory(RuntimeError("t20 must not build dialog when marked")),
+        pre_marker=True,
+    )
+    seed = json.dumps({"request_id": RID, "attempt": 1})
     assert run.rc == 4  # ALREADY_SENT: refusing to resend
     assert len(run.calls) == 0  # nothing consumed
+    assert (run.sandbox / "sent.json").read_text(encoding="utf-8") == seed
     assert not (run.sandbox / "evidence").exists()
     assert not (run.sandbox / "transport").exists()
     assert not (run.sandbox / "failure").exists()
     assert len(run.observe_calls) == 0  # dialog never reached
-    _matrix("marker-exists", {"rc": 4, "calls": 0})
+    _assert_writes_confined(run.writes, run.sandbox)
+    _matrix("marker-exists", {"rc": 4, "calls": 0, "marker": "retained"})
 
 
 def test_t20_negative_dual_doors(monkeypatch, tmp_path, capsys):
@@ -789,19 +900,25 @@ def test_t20_socket_hard_blocked_at_runtime():
 # -- T20-zz: sandbox case-matrix artifact (secret-free) ------------------------
 
 
-def test_t20_zz_matrix_artifact():
-    """Persist the secret-free case matrix to the isolated offline/ dir."""
-    out_dir = LIVE_B4_DIR / "offline"
+def test_t20_zz_matrix_artifact(tmp_path):
+    """Persist the secret-free case matrix to the per-test tmp sandbox.
+
+    T20-ISOLATION-1: the formal ``live-fire-4/offline/case-matrix.json`` is
+    never written here (it stays byte-identical, hash-pinned by the worker).
+    """
+    out_dir = tmp_path / "t20-case-matrix"
     out_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "ticket": "SA-TRANSPORT-OBS-2C",
+        "isolation": "T20-ISOLATION-1",
         "note": (
             "offline only; local POST != backend received/billed; "
-            "B4 main wiring through observe_dialog into LIVE_DIR/failure; "
+            "B4 main wiring through observe_dialog into sandbox LIVE_DIR/failure; "
             "B1/B2/B3 originals untouched, INCONCLUSIVE stands; "
-            "formal B4 marker absent, offline markers in sandboxes only"
+            "formal live-fire-4 marker/matrix never read nor written, "
+            "offline markers in per-test sandboxes only"
         ),
-        "formal_marker": "absent",
+        "formal_marker": "isolated-not-absent",
         "cases": MATRIX_ROWS,
     }
     text = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
@@ -810,4 +927,4 @@ def test_t20_zz_matrix_artifact():
     path = out_dir / "case-matrix.json"
     path.write_text(text, encoding="utf-8")
     assert json.loads(path.read_text(encoding="utf-8"))["ticket"] == "SA-TRANSPORT-OBS-2C"
-    assert not (LIVE_B4_DIR / "sent.json").exists()  # formal marker must still not exist
+    assert len(MATRIX_ROWS) > 0  # matrix actually accumulated across this file
