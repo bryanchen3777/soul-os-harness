@@ -194,3 +194,4 @@
   證據 `verification/sa-door-mech-fix-2/`。
 - 禁止（本票）：不開門、不接真流量；不動 `src/**`、正式設定、403 契約、
   放行順序；不重用舊 `door_open.py`；不手動改門、不繞常數。
+- ENTRY-FIX-1：2026-11-15，正式入口兩處接線（主大腦授權外科手術，src其餘零動）：(1) wiring.py正式同步端點body加dict型別，JSON POST不再被當query擋422；保持同步執行，不在live loop內同步等上游；(2) run_server.py新增預設關閉的SA取證開關，啟用時把既有EvidenceSink透傳進既有factory，只寫呼叫端自建本批目錄，不影響其他聊天入口。測試tests/soul_access/test_t21_live_entry_fix.py 6項（正式端點直掛、拒絕零外呼、三方配對、去型別422紅、去sink零檔紅）。CLI同槽PASS。證據 verification/sa-live-entry-fix-1/。

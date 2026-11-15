@@ -10580,3 +10580,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 複核（.venv）：T21新測6過；分塊全庫9334 passed＋32 skipped，唯一紅＝test_m3_1_phase_c守衛釘run_server零diff，被本票授權hunk（＋33/-1）觸發；失敗訊息逐位元即該授權改動，方向性已由worker雙向證實（stash→過、還原→紅），Mavis複跑確認。守衛未動。
 - 待臥龍三件事：ENTRY-FIX-1終驗；m3守衛碰撞裁決（沿先例allowlist授權hunk或另開工單）；OPEN-1是否解阻。生產雙門閉、18765空。
 - Frozen：除授權之wiring簽名＋取證透傳外，其餘src、正式參數、門機制、記憶規則、衰減、cohorts不變；未啟服綁埠外呼殺行程。
+## 0.1.181 終驗前自查：臥龍兩個疑點皆有結論，缺口已補
+- 疑點1（m3守衛）：成立一半。守衛確只查未暫存diff，提交後比較為空，Mavis在已提交樹重跑該測轉綠（1 passed）。結論：守衛不用動、不用allowlist；ENTRY改動留在已提交狀態即合規，後續再動run_server須重走授權。
+- 疑點2（少20項＋RUNBOOK附錄）：成立。分塊漏了tests/tools（C5只含clients/external_gateway/integration/world），全庫收集9387＝分塊9367＋tools 20。Mavis已補跑tests/tools：20 passed exit 0（證據regress_c10_tools.log＋full-addendum.txt）；併後9354 passed＋32 skipped＋1 failed（已知守衛碰撞，已提交樹上為綠）＝9387，與全庫收集總數吻合，覆蓋無缺。RUNBOOK缺ENTRY附錄屬實，Mavis已按既有體例補§11附錄（純文件，無產品碼變更）。
+- 待臥龍：ENTRY-FIX-1終驗（D1/D2＋證據閉合）＋OPEN-1解阻。生產雙門閉、18765空。
+- Frozen：除授權兩處外src不變；未啟服綁埠外呼殺行程。
