@@ -10565,3 +10565,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 90節點核准：逐筆對帳成立（90 ID全存在、89 value＋1 belief、建日一致、last_support==created、傳遞邊零、7天下界早於22Z、包裝恰增90、正文零不明差）；只核准報告第22行固定90 ID。入帳只改台帳及其測試（11-08、not_before取22Z、逐節點bounds＝建立＋7天、a28d910…明記belief）；重跑同槽須PASS exit 0 pending 0，保留原exit 3報告。
 - 已派FIX-2（serving loop閉門判定後走獨立永不轉發拒絕app＋台帳入帳＋分塊Hard Gate＋nodeid/skip對帳）。
 - Frozen：src零改動、data唯讀、未啟服、未綁埠、未殺行程。
+## 0.1.178 SA-DOOR-MECH-FIX-2 worker交付，Mavis複核通過，待終驗
+- 交付（tracked僅5檔，src零改動）：serve_sa_thin.py（閉門SA封包走獨立reject快路徑、不進業務pump、復開不改變已拒決定；附帶修send作用域bug）；門機制＋3新測試（A卡住B秒級403且上游計數1、401/404同走快路徑、繞過變異紅綠）；台帳追加11-08一批90 ID（1575，belief單記a28d910…）；台帳測試更名＋1108形狀守衛；RUNBOOK附錄。
+- 複核（.venv Python 3.11.15）：門機制＋台帳183 passed；分塊全庫R1 2505＋R2 2147＋S1 911＋S2 1302＋S3 1540＋S4 944＝9349 passed＋32 skipped（＝收集9381，互斥劃分，skip聯集added 0/removed 0）；CLI同槽重跑VERDICT PASS exit 0、pending 90→0、prompt零不明差。生產雙門閉、18765空、8000正常，data/elevation零寫入。
+- 待臥龍：FIX-2終驗（P1＋台帳重跑PASS）；通過則OPEN-1解阻。
+- Frozen：src零改動、正式參數、403、衰減、既有cohorts、放行順序不變。

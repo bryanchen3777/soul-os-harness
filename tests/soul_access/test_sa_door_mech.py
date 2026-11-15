@@ -66,6 +66,7 @@ import json
 import queue
 import sys
 import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -278,7 +279,8 @@ class _CountingSender:
         return self.text
 
 
-def _build_app(monkeypatch, registry_path, presets_path, gate_path, control, sender):
+def _build_app(monkeypatch, registry_path, presets_path, gate_path, control, sender,
+               enable_reject_fast_path=True):
     monkeypatch.setenv(KEY_REF, FAKE_KEY)
     forwarder = sa_wiring.build_thin_forwarder(
         release_path=str(gate_path),
@@ -291,6 +293,7 @@ def _build_app(monkeypatch, registry_path, presets_path, gate_path, control, sen
         release_path=str(gate_path),
         _forwarder=forwarder,
         control=control,
+        enable_reject_fast_path=enable_reject_fast_path,
     )
 
 
@@ -1336,3 +1339,310 @@ def test_door_ast_strict_readback_and_unconfirmed_events():
     )
     app_text = ast.get_source_segment(src, app_node) or ""
     assert "_isolate_business_asgi" in app_text
+
+
+# -- p: FIX-2 closed-door reject fast path (P1: B must not queue behind A) ---
+
+def _snapshot_body(n):
+    snapshot = _snapshot_for(PRIMARY, MODELS[PRIMARY], n)
+    return sa_api.envelope_to_body(
+        sa_api.build_envelope(snapshot=snapshot, messages=(("user", "door probe"),),
+                              created_utc="2026-11-15T00:00:00Z"))
+
+
+def test_door_fix2_closed_refusal_bypasses_parked_upstream(tmp_path, monkeypatch):
+    """FIX-2 P1: with A parked in the slow upstream, panic-close completes and
+    B (new closed-door SA) is refused 403 in <1s with zero new upstream calls.
+
+    Pre-fix B queued on the single pump behind A, so the 403 only landed
+    after the upstream recovered. The fast path serves closed-door SA bodies
+    on the serving loop via the reject app instead. A and B run concurrently
+    on ONE loop (``asyncio.gather``, D2 idiom); ``release`` is settled in
+    ``finally`` so a red run cannot wedge the pump thread."""
+    registry_path, presets_path, gate_path = _door_files(tmp_path)
+    control = _door_control(tmp_path, monkeypatch, gate_path, registry_path, presets_path)
+    entered = threading.Event()
+    release = threading.Event()
+    sender = _ParkedSender(entered, release)
+    app = _build_app(monkeypatch, registry_path, presets_path, gate_path, control, sender)
+    _open_via_api(control)
+    body_a = _snapshot_body(31)
+    body_b = _snapshot_body(32)
+    order = []
+
+    async def _scenario():
+        client_a = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        )
+        client_b = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        )
+        try:
+            async def _a():
+                try:
+                    response = await client_a.post(
+                        "/%s/%s/v1/chat/completions" % (SOUL, PRIMARY),
+                        headers={"Authorization": "Bearer " + TOKEN},
+                        json=body_a,
+                    )
+                finally:
+                    release.set()
+                order.append(("A", response.status_code))
+                return response
+
+            async def _b():
+                for _ in range(300):
+                    if entered.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+                assert entered.is_set(), "A never reached the sender"
+                status, _ = control.close_door()
+                assert status == 200
+                start = time.monotonic()
+                try:
+                    response = await client_b.post(
+                        "/%s/%s/v1/chat/completions" % (SOUL, PRIMARY),
+                        headers={"Authorization": "Bearer " + TOKEN},
+                        json=body_b,
+                    )
+                finally:
+                    release.set()
+                order.append(("B", response.status_code, time.monotonic() - start))
+                return response
+
+            return await asyncio.gather(_a(), _b())
+        finally:
+            release.set()
+            await client_a.aclose()
+            await client_b.aclose()
+
+    response_a, response_b = _DOOR_RUNNER.run(
+        asyncio.wait_for(_scenario(), timeout=30)
+    )
+    assert response_a.status_code == 200  # A admitted pre-close
+    assert response_b.status_code == 403, response_b.text
+    refused_b = [entry for entry in order if entry[0] == "B"]
+    assert refused_b and refused_b[0][2] < 1.0, order  # B refused fast
+    assert len(sender.calls) == 1, sender.calls  # the re-close sent nothing new
+
+
+def test_door_fix2_auth_and_route_counterexamples_skip_pump(tmp_path, monkeypatch):
+    """FIX-2: while A is parked, a wrong-token SA body still answers 401 and
+    an unknown-route SA body still answers 404 -- both in <1s, zero new
+    upstream calls. The fast path reuses auth/routing/error mapping, so the
+    contract copies are unchanged."""
+    registry_path, presets_path, gate_path = _door_files(tmp_path)
+    control = _door_control(tmp_path, monkeypatch, gate_path, registry_path, presets_path)
+    entered = threading.Event()
+    release = threading.Event()
+    sender = _ParkedSender(entered, release)
+    app = _build_app(monkeypatch, registry_path, presets_path, gate_path, control, sender)
+    _open_via_api(control)
+    body = _snapshot_body(21)
+    marks = {}
+
+    async def _scenario():
+        client_a = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        )
+        client_probe = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        )
+        try:
+            async def _a():
+                try:
+                    return await client_a.post(
+                        "/%s/%s/v1/chat/completions" % (SOUL, PRIMARY),
+                        headers={"Authorization": "Bearer " + TOKEN},
+                        json=_snapshot_body(20),
+                    )
+                finally:
+                    release.set()
+
+            async def _probes():
+                for _ in range(300):
+                    if entered.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+                assert entered.is_set(), "A never reached the sender"
+                assert control.close_door()[0] == 200
+                try:
+                    start = time.monotonic()
+                    try:
+                        bad_auth = await client_probe.post(
+                            "/%s/%s/v1/chat/completions" % (SOUL, PRIMARY),
+                            headers={"Authorization": "Bearer " + WRONG_TOKEN},
+                            json=body,
+                        )
+                    finally:
+                        pass
+                    marks["auth"] = (bad_auth.status_code, time.monotonic() - start)
+                    start = time.monotonic()
+                    bad_route = await client_probe.post(
+                            "/nope/%s/v1/chat/completions" % PRIMARY,
+                            headers={"Authorization": "Bearer " + TOKEN},
+                            json=body,
+                        )
+                    marks["route"] = (bad_route.status_code, time.monotonic() - start)
+                    return (bad_auth, bad_route)
+                finally:
+                    release.set()
+
+            response_a, (bad_auth, bad_route) = await asyncio.gather(_a(), _probes())
+            marks["a_status"] = response_a.status_code
+            return (bad_auth, bad_route)
+        finally:
+            release.set()
+            await client_a.aclose()
+            await client_probe.aclose()
+
+    bad_auth, bad_route = _DOOR_RUNNER.run(
+        asyncio.wait_for(_scenario(), timeout=30)
+    )
+    assert bad_auth.status_code == 401, bad_auth.text
+    assert marks["auth"][1] < 1.0, "401 queued behind parked A (%.3fs)" % marks["auth"][1]
+    assert bad_route.status_code == 404, bad_route.text
+    assert marks["route"][1] < 1.0, "404 queued behind parked A (%.3fs)" % marks["route"][1]
+    assert marks["a_status"] == 200
+    assert sender.calls and len(sender.calls) == 1, sender.calls
+
+
+def test_door_fix2_mutation_bypass_red_then_revert_green(tmp_path, monkeypatch):
+    """Bidirectional fast-path mutant: with the bypass seam
+    (``enable_reject_fast_path=False``) B starves behind parked A (RED --
+    no 403 within 2s); reverted (True) B is refused 403 in <1s (GREEN).
+    The same oracle judges both, so a toothless bypass cannot pass."""
+    registry_path, presets_path, gate_path = _door_files(tmp_path)
+    control = _door_control(tmp_path, monkeypatch, gate_path, registry_path, presets_path)
+    entered = threading.Event()
+    release = threading.Event()
+    sender = _ParkedSender(entered, release)
+    mutant = _build_app(
+        monkeypatch, registry_path, presets_path, gate_path, control, sender,
+        enable_reject_fast_path=False,
+    )
+    _open_via_api(control)
+    verdict = {}
+
+    async def _mutant_scenario():
+        client_a = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=mutant), base_url="http://test"
+        )
+        client_b = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=mutant), base_url="http://test"
+        )
+        try:
+            async def _a():
+                try:
+                    return await client_a.post(
+                        "/%s/%s/v1/chat/completions" % (SOUL, PRIMARY),
+                        headers={"Authorization": "Bearer " + TOKEN},
+                        json=_snapshot_body(41),
+                    )
+                finally:
+                    release.set()
+
+            async def _b():
+                for _ in range(300):
+                    if entered.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+                assert entered.is_set(), "A never reached the sender"
+                assert control.close_door()[0] == 200
+                pending = asyncio.create_task(client_b.post(
+                    "/%s/%s/v1/chat/completions" % (SOUL, PRIMARY),
+                    headers={"Authorization": "Bearer " + TOKEN},
+                    json=_snapshot_body(42),
+                ))
+                try:
+                    await asyncio.sleep(2.0)
+                    verdict["starved"] = not pending.done()
+                finally:
+                    release.set()
+                verdict["late"] = await pending
+                return verdict["late"]
+
+            response_a, response_b = await asyncio.gather(_a(), _b())
+            verdict["a_status"] = response_a.status_code
+            return response_b
+        finally:
+            release.set()
+            await client_a.aclose()
+            await client_b.aclose()
+
+    response_b = _DOOR_RUNNER.run(
+        asyncio.wait_for(_mutant_scenario(), timeout=30)
+    )
+    if not verdict.get("starved", False):
+        pytest.fail("MUTATION DUD -- STOP, report: bypassed B refused fast; "
+                    "the queue is not the blocker")
+    assert verdict["a_status"] == 200
+    assert response_b.status_code == 403  # queued refusal lands on release
+    assert len(sender.calls) == 1, sender.calls
+    # Revert: same oracle, fresh closed app with the fast path on.
+    control2 = _door_control(
+        tmp_path, monkeypatch, gate_path, registry_path, presets_path,
+        run_id="run-door-fix2-revert-1",
+    )
+    entered2 = threading.Event()
+    release2 = threading.Event()
+    sender2 = _ParkedSender(entered2, release2)
+    app2 = _build_app(
+        monkeypatch, registry_path, presets_path, gate_path, control2, sender2,
+        enable_reject_fast_path=True,
+    )
+    _open_via_api(control2)
+    marks2 = {}
+
+    async def _revert_scenario():
+        client_a = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app2), base_url="http://test"
+        )
+        client_b = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app2), base_url="http://test"
+        )
+        try:
+            async def _a():
+                try:
+                    return await client_a.post(
+                        "/%s/%s/v1/chat/completions" % (SOUL, PRIMARY),
+                        headers={"Authorization": "Bearer " + TOKEN},
+                        json=_snapshot_body(43),
+                    )
+                finally:
+                    release2.set()
+
+            async def _b():
+                for _ in range(300):
+                    if entered2.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+                assert entered2.is_set(), "A never reached the sender"
+                assert control2.close_door()[0] == 200
+                start = time.monotonic()
+                try:
+                    response = await client_b.post(
+                        "/%s/%s/v1/chat/completions" % (SOUL, PRIMARY),
+                        headers={"Authorization": "Bearer " + TOKEN},
+                        json=_snapshot_body(44),
+                    )
+                finally:
+                    release2.set()
+                marks2["elapsed"] = time.monotonic() - start
+                return response
+
+            response_a, response_b = await asyncio.gather(_a(), _b())
+            marks2["a_status"] = response_a.status_code
+            return response_b
+        finally:
+            release2.set()
+            await client_a.aclose()
+            await client_b.aclose()
+
+    refused = _DOOR_RUNNER.run(
+        asyncio.wait_for(_revert_scenario(), timeout=30)
+    )
+    assert refused.status_code == 403, refused.text
+    assert marks2["elapsed"] < 1.0, "reverted B queued (%.3fs)" % marks2["elapsed"]
+    assert marks2["a_status"] == 200
+    assert len(sender2.calls) == 1, sender2.calls

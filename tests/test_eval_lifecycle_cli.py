@@ -2680,6 +2680,9 @@ class TestPending1104EvidenceBinding(unittest.TestCase):
     2026-11-05 cohort 入帳（Sol 2026-11-12 核准 93 ID：89 value＋4 belief）後，
     核准數 1392→1485，舊集合零刪除，見
     `test_ledger_count_now_1485_after_1105_cohort`。
+    2026-11-08 cohort 入帳（FIX-1 終驗 VETO 核准 90 ID：89 value＋1 belief）後，
+    核准數 1485→1575，舊集合零刪除，見
+    `test_ledger_count_now_1575_after_1108_cohort`。
     全部隔離沙盒／TEMP 副本；repo 檔全程不寫入。
     """
 
@@ -2729,16 +2732,16 @@ class TestPending1104EvidenceBinding(unittest.TestCase):
         for key in self.REQUIRED_EVIDENCE_KEYS:
             self.assertIn('"%s"' % key, src, "缺少證據鍵：%s" % key)
 
-    def test_ledger_count_now_1485_after_1105_cohort(self):
-        """台帳凍結（2026-11-05 入帳）：核准數 1392 → 1485，增長恰為 2026-11-05 的 93 ID。
+    def test_ledger_count_now_1575_after_1108_cohort(self):
+        """台帳凍結（2026-11-08 入帳）：核准數 1485 → 1575，增長恰為 2026-11-08 的 90 ID。
 
         舊集合不變由「純新增 diff」保證（本票對 CLI 的改動必須是零刪除；
         見 stage-b 證據的 `git diff --numstat`），本測試釘死新總數與新 cohort
-        的形狀：93 節點、退役窗、4 belief 記載型別、逐節點下界全覆蓋；
-        同時保留 2026-11-04 cohort 的形狀斷言（90 節點／退役窗／1 belief／
-        bounds 全覆蓋），舊集合一字不動。
+        的形狀：90 節點、退役窗、1 belief 記載型別、逐節點下界全覆蓋；
+        同時保留 2026-11-04／2026-11-05 cohort 的形狀斷言（90 節點／93 節點、
+        退役窗、1／4 belief、bounds 全覆蓋），舊集合一字不動。
         """
-        self.assertEqual(len(CLI.approved_retirement_ids()), 1485)
+        self.assertEqual(len(CLI.approved_retirement_ids()), 1575)
         self.assertEqual(CLI.EXPECTED_RETIREMENT_NOT_BEFORE,
                          "2026-10-25T02:00:00+00:00")
         cohorts04 = [c for c in CLI.EXPECTED_RETIREMENT_COHORTS
@@ -2764,13 +2767,23 @@ class TestPending1104EvidenceBinding(unittest.TestCase):
                           "dad154a54589446cb93d240a34967d0e": "belief"})
         self.assertEqual(set(c["bounds"]), set(c["nodes"]),
                          "逐節點下界必須全覆蓋 93 節點")
+        cohorts08 = [c for c in CLI.EXPECTED_RETIREMENT_COHORTS
+                     if c["date"] == "2026-11-08"]
+        self.assertEqual(len(cohorts08), 1, "2026-11-08 cohort 必須恰有一筆")
+        c08 = cohorts08[0]
+        self.assertEqual(c08["not_before"], "2026-11-15T22:00:00+00:00")
+        self.assertEqual(len(set(c08["nodes"])), 90)
+        self.assertEqual(c08["types"],
+                         {"a28d910ed2034d3597e40b69ec72211b": "belief"})
+        self.assertEqual(set(c08["bounds"]), set(c08["nodes"]),
+                         "逐節點下界必須全覆蓋 90 節點")
         rest = set()
         for other in CLI.EXPECTED_RETIREMENT_COHORTS:
-            if other["date"] != "2026-11-05":
+            if other["date"] != "2026-11-08":
                 rest |= set(other["nodes"])
-        self.assertEqual(len(rest), 1392, "舊集合必須原樣保留 1392 筆")
-        self.assertEqual(set(c["nodes"]) & rest, set(),
-                         "新 93 ID 不得與舊集合重疊")
+        self.assertEqual(len(rest), 1485, "舊集合必須原樣保留 1485 筆")
+        self.assertEqual(set(c08["nodes"]) & rest, set(),
+                         "新 90 ID 不得與舊集合重疊")
 
     # ── 功能（合成圖譜，全隔離）──
     def test_synthetic_run_evidence_is_consistent(self):

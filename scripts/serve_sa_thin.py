@@ -758,7 +758,32 @@ _BUSINESS_THREAD = threading.Thread(
 _BUSINESS_THREAD.start()
 
 
-def _isolate_business_asgi(app):
+def _is_sa_marked_body(buffered) -> bool:
+    """Report whether the buffered HTTP body carries the soul-access marker.
+
+    Pure inspection of the already-buffered ``http.request`` messages: join
+    their ``body`` bytes, decode UTF-8, JSON-parse, and check for the
+    ``soul_access_v1`` key. Any fault (empty / non-UTF-8 / non-JSON /
+    non-dict / marker absent) reads as NOT marked -- the caller falls back
+    to the business pump, so a misread can only cost a queue slot, never a
+    wrong refusal.
+    """
+    try:
+        raw = b"".join(
+            (m.get("body") or b"")
+            for m in buffered
+            if isinstance(m, dict) and m.get("type") == "http.request"
+        )
+        if not raw:
+            return False
+        body = json.loads(raw.decode("utf-8"))
+    except (ValueError, TypeError, UnicodeDecodeError, AttributeError):
+        return False
+    return isinstance(body, dict) and "soul_access_v1" in body
+
+
+def _isolate_business_asgi(app, *, control=None, reject_app=None,
+                           enable_reject_fast_path=True):
     """Run business paths on the pump; keep control on the serving loop.
 
     SA-DOOR-MECH-FIX-1 (thin-side only; frozen ``src/external_gateway/app.py``
@@ -773,7 +798,28 @@ def _isolate_business_asgi(app):
     serving loop. A stalled business call then parks the pump thread,
     never the control route -- and no cross-thread asyncio wakeup is ever
     needed, so the SA-0 socket hard-block cannot trip it.
+
+    SA-DOOR-MECH-FIX-2 (closed-door reject fast path): after the body is
+    buffered on the serving loop, a closed instance door plus a
+    soul-access-marked body is served DIRECTLY by ``reject_app`` on the
+    serving loop -- never enqueued behind the single pump. ``reject_app``
+    is a second ``create_external_app`` over the SAME provider / preset
+    loader: auth (401), routing (404) and the error map are identical, and
+    only its soul handler is pinned to refuse (403). Non-SA bodies are
+    untouched (still via the pump). ``enable_reject_fast_path=False`` is
+    the test-only bypass seam (proves the queue is the blocker: bypassed
+    B starves behind A -> RED; reverted -> GREEN).
     """
+
+    async def _run_on_this_loop(target, t_scope, t_receive, t_send):
+        captured: list = []
+
+        async def _mem_send(message):
+            captured.append(message)
+
+        await target(t_scope, t_receive, _mem_send)
+        for message in captured:
+            await t_send(message)
 
     async def _isolated(scope, receive, send):
         if not isinstance(scope, dict) or scope.get("type") != "http":
@@ -788,6 +834,32 @@ def _isolate_business_asgi(app):
                 "more_body"
             ):
                 break
+        # FIX-2 fast path: closed door + SA-marked body -> reject_app here,
+        # never behind the pump. The door read is a short lock hold (same
+        # as the in-handler admission check); the reject run reuses the
+        # buffered bytes on THIS loop, so a parked pump slot cannot starve
+        # the refusal. Any fault falls through to the pump (fail-queued,
+        # never fail-refused).
+        if enable_reject_fast_path and reject_app is not None:
+            try:
+                if control is None:
+                    closed = not _THIN_OPEN
+                else:
+                    with control._door_lock:
+                        closed = not control._instance_open
+            except Exception:
+                closed = False
+            if closed and _is_sa_marked_body(buffered):
+                replay_fast = iter(buffered)
+
+                async def _fast_receive():
+                    try:
+                        return next(replay_fast)
+                    except StopIteration:
+                        return {"type": "http.disconnect"}
+
+                await _run_on_this_loop(reject_app, scope, _fast_receive, send)
+                return
         sent = []
         replay = iter(buffered)
 
@@ -946,19 +1018,41 @@ def preflight(registry_path, presets_path, *, _socket_factory=None) -> int:
     return 0
 
 
-def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder=None, control=None):
+def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder=None, control=None,
+                   enable_reject_fast_path=True):
     """Assemble the thin ASGI app (no carrier change, no serving).
 
     Auth / routing / preset loading are the production objects; the only
     thin-specific pieces are the closed-only instance-door handler and the
     optional loopback-only control route (``control`` is a ``ThinControl``;
     ``None`` keeps the app exactly as before).
+
+    FIX-2: builds a second app (``reject_app``) over the SAME provider /
+    preset loader with ONLY the soul handler pinned to refuse. The serving
+    wrapper serves closed-door SA-marked bodies through it directly, so a
+    parked pump slot cannot starve a new refusal. ``_forwarder`` (test
+    seam) feeds BOTH apps: the main handler and the reject handler refuse
+    before touching it while closed, so the upstream count is identical.
     """
     with open(registry_path, encoding="utf-8") as fh:
         registry = RegistryProvider(json.load(fh))
+    loader = file_preset_loader(presets_path)
+    # FIX-2 reject handler: the legacy constant-closed handler (control=None
+    # -> ``_THIN_OPEN`` False -> always 403, zero forward). Built through
+    # the SAME ``build_thin_closed_handler`` seam the door-removal mutation
+    # patches, so that mutant still admits (RED) instead of being masked by
+    # the fast path.
+    reject_app = create_external_app(
+        registry,
+        loader,
+        PresetRoutingBackend(),
+        soul_live_handler=build_thin_closed_handler(
+            release_path=release_path, _forwarder=_forwarder, control=None
+        ),
+    )
     app = create_external_app(
         registry,
-        file_preset_loader(presets_path),
+        loader,
         PresetRoutingBackend(),
         soul_live_handler=build_thin_closed_handler(
             release_path=release_path, _forwarder=_forwarder, control=control
@@ -973,7 +1067,13 @@ def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder
         )
         mount_control_route(app, control)
     # SA-DOOR-MECH-FIX-1: business on the pump thread, control on this loop.
-    return _isolate_business_asgi(app)
+    # FIX-2: closed-door SA bodies refuse on this loop via reject_app.
+    return _isolate_business_asgi(
+        app,
+        control=control,
+        reject_app=reject_app,
+        enable_reject_fast_path=enable_reject_fast_path,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
