@@ -10464,3 +10464,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 測試衛生立案：case-matrix維持受版控證據，測試不得覆寫；後票修T18產物寫tmp_path＋斷言沙盒＋隔離T16 dotenv副作用；修復前禁止在共享工作樹重跑會覆寫該檔的測試（必要復現限隔離沙盒）；不採ignore、不放寬斷言、不以事後還原代替修復。本次還原只是現場恢復。
 - 本票收口；衛生缺陷另票追蹤。實彈／部署／開門仍凍結，待Owner拍板事項不變。
 - Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程、未task_stop wrapper。
+## 0.1.160 SA-TEST-HYGIENE-1 衛生修復交付，Mavis複核通過，待臥龍終驗
+- worker交付：T18與T19的zz產物改寫tmp_path沙盒（各＋9／－6），T20本就乾淨未動；新增tests/infra/test_sa_test_hygiene_guard.py（6例：落點規則＋哈希斷言＋正反teeth，附core.autocrlf的clean過濾）；T16污染鏈唯讀定位（T16執行期無stub載入真dotenv，T18舊式嚴斷言被染），改斷言或動conftest皆停手，子項BLOCKED待裁；報告verification/offline/sa-test-hygiene-1.txt。
+- Mavis複核（獨立重跑）：工作樹僅兩M＋一A，verification零M；2b矩陣哈希與既有一致、2a無改動；新守衛＋T18＋T19共75 passed；infra全量417 passed exit 0；T16＋T18合跑1 failed／57 passed與基線一致（未放寬、未擴修，維持候選例外）。
+- 待辦：送臥龍終驗（衛生ACCEPTED＋T16子項BLOCKED裁決）；修復前禁跑規約維持有效直到本票合入。
+- Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程、未task_stop wrapper。

@@ -2,8 +2,9 @@
 
 Decision-complete scope (SA-TRANSPORT-OBS-2A, mastermind Wolong approved):
 zero product change. This file (``tests/soul_access/test_t18_exit7_coverage.py``)
-is the ONLY new file; artifacts stay in ``verification/sa-transport-obs-2a/``
-(self-built sandbox) plus per-test ``tmp_path``. Read-only: ``src/llm/proxy.py``
+is the ONLY new file; artifacts stay in per-test ``tmp_path``. The committed
+``verification/sa-transport-obs-2a/case-matrix.json`` is a frozen reference:
+read-only compare, never written by this suite. Read-only: ``src/llm/proxy.py``
 (esp. the ``except (ConnectError, TimeoutException)`` at :2212),
 ``src/soul_access/evidence.py`` (esp. ``propagate_transport_obs`` at :593),
 the three wiring ``except`` pass-throughs, and the B1/B2/B3 originals
@@ -907,12 +908,17 @@ def test_t18_mutation_misclassify_reverted_green(tmp_path, monkeypatch):
     _matrix("mut-misclassify-green", {"observer": "sees-connect"})
 
 
-# -- T18-i: sandbox case-matrix artifact (secret-free) ---------------------------------
+# -- T18-i: sandbox case-matrix artifact (secret-free, tmp_path only) ------------
+#
+# SA-TEST-HYGIENE-1: this artifact MUST NOT touch the repo tree. The committed
+# ``verification/sa-transport-obs-2a/case-matrix.json`` is a frozen reference
+# (read-only); the per-run matrix lands under the per-test ``tmp_path`` sandbox
+# so passing and failing runs alike leave every tracked file untouched.
 
 
-def test_t18_zz_matrix_artifact():
-    """Persist the secret-free case matrix to the ticket sandbox dir."""
-    out_dir = _REPO_ROOT / "verification" / "sa-transport-obs-2a"
+def test_t18_zz_matrix_artifact(tmp_path):
+    """Persist the secret-free case matrix to the per-test sandbox dir."""
+    out_dir = tmp_path / "t18-case-matrix"
     out_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "ticket": "SA-TRANSPORT-OBS-2A",
