@@ -1,0 +1,7 @@
+{
+  "dialog_request_id": "req-sa-diag-compact-1-0001",
+  "http_status": 200,
+  "raw_body": "{\"id\":\"chatcmpl-804c8ee9b7b542e99dd28e37f2cc73b0\",\"object\":\"chat.completion\",\"created\":1794787005,\"model\":\"sa-rem-primary\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}}",
+  "ticket": "SA-DIAG-COMPACT-01",
+  "transport_calls": 1
+}
