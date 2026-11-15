@@ -53,12 +53,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import secrets
 import socket
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -76,6 +78,7 @@ from src.external_gateway.app import file_preset_loader
 from src.external_gateway.backends import PresetRoutingBackend
 from src.interfaces.external_auth import RegistryProvider
 from src.soul_access import bridge as _sa_bridge
+from src.soul_access import release as _sa_release
 from src.soul_access import wiring as _sa_wiring
 
 #: Loopback-only bind. No flag can change it (there is no --host/--port).
@@ -105,6 +108,13 @@ _CLOSED_MESSAGE = "soul-access inbound closed"
 #: Instance door: process-local, closed, no opener in this ticket. A fresh
 #: process (restart) re-executes this constant, so restart stays closed.
 _THIN_OPEN = False
+
+
+#: SA-DOOR-MECH-1 note (additive): the controlled open path lives on
+#: ``ThinControl`` (``close_door`` / ``install_registry`` / ``ready`` /
+#: ``open_door``), instance-owned and default-closed; the module constant
+#: above stays False for the legacy no-control handler path. ``--control``
+#: sends one door command to the running entry and exits before any bind.
 
 
 # -- SA-ENTRY-GATE-1 control plane (graceful shutdown, loopback-only) --------
@@ -161,6 +171,9 @@ class ThinControl:
         drain_timeout_s=5.0,
         listener=None,
         sleeper=None,
+        release_path=None,
+        registry_path=None,
+        presets_path=None,
     ):
         self.run_id = run_id if isinstance(run_id, str) and run_id else uuid.uuid4().hex
         self._token = (
@@ -184,6 +197,28 @@ class ThinControl:
         self.events = []
         self._seq = 0
         self._listener_closed = False
+        # -- SA-DOOR-MECH-1 dual-door state (instance-owned, default closed) ----
+        # The instance door lives on THIS controller object: a fresh process
+        # builds a fresh closed controller, so a restart never restores open.
+        # Control operations (below) and inbound admission (the thin closed
+        # handler) share ``_door_lock``: exactly one of them mutates or
+        # consults the doors at a time.
+        self._door_lock = threading.Lock()
+        self._instance_open = False
+        self._installed = False
+        self._ready = False
+        self._installed_run = None
+        self._verified = None
+        self.release_path = (
+            str(release_path) if release_path is not None else None
+        )
+        self.registry_path = (
+            str(registry_path) if registry_path is not None else None
+        )
+        self.presets_path = (
+            str(presets_path) if presets_path is not None else None
+        )
+        self._provider = None
         self._record("started")
 
     # -- events (run_id reconciliation, never carries the token) -------------
@@ -215,6 +250,272 @@ class ThinControl:
     def read_token(self):
         """Return the token (only the launcher reads it back from the file)."""
         return self._token
+
+    # -- SA-DOOR-MECH-1 dual-door control (instance door + shared release) ------
+    #
+    # Two doors, one admission: the instance door (this object, default
+    # closed) and the shared release file (open only when it hot-reads
+    # ``{"status": "open"}`` right now). Inbound is admitted only while BOTH
+    # are open. Every method returns the existing control shape
+    # ``(status, payload)`` with ``status`` / ``run_id`` / ``state`` keys.
+    # ``close_door`` never reads the configs, so drift can never block a
+    # re-close. ``install_registry`` / ``open_door`` re-read and re-verify
+    # the pinned dual hashes from disk on every call and drive the service's
+    # actual ``RegistryProvider.update()`` with those same verified bytes
+    # (snapshot semantics are the provider's own, untouched here).
+
+    def attach(self, provider=None, *, registry_path=None, presets_path=None,
+               release_path=None):
+        """Bind the service's actual config/provider handles (no copies).
+
+        ``provider`` must be the live ``RegistryProvider`` the app serves
+        from; ``install_registry`` calls its ``update()`` with the freshly
+        verified bytes. Paths override the constructor values when given.
+        """
+        if provider is not None:
+            self._provider = provider
+        if registry_path is not None:
+            self.registry_path = str(registry_path)
+        if presets_path is not None:
+            self.presets_path = str(presets_path)
+        if release_path is not None:
+            self.release_path = str(release_path)
+        self._record("attached")
+        return self
+
+    def is_instance_open(self) -> bool:
+        """Report the instance door (default closed, restart-closed)."""
+        with self._door_lock:
+            return self._instance_open
+
+    def is_shared_open(self) -> bool:
+        """Hot-read the shared release file (fail-closed on any fault)."""
+        if self.release_path is None:
+            return False
+        return _sa_release.is_live_inbound_open(self.release_path)
+
+    def _door_payload(self, status, extra=None):
+        payload = {
+            "status": status,
+            "run_id": self.run_id,
+            "state": self.state,
+            "instance_open": self._instance_open,
+            "shared_open": self.is_shared_open(),
+            "installed": self._installed,
+            "ready": self._ready,
+        }
+        if extra:
+            payload.update(extra)
+        return payload
+
+    @staticmethod
+    def _atomic_write_json(path, obj) -> None:
+        """Replace ``path`` with ``obj`` atomically (tmp + rename, same dir)."""
+        target = Path(path)
+        tmp = target.parent / (".tmp-%s-%s" % (uuid.uuid4().hex, target.name))
+        tmp.write_text(json.dumps(obj), encoding="utf-8")
+        os.replace(tmp, target)
+
+    def _read_verify(self):
+        """Re-read configs and pin them to the dual content hashes.
+
+        Returns ``(True, (reg_parsed, pre_parsed))`` or
+        ``(False, reason)``. Any fault (missing / unreadable / unparsable /
+        hash drift / template marker) refuses -- never a partial install.
+        """
+        if self.registry_path is None or self.presets_path is None:
+            return (False, "config-paths-unset")
+        try:
+            reg_raw = Path(self.registry_path).read_bytes()
+        except (OSError, ValueError):
+            return (False, "registry-unreadable")
+        if hashlib.sha256(reg_raw).hexdigest() != REGISTRY_SHA256:
+            return (False, "registry-drift")
+        try:
+            reg_parsed = json.loads(reg_raw.decode("utf-8"))
+        except (ValueError, TypeError, UnicodeDecodeError):
+            return (False, "registry-bad-json")
+        try:
+            if "do-not-deploy" in reg_raw.decode("utf-8"):
+                return (False, "registry-template-marker")
+        except (ValueError, UnicodeDecodeError):
+            return (False, "registry-bad-json")
+        try:
+            pre_raw = Path(self.presets_path).read_bytes()
+        except (OSError, ValueError):
+            return (False, "presets-unreadable")
+        if hashlib.sha256(pre_raw).hexdigest() != PRESETS_SHA256:
+            return (False, "presets-drift")
+        try:
+            pre_parsed = json.loads(pre_raw.decode("utf-8"))
+        except (ValueError, TypeError, UnicodeDecodeError):
+            return (False, "presets-bad-json")
+        return (True, (reg_parsed, pre_parsed))
+
+    def _shared_closed(self) -> bool:
+        return not self.is_shared_open()
+
+    def close_door(self):
+        """One-shot dual re-close (idempotent; never blocked by drift).
+
+        Closes the instance door FIRST, then atomically replaces the shared
+        release with closed and reads it back to confirm; revokes the ready
+        qualification. Configs are never read, so a drifted config cannot
+        block a re-close. On a shared-write/confirm fault the instance door
+        is still closed and the reply is 500 (never a false closed claim).
+        """
+        with self._door_lock:
+            self._instance_open = False
+            self._ready = False
+            self._record("instance-closed")
+            if self.release_path is None:
+                self._record("shared-close-skipped", "no-release-path")
+                return (200, self._door_payload("ok"))
+            try:
+                self._atomic_write_json(self.release_path, {"status": "closed"})
+            except Exception as exc:
+                self._record("shared-close-failed", type(exc).__name__)
+                return (500, self._door_payload("close-failed"))
+            if not self._shared_closed():
+                self._record("shared-close-unconfirmed")
+                return (500, self._door_payload("close-failed"))
+            self._record("shared-closed", "confirmed")
+            return (200, self._door_payload("ok"))
+
+    def install_registry(self):
+        """Install the verified snapshot; both doors must already be closed.
+
+        Re-reads and re-verifies the dual hashes, then calls the service's
+        actual ``RegistryProvider.update()`` with those same verified bytes.
+        A bad candidate raises inside ``update()`` and the old snapshot keeps
+        serving (provider snapshot semantics, untouched here).
+        """
+        with self._door_lock:
+            if self._instance_open or not self._shared_closed():
+                self._record("install-refused", "doors-not-both-closed")
+                return (
+                    409,
+                    self._door_payload("refused", {"reason": "doors-not-both-closed"}),
+                )
+            if self._provider is None:
+                self._record("install-refused", "provider-unattached")
+                return (
+                    409,
+                    self._door_payload("refused", {"reason": "provider-unattached"}),
+                )
+            ok, data = self._read_verify()
+            if not ok:
+                self._record("install-refused", data)
+                return (409, self._door_payload("refused", {"reason": data}))
+            reg_parsed, _pre_parsed = data
+            try:
+                self._provider.update(reg_parsed)
+            except Exception as exc:
+                self._record("install-refused", "snapshot-rejected=%s" % type(exc).__name__)
+                return (
+                    409,
+                    self._door_payload("refused", {"reason": "snapshot-rejected"}),
+                )
+            self._installed = True
+            self._installed_run = self.run_id
+            self._ready = False
+            self._verified = {
+                "registry_sha": REGISTRY_SHA256,
+                "presets_sha": PRESETS_SHA256,
+            }
+            self._record("installed")
+            return (200, self._door_payload("ok"))
+
+    def ready(self):
+        """Confirm readiness: both doors closed AND a verified snapshot held.
+
+        Forces the triple check (instance closed + shared closed + installed
+        in this run) before arming ``open_door``. Never opens anything.
+        """
+        with self._door_lock:
+            if self._instance_open or not self._shared_closed():
+                self._record("ready-refused", "doors-not-both-closed")
+                return (
+                    409,
+                    self._door_payload("refused", {"reason": "doors-not-both-closed"}),
+                )
+            if not self._installed or self._installed_run != self.run_id:
+                self._record("ready-refused", "not-installed")
+                return (
+                    409,
+                    self._door_payload("refused", {"reason": "not-installed"}),
+                )
+            if self._verified is None:
+                self._record("ready-refused", "no-verified-snapshot")
+                return (
+                    409,
+                    self._door_payload("refused", {"reason": "no-verified-snapshot"}),
+                )
+            ok, _data = self._read_verify()
+            if not ok:
+                self._record("ready-refused", _data)
+                return (409, self._door_payload("refused", {"reason": _data}))
+            self._ready = True
+            self._record("ready")
+            return (200, self._door_payload("ok"))
+
+    def open_door(self):
+        """Open both doors in order: shared first, instance last.
+
+        Requires installed + ready in this same run. Re-verifies the dual
+        hashes first; any drift re-closes both doors immediately and stops
+        the ticket (409, never half-open). A restart (fresh controller)
+        starts closed by construction and never restores open.
+        """
+        with self._door_lock:
+            if not (
+                self._installed
+                and self._ready
+                and self._installed_run == self.run_id
+            ):
+                self._record("open-refused", "not-installed-or-ready")
+                return (
+                    409,
+                    self._door_payload(
+                        "refused", {"reason": "not-installed-or-ready"}
+                    ),
+                )
+            ok, _data = self._read_verify()
+            if not ok:
+                self._instance_open = False
+                self._ready = False
+                try:
+                    if self.release_path is not None:
+                        self._atomic_write_json(
+                            self.release_path, {"status": "closed"}
+                        )
+                except Exception:
+                    pass
+                self._record("drift-reclosed", _data)
+                return (
+                    409,
+                    self._door_payload("refused", {"reason": _data}),
+                )
+            if self.release_path is None:
+                self._record("open-refused", "no-release-path")
+                return (
+                    409,
+                    self._door_payload("refused", {"reason": "no-release-path"}),
+                )
+            try:
+                self._atomic_write_json(self.release_path, {"status": "open"})
+            except Exception as exc:
+                self._record("open-failed", "shared-write=%s" % type(exc).__name__)
+                self._instance_open = False
+                return (500, self._door_payload("open-failed"))
+            if not self.is_shared_open():
+                self._record("open-failed", "shared-unconfirmed")
+                self._instance_open = False
+                return (500, self._door_payload("open-failed"))
+            self._record("shared-opened", "confirmed")
+            self._instance_open = True
+            self._record("instance-opened")
+            return (200, self._door_payload("ok"))
 
     # -- in-flight tracking ---------------------------------------------------
 
@@ -260,6 +561,25 @@ class ThinControl:
                     "inflight": self.inflight,
                 },
             )
+        # -- SA-DOOR-MECH-1 door commands: loopback + token (above) plus an
+        # explicit run_id match. A wrong or missing run_id refuses 401 with
+        # zero state change, exactly like a wrong token. ``panic-close`` is a
+        # direct ``close_door()`` call (one-shot dual re-close, idempotent).
+        if command in ("close", "install", "ready", "open", "panic-close"):
+            presented_run = body.get("run_id") if isinstance(body, dict) else None
+            if not isinstance(presented_run, str) or not hmac.compare_digest(
+                presented_run, self.run_id
+            ):
+                self._record("door-unauthorized")
+                return (401, {"status": "unauthorized", "run_id": self.run_id})
+            if command == "close" or command == "panic-close":
+                return self.close_door()
+            if command == "install":
+                return self.install_registry()
+            if command == "ready":
+                return self.ready()
+            if command == "open":
+                return self.open_door()
         return (400, {"status": "bad-command", "run_id": self.run_id})
 
     # -- shutdown (idempotent; BLOCKED on drain anomaly) ----------------------
@@ -376,7 +696,7 @@ def is_thin_open() -> bool:
     return _THIN_OPEN
 
 
-def build_thin_closed_handler(*, release_path=None, _forwarder=None):
+def build_thin_closed_handler(*, release_path=None, _forwarder=None, control=None):
     """Build the closed-only soul-access handler for this instance.
 
     The door refuses FIRST (403, zero forward) before the shared release
@@ -386,16 +706,30 @@ def build_thin_closed_handler(*, release_path=None, _forwarder=None):
     is a test-only seam (counting stand-in); production always builds the
     real thin forwarder (which still independently checks the release file
     per request, so the entry is doubly closed).
+
+    SA-DOOR-MECH-1: when ``control`` (a ``ThinControl``) is given, the
+    instance door is that controller's instance-owned flag, consulted under
+    the shared door lock; a closed instance door refuses 403 with zero
+    forward, and an open one delegates to the forwarder (which still
+    hot-reads the shared gate itself). When ``control`` is ``None`` the
+    legacy process constant ``_THIN_OPEN`` (always False) decides.
     """
     forwarder = _forwarder
     if forwarder is None:
         target = release_path if release_path is not None else str(_sa_wiring.RELEASE_FILE)
         forwarder = _sa_wiring.build_thin_forwarder(release_path=target)
 
-    def _handle(envelope, *, route=None, preset=None):
-        if not _THIN_OPEN:
-            raise _sa_bridge.LiveRefused(403, "forbidden", _CLOSED_MESSAGE)
-        return forwarder(envelope, route=route, preset=preset)
+    if control is None:
+        def _handle(envelope, *, route=None, preset=None):
+            if not _THIN_OPEN:
+                raise _sa_bridge.LiveRefused(403, "forbidden", _CLOSED_MESSAGE)
+            return forwarder(envelope, route=route, preset=preset)
+    else:
+        def _handle(envelope, *, route=None, preset=None):
+            with control._door_lock:
+                if not control._instance_open:
+                    raise _sa_bridge.LiveRefused(403, "forbidden", _CLOSED_MESSAGE)
+                return forwarder(envelope, route=route, preset=preset)
 
     return _handle
 
@@ -489,10 +823,16 @@ def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder
         file_preset_loader(presets_path),
         PresetRoutingBackend(),
         soul_live_handler=build_thin_closed_handler(
-            release_path=release_path, _forwarder=_forwarder
+            release_path=release_path, _forwarder=_forwarder, control=control
         ),
     )
     if control is not None:
+        control.attach(
+            provider=registry,
+            registry_path=str(registry_path),
+            presets_path=str(presets_path),
+            release_path=(str(release_path) if release_path is not None else None),
+        )
         mount_control_route(app, control)
     return app
 
@@ -518,6 +858,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Control-file path for the loopback shutdown token "
         "(default: %(default)s; token is never logged).",
     )
+    parser.add_argument(
+        "--control",
+        choices=("close", "install", "ready", "open", "panic-close"),
+        default=None,
+        help="Send one door command to the running thin entry over "
+        "loopback and exit (no bind, no serve; fixed endpoint, zero retry; "
+        "success exits 0, lost contact or write failure exits 2).",
+    )
     return parser
 
 
@@ -526,14 +874,85 @@ def _refuse() -> int:
     return 2
 
 
+#: Door commands the ``--control`` client may send (server side accepts the
+#: same set; ``shutdown`` / ``status`` stay server-side only).
+CONTROL_COMMANDS = ("close", "install", "ready", "open", "panic-close")
+
+
+def _run_control_command(command, control_file, *, _connect=None) -> int:
+    """Send one door command to the running entry; return the exit code.
+
+    Runs BEFORE any preflight / bind / serve work in ``main()``. Reads the
+    existing control file (run_id + token + endpoint), POSTs once to the
+    fixed loopback endpoint (zero retry), and exits 0 only on a 200 reply.
+    Lost contact, an unreadable control file, or a write failure exits 2
+    and never claims a re-close. ``_connect`` is a test-only
+    ``HTTPConnection`` factory seam (default: the real one, loopback-only).
+    """
+    try:
+        filed = json.loads(Path(control_file).read_text(encoding="utf-8"))
+        run_id = filed.get("run_id")
+        token = filed.get("token")
+        endpoint = filed.get("endpoint", CONTROL_ENDPOINT)
+    except Exception:
+        print("sa thin control: unreadable control file.", file=sys.stderr)
+        return 2
+    if (
+        endpoint != CONTROL_ENDPOINT
+        or not isinstance(run_id, str)
+        or not run_id
+        or not isinstance(token, str)
+        or not token
+    ):
+        print("sa thin control: control file refused.", file=sys.stderr)
+        return 2
+    body = json.dumps({"token": token, "command": command, "run_id": run_id})
+    factory = _connect if _connect is not None else http.client.HTTPConnection
+    try:
+        conn = factory(THIN_HOST, THIN_PORT, timeout=5)
+        conn.request(
+            "POST",
+            CONTROL_ENDPOINT,
+            body=body,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(body.encode("utf-8"))),
+            },
+        )
+        response = conn.getresponse()
+        status = response.status
+        response.read()
+    except Exception:
+        print(
+            "sa thin control: %s failed (no contact)." % command,
+            file=sys.stderr,
+        )
+        return 2
+    if status == 200:
+        print("sa thin control: %s ok." % command)
+        return 0
+    print(
+        "sa thin control: %s refused (status %d)." % (command, status),
+        file=sys.stderr,
+    )
+    return 2
+
+
 def main(argv=None) -> int:
     """Parse, preflight, announce, serve. Returns process exit code."""
     args = build_parser().parse_args(argv)
+    if args.control is not None:
+        return _run_control_command(args.control, args.control_file)
     if preflight(args.registry, args.presets) != 0:
         return _refuse()
     control = ThinControl(control_path=args.control_file)
     control.write_control_file()
-    app = build_thin_app(args.registry, args.presets, control=control)
+    app = build_thin_app(
+        args.registry,
+        args.presets,
+        release_path=str(_sa_wiring.RELEASE_FILE),
+        control=control,
+    )
     # run_id is reconciliation inventory (the token itself is never printed).
     print(
         "sa thin entry on %s:%s (closed, loopback-only) run_id=%s control=%s"

@@ -10546,3 +10546,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 效力：直送前置驗證通過，可推進B後續工程；不得據此開門或接流量（副本刪bind探測，驗收不含正式bind/入口開門/持續服務）。雙門維持closed/False。本案關閉，不補打不重審；不得把限定通過記成服務已開放。
 - 待辦：只剩SA-DOOR-MECH-1施工中，回來即複核終驗，再走SA-DOOR-OPEN-1。
 - Frozen：src零改動、data唯讀、未啟服、未綁埠、未殺行程、未task_stop wrapper；真實外呼共1次（單發授權內，已耗盡）。
+## 0.1.174 SA-DOOR-MECH-1 worker交付，Mavis複核通過，待終驗
+- 交付：tracked僅4個票內檔（serve_sa_thin.py＋433雙門控制close/install/ready/open、panic-close、loopback＋token＋run_id、--control分支；test_sa_door_mech.py新增21項；test_t17_recovery.py門縫改公開API；RUNBOOK §11開關門命令）。src零改動、data唯讀、未啟服、未綁埠。
+- 複核（.venv Python 3.11.15）：door_mech 21＋T17 25＝46 passed（2.66s）；tests/infra 428 passed（108s，exit 0，含AST守衛）；雙門預設閉合、順序不可跳、全序列開門事件有序、漂移拒裝拒開並重關、live provider快照有證、close/panic-close冪等；--control綁定前分流。生產雙門維持closed/False，:18765空、:8000正常。
+- 待辦：同步Notion後送臥龍終驗；終驗通過才走SA-DOOR-OPEN-1，之前不開門不接流量。
+- Frozen：src零改動、data唯讀、未啟服、未綁埠、未殺行程、未task_stop wrapper。

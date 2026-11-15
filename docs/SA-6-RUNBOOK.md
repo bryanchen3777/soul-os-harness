@@ -146,3 +146,29 @@
 - 邊界聲明：本票只驗收「能力」（evidence channel 可用），**不宣稱線上缺口已解除**。實彈續行另有兩前置：埠釋放＋閉門接線驗證。
 - 證據：`verification/sa-evidence-channel-1/`（`STATUS.md`／`evidence-report.json`／`sample/` 真實碼路徑樣本對）。
 - 禁止（本票）：不碰 launcher／探針／生產設定／data；失敗保留閉門；不推播（本地提交，pathspec 僅本票檔案）。
+
+## 11. SA-DOOR-MECH-1 雙門控制機制（2026-11-15；只驗機制、不開門）
+
+- 機制：`scripts/serve_sa_thin.py` 的 `ThinControl` 新增實例門＋共享門雙門控制
+  （`close_door`／`install_registry`／`ready`／`open_door`），另有 `panic-close`
+  與 `--control` 客戶端分支。實際開門是 SA-DOOR-OPEN-1，本票只驗機制。
+- 規則：順序不可跳（先關雙門→裝 snapshot→備妥→先共享後實例開）；
+  讀回確認；漂移重關並止步；重啟永閉；`--control` 在 bind/serve 前分支，
+  固定端點、零重試，成功 exit 0，失聯／寫入失敗 exit 2 且不謊稱已關。
+- 啟用（生產操作皆經本函式，禁手動改門）：
+  ```powershell
+  function sd($c) {
+    & .venv\Scripts\python.exe -B scripts\serve_sa_thin.py --control $c
+    if ($LASTEXITCODE -ne 0) { throw 'BLOCKED' }
+  }
+  sd close
+  sd install
+  sd ready
+  sd open
+  # 一鍵復閉
+  sd panic-close
+  ```
+- 測試：`tests/soul_access/test_sa_door_mech.py`（21 項，含雙向變異）；
+  T17 薄端門縫改走公開 API（install→ready→open），斷言不變。
+- 禁止（本票）：不開門、不接真流量；不動 `src/**`、正式設定、403 契約、
+  放行順序；不重用舊 `door_open.py`；不手動改門、不繞常數。

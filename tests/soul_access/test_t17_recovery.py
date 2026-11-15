@@ -758,6 +758,74 @@ def test_t17_recovery_redaction_key_ref_only(tmp_path, monkeypatch):
 
 
 # -- T17-d: thin side (formal forwarder + formal thin app, ASGI loopback) -----
+#
+# Door seam (SA-DOOR-MECH-1): the instance door is owned by a per-test
+# ``ThinControl`` (default closed) and is opened ONLY through the public API
+# (``install_registry`` -> ``ready`` -> ``open_door``); the shared sandbox gate
+# is flipped by writing the sandbox gate file. The module-global
+# ``_THIN_OPEN`` constant is never touched.
+
+def _pin_thin_shas(monkeypatch, registry_path: Path, presets_path: Path):
+    """Point the dual-hash pins at the sandbox copies (T12 precedent).
+
+    Production pins stay asserted by T12; the sandbox copies stand in so the
+    verify path runs for real."""
+    monkeypatch.setattr(
+        thin_mod,
+        "REGISTRY_SHA256",
+        hashlib.sha256(Path(registry_path).read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(
+        thin_mod,
+        "PRESETS_SHA256",
+        hashlib.sha256(Path(presets_path).read_bytes()).hexdigest(),
+    )
+
+
+def _thin_control_app(
+    tmp_path: Path,
+    monkeypatch,
+    registry_path: Path,
+    presets_path: Path,
+    gate_path: Path,
+    sender,
+    *,
+    run_id: str,
+    token: str,
+    control_name: str = "control.json",
+):
+    """Sandbox app guarded by an instance-owned control (public API only).
+
+    ``build_thin_app`` attaches the live sandbox provider + paths to the
+    control; the caller opens it with ``_thin_open_via_api``."""
+    _pin_thin_shas(monkeypatch, registry_path, presets_path)
+    control = thin_mod.ThinControl(
+        run_id=run_id,
+        token=token,
+        control_path=str(tmp_path / control_name),
+    )
+    forwarder = wiring.build_thin_forwarder(
+        release_path=str(gate_path),
+        target_base="http://t17-thin.invalid",
+        sender=sender,
+    )
+    app = thin_mod.build_thin_app(
+        str(registry_path), str(presets_path),
+        release_path=str(gate_path), _forwarder=forwarder, control=control,
+    )
+    return (control, app)
+
+
+def _thin_open_via_api(control):
+    """Open via the public door API: install -> ready -> open (each 200)."""
+    status, _ = control.install_registry()
+    assert status == 200
+    status, _ = control.ready()
+    assert status == 200
+    status, payload = control.open_door()
+    assert status == 200
+    return payload
+
 
 def test_t17_recovery_thin_g1_instance_closed_refuses(tmp_path, monkeypatch):
     """G1: instance door closed refuses even when the sandbox gate says open."""
@@ -783,18 +851,15 @@ def test_t17_recovery_thin_g1_instance_closed_refuses(tmp_path, monkeypatch):
 def test_t17_recovery_thin_g2_shared_closed_refuses(tmp_path, monkeypatch):
     """G2: shared (sandbox release) gate closed refuses with instance open."""
     monkeypatch.setenv(THIN_KEY_REF, THIN_FAKE_KEY)
-    monkeypatch.setattr(thin_mod, "_THIN_OPEN", True)
     registry_path, presets_path, gate_path = _thin_files(tmp_path, "closed")
     sender = _CountingSender()
-    forwarder = wiring.build_thin_forwarder(
-        release_path=str(gate_path),
-        target_base="http://t17-thin.invalid",
-        sender=sender,
+    control, app = _thin_control_app(
+        tmp_path, monkeypatch, registry_path, presets_path, gate_path, sender,
+        run_id="run-t17-g2", token="t17-g2-control-token",
     )
-    app = thin_mod.build_thin_app(
-        str(registry_path), str(presets_path),
-        release_path=str(gate_path), _forwarder=forwarder,
-    )
+    _thin_open_via_api(control)
+    assert control.is_instance_open() is True
+    gate_path.write_text(json.dumps({"status": "closed"}), encoding="utf-8")
     response = _post_thin(app)
     assert response.status_code == 403
     assert sender.calls == []
@@ -802,33 +867,24 @@ def test_t17_recovery_thin_g2_shared_closed_refuses(tmp_path, monkeypatch):
 
 def test_t17_recovery_thin_open_once_then_reclose(tmp_path, monkeypatch):
     """Both gates briefly open: exactly one success; re-close re-verified;
-    doors restored closed (monkeypatch + explicit re-verify)."""
+    doors restored closed (public-API close_door + read-back re-verify)."""
     monkeypatch.setenv(THIN_KEY_REF, THIN_FAKE_KEY)
-    registry_path, presets_path, gate_path = _thin_files(tmp_path, "open")
+    registry_path, presets_path, gate_path = _thin_files(tmp_path, "closed")
     sender = _CountingSender()
-    forwarder = wiring.build_thin_forwarder(
-        release_path=str(gate_path),
-        target_base="http://t17-thin.invalid",
-        sender=sender,
+    control, app_ok = _thin_control_app(
+        tmp_path, monkeypatch, registry_path, presets_path, gate_path, sender,
+        run_id="run-t17-open", token="t17-open-control-token",
     )
-    monkeypatch.setattr(thin_mod, "_THIN_OPEN", True)
-    try:
-        app_ok = thin_mod.build_thin_app(
-            str(registry_path), str(presets_path),
-            release_path=str(gate_path), _forwarder=forwarder,
-        )
-        response = _post_thin(app_ok)
-        assert response.status_code == 200
-        assert len(sender.calls) == 1
-        assert response.json()["choices"][0]["message"]["content"] == THIN_SUCCESS_TEXT
-    finally:
-        monkeypatch.setattr(thin_mod, "_THIN_OPEN", False)
-        gate_path.write_text(json.dumps({"status": "closed"}), encoding="utf-8")
-    app_re = thin_mod.build_thin_app(
-        str(registry_path), str(presets_path),
-        release_path=str(gate_path), _forwarder=forwarder,
-    )
-    response_re = _post_thin(app_re)
+    _thin_open_via_api(control)
+    response = _post_thin(app_ok)
+    assert response.status_code == 200
+    assert len(sender.calls) == 1
+    assert response.json()["choices"][0]["message"]["content"] == THIN_SUCCESS_TEXT
+    status, _ = control.close_door()
+    assert status == 200
+    assert control.is_instance_open() is False
+    assert json.loads(gate_path.read_text(encoding="utf-8")) == {"status": "closed"}
+    response_re = _post_thin(app_ok)
     assert response_re.status_code == 403
     assert len(sender.calls) == 1  # reclose transmitted nothing more
     assert thin_mod.is_thin_open() is False
@@ -989,22 +1045,18 @@ def test_t17_mutation_wrong_pairing_reverted_green(tmp_path, monkeypatch):
 
 
 def test_t17_mutation_gate_relaxed_red(tmp_path, monkeypatch):
-    """Relaxed mutant: instance door forced open while the shared sandbox
-    gate stays closed -> still 403 with zero transmission (RED for anyone
-    expecting the relaxed door to admit)."""
+    """Relaxed mutant: instance door open (public API) while the shared
+    sandbox gate stays closed -> still 403 with zero transmission (RED for
+    anyone expecting the relaxed door to admit)."""
     monkeypatch.setenv(THIN_KEY_REF, THIN_FAKE_KEY)
-    monkeypatch.setattr(thin_mod, "_THIN_OPEN", True)  # relaxed mutant
     registry_path, presets_path, gate_path = _thin_files(tmp_path, "closed")
     sender = _CountingSender()
-    forwarder = wiring.build_thin_forwarder(
-        release_path=str(gate_path),
-        target_base="http://t17-thin.invalid",
-        sender=sender,
+    control, app = _thin_control_app(
+        tmp_path, monkeypatch, registry_path, presets_path, gate_path, sender,
+        run_id="run-t17-mrelax", token="t17-mrelax-control-token",
     )
-    app = thin_mod.build_thin_app(
-        str(registry_path), str(presets_path),
-        release_path=str(gate_path), _forwarder=forwarder,
-    )
+    _thin_open_via_api(control)
+    gate_path.write_text(json.dumps({"status": "closed"}), encoding="utf-8")
     response = _post_thin(app)
     if response.status_code != 403 or sender.calls != []:
         pytest.fail("MUTATION DUD -- STOP, report: relaxed instance door admitted")
@@ -1014,18 +1066,13 @@ def test_t17_mutation_gate_relaxed_red(tmp_path, monkeypatch):
 def test_t17_mutation_gate_relaxed_reverted_green(tmp_path, monkeypatch):
     """Revert: both doors legitimately open -> exactly one success (GREEN)."""
     monkeypatch.setenv(THIN_KEY_REF, THIN_FAKE_KEY)
-    monkeypatch.setattr(thin_mod, "_THIN_OPEN", True)
-    registry_path, presets_path, gate_path = _thin_files(tmp_path, "open")
+    registry_path, presets_path, gate_path = _thin_files(tmp_path, "closed")
     sender = _CountingSender()
-    forwarder = wiring.build_thin_forwarder(
-        release_path=str(gate_path),
-        target_base="http://t17-thin.invalid",
-        sender=sender,
+    control, app = _thin_control_app(
+        tmp_path, monkeypatch, registry_path, presets_path, gate_path, sender,
+        run_id="run-t17-mrelax-g", token="t17-mrelax-g-control-token",
     )
-    app = thin_mod.build_thin_app(
-        str(registry_path), str(presets_path),
-        release_path=str(gate_path), _forwarder=forwarder,
-    )
+    _thin_open_via_api(control)
     response = _post_thin(app)
     assert response.status_code == 200 and len(sender.calls) == 1
 
@@ -1034,19 +1081,14 @@ def test_t17_mutation_gate_forced_closed_red(tmp_path, monkeypatch):
     """Forced-closed mutant: on the success configuration the shared gate is
     forced closed at the last moment -> 403 with zero transmission (RED)."""
     monkeypatch.setenv(THIN_KEY_REF, THIN_FAKE_KEY)
-    monkeypatch.setattr(thin_mod, "_THIN_OPEN", True)
-    registry_path, presets_path, gate_path = _thin_files(tmp_path, "open")
+    registry_path, presets_path, gate_path = _thin_files(tmp_path, "closed")
     sender = _CountingSender()
-    forwarder = wiring.build_thin_forwarder(
-        release_path=str(gate_path),
-        target_base="http://t17-thin.invalid",
-        sender=sender,
+    control, app = _thin_control_app(
+        tmp_path, monkeypatch, registry_path, presets_path, gate_path, sender,
+        run_id="run-t17-mforce", token="t17-mforce-control-token",
     )
+    _thin_open_via_api(control)
     gate_path.write_text(json.dumps({"status": "closed"}), encoding="utf-8")  # forced
-    app = thin_mod.build_thin_app(
-        str(registry_path), str(presets_path),
-        release_path=str(gate_path), _forwarder=forwarder,
-    )
     response = _post_thin(app)
     if response.status_code != 403 or sender.calls != []:
         pytest.fail("MUTATION DUD -- STOP, report: forced-closed gate admitted")
@@ -1056,18 +1098,13 @@ def test_t17_mutation_gate_forced_closed_red(tmp_path, monkeypatch):
 def test_t17_mutation_gate_forced_closed_reverted_green(tmp_path, monkeypatch):
     """Revert: gate restored open with instance open -> success (GREEN)."""
     monkeypatch.setenv(THIN_KEY_REF, THIN_FAKE_KEY)
-    monkeypatch.setattr(thin_mod, "_THIN_OPEN", True)
-    registry_path, presets_path, gate_path = _thin_files(tmp_path, "open")
+    registry_path, presets_path, gate_path = _thin_files(tmp_path, "closed")
     sender = _CountingSender()
-    forwarder = wiring.build_thin_forwarder(
-        release_path=str(gate_path),
-        target_base="http://t17-thin.invalid",
-        sender=sender,
+    control, app = _thin_control_app(
+        tmp_path, monkeypatch, registry_path, presets_path, gate_path, sender,
+        run_id="run-t17-mforce-g", token="t17-mforce-g-control-token",
     )
-    app = thin_mod.build_thin_app(
-        str(registry_path), str(presets_path),
-        release_path=str(gate_path), _forwarder=forwarder,
-    )
+    _thin_open_via_api(control)
     response = _post_thin(app)
     assert response.status_code == 200 and len(sender.calls) == 1
     assert response.json()["choices"][0]["message"]["content"] == THIN_SUCCESS_TEXT
