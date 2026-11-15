@@ -10437,3 +10437,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - Mavis最小补证执行（只读）：依次task_output回收bg_3ac7be4d及两路读者任务bg_e31992d4、bg_187261fa——三者皆回「Local background task not found」（背景任务输出已被GC）。最小补证不可得，依卧龙附条件维持留案，不再开新取证票。
 - 今晚链条收敛：2C离线ACCEPTED／OFFLINE_READY（限定）；B1/B2/B3 INCONCLUSIVE；B4已耗尽；E1留案INCONCLUSIVE；全库闸门未满足；部署仍BLOCKED。后续只剩Owner裁示事项（新真实批授权／花钱／换模型）或新证据出现时再动；工程端无自行可办事项，停止开票。
 - Frozen：未改Frozen Contract、未改守卫、未写data/**、未启服、未绑埠、无真实外呼；未杀行程、未task_stop wrapper。
+## 0.1.155 卧龙部署线方向：继续离线工程，部署仍BLOCKED；SA-LOOP-OFFLINE-1已派工
+- Owner问「还没部署，应该继续下一步」；卧龙方向裁决（bg_032dda14，唯读核对，未执行测试）：继续离线工程；部署仍BLOCKED，不授权新实弹。新线索（待验假说，非根因）：B4发送器用手动coroutine pump、明确不建立event loop（live_fire_b4_real.py:137），而失败档记NoEventLoopError；下一票先做零外连因果对照。
+- 下一票SA-LOOP-OFFLINE-1（已派工bg_f2d6f9b2）：仅新增tests/soul_access/test_transport_loop.py；保留真backend/httpx、最低传输层注入mock；同输入对照旧pump与单线程无socket测试回圈；网络硬拦、假凭证、输出限tmp_path。验收：旧红→候选绿→退回红（附完整堆栈、mock raw/usage配对、单次零重试证据）；不能重现即INCONCLUSIVE停票。不做：改产品/Frozen/门禁/生产值/既有批次；启服绑埠、外呼、重跑全库追E1。
+- 排序与权限：①本票工程自办（成本最低）；②薄端合法开门与逐请求取证离线设计可并行，实作须另票限域解冻（成本较高）；③闭门部署须正式值核准＋全库闸门放行，2C不能取代。Owner须明示：花钱、registry/presets正式值核准、实际开门、新实弹批次。APPROVAL-1、T18、E1维持原判。
+- Frozen：未改Frozen Contract、未改守卫、未写data/**、未启服、未绑埠、无真实外呼；未杀行程、未task_stop wrapper。
