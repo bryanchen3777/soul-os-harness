@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import ast
+import contextlib
 import importlib.util
 import inspect
 import json
@@ -92,28 +93,56 @@ class _NoopDotenv(ModuleType):
         return False
 
 
-#Installed unconditionally BEFORE the B3 import: an earlier-imported module
-# may already hold the real dotenv, which must not read a real .env here.
-_SAVED_DOTENV = sys.modules.get("dotenv")
-sys.modules["dotenv"] = _NoopDotenv("dotenv")
+#Installed around the B3 exec ONLY (never left behind): an earlier-imported
+# module may already hold the real dotenv, which must not read a real .env
+# here. The snapshot is taken FRESH at load time inside the context manager —
+# never as a stale import-time module global: a stale ``None`` snapshot goes
+# red the moment any legitimate later import populates the entry before this
+# module's tests run (GATE-2: the life-thread pipeline's lazy
+# ``configs.loader`` -> real ``dotenv`` import lands in ``sys.modules``
+# mid-session, so ``sys.modules.get("dotenv") is _SAVED_DOTENV`` compared a
+# fossil against the live session). Same scoped-stub shape as T16's
+# ``_stub_dotenv_for_b2`` (SA-T16-ISOLATION-1).
+_MISSING = object()  # sentinel: distinguishes "key absent" from any entry
+
+_T18_STUB = _NoopDotenv("dotenv")
+
+
+@contextlib.contextmanager
+def _stub_dotenv_for_b3():
+    """Pre-empt ``sys.modules["dotenv"]`` for one B3 load; always restore."""
+    saved = sys.modules.get("dotenv", _MISSING)
+    sys.modules["dotenv"] = _T18_STUB
+    try:
+        # Strict pre-load pin: the stub — never the real loader — serves B3.
+        assert sys.modules.get("dotenv") is _T18_STUB
+        yield _T18_STUB
+    finally:
+        if saved is _MISSING:
+            sys.modules.pop("dotenv", None)
+            # Strict post-restore pin + key existence: absent-before ⇒ the
+            # key itself is gone afterwards, not a None placeholder.
+            assert "dotenv" not in sys.modules
+        else:
+            sys.modules["dotenv"] = saved
+            # Strict post-restore pin: the prior entry returns by identity.
+            assert sys.modules.get("dotenv") is saved
 
 
 def _load_b3():
-    spec = importlib.util.spec_from_file_location("live_fire_b3_t18", LIVE_B3_PATH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    with _stub_dotenv_for_b3():
+        spec = importlib.util.spec_from_file_location("live_fire_b3_t18", LIVE_B3_PATH)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
 
 b3 = _load_b3()
 _B3_DOTENV_CALLS = list(_DOTENV_CALLS)  # snapshot: later modules must not pollute it
-# Restore whatever dotenv was there before (or drop the stub) so this
-# module's import-time stub never leaks into other tests sharing the session.
+# The context manager above already restored whatever dotenv entry was there
+# before this module's B3 load (or dropped the stub when there was none), so
+# the load-time stub never leaks into other tests sharing the session.
 # b3 already consumed the stub at import; nothing else needs it afterwards.
-if _SAVED_DOTENV is None:
-    del sys.modules["dotenv"]
-else:
-    sys.modules["dotenv"] = _SAVED_DOTENV
 
 NON_ROUTABLE_BASE = "http://t18-invalid.invalid/v1/chat/completions"
 SENTINEL_KEY_REF = "OLLAMA_API_KEY"
@@ -294,9 +323,15 @@ def test_t18_b3_loads_without_dotenv_and_main_never_called():
     assert LIVE_B1_PATH.exists() and LIVE_B2_PATH.exists() and LIVE_B3_PATH.exists()
     # The stubbed loader did nothing (no file read, no env injection).
     assert _B3_DOTENV_CALLS == [((), {})]
-    # ... and the stub never leaks: sys.modules holds whatever was there
-    # before this module (real dotenv or nothing), never our stub.
-    assert sys.modules.get("dotenv") is _SAVED_DOTENV
+    # ... and the stub never leaks: no live reference to our stub survives
+    # anywhere in the session. Whatever the real dotenv entry holds NOW —
+    # e.g. populated later by a legitimate lazy import such as the
+    # life-thread pipeline's ``configs.loader`` — is read-only here and says
+    # nothing about our load; the strict before/after-``is`` + key-existence
+    # pins already ran (and passed) at load time inside
+    # ``_stub_dotenv_for_b3``, where the snapshot is fresh. Pinning a stale
+    # import-time snapshot here is what turned GATE-2 red, so it stays out.
+    assert all(mod is not _T18_STUB for mod in list(sys.modules.values()))
     assert callable(b3.main)  # present but NEVER invoked in this file
     assert "fake suspend" in inspect.getsource(b3._run)  # original pump pin
     _matrix("b3-load", {"dotenv_stubbed": True, "main_called": False})

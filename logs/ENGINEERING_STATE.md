@@ -10501,3 +10501,10 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 新票SA-T18-DOTENV-BOUNDARY-1（先證後修）：未修提交同.venv隔離復現＋沙盒hook記dotenv身分、縮最小紅序列；證實T16洩漏才重開原案，真環境污染回報另裁；若係合法匯入撞陳舊快照，僅改T18一檔（_load_b3封裝快照/stub/載入/finally復原，sentinel區分缺席，保留嚴格is斷言，不放寬），新增`tests/infra/test_sa_t18_dotenv_boundary.py`。
 - 驗收：缺席/既存×成功/例外皆精確復原，真dotenv零讀、main零呼叫；移除stub/復原變異必紅；最小序列修前紅修後綠，T16/T18正反序＋infra＋全庫綠；產物僅tmp_path；src/conftest/正式證據雙哈希不動。
 - Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程、未task_stop wrapper。
+
+## 0.1.166 SA-T18-DOTENV-BOUNDARY-1複核通過（分支c，先證後修）——送臥龍終驗
+- 真兇（hook實測）：`tests/soul/test_life_thread_at_capacity_wake.py` call期 `asyncio.run(m5.run_slot_pipeline)` → `life_thread_orchestrator.py:781 capacity()` → `life_threads.py:393 from configs.loader import load_config` → `configs/loader.py:30 from dotenv import load_dotenv`（模組層真包，audit恰1次，收集完成時為None）。產品合法延遲匯入撞T18陳舊快照；非T16洩漏（T16→T18綠、全程None），非環境污染。最小紅序列雙檔~3秒：修前1 failed/29 passed，修後30 passed。
+- 修復（僅兩檔）：T18刪import-time陳舊快照，新增`_MISSING` sentinel＋`_stub_dotenv_for_b3()`（新鮮快照＋載入時嚴格is/key斷言＋finally復原），測試期斷言改`all(mod is not _T18_STUB…)`（嚴格性前移，非放寬，與T19先例同形）；新增`tests/infra/test_sa_t18_dotenv_boundary.py` 8項（四象限復原＋main零呼叫＋雙變異必紅＋機制pin）。
+- Mavis複核：最小序列38 passed（含邊界8）／T16↔T18各58 passed／infra 428全綠（追蹤後衛生轉綠）／diff僅兩檔52+/17-＋新檔；全庫（worker跑，1017s）1 failed、9314 passed，唯一紅係新檔未追蹤（已追蹤即消，T18無FAILED行）；tracked僅兩檔＋canonical，src零改動、data唯讀、雙哈希未動。
+- 待辦：送臥龍終驗（分支c修復ACCEPTED＋GATE效力重判）。
+- Frozen：src零改動、data唯讀、未啟服、未綁埠、無真實外呼、未殺行程、未task_stop wrapper。
