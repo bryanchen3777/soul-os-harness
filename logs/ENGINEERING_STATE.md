@@ -10427,3 +10427,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 卧龙终验（bg_88464626，书面裁决，未读码未重跑，依Mavis复核摘要裁定）：A. T20-ISOLATION-1 ACCEPTED——正式产物零读写＋合成seed＋发送硬拦＋逐run写入范围断言，隔离成立；双变异覆盖路径逸出与已送前提丢失且还原转绿，对本票充分，不追加补证，不扩张为全局隔离保证；T18沿用0.1.149已准单项例外，全库如实记9291 passed／32 skipped／1 failed，不得称全绿。B. 2C ACCEPTED／OFFLINE_READY——限定为「B4离线接线及测试隔离验收完成」，不代表部署完成或实弹验收通过；实弹继续冻结，本裁决不授予重送、补打或任何新外呼权限。C. E1 INCONCLUSIVE／原因未定——空归因输出不能证明外部并发；新窗口无红不能解释旧四红；2a矩阵改写属已知T18 writer副作用，还原不抹除事件，不足以归因E1；E1留案，与限定验收分开处理。D. 下一票E1-ATTRIBUTION-1——只读核对既有失败堆栈、守卫基准与异动时间线，补足四红因果证据；不为取证重跑全库。
 - 效力收敛：2C离线能力验收关闭（含T20隔离）；B1/B2/B3维持INCONCLUSIVE；B4已耗尽；实弹冻结维持；部署仍BLOCKED。
 - Frozen：未改Frozen Contract、未改守卫、未写data/**、未启服、未绑埠、无真实外呼；未杀行程、未task_stop wrapper。
+## 0.1.153 E1-ATTRIBUTION-1 worker交付（外部并发成立，待卧龙定性）
+- 交付（commit 7a45b14，唯一证据档 verification/offline/e1-attribution-1.txt，184行）：结论三选一选①外部并发成立——生产22:00夜槽在首轮回归窗内（22:02:24→22:17:54）持续写入四守卫共同覆盖的data路径（mtime＋内容ts双重时间来源，emilia life_threads尾笔updated_at 03:12:18Z咬合mtime 22:12:18、diary_raw_response尾笔ts咬合mtime 22:14:06，具生产形状）；(a)新增套件差分（22238d4／798fd3f）无可达data/**写入；(b)测试状态泄漏排除为必要因（conftest隔离＋守卫自隔离＋GATE-1同树同序全绿差分反证，穷举普查未做已声明）；(c)命中，排除清单核对被写档全为guarded；GATE-1无红系取样窗落在写入停止后；2a矩阵改写与四红无关。
+- 证据缺口（worker诚实声明，Mavis不填补）：首轮失败堆栈原文未落档（bg_3ac7be4d输出不在repo、bg_8c96e55b为空），被点名档按守卫语义＋mtime重建并标注为重建非引文；各守卫微窗精确执行时刻未知；全套件穷举写入面普查未做。Mavis未独立复算时间线，结论是否成立由卧龙书面定性，不自行宣布归因成立。
+- Mavis验收：证据档存在且结构完整；tracked树除本档外干净（2c-gate-1.txt维持untracked既有状态不动）；唯读取证成立（无测试执行、无data写入）；Frozen零接触。
+- Frozen：未改Frozen Contract、未改守卫、未写data/**、未启服、未绑埠、无真实外呼；未杀行程、未task_stop wrapper。
