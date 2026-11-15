@@ -780,7 +780,7 @@ def mount_live_route(app, *, live=None, generate=None, release_path=None):
         live=live, generate=generate, release_path=release_path
     )
 
-    def _sa_live_route(body):
+    def _sa_live_route(body: dict):
         current = _bridge.get_live_loop(app)
         if current is None or current is not live:
             raise _bridge.LiveRefused(

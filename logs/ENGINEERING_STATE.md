@@ -10575,3 +10575,8 @@ CLI 沙盒快跑在 2026-11-02T02:00Z 槽預告 `PENDING_COHORT`（exit 3）：2
 - 新阻斷（開門前既存接線問題，非重開FIX-2）：(1)正式live路由body未宣告JSON body型，純記憶體簽章對照422（query/body），既有雙跳測試自加包裝遮住缺陷；(2)正式launcher未接evidence_sink，首發缺原生raw/usage，外層恆零usage不能當計費證據。
 - 已派ENTRY-FIX-1（wiring端點加body:dict保持同步＋run_server預設關SA取證開關透傳EvidenceSink＋正式端點直掛測試＋雙變異；不部署不實彈）。首發規則備用：核對版本雙雜湊埠run_id→close→install→ready→open→單封包你好→panic-close，漂移逾時缺證即停。
 - Frozen：除主大腦授權之wiring簽名一行＋取證透傳外，其餘src、正式參數、門機制、記憶規則、衰減、cohorts、放行順序不變。
+## 0.1.180 ENTRY-FIX-1 worker交付，Mavis複核：產品修法通過，剩守衛碰撞待主大腦裁決
+- 交付（tracked：wiring.py簽名一行、run_server.py＋33/-1取證透傳、新T21測試6項、RUNBOOK附錄；src其餘零動）：正式端點body:dict可達、拒絕零外呼、request/response/usage三方配對；雙向變異（去型別422紅、去sink零檔紅）成立；CLI同槽PASS。
+- 複核（.venv）：T21新測6過；分塊全庫9334 passed＋32 skipped，唯一紅＝test_m3_1_phase_c守衛釘run_server零diff，被本票授權hunk（＋33/-1）觸發；失敗訊息逐位元即該授權改動，方向性已由worker雙向證實（stash→過、還原→紅），Mavis複跑確認。守衛未動。
+- 待臥龍三件事：ENTRY-FIX-1終驗；m3守衛碰撞裁決（沿先例allowlist授權hunk或另開工單）；OPEN-1是否解阻。生產雙門閉、18765空。
+- Frozen：除授權之wiring簽名＋取證透傳外，其餘src、正式參數、門機制、記憶規則、衰減、cohorts不變；未啟服綁埠外呼殺行程。

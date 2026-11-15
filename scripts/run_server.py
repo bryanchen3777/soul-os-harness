@@ -540,6 +540,35 @@ async def _shutdown_decay_worker() -> None:
     globals()["_DECAY_WORKER_TASK"] = mod._DECAY_WORKER_TASK
 
 
+def _sa_evidence_sink_for_batch():
+    """SA-LIVE-ENTRY-FIX-1: caller-owned SA evidence sink, default OFF (additive).
+
+    ``SOULOS_SA_EVIDENCE_DIR`` unset/empty (default) => None => the dialog
+    factory behaves bit-identically (no evidence argument is passed). When
+    set, it must name an already-existing caller-created directory (e.g. the
+    ticket's per-batch verification dir); the directory is NEVER created here.
+    The pre-existing ``EvidenceSink`` refuses repo ``data/**`` structurally at
+    construction, so a mis-set variable can only warn-and-disable, never
+    redirect production writes. Any fault => None (legacy behavior); an
+    observability seam never breaks startup.
+    """
+    raw = os.getenv("SOULOS_SA_EVIDENCE_DIR", "").strip()
+    if not raw:
+        return None
+    try:
+        from src.soul_access import evidence as _sa_evidence_mod
+
+        candidate = Path(raw).expanduser()
+        if not candidate.is_dir():
+            raise ValueError("SA evidence dir does not exist")
+        return _sa_evidence_mod.EvidenceSink(candidate)
+    except Exception as exc:  # observability seam never breaks startup
+        logger.warning(
+            "[SA-LIVE-ENTRY-FIX-1] SA evidence disabled: %s", type(exc).__name__
+        )
+        return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """所有初始化在同一個 event loop 裡，避免跨 loop 問題。"""
@@ -803,6 +832,8 @@ async def lifespan(app: FastAPI):
         from src.soul_access import wiring as _sa_wiring
 
         _sa_loop = _sa_asyncio.get_running_loop()
+        # SA-LIVE-ENTRY-FIX-1: default-OFF SA evidence sink (None => legacy).
+        _sa_evidence = _sa_evidence_sink_for_batch()
         _sa_wiring.mount_live_route(
             app,
             live=_sa_wiring.get_live_loop(app),
@@ -813,7 +844,8 @@ async def lifespan(app: FastAPI):
                 session_store=_sa_wiring.new_shared_session_store(),
                 dialog=None,
                 dialog_factory=_sa_wiring.build_dialog_factory(
-                    llm=llm, loop=_sa_loop, resolve_backend=None
+                    llm=llm, loop=_sa_loop, resolve_backend=None,
+                    evidence_sink=_sa_evidence,
                 ),
             ),
             release_path=_sa_wiring.RELEASE_FILE,
