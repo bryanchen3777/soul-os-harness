@@ -392,3 +392,65 @@ def test_store_and_stream_options_coexist_no_raw_pollution():
     assert "store" not in raw
     assert "stream_options" not in raw
     assert raw["stream"] is False
+
+
+# -- SHIM-ADMIT-MAX-COMPLETION-TOKENS-001: admit + map to max_tokens -----
+
+import pytest as _pytest_mct  # noqa: E402  (local alias to avoid shadowing)
+
+
+@_pytest_mct.mark.parametrize("val", [16, 1, 2048])
+def test_max_completion_tokens_admitted_and_mapped(val):
+    req = parse_chat_request(_valid_body(max_completion_tokens=val))
+    assert isinstance(req, InternalReq)
+    assert req.max_tokens == val
+    raw = req.to_raw_request()
+    assert raw["max_tokens"] == val
+    assert "max_completion_tokens" not in raw
+
+
+def test_max_completion_tokens_none_falls_back_to_default():
+    req = parse_chat_request(_valid_body(max_completion_tokens=None))
+    assert isinstance(req, InternalReq)
+    assert req.max_tokens == 512
+    raw = req.to_raw_request()
+    assert raw["max_tokens"] == 512
+    assert "max_completion_tokens" not in raw
+
+
+@_pytest_mct.mark.parametrize("bad", [0, 2049, -1, "100", 1.5, True, False])
+def test_max_completion_tokens_invalid_400(bad):
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(_valid_body(max_completion_tokens=bad))
+    assert ei.value.status == 400
+    assert ei.value.code == "invalid_request_error"
+    assert ei.value.param == "max_completion_tokens"
+
+
+def test_max_tokens_and_max_completion_tokens_conflict_400():
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(_valid_body(max_tokens=16, max_completion_tokens=16))
+    assert ei.value.status == 400
+    assert ei.value.code == "invalid_request_error"
+    assert ei.value.param == "max_completion_tokens"
+
+
+def test_store_stream_options_max_completion_tokens_coexist_no_raw_pollution():
+    req = parse_chat_request(
+        _valid_body(store=True, stream_options={"include_usage": True}, max_completion_tokens=16)
+    )
+    assert isinstance(req, InternalReq)
+    assert req.max_tokens == 16
+    raw = req.to_raw_request()
+    assert "store" not in raw
+    assert "stream_options" not in raw
+    assert "max_completion_tokens" not in raw
+    assert raw["max_tokens"] == 16
+    assert raw["stream"] is False
+
+
+def test_unknown_param_still_400_after_max_completion_tokens_admit():
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(_valid_body(max_completion_tokens=16, unknown_param=1))
+    assert ei.value.status == 400
+    assert ei.value.message == "Unsupported parameter: unknown_param"

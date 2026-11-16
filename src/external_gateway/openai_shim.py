@@ -46,7 +46,9 @@ _CODE = "invalid_request_error"
 # NOTE (SHIM-ADMIT-STORE-001): ``store`` is admitted and no-op dropped
 # (never forwarded upstream via ``to_raw_request``; no usage chunk is
 # synthesized in SSE). Accepted values are None / True / False only.
-_TOP_KEYS = frozenset({"model", "messages", "temperature", "max_tokens", "stop", "stream", "stream_options", "store"})
+# NOTE (SHIM-ADMIT-MAX-COMPLETION-TOKENS-001): 新版長度上限，映射為 max_tokens；
+# 與 max_tokens 並存即 400 衝突；不轉上游原名、不合成 usage。
+_TOP_KEYS = frozenset({"model", "messages", "temperature", "max_tokens", "max_completion_tokens", "stop", "stream", "stream_options", "store"})
 
 # Accepted but rejected-with-400 extensions (subset of the "extra key" rule,
 # listed explicitly so a reader sees the ban without diffing key sets).
@@ -172,6 +174,16 @@ def _check_max_tokens(value) -> int:
     return value
 
 
+def _check_max_completion_tokens(value) -> int | None:
+    if value is None:
+        return None
+    if type(value) is bool:
+        _bad("max_completion_tokens")
+    if type(value) is not int or value < 1 or value > 2048:
+        _bad("max_completion_tokens")
+    return value
+
+
 def _check_stop(value) -> tuple[str, ...] | None:
     if value is None:
         return None
@@ -238,7 +250,13 @@ def parse_chat_request(d: Mapping) -> InternalReq:
     model = _check_model(d["model"])
     messages = _check_messages(d["messages"])
     temperature = _check_temperature(d["temperature"]) if "temperature" in d else 0.5
-    max_tokens = _check_max_tokens(d["max_tokens"]) if "max_tokens" in d else 512
+    if "max_tokens" in d and "max_completion_tokens" in d:
+        _bad("max_completion_tokens")
+    elif "max_completion_tokens" in d:
+        v = _check_max_completion_tokens(d["max_completion_tokens"])
+        max_tokens = 512 if v is None else v
+    else:
+        max_tokens = _check_max_tokens(d["max_tokens"]) if "max_tokens" in d else 512
     stop = _check_stop(d["stop"]) if "stop" in d else None
     return InternalReq(
         model=model,
