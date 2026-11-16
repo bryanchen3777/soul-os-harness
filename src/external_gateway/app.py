@@ -601,7 +601,7 @@ def create_external_app(registry, load_preset_fn=None, chat_backend=None, soul_l
             return StreamingResponse(
                 iter_chat_sse(text, internal.model),
                 media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
         return JSONResponse(status_code=200, content=to_chat_response(text, internal.model))
 

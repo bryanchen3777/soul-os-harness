@@ -311,7 +311,8 @@ def test_e4_stream_true_is_sse_200(tmp_path, monkeypatch):
     assert resp.status_code == 200
     assert "text/event-stream" in resp.headers["content-type"]
     assert resp.headers["Cache-Control"] == "no-cache"
-    assert resp.headers["Connection"] == "keep-alive"
+    assert resp.headers["X-Accel-Buffering"] == "no"
+    assert "Connection" not in resp.headers
     # 上游仍走非流式：fake carrier 被调用一次、返回完整文本。
     assert len(backend.calls) == 1
     text = resp.text
