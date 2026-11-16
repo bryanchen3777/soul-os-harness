@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 
 import httpx
 
@@ -91,8 +92,12 @@ def forward_responses_request(request_body, base_url, api_key, timeout_s=60.0,
     the mapped ``InterfaceError`` (see module docstring). ``api_key``
     and ``request_body`` never enter logs or error messages.
     Optional ``session_id`` is forwarded as the ``x-opencode-session``
-    upstream header only (absent when falsy); its value never enters logs,
-    only the ``has_session_header`` boolean.
+    upstream header. When it is missing (None) or empty, a per-request
+    ``thin-<16 hex>`` value (``secrets.token_hex(8)``) is generated and
+    injected instead, so upstream always receives the header; a supplied
+    value is forwarded verbatim and never overwritten. Its value never
+    enters logs, only the ``session_header_present`` /
+    ``session_header_injected`` booleans.
     """
     try:
         timeout = float(timeout_s)
@@ -104,9 +109,13 @@ def forward_responses_request(request_body, base_url, api_key, timeout_s=60.0,
         _fail_closed()
     url = base_url.rstrip("/") + RESPONSES_PATH
     headers = {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}
-    has_session_header = isinstance(session_id, str) and bool(session_id)
-    if has_session_header:
+    session_header_present = isinstance(session_id, str) and bool(session_id)
+    if session_header_present:
         headers["x-opencode-session"] = session_id
+        session_header_injected = False
+    else:
+        headers["x-opencode-session"] = "thin-" + secrets.token_hex(8)
+        session_header_injected = True
     try:
         timeout_obj = httpx.Timeout(
             connect=timeout, read=timeout, write=timeout, pool=timeout
@@ -119,17 +128,18 @@ def forward_responses_request(request_body, base_url, api_key, timeout_s=60.0,
     except InterfaceError:
         raise
     except httpx.TimeoutException:
-        _LOGGER.info("ext provider=opencode-go preset=%s status=%s has_session_header=%s", RESPONSES_PRESET_NAME, 500, has_session_header)
+        _LOGGER.info("ext provider=opencode-go preset=%s status=%s session_header_present=%s session_header_injected=%s", RESPONSES_PRESET_NAME, 500, session_header_present, session_header_injected)
         _fail_closed()
     except Exception:
-        _LOGGER.info("ext provider=opencode-go preset=%s status=%s has_session_header=%s", RESPONSES_PRESET_NAME, 500, has_session_header)
+        _LOGGER.info("ext provider=opencode-go preset=%s status=%s session_header_present=%s session_header_injected=%s", RESPONSES_PRESET_NAME, 500, session_header_present, session_header_injected)
         _fail_closed()
     if resp.status_code != 200:
         _LOGGER.info(
-            "ext provider=opencode-go preset=%s status=%s has_session_header=%s",
+            "ext provider=opencode-go preset=%s status=%s session_header_present=%s session_header_injected=%s",
             RESPONSES_PRESET_NAME,
             resp.status_code,
-            has_session_header,
+            session_header_present,
+            session_header_injected,
         )
         _raise_for_status(resp.status_code)
     try:
@@ -137,7 +147,7 @@ def forward_responses_request(request_body, base_url, api_key, timeout_s=60.0,
     except InterfaceError:
         raise
     except Exception:
-        _LOGGER.info("ext provider=opencode-go preset=%s status=%s has_session_header=%s", RESPONSES_PRESET_NAME, 500, has_session_header)
+        _LOGGER.info("ext provider=opencode-go preset=%s status=%s session_header_present=%s session_header_injected=%s", RESPONSES_PRESET_NAME, 500, session_header_present, session_header_injected)
         _fail_closed()
-    _LOGGER.info("ext provider=opencode-go preset=%s status=%s has_session_header=%s", RESPONSES_PRESET_NAME, 200, has_session_header)
+    _LOGGER.info("ext provider=opencode-go preset=%s status=%s session_header_present=%s session_header_injected=%s", RESPONSES_PRESET_NAME, 200, session_header_present, session_header_injected)
     return (200, data)
