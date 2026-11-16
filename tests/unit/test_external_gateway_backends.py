@@ -224,8 +224,16 @@ def test_production_presets_all_ollama_with_root_base_url():
         "minimax-m3.1-flash",
         "glm-5.3-flash",
         "mimo-v2.6-flash",
+        "muse-spark-1.3-contributor",
     ]
     for entry in raw["presets"]:
+        if entry["name"] == "muse-spark-1.3-contributor":
+            # SA-RESPONSES-NATIVE-1: the single native Responses preset rides
+            # OpenCode Go (openai wire), not the ollama cloud root.
+            assert entry["provider"] == "openai", entry["name"]
+            assert entry["params"]["base_url"] == "https://opencode.ai/zen/go/v1", entry["name"]
+            assert entry["key_ref"] == "OPENCODE_GO_API_KEY", entry["name"]
+            continue
         assert entry["provider"] == "ollama", entry["name"]
         assert entry["params"]["base_url"] == "https://ollama.com", entry["name"]
         assert entry["key_ref"] == "OLLAMA_API_KEY", entry["name"]

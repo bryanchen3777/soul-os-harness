@@ -30,7 +30,8 @@ Coverage (ticket acceptance mapping, probes A-E):
      and ruka/glm; 404 probe: akane/glm and mai/mimo with no binding);
   E. pin guard: production registry/presets bytes still match the pinned
      dual hashes and preflight accepts the pinned copies; production
-     registry binds all five souls x4 presets with six allowed routes.
+     registry binds all five souls x4 presets plus the native
+     muse-spark-1.3-contributor route per soul, with 25 allowed routes.
 """
 
 from __future__ import annotations
@@ -537,8 +538,14 @@ def test_multi_soul_e_production_pins_match_and_preflight_passes(tmp_path):
     for soul in ("rem", "mai", "ruka", "akane", "mahiru"):
         for alias in ("primary", "minimax-m3.1-flash", "glm-5.3-flash", "mimo-v2.6-flash"):
             assert (soul, alias) in souls
-    assert len(registry["routes"]) == 20
+        assert (soul, "muse-spark-1.3-contributor") in souls
+    assert len(registry["routes"]) == 25
     for route in registry["routes"]:
+        if route["backend_alias"] == "muse-spark-1.3-contributor":
+            assert route["backend_ref"] == "sa-opencode-go"
+            assert route["agent_id"] == "agent_" + route["soul_alias"]
+            assert route["context_window_tokens"] == 200000
+            continue
         assert route["backend_ref"] == "sa-ollama-cloud"
         assert route["agent_id"] == "agent_" + route["soul_alias"]
         assert route["context_window_tokens"] == 4096
@@ -564,6 +571,11 @@ def test_multi_soul_e_production_pins_match_and_preflight_passes(tmp_path):
         "mahiru/minimax-m3.1-flash",
         "mahiru/glm-5.3-flash",
         "mahiru/mimo-v2.6-flash",
+        "rem/muse-spark-1.3-contributor",
+        "mai/muse-spark-1.3-contributor",
+        "ruka/muse-spark-1.3-contributor",
+        "akane/muse-spark-1.3-contributor",
+        "mahiru/muse-spark-1.3-contributor",
     ]
     registry_copy = tmp_path / "registry.json"
     presets_copy = tmp_path / "presets.json"

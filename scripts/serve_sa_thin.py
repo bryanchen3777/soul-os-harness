@@ -101,8 +101,8 @@ assert THIN_PORT == EXTERNAL_PORT
 #: Pinned e351541 content hashes (``configs/sa/registry.json`` +
 #: ``configs/sa/presets.json``). Re-read and compared on every start;
 #: any drift refuses startup. Lowercase hex, ``hashlib.sha256().hexdigest()``.
-REGISTRY_SHA256 = "1ab1c68dafae368e7e085fdc1920ab4b98e7e24d1f1bfc53d4bf8d4c45bebab2"
-PRESETS_SHA256 = "35ab58bed7c72f60d7514deb8cd7e933be5b31c40c2598e3491919c28815e30a"
+REGISTRY_SHA256 = "28518258405911c396e3aa3f4ec49f2bf7de95a31fd5dd3cd0884120d8872276"
+PRESETS_SHA256 = "36e985713094c91031685a025ee8c6222d6dcb6e2c2603eb8b4c5aa946b460f4"
 
 #: Production config defaults (same files the gateway carrier loads).
 REGISTRY_DEFAULT = _REPO_ROOT / "configs" / "sa" / "registry.json"
@@ -778,6 +778,211 @@ def mount_control_route(app, control):
     return route
 
 
+def mount_responses_route(app, registry, loader):
+    """Register the native Responses routes (SA-RESPONSES-NATIVE-1, additive).
+
+    Mounts one exact ``POST /{soul}/muse-spark-1.3-contributor/v1/responses``
+    route per soul (rem/mai/ruka/akane/mahiru) on the given app, ahead of
+    the catch-all. Each request is admitted in order: Bearer extract (401),
+    authenticate (401), resolve_route (404), agent-map check (500),
+    preset load (404 unknown preset / 500 broken or missing key), provider
+    + name + model pin (non-openai or non-native model -> 404),
+    authorize_route (403), body read (400), then the body is forwarded
+    VERBATIM via ``responses_backend.forward_responses_request`` and the
+    upstream JSON is returned VERBATIM. There is no completions<->responses
+    translation anywhere on this path. ``registry`` is the live
+    ``RegistryProvider`` (read fresh per request); ``loader`` is the
+    ``file_preset_loader`` for the pinned presets file. Returns the five
+    inserted routes (for introspection only; serving never consults them).
+    """
+
+    from fastapi.responses import JSONResponse
+    from fastapi.routing import APIRoute
+
+    from src.external_gateway.openai_shim import to_error
+    from src.external_gateway.routing import SOUL_AGENT_MAP
+    from src.interfaces.config import resolve_route
+    from src.interfaces.external_auth import extract_bearer
+    from src.interfaces.identity import authenticate
+    from src.interfaces.identity import authorize_route
+    from src.interfaces.schema import InterfaceError
+    from src.soul_access import responses_backend as _responses_backend
+
+    PRESET = _responses_backend.RESPONSES_PRESET_NAME
+
+    def _make_endpoint(soul):
+        async def _responses_endpoint(request: Request):
+            try:
+                raw_headers = [
+                    (k.decode("latin-1"), v.decode("latin-1"))
+                    for k, v in (request.scope.get("headers") or [])
+                ]
+            except Exception:
+                raw_headers = []
+            try:
+                token, _headers = extract_bearer(raw_headers)
+            except InterfaceError:
+                _LOGGER.info(
+                    "ext soul=%s preset=%s endpoint=responses status=401",
+                    soul, PRESET,
+                )
+                return JSONResponse(
+                    status_code=401,
+                    content=to_error(401, "unauthorized", "Invalid credentials."),
+                )
+            try:
+                snapshot = registry.current()
+                client = authenticate(token, snapshot)
+            except InterfaceError:
+                _LOGGER.info(
+                    "ext soul=%s preset=%s endpoint=responses status=401",
+                    soul, PRESET,
+                )
+                return JSONResponse(
+                    status_code=401,
+                    content=to_error(401, "unauthorized", "Invalid credentials."),
+                )
+            except Exception:
+                _LOGGER.info(
+                    "ext soul=%s preset=%s endpoint=responses status=401",
+                    soul, PRESET,
+                )
+                return JSONResponse(
+                    status_code=401,
+                    content=to_error(401, "unauthorized", "Invalid credentials."),
+                )
+            try:
+                route = resolve_route(snapshot, soul, PRESET)
+            except InterfaceError:
+                _LOGGER.info(
+                    "ext soul=%s preset=%s endpoint=responses status=404",
+                    soul, PRESET,
+                )
+                return JSONResponse(
+                    status_code=404,
+                    content=to_error(404, "route_not_found", "Unknown route."),
+                )
+            if route.agent_id != SOUL_AGENT_MAP[soul]:
+                _LOGGER.info(
+                    "ext soul=%s preset=%s endpoint=responses status=500",
+                    soul, PRESET,
+                )
+                return JSONResponse(
+                    status_code=500,
+                    content=to_error(
+                        500, "invalid_route", "Invalid gateway route configuration."
+                    ),
+                )
+            try:
+                preset_obj = loader(PRESET)
+            except InterfaceError as exc:
+                if exc.status == 404:
+                    _LOGGER.info(
+                        "ext soul=%s preset=%s endpoint=responses status=404",
+                        soul, PRESET,
+                    )
+                    return JSONResponse(
+                        status_code=404,
+                        content=to_error(404, "route_not_found", "Unknown route."),
+                    )
+                _LOGGER.info(
+                    "ext soul=%s preset=%s endpoint=responses status=500",
+                    soul, PRESET,
+                )
+                return JSONResponse(
+                    status_code=500,
+                    content=to_error(
+                        500, "invalid_preset", "Invalid preset configuration."
+                    ),
+                )
+            except Exception:
+                _LOGGER.info(
+                    "ext soul=%s preset=%s endpoint=responses status=500",
+                    soul, PRESET,
+                )
+                return JSONResponse(
+                    status_code=500,
+                    content=to_error(
+                        500, "invalid_preset", "Invalid preset configuration."
+                    ),
+                )
+            if (
+                getattr(preset_obj, "name", None) != PRESET
+                or getattr(preset_obj, "provider", None) != "openai"
+                or getattr(preset_obj, "model", None)
+                != _responses_backend.RESPONSES_MODEL
+            ):
+                _LOGGER.info(
+                    "ext soul=%s preset=%s endpoint=responses status=404",
+                    soul, PRESET,
+                )
+                return JSONResponse(
+                    status_code=404,
+                    content=to_error(404, "route_not_found", "Unknown route."),
+                )
+            try:
+                authorize_route(client, route)
+            except InterfaceError:
+                _LOGGER.info(
+                    "ext soul=%s preset=%s endpoint=responses status=403",
+                    soul, PRESET,
+                )
+                return JSONResponse(
+                    status_code=403,
+                    content=to_error(403, "forbidden", "Route access is forbidden."),
+                )
+            try:
+                body = await request.json()
+            except Exception:
+                _LOGGER.info(
+                    "ext soul=%s preset=%s endpoint=responses status=400",
+                    soul, PRESET,
+                )
+                return JSONResponse(
+                    status_code=400,
+                    content=to_error(
+                        400, "invalid_request_error", "Invalid request."
+                    ),
+                )
+            try:
+                status, data = _responses_backend.forward_responses_request(
+                    body,
+                    getattr(preset_obj, "base_url", None),
+                    getattr(preset_obj, "api_key", None),
+                    timeout_s=_responses_backend.RESPONSE_TIMEOUT_S,
+                )
+            except InterfaceError as exc:
+                _LOGGER.info(
+                    "ext soul=%s preset=%s endpoint=responses status=%s",
+                    soul, PRESET, exc.status,
+                )
+                return JSONResponse(
+                    status_code=exc.status,
+                    content=to_error(exc.status, exc.code, exc.message),
+                )
+            _LOGGER.info(
+                "ext soul=%s preset=%s endpoint=responses status=%s",
+                soul, PRESET, status,
+            )
+            return JSONResponse(status_code=status, content=data)
+
+        return _responses_endpoint
+
+    mounted = []
+    for soul in _responses_backend.RESPONSES_SOULS:
+        path = "/%s/%s/v1/responses" % (soul, PRESET)
+        route = APIRoute(path, endpoint=_make_endpoint(soul), methods=["POST"])
+        try:
+            app.routes.insert(0, route)
+        except Exception:
+            try:
+                app.router.routes.insert(0, route)
+            except Exception:
+                pass
+        mounted.append(route)
+    return mounted
+
+
 #: Business pump (SA-DOOR-MECH-FIX-1 D2): a dedicated daemon thread driving
 #: one event loop created at import time. Import time is before the SA-0
 #: test fixture hard-blocks ``socket.socket`` (Windows loop construction
@@ -1289,6 +1494,12 @@ def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder
         soul_overlay_fn=overlay_mahiru,
     )
     app = app_rem
+    # SA-RESPONSES-NATIVE-1: native Responses routes ride every soul app
+    # (first-segment dispatch sends /{soul}/... to its own app, so each of
+    # the five apps carries all five exact paths; the frozen chat catch-all
+    # is untouched and still answers everything else).
+    for _soul_app in (app_rem, app_mai, app_ruka, app_akane, app_mahiru):
+        mount_responses_route(_soul_app, registry, loader)
     if control is not None:
         control.attach(
             provider=registry,
