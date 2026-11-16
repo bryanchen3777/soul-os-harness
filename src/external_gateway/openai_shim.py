@@ -6,8 +6,11 @@ translates shapes:
   OpenAI dict -> parse_chat_request -> InternalReq -> to_raw_request
       -> serve_external(..., executor) -> to_chat_response / to_error
 
-S2 resolution (frozen for S3): the first batch is non-streaming, so
-``stream: true`` is always rejected with 400. SSE stays a later increment.
+S3 pseudo-streaming: ``stream: true`` is accepted. The upstream call
+stays non-streaming (``to_raw_request`` always renders ``stream: False`` for
+the engine allowlist); the HTTP layer (``app.py``) synthesizes standard
+OpenAI SSE chunks from the full reply text (role delta, full-content delta,
+stop chunk, ``data: [DONE]``) via ``to_chat_sse_chunks`` / ``iter_chat_sse``.
 
 ``stop`` is accepted for OpenAI shape compatibility but is NOT forwarded to
 the engine: ``admit`` / ``parse_request`` have no stop-sequence semantics.
@@ -17,6 +20,7 @@ and to_raw_request).
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import time
@@ -88,8 +92,9 @@ class InternalReq:
         """Render the Mapping shape ``admit`` / ``parse_request`` accepts.
 
         ``stop`` is intentionally dropped: the engine has no stop-sequence
-        semantics. ``stream`` is always False here (True is rejected at
-        parse time), rendered explicitly for the engine's allowlist.
+        semantics. ``stream`` is always False here (the engine allowlist
+        admits only non-streaming; ``True`` is served as synthesized SSE at
+        the HTTP layer), rendered explicitly for the engine's allowlist.
         """
         msgs = []
         for m in self.messages:
@@ -170,7 +175,9 @@ def parse_chat_request(d: Mapping) -> InternalReq:
 
     Raises InterfaceError(400, "invalid_request_error", ...) on: non-mapping
     input, any key outside the allowlist (banned extensions included),
-    bad role, bad types, or ``stream: true`` (S2: first batch is non-stream).
+    bad role, bad types, or non-bool ``stream``. ``stream: true`` is
+    accepted (S3 pseudo-streaming: upstream stays non-streaming, the HTTP
+    layer synthesizes SSE); ``stream`` defaults to False when absent.
     """
     if not isinstance(d, Mapping):
         _bad(None)
@@ -181,12 +188,12 @@ def parse_chat_request(d: Mapping) -> InternalReq:
             _bad(k, "Unsupported parameter." if isinstance(k, str) else "Invalid request.")
     if "model" not in d or "messages" not in d:
         _bad("model" if "model" not in d else "messages")
+    stream = False
     if "stream" in d:
         st = d["stream"]
         if type(st) is not bool:
             _bad("stream")
-        if st is True:
-            _bad("stream", "Streaming is not supported by this interface version.")
+        stream = st
     model = _check_model(d["model"])
     messages = _check_messages(d["messages"])
     temperature = _check_temperature(d["temperature"]) if "temperature" in d else 0.5
@@ -198,7 +205,7 @@ def parse_chat_request(d: Mapping) -> InternalReq:
         temperature=temperature,
         max_tokens=max_tokens,
         stop=stop,
-        stream=False,
+        stream=stream,
     )
 
 
@@ -223,6 +230,49 @@ def to_chat_response(text: str, model: str) -> dict:
         # 未接計費，不偽造 token 數：usage 誠實填 0。
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
+
+
+def to_chat_sse_chunks(text: str, model: str) -> tuple[dict, dict, dict]:
+    """Build the three OpenAI-shaped ``chat.completion.chunk`` payloads.
+
+    Order: role delta, full-content delta, stop chunk. All three share one
+    ``id`` (``chatcmpl-`` + uuid4 hex, same rule as ``to_chat_response``),
+    one ``created`` (``int(time.time())``), and the caller's ``model``.
+    The full reply rides in a single content delta: upstream is
+    non-streaming, so there is nothing to incrementally tokenize.
+    """
+    if not isinstance(text, str):
+        raise TypeError("text must be str")
+    if not isinstance(model, str):
+        raise TypeError("model must be str")
+    cid = "chatcmpl-" + uuid.uuid4().hex
+    created = int(time.time())
+    base = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model}
+    role_chunk = {
+        **base,
+        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+    }
+    content_chunk = {
+        **base,
+        "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+    }
+    stop_chunk = {
+        **base,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+    }
+    return (role_chunk, content_chunk, stop_chunk)
+
+
+def iter_chat_sse(text: str, model: str):
+    """Yield SSE ``data:`` frames (bytes) for one full reply plus ``[DONE]``.
+
+    Pure bytes formatting only: no HTTP, no sockets, no files. The caller
+    (``app.py``) wraps this iterator in a ``StreamingResponse`` with
+    ``media_type="text/event-stream"``.
+    """
+    for payload in to_chat_sse_chunks(text, model):
+        yield ("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode("utf-8")
+    yield b"data: [DONE]\n\n"
 
 
 _TYPE_BY_STATUS = {

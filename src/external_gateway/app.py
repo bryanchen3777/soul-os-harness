@@ -31,9 +31,10 @@ Request order per call (fail-closed, first refusal wins):
      returns 403 (checked after the route is known, before the body,
      so a forbidden caller never triggers body parsing);
   9. models endpoint returns a static list; chat parses the body
-     (``parse_chat_request``: stream:true and schema faults are 400),
-     calls ``chat_backend.complete``, and renders the reply with
-     ``to_chat_response``.
+     (``parse_chat_request``: ``stream:true`` is served as synthesized SSE,
+     schema faults stay 400), calls ``chat_backend.complete`` (always
+     non-streaming), and renders the reply with ``to_chat_response``
+     (``stream:false`` / absent) or ``iter_chat_sse`` (``stream:true``).
 
 Every error goes through ``to_error`` (fixed copy for 5xx, credential
 scrub for the rest). The only log lines emitted here carry
@@ -50,8 +51,11 @@ from typing import Protocol
 
 from fastapi import FastAPI
 from fastapi import Request
+from fastapi import Response
 from fastapi.responses import JSONResponse
+from fastapi.responses import StreamingResponse
 
+from src.external_gateway.openai_shim import iter_chat_sse
 from src.external_gateway.openai_shim import parse_chat_request
 from src.external_gateway.openai_shim import to_chat_response
 from src.external_gateway.openai_shim import to_error
@@ -379,7 +383,7 @@ def create_external_app(registry, load_preset_fn=None, chat_backend=None, soul_l
             return current()
         return registry
 
-    async def _handle(request: Request) -> JSONResponse:
+    async def _handle(request: Request) -> Response:
         req_id = uuid.uuid4().hex
         scope = request.scope
         raw_path = scope.get("path", "")
@@ -545,6 +549,7 @@ def create_external_app(registry, load_preset_fn=None, chat_backend=None, soul_l
                 req_id,
             )
             return _from_interface_error(exc)
+        _LOGGER.info("ext path=%s stream=%s model=%s", raw_path, internal.stream, internal.model)
         params = {"temperature": internal.temperature, "max_tokens": internal.max_tokens}
         try:
             text = backend.complete(route, preset_obj, internal.messages, params)
@@ -592,10 +597,16 @@ def create_external_app(registry, load_preset_fn=None, chat_backend=None, soul_l
             endpoint,
             req_id,
         )
+        if internal.stream:
+            return StreamingResponse(
+                iter_chat_sse(text, internal.model),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
         return JSONResponse(status_code=200, content=to_chat_response(text, internal.model))
 
     @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-    async def _entry(request: Request) -> JSONResponse:
+    async def _entry(request: Request) -> Response:
         return await _handle(request)
 
     return app

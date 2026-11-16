@@ -7,9 +7,11 @@ from pathlib import Path
 import pytest
 
 from src.external_gateway.openai_shim import InternalReq
+from src.external_gateway.openai_shim import iter_chat_sse
 from src.external_gateway.openai_shim import make_executor
 from src.external_gateway.openai_shim import parse_chat_request
 from src.external_gateway.openai_shim import to_chat_response
+from src.external_gateway.openai_shim import to_chat_sse_chunks
 from src.external_gateway.openai_shim import to_error
 from src.interfaces.external_auth import RegistryProvider
 from src.interfaces.external_auth import serve_external
@@ -73,11 +75,12 @@ def test_extra_message_key_400():
     assert ei.value.status == 400
 
 
-def test_stream_true_400_explicitly_unsupported():
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(_valid_body(stream=True))
-    assert ei.value.status == 400
-    assert ei.value.code == "invalid_request_error"
+def test_stream_true_accepted_s3_pseudo_streaming():
+    req = parse_chat_request(_valid_body(stream=True))
+    assert isinstance(req, InternalReq)
+    assert req.stream is True
+    # 上游仍走非流式：引擎 allowlist 只收 stream=False。
+    assert req.to_raw_request()["stream"] is False
 
 
 def test_stream_non_bool_400():
@@ -179,7 +182,7 @@ def test_secret_scrubbed_from_message():
 
 def test_interface_error_converts_to_envelope():
     with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(_valid_body(stream=True))
+        parse_chat_request(_valid_body(messages=[{"role": "developer", "content": "x"}]))
     env = to_error(ei.value.status, ei.value.code, ei.value.message)
     assert env["error"]["type"] == "invalid_request_error"
 
@@ -212,3 +215,47 @@ def test_make_executor_rejects_bad_args():
         make_executor(123, lambda d: "x")
     with pytest.raises(TypeError):
         make_executor("model-a", "not-callable")
+
+
+# -- S3 pseudo-streaming: SSE chunk shape ------------------------------------
+
+def test_sse_chunks_share_id_created_model():
+    role_chunk, content_chunk, stop_chunk = to_chat_sse_chunks("hello", "model-a")
+    for chunk in (role_chunk, content_chunk, stop_chunk):
+        assert chunk["object"] == "chat.completion.chunk"
+        assert chunk["model"] == "model-a"
+        assert chunk["id"].startswith("chatcmpl-")
+        assert len(chunk["id"]) == len("chatcmpl-") + 32
+        assert isinstance(chunk["created"], int)
+    ids = {role_chunk["id"], content_chunk["id"], stop_chunk["id"]}
+    createds = {role_chunk["created"], content_chunk["created"], stop_chunk["created"]}
+    assert len(ids) == 1
+    assert len(createds) == 1
+
+
+def test_sse_chunks_role_content_stop_order():
+    role_chunk, content_chunk, stop_chunk = to_chat_sse_chunks("full-text", "model-a")
+    assert role_chunk["choices"] == [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]
+    assert content_chunk["choices"] == [
+        {"index": 0, "delta": {"content": "full-text"}, "finish_reason": None}
+    ]
+    assert stop_chunk["choices"] == [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+
+
+def test_sse_chunks_reject_bad_args():
+    with pytest.raises(TypeError):
+        to_chat_sse_chunks(123, "model-a")
+    with pytest.raises(TypeError):
+        to_chat_sse_chunks("hi", 123)
+
+
+def test_iter_chat_sse_frames_end_with_done():
+    frames = list(iter_chat_sse("hello", "model-a"))
+    assert len(frames) == 4
+    assert frames[-1] == b"data: [DONE]\n\n"
+    payloads = [json.loads(f.decode("utf-8")[len("data: "):]) for f in frames[:-1]]
+    assert payloads[0]["choices"][0]["delta"] == {"role": "assistant"}
+    assert payloads[1]["choices"][0]["delta"] == {"content": "hello"}
+    assert payloads[1]["choices"][0]["finish_reason"] is None
+    assert payloads[2]["choices"][0]["finish_reason"] == "stop"
+    assert all(p["object"] == "chat.completion.chunk" for p in payloads)

@@ -15,8 +15,8 @@ carrier (PresetRoutingBackend) is never constructed here.
 What this file pins (Sol S8-CLOSEOUT-1, decision-complete):
 
   1. chat/models happy paths on the frozen route (rem/primary);
-  2. 401 / 403 / 404 / stream-400 / agent-mismatch-500, each with
-     provider-zero-calls;
+  2. 401 / 403 / 404 / agent-mismatch-500, each with provider-zero-calls,
+     plus stream:true served as synthesized SSE (provider called once);
   3. preset per-call reread (model swap without restart/rebuild);
   4. registry startup snapshot (disk rewrite alone changes nothing;
      a rebuild -- i.e. a restart -- picks the new route up);
@@ -255,18 +255,18 @@ def test_s8_unknown_preset_404_no_provider_call(tmp_path, monkeypatch):
     assert backend.calls == []
 
 
-def test_s8_stream_true_400_no_provider_call(tmp_path, monkeypatch):
+def test_s8_stream_true_sse_200_calls_provider_once(tmp_path, monkeypatch):
     client, token, backend, _preset_path, _provider = _setup(tmp_path, monkeypatch)
     resp = client.post(
         "/rem/primary/v1/chat/completions",
         headers=_auth(token),
         json=_chat_body(stream=True),
     )
-    assert resp.status_code == 400
-    err = _err(resp)
-    assert err["code"] == "invalid_request_error"
-    assert err["message"] == "Streaming is not supported by this interface version."
-    assert backend.calls == []
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.headers["content-type"]
+    assert "data: [DONE]" in resp.text
+    assert "s8-fake-reply" in resp.text
+    assert len(backend.calls) == 1
 
 
 def test_s8_agent_mismatch_500_no_provider_call(tmp_path, monkeypatch):

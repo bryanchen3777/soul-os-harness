@@ -302,15 +302,37 @@ def test_e3_unknown_preset_in_valid_config_is_404(tmp_path, monkeypatch):
     assert err["message"] == "Unknown route."
 
 
-def test_e4_stream_true_is_400(tmp_path, monkeypatch):
-    client = TestClient(_std_app(tmp_path, monkeypatch))
+def test_e4_stream_true_is_sse_200(tmp_path, monkeypatch):
+    backend = _FakeBackend("says hi")
+    client = TestClient(_std_app(tmp_path, monkeypatch, backend=backend))
     resp = client.post(
         "/rem/primary/v1/chat/completions", headers=_auth(TOKEN_A), json=_chat_body(stream=True)
     )
-    assert resp.status_code == 400
-    err = _err(resp)
-    assert err["code"] == "invalid_request_error"
-    assert err["message"] == "Streaming is not supported by this interface version."
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.headers["content-type"]
+    assert resp.headers["Cache-Control"] == "no-cache"
+    assert resp.headers["Connection"] == "keep-alive"
+    # 上游仍走非流式：fake carrier 被调用一次、返回完整文本。
+    assert len(backend.calls) == 1
+    text = resp.text
+    assert "data: [DONE]" in text
+    assert '"role": "assistant"' in text or '"role":"assistant"' in text
+    assert "says hi" in text
+    assert "stop" in text
+
+
+def test_e4b_stream_false_stays_json(tmp_path, monkeypatch):
+    backend = _FakeBackend("says hi")
+    client = TestClient(_std_app(tmp_path, monkeypatch, backend=backend))
+    resp = client.post(
+        "/rem/primary/v1/chat/completions", headers=_auth(TOKEN_A), json=_chat_body(stream=False)
+    )
+    assert resp.status_code == 200
+    assert "application/json" in resp.headers["content-type"]
+    out = resp.json()
+    assert out["object"] == "chat.completion"
+    assert out["model"] == "primary"
+    assert out["choices"][0]["message"] == {"role": "assistant", "content": "says hi"}
 
 
 def test_e5_schema_fault_is_400(tmp_path, monkeypatch):
