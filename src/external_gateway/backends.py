@@ -213,7 +213,7 @@ class OllamaBackend:
         except Exception:
             _LOGGER.info("ext provider=%s preset=%s status=%s", "ollama", preset.name, 500)
             _fail_closed()
-        if not isinstance(content, str):
+        if not isinstance(content, str) or not content.strip():
             _LOGGER.info("ext provider=%s preset=%s status=%s", "ollama", preset.name, 500)
             _fail_closed()
         _LOGGER.info("ext provider=%s preset=%s status=%s", "ollama", preset.name, 200)

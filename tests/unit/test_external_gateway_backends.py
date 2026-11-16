@@ -166,6 +166,57 @@ def test_supported_providers_whitelist_unchanged():
 # -- production presets file alignment (read-only check) ---------------------
 
 
+# -- SA-FIX-FAILCLOSED-EMPTY-CONTENT: empty/blank upstream reply is 500 ---
+
+
+class _FakeEmptyResp:
+    status_code = 200
+
+    def __init__(self, content):
+        self._content = content
+
+    def json(self):
+        return {"choices": [{"message": {"content": self._content}}]}
+
+
+def _empty_case_client(content):
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(self, url, headers=None, json=None):
+            return _FakeEmptyResp(content)
+
+    return _Client
+
+
+@pytest.mark.parametrize("content", ["", "   ", "\n\t "])
+def test_ollama_empty_or_blank_content_fails_closed_500(monkeypatch, content):
+    monkeypatch.setattr(backends.httpx, "Client", _empty_case_client(content), raising=True)
+    backend = OllamaBackend(
+        base_url="https://ollama.com", model="do-not-deploy-model", api_key=KEY_SENTINEL
+    )
+    with pytest.raises(InterfaceError) as excinfo:
+        backend.complete(_route(), _ollama_preset(base_url="https://ollama.com"), [{"role": "user", "content": "hi"}], {"temperature": 0.5, "max_tokens": 8})
+    assert excinfo.value.status == 500
+    assert excinfo.value.code == "internal"
+
+
+def test_ollama_nonempty_content_still_200(monkeypatch):
+    monkeypatch.setattr(backends.httpx, "Client", _empty_case_client("  hi  "), raising=True)
+    backend = OllamaBackend(
+        base_url="https://ollama.com", model="do-not-deploy-model", api_key=KEY_SENTINEL
+    )
+    text = backend.complete(_route(), _ollama_preset(base_url="https://ollama.com"), [{"role": "user", "content": "hi"}], {"temperature": 0.5, "max_tokens": 8})
+    assert text == "  hi  "
+
+
 def test_production_presets_all_ollama_with_root_base_url():
     raw = json.loads(PRODUCTION_PRESETS.read_text(encoding="utf-8"))
     assert [p["name"] for p in raw["presets"]] == [
