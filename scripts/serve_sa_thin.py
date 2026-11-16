@@ -789,14 +789,18 @@ def mount_responses_route(app, registry, loader):
     + name + model pin (non-openai or non-native model -> 404),
     authorize_route (403), body read (400), then the body is forwarded
     VERBATIM via ``responses_backend.forward_responses_request`` and the
-    upstream JSON is returned VERBATIM. There is no completions<->responses
-    translation anywhere on this path. ``registry`` is the live
+    upstream JSON is returned VERBATIM. A truthy ``stream`` flag instead
+    returns the upstream SSE byte stream VERBATIM as ``text/event-stream``
+    (no JSON decode, no error-frame synthesis). There is no
+    completions<->responses translation anywhere on this path. ``registry``
+    is the live
     ``RegistryProvider`` (read fresh per request); ``loader`` is the
     ``file_preset_loader`` for the pinned presets file. Returns the five
     inserted routes (for introspection only; serving never consults them).
     """
 
     from fastapi.responses import JSONResponse
+    from fastapi.responses import StreamingResponse
     from fastapi.routing import APIRoute
 
     from src.external_gateway.openai_shim import to_error
@@ -945,7 +949,7 @@ def mount_responses_route(app, registry, loader):
                     ),
                 )
             try:
-                status, data = _responses_backend.forward_responses_request(
+                result = _responses_backend.forward_responses_request(
                     body,
                     getattr(preset_obj, "base_url", None),
                     getattr(preset_obj, "api_key", None),
@@ -963,10 +967,45 @@ def mount_responses_route(app, registry, loader):
                     status_code=exc.status,
                     content=to_error(exc.status, exc.code, exc.message),
                 )
+            if len(result) == 3:
+                status, data, is_stream = result
+            else:
+                status, data = result
+                is_stream = False
             _LOGGER.info(
                 "ext soul=%s preset=%s endpoint=responses status=%s",
                 soul, PRESET, status,
             )
+            if is_stream:
+                _payload_gen = data
+
+                async def _sse_iter():
+                    try:
+                        for _chunk in _payload_gen:
+                            try:
+                                if await request.is_disconnected():
+                                    break
+                            except Exception:
+                                break
+                            yield _chunk
+                    finally:
+                        try:
+                            _close = getattr(_payload_gen, "close", None)
+                            if callable(_close):
+                                _close()
+                        except Exception:
+                            pass
+
+                return StreamingResponse(
+                    _sse_iter(),
+                    status_code=status,
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
             return JSONResponse(status_code=status, content=data)
 
         return _responses_endpoint

@@ -198,9 +198,122 @@ def load_opencode_go_key() -> str:
     return key
 
 
+def _is_stream_request(request_body) -> bool:
+    """Report whether the caller asked for SSE streaming (never raises).
+
+    ``True`` only when ``request_body`` is a dict with a truthy ``stream``
+    value. Non-dict bodies (list/str/None/...) always read as ``False``,
+    so the classic whole-JSON path keeps serving them verbatim.
+    """
+    try:
+        return isinstance(request_body, dict) and bool(request_body.get("stream"))
+    except Exception:
+        return False
+
+
+def _forward_stream_request(url, headers, request_body, timeout_obj,
+                            session_header_present, session_header_injected,
+                            model_normalized):
+    """Forward one streaming Responses request; return ``(200, gen, True)``.
+
+    ``gen`` is a bytes generator yielding ``resp.iter_bytes()`` chunks
+    verbatim (no SSE frame parsing, no JSON decoding -- ``resp.json()`` is
+    never called on this path). A non-200 first packet reads at most 4 KiB
+    and raises the mapped ``InterfaceError`` via ``_raise_for_status``.
+    Mid-stream timeout/transport faults end the generator silently (EOF,
+    no injected string, no upstream text). The client is closed when the
+    generator exhausts, errors, or is closed early; the closing log carries
+    only provider/preset/status/stream/bytes_sent numerics.
+    """
+    try:
+        client = httpx.Client(timeout=timeout_obj)
+    except Exception:
+        _fail_closed()
+    try:
+        stream_cm = client.stream("POST", url, headers=headers, json=request_body)
+        resp = stream_cm.__enter__()
+    except InterfaceError:
+        raise
+    except httpx.TimeoutException:
+        _LOGGER.info(
+            "ext provider=opencode-go preset=%s status=%s stream=%s",
+            RESPONSES_PRESET_NAME, 500, True,
+        )
+        try:
+            client.close()
+        except Exception:
+            pass
+        _fail_closed()
+    except Exception:
+        _LOGGER.info(
+            "ext provider=opencode-go preset=%s status=%s stream=%s",
+            RESPONSES_PRESET_NAME, 500, True,
+        )
+        try:
+            client.close()
+        except Exception:
+            pass
+        _fail_closed()
+    if resp.status_code != 200:
+        try:
+            try:
+                resp.read()
+            except Exception:
+                pass
+            body_text = _upstream_body_text(resp)
+        except Exception:
+            body_text = ""
+        _LOGGER.info(
+            "ext provider=opencode-go preset=%s status=%s stream=%s",
+            RESPONSES_PRESET_NAME, resp.status_code, True,
+        )
+        try:
+            stream_cm.__exit__(None, None, None)
+        except Exception:
+            pass
+        try:
+            client.close()
+        except Exception:
+            pass
+        _raise_for_status(resp.status_code, body_text)
+
+    def _byte_gen():
+        bytes_sent = 0
+        try:
+            for chunk in resp.iter_bytes():
+                if not isinstance(chunk, (bytes, bytearray)):
+                    continue
+                bytes_sent += len(chunk)
+                yield bytes(chunk)
+        except Exception:
+            return
+        finally:
+            try:
+                stream_cm.__exit__(None, None, None)
+            except Exception:
+                pass
+            try:
+                client.close()
+            except Exception:
+                pass
+            _LOGGER.info(
+                "ext provider=opencode-go preset=%s status=%s stream=%s bytes_sent=%s",
+                RESPONSES_PRESET_NAME, 200, True, bytes_sent,
+            )
+
+    return (200, _byte_gen(), True)
+
+
 def forward_responses_request(request_body, base_url, api_key, timeout_s=60.0,
                              session_id=None):
-    """Forward one Responses request natively; return ``(status, data)``.
+    """Forward one Responses request natively.
+
+    ``stream:false`` (or missing ``stream``) returns ``(status, data)``: the
+    upstream 200 JSON verbatim. ``stream:true`` returns
+    ``(status, payload, True)`` where ``payload`` is a bytes generator
+    yielding the upstream SSE byte stream verbatim (``resp.json()`` is never
+    called on that path). Non-stream callers keep unpacking two values, so
+    existing ``status, data = ...`` call sites are unaffected.
 
     ``request_body`` is sent verbatim as the upstream JSON payload, except
     that a known public model alias is first rewritten in place to the
@@ -244,6 +357,12 @@ def forward_responses_request(request_body, base_url, api_key, timeout_s=60.0,
         )
     except Exception:
         _fail_closed()
+    if _is_stream_request(request_body):
+        return _forward_stream_request(
+            url, headers, request_body, timeout_obj,
+            session_header_present, session_header_injected,
+            model_normalized,
+        )
     try:
         with httpx.Client(timeout=timeout_obj) as client:
             resp = client.post(url, headers=headers, json=request_body)
