@@ -101,7 +101,7 @@ assert THIN_PORT == EXTERNAL_PORT
 #: Pinned e351541 content hashes (``configs/sa/registry.json`` +
 #: ``configs/sa/presets.json``). Re-read and compared on every start;
 #: any drift refuses startup. Lowercase hex, ``hashlib.sha256().hexdigest()``.
-REGISTRY_SHA256 = "77cb62c1af26199d8dd44ec7c6558d6efa64db5564a1b1c8c8afc0707d0035f8"
+REGISTRY_SHA256 = "1ab1c68dafae368e7e085fdc1920ab4b98e7e24d1f1bfc53d4bf8d4c45bebab2"
 PRESETS_SHA256 = "35ab58bed7c72f60d7514deb8cd7e933be5b31c40c2598e3491919c28815e30a"
 
 #: Production config defaults (same files the gateway carrier loads).

@@ -545,11 +545,25 @@ def test_multi_soul_e_production_pins_match_and_preflight_passes(tmp_path):
     allowed = registry["clients"][0]["allowed_routes"]
     assert allowed == [
         "rem/primary",
-        "mai/primary",
-        "ruka/primary",
-        "akane/primary",
-        "mahiru/primary",
+        "rem/minimax-m3.1-flash",
         "rem/glm-5.3-flash",
+        "rem/mimo-v2.6-flash",
+        "mai/primary",
+        "mai/minimax-m3.1-flash",
+        "mai/glm-5.3-flash",
+        "mai/mimo-v2.6-flash",
+        "ruka/primary",
+        "ruka/minimax-m3.1-flash",
+        "ruka/glm-5.3-flash",
+        "ruka/mimo-v2.6-flash",
+        "akane/primary",
+        "akane/minimax-m3.1-flash",
+        "akane/glm-5.3-flash",
+        "akane/mimo-v2.6-flash",
+        "mahiru/primary",
+        "mahiru/minimax-m3.1-flash",
+        "mahiru/glm-5.3-flash",
+        "mahiru/mimo-v2.6-flash",
     ]
     registry_copy = tmp_path / "registry.json"
     presets_copy = tmp_path / "presets.json"
