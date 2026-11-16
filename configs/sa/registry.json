@@ -35,6 +35,38 @@
       "public_model_id": "sa-rem-mimo-v2.6-flash",
       "backend_ref": "sa-ollama-cloud",
       "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "mai",
+      "backend_alias": "primary",
+      "agent_id": "agent_mai",
+      "public_model_id": "sa-mai-primary",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "mai",
+      "backend_alias": "minimax-m3.1-flash",
+      "agent_id": "agent_mai",
+      "public_model_id": "sa-mai-minimax-m3.1-flash",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "mai",
+      "backend_alias": "glm-5.3-flash",
+      "agent_id": "agent_mai",
+      "public_model_id": "sa-mai-glm-5.3-flash",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "mai",
+      "backend_alias": "mimo-v2.6-flash",
+      "agent_id": "agent_mai",
+      "public_model_id": "sa-mai-mimo-v2.6-flash",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
     }
   ],
   "clients": [
@@ -43,7 +75,9 @@
       "principal_id": "bryan",
       "purpose": "interactive",
       "allowed_routes": [
-        "rem/primary"
+        "rem/primary",
+        "mai/primary",
+        "rem/glm-5.3-flash"
       ],
       "scope": "owner_private",
       "allow_persistent_memory": true,

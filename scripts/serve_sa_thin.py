@@ -101,7 +101,7 @@ assert THIN_PORT == EXTERNAL_PORT
 #: Pinned e351541 content hashes (``configs/sa/registry.json`` +
 #: ``configs/sa/presets.json``). Re-read and compared on every start;
 #: any drift refuses startup. Lowercase hex, ``hashlib.sha256().hexdigest()``.
-REGISTRY_SHA256 = "6d805d70a13874240cb1a469310cc6327542d6e0bc21a663cb6ed40ac14ac203"
+REGISTRY_SHA256 = "9e49d0c31e868859012d31c89e844305bdff1b7aa9a39b237b1c1ab3413ee679"
 PRESETS_SHA256 = "35ab58bed7c72f60d7514deb8cd7e933be5b31c40c2598e3491919c28815e30a"
 
 #: Production config defaults (same files the gateway carrier loads).
@@ -831,7 +831,7 @@ def _is_sa_marked_body(buffered) -> bool:
 
 
 def _isolate_business_asgi(app, *, control=None, reject_app=None,
-                           enable_reject_fast_path=True):
+                           enable_reject_fast_path=True, soul_apps=None):
     """Run business paths on the pump; keep control on the serving loop.
 
     SA-DOOR-MECH-FIX-1 (thin-side only; frozen ``src/external_gateway/app.py``
@@ -858,6 +858,22 @@ def _isolate_business_asgi(app, *, control=None, reject_app=None,
     the test-only bypass seam (proves the queue is the blocker: bypassed
     B starves behind A -> RED; reverted -> GREEN).
     """
+
+    # THIN-ROUTING-MULTI-SOUL-1 (additive): when soul_apps ({soul: app})
+    # is given, business scopes dispatch on the URL path first segment:
+    # /{soul}/... rides that soul app (own persona overlay); the control
+    # route rides the default app; any unknown first segment rides the
+    # default app so the frozen whitelist answers the 404. None (default)
+    # keeps the exact single-app behaviour every existing caller relies on.
+    def _target_for(path):
+        if not isinstance(soul_apps, dict):
+            return app
+        if not isinstance(path, str) or path == CONTROL_ENDPOINT:
+            return app
+        parts = path.split("/")
+        soul = parts[1] if len(parts) > 1 else ""
+        target = soul_apps.get(soul)
+        return target if target is not None else app
 
     async def _run_on_this_loop(target, t_scope, t_receive, t_send):
         captured: list = []
@@ -921,7 +937,8 @@ def _isolate_business_asgi(app, *, control=None, reject_app=None,
             sent.append(message)
 
         out_q = queue.Queue(maxsize=1)
-        _BUSINESS_JOBS.put((app(scope, _mem_receive, _mem_send), out_q))
+        target = _target_for(scope.get("path"))
+        _BUSINESS_JOBS.put((target(scope, _mem_receive, _mem_send), out_q))
         while True:
             try:
                 ok, value = out_q.get_nowait()
@@ -1066,13 +1083,54 @@ def preflight(registry_path, presets_path, *, _socket_factory=None) -> int:
     return 0
 
 
-#: Rem persona source (THIN-OVERLAY-REM-1): the project-root persona
-#: file, read UTF-8 and cached per path. Fail-open: any read fault reads
-#: as missing and the overlay degrades to the raw parsed input.
+#: Persona source (THIN-OVERLAY-REM-1, generalized MULTI-SOUL-1): the
+#: project-root persona file per soul (personas/agent_{soul}.md), read
+#: UTF-8 and cached per path. Fail-open: any read fault reads as missing
+#: and the overlay degrades to the raw parsed input.
+def _persona_default_path(soul):
+    # Default persona file for a soul; reading validates it (fail-open
+    # None on any fault, never a 500).
+    return _REPO_ROOT / "personas" / ("agent_%s.md" % soul)
+
 _REM_PERSONA_DEFAULT = _REPO_ROOT / "personas" / "agent_rem.md"
 
 #: Persona text cache keyed by the resolved path string.
-_REM_PERSONA_CACHE: dict = {}
+_PERSONA_CACHE: dict = {}
+
+#: Back-compat alias: the legacy Rem-only cache name shares the same dict.
+_REM_PERSONA_CACHE = _PERSONA_CACHE
+
+
+def _load_persona_text(soul, persona_path=None):
+    # Read one soul persona file (UTF-8, cached). None on any fault.
+    # A missing / unreadable / empty file is logged (ERROR, err type only --
+    # no path, no content) and reads as None, so the overlay returns None and
+    # the gateway falls back to the raw parsed input through the existing
+    # overlay-degraded path. soul selects the default file
+    # (personas/agent_{soul}.md); an explicit persona_path overrides it.
+    if persona_path is None:
+        path = _persona_default_path(soul)
+    else:
+        path = Path(persona_path)
+    key = str(path)
+    if key in _PERSONA_CACHE:
+        return _PERSONA_CACHE[key]
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except Exception as exc:
+        _LOGGER.error(
+            "ext soul=%s status=overlay-persona-unreadable err=%s",
+            soul,
+            type(exc).__name__,
+        )
+        return None
+    if not isinstance(text, str) or not text:
+        _LOGGER.error(
+            "ext soul=%s status=overlay-persona-unreadable err=empty", soul
+        )
+        return None
+    _PERSONA_CACHE[key] = text
+    return text
 
 
 def _load_rem_persona_text(persona_path=None):
@@ -1083,40 +1141,21 @@ def _load_rem_persona_text(persona_path=None):
     the gateway falls back to the raw parsed input through the existing
     overlay-degraded path.
     """
-    path = Path(persona_path) if persona_path is not None else _REM_PERSONA_DEFAULT
-    key = str(path)
-    if key in _REM_PERSONA_CACHE:
-        return _REM_PERSONA_CACHE[key]
-    try:
-        text = Path(path).read_text(encoding="utf-8")
-    except Exception as exc:
-        _LOGGER.error(
-            "ext soul=rem status=overlay-persona-unreadable err=%s",
-            type(exc).__name__,
-        )
-        return None
-    if not isinstance(text, str) or not text:
-        _LOGGER.error("ext soul=rem status=overlay-persona-unreadable err=empty")
-        return None
-    _REM_PERSONA_CACHE[key] = text
-    return text
+    return _load_persona_text("rem", persona_path)
 
 
-def build_rem_soul_overlay(persona_path=None):
-    """Build the thin Rem soul overlay (THIN-OVERLAY-REM-1, fail-open).
-
-    The returned ``soul_overlay_fn(messages, params)`` injects the full
-    ``personas/agent_rem.md`` text as the leading system message: when the
-    first message is already ``system`` its content is prefixed (persona +
-    blank line + original), otherwise a new system message is inserted at
-    the front. Success logs ``overlay-applied``; any fault returns None so
-    the gateway falls back to the raw parsed input (the existing
-    overlay-degraded path, never a 500).
-    """
-
+def build_soul_overlay(soul, persona_path=None):
+    # Build the thin soul overlay for one soul (MULTI-SOUL-1, fail-open).
+    # The returned soul_overlay_fn(messages, params) injects the full
+    # personas/agent_{soul}.md text as the leading system message: when the
+    # first message is already system its content is prefixed (persona +
+    # blank line + original), otherwise a new system message is inserted at
+    # the front. Success logs overlay-applied; any fault returns None so
+    # the gateway falls back to the raw parsed input (the existing
+    # overlay-degraded path, never a 500).
     def _overlay(messages, params):
         try:
-            text = _load_rem_persona_text(persona_path)
+            text = _load_persona_text(soul, persona_path)
             if not text:
                 return None
             msgs = tuple(messages)
@@ -1130,7 +1169,8 @@ def build_rem_soul_overlay(persona_path=None):
             else:
                 overlaid = (ChatMessage(role="system", content=text, extras={}),) + msgs
             _LOGGER.info(
-                "ext soul=rem status=overlay-applied prompt_chars=%d req_msgs=%d",
+                "ext soul=%s status=overlay-applied prompt_chars=%d req_msgs=%d",
+                soul,
                 len(text),
                 len(msgs),
             )
@@ -1139,6 +1179,20 @@ def build_rem_soul_overlay(persona_path=None):
             return None
 
     return _overlay
+
+
+def build_rem_soul_overlay(persona_path=None):
+    """Build the thin Rem soul overlay (THIN-OVERLAY-REM-1, fail-open).
+
+    The returned ``soul_overlay_fn(messages, params)`` injects the full
+    ``personas/agent_rem.md`` text as the leading system message: when the
+    first message is already ``system`` its content is prefixed (persona +
+    blank line + original), otherwise a new system message is inserted at
+    the front. Success logs ``overlay-applied``; any fault returns None so
+    the gateway falls back to the raw parsed input (the existing
+    overlay-degraded path, never a 500).
+    """
+    return build_soul_overlay("rem", persona_path)
 
 
 def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder=None, control=None,
@@ -1160,12 +1214,18 @@ def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder
     with open(registry_path, encoding="utf-8") as fh:
         registry = RegistryProvider(json.load(fh))
     loader = file_preset_loader(presets_path)
-    # THIN-OVERLAY-REM-1: the Rem soul overlay rides BOTH apps (reject +
-    # business) so standard (marker-free) requests carry the Rem persona
-    # upstream. Explicit injection (tests) wins; default is the project-root
-    # ``personas/agent_rem.md``. Fail-open: any overlay fault degrades to
-    # the raw parsed input (gateway overlay-degraded path, never a 500).
-    overlay = soul_overlay_fn if callable(soul_overlay_fn) else build_rem_soul_overlay()
+    # MULTI-SOUL-1: per-soul overlays ride their own apps so standard
+    # (marker-free) requests carry the right persona upstream. Explicit
+    # injection (tests) wins for every soul; defaults are the project-root
+    # personas/agent_{soul}.md files. Fail-open: any overlay fault degrades
+    # to the raw parsed input (gateway overlay-degraded path, never a 500).
+    def _overlay_for(soul):
+        if callable(soul_overlay_fn):
+            return soul_overlay_fn
+        return build_soul_overlay(soul)
+
+    overlay_rem = _overlay_for("rem")
+    overlay_mai = _overlay_for("mai")
     # FIX-2 reject handler: the legacy constant-closed handler (control=None
     # -> ``_THIN_OPEN`` False -> always 403, zero forward). Built through
     # the SAME ``build_thin_closed_handler`` seam the door-removal mutation
@@ -1178,17 +1238,27 @@ def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder
         soul_live_handler=build_thin_closed_handler(
             release_path=release_path, _forwarder=_forwarder, control=None
         ),
-        soul_overlay_fn=overlay,
+        soul_overlay_fn=overlay_rem,
     )
-    app = create_external_app(
+    app_rem = create_external_app(
         registry,
         loader,
         PresetRoutingBackend(),
         soul_live_handler=build_thin_closed_handler(
             release_path=release_path, _forwarder=_forwarder, control=control
         ),
-        soul_overlay_fn=overlay,
+        soul_overlay_fn=overlay_rem,
     )
+    app_mai = create_external_app(
+        registry,
+        loader,
+        PresetRoutingBackend(),
+        soul_live_handler=build_thin_closed_handler(
+            release_path=release_path, _forwarder=_forwarder, control=control
+        ),
+        soul_overlay_fn=overlay_mai,
+    )
+    app = app_rem
     if control is not None:
         control.attach(
             provider=registry,
@@ -1199,11 +1269,14 @@ def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder
         mount_control_route(app, control)
     # SA-DOOR-MECH-FIX-1: business on the pump thread, control on this loop.
     # FIX-2: closed-door SA bodies refuse on this loop via reject_app.
+    # MULTI-SOUL-1: rem/mai ride per-soul apps (own persona overlay);
+    # control + unknown paths ride the default (rem) app.
     return _isolate_business_asgi(
         app,
         control=control,
         reject_app=reject_app,
         enable_reject_fast_path=enable_reject_fast_path,
+        soul_apps={"rem": app_rem, "mai": app_mai},
     )
 
 
