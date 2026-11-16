@@ -3,8 +3,8 @@
 Decision-complete scope (mastermind Sol approved): product change is
 confined to ``scripts/serve_sa_thin.py`` (per-soul overlays + per-soul
 apps + first-segment dispatch) and ``configs/sa/registry.json`` (mai x4
-bindings + widened allowed_routes); ``presets.json``, frozen gateway
-assembly, ``:8000`` and every Frozen contract are untouched.
+plus ruka/akane/mahiru x4 bindings + widened allowed_routes); ``presets.json``,
+frozen gateway assembly, ``:8000`` and every Frozen contract are untouched.
 
 Transport is memory-only: the thin app is driven through
 ``httpx.ASGITransport`` (in-process, never a port). The upstream carrier
@@ -18,14 +18,19 @@ synthetic sandbox token minted by ``issue_credential``.
 Coverage (ticket acceptance mapping, probes A-E):
   A. /mai/primary carries the Mai persona (contains Sakurajima Mai
      markers, zero Rem markers);
+  A2. /ruka/primary carries the Ruka persona (contains Ruka markers,
+     zero other-soul markers); /akane/primary and /mahiru/primary
+     likewise with their own markers;
   B. /rem/glm-5.3-flash resolves exactly the glm preset (name + model)
      and carries the Rem persona (contains Rem markers, zero Mai markers);
-  C. alternating mai -> rem -> mai keeps each soul's own persona
-     (no cross-smell between consecutive calls);
+  C. alternating souls keep their own persona (no cross-smell between
+     consecutive calls), extended to all five souls;
   D. unlisted-but-registered route refuses 403, unregistered route
-     refuses 404, both with zero new upstream calls;
+     refuses 404, both with zero new upstream calls (403 probe: rem/mimo
+     and ruka/glm; 404 probe: akane/glm and mai/mimo with no binding);
   E. pin guard: production registry/presets bytes still match the pinned
-     dual hashes and preflight accepts the pinned copies.
+     dual hashes and preflight accepts the pinned copies; production
+     registry binds all five souls x4 presets with six allowed routes.
 """
 
 from __future__ import annotations
@@ -65,7 +70,7 @@ MIMO_MODEL = "sandbox-model-mimo"
 RUN_ID = "run-multi-soul-1"
 DOOR_TOKEN = "multi-soul-control-token"
 
-# Persona markers (verified mutually exclusive across the two files):
+# Persona markers (verified mutually exclusive across the five files):
 # agent_mai.md carries these, agent_rem.md carries none of them.
 MAI_MARKERS = ("櫻島麻衣", "兔女郎")
 # agent_rem.md carries these, agent_mai.md carries none of them.
@@ -76,6 +81,19 @@ MAI_ABSENT = ("雷姆", "羅茲瓦爾")
 # anchor (its single Mai reference is an explicit do-not-imitate rule,
 # so only the positive Mai anchor is asserted absent here).
 REM_ABSENT = ("兔女郎",)
+# agent_ruka.md carries these; rem/mai/akane/mahiru files carry none.
+# (agent_ruka.md mentions 雷姆醬 twice in a do-not-imitate rule, so 雷姆
+# is NOT asserted absent -- same idiom as REM_ABSENT above.)
+RUKA_MARKERS = ("更科瑠夏", "瑠夏")
+RUKA_ABSENT = ("櫻島麻衣", "兔女郎", "羅茲瓦爾", "黑川茜", "星野", "真昼")
+# agent_akane.md carries these; rem/mai/ruka/mahiru files carry none.
+# (agent_akane.md mentions 雷姆醬 twice in a naming rule, so 雷姆 is NOT
+# asserted absent.)
+AKANE_MARKERS = ("あかね", "星野")
+AKANE_ABSENT = ("櫻島麻衣", "兔女郎", "羅茲瓦爾", "瑠夏", "真昼")
+# agent_mahiru.md carries these; the other four files carry none.
+MAHIRU_MARKERS = ("椎名真昼", "真昼")
+MAHIRU_ABSENT = ("雷姆", "羅茲瓦爾", "櫻島麻衣", "兔女郎", "瑠夏", "黑川茜", "星野", "あかね")
 
 
 def _registry_raw(token_digest):
@@ -98,6 +116,10 @@ def _registry_raw(token_digest):
             _route("rem", MIMO),
             _route("mai", PRIMARY),
             _route("mai", GLM),
+            _route("ruka", PRIMARY),
+            _route("ruka", GLM),
+            _route("akane", PRIMARY),
+            _route("mahiru", PRIMARY),
         ],
         "clients": [
             {
@@ -108,6 +130,9 @@ def _registry_raw(token_digest):
                     "rem/%s" % PRIMARY,
                     "mai/%s" % PRIMARY,
                     "rem/%s" % GLM,
+                    "ruka/%s" % PRIMARY,
+                    "akane/%s" % PRIMARY,
+                    "mahiru/%s" % PRIMARY,
                 ],
                 "scope": SCOPE,
                 "allow_persistent_memory": True,
@@ -312,6 +337,42 @@ def _assert_rem_persona(call):
         assert marker not in content
 
 
+def _assert_ruka_persona(call):
+    assert call["soul"] == "ruka"
+    assert call["agent_id"] == "agent_ruka"
+    assert call["first_role"] == "system"
+    content = call["first_content"]
+    assert isinstance(content, str)
+    for marker in RUKA_MARKERS:
+        assert marker in content
+    for marker in RUKA_ABSENT:
+        assert marker not in content
+
+
+def _assert_akane_persona(call):
+    assert call["soul"] == "akane"
+    assert call["agent_id"] == "agent_akane"
+    assert call["first_role"] == "system"
+    content = call["first_content"]
+    assert isinstance(content, str)
+    for marker in AKANE_MARKERS:
+        assert marker in content
+    for marker in AKANE_ABSENT:
+        assert marker not in content
+
+
+def _assert_mahiru_persona(call):
+    assert call["soul"] == "mahiru"
+    assert call["agent_id"] == "agent_mahiru"
+    assert call["first_role"] == "system"
+    content = call["first_content"]
+    assert isinstance(content, str)
+    for marker in MAHIRU_MARKERS:
+        assert marker in content
+    for marker in MAHIRU_ABSENT:
+        assert marker not in content
+
+
 # -- probe A: /mai/primary carries the Mai persona, zero Rem smell ---------
 
 
@@ -325,6 +386,45 @@ def test_multi_soul_a_mai_primary_carries_mai_persona(monkeypatch, tmp_path):
     assert call["preset_name"] == PRIMARY
     assert call["preset_model"] == PRIMARY_MODEL
     _assert_mai_persona(call)
+
+
+# -- probe A2: new souls carry their own persona, zero other-soul smell ---
+
+
+def test_multi_soul_a2_ruka_primary_carries_ruka_persona(monkeypatch, tmp_path):
+    app, token, calls = _open_app(monkeypatch, tmp_path)
+    resp = _post(app, "ruka", PRIMARY, token, _chat_body(PRIMARY))
+    assert resp.status_code == 200
+    assert resp.json()["choices"][0]["message"]["content"] == "multi-soul-reply"
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["preset_name"] == PRIMARY
+    assert call["preset_model"] == PRIMARY_MODEL
+    _assert_ruka_persona(call)
+
+
+def test_multi_soul_a2_akane_primary_carries_akane_persona(monkeypatch, tmp_path):
+    app, token, calls = _open_app(monkeypatch, tmp_path)
+    resp = _post(app, "akane", PRIMARY, token, _chat_body(PRIMARY))
+    assert resp.status_code == 200
+    assert resp.json()["choices"][0]["message"]["content"] == "multi-soul-reply"
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["preset_name"] == PRIMARY
+    assert call["preset_model"] == PRIMARY_MODEL
+    _assert_akane_persona(call)
+
+
+def test_multi_soul_a2_mahiru_primary_carries_mahiru_persona(monkeypatch, tmp_path):
+    app, token, calls = _open_app(monkeypatch, tmp_path)
+    resp = _post(app, "mahiru", PRIMARY, token, _chat_body(PRIMARY))
+    assert resp.status_code == 200
+    assert resp.json()["choices"][0]["message"]["content"] == "multi-soul-reply"
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["preset_name"] == PRIMARY
+    assert call["preset_model"] == PRIMARY_MODEL
+    _assert_mahiru_persona(call)
 
 
 # -- probe B: /rem/glm-5.3-flash resolves the GLM preset + Rem persona ----
@@ -360,6 +460,33 @@ def test_multi_soul_c_alternating_souls_keep_own_persona(monkeypatch, tmp_path):
     assert calls[1]["preset_model"] == GLM_MODEL
 
 
+# -- probe C2: alternating across all five souls keeps each persona ------
+
+
+def test_multi_soul_c2_five_soul_alternation_no_cross_smell(monkeypatch, tmp_path):
+    app, token, calls = _open_app(monkeypatch, tmp_path)
+    seq = (
+        ("ruka", PRIMARY),
+        ("akane", PRIMARY),
+        ("mahiru", PRIMARY),
+        ("mai", PRIMARY),
+        ("rem", GLM),
+        ("ruka", PRIMARY),
+    )
+    for soul, alias in seq:
+        resp = _post(app, soul, alias, token, _chat_body(alias))
+        assert resp.status_code == 200
+    assert [c["soul"] for c in calls] == [s for (s, _a) in seq]
+    _assert_ruka_persona(calls[0])
+    _assert_akane_persona(calls[1])
+    _assert_mahiru_persona(calls[2])
+    _assert_mai_persona(calls[3])
+    _assert_rem_persona(calls[4])
+    _assert_ruka_persona(calls[5])
+    assert calls[4]["preset_name"] == GLM
+    assert calls[4]["preset_model"] == GLM_MODEL
+
+
 # -- probe D: unlisted route 403, unregistered route 404, zero upstream -----
 
 
@@ -369,8 +496,12 @@ def test_multi_soul_d_auth_matrix_403_404_zero_upstream(monkeypatch, tmp_path):
     # allowed_routes: 403 without touching upstream.
     resp = _post(app, "rem", MIMO, token, _chat_body(MIMO))
     assert resp.status_code == 403
-    # ruka/primary is a whitelisted soul with no route binding here: 404.
-    resp = _post(app, "ruka", PRIMARY, token, _chat_body(PRIMARY))
+    # ruka/glm-5.3-flash is registered and has a preset but is NOT in
+    # allowed_routes: 403 without touching upstream.
+    resp = _post(app, "ruka", GLM, token, _chat_body(GLM))
+    assert resp.status_code == 403
+    # akane/glm-5.3-flash has no route binding at all: 404.
+    resp = _post(app, "akane", GLM, token, _chat_body(GLM))
     assert resp.status_code == 404
     # mai/mimo-v2.6-flash has no route binding at all: 404.
     resp = _post(app, "mai", MIMO, token, _chat_body(MIMO))
@@ -403,17 +534,23 @@ def test_multi_soul_e_production_pins_match_and_preflight_passes(tmp_path):
     assert hashlib.sha256(presets_raw).hexdigest() == thin_mod.PRESETS_SHA256
     registry = json.loads(registry_raw.decode("utf-8"))
     souls = {(r["soul_alias"], r["backend_alias"]) for r in registry["routes"]}
-    assert ("mai", "primary") in souls
-    assert ("mai", "glm-5.3-flash") in souls
-    assert ("mai", "minimax-m3.1-flash") in souls
-    assert ("mai", "mimo-v2.6-flash") in souls
-    bound_souls = {s for (s, _a) in souls}
-    assert "ruka" not in bound_souls
-    assert "akane" not in bound_souls
-    assert "mahiru" not in bound_souls
+    for soul in ("rem", "mai", "ruka", "akane", "mahiru"):
+        for alias in ("primary", "minimax-m3.1-flash", "glm-5.3-flash", "mimo-v2.6-flash"):
+            assert (soul, alias) in souls
+    assert len(registry["routes"]) == 20
+    for route in registry["routes"]:
+        assert route["backend_ref"] == "sa-ollama-cloud"
+        assert route["agent_id"] == "agent_" + route["soul_alias"]
+        assert route["context_window_tokens"] == 4096
     allowed = registry["clients"][0]["allowed_routes"]
-    assert "mai/primary" in allowed
-    assert "rem/glm-5.3-flash" in allowed
+    assert allowed == [
+        "rem/primary",
+        "mai/primary",
+        "ruka/primary",
+        "akane/primary",
+        "mahiru/primary",
+        "rem/glm-5.3-flash",
+    ]
     registry_copy = tmp_path / "registry.json"
     presets_copy = tmp_path / "presets.json"
     registry_copy.write_bytes(registry_raw)

@@ -101,7 +101,7 @@ assert THIN_PORT == EXTERNAL_PORT
 #: Pinned e351541 content hashes (``configs/sa/registry.json`` +
 #: ``configs/sa/presets.json``). Re-read and compared on every start;
 #: any drift refuses startup. Lowercase hex, ``hashlib.sha256().hexdigest()``.
-REGISTRY_SHA256 = "9e49d0c31e868859012d31c89e844305bdff1b7aa9a39b237b1c1ab3413ee679"
+REGISTRY_SHA256 = "77cb62c1af26199d8dd44ec7c6558d6efa64db5564a1b1c8c8afc0707d0035f8"
 PRESETS_SHA256 = "35ab58bed7c72f60d7514deb8cd7e933be5b31c40c2598e3491919c28815e30a"
 
 #: Production config defaults (same files the gateway carrier loads).
@@ -1226,6 +1226,9 @@ def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder
 
     overlay_rem = _overlay_for("rem")
     overlay_mai = _overlay_for("mai")
+    overlay_ruka = _overlay_for("ruka")
+    overlay_akane = _overlay_for("akane")
+    overlay_mahiru = _overlay_for("mahiru")
     # FIX-2 reject handler: the legacy constant-closed handler (control=None
     # -> ``_THIN_OPEN`` False -> always 403, zero forward). Built through
     # the SAME ``build_thin_closed_handler`` seam the door-removal mutation
@@ -1258,6 +1261,33 @@ def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder
         ),
         soul_overlay_fn=overlay_mai,
     )
+    app_ruka = create_external_app(
+        registry,
+        loader,
+        PresetRoutingBackend(),
+        soul_live_handler=build_thin_closed_handler(
+            release_path=release_path, _forwarder=_forwarder, control=control
+        ),
+        soul_overlay_fn=overlay_ruka,
+    )
+    app_akane = create_external_app(
+        registry,
+        loader,
+        PresetRoutingBackend(),
+        soul_live_handler=build_thin_closed_handler(
+            release_path=release_path, _forwarder=_forwarder, control=control
+        ),
+        soul_overlay_fn=overlay_akane,
+    )
+    app_mahiru = create_external_app(
+        registry,
+        loader,
+        PresetRoutingBackend(),
+        soul_live_handler=build_thin_closed_handler(
+            release_path=release_path, _forwarder=_forwarder, control=control
+        ),
+        soul_overlay_fn=overlay_mahiru,
+    )
     app = app_rem
     if control is not None:
         control.attach(
@@ -1269,14 +1299,20 @@ def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder
         mount_control_route(app, control)
     # SA-DOOR-MECH-FIX-1: business on the pump thread, control on this loop.
     # FIX-2: closed-door SA bodies refuse on this loop via reject_app.
-    # MULTI-SOUL-1: rem/mai ride per-soul apps (own persona overlay);
-    # control + unknown paths ride the default (rem) app.
+    # MULTI-SOUL-1: rem/mai/ruka/akane/mahiru ride per-soul apps (own
+    # persona overlay); control + unknown paths ride the default (rem) app.
     return _isolate_business_asgi(
         app,
         control=control,
         reject_app=reject_app,
         enable_reject_fast_path=enable_reject_fast_path,
-        soul_apps={"rem": app_rem, "mai": app_mai},
+        soul_apps={
+            "rem": app_rem,
+            "mai": app_mai,
+            "ruka": app_ruka,
+            "akane": app_akane,
+            "mahiru": app_mahiru,
+        },
     )
 
 

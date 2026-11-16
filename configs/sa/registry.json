@@ -67,6 +67,102 @@
       "public_model_id": "sa-mai-mimo-v2.6-flash",
       "backend_ref": "sa-ollama-cloud",
       "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "ruka",
+      "backend_alias": "primary",
+      "agent_id": "agent_ruka",
+      "public_model_id": "sa-ruka-primary",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "ruka",
+      "backend_alias": "minimax-m3.1-flash",
+      "agent_id": "agent_ruka",
+      "public_model_id": "sa-ruka-minimax-m3.1-flash",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "ruka",
+      "backend_alias": "glm-5.3-flash",
+      "agent_id": "agent_ruka",
+      "public_model_id": "sa-ruka-glm-5.3-flash",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "ruka",
+      "backend_alias": "mimo-v2.6-flash",
+      "agent_id": "agent_ruka",
+      "public_model_id": "sa-ruka-mimo-v2.6-flash",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "akane",
+      "backend_alias": "primary",
+      "agent_id": "agent_akane",
+      "public_model_id": "sa-akane-primary",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "akane",
+      "backend_alias": "minimax-m3.1-flash",
+      "agent_id": "agent_akane",
+      "public_model_id": "sa-akane-minimax-m3.1-flash",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "akane",
+      "backend_alias": "glm-5.3-flash",
+      "agent_id": "agent_akane",
+      "public_model_id": "sa-akane-glm-5.3-flash",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "akane",
+      "backend_alias": "mimo-v2.6-flash",
+      "agent_id": "agent_akane",
+      "public_model_id": "sa-akane-mimo-v2.6-flash",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "mahiru",
+      "backend_alias": "primary",
+      "agent_id": "agent_mahiru",
+      "public_model_id": "sa-mahiru-primary",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "mahiru",
+      "backend_alias": "minimax-m3.1-flash",
+      "agent_id": "agent_mahiru",
+      "public_model_id": "sa-mahiru-minimax-m3.1-flash",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "mahiru",
+      "backend_alias": "glm-5.3-flash",
+      "agent_id": "agent_mahiru",
+      "public_model_id": "sa-mahiru-glm-5.3-flash",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
+    },
+    {
+      "soul_alias": "mahiru",
+      "backend_alias": "mimo-v2.6-flash",
+      "agent_id": "agent_mahiru",
+      "public_model_id": "sa-mahiru-mimo-v2.6-flash",
+      "backend_ref": "sa-ollama-cloud",
+      "context_window_tokens": 4096
     }
   ],
   "clients": [
@@ -77,6 +173,9 @@
       "allowed_routes": [
         "rem/primary",
         "mai/primary",
+        "ruka/primary",
+        "akane/primary",
+        "mahiru/primary",
         "rem/glm-5.3-flash"
       ],
       "scope": "owner_private",
