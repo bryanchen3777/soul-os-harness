@@ -126,7 +126,10 @@ def _check_messages(value) -> tuple[ChatMessage, ...]:
             _bad("messages")
         for k in m.keys():
             if k not in _MSG_KEYS:
-                _bad("messages", "Unsupported parameter.")
+                if isinstance(k, str):
+                    _bad("messages", f"Unsupported message field: {k}")
+                else:
+                    _bad("messages", "Invalid request.")
         if "role" not in m or "content" not in m:
             _bad("messages")
         role = m["role"]
@@ -185,7 +188,10 @@ def parse_chat_request(d: Mapping) -> InternalReq:
         if k in _BANNED_KEYS:
             _bad(k, "Unsupported parameter.")
         if k not in _TOP_KEYS:
-            _bad(k, "Unsupported parameter." if isinstance(k, str) else "Invalid request.")
+            if isinstance(k, str):
+                _bad(k, f"Unsupported parameter: {k}")
+            else:
+                _bad(k, "Invalid request.")
     if "model" not in d or "messages" not in d:
         _bad("model" if "model" not in d else "messages")
     stream = False

@@ -259,3 +259,58 @@ def test_iter_chat_sse_frames_end_with_done():
     assert payloads[1]["choices"][0]["finish_reason"] is None
     assert payloads[2]["choices"][0]["finish_reason"] == "stop"
     assert all(p["object"] == "chat.completion.chunk" for p in payloads)
+
+
+# -- DIAG-SHIM-KEY-001: 400 carries the offending key name (name only) ------
+
+def test_unknown_top_level_key_message_carries_key_name():
+    body = _valid_body(extra_key=1)
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(body)
+    assert ei.value.status == 400
+    assert ei.value.message == "Unsupported parameter: extra_key"
+
+
+def test_unknown_top_level_key_survives_error_envelope_and_scrub():
+    body = _valid_body(extra_key=1)
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(body)
+    env = to_error(ei.value.status, ei.value.code, ei.value.message)
+    assert env["error"]["message"] == "Unsupported parameter: extra_key"
+    assert "extra_key" in env["error"]["message"]
+
+
+def test_unknown_message_field_carries_field_name():
+    body = _valid_body(messages=[{"role": "user", "content": "hi", "tool_calls": []}])
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(body)
+    assert ei.value.status == 400
+    assert ei.value.message == "Unsupported message field: tool_calls"
+
+
+@pytest.mark.parametrize("banned", ["logit_bias", "function_call", "tools", "functions", "tool_choice"])
+def test_banned_keys_do_not_leak_key_name(banned):
+    body = _valid_body()
+    body[banned] = {}
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(body)
+    assert ei.value.status == 400
+    assert ei.value.message == "Unsupported parameter."
+    assert banned not in ei.value.message
+
+
+def test_non_str_top_level_key_no_repr_leak():
+    body = _valid_body()
+    body[123] = 1
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(body)
+    assert ei.value.status == 400
+    assert ei.value.message == "Invalid request."
+
+
+def test_non_str_message_field_key_no_repr_leak():
+    body = _valid_body(messages=[{"role": "user", "content": "hi", 123: 1}])
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(body)
+    assert ei.value.status == 400
+    assert ei.value.message == "Invalid request."
