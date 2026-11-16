@@ -56,6 +56,7 @@ import hashlib
 import hmac
 import http.client
 import json
+import logging
 import os
 import queue
 import secrets
@@ -79,6 +80,7 @@ from src.external_gateway.app import EXTERNAL_PORT
 from src.external_gateway.app import create_external_app
 from src.external_gateway.app import file_preset_loader
 from src.external_gateway.backends import PresetRoutingBackend
+from src.external_gateway.openai_shim import ChatMessage
 from src.interfaces.external_auth import RegistryProvider
 from src.soul_access import bridge as _sa_bridge
 from src.soul_access import release as _sa_release
@@ -86,6 +88,10 @@ from src.soul_access import wiring as _sa_wiring
 
 #: Loopback-only bind. No flag can change it (there is no --host/--port).
 THIN_HOST = "127.0.0.1"
+
+#: Module logger (overlay applied / persona unreadable lines only; never a
+#: body, a token, or a key).
+_LOGGER = logging.getLogger(__name__)
 
 #: Thin port. Must stay the frozen outward port (asserted in tests).
 THIN_PORT = 18765
@@ -1060,8 +1066,83 @@ def preflight(registry_path, presets_path, *, _socket_factory=None) -> int:
     return 0
 
 
+#: Rem persona source (THIN-OVERLAY-REM-1): the project-root persona
+#: file, read UTF-8 and cached per path. Fail-open: any read fault reads
+#: as missing and the overlay degrades to the raw parsed input.
+_REM_PERSONA_DEFAULT = _REPO_ROOT / "personas" / "agent_rem.md"
+
+#: Persona text cache keyed by the resolved path string.
+_REM_PERSONA_CACHE: dict = {}
+
+
+def _load_rem_persona_text(persona_path=None):
+    """Read the Rem persona file (UTF-8, cached). None on any fault.
+
+    A missing / unreadable / empty file is logged (ERROR, err type only --
+    no path, no content) and reads as None, so the overlay returns None and
+    the gateway falls back to the raw parsed input through the existing
+    overlay-degraded path.
+    """
+    path = Path(persona_path) if persona_path is not None else _REM_PERSONA_DEFAULT
+    key = str(path)
+    if key in _REM_PERSONA_CACHE:
+        return _REM_PERSONA_CACHE[key]
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except Exception as exc:
+        _LOGGER.error(
+            "ext soul=rem status=overlay-persona-unreadable err=%s",
+            type(exc).__name__,
+        )
+        return None
+    if not isinstance(text, str) or not text:
+        _LOGGER.error("ext soul=rem status=overlay-persona-unreadable err=empty")
+        return None
+    _REM_PERSONA_CACHE[key] = text
+    return text
+
+
+def build_rem_soul_overlay(persona_path=None):
+    """Build the thin Rem soul overlay (THIN-OVERLAY-REM-1, fail-open).
+
+    The returned ``soul_overlay_fn(messages, params)`` injects the full
+    ``personas/agent_rem.md`` text as the leading system message: when the
+    first message is already ``system`` its content is prefixed (persona +
+    blank line + original), otherwise a new system message is inserted at
+    the front. Success logs ``overlay-applied``; any fault returns None so
+    the gateway falls back to the raw parsed input (the existing
+    overlay-degraded path, never a 500).
+    """
+
+    def _overlay(messages, params):
+        try:
+            text = _load_rem_persona_text(persona_path)
+            if not text:
+                return None
+            msgs = tuple(messages)
+            if msgs and msgs[0].role == "system" and isinstance(msgs[0].content, str):
+                head = ChatMessage(
+                    role="system",
+                    content=text + "\n\n" + msgs[0].content,
+                    extras=dict(msgs[0].extras),
+                )
+                overlaid = (head,) + msgs[1:]
+            else:
+                overlaid = (ChatMessage(role="system", content=text, extras={}),) + msgs
+            _LOGGER.info(
+                "ext soul=rem status=overlay-applied prompt_chars=%d req_msgs=%d",
+                len(text),
+                len(msgs),
+            )
+            return (overlaid, params)
+        except Exception:
+            return None
+
+    return _overlay
+
+
 def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder=None, control=None,
-                   enable_reject_fast_path=True):
+                   enable_reject_fast_path=True, soul_overlay_fn=None):
     """Assemble the thin ASGI app (no carrier change, no serving).
 
     Auth / routing / preset loading are the production objects; the only
@@ -1079,6 +1160,12 @@ def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder
     with open(registry_path, encoding="utf-8") as fh:
         registry = RegistryProvider(json.load(fh))
     loader = file_preset_loader(presets_path)
+    # THIN-OVERLAY-REM-1: the Rem soul overlay rides BOTH apps (reject +
+    # business) so standard (marker-free) requests carry the Rem persona
+    # upstream. Explicit injection (tests) wins; default is the project-root
+    # ``personas/agent_rem.md``. Fail-open: any overlay fault degrades to
+    # the raw parsed input (gateway overlay-degraded path, never a 500).
+    overlay = soul_overlay_fn if callable(soul_overlay_fn) else build_rem_soul_overlay()
     # FIX-2 reject handler: the legacy constant-closed handler (control=None
     # -> ``_THIN_OPEN`` False -> always 403, zero forward). Built through
     # the SAME ``build_thin_closed_handler`` seam the door-removal mutation
@@ -1091,6 +1178,7 @@ def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder
         soul_live_handler=build_thin_closed_handler(
             release_path=release_path, _forwarder=_forwarder, control=None
         ),
+        soul_overlay_fn=overlay,
     )
     app = create_external_app(
         registry,
@@ -1099,6 +1187,7 @@ def build_thin_app(registry_path, presets_path, *, release_path=None, _forwarder
         soul_live_handler=build_thin_closed_handler(
             release_path=release_path, _forwarder=_forwarder, control=control
         ),
+        soul_overlay_fn=overlay,
     )
     if control is not None:
         control.attach(
