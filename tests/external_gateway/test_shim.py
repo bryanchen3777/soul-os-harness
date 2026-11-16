@@ -352,3 +352,43 @@ def test_other_unknown_key_still_400_after_stream_options_admit():
         parse_chat_request(_valid_body(stream_options={"include_usage": True}, dummy_key=1))
     assert ei.value.status == 400
     assert ei.value.message == "Unsupported parameter: dummy_key"
+
+
+# -- SHIM-ADMIT-STORE-001: admit + no-op drop --------------------------------
+
+import pytest as _pytest_store  # noqa: E402  (local alias to avoid shadowing)
+
+
+@_pytest_store.mark.parametrize("val", [True, False, None])
+def test_store_admitted_and_dropped(val):
+    req = parse_chat_request(_valid_body(store=val))
+    assert isinstance(req, InternalReq)
+    raw = req.to_raw_request()
+    assert "store" not in raw
+
+
+@_pytest_store.mark.parametrize("bad", [1, 0, "true", [], {}])
+def test_store_non_bool_400(bad):
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(_valid_body(store=bad))
+    assert ei.value.status == 400
+    assert ei.value.code == "invalid_request_error"
+    assert ei.value.param == "store"
+
+
+def test_unknown_param_still_400_after_store_admit():
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(_valid_body(store=True, unknown_param=1))
+    assert ei.value.status == 400
+    assert ei.value.message == "Unsupported parameter: unknown_param"
+
+
+def test_store_and_stream_options_coexist_no_raw_pollution():
+    req = parse_chat_request(
+        _valid_body(store=True, stream=True, stream_options={"include_usage": True})
+    )
+    assert isinstance(req, InternalReq)
+    raw = req.to_raw_request()
+    assert "store" not in raw
+    assert "stream_options" not in raw
+    assert raw["stream"] is False

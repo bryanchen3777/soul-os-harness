@@ -43,7 +43,10 @@ _CODE = "invalid_request_error"
 # no-op dropped (never forwarded upstream; no usage chunk is synthesized in
 # SSE because upstream is zero-accounting). Never invent private claims in
 # SSE chunks.
-_TOP_KEYS = frozenset({"model", "messages", "temperature", "max_tokens", "stop", "stream", "stream_options"})
+# NOTE (SHIM-ADMIT-STORE-001): ``store`` is admitted and no-op dropped
+# (never forwarded upstream via ``to_raw_request``; no usage chunk is
+# synthesized in SSE). Accepted values are None / True / False only.
+_TOP_KEYS = frozenset({"model", "messages", "temperature", "max_tokens", "stop", "stream", "stream_options", "store"})
 
 # Accepted but rejected-with-400 extensions (subset of the "extra key" rule,
 # listed explicitly so a reader sees the ban without diffing key sets).
@@ -179,6 +182,12 @@ def _check_stop(value) -> tuple[str, ...] | None:
     _bad("stop")
 
 
+def _check_store(value) -> None:
+    if value is None or type(value) is bool:
+        return None
+    _bad("store")
+
+
 def _check_stream_options(value) -> None:
     """Admit ``stream_options`` and no-op drop it.
 
@@ -218,6 +227,8 @@ def parse_chat_request(d: Mapping) -> InternalReq:
         _bad("model" if "model" not in d else "messages")
     if "stream_options" in d:
         _check_stream_options(d["stream_options"])
+    if "store" in d:
+        _check_store(d["store"])
     stream = False
     if "stream" in d:
         st = d["stream"]
