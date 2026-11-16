@@ -39,7 +39,11 @@ _CODE = "invalid_request_error"
 
 # Top-level keys accepted on a chat-completions request body. Anything else --
 # including the explicitly banned OpenAI extensions below -- is a 400.
-_TOP_KEYS = frozenset({"model", "messages", "temperature", "max_tokens", "stop", "stream"})
+# NOTE (SHIM-ADMIT-STREAM-OPTIONS-001): ``stream_options`` is admitted and
+# no-op dropped (never forwarded upstream; no usage chunk is synthesized in
+# SSE because upstream is zero-accounting). Never invent private claims in
+# SSE chunks.
+_TOP_KEYS = frozenset({"model", "messages", "temperature", "max_tokens", "stop", "stream", "stream_options"})
 
 # Accepted but rejected-with-400 extensions (subset of the "extra key" rule,
 # listed explicitly so a reader sees the ban without diffing key sets).
@@ -95,6 +99,8 @@ class InternalReq:
         semantics. ``stream`` is always False here (the engine allowlist
         admits only non-streaming; ``True`` is served as synthesized SSE at
         the HTTP layer), rendered explicitly for the engine's allowlist.
+        ``stream_options`` is admitted-and-dropped upstream of here and never
+        rendered.
         """
         msgs = []
         for m in self.messages:
@@ -173,6 +179,18 @@ def _check_stop(value) -> tuple[str, ...] | None:
     _bad("stop")
 
 
+def _check_stream_options(value) -> None:
+    """Admit ``stream_options`` and no-op drop it.
+
+    ``None`` or any Mapping is accepted and discarded (not stored, not
+    forwarded; ``to_raw_request`` never renders it and no usage chunk is
+    synthesized). Anything else is a 400. Content is not validated.
+    """
+    if value is None or isinstance(value, Mapping):
+        return None
+    _bad("stream_options")
+
+
 def parse_chat_request(d: Mapping) -> InternalReq:
     """Parse + strictly validate an OpenAI chat-completions body.
 
@@ -181,6 +199,10 @@ def parse_chat_request(d: Mapping) -> InternalReq:
     bad role, bad types, or non-bool ``stream``. ``stream: true`` is
     accepted (S3 pseudo-streaming: upstream stays non-streaming, the HTTP
     layer synthesizes SSE); ``stream`` defaults to False when absent.
+    ``stream_options`` (Mapping or None) is admitted and no-op dropped: its
+    content is not validated, it is not stored on ``InternalReq``, it never
+    appears in ``to_raw_request``, and no usage chunk is appended to SSE
+    (upstream is zero-accounting).
     """
     if not isinstance(d, Mapping):
         _bad(None)
@@ -194,6 +216,8 @@ def parse_chat_request(d: Mapping) -> InternalReq:
                 _bad(k, "Invalid request.")
     if "model" not in d or "messages" not in d:
         _bad("model" if "model" not in d else "messages")
+    if "stream_options" in d:
+        _check_stream_options(d["stream_options"])
     stream = False
     if "stream" in d:
         st = d["stream"]

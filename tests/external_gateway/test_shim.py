@@ -314,3 +314,41 @@ def test_non_str_message_field_key_no_repr_leak():
         parse_chat_request(body)
     assert ei.value.status == 400
     assert ei.value.message == "Invalid request."
+
+
+# -- SHIM-ADMIT-STREAM-OPTIONS-001: admit + no-op drop ----------------------
+
+def test_stream_options_include_usage_admitted_and_dropped():
+    req = parse_chat_request(_valid_body(stream=True, stream_options={"include_usage": True}))
+    assert isinstance(req, InternalReq)
+    assert req.stream is True
+    raw = req.to_raw_request()
+    assert "stream_options" not in raw
+    assert raw["stream"] is False
+    frames = list(iter_chat_sse("hello", "model-a"))
+    assert len(frames) == 4
+    assert frames[-1] == b"data: [DONE]\n\n"
+    payloads = [json.loads(f.decode("utf-8")[len("data: "):]) for f in frames[:-1]]
+    assert all("usage" not in p for p in payloads)
+
+
+def test_stream_options_none_and_empty_mapping_ok():
+    for val in (None, {}):
+        req = parse_chat_request(_valid_body(stream_options=val))
+        assert isinstance(req, InternalReq)
+        assert "stream_options" not in req.to_raw_request()
+
+
+@pytest.mark.parametrize("bad", ["yes", 1, True, [], ["include_usage"]])
+def test_stream_options_non_mapping_400(bad):
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(_valid_body(stream_options=bad))
+    assert ei.value.status == 400
+    assert ei.value.code == "invalid_request_error"
+
+
+def test_other_unknown_key_still_400_after_stream_options_admit():
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(_valid_body(stream_options={"include_usage": True}, dummy_key=1))
+    assert ei.value.status == 400
+    assert ei.value.message == "Unsupported parameter: dummy_key"
