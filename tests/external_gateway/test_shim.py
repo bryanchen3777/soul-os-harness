@@ -58,7 +58,17 @@ def test_former_banned_extension_keys_passthrough(key):
     assert req.to_raw_request()[key] == body[key]
 
 
-@pytest.mark.parametrize("role", ["developer", "function", "tool", "System", ""])
+# -- TRANS-2: roles are open, message keys ride verbatim ---------------------
+
+@pytest.mark.parametrize("role", ["developer", "function", "tool", "system", "assistant", "System", "custom-role", "x"])
+def test_open_roles_admitted(role):
+    req = parse_chat_request(_valid_body(messages=[{"role": role, "content": "x"}]))
+    assert isinstance(req, InternalReq)
+    assert req.messages[0].role == role
+    assert req.to_raw_request()["messages"][0]["role"] == role
+
+
+@pytest.mark.parametrize("role", ["", 123, None, ["user"]])
 def test_bad_role_400(role):
     body = _valid_body(messages=[{"role": role, "content": "x"}])
     with pytest.raises(InterfaceError) as ei:
@@ -67,11 +77,22 @@ def test_bad_role_400(role):
     assert ei.value.code == "invalid_request_error"
 
 
-def test_extra_message_key_400():
-    body = _valid_body(messages=[{"role": "user", "content": "hi", "tool_calls": []}])
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(body)
-    assert ei.value.status == 400
+def test_extra_message_keys_ride_verbatim_in_extras():
+    msg = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "f", "arguments": "{}"}}],
+        "id": "msg-1",
+    }
+    req = parse_chat_request(_valid_body(messages=[msg]))
+    assert isinstance(req, InternalReq)
+    assert req.messages[0].content is None
+    assert req.messages[0].extras == {
+        "tool_calls": msg["tool_calls"],
+        "id": "msg-1",
+    }
+    raw = req.to_raw_request()["messages"][0]
+    assert raw == msg
 
 
 def test_stream_true_accepted_s3_pseudo_streaming():
@@ -181,7 +202,7 @@ def test_secret_scrubbed_from_message():
 
 def test_interface_error_converts_to_envelope():
     with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(_valid_body(messages=[{"role": "developer", "content": "x"}]))
+        parse_chat_request(_valid_body(messages=[{"role": "", "content": "x"}]))
     env = to_error(ei.value.status, ei.value.code, ei.value.message)
     assert env["error"]["type"] == "invalid_request_error"
 
@@ -280,12 +301,13 @@ def test_unknown_top_level_key_survives_error_envelope_and_scrub():
     assert "[redacted]" in out["error"]["message"]
 
 
-def test_unknown_message_field_carries_field_name():
-    body = _valid_body(messages=[{"role": "user", "content": "hi", "tool_calls": []}])
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(body)
-    assert ei.value.status == 400
-    assert ei.value.message == "Unsupported message field: tool_calls"
+def test_unknown_message_field_rides_verbatim_not_400():
+    body = _valid_body(messages=[{"role": "user", "content": "hi", "tool_calls": [{"id": "call-1"}]}])
+    req = parse_chat_request(body)
+    assert isinstance(req, InternalReq)
+    raw = req.to_raw_request()["messages"][0]
+    assert raw["tool_calls"] == [{"id": "call-1"}]
+    assert raw["content"] == "hi"
 
 
 @pytest.mark.parametrize("key", ["logit_bias", "function_call", "tools", "functions", "tool_choice"])

@@ -9,15 +9,28 @@ translates shapes:
 Transparent passthrough (SHIM-OVERLAY-TRANS-1): the Harness / LLM upstream
 is the authority on extra parameters. The shim only guards the routing
 minimum -- ``model`` (non-empty string, public model id) and ``messages``
-(non-empty array, each entry with legal ``role``/``content`` types) plus
-the engine-local knobs it owns (``temperature`` / ``max_tokens`` /
-``stream`` / ``stop``). Every other top-level key (``tools``,
-``tool_choice``, ``functions``, ``function_call``, ``logit_bias``,
-``store``, ``stream_options``, ``max_completion_tokens`` and any future
-unknown key) is NEVER a 400: it rides verbatim in
+(non-empty array, at most 128 entries) plus the engine-local knobs it owns
+(``temperature`` / ``max_tokens`` / ``stream`` / ``stop``). Every other
+top-level key (``tools``, ``tool_choice``, ``functions``, ``function_call``,
+``logit_bias``, ``store``, ``stream_options``, ``max_completion_tokens`` and
+any future unknown key) is NEVER a 400: it rides verbatim in
 ``InternalReq.passthrough`` and is unpacked back into the payload by
 ``to_raw_request`` / the backend at send time, key names and values
 byte-identical.
+
+Message layer (SHIM-OVERLAY-TRANS-2): the message array is a structural
+floor guard plus transparent passthrough. Each entry must be a mapping with
+a non-empty string ``role`` and a present ``content`` key whose value is
+``None``, ``str``, or ``list`` (parts arrays ride through). Roles are open:
+system / developer / user / assistant / tool / function and any unknown
+role are admitted. Every other message key (``tool_calls``,
+``tool_call_id``, ``function_call``, ``id``, ``name``, ...) rides verbatim
+in ``ChatMessage.extras`` and is restored by ``to_raw_request`` /
+``_wire_messages`` without loss. A null or empty-string content is admitted
+only with a tool payload (tool-only turn); bare empty content without tools
+stays fail-closed 500. DoS guard is total-only: the canonical JSON of the
+whole messages array is capped (same 256 KiB figure as the engine-side total
+cap); there is deliberately no per-message cap so parts arrays pass.
 
 S3 pseudo-streaming: ``stream: true`` is accepted. The upstream call
 stays non-streaming (``to_raw_request`` always renders ``stream: False``);
@@ -57,8 +70,12 @@ _CODE = "invalid_request_error"
 # request body rides verbatim in ``InternalReq.passthrough`` (never a 400).
 _PARSED_KEYS = frozenset({"model", "messages", "temperature", "max_tokens", "stop", "stream"})
 
-_MSG_KEYS = frozenset({"role", "content", "name"})
-_ROLES = frozenset({"system", "user", "assistant"})
+_MSG_MAX_COUNT = 128
+
+#: Total-only DoS guard for the message array: canonical JSON bytes of the
+#: whole ``messages`` array. Mirrors the engine-side total-cap figure; there
+#: is deliberately no per-message cap so parts arrays pass.
+_MSG_MAX_JSON_BYTES = 262144
 
 # Upstream failures are never echoed: every 5xx becomes this fixed copy.
 _FIXED_UPSTREAM_MESSAGE = "Internal server error."
@@ -84,9 +101,18 @@ def _scrub(message: str) -> str:
 
 @dataclass(frozen=True)
 class ChatMessage:
+    """One admitted message: role + content floor plus verbatim extras.
+
+    ``role`` is any non-empty string (unknown roles admitted).
+    ``content`` is ``None`` (tool-only turn), ``str``, or ``list`` (parts
+    array). ``extras`` holds every other message key verbatim
+    (``tool_calls`` / ``tool_call_id`` / ``function_call`` / ``id`` /
+    ``name`` / ...), snapshot-copied at parse time.
+    """
+
     role: str
-    content: str
-    name: str | None = None
+    content: str | list | None
+    extras: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -113,12 +139,13 @@ class InternalReq:
         semantics. ``stream`` is always False here, rendered explicitly.
         ``passthrough`` keys are unpacked verbatim on top (they are disjoint
         from the parsed knobs by construction, so nothing is overwritten).
+        Message extras ride under their original keys: each message renders
+        as ``{"role", "content", **extras}``, byte-identical to admission.
         """
         msgs = []
         for m in self.messages:
             item: dict = {"role": m.role, "content": m.content}
-            if m.name is not None:
-                item["name"] = m.name
+            item.update(dict(m.extras))
             msgs.append(item)
         raw = {
             "model": self.model,
@@ -138,30 +165,50 @@ def _check_model(value, param="model") -> str:
 
 
 def _check_messages(value) -> tuple[ChatMessage, ...]:
-    if not isinstance(value, list) or len(value) == 0 or len(value) > 128:
+    """Structural floor guard + transparent passthrough (TRANS-2).
+
+    Admits: non-empty list, at most 128 entries, whole-array canonical JSON
+    within the total byte cap; each entry a mapping with a non-empty string
+    ``role`` (any role, known or unknown) and a present ``content`` key
+    (``None`` / ``str`` / ``list``). Every other message key rides verbatim
+    in ``ChatMessage.extras`` -- never a 400. Null / empty-string content is
+    admitted only with a tool payload (``tool_calls`` / ``function_call``);
+    bare empty content without tools stays fail-closed 500.
+    """
+    if not isinstance(value, list) or len(value) == 0 or len(value) > _MSG_MAX_COUNT:
+        _bad("messages")
+    try:
+        canon = json.dumps(
+            value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+            default=str,
+        )
+    except Exception:
+        _bad("messages")
+    if len(canon.encode("utf-8")) > _MSG_MAX_JSON_BYTES:
         _bad("messages")
     out = []
     for m in value:
         if not isinstance(m, Mapping):
             _bad("messages")
         for k in m.keys():
-            if k not in _MSG_KEYS:
-                if isinstance(k, str):
-                    _bad("messages", f"Unsupported message field: {k}")
-                else:
-                    _bad("messages", "Invalid request.")
+            if not isinstance(k, str):
+                _bad("messages", "Invalid request.")
         if "role" not in m or "content" not in m:
             _bad("messages")
         role = m["role"]
         content = m["content"]
-        name = m.get("name", None)
-        if not isinstance(role, str) or role not in _ROLES:
+        if not isinstance(role, str) or role == "":
             _bad("role")
-        if not isinstance(content, str):
+        if not (content is None or isinstance(content, (str, list))):
             _bad("content")
-        if name is not None and (not isinstance(name, str) or len(name) > 64):
-            _bad("name")
-        out.append(ChatMessage(role=role, content=content, name=name))
+        try:
+            extras = copy.deepcopy({k: v for k, v in m.items() if k not in ("role", "content")})
+        except Exception:
+            extras = {k: v for k, v in m.items() if k not in ("role", "content")}
+        if content is None or content == "":
+            if extras.get("tool_calls") is None and extras.get("function_call") is None:
+                raise InterfaceError(500, "internal", None, "Internal server error.")
+        out.append(ChatMessage(role=role, content=content, extras=extras))
     return tuple(out)
 
 
@@ -200,7 +247,10 @@ def parse_chat_request(d: Mapping) -> InternalReq:
     non-mapping input, a missing/invalid ``model`` or ``messages``, bad
     ``temperature`` / ``max_tokens`` / ``stop`` types, or a non-bool
     ``stream``. ``stream: true`` is accepted (S3 pseudo-streaming: upstream
-    stays non-streaming, the HTTP layer synthesizes SSE).
+    stays non-streaming, the HTTP layer synthesizes SSE). Message entries
+    admit any non-empty role and ``None`` / ``str`` / ``list`` content with
+    all other keys riding verbatim in ``ChatMessage.extras``; bare empty
+    content without a tool payload is the one fail-closed 500.
 
     Every other top-level key -- ``tools``, ``tool_choice``,
     ``functions``, ``function_call``, ``logit_bias``, ``store``,

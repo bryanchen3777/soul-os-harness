@@ -72,13 +72,29 @@ def _timeout() -> httpx.Timeout:
 
 
 def _wire_messages(messages: Any) -> list:
-    """Render internal messages to plain role/content dicts."""
+    """Render internal messages to plain role/content dicts, extras intact.
+
+    Transparent passthrough (SHIM-OVERLAY-TRANS-2): every key beyond
+    ``role``/``content`` -- ``tool_call_id``, ``tool_calls``,
+    ``function_call``, ``id``, ``name``, ... -- is forwarded verbatim under
+    its original key. Nothing is dropped, renamed, or synthesized. A bare
+    empty ``extras`` mapping renders the plain ``{"role", "content"}``
+    shape, byte-identical to before.
+    """
     out = []
     for m in messages:
         if isinstance(m, dict):
-            out.append({"role": m.get("role"), "content": m.get("content")})
+            item = {"role": m.get("role"), "content": m.get("content")}
+            for k, v in m.items():
+                if k not in ("role", "content"):
+                    item[k] = v
+            out.append(item)
         else:
-            out.append({"role": getattr(m, "role", None), "content": getattr(m, "content", None)})
+            item = {"role": getattr(m, "role", None), "content": getattr(m, "content", None)}
+            extras = getattr(m, "extras", None)
+            if isinstance(extras, dict):
+                item.update(extras)
+            out.append(item)
     return out
 
 
