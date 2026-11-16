@@ -454,3 +454,147 @@ def test_unknown_param_still_400_after_max_completion_tokens_admit():
         parse_chat_request(_valid_body(max_completion_tokens=16, unknown_param=1))
     assert ei.value.status == 400
     assert ei.value.message == "Unsupported parameter: unknown_param"
+
+
+# -- SHIM-EMPTY-TOOL-ADMIT: empty tools / harmless tool_choice admitted -----
+_TOOL_KEYS = ("tools", "tool_choice", "functions", "function_call", "logit_bias")
+
+
+def test_empty_tools_admitted_and_dropped():
+    req = parse_chat_request(_valid_body(tools=[]))
+    assert isinstance(req, InternalReq)
+    raw = req.to_raw_request()
+    for k in _TOOL_KEYS:
+        assert k not in raw
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        [{"type": "function", "function": {"name": "f"}}],
+        "x",
+        {},
+        {"type": "function"},
+        [{}],
+        None,
+        True,
+    ],
+)
+def test_nonempty_or_nonlist_tools_400(bad):
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(_valid_body(tools=bad))
+    assert ei.value.status == 400
+    assert ei.value.code == "invalid_request_error"
+    assert ei.value.message == "Unsupported parameter."
+
+
+def test_tool_choice_none_admitted_and_dropped():
+    req = parse_chat_request(_valid_body(tool_choice="none"))
+    assert isinstance(req, InternalReq)
+    raw = req.to_raw_request()
+    for k in _TOOL_KEYS:
+        assert k not in raw
+
+
+def test_empty_tools_plus_auto_admitted_and_dropped():
+    req = parse_chat_request(_valid_body(tools=[], tool_choice="auto"))
+    assert isinstance(req, InternalReq)
+    raw = req.to_raw_request()
+    for k in _TOOL_KEYS:
+        assert k not in raw
+
+
+def test_bare_auto_without_tools_admitted_and_dropped():
+    req = parse_chat_request(_valid_body(tool_choice="auto"))
+    assert isinstance(req, InternalReq)
+    raw = req.to_raw_request()
+    for k in _TOOL_KEYS:
+        assert k not in raw
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["required", {"type": "function", "function": {"name": "f"}}, "AUTO", "None", "", None, True, 0, []],
+)
+def test_bad_tool_choice_400(bad):
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(_valid_body(tool_choice=bad))
+    assert ei.value.status == 400
+    assert ei.value.code == "invalid_request_error"
+    assert ei.value.message == "Unsupported parameter."
+
+
+def test_nonempty_tools_plus_auto_400_forward_order():
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(
+            _valid_body(tools=[{"type": "function", "function": {"name": "f"}}], tool_choice="auto")
+        )
+    assert ei.value.status == 400
+
+
+def test_nonempty_tools_plus_auto_400_reversed_order():
+    body = {
+        "model": "model-a",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tool_choice": "auto",
+        "tools": [{"type": "function", "function": {"name": "f"}}],
+    }
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(body)
+    assert ei.value.status == 400
+
+
+def test_nonempty_tools_plus_none_400():
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(
+            _valid_body(tools=[{"type": "function", "function": {"name": "f"}}], tool_choice="none")
+        )
+    assert ei.value.status == 400
+
+
+@pytest.mark.parametrize("bad", [{}, [], {"name": "f"}])
+def test_functions_always_400_even_empty(bad):
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(_valid_body(functions=bad))
+    assert ei.value.status == 400
+    assert ei.value.code == "invalid_request_error"
+    assert ei.value.message == "Unsupported parameter."
+
+
+@pytest.mark.parametrize("bad", [{"name": "f"}, "none", {}, [], None])
+def test_function_call_always_400(bad):
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(_valid_body(function_call=bad))
+    assert ei.value.status == 400
+    assert ei.value.code == "invalid_request_error"
+    assert ei.value.message == "Unsupported parameter."
+
+
+@pytest.mark.parametrize("bad", [{}, {"x": 1}, "x", 0])
+def test_logit_bias_always_400(bad):
+    with pytest.raises(InterfaceError) as ei:
+        parse_chat_request(_valid_body(logit_bias=bad))
+    assert ei.value.status == 400
+    assert ei.value.code == "invalid_request_error"
+    assert ei.value.message == "Unsupported parameter."
+
+
+def test_empty_tools_coexist_no_raw_pollution():
+    req = parse_chat_request(
+        _valid_body(
+            tools=[],
+            tool_choice="none",
+            store=True,
+            stream=True,
+            stream_options={"include_usage": True},
+            max_completion_tokens=16,
+        )
+    )
+    assert isinstance(req, InternalReq)
+    assert req.max_tokens == 16
+    raw = req.to_raw_request()
+    for k in ("tools", "tool_choice", "functions", "function_call", "logit_bias",
+              "store", "stream_options", "max_completion_tokens"):
+        assert k not in raw
+    assert raw["max_tokens"] == 16
+    assert raw["stream"] is False

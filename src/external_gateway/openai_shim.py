@@ -46,6 +46,13 @@ _CODE = "invalid_request_error"
 # NOTE (SHIM-ADMIT-STORE-001): ``store`` is admitted and no-op dropped
 # (never forwarded upstream via ``to_raw_request``; no usage chunk is
 # synthesized in SSE). Accepted values are None / True / False only.
+# NOTE (SHIM-EMPTY-TOOL-ADMIT): ``tools`` / ``tool_choice`` stay in
+# ``_BANNED_KEYS`` (not in ``_TOP_KEYS``) but are graded inside the ban
+# check: empty ``tools`` ([]) and harmless ``tool_choice`` ("none", or
+# "auto" with tools absent/empty) are admitted and no-op dropped (never
+# stored on ``InternalReq``, never rendered by ``to_raw_request``).
+# Any real tool use (non-empty ``tools``, "required"/dict ``tool_choice``,
+# "auto" alongside non-empty ``tools``) stays 400.
 # NOTE (SHIM-ADMIT-MAX-COMPLETION-TOKENS-001): 新版長度上限，映射為 max_tokens；
 # 與 max_tokens 並存即 400 衝突；不轉上游原名、不合成 usage。
 _TOP_KEYS = frozenset({"model", "messages", "temperature", "max_tokens", "max_completion_tokens", "stop", "stream", "stream_options", "store"})
@@ -227,7 +234,26 @@ def parse_chat_request(d: Mapping) -> InternalReq:
     """
     if not isinstance(d, Mapping):
         _bad(None)
+    # Order-independent: ``tool_choice == "auto"`` is harmless only when
+    # ``tools`` is absent or empty, so grade ``tools`` emptiness BEFORE the
+    # per-key ban loop (a single pass in insertion order could otherwise
+    # admit ``{"tool_choice": "auto", "tools": [...]}`` by seeing "auto"
+    # first).
+    _tools_empty = ("tools" not in d) or (isinstance(d["tools"], list) and len(d["tools"]) == 0)
     for k in d.keys():
+        if k == "tools":
+            v = d[k]
+            if not (isinstance(v, list) and len(v) == 0):
+                _bad(k, "Unsupported parameter.")
+            continue
+        if k == "tool_choice":
+            v = d[k]
+            if v == "none":
+                continue
+            if v == "auto" and _tools_empty:
+                continue
+            _bad(k, "Unsupported parameter.")
+            continue
         if k in _BANNED_KEYS:
             _bad(k, "Unsupported parameter.")
         if k not in _TOP_KEYS:
