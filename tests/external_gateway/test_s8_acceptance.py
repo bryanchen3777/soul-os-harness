@@ -64,8 +64,8 @@ class _FakeBackend:
         self.text = text
         self.calls = []
 
-    def complete(self, route, preset, messages, params):
-        self.calls.append((route, preset, messages, params))
+    def complete(self, route, preset, messages, params, passthrough=None):
+        self.calls.append((route, preset, messages, params, passthrough))
         return self.text
 
 
@@ -174,7 +174,7 @@ def test_s8_chat_200_rem_primary(tmp_path, monkeypatch):
     assert out["choices"][0]["finish_reason"] == "stop"
     assert out["usage"] == {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     assert len(backend.calls) == 1
-    route, preset, _messages, params = backend.calls[0]
+    route, preset, _messages, params, passthrough = backend.calls[0]
     assert (route.soul_alias, route.backend_alias) == ("rem", "primary")
     assert route.agent_id == "agent_rem"
     assert params == {"temperature": 0.5, "max_tokens": 512}

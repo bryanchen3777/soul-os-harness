@@ -6,20 +6,36 @@ translates shapes:
   OpenAI dict -> parse_chat_request -> InternalReq -> to_raw_request
       -> serve_external(..., executor) -> to_chat_response / to_error
 
-S3 pseudo-streaming: ``stream: true`` is accepted. The upstream call
-stays non-streaming (``to_raw_request`` always renders ``stream: False`` for
-the engine allowlist); the HTTP layer (``app.py``) synthesizes standard
-OpenAI SSE chunks from the full reply text (role delta, full-content delta,
-stop chunk, ``data: [DONE]``) via ``to_chat_sse_chunks`` / ``iter_chat_sse``.
+Transparent passthrough (SHIM-OVERLAY-TRANS-1): the Harness / LLM upstream
+is the authority on extra parameters. The shim only guards the routing
+minimum -- ``model`` (non-empty string, public model id) and ``messages``
+(non-empty array, each entry with legal ``role``/``content`` types) plus
+the engine-local knobs it owns (``temperature`` / ``max_tokens`` /
+``stream`` / ``stop``). Every other top-level key (``tools``,
+``tool_choice``, ``functions``, ``function_call``, ``logit_bias``,
+``store``, ``stream_options``, ``max_completion_tokens`` and any future
+unknown key) is NEVER a 400: it rides verbatim in
+``InternalReq.passthrough`` and is unpacked back into the payload by
+``to_raw_request`` / the backend at send time, key names and values
+byte-identical.
 
-``stop`` is accepted for OpenAI shape compatibility but is NOT forwarded to
-the engine: ``admit`` / ``parse_request`` have no stop-sequence semantics.
-Accepting-and-dropping is documented here (not silent: see InternalReq.stop
-and to_raw_request).
+S3 pseudo-streaming: ``stream: true`` is accepted. The upstream call
+stays non-streaming (``to_raw_request`` always renders ``stream: False``);
+the HTTP layer (``app.py``) synthesizes standard OpenAI SSE chunks from
+the full reply text (role delta, full-content delta, stop chunk,
+``data: [DONE]``) via ``to_chat_sse_chunks`` / ``iter_chat_sse``.
+Upstream tool payloads (``tool_calls`` / ``function_call`` / ``usage``),
+when present, are carried through the same builders verbatim -- present
+means forwarded, absent means omitted, never synthesized, never forged.
+
+``stop`` is accepted for OpenAI shape compatibility but is NOT forwarded:
+``InternalReq.stop`` is carried (not rendered by ``to_raw_request``) --
+the engine has no stop-sequence semantics.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -37,29 +53,9 @@ from src.interfaces.schema import is_valid_public_model_id
 
 _CODE = "invalid_request_error"
 
-# Top-level keys accepted on a chat-completions request body. Anything else --
-# including the explicitly banned OpenAI extensions below -- is a 400.
-# NOTE (SHIM-ADMIT-STREAM-OPTIONS-001): ``stream_options`` is admitted and
-# no-op dropped (never forwarded upstream; no usage chunk is synthesized in
-# SSE because upstream is zero-accounting). Never invent private claims in
-# SSE chunks.
-# NOTE (SHIM-ADMIT-STORE-001): ``store`` is admitted and no-op dropped
-# (never forwarded upstream via ``to_raw_request``; no usage chunk is
-# synthesized in SSE). Accepted values are None / True / False only.
-# NOTE (SHIM-EMPTY-TOOL-ADMIT): ``tools`` / ``tool_choice`` stay in
-# ``_BANNED_KEYS`` (not in ``_TOP_KEYS``) but are graded inside the ban
-# check: empty ``tools`` ([]) and harmless ``tool_choice`` ("none", or
-# "auto" with tools absent/empty) are admitted and no-op dropped (never
-# stored on ``InternalReq``, never rendered by ``to_raw_request``).
-# Any real tool use (non-empty ``tools``, "required"/dict ``tool_choice``,
-# "auto" alongside non-empty ``tools``) stays 400.
-# NOTE (SHIM-ADMIT-MAX-COMPLETION-TOKENS-001): 新版長度上限，映射為 max_tokens；
-# 與 max_tokens 並存即 400 衝突；不轉上游原名、不合成 usage。
-_TOP_KEYS = frozenset({"model", "messages", "temperature", "max_tokens", "max_completion_tokens", "stop", "stream", "stream_options", "store"})
-
-# Accepted but rejected-with-400 extensions (subset of the "extra key" rule,
-# listed explicitly so a reader sees the ban without diffing key sets).
-_BANNED_KEYS = frozenset({"logit_bias", "function_call", "tools", "functions", "tool_choice"})
+# Engine-local knobs parsed into typed fields. Everything else on the
+# request body rides verbatim in ``InternalReq.passthrough`` (never a 400).
+_PARSED_KEYS = frozenset({"model", "messages", "temperature", "max_tokens", "stop", "stream"})
 
 _MSG_KEYS = frozenset({"role", "content", "name"})
 _ROLES = frozenset({"system", "user", "assistant"})
@@ -95,7 +91,12 @@ class ChatMessage:
 
 @dataclass(frozen=True)
 class InternalReq:
-    """Normalized chat request. ``stop`` is carried (not forwarded)."""
+    """Normalized chat request. ``stop`` is carried (not forwarded).
+
+    ``passthrough`` holds every top-level body key outside the parsed
+    engine-local knobs, verbatim (key names and values untouched). The
+    backend unpacks it into the upstream payload as-is.
+    """
 
     model: str
     messages: tuple[ChatMessage, ...]
@@ -103,16 +104,15 @@ class InternalReq:
     max_tokens: int = 512
     stop: tuple[str, ...] | None = None
     stream: bool = False
+    passthrough: dict = field(default_factory=dict)
 
     def to_raw_request(self) -> dict:
         """Render the Mapping shape ``admit`` / ``parse_request`` accepts.
 
         ``stop`` is intentionally dropped: the engine has no stop-sequence
-        semantics. ``stream`` is always False here (the engine allowlist
-        admits only non-streaming; ``True`` is served as synthesized SSE at
-        the HTTP layer), rendered explicitly for the engine's allowlist.
-        ``stream_options`` is admitted-and-dropped upstream of here and never
-        rendered.
+        semantics. ``stream`` is always False here, rendered explicitly.
+        ``passthrough`` keys are unpacked verbatim on top (they are disjoint
+        from the parsed knobs by construction, so nothing is overwritten).
         """
         msgs = []
         for m in self.messages:
@@ -120,13 +120,15 @@ class InternalReq:
             if m.name is not None:
                 item["name"] = m.name
             msgs.append(item)
-        return {
+        raw = {
             "model": self.model,
             "messages": msgs,
             "stream": False,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
+        raw.update(dict(self.passthrough))
+        return raw
 
 
 def _check_model(value, param="model") -> str:
@@ -181,16 +183,6 @@ def _check_max_tokens(value) -> int:
     return value
 
 
-def _check_max_completion_tokens(value) -> int | None:
-    if value is None:
-        return None
-    if type(value) is bool:
-        _bad("max_completion_tokens")
-    if type(value) is not int or value < 1 or value > 2048:
-        _bad("max_completion_tokens")
-    return value
-
-
 def _check_stop(value) -> tuple[str, ...] | None:
     if value is None:
         return None
@@ -201,72 +193,30 @@ def _check_stop(value) -> tuple[str, ...] | None:
     _bad("stop")
 
 
-def _check_store(value) -> None:
-    if value is None or type(value) is bool:
-        return None
-    _bad("store")
-
-
-def _check_stream_options(value) -> None:
-    """Admit ``stream_options`` and no-op drop it.
-
-    ``None`` or any Mapping is accepted and discarded (not stored, not
-    forwarded; ``to_raw_request`` never renders it and no usage chunk is
-    synthesized). Anything else is a 400. Content is not validated.
-    """
-    if value is None or isinstance(value, Mapping):
-        return None
-    _bad("stream_options")
-
-
 def parse_chat_request(d: Mapping) -> InternalReq:
-    """Parse + strictly validate an OpenAI chat-completions body.
+    """Parse an OpenAI chat-completions body with transparent passthrough.
 
-    Raises InterfaceError(400, "invalid_request_error", ...) on: non-mapping
-    input, any key outside the allowlist (banned extensions included),
-    bad role, bad types, or non-bool ``stream``. ``stream: true`` is
-    accepted (S3 pseudo-streaming: upstream stays non-streaming, the HTTP
-    layer synthesizes SSE); ``stream`` defaults to False when absent.
-    ``stream_options`` (Mapping or None) is admitted and no-op dropped: its
-    content is not validated, it is not stored on ``InternalReq``, it never
-    appears in ``to_raw_request``, and no usage chunk is appended to SSE
-    (upstream is zero-accounting).
+    Raises InterfaceError(400, "invalid_request_error", ...) only on: a
+    non-mapping input, a missing/invalid ``model`` or ``messages``, bad
+    ``temperature`` / ``max_tokens`` / ``stop`` types, or a non-bool
+    ``stream``. ``stream: true`` is accepted (S3 pseudo-streaming: upstream
+    stays non-streaming, the HTTP layer synthesizes SSE).
+
+    Every other top-level key -- ``tools``, ``tool_choice``,
+    ``functions``, ``function_call``, ``logit_bias``, ``store``,
+    ``stream_options``, ``max_completion_tokens`` and any future unknown
+    key -- is NEVER a 400: it is stored verbatim in
+    ``InternalReq.passthrough`` (a snapshot copy) and re-emitted by
+    ``to_raw_request`` / the backend unpacked into the upstream payload.
+    Non-string top-level keys stay 400 (no repr leak).
     """
     if not isinstance(d, Mapping):
         _bad(None)
-    # Order-independent: ``tool_choice == "auto"`` is harmless only when
-    # ``tools`` is absent or empty, so grade ``tools`` emptiness BEFORE the
-    # per-key ban loop (a single pass in insertion order could otherwise
-    # admit ``{"tool_choice": "auto", "tools": [...]}`` by seeing "auto"
-    # first).
-    _tools_empty = ("tools" not in d) or (isinstance(d["tools"], list) and len(d["tools"]) == 0)
     for k in d.keys():
-        if k == "tools":
-            v = d[k]
-            if not (isinstance(v, list) and len(v) == 0):
-                _bad(k, "Unsupported parameter.")
-            continue
-        if k == "tool_choice":
-            v = d[k]
-            if v == "none":
-                continue
-            if v == "auto" and _tools_empty:
-                continue
-            _bad(k, "Unsupported parameter.")
-            continue
-        if k in _BANNED_KEYS:
-            _bad(k, "Unsupported parameter.")
-        if k not in _TOP_KEYS:
-            if isinstance(k, str):
-                _bad(k, f"Unsupported parameter: {k}")
-            else:
-                _bad(k, "Invalid request.")
+        if not isinstance(k, str):
+            _bad(k, "Invalid request.")
     if "model" not in d or "messages" not in d:
         _bad("model" if "model" not in d else "messages")
-    if "stream_options" in d:
-        _check_stream_options(d["stream_options"])
-    if "store" in d:
-        _check_store(d["store"])
     stream = False
     if "stream" in d:
         st = d["stream"]
@@ -276,14 +226,16 @@ def parse_chat_request(d: Mapping) -> InternalReq:
     model = _check_model(d["model"])
     messages = _check_messages(d["messages"])
     temperature = _check_temperature(d["temperature"]) if "temperature" in d else 0.5
-    if "max_tokens" in d and "max_completion_tokens" in d:
-        _bad("max_completion_tokens")
-    elif "max_completion_tokens" in d:
-        v = _check_max_completion_tokens(d["max_completion_tokens"])
-        max_tokens = 512 if v is None else v
-    else:
-        max_tokens = _check_max_tokens(d["max_tokens"]) if "max_tokens" in d else 512
+    max_tokens = _check_max_tokens(d["max_tokens"]) if "max_tokens" in d else 512
     stop = _check_stop(d["stop"]) if "stop" in d else None
+    extra = {k: d[k] for k in d.keys() if k not in _PARSED_KEYS}
+    try:
+        # Snapshot: later mutation of the caller's body must not move the
+        # request already admitted. Exotic non-copyable values fall back
+        # to a shallow copy (still verbatim, still never a 400).
+        passthrough = copy.deepcopy(extra)
+    except Exception:
+        passthrough = dict(extra)
     return InternalReq(
         model=model,
         messages=messages,
@@ -291,15 +243,39 @@ def parse_chat_request(d: Mapping) -> InternalReq:
         max_tokens=max_tokens,
         stop=stop,
         stream=stream,
+        passthrough=passthrough,
     )
 
 
-def to_chat_response(text: str, model: str) -> dict:
-    """Build an OpenAI-shaped ``chat.completion`` dict for one assistant reply."""
+def _passthrough_message_extra(message_extra) -> dict:
+    """Copy the forwardable upstream tool keys verbatim, nothing else.
+
+    Only ``tool_calls`` / ``function_call`` ride through (present means
+    forwarded, absent means omitted). Anything else in the mapping is
+    dropped -- never synthesized, never forged.
+    """
+    extra = {}
+    if isinstance(message_extra, Mapping):
+        for k in ("tool_calls", "function_call"):
+            if k in message_extra and message_extra[k] is not None:
+                extra[k] = message_extra[k]
+    return extra
+
+
+def to_chat_response(text: str, model: str, *, message_extra=None, usage=None) -> dict:
+    """Build an OpenAI-shaped ``chat.completion`` dict for one assistant reply.
+
+    Upstream tool payloads ride through verbatim: ``message_extra`` may
+    carry ``tool_calls`` / ``function_call`` (merged into the message) and
+    ``usage`` (a Mapping) replaces the default zero-usage. Absent means
+    omitted -- nothing is synthesized or forged.
+    """
     if not isinstance(text, str):
         raise TypeError("text must be str")
     if not isinstance(model, str):
         raise TypeError("model must be str")
+    message: dict = {"role": "assistant", "content": text}
+    message.update(_passthrough_message_extra(message_extra))
     return {
         "id": "chatcmpl-" + uuid.uuid4().hex,
         "object": "chat.completion",
@@ -308,16 +284,18 @@ def to_chat_response(text: str, model: str) -> dict:
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": text},
+                "message": message,
                 "finish_reason": "stop",
             }
         ],
-        # 未接計費，不偽造 token 數：usage 誠實填 0。
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        # 未接計費，不偽造 token 數：上游無 usage 時誠實填 0；上游有則原樣透傳。
+        "usage": dict(usage)
+        if isinstance(usage, Mapping)
+        else {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
 
-def to_chat_sse_chunks(text: str, model: str) -> tuple[dict, dict, dict]:
+def to_chat_sse_chunks(text: str, model: str, *, message_extra=None, usage=None) -> tuple:
     """Build the three OpenAI-shaped ``chat.completion.chunk`` payloads.
 
     Order: role delta, full-content delta, stop chunk. All three share one
@@ -325,6 +303,10 @@ def to_chat_sse_chunks(text: str, model: str) -> tuple[dict, dict, dict]:
     one ``created`` (``int(time.time())``), and the caller's ``model``.
     The full reply rides in a single content delta: upstream is
     non-streaming, so there is nothing to incrementally tokenize.
+    ``message_extra`` (``tool_calls`` / ``function_call``) rides verbatim
+    inside the content delta when present. When ``usage`` (a Mapping) is
+    given, a fourth usage chunk is appended (``choices: []``); otherwise
+    the return stays a 3-tuple and no usage chunk is synthesized.
     """
     if not isinstance(text, str):
         raise TypeError("text must be str")
@@ -337,25 +319,31 @@ def to_chat_sse_chunks(text: str, model: str) -> tuple[dict, dict, dict]:
         **base,
         "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
     }
+    content_delta: dict = {"content": text}
+    content_delta.update(_passthrough_message_extra(message_extra))
     content_chunk = {
         **base,
-        "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+        "choices": [{"index": 0, "delta": content_delta, "finish_reason": None}],
     }
     stop_chunk = {
         **base,
         "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
     }
+    if isinstance(usage, Mapping):
+        usage_chunk = {**base, "choices": [], "usage": dict(usage)}
+        return (role_chunk, content_chunk, stop_chunk, usage_chunk)
     return (role_chunk, content_chunk, stop_chunk)
 
 
-def iter_chat_sse(text: str, model: str):
+def iter_chat_sse(text: str, model: str, *, message_extra=None, usage=None):
     """Yield SSE ``data:`` frames (bytes) for one full reply plus ``[DONE]``.
 
     Pure bytes formatting only: no HTTP, no sockets, no files. The caller
     (``app.py``) wraps this iterator in a ``StreamingResponse`` with
-    ``media_type="text/event-stream"``.
+    ``media_type="text/event-stream"``. Upstream tool payloads and usage
+    ride through exactly as ``to_chat_sse_chunks`` renders them.
     """
-    for payload in to_chat_sse_chunks(text, model):
+    for payload in to_chat_sse_chunks(text, model, message_extra=message_extra, usage=usage):
         yield ("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode("utf-8")
     yield b"data: [DONE]\n\n"
 

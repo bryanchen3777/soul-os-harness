@@ -52,6 +52,7 @@ from typing import Protocol
 from fastapi import FastAPI
 from fastapi import Request
 from fastapi import Response
+from fastapi import BackgroundTasks
 from fastapi.responses import JSONResponse
 from fastapi.responses import StreamingResponse
 
@@ -124,18 +125,48 @@ def parse_external_path(path: str) -> tuple[str, str, str]:
 
 
 class ChatBackend(Protocol):
-    """Outward provider carrier (injected; S7 owns the real one)."""
+    """Outward provider carrier (injected; S7 owns the real one).
 
-    def complete(self, route, preset, messages, params) -> str:
-        """Return the assistant reply text for one admitted chat call."""
+    ``passthrough`` carries the shim's verbatim extra keys; the carrier
+    unpacks it into the upstream payload as-is. The return is either a
+    ``BackendReply`` (text + verbatim tool payloads) or, for backward
+    compatibility with simple injected carriers, a plain reply-text str.
+    """
+
+    def complete(self, route, preset, messages, params, passthrough=None):
+        """Return the assistant reply for one admitted chat call."""
         ...  # pragma: no cover - protocol shape only
 
 
 class NotImplementedBackend:
     """Default carrier: no provider wired, every chat call fails closed."""
 
-    def complete(self, route, preset, messages, params) -> str:
+    def complete(self, route, preset, messages, params, passthrough=None):
         raise InterfaceError(500, "internal", None, _FIXED_500_MESSAGE)
+
+
+def _unwrap_reply(reply):
+    """Split a carrier return into (text, message_extra, usage).
+
+    Accepts the ``BackendReply`` shape (text + verbatim tool payloads) or
+    a plain reply-text str from simple injected carriers. Anything else
+    is a caller-visible 500 (fail closed, fixed copy).
+    """
+    if isinstance(reply, str):
+        return (reply, None, None)
+    try:
+        text = reply.text
+        extra = {}
+        for k in ("tool_calls", "function_call"):
+            v = getattr(reply, k, None)
+            if v is not None:
+                extra[k] = v
+        usage = getattr(reply, "usage", None)
+    except Exception:
+        raise InterfaceError(500, "internal", None, _FIXED_500_MESSAGE)
+    if not isinstance(text, str):
+        raise InterfaceError(500, "internal", None, _FIXED_500_MESSAGE)
+    return (text, extra or None, usage if isinstance(usage, dict) else None)
 
 
 def file_preset_loader(preset_path) -> Callable[[str], Preset]:
@@ -361,7 +392,10 @@ def _sa_live_dispatch(
     return JSONResponse(status_code=200, content=to_chat_response(text, envelope.snapshot.model))
 
 
-def create_external_app(registry, load_preset_fn=None, chat_backend=None, soul_live_handler=None) -> FastAPI:
+def create_external_app(
+    registry, load_preset_fn=None, chat_backend=None, soul_live_handler=None,
+    soul_overlay_fn=None, memory_settle_fn=None,
+) -> FastAPI:
     """Assemble the outward OpenAI-shaped ASGI app. No carrier attached.
 
     ``registry`` is a ``RegistryProvider`` (or a ready ``Registry``
@@ -371,6 +405,20 @@ def create_external_app(registry, load_preset_fn=None, chat_backend=None, soul_l
     every route 500, a missing carrier installs ``NotImplementedBackend``.
     ``soul_live_handler`` (SA-1, optional) serves envelope-marked bodies via
     the live loop; omitted means envelope traffic fails closed with 500.
+
+    ``soul_overlay_fn`` (SHIM-OVERLAY-TRANS-1, optional) is the Soul OS
+    overlay hook (persona injection / memory retrieval / filtering). It is
+    called as ``soul_overlay_fn(messages, params)`` and may return a
+    ``(messages, params)`` pair or None (no change). ANY exception from it
+    -- or a malformed return -- is caught, logged with stack, and the call
+    degrades to the raw parsed input against upstream: the overlay can
+    never turn a chat call into a 500.
+
+    ``memory_settle_fn`` (SHIM-OVERLAY-TRANS-1, optional) settles memory
+    after a successful upstream reply. It runs as a response background
+    task as ``memory_settle_fn(soul, preset_name, messages, text)``; ANY
+    exception from it is caught and logged only -- it never affects the
+    client reply.
     """
     loader = load_preset_fn if callable(load_preset_fn) else _missing_preset_loader
     backend = chat_backend if chat_backend is not None else NotImplementedBackend()
@@ -551,8 +599,34 @@ def create_external_app(registry, load_preset_fn=None, chat_backend=None, soul_l
             return _from_interface_error(exc)
         _LOGGER.info("ext path=%s stream=%s model=%s", raw_path, internal.stream, internal.model)
         params = {"temperature": internal.temperature, "max_tokens": internal.max_tokens}
+        # Soul OS overlay: fail-open by construction. Any overlay fault
+        # (raise or malformed return) is logged with stack and the call
+        # proceeds with the raw parsed input -- never a 500.
+        overlay_messages = internal.messages
         try:
-            text = backend.complete(route, preset_obj, internal.messages, params)
+            if soul_overlay_fn is not None:
+                overlaid = soul_overlay_fn(internal.messages, params)
+                if overlaid is not None:
+                    om, op = overlaid
+                    if not isinstance(om, tuple):
+                        om = tuple(om)
+                    overlay_messages = om
+                    params = dict(op)
+        except Exception:
+            _LOGGER.warning(
+                "ext soul=%s preset=%s endpoint=%s status=overlay-degraded req=%s",
+                soul,
+                preset_name,
+                endpoint,
+                req_id,
+                exc_info=True,
+            )
+            overlay_messages = internal.messages
+            params = {"temperature": internal.temperature, "max_tokens": internal.max_tokens}
+        try:
+            reply = backend.complete(
+                route, preset_obj, overlay_messages, params, passthrough=internal.passthrough
+            )
         except InterfaceError as exc:
             if isinstance(exc.status, int) and 400 <= exc.status < 500:
                 _LOGGER.info(
@@ -581,7 +655,9 @@ def create_external_app(registry, load_preset_fn=None, chat_backend=None, soul_l
                 req_id,
             )
             return _error_response(500, "internal", _FIXED_500_MESSAGE)
-        if not isinstance(text, str):
+        try:
+            text, message_extra, usage = _unwrap_reply(reply)
+        except InterfaceError as exc:
             _LOGGER.info(
                 "ext soul=%s preset=%s endpoint=%s status=500 req=%s",
                 soul,
@@ -597,13 +673,44 @@ def create_external_app(registry, load_preset_fn=None, chat_backend=None, soul_l
             endpoint,
             req_id,
         )
+        # Memory settle runs as a background task and can never affect the
+        # client reply: any fault inside is caught and logged only.
+        background = None
+        if memory_settle_fn is not None:
+            def _settle(
+                _fn=memory_settle_fn,
+                _soul=soul,
+                _preset=preset_name,
+                _messages=overlay_messages,
+                _text=text,
+                _req=req_id,
+            ):
+                try:
+                    _fn(_soul, _preset, _messages, _text)
+                except Exception:
+                    _LOGGER.error(
+                        "ext soul=%s preset=%s status=memory-settle-fault req=%s",
+                        _soul,
+                        _preset,
+                        _req,
+                        exc_info=True,
+                    )
+
+            tasks = BackgroundTasks()
+            tasks.add_task(_settle)
+            background = tasks
         if internal.stream:
             return StreamingResponse(
-                iter_chat_sse(text, internal.model),
+                iter_chat_sse(text, internal.model, message_extra=message_extra, usage=usage),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                background=background,
             )
-        return JSONResponse(status_code=200, content=to_chat_response(text, internal.model))
+        return JSONResponse(
+            status_code=200,
+            content=to_chat_response(text, internal.model, message_extra=message_extra, usage=usage),
+            background=background,
+        )
 
     @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def _entry(request: Request) -> Response:

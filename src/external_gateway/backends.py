@@ -5,6 +5,19 @@ Synchronous only (``httpx.Client``; no ``AsyncClient`` -- ``app.py`` calls
 file reads, no environment reads: the preset (model, key, base URL) arrives
 ready-made from ``load_preset`` through S6.
 
+Transparent passthrough (SHIM-OVERLAY-TRANS-1): the Harness / LLM upstream
+is the authority on extra parameters. ``complete`` accepts the shim's
+``passthrough`` mapping and unpacks it into the upstream payload verbatim
+(key names and values untouched) on top of the fixed shape
+(model / messages / temperature / max_tokens / stream=False).
+
+Upstream tool payloads are preserved, not synthesized: ``complete``
+returns a ``BackendReply`` carrying the text plus the verbatim
+``tool_calls`` / ``function_call`` / ``usage`` when the provider sent
+them (absent means omitted). A tool-only reply (null content together
+with tool calls) passes through with empty text; empty / whitespace-only
+content WITHOUT tool calls stays fail-closed 500.
+
 Fail-closed mapping (exact, never invented):
   provider 400 -> 400 invalid_request_error (fixed copy, upstream text dropped)
   provider 429 -> 429 rate_limit_error (fixed copy)
@@ -23,7 +36,7 @@ from __future__ import annotations
 
 import httpx
 import logging
-from typing import Any
+from typing import Any, NamedTuple
 
 from src.external_gateway.app import ChatBackend
 from src.external_gateway.preset import Preset
@@ -89,6 +102,60 @@ def _fail_closed() -> None:
 _LOCAL_HTTP_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
+class BackendReply(NamedTuple):
+    """One upstream chat reply: text plus verbatim tool payloads.
+
+    ``tool_calls`` / ``function_call`` / ``usage`` are the provider's own
+    objects (or None when the provider sent none). They are forwarded
+    as-is by the app layer -- present means forwarded, absent means
+    omitted, never synthesized, never forged.
+    """
+
+    text: str
+    tool_calls: Any = None
+    function_call: Any = None
+    usage: Any = None
+
+
+def _merge_passthrough(payload: dict, passthrough: Any) -> dict:
+    """Unpack the shim passthrough into the upstream payload verbatim."""
+    if passthrough:
+        payload.update(dict(passthrough))
+    return payload
+
+
+def _parse_reply(data: Any) -> BackendReply:
+    """Split one provider payload into text + verbatim tool payloads.
+
+    Raises InterfaceError(500, internal) via ``_fail_closed`` on any bad
+    shape. A tool-only reply (null content together with tool calls)
+    passes with empty text; empty / whitespace-only content WITHOUT tool
+    calls stays fail-closed 500.
+    """
+    try:
+        message = data["choices"][0]["message"]
+        content = message.get("content")
+        tool_calls = message.get("tool_calls")
+        function_call = message.get("function_call")
+        usage = data.get("usage")
+    except Exception:
+        _fail_closed()
+    if content is None and (tool_calls is not None or function_call is not None):
+        content = ""
+    if not isinstance(content, str):
+        _fail_closed()
+    if not content.strip() and tool_calls is None and function_call is None:
+        _fail_closed()
+    if not isinstance(usage, dict):
+        usage = None
+    return BackendReply(
+        text=content,
+        tool_calls=tool_calls,
+        function_call=function_call,
+        usage=usage,
+    )
+
+
 def _ollama_base_allowed(base_url: Any) -> bool:
     """True when an Ollama base URL may be dialed (https anywhere, else loopback)."""
     if not isinstance(base_url, str):
@@ -115,15 +182,20 @@ class DeepSeekBackend:
         self._api_key = api_key
         self._model = model
 
-    def complete(self, route: Any, preset: Any, messages: Any, params: Any) -> str:
+    def complete(
+        self, route: Any, preset: Any, messages: Any, params: Any, passthrough: Any = None
+    ) -> BackendReply:
         try:
-            payload = {
-                "model": self._model,
-                "messages": _wire_messages(messages),
-                "temperature": params["temperature"],
-                "max_tokens": params["max_tokens"],
-                "stream": False,
-            }
+            payload = _merge_passthrough(
+                {
+                    "model": self._model,
+                    "messages": _wire_messages(messages),
+                    "temperature": params["temperature"],
+                    "max_tokens": params["max_tokens"],
+                    "stream": False,
+                },
+                passthrough,
+            )
         except (KeyError, TypeError):
             _LOGGER.info("ext provider=%s preset=%s status=%s", "deepseek", preset.name, 500)
             _fail_closed()
@@ -146,15 +218,14 @@ class DeepSeekBackend:
             _raise_for_status(resp.status_code)
         try:
             data = resp.json()
-            content = data["choices"][0]["message"]["content"]
+            reply = _parse_reply(data)
+        except InterfaceError:
+            raise
         except Exception:
             _LOGGER.info("ext provider=%s preset=%s status=%s", "deepseek", preset.name, 500)
             _fail_closed()
-        if not isinstance(content, str):
-            _LOGGER.info("ext provider=%s preset=%s status=%s", "deepseek", preset.name, 500)
-            _fail_closed()
         _LOGGER.info("ext provider=%s preset=%s status=%s", "deepseek", preset.name, 200)
-        return content
+        return reply
 
 
 class OllamaBackend:
@@ -175,18 +246,23 @@ class OllamaBackend:
             return stripped + "/chat/completions"
         return stripped + "/v1/chat/completions"
 
-    def complete(self, route: Any, preset: Any, messages: Any, params: Any) -> str:
+    def complete(
+        self, route: Any, preset: Any, messages: Any, params: Any, passthrough: Any = None
+    ) -> BackendReply:
         if not _ollama_base_allowed(self._base_url):
             _LOGGER.info("ext provider=%s preset=%s status=%s", "ollama", preset.name, 500)
             _fail_closed()
         try:
-            payload = {
-                "model": self._model,
-                "messages": _wire_messages(messages),
-                "temperature": params["temperature"],
-                "max_tokens": params["max_tokens"],
-                "stream": False,
-            }
+            payload = _merge_passthrough(
+                {
+                    "model": self._model,
+                    "messages": _wire_messages(messages),
+                    "temperature": params["temperature"],
+                    "max_tokens": params["max_tokens"],
+                    "stream": False,
+                },
+                passthrough,
+            )
         except (KeyError, TypeError):
             _LOGGER.info("ext provider=%s preset=%s status=%s", "ollama", preset.name, 500)
             _fail_closed()
@@ -209,15 +285,14 @@ class OllamaBackend:
             _raise_for_status(resp.status_code)
         try:
             data = resp.json()
-            content = data["choices"][0]["message"]["content"]
+            reply = _parse_reply(data)
+        except InterfaceError:
+            raise
         except Exception:
             _LOGGER.info("ext provider=%s preset=%s status=%s", "ollama", preset.name, 500)
             _fail_closed()
-        if not isinstance(content, str) or not content.strip():
-            _LOGGER.info("ext provider=%s preset=%s status=%s", "ollama", preset.name, 500)
-            _fail_closed()
         _LOGGER.info("ext provider=%s preset=%s status=%s", "ollama", preset.name, 200)
-        return content
+        return reply
 
 
 class PresetRoutingBackend:
@@ -226,8 +301,10 @@ class PresetRoutingBackend:
     This is the single object handed to ``create_external_app``.
     """
 
-    def complete(self, route: Any, preset: Preset, messages: Any, params: Any) -> str:
-        return build_backend(preset).complete(route, preset, messages, params)
+    def complete(
+        self, route: Any, preset: Preset, messages: Any, params: Any, passthrough: Any = None
+    ) -> BackendReply:
+        return build_backend(preset).complete(route, preset, messages, params, passthrough=passthrough)
 
 
 def build_backend(preset: Preset) -> ChatBackend:

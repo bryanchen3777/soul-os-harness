@@ -1,4 +1,4 @@
-"""S7-W5 transport carrier tests. Pure offline: monkeypatched httpx only.
+﻿"""S7-W5 transport carrier tests. Pure offline: monkeypatched httpx only.
 
 No real provider call exists anywhere in this file. Every key value here is
 an uppercase hyphenated SENTINEL. ``socket.create_connection`` is
@@ -145,7 +145,7 @@ def test_u1_deepseek_success_shape(monkeypatch):
     _patch_post(monkeypatch, 200, _ok_payload(), capture=seen)
     backend = DeepSeekBackend(api_key=KEY_D, model="do-not-deploy-model")
     out = backend.complete(None, _deepseek_preset(), _messages(), _params())
-    assert out == CONTENT_SENTINEL
+    assert out.text == CONTENT_SENTINEL
     assert len(seen) == 1
     call = seen[0]
     assert call["url"] == DEEPSEEK_URL
@@ -167,7 +167,7 @@ def test_u2_ollama_success_shape_with_bearer(monkeypatch):
     preset = _ollama_preset(base_url="http://localhost:11434")
     backend = OllamaBackend(base_url=preset.base_url, model="do-not-deploy-model", api_key=preset.api_key)
     out = backend.complete(None, preset, _messages(), _params())
-    assert out == CONTENT_SENTINEL
+    assert out.text == CONTENT_SENTINEL
     assert len(seen) == 1
     call = seen[0]
     assert call["url"] == "http://localhost:11434/v1/chat/completions"
@@ -322,7 +322,7 @@ def test_h1_cloud_bearer_exact_and_passthrough(monkeypatch):
     _patch_post(monkeypatch, 200, _ok_payload(), capture=seen)
     preset = _ollama_cloud_preset()
     out = build_backend(preset).complete(None, preset, _messages(), _params())
-    assert out == CONTENT_SENTINEL
+    assert out.text == CONTENT_SENTINEL
     assert len(seen) == 1
     call = seen[0]
     assert call["url"] == CLOUD_URL + "/v1/chat/completions"
@@ -359,7 +359,7 @@ def test_h2_localhost_same_bearer_no_fork(monkeypatch):
     _patch_post(monkeypatch, 200, _ok_payload(), capture=seen)
     preset = _ollama_localhost_preset()
     out = build_backend(preset).complete(None, preset, _messages(), _params())
-    assert out == CONTENT_SENTINEL
+    assert out.text == CONTENT_SENTINEL
     assert len(seen) == 1
     call = seen[0]
     assert call["url"] == "http://localhost:11434/v1/chat/completions"
@@ -385,7 +385,7 @@ def test_h3b_loopback_numeric_http_still_allowed(monkeypatch):
     preset = _ollama_preset(base_url="http://127.0.0.1:11434")
     backend = OllamaBackend(base_url=preset.base_url, model="do-not-deploy-model", api_key=preset.api_key)
     out = backend.complete(None, preset, _messages(), _params())
-    assert out == CONTENT_SENTINEL
+    assert out.text == CONTENT_SENTINEL
     assert len(seen) == 1
     assert seen[0]["headers"] == {"Authorization": "Bearer " + KEY_O}
 
@@ -637,3 +637,114 @@ def test_g2_serve_shape_pinned():
     assert mod.build_parser().get_default("port") == EXTERNAL_PORT
     runner = getattr(mod.uvicorn, "run")
     assert callable(runner)
+
+
+# -- SHIM-OVERLAY-TRANS-1: passthrough merge + tool reply preservation -----
+
+
+def _tool_payload(content=None):
+    return {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {"name": "get_weather", "arguments": '{"city":"X"}'},
+                        }
+                    ],
+                }
+            }
+        ],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 7, "total_tokens": 10},
+    }
+
+
+def test_t1_ollama_passthrough_keys_merged_verbatim(monkeypatch):
+    seen = []
+    _patch_post(monkeypatch, 200, _ok_payload(), capture=seen)
+    preset = _ollama_preset(base_url="http://localhost:11434")
+    backend = OllamaBackend(base_url=preset.base_url, model="do-not-deploy-model", api_key=preset.api_key)
+    tools = [{"type": "function", "function": {"name": "get_weather"}}]
+    out = backend.complete(
+        None,
+        preset,
+        _messages(),
+        _params(),
+        passthrough={"tools": tools, "tool_choice": "auto", "custom_meta_field": "meta-1"},
+    )
+    assert out.text == CONTENT_SENTINEL
+    assert out.tool_calls is None
+    assert out.usage is None
+    body = seen[0]["json"]
+    assert body["tools"] == tools
+    assert body["tool_choice"] == "auto"
+    assert body["custom_meta_field"] == "meta-1"
+    assert body["model"] == "do-not-deploy-model"
+    assert body["temperature"] == 0.5
+    assert body["stream"] is False
+
+
+def test_t2_ollama_empty_passthrough_keeps_fixed_shape(monkeypatch):
+    seen = []
+    _patch_post(monkeypatch, 200, _ok_payload(), capture=seen)
+    preset = _ollama_preset(base_url="http://localhost:11434")
+    backend = OllamaBackend(base_url=preset.base_url, model="do-not-deploy-model", api_key=preset.api_key)
+    backend.complete(None, preset, _messages(), _params(), passthrough={})
+    assert seen[0]["json"] == {
+        "model": "do-not-deploy-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "temperature": 0.5,
+        "max_tokens": 512,
+        "stream": False,
+    }
+
+
+def test_t3_ollama_tool_only_reply_preserved_not_500(monkeypatch):
+    _patch_post(monkeypatch, 200, _tool_payload(content=None))
+    preset = _ollama_preset(base_url="http://localhost:11434")
+    backend = OllamaBackend(base_url=preset.base_url, model="do-not-deploy-model", api_key=preset.api_key)
+    out = backend.complete(None, preset, _messages(), _params())
+    assert out.text == ""
+    assert out.tool_calls == [
+        {
+            "id": "call-1",
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": '{"city":"X"}'},
+        }
+    ]
+    assert out.usage == {"prompt_tokens": 3, "completion_tokens": 7, "total_tokens": 10}
+
+
+def test_t4_blank_content_without_tools_still_500(monkeypatch):
+    _patch_post(monkeypatch, 200, _ok_payload(content="   "))
+    preset = _ollama_preset(base_url="http://localhost:11434")
+    backend = OllamaBackend(base_url=preset.base_url, model="do-not-deploy-model", api_key=preset.api_key)
+    with pytest.raises(InterfaceError) as ei:
+        backend.complete(None, preset, _messages(), _params())
+    assert (ei.value.status, ei.value.code) == (500, "internal")
+
+
+def test_t5_deepseek_forwards_usage_and_function_call(monkeypatch):
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "done",
+                    "function_call": {"name": "f", "arguments": "{}"},
+                }
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+    }
+    _patch_post(monkeypatch, 200, payload)
+    out = DeepSeekBackend(api_key=KEY_D, model="m").complete(
+        None, _deepseek_preset(), _messages(), _params()
+    )
+    assert out.text == "done"
+    assert out.function_call == {"name": "f", "arguments": "{}"}
+    assert out.usage == {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}

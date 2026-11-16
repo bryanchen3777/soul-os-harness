@@ -64,8 +64,8 @@ class _FakeBackend:
         self.text = text
         self.calls = []
 
-    def complete(self, route, preset, messages, params):
-        self.calls.append((route, preset, messages, params))
+    def complete(self, route, preset, messages, params, passthrough=None):
+        self.calls.append((route, preset, messages, params, passthrough))
         return self.text
 
 
@@ -448,7 +448,7 @@ def test_b1_fake_backend_text_shapes_reply(tmp_path, monkeypatch):
     assert out["model"] == "primary"
     assert out["choices"][0]["message"] == {"role": "assistant", "content": "says hi"}
     assert out["usage"] == {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    route, preset, messages, params = backend.calls[0]
+    route, preset, messages, params, passthrough = backend.calls[0]
     assert (route.soul_alias, route.backend_alias) == ("rem", "primary")
     assert preset.name == "primary"
     assert params == {"temperature": 0.5, "max_tokens": 512}

@@ -135,7 +135,7 @@ def test_ollama_complete_sends_bearer_and_payload(monkeypatch):
     params = {"temperature": 0.5, "max_tokens": 8}
     messages = [{"role": "user", "content": "hi"}]
     text = backend.complete(_route(), preset, messages, params)
-    assert text == "hello-from-mock"
+    assert text.text == "hello-from-mock"
     sent = _FakeClient.last
     assert sent["url"] == EXPECTED_URL
     assert sent["headers"] == {"Authorization": "Bearer " + KEY_SENTINEL}
@@ -214,7 +214,7 @@ def test_ollama_nonempty_content_still_200(monkeypatch):
         base_url="https://ollama.com", model="do-not-deploy-model", api_key=KEY_SENTINEL
     )
     text = backend.complete(_route(), _ollama_preset(base_url="https://ollama.com"), [{"role": "user", "content": "hi"}], {"temperature": 0.5, "max_tokens": 8})
-    assert text == "  hi  "
+    assert text.text == "  hi  "
 
 
 def test_production_presets_all_ollama_with_root_base_url():

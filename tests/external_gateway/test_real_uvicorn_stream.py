@@ -45,8 +45,8 @@ class _FakeBackend:
         self.text = text
         self.calls = []
 
-    def complete(self, route, preset, messages, params):
-        self.calls.append((route, preset, messages, params))
+    def complete(self, route, preset, messages, params, passthrough=None):
+        self.calls.append((route, preset, messages, params, passthrough))
         return self.text
 
 

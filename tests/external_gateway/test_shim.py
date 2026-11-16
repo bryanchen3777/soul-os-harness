@@ -39,24 +39,23 @@ def _canon(obj) -> bytes:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
-# -- allowlist ---------------------------------------------------------------
+# -- transparent passthrough: extra top-level keys are never 400 -----------
 
-def test_extra_top_level_key_400():
-    body = _valid_body(extra_key=1)
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(body)
-    assert ei.value.status == 400
-    assert ei.value.code == "invalid_request_error"
+def test_extra_top_level_key_passthrough_not_400():
+    req = parse_chat_request(_valid_body(extra_key=1))
+    assert isinstance(req, InternalReq)
+    assert req.passthrough == {"extra_key": 1}
+    assert req.to_raw_request()["extra_key"] == 1
 
 
-@pytest.mark.parametrize("banned", ["logit_bias", "function_call", "tools"])
-def test_banned_extension_keys_400(banned):
+@pytest.mark.parametrize("key", ["logit_bias", "function_call", "tools", "functions", "tool_choice"])
+def test_former_banned_extension_keys_passthrough(key):
     body = _valid_body()
-    body[banned] = {} if banned != "function_call" else {"name": "f"}
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(body)
-    assert ei.value.status == 400
-    assert ei.value.code == "invalid_request_error"
+    body[key] = {} if key != "function_call" else {"name": "f"}
+    req = parse_chat_request(body)
+    assert isinstance(req, InternalReq)
+    assert req.passthrough[key] == body[key]
+    assert req.to_raw_request()[key] == body[key]
 
 
 @pytest.mark.parametrize("role", ["developer", "function", "tool", "System", ""])
@@ -261,23 +260,24 @@ def test_iter_chat_sse_frames_end_with_done():
     assert all(p["object"] == "chat.completion.chunk" for p in payloads)
 
 
-# -- DIAG-SHIM-KEY-001: 400 carries the offending key name (name only) ------
+# -- DIAG-SHIM-KEY-001: retired (transparent passthrough, no 400) -----------
+# Unknown top-level keys are forwarded verbatim (see passthrough tests
+# above). Only the message-shape diagnostics below still apply: a bad
+# message field stays 400 and still names the field (name only, scrubbed
+# through the error envelope).
 
-def test_unknown_top_level_key_message_carries_key_name():
+def test_unknown_top_level_key_forwarded_verbatim():
     body = _valid_body(extra_key=1)
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(body)
-    assert ei.value.status == 400
-    assert ei.value.message == "Unsupported parameter: extra_key"
+    req = parse_chat_request(body)
+    assert req.passthrough == {"extra_key": 1}
+    env = to_error(400, "invalid_request_error", "probe")
+    assert env["error"]["message"] == "probe"
 
 
 def test_unknown_top_level_key_survives_error_envelope_and_scrub():
-    body = _valid_body(extra_key=1)
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(body)
-    env = to_error(ei.value.status, ei.value.code, ei.value.message)
-    assert env["error"]["message"] == "Unsupported parameter: extra_key"
-    assert "extra_key" in env["error"]["message"]
+    out = to_error(400, "invalid_request_error", "rejected api_key=sk-abc123XYZ tail")
+    assert "sk-abc123XYZ" not in out["error"]["message"]
+    assert "[redacted]" in out["error"]["message"]
 
 
 def test_unknown_message_field_carries_field_name():
@@ -288,15 +288,13 @@ def test_unknown_message_field_carries_field_name():
     assert ei.value.message == "Unsupported message field: tool_calls"
 
 
-@pytest.mark.parametrize("banned", ["logit_bias", "function_call", "tools", "functions", "tool_choice"])
-def test_banned_keys_do_not_leak_key_name(banned):
+@pytest.mark.parametrize("key", ["logit_bias", "function_call", "tools", "functions", "tool_choice"])
+def test_former_banned_keys_forwarded_verbatim(key):
     body = _valid_body()
-    body[banned] = {}
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(body)
-    assert ei.value.status == 400
-    assert ei.value.message == "Unsupported parameter."
-    assert banned not in ei.value.message
+    body[key] = {}
+    req = parse_chat_request(body)
+    assert req.passthrough[key] == {}
+    assert req.to_raw_request()[key] == {}
 
 
 def test_non_str_top_level_key_no_repr_leak():
@@ -316,14 +314,14 @@ def test_non_str_message_field_key_no_repr_leak():
     assert ei.value.message == "Invalid request."
 
 
-# -- SHIM-ADMIT-STREAM-OPTIONS-001: admit + no-op drop ----------------------
+# -- SHIM-OVERLAY-TRANS-1: stream_options forwarded via passthrough --------
 
-def test_stream_options_include_usage_admitted_and_dropped():
+def test_stream_options_include_usage_forwarded_not_dropped():
     req = parse_chat_request(_valid_body(stream=True, stream_options={"include_usage": True}))
     assert isinstance(req, InternalReq)
     assert req.stream is True
     raw = req.to_raw_request()
-    assert "stream_options" not in raw
+    assert raw["stream_options"] == {"include_usage": True}
     assert raw["stream"] is False
     frames = list(iter_chat_sse("hello", "model-a"))
     assert len(frames) == 4
@@ -332,144 +330,127 @@ def test_stream_options_include_usage_admitted_and_dropped():
     assert all("usage" not in p for p in payloads)
 
 
-def test_stream_options_none_and_empty_mapping_ok():
+def test_stream_options_none_and_empty_mapping_forwarded():
     for val in (None, {}):
         req = parse_chat_request(_valid_body(stream_options=val))
         assert isinstance(req, InternalReq)
-        assert "stream_options" not in req.to_raw_request()
+        assert req.to_raw_request()["stream_options"] == val
 
 
-@pytest.mark.parametrize("bad", ["yes", 1, True, [], ["include_usage"]])
-def test_stream_options_non_mapping_400(bad):
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(_valid_body(stream_options=bad))
-    assert ei.value.status == 400
-    assert ei.value.code == "invalid_request_error"
+@pytest.mark.parametrize("val", ["yes", 1, True, [], ["include_usage"]])
+def test_stream_options_arbitrary_values_passthrough(val):
+    req = parse_chat_request(_valid_body(stream_options=val))
+    assert req.to_raw_request()["stream_options"] == val
 
 
-def test_other_unknown_key_still_400_after_stream_options_admit():
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(_valid_body(stream_options={"include_usage": True}, dummy_key=1))
-    assert ei.value.status == 400
-    assert ei.value.message == "Unsupported parameter: dummy_key"
+def test_other_unknown_key_also_passthrough_with_stream_options():
+    req = parse_chat_request(_valid_body(stream_options={"include_usage": True}, dummy_key=1))
+    assert req.to_raw_request()["dummy_key"] == 1
+    assert req.to_raw_request()["stream_options"] == {"include_usage": True}
 
 
-# -- SHIM-ADMIT-STORE-001: admit + no-op drop --------------------------------
+# -- SHIM-OVERLAY-TRANS-1: store forwarded via passthrough ------------------
 
 import pytest as _pytest_store  # noqa: E402  (local alias to avoid shadowing)
 
 
 @_pytest_store.mark.parametrize("val", [True, False, None])
-def test_store_admitted_and_dropped(val):
+def test_store_forwarded_not_dropped(val):
     req = parse_chat_request(_valid_body(store=val))
     assert isinstance(req, InternalReq)
-    raw = req.to_raw_request()
-    assert "store" not in raw
+    assert req.to_raw_request()["store"] is val
 
 
-@_pytest_store.mark.parametrize("bad", [1, 0, "true", [], {}])
-def test_store_non_bool_400(bad):
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(_valid_body(store=bad))
-    assert ei.value.status == 400
-    assert ei.value.code == "invalid_request_error"
-    assert ei.value.param == "store"
+@_pytest_store.mark.parametrize("val", [1, 0, "true", [], {}])
+def test_store_arbitrary_values_passthrough(val):
+    req = parse_chat_request(_valid_body(store=val))
+    assert req.to_raw_request()["store"] == val
 
 
-def test_unknown_param_still_400_after_store_admit():
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(_valid_body(store=True, unknown_param=1))
-    assert ei.value.status == 400
-    assert ei.value.message == "Unsupported parameter: unknown_param"
+def test_unknown_param_also_passthrough_with_store():
+    req = parse_chat_request(_valid_body(store=True, unknown_param=1))
+    assert req.to_raw_request()["store"] is True
+    assert req.to_raw_request()["unknown_param"] == 1
 
 
-def test_store_and_stream_options_coexist_no_raw_pollution():
+def test_store_and_stream_options_coexist_in_raw():
     req = parse_chat_request(
         _valid_body(store=True, stream=True, stream_options={"include_usage": True})
     )
     assert isinstance(req, InternalReq)
     raw = req.to_raw_request()
-    assert "store" not in raw
-    assert "stream_options" not in raw
+    assert raw["store"] is True
+    assert raw["stream_options"] == {"include_usage": True}
     assert raw["stream"] is False
 
 
-# -- SHIM-ADMIT-MAX-COMPLETION-TOKENS-001: admit + map to max_tokens -----
+# -- SHIM-OVERLAY-TRANS-1: max_completion_tokens forwarded verbatim ------
 
 import pytest as _pytest_mct  # noqa: E402  (local alias to avoid shadowing)
 
 
 @_pytest_mct.mark.parametrize("val", [16, 1, 2048])
-def test_max_completion_tokens_admitted_and_mapped(val):
+def test_max_completion_tokens_forwarded_verbatim(val):
     req = parse_chat_request(_valid_body(max_completion_tokens=val))
-    assert isinstance(req, InternalReq)
-    assert req.max_tokens == val
-    raw = req.to_raw_request()
-    assert raw["max_tokens"] == val
-    assert "max_completion_tokens" not in raw
-
-
-def test_max_completion_tokens_none_falls_back_to_default():
-    req = parse_chat_request(_valid_body(max_completion_tokens=None))
     assert isinstance(req, InternalReq)
     assert req.max_tokens == 512
     raw = req.to_raw_request()
     assert raw["max_tokens"] == 512
-    assert "max_completion_tokens" not in raw
+    assert raw["max_completion_tokens"] == val
 
 
-@_pytest_mct.mark.parametrize("bad", [0, 2049, -1, "100", 1.5, True, False])
-def test_max_completion_tokens_invalid_400(bad):
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(_valid_body(max_completion_tokens=bad))
-    assert ei.value.status == 400
-    assert ei.value.code == "invalid_request_error"
-    assert ei.value.param == "max_completion_tokens"
+def test_max_completion_tokens_none_forwarded_verbatim():
+    req = parse_chat_request(_valid_body(max_completion_tokens=None))
+    assert isinstance(req, InternalReq)
+    assert req.max_tokens == 512
+    assert req.to_raw_request()["max_completion_tokens"] is None
 
 
-def test_max_tokens_and_max_completion_tokens_conflict_400():
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(_valid_body(max_tokens=16, max_completion_tokens=16))
-    assert ei.value.status == 400
-    assert ei.value.code == "invalid_request_error"
-    assert ei.value.param == "max_completion_tokens"
+@_pytest_mct.mark.parametrize("val", [0, 2049, -1, "100", 1.5, True, False])
+def test_max_completion_tokens_arbitrary_values_passthrough(val):
+    req = parse_chat_request(_valid_body(max_completion_tokens=val))
+    assert req.to_raw_request()["max_completion_tokens"] == val
 
 
-def test_store_stream_options_max_completion_tokens_coexist_no_raw_pollution():
+def test_max_tokens_and_max_completion_tokens_coexist_no_conflict():
+    req = parse_chat_request(_valid_body(max_tokens=16, max_completion_tokens=32))
+    assert isinstance(req, InternalReq)
+    raw = req.to_raw_request()
+    assert raw["max_tokens"] == 16
+    assert raw["max_completion_tokens"] == 32
+
+
+def test_store_stream_options_max_completion_tokens_coexist_in_raw():
     req = parse_chat_request(
         _valid_body(store=True, stream_options={"include_usage": True}, max_completion_tokens=16)
     )
     assert isinstance(req, InternalReq)
-    assert req.max_tokens == 16
     raw = req.to_raw_request()
-    assert "store" not in raw
-    assert "stream_options" not in raw
-    assert "max_completion_tokens" not in raw
-    assert raw["max_tokens"] == 16
+    assert raw["store"] is True
+    assert raw["stream_options"] == {"include_usage": True}
+    assert raw["max_completion_tokens"] == 16
+    assert raw["max_tokens"] == 512
     assert raw["stream"] is False
 
 
-def test_unknown_param_still_400_after_max_completion_tokens_admit():
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(_valid_body(max_completion_tokens=16, unknown_param=1))
-    assert ei.value.status == 400
-    assert ei.value.message == "Unsupported parameter: unknown_param"
+def test_unknown_param_also_passthrough_with_max_completion_tokens():
+    req = parse_chat_request(_valid_body(max_completion_tokens=16, unknown_param=1))
+    assert req.to_raw_request()["unknown_param"] == 1
+    assert req.to_raw_request()["max_completion_tokens"] == 16
 
 
-# -- SHIM-EMPTY-TOOL-ADMIT: empty tools / harmless tool_choice admitted -----
+# -- SHIM-OVERLAY-TRANS-1: tools / tool_choice / legacy keys forwarded -----
 _TOOL_KEYS = ("tools", "tool_choice", "functions", "function_call", "logit_bias")
 
 
-def test_empty_tools_admitted_and_dropped():
+def test_empty_tools_forwarded_not_dropped():
     req = parse_chat_request(_valid_body(tools=[]))
     assert isinstance(req, InternalReq)
-    raw = req.to_raw_request()
-    for k in _TOOL_KEYS:
-        assert k not in raw
+    assert req.to_raw_request()["tools"] == []
 
 
 @pytest.mark.parametrize(
-    "bad",
+    "tools",
     [
         [{"type": "function", "function": {"name": "f"}}],
         "x",
@@ -480,106 +461,93 @@ def test_empty_tools_admitted_and_dropped():
         True,
     ],
 )
-def test_nonempty_or_nonlist_tools_400(bad):
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(_valid_body(tools=bad))
-    assert ei.value.status == 400
-    assert ei.value.code == "invalid_request_error"
-    assert ei.value.message == "Unsupported parameter."
+def test_nonempty_or_nonlist_tools_forwarded(tools):
+    req = parse_chat_request(_valid_body(tools=tools))
+    assert isinstance(req, InternalReq)
+    assert req.to_raw_request()["tools"] == tools
 
 
-def test_tool_choice_none_admitted_and_dropped():
+def test_tool_choice_none_forwarded_not_dropped():
     req = parse_chat_request(_valid_body(tool_choice="none"))
     assert isinstance(req, InternalReq)
-    raw = req.to_raw_request()
-    for k in _TOOL_KEYS:
-        assert k not in raw
+    assert req.to_raw_request()["tool_choice"] == "none"
 
 
-def test_empty_tools_plus_auto_admitted_and_dropped():
+def test_empty_tools_plus_auto_forwarded():
     req = parse_chat_request(_valid_body(tools=[], tool_choice="auto"))
     assert isinstance(req, InternalReq)
     raw = req.to_raw_request()
-    for k in _TOOL_KEYS:
-        assert k not in raw
+    assert raw["tools"] == []
+    assert raw["tool_choice"] == "auto"
 
 
-def test_bare_auto_without_tools_admitted_and_dropped():
+def test_bare_auto_without_tools_forwarded():
     req = parse_chat_request(_valid_body(tool_choice="auto"))
     assert isinstance(req, InternalReq)
-    raw = req.to_raw_request()
-    for k in _TOOL_KEYS:
-        assert k not in raw
+    assert req.to_raw_request()["tool_choice"] == "auto"
 
 
 @pytest.mark.parametrize(
-    "bad",
+    "choice",
     ["required", {"type": "function", "function": {"name": "f"}}, "AUTO", "None", "", None, True, 0, []],
 )
-def test_bad_tool_choice_400(bad):
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(_valid_body(tool_choice=bad))
-    assert ei.value.status == 400
-    assert ei.value.code == "invalid_request_error"
-    assert ei.value.message == "Unsupported parameter."
+def test_arbitrary_tool_choice_forwarded(choice):
+    req = parse_chat_request(_valid_body(tool_choice=choice))
+    assert isinstance(req, InternalReq)
+    assert req.to_raw_request()["tool_choice"] == choice
 
 
-def test_nonempty_tools_plus_auto_400_forward_order():
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(
-            _valid_body(tools=[{"type": "function", "function": {"name": "f"}}], tool_choice="auto")
-        )
-    assert ei.value.status == 400
+def test_nonempty_tools_plus_auto_forwarded_in_order():
+    req = parse_chat_request(
+        _valid_body(tools=[{"type": "function", "function": {"name": "f"}}], tool_choice="auto")
+    )
+    assert isinstance(req, InternalReq)
+    assert req.to_raw_request()["tools"] == [{"type": "function", "function": {"name": "f"}}]
+    assert req.to_raw_request()["tool_choice"] == "auto"
 
 
-def test_nonempty_tools_plus_auto_400_reversed_order():
+def test_nonempty_tools_plus_auto_forwarded_reversed_order():
     body = {
         "model": "model-a",
         "messages": [{"role": "user", "content": "hi"}],
         "tool_choice": "auto",
         "tools": [{"type": "function", "function": {"name": "f"}}],
     }
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(body)
-    assert ei.value.status == 400
+    req = parse_chat_request(body)
+    assert req.to_raw_request()["tool_choice"] == "auto"
+    assert req.to_raw_request()["tools"] == [{"type": "function", "function": {"name": "f"}}]
 
 
-def test_nonempty_tools_plus_none_400():
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(
-            _valid_body(tools=[{"type": "function", "function": {"name": "f"}}], tool_choice="none")
-        )
-    assert ei.value.status == 400
+def test_nonempty_tools_plus_none_forwarded():
+    req = parse_chat_request(
+        _valid_body(tools=[{"type": "function", "function": {"name": "f"}}], tool_choice="none")
+    )
+    assert isinstance(req, InternalReq)
+    assert req.to_raw_request()["tools"] == [{"type": "function", "function": {"name": "f"}}]
 
 
-@pytest.mark.parametrize("bad", [{}, [], {"name": "f"}])
-def test_functions_always_400_even_empty(bad):
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(_valid_body(functions=bad))
-    assert ei.value.status == 400
-    assert ei.value.code == "invalid_request_error"
-    assert ei.value.message == "Unsupported parameter."
+@pytest.mark.parametrize("val", [{}, [], {"name": "f"}])
+def test_functions_forwarded_even_empty(val):
+    req = parse_chat_request(_valid_body(functions=val))
+    assert isinstance(req, InternalReq)
+    assert req.to_raw_request()["functions"] == val
 
 
-@pytest.mark.parametrize("bad", [{"name": "f"}, "none", {}, [], None])
-def test_function_call_always_400(bad):
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(_valid_body(function_call=bad))
-    assert ei.value.status == 400
-    assert ei.value.code == "invalid_request_error"
-    assert ei.value.message == "Unsupported parameter."
+@pytest.mark.parametrize("val", [{"name": "f"}, "none", {}, [], None])
+def test_function_call_forwarded(val):
+    req = parse_chat_request(_valid_body(function_call=val))
+    assert isinstance(req, InternalReq)
+    assert req.to_raw_request()["function_call"] == val
 
 
-@pytest.mark.parametrize("bad", [{}, {"x": 1}, "x", 0])
-def test_logit_bias_always_400(bad):
-    with pytest.raises(InterfaceError) as ei:
-        parse_chat_request(_valid_body(logit_bias=bad))
-    assert ei.value.status == 400
-    assert ei.value.code == "invalid_request_error"
-    assert ei.value.message == "Unsupported parameter."
+@pytest.mark.parametrize("val", [{}, {"x": 1}, "x", 0])
+def test_logit_bias_forwarded(val):
+    req = parse_chat_request(_valid_body(logit_bias=val))
+    assert isinstance(req, InternalReq)
+    assert req.to_raw_request()["logit_bias"] == val
 
 
-def test_empty_tools_coexist_no_raw_pollution():
+def test_tools_coexist_in_raw():
     req = parse_chat_request(
         _valid_body(
             tools=[],
@@ -591,10 +559,12 @@ def test_empty_tools_coexist_no_raw_pollution():
         )
     )
     assert isinstance(req, InternalReq)
-    assert req.max_tokens == 16
+    assert req.max_tokens == 512
     raw = req.to_raw_request()
-    for k in ("tools", "tool_choice", "functions", "function_call", "logit_bias",
-              "store", "stream_options", "max_completion_tokens"):
-        assert k not in raw
-    assert raw["max_tokens"] == 16
+    assert raw["tools"] == []
+    assert raw["tool_choice"] == "none"
+    assert raw["store"] is True
+    assert raw["stream_options"] == {"include_usage": True}
+    assert raw["max_completion_tokens"] == 16
+    assert raw["max_tokens"] == 512
     assert raw["stream"] is False
