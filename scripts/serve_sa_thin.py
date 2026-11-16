@@ -950,6 +950,9 @@ def mount_responses_route(app, registry, loader):
                     getattr(preset_obj, "base_url", None),
                     getattr(preset_obj, "api_key", None),
                     timeout_s=_responses_backend.RESPONSE_TIMEOUT_S,
+                    session_id=(
+                        request.headers.get("x-opencode-session") or None
+                    ),
                 )
             except InterfaceError as exc:
                 _LOGGER.info(

@@ -277,11 +277,13 @@ def _build_app(registry_path, presets_path, release_path):
     )
 
 
-def _post_responses(app, soul, token, body):
+def _post_responses(app, soul, token, body, extra_headers=None):
     async def _go():
         headers = {}
         if token is not None:
             headers["Authorization"] = "Bearer " + token
+        if extra_headers:
+            headers.update(extra_headers)
         client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",
@@ -457,3 +459,74 @@ def test_resp_native_missing_key_never_echoes_env(monkeypatch):
         resp_mod.load_opencode_go_key()
     assert SENTINEL not in str(exc_info.value)
     assert SENTINEL not in (exc_info.value.message or "")
+
+
+# -- h. x-opencode-session passthrough (thin /responses, mock only) --------------
+#
+# Upstream 400 root cause: the thin endpoint dropped the caller's
+# ``x-opencode-session`` header so upstream judged the session missing.
+# The endpoint forwards exactly that one header (case-insensitive read,
+# no other custom-header passthrough); absence never blocks -- the
+# request still forwards and upstream decides.
+
+SESSION_VALUE = "resp-native-session-abc-123"
+
+
+def test_resp_native_session_header_forwarded_verbatim(
+    _fake_upstream, tmp_path
+):
+    registry_path, presets_path, release_path = _sandbox_files(tmp_path)
+    app = _build_app(registry_path, presets_path, release_path)
+    response = _post_responses(
+        app,
+        "rem",
+        TOKEN,
+        _native_body(),
+        extra_headers={
+            "x-opencode-session": SESSION_VALUE,
+            "x-evil-custom": "must-not-forward",
+        },
+    )
+    assert response.status_code == 200
+    assert len(_FakeClient.calls) == 1
+    outgoing = _FakeClient.calls[0]
+    assert outgoing["headers"].get("x-opencode-session") == SESSION_VALUE
+    # Only that one header is forwarded; other custom headers are dropped.
+    assert "x-evil-custom" not in outgoing["headers"]
+
+
+def test_resp_native_missing_session_header_forwards_without_it(
+    _fake_upstream, tmp_path
+):
+    registry_path, presets_path, release_path = _sandbox_files(tmp_path)
+    app = _build_app(registry_path, presets_path, release_path)
+    response = _post_responses(app, "rem", TOKEN, _native_body())
+    assert response.status_code == 200
+    assert len(_FakeClient.calls) == 1
+    assert "x-opencode-session" not in _FakeClient.calls[0]["headers"]
+
+
+def test_resp_native_session_value_never_logged(
+    _fake_upstream, tmp_path, caplog
+):
+    import logging as _logging
+
+    registry_path, presets_path, release_path = _sandbox_files(tmp_path)
+    app = _build_app(registry_path, presets_path, release_path)
+    with caplog.at_level(_logging.INFO):
+        response = _post_responses(
+            app,
+            "rem",
+            TOKEN,
+            _native_body(),
+            extra_headers={"X-Opencode-Session": SESSION_VALUE},
+        )
+    assert response.status_code == 200
+    assert len(_FakeClient.calls) == 1
+    # Case-insensitive read still forwards the exact value upstream.
+    assert _FakeClient.calls[0]["headers"].get("x-opencode-session") == SESSION_VALUE
+    # The value itself must not appear in any captured log record.
+    for record in caplog.records:
+        rendered = record.getMessage()
+        assert SESSION_VALUE not in rendered
+        assert SESSION_VALUE not in str(record.args)

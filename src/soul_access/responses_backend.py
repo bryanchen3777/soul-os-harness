@@ -80,7 +80,8 @@ def load_opencode_go_key() -> str:
     return key
 
 
-def forward_responses_request(request_body, base_url, api_key, timeout_s=60.0):
+def forward_responses_request(request_body, base_url, api_key, timeout_s=60.0,
+                             session_id=None):
     """Forward one Responses request natively; return ``(status, data)``.
 
     ``request_body`` is sent verbatim as the upstream JSON payload and
@@ -89,6 +90,9 @@ def forward_responses_request(request_body, base_url, api_key, timeout_s=60.0):
     non-200 status, network fault, timeout, or non-JSON reply raises
     the mapped ``InterfaceError`` (see module docstring). ``api_key``
     and ``request_body`` never enter logs or error messages.
+    Optional ``session_id`` is forwarded as the ``x-opencode-session``
+    upstream header only (absent when falsy); its value never enters logs,
+    only the ``has_session_header`` boolean.
     """
     try:
         timeout = float(timeout_s)
@@ -100,6 +104,9 @@ def forward_responses_request(request_body, base_url, api_key, timeout_s=60.0):
         _fail_closed()
     url = base_url.rstrip("/") + RESPONSES_PATH
     headers = {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}
+    has_session_header = isinstance(session_id, str) and bool(session_id)
+    if has_session_header:
+        headers["x-opencode-session"] = session_id
     try:
         timeout_obj = httpx.Timeout(
             connect=timeout, read=timeout, write=timeout, pool=timeout
@@ -112,16 +119,17 @@ def forward_responses_request(request_body, base_url, api_key, timeout_s=60.0):
     except InterfaceError:
         raise
     except httpx.TimeoutException:
-        _LOGGER.info("ext provider=opencode-go preset=%s status=%s", RESPONSES_PRESET_NAME, 500)
+        _LOGGER.info("ext provider=opencode-go preset=%s status=%s has_session_header=%s", RESPONSES_PRESET_NAME, 500, has_session_header)
         _fail_closed()
     except Exception:
-        _LOGGER.info("ext provider=opencode-go preset=%s status=%s", RESPONSES_PRESET_NAME, 500)
+        _LOGGER.info("ext provider=opencode-go preset=%s status=%s has_session_header=%s", RESPONSES_PRESET_NAME, 500, has_session_header)
         _fail_closed()
     if resp.status_code != 200:
         _LOGGER.info(
-            "ext provider=opencode-go preset=%s status=%s",
+            "ext provider=opencode-go preset=%s status=%s has_session_header=%s",
             RESPONSES_PRESET_NAME,
             resp.status_code,
+            has_session_header,
         )
         _raise_for_status(resp.status_code)
     try:
@@ -129,7 +137,7 @@ def forward_responses_request(request_body, base_url, api_key, timeout_s=60.0):
     except InterfaceError:
         raise
     except Exception:
-        _LOGGER.info("ext provider=opencode-go preset=%s status=%s", RESPONSES_PRESET_NAME, 500)
+        _LOGGER.info("ext provider=opencode-go preset=%s status=%s has_session_header=%s", RESPONSES_PRESET_NAME, 500, has_session_header)
         _fail_closed()
-    _LOGGER.info("ext provider=opencode-go preset=%s status=%s", RESPONSES_PRESET_NAME, 200)
+    _LOGGER.info("ext provider=opencode-go preset=%s status=%s has_session_header=%s", RESPONSES_PRESET_NAME, 200, has_session_header)
     return (200, data)
