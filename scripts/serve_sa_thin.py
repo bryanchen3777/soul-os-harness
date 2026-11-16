@@ -898,7 +898,7 @@ def _isolate_business_asgi(app, *, control=None, reject_app=None,
                     try:
                         return next(replay_fast)
                     except StopIteration:
-                        return {"type": "http.disconnect"}
+                        await asyncio.Event().wait()
 
                 await _run_on_this_loop(reject_app, scope, _fast_receive, send)
                 return
@@ -909,7 +909,7 @@ def _isolate_business_asgi(app, *, control=None, reject_app=None,
             try:
                 return next(replay)
             except StopIteration:
-                return {"type": "http.disconnect"}
+                await asyncio.Event().wait()
 
         async def _mem_send(message):
             sent.append(message)
